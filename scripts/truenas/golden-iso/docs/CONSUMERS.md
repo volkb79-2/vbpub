@@ -4,6 +4,13 @@ This records a successful install of TrueNAS `27.0.0-RC.1` in an x86_64 QEMU
 TCG VM, a root SSH key setup through TrueNAS middleware, a first boot without
 the installer ISO, and a captured raw whole-disk image.
 
+The results below are historical run records. As of 2026-10-21, the ignored
+`artifacts/` directory contains only the mode-0600 secrets sidecar; the raw
+image and restore ISO are absent. The retained source QCOW2 is dated
+2026-10-15 and contains the `27.0.0-RC.1` installation, so these old hashes
+and replay results cannot be used to identify a current golden artifact.
+Recreate and verify the raw image before following the restore steps below.
+
 ## Result
 
 - TrueNAS ISO: `TrueNAS-27.0.0-RC.1.iso`, SHA-256
@@ -96,9 +103,10 @@ v1001 restore is not certified until the current console or a successful
 SSH/API check confirms the receipt, new API key, and ONLINE boot pool.
 
 The fix adds `lsblk --tree` to EFI partition discovery and a regression test
-for the Debian flat-output behavior. The v6 ISO is being rebuilt from the same
-golden image; record its checksum and live/TCG result here after those checks
-complete.
+for the Debian flat-output behavior. At the time of the earlier report, the v6
+ISO was being rebuilt from the then-current golden image. That output is not
+present in this checkout as of 2026-10-21; record its checksum and live/TCG
+result here only after rebuilding and confirming them.
 
 ## Requirements and work directory
 
@@ -483,6 +491,14 @@ The tested output was UID `0`, kernel `6.18.52-production+truenas`, and
 to `/ui/`. Partition 3 still ended at sector `33554398` on the 20 GiB target.
 
 ## Netcup live restore
+
+For any future live test of a restored image, the first action after the host
+boots is to change `truenas_admin` from the recipe's publicly known bootstrap
+password to a fresh random value. Store it only in a mode-0600, gitignored
+host-specific TOML file and use that file for later UI/API gate authentication.
+Keep it separate from the golden-image sidecar. This credential rotation is a
+required test preflight; the existing installer scripts currently restore the
+image as captured and do not automate this host-specific change.
 
 Use the SCP CLI for upload, attach, power, and detach. Confirm the server id
 before using the destructive flow; `v1001.vxxu.de` is id `804027`. The exact

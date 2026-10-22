@@ -18,6 +18,7 @@ forward_env = [
   "TRUENAS_TEST_CACHE_TARGET",
   "TRUENAS_DISK_DEVICE",
   "TRUENAS_BOOT_POOL_PARTITION",
+  "TRUENAS_PATH_B_SETUP",
   "TRUENAS_MINIMUM_FREE_BYTES",
   "TRUENAS_TEST_ALLOW_DISK_PROVISION",
 ]
@@ -57,12 +58,17 @@ forward_env = [
   "TRUENAS_V27_EXPECTED_PRIOR_DATASET_INFO_SHA256",
   "TRUENAS_DISK_DEVICE",
   "TRUENAS_BOOT_POOL_PARTITION",
+  "TRUENAS_PATH_B_SETUP",
   "TRUENAS_MINIMUM_FREE_BYTES",
   "TRUENAS_TEST_ALLOW_DISK_PROVISION",
   "TRUENAS_UI_URL",
   "TRUENAS_UI_SECRET_FILE",
+  "TRUENAS_ROOT_SSH_PUBLIC_KEY_FILE",
   "TRUENAS_TEST_RESUME_EXISTING_UI_ROOT",
   "TRUENAS_TEST_RESUME_EXISTING_UI_DATASET",
+  "TRUENAS_TEST_ALLOW_PATH_A_ROOT_PROVISION",
+  "TRUENAS_TEST_ALLOW_UNRECORDED_PATCH",
+  "TRUENAS_OBSERVED_PATCH_MANIFEST",
   "TRUENAS_TEST_CLEANUP_STALE_UI_CONTAINER",
   "TRUENAS_TEST_PRESERVE_UI_WORKLOADS",
   "TRUENAS_UI_WORKLOAD_MANIFEST",
@@ -152,7 +158,31 @@ environment = "networked-tester"
 argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && \"$TESTER_VENV/bin/python\" -m pip install --disable-pip-version-check -r requirements-live-ui.txt && PYTHONPATH={worktree}/pwmcp/client/src \"$TESTER_VENV/bin/python\" live_ui.py"]
 budget = "45m"
 required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_UI_URL", "TRUENAS_UI_SECRET_FILE", "PWMCP_WS_URL", "PWMCP_PLAYWRIGHT_VERSION"]
-description = "Use the managed PWMCP browser to create Path A/B storage and submit container, VM, and cache-device UI workflows; verify backing ZFS state"
+description = "Use the managed PWMCP browser for Path A or explicitly provisioned Path B storage, submit dataset/zvol/container/VM UI workflows, and verify backing ZFS state; optional Path B wizard mode probes pool creation"
+
+[lanes.live-ui-auth]
+kind = "command"
+environment = "networked-tester"
+argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && \"$TESTER_VENV/bin/python\" -m pip install --disable-pip-version-check -r requirements-live-ui.txt && PYTHONPATH={worktree}/pwmcp/client/src \"$TESTER_VENV/bin/python\" live_ui_auth.py"]
+budget = "15m"
+required_env = ["TRUENAS_TEST_HOST", "TRUENAS_EXPECTED_VERSION", "TRUENAS_UI_URL", "TRUENAS_UI_SECRET_FILE", "PWMCP_WS_URL", "PWMCP_PLAYWRIGHT_VERSION"]
+description = "Authenticate to a TrueNAS UI through PWMCP and inventory visible navigation without changing host state"
+
+[lanes.live-ui-prepare-ssh]
+kind = "command"
+environment = "networked-tester"
+argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && \"$TESTER_VENV/bin/python\" -m pip install --disable-pip-version-check -r requirements-live-ui.txt && PYTHONPATH={worktree}/pwmcp/client/src \"$TESTER_VENV/bin/python\" live_ui_prepare_ssh.py"]
+budget = "15m"
+required_env = ["TRUENAS_TEST_HOST", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_UI_URL", "TRUENAS_UI_SECRET_FILE", "TRUENAS_ROOT_SSH_PUBLIC_KEY_FILE", "PWMCP_WS_URL", "PWMCP_PLAYWRIGHT_VERSION"]
+description = "On an explicitly disposable target, configure the supplied key on the built-in root account, disable root/global SSH password authentication, and start SSH through the TrueNAS UI"
+
+[lanes.live-ui-observed-v1001]
+kind = "command"
+environment = "networked-tester"
+argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && \"$TESTER_VENV/bin/python\" -m pip install --disable-pip-version-check -r requirements-live-ui.txt && PYTHONPATH={worktree}/pwmcp/client/src \"$TESTER_VENV/bin/python\" live_ui.py"]
+budget = "45m"
+required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_TEST_ALLOW_UNRECORDED_PATCH", "TRUENAS_OBSERVED_PATCH_MANIFEST", "TRUENAS_UI_URL", "TRUENAS_UI_SECRET_FILE", "PWMCP_WS_URL", "PWMCP_PLAYWRIGHT_VERSION"]
+description = "Exploratory Path A PWMCP UI storage acceptance on v1001's exact fingerprinted unrecorded code state; may provision only the empty 2 GiB managed root behind an explicit guard; does not certify the current patch adapter"
 
 [lanes.live-ui-workloads]
 kind = "command"

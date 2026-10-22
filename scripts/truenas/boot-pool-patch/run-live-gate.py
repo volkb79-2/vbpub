@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Run a registered TrueNAS live gate from a capped tester on the guest network.
+"""Run a registered TrueNAS live gate from a capped tester on a verified network.
 
 run-gate's ephemeral environments intentionally have no network attachment.
-This wrapper creates a short-lived tester-unified exec target on the disposable
-guest's Docker network, then delegates the actual verdict to run-gate.py.
+This wrapper creates a short-lived tester-unified exec target on either a
+managed guest's network or an explicitly selected external-host network, then
+delegates the actual verdict to the installed Run-Gate CLI.
 """
 
 from __future__ import annotations
@@ -16,15 +17,20 @@ from pathlib import Path, PurePosixPath
 import posixpath
 import re
 import shlex
+import shutil
 import stat
 import subprocess
 import sys
 import time
 import uuid
 from typing import Any
+from urllib.parse import urlsplit
 
 TRUENAS_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TRUENAS_ROOT))
+PATCH_ACCEPTANCE_ROOT = Path(__file__).resolve().parent / "acceptance"
+if str(PATCH_ACCEPTANCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(PATCH_ACCEPTANCE_ROOT))
 
 from tcg_vm import (
     VM_LABEL,
@@ -55,9 +61,18 @@ TESTER_LATE_CREATE_GRACE_SECONDS = 180
 LIVE_LANES = frozenset({
     "live-storage", "live-boot", "live-update", "live-v27-patch", "live-v28-patch",
     "live-path-b-provision", "live-path-b-partition", "live-ui", "live-vdev-topology",
-    "live-ui-workloads", "live-inspect",
+    "live-ui-workloads", "live-ui-auth", "live-ui-prepare-ssh", "live-ui-observed-v1001",
+    "live-inspect",
 })
-UI_LANES = frozenset({"live-ui", "live-ui-workloads", "live-vdev-topology"})
+UI_LANES = frozenset({
+    "live-ui", "live-ui-workloads", "live-ui-auth", "live-ui-prepare-ssh",
+    "live-vdev-topology", "live-ui-observed-v1001",
+})
+SSH_LANES = LIVE_LANES - {"live-ui-auth", "live-ui-prepare-ssh"}
+EXTERNAL_TARGET_LANES = frozenset({
+    "live-inspect", "live-v27-patch", "live-path-b-provision", "live-ui-auth",
+    "live-ui-prepare-ssh", "live-path-b-partition", "live-ui", "live-ui-observed-v1001",
+})
 LIVE_LANE_TIMEOUT_SECONDS = {
     "live-storage": 2400,
     "live-boot": 2400,
@@ -67,6 +82,9 @@ LIVE_LANE_TIMEOUT_SECONDS = {
     "live-path-b-provision": 900,
     "live-path-b-partition": 900,
     "live-ui": 2700,
+    "live-ui-auth": 900,
+    "live-ui-prepare-ssh": 900,
+    "live-ui-observed-v1001": 2700,
     "live-ui-workloads": 2700,
     "live-vdev-topology": 3600,
     "live-inspect": 900,
@@ -144,6 +162,8 @@ def configured_vm_https_port(vm: dict[str, Any]) -> int:
 
 
 def verify_network_alias(network: str, alias: str) -> str:
+    if network in {"bridge", "host", "none"}:
+        raise RunnerError(f"network {network!r} is not a verified custom bridge")
     result = docker_run(["docker", "network", "inspect", network])
     try:
         details = json.loads(result.stdout)
@@ -167,14 +187,72 @@ def verify_network_alias(network: str, alias: str) -> str:
     raise RunnerError(f"custom bridge {network!r} has no container with DNS alias {alias!r}")
 
 
+def verify_custom_bridge_network(network: str) -> str:
+    validate_network_name(network)
+    result = docker_run(["docker", "network", "inspect", network])
+    try:
+        details = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RunnerError(f"Docker returned malformed network details for {network!r}") from exc
+    if (not isinstance(details, list) or len(details) != 1
+            or not isinstance(details[0], dict)
+            or details[0].get("Driver") != "bridge"):
+        raise RunnerError(f"network {network!r} is not one verified Docker custom bridge")
+    return network
+
+
+def validate_network_name(network: str) -> str:
+    if (not isinstance(network, str)
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,126}", network) is None
+            or network in {"bridge", "host", "none"}):
+        raise RunnerError("--docker-network must name a custom Docker bridge")
+    return network
+
+
+def validate_external_ui_url(value: str) -> str:
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError as exc:
+        raise RunnerError("TRUENAS_UI_URL is not a valid HTTPS origin") from exc
+    if (parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password
+            or parsed.path not in {"", "/"} or parsed.query or parsed.fragment
+            or (port is not None and not 1 <= port <= 65535)):
+        raise RunnerError("TRUENAS_UI_URL must be an HTTPS origin without credentials, path, query, or fragment")
+    return value.rstrip("/")
+
+
+def external_target(lane: str) -> tuple[str, str | None]:
+    if lane not in EXTERNAL_TARGET_LANES:
+        raise RunnerError(
+            f"{lane} is not enabled for an external TrueNAS target; allowed: {sorted(EXTERNAL_TARGET_LANES)}"
+        )
+    host = os.environ.get("TRUENAS_TEST_HOST", "")
+    if (not host or host != host.strip() or host.startswith("-")
+            or any(char in host for char in "/\\@\x00 \t\r\n")):
+        raise RunnerError("external-host mode requires TRUENAS_TEST_HOST to be a hostname or IP address")
+    if lane in UI_LANES:
+        ui_url = validate_external_ui_url(os.environ.get("TRUENAS_UI_URL", ""))
+    else:
+        ui_url = None
+    return host, ui_url
+
+
+def validate_high_psi_override(args: argparse.Namespace) -> bool:
+    if args.allow_high_psi and args.docker_network is None:
+        raise RunnerError("--allow-high-psi is only valid with an explicit external --docker-network")
+    return bool(args.allow_high_psi)
+
+
 def required_live_environment(
     lane: str,
-    vm_name: str,
+    target_host: str,
     worktree_root: Path,
     *,
     ui_port: int | None = None,
+    ui_url: str | None = None,
 ) -> dict[str, str]:
-    if lane != "live-inspect" and os.environ.get("TRUENAS_TEST_ALLOW_MUTATIONS") != "1":
+    if lane not in {"live-inspect", "live-ui-auth"} and os.environ.get("TRUENAS_TEST_ALLOW_MUTATIONS") != "1":
         raise RunnerError("set TRUENAS_TEST_ALLOW_MUTATIONS=1 only for a disposable TrueNAS VM")
     if not os.environ.get("TRUENAS_EXPECTED_VERSION"):
         raise RunnerError("TRUENAS_EXPECTED_VERSION is required")
@@ -306,8 +384,12 @@ def required_live_environment(
 
     ui_settings: dict[str, str] = {}
     if lane in UI_LANES:
-        if ui_port is None or not 1 <= ui_port <= 65535:
-            raise RunnerError(f"{lane} requires the verified managed VM HTTPS port")
+        if ui_url is None:
+            if ui_port is None or not 1 <= ui_port <= 65535:
+                raise RunnerError(f"{lane} requires a verified managed-VM port or external HTTPS URL")
+            ui_url = f"https://{target_host}:{ui_port}"
+        else:
+            ui_url = validate_external_ui_url(ui_url)
         resume_existing_root = os.environ.get("TRUENAS_TEST_RESUME_EXISTING_UI_ROOT", "")
         if resume_existing_root not in {"", "1"}:
             raise RunnerError("TRUENAS_TEST_RESUME_EXISTING_UI_ROOT must be unset or 1")
@@ -384,8 +466,7 @@ def required_live_environment(
         if stat.S_IMODE(secret_stat.st_mode) & 0o077:
             raise RunnerError("TrueNAS UI credential file must not be group/world accessible")
         ui_settings = {
-            # tcg_vm.py forwards this internal port on the guest's verified Docker bridge.
-            "TRUENAS_UI_URL": f"https://{vm_name}:{ui_port}",
+            "TRUENAS_UI_URL": ui_url,
             "TRUENAS_UI_SECRET_FILE": secret_path,
             "PWMCP_WS_URL": ws_url,
             "PWMCP_PLAYWRIGHT_VERSION": playwright_version,
@@ -396,36 +477,121 @@ def required_live_environment(
             "TRUENAS_UI_WORKLOAD_MANIFEST": workload_manifest,
         }
 
-    try:
-        port = int(os.environ.get("TRUENAS_TEST_PORT", ""))
-    except ValueError as exc:
-        raise RunnerError("TRUENAS_TEST_PORT must be an integer") from exc
-    if not 1 <= port <= 65535:
-        raise RunnerError("TRUENAS_TEST_PORT must be between 1 and 65535")
+    observed_patch_settings: dict[str, str] = {}
+    observed_patch_guard = os.environ.get("TRUENAS_TEST_ALLOW_UNRECORDED_PATCH", "")
+    observed_patch_manifest = os.environ.get("TRUENAS_OBSERVED_PATCH_MANIFEST", "")
+    path_a_root_provision_guard = os.environ.get("TRUENAS_TEST_ALLOW_PATH_A_ROOT_PROVISION", "")
+    if path_a_root_provision_guard not in {"", "1"}:
+        raise RunnerError("TRUENAS_TEST_ALLOW_PATH_A_ROOT_PROVISION must be unset or 1")
+    if lane == "live-ui-observed-v1001":
+        if observed_patch_guard != "1":
+            raise RunnerError(
+                "set TRUENAS_TEST_ALLOW_UNRECORDED_PATCH=1 only for the pinned exploratory v1001 UI lane"
+            )
+        manifest_path = repo_path_in_tester(observed_patch_manifest, worktree_root)
+        try:
+            from observed_patch_manifest import load_observed_patch_manifest
 
-    key_path = repo_path_in_tester(os.environ.get("TRUENAS_TEST_KEY", ""), worktree_root)
-    known_hosts_path = repo_path_in_tester(
-        os.environ.get("TRUENAS_TEST_KNOWN_HOSTS", ""), worktree_root
-    )
-    key_stat = Path(key_path).stat()
-    hosts_stat = Path(known_hosts_path).stat()
-    if key_stat.st_uid == 0:
-        raise RunnerError("the networked tester must run as a non-root SSH key owner")
-    if stat.S_IMODE(key_stat.st_mode) & 0o077:
-        raise RunnerError(f"SSH private key must not be group/world accessible: {key_path}")
-    if (key_stat.st_uid, key_stat.st_gid) != (hosts_stat.st_uid, hosts_stat.st_gid):
-        raise RunnerError("SSH private key and known_hosts must have the same owner for the tester")
-    if lane in UI_LANES and (secret_stat.st_uid, secret_stat.st_gid) != (key_stat.st_uid, key_stat.st_gid):
-        raise RunnerError("TrueNAS UI credential file and SSH key must have the same owner for the tester")
+            load_observed_patch_manifest(
+                manifest_path,
+                target_host=target_host,
+                expected_version=os.environ["TRUENAS_EXPECTED_VERSION"],
+                profile=profile,
+            )
+        except (KeyError, ValueError) as exc:
+            raise RunnerError(f"invalid observed-patch UI fingerprint: {exc}") from exc
+        if path_a_root_provision_guard == "1":
+            if profile != "path-a":
+                raise RunnerError("Path A root provisioning requires TRUENAS_STORAGE_PROFILE=path-a")
+            if os.environ.get("TRUENAS_TEST_RESUME_EXISTING_UI_ROOT") == "1":
+                raise RunnerError(
+                    "Path A root provisioning and TRUENAS_TEST_RESUME_EXISTING_UI_ROOT are mutually exclusive"
+                )
+            observed_patch_settings["TRUENAS_TEST_ALLOW_PATH_A_ROOT_PROVISION"] = "1"
+        observed_patch_settings = {
+            "TRUENAS_TEST_ALLOW_UNRECORDED_PATCH": "1",
+            "TRUENAS_OBSERVED_PATCH_MANIFEST": manifest_path,
+            **observed_patch_settings,
+        }
+    elif observed_patch_guard or observed_patch_manifest or path_a_root_provision_guard:
+        raise RunnerError(
+            "TRUENAS_TEST_ALLOW_UNRECORDED_PATCH and TRUENAS_OBSERVED_PATCH_MANIFEST "
+            "are only valid for live-ui-observed-v1001"
+        )
+
+    root_ssh_key_settings: dict[str, str] = {}
+    if lane == "live-ui-prepare-ssh":
+        public_key_path = repo_path_in_tester(
+            os.environ.get("TRUENAS_ROOT_SSH_PUBLIC_KEY_FILE", ""), worktree_root
+        )
+        public_key_lines = [
+            line.strip()
+            for line in Path(public_key_path).read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        if len(public_key_lines) != 1 or not public_key_lines[0].startswith("ssh-ed25519 "):
+            raise RunnerError(
+                "TRUENAS_ROOT_SSH_PUBLIC_KEY_FILE must contain exactly one Ed25519 public key"
+            )
+        if shutil.which("ssh-keygen") is None:
+            raise RunnerError("ssh-keygen is required to validate the configured root public key")
+        try:
+            key_check = subprocess.run(
+                ["ssh-keygen", "-lf", public_key_path],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=15,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            raise RunnerError("could not validate the configured root SSH public key") from None
+        if key_check.returncode != 0 or "(ED25519)" not in key_check.stdout:
+            raise RunnerError("TRUENAS_ROOT_SSH_PUBLIC_KEY_FILE is not a valid Ed25519 public key")
+        root_ssh_key_settings["TRUENAS_ROOT_SSH_PUBLIC_KEY_FILE"] = public_key_path
+
+    ssh_settings: dict[str, str] = {
+        "TRUENAS_TEST_PORT": "",
+        "TRUENAS_TEST_KEY": "",
+        "TRUENAS_TEST_KNOWN_HOSTS": "",
+        "_TRUENAS_TESTER_UID_GID": f"{os.getuid()}:{os.getgid()}",
+    }
+    if lane in SSH_LANES:
+        try:
+            port = int(os.environ.get("TRUENAS_TEST_PORT", ""))
+        except ValueError as exc:
+            raise RunnerError("TRUENAS_TEST_PORT must be an integer") from exc
+        if not 1 <= port <= 65535:
+            raise RunnerError("TRUENAS_TEST_PORT must be between 1 and 65535")
+
+        key_path = repo_path_in_tester(os.environ.get("TRUENAS_TEST_KEY", ""), worktree_root)
+        known_hosts_path = repo_path_in_tester(
+            os.environ.get("TRUENAS_TEST_KNOWN_HOSTS", ""), worktree_root
+        )
+        key_stat = Path(key_path).stat()
+        hosts_stat = Path(known_hosts_path).stat()
+        if key_stat.st_uid == 0:
+            raise RunnerError("the networked tester must run as a non-root SSH key owner")
+        if stat.S_IMODE(key_stat.st_mode) & 0o077:
+            raise RunnerError(f"SSH private key must not be group/world accessible: {key_path}")
+        if (key_stat.st_uid, key_stat.st_gid) != (hosts_stat.st_uid, hosts_stat.st_gid):
+            raise RunnerError("SSH private key and known_hosts must have the same owner for the tester")
+        if lane in UI_LANES and (secret_stat.st_uid, secret_stat.st_gid) != (key_stat.st_uid, key_stat.st_gid):
+            raise RunnerError("TrueNAS UI credential file and SSH key must have the same owner for the tester")
+        ssh_settings = {
+            "TRUENAS_TEST_PORT": str(port),
+            "TRUENAS_TEST_KEY": key_path,
+            "TRUENAS_TEST_KNOWN_HOSTS": known_hosts_path,
+            "_TRUENAS_TESTER_UID_GID": f"{key_stat.st_uid}:{key_stat.st_gid}",
+        }
+    elif (secret_stat.st_uid, secret_stat.st_gid) != (os.getuid(), os.getgid()):
+        raise RunnerError("TrueNAS UI credential file must be owned by the current non-root user")
     return {
-        "TRUENAS_TEST_HOST": vm_name,
-        "TRUENAS_TEST_PORT": str(port),
-        "TRUENAS_TEST_KEY": key_path,
-        "TRUENAS_TEST_KNOWN_HOSTS": known_hosts_path,
+        "TRUENAS_TEST_HOST": target_host,
+        **ssh_settings,
         "TRUENAS_TEST_USER": os.environ.get("TRUENAS_TEST_USER", "root"),
         "TRUENAS_STORAGE_PROFILE": profile,
         "TRUENAS_EXPECTED_VERSION": os.environ["TRUENAS_EXPECTED_VERSION"],
-        "TRUENAS_TEST_ALLOW_MUTATIONS": "" if lane == "live-inspect" else "1",
+        "TRUENAS_TEST_ALLOW_MUTATIONS": "" if lane in {"live-inspect", "live-ui-auth"} else "1",
         "TRUENAS_TEST_ALLOW_REBOOT": os.environ.get("TRUENAS_TEST_ALLOW_REBOOT", ""),
         "TRUENAS_TEST_ALLOW_UPDATE": os.environ.get("TRUENAS_TEST_ALLOW_UPDATE", ""),
         "TRUENAS_TEST_ALLOW_DISK_PROVISION": os.environ.get(
@@ -444,7 +610,8 @@ def required_live_environment(
         "TRUENAS_UPDATE_EXPECTED_VERSION": os.environ.get("TRUENAS_UPDATE_EXPECTED_VERSION", ""),
         **update_paths,
         **ui_settings,
-        "_TRUENAS_TESTER_UID_GID": f"{key_stat.st_uid}:{key_stat.st_gid}",
+        **root_ssh_key_settings,
+        **observed_patch_settings,
     }
 
 
@@ -687,15 +854,52 @@ def export_ui_workload_manifest(tester_path: str, host_path: Path, gate_status: 
     return True
 
 
+def run_registered_lane(
+    lane: str,
+    worktree_root: Path,
+    env: dict[str, str],
+    *,
+    allow_dirty: bool,
+) -> int:
+    """Delegate the verdict to the installed Run-Gate CLI."""
+    run_gate = shutil.which("run-gate")
+    if not run_gate:
+        raise RunnerError(
+            "installed Run-Gate CLI is not on PATH; activate /home/vscode/.venv first"
+        )
+    gate_argv = [run_gate, lane, "--worktree", str(worktree_root)]
+    if allow_dirty:
+        gate_argv.append("--allow-dirty")
+    result = subprocess.run(
+        gate_argv,
+        cwd=TRUENAS_ROOT,
+        env=env,
+        check=False,
+    )
+    return result.returncode
+
+
 def run(args: argparse.Namespace) -> int:
     if args.lane not in LIVE_LANES:
         raise RunnerError(f"unsupported live lane {args.lane!r}; choose one of {sorted(LIVE_LANES)}")
+    allow_high_psi = validate_high_psi_override(args)
+
+    if args.lane == "live-ui-observed-v1001" and args.docker_network is None:
+        raise RunnerError("live-ui-observed-v1001 is restricted to its fingerprinted external host")
 
     worktree_root = Path(__file__).resolve().parents[3]
-    vm, network = verified_vm_network(args.vm_container)
-    ui_port = configured_vm_https_port(vm) if args.lane in UI_LANES else None
+    if args.docker_network is not None:
+        target_host, ui_url = external_target(args.lane)
+        network = verify_custom_bridge_network(args.docker_network)
+        vm = None
+        ui_port = None
+    else:
+        target_host = args.vm_container
+        ui_url = None
+        vm, network = verified_vm_network(args.vm_container)
+        ui_port = configured_vm_https_port(vm) if args.lane in UI_LANES else None
     child_env = required_live_environment(
-        args.lane, args.vm_container, worktree_root, ui_port=ui_port,
+        args.lane, target_host, worktree_root, ui_port=ui_port, ui_url=ui_url,
     )
     workload_manifest_export: tuple[Path, str] | None = None
     if args.lane == "live-ui" and child_env.get("TRUENAS_TEST_PRESERVE_UI_WORKLOADS") == "1":
@@ -713,6 +917,8 @@ def run(args: argparse.Namespace) -> int:
         # custom bridge before starting the registered UI lane.
         verify_network_alias(network, "pwmcp")
     if args.lane == "live-update":
+        if vm is None:
+            raise RunnerError("live-update requires a managed QEMU VM with read-only update media")
         media = Path(child_env["TRUENAS_UPDATE_ISO"]).resolve(strict=True)
         _, current_container = inspect_current_container()
         host_media = resolve_docker_path(
@@ -746,7 +952,14 @@ def run(args: argparse.Namespace) -> int:
     validate_memory_headroom(
         levels,
         requested_cpus=TESTER_CPU_CORES,
+        allow_memory_psi_pressure=allow_high_psi,
     )
+    if allow_high_psi:
+        print(
+            "[admission] explicit PSI override: keeping finite-memory, current-memory, "
+            "CPU-quota, and tester-container caps; skipping only PSI threshold refusals",
+            flush=True,
+        )
     if args.lane == "live-v27-patch":
         acceptance_dir = worktree_root / "scripts" / "truenas" / "boot-pool-patch" / "acceptance"
         sys.path.insert(0, str(acceptance_dir))
@@ -814,22 +1027,21 @@ def run(args: argparse.Namespace) -> int:
         print("[tester] " + json.dumps(placement, sort_keys=True), flush=True)
         test_key = child_env["TRUENAS_TEST_KEY"]
         known_hosts = child_env["TRUENAS_TEST_KNOWN_HOSTS"]
-        access = docker_run([
-            "docker", "exec", TESTER_NAME, "/bin/bash", "-lc",
-            f"test -f {shlex.quote(test_key)} && test -r {shlex.quote(test_key)} && "
-            f"test -f {shlex.quote(known_hosts)} && test -r {shlex.quote(known_hosts)}",
-        ], check=False)
-        if access.returncode:
-            raise RunnerError("tester user cannot read the selected SSH key or known_hosts file")
+        if test_key and known_hosts:
+            access = docker_run([
+                "docker", "exec", TESTER_NAME, "/bin/bash", "-lc",
+                f"test -f {shlex.quote(test_key)} && test -r {shlex.quote(test_key)} && "
+                f"test -f {shlex.quote(known_hosts)} && test -r {shlex.quote(known_hosts)}",
+            ], check=False)
+            if access.returncode:
+                raise RunnerError("tester user cannot read the selected SSH key or known_hosts file")
 
         gate_env = os.environ.copy()
         gate_env.update(child_env)
         gate_env.pop("_TRUENAS_TESTER_UID_GID", None)
-        gate_argv = [sys.executable, str(worktree_root / "scripts" / "truenas" / "run-gate.py"), args.lane]
-        if args.allow_dirty:
-            gate_argv.append("--allow-dirty")
-        gate = subprocess.run(gate_argv, cwd=worktree_root, env=gate_env, check=False)
-        run_status = gate.returncode
+        run_status = run_registered_lane(
+            args.lane, worktree_root, gate_env, allow_dirty=args.allow_dirty,
+        )
         if workload_manifest_export is not None:
             export_ui_workload_manifest(
                 workload_manifest_export[1], workload_manifest_export[0], run_status,
@@ -853,7 +1065,19 @@ def run(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("lane", choices=sorted(LIVE_LANES))
-    parser.add_argument("--vm-container", required=True, help="running tcg_vm.py container name")
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument("--vm-container", help="running tcg_vm.py container name")
+    target.add_argument(
+        "--docker-network",
+        help="custom Docker bridge for an external host; requires TRUENAS_TEST_HOST",
+    )
+    parser.add_argument(
+        "--allow-high-psi", action="store_true",
+        help=(
+            "for one external-host run only, skip memory PSI thresholds while retaining "
+            "finite-memory, hard-current, CPU-quota, and tester-container limits"
+        ),
+    )
     parser.add_argument(
         "--allow-dirty", action="store_true",
         help="pass run-gate's explicit dirty-worktree opt-in",

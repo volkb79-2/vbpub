@@ -1611,7 +1611,7 @@
         "argument_id": "argument:route:entrypoint:scp-api/snapshots/action",
         "choice": "dryrun"
       },
-      "signature": "sha256:fa2080b6faf83c16852c05c8394bfcf2ba70745cc32af5b67c596a2fdf15d693"
+      "signature": "sha256:883f7eaa0491b86d4fcfbfb6c2f9874e5ad3e3a9a98a8b76638e29e91478400c"
     },
     {
       "id": "case:route:entrypoint:scp-api/snapshots/argument-choice/argument:route:entrypoint:scp-api/snapshots/action/5498a731a1",
@@ -1624,7 +1624,20 @@
         "argument_id": "argument:route:entrypoint:scp-api/snapshots/action",
         "choice": "create"
       },
-      "signature": "sha256:1dbf5bccef3db79dacbfb234fc896a5c0928629e9ec8d7a8e172d35ab17b0c1c"
+      "signature": "sha256:9261e85674db19f2716632382a2ad9b852693bad24af3e03d77981c153891d59"
+    },
+    {
+      "id": "case:route:entrypoint:scp-api/snapshots/argument-choice/argument:route:entrypoint:scp-api/snapshots/action/721b66695b",
+      "kind": "argument-choice",
+      "members": [
+        "argument:route:entrypoint:scp-api/snapshots/action"
+      ],
+      "route_id": "route:entrypoint:scp-api/snapshots",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:scp-api/snapshots/action",
+        "choice": "revert"
+      },
+      "signature": "sha256:dc4417f6a30daa1be86649f715e4eabdd8a5d0624967918c0c4d95deeabaacd5"
     },
     {
       "id": "case:route:entrypoint:scp-api/snapshots/argument-choice/argument:route:entrypoint:scp-api/snapshots/action/b05a18f448",
@@ -1637,7 +1650,7 @@
         "argument_id": "argument:route:entrypoint:scp-api/snapshots/action",
         "choice": "delete"
       },
-      "signature": "sha256:a2debe54e931f661fced110610d4ad105cb28a090a49d6c817bbf323ce504633"
+      "signature": "sha256:967d16841cf091f1770284743df2f7c8373e477f2b121af6ef48e96c141ebd03"
     },
     {
       "id": "case:route:entrypoint:scp-api/snapshots/argument-shape/argument:route:entrypoint:scp-api/snapshots/action",
@@ -1649,7 +1662,7 @@
       "shape": {
         "argument_id": "argument:route:entrypoint:scp-api/snapshots/action"
       },
-      "signature": "sha256:21b777c17279e77d0243fe682c0afe0958912c1dd2db7fe6d1365f865e5e2105"
+      "signature": "sha256:5acf8ee7461ce0974a8b75a8f27f3ae63e36ce820829c190753dcbee08b68ed5"
     },
     {
       "id": "case:route:entrypoint:scp-api/snapshots/argument-shape/argument:route:entrypoint:scp-api/snapshots/server_id",
@@ -1661,7 +1674,7 @@
       "shape": {
         "argument_id": "argument:route:entrypoint:scp-api/snapshots/server_id"
       },
-      "signature": "sha256:2c25ec9c52b118a7e1b97e5a5525f406bacf4b184b88d5e0b458272de948eb94"
+      "signature": "sha256:66f6d975792212bae7ca0111845d41e8c7451f4c54badc759d21bc0c05f1fbbb"
     },
     {
       "id": "case:route:entrypoint:scp-api/snapshots/argument-shape/argument:route:entrypoint:scp-api/snapshots/snapshot_name",
@@ -1673,7 +1686,7 @@
       "shape": {
         "argument_id": "argument:route:entrypoint:scp-api/snapshots/snapshot_name"
       },
-      "signature": "sha256:6b14ad578ebf5da2a266b077fe00cd8d727a6e917a271f627bd0851ff0321a7c"
+      "signature": "sha256:f421f544d747fe3d0d08241f802ad7d400668865435643f3ce44aaa02bf7405b"
     },
     {
       "id": "case:route:entrypoint:scp-api/snapshots/minimum",
@@ -1691,7 +1704,7 @@
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:be55ad230a4fb70898f1f1cb616ae9a22269cac7216365ac7f6146bdfd51dba4"
+      "signature": "sha256:83b8ed49289037f1ec45f66f33334457de16ddc58e6ff81c4ba53750228fc881"
     },
     {
       "id": "case:route:entrypoint:scp-api/snapshots/option-spelling/option:route:entrypoint:scp-api/snapshots/--debug-raw/--debug-raw",
@@ -1704,7 +1717,7 @@
         "option_id": "option:route:entrypoint:scp-api/snapshots/--debug-raw",
         "spelling": "--debug-raw"
       },
-      "signature": "sha256:98d1bd9ec31ac827728d98a52fdff19be14a1cbe5a52f0451e1f385b59ebd63e"
+      "signature": "sha256:5550ec26b956a3fc9e5ed6077d9b780c8041f39087ad01230a6fc72750fcb36f"
     },
     {
       "id": "case:route:entrypoint:scp-api/snapshots/option-spelling/option:route:entrypoint:scp-api/snapshots/--description/--description",
@@ -1717,7 +1730,7 @@
         "option_id": "option:route:entrypoint:scp-api/snapshots/--description",
         "spelling": "--description"
       },
-      "signature": "sha256:c28bb2098361dfcf7e1781ccb126232f211256d7aba70cf46210ebce46f5c51e"
+      "signature": "sha256:656d8fcced21e34a4a526ae7cc3dfc4a3ff92c3e41a8fc2bf02892af74fd2293"
     },
     {
       "id": "case:route:entrypoint:scp-api/snapshots/option-spelling/option:route:entrypoint:scp-api/snapshots/--disk-name/--disk-name",
@@ -1730,7 +1743,7 @@
         "option_id": "option:route:entrypoint:scp-api/snapshots/--disk-name",
         "spelling": "--disk-name"
       },
-      "signature": "sha256:729ccf5d862e504747fc1719f71397f8fcb6f1040645e52d8322aecd6e02e254"
+      "signature": "sha256:8b73fb451278434f345e6d7a9b12e78c5f71c2af90378bbe62077d01307357f5"
     },
     {
       "id": "case:route:entrypoint:scp-api/snapshots/option-spelling/option:route:entrypoint:scp-api/snapshots/--dry-run/--dry-run",
@@ -1743,7 +1756,7 @@
         "option_id": "option:route:entrypoint:scp-api/snapshots/--dry-run",
         "spelling": "--dry-run"
       },
-      "signature": "sha256:ba983bc689cb495bf3c1d9f4df413c984ce4ffbc43f262fb50637f91ed2213f7"
+      "signature": "sha256:2c92882ef755344093733a7ddeb4b9dfaad44a4cb4203fa5a5533efc07ea886d"
     },
     {
       "id": "case:route:entrypoint:scp-api/snapshots/option-spelling/option:route:entrypoint:scp-api/snapshots/--json/--json",
@@ -1756,7 +1769,7 @@
         "option_id": "option:route:entrypoint:scp-api/snapshots/--json",
         "spelling": "--json"
       },
-      "signature": "sha256:2103f7367f5f2027fde35235f34793dec0e8e0f0f1b53b248aab2bbb6afc70f5"
+      "signature": "sha256:88ba487a94fa855ede3996eeb2bbbccc145850f928b519d2bbd1cec2f2568253"
     },
     {
       "id": "case:route:entrypoint:scp-api/snapshots/option-spelling/option:route:entrypoint:scp-api/snapshots/--name/--name",
@@ -1769,7 +1782,7 @@
         "option_id": "option:route:entrypoint:scp-api/snapshots/--name",
         "spelling": "--name"
       },
-      "signature": "sha256:661cfaa87415df5ec61e5c891b62b6b7effceb1badfba940016d7c5d07204963"
+      "signature": "sha256:4a2049f0afaed33edb44ac995e8b79cdbf447a56f38b7be163a8f74ed56d89a6"
     },
     {
       "id": "case:route:entrypoint:scp-api/snapshots/option-spelling/option:route:entrypoint:scp-api/snapshots/--online/--online",
@@ -1782,7 +1795,7 @@
         "option_id": "option:route:entrypoint:scp-api/snapshots/--online",
         "spelling": "--online"
       },
-      "signature": "sha256:f2784a61d9857f560174c09d786fc93721a1f4ddf2562d3053f40888636d35a0"
+      "signature": "sha256:ed5b23a9cf250218681481dc0a75ebd6c32a74ec7420cacf907965547350d2b6"
     },
     {
       "id": "case:route:entrypoint:scp-api/snapshots/option-spelling/option:route:entrypoint:scp-api/snapshots/--yes/--yes",
@@ -1795,7 +1808,7 @@
         "option_id": "option:route:entrypoint:scp-api/snapshots/--yes",
         "spelling": "--yes"
       },
-      "signature": "sha256:12886a2c6f93fd4ee55fd3ec6f628d4df2c1168bc94deba4600b35af0e8683e3"
+      "signature": "sha256:71ed80f417572b075594b0a22f004a82d9ec4006e585920d640adffd673eb87e"
     },
     {
       "id": "case:route:entrypoint:scp-api/status/argument-shape/argument:route:entrypoint:scp-api/status/server_id",
@@ -4858,16 +4871,17 @@
           "choices": [
             "create",
             "dryrun",
-            "delete"
+            "delete",
+            "revert"
           ],
           "const": null,
           "default": null,
-          "description": "create a snapshot, check whether creation is currently possible, or delete a named snapshot (confirmed)",
+          "description": "create, check, delete, or restore a named server snapshot (confirmed)",
           "help_group": "ACTIONS",
           "hidden": false,
           "id": "argument:route:entrypoint:scp-api/snapshots/action",
           "kind": "argument",
-          "metavar": "{create,dryrun,delete}",
+          "metavar": "{create,dryrun,delete,revert}",
           "minimum_values": 0,
           "name": "action",
           "nargs": "?",
@@ -4885,7 +4899,7 @@
           "choices": null,
           "const": null,
           "default": null,
-          "description": "name of the snapshot to delete; required with delete (see the list shown by 'snapshots SERVER_ID')",
+          "description": "snapshot name; required with delete or revert (see 'snapshots SERVER_ID')",
           "help_group": "positional arguments",
           "hidden": false,
           "id": "argument:route:entrypoint:scp-api/snapshots/snapshot_name",
@@ -4927,7 +4941,7 @@
       "confirmation": true,
       "constraints": [],
       "delegated_metadata": [],
-      "description": "List snapshots for one or every server. dryrun asks SCP whether creation is possible (an empty answer means possible); create makes a snapshot and is confirmed. delete SNAPSHOT_NAME removes that snapshot (DELETE /api/v1/servers/{id}/snapshots/{name}, identified by NAME): it is irreversible, honours the protected-server denylist, is refused when the name is not in the server's snapshot list, and is confirmed; with --dry-run it only shows what would be deleted. The API answers a task, which ./monitor-task.py watch can follow. create and dryrun need a disk: the server's only disk is used unless --disk-name is given, or pass --online. Note: the server record's snapshotCount can exceed the list this verb shows; the provider list endpoint takes no paging parameters, so that difference is provider-side.",
+      "description": "List snapshots for one or every server. dryrun asks SCP whether creation is possible (an empty answer means possible); create makes a snapshot and is confirmed. delete SNAPSHOT_NAME removes the named snapshot. revert SNAPSHOT_NAME replaces the server disk contents from that snapshot (POST /api/v1/servers/{id}/snapshots/{name}/revert). Both actions are confirmed, require one existing unique snapshot name, and honour the protected-server denylist. Revert refuses while server tasks are active and supports --dry-run. The API answers a task; follow it with ./monitor-task.py watch TASK_UUID. create and dryrun need a disk: the server's only disk is used unless --disk-name is given, or pass --online. Note: the server record's snapshotCount can exceed the list this verb shows; the provider list endpoint takes no paging parameters, so that difference is provider-side.",
       "group": "MIXED OPERATIONS",
       "id": "route:entrypoint:scp-api/snapshots",
       "kind": "invocation",
@@ -4974,8 +4988,8 @@
       "subcommand_groups": [],
       "subcommands": [],
       "subcommands_required": false,
-      "summary": "list, check, create, or delete server snapshots [mutating; dry-run]",
-      "synopsis_override": "[server_id] [create|dryrun|delete SNAPSHOT_NAME]",
+      "summary": "list, check, create, delete, or restore server snapshots [mutating; dry-run]",
+      "synopsis_override": "[server_id] [create|dryrun|delete|revert SNAPSHOT_NAME]",
       "syntax_complete": true,
       "usage_override": null
     },

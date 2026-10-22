@@ -4,7 +4,9 @@ import ast
 import hashlib
 import importlib.util
 import json
+import os
 import re
+import subprocess
 from types import SimpleNamespace
 from pathlib import Path
 import sys
@@ -18,6 +20,8 @@ SCRIPT = PATCH_ROOT / "run-live-gate.py"
 CONFIG = TRUENAS_ROOT / "run-gate.toml"
 README = PATCH_ROOT / "README.md"
 LIVE_UI = PATCH_ROOT / "acceptance" / "live_ui.py"
+LIVE_UI_AUTH = PATCH_ROOT / "acceptance" / "live_ui_auth.py"
+LIVE_UI_PREPARE_SSH = PATCH_ROOT / "acceptance" / "live_ui_prepare_ssh.py"
 UI_RESUME = PATCH_ROOT / "acceptance" / "ui_resume.py"
 LIVE_INSPECT = PATCH_ROOT / "acceptance" / "live_inspect.py"
 LIVE_VDEV_TOPOLOGY = PATCH_ROOT / "acceptance" / "live_vdev_topology.py"
@@ -87,7 +91,7 @@ def test_live_lanes_use_a_capped_networked_exec_runner() -> None:
     for name in (
         "live-storage", "live-boot", "live-update", "live-v27-patch", "live-v28-patch",
         "live-path-b-provision", "live-path-b-partition", "live-ui", "live-ui-workloads",
-        "live-vdev-topology", "live-inspect",
+        "live-vdev-topology", "live-inspect", "live-ui-prepare-ssh", "live-ui-observed-v1001",
     ):
         lane = config["lanes"][name]
         assert lane["environment"] == "networked-tester"
@@ -97,8 +101,210 @@ def test_live_lanes_use_a_capped_networked_exec_runner() -> None:
     assert "TRUENAS_TEST_RESUME_EXISTING_UI_ROOT" in config["environments"]["networked-tester"]["forward_env"]
     assert "TRUENAS_TEST_RESUME_EXISTING_UI_DATASET" in config["environments"]["networked-tester"]["forward_env"]
     assert "TRUENAS_TEST_CLEANUP_STALE_UI_CONTAINER" in config["environments"]["networked-tester"]["forward_env"]
+    auth_required = set(config["lanes"]["live-ui-auth"]["required_env"])
+    assert {"TRUENAS_TEST_HOST", "TRUENAS_UI_URL", "TRUENAS_UI_SECRET_FILE", "PWMCP_WS_URL"} <= auth_required
+    assert not {"TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_TEST_PORT"} & auth_required
+    assert "live_ui_auth.py" in " ".join(config["lanes"]["live-ui-auth"]["argv"])
+    auth_source = LIVE_UI_AUTH.read_text()
+    assert 'name="Credentials submenu", exact=True' in auth_source
+    assert 'credentials_menu.first.wait_for(state="visible", timeout=60_000)' in auth_source
+    assert 'name=re.compile(r"^(?:Local )?Users$", re.I)' in auth_source
+    assert '[local-users-page] url={page.url}; root-row-count=' in auth_source
+    assert 'base_url + "/ui/credentials/users?username=root"' in auth_source
+    assert "ssh_key_field_populated={root_key_field_populated}" in auth_source
+    assert 'name=re.compile(r"^Details for root\\b", re.I)' in auth_source
+    assert 'ssh_access.check()' in auth_source
+    assert "[root-user-edit-form] ssh_key_field_count=" in auth_source
+    prepare_ssh = config["lanes"]["live-ui-prepare-ssh"]
+    prepare_ssh_required = set(prepare_ssh["required_env"])
+    assert {"TRUENAS_TEST_HOST", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_UI_URL",
+            "TRUENAS_UI_SECRET_FILE", "TRUENAS_ROOT_SSH_PUBLIC_KEY_FILE",
+            "PWMCP_WS_URL"} <= prepare_ssh_required
+    assert not {"TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_TEST_PORT"} & prepare_ssh_required
+    assert "live_ui_prepare_ssh.py" in " ".join(prepare_ssh["argv"])
+    assert prepare_ssh["environment"] == "networked-tester"
+    runner = load_runner()
+    assert "live-ui-prepare-ssh" in runner.EXTERNAL_TARGET_LANES
+    assert "live-ui-prepare-ssh" in runner.UI_LANES
+    assert "live-ui-prepare-ssh" not in runner.SSH_LANES
+    observed_ui = config["lanes"]["live-ui-observed-v1001"]
+    observed_required = set(observed_ui["required_env"])
+    assert {
+        "TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY",
+        "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE",
+        "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS",
+        "TRUENAS_TEST_ALLOW_UNRECORDED_PATCH", "TRUENAS_OBSERVED_PATCH_MANIFEST",
+        "TRUENAS_UI_URL", "TRUENAS_UI_SECRET_FILE", "PWMCP_WS_URL",
+        "PWMCP_PLAYWRIGHT_VERSION",
+    } <= observed_required
+    assert "live_ui.py" in " ".join(observed_ui["argv"])
+    assert "does not certify the current patch adapter" in observed_ui["description"]
+    assert "live-ui-observed-v1001" in runner.EXTERNAL_TARGET_LANES
+    assert "live-ui-observed-v1001" in runner.UI_LANES
+    assert "live-ui-observed-v1001" in runner.SSH_LANES
+    assert {"TRUENAS_TEST_ALLOW_UNRECORDED_PATCH", "TRUENAS_OBSERVED_PATCH_MANIFEST"} <= set(
+        environment["forward_env"]
+    )
+    assert "TRUENAS_TEST_ALLOW_PATH_A_ROOT_PROVISION" in environment["forward_env"]
     assert "live_vdev_topology.py" in " ".join(config["lanes"]["live-vdev-topology"]["argv"])
     assert config["lanes"]["live-vdev-topology"]["budget"] == "60m"
+
+
+def test_prepare_ssh_ui_lane_disables_password_auth_before_starting_service() -> None:
+    source = LIVE_UI_PREPARE_SSH.read_text()
+    assert 'TRUENAS_TEST_ALLOW_MUTATIONS") != "1"' in source
+    assert 'rows.first.wait_for(state="visible", timeout=60_000)' in source
+    assert 'get_by_role("checkbox", name="Allow Password Authentication", exact=True)' in source
+    assert "password_auth.uncheck()" in source
+    assert "page.wait_for_timeout(2_000)" in source
+    assert 'if password_auth.is_checked():' in source
+    assert "SSH password authentication is still enabled after saving the setting" in source
+    assert "deadline = time.monotonic() + 120" in source
+    assert "last row: {status!r}" in source
+    assert 'autostart = row.get_by_role("switch")' in source
+    assert "enabled automatic start for SSH" in source
+    assert 'name="Enable SSH Service"' not in source
+    assert 'name="SSH Public Keys (Authorized Keys)", exact=True' in source
+    assert 'name="Disable Password", exact=True' in source
+    assert '"ssh-keygen", "-lf", str(key_path)' in source
+    tree = ast.parse(source)
+    run_function = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "run"
+    )
+    call_nodes = [
+        node for node in ast.walk(run_function)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    ]
+    calls = [node.func.id for node in sorted(call_nodes, key=lambda item: item.lineno)]
+    assert calls.index("configure_root_ssh_access") < calls.index("disable_password_authentication")
+    assert calls.index("disable_password_authentication") < calls.index("enable_and_start_ssh")
+
+
+def test_prepare_ssh_public_key_must_be_valid_and_inside_the_worktree(tmp_path, monkeypatch) -> None:
+    runner = load_runner()
+    secrets = tmp_path / "ui-secrets.toml"
+    secrets.write_text("[truenas_admin]\nusername = 'truenas_admin'\npassword = 'not-read-here'\n")
+    secrets.chmod(0o600)
+    private_key = tmp_path / "generated-root-key"
+    subprocess.run(
+        ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(private_key)],
+        check=True,
+    )
+    public_key = Path(str(private_key) + ".pub")
+    for name, value in {
+        "TRUENAS_TEST_ALLOW_MUTATIONS": "1",
+        "TRUENAS_EXPECTED_VERSION": "27.0.0-RC.1",
+        "TRUENAS_STORAGE_PROFILE": "path-a",
+        "TRUENAS_UI_URL": "https://nas.example.test",
+        "TRUENAS_UI_SECRET_FILE": str(secrets),
+        "TRUENAS_ROOT_SSH_PUBLIC_KEY_FILE": str(public_key),
+        "PWMCP_WS_URL": "ws://pwmcp:3000/",
+        "PWMCP_PLAYWRIGHT_VERSION": "1.64.0",
+    }.items():
+        monkeypatch.setenv(name, value)
+    environment = runner.required_live_environment(
+        "live-ui-prepare-ssh", "nas.example.test", tmp_path,
+        ui_url="https://nas.example.test",
+    )
+    assert environment["TRUENAS_ROOT_SSH_PUBLIC_KEY_FILE"] == str(public_key)
+
+    outside_key = tmp_path.parent / f"{tmp_path.name}-outside.pub"
+    outside_key.write_text(public_key.read_text())
+    monkeypatch.setenv("TRUENAS_ROOT_SSH_PUBLIC_KEY_FILE", str(outside_key))
+    try:
+        runner.required_live_environment(
+            "live-ui-prepare-ssh", "nas.example.test", tmp_path,
+            ui_url="https://nas.example.test",
+        )
+    except runner.RunnerError as exc:
+        assert "inside this worktree" in str(exc)
+    else:
+        raise AssertionError("SSH preparation accepted a public key outside the worktree")
+
+    public_key.write_text("ssh-rsa AAAA legacy-key\n")
+    monkeypatch.setenv("TRUENAS_ROOT_SSH_PUBLIC_KEY_FILE", str(public_key))
+    try:
+        runner.required_live_environment(
+            "live-ui-prepare-ssh", "nas.example.test", tmp_path,
+            ui_url="https://nas.example.test",
+        )
+    except runner.RunnerError as exc:
+        assert "exactly one Ed25519 public key" in str(exc)
+    else:
+        raise AssertionError("SSH preparation accepted a non-Ed25519 public key")
+
+
+def test_observed_v1001_ui_lane_requires_external_target_and_matching_manifest(
+    tmp_path, monkeypatch,
+) -> None:
+    runner = load_runner()
+    secret = tmp_path / "ui-secrets.toml"
+    secret.write_text("[truenas_admin]\nusername = 'truenas_admin'\npassword = 'not-read-here'\n")
+    secret.chmod(0o600)
+    private_key = tmp_path / "root-key"
+    subprocess.run(
+        ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(private_key)],
+        check=True,
+    )
+    known_hosts = tmp_path / "known_hosts"
+    known_hosts.write_text("v1001.vxxu.de ssh-ed25519 AAAAexamplekey\n")
+    manifest = tmp_path / "observed.json"
+    manifest.write_bytes(
+        (TRUENAS_ROOT / "boot-pool-patch/v27/observed-v1001-unrecorded-code-20261021.json").read_bytes()
+    )
+    for name, value in {
+        "TRUENAS_TEST_ALLOW_MUTATIONS": "1",
+        "TRUENAS_EXPECTED_VERSION": "27.0.0-RC.1",
+        "TRUENAS_STORAGE_PROFILE": "path-a",
+        "TRUENAS_TEST_PORT": "22",
+        "TRUENAS_TEST_USER": "root",
+        "TRUENAS_TEST_KEY": str(private_key),
+        "TRUENAS_TEST_KNOWN_HOSTS": str(known_hosts),
+        "TRUENAS_UI_URL": "https://v1001.vxxu.de",
+        "TRUENAS_UI_SECRET_FILE": str(secret),
+        "PWMCP_WS_URL": "ws://pwmcp:3000/",
+        "PWMCP_PLAYWRIGHT_VERSION": "1.64.0",
+        "TRUENAS_TEST_ALLOW_UNRECORDED_PATCH": "1",
+        "TRUENAS_TEST_ALLOW_PATH_A_ROOT_PROVISION": "1",
+        "TRUENAS_OBSERVED_PATCH_MANIFEST": str(manifest),
+    }.items():
+        monkeypatch.setenv(name, value)
+
+    environment = runner.required_live_environment(
+        "live-ui-observed-v1001", "v1001.vxxu.de", tmp_path,
+        ui_url="https://v1001.vxxu.de",
+    )
+    assert environment["TRUENAS_TEST_ALLOW_UNRECORDED_PATCH"] == "1"
+    assert environment["TRUENAS_TEST_ALLOW_PATH_A_ROOT_PROVISION"] == "1"
+    assert environment["TRUENAS_OBSERVED_PATCH_MANIFEST"] == str(manifest)
+
+    monkeypatch.setenv("TRUENAS_TEST_ALLOW_UNRECORDED_PATCH", "0")
+    try:
+        runner.required_live_environment(
+            "live-ui-observed-v1001", "v1001.vxxu.de", tmp_path,
+            ui_url="https://v1001.vxxu.de",
+        )
+    except runner.RunnerError as exc:
+        assert "only for the pinned exploratory v1001 UI lane" in str(exc)
+    else:
+        raise AssertionError("the exploratory UI lane accepted a missing explicit guard")
+
+
+def test_observed_v1001_ui_lane_refuses_managed_vm_mode() -> None:
+    runner = load_runner()
+    args = SimpleNamespace(
+        lane="live-ui-observed-v1001",
+        docker_network=None,
+        vm_container="truenas-v27-local",
+        allow_high_psi=False,
+    )
+    try:
+        runner.run(args)
+    except runner.RunnerError as exc:
+        assert "restricted to its fingerprinted external host" in str(exc)
+    else:
+        raise AssertionError("the v1001 observed-code lane accepted a managed local VM")
 
 
 def test_ui_workload_cycle_waits_for_true_nas_table_rows_after_login() -> None:
@@ -181,9 +387,49 @@ def test_networked_runner_uses_gates_slice_and_small_verified_limits() -> None:
     assert '"live-v28-patch": 2400' in source
     assert '"live-path-b-partition": 900' in source
     assert '"live-ui": 2700' in source
+    assert '"live-ui-auth": 900' in source
     assert '"live-vdev-topology": 3600' in source
     assert '"live-inspect": 900' in source
+    assert "allow_memory_psi_pressure=allow_high_psi" in source
     assert "LIVE_LANE_TIMEOUT_SECONDS[args.lane]" in source
+
+
+def test_networked_runner_delegates_verdict_to_installed_run_gate(monkeypatch, tmp_path) -> None:
+    runner = load_runner()
+    calls = []
+
+    monkeypatch.setattr(runner.shutil, "which", lambda name: "/estate/bin/run-gate")
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+    status = runner.run_registered_lane(
+        "live-inspect",
+        tmp_path,
+        {"GATE_MARKER": "preserved"},
+        allow_dirty=True,
+    )
+
+    assert status == 0
+    assert calls == [(
+        ["/estate/bin/run-gate", "live-inspect", "--worktree", str(tmp_path), "--allow-dirty"],
+        {"cwd": runner.TRUENAS_ROOT, "env": {"GATE_MARKER": "preserved"}, "check": False},
+    )]
+    source = SCRIPT.read_text()
+    assert "run-gate.py" not in source
+
+
+def test_networked_runner_fails_loudly_without_installed_run_gate(monkeypatch, tmp_path) -> None:
+    runner = load_runner()
+    monkeypatch.setattr(runner.shutil, "which", lambda _name: None)
+    try:
+        runner.run_registered_lane("live-inspect", tmp_path, {}, allow_dirty=False)
+    except runner.RunnerError as exc:
+        assert "activate /home/vscode/.venv" in str(exc)
+    else:
+        raise AssertionError("networked runner must not fall back to a copied gate script")
 
 
 def test_ui_gate_requires_private_credentials_and_pwmcp_contract(tmp_path, monkeypatch) -> None:
@@ -276,7 +522,43 @@ def test_ui_gate_requires_private_credentials_and_pwmcp_contract(tmp_path, monke
     except runner.RunnerError as exc:
         assert "credential file" in str(exc)
     else:
-        raise AssertionError("the live UI lane must reject group/world-readable credentials")
+            raise AssertionError("the live UI lane must reject group/world-readable credentials")
+
+
+def test_readonly_ui_auth_lane_needs_no_ssh_credentials(tmp_path, monkeypatch) -> None:
+    runner = load_runner()
+    secret = tmp_path / "ui-secrets.toml"
+    secret.write_text("[truenas_admin]\nusername='admin'\npassword='test'\n")
+    secret.chmod(0o600)
+    for name, value in {
+        "TRUENAS_EXPECTED_VERSION": "27.0.0-RC.1",
+        "TRUENAS_STORAGE_PROFILE": "path-a",
+        "TRUENAS_UI_SECRET_FILE": str(secret),
+        "TRUENAS_UI_URL": "https://nas.example.test",
+        "PWMCP_WS_URL": "ws://pwmcp:3000/",
+        "PWMCP_PLAYWRIGHT_VERSION": "1.64.0",
+    }.items():
+        monkeypatch.setenv(name, value)
+    for name in ("TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_TEST_PORT"):
+        monkeypatch.delenv(name, raising=False)
+
+    selected = runner.required_live_environment(
+        "live-ui-auth", "nas.example.test", tmp_path,
+        ui_url="https://nas.example.test",
+    )
+    assert selected["TRUENAS_TEST_ALLOW_MUTATIONS"] == ""
+    assert selected["TRUENAS_TEST_KEY"] == ""
+    assert selected["TRUENAS_TEST_KNOWN_HOSTS"] == ""
+    assert selected["TRUENAS_TEST_PORT"] == ""
+    assert selected["_TRUENAS_TESTER_UID_GID"] == f"{os.getuid()}:{os.getgid()}"
+    source = LIVE_UI_AUTH.read_text()
+    assert 'page.get_by_role("button", name="Log In", exact=True).click()' in source
+    assert 'page.wait_for_url(re.compile(r"/ui/(?!signin)"), timeout=120_000)' in source
+    assert 'page.get_by_role("link", name="Services", exact=True)' in source
+    assert 're.search(r"\\bSSH\\b", line, re.I)' in source
+    assert 'page.get_by_role("row", name=re.compile(r"^SSH\\b"))' in source
+    assert 'name="Edit Service", exact=True' in source
+    assert "context.close()" in source
 
 
 def test_live_ui_port_comes_from_the_managed_vm_configuration() -> None:
@@ -617,6 +899,126 @@ def test_pwmcp_alias_must_exist_on_the_selected_guest_network(monkeypatch) -> No
         raise AssertionError("the UI lane must refuse a network with no PWMCP alias")
 
 
+def test_external_target_requires_an_explicit_supported_host_and_https_ui_origin(monkeypatch) -> None:
+    runner = load_runner()
+    monkeypatch.setenv("TRUENAS_TEST_HOST", "v1001.vxxu.de")
+    monkeypatch.setenv("TRUENAS_UI_URL", "https://v1001.vxxu.de")
+    assert runner.external_target("live-ui") == (
+        "v1001.vxxu.de", "https://v1001.vxxu.de",
+    )
+    assert runner.external_target("live-inspect") == ("v1001.vxxu.de", None)
+
+    for value in (
+        "http://v1001.vxxu.de", "https://user@v1001.vxxu.de",
+        "https://v1001.vxxu.de/ui", "https://v1001.vxxu.de/?token=secret",
+    ):
+        monkeypatch.setenv("TRUENAS_UI_URL", value)
+        try:
+            runner.external_target("live-ui")
+        except runner.RunnerError as exc:
+            assert "HTTPS origin" in str(exc)
+        else:
+            raise AssertionError(f"external UI target accepted unsafe URL {value!r}")
+
+    monkeypatch.setenv("TRUENAS_TEST_HOST", "-option-like-host")
+    try:
+        runner.external_target("live-inspect")
+    except runner.RunnerError as exc:
+        assert "hostname or IP address" in str(exc)
+    else:
+        raise AssertionError("external target accepted an option-like host")
+
+    monkeypatch.setenv("TRUENAS_TEST_HOST", "v1001.vxxu.de")
+    try:
+        runner.external_target("live-update")
+    except runner.RunnerError as exc:
+        assert "not enabled for an external" in str(exc)
+    else:
+        raise AssertionError("external mode must not permit update/reboot workflows")
+
+
+def test_external_network_must_be_an_existing_custom_bridge(monkeypatch) -> None:
+    runner = load_runner()
+    calls = []
+
+    def inspect(argv, **_kwargs):
+        calls.append(argv)
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps([{"Driver": "bridge"}]),
+            stderr="",
+        )
+
+    monkeypatch.setattr(runner, "docker_run", inspect)
+    assert runner.verify_custom_bridge_network("dstdns-test-network") == "dstdns-test-network"
+    assert calls == [["docker", "network", "inspect", "dstdns-test-network"]]
+
+    for network in ("bridge", "host", "none", "bad network"):
+        try:
+            runner.verify_custom_bridge_network(network)
+        except runner.RunnerError as exc:
+            assert "custom Docker bridge" in str(exc)
+        else:
+            raise AssertionError(f"external mode accepted reserved or invalid network {network!r}")
+
+    monkeypatch.setattr(
+        runner,
+        "docker_run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0, stdout=json.dumps([{"Driver": "overlay"}]), stderr="",
+        ),
+    )
+    try:
+        runner.verify_custom_bridge_network("overlay-test")
+    except runner.RunnerError as exc:
+        assert "custom bridge" in str(exc)
+    else:
+        raise AssertionError("external mode accepted a non-bridge Docker network")
+
+
+def test_live_gate_cli_requires_exactly_one_managed_or_external_target() -> None:
+    runner = load_runner()
+    assert runner.build_parser().parse_args([
+        "live-inspect", "--vm-container", "truenas-test",
+    ]).vm_container == "truenas-test"
+    assert runner.build_parser().parse_args([
+        "live-inspect", "--docker-network", "dstdns-test-network",
+    ]).docker_network == "dstdns-test-network"
+    for argv in (
+        ["live-inspect"],
+        ["live-inspect", "--vm-container", "truenas-test", "--docker-network", "net"],
+    ):
+        try:
+            runner.build_parser().parse_args(argv)
+        except SystemExit as exc:
+            assert exc.code == 2
+        else:
+            raise AssertionError(f"runner accepted ambiguous target selection: {argv!r}")
+
+
+def test_high_psi_override_is_explicit_and_external_only() -> None:
+    runner = load_runner()
+    external = runner.build_parser().parse_args([
+        "live-ui-auth", "--docker-network", "custom-bridge", "--allow-high-psi",
+    ])
+    assert runner.validate_high_psi_override(external) is True
+
+    managed = runner.build_parser().parse_args([
+        "live-ui-auth", "--vm-container", "truenas-test", "--allow-high-psi",
+    ])
+    try:
+        runner.validate_high_psi_override(managed)
+    except runner.RunnerError as exc:
+        assert "external --docker-network" in str(exc)
+    else:
+        raise AssertionError("PSI override must be unavailable for managed guest runs")
+
+    default = runner.build_parser().parse_args([
+        "live-ui-auth", "--docker-network", "custom-bridge",
+    ])
+    assert runner.validate_high_psi_override(default) is False
+
+
 def test_live_ui_script_inventories_before_mutating_and_checks_zfs_backing() -> None:
     source = LIVE_UI.read_text()
     tree = ast.parse(source)
@@ -713,6 +1115,12 @@ def test_live_ui_script_inventories_before_mutating_and_checks_zfs_backing() -> 
         'quota_dom.get("dataTest") == "input-quota"',
         '"root_create_guard"',
         '"root-excluded-from-descendant-readiness-v1"',
+        '"TRUENAS_TEST_ALLOW_UNRECORDED_PATCH"',
+        '"TRUENAS_OBSERVED_PATCH_MANIFEST"',
+        '"TRUENAS_TEST_ALLOW_PATH_A_ROOT_PROVISION"',
+        'verify_observed_patch_files(target, observed_manifest)',
+        'marker_state == "absent"',
+        'does not certify the current patch bundle',
         'dataset_create_properties(create_requests, root)',
         'type(ui_quota) is int and ui_quota >= 1_000_000_000',
         '"path-a-root-ui-wire"',
@@ -1334,9 +1742,26 @@ def test_user_docs_link_the_live_gate_and_name_all_lane_values() -> None:
     ui_acceptance = consumers.split("## Run PWMCP UI storage acceptance", 1)[1].split(
         "## Repair the legacy v27 root-create guard", 1
     )[0]
-    assert "Do not run `live-path-b-provision`" in ui_acceptance
-    assert "`live-path-b-partition`" in ui_acceptance
-    assert "TrueNAS UI pool wizard" in ui_acceptance
+    ui_wizard_mode = ui_acceptance.split("- **`ui-wizard`**", 1)[1].split(
+        "- **`preprovisioned`**", 1
+    )[0]
+    preprovisioned_mode = ui_acceptance.split("- **`preprovisioned`**", 1)[1].split(
+        "On the current fresh patched guest", 1
+    )[0]
+    assert "`live-path-b-partition`" in ui_wizard_mode
+    assert "Do not run `live-path-b-provision` in this mode" in ui_wizard_mode
+    assert "`TRUENAS_PATH_B_SETUP=ui-wizard`" in ui_wizard_mode
+    assert "`live-path-b-provision`" in preprovisioned_mode
+    assert "export TRUENAS_PATH_B_SETUP=preprovisioned" in ui_acceptance
+    assert "--docker-network" in consumers
+    assert "external TrueNAS host" in consumers
+    assert "EXTERNAL_TARGET_LANES" in SCRIPT.read_text()
+    assert "External-host mode" in design
+    assert "--docker-network" in readme
+    assert "--allow-high-psi" in consumers
+    assert "--allow-high-psi" in design
+    assert "--allow-high-psi" in readme
+    assert "does not test UI pool" in preprovisioned_mode
     assert "TRUENAS_V27_PRIOR_PATCH_BUNDLE" in consumers
     assert "TRUENAS_V27_EXPECTED_PRIOR_BUNDLE_SHA256" in consumers
     for document in (readme, design, consumers):

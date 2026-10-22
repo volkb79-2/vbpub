@@ -1,7 +1,7 @@
 # cli-extended.toml
 #
 # Standalone project configuration (the Netcup scripts have no pyproject).
-# Declares the three Netcup CLIs for the shared `cli-extended surface` /
+# Declares the five Netcup CLIs for the shared `cli-extended surface` /
 # `cli-extended audit` commands and for the pytest plugin. Each spec file holds
 # exactly one generated region, so every CLI has its own CLI-SPEC-<id>.md;
 # CLI-SPEC.md is the index.
@@ -22,6 +22,14 @@ review = "cli-review-monitor-task.toml"
 manifest = "cli-surface-monitor-task.json"
 spec = "CLI-SPEC-monitor-task.md"
 findings = "cli-review-findings-monitor-task.toml"
+
+[[clis]]
+id = "install-restore-iso"
+factory = "install-restore-iso.py:build_cli"
+review = "cli-review-install-restore-iso.toml"
+manifest = "cli-surface-install-restore-iso.json"
+spec = "CLI-SPEC-install-restore-iso.md"
+findings = "cli-review-findings-install-restore-iso.toml"
 
 [[clis]]
 id = "scp-api"

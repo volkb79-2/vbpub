@@ -9,7 +9,7 @@ Control Panel API. They can optionally pass an operator-supplied cloud-init
 
 From the repository root, make an isolated environment for these scripts. The
 remaining setup commands below assume the current directory is `scripts/netcup`.
-`scp-api.py`, `install-host.py`, and `monitor-task.py` use the repository's
+`scp-api.py`, `install-host.py`, `monitor-task.py`, and `install-restore-iso.py` use the repository's
 `cli-extended` package, installed in the same environment that runs them:
 
 ```bash
@@ -19,7 +19,7 @@ python3 -m venv .venv
 python -m pip install --editable ../../libraries/cli-extended
 ```
 
-All three commands use the family version in `VERSION` and generate their
+All four commands use the family version in `VERSION` and generate their
 grouped usage and verb help from their command registries. Discovery is
 side-effect free and does not require a token or API settings:
 
@@ -27,6 +27,7 @@ side-effect free and does not require a token or API settings:
 ./scp-api.py --help
 ./install-host.py help wizard
 ./monitor-task.py --version
+./install-restore-iso.py help start
 ```
 
 Bare invocation prints top-level usage, whose common output options are the
@@ -35,7 +36,7 @@ command help; that selected-verb help shows which options such as `--json`
 actually apply.
 
 [`CLI-SPEC.md`](CLI-SPEC.md) indexes the canonical grammar and semantic review
-of all three CLIs (one `CLI-SPEC-<cli>.md` each, declared in
+of all four CLIs (one `CLI-SPEC-<cli>.md` each, declared in
 `cli-extended.toml`). Each generated inventory follows the live registry; the
 product-owned catalog records accepted/refused combinations, effects, and the
 behavior tests that keep each reviewed call linked to executable evidence.
@@ -78,16 +79,23 @@ protected-server denylist. Each candidate shows its server ID, IP addresses,
 and configured or resolver-derived reverse-DNS entries. It does not create an
 SSH key.
 
-### Local protected-server denylist
+### Shared local protected-server policy
 
-The login selection is a local safety guard for this checkout, not a Netcup
-account lock. It is saved in `.env` as
-`NETCUP_SCP_API_PROTECTED_SERVERS`; the wizard also records the selected server
-IDs in `NETCUP_SCP_API_PROTECTED_SERVER_IDS` so a later server rename cannot
-silently remove protection. The `.env` writer enforces mode `0600`.
+The login selection is a local safety policy for automated Netcup workflows,
+not a Netcup account lock. It is saved in `.env` as `NETCUP_PROTECTED_SERVERS`;
+the wizard also records selected server IDs in `NETCUP_PROTECTED_SERVER_IDS`
+so a later server rename cannot silently remove protection. API commands use
+the shared `netcup_scp_client.assert_server_operation_allowed` guard. Any
+automated SCP UI/PWMCP flow must call that same guard before operating on a
+server. This repository does not currently provide a managed SCP UI flow, and
+the `NETCUP_SCP_UI_*` values are not read by the Netcup CLI. The SCP website
+itself does not read this local policy, so a person using the website directly
+can bypass it. Existing `.env` files must rename the old
+`NETCUP_SCP_API_PROTECTED_*` keys; non-empty legacy keys are rejected instead
+of silently disabling the policy. The `.env` writer enforces mode `0600`.
 
 The guarded server mutations are ISO attach/detach, rescue deactivation,
-snapshot creation and deletion, task cancellation, firewall assignment, power
+snapshot creation, deletion and restoration, task cancellation, firewall assignment, power
 operations, and Debian image installation. Read-only queries, snapshot `dryrun`,
 and installer `--dry-run` remain available. Account-level user-ISO upload and
 firewall-policy create/PUT are not server-targeted; applying a policy with
@@ -97,7 +105,58 @@ against the protected target.
 
 To change the selection, run login again and choose additional servers. For a
 non-interactive login, the token is still saved but selection is skipped; set
-the validated `v<digits>` names in `.env` or run login from a terminal.
+the validated `v<digits>` names in `.env` or run login from a terminal. The
+same policy variables are independent of whether an automated workflow uses
+the REST API or the SCP browser interface.
+
+### SCP API reference and console access
+
+Netcup's [SCP REST API documentation](https://www.netcup.com/en/helpcenter/documentation/servercontrolpanel/api)
+is the canonical human reference. The live OpenAPI JSON is published at
+[`https://www.servercontrolpanel.de/scp-core/api/v1/openapi`](https://www.servercontrolpanel.de/scp-core/api/v1/openapi)
+and the local `netcup-scp-openapi.json` snapshot can be refreshed with:
+
+```bash
+./update-scp-openapi.py
+```
+
+The API's `/api/v1/servers/{serverId}/rescuesystem` resource reports rescue
+status (`GET`), activates the provider rescue system (`POST`), and deactivates
+it (`DELETE`). Netcup's rescue system is a separately booted minimal Grml Linux
+environment for recovery, network diagnosis, backup, and repair of the
+installed OS. The current OpenAPI response for `GET` includes an `active` flag
+and optional temporary rescue password; `scp-api.py` redacts the password in
+normal output. Activation requires the server to be off, and Netcup documents
+that the rescue mode disables the provider firewall. Deactivation shuts the
+server down so it can be started from its original disk. This is not an ISO
+console or a serial-console endpoint. See
+[Netcup's rescue guide](https://www.netcup.com/en/helpcenter/documentation/server/rescue-system).
+
+Netcup exposes the server's “Screen” as browser VNC in the SCP; its REST API
+spec has no documented serial/VNC/screen endpoint. A manual PWMCP check on
+server 804027 confirmed that the Screen displays the installed TrueNAS
+`Console setup` menu and accepts keyboard input after clicking the console
+canvas. That ready screen includes the guest's HTTP and HTTPS management URLs.
+The generic installer does not consume the SCP UI credentials or inspect this
+screen. It still observes provider state: it waits for `RUNNING` and then an
+off state, using that shutdown as its configured handoff signal. It does not
+read guest console text or independently prove installer success. A guest
+waiting at a “press any key to power off” screen remains running, so the wait
+times out. A normal guest reboot usually leaves the provider state `RUNNING`
+and is not recognized as completion. If a reboot creates an `OFF` sample, the
+generic check has no reason code to distinguish it from the configured
+handoff and may treat it as completion. For the manual check and the limits on
+automated screen recognition, see the [generic install design](DESIGN-GUIDE.md#generic-installer-iso-handoff).
+Netcup's [Screen guide](https://www.netcup.com/en/helpcenter/documentation/server/screen)
+describes the VNC console.
+
+For a separately managed local browser session, these optional values can be
+stored in the ignored `.env` file and kept mode `0600`; the public URL and
+variable names are in `.env.example`. No current repository command consumes
+these browser-only settings.
+SCP credentials do not belong in `netcup.toml`, which contains the REST API
+endpoint settings. If the account requires a second factor, it must be
+completed interactively; do not save a TOTP seed in `.env`.
 
 ### Quickstart: inspect and install a Debian VM
 
@@ -353,6 +412,8 @@ bootable installer or recovery media. Useful first queries are:
 ./scp-api.py snapshots 799611 create --name before-upgrade
 ./scp-api.py snapshots 799611 delete before-upgrade --dry-run   # shows the target, deletes nothing
 ./scp-api.py snapshots 799611 delete before-upgrade
+./scp-api.py snapshots 799611 revert before-upgrade --dry-run  # previews the disk restore
+./scp-api.py snapshots 799611 revert before-upgrade            # confirmed restore
 ./scp-api.py boot-order 799611
 ./scp-api.py boot-order 799611 set HDD,CDROM,NETWORK
 ./scp-api.py tasks --state RUNNING --server-id 799611
@@ -397,7 +458,18 @@ irreversible, so it honours the protected-server denylist, is confirmed (`--yes`
 in a non-interactive run, else exit 2), and is refused with exit 2 when the name
 is not in the server's snapshot list. `--dry-run` looks the snapshot up and shows
 what would be deleted without sending the DELETE. The API answers a task; follow
-it with `./monitor-task.py watch TASK_UUID`. The server record's
+it with `./monitor-task.py watch TASK_UUID`.
+
+`snapshots SERVER_ID revert SNAPSHOT_NAME` restores the server's disk from the
+named snapshot (`POST /servers/{id}/snapshots/{name}/revert`). It replaces the
+current disk contents, so it requires an explicit server ID, an exact unique
+name from the server's snapshot list, the protected-server guard, and
+confirmation. Before submitting it checks for `PENDING`, `RUNNING`, and
+`WAITING_FOR_CANCEL` tasks on that server and refuses if one is active.
+`--dry-run` shows the selected snapshot without sending the restore request.
+The API answers a task; follow it with `./monitor-task.py watch TASK_UUID`, then
+inspect server state and boot health before relying on the restored system.
+The server record's
 `snapshotCount` can be higher than the list `snapshots` shows (live: count 1,
 list `[]` on both test hosts); `GET /servers/{id}/snapshots` takes no paging
 parameters in the spec, so this is a provider-side discrepancy, not a client
@@ -423,6 +495,13 @@ fails closed: if `GET /tasks` errors, detach is refused. `--ignore-active-tasks`
 skips the check (it prints a warning and the detach is still confirmed). The
 check is check-then-act: a task can start between the check and the DELETE, so
 it narrows the window but cannot close it.
+
+Guest-side optical-drive eject is not equivalent to this provider API action.
+On TrueNAS 27, Linux's `CDROMEJECT` ioctl returned success, but SCP continued
+to report the user ISO as attached and the guest still saw its media. To detach
+virtual media, call `iso-attached SERVER_ID detach`; do not use a guest `eject`
+command as evidence that SCP removed the ISO. The guest can then reboot from
+disk, subject to provider boot order and any pending `configChanged` state.
 `snapshots ... --online` cannot be combined with `--disk-name` (exit 2; the
 provider error is `online.diskselected`), and the provider may refuse online
 snapshots on UEFI hosts (`online.uefi`). `snapshots SERVER_ID dryrun` renders the
@@ -542,10 +621,12 @@ export ISO_KEY=debian-custom-recovery.iso
 ```
 
 For a large image, the API prepare response supplies an
-`uploadId`; `user-iso upload --multipart` performs that flow. The API
-documentation in `netcup-scp-openapi.json` remains authoritative for the
-presigned-URL response. The boot-device option requests CD-ROM as the next
-boot device.
+`uploadId`; `user-iso upload --multipart` performs that flow. The local
+`netcup-scp-openapi.json` is a refreshable snapshot of the API schema and
+remains authoritative for the presigned-URL response. The boot-device option
+requests CD-ROM as the next boot device. See the
+[API reference and console access](README.md#scp-api-reference-and-console-access)
+section for Netcup's canonical documentation URL and snapshot updater.
 
 The sample policy files in
 [`firewall-policy-examples/`](firewall-policy-examples/) cover SSH allow-lists,
@@ -593,3 +674,59 @@ explicitly, for example:
 
 The rationale for this producer/consumer boundary is in
 [`DESIGN-GUIDE.md`](DESIGN-GUIDE.md).
+
+## Generic installer ISO workflow
+
+`install-restore-iso.py install` handles a fresh install ISO. The installer ISO
+must power the guest off after a successful installation. Netcup does not
+report a guest OS reboot as an installation-complete event; a guest reboot can
+continue booting the attached CD and repeat the installer. The command waits
+for the guest to reach `RUNNING` and then power off, detaches the provider ISO
+while the server is off, restores the boot order saved before the upload, and
+only then powers on the installed disk. This prevents the next boot from
+entering the installer again.
+
+The TrueNAS unattended image supports this handoff with
+`--post-install-action poweroff` and the kernel's `noeject` option. An ordinary
+manual TrueNAS install or a third-party installer that only reboots does not
+provide this completion signal; configure it to power off after success before
+using the generic workflow.
+
+This checks a provider-state transition, not guest installer output. A normal
+reboot leaves the guest running and times out; if a brief reboot is observed as
+off, the provider API gives no reason code and the handoff check could mistake
+it for successful-install poweroff.
+
+```bash
+./install-restore-iso.py install 804027 \
+  --iso ../truenas/vanilla-iso-patcher/artifacts/TrueNAS-27-unattended-relaxed.iso \
+  --state-file /tmp/v1001-install.json \
+  --yes
+```
+
+After the poweroff handoff, the provider ISO is detached and the saved boot
+order is restored before the installed disk is booted. By default, completion
+means Netcup reports the disk boot as `RUNNING` with `configChanged=false`.
+`--ready-url` and optional `--ready-text` add an application-specific HTTP
+check, but are not needed for generic installs. For TrueNAS, use the UI or API
+separately to verify the installed system and credentials.
+Use the [consumer guide](CONSUMERS.md#install-from-a-generic-iso) for a
+copyable command and the [design guide](DESIGN-GUIDE.md#generic-installer-iso-handoff)
+for the provider completion signal.
+
+## Unattended restore ISO workflow
+
+[`install-restore-iso.py`](install-restore-iso.py) uses the shared SCP client
+for `start`, `finish`, `recover`, and `status`. `start` hashes and uploads a local ISO,
+saves the server's current boot order in a private checkpoint, attaches the
+media, and power-cycles into the restore environment. Netcup task progress and
+the guest's Mattermost restore progress are reported separately. `finish`
+requires an explicit restore-complete assertion, detaches the provider ISO,
+restores the saved boot order, performs a cold provider cycle, and verifies
+root SSH plus the TrueNAS boot pool. The restore does not expand the captured
+ZFS partition. If the ISO did not report completion, `recover --try-disk-boot`
+performs the provider detach, saved boot order restore, cold cycle, and SSH/pool
+check while keeping the checkpoint explicitly uncertified. See the
+[consumer guide](CONSUMERS.md#restore-a-truenas-golden-disk) for exact commands
+and the [design rationale](DESIGN-GUIDE.md#restore-iso-lifecycle) for the
+restore handoff and recovery semantics.

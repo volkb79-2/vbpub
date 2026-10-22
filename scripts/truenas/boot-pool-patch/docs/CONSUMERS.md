@@ -9,8 +9,9 @@ before running them.
 In this workspace devcontainer, set
 `DOCKER_HOST=unix:///var/run/docker.sock` before running registered container
 gates. The inherited `/run/docker-api/docker.sock` endpoint did not complete
-the tester lifecycle. Continue to launch gates through `run-gate.py` and
-`run-live-gate.py`; those runners place their testers in
+the tester lifecycle. Activate the estate venv and use its installed
+`run-gate` CLI for registered lanes. `run-live-gate.py` provisions the
+guest-network tester, then delegates the lane verdict to that CLI. Both use
 `$CGROUP_PARENT_DEV_GATES`.
 
 ## Run the patch unit gate
@@ -20,8 +21,9 @@ applying a release adapter:
 
 ```bash
 cd scripts/truenas
+source /home/vscode/.venv/bin/activate
 export DOCKER_HOST=unix:///var/run/docker.sock
-./run-gate.py unit-boot-pool-patch --allow-dirty
+run-gate unit-boot-pool-patch --worktree "$(git rev-parse --show-toplevel)" --allow-dirty
 ```
 
 This runs the boot-pool patch policy, adapter artifact, and live-gate contract
@@ -71,8 +73,173 @@ mount, it creates the marker, unmounts the tree, and reboots again to verify
 persistence. For the
 broader dataset, zvol, VM, container, cache-vdev, and share API sequence, use
 `live-storage` with the same connection values and mutation guard but omit
-`TRUENAS_TEST_ALLOW_REBOOT`. The lane returns through `run-gate.py`, so its
-verdict and resource record use the registered gate workflow.
+`TRUENAS_TEST_ALLOW_REBOOT`. The wrapper delegates to the installed
+`run-gate` CLI, so its verdict and resource record use the registered gate
+workflow.
+
+## Use an external TrueNAS host
+
+For a dedicated host that can be reset between runs, the wrapper can place its
+bounded tester on an explicitly selected custom Docker bridge and connect to
+the host by SSH. External mode is limited to `live-ui-auth`, `live-inspect`,
+`live-v27-patch`, `live-path-b-provision`, `live-path-b-partition`,
+`live-ui-prepare-ssh`, `live-ui`, and the fingerprint-pinned exploratory
+`live-ui-observed-v1001` lane. It refuses
+update, reboot, vdev-topology, and workload-resume lanes; those need a managed
+guest or stronger external-host lifecycle handling. The tester remains capped
+at 0.5 CPU / 512 MiB in `$CGROUP_PARENT_DEV_GATES`. This does not limit CPU or
+memory used by the external TrueNAS host.
+
+The wrapper normally refuses if `memory PSI some/full avg10` reaches its
+admission threshold. An operator-authorized one-run `--allow-high-psi` switch
+is available only with `--docker-network`; it skips those two PSI threshold
+refusals. The wrapper still requires readable PSI, finite memory limits,
+current memory below every hard `memory.max`, enough CPU quota, and retains
+the tester's 0.5 CPU / 512 MiB limits. Do not use the switch for managed guest
+runs.
+
+The selected custom bridge must already exist and include the PWMCP service
+under DNS alias `pwmcp` for UI lanes. Set `TRUENAS_TEST_HOST` to the target
+host, and use a pinned SSH `known_hosts` entry for SSH lanes. For UI lanes, set
+`TRUENAS_UI_URL` to an HTTPS origin and point `TRUENAS_UI_SECRET_FILE` at a
+mode-0600 TOML file containing `[truenas_admin]`, `username`, and `password`.
+The SSH key and known-hosts file must be inside this worktree and owned by the
+same non-root UID. The UI secret must also be inside the worktree; it is owned
+by the same UID as the SSH key when one is required. `live-ui-auth` is
+read-only and needs no SSH key or host-key file. `live-ui-prepare-ssh` also
+needs no private SSH key because it uses the UI; it is mutation-guarded and
+must only run on the disposable target. Point
+`TRUENAS_ROOT_SSH_PUBLIC_KEY_FILE` at one Ed25519 `.pub` file inside the
+worktree. The lane adds that key to the built-in root account while preserving
+other authorized keys, disables root password login and global SSH password
+authentication, and verifies those settings after reopening the forms. It
+starts SSH if stopped and enables automatic start only when the row's switch
+is off. An already-on automatic-start setting is preserved. Pin the host key
+and use the matching private key for later SSH lanes.
+
+If the generated public-key file is missing, derive it from the protected
+private key without copying the private key into the tester:
+
+```bash
+ssh-keygen -y -f golden-iso/vm/root_ed25519 > golden-iso/vm/root_ed25519.pub
+chmod 0644 golden-iso/vm/root_ed25519.pub
+```
+
+Example for a disposable v27 Path A target:
+
+```bash
+cd scripts/truenas
+export TRUENAS_TEST_HOST=nas.example.test
+export TRUENAS_TEST_PORT=22
+export TRUENAS_TEST_KEY="$PWD/boot-pool-patch/artifacts/.live-test-root-key"
+export TRUENAS_TEST_KNOWN_HOSTS="$PWD/boot-pool-patch/artifacts/nas.example.test.known_hosts"
+export TRUENAS_STORAGE_PROFILE=path-a
+export TRUENAS_EXPECTED_VERSION=27.0.0-RC.1
+export TRUENAS_TEST_ALLOW_MUTATIONS=1
+export TRUENAS_UI_URL=https://nas.example.test
+export TRUENAS_UI_SECRET_FILE="$PWD/boot-pool-patch/artifacts/nas-ui-secrets.toml"
+export TRUENAS_ROOT_SSH_PUBLIC_KEY_FILE="$PWD/golden-iso/vm/root_ed25519.pub"
+export PWMCP_WS_URL=ws://pwmcp:3000/
+export PWMCP_PLAYWRIGHT_VERSION=1.64.0 # use `pwmcp contract`
+
+/home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py live-inspect \
+  --docker-network custom-test-bridge --allow-dirty
+/home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py live-v27-patch \
+  --docker-network custom-test-bridge --allow-dirty
+/home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py live-ui \
+  --docker-network custom-test-bridge --allow-dirty
+```
+
+To confirm UI credentials and browser navigation before preparing SSH, run
+the read-only login gate with only the UI settings above:
+
+```bash
+/home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py live-ui-auth \
+  --docker-network custom-test-bridge --allow-high-psi --allow-dirty
+```
+
+After confirming the UI login, prepare key-only root SSH through the UI. This
+lane writes the public key to the built-in root account and changes SSH
+service settings, so it requires the mutation guard:
+
+```bash
+/home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py live-ui-prepare-ssh \
+  --docker-network custom-test-bridge --allow-high-psi --allow-dirty
+```
+
+Then capture and verify the expected host key before running an SSH lane. Do
+not set `TRUENAS_TEST_KEY` or `TRUENAS_TEST_KNOWN_HOSTS` from a newly scanned
+key until its fingerprint has been matched against a trusted provider or
+console record.
+
+Run `live-inspect` first and check the inventory before enabling mutations.
+Snapshot the host through its provider before disk or pool changes, then
+restore that snapshot after testing if a clean baseline is required. The
+wrapper does not power off, reboot, reinstall, or restore an external host.
+
+### Exploratory UI check on v1001
+
+Use this lane only for the exact v1001 `27.0.0-RC.1` state captured in
+[`observed-v1001-unrecorded-code-20261021.json`](../v27/observed-v1001-unrecorded-code-20261021.json).
+The regular patch installer refused this host because its middleware source
+does not match the current adapter. This lane verifies all 17 recorded source
+hashes and the absent install marker before running UI checks. It tests the
+host's current UI behavior; a pass does not certify the current adapter or
+identify the provenance of the custom files. If `boot-pool/user-data` is
+absent, setting `TRUENAS_TEST_ALLOW_PATH_A_ROOT_PROVISION=1` lets the gate
+create only that empty root through ZFS with a 2 GiB quota, fixed mountpoint,
+and `canmount=on`; it verifies the mount and empty tree before continuing.
+The root itself is intentionally not created through the UI because this
+middleware state rejects dataset CRUD for the managed root. The UI then creates
+test descendants and zvols, submits a VM definition, and removes its test
+objects. Take a provider snapshot first so the host can be reset if cleanup or
+the host itself fails.
+
+**Latest acceptance failed.** On 2026-10-21, the pinned source check and
+guarded 2 GiB root setup passed, but middleware raised
+`NameError: name 'mountpoint' is not defined` in
+`pool_/dataset.py:117` on the first child dataset create. No child dataset or
+later UI object was created. The pre-patch Netcup snapshot was restored and
+v1001 is shut off. These commands document the guarded workflow; do not rerun
+them as-is. Before another live attempt, first change `truenas_admin` from the
+public default password to a random value and persist it in the gitignored
+host-specific secret file. The recorded failure is in
+[`live-ui-observed-v1001-child-create-nameerror-20261021.log`](../artifacts/live-ui-observed-v1001-child-create-nameerror-20261021.log).
+
+From the `scripts/truenas` directory, configure the protected v1001 UI secret,
+the prepared root key, and pinned SSH host key already stored under
+`boot-pool-patch/artifacts/`:
+
+```bash
+cd scripts/truenas
+export TRUENAS_TEST_HOST=v1001.vxxu.de
+export TRUENAS_TEST_PORT=22
+export TRUENAS_TEST_KEY="$PWD/golden-iso/vm/root_ed25519"
+export TRUENAS_TEST_KNOWN_HOSTS="$PWD/boot-pool-patch/artifacts/v1001.known_hosts"
+export TRUENAS_STORAGE_PROFILE=path-a
+export TRUENAS_EXPECTED_VERSION=27.0.0-RC.1
+export TRUENAS_TEST_ALLOW_MUTATIONS=1
+export TRUENAS_TEST_ALLOW_UNRECORDED_PATCH=1
+export TRUENAS_TEST_ALLOW_PATH_A_ROOT_PROVISION=1
+export TRUENAS_OBSERVED_PATCH_MANIFEST="$PWD/boot-pool-patch/v27/observed-v1001-unrecorded-code-20261021.json"
+export TRUENAS_UI_URL=https://v1001.vxxu.de
+export TRUENAS_UI_SECRET_FILE="$PWD/boot-pool-patch/artifacts/v1001-ui-secrets.toml"
+export PWMCP_WS_URL=ws://pwmcp:3000/
+export PWMCP_PLAYWRIGHT_VERSION=1.64.0
+
+/home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py live-ui-observed-v1001 \
+  --docker-network custom-test-bridge --allow-high-psi --allow-dirty
+```
+
+On a later run with the verified root already present, omit the provisioning
+guard and set `TRUENAS_TEST_RESUME_EXISTING_UI_ROOT=1`; the gate rechecks its
+quota, mountpoint, canmount mode, mount source, and contents before proceeding.
+
+The bridge must include PWMCP under the `pwmcp` DNS alias. `--allow-high-psi`
+is an explicit one-run external-target override: it skips only PSI thresholds,
+not tester memory, CPU, or cgroup placement checks. The lane does not apply or
+repair middleware code. Re-run `live-inspect` after the UI lane and use the
+provider's snapshot restore if the host is not clean or reachable.
 
 The cache check creates a sparse zvol in the selected Path A or Path B pool,
 adds it as an L2ARC device to a second temporary pool whose data vdev is a
@@ -129,6 +296,17 @@ probe datasets, containers, or VM records. See the
 [UI run](../artifacts/live-ui-v27-path-a-clean-20261019.log) and
 [post-run inventory](../artifacts/live-inspect-v27-path-a-clean-20261019-post-ui.log).
 This proves the tested UI actions, not retention through a v27→v28 update.
+
+On 2026-10-21, after a host restart, the preserved migration guest passed a
+second registered read-only inventory and a registered `live-ui-workloads`
+cycle. The container and blank VM each reached RUNNING and STOPPED through the
+UI; the VM required the UI Power Off action after graceful Stop did not finish.
+The filesystem and zvol probe hashes still matched the manifest. The serial
+log showed an unexplained second kernel-start sequence during recovery. See
+the [inventory](../artifacts/live-inspect-v27-golden-ui-migration-20261021-second-boot-pass.log),
+[UI cycle](../artifacts/live-ui-workloads-v27-golden-ui-migration-20261021-second-boot-pass.log),
+and [SSH startup failure before UI actions](../artifacts/live-ui-workloads-v27-golden-ui-migration-20261021-second-boot-ssh-failure.log).
+The v27-to-v28 update has not yet run against this manifest.
 
 For reboot and update acceptance, preserve the objects from `live-ui` by
 setting `TRUENAS_TEST_PRESERVE_UI_WORKLOADS=1` and a new
@@ -232,12 +410,23 @@ python3 boot-pool-patch/run-live-gate.py live-vdev-topology \
 ```
 
 
-Fresh Path B validation starts with a fresh guest and the relaxation patch
-installed. The registered `live-path-b-partition` lane then reserves only the
-free-tail partition as `/dev/vda4`; that partition is not currently created
-through the UI. The TrueNAS UI pool wizard must create and register
-`boot-disk-data` from it; do not select `/dev/vda`, which contains the running
-boot pool. Do not run `live-path-b-provision`.
+Path B has two explicit setup modes for the registered `live-ui` lane. Both
+start from a fresh disposable managed guest with the v27 relaxation patch
+installed. The mode is mandatory for Path B; the gate does not infer it from
+whether a pool happens to exist.
+
+- **`ui-wizard`** tests the full UI pool-creation route. First run the
+  registered `live-path-b-partition` lane, which reserves only the free tail
+  as `/dev/vda4`; then run `live-ui` with
+  `TRUENAS_PATH_B_SETUP=ui-wizard`. Do not select `/dev/vda`, which contains
+  the running boot pool. Do not run `live-path-b-provision` in this mode; it
+  would bypass the pool-creation UI being tested.
+- **`preprovisioned`** tests downstream dataset, zvol, container, and VM UI
+  operations after the registered `live-path-b-provision` lane has created
+  and registered `boot-disk-data`. This deliberately does not test UI pool
+  creation. Its registered unit gate passed with 170 tests and 45 subtests;
+  fresh live UI acceptance remains open. See the
+  [unit-gate log](../artifacts/unit-boot-pool-patch-path-b-ui-preprovision-mode-20261021.log).
 
 On the current fresh patched guest `truenas-v27-ui-b-fresh-r1-20261018`, the
 guarded partition lane passed and reserved a 4 GiB `/dev/vda4`. The later
@@ -250,12 +439,56 @@ reported zero raw capacity and no disks, then stopped before submitting
 [UI run](../artifacts/live-ui-v27-path-b-r1-after-cleanup-with-disks-screen-20261018.log)
 and [post-attempt inventory](../artifacts/live-inspect-v27-path-b-r1-after-disks-screen-20261018.log).
 
-Creation of `/dev/vda4` through the UI and UI creation/registration of
-`boot-disk-data` remain open. Preserve the required baseline order: guarded
-partition-only lane first, then UI pool wizard. Do not select `/dev/vda` or run
-`live-path-b-provision`. Do not repeat the wizard on this guest unless a
-supported UI inventory path changes; no downstream Path B UI checks can run
-until the UI creates the pool.
+Creation of `/dev/vda4` and `boot-disk-data` through the UI remain open. The
+existing `ui-wizard` result is a safe refusal: this build's middleware and
+browser `disk.query` omit `/dev/vda4`, and the wizard has no partition controls.
+Do not repeat that wizard on the same guest unless the supported inventory
+path changes. Downstream Path B UI checks can instead use `preprovisioned`.
+Its registered unit gate passed on 2026-10-21; a fresh live run is still
+required before downstream UI behavior counts as evidence. Rerun the unit
+gate after changing the implementation or its contract tests.
+
+For a disposable managed v27 guest, the preprovisioned sequence is:
+
+```bash
+cd scripts/truenas
+source /home/vscode/.venv/bin/activate
+: "${TRUENAS_VM_CONTAINER:?set to a fresh managed Path B guest}"
+export TRUENAS_STORAGE_PROFILE=path-b
+export TRUENAS_EXPECTED_VERSION=27.0.0-RC.1
+export TRUENAS_TEST_ALLOW_MUTATIONS=1
+export TRUENAS_TEST_PORT=2222
+export TRUENAS_TEST_KEY="$PWD/boot-pool-patch/artifacts/.live-test-root-key"
+export TRUENAS_TEST_KNOWN_HOSTS="$PWD/boot-pool-patch/artifacts/<guest-state>/known_hosts"
+
+# Inspect first. Replace <guest-state> with this guest's recorded vm-state path.
+python3 boot-pool-patch/run-live-gate.py live-inspect \
+  --vm-container "$TRUENAS_VM_CONTAINER" --allow-dirty
+
+# Set these from the inventory. These are the managed single-disk QEMU example.
+export TRUENAS_TEST_ALLOW_DISK_PROVISION=1
+export TRUENAS_DISK_DEVICE=/dev/vda
+export TRUENAS_BOOT_POOL_PARTITION=/dev/vda3
+export TRUENAS_MINIMUM_FREE_BYTES=1073741824
+python3 boot-pool-patch/run-live-gate.py live-path-b-provision \
+  --vm-container "$TRUENAS_VM_CONTAINER" --allow-dirty
+
+export TRUENAS_PATH_B_SETUP=preprovisioned
+export TRUENAS_UI_SECRET_FILE="$PWD/golden-iso/artifacts/truenas-27-16GiB-golden.secrets.toml"
+export PWMCP_WS_URL=ws://pwmcp:3000/
+export PWMCP_PLAYWRIGHT_VERSION=1.64.0 # use the version from `pwmcp contract`
+python3 boot-pool-patch/run-live-gate.py live-ui \
+  --vm-container "$TRUENAS_VM_CONTAINER" --allow-dirty
+```
+
+Replace `<guest-state>` with the `vm-state` directory recorded for that
+managed guest. This sequence mutates the selected disk, so use only a fresh
+disposable COW guest and never point these variables at a production host.
+The registered UI gate then checks the exact partition-4 layout read-only, the
+mounted `boot-disk-data` root, and its middleware container-pool choice before
+opening the storage forms. It fails on any observed browser `pool.create`
+request, regardless of the requested pool name, and checks again after the UI
+workflow. UI pool creation remains outside this mode.
 
 After the pool/root setup, the registered UI workflow creates a persistent user
 dataset and verifies its ZFS mount source and allocation after a write; creates
@@ -415,10 +648,10 @@ and owned by the same non-root UID as the SSH key. The `playwright` dependency
 is installed in the ephemeral tester from the pinned
 [`requirements-live-ui.txt`](../acceptance/requirements-live-ui.txt); set its
 version to the `playwright_version` reported by `pwmcp contract`.
-The lane is registered. The fresh Path A run passed; the current fresh Path B
-run stopped safely because the wizard could not see `/dev/vda4`. Keep Path B
-acceptance open until the UI pool creation and downstream checks pass with
-preserved artifacts.
+The lane is registered. The fresh Path A run passed; the Path B `ui-wizard`
+route stopped safely because the wizard could not see `/dev/vda4`. The new
+`preprovisioned` route covers downstream forms after registered pool setup,
+but remains unverified until its unit and live gates pass.
 
 Run Path A and Path B on separate fresh COW guests. Use the matching SSH port
 and `known_hosts` from each runner manifest. The Path A commands below are an
@@ -453,11 +686,11 @@ registered post-attempt inventory passed and confirmed there is no
 [partition result](../artifacts/live-path-b-partition-v27-path-b-fresh-r1-20261018.log),
 [latest UI diagnostic](../artifacts/live-ui-v27-path-b-r1-after-cleanup-with-disks-screen-20261018.log),
 and [post-attempt inventory](../artifacts/live-inspect-v27-path-b-r1-after-disks-screen-20261018.log).
-Preserve the guest; do not replay the patch or partition lane. Keep the required
-sequence: guarded partition-only lane first, then UI creation/registration of
-`boot-disk-data`. Creation of `/dev/vda4` through the UI is also still open.
-Do not select the whole disk or run `live-path-b-provision`. Do not repeat the
-wizard on this guest unless a supported UI inventory path changes.
+Preserve this diagnostic guest; do not replay the patch, partition, or wizard
+lanes on it. Creation of `/dev/vda4` and `boot-disk-data` through the UI is
+still open. Do not select the whole disk or use this guest for the new
+preprovisioned route; use a fresh disposable managed guest for that separate
+downstream UI test.
 
 Keep each guest on `$CGROUP_PARENT_DEV_BACKGROUND` and the network tester on
 `$CGROUP_PARENT_DEV_GATES` through the supported `tcg_vm.py` and
@@ -756,9 +989,11 @@ share-client access, and guest OS boot remain open.
 
 Two experimental v27 paths have passed scripted API checks and limited PWMCP
 UI navigation on local `27.0.0-RC.1` guests. Fresh patched Path A submitted UI
-acceptance passed; fresh patched Path B UI acceptance remains open because
-middleware and browser `disk.query` omit `/dev/vda4`, and the Disks screen has
-no partition controls. A fresh
+acceptance passed. Path B UI pool creation remains open because middleware
+and browser `disk.query` omit `/dev/vda4`, and the Disks screen has no
+partition controls. The preprovisioned downstream UI route passed its
+registered unit gate with 170 tests and 45 subtests; fresh live acceptance
+remains open. A fresh
 Path A live-storage run also passed with
 the disposable guest placed in a capped background Docker container and the
 tester placed separately in the gates slice. It verified dataset/zvol
@@ -782,15 +1017,15 @@ a fresh isolated Path B guest; see the [v27 provision log](../artifacts/live-pat
 and [v27 Path B storage log](../artifacts/live-storage-v27-path-b-existing-container-protection-pass-20261017.log).
 Neither API acceptance boots a guest OS or mounts NFS/SMB shares from a client.
 
-## Legacy CLI Path B provisioner (not for fresh UI validation)
+## Registered Path B provisioner for disposable tests
 
 The registered `live-path-b-provision` lane and the `provision_path_b.py`
-controller were used for earlier API/storage acceptance. They create and
-register the pool outside the UI. Do not use either for the current fresh
-Path B UI validation: run `live-path-b-partition` to reserve only the partition,
-then use the TrueNAS UI pool wizard to create and register `boot-disk-data`.
-The separate CLI workflow below is retained only to document that legacy test
-tool and its previously recorded results.
+controller create and register the pool outside the UI. Use the registered
+lane for API/storage acceptance and the new `preprovisioned` UI mode. For the
+separate `ui-wizard` diagnostic, use `live-path-b-partition` and then let the
+TrueNAS wizard attempt pool creation; do not run the provisioner in that mode.
+The direct SSH command below is a lower-level legacy example, not the preferred
+registered workflow and not authorization to mutate a real host.
 
 Path B uses partition 4 after the existing TrueNAS boot-pool partition. It
 requires a single-disk GPT layout with partitions 1, 2, and 3 only, with

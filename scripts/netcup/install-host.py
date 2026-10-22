@@ -331,7 +331,7 @@ def _protected_server_policy_configured() -> bool:
 def _ensure_server_mutation_allowed(server_id: Any, server_name: Any, operation: str) -> None:
     """Apply the shared local denylist without exposing a traceback."""
     try:
-        netcup_scp_client.assert_server_mutation_allowed(server_id, server_name, operation)
+        netcup_scp_client.assert_server_operation_allowed(server_id, server_name, operation)
     except (ValueError, netcup_scp_client.ProtectedServerError) as exc:
         raise CliFailure(str(exc), exit_code=2) from exc
 

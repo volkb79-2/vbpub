@@ -14,8 +14,57 @@ The registered `unit-boot-pool-patch` lane runs the patch's policy, artifact,
 and live-gate contract tests in `tester-unified`, without starting a TrueNAS
 guest. Runtime acceptance stays in separate guarded lanes because it needs a
 disposable guest and may create storage, start VMs or containers, or reboot.
-This keeps quick source-contract feedback distinct from evidence that an
-adapter works against one exact TrueNAS build.
+Use the installed Run-Gate CLI for every verdict so the declared lane,
+resource limits, environment, and recorded result remain authoritative. The
+small `run-live-gate.py` helper only provisions the network-attached tester
+that the ordinary ephemeral environment cannot provide; it then delegates
+back to Run-Gate. This keeps quick source-contract feedback distinct from
+evidence that an adapter works against one exact TrueNAS build.
+
+External-host mode exists for a disposable physical or provider VM when local
+TCG admission is unavailable. It requires an explicit `--docker-network`, a
+verified custom bridge, pinned SSH host keys, and an HTTPS UI origin. It only
+allows read-only inventory, the v27 patch, guarded Path B partition/pool setup,
+the read-only `live-ui-auth` gate, the guarded `live-ui-prepare-ssh` lane, and
+the existing UI acceptance lane. SSH preparation adds the supplied public key
+to TrueNAS's built-in root user, verifies that root password login and global
+SSH password authentication are disabled, then starts the service. It keeps
+other root authorized keys and preserves the automatic-start setting when
+already on. Following SSH lanes can then exercise the configured key-only
+account without enabling password logins.
+Reboot/update and the wider workload and vdev lanes remain managed-guest only
+because the wrapper has no provider lifecycle or rollback contract. The
+networked tester is still resource-capped in the gates slice; those limits do
+not constrain the external host. The explicit `--allow-high-psi` flag is
+restricted to external targets and one invocation. It skips only `some/full`
+PSI thresholds; readable PSI, finite memory limits, current usage below every
+hard limit, CPU quota, and the 0.5 CPU / 512 MiB tester caps remain required.
+
+The `live-ui-observed-v1001` lane is a narrow exception for UI exploration on
+v1001's already-customized v27 RC.1 installation. The normal `live-v27-patch`
+lane correctly refuses it because 14 of 15 current adapter targets do not
+match the release fingerprints, and no install manifest identifies the custom
+state. Rather than overwrite unknown code, the exploratory lane pins the exact
+hashes of all 15 adapter targets plus the two matching custom modules, checks
+that the patch-install marker is absent, and then runs the existing bounded
+PWMCP UI workflow. If the Path A root is absent, a second explicit guard lets
+the lane create only the empty `boot-pool/user-data` root with a 2 GiB quota,
+fixed mountpoint, and `canmount=on` through ZFS. It verifies the mount and
+empty tree before the UI workflow. This setup is required because the observed
+middleware refuses root creation through dataset CRUD; it means this lane does
+not test UI creation of the root. Any changed source hash stops the lane
+before storage mutations.
+This provides an evidence path when a disposable host is available but no
+local TCG guest can be admitted. It does not validate the adapter bundle,
+attribute the custom files to the golden image, or generalize beyond this
+specific v1001 fingerprint. On the 2026-10-21 live run, the root passed
+verification but the first child dataset create failed with
+`NameError: name 'mountpoint' is not defined` in middleware at
+`pool_/dataset.py:117`. No child dataset was created, and the remaining UI
+workflow did not run. This is a failed exploratory acceptance and a middleware
+defect to diagnose, not evidence for the release adapter. The pre-patch
+provider snapshot was restored afterward; v1001 is shut off. The lane does not
+start a VM guest or test provider reinstall behavior.
 
 ## Source comparison
 
@@ -347,11 +396,21 @@ has no mountpoint control. The gate verifies those properties and the live
 mount source. Root creation skips the descendant readiness check because that
 check queries an existing root; applying it to the root being created would
 make UI provisioning refuse itself. Descendant operations still require the
-existing root to pass the quota, mountpoint, and canmount checks. For Path B,
-the guarded partition lane reserves the free tail without creating a pool; the
-TrueNAS storage wizard must create `boot-disk-data` from that partition. The
-UI must offer only the verified `/dev/vda4` target used by this disposable VM,
-and the gate refuses to select the whole boot disk.
+existing root to pass the quota, mountpoint, and canmount checks. Path B has
+two explicit setup modes. `ui-wizard` reserves the free tail with the guarded
+partition-only lane and then asks the TrueNAS wizard to create
+`boot-disk-data`; this tests the full UI pool-creation route. `preprovisioned`
+uses the registered Path B provisioner to create and register the pool before
+the browser tests dataset, zvol, container, and VM operations. The latter
+isolates downstream UI coverage from the wizard's missing partition
+inventory; it does not prove UI pool creation. Both modes require an explicit
+`TRUENAS_PATH_B_SETUP` value and refuse selection of the whole boot disk. The
+preprovisioned path passed its registered unit gate on 2026-10-21 (170 tests
+and 45 subtests; see the
+[unit log](../artifacts/unit-boot-pool-patch-path-b-ui-preprovision-mode-20261021.log)).
+The browser observer rejects any `pool.create` request in preprovisioned mode,
+including a request for a pool other than `boot-disk-data`, and checks again
+after the remaining UI workflow. Fresh live UI acceptance remains open.
 
 The fresh patched Path B attempt on 2026-10-18 did not meet that UI
 precondition. Kernel `lsblk` showed `/dev/vda4` as a 4 GiB ZFS partition, but
@@ -362,9 +421,12 @@ and no available disks, and the gate stopped before pool creation. A
 post-attempt inventory passed and confirmed no test pool or probe data. See
 the [latest UI log](../artifacts/live-ui-v27-path-b-r1-after-cleanup-with-disks-screen-20261018.log)
 and [read-only inventory](../artifacts/live-inspect-v27-path-b-r1-after-disks-screen-20261018.log).
-Keep UI creation of `/dev/vda4`, UI creation of `boot-disk-data`, and downstream
-storage checks open. Do not select the whole disk or substitute the CLI pool
-provisioner.
+This is a safe refusal for the `ui-wizard` mode, not a test of downstream
+Path B storage forms. Keep UI creation of `/dev/vda4` and `boot-disk-data`
+open. The new `preprovisioned` mode can exercise downstream UI operations
+after the registered provisioner creates the exact pool. Its registered unit
+gate passed on 2026-10-21; fresh live acceptance remains open. Do not select the whole disk;
+do not present the preprovisioner as UI pool-creation evidence.
 
 On fresh patched r4, the registered UI created the root with its 2 GiB
 `quota`, pinned mountpoint, `canmount=on`, and live ZFS mount source. It also
@@ -407,8 +469,10 @@ their types, sizes, block size, mountpoint, and mount source, and rejects
 unlisted user datasets and writable container descendants. It also allows only
 the pinned middleware image-cache datasets and their exact `@image` snapshot;
 other snapshots are refused. These settings are valid only for Path A and do
-not create or delete storage. Fresh Path B still uses the guarded
-partition-only lane followed by the TrueNAS UI pool wizard.
+not create or delete storage. Path B setup is selected separately with
+`TRUENAS_PATH_B_SETUP=ui-wizard` or
+`TRUENAS_PATH_B_SETUP=preprovisioned`; the latter requires a pool already
+created and registered by the guarded provisioner.
 
 On the tested TrueNAS 27.0.0-RC.1 UI, open the signed-in account menu →
 **Preferences** to find **Session Timeout**. The live UI showed 300 seconds.
@@ -438,11 +502,13 @@ capacity and no disks before stopping without `pool.create`. Post-attempt
 registered inventory confirms no `boot-disk-data` pool or probe data. See the
 [UI run](../artifacts/live-ui-v27-path-b-r1-after-cleanup-with-disks-screen-20261018.log)
 and [post-run inventory](../artifacts/live-inspect-v27-path-b-r1-after-disks-screen-20261018.log).
-Creation of `/dev/vda4` through the UI and creation/registration of
-`boot-disk-data` remain open. Real second-disk cache use, TrueNAS UI/middleware
-cache configuration, share-client access, VM guest boot, automatic remount
-through update, controlled reboot/update survival, and actual KVM selection
-remain open until direct evidence passes. See the [consumer instructions](CONSUMERS.md#run-pwmcp-ui-storage-acceptance)
+Creation of `/dev/vda4` and `boot-disk-data` through the UI remains open. The
+new `preprovisioned` Path B downstream UI route passed its registered unit
+gate, but has not yet been live tested. Real
+second-disk cache use, TrueNAS UI/middleware cache configuration, share-client
+access, VM guest boot, automatic remount through update, controlled
+reboot/update survival, and actual KVM selection remain open until direct
+evidence passes. See the [consumer instructions](CONSUMERS.md#run-pwmcp-ui-storage-acceptance)
 and [resume procedure](CONSUMERS.md#resume-a-partial-path-a-ui-run).
 
 ### Preserving UI-created workloads for reboot and update checks
@@ -467,6 +533,18 @@ with the recorded filesystem and zvol hashes unchanged. This is the v27
 baseline only; the same manifest has not yet been carried through a v27-to-v28
 update and v28 patch reboot. The container has not yet been tested with the
 user probe filesystem mounted into it.
+
+After the October 21 host restart, the resumed guest passed two read-only
+inventories and another registered UI workload cycle; all recorded filesystem
+and zvol hashes remained unchanged. The UI returned the container and blank
+VM to STOPPED, using Power Off when the VM's graceful Stop did not complete.
+Serial output showed a second kernel-start sequence about nine minutes after
+the first, without an explicit shutdown reason. This is an unexplained boot
+observation, not evidence of a patch defect or provider action. The guest was
+cleanly stopped after the run. See the [second inventory](../artifacts/live-inspect-v27-golden-ui-migration-20261021-second-boot-pass.log),
+[UI cycle](../artifacts/live-ui-workloads-v27-golden-ui-migration-20261021-second-boot-pass.log),
+and [serial log](../artifacts/v27-golden-ui-migration-20261019/vm-state/serial.log).
+No v27-to-v28 update has run against this manifest yet.
 
 ### Recover an interrupted live tester
 
@@ -594,7 +672,9 @@ now test two ways to use free space on a TrueNAS system disk: a bounded
 on a reserved GPT tail (Path B). Historical acceptance exercised both paths
 with scripted API checks and limited PWMCP UI navigation, using a Path B pool
 created outside the current fresh UI workflow. Fresh patched Path A submitted
-UI acceptance passed; fresh patched Path B UI acceptance remains open. A fresh Path A live-storage
+UI acceptance passed. Path B UI pool creation remains open; the new
+preprovisioned downstream UI route passed its registered unit gate and still
+needs fresh live acceptance. A fresh Path A live-storage
 acceptance also passed on 2026-10-16 from a COW guest in the separate
 `dev-background.slice` container. It verified dataset and zvol CRUD, cache-vdev
 add/remove, VM start with QEMU XML and process arguments confirming TCG,
@@ -722,10 +802,14 @@ probe datasets, containers, or VM records. See the
 The current patch unit lane passed with 156 tests and 45 subtests; the full
 unit lane last passed with 362 tests and 45 subtests before this UI-helper-only
 change and was not rerun. The cache exercise used a temporary file-backed
-target pool; a real second-disk target and TrueNAS UI/middleware cache-device
-configuration remain untested.
-Actual KVM selection, guest OS boot, NFS/SMB client access, fresh Path B UI,
-Path B reboot/import, automatic remount through update, and broader
+target pool on both Path A and Path B. This demonstrates cross-pool L2ARC
+attachment in that setup, not a separate disk-backed pool, import ordering, or
+TrueNAS UI/middleware cache-device configuration. The current preprovisioned
+Path B UI helper passed its registered unit gate with 170 tests and 45
+subtests; fresh live acceptance remains open. See the
+[unit log](../artifacts/unit-boot-pool-patch-path-b-ui-preprovision-mode-20261021.log).
+Actual KVM selection, guest OS boot, NFS/SMB client access, Path B UI pool
+creation, Path B reboot/import, automatic remount through update, and broader
 patched-update survival remain open. The latest fresh Path B UI attempt found
 that the kernel sees `/dev/vda4`, while middleware and browser `disk.query`
 omit it. The Disks screen had no partition controls, the wizard reported no

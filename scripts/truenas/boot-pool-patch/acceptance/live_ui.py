@@ -19,6 +19,14 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import expect
 from pwmcp_client import BrowserLease, PwmcpError
 
+from path_b_provisioner import provision_path_b
+from path_b_ui_setup import contains_pool_create_request, resolve_path_b_setup_mode
+from path_a_ui_provisioner import PathARootProvisionError, provision_path_a_ui_root
+from observed_patch_manifest import (
+    ObservedPatchManifestError,
+    load_observed_patch_manifest,
+    verify_observed_patch_files,
+)
 from remote import RemoteError, Target, flatten_datasets
 from ui_resume import (
     unexpected_ui_root_snapshots,
@@ -171,6 +179,25 @@ def selected_pool(profile: str) -> str:
 
 def selected_dataset_parent(profile: str) -> str:
     return "boot-pool/user-data" if profile == "path-a" else "boot-disk-data"
+
+
+def verify_preprovisioned_path_b_pool(
+    target: Target, *, disk: str, boot_pool_partition: str, expected_version: str,
+) -> dict:
+    """Require Path B's exact registered partition-4 pool without writing storage."""
+    result = provision_path_b(
+        target,
+        disk=disk,
+        boot_pool_partition=boot_pool_partition,
+        expected_version=expected_version,
+        apply=False,
+    )
+    require(
+        result.get("state") == "already_configured",
+        "preprovisioned Path B requires the exact registered pool and partition-4 layout; "
+        f"read-only provisioner returned {result!r}",
+    )
+    return result
 
 
 def container_storage_root(profile: str) -> str:
@@ -462,7 +489,7 @@ def fill_labeled_textbox(dialog, labels: tuple[str, ...], value: str, *, require
 
 def inventory_before_ui_mutation(
     target: Target, profile: str, image_name: str, *, resume_existing_root: bool = False,
-    resume_existing_ui_dataset: str = "",
+    resume_existing_ui_dataset: str = "", path_b_setup: str | None = None,
 ) -> bool:
     pool = selected_pool(profile)
     root = selected_dataset_parent(profile)
@@ -475,25 +502,63 @@ def inventory_before_ui_mutation(
     }
     require(pool_health.get("boot-pool") == "ONLINE",
             f"fresh guest direct ZFS inventory omits boot-pool ONLINE: {direct_pools!r}")
-    require("boot-disk-data" not in pool_health,
-            f"fresh guest already has Path B pool boot-disk-data: {direct_pools!r}")
-    try:
-        patch_record = json.loads(
-            target.shell("cat /root/v27-boot-pool-patch-install.json", timeout=30)
-        )
-    except (RemoteError, ValueError) as exc:
-        raise RemoteError("live-ui requires the registered v27 patch-install record") from exc
-    require(
-        patch_record.get("root_create_guard") == "root-excluded-from-descendant-readiness-v1",
-        f"live-ui requires the v27 root-create guard marker from the current patch bundle: {patch_record!r}",
+    if profile != "path-b" or path_b_setup == "ui-wizard":
+        require("boot-disk-data" not in pool_health,
+                f"fresh guest already has Path B pool boot-disk-data: {direct_pools!r}")
+    elif path_b_setup == "preprovisioned":
+        require(pool_health.get("boot-disk-data") == "ONLINE",
+                f"preprovisioned Path B requires boot-disk-data ONLINE: {direct_pools!r}")
+    else:
+        raise RemoteError("Path B inventory requires an explicit setup mode")
+    marker_state = target.shell(
+        "if test -e /root/v27-boot-pool-patch-install.json; then printf present; else printf absent; fi",
+        timeout=30,
     )
+    observed_manifest_path = os.environ.get("TRUENAS_OBSERVED_PATCH_MANIFEST", "")
+    allow_observed_patch = os.environ.get("TRUENAS_TEST_ALLOW_UNRECORDED_PATCH", "")
+    if observed_manifest_path or allow_observed_patch:
+        expected_release = required_env("TRUENAS_EXPECTED_VERSION")
+        require(
+            allow_observed_patch == "1" and bool(observed_manifest_path),
+            "unrecorded patch UI checks require both the explicit guard and an observed-code manifest",
+        )
+        require(profile == "path-a" and expected_release == "27.0.0-RC.1",
+                "unrecorded patch UI checks support only the observed v27 Path A target")
+        require(marker_state == "absent",
+                "observed-code UI checks require the v27 patch-install record to remain absent")
+        try:
+            observed_manifest = load_observed_patch_manifest(
+                observed_manifest_path,
+                target_host=required_env("TRUENAS_TEST_HOST"),
+                expected_version=expected_release,
+                profile=profile,
+            )
+            verify_observed_patch_files(target, observed_manifest)
+        except ObservedPatchManifestError as exc:
+            raise RemoteError(f"observed v27 source check failed: {exc}") from exc
+        report(
+            "unrecorded-patch-state",
+            "target source matches the pinned observed v27 fingerprint; UI result is exploratory and does not certify the current patch bundle",
+        )
+    else:
+        require(marker_state == "present", "live-ui requires the registered v27 patch-install record")
+        try:
+            patch_record = json.loads(
+                target.shell("cat /root/v27-boot-pool-patch-install.json", timeout=30)
+            )
+        except (RemoteError, ValueError) as exc:
+            raise RemoteError("live-ui requires the registered v27 patch-install record") from exc
+        require(
+            patch_record.get("root_create_guard") == "root-excluded-from-descendant-readiness-v1",
+            f"live-ui requires the v27 root-create guard marker from the current patch bundle: {patch_record!r}",
+        )
     if profile == "path-b":
+        require(path_b_setup in {"ui-wizard", "preprovisioned"},
+                "Path B inventory requires an explicit setup mode")
         require(not resume_existing_root,
                 "TRUENAS_TEST_RESUME_EXISTING_UI_ROOT is valid only for Path A live-ui")
         require(not resume_existing_ui_dataset,
                 "TRUENAS_TEST_RESUME_EXISTING_UI_DATASET is valid only for Path A live-ui")
-        require("boot-disk-data" not in rows,
-                "fresh Path B target already has boot-disk-data dataset state")
         disk = required_env("TRUENAS_DISK_DEVICE")
         boot_partition = required_env("TRUENAS_BOOT_POOL_PARTITION")
         block_devices = json.loads(target.run([
@@ -511,16 +576,48 @@ def inventory_before_ui_mutation(
                     for key in ("name", "devname", "identifier", "size", "model")
                     if key in row
                 }
-                for row in middleware_disks
-                if isinstance(row, dict)
+            for row in middleware_disks
+            if isinstance(row, dict)
             ],
         })
+        if path_b_setup == "ui-wizard":
+            require("boot-disk-data" not in rows,
+                    "Path B UI-wizard mode requires no existing boot-disk-data pool")
+        else:
+            configured = verify_preprovisioned_path_b_pool(
+                target,
+                disk=disk,
+                boot_pool_partition=boot_partition,
+                expected_version=required_env("TRUENAS_EXPECTED_VERSION"),
+            )
+            direct_names = target.run([
+                "zfs", "list", "-H", "-t", "filesystem,volume", "-o", "name", "-r", pool,
+            ], timeout=90).splitlines()
+            require(direct_names == [pool],
+                    f"preprovisioned Path B must have no test descendants before UI mutation: {direct_names!r}")
+            root_mountpoint = zfs_property(target, pool, "mountpoint")
+            require(root_mountpoint == f"/mnt/{pool}",
+                    f"preprovisioned Path B root mountpoint is {root_mountpoint!r}")
+            root_source = target.run([
+                "findmnt", "-n", "-o", "SOURCE", "--target", root_mountpoint,
+            ], timeout=45)
+            require(root_source == pool,
+                    f"preprovisioned Path B root is mounted from {root_source!r}, expected {pool!r}")
+            choices = target.call("container.pool_choices", timeout=120)
+            require(pool in choices,
+                    f"container pool choices omit preprovisioned Path B pool {pool}: {choices!r}")
+            report(
+                "path-b-preprovisioned-inventory",
+                f"strict provisioner verified disk={configured.get('disk')} "
+                f"partition={configured.get('partition')}; pool root is clean and mounted; "
+                "container.pool_choices includes boot-disk-data",
+            )
     containers = target.query("container.query", timeout=120)
     vms = target.query("vm.query", timeout=120)
     require(containers == [], f"fresh UI target has existing container records: {containers!r}")
     require(vms == [], f"fresh UI target has existing VM records: {vms!r}")
-    # Path B has no selected pool yet: the UI wizard creates it later in this
-    # run. Only query datasets beneath a pool that direct ZFS inventory found.
+    # In UI-wizard mode Path B has no selected pool yet. Preprovisioned mode
+    # requires its pool root to be the only existing dataset before this run.
     direct_names = []
     if pool in pool_health:
         direct_names = target.run([
@@ -530,7 +627,7 @@ def inventory_before_ui_mutation(
     if existing_root:
         require(resume_existing_root,
                 f"fresh Path A target already has {root}; set the guarded UI resume flag only "
-                "for the previously UI-created root")
+                "after intentionally retaining or provisioning this root")
         try:
             descendants, cached_images = ui_root_internal_datasets(
                 direct_names, root, image_name, resumed_ui_dataset=resume_existing_ui_dataset,
@@ -1629,6 +1726,12 @@ def main() -> int:
     profile = required_env("TRUENAS_STORAGE_PROFILE")
     if profile not in {"path-a", "path-b"}:
         raise RemoteError("TRUENAS_STORAGE_PROFILE must be path-a or path-b")
+    try:
+        path_b_setup = resolve_path_b_setup_mode(
+            profile, os.environ.get("TRUENAS_PATH_B_SETUP", ""),
+        )
+    except ValueError as exc:
+        raise RemoteError(str(exc)) from exc
     preserve_setting = os.environ.get("TRUENAS_TEST_PRESERVE_UI_WORKLOADS", "")
     if preserve_setting not in {"", "0", "1"}:
         raise RemoteError("TRUENAS_TEST_PRESERVE_UI_WORKLOADS must be unset, 0, or 1")
@@ -1646,6 +1749,24 @@ def main() -> int:
         raise RemoteError("TRUENAS_TEST_RESUME_EXISTING_UI_ROOT must be unset or 1")
     if resume_existing_root == "1" and profile != "path-a":
         raise RemoteError("TRUENAS_TEST_RESUME_EXISTING_UI_ROOT=1 is only valid for Path A")
+    provision_path_a_root = os.environ.get("TRUENAS_TEST_ALLOW_PATH_A_ROOT_PROVISION", "")
+    if provision_path_a_root not in {"", "1"}:
+        raise RemoteError("TRUENAS_TEST_ALLOW_PATH_A_ROOT_PROVISION must be unset or 1")
+    observed_patch_mode = os.environ.get("TRUENAS_TEST_ALLOW_UNRECORDED_PATCH", "") == "1"
+    if provision_path_a_root == "1":
+        if not observed_patch_mode or profile != "path-a":
+            raise RemoteError(
+                "Path A root provisioning is restricted to the fingerprinted external v1001 Path A lane"
+            )
+        if resume_existing_root == "1":
+            raise RemoteError(
+                "Path A root provisioning and TRUENAS_TEST_RESUME_EXISTING_UI_ROOT are mutually exclusive"
+            )
+    elif observed_patch_mode and resume_existing_root != "1":
+        raise RemoteError(
+            "the observed v1001 UI lane requires either the guarded Path A root provision "
+            "or the guarded existing-root resume setting"
+        )
     try:
         resume_existing_ui_dataset = validate_resumed_ui_dataset(
             os.environ.get("TRUENAS_TEST_RESUME_EXISTING_UI_DATASET", "").strip()
@@ -1733,8 +1854,26 @@ def main() -> int:
         )
     existing_ui_root = inventory_before_ui_mutation(
         target, profile, image_name, resume_existing_root=resume_existing_root == "1",
-        resume_existing_ui_dataset=resume_existing_ui_dataset,
+        resume_existing_ui_dataset=resume_existing_ui_dataset, path_b_setup=path_b_setup,
     )
+    if provision_path_a_root == "1":
+        require(not existing_ui_root,
+                "Path A root provisioning guard was set but the root already exists")
+        try:
+            root_result = provision_path_a_ui_root(target)
+        except PathARootProvisionError as exc:
+            raise RemoteError(f"guarded Path A root provisioning failed: {exc}") from exc
+        report(
+            "path-a-root-bootstrap",
+            "created and verified the empty 2 GiB boot-pool/user-data root outside dataset CRUD; "
+            f"details={json.dumps(root_result, sort_keys=True)}",
+        )
+        existing_ui_root = inventory_before_ui_mutation(
+            target, profile, image_name, resume_existing_root=True,
+            resume_existing_ui_dataset=resume_existing_ui_dataset, path_b_setup=path_b_setup,
+        )
+        require(existing_ui_root,
+                "Path A root bootstrap completed but the strict existing-root inventory did not admit it")
 
     try:
         ui_stage = "connect-pwmcp"
@@ -1800,13 +1939,33 @@ def main() -> int:
                 if existing_ui_root:
                     report(
                         "path-a-root-ui",
-                        "resuming from the verified UI-created root and its pinned image cache",
+                        "using the strictly verified pre-existing Path A root; root provisioning is outside this UI workflow",
                     )
                 else:
                     create_path_a_root_in_ui(page, base_url, target, dataset_create_requests)
             else:
                 inspect_path_b_partition_ui(page, base_url)
-                pool = create_path_b_pool_in_ui(page, base_url, target, pool_create_requests)
+                if path_b_setup == "ui-wizard":
+                    pool = create_path_b_pool_in_ui(page, base_url, target, pool_create_requests)
+                else:
+                    disk = required_env("TRUENAS_DISK_DEVICE")
+                    boot_partition = required_env("TRUENAS_BOOT_POOL_PARTITION")
+                    configured = verify_preprovisioned_path_b_pool(
+                        target,
+                        disk=disk,
+                        boot_pool_partition=boot_partition,
+                        expected_version=expected_version,
+                    )
+                    require(
+                        not contains_pool_create_request(pool_create_requests),
+                        "preprovisioned Path B UI unexpectedly submitted a pool.create request: "
+                        f"{pool_create_requests!r}",
+                    )
+                    report(
+                        "path-b-preprovisioned-ui",
+                        f"using verified existing {pool} on {configured.get('partition')}; "
+                        "pool creation remains outside the UI storage acceptance",
+                    )
 
             ui_stage = "dataset-parent"
             parent = select_dataset_parent(page, base_url, profile)
@@ -2069,6 +2228,12 @@ def main() -> int:
             require(page.get_by_role("button", name=re.compile(r"\bAdd\b")).count() >= 2,
                     "sharing UI does not expose the SMB and NFS Add actions")
             report("shares-ui", "SMB and NFS share pages/actions are available")
+            if path_b_setup == "preprovisioned":
+                require(
+                    not contains_pool_create_request(pool_create_requests),
+                    "preprovisioned Path B UI submitted a pool.create request during storage checks: "
+                    f"{pool_create_requests!r}",
+                )
             context.close()
 
     except PwmcpError as exc:

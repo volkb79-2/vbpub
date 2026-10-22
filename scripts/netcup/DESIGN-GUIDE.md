@@ -6,8 +6,8 @@ The SCP API needs a long-lived OAuth refresh token, but obtaining it is a
 browser-mediated device-code flow. `login` performs that flow and writes the
 token to `.env`. Afterward, in an interactive terminal, it performs one
 read-only server inventory request and offers only SCP internal names matching
-`v<digits>` for a local protected-server denylist. It does not create an SSH
-key. Non-interactive login still saves the token and leaves the denylist
+`v<digits>` for a shared local protected-server policy. It does not create an
+SSH key. Non-interactive login still saves the token and leaves the policy
 unchanged.
 
 The interactive candidates are enriched with server detail and interface
@@ -17,15 +17,21 @@ presentation data, the wizard says so and still permits selecting the verified
 name/ID; it never treats missing addresses as evidence that a server has no
 addresses.
 
-The denylist is intentionally local rather than a claimed provider-side lock:
-the SCP API has no account/server “lock” operation. Mutating server commands
-fetch server details immediately before acting and refuse a matching name or
-recorded ID. Login persists both the selected name and ID; the ID prevents a
-rename from becoming a fail-open. Invalid policy syntax or an indeterminate
-target response fails closed. Account-level user-ISO storage and firewall
-policy definition are not server mutations; attaching media, assigning a
-policy, power operations, task cancellation, and Debian image installation
-are guarded.
+The policy is intentionally local rather than a claimed provider-side lock:
+the SCP API has no account/server “lock” operation, and the SCP website does
+not read local configuration. API commands fetch server details immediately
+before acting and refuse a matching name or recorded ID. Login persists both
+the selected name and ID; the ID prevents a rename from becoming a fail-open.
+Invalid policy syntax or an indeterminate target response fails closed. Any
+automated UI/PWMCP path must call the same
+`netcup_scp_client.assert_server_operation_allowed` guard before operating on
+a server; direct manual website actions can bypass the local policy.
+The repository currently has no managed SCP UI flow, so this shared guard is
+presently enforced by API-backed commands only; the `NETCUP_SCP_UI_*` settings
+are not consumed by a repository command.
+Account-level user-ISO storage and firewall policy definition are not server
+mutations; attaching media, assigning a policy, power operations, task
+cancellation, and Debian image installation are guarded.
 
 The interactive `wizard` is the API-backed gather-and-install path. It resolves
 the target through the same picker as normal installation, writes a complete
@@ -112,10 +118,40 @@ contains installer/SSH policy only, and `monitor-task.toml` contains
 monitor polling only. Frontends import `netcup_scp_client`; they do not shell
 out to `scp-api.py` or duplicate token/configuration setup.
 
+## OpenAPI reference and SCP Screen
+
+The canonical human API documentation is Netcup's
+[SCP REST API page](https://www.netcup.com/en/helpcenter/documentation/servercontrolpanel/api).
+The SCP publishes its OpenAPI document directly at
+`https://www.servercontrolpanel.de/scp-core/api/v1/openapi`; the local
+`netcup-scp-openapi.json` is a checked-in reference snapshot, not a runtime
+dependency. `update-scp-openapi.py` validates the response shape and atomically
+replaces that snapshot so a network or schema error cannot truncate the prior
+copy.
+
+The published API schema includes `/api/v1/servers/{serverId}/rescuesystem`:
+`GET` reports state, `POST` activates the provider-managed rescue boot, and
+`DELETE` deactivates it. This boots Netcup's minimal Grml rescue Linux outside
+the installed OS, for network diagnosis, backup, and system repair. It is a
+recovery environment, not a serial console or an ISO installation signal.
+The status schema includes an `active` flag and optional temporary rescue
+password; the CLI's normal output redacts that secret. Netcup requires the
+server to be off before activation and notes that the provider firewall is
+disabled while rescue mode is active.
+
+Netcup documents its SCP “Screen” as browser VNC. That is a separate browser
+surface from the REST API, whose published schema has no screen, VNC, or serial
+console operation. A manual PWMCP check confirmed screen access and keyboard
+delivery after clicking the console canvas; it did not validate screen-text
+recognition. Credentials belong in the local mode-0600 `.env`; the URL is
+public, and `netcup.toml` remains limited to API endpoint settings. The
+browser may also require an interactive second factor. See the live check
+below for the observed console and automation limit.
+
 ## Shared CLI boundary
 
-All three Netcup entrypoints—`scp-api.py`, `install-host.py`, and
-`monitor-task.py`—use `cli-extended` for identity/version, grouped help,
+All four Netcup entrypoints—`scp-api.py`, `install-host.py`,
+`monitor-task.py`, and `install-restore-iso.py`—use `cli-extended` for identity/version, grouped help,
 registry-backed verb parsing, common output/diagnostic behavior, and clean
 cancellation. Install the package in the same Python environment that runs
 the scripts; they do not add a repository-root import-path fallback. Their
@@ -138,6 +174,92 @@ workflow: it loads local SSH settings and follows the provider customScript
 log over SSH, but makes no Netcup API calls and never creates an identity key.
 It uses normal SSH key/agent discovery unless an existing identity is
 explicitly selected.
+
+## Generic installer ISO handoff
+
+The SCP API exposes the provider VM's state and ISO attachment, but not guest
+console text or a portable installation-complete event. Guest-side
+`CDROMEJECT` does not remove the provider attachment, and a normal reboot leaves
+the VM running and can boot the same attached installer again. The generic
+install verb therefore uses a configured shutdown handoff: the installer is
+expected to power off after success. This is a workflow signal, not independent
+proof that the guest installer succeeded; the generic workflow does not read
+its logs.
+
+The workflow records the uploaded ISO hash, saved provider boot order and each
+completed mutation. It observes the guest reach `RUNNING`, then waits until
+Netcup reports it off. While the guest is off it detaches the exact ISO this
+workflow uploaded, restores the saved boot order, and powers on the server
+from disk. It marks the install complete after Netcup reports `RUNNING` with
+`configChanged=false`. A caller can optionally add an HTTP readiness probe,
+but that is not part of the generic completion contract. On timeout, the ISO
+remains attached and the checkpoint can resume; the tool does not guess that
+the installer completed.
+
+The provider polling first observes `RUNNING` with `configChanged=false`, then
+waits for `OFF`, `STOPPED`, `SHUTDOWN`, or `SHUTOFF`. If the guest blocks at an
+end screen asking for a key before poweroff, it remains running and the wait
+times out. A PWMCP session can view the SCP Screen and send input after the
+operator clicks the console canvas, after which the normal provider handoff
+can resume. If the installer automatically reboots, the provider normally
+continues reporting `RUNNING`, so the workflow cannot recognize that reboot as
+completion. If a brief reboot appears as an `OFF` poll, the API provides no
+reason code and the current check could mistake it for the handoff. Reboot-only
+installers need a guest success signal or a system-specific readiness check.
+The TrueNAS unattended image supports the handoff by selecting
+`--post-install-action poweroff`; its GRUB entry also uses `noeject` to avoid
+the live-boot media-removal prompt that would otherwise stop before shutdown.
+
+#### Live SCP Screen check (2026-10-19)
+
+On Netcup server 804027 (`v1001.vxxu.de`), PWMCP authenticated to the SCP and
+opened the Screen popup at
+`https://www.servercontrolpanel.de/scp-ui/servers/804027/screen?popup=1`. The
+console showed TrueNAS `Console setup` and the guest's HTTP and HTTPS
+management URLs; this is the installed, ready-to-use system screen, not an
+installer finish prompt. Clicking the canvas and sending `0` without Enter
+placed the character at the console prompt; Backspace removed it, and the
+menu was restored by reopening the Screen. No menu option was submitted. A
+read-only provider check afterward still reported `RUNNING`,
+`configChanged=false`, no ISO attached, and boot order `HDD,NETWORK,CDROM`.
+
+The console is rendered as a canvas. PWMCP's page snapshot exposes the browser
+controls but not the console text, so automatic detection needs OCR or a
+screen-specific image recognizer. The manual check verified screen access and
+keyboard delivery; it did not observe an installer reboot or a finish prompt.
+No PWMCP screen observer is part of the generic installer yet. A future
+observer must treat an unrecognized screen as indeterminate and keep waiting;
+provider `OFF` alone has no reason code that proves installer success.
+
+## Restore ISO lifecycle
+
+A restore ISO takes long enough that a single command cannot safely infer when
+the destructive guest write has finished. `start` uploads and boots the ISO,
+then records the saved provider boot order and returns control to the operator.
+The guest reports target discovery, write progress, read-back verification,
+and completion through Mattermost. The operator explicitly asserts completion
+before `finish` can remove the provider media.
+
+The finish stage calls SCP to detach the virtual media, restores the boot order
+captured before attachment, waits for each provider task, cold-cycles the
+server, and verifies both SSH and `boot-pool` health. Guest `CDROMEJECT` only
+requests an eject from the virtual drive; it does not remove SCP's media
+attachment. The state file is private and records each completed provider
+stage so an interrupted CLI invocation can resume without guessing which
+mutation succeeded. A read-only `status` command exposes that checkpoint.
+
+`finish` requires the operator to assert the guest's completion notification
+and disk read-back verification. When that evidence is unavailable, `recover
+--try-disk-boot` performs the same provider detach, boot-order restoration,
+cold cycle, and SSH/pool health check without recording restore completion.
+Its terminal checkpoint is `recovered`, and `restore_certified=false`; this
+distinguishes a healthy boot from proof that the ISO completed its write and
+verification steps. A recovery attempt can resume from its persisted provider
+stage after interruption.
+
+This boundary keeps Netcup credentials and provider mutations on the controller.
+The ISO only restores the disk, reports progress to Mattermost, and requests a
+reboot; it does not try to call the SCP API or grow the ZFS partition.
 
 ### Task monitor behavior
 
@@ -210,9 +332,12 @@ authentication is reported as `no keys match`. An SSH-level/session refusal is
 reported as `rejected`, while transport failure is reported as `no answer`.
 
 Actions that change state cannot safely fan out. ISO detach, rescue-system
-deactivation, snapshot creation, and snapshot dry-run therefore refuse without
-an explicit server ID. This keeps the convenient account-wide default limited
-to inspection while retaining the API's server boundary for mutations.
+deactivation, snapshot creation, deletion, and restoration therefore require an
+explicit server ID. Snapshot restore additionally requires a listed unique
+snapshot name, checks for active provider tasks, supports a read-only dry run,
+and asks for confirmation before submitting the asynchronous disk replacement.
+This keeps the convenient account-wide default limited to inspection while
+retaining the API's server boundary for mutations.
 
 The same boundary applies to ISO attachment and firewall assignment: both
 require an explicit server. Firewall `set` requires the complete replacement
@@ -224,6 +349,13 @@ validate locally and remain confirmation-gated because they carry larger
 lockout/storage failure surfaces than a read/list wrapper. Presigned ISO
 uploads bypass the authenticated API request helper so the SCP bearer token is
 never sent to object storage.
+
+ISO attachment is provider state. A guest `CDROMEJECT` ioctl can make the
+virtual drive report an eject request, but it does not call SCP or remove the
+provider's media attachment. A TrueNAS 27 live check returned success from the
+ioctl while `iso-attached` still reported the ISO attached. Use the confirmed
+`iso-attached SERVER_ID detach` action for provider detachment, then inspect
+boot order and `configChanged` before rebooting.
 
 Firewall policy input is the API's `FirewallPolicySave` request shape, supplied
 as strict inline JSON or a JSON file. The validator rejects unknown/read-only

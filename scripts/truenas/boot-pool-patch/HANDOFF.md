@@ -1,9 +1,38 @@
 # Boot-pool patch handoff
 
-Updated: 2026-10-19 UTC
+Updated: 2026-10-21 UTC
 
 This is the resume point for the TrueNAS boot-pool patch work. Patch files,
 tests, evidence, and follow-up notes stay under this directory.
+
+## Paused stop point — 2026-10-21
+
+The operator asked to stop testing and persist the current results. Netcup
+v1001 is shut off after restoring the pre-patch snapshot
+`truenas-v27-rc1-base-20261021`
+(`b8e286a2-9248-4c35-b9ad-ca82fd2fde95`); restore task
+`fbad4f98-cfb0-4740-96dc-dff1e562113f` finished and Netcup reported
+`SHUTOFF`, uptime 0. Do not power it on or start a local QEMU VM until the
+operator resumes the test work.
+
+The guarded `live-ui-observed-v1001` run matched its pinned 17-file fingerprint,
+created and verified the empty Path A root with a 2 GiB quota, authenticated
+with PWMCP, then failed on the first child dataset create with middleware
+`NameError: name 'mountpoint' is not defined` (`pool_/dataset.py:117`). No
+child dataset was created and the UI workflow did not get to zvol, container,
+or VM forms. The normal v27 adapter had already refused before mutation because
+14/15 source fingerprints differed. The registered unit lane passed with 194
+tests and 45 subtests. Logs are the restricted
+[`live UI failure`](artifacts/live-ui-observed-v1001-child-create-nameerror-20261021.log)
+and [`unit result`](artifacts/unit-boot-pool-patch-observed-root-bootstrap-20261021.log).
+
+Before any next live UI test, the first host action must be changing the
+publicly known `truenas_admin/truenas` password to a random host-specific value
+and saving it in a mode-0600, gitignored TOML file for future access. Do not
+put it in tracked docs or gate logs. The next work is an operator-led design
+interview about artifact/VM/tmp storage locations, qcow2 compression,
+credential-file ownership, and cleanup policy. No large-file cleanup or
+artifact migration has been done.
 
 ## Working checkout
 
@@ -12,30 +41,167 @@ tests, evidence, and follow-up notes stay under this directory.
 - Subproject: `scripts/truenas/boot-pool-patch`
 - The worktree also contains separate Netcup work. Keep Netcup out of any
   TrueNAS commit.
+- The current TrueNAS source, tests, docs, and evidence changes are uncommitted;
+  do not stage unrelated Netcup changes while continuing this work.
 - TrueNAS guest disks and logs are ignored artifacts beneath `artifacts/`.
 
-## Active successor task
+## Existing successor task (deferred)
 
 Continue from the detailed [successor prompt](successor-handoff-v27-path-a-v28-migration-20261019.md).
 It describes the current guest and manifest, v27 evidence, exact v28 update
 artifacts, ordered update/patch/reboot checks, PWMCP tester constraints, and
 deferred patch-level display research.
 
-The fresh Path A UI migration guest
-`truenas-v27-golden-ui-migration-20261019` is stopped. Its overlay and attached
-read-only v28 ISO remain in
-`artifacts/v27-golden-ui-migration-20261019/vm-state`; no managed TrueNAS guest
-container is running. The UI workload manifest is
-`artifacts/v27-golden-ui-migration-20261019/ui-workloads.json`. Before any
-further mutation, resume or replace the guest and pass registered read-only
-`live-inspect`. The most recent resumed guest did not produce a passing new
-inventory, so use the saved v27 logs only for their recorded runs.
+## 2026-10-21 fresh v28 Path B checkpoint
 
-Fresh v27 Path A evidence now includes UI creation of the root/filesystem,
-zvols, container and VM record; UI Start/Stop actions for the container and a
-blank VM; root/data remount across a v27 reboot; and a second UI Start/Stop
-cycle after that reboot. See the task-specific evidence table in the successor
-prompt. No v27-to-v28 update has yet been run against this manifest.
+The fresh managed COW guest `truenas-v28-path-b-clean-20261021` booted in
+`artifacts/v28-path-b-clean-20261021/`, from the verified
+`artifacts/v28-path-b-base.qcow2` base, without an ISO. It reached the TrueNAS
+console. SSH was inactive by default despite the configured root key; it was
+started temporarily from the disposable guest console, and its ED25519 host
+key is pinned in the state directory's `known_hosts`. To reduce memory while
+host pressure is high, it was cleanly stopped through `tcg_vm.py`; the runner
+reports exit code 0, no OOM kill, and preserves the overlay and firmware state.
+
+The first registered read-only `live-inspect` attempt refused before creating
+the 512-MiB tester because full PSI in `dev-gates.slice` was 7.12% (limit 1%).
+Later admission reads still refused on `/dev.slice` and `/` pressure. After the
+guest stopped, TCG resume admission still observed 3.68% full PSI in
+`dev-background.slice`; live-gate admission observed 39.94% full PSI in
+`dev-gates.slice`, with `/dev.slice` at 14.75% and `/` at 12.52%. No inventory,
+Path B provisioning, or storage mutation has run on this guest.
+The latest check around 04:03 UTC still refused both operations: the guest
+slice itself was clear, but `/dev.slice` PSI was 88.23% some / 74.47% full,
+`/` was 81.99% / 63.68%, and `dev-gates.slice` was 25.53% / 25.53%. Do not
+resume or launch a tester until managed admission passes.
+The refusal is recorded in
+[`live-inspect-v28-path-b-clean-20261021.log`](artifacts/live-inspect-v28-path-b-clean-20261021.log);
+latest resource and console setup details are in
+[`tcg-vm-v28-path-b-clean-20261021-resume-checkpoint.log`](artifacts/tcg-vm-v28-path-b-clean-20261021-resume-checkpoint.log).
+
+After the host reboot, supported `tcg_vm.py start --resume` attempts still
+refused before container creation: `/dev.slice` memory PSI full avg10 was
+5.19%, then 6.54% (1% limit), and some avg10 was 51.7%, then 10.63% (10%
+limit). A final read-only status shows the guest remains `exited`, exit code 0,
+`oom_killed=false`; Run-Gate has no inflight invocation. No new inventory,
+Path B provisioning, or `live-storage` result exists. The exact attempt outputs
+are in
+[`tcg-vm-v28-path-b-clean-20261021-resume-after-host-reboot.log`](artifacts/tcg-vm-v28-path-b-clean-20261021-resume-after-host-reboot.log).
+
+Next, wait for managed TCG start admission to pass and resume the preserved
+guest. Start SSH from the console if it is inactive after boot. Then wait for
+live-gate admission, rerun registered read-only `live-inspect`, and confirm
+the clean Path B baseline before starting registered `live-storage`. Do not
+bypass or loosen the resource limits.
+
+The fresh Path A UI migration guest
+`truenas-v27-golden-ui-migration-20261019` is cleanly stopped after a resumed
+read-only inventory and UI workload cycle passed on 2026-10-21. Its overlay
+and attached read-only v28 ISO remain in
+`artifacts/v27-golden-ui-migration-20261019/vm-state`; the manifest is
+`artifacts/v27-golden-ui-migration-20261019/ui-workloads.json`. Resume only
+through `tcg_vm.py`; before another mutation, run registered read-only
+`live-inspect` again. No v27-to-v28 update has run against this manifest.
+The latest managed status confirms `Exited (0)`, `oom_killed=false`. The
+worktree also contains a candidate Path B `preprovisioned` UI setup mode. Its
+registered unit gate passed with 170 tests and 45 subtests on 2026-10-21;
+fresh live UI acceptance remains open. See
+[`unit-boot-pool-patch-path-b-ui-preprovision-mode-20261021.log`](artifacts/unit-boot-pool-patch-path-b-ui-preprovision-mode-20261021.log).
+The lane was rerun through Run-Gate after resuming this session and passed the
+same 170 tests and 45 subtests; the captured pytest output is
+[`unit-boot-pool-patch-post-resume-20261021.log`](artifacts/unit-boot-pool-patch-post-resume-20261021.log).
+
+Earlier resume attempts were refused by the runner's host-memory PSI admission
+check. After the host reboot, one external sample briefly showed `/dev.slice`
+avg10 some 0.40% / full 0.38%, but the runner's next live preflight observed
+some 26.29% and refused before container creation. A subsequent sample was
+still over both limits (some 11.82%, full 11.05%; limits 10% and 1%). Pressure
+is volatile; a second attempt similarly rose from an external some/full
+avg10 sample of 0.89% / 0.79% to 18.3% some at live preflight and was refused.
+The guest remains cleanly exited and no update job has started.
+See
+[`tcg-vm-start-admission-v27-golden-ui-migration-20261021-post-reboot.log`](artifacts/tcg-vm-start-admission-v27-golden-ui-migration-20261021-post-reboot.log).
+Retry only after the runner's admission check can pass; do not bypass or raise
+the limit. Run-Gate has no inflight job; the latest `live-storage` result is
+v27 Path A from October 19, and the latest v28 Path B result remains its
+October 17 PASS.
+
+Fresh v27 Path A evidence includes UI creation of the root/filesystem, zvols,
+container and VM record; UI Start/Stop actions for the container and a blank
+VM; root/data remount across a v27 reboot; and a second UI Start/Stop cycle
+after that reboot. After the host restart, the resumed guest passed two
+read-only inventories and another UI workload cycle with the same hashes.
+Its serial log shows an unexplained second kernel boot during recovery; see
+the 2026-10-21 section below. No v27-to-v28 update has yet been run against
+this manifest.
+
+## 2026-10-21 host-restart checkpoint
+
+The migration guest's first two post-restart SSH inventory attempts timed out
+during banner exchange while TrueNAS was booting. A later registered
+`live-inspect` passed, then serial output showed a second kernel-start sequence
+without a recorded shutdown reason. A second read-only inventory passed, and
+the registered UI workload lane passed on that boot. It cycled the preserved
+container and blank VM through UI Start/Stop, using UI Power Off when graceful
+VM Stop did not finish; the filesystem and both zvol hashes remained equal to
+the manifest. The guest was cleanly stopped after recording the evidence.
+
+- [`live-inspect-v27-golden-ui-migration-20261021-post-host-reboot-pass.log`](artifacts/live-inspect-v27-golden-ui-migration-20261021-post-host-reboot-pass.log)
+- [`live-inspect-v27-golden-ui-migration-20261021-second-boot-pass.log`](artifacts/live-inspect-v27-golden-ui-migration-20261021-second-boot-pass.log)
+- [`live-inspect-v27-golden-ui-migration-20261021-cold-boot-failure-1.log`](artifacts/live-inspect-v27-golden-ui-migration-20261021-cold-boot-failure-1.log)
+- [`live-inspect-v27-golden-ui-migration-20261021-cold-boot-failure-2.log`](artifacts/live-inspect-v27-golden-ui-migration-20261021-cold-boot-failure-2.log)
+- [`live-ui-workloads-v27-golden-ui-migration-20261021-second-boot-pass.log`](artifacts/live-ui-workloads-v27-golden-ui-migration-20261021-second-boot-pass.log)
+- [`live-ui-workloads-v27-golden-ui-migration-20261021-second-boot-ssh-failure.log`](artifacts/live-ui-workloads-v27-golden-ui-migration-20261021-second-boot-ssh-failure.log)
+
+After that earlier wrapper-delegation pass (158 tests and 45 subtests), the
+registered unit lane passed again with the candidate preprovisioned Path B UI
+changes: 170 tests and 45 subtests. See
+[`unit-boot-pool-patch-path-b-ui-preprovision-mode-20261021.log`](artifacts/unit-boot-pool-patch-path-b-ui-preprovision-mode-20261021.log).
+Fresh live UI acceptance remains open.
+
+The latest `run-gate doctor` snapshot reported full memory PSI avg10 of 19.9%
+in `dev.slice` and 16.66% on the host; `dev-background.slice` was at 485 MiB
+and 0.0%, while `dev-gates.slice` was at 1,227 MiB and 46.79%. The TCG
+runner's full-PSI limit is 1%, so this snapshot does not admit a VM. Earlier
+same-day readings (2.21% in `dev.slice`, 3.2% on the host, plus prior higher
+and lower samples) are historical and volatile. No VM was started on this
+resume. Check the managed runner's live preflight before launching a guest;
+do not decide admission from one external sample or bypass its limits.
+
+PWMCP was healthy at the earlier checkpoint: `pwmcp doctor` reported release
+1.64.0-r2 and Playwright 1.64.0, and `dstdns-hox0ju-network` contained the
+PWMCP and devcontainer aliases. Recheck before use. The
+`debian-install-vm:ab8643b97cc8` image was present at that checkpoint. The v27
+migration guest's saved overlay and firmware remain; recheck its managed
+status before use. The old v27 Path B diagnostic guest container is absent.
+Use a fresh managed guest for Path B acceptance.
+
+The expected v28 Path B `live-storage` run left no durable completion record
+after the host restart: Run-Gate has no inflight invocation, and its latest
+`live-storage` history entry is the 2026-10-19 v27 Path A pass. Treat the
+expected run as interrupted/lost, not passed or failed. The earlier registered
+Path B PASS remains
+[`live-storage-v28-path-b-existing-container-protection-pass-20261017.log`](artifacts/live-storage-v28-path-b-existing-container-protection-pass-20261017.log).
+The current Docker inventory has no `truenas-v28-path-b-20261017` container.
+Its `runner.json`, overlay, firmware, and recorded base disk
+`artifacts/v28-path-b-base.qcow2` remain. The base file's device, inode, size,
+and mtime match the runner manifest; `qemu-img info` reports a non-corrupt
+20-GiB virtual disk. A host-side `qemu-img info --backing-chain` on the
+overlay reports `/base/disk.qcow2` missing because that is the path inside the
+managed runner container, where `tcg_vm.py` bind-mounts the host base image.
+That host-side error does not show that the base or overlay is damaged.
+
+The original read-only installer ISO is missing from its recorded path. Its
+expected SHA-256 is
+`3fcb9bcdee4b597f1498f019890c1735fb4c68b55fcc94ed1d98fc40d9fd09d1`. The
+different `unattended-relaxed-16GiB-final7.iso` exists under
+`scripts/truenas/vanilla-iso-patcher/artifacts/` but is 645,120 bytes larger;
+do not attach it as a replacement. The old runner manifest will not permit
+resuming with the ISO omitted. For a fresh v28 Path B acceptance, use the
+verified installed base disk in a new empty state directory and omit
+`--readonly-media`; then pass registered read-only inventory before mutation.
+Do not reuse the old overlay for that fresh run or claim a new result before
+the registered gate completes.
 
 ## Live guest checkpoint (2026-10-19)
 
@@ -55,7 +221,7 @@ Before any new mutation, inspect the selected managed guest and pass registered
 read-only `live-inspect`; historical gate results remain evidence only for the
 exact run that produced them.
 
-## Remaining Path B limitation: UI cannot select the reserved partition
+## Path B UI limitation and candidate downstream route
 
 Fresh guest `truenas-v27-ui-b-fresh-r1-20261018` was restored from the golden
 base and patched with the registered `live-v27-patch` lane before Path B
@@ -82,11 +248,16 @@ The registered post-attempt inventory passed at
 [`live-inspect-v27-path-b-r1-after-disks-screen-20261018.log`](artifacts/live-inspect-v27-path-b-r1-after-disks-screen-20261018.log).
 It confirms `boot-pool` ONLINE, the patch installed, no `boot-disk-data` or
 user-data root, and no probe datasets/snapshots, containers, or VMs. Path B
-pool creation and creation of `/dev/vda4` through the UI remain open. Keep the
-guarded partition-only lane first in the Path B baseline, then require the UI
-pool wizard to create/register `boot-disk-data`; keep the separate UI
-partition route as an explicit unanswered requirement. Do not select
-`/dev/vda` or run `live-path-b-provision`.
+pool creation and creation of `/dev/vda4` through the UI remain open. The
+historical `ui-wizard` diagnostic is a safe refusal; do not replay it on this
+guest. The worktree now adds explicit `TRUENAS_PATH_B_SETUP=preprovisioned` for
+downstream UI acceptance: a registered `live-path-b-provision` run creates
+and registers the pool first, then `live-ui` verifies the exact Path B layout
+and exercises user storage forms in the UI. Its registered unit gate passed
+with 170 tests and 45 subtests; fresh live acceptance remains open. It does not
+prove UI pool creation.
+Use a fresh disposable managed guest and never select `/dev/vda` as a pool
+device.
 
 After the latest UI helper change, the registered patch unit lane passed 149
 tests + 45 subtests:
@@ -263,9 +434,14 @@ middleware-managed dataset exists before destroy, remains after the destroy
 attempt, remains after the snapshot attempt, and that the attempted snapshot
 does not exist. The Path B gate passed at
 [`live-storage-v28-path-b-existing-container-protection-pass-20261017.log`](artifacts/live-storage-v28-path-b-existing-container-protection-pass-20261017.log).
-The earlier JSON-null failure remains preserved. The current managed v28 Path B
-guest is stopped with `oom_killed=false`; inspect its existing state and probe
-data read-only before any future v28 mutation.
+The earlier JSON-null failure remains preserved. On October 21,
+`tcg_vm.py status` found no Docker container named
+`truenas-v28-path-b-20261017`; the old `runner.json`, disk overlay, and firmware
+artifacts remain. Its runner metadata points to a boot-pool ISO missing from
+the recorded path. The stopped status and `oom_killed=false` recorded by the
+earlier checkpoint are historical, not current. Before any new v28 mutation,
+recover through the managed runner only after verifying its inputs, then run
+registered read-only `live-inspect`.
 
 Do not repeat the Path B UI attempt on r1 until a supported UI workflow can
 select the existing `/dev/vda4`; its middleware/browser disk query currently
@@ -292,12 +468,13 @@ testers belong in `$CGROUP_PARENT_DEV_GATES` and guests in
 ## Original v28 Path B failure and read-only inspection
 
 The preserved post-run inspection below is historical, not a fresh inventory
-of the current managed guest. Its latest `tcg_vm.py status` check showed
-`truenas-v28-path-b-20261017` exited with `oom_killed=false`; a registered
-read-only `live-inspect` is still required before any mutation. Resume only
-with the exact identity in
+of a current guest. The October 21 `tcg_vm.py status` check found no container
+named `truenas-v28-path-b-20261017`. The runner's exact media path is missing,
+so do not assume `--resume` can recreate the guest or substitute another ISO.
+Any new guest must be started through the managed runner and pass registered
+read-only `live-inspect` before mutation. The prior identity record is
 [`artifacts/v28-path-b-20261017/runner.json`](artifacts/v28-path-b-20261017/runner.json)
-and the managed `tcg_vm.py --resume` flow after host admission recovers.
+and the preserved overlay is under the same artifact directory.
 
 The original v28 Path B `live-storage` gate returned JSON `null` from
 `zfs.resource.destroy` after confirming the target dataset existed under
@@ -319,15 +496,18 @@ alone did not prove survival.
 | Target | Passed evidence | Still open |
 |---|---|---|
 | v27 Path A | Registered live storage refuses destroy and snapshot attempts against an existing middleware-managed dataset and verifies survival; dataset/zvol, cache-vdev add/remove, TCG VM, persistent container data, share-record CRUD, cleanup; Path A reboot remount passed. Fresh registered PWMCP UI setup created/wrote a filesystem, created zvols, selected `boot-pool` for a container, and submitted a VM wizard with an existing boot-pool zvol. A separate UI workload lane started/stopped the container and blank VM before and after a controlled v27 reboot, checking the same filesystem/zvol hashes. The VM autostarted after reboot. Session Timeout was found under account menu → Preferences at 300 seconds. | Retention and natural post-update accessibility through v27→v28 and v28 patch/reboot remain open. The container test does not prove access to a user-mounted filesystem; the VM has no guest OS. Auxiliary-vdev role selection, real second-disk cache, client-side NFS/SMB access, guest boot, and actual live KVM selection remain open. |
-| v27 Path B | Registered partition-only lane reserved `/dev/vda4` on a fresh patched guest. After host recovery, the registered PWMCP lane reached the Disks screen and Pool Creation Wizard; `lsblk` sees `vda4`, but middleware and browser `disk.query` omit it. The Disks screen showed no partition controls, and the wizard reported no disks and submitted no pool creation. A post-attempt read-only inventory passed with `boot-pool` ONLINE and no probe/user data or `boot-disk-data`. | UI creation of `/dev/vda4` and `boot-disk-data`; fresh Path B UI storage checks; reboot/import and update survival; second-disk cache target; client-side shares, guest OS boot, and actual KVM selection remain open. |
+| v27 Path B | Registered partition-only lane reserved `/dev/vda4` on a fresh patched guest. After host recovery, the registered PWMCP lane reached the Disks screen and Pool Creation Wizard; `lsblk` sees `vda4`, but middleware and browser `disk.query` omit it. The Disks screen showed no partition controls, and the wizard reported no disks and submitted no pool creation. A post-attempt read-only inventory passed with `boot-pool` ONLINE and no probe/user data or `boot-disk-data`. The preprovisioned downstream UI mode passed the registered unit gate (170 tests and 45 subtests). | UI creation of `/dev/vda4` and `boot-disk-data`; a fresh live run of the preprovisioned downstream UI mode; reboot/import and update survival; second-disk cache target; client-side shares, guest OS boot, and actual KVM selection remain open. |
 | v27 auxiliary-vdev topology | Registered diagnostic created sparse single-disk and RAIDZ1 target pools and UI-created boot-pool zvols. The UI showed Cache, Log, and Special steps but no boot-pool zvols; middleware refused all tested zvol device paths before ZFS attachment. Direct checks found both target pools ONLINE with empty auxiliary-role arrays, and cleanup passed. | OpenZFS attachment acceptance, API/UI selection, each role independently, identical-device reuse, partitioned devices, separate source pool, Path B source pool, SLOG writes, metadata allocation, import ordering, and physical-disk tests. |
 | v28 Path A | Guarded adapter install/replacement, live storage with existing-container destroy/snapshot refusal and survival, public clone refusal, and reboot/remount passed. The v27-to-v28 marker survived update, but data was mounted manually for verification. | Automatic remount through update; retention and continued operation of pre-existing container/VM records and data through update and v28 patch reapplication; full UI, client-side shares, guest OS boot, actual KVM selection, and second-disk cache target. |
 | v28 Path B | Registered Path B partition/pool provisioner, guarded adapter install, and live storage with existing-container destroy/snapshot refusal and direct survival checks passed. | Reboot/import and update survival on Path B; second-disk cache target; full UI, client-side shares, guest OS boot, and actual KVM selection. |
 | Separate-disk target pool using a system-disk zvol as L2ARC | Not tested. Existing cache checks use a temporary file-backed target pool. | Attach a real second virtual disk, create the target pool there, add/remove the Path A or B zvol as L2ARC, inspect `zpool status -P`, and test import/reboot ordering. |
 
-All storage acceptance cache results so far are file-backed-target results. They
-do not prove separate-disk import behavior, cache reliability or performance,
-or UI/middleware configuration of L2ARC. Keep those claims open.
+All four v27/v28 Path A/B storage gates passed cross-pool L2ARC add/status/
+remove using a zvol from the selected system-disk pool and a temporary
+file-backed target pool. This is evidence that the zvol can serve as a cache
+device in that setup, but it does not prove a separate disk-backed target,
+source/target import ordering, cache reliability or performance, or
+UI/middleware configuration of L2ARC. Keep those claims open.
 
 ## Guard and regression status
 
@@ -359,18 +539,22 @@ pass these assertions.
    checks the container record and backing dataset but not access to the
    separate probe filesystem. Install a guest OS in the VM only in a separate
    acceptance step; current UI evidence covers a blank VM and boot-pool zvol.
-3. Preserve the fresh patched Path B guest `truenas-v27-ui-b-fresh-r1-20261018`
-   and its `/dev/vda4` partition. The latest registered UI run shows no
-   partition controls on the Disks screen; the pool wizard still omits `vda4`
-   and creates no pool. Investigate a supported UI route and preserve the
-   baseline sequence: guarded partition-only lane first, then UI creation and
-   registration of `boot-disk-data`. Never select `/dev/vda` or use
-   `live-path-b-provision`.
+3. Keep UI creation of the Path B partition and pool open. The registered
+   unit lane passed for the explicit `TRUENAS_PATH_B_SETUP` resolver. Next, on
+   a fresh disposable managed v27 guest, run `live-path-b-provision` followed by `live-ui` with
+   `TRUENAS_PATH_B_SETUP=preprovisioned`. This proves downstream UI operations
+   only; retain the old `ui-wizard` refusal as evidence that UI pool creation
+   remains unsupported. Never select the whole `/dev/vda` disk.
 4. Before any future v28 Path B mutation, resume the saved state only
    through `tcg_vm.py` and run registered read-only `live-inspect`. The
    existing v28 storage gate has direct pre/post ZFS checks for both destroy
    and snapshot refusals, but its current guest state still needs inspection.
-5. Implement the narrowly allowlisted vdev-device path in middleware and the
+5. Add a second virtual disk to the managed guest, create a disposable data
+   pool, and test `TRUENAS_TEST_CACHE_TARGET` with both Path A and Path B zvols.
+   Verify add/status/remove, then test pool import and behavior when the source
+   cache pool is unavailable. The current cache results used a file-backed
+   target; they do not answer this question.
+6. Implement the narrowly allowlisted vdev-device path in middleware and the
    UI before another feature-acceptance run. On a fresh patched v27 guest,
    pass registered read-only inventory, then test cache, log, and special
    roles separately and in combinations through API and UI. Keep same-device

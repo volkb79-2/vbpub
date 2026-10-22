@@ -65,6 +65,19 @@ live notification webhook, so the image, sidecar, and ISO must all be handled
 as private artifacts. This workflow restores the disk as captured; it does not
 rotate those values.
 
+The restore image can have a bootstrap password that is known from the public
+recipe. A live test must rotate `truenas_admin` to a fresh random password as
+its first host action, then save the host-specific value in a protected,
+gitignored TOML file for later test connections. Keep this credential outside
+the golden source-image sidecar: that sidecar describes the reusable source
+image, while the new password belongs to one deployed host.
+
+Step 1 and step 2 do not apply the separate boot-pool relaxation patch. They
+capture and restore the source disk's existing state. A manually patched source
+would be copied into the image, but only if the patch had already been applied
+and validated before capture; the automation does not currently prove or
+record that condition.
+
 The ISO does not contain Netcup API credentials and does not call the provider
 API. A guest cannot safely assume the provider's virtual-media attachment can
 be detached by a local `eject`; the controller uses the Netcup CLI to detach

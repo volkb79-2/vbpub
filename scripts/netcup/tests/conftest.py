@@ -33,6 +33,9 @@ def _load_module(path: Path, name: str) -> types.ModuleType:
 @pytest.fixture()
 def install_host_mod(monkeypatch):
     mod = _load_module(INSTALL_HOST_PATH, "scp_api_install_host")
+    # The gate sees the worktree's ignored operator .env. Installer tests must
+    # use only their explicit monkeypatched inputs, never inherit that file.
+    monkeypatch.setattr(mod, "load_env_file", lambda: None)
     settings = mod.netcup_scp_client.load_api_settings(NETCUP_DIR / "netcup.toml")
     monkeypatch.setattr(mod.netcup_scp_client, "BASE_URL", settings["api.base_url"])
     monkeypatch.setattr(mod.netcup_scp_client, "KEYCLOAK_URL", settings["api.keycloak_url"])
@@ -49,6 +52,8 @@ def explore_mod(monkeypatch):
     # A developer's ignored scripts/netcup/.env is real operator state.  Do
     # not let a local protected-server denylist leak from install-host tests
     # into explorer tests; individual tests opt into the policy explicitly.
+    monkeypatch.delenv("NETCUP_PROTECTED_SERVERS", raising=False)
+    monkeypatch.delenv("NETCUP_PROTECTED_SERVER_IDS", raising=False)
     monkeypatch.delenv("NETCUP_SCP_API_PROTECTED_SERVERS", raising=False)
     monkeypatch.delenv("NETCUP_SCP_API_PROTECTED_SERVER_IDS", raising=False)
     mod = _load_module(EXPLORE_PATH, "scp_api_explore")

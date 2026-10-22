@@ -64,11 +64,17 @@ mountpoint and mount policy. The previous apparent quota submission defect
 was the UI test filling the dataset-only `refquota` field. The corrected
 PWMCP interaction captures the actual RPC payload and verifies the finite
 `quota`; its preserved follow-up UI run created and directly verified the
-root before failing at a later VM-zvol step. Path B currently reserves the
-free-tail partition with the guarded partition-only lane; the TrueNAS UI must
-create the `boot-disk-data` pool from that partition. The current v27 wizard
-omits `/dev/vda4` from `disk.query` and creates no pool. No UI route that
-creates `/dev/vda4` itself has been demonstrated. See the [boot-pool patch design
+root before failing at a later VM-zvol step. The Path B `ui-wizard` route
+reserves the free-tail partition with the guarded partition-only lane, then
+asks the TrueNAS UI to create `boot-disk-data`. The current v27 wizard omits
+`/dev/vda4` from `disk.query` and creates no pool; no UI route that creates
+`/dev/vda4` itself has been demonstrated. The current worktree also adds a
+candidate `preprovisioned` mode that creates/registers the pool through the
+guarded provisioner before testing downstream dataset, zvol, container, and
+VM forms in the UI. Its registered unit gate passed on 2026-10-21 with 170
+tests and 45 subtests; fresh live UI acceptance remains open, and this mode
+fails if the browser submits any `pool.create` request. It does not demonstrate
+UI pool creation. See the [boot-pool patch design
 guide](boot-pool-patch/docs/DESIGN-GUIDE.md#pwmcp-storage-ui-acceptance) and
 [UI consumer steps](boot-pool-patch/docs/CONSUMERS.md#run-pwmcp-ui-storage-acceptance).
 The registered Path B UI run now includes the Disks screen inspection. It
@@ -135,6 +141,8 @@ zero raw capacity and no disks and submits no `pool.create`. The post-attempt
 read-only inventory confirms `boot-pool` ONLINE and no `boot-disk-data` pool or
 probe data. Evidence is in the [registered UI run](boot-pool-patch/artifacts/live-ui-v27-path-b-r1-after-cleanup-with-disks-screen-20261018.log)
 and [post-attempt inventory](boot-pool-patch/artifacts/live-inspect-v27-path-b-r1-after-disks-screen-20261018.log).
+The preprovisioned UI route passed its registered unit gate with 170 tests and
+45 subtests; its fresh live acceptance remains open.
 Path B UI partition and pool creation, downstream UI storage checks,
 reboot/import and update survival, controlled v27 reboot/update and automatic
 remount through update, retention of existing data/container/VM objects through

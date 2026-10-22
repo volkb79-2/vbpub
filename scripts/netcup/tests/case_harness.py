@@ -201,6 +201,7 @@ SCP_ROUTES = {
     S42 + "/disks/supported-drivers": ["VIRTIO", "SATA"],
     S42 + "/rescuesystem": {"active": False},
     S42 + "/snapshots": [{"uuid": "snap-1", "name": "before", "state": "READY"}],
+    ("post", S42 + "/snapshots/before/revert"): {"uuid": TASK_UUID, "state": "PENDING"},
     # Live shape (P0.13): {ISO timestamp: {series name: number}}.
     S42 + "/metrics/cpu": {"2026-10-05T05:10:00Z": {"CPU0": 1316666.5}, "2026-10-05T05:20:00Z": {"CPU0": 1183333.5}},
     S42 + "/metrics/disk": {"2026-10-05T05:10:00Z": {"vda Read": 0.0, "vda Write": 0.32}},
@@ -235,6 +236,10 @@ class RoutedClient:
             import copy
 
             return copy.deepcopy(self.routes[endpoint])
+        if (method, endpoint) in self.routes:
+            import copy
+
+            return copy.deepcopy(self.routes[(method, endpoint)])
         return {}
 
     def get(self, endpoint, params=None):

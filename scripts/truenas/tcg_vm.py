@@ -313,8 +313,15 @@ def validate_memory_headroom(
     *,
     requested_cpus: float = VM_CPUS,
     max_memory_psi_full_avg10: float = MAX_MEMORY_PSI_FULL_AVG10,
+    allow_memory_psi_pressure: bool = False,
 ) -> None:
-    """Use live PSI and hard limits for admission; memory.high and VM caps may overcommit."""
+    """Use live PSI and hard limits for admission; memory.high and VM caps may overcommit.
+
+    ``allow_memory_psi_pressure`` is an explicit one-run escape hatch for a
+    human-authorized external-host probe. It skips only PSI threshold refusals;
+    PSI readability, hard memory usage, finite limits, and CPU quota remain
+    mandatory.
+    """
     if not levels:
         raise RunnerError("host cgroup inspector returned no resource levels")
     target = levels[0]
@@ -336,12 +343,12 @@ def validate_memory_headroom(
             full = level.get("memory_psi_full_avg10")
             if some is None or full is None:
                 raise RunnerError(f"cannot read memory PSI at finite cgroup {level['path']}")
-            if float(some) >= MAX_MEMORY_PSI_SOME_AVG10:
+            if not allow_memory_psi_pressure and float(some) >= MAX_MEMORY_PSI_SOME_AVG10:
                 raise RunnerError(
                     f"memory PSI some avg10 {some:g}% at {level['path']} meets or exceeds "
                     f"the {MAX_MEMORY_PSI_SOME_AVG10:g}% admission limit"
                 )
-            if float(full) >= max_memory_psi_full_avg10:
+            if not allow_memory_psi_pressure and float(full) >= max_memory_psi_full_avg10:
                 raise RunnerError(
                     f"memory PSI full avg10 {full:g}% at {level['path']} meets or exceeds "
                     f"the {max_memory_psi_full_avg10:g}% admission limit"

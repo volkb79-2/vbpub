@@ -407,6 +407,41 @@ def test_memory_preflight_accepts_explicit_full_pressure_limit_without_disabling
         tcg_vm.validate_memory_headroom(levels, max_memory_psi_full_avg10=1.45)
 
 
+def test_memory_preflight_explicit_psi_override_keeps_hard_memory_and_cpu_guards():
+    levels = [{
+        "path": "/dev.slice/dev-gates.slice",
+        "cpu_max": 1.0,
+        "memory_high": 5 * 1024**3,
+        "memory_max": 8 * 1024**3,
+        "memory_current": 2 * 1024**3,
+        "memory_psi_some_avg10": tcg_vm.MAX_MEMORY_PSI_SOME_AVG10,
+        "memory_psi_full_avg10": tcg_vm.MAX_MEMORY_PSI_FULL_AVG10,
+    }]
+    tcg_vm.validate_memory_headroom(
+        levels, requested_cpus=0.5, allow_memory_psi_pressure=True,
+    )
+
+    levels[0]["memory_current"] = levels[0]["memory_max"]
+    with pytest.raises(tcg_vm.RunnerError, match="reached hard memory.max"):
+        tcg_vm.validate_memory_headroom(
+            levels, requested_cpus=0.5, allow_memory_psi_pressure=True,
+        )
+
+    levels[0]["memory_current"] = 2 * 1024**3
+    levels[0]["cpu_max"] = 0.25
+    with pytest.raises(tcg_vm.RunnerError, match="quota"):
+        tcg_vm.validate_memory_headroom(
+            levels, requested_cpus=0.5, allow_memory_psi_pressure=True,
+        )
+
+    levels[0]["cpu_max"] = 1.0
+    levels[0].pop("memory_psi_some_avg10")
+    with pytest.raises(tcg_vm.RunnerError, match="cannot read memory PSI"):
+        tcg_vm.validate_memory_headroom(
+            levels, requested_cpus=0.5, allow_memory_psi_pressure=True,
+        )
+
+
 def test_memory_preflight_refuses_when_selected_slice_has_no_finite_memory_max():
     levels = [
         {

@@ -188,6 +188,14 @@ CALLS = {
         ("delete", "servers/42/snapshots/before", None),
     ],
     "snapshots 42 delete before --dry-run": [("get", "servers/42/snapshots", None)],
+    "snapshots 42 revert before --yes": [
+        ("get", "servers/42/snapshots", None),
+        ("get", "tasks", {"serverId": 42, "state": "PENDING"}),
+        ("get", "tasks", {"serverId": 42, "state": "RUNNING"}),
+        ("get", "tasks", {"serverId": 42, "state": "WAITING_FOR_CANCEL"}),
+        ("post", "servers/42/snapshots/before/revert", None),
+    ],
+    "snapshots 42 revert before --dry-run": [("get", "servers/42/snapshots", None)],
     "snapshots 42 create --name before-upgrade --yes": [
         ("get", "servers/42/disks", None),
         ("post", "servers/42/snapshots", {"name": "before-upgrade", "diskName": "vda"}),
@@ -267,6 +275,7 @@ INVALID = {
     "snapshots-action": ("snapshots 42 bogus", CHOICE),
     "snapshots-server-id": ("snapshots abc", INT),
     "snapshots-snapshot-name": ("snapshots 42 delete --yes", "requires a SNAPSHOT_NAME"),
+    "snapshots-revert-missing-name": ("snapshots 42 revert --yes", "requires a SNAPSHOT_NAME"),
     "status-server-id": ("status abc", INT),
     "tasks-action": (f"tasks {TASK_UUID} bogus", CHOICE),
     "tasks-state": ("tasks --state BOGUS", CHOICE),

@@ -12,3 +12,8 @@ remote-logs/
 
 # Local env files (secrets)
 .env
+# Local runtime and Python build artifacts
+.state/
+.venv/
+__pycache__/
+*.py[cod]
