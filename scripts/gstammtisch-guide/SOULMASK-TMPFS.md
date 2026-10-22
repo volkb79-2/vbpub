@@ -429,6 +429,27 @@ values are the defaults). The canaries in `tools/canary-run.sh` prove it goes
 red when containment, refusal, rollback-relevant, prune-safety or
 container-check logic is broken.
 
+### Ordering with a dedicated Wings filesystem
+
+All mounts this unit makes are inside `/var/lib/pterodactyl/volumes/...`. If that tree becomes its own
+filesystem (planned: btrfs on its own LV, [BTRFS-COW.md](BTRFS-COW.md)), the unit needs it mounted first
+and must not run against the ext4 directory underneath. The shipped unit therefore carries
+`RequiresMountsFor=/var/lib/pterodactyl` next to `After=local-fs.target` / `Before=docker.service`:
+
+- **Start:** an fstab mount is ordered before `local-fs.target` (also with `nofail`), so the existing
+  `After=` already sufficed; `RequiresMountsFor=` states the dependency and adds the failure behaviour.
+- **Missing mount:** the unit fails (nothing is mounted onto the empty directory underneath); pair it with
+  `chattr +i` on the unmounted mountpoint so Wings cannot fork its state onto ext4 either.
+- **Shutdown:** systemd stops this unit (`ExecStop` = teardown of every bind target and per-instance tmpfs)
+  before unmounting the filesystem, so the unmount does not hit "busy".
+- **Not a symlink:** mount the filesystem directly on `/var/lib/pterodactyl`; setup refuses symlinked
+  volume paths. If `SOULMASK_VOLUMES_ROOT` is ever pointed elsewhere, change the unit's
+  `RequiresMountsFor=` to match.
+- **Deploying the unit file** needs only `systemctl daemon-reload`, no restart: while the path is a plain
+  directory on root the new line is a no-op.
+- The remaining ext4 exposure listed under "Operator responsibilities" (`world.db`/`account.db` fsyncs)
+  is what a dedicated Wings filesystem addresses: it gets its own journal.
+
 ### Deployment (controller)
 
 > **Maintenance window, expect it (measured 2026-10-20, gstammtisch, live SMT-01 deploy).**

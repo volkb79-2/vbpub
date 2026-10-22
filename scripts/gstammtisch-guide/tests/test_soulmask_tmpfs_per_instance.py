@@ -1216,6 +1216,15 @@ def test_policy_values_pass_the_scripts_own_validators() -> None:
     assert r.stdout.strip() == str(512 * 1024)
 
 
+def test_the_unit_requires_the_wings_volumes_mount_and_still_runs_before_docker() -> None:
+    body = SHIPPED_UNIT.read_text()
+    # mounts land inside /var/lib/pterodactyl: that filesystem must be up first, and a
+    # missing one must fail the unit rather than mount tmpfs onto the ext4 dir underneath
+    assert re.search(r"^RequiresMountsFor=/var/lib/pterodactyl$", body, re.M)
+    assert re.search(r"^Before=docker\.service$", body, re.M)
+    assert re.search(r"^After=local-fs\.target$", body, re.M)
+
+
 def test_the_unit_treats_exit_75_as_success_and_setup_uses_that_code() -> None:
     assert re.search(r"^SuccessExitStatus=75$", SHIPPED_UNIT.read_text(), re.M)
     assert re.search(r"^PI_EXIT_CODE=75\b", SETUP.read_text(), re.M)

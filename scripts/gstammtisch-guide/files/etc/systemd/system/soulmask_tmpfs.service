@@ -5,6 +5,12 @@ Documentation=file:///home/vb/volkb79-2/vbpub/scripts/gstammtisch-guide/SOULMASK
 # Must run before Docker so containers mount the tmpfs-backed paths.
 Before=docker.service
 After=local-fs.target
+# The per-instance tmpfs and bind mounts land INSIDE the Wings volumes tree, so this
+# unit needs that tree's own filesystem mounted first. Harmless while it is a plain
+# directory on root; once /var/lib/pterodactyl is a dedicated filesystem (BTRFS-COW.md)
+# it makes a missing mount FAIL this unit instead of mounting tmpfs onto the directory
+# underneath, and orders ExecStop before that filesystem is unmounted at shutdown.
+RequiresMountsFor=/var/lib/pterodactyl
 DefaultDependencies=no
 
 [Service]
