@@ -1,10 +1,10 @@
 # Versioned Package Manifests
 
-CMRU generates these GHCR documentation pages from the final image manifests
-when `mdt-cockpit` is built. The first image build creates the family
-directories for `mdt-cockpit` and `mdt-cockpit-devcontainer`.
+Repository-hosted Markdown targets for GHCR package metadata.
 
-The original MDT package manifests remain in the
-[original project's package output](../../modern-debian-tools-python-debug/package-manifests-versioned/).
-They describe the original image families and are not copied into this fork's
-package output.
+## Package Families
+
+- [mdt-cockpit](https://github.com/volkb79-2/vbpub/blob/main/mdt-cockpit/package-manifests-versioned/mdt-cockpit/README.md) - stable current docs: https://github.com/volkb79-2/vbpub/blob/main/mdt-cockpit/package-manifests-versioned/mdt-cockpit/latest.md
+- [mdt-cockpit-devcontainer](https://github.com/volkb79-2/vbpub/blob/main/mdt-cockpit/package-manifests-versioned/mdt-cockpit-devcontainer/README.md) - stable current docs: https://github.com/volkb79-2/vbpub/blob/main/mdt-cockpit/package-manifests-versioned/mdt-cockpit-devcontainer/latest.md
+
+Each family directory contains a landing page plus versioned release manifests that can also be copied into the image build output.

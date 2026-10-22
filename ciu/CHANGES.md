@@ -21,8 +21,89 @@ the technical detail below it.
 
 <!-- cmru: release history -->
 
-## [Unreleased]
+## [7.17.0] - 2026-10-21
+<!-- cmru: generated -->
+<!-- cmru: source-end=bd3a933f255e3e3d63182de557a68b825ab4f50f -->
 
+### Added
+- feat(assay,ciu,cmru,cgroup-profiler,nyxloom,run-gate): complete integrated release wave (1fa737782)
+- feat(run-gate): make wheel SemVer the only supported interface (9a0e192ab)
+- feat: add contract-2 resource event attribution (90dc9078d)
+
+### Fixed
+- fix(ciu): re-render get.py with the non-over-claiming 404 message (C-03a) (037b8fe9d)
+- fix(ciu): re-render get.py with the clearer missing-asset refusal (R6-03) (0843aea78)
+- fix(ciu): re-render get.py from the template without the legacy-name fallback (PWMCP-08) (67632da7f)
+- fix(ciu): re-render get.py from the updated cmru installer template (KI-89 fallback) (2d92819fc)
+- fix: harden Run-Gate release bootstrap and Assay preflights (f466d5839)
+- fix(ciu): preserve host data on failed reset (24e9d87d6)
+- fix: bind release gates to exact tool candidates (cd673fecd)
+- fix: close release-wave followup findings (08632f747)
+- fix: close release-wave review findings (49e4be092)
+- fix(ciu): close P53 recovery identity review findings (f472c62ed)
+- fix(ciu): verify managed runtime ownership on direct up (374d55f7d)
+- fix(ciu): close managed worktree recovery review findings (9a69f22a5)
+- fix(ciu): harden managed worktree recovery (8af65ea12)
+- fix(ciu): fold review findings into worktree recovery (c68d3e6fe)
+- fix(ciu): preserve overlay state through interrupted repair (eca272a6c)
+- fix(ciu): detect no-checkout worktree resume state (d7c4a9196)
+- fix(ciu): report safe checkout recovery state (de3d8b4ba)
+- fix(ciu): validate interrupted checkout before reset (f10f5388c)
+- fix(ciu): resume initial overlay allocation safely (b63109a86)
+- fix(ciu): checkpoint initial worktree overlay intent (26d340be4)
+- fix(ciu): bind enrollment gate to tester Run-Gate wheel (fcffeee8c)
+- fix(ciu): run enrollment gate in isolated tester (bcb0e04d6)
+- fix(ciu): invoke enrollment lane from project root (32afbe51c)
+- fix(ciu): gate releases on real enrollment checks (350a7132c)
+
+### Changed
+- Merge cmru 6.2.1 batch: KI-79 for the 6.2.x line, KI-89 render test, KI-90, KI-92 stale gate-snapshot records, 404 text, gate budgets (9b4ca3a2e)
+- Merge origin/main into int-02-20261021 (gate the integrated tree) (62497cb0a)
+- BL-01: review fixes - label facts vs hypotheses, drop out-of-repo citations (e79dd01aa)
+- BL-01: renumber filed entries to free IDs (RG-108->RG-109, CIU-150->CIU-151, CP-24->CP-27) (4d384174c)
+- BL-01: file backlog entries RG-108, CIU-150 (+ CIU-134 third reproduction), CP-24 (d5761487d)
+- docs/test: INT-02 review fixes I-01..I-07 (f4267688a)
+- backlog(ciu): file CIU-149, test_forwards_all_options trips the S16 root refusal and fails the ciu lane fast (pre-existing) (9d8b9fddf)
+- Merge main into CGProfile release candidate (f4933a2d5)
+- CIU-148: SPEC S15.20 / D8 cite a dstdns measurement doc that moved (filed from dstdns W20) (e9ff7301e)
+- ciu: file CIU-147 (changed bind-mounted rendered config does not recreate the container; dstdns B064) (2771caba4)
+- ciu: file CIU-146 (down --profile/--phases stop every project container; selection ignored by action_stop) (4d68ad4e7)
+- merge: sync latest main into release candidate (6e128635a)
+- ciu: CIU-134 second reproduction (dstdns P243 worktree rm: root-owned runner artifacts block checkout deletion) (180649ec3)
+- merge: sync release wave with main (3ffa596ed)
+- ciu: file CIU-144 (CIU-117 notice on stdout breaks resolve/check --json in a linked worktree) (a67d5d1f8)
+- ciu: record Compose workspace network ownership gap (d878dc128)
+- Merge branch 'cmru-release-readiness-20261015' into run-gate-rg93-git-metadata-20261013 (a23adb85a)
+- Merge branch 'tool-release-wave-20261014' into run-gate-rg93-git-metadata-20261013 (9df3aba6a)
+- Merge branch 'main' into run-gate-rg93-git-metadata-20261013 (092da25fb)
+- merge main into run-gate-rg93-git-metadata-20261013 (1ba70a8ea)
+- backlog: file RG-104 (observer rollup rejects Assay's pre-R0 lane-wide refusal) and CIU-142 (no fork-point re-record after a worktree rebase), from dstdns P242 (6056f7bcc)
+- Merge branch 'main' into cmru-release-readiness-20261015 (b5bf27485)
+- backlog: file RG-98..RG-101 and CIU-139 from the dstdns deep review (8523c3c58)
+- merge CIU worktree recovery hardening (a3104908e)
+- merge latest main into Run-Gate SemVer candidate (7af06b66c)
+- style(ciu): align scaffold fixture indentation (f55c21d82)
+- merge CIU-131 enrollment gate into CIU-135 (ad9c35b65)
+- chore(gates): declare mutation resource ceilings (da06e52de)
+- chore: integrate contract-2 release wave (336336d81)
+
+### Documentation
+- docs(ciu): drop stray blank line in SPEC-V8 D.7 merge (f7a491232)
+- docs(ciu): align RG-55 notes with final architecture (third-version merge) (bcda3a9b6)
+- docs: preserve run-gate release reviews and lifecycle handoff (98c3d84d8)
+- docs(ciu): close CIU-131 with gate evidence (87c020aa2)
+- docs(ciu): file worktree removal escalation gap (8125c7deb)
+
+### Testing
+- test(ciu): cover initial overlay recovery branches (cad352895)
+- test(ciu): cover short checkout status diagnostic (9a4831208)
+- test(ciu): declare render fixture container uid (bc9b51170)
+- test(ciu): cover checkout recovery refusals (dd2a42a84)
+- test(ciu): exercise requested overlay publication failure (1ea317b66)
+- test(ciu): align overlay recovery regression fixtures (16e37c175)
+- test(ciu): normalize sshd fixture and omit nested profile (517145797)
+
+<!-- cmru: pending release notes begin -->
 ### Fixed
 - Managed worktree creation and adoption validate initial overlay options before lifecycle mutation and preserve the exact request for safe interrupted recovery. Schema v5 records overlay recovery, the one-time checkout-reset boundary, and a verified Docker network object id. The requested base is snapshotted before allocation so marker validation, workspace creation, and reset use one commit. All worktree verbs use the selected nested CIU root for record lookup.
 - `ensure` refuses to repeat an uncheckpointed initial reset, verifies same-name networks on its ready path, and checks explicit base/directory constraints. Managed `up` also verifies network ownership before launching. A failed Docker permission probe is indeterminate rather than network absence; a failed allocation records `runtime-verification-failed`, reserving `runtime-collision` for proven conflicts. A one-time legacy claim cannot replace a saved object id. Lease updates serialize with lifecycle transitions, record writes sync the parent directory after replacement, and CIU's ignore rules cover interrupted record and overlay staging files.
@@ -41,6 +122,9 @@ the technical detail below it.
 - Detect ignored files placed over tracked worktree paths before a reset, so recovery cannot silently overwrite local data.
 - Keep the allocation-lock bypass private to CIU's internal call path instead of exposing it as a user-facing CLI option.
 - Preserve the CLI's concise `[ERROR]` diagnostic when private worktree env generation runs under an already-held allocation lock; expected workspace identity errors no longer surface as Python tracebacks.
+<!-- cmru: pending release notes end -->
+
+## [Unreleased]
 
 ## [7.16.0] - 2026-10-07
 <!-- cmru: generated -->
