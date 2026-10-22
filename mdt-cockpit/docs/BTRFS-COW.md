@@ -11,6 +11,9 @@ kernel 7.2.9, btrfs-progs 7.1; results hold for those versions),* **[K]** *docum
 systemd or the kernel, not re-verified here,* **[T]** *assumption still untested. `host-setup/scripts/
 mdt-cow-selfcheck.sh` reproduces the [R] items on any scratch host (section 9).*
 
+What we could build on this area (ciu storage, per-run VM disks, assay warm bases), the options we weighed and the issues an adversarial review
+found are in [BTRFS-COW-OPTIONS.md](BTRFS-COW-OPTIONS.md); read its section 9 before building on the area.
+
 Host-specific rollouts (sizing, LVM, existing services) are runbooks outside this document; the reference
 host's is `scripts/gstammtisch-guide/BTRFS-ROLLOUT.md`.
 
@@ -237,7 +240,7 @@ Why this shape:
 | Path | Property | Why |
 |---|---|---|
 | `<user>/shared/upstream-iso` | `compression none` | ISOs are already compressed [M: a 2.3 GB TrueNAS ISO compressed to 97% with zstd -3] |
-| `<user>/shared/vm-disks` | `compression zstd` | sparse/zero-heavy raw images compress well |
+| `<user>/shared/vm-disks` | **undecided** (not `zstd` until benchmarked) | goldens are already sparse, so only the non-zero part would compress, and guest 4 KiB random writes into compressed 128 KiB extents may amplify reads and fragment on a slow disk [K, unverified]; `chattr +C` and compression exclude each other; see BTRFS-COW-OPTIONS.md 4.6 |
 | `<user>/<repo>/assay/base` (snapshots carry it) | `compression zstd` | sources, venvs, caches; on a slow disk fewer bytes written wins |
 | `<user>/<repo>/worktrees/<instance-id>` | `compression zstd` | compressible per-worktree scratch |
 
@@ -252,7 +255,8 @@ btrfs property set <user>/<repo>/assay/base compression zstd
 level works on kernel 7.2.9 with btrfs-progs 7.1: `btrfs property set <dir> compression zstd:3` was accepted
 and read back as `zstd:3` [R]; older versions are untested [T]. Compressible data (48 MB of one repeated byte)
 took far less space under `compression zstd` than under `none` [R]. Existing files are recompressed with
-`btrfs filesystem defragment -czstd`. Decompression speed
+`btrfs filesystem defragment -czstd`, but **never run that on `shared/`, base images or anything snapshotted or reflinked**: it unshares
+the extents and can multiply the space used. Decompression speed
 barely depends on the level; only write CPU does.
 
 **CoW and VM images.** Copy-on-write fragments large randomly-written files such as VM disks, and `chattr +C`
