@@ -228,6 +228,35 @@ def _prompt(text: str) -> str:
     return answer
 
 
+# ─── step numbering ───────────────────────────────────────────────────────
+# ONE list names the wizard's steps in the order main() runs them; every step
+# prints its heading through section(), so the numbers the operator sees can
+# never drift from the real order (tests/test_wizard_flow.py enforces both).
+# Each step maps to a section of host-setup.env.example:
+#   1 sec. 1   2 -        3 secs. 2+3   4 sec. 5   5 sec. 6   6 sec. 7
+#   7 sec. 4.1-4.4 (after the benchmark)   8 sec. 4.6   9 sec. 4.7
+STEP_TITLES = (
+    "Host facts",
+    "IO benchmark",
+    "Governed slices",
+    "Buildx and devcontainer policies",
+    "Reconcile sweep and watchers",
+    "Docker defaults and backstop",
+    "IO caps",
+    "Writeback and root queue",
+    "IO scheduler and io.cost",
+)
+
+
+SUMMARY_MAX_LINES = 60
+
+
+def section(title: str) -> None:
+    """Print the numbered heading of one wizard step: `-- [3/9] Governed slices --`."""
+    number = STEP_TITLES.index(title) + 1
+    out(f"\n-- [{number}/{len(STEP_TITLES)}] {title} --")
+
+
 # ─── pure functions (parsing/formatting/proposals — no I/O, reviewable and
 #     independently testable without root, a real host, or a terminal) ──────
 
@@ -1829,16 +1858,7 @@ def check_benchmark_results(
 
 
 def step_io_device(cfg_current: dict[str, str], example_defaults: dict[str, str]) -> str:
-    out("\n-- a. storage measurement setup --")
-    out("Measurement:")
-    for bullet in (
-        "Shared Linux-derived `io.cost` matrix generator: sequential and random read/write throughput.",
-        "The benchmark writes results used to set `io.max` ceilings; it does not enable `io.cost`.",
-        "The persistent target file stays on the Docker-data filesystem/device.",
-        "Results are reusable only while target, filesystem, device identity, topology, and kernel/generator match.",
-        "The benchmark target is a file, never the raw block device, so this measurement is non-destructive.",
-    ):
-        out(f"- {bullet}", hang="  ")
+    section("Host facts")
     out("Docker data device:")
     for bullet in (
         "`IO_DEV_PATH` selects the host block device named by the static root limits and measured results.",
@@ -2065,7 +2085,16 @@ def step_io_baseline_start(
     status_path: Path | None = None,
 ) -> tuple[str, str, BaselineJob | None]:
     """Collect result paths and start one optional benchmark in the background."""
-    out("\n-- b. benchmark results --")
+    section("IO benchmark")
+    out("Measurement:")
+    for bullet in (
+        "Shared Linux-derived `io.cost` matrix generator: sequential and random read/write throughput.",
+        "The benchmark writes results used to set `io.max` ceilings; it does not enable `io.cost`.",
+        "The persistent target file stays on the Docker-data filesystem/device.",
+        "Results are reusable only while target, filesystem, device identity, topology, and kernel/generator match.",
+        "The benchmark target is a file, never the raw block device, so this measurement is non-destructive.",
+    ):
+        out(f"- {bullet}", hang="  ")
     out("Results file contract:")
     for bullet in (
         "Stores six raw coefficients plus four `io.max` ceilings.",
@@ -2206,7 +2235,7 @@ def step_io_settings(
     results: dict[str, int],
 ) -> dict[str, str]:
     """Converge all IO choices after the background measurement has finished."""
-    out("\n-- h. final IO settings --")
+    section("IO caps")
     out("The benchmark has finished (or was intentionally skipped), so these prompts now show the actual result of each percentage.")
     out("IO hierarchy, top down:")
     for bullet in (
@@ -2288,7 +2317,7 @@ def step_io_cap_pct(cfg_current: dict[str, str], example_defaults: dict[str, str
 def step_docker_daemon(
     cfg_current: dict[str, str], example_defaults: dict[str, str]
 ) -> tuple[str, str, str]:
-    out("\n-- f. Docker daemon.json keys this tool owns --")
+    section("Docker defaults and backstop")
     out("Default placement:")
     for bullet in (
         "DOCKER_DAEMON_CGROUP_PARENT is Docker's default for containers without their own --cgroup-parent.",
@@ -2419,7 +2448,7 @@ def step_slice_first_resources(
     if not host_nproc:
         raise ValueError("nproc did not return a positive CPU count; cannot explain or derive CPU ceilings")
 
-    out("\n-- d. Governed slices (slice-first) --")
+    section("Governed slices")
     out("Proposal inputs:")
     for bullet in (
         f"MemTotal={kib_to_size_str(total_kib)} -> sizing source.",
@@ -2437,16 +2466,6 @@ def step_slice_first_resources(
         "Every field is optional; Enter keeps the shown default and `-` omits the directive.",
     ):
         out(f"- {bullet}", hang="  ")
-    out("Memory hierarchy:")
-    for line in (
-        "dev.slice (parent: whole dev estate)",
-        "+-- dev-interactive.slice (child: IDE/devcontainers)",
-        "+-- dev-background.slice (child: long-running stacks)",
-        "+-- dev-gates.slice (child: disposable lanes)",
-        "+-- dev-buildkitd.slice (child: shared builder)",
-        "+-- dev-memory_min_guaranteed.slice (sibling: admitted floor)",
-    ):
-        out(line, indent="  ")
     out("Top-down example (starting proposals; your answers replace these values):")
     root_reserve = parse_int_or_default(
         resolve_default("DEV_CPU_RESERVE_CORES", cfg_current, example_defaults, None), 1
@@ -2477,7 +2496,7 @@ def step_slice_first_resources(
         ("├─ dev-buildkitd.slice", "shared BuildKit", proposals["DEV_BUILDKITD_MEMORY_HIGH"] + "/" + proposals["DEV_BUILDKITD_MEMORY_MAX"],
          f"{max(1, host_nproc - child_reserve) * 100}%", kib_or_auto(child_swap),
          "parent IOPS × 60%"),
-        ("└─ dev-memory_min_guaranteed.slice", "admitted floor", "optional/optional", "inherited", "inherited",
+        ("└─ dev-memory_min_guaranteed.slice", "admitted floor", "optional", "inherited", "inherited",
          "inherited"),
     )
     why_by_cgroup = {
@@ -2496,17 +2515,10 @@ def step_slice_first_resources(
     else:
         out("cgroup tree | High/Max | CPUQuota | SwapMax | IO policy", indent="  ")
         for row in table_rows:
-            out(f"{row[0]} | H/M {row[2]} | CPU {row[3]} | swap {row[4]}", indent="  ")
+            cpu_swap = "CPU/swap inherited" if row[3] == row[4] == "inherited" else f"CPU {row[3]} | swap {row[4]}"
+            out(f"{row[0]} | H/M {row[2]} | {cpu_swap}", indent="  ")
             out(f"IO: {row[5]}; why: {why_by_cgroup[row[0]]}", indent="    ", hang="      ")
     out("  * This is a concrete 16-GiB-style starting example. `auto` CPU/swap values are derived at install time; IO percentages are applied only after current benchmark results exist.")
-    out("Validation policy:")
-    for bullet in (
-        "Sibling Min/Low/High controls are independent; their values are not summed.",
-        "Each slice still requires Min <= Low <= High <= Max for configured fields.",
-        "A child Min/Low without matching parent protection is allowed but may be ineffective; the wizard reports it.",
-        "A single child High/Max above its parent is re-prompted; sibling totals above the parent are advisory only.",
-    ):
-        out(f"- {bullet}", hang="  ")
     out("Starting proposals (review before accepting):")
     for line in (
         "dev.slice: MemoryHigh=75% / MemoryMax=100% of physical RAM",
@@ -2515,7 +2527,6 @@ def step_slice_first_resources(
         "dev-gates.slice: MemoryLow=unset / High=5% / Max=10%",
         "dev-buildkitd.slice: MemoryLow=unset / High=10% / Max=12%",
         "MemoryLow is unset because the parent MemoryLow is unset; configure the parent first if soft protection is wanted.",
-        "These are independent slice controls; the wizard does not add sibling values together.",
     ):
         out(f"- {line}", hang="  ")
     _, suggested_min_kib, suggestion_formula = propose_memory_min_guaranteed_suggestion(
@@ -2533,12 +2544,20 @@ def step_slice_first_resources(
     ):
         out(f"- {bullet}", hang="  ")
 
+    out("\nRules for every slice below (stated once; the parent and each tier then ask the same questions):")
+    for bullet in (
+        "Memory: every field is optional; Enter keeps the default, `-` removes the directive. Sibling Min/Low/High controls are independent (their values are not summed). Hard rule per slice: Min <= Low <= High <= Max. A child High/Max above its parent is re-prompted; sibling totals above the parent are advisory only (that does not block). A child Min/Low without matching parent protection is allowed but may be ineffective; the wizard reports it. `MemoryMax` is RAM only.",
+        "`MemorySwapMax` limits swap only: `auto` derives it from the live parent, a size is this slice's own ceiling, `-` omits the directive (unlimited/default).",
+        "`CPUQuota` is the slice's hard cap: `auto` derives it from the child reserve above, `-` omits it, an explicit N% wins. `CPUWeight` and `IOWeight` are relative shares, not caps, and matter only when siblings contend.",
+        "`MemoryZSwapWriteback` is a per-slice yes/no policy, not a size; a no on an ancestor still disables writeback below it.",
+    ):
+        out(f"- {bullet}", hang="  ")
     out("\n  dev.slice — shared parent")
     out("Parent role:")
     for bullet in (
         "One control applies to the whole dev estate; child controls shape each sibling subtree.",
         "The guaranteed `MemoryMin` value is mirrored on its dedicated sibling; there is one ceiling to decide.",
-        "An unset parent control leaves that level at systemd's default.",
+        "An unset parent control leaves that level at systemd's default; `MemoryLow`, `MemoryHigh` and `MemoryMax` below apply to the whole dev estate, not to one container.",
     ):
         out(f"- {bullet}", hang="  ")
     values["DEV_MEMORY_MIN_GUARANTEED_CEILING"] = walk_key(
@@ -2551,7 +2570,6 @@ def step_slice_first_resources(
         ("MemoryHigh", "DEV_MEMORY_HIGH"),
         ("MemoryMax", "DEV_MEMORY_MAX"),
     ):
-        out(f"- `{field}` is the parent control for the whole dev estate, not one container; `-` leaves it unset.", hang="  ")
         values[key] = walk_key(
             f"  {field} (optional; '-' = no directive)",
             key, cfg_current, example_defaults, proposals.get(key),
@@ -2640,21 +2658,7 @@ def step_slice_first_resources(
         child_swap = "not derived because the parent is unlimited"
     else:
         child_swap = (parse_size_to_kib(values["DEV_SWAP_MAX"]) * 1024 * entered_swap_pct // 100)
-    out("Cgroup mount safety:")
-    for bullet in (
-        "The periodic host service checks `memory_recursiveprot`; without it, slice MemoryMin/Low may not protect container pages.",
-        "`fix` remounts the host cgroup filesystem when the required flag is missing.",
-        "`warn` only records the problem; protection may remain ineffective until an operator repairs the mount.",
-        "This setting is host-only and is unrelated to Docker container placement.",
-    ):
-        out(f"- {bullet}", hang="  ")
-    values["CGROUP2_FLAGS"] = walk_key(
-        "  cgroup2 mount policy (fix missing flags / warn only)",
-        "CGROUP2_FLAGS", cfg_current, example_defaults,
-        validate=validate_cgroup2_flags,
-    )
-
-    out("\n-- e. Guaranteed memory floor (opt-in; one shared ceiling) --")
+    out("\n  dev-memory_min_guaranteed.slice - guaranteed floor (opt-in; one shared ceiling)")
     out("Guaranteed floor:")
     for bullet in (
         "Optional hard `MemoryMin` for explicitly admitted containers only.",
@@ -2699,15 +2703,6 @@ def step_slice_first_resources(
     for slice_name, prefix in child_specs:
         out(f"\n  {slice_name}")
         out(descriptions[prefix])
-        out("Child controls:")
-        for bullet in (
-            "Apply to this slice's subtree; sibling values are independent and are not summed.",
-            "Optional fields: Enter keeps the default; `-` removes the directive.",
-            "Hard rule: this slice's Min <= Low <= High <= Max.",
-            "Child High/Max above the parent -> re-prompt that child; sibling totals above the parent do not block.",
-            "`MemoryMax` is RAM; `MemorySwapMax` below is swap only.",
-        ):
-            out(f"- {bullet}", hang="  ")
         for field in ("MIN", "LOW", "HIGH", "MAX"):
             key = f"{prefix}_MEMORY_{field}"
             values[key] = walk_key(
@@ -2715,13 +2710,25 @@ def step_slice_first_resources(
                 key, cfg_current, example_defaults, proposals.get(key),
                 validate=validate_optional_positive_size, allow_empty_token=True,
             )
-        out("CPU and IO controls:")
-        for bullet in (
-            "CPUQuota is this slice's hard cap; `auto` derives it from the child reserve above, `-` omits it, and an explicit N% wins.",
-            "Explicit N% wins; CPUWeight and IOWeight are relative shares, not caps.",
-            "Weights matter only when siblings contend.",
-        ):
-            out(f"- {bullet}", hang="  ")
+        child_swap_default = resolve_default(
+            f"{prefix}_MEMORY_SWAP_MAX", cfg_current, example_defaults, "auto"
+        )
+        child_swap_display = None
+        if child_swap_default in ("", "auto"):
+            if isinstance(child_swap, int):
+                child_swap_display = f"auto -> {kib_or_auto(child_swap)}"
+            elif child_swap == "not derived because the parent is unlimited":
+                child_swap_display = "auto -> unavailable because parent is unlimited"
+            else:
+                child_swap_display = "auto -> unavailable (host swap is zero)"
+        values[f"{prefix}_MEMORY_SWAP_MAX"] = walk_key(
+            "  MemorySwapMax (auto = derived; '-' = no directive/unlimited)",
+            f"{prefix}_MEMORY_SWAP_MAX", cfg_current, example_defaults,
+            proposal="auto",
+            default_display=child_swap_display,
+            validate=validate_size_or_auto,
+            allow_empty_token=True, empty_value="-",
+        )
         child_cpu_default = resolve_default(
             f"{prefix}_CPU_QUOTA", cfg_current, example_defaults, "auto"
         )
@@ -2749,80 +2756,29 @@ def step_slice_first_resources(
             f"{prefix}_IO_WEIGHT", cfg_current, example_defaults,
             validate=validate_weight,
         )
-        out("Swap control:")
-        for bullet in (
-            "MemorySwapMax limits swap only.",
-            "`auto` derives from the live parent; a size is this slice's explicit swap-only ceiling; `-` omits the directive (unlimited/default).",
-        ):
-            out(f"- {bullet}", hang="  ")
-        child_swap_default = resolve_default(
-            f"{prefix}_MEMORY_SWAP_MAX", cfg_current, example_defaults, "auto"
-        )
-        child_swap_display = None
-        if child_swap_default in ("", "auto"):
-            if isinstance(child_swap, int):
-                child_swap_display = f"auto -> {kib_or_auto(child_swap)}"
-            elif child_swap == "not derived because the parent is unlimited":
-                child_swap_display = "auto -> unavailable because parent is unlimited"
-            else:
-                child_swap_display = "auto -> unavailable (host swap is zero)"
-        values[f"{prefix}_MEMORY_SWAP_MAX"] = walk_key(
-            "  MemorySwapMax (auto = derived; '-' = no directive/unlimited)",
-            f"{prefix}_MEMORY_SWAP_MAX", cfg_current, example_defaults,
-            proposal="auto",
-            default_display=child_swap_display,
-            validate=validate_size_or_auto,
-            allow_empty_token=True, empty_value="-",
-        )
-        out("Zswap control:")
-        for bullet in (
-            "MemoryZSwapWriteback is a per-slice yes/no policy, not a size or memory limit.",
-            "A no on an ancestor still disables writeback below it.",
-        ):
-            out(f"- {bullet}", hang="  ")
         values[f"{prefix}_ZSWAP_WRITEBACK"] = walk_yn_key(
             "  MemoryZSwapWriteback", f"{prefix}_ZSWAP_WRITEBACK",
             cfg_current, example_defaults,
         )
         if prefix in ("DEV_BACKGROUND", "DEV_GATES"):
-            out("OOM policy:")
-            out("- systemd-oomd may act at the configured pressure percentage; this is separate from MemoryMax.", hang="  ")
+            out("  systemd-oomd may act at this pressure percentage; it is separate from MemoryMax.")
             values[f"{prefix}_OOM_PRESSURE_LIMIT"] = walk_key(
                 "  ManagedOOMMemoryPressureLimit (systemd percentage, e.g. 75%)",
                 f"{prefix}_OOM_PRESSURE_LIMIT", cfg_current, example_defaults,
                 validate=validate_systemd_pct_1_100,
             )
         if prefix == "DEV_BUILDKITD":
-            out("BuildKit-specific controls:")
-            for bullet in (
-                "The host-managed rootless worker is the only approved normal worker.",
-                "Report-only logs unapproved docker-container workers and leaves them running.",
-                "Terminate removes those workers and can interrupt a build; choosing it needs a second explicit confirmation.",
-            ):
-                out(f"- {bullet}", hang="  ")
+            out("  The host-managed rootless worker is the only approved normal BuildKit worker. Solver parallelism limits simultaneous RUN/cache operations inside this daemon; it does not limit the number of client builds and is separate from release REPACK_JOBS and REPACK_CONCURRENCY.")
             values["DEV_BUILDKITD_IMAGE"] = walk_key(
                 "  BuildKit image (rootless OCI reference)", "DEV_BUILDKITD_IMAGE",
                 cfg_current, example_defaults, validate=validate_buildkit_image,
             )
-            out("Solver parallelism:")
-            for bullet in (
-                "Limits simultaneous RUN/cache operations inside this daemon.",
-                "Does not limit the number of client builds.",
-                "Separate from release REPACK_JOBS and REPACK_CONCURRENCY.",
-            ):
-                out(f"- {bullet}", hang="  ")
             values["DEV_BUILDKITD_MAX_PARALLELISM"] = walk_key(
                 "  BuildKit max parallel solver operations (positive integer)",
                 "DEV_BUILDKITD_MAX_PARALLELISM", cfg_current, example_defaults,
                 proposal=str(max(1, min(4, host_nproc))),
                 validate=validate_positive_int,
             )
-            policy = walk_key(
-                "  accidental Buildx policy (terminate or report-only)",
-                "BUILDX_ACCIDENTAL_CONTAINER_POLICY", cfg_current, example_defaults,
-                validate=validate_guard_policy,
-            )
-            values["BUILDX_ACCIDENTAL_CONTAINER_POLICY"] = confirm_guard_termination(policy)
     _reprompt_memory_constraints(avail_kib, values)
     return values
 
@@ -2830,24 +2786,14 @@ def step_slice_first_resources(
 def step_watcher(
     cfg_current: dict[str, str], example_defaults: dict[str, str]
 ) -> dict[str, str]:
-    """Configure the per-container memory service and Buildx worker match."""
+    """Step 5: the periodic sweep (interval, cgroup2 mount policy), then the opt-in per-container memory watcher."""
     values: dict[str, str] = {}
-    out("\n-- g. reactive container safeguards --")
-    out("Purpose and precedence:")
-    for bullet in (
-        "The inotify memory watcher can apply a per-container MemoryHigh/MemoryMax pair under interactive, background, and gates.",
-        "The shipped default is '-' for both values, so no extra leaf memory or swap cap is applied; each parent slice still bounds its tier.",
-        "When all six values are '-', install.sh leaves the memory watcher service disabled.",
-        "A Docker mem_limit is authoritative and makes this watcher leave that container alone. CIU may separately set mem_limit or MemoryMin; keep any explicit leaf settings compatible.",
-        "The periodic reconciliation service manages IO policy and cgroup2 mount flags; it does not apply per-container memory limits.",
-    ):
-        out(f"- {bullet}", hang="  ")
+    section("Reconcile sweep and watchers")
     out("Matching and cadence:")
     for bullet in (
         "The Docker-events IO watcher applies the measured per-container cap immediately; the periodic timer is its backstop.",
         "The same interval also checks cgroup mount flags, so a shorter interval reduces that repair window at some host overhead.",
-        "No pattern is needed for a container correctly placed under a governed child: its cgroup path is authoritative.",
-        "The only pattern below is for an unapproved Buildx worker outside the tree, where its broken placement cannot select it.",
+        "No name pattern is needed for a container correctly placed under a governed child: its cgroup path is authoritative (the one pattern, for out-of-tree Buildx workers, was asked in step 4).",
         "Changing these values affects future events/sweeps after the services reload their config; re-run install.sh or restart them.",
     ):
         out(f"- {bullet}", hang="  ")
@@ -2856,11 +2802,28 @@ def step_watcher(
         "WATCHER_INTERVAL", cfg_current, example_defaults,
         validate=validate_systemd_timespan,
     )
-    values["WATCHER_BUILDKIT_NAME_PATTERNS"] = walk_key(
-        "Out-of-tree Buildx container-name patterns (space-separated shell globs)",
-        "WATCHER_BUILDKIT_NAME_PATTERNS", cfg_current, example_defaults,
-        validate=validate_watcher_patterns,
+    out("Cgroup mount safety:")
+    for bullet in (
+        "The periodic host service checks `memory_recursiveprot`; without it, slice MemoryMin/Low may not protect container pages.",
+        "`fix` remounts the host cgroup filesystem when the required flag is missing.",
+        "`warn` only records the problem; protection may remain ineffective until an operator repairs the mount.",
+        "This setting is host-only and is unrelated to Docker container placement.",
+    ):
+        out(f"- {bullet}", hang="  ")
+    values["CGROUP2_FLAGS"] = walk_key(
+        "cgroup2 mount policy (fix missing flags / warn only)",
+        "CGROUP2_FLAGS", cfg_current, example_defaults,
+        validate=validate_cgroup2_flags,
     )
+    out("Per-container memory watcher (opt-in):")
+    for bullet in (
+        "The inotify memory watcher can apply a per-container MemoryHigh/MemoryMax pair under interactive, background, and gates.",
+        "The shipped default is '-' for both values, so no extra leaf memory or swap cap is applied; each parent slice still bounds its tier.",
+        "When all six values are '-', install.sh leaves the memory watcher service disabled.",
+        "A Docker mem_limit is authoritative and makes this watcher leave that container alone. CIU may separately set mem_limit or MemoryMin; keep any explicit leaf settings compatible.",
+        "The periodic reconciliation service manages IO policy and cgroup2 mount flags; it does not apply per-container memory limits.",
+    ):
+        out(f"- {bullet}", hang="  ")
     policy_prompt_config = dict(cfg_current)
     if "WATCHER_MEMORY_POLICY" not in policy_prompt_config:
         # Preserve pre-policy installs' explicit leaf caps during upgrade.
@@ -2928,11 +2891,42 @@ def step_watcher(
     return values
 
 
+def step_build_policies(
+    cfg_current: dict[str, str], example_defaults: dict[str, str]
+) -> dict[str, str]:
+    """Step 4: what happens to a Buildx worker the host did not approve.
+
+    The policy and the name pattern that finds an out-of-tree worker are one
+    topic, so they are asked together (they used to sit in two different steps).
+    """
+    section("Buildx and devcontainer policies")
+    out("Accidental Buildx workers:")
+    for bullet in (
+        "The host-managed rootless worker (step 3, dev-buildkitd.slice) is the only approved normal BuildKit worker.",
+        "Report-only logs unapproved docker-container workers and leaves them running.",
+        "Terminate removes those workers and can interrupt a build; choosing it needs a second explicit confirmation.",
+        "Correctly placed containers are selected by their cgroup path, not by name. The pattern below is only for an unapproved Buildx worker that landed outside the governed tree, where its broken placement cannot select it; the IO sweep then caps and deprioritizes it.",
+    ):
+        out(f"- {bullet}", hang="  ")
+    policy = walk_key(
+        "Accidental Buildx policy (terminate or report-only)",
+        "BUILDX_ACCIDENTAL_CONTAINER_POLICY", cfg_current, example_defaults,
+        validate=validate_guard_policy,
+    )
+    values = {"BUILDX_ACCIDENTAL_CONTAINER_POLICY": confirm_guard_termination(policy)}
+    values["WATCHER_BUILDKIT_NAME_PATTERNS"] = walk_key(
+        "Out-of-tree Buildx container-name patterns (space-separated shell globs)",
+        "WATCHER_BUILDKIT_NAME_PATTERNS", cfg_current, example_defaults,
+        validate=validate_watcher_patterns,
+    )
+    return values
+
+
 def step_devcontainer_bootstrap(
     cfg_current: dict[str, str], example_defaults: dict[str, str]
 ) -> dict[str, str]:
     """Choose how the host bootstrap prepares missing devcontainer sources."""
-    out("\n-- i. devcontainer bind-source preparation --")
+    out("\nDevcontainer bind sources:")
     out("The initializeCommand runs on the host before Docker starts the container.")
     for bullet in (
         "Existing sources are classified from the host filesystem, independent of their names or suffixes.",
@@ -2955,7 +2949,7 @@ def step_damon_stat_policy(
 ) -> dict[str, str]:
     """Ask whether MDT should disable the host-global DAMON_STAT monitor."""
     key = "DAMON_STAT_DISABLE_DEFAULT"
-    out("\n-- h. host DAMON policy --")
+    out("\nDAMON_STAT policy:")
     out(
         "DAMON_STAT monitors system-wide memory and is exclusive with the generic "
         "DAMON sysfs interface used by cgprofile. Disabling it lets cgprofile "
@@ -3208,7 +3202,7 @@ def step_io_writeback(
     """Ask for the four writeback / root-queue keys.  Default precedence per key: a CURRENT benchmark
     proposal > the existing configured value > `kernel` (an explicit policy default: leave the
     kernel's value untouched).  The gstammtisch values are shown as a labelled example, never defaulted."""
-    out("\n-- i. writeback and root-queue settings --")
+    section("Writeback and root queue")
     out(
         "These bound how much a slow shared disk can hold in flight, so an fsync or journal commit does not wait "
         "behind a long backlog. Every key accepts a number or the word `kernel` (leave the kernel's value untouched). "
@@ -3304,7 +3298,7 @@ def step_io_scheduler_and_cost(
     never assumed.  Proposals: model = a current identity-verified IOB-02 result > the existing value > `kernel`;
     scheduler and QoS = the existing value > the explicit policy default (`kernel` / `off`).  The gstammtisch
     values are a labelled example only."""
-    out("\n-- j. IO scheduler and io.cost --")
+    section("IO scheduler and io.cost")
     out(
         "io.cost enforces cgroup `io.weight` (1..10000) with a device cost model and QoS targets, replacing BFQ's `io.bfq.weight` "
         "(1..1000) as the weight mechanism. Measured on gstammtisch (IO-STALL-TESTING-GUIDE.md section 11): bfq 1.15 s game "
@@ -3357,11 +3351,14 @@ def explain_install_map() -> None:
     out("The prompts fill one host configuration. This is the installation shape:")
     for line in (
         "dev.slice",
-        "+-- dev-interactive.slice / dev-background.slice / dev-gates.slice",
-        "+-- dev-memory_min_guaranteed.slice / dev-buildkitd.slice",
-        "+-- host services, Docker drop-ins, scripts, and health check",
+        "+-- dev-interactive.slice",
+        "+-- dev-background.slice",
+        "+-- dev-gates.slice",
+        "+-- dev-memory_min_guaranteed.slice",
+        "+-- dev-buildkitd.slice",
     ):
         out(line, indent="  ")
+    out("Next to the slices: host services, Docker drop-ins, installed scripts, and a health check.")
     out("What each part does:")
     for bullet in (
         "`dev*.slice` units — static CPU, memory, swap, weights, and tight IO fallback.",
@@ -3404,8 +3401,8 @@ def parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
         prog="mdt-host-setup-wizard.py",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description=(
-            "Create a host-sized mdt host-setup.env by asking for each governed "
-            "resource in slice order.\n"
+            "Create a host-sized mdt host-setup.env in nine numbered steps "
+            "(host facts, benchmark, slices, policies, watchers, Docker, IO).\n"
             "Values are validated before they are written.\n"
             "Host shell only: a devcontainer invocation is refused."
         ),
@@ -3679,38 +3676,19 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     out("== mdt host-setup wizard ==")
-    out("Run contract:")
-    for bullet in (
-        "Reads the template, existing output, host memory/swap facts, Docker mount, and benchmark results.",
-        "Existing values win; otherwise defaults come from a live-host proposal, then the example.",
-        "Writes the candidate atomically only after all prompts and validation finish.",
-    ):
-        out(f"- {bullet}", hang="  ")
     out(f"template: `{args.example}`")
     out(f"writing:  `{args.output}`")
-    if args.skip_run_offer:
-        out("Installer mode:")
-        out("- `install.sh` validates this candidate before backup, rendering, or host apply.", hang="  ")
-    else:
-        out("Standalone mode:")
-        out("- Writes only the candidate; rendering and Docker restart wait for the final install offer.", hang="  ")
-    out("Prompt conventions:")
+    out("How it works:")
     for bullet in (
-        "Enter accepts the shown default; `-` clears optional memory directives.",
-        "For derived CPUQuota/MemorySwapMax, `auto` means derive at install time and `-` means no directive (unlimited/default). Enter accepts the shown choice and its displayed result.",
-        "A cleared memory directive is omitted from the rendered unit.",
-    ):
-        out(f"- {bullet}", hang="  ")
-    out(
-        "Terminal formatting: text in backticks is highlighted only on an interactive "
-        "TTY. Redirected output keeps the backticks as readable markers; set `NO_COLOR` "
-        "(even to an empty value) to disable ANSI highlighting."
-    )
-    out("Important files and side effects:")
-    for bullet in (
-        "Template and output paths are read/written; benchmark-results and target identity are checked in section b.",
-        "The results file and target change only if the benchmark is selected.",
-        "`install.sh` writes `/etc/mdt`, merges owned Docker keys, and restarts Docker only with `--restart-docker`.",
+        f"{len(STEP_TITLES)} steps, one concern each. Every prompt shows where its default comes from: an `existing` value in the output file, one `derived` from this host, or the `example` template (existing wins, then derived, then example).",
+        "Enter accepts the default; `-` clears an optional directive; `auto` means derive at install time. Sizes are binary (`2G` is 2 GiB); a bare number is bytes.",
+        "Nothing is written until every answer is validated. The file is then written atomically from the template, so all of its comments are kept.",
+        (
+            "Installer mode: `install.sh` validates this candidate before backup, rendering, or host apply."
+            if args.skip_run_offer else
+            "Standalone mode: only the candidate is written; rendering and a Docker restart wait for the final install offer."
+        ),
+        "Text in backticks is highlighted on an interactive TTY; set `NO_COLOR` (even to an empty value) to disable ANSI.",
     ):
         out(f"- {bullet}", hang="  ")
     out(
@@ -3723,11 +3701,12 @@ def main(argv: list[str] | None = None) -> int:
     walked: dict[str, str] = {}
     baseline_job: BaselineJob | None = None
     try:
-        # Start the optional disk measurement before the resource questions.
-        # It runs concurrently with the rest of the wizard; all IO choices are
-        # deliberately collected after the one job has finished.
+        # Step order = STEP_TITLES. The optional disk measurement starts early
+        # (step 2) and runs concurrently with steps 3-6; every IO choice is
+        # deliberately collected after the one job has finished (steps 7-9).
         io_dev_path = step_io_device(cfg_current, example_defaults)
         walked["IO_DEV_PATH"] = io_dev_path
+        walked.update(step_damon_stat_policy(cfg_current, example_defaults))
         baseline_env, baseline_testfile, baseline_job = step_io_baseline_start(
             cfg_current, example_defaults, args.io_baseline_script, io_dev_path,
             baseline_requested=args.with_baseline,
@@ -3737,6 +3716,9 @@ def main(argv: list[str] | None = None) -> int:
         walked["IO_BASELINE_TESTFILE"] = baseline_testfile
 
         walked.update(step_slice_first_resources(meminfo, cfg_current, example_defaults))
+        walked.update(step_build_policies(cfg_current, example_defaults))
+        walked.update(step_devcontainer_bootstrap(cfg_current, example_defaults))
+        walked.update(step_watcher(cfg_current, example_defaults))
         cgroup_parent, backstop_max, backstop_swap = step_docker_daemon(
             cfg_current, example_defaults
         )
@@ -3744,10 +3726,6 @@ def main(argv: list[str] | None = None) -> int:
         walked["DOCKER_SCOPE_BACKSTOP_MEMORY_MAX"] = backstop_max
         walked["DOCKER_SCOPE_BACKSTOP_MEMORY_SWAP_MAX"] = backstop_swap
 
-        walked.update(step_watcher(cfg_current, example_defaults))
-        walked.update(step_damon_stat_policy(cfg_current, example_defaults))
-        walked.update(step_devcontainer_bootstrap(cfg_current, example_defaults))
-        _reprompt_memory_constraints(meminfo.get("MemAvailable", 0), walked)
         baseline_results = finish_io_baseline(baseline_job)
         if not baseline_results:
             baseline_results = read_baseline_results(Path(baseline_env))
@@ -3807,6 +3785,24 @@ def main(argv: list[str] | None = None) -> int:
         out("Final review warnings (does not block):")
         for warning in final_warnings:
             out(f"- {warning}", hang="  ")
+
+    # Review aid: what differs from the values the operator started from
+    # (the existing file, else the example), so a derived proposal that was
+    # accepted with Enter is visible before it is written.
+    changes = [
+        (key, cfg_current.get(key, example_defaults.get(key, "")), value)
+        for key, value in candidate_values.items()
+        if key in example_defaults and value != cfg_current.get(key, example_defaults.get(key, ""))
+    ]
+    out()
+    if not changes:
+        out("Summary: no value differs from the starting values (existing file, else the example).")
+    else:
+        out(f"Summary: {len(changes)} value(s) differ from the starting values (existing file, else the example):")
+        for key, before, after in changes[:SUMMARY_MAX_LINES]:
+            out(f"- `{key}`: {before or '<empty>'} -> {after or '<empty>'}", hang="    ")
+        if len(changes) > SUMMARY_MAX_LINES:
+            out(f"- ... and {len(changes) - SUMMARY_MAX_LINES} more.", hang="    ")
 
     try:
         write_atomic(args.output, text)

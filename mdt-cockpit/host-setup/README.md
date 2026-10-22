@@ -565,13 +565,24 @@ comments and blank lines but rejects additional active directives. The
 and [consumer procedure](../docs/CONSUMERS.md#cgprofile-resource-observer-host-setup)
 cover the daemon deployment that follows.
 
-Or, instead of the hand-edit step: `sudo ./install.sh --wizard` walks
-`host-setup.env.example`'s own sections interactively (IO device, static root
-IO fallback values, benchmark-results path and identity, IO cap percentages, every governed slice's four
-memory controls, CPU/IO weights, swap/zswap controls, cgroup mount policy,
-the memory-min-guaranteed ceiling, BuildKit, Docker daemon.json keys, and
-reactive watcher cadence, match patterns, and limits) and
-proposes starting numbers scaled off THIS host's own live `/proc/meminfo`
+Or, instead of the hand-edit step: `sudo ./install.sh --wizard` walks nine numbered steps, each printed as
+`-- [n/9] title --` (the same grouping as the sections of `host-setup.env.example`, with the IO caps last because
+they wait for the optional benchmark):
+
+| Step | Asks about |
+|---|---|
+| 1 Host facts | the Docker data device (`IO_DEV_PATH`) and the DAMON_STAT policy |
+| 2 IO benchmark | the results file and target paths; optionally starts the benchmark in the background |
+| 3 Governed slices | `dev.slice`, the guaranteed memory floor and the four tiers: memory controls, CPU, swap, zswap, weights, OOM, BuildKit image and parallelism |
+| 4 Buildx and devcontainer policies | the accidental-Buildx policy and its out-of-tree name pattern; the devcontainer bind-source policy |
+| 5 Reconcile sweep and watchers | the sweep interval, the cgroup2 mount policy and the opt-in per-container memory watcher |
+| 6 Docker defaults and backstop | the `daemon.json` cgroup-parent and the docker-scope backstop |
+| 7 IO caps | static fallbacks, operator pins, the cap percentages and the gates/BuildKit IOPS sub-ceiling (after the benchmark) |
+| 8 Writeback and root queue | the four host-global writeback and queue keys |
+| 9 IO scheduler and io.cost | the scheduler, the io.cost model and QoS |
+
+Before writing, the wizard prints a summary of every value that differs from the starting values (the existing
+file, else the example). It proposes starting numbers scaled off THIS host's own live `/proc/meminfo`
 instead of the shipped example's fixed figures — Enter accepts the shown
 default at every step, and it falls through into the same render/apply logic
 after candidate validation. Existing values are shown as `existing:` defaults,
@@ -586,7 +597,7 @@ complete and the installer backs up any existing config only after validation.
 
 ### Writeback and root-queue settings (MDT-HS-05)
 
-The wizard (section i, after the IO settings) asks for four host-global keys and install.sh renders, applies and
+The wizard (step 8, after the IO caps) asks for four host-global keys and install.sh renders, applies and
 verifies them: `IO_WRITEBACK_DIRTY_BYTES` and `IO_WRITEBACK_DIRTY_BACKGROUND_BYTES` (`vm.dirty_bytes`,
 `vm.dirty_background_bytes`), and `IO_ROOT_QUEUE_NR_REQUESTS` and `IO_ROOT_QUEUE_MAX_SECTORS_KB` (the root disk's
 `queue/nr_requests` and `queue/max_sectors_kb`). Each is a positive integer (bytes; KB for `max_sectors_kb`) or the
@@ -615,7 +626,7 @@ DESIGN-GUIDE section on MDT-HS-05 and `scripts/gstammtisch-guide/HOST-IO-INTERFE
 
 ### IO scheduler and io.cost (MDT-HS-07)
 
-The wizard (section j, after the writeback keys) asks three more keys and install.sh renders, applies and verifies them:
+The wizard (step 9, after the writeback keys) asks three more keys and install.sh renders, applies and verifies them:
 `IO_ROOT_SCHEDULER` (`mq-deadline`, `none`, `bfq` or `kernel`; it must be one the derived root disk lists in
 `queue/scheduler`), `IO_COST_MODEL` (`kernel`, which writes `ctrl=auto`, or the six linear coefficients `rbps rseqiops
 rrandiops wbps wseqiops wrandiops`, quoted) and `IO_COST_QOS` (`off`, which writes `enable=0`, or `rpct rlat wpct wlat min

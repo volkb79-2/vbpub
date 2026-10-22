@@ -1220,7 +1220,7 @@ done
             transcript_text = transcript.getvalue()
             self.assertLess(
                 transcript_text.index("-- install map: what this creates and enables --"),
-                transcript_text.index("-- a. storage measurement setup --"),
+                transcript_text.index("-- [1/9] Host facts --"),
             )
             for bullet in (
                 "mdt-container-io-events-watcher.service",
