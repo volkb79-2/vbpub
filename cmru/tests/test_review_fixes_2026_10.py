@@ -60,14 +60,34 @@ def test_head_build_of_a_commit_contained_in_origin_main_is_publishable(repo):
     )
 
 
-def test_origin_main_builds_and_old_records_keep_working(repo, capsys):
+def test_origin_main_builds_and_genuine_old_records_keep_working(repo):
     transaction.assert_build_source_publishable(
         repo.root, "alpha", {"source_mode": "origin-main", "source_commit": repo.unpushed},
     )
+    # no source_mode: checked like a HEAD build, so a pre-field origin/main build passes ...
     transaction.assert_build_source_publishable(
-        repo.root, "alpha", {"source_commit": repo.unpushed},
+        repo.root, "alpha", {"source_commit": repo.published},
     )
-    assert "no source_mode" in capsys.readouterr().out
+
+
+def test_a_record_without_source_mode_is_not_trusted_as_origin_main(repo):
+    """A dev cmru wrote HEAD builds without the field after KI-95 (review LOW a)."""
+    with pytest.raises(UnsafeRecord):
+        transaction.assert_build_source_publishable(
+            repo.root, "alpha", {"source_commit": repo.unpushed},
+        )
+
+
+def test_a_failed_fetch_fails_closed_with_exit_4(repo, monkeypatch):
+    def boom(*_a, **_k):
+        raise subprocess.CalledProcessError(128, ["git", "fetch"])
+
+    monkeypatch.setattr(transaction, "fetch_origin_main", boom)
+    with pytest.raises(UnsafeRecord, match="cannot verify") as exc:
+        transaction.assert_build_source_publishable(
+            repo.root, "alpha", {"source_mode": "head", "source_commit": repo.published},
+        )
+    assert exc.value.exit_code == 4
 
 
 def test_build_manifest_source_mode_is_optional_but_closed(tmp_path):
@@ -117,28 +137,6 @@ def test_gh_scope_hint_includes_delete_packages():
     assert "delete:packages" in config.GH_PACKAGES_HINT
 
 
-# ─── M2: a child adopts the parent's token_source for an older snapshot ─────────
-
-def test_handoff_carries_token_source_and_old_payloads_still_decode():
-    payload = credential_handoff.encode(
-        credential_handoff.CredentialHandoff(root="r", token_source="gh"),
-    )
-    assert credential_handoff.decode(payload).token_source == "gh"
-    legacy = json.dumps({"schema_version": 1, "root": "r", "projects": {}}).encode()
-    assert credential_handoff.decode(legacy).token_source == ""
-
-
-def test_child_loading_a_snapshot_without_the_key_takes_the_parents_source(monkeypatch):
-    handoff = credential_handoff.CredentialHandoff(root="t", token_source="gh")
-    monkeypatch.setattr(credential_handoff, "child_handoff", lambda: handoff)
-    assert config._github({"owner": "o", "repo": "r", "owner_type": "user"}).token_source == "gh"
-    monkeypatch.setattr(credential_handoff, "child_handoff", lambda: None)
-    with pytest.raises(SystemExit):  # no handoff: the key stays mandatory
-        config._github({"owner": "o", "repo": "r", "owner_type": "user"})
-
-
-# ─── M3: the gh credential reaches publishing steps only ────────────────────────
-
 def _step(name, **kw):
     base = dict(
         name=name, commands=[], bake_set_prefix=None, bake_set_vars=[], no_cache_env=None,
@@ -147,21 +145,15 @@ def _step(name, **kw):
     return StepConfig(**{**base, **kw})
 
 
-def test_only_publishing_steps_receive_the_gh_credential():
-    assert cli.step_receives_publisher_credential(_step("push"))
-    assert cli.step_receives_publisher_credential(_step("x", login={"registry": "ghcr.io"}))
-    assert cli.step_receives_publisher_credential(_step("x", required_env=["GITHUB_PUSH_PAT"]))
-    for name in ("build", "run-tests", "prepare", "clean"):
-        assert not cli.step_receives_publisher_credential(_step(name))
+# ─── L3 / gh laziness in apply_release_env ──────────────────────────────────────
 
-
-def test_gh_login_is_not_placed_in_the_process_environment(monkeypatch):
+def test_gh_login_is_not_resolved_into_the_process_environment(monkeypatch):
     for key in ("GITHUB_PUSH_PAT", "GH_TOKEN", "GH_ENTERPRISE_TOKEN"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("GH_TOKEN", "ambient")
     gh = cli.GitHubConfig("o", "r", "secret", "user", token_source="gh")
     cli.apply_release_env(gh, cli.ReleaseEnvConfig({}, None))
-    assert "GITHUB_PUSH_PAT" not in os.environ
+    assert "GITHUB_PUSH_PAT" not in os.environ  # injected per step instead (lazy)
     assert "GH_TOKEN" not in os.environ  # L3
     legacy = cli.GitHubConfig("o", "r", "secret", "user", token_source="cmru")
     cli.apply_release_env(legacy, cli.ReleaseEnvConfig({}, None))
@@ -246,3 +238,147 @@ def test_snapshot_label_names_origin_main_or_the_checked_out_commit(repo):
     _git(repo.root, "fetch", "origin")
     assert cli._snapshot_source_name(repo.root, repo.published) == "origin/main"
     assert cli._snapshot_source_name(repo.root, repo.unpushed) == "checked-out commit"
+
+
+# ─── Round 2 ────────────────────────────────────────────────────────────────────
+from tests.test_cli_build_output_semantics import (  # noqa: E402
+    OUTPUT_ID, SOURCE_COMMIT, _patch_config, _project, _record,
+)
+from tests.test_token_source import _write as _write_gh_project  # noqa: E402
+
+
+@pytest.fixture
+def gh_tripwire(monkeypatch):
+    """Any attempt to read the gh login fails the test."""
+    config.reset_gh_token_cache()
+    calls = []
+
+    def tripwire():
+        calls.append(1)
+        raise AssertionError("gh was consulted")
+
+    monkeypatch.setattr(config, "_gh_token", tripwire)
+    for key in ("GITHUB_PUSH_PAT", "GITHUB_TOKEN", "GH_TOKEN", "CMRU_RELEASE_TRANSACTION_CHILD"):
+        monkeypatch.delenv(key, raising=False)
+    return calls
+
+
+@pytest.fixture
+def gh_project(tmp_path, monkeypatch):
+    path = _write_gh_project(tmp_path, '"gh"')
+    for args in (("init", "-q", "-b", "main"), ("config", "user.email", "a@b"),
+                 ("config", "user.name", "a"), ("add", "."), ("commit", "-qm", "i")):
+        subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True)
+    monkeypatch.chdir(tmp_path)
+    return path
+
+
+def test_status_and_a_build_dry_run_need_no_gh_login(gh_project, gh_tripwire):
+    assert cli.main(["status", "--config", str(gh_project)]) == 0
+    assert cli.main(["build", "alpha", "--dry-run", "--config", str(gh_project)]) == 0
+    assert gh_tripwire == []
+
+
+def test_family_rebasing_and_hashing_keep_the_token_lazy(gh_project, gh_tripwire, tmp_path):
+    _root, configs, *rest = cli.load_config(gh_project, validate_dependencies=False)
+    cli._configs_for_git_family(configs, ["alpha"], tmp_path)
+    hash(rest[-2])
+    cli.github_for_project(rest[-2], configs["alpha"])
+    assert gh_tripwire == []
+
+
+def test_build_handoff_is_best_effort_without_a_gh_login(gh_project, monkeypatch):
+    config.reset_gh_token_cache()
+    monkeypatch.setattr(config, "_gh_token", lambda: (_ for _ in ()).throw(SystemExit(2)))
+    _root, configs, *rest = cli.load_config(gh_project, validate_dependencies=False)
+    handoff = cli._credential_handoff(rest[-2], configs, ["alpha"], best_effort=True)
+    assert handoff.root == "" and handoff.projects == {"alpha": ""}
+    with pytest.raises(SystemExit):  # a release still needs the credential
+        cli._credential_handoff(rest[-2], configs, ["alpha"])
+
+
+def test_the_handoff_payload_keeps_its_three_key_shape():
+    payload = credential_handoff.encode(credential_handoff.CredentialHandoff(root="r"))
+    assert set(json.loads(payload)) == {"schema_version", "root", "projects"}
+
+
+# end-to-end (LOW b)
+def test_publish_build_output_runs_the_source_gate_before_any_push(monkeypatch, tmp_path):
+    project = _project("alpha", tmp_path)
+    _patch_config(monkeypatch, tmp_path, {"alpha": project})
+    record = _record(tmp_path)
+    record["manifest"]["source_mode"] = "head"
+    monkeypatch.setattr(transaction, "validate_retained_build_output", lambda *_a: record)
+    monkeypatch.setattr(cli, "require_project_publish_credentials", lambda *_a: None)
+    monkeypatch.setattr(
+        transaction, "project_git_family_groups", lambda _r, sel: {tmp_path: list(sel)},
+    )
+    monkeypatch.setattr(cli, "_configs_for_git_family", lambda configs, _n, _r: configs)
+    monkeypatch.setattr(cli, "apply_project_release_env", lambda *_a: None)
+    gate = []
+
+    def refuse(root, name, manifest, **_kw):
+        gate.append((name, manifest["source_mode"]))
+        raise UnsafeRecord("not on origin/main")
+
+    monkeypatch.setattr(transaction, "assert_build_source_publishable", refuse)
+    pushed = []
+    monkeypatch.setattr(cli, "run_project_step", lambda *a, **k: pushed.append(a))
+    assert cli.main(["publish", "alpha", "--build-output", OUTPUT_ID]) == 4
+    assert gate == [("alpha", "head")] and pushed == []
+
+
+def test_retention_writes_the_source_mode(tmp_path):
+    from tests.test_runner_transaction_residuals import git, repo as make_repo
+
+    root = make_repo(tmp_path)
+    workspace = transaction.create_workspace(root, base=git(root, "rev-parse", "HEAD"), purpose="build")
+    child = workspace.path / "demo"
+    (child / "logs").mkdir(parents=True)
+    (child / "dist").mkdir()
+    (child / "dist" / "w.whl").write_bytes(b"x")
+    project = SimpleNamespace(project_root=root / "demo", artifact_dirs=["dist"])
+    out = transaction.retain_successful_build_outputs(
+        root, workspace, {"demo": project}, ["demo"], source_mode="head",
+    )
+    manifest = json.loads((out[1] / "build.json").read_text(encoding="utf-8"))
+    assert manifest["source_mode"] == "head"
+    transaction.remove_workspace(workspace)
+
+
+def test_run_project_step_injects_the_gh_credential_into_every_step_and_scrubs_ambient(monkeypatch, tmp_path):
+    captured = {}
+    monkeypatch.setattr(
+        cli, "execute_step", lambda step, *_a, **kw: captured.update({step.name: kw["protected_env"]}),
+    )
+    monkeypatch.setattr(cli, "_create_bound_cmru_launcher", lambda d: d / "cmru")
+    monkeypatch.setattr(transaction, "is_transaction_child", lambda _r: False)
+    steps = {n: _step(n) for n in ("build", "push", "prepare")}
+    project = cli.ProjectConfig(
+        name="a", template_revision=2, env={}, steps={}, prefix="a-v", scm_dist="a", cwd=".",
+        version=None, paths=["."], project_root=tmp_path, runner_steps=steps,
+        token_source="gh", github_token="SECRET-TOKEN",
+    )
+    for name in steps:
+        cli.run_project_step(project, name, tmp_path, tmp_path / "logs")
+    for name in steps:  # parity with the secret-file era: every step gets it
+        assert captured[name]["GITHUB_PUSH_PAT"] == "SECRET-TOKEN"
+        assert captured[name]["GH_TOKEN"] is None
+
+
+def test_secret_file_is_refused_through_the_publish_verb(monkeypatch, tmp_path, capsys):
+    project = _project("alpha", tmp_path)
+    _patch_config(monkeypatch, tmp_path, {"alpha": project})
+    gh = cli.GitHubConfig("o", "r", "", "user", token_source="gh")
+    monkeypatch.setattr(
+        cli, "load_config",
+        lambda _p, **_k: (
+            tmp_path, {"alpha": project}, ["alpha"], ["alpha"], ["build"], "project-first", {},
+            cli.CleanupConfig([], [], [], []), gh, cli.ReleaseEnvConfig({}, None),
+        ),
+    )
+    secret = tmp_path / "s.toml"
+    secret.write_text("x", encoding="utf-8")
+    rc = cli.main(["publish", "alpha", "--from-checkout", "--secret-file", str(secret)])
+    captured = capsys.readouterr()
+    assert rc == 2 and "--secret-file cannot be used" in captured.err + captured.out

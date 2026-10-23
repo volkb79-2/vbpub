@@ -65,7 +65,7 @@ def test_build_success_runs_child_retains_outputs_and_reports_cleanup_command(mo
     assert calls[0][1] == ["demo", "--config", "cmru.toml"]
     assert calls[0][2] == {
         "verb": "build", "project_names": ["demo"],
-        "credentials": CredentialHandoff(root="token", projects={"demo": ""}, token_source="cmru"),
+        "credentials": CredentialHandoff(root="token", projects={"demo": ""}),
     }
     assert calls[-1] == ("removed", workspace)
     output = capsys.readouterr().out

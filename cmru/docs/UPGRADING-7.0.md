@@ -50,33 +50,26 @@ fine-grained PAT limited to one repository would not.
   builds the committed state past uncommitted project edits (the refusal now names it).
 - `cmru release --skip-gates REASON` (CMRU-SKIP-01), see CONSUMERS.md.
 
-## Older transactions, old branches and 6.x controllers (honest limits)
+## Unsupported: older snapshots and 6.x controllers
 
-The key is mandatory in the config the controller loads, so:
+`token_source` is required in every config a cmru 7.x process loads, including the snapshot a
+release or build child loads. In-flight 6.x transactions, `--from-worktree` from a branch that
+predates the key, and default HEAD builds on such a branch are unsupported: add the key first. A
+released 6.2.x `cmru` rejects `token_source` as an unknown key, so no single config works for both
+a 6.2.x and a 7.x controller; upgrade every machine that runs `cmru` against the estate.
 
-- **A controller (`cmru` 7.x) whose own checked-out config lacks `token_source`** refuses at
-  once (exit 2), before any worktree is created. Add the key first.
-- **An in-flight release transaction started by 6.x** (`release --resume`), **`--from-worktree`
-  from an older branch** and **a default HEAD build on an older branch**: the 7.x parent
-  declares its `token_source` in the credential handoff, and the child adopts it when the
-  snapshot it loads lacks the key. These now work. A project step that re-invokes `cmru` below
-  such a child does not receive that declaration and still needs the key in the snapshot.
-- **A released 6.2.x `cmru` rejects `token_source` as an unknown key.** No single config works
-  for both a 6.2.x and a 7.x controller. Upgrade every machine that runs `cmru` against the
-  estate before committing the key, or keep the key out of branches a 6.x controller still builds.
+## Credential notes
 
-## Credential exposure notes
-
-- Under `"gh"` the token is fetched lazily (only commands that need a credential run `gh`) and
-  injected only into publishing steps (`push`, steps with a registry `login`, steps listing
-  `GITHUB_PUSH_PAT` in `required_env`); other steps never see it. Under `"cmru"` the token is still
-  exported to the whole process environment as before (KI-96).
+- Under `"gh"` the token is fetched lazily (once per process), only when a credential is used:
+  `status`, `dependencies`, `run`, `doctor` and a `build` need no `gh` login. It then reaches the
+  same places a secret-file token did (every project step's environment, the release child pipe).
+  Hardening that for both modes is KI-96 (hygiene, not a boundary).
 - `gh` stores its token in plaintext in `~/.config/gh/hosts.yml`: the same exposure as
   `cmru.secret.toml`, but typically with broader scopes (the account's full `repo` scope).
 - `cmru doctor` reports the declared source even when the config otherwise fails to load. Under
   `"gh"` it checks only that `gh auth token` returns a token: that command does not validate the
   token against GitHub and says nothing about scopes (use `gh auth status`).
-- `--secret-file` is refused under `"gh"`.
+- `--secret-file` is refused under `"gh"`. `GH_TOKEN`/`GH_ENTERPRISE_TOKEN` are cleared from steps.
 
 ## HEAD builds and publication
 

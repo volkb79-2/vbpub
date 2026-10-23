@@ -32,6 +32,7 @@ from cmru.config import (
     ResolvesLazyTokens,
     is_reserved_internal_env,
     load_forge_config,
+    lazy_replace,
     raw_field,
 )
 from cmru.config import InvocationContext, resolve_invocation_context
@@ -108,7 +109,7 @@ class ProjectConfig(ResolvesLazyTokens):
     evidence_paths: tuple[str, ...] = ()  # declared project-relative gate evidence paths
     build_step: str = ""                # explicit [project.release].build_step
     token_source: str = "cmru"          # "gh" | "cmru" (KI-94); "gh" scopes the credential to publishing steps (M3)
-    github_token: str = field(default="", repr=False)  # root credential or explicit project-secret override
+    github_token: str = field(default="", repr=False, compare=False)  # root credential or explicit project-secret override
     runtime_kind: str = "none"           # declared lifecycle owner: none | ciu
     # First-party artifacts this project's own tests/tooling consume (S15). Empty ⇒
     # no declared tool dependency (today's behaviour, unchanged).
@@ -145,7 +146,7 @@ class CleanupPlan:
 class GitHubConfig(ResolvesLazyTokens):
     owner: str
     repo: str
-    token: str = field(repr=False)
+    token: str = field(repr=False, compare=False)
     owner_type: str  # required: "user" | "org"  (V03; replaces the modern-debian-tools probe)
     token_source: str = "cmru"  # "gh" | "cmru" (KI-94)
 
@@ -322,20 +323,6 @@ def _build_step_config(step_name: str, commands: List[Command]) -> StepConfig:
 _AMBIENT_GH_TOKEN_KEYS = ("GH_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_TOKEN")
 
 
-def step_receives_publisher_credential(step: StepConfig) -> bool:
-    """Whether a step may receive the ``gh``-sourced credential (M3).
-
-    Conservative: only the ``push`` step, or a step that declares a registry
-    ``login`` or lists ``GITHUB_PUSH_PAT`` in ``required_env``.  Build, test,
-    clean and prepare steps get none.
-    """
-    return (
-        step.name == "push"
-        or bool(step.login)
-        or "GITHUB_PUSH_PAT" in (step.required_env or ())
-    )
-
-
 def run_project_step(
     project: "ProjectConfig",
     step_name: str,
@@ -421,15 +408,12 @@ def run_project_step(
             internal_env[NOTES_SOURCE_ENV] = declaration_for(
                 getattr(project, "changelog", None),
             )
-            # M3 (KI-94): a `gh` login carries the user's broad scopes, so it is
-            # injected only into steps that publish/push/log in; every other step
-            # (build, run-tests, prepare, ...) gets none -- and any ambient
-            # gh/GitHub token is cleared from it (L3).
-            gh_scoped = getattr(project, "token_source", "cmru") == "gh"
-            if gh_scoped and not step_receives_publisher_credential(step):
-                resolved_token = ""
-                for key in ("GITHUB_PUSH_PAT", *_AMBIENT_GH_TOKEN_KEYS):
-                    internal_env.setdefault(key, None)
+            # Parity with the secret-file era: the resolved token reaches every
+            # step.  Under `gh` it is read lazily and best-effort, so a step-running
+            # command without a login (`cmru run`) still works; ambient gh/GitHub
+            # token variables are always cleared (L3).
+            if getattr(project, "token_source", "cmru") == "gh":
+                resolved_token = _best_effort_token(lambda: getattr(project, "github_token", ""))
             else:
                 resolved_token = (getattr(project, "github_token", None) or "").strip()
             for key in _AMBIENT_GH_TOKEN_KEYS:
@@ -895,10 +879,10 @@ def apply_release_env(github: GitHubConfig, env_config: ReleaseEnvConfig) -> Non
     # Each project operation receives exactly its already-resolved credential.
     # Apply it after declared values so an environment table cannot replace the
     # selected token. The strict config reader rejects credential keys there too.
-    # token_source = "gh" (M3): the login is NOT placed in the process
-    # environment, where every later step would inherit it; it is injected only
-    # into publishing steps by run_project_step and handed to children over the
-    # credential pipe.
+    # token_source = "gh": reading the token would run `gh` for every command
+    # that merely loads the config (status, run, ...). run_project_step injects
+    # it into every step's protected environment instead (same reach as the
+    # process-env placement), and children get it over the credential pipe.
     if github.token_source != "gh" and github.token:
         os.environ["GITHUB_PUSH_PAT"] = github.token
 
@@ -910,7 +894,7 @@ def github_for_project(github: GitHubConfig, project: ProjectConfig) -> GitHubCo
     resolved from the invocation environment or the strict root-plus-project
     secret overlay, so this function never discovers a credential by fallback.
     """
-    return replace(github, token=raw_field(project, "github_token"))
+    return lazy_replace(github, token=raw_field(project, "github_token"))
 
 
 def apply_project_release_env(
@@ -2927,7 +2911,7 @@ def _prepare_oci_release_body_retry(
         bake_set_prefix=None, bake_set_vars=[], no_cache_env=None,
         clean_dirs=[], login=None, registries=[],
     )
-    retry_project = replace(
+    retry_project = lazy_replace(
         project,
         runner_steps={**(project.runner_steps or {}), "push": body_step},
     )
@@ -4772,10 +4756,31 @@ def _project_git_tag_policy_in_candidate(
     )[1]
 
 
+def _best_effort_token(value_getter) -> str:
+    """Read a (possibly lazy ``gh``) credential, or ``""`` when no login is available.
+
+    Commands that need no credential (``status``, ``run``, a ``build`` whose steps
+    do not use one) must work without a ``gh`` login, exactly as they did with an
+    absent ``cmru.secret.toml``; a step that DOES need it then fails on its own
+    ``required_env``/publish check.  The ``gh`` diagnostic is swallowed here.
+    """
+    import contextlib
+    import io
+
+    sink = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(sink), contextlib.redirect_stdout(sink):
+            return (value_getter() or "").strip()
+    except SystemExit:
+        return ""
+
+
 def _credential_handoff(
     github_config: "GitHubConfig",
     configs: Mapping[str, "ProjectConfig"],
     project_names: Sequence[str],
+    *,
+    best_effort: bool = False,
 ) -> CredentialHandoff:
     """Collect the credentials this launcher already resolved, for the child.
 
@@ -4783,11 +4788,21 @@ def _credential_handoff(
     first, else the root secret merged with the project overlay), i.e. from the
     caller's checkout on the host. They travel only over the child's private
     pipe; no secret file is ever written into the release worktree.
+
+    ``best_effort`` (``cmru build``) hands over empty strings when a ``gh`` login
+    is unavailable instead of failing the build.
     """
+    if best_effort:
+        return CredentialHandoff(
+            root=_best_effort_token(lambda: github_config.token),
+            projects={
+                name: _best_effort_token(lambda n=name: configs[n].github_token)
+                for name in project_names
+            },
+        )
     return CredentialHandoff(
         root=github_config.token or "",
         projects={name: configs[name].github_token or "" for name in project_names},
-        token_source=getattr(github_config, "token_source", ""),
     )
 
 
@@ -4884,7 +4899,7 @@ def _configs_for_git_family(
                 rebased.append(replace(command, cwd=child_root / command_relative))
             rebased_steps[step_name] = rebased
         cwd = relative.as_posix() if relative.parts else "."
-        result[name] = replace(
+        result[name] = lazy_replace(
             project,
             cwd=cwd,
             paths=[cwd],
@@ -5943,7 +5958,9 @@ def _dispatch(args, runtime):
                     )
                     rc = transaction.run_child(
                         workspace, child_args, verb="build", project_names=names,
-                        credentials=_credential_handoff(github_config, configs, names),
+                        credentials=_credential_handoff(
+                            github_config, configs, names, best_effort=True,
+                        ),
                     )
                     if rc:
                         log_error(
@@ -6064,7 +6081,7 @@ def _dispatch(args, runtime):
                             family_root, member_name, build_records[member_name]["manifest"],
                             git_auth=git_auth, fetched=fetched,
                         )
-                        if build_records[member_name]["manifest"].get("source_mode") == "head":
+                        if build_records[member_name]["manifest"].get("source_mode") != "origin-main":
                             fetched = True
             except CmruError as exc:
                 _exit_for_domain_error(exc)

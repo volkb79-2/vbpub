@@ -443,21 +443,24 @@ def assert_build_source_publishable(
     unpushed or feature-branch commit.  Such bytes are good locally but must not
     become a normal published artifact: publication requires the source commit to
     be an ancestor of a freshly fetched ``origin/main``.  ``origin-main`` builds
-    are unchanged; a record without ``source_mode`` predates the field (every
-    build then was an origin/main build) and keeps working.
+    are unchanged; a record without ``source_mode`` is checked like a ``head`` build.
     """
     mode = manifest.get("source_mode")
-    if mode is None:
-        print(
-            f"[INFO] {project_name}: build record has no source_mode (written before "
-            "HEAD builds existed); treated as an origin-main build", flush=True,
-        )
-        return
     if mode == "origin-main":
         return
+    # ``head`` builds, and records WITHOUT the field: a dev cmru wrote HEAD builds
+    # without it after KI-95, so absence proves nothing. The ancestor check is free
+    # for a genuine (older) origin/main build, whose commit is on origin/main.
     commit = str(manifest.get("source_commit", ""))
     if not fetched:
-        fetch_origin_main(repo_root, git_auth=git_auth)
+        try:
+            fetch_origin_main(repo_root, git_auth=git_auth)
+        except (subprocess.CalledProcessError, OSError, RuntimeError) as exc:
+            raise UnsafeRecord(
+                f"{project_name}: cannot verify that build source {commit[:12]} is contained "
+                f"in origin/main (fetch failed: {type(exc).__name__}); refusing to publish. "
+                "Fix connectivity/credentials and retry."
+            ) from exc
     result = subprocess.run(
         ["git", "-C", str(repo_root), "merge-base", "--is-ancestor", commit, "origin/main"],
         capture_output=True, text=True, check=False,

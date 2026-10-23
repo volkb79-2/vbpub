@@ -37,7 +37,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Fixed (review of the 2026-10 changes)
 - H1: `build.json` records `source_mode` (`head`|`origin-main`); `publish --build-output` refuses (exit 4) a HEAD build whose commit is not an ancestor of a freshly fetched `origin/main` (old records without the field keep working, with a log line).
 - H2: the `gh` token is resolved lazily (once per process) where a credential is used, not at config load; `status`/`dependencies`/`run`/`doctor` and the real-estate tests need no `gh` login.
-- M1: GHCR scope hints include `delete:packages`. M2: a release/build child adopts the parent's `token_source` (credential handoff) when its snapshot predates the key; UPGRADING-7.0 documents the in-flight, old-branch and 6.x-controller cases. M3: under `gh` the credential reaches only push/login/`required_env` steps, and is no longer exported to the process environment (KI-96 files the `cmru`-source follow-up). M4: a HEAD build warns about dirty tracked files outside the selected project directories.
+- M1: GHCR scope hints include `delete:packages`. M2/M3: out of scope by operator decision (no legacy-snapshot support; the token reaches the same places a secret-file token did); UPGRADING-7.0 says older snapshots and 6.x controllers are unsupported; KI-96 records optional step-scoping hardening for both modes. M4: a HEAD build warns about dirty tracked files outside the selected project directories.
+- Round 2: `cmru status`, `run` and `build` no longer need a `gh` login (the token stays lazy through config rebinding, hashing and the build handoff; step injection is best-effort); records without `source_mode` are ancestor-checked and a failed fetch fails closed (exit 4).
 - L1 `--secret-file` is refused under `gh`; L2 doctor reports the declared source even when the config does not load and states that scopes are unchecked; L3 `GH_TOKEN`/`GH_ENTERPRISE_TOKEN` are scrubbed from steps and hooks; L4 snapshot error labels name the real source; L6 documented plaintext `hosts.yml`.
 
 ### Changed
@@ -87,7 +88,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 <!-- cmru: pending release notes begin -->
 ### Changed
 - `cmru gate-snapshots` reports a snapshot whose directory and Git registration are both gone as `stale-record` instead of `retained`, and `--remove` drops it; a missing directory that Git still registers, and an existing directory Git does not register, stay `retained` with their own reasons (KI-92).
-- The KI-79 provisional R2 deferral is authorized for the whole 6.2 patch line (`>= 6.2.0`, `< 6.3.0`; operator decisions 2026-10-21); 6.3.0 and later still refuse. R2 is owed before the first release judged worth R2 and at the latest before 6.3.0 (KI-79).
+- The KI-79 provisional R2 deferral is authorized for the 6.2 patch line (`>= 6.2.0`, `< 6.3.0`; operator decisions 2026-10-21) and the 7.0 patch line (`>= 7.0.0`, `< 7.1.0`; operator decision 2026-10-23); every other version still refuses. R2 is owed before the first release judged worth R2 and at the latest before 6.3.0 or 7.1.0 (KI-79).
 - One asset-name function now serves bundle producers and the rendered `get.py`, and a test compares every installer project's published bundle name with the name its `get.py` requests (KI-89). The `get.py` download behaviour is unchanged: it requests only `<tag><asset_suffix>` (a legacy-name fallback was added and removed before release, PWMCP-08).
 <!-- cmru: pending release notes end -->
 

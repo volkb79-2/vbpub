@@ -19,6 +19,7 @@ import os
 import re
 import subprocess
 import tomllib
+import dataclasses
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import List, Mapping, Optional
@@ -69,6 +70,19 @@ class ResolvesLazyTokens:
         return value
 
 
+def lazy_replace(obj, **changes):
+    """``dataclasses.replace`` that keeps a lazy ``gh`` token lazy.
+
+    Plain ``replace`` reads every field through ``getattr`` and would run ``gh``
+    (this made ``cmru status`` need a login).  Unchanged fields are read raw.
+    """
+    kept = {
+        f.name: object.__getattribute__(obj, f.name)
+        for f in dataclasses.fields(obj) if f.init and f.name not in changes
+    }
+    return dataclasses.replace(obj, **kept, **changes)
+
+
 def raw_field(obj: object, name: str):
     """Read a field without resolving a lazy ``gh`` token."""
     return object.__getattribute__(obj, name)
@@ -79,7 +93,7 @@ class GitHubS2Config(ResolvesLazyTokens):
     owner: str
     repo: str
     owner_type: str          # "user" | "org"  (V03)
-    token: Optional[str] = field(repr=False)  # resolved repository baseline secret; never from committed config
+    token: Optional[str] = field(repr=False, compare=False)  # resolved repository baseline secret; never from committed config
     token_source: str = "cmru"  # "gh" | "cmru" (KI-94); mandatory in the committed [github] table
 
 
@@ -889,16 +903,6 @@ def _github(raw: object) -> GitHubS2Config:
     if owner_type not in {"user", "org"}:
         _error("github.owner_type must be 'user' or 'org'")
     token_source = raw.get("token_source")
-    if token_source is None:
-        # A release-transaction child can load an older snapshot (an old branch,
-        # --from-worktree, a pre-KI-94 commit) that predates the mandatory key:
-        # it adopts the PARENT's declared source, handed over with the credentials.
-        try:
-            handoff = credential_handoff.child_handoff()
-        except RuntimeError:
-            handoff = None
-        if handoff is not None and handoff.token_source in TOKEN_SOURCES:
-            token_source = handoff.token_source
     if token_source not in TOKEN_SOURCES:
         shown = "missing" if token_source is None else f"{token_source!r}"
         _error(

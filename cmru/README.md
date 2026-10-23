@@ -938,9 +938,9 @@ collect event evidence; [KI-77](KNOWN_ISSUES_TODO_BACKLOG.md#ki-77--the-release-
 tracks that gap. The 6.2.x release candidates select
 `gate-provisional`: it runs the ref, installed-wheel, Assay R0/R1/R3, coverage,
 and canary checks, then records the operator-approved R2 deferral under KI-79.
-That deferral is bound to the 6.2 patch line, `>= 6.2.0` and `< 6.3.0` (operator decisions
-2026-10-14 and 2026-10-21): the gate refuses a prepared 6.3.0 or later after the candidate
-is prepared. It therefore records no mutation event evidence. Every release deferred this way is without an R2 pass; one full R2 run is owed before 6.3.0 (KI-79). The full `gate` lane remains
+That deferral is bound to two windows, the 6.2 patch line (`>= 6.2.0`, `< 6.3.0`) and the 7.0 patch line
+(`>= 7.0.0`, `< 7.1.0`; operator decisions 2026-10-14, 2026-10-21 and 2026-10-23): the gate refuses any other
+prepared version (6.3.x, 7.1.0 and later) after the candidate is prepared. It therefore records no mutation event evidence. Every release deferred this way is without an R2 pass; one full R2 run is owed before 6.3.0 or 7.1.0, whichever is first (KI-79). The full `gate` lane remains
 available for the post-release mutation campaign.
 Both are `bare-host` lanes (the controller starts lane containers itself), so they need
 the estate Python environment that holds the installed `cmru` wheel and its declared

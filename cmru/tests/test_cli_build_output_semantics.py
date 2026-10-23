@@ -81,6 +81,7 @@ def _record(root: Path):
         "artifact_root": root / "alpha" / "artifacts" / OUTPUT_ID,
         "manifest": {
             "source_commit": SOURCE_COMMIT,
+            "source_mode": "origin-main",
             "source_commit_date": "2026-09-27T12:00:00+00:00",
             "artifacts": [{
                 "directory": "dist",

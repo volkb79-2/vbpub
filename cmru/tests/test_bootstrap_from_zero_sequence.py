@@ -132,6 +132,7 @@ def test_step_one_reaches_a_working_first_cmru_from_the_artifacts_it_built(tmp_p
         [str(estate_python), "-c",
          "import importlib.metadata as m; print(m.version('cli-extended'), m.version('cmru'))"],
         capture_output=True, text=True, check=True,
+        cwd=tmp_path,  # never the project dir: its local cmru.egg-info would shadow the venv's dist
     ).stdout.split()
     assert installed == ["0.3.0+bootstrap.source", "0.0.0+bootstrap.source"]  # stale 9.9.9 replaced
 
@@ -183,7 +184,11 @@ def _dockerfile(path: Path, url: str, sha: str) -> None:
 
 
 def _pointer(path: Path, sha: str, url: str) -> None:
-    path.write_text(json.dumps({"version": "0.3.0", "asset": "x.whl", "sha256": sha, "url": url}), encoding="utf-8")
+    # The pointer's version must name the wheel version in the URL (the real
+    # Dockerfile pin moves with every cli-extended release); 0.3.0 otherwise.
+    named = re.search(r"cli_extended-(\d+\.\d+\.\d+)-", url)
+    version = named.group(1) if named else "0.3.0"
+    path.write_text(json.dumps({"version": version, "asset": "x.whl", "sha256": sha, "url": url}), encoding="utf-8")
 
 
 def _identity(*args: str) -> subprocess.CompletedProcess[str]:

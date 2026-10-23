@@ -1748,14 +1748,13 @@ valid in `cmru.secret.toml` (refused with the same pointer).
   runs (15 s timeout) the first time a credential is actually used (release/publish/build
   handoff, publish-credential check, cleanup, GHCR/registry calls, HTTPS Git transport), so
   `status`, `dependencies`, `run` and tests that load the estate config need no `gh` login.
-  It flows through the reserved-credential handling: handed to transaction children over the
-  private pipe, and injected into project steps only for the `push` step, a step that
-  declares a registry `login`, or one listing `GITHUB_PUSH_PAT` in `required_env`; build,
-  test, prepare and clean steps get none, and `GH_TOKEN`/`GH_ENTERPRISE_TOKEN`/`GITHUB_TOKEN`
-  are cleared from every step. (`token_source = "cmru"` keeps its previous environment
-  placement; see KI-96.) Never in step env tables, manifests, logs or argv. `--secret-file`
-  is refused under `gh`. A transaction child that loads a snapshot predating the mandatory key
-  adopts the parent's declared `token_source` (carried in the credential handoff).
+  The token reaches exactly the places a secret-file token did: handed to transaction
+  children over the private pipe and injected into every project step's protected
+  environment (read best-effort under `gh`, so a step-running command without a login still
+  works and a step that needs the token fails on its own check); `GH_TOKEN`,
+  `GH_ENTERPRISE_TOKEN` and `GITHUB_TOKEN` are cleared from every step. Never in step env
+  tables, manifests, logs or argv. `--secret-file` is refused under `gh`. The key is required
+  in every config a cmru 7.x process loads; older snapshots and 6.x controllers are unsupported.
 - `token_source = "cmru"`: the resolution below (environment, then secret files) applies.
 
 1. `GITHUB_PUSH_PAT` env var, then `GITHUB_TOKEN` env var.
@@ -1856,7 +1855,7 @@ otherwise unchanged.
 #### Release-gate provisional evidence
 
 A deferral tracking id is bound to one release version: `KI-79` authorizes only CMRU `>= 6.2.0` and
-`< 6.3.0` (the 6.2 patch line; operator decisions 2026-10-14 and 2026-10-21), read from
+`< 6.3.0` (the 6.2 patch line) or `>= 7.0.0` and `< 7.1.0` (the 7.0 patch line; operator decisions 2026-10-14, 2026-10-21 and 2026-10-23), read from
 the prepared changelog, and `FIRST-RELEASE-R2` only a first release with no published
 stable tag. Any other id or prepared version refuses before a lane runs.
 

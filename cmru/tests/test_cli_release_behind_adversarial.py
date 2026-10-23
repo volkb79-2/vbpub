@@ -88,7 +88,7 @@ def test_release_uses_fetched_origin_and_moved_config_path_when_local_main_is_be
     }
     # The parent hands its already-resolved credential to the child; it copies
     # no secret file into the release worktree.
-    assert handed == [CredentialHandoff(root="token", projects={"demo": "token"}, token_source="cmru")]
+    assert handed == [CredentialHandoff(root="token", projects={"demo": "token"})]
     output = capsys.readouterr().out
     assert "1 commit(s) behind origin/main" in output
     assert "Release transaction complete" in output

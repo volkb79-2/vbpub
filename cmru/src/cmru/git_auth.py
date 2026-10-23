@@ -25,7 +25,7 @@ class GitHubGitAuth(ResolvesLazyTokens):
 
     owner: str
     repo: str
-    token: str = field(repr=False)
+    token: str = field(repr=False, compare=False)
 
 
 _ASKPASS_SOURCE = """import os
