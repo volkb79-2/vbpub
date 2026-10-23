@@ -24,7 +24,9 @@ class ReleaseFlowTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.config = tomllib.loads((ROOT / "cmru.toml").read_text())
-        cls.env = cls.config["env"]
+        estate = tomllib.loads((ROOT.parent / "cmru.orchestration.toml").read_text())
+        # cmru's precedence: project env over the estate defaults
+        cls.env = {**estate["orchestration"]["defaults"]["env"], **cls.config["env"]}
 
     def test_private_build_then_source_first_push_is_the_release_default(self) -> None:
         self.assertEqual(self.env["RELEASE_IMAGE_FLOW"], "load")
@@ -55,8 +57,9 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertIn("attest+=type=sbom", wrapper)
 
     def test_release_uses_the_host_managed_remote_builder(self) -> None:
-        self.assertEqual(self.env["BUILDX_BUILDER"], "mdt-managed")
-        self.assertEqual(self.env["BUILDKIT_HOST"], "unix:///run/mdt-buildkitd/buildkitd.sock")
+        # declared once for the estate as an environment-overridable default (cmru.orchestration.toml)
+        self.assertEqual(self.env["BUILDX_BUILDER"], "${BUILDX_BUILDER:-mdt-managed}")
+        self.assertEqual(self.env["BUILDKIT_HOST"], "${BUILDKIT_HOST:-unix:///run/mdt-buildkitd/buildkitd.sock}")
         for key in (
             "REPACK_JOBS",
             "REPACK_CONCURRENCY",
