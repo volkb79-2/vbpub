@@ -107,6 +107,14 @@ command. A VM can have a disk whose speed we change from outside, while the gove
   device) and the same `io.cost` model/QoS/`io.max` renderers (`host-setup` scripts), so the governor
   is tested against the real apply path.
 
+**Slow fsync must be possible.** A RAM-backed disk makes flushes nearly free, and QEMU's throttle limits
+bandwidth and IOPS but, as far as we know, not flush time (unverified). Slow flushes (what a provider
+snapshot plausibly does) are therefore produced **inside the guest** with `dm-delay` stacked on the data
+disk, which delays reads, writes and flushes separately (the target takes an optional flush device and
+delay). Bandwidth/IOPS caps come from the QEMU throttle, per-operation delays from `dm-delay`; scenarios
+combine them, and a flush-only slowdown is one of the scenarios. The test checks first that an `fsync`
+in the guest really takes the configured time.
+
 **TCG means slow.** Absolute speeds are far lower than the host's (single-digit MB/s is realistic); that is
 fine because the question is *relative*: capability falls by 20× and returns. All time constants are
 expressed in sampling windows, so a scenario of minutes stands for the real hours. Scenarios are scaled
