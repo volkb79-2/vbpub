@@ -968,10 +968,13 @@ try:
 except json.JSONDecodeError as exc:
     sys.exit(f"refusing to merge into an unparseable {path}: {exc}")
 
-config["cgroup-parent"] = cgroup_parent
-
-path.write_text(json.dumps(config, indent=2) + "\n")
-print(f"merged into {path}: cgroup-parent={cgroup_parent} (needs a dockerd RESTART to take effect)")
+if config.get("cgroup-parent") == cgroup_parent:
+    # Unchanged: leave the file (and its mtime) alone, so the restart reminder below can tell a pending change from a settled one.
+    print(f"{path}: cgroup-parent={cgroup_parent} already set")
+else:
+    config["cgroup-parent"] = cgroup_parent
+    path.write_text(json.dumps(config, indent=2) + "\n")
+    print(f"merged into {path}: cgroup-parent={cgroup_parent} (needs a dockerd RESTART to take effect)")
 PY
 
 echo "== scripts =="
@@ -1197,15 +1200,27 @@ if [ "$AUTO_RESTART_DOCKER" = 1 ]; then
   fi
 else
   echo "== done — verify with: mdt-host-check.sh =="
-  echo "== REMINDER: /etc/docker/daemon.json's cgroup-parent change needs a scheduled"
-  echo "   'systemctl restart docker' to take effect — this restarts every running"
-  echo "   container. Not done automatically by this script."
-  echo "== REMINDER: the new /run/docker-api/docker.sock listener needs a scheduled"
-  echo "   'systemctl restart docker.socket docker.service' to take effect — dockerd"
-  echo "   only picks up newly-added listen sockets at its own startup, so restarting"
-  echo "   docker.socket alone (which just rebinds) is not enough. Same disruption as"
-  echo "   the daemon.json restart above; batch them into the same window. Not done"
-  echo "   automatically by this script (use --restart-docker flag to enable)."
+  # Remind only about what the RUNNING dockerd has not picked up yet: daemon.json newer than dockerd's start,
+  # or the extra API socket not listening. A re-run after the restart stays silent.
+  dockerd_pid="$(pidof dockerd 2>/dev/null | cut -d' ' -f1)"
+  dockerd_started=""
+  if [ -n "$dockerd_pid" ]; then
+    dockerd_started="$(date -d "$(ps -o lstart= -p "$dockerd_pid" 2>/dev/null)" +%s 2>/dev/null || true)"
+  fi
+  daemon_json_mtime="$(stat -c %Y /etc/docker/daemon.json 2>/dev/null || echo 0)"
+  if [ -z "$dockerd_started" ] || [ "$daemon_json_mtime" -gt "$dockerd_started" ]; then
+    echo "== REMINDER: /etc/docker/daemon.json's cgroup-parent change needs a scheduled"
+    echo "   'systemctl restart docker' to take effect — this restarts every running"
+    echo "   container. Not done automatically by this script."
+  fi
+  if [ ! -S /run/docker-api/docker.sock ]; then
+    echo "== REMINDER: the new /run/docker-api/docker.sock listener needs a scheduled"
+    echo "   'systemctl restart docker.socket docker.service' to take effect — dockerd"
+    echo "   only picks up newly-added listen sockets at its own startup, so restarting"
+    echo "   docker.socket alone (which just rebinds) is not enough. Same disruption as"
+    echo "   the daemon.json restart above; batch them into the same window. Not done"
+    echo "   automatically by this script (use --restart-docker flag to enable)."
+  fi
 fi
 if [ "${BUILDKITD_RESTART_PENDING:-0}" = 1 ]; then
   echo "ERROR: mdt-buildkitd.service was not restarted although its unit/config changed (a build may be active); the rest of the install completed. Re-run install.sh --restart-buildkitd when no build is running." >&2

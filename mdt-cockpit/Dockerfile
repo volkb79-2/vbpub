@@ -123,6 +123,10 @@ ARG MDT_LOCAL_ARTIFACTS_JSON=""
 # volumes and derived images can rely on it. The build refuses a base that
 # already uses it (see the group RUN below).
 ARG MDT_GID="2750"
+# Build-time only: "true" makes dpkg skip its per-file fsync while packages install (apt and dpkg -i), which
+# is much faster on a throttled disk. A crash would corrupt only the discarded build container. The drop-in is
+# removed again before the image ends, so the shipped image keeps dpkg's default. Set from cmru.toml [env].
+ARG MDT_BUILD_UNSAFE_IO="false"
 
 ENV DEBIAN_VERSION="${DEBIAN_VERSION}"
 ENV BACKPORTS_URI="${BACKPORTS_URI}"
@@ -130,6 +134,10 @@ ENV BACKPORTS_URI="${BACKPORTS_URI}"
 ENV DEBIAN_FRONTEND=noninteractive
 
 USER root
+
+RUN if [ "${MDT_BUILD_UNSAFE_IO}" = "true" ]; then \
+        echo "force-unsafe-io" > /etc/dpkg/dpkg.cfg.d/99-mdt-build-unsafe-io; \
+    fi
 
 COPY apt/backports.sources.in /tmp/backports.sources.in
 # Priority policy (stable 500, stable-backports 600; testing/oldstable stay 100 via preview-archives). Matches the
@@ -1222,6 +1230,9 @@ RUN grep -qxF '  PATH="${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 # compose their preloads as "theirs:ours" or unset ours for that run.
 COPY --from=ksm-build /tmp/ksm-optin.so /usr/local/lib/ksm-optin.so
 ENV LD_PRELOAD=${KSM_OPTIN_LD_PRELOAD}
+
+# The image must not keep the build-only dpkg setting (see MDT_BUILD_UNSAFE_IO above).
+RUN rm -f /etc/dpkg/dpkg.cfg.d/99-mdt-build-unsafe-io
 
 USER vscode
 

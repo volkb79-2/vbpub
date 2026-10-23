@@ -12,6 +12,8 @@ CMRU_TESTER_DIND_MEMORY = "2g"
 CMRU_TESTER_DIND_CPUS = "1.5"
 CMRU_TESTER_DIND_PIDS_LIMIT = "2048"
 RELEASE_IMAGE_FLOW = "load"
+# dpkg skips its per-file fsync during the image build only (Dockerfile ARG MDT_BUILD_UNSAFE_IO; removed before the image ends).
+MDT_BUILD_UNSAFE_IO = "true"
 IMAGE_COMPRESSION = "zstd"
 IMAGE_COMPRESSION_LEVEL = "3"
 IMAGE_FORCE_COMPRESSION = "false"

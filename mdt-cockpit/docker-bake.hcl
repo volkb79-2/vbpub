@@ -65,6 +65,12 @@ variable "BUILD_TIMESTAMP" {
   default = "unknown"
 }
 
+// "true" lets dpkg skip fsync during the image build (build-time only; the Dockerfile removes the setting again).
+// Set by cmru.toml [env]; the environment variable of the same name overrides this default.
+variable "MDT_BUILD_UNSAFE_IO" {
+  default = "false"
+}
+
 // Mirror used for backports installs; callers override only when they need a different mirror.
 variable "BACKPORTS_URI" {
   default = "http://debian.anexia.at/debian"
@@ -574,6 +580,7 @@ target "base" {
     OCI_REVISION = "${OCI_REVISION}"
     OCI_CREATED = "${OCI_CREATED}"
     BUILD_TIMESTAMP = "${BUILD_TIMESTAMP}"
+    MDT_BUILD_UNSAFE_IO = "${MDT_BUILD_UNSAFE_IO}"
     POSTGRESQL_CLIENT_VERSION = "${POSTGRESQL_CLIENT_VERSION}"
     REDIS_TOOLS_VERSION = "${REDIS_TOOLS_VERSION}"
     RIPGREP_VERSION = "${RIPGREP_VERSION}"

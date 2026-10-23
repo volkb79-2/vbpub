@@ -34,7 +34,7 @@ So "calibrate once per identity" is not enough on a virtual disk whose backing s
 
 ## 2. What the uncapped test builds show (new model, vrate floor 50)
 
-Two builds (mdt-cockpit, modern-debian-tools-python-debug) were sampled every 15 s from `/sys/block/vda/stat` and `io.stat`.
+Two builds (mdt-cockpit and its predecessor image family) were sampled every 15 s from `/sys/block/vda/stat` and `io.stat`.
 
 | | mdt-cockpit (78 samples) | mdt-python-debug (77 samples) |
 |---|---|---|
