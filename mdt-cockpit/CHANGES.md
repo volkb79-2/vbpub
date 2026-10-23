@@ -4,6 +4,16 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [source-c7938ea382b8] - 2026-10-23
+<!-- cmru: generated -->
+<!-- cmru: source-end=c7938ea382b8a1f2d11e5fc3be41c0cdb4575be1 -->
+
+### Fixed
+- fix(mdt-cockpit): oci-push builds only through the managed mdt-buildkitd (f21f4c147)
+
+### Changed
+- refactor(mdt-cockpit): oci-push wording and fixtures name no mdt-specific endpoint (c7938ea38)
+
 ## [source-41944bebeb34] - 2026-10-22
 <!-- cmru: generated -->
 <!-- cmru: source-end=41944bebeb342f78fb747413bbfed28d8a6af475 -->

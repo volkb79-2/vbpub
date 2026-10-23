@@ -3,7 +3,7 @@
 ## Release
 
 - Build date: `20261022`
-- Built at (UTC): `2026-10-22T13:47:23Z`
+- Built at (UTC): `2026-10-22T23:21:59Z`
 - Debian: `trixie`
 - Python: `3.14`
 - Immutable image tag: `trixie-py3.14-php8.5-20261022`
@@ -108,14 +108,14 @@ mdt-cockpit + PHP 8.5 VS Code devcontainer image. Adds PHP 8.5 CLI/FPM, composer
 |---|---|---|---|---|
 | `aider` | `aider 0.86.3.dev53+g5dc9490bb` | latest | https://github.com/Aider-AI/aider |  |
 | `antigravity` | `1.4.5` | latest | https://github.com/antigravity/antigravity-cli | [`sha256:90cc1894b6862510869ad4cf…`](https://storage.googleapis.com/antigravity-public/antigravity-cli/1.4.5-4952523841339392/linux-x64/cli_linux_x64.tar.gz) |
-| `claude` | `2.1.308 (Claude Code)` | latest | https://github.com/anthropics/claude-code |  |
+| `claude` | `2.1.309 (Claude Code)` | latest | https://github.com/anthropics/claude-code |  |
 | `claudelink` | `1.6.1` | latest | https://github.com/RBJGlobal/claudelink |  |
 | `codex` | `codex-cli 0.163.0` | latest | https://github.com/openai/codex |  |
-| `copilot` | `Package extraction took 18039ms` | latest | https://github.com/github/copilot-cli |  |
+| `copilot` | `Package extraction took 18212ms` | latest | https://github.com/github/copilot-cli |  |
 | `openclaw` | `OpenClaw 2026.9.8 (fc23bc8)` | latest | https://github.com/openclaw/openclaw |  |
 | `opencode` | `1.19.4` | latest | https://github.com/anomalyco/opencode |  |
 | `pi` | `1.4.0` | latest | https://github.com/earendil-works/pi |  |
-| `reasonix` | `reasonix v2.48.0` | latest | https://github.com/reasonix/reasonix |  |
+| `reasonix` | `reasonix v2.49.0` | latest | https://github.com/reasonix/reasonix |  |
 
 ## Container Inspection Tools (source: GitHub Releases (pre-built binaries))
 
@@ -152,7 +152,7 @@ mdt-cockpit + PHP 8.5 VS Code devcontainer image. Adds PHP 8.5 CLI/FPM, composer
 | `b2` | `b2 command line tool, version 5.0.1 (b2sdk version 2.13.2)` | latest | https://github.com/Backblaze/B2_Command_Line_Tool | [`sha256:01a846522591e1ef90ad600e…`](https://github.com/Backblaze/B2_Command_Line_Tool/releases/download/v5.0.1/b2-linux) |
 | `bat` | `bat 0.26.1 (979ba22)` | latest | https://github.com/sharkdp/bat | [`sha256:726f04c8f576a7fd18b7634f…`](https://github.com/sharkdp/bat/releases/download/v0.26.1/bat-v0.26.1-x86_64-unknown-linux-gnu.tar.gz) |
 | `composer` | `Composer version 2.8.8 2025-04-04 16:56:46` | latest |  |  |
-| `consul` | `Consul v2.0.4` | latest | https://github.com/hashicorp/consul | [`sha256:7a28033850a24fd411722593…`](https://releases.hashicorp.com/consul/2.0.4/consul_2.0.4_linux_amd64.zip) |
+| `consul` | `Consul v2.1.0` | latest | https://github.com/hashicorp/consul | [`sha256:a9c9cdf1ed93bd29a9671b02…`](https://releases.hashicorp.com/consul/2.1.0/consul_2.1.0_linux_amd64.zip) |
 | `delta` | `delta 0.20.1` | latest | https://github.com/dandavison/delta | [`sha256:50f08c879f84c81ceb220e47…`](https://github.com/dandavison/delta/releases/download/0.20.1/delta-0.20.1-x86_64-unknown-linux-gnu.tar.gz) |
 | `dust` | `1.2.6` | latest | https://github.com/bootandy/dust | [`sha256:cbf2cb5c9d6227e46fc4b29c…`](https://github.com/bootandy/dust/releases/download/v1.2.6/dust-v1.2.6-x86_64-unknown-linux-musl.tar.gz) |
 | `fd` | `fd 10.5.0` | latest | https://github.com/sharkdp/fd | [`sha256:a1259cd129636efbc3fef123…`](https://github.com/sharkdp/fd/releases/download/v10.5.0/fd-v10.5.0-x86_64-unknown-linux-gnu.tar.gz) |
@@ -168,7 +168,7 @@ mdt-cockpit + PHP 8.5 VS Code devcontainer image. Adds PHP 8.5 CLI/FPM, composer
 | `rga` | `ripgrep-all 0.10.10` | latest | https://github.com/phiresky/ripgrep-all | [`sha256:a969c25b182ac84aa6725183…`](https://github.com/phiresky/ripgrep-all/releases/download/v0.10.10/ripgrep_all-v0.10.10-x86_64-unknown-linux-musl.tar.gz) |
 | `ripgrep` | `ripgrep 15.2.0 (rev e89fff89ac)` | latest | https://github.com/BurntSushi/ripgrep | [`sha256:33e15bcf1624b25cdd2a5581…`](https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz) |
 | `shellcheck` | `0.11.0` | latest | https://github.com/koalaman/shellcheck | [`sha256:8c3be12b05d5c177a04c29e3…`](https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz) |
-| `vault` | `Vault v2.2.0 (2891bfd23893ebd302307050edaf03d871ea8351), built 2026-10-14T15:24:08Z` | latest | https://github.com/hashicorp/vault | [`sha256:05d78b0ac842ca7c522fc297…`](https://releases.hashicorp.com/vault/2.2.0/vault_2.2.0_linux_amd64.zip) |
+| `vault` | `Vault v2.2.1 (0e7c41b936218bd2401ab0f891c93bec10e2e8e4), built 2026-10-22T16:27:49Z` | latest | https://github.com/hashicorp/vault | [`sha256:079435de8ff146bdec4cdbe3…`](https://releases.hashicorp.com/vault/2.2.1/vault_2.2.1_linux_amd64.zip) |
 | `yq` | `yq (https://github.com/mikefarah/yq/) version v4.54.1` | latest | https://github.com/mikefarah/yq | [`sha256:8e34fc298390875de416e6a4…`](https://github.com/mikefarah/yq/releases/download/v4.54.1/yq_linux_amd64) |
 
 ## Python Packages (source: PyPI (resolved at build time via pip))
@@ -192,8 +192,8 @@ mdt-cockpit + PHP 8.5 VS Code devcontainer image. Adds PHP 8.5 CLI/FPM, composer
     backoff==2.2.1
     beautifulsoup4==4.14.3
     boolean.py==5.0
-    boto3==1.43.117
-    botocore==1.43.117
+    boto3==1.43.118
+    botocore==1.43.118
     build==1.6.1
     CacheControl==0.14.4
     cachetools==7.2.4
@@ -208,7 +208,7 @@ mdt-cockpit + PHP 8.5 VS Code devcontainer image. Adds PHP 8.5 CLI/FPM, composer
     cmru==6.2.1
     colorama==0.4.6
     ConfigArgParse==1.7.5
-    coverage==7.16.2
+    coverage==7.17.0
     cryptography==50.0.2
     cyclonedx-python-lib==11.12.0
     debugpy==1.8.22
@@ -334,7 +334,7 @@ mdt-cockpit + PHP 8.5 VS Code devcontainer image. Adds PHP 8.5 CLI/FPM, composer
     rfc3986==2.0.0
     rich==15.0.0
     rpds-py==0.30.0
-    ruff==0.17.1
+    ruff==0.17.2
     s3transfer==0.19.3
     scipy==1.17.1
     SecretStorage==3.5.0
@@ -375,7 +375,7 @@ mdt-cockpit + PHP 8.5 VS Code devcontainer image. Adds PHP 8.5 CLI/FPM, composer
     urllib3==2.6.3
     uv==0.13.5
     vcs-versioning==2.6.0
-    virtualenv==21.14.12
+    virtualenv==21.14.13
     watchfiles==1.1.1
     wcwidth==0.6.0
     websockets==17.3
