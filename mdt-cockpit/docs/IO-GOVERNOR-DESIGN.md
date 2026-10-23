@@ -55,6 +55,29 @@ Findings that drive the design:
    matters for the governor: **vrate pinned at either clamp for minutes means the model or the clamp is stale**, whatever the latency says.
 3. iobench R6 derives `min = 100`; the value 50 used here was chosen by hand. Which is right is an open A/B (section 7).
 
+### 2a. Why `vrate` sits at the floor (measured 2026-10-23, kernel tracepoint)
+
+The `iocost:iocost_ioc_vrate_adj` tracepoint (tracefs, read-only, no block IO) was recorded for 815 s
+under normal load (load average about 1.6): 636 events, `vrate` at the floor (50 %) in every one.
+
+| Kernel's reason recorded per period | Events |
+|---|---|
+| request-slot wait above 5 % (`rq_wait_pct`; maximum seen 292 %) | 260 (41 %) |
+| of those, with no missed latency target and no cgroup short of budget | 235 |
+| missed latency target | 14 (2 %) |
+| some cgroup short of budget | 25 (4 %) |
+| periods the kernel itself marked busy (`busy_level` > 0) | 262, almost exactly the slot-wait ones |
+
+The kernel lowers `vrate` when slot waits exceed 5 % and then leaves it there while nobody is short of
+budget. The slot waits are **our own setting**: host-setup `IO_ROOT_QUEUE_NR_REQUESTS=16` (with
+`max_sectors_kb=64`, `mq-deadline`) bounds in-flight IO on purpose; it took the game thread's worst
+D-state stall from 26.9 s to 0.14 s (DESIGN-GUIDE, MDT-HS-05). So the floor is the price of a good
+decision, not a stale model, and a rule keyed on "`vrate` at the floor" would fire almost all the time
+without anything being wrong. Consequences for the governor: the trigger must be missed latency or
+budget shortages, never the floor; and the QoS `min` is effectively the operating point on this host, so
+the `min` choice (50 vs 100) matters more than the model's absolute values. Open experiment: whether a
+`min` of 100 changes protected latency (a host change, to be run in a window).
+
 ## 3. Design: observe, decide, act, with asymmetric trust
 
 A single small service, `mdt-io-governor.service` (Python stdlib, `cli-extended` CLI like the other host tools), one state file under
