@@ -844,6 +844,7 @@ def _config_value_validators() -> dict[str, Validator]:
         "DEV_BUILDKITD_IMAGE": validate_buildkit_image,
         "DEV_BUILDKITD_CACHE": validate_buildkit_cache,
         "DEV_BUILDKITD_MAX_PARALLELISM": validate_positive_int,
+        "DEV_BUILDKITD_GC_KEEP": validate_positive_int,
         "BUILDX_ACCIDENTAL_CONTAINER_POLICY": validate_guard_policy,
         "DEVCONTAINER_MISSING_BIND_SOURCE_POLICY": validate_missing_bind_source_policy,
         "WATCHER_MEMORY_POLICY": validate_watcher_memory_policy,

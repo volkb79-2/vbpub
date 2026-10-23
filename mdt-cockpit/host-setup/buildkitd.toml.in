@@ -3,3 +3,7 @@
 # separate client requests.
 [worker.oci]
   max-parallelism = @DEV_BUILDKITD_MAX_PARALLELISM@
+  # Build-cache garbage collection: keep at most this much cache (DEV_BUILDKITD_GC_KEEP, in GB, on the
+  # cache directory's filesystem); BuildKit removes the least recently used unused entries beyond it.
+  gc = true
+  gckeepstorage = "@DEV_BUILDKITD_GC_KEEP@GB"

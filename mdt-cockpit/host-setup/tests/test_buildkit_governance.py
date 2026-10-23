@@ -1575,6 +1575,17 @@ done
         self.assertIn('case "$cache" in /*)', unit)  # a bind source must exist: never silently created on the root fs
         self.assertIn('DEV_BUILDKITD_CACHE="mdt-buildkitd-cache"', (ROOT / "host-setup.env.example").read_text())
 
+    def test_buildkit_cache_gc_limit_is_a_validated_rendered_key(self) -> None:
+        toml = (ROOT / "buildkitd.toml.in").read_text()
+        self.assertIn('gckeepstorage = "@DEV_BUILDKITD_GC_KEEP@GB"', toml)
+        self.assertIn("gc = true", toml)
+        self.assertIn("DEV_BUILDKITD_GC_KEEP=50", (ROOT / "host-setup.env.example").read_text())
+        install = (ROOT / "install.sh").read_text()
+        self.assertIn("DEV_BUILDKITD_MAX_PARALLELISM DEV_BUILDKITD_GC_KEEP", install)  # RENDER_VARS
+        self.assertIn("DEV_BUILDKITD_GC_KEEP must be a positive whole number of GB", install)
+        self.assertIsNone(WIZARD.validate_positive_int("50"))
+        self.assertIsNotNone(WIZARD.validate_positive_int("0"))
+
     def test_guaranteed_sibling_memory_min_confirms_and_updates_shared_key(self) -> None:
         values = {"DEV_MEMORY_MIN_GUARANTEED_CEILING": "1G"}
         with mock.patch.object(WIZARD, "_prompt", return_value="2G") as prompt:
