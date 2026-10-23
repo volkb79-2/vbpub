@@ -1046,11 +1046,12 @@ FIRST_RELEASE_POSTPONE_REASON = (
     f"`run-gate {FIRST_RELEASE_R2_FOLLOW_UP_LANE}`"
 )
 #: Version window each postponement id may defer R2 for: ``(lowest, below)``, i.e.
-#: ``lowest <= version < below``. KI-79: the whole 6.2 patch line (6.2.0 by the 2026-10-14
-#: operator decision; widened 2026-10-21 -- "release more cmru also without prior R2" --
-#: to every 6.2.x). 6.3.0 and later (7.x included) still refuse; moving the window needs a
-#: new operator decision and a reviewed change here.
-POSTPONEMENT_RELEASE_VERSIONS = {"KI-79": ((6, 2, 0), (6, 3, 0))}
+#: ``lowest <= version < below``; an id may list several windows. KI-79: the whole 6.2 patch
+#: line (6.2.0 by the 2026-10-14 operator decision; widened 2026-10-21 -- "release more cmru
+#: also without prior R2" -- to every 6.2.x) and, by the 2026-10-23 operator decision, the 7.0
+#: line (the 7.0.0 release carrying the mandatory `[github] token_source`). Every other version
+#: still refuses; moving a window needs a new operator decision and a reviewed change here.
+POSTPONEMENT_RELEASE_VERSIONS = {"KI-79": (((6, 2, 0), (6, 3, 0)), ((7, 0, 0), (7, 1, 0)))}
 
 
 def _version_tuple(version: str) -> tuple[int, int, int]:
@@ -1058,10 +1059,12 @@ def _version_tuple(version: str) -> tuple[int, int, int]:
     return major, minor, patch
 
 
-def _postponement_window_text(window: tuple[tuple[int, int, int], tuple[int, int, int]]) -> str:
-    low, below = window
-    return (f">= {'.'.join(map(str, low))} and < {'.'.join(map(str, below))} "
-            f"(the {low[0]}.{low[1]} patch line)")
+def _postponement_window_text(windows: tuple[tuple[tuple[int, int, int], tuple[int, int, int]], ...]) -> str:
+    return " or ".join(
+        f">= {'.'.join(map(str, low))} and < {'.'.join(map(str, below))} "
+        f"(the {low[0]}.{low[1]} patch line)"
+        for low, below in windows
+    )
 #: What a later whole-source/full mutation follow-up needs before it can run.
 #: The marker and the snapshot manifest carry these verbatim so a reader never
 #: has to infer them from prose. ``d4-capacity-evidence`` is named, not defined,
@@ -1139,17 +1142,19 @@ def _validate_postponement(
                 "first-release R2 deferral requires a dated, prepared CMRU release heading"
             )
         return observed_version
-    window = POSTPONEMENT_RELEASE_VERSIONS.get(tracking_id)
-    if window is None:
+    windows = POSTPONEMENT_RELEASE_VERSIONS.get(tracking_id)
+    if windows is None:
         raise RuntimeError(
             f"mutation postponement {tracking_id!r} is not authorized for a release"
         )
     observed_version = _prepared_release_version(project_root)
-    if observed_version is None or not window[0] <= _version_tuple(observed_version) < window[1]:
+    if observed_version is None or not any(
+        low <= _version_tuple(observed_version) < below for low, below in windows
+    ):
         observed = observed_version or "no prepared release version"
         raise RuntimeError(
             f"mutation postponement {tracking_id} is authorized only for CMRU "
-            f"{_postponement_window_text(window)}; prepared changelog identifies {observed}"
+            f"{_postponement_window_text(windows)}; prepared changelog identifies {observed}"
         )
     return observed_version
 
