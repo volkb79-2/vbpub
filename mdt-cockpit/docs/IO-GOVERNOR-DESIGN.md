@@ -106,6 +106,37 @@ IO latency must stay low (here the game server, on another host a database) and 
   timestamp and fill. A snapshot or a provider optimisation is invisible to the guest, so `mdt-io-governor note "<text>"` lets the operator annotate
   events ("snapshot created", "storage optimisation done") into `ceilings.jsonl` for later correlation.
 
+### 3.0b Device-only mode: no protect list, just keep the cost model true
+
+The governor must also be useful with **nothing to protect**: no container, PID or cgroup named.
+Its job then reduces to the original one, keeping `io.cost` honest, because `vrate` can only do its
+work if the model and QoS describe the disk as it is *now*:
+
+- **Too optimistic a model** (the 6 MB/s days): the kernel believes the disk can do more than it
+  can, issues too much, device latency rises, `vrate` falls to the floor, and every cgroup is
+  throttled hard without a model-side reason.
+- **Too pessimistic a model** (what we had before the re-measure): `vrate` is pinned and the
+  disk's real headroom is wasted.
+
+Signals that need no workload: per-device latency from `/sys/block/<dev>/stat` (service time per IO),
+device utilisation, system-wide `io.pressure` (`/proc/pressure/io`) and the kernel's own `vrate`
+(`io.stat` on the cgroup root) and its clamp (`min`/`max`). The inference is the same as 3.1a:
+
+1. If `vrate` sits at the **floor** while device latency is far below the QoS targets
+   (`rlat`/`wlat`) and utilisation is low, the model is too pessimistic: raise the model
+   (`rbps`/`wbps`/IOPS) and/or lower `min` by a bounded step.
+2. If `vrate` is at the floor **and** latency exceeds the targets while IO is substantial, the
+   disk really is slow now (or the model is too optimistic): lower the model by a bounded step, so
+   the kernel's scale tracks the disk instead of fighting it.
+3. If `vrate` varies freely between its clamps, change nothing.
+4. With **little IO** nothing can be inferred and nothing is changed; the previous values stay
+   (3.1a). No probe, no IO of its own.
+
+Writing a protect list on top only adds a second, workload-level signal and a different goal
+(bound the protected workload's p99, not the model's accuracy). The two modes use the same
+decide/act/rollback machinery; `IO_GOV_PROTECT` empty selects device-only mode, and that is the
+default.
+
 ### 3.1 Observe (every 15 s, cheap)
 
 * Device: `/sys/block/<dev>/stat` deltas -> throughput, IOPS, mean latency, busy %, queue depth (the sampler used for this document).

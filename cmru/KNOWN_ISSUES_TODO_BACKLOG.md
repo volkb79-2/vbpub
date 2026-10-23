@@ -2413,3 +2413,7 @@ The operator grants the packages scopes once with `gh auth refresh -h github.com
 (`gh api -i /user` -> `X-OAuth-Scopes`) and refuses with the exact refresh command when one is missing. The token stays inside the existing
 reserved-credential handling (never in step env, logs or manifests). Trade-off to decide: the `gh` OAuth token carries the account's full `repo` scope, which a
 fine-grained PAT limited to this repository would not.
+
+### KI-95 - `cmru build` snapshotted `origin/main`, so branch and worktree builds silently built something else
+
+**Status:** FIXED 2026-10-23 (unreleased). `cmru build` now builds the commit the invoking checkout or worktree is on (`git rev-parse HEAD`), pushed or not: a build never publishes, so it needs no remote-visible source, and a feature branch or release-candidate worktree builds as itself. `--from-origin-main` restores the old fetched-snapshot behaviour (with the ahead/behind checks). Uncommitted edits to the selected projects are still refused, and the refusal now names the escape hatch: `--allow-uncommitted` builds the committed state without them. Tests: `tests/test_cli_build_failure_boundaries_adversarial.py` (default source, no fetch, no ahead check; `--allow-uncommitted`; refusal text).

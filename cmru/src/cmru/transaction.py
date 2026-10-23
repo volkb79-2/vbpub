@@ -428,6 +428,11 @@ def local_main_divergence(repo_root: Path, *, ref: str = "main") -> tuple[int, i
         ) from exc
 
 
+def local_head_commit(repo_root: Path) -> str:
+    """Return the full commit id the caller's checkout (or worktree) is on."""
+    return _git(repo_root, "rev-parse", "HEAD")
+
+
 def assert_local_main_not_ahead(repo_root: Path, *, ref: str = "main") -> int:
     """Reject commits under ``ref`` that an origin/main snapshot would omit.
 

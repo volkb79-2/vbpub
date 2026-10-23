@@ -436,3 +436,7 @@ under each release worktree's `build/oci-layouts`. Only BuildKit's own cache and
 buildkitd's, so nothing writes `mdt-buildkit-cache*` any more and about 54 GB can be deleted (a cache, regenerable). The artifact cache needs
 an age/LRU prune, and its default should not be inside `.git` (set `MDT_ARTIFACT_CACHE_DIR`, or move it with the buildkitd cache to the btrfs area).
 Fix direction: a `stage_tool_artifacts.py prune --older-than` and a unit test; no other code in the repo writes under the git common dir.
+
+## MDT-026 - optional fsync-free BuildKit cache operations (2026-10-23)
+
+**Status:** ANALYSED, not implemented. `libeatmydata` cannot affect `buildkitd` (static Go binary, raw syscalls); it can only help dynamic processes in `RUN` steps. Options and recommendation: `docs/BUILDKITD-FLOWS.md` section 7 (Dockerfile build ARG with `dpkg --force-unsafe-io` / `eatmydata`, default off, measure first; a seccomp no-op filter for the daemon is unverified). Architecture and flows of the whole BuildKit setup: `docs/BUILDKITD-FLOWS.md`.

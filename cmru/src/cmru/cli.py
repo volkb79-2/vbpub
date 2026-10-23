@@ -5772,26 +5772,43 @@ def _dispatch(args, runtime):
                     target_override=",".join(names), original_target=vargs.target,
                     verb="build", forward_from=vargs,
                 )
+                from_origin_main = bool(getattr(vargs, "from_origin_main", False))
+                allow_uncommitted = bool(getattr(vargs, "allow_uncommitted", False))
                 with transaction.release_lock(transaction_root):
-                    dirty = _uncommitted_release_paths(transaction_root, configs, names)
+                    dirty = {} if allow_uncommitted else _uncommitted_release_paths(
+                        transaction_root, configs, names,
+                    )
                     if dirty:
                         for project_name, files in dirty.items():
                             log_error(f"{project_name}: uncommitted changes — {', '.join(files)}")
+                        source_name = "origin/main" if from_origin_main else "the checked-out commit (HEAD)"
                         raise transaction.RefusedBeforeChange(
-                            "cmru build snapshots origin/main; commit and push the selected project "
-                            "changes first so the isolated build cannot silently omit them."
+                            f"cmru build snapshots {source_name}, so the uncommitted changes above "
+                            "would be silently left out. Commit them (a push is not needed for the "
+                            "default HEAD source), or pass --allow-uncommitted to build the "
+                            "committed state without them."
                         )
-                    base = transaction.fetch_origin_main(transaction_root, git_auth=git_auth)
+                    if from_origin_main:
+                        base = transaction.fetch_origin_main(transaction_root, git_auth=git_auth)
+                        behind = transaction.assert_local_main_not_ahead(transaction_root)
+                        if behind:
+                            log_warn(
+                                f"Local main is {behind} commit(s) behind origin/main; "
+                                f"build uses fetched origin/main {base[:12]}."
+                            )
+                    else:
+                        # Default: the commit this checkout (or worktree) is on, pushed or not.
+                        # A build never publishes, so it needs no remote-visible source; this
+                        # also lets a feature branch or release-candidate worktree be built as-is.
+                        base = transaction.local_head_commit(transaction_root)
+                        log_info(
+                            f"Build source: checked-out commit {base[:12]} "
+                            "(use --from-origin-main to build fetched origin/main instead)"
+                        )
                     # Validates every selected project config exists at the snapshot.
                     _project_config_paths_at_snapshot(
                         transaction_root, base, cfg_path, configs, names,
                     )
-                    behind = transaction.assert_local_main_not_ahead(transaction_root)
-                    if behind:
-                        log_warn(
-                            f"Local main is {behind} commit(s) behind origin/main; "
-                            f"build uses fetched origin/main {base[:12]}."
-                        )
                     workspace = transaction.create_workspace(
                         repo_root, base=base, purpose="build", scope=','.join(names),
                         source_git_root=transaction_root,
@@ -8029,7 +8046,11 @@ def _build_cli():
     ))
     common_target = (target,)
     build_options = (config_opt, *detail_opts)
-    registry.register(VerbSpec("build", description="Run the isolated build step.", group=VerbGroup.MODIFICATION.value, arguments=common_target, options=build_options, mutating=True, dry_run=True, include_confirmation=False, include_json=False, include_progress=False, handler=direct()))
+    build_source_options = (
+        OptionSpec(("--from-origin-main",), "build the fetched origin/main snapshot instead of the checked-out commit (the default; HEAD needs no push)", parser_kwargs={"action": "store_true", "default": False}),
+        OptionSpec(("--allow-uncommitted",), "build the committed state even when the selected projects have uncommitted edits (they are omitted)", parser_kwargs={"action": "store_true", "default": False}),
+    )
+    registry.register(VerbSpec("build", description="Run the isolated build step on the checked-out commit (or origin/main with --from-origin-main).", group=VerbGroup.MODIFICATION.value, arguments=common_target, options=(*build_options, *build_source_options), mutating=True, dry_run=True, include_confirmation=False, include_json=False, include_progress=False, handler=direct()))
     publish_options = (
         OptionSpec(("--build-output",), "publish the verified retained build ID printed by cmru build", metavar="ID", parser_kwargs={"default": None, "type": _non_empty}, mutually_exclusive_group="publish-source", mutually_exclusive_required=True),
         OptionSpec(("--from-checkout",), "publish from the CALLER'S checkout (not isolated); --release-tag enables a tag-verified OCI release-body retry", parser_kwargs={"action": "store_true", "default": False}, mutually_exclusive_group="publish-source", mutually_exclusive_required=True),
