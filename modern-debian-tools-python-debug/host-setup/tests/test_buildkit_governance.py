@@ -1600,7 +1600,7 @@ done
         self.assertIn('source=/run/mdt-buildkitd,target=/run/mdt-buildkitd,type=bind', template)
         self.assertNotIn("host-buildkitd", template)
         self.assertNotIn("OPTIONAL and commented out", template)
-        self.assertIn('BUILDX_BUILDER = "mdt-managed"', (ROOT.parent / "cmru.toml").read_text())
+        self.assertIn('BUILDX_BUILDER:-mdt-managed', (ROOT.parent.parent / "cmru.orchestration.toml").read_text())
         release = (ROOT.parent / "scripts/ensure-release-builder.sh").read_text()
         self.assertNotIn("docker-container", release)
         self.assertNotIn("buildx rm", release)

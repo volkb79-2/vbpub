@@ -4,8 +4,6 @@ schema_version = 1
 kind = "none"
 
 [env]
-BUILDX_BUILDER = "mdt-managed"
-BUILDKIT_HOST = "unix:///run/mdt-buildkitd/buildkitd.sock"
 
 [project]
 id = "tester-base"

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 import tomllib
@@ -31,6 +32,7 @@ from cmru.ghcr import GitHubPackages
 
 PWMCP_DIR = Path(__file__).resolve().parent
 BUILD_CONFIG = PWMCP_DIR / "cmru.toml"
+ESTATE_CONFIG = PWMCP_DIR.parent / "cmru.orchestration.toml"
 
 # Strict prepared-coordinate loader and the shared script registration
 # (pwmcp/scripts/_vars.py). `cli_extended` and `cmru` are the INSTALLED packages
@@ -89,27 +91,47 @@ def run(argv: list[str], cwd: Path | None = None) -> None:
 @dataclass(frozen=True)
 class BuilderConfig:
     name: str
-    endpoint: str
+    endpoint: str  # empty: a plain builder (e.g. the docker default), nothing to verify beyond it existing
 
 
-def load_builder_config(path: Path = BUILD_CONFIG) -> BuilderConfig:
+_ENV_REFERENCE = re.compile(r"^\$\{([A-Z_][A-Z0-9_]*)(?::-([^{}]*))?\}$")
+
+
+def _resolve(value: object) -> str:
+    """Expand a whole-value ${NAME:-default} reference the way cmru does at load (the environment
+    wins, a set-but-empty value counts as set); anything else is the literal."""
+    text = str(value).strip()
+    match = _ENV_REFERENCE.fullmatch(text)
+    if match is None:
+        return text
+    actual = os.environ.get(match.group(1))
+    return actual.strip() if actual is not None else (match.group(2) or "")
+
+
+def load_builder_config(path: Path = BUILD_CONFIG, estate: Path = ESTATE_CONFIG) -> BuilderConfig:
+    """The Buildx builder and BuildKit endpoint for a run of this script. Under cmru the step env
+    already carries cmru's resolved values (project [env] over [orchestration.defaults.env]), which
+    is what the process environment holds here. Run by hand, the process environment still wins,
+    else the project cmru.toml [env] over the estate defaults, whose ${NAME:-default} references
+    resolve as cmru resolves them. An empty endpoint means a plain builder, not the managed remote."""
+    raw: dict = {}
+    if estate.is_file():
+        with estate.open("rb") as handle:
+            raw.update(tomllib.load(handle).get("orchestration", {}).get("defaults", {}).get("env", {}))
     with path.open("rb") as handle:
-        raw = tomllib.load(handle).get("env", {})
+        raw.update(tomllib.load(handle).get("env", {}))
     required = ("BUILDX_BUILDER", "BUILDKIT_HOST")
-    missing = [key for key in required if key not in raw]
+    missing = [key for key in required if key not in raw and key not in os.environ]
     if missing:
-        fail(f"{path.name} [env] is missing managed BuildKit keys: {', '.join(missing)}")
-    name = str(raw["BUILDX_BUILDER"]).strip()
-    endpoint = str(raw["BUILDKIT_HOST"]).strip()
-    if not name:
-        fail(f"{path.name} [env].BUILDX_BUILDER must be non-empty")
-    if not endpoint.startswith("unix:///"):
-        fail(f"{path.name} [env].BUILDKIT_HOST must be an absolute Unix endpoint")
+        fail(f"{path.name} [env] (or the estate defaults) is missing BuildKit keys: {', '.join(missing)}")
+    name, endpoint = (os.environ[k].strip() if k in os.environ else _resolve(raw[k]) for k in required)
+    if endpoint and not endpoint.startswith("unix:///"):
+        fail(f"{path.name} [env].BUILDKIT_HOST must be empty or an absolute Unix endpoint")
     return BuilderConfig(name=name, endpoint=endpoint)
 
 
 def _inspect_builder(config: BuilderConfig, *, bootstrap: bool) -> str:
-    argv = ["docker", "buildx", "inspect", config.name]
+    argv = ["docker", "buildx", "inspect", *([config.name] if config.name else [])]
     if bootstrap:
         argv.append("--bootstrap")
     result = subprocess.run(argv, capture_output=True, text=True, check=False)
@@ -148,8 +170,17 @@ def _assert_remote_builder(config: BuilderConfig, output: str) -> None:
         )
 
 
+def _builder_args(config: BuilderConfig) -> list[str]:
+    return ["--builder", config.name] if config.name else []
+
+
 def ensure_builder(config: BuilderConfig) -> None:
-    """Verify the durable host-managed remote; never create a worker here."""
+    """Verify the configured builder exists; with a managed endpoint also that it is exactly that
+    remote. Never create a worker here."""
+    if not config.endpoint:
+        _inspect_builder(config, bootstrap=False)
+        log(f"Using Buildx builder {config.name or '<current>'} (no managed BuildKit endpoint configured)")
+        return
     _assert_remote_builder(config, _inspect_builder(config, bootstrap=False))
     _assert_remote_builder(config, _inspect_builder(config, bootstrap=True))
     log(f"Using host-managed BuildKit remote {config.name} at {config.endpoint}")
@@ -165,7 +196,7 @@ def do_build() -> None:
         f"Building pwmcp coordinated release "
         f"PLAYWRIGHT_VERSION={pw_version} PWMCP_VERSION={pwmcp_version}"
     )
-    run(["docker", "buildx", "bake", "--builder", builder.name, "all", "--load"], cwd=PWMCP_DIR)
+    run(["docker", "buildx", "bake", *_builder_args(builder), "all", "--load"], cwd=PWMCP_DIR)
     log("Build complete.")
 
 
@@ -192,7 +223,7 @@ def do_push() -> None:
         f"Pushing pwmcp coordinated release "
         f"PLAYWRIGHT_VERSION={pw_version} PWMCP_VERSION={pwmcp_version}"
     )
-    run(["docker", "buildx", "bake", "--builder", builder.name, "all", "--push"], cwd=PWMCP_DIR)
+    run(["docker", "buildx", "bake", *_builder_args(builder), "all", "--push"], cwd=PWMCP_DIR)
     package_names = [
         name.strip()
         for name in (os.environ.get("GHCR_PACKAGE_NAMES") or "pwmcp").split(",")
