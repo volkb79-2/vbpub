@@ -52,8 +52,8 @@ Findings that drive the design:
 ## 3. Design: observe, decide, act, with asymmetric trust
 
 A single small service, `mdt-io-governor.service` (Python stdlib, `cli-extended` CLI like the other host tools), one state file under
-`/var/lib/mdt/io-governor/`. It is not a benchmark. It reads what the kernel already exposes, keeps the evidence, and moves settings in small
-bounded steps. iobench stays the only thing that produces a calibrated model.
+`/var/lib/mdt/io-governor/`. **It performs no IO of its own and runs no benchmark**: it only reads what the kernel already exposes, keeps the
+evidence, and moves settings in small bounded steps. iobench stays the only thing that produces a calibrated model, and only when an operator runs it.
 
 ### 3.1 Observe (every 15 s, cheap)
 
@@ -64,6 +64,43 @@ bounded steps. iobench stays the only thing that produces a calibrated model.
   with `source: governor` (IOB-CEI-01 requires duration >= 60 s, direction and workload class). This is the population step iobench's
   D-011 says is missing: until now the history is `single-run`.
 
+### 3.1a Inferring the ceiling when little IO happens
+
+Most of the time the disk is idle or lightly used, and an idle window says nothing about capacity. The governor therefore treats every
+observation as a **bound, not an estimate**:
+
+* A window with throughput X at healthy latency proves *capacity >= X* (a **lower bound**). Only a saturated window (device busy >= 85 %, or vrate at
+  the max clamp, with latency still under target) is close to the ceiling. The ceiling estimate is the best proven lower bound, and it **decays only
+  on evidence of failure** (latency over target at a lower throughput), never because the disk was quiet. No saturated window means: hold the
+  current values.
+* **An upper bound comes from configuration, not from the disk.** The governor needs a range it may never leave: per direction a floor and a
+  ceiling (`IO_GOV_{R,W}_FLOOR`, `IO_GOV_{R,W}_CEIL`, default from the last iobench result, else from the operator). The ceiling is the best sustained
+  figure ever proven (or a provider plan limit); nothing observed passively can justify a value above it, and raising it is an operator or
+  iobench act. This is what stops a cache burst or a flat provider cap from being mistaken for capacity.
+* **The controller already measures the ratio.** `cost.vrate` is io.cost's own running estimate of "device capacity / model". vrate at the max
+  clamp with latency fine means the model is too low by about `max/100`; vrate at the min clamp *with latency over target* means it is too high.
+  The governor re-centres the model by that factor (one bounded step), so the fast loop stays inside its clamps. It does not replace the fast loop.
+  vrate at the min clamp with healthy latency (what the builds showed) is **not** treated as "model too high".
+* **Random vs sequential.** A sweep on 2026-10-23 (fio, direct, queue depth 16, dev-gates slice) fits one two-term cost per request,
+  `t = a + b x size`, which is exactly io.cost's linear model (`*iops` and `*bps` coefficients):
+
+  | size | write MB/s | write IOPS | read MB/s | read IOPS |
+  |---|---|---|---|---|
+  | 4k | 69 | 17.6k | 138 | 35k |
+  | 16k | 109 | 6.9k | 389 | 25k |
+  | 64k | 190 | 3.0k | 716 | 11.5k |
+  | 256k | 190 | 0.76k | 666 | 2.7k |
+  | 1M | 153 | 0.15k | 632 | 0.63k |
+
+  Writes: about 36 us per request plus 5.3 ns per byte; reads: about 22 us plus 1.4 ns per byte. Random 4k is therefore IOPS-limited and large IO is
+  bandwidth-limited, and the knee sits near 64k. From the per-window request mix the governor takes the average request size (`sectors / ios`
+  from `/sys/block/*/stat`) and classifies the window; it keeps a separate best-proven bound for small-IO (IOPS) and large-IO (bandwidth) windows
+  and fits `a`, `b` by least squares over the saturated windows of different sizes. A lower bound seen on one mix is then extrapolated to the other
+  only through that fit and only up to the configured ceiling; with fewer than two distinct sizes it extrapolates nothing.
+* **Variability is real.** The same 4k random-write test gave 46.5k IOPS earlier on 2026-10-23 (queue depth 16, fresh file) and 17.6k in the sweep
+  a short while later, a 2.6x spread within the hour on an otherwise similar host. Steps need two consecutive windows and a cooldown, and the model basis stays the
+  worst sustained plateau (D-IOC-2), not the best.
+
 ### 3.2 Decide (every 5 min, and on events)
 
 Inputs are the model basis (iobench D-IOC-2: the worst sustained plateau per direction) and the recent observed plateaus.
@@ -71,7 +108,7 @@ Inputs are the model basis (iobench D-IOC-2: the worst sustained plateau per dir
 | observation (sustained, per direction) | meaning | action |
 |---|---|---|
 | plateau below the model by > 25 % in two consecutive windows | ceiling fell | **lower** model and dev caps toward the plateau (fast path, observation is enough) |
-| plateau above the model by > 25 % in two windows (IOB-CEI-04) | ceiling rose or model too low | raise `recalibrate_recommended`; step the model up only after a probe (3.4) or if the plateau proves saturation (device busy >= 85 %) |
+| plateau above the model by > 25 % in two windows (IOB-CEI-04) | ceiling rose or model too low | raise `recalibrate_recommended`; step the model up only if the plateau proves saturation (device busy >= 85 % or vrate at max, latency under target), never above the configured ceiling |
 | vrate at the max clamp for > 10 min with latency under target | model too low | as above |
 | vrate at the min clamp for > 10 min with latency under target | clamp or request-slot issue | do not touch the model; log, and let the operator or the A/B settle `min` and `nr_requests` |
 | latency percentile over target for > 2 min while vrate is at min | device slower than model | lower the model one step |
@@ -81,8 +118,8 @@ Rules shared by every move: a step is at most 25 %; a cooldown of 30 min between
 0.7 x the worst recorded plateau or above the best proven plateau; `min`/`max` of the QoS follow iobench R6 from the same history; dev caps stay
 `DEV_IO_CAP_PCT` of the model, so the caps and the model cannot drift apart again.
 
-Trust is asymmetric on purpose. Lowering is cheap and safe, so observation alone is enough. Raising is how a flat provider cap or a cache gets
-mistaken for capacity, so it needs evidence: a probe or a plateau that provably saturated the device.
+Trust is asymmetric on purpose. Lowering is cheap and safe, so one pair of windows is enough. Raising is how a flat provider cap or a cache gets
+mistaken for capacity, so it needs a saturated window and is capped by the configured ceiling.
 
 ### 3.3 Act
 
@@ -92,11 +129,11 @@ mistaken for capacity, so it needs evidence: a probe or a plateau that provably 
   drift check (`_mdt_reassert_io_settings`) must compare against the state file for auto keys, otherwise it undoes the governor within a minute.
 * Honours `mdt-io-reassert-pause`.
 
-### 3.4 Probe (rare, only in a quiet window)
+### 3.4 No probe
 
-The same test used on 2026-10-23: `fio` 1 MiB direct writes, `--fsync=4`, 60-90 s, in `dev-gates.slice`, only when host io pressure is below 1 %
-and the game is idle. Required for any increase. Never on a node that is not the configured test host; never on production nodes without the
-operator flag.
+The governor never generates load, not even in a quiet window. An increase therefore waits for the workload to prove it (a saturated window, 3.1a).
+If the operator wants a fresh figure sooner, they run iobench (`calibrate` / the wizard), which appends a `benchmark` observation the governor then
+uses as a bound.
 
 ### 3.5 Safety invariants
 
@@ -107,7 +144,7 @@ operator flag.
 
 ## 4. Configuration (host-setup.env, wizard step "IO governance")
 
-`IO_GOVERNOR=off|observe|enforce-down|enforce`, `IO_GOV_STEP_PCT=25`, `IO_GOV_COOLDOWN_MIN=30`, `IO_GOV_FLOOR_PCT=70`, `IO_GOV_PROBE=off|quiet-window`,
+`IO_GOVERNOR=off|observe|enforce-down|enforce`, `IO_GOV_STEP_PCT=25`, `IO_GOV_COOLDOWN_MIN=30`, `IO_GOV_FLOOR_PCT=70`, `IO_GOV_{R,W}_FLOOR` / `IO_GOV_{R,W}_CEIL` (the range it may never leave),
 `IO_GOV_GAME_CGROUP=` (the cgroup whose pressure freezes increases). The wizard proposes the first model from an iobench result when one exists.
 
 ## 5. Phases
@@ -117,7 +154,7 @@ operator flag.
 | P0 | `observe` mode: the sampler as a service, journal + `ceilings.jsonl` plateaus, no writes | two weeks of plateaus; the 25 % windows fire on a replay of the 2026-10-20 -> 2026-10-23 shift |
 | P1 | `recalibrate_recommended` surfaced in `mdt doctor` and the wizard | operator sees the warning within 24 h of a real shift |
 | P2 | `enforce-down` | a simulated ceiling drop lowers caps and model within two windows without game harm |
-| P3 | `enforce` with the quiet-window probe | an increase only after a probe; A/B of build time before/after |
+| P3 | `enforce` (increases on saturated windows only, bounded by the ceiling) | build time before/after; no step outside floor/ceiling in a replay with injected bursts |
 
 Tests: replay of recorded traces (the logs from this session are the first two), a table-driven decision test for section 3.2, and the VM
 harness for the live acceptance. The decision core stays pure (samples in, action out) so it is testable without a host.

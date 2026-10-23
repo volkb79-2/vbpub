@@ -386,3 +386,27 @@ the QoS floor (50) in 58 of 77 samples while latency was far under target.
 **Next.** P0 observe-only service feeding `libraries/iobench` `ceilings.jsonl` (`source: governor`, IOB-CEI-01), then `recalibrate_recommended` in
 `mdt doctor`, then enforce-down, then enforce with a quiet-window probe. Open: why vrate pins at the floor (A/B `nr_requests`, `min` 50 vs 100).
 Also tracked from iobench `BACKLOG.md` (the optional IOGOV item).
+
+## MDT-024 - move the mdt-buildkitd cache onto a compressed btrfs subvolume in `devcontainers-cow` (2026-10-23)
+
+**Status:** PLAN, not applied. Today the cache is the Docker named volume `mdt-buildkitd-cache` (93 GB, snapshotter `runc-overlayfs`,
+owner 1000:1000, no userns remap) on the root ext4, so BuildKit's write bursts share the root journal with everything else
+(HOST-IO-INTERFERENCE: that shared journal is what stalled the game's fsync path). `devcontainers-cow` is a separate btrfs filesystem
+(own transaction stream, 194 GB, nearly empty, mounted `noatime,discard=async` at `/srv/devcontainers-cow`).
+
+**Steps (host, root).**
+1. `btrfs subvolume create /srv/devcontainers-cow/buildkitd` (the subvolume name is a path below the top level, BTRFS-COW.md 2.1).
+2. `btrfs property set /srv/devcontainers-cow/buildkitd compression zstd` (BTRFS-COW.md policy: no `compress=` mount option; never `chattr +C`, it disables compression).
+3. `chown 1000:1000 /srv/devcontainers-cow/buildkitd && chmod 2755 ...` (the rootless worker is uid 1000).
+4. host-setup: a key `BUILDKITD_CACHE_DIR` (empty = the Docker volume, the current behaviour) rendered into `units/mdt-buildkitd.service.in` as
+   `-v $BUILDKITD_CACHE_DIR:/home/user/.local/share/buildkit`, with `RequiresMountsFor=` and an `ExecStartPre` that refuses unless the path is on btrfs
+   (`stat -f -c %T`); the mount is `nofail`, and a missing mount must not make Docker create the directory on the root ext4.
+5. `buildkitd.toml`: `[worker.oci] gc = true` with `gckeepstorage` (MB) well below the pool, which the VM harness also uses (BTRFS-COW-OPTIONS A17).
+6. Start with a cold cache (no migration; it is disposable and crosses filesystems). Afterwards remove the old volume and the stale `buildx_buildkit_*_state` volumes.
+
+**Verify.** `findmnt -T`, `compsize` for the real ratio, one build with the IO sampler against the 2026-10-23 numbers (about 1100 s,
+35 MB/s average writes), and that `dev-buildkitd.slice` `io.stat` still shows the writes (btrfs can charge metadata and log writes to the root cgroup).
+
+**Risks.** overlayfs over btrfs inside the rootless user namespace is unproven here (needs a trial; fall back = leave the cache on ext4);
+compression costs CPU (8 cores) and layer blobs are already compressed, so only unpacked snapshot trees gain; `docker --load` still writes the
+image into the Docker store on the root ext4, so only BuildKit's own cache moves. Not a reason to touch the `host-services` filesystem: it carries the game volumes.
