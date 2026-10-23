@@ -45,7 +45,7 @@ def _docker_reachable() -> bool:
 
 
 def _buildkit_endpoint() -> str:
-    """The configured BuildKit endpoint (cmru.toml [env] BUILDKIT_HOST). The test builds only through it:
+    """The configured BuildKit endpoint (BUILDKIT_HOST, from the environment cmru supplies). The test builds only through it:
     a host that governs builds may terminate a BuildKit worker the test starts itself."""
     value = os.environ.get("BUILDKIT_HOST", "").strip()
     return value if value.startswith("unix:///") else ""

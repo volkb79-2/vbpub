@@ -109,9 +109,11 @@ def _resolve(value: object) -> str:
 
 
 def load_builder_config(path: Path = BUILD_CONFIG, estate: Path = ESTATE_CONFIG) -> BuilderConfig:
-    """The Buildx builder and BuildKit endpoint: the process environment, else the project's
-    cmru.toml [env] over the estate defaults ([orchestration.defaults.env] in cmru.orchestration.toml),
-    the same precedence cmru applies. An empty endpoint means a plain builder, not the managed remote."""
+    """The Buildx builder and BuildKit endpoint for a run of this script. Under cmru the step env
+    already carries cmru's resolved values (project [env] over [orchestration.defaults.env]), which
+    is what the process environment holds here. Run by hand, the process environment still wins,
+    else the project cmru.toml [env] over the estate defaults, whose ${NAME:-default} references
+    resolve as cmru resolves them. An empty endpoint means a plain builder, not the managed remote."""
     raw: dict = {}
     if estate.is_file():
         with estate.open("rb") as handle:

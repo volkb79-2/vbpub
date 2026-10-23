@@ -91,3 +91,17 @@ def test_a_reference_in_the_file_resolves_like_cmru_does(tmp_path: Path, monkeyp
     config = build_push.load_builder_config(project, estate=estate)
 
     assert (config.name, config.endpoint) == ("managed", "unix:///run/x.sock")
+
+
+def test_a_plain_builder_is_only_checked_to_exist(monkeypatch) -> None:
+    inspected = []
+    monkeypatch.setattr(build_push, "_inspect_builder", lambda config, bootstrap: inspected.append((config.name, bootstrap)) or "")
+    monkeypatch.setattr(build_push, "_assert_remote_builder", lambda *a: (_ for _ in ()).throw(AssertionError("remote asserted")))
+
+    build_push.ensure_builder(build_push.BuilderConfig(name="default", endpoint=""))
+
+    assert inspected == [("default", False)]
+
+
+def test_an_empty_builder_name_adds_no_builder_flag() -> None:
+    assert build_push._builder_args(build_push.BuilderConfig(name="", endpoint="")) == []
