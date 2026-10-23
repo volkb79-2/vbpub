@@ -389,7 +389,15 @@ Also tracked from iobench `BACKLOG.md` (the optional IOGOV item).
 
 ## MDT-024 - move the mdt-buildkitd cache onto a compressed btrfs subvolume in `devcontainers-cow` (2026-10-23)
 
-**Status:** IMPLEMENTED 2026-10-23 as host-setup key `DEV_BUILDKITD_CACHE` (a Docker volume name, the default, or an absolute host path); the cold-cache trial on `/srv/devcontainers-cow/buildkitd-cache` was started the same day, results to be added here. Today the cache is the Docker named volume `mdt-buildkitd-cache` (93 GB, snapshotter `runc-overlayfs`,
+**Status:** IMPLEMENTED 2026-10-23 as host-setup key `DEV_BUILDKITD_CACHE` (a Docker volume name, the default, or an absolute host path); the cold-cache trial on `/srv/devcontainers-cow/buildkitd-cache` passed the same day and the setting stays in use.
+
+**Trial result (mdt-cockpit image, cold cache, 2026-10-23).**
+* **Works:** rootless BuildKit with the `runc-overlayfs` snapshotter runs on btrfs; the build succeeded in 1152 s, the same as the warm-cache ext4 builds (1082-1090 s). Those earlier builds got little from their cache, so the cold run is not slower.
+* **Compression:** 26 GB referenced, 22 GB logical, **13 GB on disk (60 %)**; zstd extents 12 GB -> 4.2 GB (32 %), 9.1 GB stored as is (already compressed layer blobs and incompressible data, as expected).
+* **IO:** average write 30 MB/s and read 45 MB/s, peaks 123 / 197 MB/s, device busy at most 74 %, io pressure average 1.0 / max 9, the same as on ext4.
+* **Attribution:** `dev-buildkitd.slice/io.stat` shows the btrfs LV (253:2) with 18.8 GB written and 40.6 GB read, so btrfs data IO is charged to the slice, not to the root cgroup. Metadata and log writes were not separated out.
+* **Cleanup done:** the old `mdt-buildkitd-cache` volume (93 GB) and three stale `buildx_buildkit_*_state` volumes were removed.
+* **Open:** the pool is shared with the VM harness (194 GB): set `gckeepstorage` in `buildkitd.toml` before the cache grows toward it. Today the cache is the Docker named volume `mdt-buildkitd-cache` (93 GB, snapshotter `runc-overlayfs`,
 owner 1000:1000, no userns remap) on the root ext4, so BuildKit's write bursts share the root journal with everything else
 (HOST-IO-INTERFERENCE: that shared journal is what stalled the game's fsync path). `devcontainers-cow` is a separate btrfs filesystem
 (own transaction stream, 194 GB, nearly empty, mounted `noatime,discard=async` at `/srv/devcontainers-cow`).
