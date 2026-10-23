@@ -24,7 +24,9 @@ class ReleaseFlowTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.config = tomllib.loads((ROOT / "cmru.toml").read_text())
-        cls.env = cls.config["env"]
+        estate = tomllib.loads((ROOT.parent / "cmru.orchestration.toml").read_text())
+        # cmru's precedence: project env over the estate defaults
+        cls.env = {**estate["orchestration"]["defaults"]["env"], **cls.config["env"]}
 
     def test_private_build_then_source_first_push_is_the_release_default(self) -> None:
         self.assertEqual(self.env["RELEASE_IMAGE_FLOW"], "load")

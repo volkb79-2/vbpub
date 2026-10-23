@@ -25,7 +25,7 @@ BUILDKIT_HOST = "unix:///run/test-buildkit.sock"
         encoding="utf-8",
     )
 
-    config = build_push.load_builder_config(config_path)
+    config = build_push.load_builder_config(config_path, estate=tmp_path / "none.toml")
 
     assert config.name == "test-builder"
     assert config.endpoint == "unix:///run/test-buildkit.sock"
@@ -36,7 +36,7 @@ def test_missing_builder_setting_is_fatal(tmp_path: Path) -> None:
     config_path.write_text("[env]\nBUILDX_BUILDER='incomplete'\n", encoding="utf-8")
 
     with pytest.raises(SystemExit):
-        build_push.load_builder_config(config_path)
+        build_push.load_builder_config(config_path, estate=tmp_path / "none.toml")
 
 
 @pytest.mark.parametrize(
@@ -50,4 +50,11 @@ def test_invalid_builder_values_are_fatal(tmp_path: Path, contents: str) -> None
     config_path = tmp_path / "cmru.toml"
     config_path.write_text(contents, encoding="utf-8")
     with pytest.raises(SystemExit):
-        build_push.load_builder_config(config_path)
+        build_push.load_builder_config(config_path, estate=tmp_path / "none.toml")
+
+
+def test_the_estate_defaults_supply_the_managed_builder(tmp_path: Path) -> None:
+    project = tmp_path / "cmru.toml"
+    project.write_text("[env]\n", encoding="utf-8")
+    config = build_push.load_builder_config(project)
+    assert config.name and config.endpoint.startswith("unix:///")

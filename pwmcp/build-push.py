@@ -31,6 +31,7 @@ from cmru.ghcr import GitHubPackages
 
 PWMCP_DIR = Path(__file__).resolve().parent
 BUILD_CONFIG = PWMCP_DIR / "cmru.toml"
+ESTATE_CONFIG = PWMCP_DIR.parent / "cmru.orchestration.toml"
 
 # Strict prepared-coordinate loader and the shared script registration
 # (pwmcp/scripts/_vars.py). `cli_extended` and `cmru` are the INSTALLED packages
@@ -92,13 +93,19 @@ class BuilderConfig:
     endpoint: str
 
 
-def load_builder_config(path: Path = BUILD_CONFIG) -> BuilderConfig:
+def load_builder_config(path: Path = BUILD_CONFIG, estate: Path = ESTATE_CONFIG) -> BuilderConfig:
+    """The managed BuildKit builder: the project's cmru.toml [env] over the estate defaults
+    ([orchestration.defaults.env] in cmru.orchestration.toml), the same precedence cmru applies."""
+    raw: dict = {}
+    if estate.is_file():
+        with estate.open("rb") as handle:
+            raw.update(tomllib.load(handle).get("orchestration", {}).get("defaults", {}).get("env", {}))
     with path.open("rb") as handle:
-        raw = tomllib.load(handle).get("env", {})
+        raw.update(tomllib.load(handle).get("env", {}))
     required = ("BUILDX_BUILDER", "BUILDKIT_HOST")
     missing = [key for key in required if key not in raw]
     if missing:
-        fail(f"{path.name} [env] is missing managed BuildKit keys: {', '.join(missing)}")
+        fail(f"{path.name} [env] (or the estate defaults) is missing managed BuildKit keys: {', '.join(missing)}")
     name = str(raw["BUILDX_BUILDER"]).strip()
     endpoint = str(raw["BUILDKIT_HOST"]).strip()
     if not name:

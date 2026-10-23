@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -43,7 +44,17 @@ def _docker_reachable() -> bool:
         return False
 
 
-@unittest.skipUnless(_tools_available() and _docker_reachable(), "docker/crane/regctl not available")
+def _buildkit_endpoint() -> str:
+    """The configured BuildKit endpoint (cmru.toml [env] BUILDKIT_HOST). The test builds only through it:
+    a host that governs builds may terminate a BuildKit worker the test starts itself."""
+    value = os.environ.get("BUILDKIT_HOST", "").strip()
+    return value if value.startswith("unix:///") else ""
+
+
+@unittest.skipUnless(
+    _tools_available() and _docker_reachable() and _buildkit_endpoint(),
+    "docker/crane/regctl or a configured BUILDKIT_HOST not available",
+)
 class OciLayoutPushTests(unittest.TestCase):
     """Build a tiny throwaway image, push it to a real registry:2 container, and
     exercise build-push.py's digest-verified push mechanics against it."""
@@ -69,7 +80,7 @@ class OciLayoutPushTests(unittest.TestCase):
 
         cls.builder_name = "mdt-oci-push-test-builder"
         _docker("buildx", "rm", cls.builder_name, check=False)
-        _docker("buildx", "create", "--name", cls.builder_name, "--driver", "docker-container")
+        _docker("buildx", "create", "--name", cls.builder_name, "--driver", "remote", _buildkit_endpoint())
 
     @classmethod
     def tearDownClass(cls) -> None:
