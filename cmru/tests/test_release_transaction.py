@@ -3763,7 +3763,7 @@ def test_retain_successful_build_outputs_copies_commit_addressed_record(tmp_path
     monkeypatch.setattr(transaction, "_git", fake_git)
 
     retained = transaction.retain_successful_build_outputs(
-        repo_root, workspace, {"alpha": project}, ["alpha"],
+        repo_root, workspace, {"alpha": project}, ["alpha"], source_mode="origin-main",
     )
 
     output_id = f"19700101T000000Z_{'a' * 40}"

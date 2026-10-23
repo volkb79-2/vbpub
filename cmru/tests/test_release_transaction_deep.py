@@ -259,14 +259,14 @@ def test_retain_successful_build_outputs_writes_hash_manifest_and_refuses_collis
     workspace = transaction.ReleaseWorkspace(root, workspace_path, "cmru/build/retain",
                                              _git(root, "rev-parse", "HEAD"))
     project = _project(root)
-    retained = transaction.retain_successful_build_outputs(root, workspace, {"demo": project}, ["demo"])
+    retained = transaction.retain_successful_build_outputs(root, workspace, {"demo": project}, ["demo"], source_mode="origin-main")
     assert len(retained) == 2
     manifests = list((root / "demo" / "artifacts").rglob("build.json"))
     assert manifests
     payload = json.loads(manifests[0].read_text())
     assert payload["publication"] == "eligible"
     with pytest.raises(RuntimeError, match="already exists"):
-        transaction.retain_successful_build_outputs(root, workspace, {"demo": project}, ["demo"])
+        transaction.retain_successful_build_outputs(root, workspace, {"demo": project}, ["demo"], source_mode="origin-main")
     _git(root, "worktree", "remove", "--force", str(workspace_path))
     _git(root, "branch", "-D", "cmru/build/retain")
 

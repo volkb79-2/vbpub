@@ -1854,7 +1854,7 @@ otherwise unchanged.
 
 #### Release-gate provisional evidence
 
-A deferral tracking id is bound to one release version: `KI-79` authorizes only CMRU `>= 6.2.0` and
+A deferral tracking id is bound to explicit release-version windows: `KI-79` authorizes only CMRU `>= 6.2.0` and
 `< 6.3.0` (the 6.2 patch line) or `>= 7.0.0` and `< 7.1.0` (the 7.0 patch line; operator decisions 2026-10-14, 2026-10-21 and 2026-10-23), read from
 the prepared changelog, and `FIRST-RELEASE-R2` only a first release with no published
 stable tag. Any other id or prepared version refuses before a lane runs.
@@ -2163,8 +2163,8 @@ state without them. On child success it MUST copy that project's logs to
 inventory, then remove the worktree. The coordinate is the built HEAD's UTC commit timestamp
 and full SHA; an existing coordinate is an error, never an overwrite. `build.json` MUST record the build source mode (`source_mode`: `head` or `origin-main`) and
 commit; `publish --build-output` of a `head` build MUST be refused (exit 4) unless its commit is an
-ancestor of a freshly fetched `origin/main` (a record without `source_mode` predates the field and is
-treated as `origin-main`). `build.json` MUST record
+ancestor of a freshly fetched `origin/main`; a record WITHOUT `source_mode` MUST be checked the same way
+(a development cmru wrote HEAD builds without the field), which a genuine origin/main build always passes. `build.json` MUST record
 the source identity, artifact and log inventories, and any tracked or untracked source-tree
 changes. Any non-empty `source_tree_changes` makes the record ineligible for publication; CMRU
 MUST refuse real and dry-run `publish --build-output` for it. Projects MUST ignore their expected

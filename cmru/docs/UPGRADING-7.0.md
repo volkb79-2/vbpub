@@ -61,7 +61,7 @@ a 6.2.x and a 7.x controller; upgrade every machine that runs `cmru` against the
 ## Credential notes
 
 - Under `"gh"` the token is fetched lazily (once per process), only when a credential is used:
-  `status`, `dependencies`, `run`, `doctor` and a `build` need no `gh` login. It then reaches the
+  `status`, `dependencies`, `run`, `doctor` and a plain `build` need no `gh` login (a failed lookup is cached and then yields an empty token for those commands). Paths that read it strictly fail closed with exit 2 without a login: `build --from-origin-main`, `release --dry-run` and anything else that fetches or pushes over an HTTPS `origin`, `publish`, `cleanup`. It then reaches the
   same places a secret-file token did (every project step's environment, the release child pipe).
   Hardening that for both modes is KI-96 (hygiene, not a boundary).
 - `gh` stores its token in plaintext in `~/.config/gh/hosts.yml`: the same exposure as
@@ -76,6 +76,7 @@ a 6.2.x and a 7.x controller; upgrade every machine that runs `cmru` against the
 `cmru build` records `source_mode` (`head` | `origin-main`) in `build.json`. `cmru publish
 --build-output` refuses (exit 4) a `head` build whose commit is not contained in a freshly
 fetched `origin/main`; push/merge the commit, or rebuild with `--from-origin-main`. Records written
-before this field existed are treated as `origin-main` builds. A HEAD build now also warns about
+before this field existed are checked the same way as `head` builds (always passing when the
+commit is on `origin/main`). A HEAD build now also warns about
 dirty tracked files outside the selected project directories (`libraries/`, root config), which the
 HEAD snapshot omits.

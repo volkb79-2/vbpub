@@ -435,7 +435,7 @@ BUILD_SOURCE_MODES = ("head", "origin-main")
 
 def assert_build_source_publishable(
     repo_root: Path, project_name: str, manifest: Mapping[str, Any],
-    *, git_auth: GitHubGitAuth | None = None, fetched: bool = False,
+    *, git_auth: GitHubGitAuth | None = None,
 ) -> None:
     """Refuse to publish a ``head`` build whose commit origin/main does not contain (H1).
 
@@ -452,15 +452,14 @@ def assert_build_source_publishable(
     # without it after KI-95, so absence proves nothing. The ancestor check is free
     # for a genuine (older) origin/main build, whose commit is on origin/main.
     commit = str(manifest.get("source_commit", ""))
-    if not fetched:
-        try:
-            fetch_origin_main(repo_root, git_auth=git_auth)
-        except (subprocess.CalledProcessError, OSError, RuntimeError) as exc:
-            raise UnsafeRecord(
-                f"{project_name}: cannot verify that build source {commit[:12]} is contained "
-                f"in origin/main (fetch failed: {type(exc).__name__}); refusing to publish. "
-                "Fix connectivity/credentials and retry."
-            ) from exc
+    try:
+        fetch_origin_main(repo_root, git_auth=git_auth)
+    except (subprocess.CalledProcessError, OSError, RuntimeError) as exc:
+        raise UnsafeRecord(
+            f"{project_name}: cannot verify that build source {commit[:12]} is contained "
+            f"in origin/main (fetch failed: {type(exc).__name__}); refusing to publish. "
+            "Fix connectivity/credentials and retry."
+        ) from exc
     result = subprocess.run(
         ["git", "-C", str(repo_root), "merge-base", "--is-ancestor", commit, "origin/main"],
         capture_output=True, text=True, check=False,
@@ -1880,10 +1879,11 @@ def _validate_build_output_tree(
         "source_commit", "source_commit_date", "source_tree_changes", "logs", "artifacts",
     }
     if not isinstance(manifest, dict) or (
-        # ``source_mode`` is optional: records written before it existed (the
-        # origin/main-only era) are still valid and are treated as origin-main.
+        # ``source_mode`` is optional so older records still validate, but
+        # publication treats a record WITHOUT it like a HEAD build (an ancestor
+        # check against origin/main): a dev cmru wrote HEAD builds without it.
         set(manifest) not in (base_keys, base_keys | {"source_mode"})
-        or manifest.get("source_mode", "origin-main") not in BUILD_SOURCE_MODES
+        or manifest.get("source_mode", "head") not in BUILD_SOURCE_MODES
         or manifest.get("schema_version") != 1
         or manifest.get("kind") != "cmru-local-build"
         or manifest.get("publication") not in {"eligible", "forbidden"}
@@ -2201,7 +2201,8 @@ def retain_successful_build_outputs(
     workspace: ReleaseWorkspace,
     projects: Mapping[str, object],
     project_names: Sequence[str],
-    source_mode: str = "origin-main",
+    *,
+    source_mode: str,
 ) -> list[Path]:
     """Copy a successful non-release build's evidence into the caller checkout.
 

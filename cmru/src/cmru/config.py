@@ -16,6 +16,7 @@ repository root without an implicit dependency on a former monorepo root.
 from __future__ import annotations
 
 import os
+import sys
 import re
 import subprocess
 import tomllib
@@ -925,18 +926,41 @@ GH_LOGIN_HINT = "run `gh auth login`"
 GH_PACKAGES_HINT = "gh auth refresh -h github.com -s read:packages,write:packages,delete:packages"
 
 _GH_TOKEN_CACHE: list[str] = []
+_GH_TOKEN_FAILURE: list[tuple[int, str]] = []
 
 
 def reset_gh_token_cache() -> None:
-    """Forget the cached ``gh`` token (tests; a new login in a long process)."""
+    """Forget the cached ``gh`` result (tests; a new login in a long process)."""
     _GH_TOKEN_CACHE.clear()
+    _GH_TOKEN_FAILURE.clear()
 
 
 def gh_token_cached() -> str:
-    """One ``gh auth token`` lookup per process, made only where a credential is used."""
-    if not _GH_TOKEN_CACHE:
-        _GH_TOKEN_CACHE.append(_gh_token())
-    return _GH_TOKEN_CACHE[0]
+    """One ``gh auth token`` lookup per process, made only where a credential is used.
+
+    A FAILED lookup is cached too (its diagnostic is replayed each time), so
+    best-effort callers do not rerun ``gh`` (up to 15 s) for every step/project.
+    """
+    import contextlib
+    import io
+
+    if _GH_TOKEN_CACHE:
+        return _GH_TOKEN_CACHE[0]
+    if _GH_TOKEN_FAILURE:
+        code, text = _GH_TOKEN_FAILURE[0]
+        sys.stderr.write(text)
+        raise SystemExit(code)
+    captured = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(captured):
+            token = _gh_token()
+    except SystemExit as exc:
+        code = exc.code if isinstance(exc.code, int) else exit_codes.CONFIG_ERROR
+        _GH_TOKEN_FAILURE.append((code, captured.getvalue()))
+        sys.stderr.write(captured.getvalue())
+        raise
+    _GH_TOKEN_CACHE.append(token)
+    return token
 
 
 def _gh_token() -> str:

@@ -1265,7 +1265,7 @@ token_source = "gh"      # or "cmru"
 
 `"gh"` takes the token of the user's `gh auth login` (`gh auth token --hostname github.com`):
 no secret file and no `--secret-file` in any worktree. For GHCR work run
-`gh auth refresh -h github.com -s read:packages,write:packages` once. `"cmru"` keeps today's
+`gh auth refresh -h github.com -s read:packages,write:packages,delete:packages` once (`delete:packages` is for `cmru cleanup`). `"cmru"` keeps today's
 behaviour: for an HTTPS GitHub `origin`, keep the repository credential in the ignored
 CMRU-root secret file (or `GITHUB_PUSH_PAT`/`GITHUB_TOKEN`):
 

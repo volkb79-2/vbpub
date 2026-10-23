@@ -58,7 +58,7 @@ def test_transaction_retention_refuses_missing_artifacts_before_mutating_main(tm
     monkeypatch.setattr(transaction, "build_output_id", lambda ws: ("20260101T000000Z_" + "a" * 40, "a" * 40, "date"))
     monkeypatch.setattr(transaction, "_git", lambda *a, **k: "")
     with pytest.raises(RuntimeError, match="build logs are missing"):
-        transaction.retain_successful_build_outputs(repo, ws, {"demo": project}, ["demo"])
+        transaction.retain_successful_build_outputs(repo, ws, {"demo": project}, ["demo"], source_mode="origin-main")
     assert not (project_root / "artifacts").exists()
 
 

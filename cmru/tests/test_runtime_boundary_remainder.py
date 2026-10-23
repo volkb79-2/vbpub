@@ -94,7 +94,7 @@ def test_transaction_retention_refuses_missing_sources_and_delete_requires_autho
     project = SimpleNamespace(project_root=root / "demo", artifact_dirs=["dist"])
     (workspace.path / "demo" / "logs").mkdir()
     with pytest.raises(RuntimeError, match="artifact directory"):
-        transaction.retain_successful_build_outputs(root, workspace, {"demo": project}, ["demo"])
+        transaction.retain_successful_build_outputs(root, workspace, {"demo": project}, ["demo"], source_mode="origin-main")
 
     output_id = "20260816T000000Z_" + _git(root, "rev-parse", "HEAD")
     artifacts = root / "demo" / "artifacts" / output_id

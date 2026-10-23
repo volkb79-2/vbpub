@@ -120,7 +120,7 @@ def test_transaction_build_retention_rejects_empty_artifacts_and_cleanup_manifes
     child = workspace.path / "demo"; (child / "logs").mkdir(parents=True); (child / "dist").mkdir()
     project = SimpleNamespace(project_root=root / "demo", artifact_dirs=["dist"])
     with pytest.raises(RuntimeError, match="empty"):
-        transaction.retain_successful_build_outputs(root, workspace, {"demo": project}, ["demo"])
+        transaction.retain_successful_build_outputs(root, workspace, {"demo": project}, ["demo"], source_mode="origin-main")
     transaction.remove_workspace(workspace)
 
     output_id = "20260816T000000Z_" + git(root, "rev-parse", "HEAD")

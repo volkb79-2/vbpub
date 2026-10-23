@@ -138,11 +138,11 @@ def test_transaction_result_record_fails_closed(tmp_path):
 def test_transaction_retention_rejects_unknown_empty_and_collision_outputs(tmp_path):
     root = repo(tmp_path); workspace = transaction.create_workspace(root, base=git(root, "rev-parse", "HEAD"), purpose="build")
     with pytest.raises(RuntimeError, match="unknown project"):
-        transaction.retain_successful_build_outputs(root, workspace, {}, ["missing"])
+        transaction.retain_successful_build_outputs(root, workspace, {}, ["missing"], source_mode="origin-main")
     project = SimpleNamespace(project_root=root / "demo", artifact_dirs=[])
     (workspace.path / "demo" / "logs").mkdir(parents=True)
     with pytest.raises(RuntimeError, match="artifact_dirs"):
-        transaction.retain_successful_build_outputs(root, workspace, {"demo": project}, ["demo"])
+        transaction.retain_successful_build_outputs(root, workspace, {"demo": project}, ["demo"], source_mode="origin-main")
     transaction.remove_workspace(workspace)
 
 

@@ -382,3 +382,118 @@ def test_secret_file_is_refused_through_the_publish_verb(monkeypatch, tmp_path, 
     rc = cli.main(["publish", "alpha", "--from-checkout", "--secret-file", str(secret)])
     captured = capsys.readouterr()
     assert rc == 2 and "--secret-file cannot be used" in captured.err + captured.out
+
+
+# ─── Round 3: coverage of the changed branches, build source_mode end to end ────
+from tests.test_cli_build_failure_boundaries_adversarial import _prepare_build  # noqa: E402
+
+
+def test_dirty_outside_projects_skips_unknown_and_foreign_roots_and_handles_root_projects(repo):
+    root = repo.root
+    (root / "alpha").mkdir()
+    (root / "alpha" / "f.txt").write_text("1")
+    (root / "other.txt").write_text("1")
+    _git(root, "add", ".")
+    _git(root, "commit", "-m", "x")
+    (root / "alpha" / "f.txt").write_text("2")
+    (root / "other.txt").write_text("2")
+    projects = {
+        "nopath": SimpleNamespace(project_root=None),
+        "foreign": SimpleNamespace(project_root=Path("/definitely/elsewhere")),
+        "alpha": SimpleNamespace(project_root=root / "alpha"),
+    }
+    assert cli._dirty_tracked_outside_projects(root, projects, ["nopath", "foreign", "alpha"]) == [
+        "other.txt",
+    ]
+    whole = {"top": SimpleNamespace(project_root=root)}
+    assert cli._dirty_tracked_outside_projects(root, whole, ["top"]) == []
+
+
+def test_dirty_outside_projects_never_fails_the_build_when_git_does(tmp_path, monkeypatch):
+    def boom(*_a):
+        raise RuntimeError("git failed")
+
+    monkeypatch.setattr(cli, "_git", boom)
+    assert cli._dirty_tracked_outside_projects(tmp_path, {}, []) == []
+
+
+@pytest.mark.parametrize("count, tail", [(3, False), (12, True)])
+def test_build_warns_about_dirty_files_outside_the_projects_and_records_head(
+    monkeypatch, tmp_path, capsys, count, tail,
+):
+    _prepare_build(monkeypatch, tmp_path)
+    files = [f"libs/f{i}.py" for i in range(count)]
+    monkeypatch.setattr(cli, "_dirty_tracked_outside_projects", lambda *_a: files)
+    seen = {}
+    monkeypatch.setattr(cli.transaction, "run_child", lambda *a, **k: 0)
+    monkeypatch.setattr(
+        cli.transaction, "retain_successful_build_outputs",
+        lambda *a, **k: seen.update(k) or [tmp_path / "demo" / "artifacts" / "id"],
+    )
+    monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *_a: None)
+    monkeypatch.setattr(
+        cli.transaction, "validate_retained_build_output",
+        lambda *_a: (_ for _ in ()).throw(RuntimeError("not eligible")),
+    )
+    assert cli.main(["build", "demo", "--config", str(tmp_path / "cmru.toml")]) == 0
+    out = capsys.readouterr()
+    text = out.out + out.err
+    assert "libs/f0.py" in text and "NOT in this HEAD build" in text
+    assert ("(+2 more)" in text) is tail
+    assert seen == {"source_mode": "head"}  # a default build records a HEAD source
+
+
+def test_from_origin_main_build_records_origin_main(monkeypatch, tmp_path):
+    _prepare_build(monkeypatch, tmp_path)
+    seen = {}
+    monkeypatch.setattr(cli.transaction, "run_child", lambda *a, **k: 0)
+    monkeypatch.setattr(
+        cli.transaction, "retain_successful_build_outputs",
+        lambda *a, **k: seen.update(k) or [tmp_path / "demo" / "artifacts" / "id"],
+    )
+    monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *_a: None)
+    monkeypatch.setattr(
+        cli.transaction, "validate_retained_build_output",
+        lambda *_a: (_ for _ in ()).throw(RuntimeError("not eligible")),
+    )
+    cli.main(["build", "demo", "--from-origin-main", "--config", str(tmp_path / "cmru.toml")])
+    assert seen == {"source_mode": "origin-main"}
+
+
+def test_retention_requires_an_explicit_source_mode():
+    with pytest.raises(TypeError):
+        transaction.retain_successful_build_outputs(None, None, {}, [])  # type: ignore[call-arg]
+
+
+def test_gh_lookup_failure_is_cached_and_replayed(monkeypatch, capsys):
+    config.reset_gh_token_cache()
+    calls = []
+
+    def fake(argv, **_k):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 1, "", "")
+
+    monkeypatch.setattr(config.subprocess, "run", fake)
+    for _ in range(2):
+        with pytest.raises(SystemExit):
+            config.gh_token_cached()
+    assert len(calls) == 1
+    assert capsys.readouterr().err.count("gh auth login") == 2  # diagnostic replayed
+    config.reset_gh_token_cache()
+
+
+def test_doctor_ignores_an_unreadable_declared_source_and_warns_for_cmru(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "cmru.toml"
+    cfg.write_text("[github\n", encoding="utf-8")  # invalid TOML
+    assert doctor._declared_token_source(cfg) is None
+    assert doctor._declared_token_source(tmp_path / "missing.toml") is None
+    for name in ("GITHUB_PUSH_PAT", "GITHUB_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    cfg.write_text('[github]\ntoken_source = "cmru"\nbogus = 1\n', encoding="utf-8")
+    result = doctor.check_credentials()
+    assert result.status == "warn" and "does not otherwise load" in result.summary
+
+
+def test_local_head_commit_is_the_checked_out_commit(repo):
+    assert transaction.local_head_commit(repo.root) == repo.unpushed

@@ -137,12 +137,12 @@ def test_transaction_retention_empty_and_collision_outputs_are_refused(tmp_path)
     child = workspace.path / "demo"; (child / "logs").mkdir(parents=True); (child / "dist").mkdir()
     project = SimpleNamespace(project_root=root / "demo", artifact_dirs=["dist"])
     with pytest.raises(RuntimeError, match="empty"):
-        transaction.retain_successful_build_outputs(root, workspace, {"demo": project}, ["demo"])
+        transaction.retain_successful_build_outputs(root, workspace, {"demo": project}, ["demo"], source_mode="origin-main")
     (child / "dist" / "demo.whl").write_bytes(b"wheel")
     output_id, _, _ = transaction.build_output_id(workspace)
     (root / "demo" / "artifacts" / output_id).mkdir(parents=True)
     with pytest.raises(RuntimeError, match="already exists"):
-        transaction.retain_successful_build_outputs(root, workspace, {"demo": project}, ["demo"])
+        transaction.retain_successful_build_outputs(root, workspace, {"demo": project}, ["demo"], source_mode="origin-main")
     transaction.remove_workspace(workspace)
 
 

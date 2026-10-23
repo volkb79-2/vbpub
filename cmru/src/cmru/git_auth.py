@@ -159,9 +159,6 @@ def _git_environment(
         # when the credential is actually going to be used.)
         yield None
         return
-    if not auth.token.strip():
-        yield None
-        return
 
     with tempfile.TemporaryDirectory(prefix="cmru-git-askpass-") as tmp:
         helper = Path(tmp) / "askpass"

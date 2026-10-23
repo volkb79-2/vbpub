@@ -101,7 +101,7 @@ def test_transaction_retention_rejects_missing_project_root_and_untrusted_build_
     workspace = transaction.ReleaseWorkspace(root, root, "cmru/build/x", git(root, "rev-parse", "HEAD"))
     with pytest.raises(RuntimeError, match="without project_root"):
         transaction.retain_successful_build_outputs(
-            root, workspace, {"demo": SimpleNamespace(artifact_dirs=["dist"])}, ["demo"],
+            root, workspace, {"demo": SimpleNamespace(artifact_dirs=["dist"])}, ["demo"], source_mode="origin-main",
         )
 
     managed = root / ".worktrees" / "not-a-worktree"
@@ -119,7 +119,7 @@ def test_transaction_build_retention_rejects_empty_declared_artifact(tmp_path):
     (child / "dist").mkdir()
     project = SimpleNamespace(project_root=root / "demo", artifact_dirs=["dist"])
     with pytest.raises(RuntimeError, match="artifact directory is empty"):
-        transaction.retain_successful_build_outputs(root, workspace, {"demo": project}, ["demo"])
+        transaction.retain_successful_build_outputs(root, workspace, {"demo": project}, ["demo"], source_mode="origin-main")
     assert (child / "logs").is_dir()
     assert not (root / "demo" / "artifacts").exists()
     transaction.remove_workspace(workspace)
@@ -136,7 +136,7 @@ def test_transaction_build_retention_rejects_duplicate_artifact_basenames(tmp_pa
         (child / directory / "artifact.whl").write_text("wheel", encoding="utf-8")
     project = SimpleNamespace(project_root=root / "demo", artifact_dirs=["one/dist", "two/dist"])
     with pytest.raises(RuntimeError, match="artifact directory name collision: dist"):
-        transaction.retain_successful_build_outputs(root, workspace, {"demo": project}, ["demo"])
+        transaction.retain_successful_build_outputs(root, workspace, {"demo": project}, ["demo"], source_mode="origin-main")
     assert (child / "one" / "dist" / "artifact.whl").is_file()
     assert (child / "two" / "dist" / "artifact.whl").is_file()
     transaction.remove_workspace(workspace)
@@ -162,7 +162,7 @@ def test_transaction_build_retention_refuses_destination_appearing_during_copy(t
 
     with patch.object(transaction.shutil, "copytree", side_effect=copy_then_race):
         with pytest.raises(RuntimeError, match="destination appeared"):
-            transaction.retain_successful_build_outputs(root, workspace, {"demo": project}, ["demo"])
+            transaction.retain_successful_build_outputs(root, workspace, {"demo": project}, ["demo"], source_mode="origin-main")
     assert (root / "demo" / "logs" / output_id).is_dir()
     assert (child / "logs" / "step.log").is_file()
     transaction.remove_workspace(workspace)
@@ -316,7 +316,7 @@ def test_transaction_build_retention_refuses_disappeared_artifact_without_stale_
 
     with patch.object(Path, "replace", new=remove_promoted_artifacts_after_rename):
         with pytest.raises(RuntimeError, match="artifact destination disappeared"):
-            transaction.retain_successful_build_outputs(root, workspace, {"demo": project}, ["demo"])
+            transaction.retain_successful_build_outputs(root, workspace, {"demo": project}, ["demo"], source_mode="origin-main")
     assert (child / "logs" / "step.log").is_file()
     assert (child / "dist" / "artifact.whl").is_file()
     assert not (root / "demo" / "logs" / output_id).exists()
@@ -348,7 +348,7 @@ def test_transaction_build_retention_tolerates_best_effort_stage_cleanup_failure
     monkeypatch.setattr(transaction.shutil, "rmtree", cleanup_fails_only_when_errors_are_not_ignored)
     try:
         retained = transaction.retain_successful_build_outputs(
-            root, workspace, {"demo": project}, ["demo"],
+            root, workspace, {"demo": project}, ["demo"], source_mode="origin-main",
         )
         assert len(retained) == 2
         assert all(path.exists() for path in retained)
@@ -395,7 +395,7 @@ def test_build_retention_reports_the_lost_artifact_even_if_stage_cleanup_is_impe
     try:
         with pytest.raises(RuntimeError, match="artifact destination disappeared"):
             transaction.retain_successful_build_outputs(
-                root, workspace, {"demo": project}, ["demo"],
+                root, workspace, {"demo": project}, ["demo"], source_mode="origin-main",
             )
     finally:
         monkeypatch.undo()

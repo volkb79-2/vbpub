@@ -108,7 +108,7 @@ class ProjectConfig(ResolvesLazyTokens):
     artifact_dirs: tuple[str, ...] = ()  # declared project-relative output directories
     evidence_paths: tuple[str, ...] = ()  # declared project-relative gate evidence paths
     build_step: str = ""                # explicit [project.release].build_step
-    token_source: str = "cmru"          # "gh" | "cmru" (KI-94); "gh" scopes the credential to publishing steps (M3)
+    token_source: str = "cmru"          # "gh" | "cmru" (KI-94); "gh" reads the token lazily
     github_token: str = field(default="", repr=False, compare=False)  # root credential or explicit project-secret override
     runtime_kind: str = "none"           # declared lifecycle owner: none | ciu
     # First-party artifacts this project's own tests/tooling consume (S15). Empty ⇒
@@ -6074,15 +6074,12 @@ def _dispatch(args, runtime):
             # BEFORE any push step runs, so a refusal never publishes a prefix.
             try:
                 for family_root, members in groups.items():
-                    fetched = False
                     for member in members:
                         member_name = getattr(member, "name")
                         transaction.assert_build_source_publishable(
                             family_root, member_name, build_records[member_name]["manifest"],
-                            git_auth=git_auth, fetched=fetched,
+                            git_auth=git_auth,
                         )
-                        if build_records[member_name]["manifest"].get("source_mode") != "origin-main":
-                            fetched = True
             except CmruError as exc:
                 _exit_for_domain_error(exc)
             for family_root, members in groups.items():
