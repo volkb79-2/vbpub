@@ -4,6 +4,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [source-d654664c21e7] - 2026-10-23
+<!-- cmru: generated -->
+<!-- cmru: source-end=d654664c21e7e855ae90995fd37759e50d8aa6e9 -->
+
+### Testing
+- test(mdt-python-debug): release-flow test reads the builder settings from the estate defaults (d654664c2)
+
 ## [source-f17e562aed4b] - 2026-10-23
 <!-- cmru: generated -->
 <!-- cmru: source-end=f17e562aed4ba39106594071d5f4556b9d437331 -->
