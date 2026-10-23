@@ -143,8 +143,11 @@ def _artifact_cache_dir() -> Path:
         common = (PROJECT_ROOT / common).resolve()
     if common.name != ".git":
         return PROJECT_ROOT / "artifacts" / "cache" / "tool-artifacts"
-    toplevel = Path(_git_out("rev-parse", "--show-toplevel")).resolve()
-    relative = PROJECT_ROOT.resolve().relative_to(toplevel)
+    try:
+        toplevel = Path(_git_out("rev-parse", "--show-toplevel")).resolve()
+        relative = PROJECT_ROOT.resolve().relative_to(toplevel)
+    except (subprocess.CalledProcessError, ValueError):
+        return PROJECT_ROOT / "artifacts" / "cache" / "tool-artifacts"
     return common.parent / relative / "artifacts" / "cache" / "tool-artifacts"
 
 

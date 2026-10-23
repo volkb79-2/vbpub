@@ -488,6 +488,10 @@ fi
 # keeps the historical volume. A host path must already exist as a real directory owned by the worker's uid (1000).
 DEV_BUILDKITD_CACHE="${DEV_BUILDKITD_CACHE:-mdt-buildkitd-cache}"
 case "$DEV_BUILDKITD_CACHE" in
+  *$'\n'*)
+    echo "ERROR: DEV_BUILDKITD_CACHE must be a single line" >&2
+    exit 2
+    ;;
   /*)
     if ! printf '%s' "$DEV_BUILDKITD_CACHE" | grep -Eq '^/[A-Za-z0-9._/+-]+$'; then
       echo "ERROR: DEV_BUILDKITD_CACHE=$DEV_BUILDKITD_CACHE has characters outside letters, digits and . _ / + -" >&2
