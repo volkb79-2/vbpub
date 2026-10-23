@@ -80,8 +80,13 @@ CMRU_TESTER_UNIFIED_IMAGE = "tester-unified:local"
 # builds into the local image store) overrides both in its own cmru.toml [env].
 #   BUILDX_BUILDER = name of the remote Buildx builder
 #   BUILDKIT_HOST  = its unix:/// endpoint (consumers mount the socket's directory at the same path)
-BUILDX_BUILDER = "mdt-managed"
-BUILDKIT_HOST = "unix:///run/mdt-buildkitd/buildkitd.sock"
+# The ENVIRONMENT wins (cmru expands ${NAME:-default} at load; a set-but-empty value counts as
+# set). A system without the host-managed BuildKit service sets them once, in the devcontainer
+# or shell, e.g. BUILDX_BUILDER=default and BUILDKIT_HOST= (empty): generic projects then build
+# through that builder and nothing here is mdt-specific. Only mdt-cockpit itself requires the
+# managed endpoint.
+BUILDX_BUILDER = "${BUILDX_BUILDER:-mdt-managed}"
+BUILDKIT_HOST = "${BUILDKIT_HOST:-unix:///run/mdt-buildkitd/buildkitd.sock}"
 
 # RAM / swap for each gate container (docker --memory / --memory-swap):
 #   CMRU_TESTER_MEMORY       = hard cap on the container's USER-SPACE MEMORY

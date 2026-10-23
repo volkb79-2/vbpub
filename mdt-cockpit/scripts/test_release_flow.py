@@ -57,8 +57,9 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertIn("attest+=type=sbom", wrapper)
 
     def test_release_uses_the_host_managed_remote_builder(self) -> None:
-        self.assertEqual(self.env["BUILDX_BUILDER"], "mdt-managed")
-        self.assertEqual(self.env["BUILDKIT_HOST"], "unix:///run/mdt-buildkitd/buildkitd.sock")
+        # declared once for the estate as an environment-overridable default (cmru.orchestration.toml)
+        self.assertEqual(self.env["BUILDX_BUILDER"], "${BUILDX_BUILDER:-mdt-managed}")
+        self.assertEqual(self.env["BUILDKIT_HOST"], "${BUILDKIT_HOST:-unix:///run/mdt-buildkitd/buildkitd.sock}")
         for key in (
             "REPACK_JOBS",
             "REPACK_CONCURRENCY",
