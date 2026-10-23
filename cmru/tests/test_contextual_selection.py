@@ -56,6 +56,7 @@ def _root_config(names: list[str]) -> str:
 owner = "acme"
 repo = "estate"
 owner_type = "org"
+token_source = "cmru"
 
 [targets]
 host = "github"

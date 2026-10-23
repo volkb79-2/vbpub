@@ -119,14 +119,40 @@ test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[build/argument-s
 id = "case:route:entrypoint:cmru/build/minimum"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:94a4f28fa919570c474bbcee9f0c1ad2f0fc0d36648eee253e7db5a5c44ba147"
-rationale = "Nothing is required: a bare `build` builds the current project from an isolated snapshot."
+reviewed_signature = "sha256:0faabda86a74f56e03c628fcc2c8caaa3accdd35e3e7d2f6efef0728b01df2f5"
+rationale = "Nothing is required: a bare `build` builds the current project from an isolated snapshot of the checked-out commit (KI-95)."
 invocation = ["build"]
 expected_exit_status = 2
 expected_stdout_contains = ""
 expected_stderr_contains = "config file not found"
 effects = ["Without a cmru config the verb refuses (exit 2) before any snapshot or step runs."]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[build/minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/build/option-spelling/option:route:entrypoint:cmru/build/--allow-uncommitted/--allow-uncommitted"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ba96923700e800b63ad8e0f064cc564e302ad2701f9d9bd07dc8b90020a46286"
+rationale = "--allow-uncommitted builds the committed state when the selected projects have uncommitted edits; without it the dirty tree is refused, naming this option."
+invocation = ["build", "--allow-uncommitted"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["Stops at configuration discovery (exit 2); with a config the uncommitted edits are omitted from the isolated build, never built."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[build/option-spelling/--allow-uncommitted/--allow-uncommitted]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/build/option-spelling/option:route:entrypoint:cmru/build/--from-origin-main/--from-origin-main"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:93ef0681343097da39c56fab3f72ec469d663b7dca6b4e799a298dd0e9d4a3a5"
+rationale = "--from-origin-main builds the fetched origin/main snapshot (with the ahead/behind checks) instead of the default checked-out commit."
+invocation = ["build", "--from-origin-main"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["Stops at configuration discovery (exit 2); with a config the build source is fetched origin/main, not HEAD."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[build/option-spelling/--from-origin-main/--from-origin-main]"]
 
 [[cases]]
 id = "case:route:entrypoint:cmru/build/option-spelling/option:route:entrypoint:cmru/build/--config/--config"

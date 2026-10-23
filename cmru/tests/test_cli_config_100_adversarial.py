@@ -17,6 +17,7 @@ def _project_toml(name: str = "demo", *, owner: str = "acme", registry: str = "g
 owner = "{owner}"
 repo = "vbpub"
 owner_type = "org"
+token_source = "cmru"
 
 [targets]
 host = "github"
@@ -66,6 +67,7 @@ def _orchestration_toml(*, project_path: str = "demo/cmru.toml", mode: str = "pr
 owner = "acme"
 repo = "vbpub"
 owner_type = "org"
+token_source = "cmru"
 
 [targets]
 host = "github"

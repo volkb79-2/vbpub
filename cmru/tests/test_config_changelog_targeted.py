@@ -30,7 +30,7 @@ def test_config_orchestration_dependency_order_rejects_late_provider(tmp_path):
     # Exercise the strict dependency-order policy through the parsed document.
     path = tmp_path / "cmru.orchestration.toml"
     path.write_text(
-        "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
+        "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\ntoken_source='cmru'\n"
         "[targets]\nhost='github'\nregistry=[]\n[orchestration]\nproject_order=['consumer','provider']\n"
         "default_projects=['consumer']\ndefault_steps=[]\nexecution_mode='project-first'\n"
         "[orchestration.project.consumer]\nconfig='consumer/cmru.toml'\ndepends_on=['provider']\n"
@@ -41,7 +41,7 @@ def test_config_orchestration_dependency_order_rejects_late_provider(tmp_path):
     (tmp_path / "consumer").mkdir(); (tmp_path / "provider").mkdir()
     for name in ("consumer", "provider"):
         document = (
-            "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
+            "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\ntoken_source='cmru'\n"
             "[targets]\nhost='github'\nregistry=[]\n[runtime]\nkind='none'\n[project]\nid='" + name + "'\n"
             "description='demo'\nprefix='" + name + "-v'\nartifacts=['bundle']\n"
             "[project.version]\nstrategy='scm'\nbump='patch'\n[project.release]\n"
@@ -57,7 +57,7 @@ def test_config_orchestration_dependency_order_rejects_late_provider(tmp_path):
 def test_config_project_and_orchestration_tables_fail_closed(tmp_path, capsys):
     project = tmp_path / "cmru.toml"
     project.write_text(
-        "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
+        "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\ntoken_source='cmru'\n"
         "[targets]\nhost='github'\nregistry=[]\n[runtime]\nkind='none'\n[project]\nid='demo'\n"
         "description='demo'\nprefix='demo-v'\nartifacts=['wheel']\n"
         "[project.version]\nstrategy='scm'\nbump='patch'\n"
@@ -97,7 +97,7 @@ def test_config_orchestration_requires_declared_projects_and_dependencies_in_ord
 
     def run(order, entries):
         path.write_text(
-            "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
+            "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\ntoken_source='cmru'\n"
             "[targets]\nhost='github'\nregistry=[]\n[orchestration]\nproject_order=" + repr(order) + "\n"
             "default_projects=" + repr(order[:1]) + "\ndefault_steps=[]\nexecution_mode='project-first'\n" + entries,
             encoding="utf-8",
@@ -124,12 +124,12 @@ def test_config_orchestration_requires_declared_projects_and_dependencies_in_ord
 def test_config_orchestration_missing_tables_are_rejected(tmp_path, capsys):
     path = tmp_path / "cmru.orchestration.toml"
     cases = [
-        ("schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
+        ("schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\ntoken_source='cmru'\n"
          "[targets]\nhost='github'\nregistry=[]\n", "[orchestration] is required"),
-        ("schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
+        ("schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\ntoken_source='cmru'\n"
          "[targets]\nhost='github'\nregistry=[]\n[orchestration]\nproject_order=[]\ndefault_projects=[]\n"
          "default_steps=[]\nexecution_mode='project-first'\n", "entries are required"),
-        ("schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
+        ("schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\ntoken_source='cmru'\n"
          "[targets]\nhost='github'\nregistry=[]\n[orchestration]\nproject_order=['demo']\ndefault_projects=['demo']\n"
          "default_steps=[]\nexecution_mode='project-first'\n[orchestration.project]\ndemo='bad'\n", "must be a table"),
     ]
@@ -144,7 +144,7 @@ def test_config_orchestration_missing_tables_are_rejected(tmp_path, capsys):
 def test_config_missing_project_table_and_empty_project_path_fail_closed(tmp_path, capsys):
     project = tmp_path / "cmru.toml"
     project.write_text(
-        "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
+        "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\ntoken_source='cmru'\n"
         "[targets]\nhost='github'\nregistry=[]\n[runtime]\nkind='none'\n",
         encoding="utf-8",
     )
@@ -155,7 +155,7 @@ def test_config_missing_project_table_and_empty_project_path_fail_closed(tmp_pat
 
     orchestration = tmp_path / "cmru.orchestration.toml"
     orchestration.write_text(
-        "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
+        "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\ntoken_source='cmru'\n"
         "[targets]\nhost='github'\nregistry=[]\n[orchestration]\nproject_order=['demo']\n"
         "default_projects=['demo']\ndefault_steps=[]\nexecution_mode='project-first'\n"
         "[orchestration.project.demo]\nconfig=''\n",
@@ -186,7 +186,7 @@ def test_config_orchestration_rejects_resolved_symlink_escape_and_accepts_earlie
     link.symlink_to(outside, target_is_directory=True)
     escaped = tmp_path / "cmru.orchestration.toml"
     escaped.write_text(
-        "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
+        "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\ntoken_source='cmru'\n"
         "[targets]\nhost='github'\nregistry=[]\n[orchestration]\nproject_order=['demo']\n"
         "default_projects=['demo']\ndefault_steps=[]\nexecution_mode='project-first'\n"
         "[orchestration.project.demo]\nconfig='link/cmru.toml'\n"
@@ -200,7 +200,7 @@ def test_config_orchestration_rejects_resolved_symlink_escape_and_accepts_earlie
 
     ordered = tmp_path / "cmru.orchestration.toml"
     ordered.write_text(
-        "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
+        "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\ntoken_source='cmru'\n"
         "[targets]\nhost='github'\nregistry=[]\n[orchestration]\nproject_order=['provider','consumer']\n"
         "default_projects=['consumer']\ndefault_steps=[]\nexecution_mode='project-first'\n"
         "[orchestration.project.provider]\nconfig='provider/cmru.toml'\n"

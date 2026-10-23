@@ -113,21 +113,38 @@
       "members": [
         "option:route:entrypoint:cmru/build/--log-prefix-time-short",
         "option:route:entrypoint:cmru/build/--show-run-details",
-        "option:route:entrypoint:cmru/build/--log-append"
+        "option:route:entrypoint:cmru/build/--log-append",
+        "option:route:entrypoint:cmru/build/--from-origin-main",
+        "option:route:entrypoint:cmru/build/--allow-uncommitted"
       ],
       "route_id": "route:entrypoint:cmru/build",
       "shape": {
         "defaulted_options": [
           "option:route:entrypoint:cmru/build/--log-prefix-time-short",
           "option:route:entrypoint:cmru/build/--show-run-details",
-          "option:route:entrypoint:cmru/build/--log-append"
+          "option:route:entrypoint:cmru/build/--log-append",
+          "option:route:entrypoint:cmru/build/--from-origin-main",
+          "option:route:entrypoint:cmru/build/--allow-uncommitted"
         ],
         "required_argument_values": {},
         "required_arguments": [],
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:94a4f28fa919570c474bbcee9f0c1ad2f0fc0d36648eee253e7db5a5c44ba147"
+      "signature": "sha256:0faabda86a74f56e03c628fcc2c8caaa3accdd35e3e7d2f6efef0728b01df2f5"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/build/option-spelling/option:route:entrypoint:cmru/build/--allow-uncommitted/--allow-uncommitted",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/build/--allow-uncommitted"
+      ],
+      "route_id": "route:entrypoint:cmru/build",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/build/--allow-uncommitted",
+        "spelling": "--allow-uncommitted"
+      },
+      "signature": "sha256:ba96923700e800b63ad8e0f064cc564e302ad2701f9d9bd07dc8b90020a46286"
     },
     {
       "id": "case:route:entrypoint:cmru/build/option-spelling/option:route:entrypoint:cmru/build/--config/--config",
@@ -167,6 +184,19 @@
         "spelling": "--dry-run"
       },
       "signature": "sha256:25af8e3b5cd41004947e89e572482054092e2ff3d44a130363b882e886fa912a"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/build/option-spelling/option:route:entrypoint:cmru/build/--from-origin-main/--from-origin-main",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/build/--from-origin-main"
+      ],
+      "route_id": "route:entrypoint:cmru/build",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/build/--from-origin-main",
+        "spelling": "--from-origin-main"
+      },
+      "signature": "sha256:93ef0681343097da39c56fab3f72ec469d663b7dca6b4e799a298dd0e9d4a3a5"
     },
     {
       "id": "case:route:entrypoint:cmru/build/option-spelling/option:route:entrypoint:cmru/build/--log-append/--log-append",
@@ -5793,6 +5823,84 @@
           "required": false,
           "scope": "verb-local",
           "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--from-origin-main",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "build the fetched origin/main snapshot instead of the checked-out commit (the default; HEAD needs no push)",
+          "dest": "from_origin_main",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--from-origin-main"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:cmru/build/--from-origin-main",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "default": false
+          },
+          "parser_path": [
+            "build"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--allow-uncommitted",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "build the committed state even when the selected projects have uncommitted edits (they are omitted)",
+          "dest": "allow_uncommitted",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--allow-uncommitted"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:cmru/build/--allow-uncommitted",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "default": false
+          },
+          "parser_path": [
+            "build"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
         }
       ],
       "aliases": [],
@@ -5815,7 +5923,7 @@
       "confirmation": false,
       "constraints": [],
       "delegated_metadata": [],
-      "description": "Run the isolated build step.",
+      "description": "Run the isolated build step on the checked-out commit (or origin/main with --from-origin-main).",
       "group": "MODIFICATION",
       "id": "route:entrypoint:cmru/build",
       "kind": "invocation",
@@ -5859,7 +5967,7 @@
       "subcommand_groups": [],
       "subcommands": [],
       "subcommands_required": false,
-      "summary": "Run the isolated build step. [mutating; dry-run]",
+      "summary": "Run the isolated build step on the checked-out commit (or origin/main with --from-origin-main). [mutating; dry-run]",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null

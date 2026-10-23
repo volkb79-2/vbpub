@@ -192,7 +192,8 @@ def render_project_toml(
         text = text.replace(
             "schema_version = 1\n",
             "schema_version = 1\n\n[github]\n"
-            f'owner = "{owner}"\nrepo = "{repo}"\nowner_type = "{owner_type}"\n\n'
+            f'owner = "{owner}"\nrepo = "{repo}"\nowner_type = "{owner_type}"\n'
+            'token_source = "gh"\n\n'
             "[targets]\nhost = \"github\"\nregistry = [\"ghcr.io\"]\n",
             1,
         )
@@ -535,7 +536,8 @@ def _run_init(args, runtime) -> None:
         "\nNext steps:\n"
         "  1. Fill in real values where placeholders remain (owner/repo,\n"
         "     release-notes env).\n"
-        "  2. Put credentials in the gitignored cmru.secret.toml.\n"
+        "  2. [github] token_source is \"gh\" (the `gh auth login` token); set it to\n"
+        "     \"cmru\" to use GITHUB_PUSH_PAT/GITHUB_TOKEN or the gitignored cmru.secret.toml.\n"
         "  3. Check the estate graph with `cmru dependencies`, then preview the\n"
         "     steps with `cmru run --dry-run` (a bare `cmru run` really runs them).\n"
     )

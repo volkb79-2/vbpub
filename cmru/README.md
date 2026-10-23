@@ -184,7 +184,8 @@ cmru release ciu                  # one project
 cmru changelog assay --backfill-tag assay-v0.1.0  # catalog a pre-history release
 cmru standards                    # strict config + project-framework conformance
 cmru standards pwmcp --update     # safely update CMRU-owned revision markers
-cmru build   <name>               # isolated local build; retains logs/artifacts, then removes worktree
+cmru build   <name>               # isolated local build of the checked-out commit; retains logs/artifacts, then removes worktree
+cmru build   <name> --from-origin-main  # build fetched origin/main instead of HEAD
 cmru worktrees                    # list retained failed build/release worktrees
 cmru gate-snapshots               # list retained release-gate snapshots (read-only)
 cmru gate-snapshots --remove --dry-run  # preview removing the ones proven unneeded
@@ -666,7 +667,7 @@ When selected products live in independent Git repositories, CMRU runs one isola
 per Git family. Each repository gets its own lock, branch, workspace identity, and promotion
 result; the coordinated release is ordered but cannot be one atomic cross-repository commit.
 
-The current KI-82 candidate adds `cmru release --from-worktree` for a clean, named non-main
+Since 6.2.0 (KI-82), `cmru release --from-worktree` is available for a clean, named non-main
 branch already pushed to the same-named `origin/<branch>` at the exact same commit. It allows
 that branch to diverge from local `main` and `origin/main`; CMRU does not push the source branch,
 update either main, or synchronize local main. This mode currently supports one Git family per
@@ -692,11 +693,14 @@ cmru release ciu --from-worktree --secret-file /absolute/path/to/main/cmru.secre
 
 The explicit `--secret-file PATH` opts in to reading another worktree's root credential file.
 When CMRU can identify the main worktree and file unambiguously, it may print the path as advice;
-it never reads that file without the option. Use this capability only with an installed CMRU
-whose `release --help` lists `--from-worktree`; KI-82 gate evidence is pending.
+it never reads that file without the option. This capability shipped in cmru 6.2.0; with
+`[github] token_source = "gh"` (KI-94) no secret file or `--secret-file` is needed at all.
 
-`cmru build` uses the same remote snapshot and transaction mechanics but stops before source
-release actions. On success it copies project logs to
+`cmru build` uses the same transaction mechanics but stops before source release actions. It
+builds the commit the invoking checkout or worktree is on (`HEAD`, pushed or not: a build never
+publishes, so it needs no remote-visible source; KI-95). `--from-origin-main` builds the fetched
+`origin/main` snapshot instead, with the ahead/behind checks. Uncommitted edits to the selected
+projects are refused; `--allow-uncommitted` builds the committed state without them. On success it copies project logs to
 `<project>/logs/<commit-date>_<full-commit>/` and declared artifact directories to
 `<project>/artifacts/<commit-date>_<full-commit>/`, writes `build.json` with a SHA-256
 inventory, then removes the worktree. These gitignored records can be consumed locally or sent
@@ -789,7 +793,13 @@ for the full contract.
 | `<project>/cmru.secret.toml` | no (gitignored) | optional same-shaped project override, deep-merged over the root secret |
 | `cmru.vars` | no (gitignored) | `KEY=VALUE` build vars a step emits for later steps |
 
-**Token resolution (S2.4):** `$GITHUB_PUSH_PAT` → `$GITHUB_TOKEN` → deep merge the
+**Token source (KI-94, mandatory):** the committed `[github]` table must set
+`token_source = "gh"` or `"cmru"`. `"gh"` uses `gh auth token --hostname github.com` (no secret
+file, works in every worktree without `--secret-file`; `gh auth login`, and for GHCR
+`gh auth refresh -h github.com -s read:packages,write:packages`). `"cmru"` uses the resolution
+below. A missing or invalid value exits 2; `token_source` is not valid inside `cmru.secret.toml`.
+
+**Token resolution for `token_source = "cmru"` (S2.4):** `$GITHUB_PUSH_PAT` → `$GITHUB_TOKEN` → deep merge the
 selected CMRU-root `cmru.secret.toml` with the selected project's optional
 `cmru.secret.toml` (the project `[github].token` wins). A committed `cmru.toml` token
 is rejected. `GITHUB_PUSH_PAT`, `GITHUB_TOKEN`, and `CMRU_GIT_AUTH_TOKEN` are reserved and

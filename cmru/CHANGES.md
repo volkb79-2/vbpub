@@ -31,6 +31,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      volume); it skips it with a stderr WARN. The release-notes generator picks this up from
      the `fix(cmru): ...` commit subject. -->
 
+### Breaking
+- `[github] token_source` (KI-94) is a MANDATORY key of the committed `[github]` table, exactly `"gh"` or `"cmru"`; a missing or other value exits 2 naming both values. `"cmru"` is the previous behaviour (`GITHUB_PUSH_PAT`, `GITHUB_TOKEN`, then `cmru.secret.toml`). `"gh"` takes the token from `gh auth token --hostname github.com` (minimal environment; no secret file and no `--secret-file` needed in any worktree; failures point at `gh auth login` and, for GHCR, `gh auth refresh -h github.com -s read:packages,write:packages`). `token_source` is not valid in `cmru.secret.toml`. Migration: add `token_source = "cmru"` to each `[github]` table; see `docs/UPGRADING-7.0.md`. `cmru init` scaffolds `"gh"`; `cmru doctor` reports the active source.
+
+### Changed
+- `cmru build` builds the checked-out commit (`HEAD`, pushed or not) by default instead of silently building `origin/main` (KI-95). New `--from-origin-main` restores the fetched snapshot (with the ahead/behind checks); new `--allow-uncommitted` builds the committed state past uncommitted project edits, and the dirty-tree refusal now names it. The CLI surface manifest, SPEC, review catalog, README and the packaged skill follow; docs that still called `--from-worktree` an unreleased KI-82 candidate now say it shipped in 6.2.0.
+
 ### Added
 - `cmru release --skip-gates REASON` (CMRU-SKIP-01) releases without running the `run-tests` gate, as an explicit, recorded operator decision. REASON is required. It skips only the execution of `steps.run-tests`: prepare, build, push, tagging, changelog, integration and every source-consistency and tool-dependency check run as before, and a project that declares no gate is still refused. The skip is announced as a `[WARN]`, shown as `run-tests: skipped (operator: ...)` in the plan and `--dry-run`, recorded in the transaction, and published as `Released without gates (operator): REASON` in every GitHub Release body. A `--resume` uses the recorded choice and refuses the flag. REASON is at most 500 characters. `cmru publish --release-tag` (the post-tag OCI body retry) restates the fact from the retained transaction record or an existing body line and otherwise refuses (exit 4) until the operator declares `--gates-ran` or `--gates-skipped REASON`; a malformed gates record is a typed refusal.
 

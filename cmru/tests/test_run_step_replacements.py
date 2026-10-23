@@ -28,6 +28,7 @@ _PROJECT = """schema_version = 1
 owner = "octocat"
 repo = "demo"
 owner_type = "user"
+token_source = "cmru"
 [targets]
 host = "github"
 registry = []

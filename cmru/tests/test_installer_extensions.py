@@ -337,7 +337,7 @@ def _project(tmp_path: Path, extensions_line: str, files: dict | None = None) ->
         target.write_text(text)
     cfg = tmp_path / "cmru.toml"
     cfg.write_text(
-        'schema_version = 1\n[github]\nowner = "octocat"\nrepo = "demo"\nowner_type = "user"\n'
+        'schema_version = 1\n[github]\nowner = "octocat"\nrepo = "demo"\nowner_type = "user"\ntoken_source = "cmru"\n'
         '[targets]\nhost = "github"\nregistry = []\n[runtime]\nkind = "none"\n'
         '[project]\nid = "demo"\ndescription = "t"\ntemplate_revision = 2\n'
         'prefix = "demo-v"\nartifacts = ["tarball"]\n'

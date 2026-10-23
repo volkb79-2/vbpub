@@ -33,6 +33,7 @@ def project_doc():
 owner="acme"
 repo="vbpub"
 owner_type="org"
+token_source="cmru"
 [targets]
 host="github"
 registry=["ghcr.io"]

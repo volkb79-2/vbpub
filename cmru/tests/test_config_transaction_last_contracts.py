@@ -31,6 +31,7 @@ def project_doc(name="demo", targets='registry=["ghcr.io"]'):
 owner="acme"
 repo="vbpub"
 owner_type="org"
+token_source="cmru"
 [targets]
 host="github"
 {targets}
@@ -66,6 +67,7 @@ def orch(entry='config="demo/cmru.toml"', order='["demo"]', projects='demo'):
 owner="acme"
 repo="vbpub"
 owner_type="org"
+token_source="cmru"
 [targets]
 host="github"
 registry=["ghcr.io"]
@@ -103,7 +105,7 @@ def test_config_secret_and_project_missing_facts_fail_closed(tmp_path, capsys):
 
 
 def test_config_orchestration_rejects_entry_shape_order_and_cross_project_targets(tmp_path, capsys):
-    demo = tmp_path / "demo"; demo.mkdir(); (demo / "cmru.toml").write_text(project_doc().replace('[github]\nowner="acme"\nrepo="vbpub"\nowner_type="org"\n[targets]\nhost="github"\nregistry=["ghcr.io"]\n', ''))
+    demo = tmp_path / "demo"; demo.mkdir(); (demo / "cmru.toml").write_text(project_doc().replace('[github]\nowner="acme"\nrepo="vbpub"\nowner_type="org"\ntoken_source="cmru"\n[targets]\nhost="github"\nregistry=["ghcr.io"]\n', ''))
     other = tmp_path / "other"; other.mkdir(); (other / "cmru.toml").write_text(project_doc("other", targets='registry=["other.example"]'))
     path = tmp_path / "cmru.orchestration.toml"
     cases = (

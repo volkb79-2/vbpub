@@ -125,7 +125,8 @@ to your terminal. Full project subprocess output is line-flushed into the root
 audit log and transaction-local `<project>/logs/cmru/<step>.log` files; use
 `--show-run-details` to stream raw child output to the terminal too. No credential
 file is ever copied into (or read from) that worktree. The launcher resolves the
-publisher credential on the host from your checkout (the invocation environment
+publisher credential on the host from your checkout (with `[github] token_source = "gh"`,
+`gh auth token --hostname github.com`; with `"cmru"` the invocation environment
 token, else the repository-root `cmru.secret.toml` merged with each selected project's
 explicit overlay) and hands the resolved root and per-project tokens to the child over
 a private inherited pipe: never argv, never a file. A resumed child (`--resume`) gets
@@ -256,7 +257,11 @@ safe behavior remains: a clean checkout may fast-forward its local `main`, while
 local `main` is left untouched rather than force-moved. A false cleanup result is reported on
 the success, plan-refusal, and child-failure paths, so no path claims that the caller was synced.
 
-`cmru build` uses the same fetched snapshot but stops before source release actions. A successful
+`cmru build` uses the same transaction mechanics but stops before source release actions. Its
+source is the commit the invoking checkout or worktree is on (`git rev-parse HEAD`, pushed or
+not; KI-95), with no fetch and no ahead check; `--from-origin-main` selects the fetched
+`origin/main` snapshot (with those checks) instead, and `--allow-uncommitted` builds the committed
+state when the selected projects have uncommitted edits (otherwise they are refused). A successful
 build copies logs into `<project>/logs/<commit-date>_<full-commit>/` and declared artifact
 directories into `<project>/artifacts/<commit-date>_<full-commit>/`, writes a `build.json`
 SHA-256 inventory, then removes its

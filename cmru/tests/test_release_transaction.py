@@ -305,6 +305,7 @@ def test_release_proceeds_when_uncommitted_changes_are_explicitly_allowed(monkey
         monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
         monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
         monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
+        monkeypatch.setattr(transaction, "local_head_commit", lambda _root, **_kwargs: "a" * 40)
         monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
         monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
         monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: calls.append("ran-child") or 0)
@@ -386,6 +387,7 @@ def test_dry_run_is_not_blocked_by_uncommitted_release_path_changes(monkeypatch)
         monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
         monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
         monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
+        monkeypatch.setattr(transaction, "local_head_commit", lambda _root, **_kwargs: "a" * 40)
         monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
         monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
         monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: calls.append("ran-child") or 0)
@@ -413,6 +415,7 @@ def test_release_ignores_ambient_snapshot_and_uses_only_launcher_handoff(
 owner = "octocat"
 repo = "demo"
 owner_type = "user"
+token_source = "cmru"
 [orchestration]
 project_order = ["alpha"]
 [project.alpha]
@@ -1390,6 +1393,7 @@ def test_parent_reverts_promotion_and_reports_sync_failure_on_child_failure(
 owner = "octocat"
 repo = "demo"
 owner_type = "user"
+token_source = "cmru"
 [orchestration]
 project_order = ["alpha"]
 [project.alpha]
@@ -1410,6 +1414,7 @@ cwd = "alpha"
     monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
     monkeypatch.setattr(cli, "_require_local_tag_inspection_support", lambda _root: None)
     monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
+    monkeypatch.setattr(transaction, "local_head_commit", lambda _root, **_kwargs: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
     monkeypatch.setattr(transaction, "write_release_tag_snapshot", lambda *_args, **_kwargs: None)
@@ -1455,6 +1460,7 @@ def test_parent_skips_revert_when_promotion_never_landed(tmp_path, monkeypatch):
 owner = "octocat"
 repo = "demo"
 owner_type = "user"
+token_source = "cmru"
 [orchestration]
 project_order = ["alpha"]
 [project.alpha]
@@ -1475,6 +1481,7 @@ cwd = "alpha"
     monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
     monkeypatch.setattr(cli, "_require_local_tag_inspection_support", lambda _root: None)
     monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
+    monkeypatch.setattr(transaction, "local_head_commit", lambda _root, **_kwargs: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
     monkeypatch.setattr(transaction, "write_release_tag_snapshot", lambda *_args, **_kwargs: None)
@@ -3886,6 +3893,7 @@ def test_parent_build_retains_successful_outputs_then_removes_worktree(tmp_path,
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *_args: {})
     monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
     monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
+    monkeypatch.setattr(transaction, "local_head_commit", lambda _root, **_kwargs: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(
         transaction, "create_workspace", lambda _root, *, base, purpose, **_kw: workspace,
@@ -3922,6 +3930,7 @@ def test_parent_build_failure_keeps_worktree_and_does_not_retain_outputs(tmp_pat
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *_args: {})
     monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
     monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
+    monkeypatch.setattr(transaction, "local_head_commit", lambda _root, **_kwargs: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(
         transaction, "create_workspace", lambda _root, *, base, purpose, **_kw: workspace,

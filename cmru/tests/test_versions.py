@@ -108,6 +108,7 @@ def _root_config(name: str, root_versions: str = "") -> str:
 owner = "example"
 repo = "example"
 owner_type = "user"
+token_source = "cmru"
 
 [targets]
 host = "github"
@@ -3555,7 +3556,7 @@ def test_standalone_project_local_target_resolves_and_records_project_side(tmp_p
         _project_config("standalone", _versions_table(14)).replace(
             "schema_version = 1\n",
             'schema_version = 1\n[github]\nowner = "example"\nrepo = "demo"\n'
-            'owner_type = "user"\n[targets]\nhost = "github"\nregistry = []\n',
+            'owner_type = "user"\ntoken_source = "cmru"\n[targets]\nhost = "github"\nregistry = []\n',
             1,
         ),
         encoding="utf-8",

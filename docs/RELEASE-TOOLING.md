@@ -13,7 +13,7 @@ One config, one installed CLI. The normative contract is
 | File | Tracked? | Purpose |
 |---|---|---|
 | `cmru.orchestration.toml` | committed | Estate selection, dependency order, and cleanup. No project commands. |
-| `cmru.secret.toml` | gitignored | Repository credential: `[github] token = "…"`. |
+| `cmru.secret.toml` | gitignored | Repository credential for `token_source = "cmru"`: `[github] token = "…"` (not needed with `"gh"`). |
 | `<project>/cmru.secret.toml` | gitignored | Optional project override; deep-merged over the root secret. |
 | [`cmru.project.sample.toml`](../cmru.project.sample.toml) | committed | Template for a portable project `cmru.toml`. |
 | `<project>/cmru.toml` | committed | Complete project release and step contract. |
@@ -65,8 +65,10 @@ Empyrion translation remains delegated and on-demand:
 
 ## Notes
 
-- GitHub credentials come from env, repository-root `cmru.secret.toml`, or an
-  explicit project-local overlay; they are never committed.
+- The committed `[github] token_source` (mandatory since cmru 7.0) picks the credential
+  source: `"gh"` = `gh auth token --hostname github.com` (no secret file, works in every
+  worktree), `"cmru"` = env, repository-root `cmru.secret.toml`, or an explicit
+  project-local overlay. Tokens are never committed.
 - The pipeline is config-driven; no project logic is hardcoded in the orchestrator.
 - **Strict configuration:** CMRU accepts only a project `cmru.toml` or an explicit
   `cmru.orchestration.toml` selected with `--config`. Old config filenames, aliases, and

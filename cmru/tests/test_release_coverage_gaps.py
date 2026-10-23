@@ -96,7 +96,7 @@ def test_config_parser_refuses_io_and_reserved_names(tmp_path, monkeypatch):
 def test_project_config_rejects_one_central_fact_duplicate(tmp_path):
     path = tmp_path / "cmru.toml"
     path.write_text(
-        "schema_version = 1\n[github]\nowner = 'o'\nrepo = 'r'\nowner_type = 'user'\n\n"
+        "schema_version = 1\n[github]\nowner = 'o'\nrepo = 'r'\nowner_type = 'user'\ntoken_source = 'cmru'\n\n"
         + _minimal_project().split("schema_version = 1\n", 1)[1],
         encoding="utf-8",
     )
@@ -120,6 +120,7 @@ def _orchestration_with_entry(tmp_path: Path, entry_name: str, config_path: str)
 owner = "o"
 repo = "r"
 owner_type = "user"
+token_source = "cmru"
 [targets]
 host = "github"
 registry = []

@@ -205,6 +205,7 @@ schema_version = 1
 owner = "your-github-owner"
 repo = "your-repository"
 owner_type = "user"
+token_source = "gh"
 
 [targets]
 host = "github"
@@ -1250,8 +1251,23 @@ version, wheel digest, and installed-file digest in `cmru.release.log` and the
 transaction log. The [release-transaction guide](RELEASE-TRANSACTIONS.md#bootstrap-when-the-release-engine-changes-in-the-same-wave)
 shows how to build that bootstrap wheel when the release engine itself changed.
 
-For an HTTPS GitHub `origin`, keep the repository credential in the ignored CMRU-root secret
-file:
+Declare where the credential comes from in the committed `[github]` table (mandatory, KI-94):
+
+```toml
+schema_version = 1
+
+[github]
+owner = "acme"
+repo = "estate"
+owner_type = "user"
+token_source = "gh"      # or "cmru"
+```
+
+`"gh"` takes the token of the user's `gh auth login` (`gh auth token --hostname github.com`):
+no secret file and no `--secret-file` in any worktree. For GHCR work run
+`gh auth refresh -h github.com -s read:packages,write:packages` once. `"cmru"` keeps today's
+behaviour: for an HTTPS GitHub `origin`, keep the repository credential in the ignored
+CMRU-root secret file (or `GITHUB_PUSH_PAT`/`GITHUB_TOKEN`):
 
 ```toml
 # <cmru-root>/cmru.secret.toml
@@ -1344,8 +1360,8 @@ cmru abandon cmru-release-20260924_120000-example-a1b2c3 \
 
 ### Release from a pushed feature worktree
 
-The `--from-worktree` flow is in the current KI-82 candidate. Use an installed CMRU whose
-`cmru release --help` lists this option. It supports one Git family per release and requires a
+The `--from-worktree` flow (KI-82) has shipped since cmru 6.2.0; an older installed CMRU
+does not list it in `cmru release --help`. It supports one Git family per release and requires a
 clean worktree on a named non-main branch. CMRU fetches that exact `origin/<branch>` and refuses
 unless its tip equals local `HEAD`; commit and push all intended work to the same-named remote
 branch first. The release can be ahead of or diverged from both local and remote `main`. A
@@ -1623,7 +1639,9 @@ own lock, candidate branch, workspace identity, and promotion result; cross-repo
 is coordinated in order but is not one atomic Git commit.
 
 `cmru build X` runs prepare/gate/build in a retained `cmru-build-…` worktree
-and records its outputs with a source identity and SHA-256 inventory. To publish
+on the commit your checkout (or feature-branch worktree) is on, pushed or not;
+`--from-origin-main` builds fetched `origin/main` instead and `--allow-uncommitted`
+builds the committed state past uncommitted edits to the project. It records its outputs with a source identity and SHA-256 inventory. To publish
 those exact retained bytes, use the ID printed by `cmru build`:
 
 ```sh

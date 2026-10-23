@@ -19,7 +19,7 @@ from tests.test_w2_integ import _registry_problem
 
 PROJECT = Path(__file__).resolve().parents[1]
 SKILL = PROJECT / "src" / "cmru" / "skills" / "cmru-cli" / "SKILL.md"
-GITHUB_BLOCK = '[github]\nowner = "o"\nrepo = "r"\nowner_type = "user"\n'
+GITHUB_BLOCK = '[github]\nowner = "o"\nrepo = "r"\nowner_type = "user"\ntoken_source = "cmru"\n'
 CONFIG = f'''schema_version = 1
 
 {GITHUB_BLOCK}

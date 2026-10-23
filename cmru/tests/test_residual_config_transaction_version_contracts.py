@@ -31,6 +31,7 @@ def project_doc() -> str:
 owner="acme"
 repo="vbpub"
 owner_type="org"
+token_source="cmru"
 [targets]
 host="github"
 registry=["ghcr.io"]
@@ -85,7 +86,7 @@ def test_config_project_required_fields_are_rejected_after_full_parse(tmp_path, 
 def test_config_orchestration_valid_fixture_rejects_unordered_dependency(tmp_path, capsys):
     project = tmp_path / "demo"; project.mkdir()
     project_text = project_doc().replace(
-        '[github]\nowner="acme"\nrepo="vbpub"\nowner_type="org"\n'
+        '[github]\nowner="acme"\nrepo="vbpub"\nowner_type="org"\ntoken_source="cmru"\n'
         '[targets]\nhost="github"\nregistry=["ghcr.io"]\n',
         "",
     )
@@ -96,6 +97,7 @@ def test_config_orchestration_valid_fixture_rejects_unordered_dependency(tmp_pat
 owner="acme"
 repo="vbpub"
 owner_type="org"
+token_source="cmru"
 [targets]
 host="github"
 registry=["ghcr.io"]

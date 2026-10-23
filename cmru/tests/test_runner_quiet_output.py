@@ -219,6 +219,7 @@ def test_project_runner_config_rejects_unknown_execution_key():
 owner = "octocat"
 repo = "demo"
 owner_type = "user"
+token_source = "cmru"
 [targets]
 host = "github"
 registry = []
@@ -254,6 +255,7 @@ def test_project_runner_config_allows_explicit_project_metadata_namespace():
 owner = "octocat"
 repo = "demo"
 owner_type = "user"
+token_source = "cmru"
 [targets]
 host = "github"
 registry = []
@@ -305,6 +307,7 @@ def test_raw_runner_uses_project_local_log_root(tmp_path, monkeypatch):
 owner = "octocat"
 repo = "demo"
 owner_type = "user"
+token_source = "cmru"
 [targets]
 host = "github"
 registry = []

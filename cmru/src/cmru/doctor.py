@@ -153,7 +153,20 @@ def check_config(runtime=None, args=None) -> CheckResult:
 
 
 def check_credentials(runtime=None, args=None) -> CheckResult:
-    """A GitHub token variable is present; reports WHICH one, never its value."""
+    """A GitHub token is available; reports WHICH source, never its value."""
+    try:
+        loaded = _load_nearest_config()
+    except ValueError:
+        loaded = None
+    if loaded is not None:
+        github = loaded[1].github
+        if getattr(github, "token_source", "cmru") == "gh":
+            # The loader already ran `gh auth token --hostname github.com`
+            # (a failure there is reported by the config check).
+            return CheckResult(
+                "ok", "token_source = gh: `gh auth token` returned a token",
+                details={"token_source": "gh"},
+            )
     for name in CREDENTIAL_VARIABLES:
         if os.environ.get(name, "").strip():
             return CheckResult(

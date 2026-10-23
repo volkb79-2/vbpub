@@ -33,6 +33,7 @@ def project_doc(name="demo", owner="acme", registry="ghcr.io"):
 owner="{owner}"
 repo="vbpub"
 owner_type="org"
+token_source="cmru"
 [targets]
 host="github"
 registry=["{registry}"]
@@ -72,6 +73,7 @@ def orch(entry='config="demo/cmru.toml"', order='["demo"]'):
 owner="acme"
 repo="vbpub"
 owner_type="org"
+token_source="cmru"
 [targets]
 host="github"
 registry=[]

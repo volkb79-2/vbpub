@@ -67,6 +67,7 @@ def test_config_project_override_wins_over_estate_default(tmp_path):
 owner = "octocat"
 repo = "demo"
 owner_type = "user"
+token_source = "cmru"
 [targets]
 host = "github"
 registry = ["ghcr.io"]

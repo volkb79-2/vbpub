@@ -560,7 +560,16 @@ artifact policy and remain portable as standalone files by carrying those two ta
 central file exists. This prevents duplicated facts from drifting while preserving a clear
 standalone bootstrap path.
 
-Repository secrets are resolved separately: the environment wins for an invocation, then the
+Where the credential comes from is a mandatory, explicit choice (KI-94): `[github] token_source`
+is `"gh"` (the user's `gh auth token --hostname github.com`, per-user so it works in every
+worktree) or `"cmru"` (the rule below). It lives in the committed `[github]` table, not the
+secret file, because the whole point of `gh` is that no secret file exists in a worktree; it is
+mandatory so a missing key can never silently select a different credential than the operator
+meant. Rejected: an implicit env, then secret file, then `gh` fallback chain (the credential in
+use would depend on ambient state) and a `token_from` pointer inside the secret file (needs the
+very file that `gh` mode exists to avoid). Under `"gh"` the environment token does not shadow the login.
+
+For `token_source = "cmru"`, repository secrets are resolved separately: the environment wins for an invocation, then the
 CMRU root secret, then a project-local overlay. No credential is copied into a project config.
 The resolved publisher token must remain the same credential through the runner and CMRU's
 Git transport. For that reason, `GITHUB_PUSH_PAT`, `GITHUB_TOKEN`, and
@@ -1375,8 +1384,7 @@ an explicit way to select it, but must not silently consume another checkout's s
 authorizes the parent process to read that root secret;
 environment-token precedence and project secret overlays still apply. The existing private
 handoff keeps the resolved credential out of the isolated transaction worktree, child argv,
-environment, and logs. This behavior is implemented in the current candidate; stable
-availability waits for KI-82's registered gate and acceptance evidence.
+environment, and logs. This behavior shipped in cmru 6.2.0 (KI-82).
 
 ## An ungated release is an explicit, recorded flag (CMRU-SKIP-01)
 

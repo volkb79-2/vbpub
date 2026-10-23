@@ -26,7 +26,12 @@ from cmru.runner import StepConfig, execute_step, parse_step as _runner_parse_st
 from cmru import transaction
 from cmru import exit_codes
 from cmru.git_auth import GitHubGitAuth, run_local_git, run_remote_git
-from cmru.config import _RESERVED_CMRU_INTERNAL_ENV, is_reserved_internal_env, load_forge_config
+from cmru.config import (
+    _RESERVED_CMRU_INTERNAL_ENV,
+    GH_PACKAGES_HINT,
+    is_reserved_internal_env,
+    load_forge_config,
+)
 from cmru.config import InvocationContext, resolve_invocation_context
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
 from cmru.credential_handoff import CredentialHandoff
@@ -139,6 +144,7 @@ class GitHubConfig:
     repo: str
     token: str
     owner_type: str  # required: "user" | "org"  (V03; replaces the modern-debian-tools probe)
+    token_source: str = "cmru"  # "gh" | "cmru" (KI-94)
 
 
 def _git_auth_for_repository(github: GitHubConfig) -> GitHubGitAuth:
@@ -793,6 +799,7 @@ def load_config(
     github_config = GitHubConfig(
         owner=forge.github.owner, repo=forge.github.repo,
         token=forge.github.token or "", owner_type=forge.github.owner_type,
+        token_source=forge.github.token_source,
     )
     env_config = ReleaseEnvConfig(
         env=forge.env,
@@ -1420,7 +1427,8 @@ def delete_package_version(owner: str, package: str, token: str, version_id: int
         if status == 403:
             log_warn(
                 "Skipping GHCR cleanup for "
-                f"{package} version {version_id}: missing package delete scope."
+                f"{package} version {version_id}: missing package delete scope "
+                f"(token_source = 'gh': {GH_PACKAGES_HINT})."
             )
             return
         raise RuntimeError(f"Failed to delete {package} version {version_id}: {body}")
@@ -1439,7 +1447,8 @@ def delete_package(owner: str, package: str, token: str, owner_type: str, dry_ru
         if status == 403:
             log_warn(
                 "Skipping GHCR package delete for "
-                f"{package}: missing package delete scope."
+                f"{package}: missing package delete scope "
+                f"(token_source = 'gh': {GH_PACKAGES_HINT})."
             )
             return
         if status == 404:

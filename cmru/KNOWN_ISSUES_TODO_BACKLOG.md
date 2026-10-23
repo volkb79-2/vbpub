@@ -2400,7 +2400,21 @@ committed file.
 
 ### KI-94 - cmru credentials: read the user's `gh` login instead of a second token in `cmru.secret.toml`
 
-**Status:** OPEN (design). Raised 2026-10-23.
+**Status:** FIXED 2026-10-23 (unreleased; breaking, ships as cmru 7.0.0). Operator decision superseding the `token_from` idea below:
+a MANDATORY key `[github] token_source`, exactly `"gh"` or `"cmru"`, in the committed `[github]` table of `cmru.orchestration.toml` (or a
+portable `cmru.toml`) - not in the secret file, because `gh` mode exists so that a worktree needs no secret file.
+`"cmru"` = unchanged resolution (`GITHUB_PUSH_PAT`, `GITHUB_TOKEN`, then `cmru.secret.toml` + project overlay).
+`"gh"` = stdout of `gh auth token --hostname github.com` run with a minimal environment (PATH, HOME, XDG/GH config and runtime dirs, locale;
+never `GH_TOKEN`/`GITHUB_TOKEN`); no secret file is read and the environment PAT does not shadow the login. Missing/invalid `token_source`,
+a missing `gh`, a non-zero exit, a timeout or an empty token are exit-2 configuration errors (the last ones with `gh auth login`, plus
+`gh auth refresh -h github.com -s read:packages,write:packages` for GHCR); a `token_source` inside `cmru.secret.toml` is refused with a
+pointer. The token flows through the unchanged reserved-credential path (`forge.github.token` -> protected runner env / private release
+handoff; the transaction child never runs `gh`) and is never logged. `cmru doctor` reports the active source without the value. No
+scope pre-check via `gh api -i /user` was implemented (the 403 warnings on GHCR delete now carry the refresh hint instead).
+`cmru init` scaffolds `token_source = "gh"`. Migration: add `token_source = "cmru"` to every `[github]` table (`docs/UPGRADING-7.0.md`).
+Code: `config.py` (`_github`, `_gh_token`, `_load_repository_secrets`), `doctor.py`, `scaffold.py`; tests `tests/test_token_source.py`.
+
+Original design note (superseded), raised 2026-10-23.
 
 **Today.** `cmru.secret.toml` (root, gitignored) or `GITHUB_PUSH_PAT`/`GITHUB_TOKEN` in the environment carry a PAT used for git push, Releases and GHCR.
 The same user already has `gh` logged in (`~/.config/gh/hosts.yml`, account `volkb79-2`), a different token with scopes `gist read:org repo workflow`: no

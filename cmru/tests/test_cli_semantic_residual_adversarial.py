@@ -46,6 +46,7 @@ def test_build_success_runs_child_retains_outputs_and_reports_cleanup_command(mo
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "child", "cmru/build/abc", "a" * 40)
     calls = []
     monkeypatch.setattr(cli.transaction, "fetch_origin_main", lambda *_, **__: "b" * 40)
+    monkeypatch.setattr(cli.transaction, "local_head_commit", lambda *_, **__: "b" * 40)
     monkeypatch.setattr(
         cli, "_project_config_paths_at_snapshot",
         lambda _root, _base, _config, _configs, names: {

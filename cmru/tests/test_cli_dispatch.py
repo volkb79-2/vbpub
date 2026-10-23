@@ -66,6 +66,7 @@ MINIMAL_S2 = """schema_version = 1
 owner = "octocat"
 repo = "demo"
 owner_type = "user"
+token_source = "cmru"
 [targets]
 host = "github"
 registry = ["ghcr.io"]
@@ -89,6 +90,7 @@ PROJECT = """schema_version = 1
 owner = "octocat"
 repo = "demo"
 owner_type = "user"
+token_source = "cmru"
 [targets]
 host = "github"
 registry = ["ghcr.io"]
@@ -120,7 +122,7 @@ commands = [ { label = "push", argv = ["true"], cwd = "." } ]
 """
 
 PROJECT_CENTRAL = PROJECT.replace(
-    '[github]\nowner = "octocat"\nrepo = "demo"\nowner_type = "user"\n'
+    '[github]\nowner = "octocat"\nrepo = "demo"\nowner_type = "user"\ntoken_source = "cmru"\n'
     '[targets]\nhost = "github"\nregistry = ["ghcr.io"]\n',
     "",
 )
@@ -296,6 +298,7 @@ repo_root = "."
 username = "octocat"
 repo = "demo"
 owner_type = "user"
+token_source = "cmru"
 [registry]
 url = "ghcr.io"
 [orchestration]

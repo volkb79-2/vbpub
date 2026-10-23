@@ -50,6 +50,7 @@ def test_default_and_explicit_config_resolution_uses_nearest_central_root(tmp_pa
 owner = "owner"
 repo = "repo"
 owner_type = "user"
+token_source = "cmru"
 [targets]
 host = "github"
 registry = ["ghcr.io"]

@@ -43,7 +43,8 @@ def test_every_documented_toml_example_is_current_toml_and_versioned(tmp_path):
     # the `bundle.toml` `[archive] name_template` contract-name example (KI-89), which
     # `test_consumers_bundle_name_template_example_is_the_contract_name` loads with the
     # shipped archive-template validator.
-    assert block_counts == {"README.md": 0, "DESIGN-GUIDE.md": 0, "CONSUMERS.md": 5}
+    # A sixth block is the `[github] token_source` credential-source example (KI-94).
+    assert block_counts == {"README.md": 0, "DESIGN-GUIDE.md": 0, "CONSUMERS.md": 6}
 
 
 def test_consumers_bundle_name_template_example_is_the_contract_name():

@@ -40,6 +40,7 @@ class GitHubS2Config:
     repo: str
     owner_type: str          # "user" | "org"  (V03)
     token: Optional[str]     # resolved repository baseline secret; never from committed config
+    token_source: str = "cmru"  # "gh" | "cmru" (KI-94); mandatory in the committed [github] table
 
 
 @dataclass(frozen=True)
@@ -839,7 +840,7 @@ def _scalar_env(
 def _github(raw: object) -> GitHubS2Config:
     if not isinstance(raw, dict):
         _error("[github] is required")
-    _reject_unknown(raw, {"owner", "repo", "owner_type"}, "github")
+    _reject_unknown(raw, {"owner", "repo", "owner_type", "token_source"}, "github")
     owner = _require(raw, "owner", "github")
     repo = _require(raw, "repo", "github")
     owner_type = _require(raw, "owner_type", "github")
@@ -847,7 +848,64 @@ def _github(raw: object) -> GitHubS2Config:
         _error("github.owner and github.repo must be non-empty strings")
     if owner_type not in {"user", "org"}:
         _error("github.owner_type must be 'user' or 'org'")
-    return GitHubS2Config(owner=owner.strip(), repo=repo.strip(), owner_type=owner_type, token=None)
+    token_source = raw.get("token_source")
+    if token_source not in TOKEN_SOURCES:
+        shown = "missing" if token_source is None else f"{token_source!r}"
+        _error(
+            f"github.token_source is {shown}: it is mandatory and must be exactly "
+            "'gh' (the token comes from `gh auth token --hostname github.com`) or "
+            "'cmru' (the token comes from GITHUB_PUSH_PAT/GITHUB_TOKEN or cmru.secret.toml). "
+            "Set it in the [github] table of cmru.orchestration.toml (or cmru.toml), "
+            'for example token_source = "gh"'
+        )
+    return GitHubS2Config(
+        owner=owner.strip(), repo=repo.strip(), owner_type=owner_type, token=None,
+        token_source=token_source,
+    )
+
+
+#: The closed vocabulary of ``[github] token_source`` (KI-94).
+TOKEN_SOURCES = ("gh", "cmru")
+GH_LOGIN_HINT = "run `gh auth login`"
+GH_PACKAGES_HINT = "gh auth refresh -h github.com -s read:packages,write:packages"
+
+
+def _gh_token() -> str:
+    """Return the logged-in ``gh`` user's token (``token_source = "gh"``).
+
+    ``gh`` runs with a minimal environment so an ambient GH_TOKEN/GITHUB_TOKEN
+    cannot silently stand in for the login the operator declared.  The token is
+    read from stdout only and is never logged, echoed or placed in an error.
+    """
+    env = {
+        key: os.environ[key]
+        for key in (
+            "PATH", "HOME", "XDG_CONFIG_HOME", "GH_CONFIG_DIR", "XDG_RUNTIME_DIR",
+            "DBUS_SESSION_BUS_ADDRESS", "LANG", "LC_ALL",
+        )
+        if os.environ.get(key)
+    }
+    command = ["gh", "auth", "token", "--hostname", "github.com"]
+    try:
+        completed = subprocess.run(
+            command, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=30, check=False,
+        )
+    except FileNotFoundError:
+        _error(
+            "github.token_source = 'gh' but the `gh` CLI is not installed or not on PATH; "
+            "install it, or set token_source = 'cmru' and supply a PAT"
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        _error(f"github.token_source = 'gh': `gh auth token` could not run ({type(exc).__name__}); {GH_LOGIN_HINT}")
+    token = (completed.stdout or "").strip()
+    if completed.returncode != 0 or not token:
+        _error(
+            "github.token_source = 'gh' but `gh auth token --hostname github.com` "
+            f"returned {'no token' if completed.returncode == 0 else f'exit {completed.returncode}'}; "
+            f"{GH_LOGIN_HINT} (for GHCR also run `{GH_PACKAGES_HINT}`)"
+        )
+    return token
 
 
 def _environment_token() -> str:
@@ -862,8 +920,14 @@ def _environment_token() -> str:
 def _secret_token(raw: object, where: str) -> str:
     if not isinstance(raw, dict):
         _error(f"{where} must be a table")
+    if "token_source" in raw:
+        _error(
+            f"{where}.token_source does not belong in the secret file: set "
+            "token_source = 'gh' or 'cmru' in the [github] table of cmru.orchestration.toml "
+            "(or cmru.toml); the secret file carries only [github] token"
+        )
     _reject_unknown(raw, {"token"}, where)
-    token = _require(raw, "token", where)
+    token =_require(raw, "token", where)
     if not isinstance(token, str) or not token.strip():
         _error(f"{where}.token must be a non-empty string")
     return token.strip()
@@ -913,6 +977,7 @@ def _resolved_secret_token(raw: Mapping[str, object], where: str) -> str:
 
 def _load_repository_secrets(
     config_root: Path, project_configs: Mapping[str, Path], *, secret_file: Path | None = None,
+    token_source: str = "cmru",
 ) -> tuple[str, Mapping[str, str]]:
     """Deep-merge root secrets with an optional project-local override.
 
@@ -934,6 +999,13 @@ def _load_repository_secrets(
         return handoff.root, {
             name: handoff.projects.get(name, handoff.root) for name in project_configs
         }
+    if token_source == "gh":
+        # KI-94: the declared source is authoritative. No secret file is read
+        # (so none is needed in a worktree) and GITHUB_PUSH_PAT/GITHUB_TOKEN do
+        # not shadow the login.  The token then flows through the same
+        # reserved-credential handling as any resolved PAT.
+        gh_token = _gh_token()
+        return gh_token, {name: gh_token for name in project_configs}
     config_root = config_root.resolve()
     root_secret_path = (
         secret_file.expanduser().resolve()
@@ -1204,10 +1276,11 @@ def _load_project_config(config_path: Path, *, secret_file: Path | None = None) 
     assert github is not None and targets is not None
     root_token, project_tokens = _load_repository_secrets(
         config_path.parent, {project.name: config_path}, secret_file=secret_file,
+        token_source=github.token_source,
     )
     github = GitHubS2Config(
         owner=github.owner, repo=github.repo, owner_type=github.owner_type,
-        token=root_token or None,
+        token=root_token or None, token_source=github.token_source,
     )
     orchestration = OrchestrationConfig(
         project_order=[project.name],
@@ -1335,8 +1408,9 @@ def _load_orchestration_config(
     known = set(docs)
     root_token, project_tokens = _load_repository_secrets(
         config_path.parent, paths, secret_file=secret_file,
+        token_source=github.token_source,
     )
-    unknown = sorted(set(orch_raw["project_order"]) - known)
+    unknown =sorted(set(orch_raw["project_order"]) - known)
     if unknown:
         _error(f"orchestration.project_order names unknown project(s): {unknown}")
     for project_id, deps in dependencies.items():
@@ -1364,7 +1438,7 @@ def _load_orchestration_config(
                 )
     github = GitHubS2Config(
         owner=github.owner, repo=github.repo, owner_type=github.owner_type,
-        token=root_token or None,
+        token=root_token or None, token_source=github.token_source,
     )
     return ForgeConfig(
         github=github, targets=targets,

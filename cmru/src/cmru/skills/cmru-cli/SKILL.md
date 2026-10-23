@@ -82,8 +82,8 @@ with origin credentials, usually the main checkout; `abandon` has no `--secret-f
 `release` and `publish` accept it).
 If hosting already deleted the PR head after merge, CMRU can retire the local transaction only
 after proving the exact candidate tip is in `origin/main`; an absent ref alone is not enough.
-Use this KI-82 candidate flow only when the installed `cmru release --help`
-lists `--from-worktree`; registered gate evidence is pending.
+This KI-82 flow shipped in cmru 6.2.0; an older installed `cmru` does not list
+`--from-worktree` in `cmru release --help`.
 A FAILED release keeps its worktree for inspection; `--resume WORKTREE` recovers
 a retained transaction only when its recorded tag/publication state is safe to
 continue. A resume keeps the version the first attempt recorded (D-001): do not
@@ -91,10 +91,21 @@ repeat `--minor`/`--major`/`--set-version`; one that selects a different version
 is refused (exit 4) before anything changes. There is no `release --abandon`:
 discarding is the `abandon` verb below.
 
+## Credentials (`[github] token_source`, mandatory since 7.0)
+
+The committed `[github]` table declares `token_source = "gh"` or `"cmru"` (missing or other:
+exit 2). `"gh"` runs `gh auth token --hostname github.com`: no secret file and no
+`--secret-file` in any worktree (if it fails: `gh auth login`; for GHCR
+`gh auth refresh -h github.com -s read:packages,write:packages`). `"cmru"` uses
+`GITHUB_PUSH_PAT`/`GITHUB_TOKEN`, then `cmru.secret.toml`. `token_source` is not a secret-file key.
+`cmru doctor` reports which source is active, never the value.
+
 ## Build, publish, history
 
 ```bash
-cmru build                           # isolated local build; retains outputs on success
+cmru build                           # isolated local build of the checked-out commit (KI-95); retains outputs on success
+cmru build --from-origin-main        # build fetched origin/main instead of HEAD
+cmru build --allow-uncommitted       # build the committed state past uncommitted project edits
 cmru publish --build-output 20261006-ciu-1   # publish a retained build's exact bytes
 cmru publish --from-checkout         # explicit: run publish from the caller's checkout
 cmru changelog ciu --backfill-tag ciu-v7.0.0 # catalog an already-published tagged release
