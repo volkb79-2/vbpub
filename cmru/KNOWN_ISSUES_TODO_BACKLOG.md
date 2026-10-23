@@ -2396,3 +2396,20 @@ sees a dirty tree for any project that generates committed files.
 **Fix direction.** Make the build transaction commit the declared generated outputs in its worktree before judging (as release does), or run the
 build's tests with the gate's clean-tree check scoped to the declared `commit_generated` paths; add a test with a project that generates a
 committed file.
+
+
+### KI-94 - cmru credentials: read the user's `gh` login instead of a second token in `cmru.secret.toml`
+
+**Status:** OPEN (design). Raised 2026-10-23.
+
+**Today.** `cmru.secret.toml` (root, gitignored) or `GITHUB_PUSH_PAT`/`GITHUB_TOKEN` in the environment carry a PAT used for git push, Releases and GHCR.
+The same user already has `gh` logged in (`~/.config/gh/hosts.yml`, account `volkb79-2`), a different token with scopes `gist read:org repo workflow`: no
+`read:packages`/`write:packages`, so `gh api` cannot read or manage GHCR packages (for example the package's linked repository). In a release worktree the
+secret file has to be passed with `--secret-file` because the inferred path is advice only.
+
+**Direction.** Resolve the credential in this order: `GITHUB_PUSH_PAT`/`GITHUB_TOKEN` env, then `cmru.secret.toml`, then `gh auth token --hostname github.com`
+(per-user, so it works in every worktree without `--secret-file`). In `cmru.secret.toml` allow a pointer instead of a value, `[github] token_from = "gh"`.
+The operator grants the packages scopes once with `gh auth refresh -h github.com -s read:packages,write:packages`; cmru checks the scopes it needs
+(`gh api -i /user` -> `X-OAuth-Scopes`) and refuses with the exact refresh command when one is missing. The token stays inside the existing
+reserved-credential handling (never in step env, logs or manifests). Trade-off to decide: the `gh` OAuth token carries the account's full `repo` scope, which a
+fine-grained PAT limited to this repository would not.

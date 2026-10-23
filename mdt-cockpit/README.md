@@ -55,7 +55,7 @@ the runtime integration around it:
 |---|---|---|
 | Intended use | Docker `run`, CI, SSH, or a plain shell | VS Code Dev Containers with `remoteUser: vscode` |
 | zsh + interactive helpers | Installed by this project | Installed by this project, extending the base's Oh My Zsh rather than replacing it |
-| Docker CLI, Compose, Buildx | Present; no daemon or socket provided | Present; the template adds `docker-outside-of-docker`, mounts the host socket, sets `DOCKER_HOST` |
+| Docker CLI, Compose, Buildx | Present; no daemon or socket provided | Present; the template mounts the host socket, adds the docker group and sets `DOCKER_HOST` (no devcontainer feature: see the template's section 4) |
 | VS Code server / features | Not included | Inherited from the base and the consumer `devcontainer.json` |
 | Oh My Zsh | Not installed | Inherited from the base |
 

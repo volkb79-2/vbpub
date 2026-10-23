@@ -16,6 +16,12 @@ On this host the sustained ceiling has moved by more than 20x in both directions
 | 2026-10-20 | stall A/B, model derived | 14-18 MB/s | 290 MB/s model | `IO_COST_MODEL` wbps 14680064; builds saw a ~6 MB/s floor |
 | 2026-10-23 | fio, direct + fsync, 120 s, dev-gates slice | **330-350 MB/s steady** (seq 1M); 243 MB/s without fsync | 992 MB/s seq, 71k IOPS rand 4k | after the storage work; 4k rand write 46.5k IOPS at 0.34 ms |
 
+What moved the ceiling is not the disk's identity but the **provider-side allocation state** (operator account, 2026-10-23): at 2026-10-20 the
+management UI reported 1.1 TB used of 1 TB with a snapshot active, which fits the 6-18 MB/s writes (a fixed allocation plus an active snapshot
+forces less efficient writes); after the operator freed space, ran `fstrim` and ran the hoster's storage optimisation the guest was at about 50 %
+(~500 GB) and sustained 340 MB/s. The guest cannot see a snapshot or the provider's allocation. It can see its own filesystem fill, the discard
+history, and the throughput/latency that results.
+
 Effects of a stale figure, both seen in one week:
 
 * Too tight: `DEV_IO_WBPS_MAX=10M` pinned the dev tier at exactly the old floor. The mdt-cockpit build step took **4694 s** under it and
@@ -55,6 +61,32 @@ A single small service, `mdt-io-governor.service` (Python stdlib, `cli-extended`
 `/var/lib/mdt/io-governor/`. **It performs no IO of its own and runs no benchmark**: it only reads what the kernel already exposes, keeps the
 evidence, and moves settings in small bounded steps. iobench stays the only thing that produces a calibrated model, and only when an operator runs it.
 
+### 3.0 Objective: prod latency, not throughput
+
+The governor exists to protect the production workload on this host (the Soulmask game server): its IO latency must stay low and **swapping
+must not stall it**. Throughput of builds is secondary and is given up first. Consequences:
+
+* The controlled variable is **latency seen by prod**, not utilisation: device read/write latency percentiles, the game cgroup's `io.pressure`
+  and D-state time, and the **swap devices' own latency** (`/sys/block/<disk>/<part>/stat` for the swap partitions: swap IO is charged to the
+  page owner's cgroup, so a game that swaps is limited by the same device the builds load).
+* The levers are the ones the dev tier already has: dev-tier caps (`io.max` on `dev.slice`), the io.cost model and QoS latency targets
+  (`rlat`/`wlat`), and weights. The governor tightens dev limits when prod latency or swap latency degrades, and relaxes them only while prod is calm.
+* A **swap-aware rule**: when swap IO share rises and swap-in latency or the game's pressure climbs, dev limits are cut harder and faster than
+  for ordinary load (swap-in is on the game's critical path; a build's write burst is not).
+* Prod harm always wins over any estimate of capacity: the proven-bound logic below only decides how far dev limits may *relax*.
+
+### 3.0a Covariates the guest can see
+
+* **Filesystem and device fill** (`statvfs` of the root and Docker/BuildKit filesystems, LVM/VG free): the leading indicator of the provider-side
+  slowdown. The governor keeps a table `fill bucket -> best proven bound` from its own history, seeded with the two known points
+  (>=100 % reported by the provider with a snapshot: 6-18 MB/s; ~50 %: 340 MB/s sustained) and warns at a configurable fill (`IO_GOV_FILL_WARN`) that
+  throughput is expected to fall, before it does. The projected bound for the current fill, not the all-time best, is what limits relaxation.
+* **Discard history**: when the last `fstrim` ran (`fstrim.timer`/journal). The governor only reads this and reports "free space has not been
+  trimmed for N days at fill F"; it never runs `fstrim` (that is IO).
+* **Change points**: a step change in the proven bound at a fixed fill (the 2026-10-20 -> 10-23 jump) is logged as a `ceiling_shift` event with
+  timestamp and fill. A snapshot or a provider optimisation is invisible to the guest, so `mdt-io-governor note "<text>"` lets the operator annotate
+  events ("snapshot created", "storage optimisation done") into `ceilings.jsonl` for later correlation.
+
 ### 3.1 Observe (every 15 s, cheap)
 
 * Device: `/sys/block/<dev>/stat` deltas -> throughput, IOPS, mean latency, busy %, queue depth (the sampler used for this document).
@@ -73,10 +105,12 @@ observation as a **bound, not an estimate**:
   the max clamp, with latency still under target) is close to the ceiling. The ceiling estimate is the best proven lower bound, and it **decays only
   on evidence of failure** (latency over target at a lower throughput), never because the disk was quiet. No saturated window means: hold the
   current values.
-* **An upper bound comes from configuration, not from the disk.** The governor needs a range it may never leave: per direction a floor and a
-  ceiling (`IO_GOV_{R,W}_FLOOR`, `IO_GOV_{R,W}_CEIL`, default from the last iobench result, else from the operator). The ceiling is the best sustained
-  figure ever proven (or a provider plan limit); nothing observed passively can justify a value above it, and raising it is an operator or
-  iobench act. This is what stops a cache burst or a flat provider cap from being mistaken for capacity.
+* **Bounds are safety rails, not a model of the disk.** The last iobench result cannot be the default range: the ceiling moves by 50x with fill
+  level, an active snapshot and the provider's optimisation state, within days. The governor needs only hard rails per direction, set by the
+  operator: a **floor** it never sets a limit below (so a build is slowed, not starved: the worst figure ever observed, 6 MB/s, is the natural
+  floor) and an **absolute ceiling** (a figure beyond anything the disk has proven, so a cache burst cannot raise limits past it). Between the
+  rails the working estimate is a **rolling envelope of what the workload has proven in the last N days, conditioned on fill level** (3.1b), not a
+  stored calibration. iobench results, when present, are just one more observation in that history.
 * **The controller already measures the ratio.** `cost.vrate` is io.cost's own running estimate of "device capacity / model". vrate at the max
   clamp with latency fine means the model is too low by about `max/100`; vrate at the min clamp *with latency over target* means it is too high.
   The governor re-centres the model by that factor (one bounded step), so the fast loop stays inside its clamps. It does not replace the fast loop.
@@ -145,7 +179,7 @@ uses as a bound.
 ## 4. Configuration (host-setup.env, wizard step "IO governance")
 
 `IO_GOVERNOR=off|observe|enforce-down|enforce`, `IO_GOV_STEP_PCT=25`, `IO_GOV_COOLDOWN_MIN=30`, `IO_GOV_FLOOR_PCT=70`, `IO_GOV_{R,W}_FLOOR` / `IO_GOV_{R,W}_CEIL` (the range it may never leave),
-`IO_GOV_GAME_CGROUP=` (the cgroup whose pressure freezes increases). The wizard proposes the first model from an iobench result when one exists.
+`IO_GOV_GAME_CGROUP=` (the cgroup whose pressure freezes increases), `IO_GOV_SWAP_DEVS=` (swap partitions to watch), `IO_GOV_FILL_WARN=80`. The wizard proposes the first model from an iobench result when one exists.
 
 ## 5. Phases
 

@@ -48,13 +48,10 @@
   // consumer needs a reproducible compatibility lane.
   "image": "ghcr.io/volkb79-2/mdt-cockpit-devcontainer:trixie-py3.14-php8.5-latest",
 
-  // ─── 4. Container features ─────────────────────────────────────────────────────
-  "features": {
-    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
-      "moby": false,
-      "dockerDashComposeVersion": "v2"
-    }
-  },
+  // ─── 4. Container features ───────────────────────────────
+  // NONE, deliberately: a feature makes the Dev Containers CLI build a local `vsc-*-features` image and then
+  // run a second `docker build` FROM that local tag (updateRemoteUserUID), which the host-managed remote
+  // BuildKit builder cannot resolve ("pull access denied"). The image ships the Docker CLI, buildx and compose.
 
   // ─── 5. Container metadata ─────────────────────────────────────────────────────
   // EDIT: the host directory whose subdirectories are your repositories. It appears as

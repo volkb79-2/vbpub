@@ -1667,6 +1667,9 @@ done
         self.assertIn('"BUILDX_BUILDER": "mdt-managed"', template)
         self.assertIn('source=/run/mdt-buildkitd,target=/run/mdt-buildkitd,type=bind', template)
         self.assertNotIn("host-buildkitd", template)
+        # a devcontainer feature makes the Dev Containers CLI build FROM a local-only tag through the remote builder
+        for path in (ROOT.parent / "templates/devcontainer.json", ROOT.parent / "templates/host-folder/devcontainer.json"):
+            self.assertNotRegex(path.read_text(), r'(?m)^\s*"features"\s*:', f"{path.name} declares devcontainer features")
         self.assertNotIn("OPTIONAL and commented out", template)
         self.assertIn('BUILDX_BUILDER:-mdt-managed', (ROOT.parent.parent / "cmru.orchestration.toml").read_text())
         release = (ROOT.parent / "scripts/ensure-release-builder.sh").read_text()
