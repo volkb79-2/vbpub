@@ -31,6 +31,31 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      volume); it skips it with a stderr WARN. The release-notes generator picks this up from
      the `fix(cmru): ...` commit subject. -->
 
+<!-- cmru: release history -->
+
+## [7.0.0] - 2026-10-23
+<!-- cmru: generated -->
+<!-- cmru: source-end=af997018f93a1024c5f137c4275a863f683a62a5 -->
+
+### Added
+- feat(cmru): KI-79 R2 postponement also authorized for the 7.0 line (operator decision 2026-10-23) (2ef0a1620)
+- feat(cmru)!: mandatory [github] token_source ("gh" or "cmru") selects the credential source (KI-94); spec/cli-surface/docs follow cmru build --from-origin-main/--allow-uncommitted (KI-95) (ef92c96f6)
+- feat(cmru): cmru build builds the checked-out commit by default (--from-origin-main for the old snapshot, --allow-uncommitted named in the dirty refusal); docs(mdt-cockpit): BUILDKITD-FLOWS architecture + trade-offs, governor device-only mode, MDT-026 (a47483296)
+- feat(cmru): release --skip-gates REASON, an explicit recorded ungated release (CMRU-SKIP-01) (e9eeaf3ce)
+
+### Fixed
+- fix(cmru): round-3 review (coverage of new branches, required source_mode, cached gh failures, doc alignment) (af997018f)
+- fix(cmru): round-2 review of the gh token work (lazy token stays lazy; parity step injection; no legacy-snapshot support); KI-79 windows prose (15386522d)
+- fix(cmru): review of the KI-94/KI-95 changes (H1 HEAD-build publish gate, H2 lazy gh token, M1-M4, L1-L6); KI-96 filed (1228b9e81)
+- fix(mdt-cockpit): devcontainer templates declare no features (updateUID build FROM a local tag fails on the remote builder); governor design: prod-latency objective, fill covariates, no stored-calibration bounds; MDT-024/025, cmru KI-94 (3d8e36f0a)
+- fix(tester-unified): pin cli-extended 0.5.0 (the pinned 0.3.0 GitHub release no longer exists) (39d8c9482)
+- fix(cmru): body-retry gates lookup binds on the annotated tag object, tolerates unrelated records (CMRU-SKIP-01 r2) (1c5a19675)
+- fix(cmru): --skip-gates review round: body retry restates the gates fact from evidence, typed refusal for a bad record (CMRU-SKIP-01) (5be0ee9ec)
+
+### Documentation
+- docs(mdt-cockpit): IO governor design; MDT-023 backlog; cmru KI-93 (cmru build dirty-tree) (beb15eece)
+
+<!-- cmru: pending release notes begin -->
 ### Breaking
 - `[github] token_source` (KI-94) is a MANDATORY key of the committed `[github]` table, exactly `"gh"` or `"cmru"`; a missing or other value exits 2 naming both values. `"cmru"` is the previous behaviour (`GITHUB_PUSH_PAT`, `GITHUB_TOKEN`, then `cmru.secret.toml`). `"gh"` takes the token from `gh auth token --hostname github.com` (minimal environment; no secret file and no `--secret-file` needed in any worktree; failures point at `gh auth login` and, for GHCR, `gh auth refresh -h github.com -s read:packages,write:packages,delete:packages`). `token_source` is not valid in `cmru.secret.toml`. Migration: add `token_source = "cmru"` to each `[github]` table; see `docs/UPGRADING-7.0.md`. `cmru init` scaffolds `"gh"`; `cmru doctor` reports the active source.
 
@@ -46,8 +71,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Added
 - `cmru release --skip-gates REASON` (CMRU-SKIP-01) releases without running the `run-tests` gate, as an explicit, recorded operator decision. REASON is required. It skips only the execution of `steps.run-tests`: prepare, build, push, tagging, changelog, integration and every source-consistency and tool-dependency check run as before, and a project that declares no gate is still refused. The skip is announced as a `[WARN]`, shown as `run-tests: skipped (operator: ...)` in the plan and `--dry-run`, recorded in the transaction, and published as `Released without gates (operator): REASON` in every GitHub Release body. A `--resume` uses the recorded choice and refuses the flag. REASON is at most 500 characters. `cmru publish --release-tag` (the post-tag OCI body retry) restates the fact from the retained transaction record or an existing body line and otherwise refuses (exit 4) until the operator declares `--gates-ran` or `--gates-skipped REASON`; a malformed gates record is a typed refusal.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [6.2.1] - 2026-10-21
 <!-- cmru: generated -->
