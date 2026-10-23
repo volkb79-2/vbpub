@@ -34,12 +34,52 @@ from cmru.version_config import deep_merge_versions, parse_versions_section
 
 # ─── Config dataclasses (S2) ─────────────────────────────────────────────────
 
+class LazyGhToken:
+    """Placeholder for the ``gh`` login's token (``token_source = "gh"``, KI-94).
+
+    Config load only validates ``token_source``; the token is fetched the first
+    time a credential-bearing attribute is *read* (see :class:`ResolvesLazyTokens`),
+    so ``status``/``dependencies``/``doctor`` and the tests that load the real
+    estate config need no working ``gh`` login.  Truthy so ``token or None`` keeps it.
+    """
+
+    __slots__ = ()
+
+    def resolve(self) -> str:
+        return gh_token_cached()
+
+    def __bool__(self) -> bool:
+        return True
+
+    def __repr__(self) -> str:
+        return "<gh token (resolved lazily)>"
+
+
+class ResolvesLazyTokens:
+    """Mixin: reading a field that holds a :class:`LazyGhToken` yields the real token.
+
+    ``object.__getattribute__(obj, name)`` (see :func:`raw_field`) returns the
+    placeholder without triggering the ``gh`` lookup.
+    """
+
+    def __getattribute__(self, name):
+        value = object.__getattribute__(self, name)
+        if type(value) is LazyGhToken:
+            return value.resolve()
+        return value
+
+
+def raw_field(obj: object, name: str):
+    """Read a field without resolving a lazy ``gh`` token."""
+    return object.__getattribute__(obj, name)
+
+
 @dataclass(frozen=True)
-class GitHubS2Config:
+class GitHubS2Config(ResolvesLazyTokens):
     owner: str
     repo: str
     owner_type: str          # "user" | "org"  (V03)
-    token: Optional[str]     # resolved repository baseline secret; never from committed config
+    token: Optional[str] = field(repr=False)  # resolved repository baseline secret; never from committed config
     token_source: str = "cmru"  # "gh" | "cmru" (KI-94); mandatory in the committed [github] table
 
 
@@ -849,6 +889,16 @@ def _github(raw: object) -> GitHubS2Config:
     if owner_type not in {"user", "org"}:
         _error("github.owner_type must be 'user' or 'org'")
     token_source = raw.get("token_source")
+    if token_source is None:
+        # A release-transaction child can load an older snapshot (an old branch,
+        # --from-worktree, a pre-KI-94 commit) that predates the mandatory key:
+        # it adopts the PARENT's declared source, handed over with the credentials.
+        try:
+            handoff = credential_handoff.child_handoff()
+        except RuntimeError:
+            handoff = None
+        if handoff is not None and handoff.token_source in TOKEN_SOURCES:
+            token_source = handoff.token_source
     if token_source not in TOKEN_SOURCES:
         shown = "missing" if token_source is None else f"{token_source!r}"
         _error(
@@ -867,7 +917,22 @@ def _github(raw: object) -> GitHubS2Config:
 #: The closed vocabulary of ``[github] token_source`` (KI-94).
 TOKEN_SOURCES = ("gh", "cmru")
 GH_LOGIN_HINT = "run `gh auth login`"
-GH_PACKAGES_HINT = "gh auth refresh -h github.com -s read:packages,write:packages"
+#: delete:packages is needed by `cmru cleanup` (GHCR package-version deletion).
+GH_PACKAGES_HINT = "gh auth refresh -h github.com -s read:packages,write:packages,delete:packages"
+
+_GH_TOKEN_CACHE: list[str] = []
+
+
+def reset_gh_token_cache() -> None:
+    """Forget the cached ``gh`` token (tests; a new login in a long process)."""
+    _GH_TOKEN_CACHE.clear()
+
+
+def gh_token_cached() -> str:
+    """One ``gh auth token`` lookup per process, made only where a credential is used."""
+    if not _GH_TOKEN_CACHE:
+        _GH_TOKEN_CACHE.append(_gh_token())
+    return _GH_TOKEN_CACHE[0]
 
 
 def _gh_token() -> str:
@@ -889,7 +954,7 @@ def _gh_token() -> str:
     try:
         completed = subprocess.run(
             command, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-            timeout=30, check=False,
+            timeout=15, check=False,
         )
     except FileNotFoundError:
         _error(
@@ -1004,8 +1069,10 @@ def _load_repository_secrets(
         # (so none is needed in a worktree) and GITHUB_PUSH_PAT/GITHUB_TOKEN do
         # not shadow the login.  The token then flows through the same
         # reserved-credential handling as any resolved PAT.
-        gh_token = _gh_token()
-        return gh_token, {name: gh_token for name in project_configs}
+        # Lazy: the lookup happens when a credential is first read (L5: short
+        # timeout, one cached call per process), not at config load.
+        lazy = LazyGhToken()
+        return lazy, {name: lazy for name in project_configs}
     config_root = config_root.resolve()
     root_secret_path = (
         secret_file.expanduser().resolve()

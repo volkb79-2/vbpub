@@ -96,7 +96,7 @@ discarding is the `abandon` verb below.
 The committed `[github]` table declares `token_source = "gh"` or `"cmru"` (missing or other:
 exit 2). `"gh"` runs `gh auth token --hostname github.com`: no secret file and no
 `--secret-file` in any worktree (if it fails: `gh auth login`; for GHCR
-`gh auth refresh -h github.com -s read:packages,write:packages`). `"cmru"` uses
+`gh auth refresh -h github.com -s read:packages,write:packages,delete:packages`). `"cmru"` uses
 `GITHUB_PUSH_PAT`/`GITHUB_TOKEN`, then `cmru.secret.toml`. `token_source` is not a secret-file key.
 `cmru doctor` reports which source is active, never the value.
 

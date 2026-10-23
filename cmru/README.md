@@ -697,8 +697,10 @@ it never reads that file without the option. This capability shipped in cmru 6.2
 `[github] token_source = "gh"` (KI-94) no secret file or `--secret-file` is needed at all.
 
 `cmru build` uses the same transaction mechanics but stops before source release actions. It
-builds the commit the invoking checkout or worktree is on (`HEAD`, pushed or not: a build never
-publishes, so it needs no remote-visible source; KI-95). `--from-origin-main` builds the fetched
+builds the commit the invoking checkout or worktree is on (`HEAD`, pushed or not; KI-95). The
+record's `build.json` notes `source_mode` (`head`|`origin-main`), and `publish --build-output`
+refuses (exit 4) a `head` build whose commit is not in a freshly fetched `origin/main`. A HEAD build
+warns about dirty tracked files outside the selected project directories. `--from-origin-main` builds the fetched
 `origin/main` snapshot instead, with the ahead/behind checks. Uncommitted edits to the selected
 projects are refused; `--allow-uncommitted` builds the committed state without them. On success it copies project logs to
 `<project>/logs/<commit-date>_<full-commit>/` and declared artifact directories to
@@ -796,7 +798,7 @@ for the full contract.
 **Token source (KI-94, mandatory):** the committed `[github]` table must set
 `token_source = "gh"` or `"cmru"`. `"gh"` uses `gh auth token --hostname github.com` (no secret
 file, works in every worktree without `--secret-file`; `gh auth login`, and for GHCR
-`gh auth refresh -h github.com -s read:packages,write:packages`). `"cmru"` uses the resolution
+`gh auth refresh -h github.com -s read:packages,write:packages,delete:packages`). `"cmru"` uses the resolution
 below. A missing or invalid value exits 2; `token_source` is not valid inside `cmru.secret.toml`.
 
 **Token resolution for `token_source = "cmru"` (S2.4):** `$GITHUB_PUSH_PAT` → `$GITHUB_TOKEN` → deep merge the

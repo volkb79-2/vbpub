@@ -505,7 +505,9 @@ def test_a_release_hands_the_credential_to_the_child_and_copies_no_secret_file(
     release_launcher,
 ):
     assert release_launcher() == 0
-    expected = CredentialHandoff(root=ROOT_TOKEN, projects={"demo": ALPHA_TOKEN})
+    expected = CredentialHandoff(
+        root=ROOT_TOKEN, projects={"demo": ALPHA_TOKEN}, token_source="cmru",
+    )
     assert release_launcher.seen["handed"] == [expected]
     # no secret file at gate time, and none by the time publishing has finished
     assert release_launcher.seen["files_during"] == [[]]
@@ -514,7 +516,9 @@ def test_a_release_hands_the_credential_to_the_child_and_copies_no_secret_file(
 
 def test_a_resumed_release_hands_the_credential_to_the_child_the_same_way(release_launcher):
     assert release_launcher("--resume", str(release_launcher.worktree)) == 0
-    expected = CredentialHandoff(root=ROOT_TOKEN, projects={"demo": ALPHA_TOKEN})
+    expected = CredentialHandoff(
+        root=ROOT_TOKEN, projects={"demo": ALPHA_TOKEN}, token_source="cmru",
+    )
     assert release_launcher.seen["handed"] == [expected]
     assert release_launcher.seen["files_during"] == [[]]
     assert release_launcher.seen["files_after"] == [[]]

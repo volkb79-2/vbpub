@@ -3902,7 +3902,7 @@ def test_parent_build_retains_successful_outputs_then_removes_worktree(tmp_path,
     monkeypatch.setattr(
         transaction,
         "retain_successful_build_outputs",
-        lambda *_args: calls.append("retained") or [tmp_path / "alpha" / "logs" / "record"],
+        lambda *_args, **_kw: calls.append("retained") or [tmp_path / "alpha" / "logs" / "record"],
     )
     monkeypatch.setattr(transaction, "remove_workspace", lambda _workspace: calls.append("removed"))
 
@@ -3937,7 +3937,7 @@ def test_parent_build_failure_keeps_worktree_and_does_not_retain_outputs(tmp_pat
     )
     monkeypatch.setattr(transaction, "run_child", lambda *_args, **_kwargs: 1)
     monkeypatch.setattr(
-        transaction, "retain_successful_build_outputs", lambda *_args: calls.append("retained"),
+        transaction, "retain_successful_build_outputs", lambda *_args, **_kw: calls.append("retained"),
     )
     monkeypatch.setattr(transaction, "remove_workspace", lambda _workspace: calls.append("removed"))
 

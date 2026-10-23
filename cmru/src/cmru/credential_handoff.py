@@ -45,6 +45,9 @@ class CredentialHandoff:
     projects: Mapping[str, str] = field(default_factory=dict)
     #: True for a process nested below a consuming child (no pipe, by design).
     nested: bool = False
+    #: The parent's declared ``[github] token_source``. A child whose snapshot
+    #: predates the mandatory key (KI-94) adopts it instead of refusing.
+    token_source: str = ""
 
 
 _CACHE: CredentialHandoff | None = None
@@ -58,14 +61,14 @@ def reset_cache() -> None:
 
 def encode(handoff: CredentialHandoff) -> bytes:
     """Serialize *handoff* for the pipe; refuse payloads that could block a write."""
-    payload = json.dumps(
-        {
-            "schema_version": _SCHEMA_VERSION,
-            "root": handoff.root,
-            "projects": dict(handoff.projects),
-        },
-        sort_keys=True,
-    ).encode("utf-8")
+    body = {
+        "schema_version": _SCHEMA_VERSION,
+        "root": handoff.root,
+        "projects": dict(handoff.projects),
+    }
+    if handoff.token_source:
+        body["token_source"] = handoff.token_source
+    payload = json.dumps(body, sort_keys=True).encode("utf-8")
     if len(payload) > MAX_PAYLOAD_BYTES:
         raise RuntimeError("credential handoff payload is too large")
     return payload
@@ -79,7 +82,11 @@ def decode(payload: bytes) -> CredentialHandoff:
         raise RuntimeError(f"invalid credential handoff payload: {exc}") from exc
     if (
         not isinstance(raw, dict)
-        or set(raw) != {"schema_version", "root", "projects"}
+        or set(raw) not in (
+            {"schema_version", "root", "projects"},
+            {"schema_version", "root", "projects", "token_source"},
+        )
+        or not isinstance(raw.get("token_source", ""), str)
         or raw["schema_version"] != _SCHEMA_VERSION
         or not isinstance(raw["root"], str)
         or not isinstance(raw["projects"], dict)
@@ -89,7 +96,10 @@ def decode(payload: bytes) -> CredentialHandoff:
         )
     ):
         raise RuntimeError("invalid credential handoff payload: unexpected shape")
-    return CredentialHandoff(root=raw["root"], projects=dict(raw["projects"]))
+    return CredentialHandoff(
+        root=raw["root"], projects=dict(raw["projects"]),
+        token_source=raw.get("token_source", ""),
+    )
 
 
 def _read_pipe(raw_fd: str) -> bytes:

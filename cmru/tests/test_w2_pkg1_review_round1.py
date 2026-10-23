@@ -72,7 +72,7 @@ def _single_family(monkeypatch, tmp_path):
     monkeypatch.setattr(cli.transaction, "forget_release_scope", lambda *a, **k: None)
     monkeypatch.setattr(
         cli.transaction, "retain_successful_build_outputs",
-        lambda *a: [tmp_path / "demo" / "artifacts" / "build-id"],
+        lambda *a, **k: [tmp_path / "demo" / "artifacts" / "build-id"],
     )
     monkeypatch.setattr(
         cli.transaction, "_sync_local_main_result",

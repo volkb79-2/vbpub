@@ -57,7 +57,7 @@ def test_build_success_runs_child_retains_outputs_and_reports_cleanup_command(mo
     monkeypatch.setattr(cli.transaction, "create_workspace", lambda *args, **kwargs: workspace)
     monkeypatch.setattr(cli.transaction, "run_child", lambda w, args, **kwargs: calls.append((w, args, kwargs)) or 0)
     retained = [tmp_path / "demo" / "artifacts" / "build-1"]
-    monkeypatch.setattr(cli.transaction, "retain_successful_build_outputs", lambda *args: retained)
+    monkeypatch.setattr(cli.transaction, "retain_successful_build_outputs", lambda *args, **_kw: retained)
     monkeypatch.setattr(cli.transaction, "validate_retained_build_output", lambda *_args: {"manifest": {"publication": "eligible"}})
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda w: calls.append(("removed", w)))
     exc = cli.main(["build", "--config", str(tmp_path / "cmru.toml"), "demo"])
@@ -65,7 +65,7 @@ def test_build_success_runs_child_retains_outputs_and_reports_cleanup_command(mo
     assert calls[0][1] == ["demo", "--config", "cmru.toml"]
     assert calls[0][2] == {
         "verb": "build", "project_names": ["demo"],
-        "credentials": CredentialHandoff(root="token", projects={"demo": ""}),
+        "credentials": CredentialHandoff(root="token", projects={"demo": ""}, token_source="cmru"),
     }
     assert calls[-1] == ("removed", workspace)
     output = capsys.readouterr().out

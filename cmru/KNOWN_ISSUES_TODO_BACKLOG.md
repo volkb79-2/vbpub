@@ -2431,3 +2431,15 @@ fine-grained PAT limited to this repository would not.
 ### KI-95 - `cmru build` snapshotted `origin/main`, so branch and worktree builds silently built something else
 
 **Status:** FIXED 2026-10-23 (unreleased). `cmru build` now builds the commit the invoking checkout or worktree is on (`git rev-parse HEAD`), pushed or not: a build never publishes, so it needs no remote-visible source, and a feature branch or release-candidate worktree builds as itself. `--from-origin-main` restores the old fetched-snapshot behaviour (with the ahead/behind checks). Uncommitted edits to the selected projects are still refused, and the refusal now names the escape hatch: `--allow-uncommitted` builds the committed state without them. Tests: `tests/test_cli_build_failure_boundaries_adversarial.py` (default source, no fetch, no ahead check; `--allow-uncommitted`; refusal text).
+
+
+### KI-96 - `token_source = "cmru"` still exports the PAT to every project step
+
+**Status:** OPEN (filed 2026-10-23 from the review of KI-94/KI-95). Under `token_source = "gh"` the credential is lazy and reaches only
+publishing steps (`push`, steps with a registry `login`, steps listing `GITHUB_PUSH_PAT` in `required_env`; `cli.step_receives_publisher_credential`).
+Under `"cmru"`, `apply_release_env` still sets `GITHUB_PUSH_PAT` in the process environment, so build/test/prepare/clean steps inherit it, and
+build children receive the credential handoff even though a HEAD build never pushes.
+**Proposed design.** Apply the same step classification to `"cmru"` (drop the `os.environ` placement, inject via `run_project_step` for
+publishing steps only); audit custom projects whose non-`push` steps read `GITHUB_PUSH_PAT` (declare it in `required_env`, which the
+classification honours); stop handing credentials to `build` children unless `--from-origin-main` needs HTTPS fetch auth. Deliberately not done
+with the KI-94 review fixes: it changes behaviour for existing `cmru` estates and needs its own migration note.

@@ -29,8 +29,10 @@ from cmru.git_auth import GitHubGitAuth, run_local_git, run_remote_git
 from cmru.config import (
     _RESERVED_CMRU_INTERNAL_ENV,
     GH_PACKAGES_HINT,
+    ResolvesLazyTokens,
     is_reserved_internal_env,
     load_forge_config,
+    raw_field,
 )
 from cmru.config import InvocationContext, resolve_invocation_context
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
@@ -81,7 +83,7 @@ class VersionSpec:
 
 
 @dataclass(frozen=True)
-class ProjectConfig:
+class ProjectConfig(ResolvesLazyTokens):
     name: str
     env: Mapping[str, str]
     steps: Mapping[str, List[Command]]
@@ -105,7 +107,8 @@ class ProjectConfig:
     artifact_dirs: tuple[str, ...] = ()  # declared project-relative output directories
     evidence_paths: tuple[str, ...] = ()  # declared project-relative gate evidence paths
     build_step: str = ""                # explicit [project.release].build_step
-    github_token: str = ""              # root credential or explicit project-secret override
+    token_source: str = "cmru"          # "gh" | "cmru" (KI-94); "gh" scopes the credential to publishing steps (M3)
+    github_token: str = field(default="", repr=False)  # root credential or explicit project-secret override
     runtime_kind: str = "none"           # declared lifecycle owner: none | ciu
     # First-party artifacts this project's own tests/tooling consume (S15). Empty ⇒
     # no declared tool dependency (today's behaviour, unchanged).
@@ -139,17 +142,17 @@ class CleanupPlan:
 
 
 @dataclass(frozen=True)
-class GitHubConfig:
+class GitHubConfig(ResolvesLazyTokens):
     owner: str
     repo: str
-    token: str
+    token: str = field(repr=False)
     owner_type: str  # required: "user" | "org"  (V03; replaces the modern-debian-tools probe)
     token_source: str = "cmru"  # "gh" | "cmru" (KI-94)
 
 
 def _git_auth_for_repository(github: GitHubConfig) -> GitHubGitAuth:
     """Bind CMRU Git transport to the root-resolved repository credential."""
-    return GitHubGitAuth(owner=github.owner, repo=github.repo, token=github.token)
+    return GitHubGitAuth(owner=github.owner, repo=github.repo, token=raw_field(github, "token"))
 
 
 def _read_origin_tag_refs(
@@ -315,6 +318,24 @@ def _build_step_config(step_name: str, commands: List[Command]) -> StepConfig:
     )
 
 
+#: gh/GitHub CLI token variables a project step must never inherit (L3).
+_AMBIENT_GH_TOKEN_KEYS = ("GH_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_TOKEN")
+
+
+def step_receives_publisher_credential(step: StepConfig) -> bool:
+    """Whether a step may receive the ``gh``-sourced credential (M3).
+
+    Conservative: only the ``push`` step, or a step that declares a registry
+    ``login`` or lists ``GITHUB_PUSH_PAT`` in ``required_env``.  Build, test,
+    clean and prepare steps get none.
+    """
+    return (
+        step.name == "push"
+        or bool(step.login)
+        or "GITHUB_PUSH_PAT" in (step.required_env or ())
+    )
+
+
 def run_project_step(
     project: "ProjectConfig",
     step_name: str,
@@ -400,7 +421,19 @@ def run_project_step(
             internal_env[NOTES_SOURCE_ENV] = declaration_for(
                 getattr(project, "changelog", None),
             )
-            resolved_token = (getattr(project, "github_token", None) or "").strip()
+            # M3 (KI-94): a `gh` login carries the user's broad scopes, so it is
+            # injected only into steps that publish/push/log in; every other step
+            # (build, run-tests, prepare, ...) gets none -- and any ambient
+            # gh/GitHub token is cleared from it (L3).
+            gh_scoped = getattr(project, "token_source", "cmru") == "gh"
+            if gh_scoped and not step_receives_publisher_credential(step):
+                resolved_token = ""
+                for key in ("GITHUB_PUSH_PAT", *_AMBIENT_GH_TOKEN_KEYS):
+                    internal_env.setdefault(key, None)
+            else:
+                resolved_token = (getattr(project, "github_token", None) or "").strip()
+            for key in _AMBIENT_GH_TOKEN_KEYS:
+                internal_env.setdefault(key, None)
             if resolved_token:
                 # This is applied after project/step env and env commands by
                 # runner.execute_step. Keep the publisher credential bound to
@@ -783,7 +816,8 @@ def load_config(
             artifact_dirs=tuple(parsed.artifact_dirs),
             evidence_paths=tuple(parsed.evidence_paths),
             build_step=parsed.build_step,
-            github_token=forge.project_tokens.get(name, forge.github.token or ""),
+            token_source=forge.github.token_source,
+            github_token=forge.project_tokens.get(name, raw_field(forge.github, "token") or ""),
             tool_dependencies=tuple(parsed.tool_dependencies),
             runtime_kind=parsed.runtime_kind,
             known_project_names=known_project_names,
@@ -798,7 +832,7 @@ def load_config(
     )
     github_config = GitHubConfig(
         owner=forge.github.owner, repo=forge.github.repo,
-        token=forge.github.token or "", owner_type=forge.github.owner_type,
+        token=raw_field(forge.github, "token") or "", owner_type=forge.github.owner_type,
         token_source=forge.github.token_source,
     )
     env_config = ReleaseEnvConfig(
@@ -844,6 +878,8 @@ def apply_release_env(github: GitHubConfig, env_config: ReleaseEnvConfig) -> Non
     os.environ.pop("GITHUB_PUSH_PAT", None)
     os.environ.pop("GITHUB_TOKEN", None)
     os.environ.pop("CMRU_GIT_AUTH_TOKEN", None)
+    for ambient in _AMBIENT_GH_TOKEN_KEYS:  # L3: gh's own variables never reach a step
+        os.environ.pop(ambient, None)
     os.environ["GITHUB_OWNER_TYPE"] = github.owner_type
     if env_config.registry_url:
         os.environ["REGISTRY"] = env_config.registry_url
@@ -859,7 +895,11 @@ def apply_release_env(github: GitHubConfig, env_config: ReleaseEnvConfig) -> Non
     # Each project operation receives exactly its already-resolved credential.
     # Apply it after declared values so an environment table cannot replace the
     # selected token. The strict config reader rejects credential keys there too.
-    if github.token:
+    # token_source = "gh" (M3): the login is NOT placed in the process
+    # environment, where every later step would inherit it; it is injected only
+    # into publishing steps by run_project_step and handed to children over the
+    # credential pipe.
+    if github.token_source != "gh" and github.token:
         os.environ["GITHUB_PUSH_PAT"] = github.token
 
 
@@ -870,7 +910,7 @@ def github_for_project(github: GitHubConfig, project: ProjectConfig) -> GitHubCo
     resolved from the invocation environment or the strict root-plus-project
     secret overlay, so this function never discovers a credential by fallback.
     """
-    return replace(github, token=project.github_token)
+    return replace(github, token=raw_field(project, "github_token"))
 
 
 def apply_project_release_env(
@@ -886,6 +926,19 @@ def apply_project_release_env(
         github_for_project(github, project),
         replace(env_config, env=project_env),
     )
+
+
+GH_LOGIN_HINT_TEXT = "run `gh auth login`"
+
+
+def refuse_secret_file_under_gh(secret_file: Path | None, github: "GitHubConfig") -> None:
+    """L1: ``--secret-file`` is meaningless (and misleading) with ``token_source = "gh"``."""
+    if secret_file is not None and getattr(github, "token_source", "cmru") == "gh":
+        raise UsageRefusal(
+            "--secret-file cannot be used with [github] token_source = 'gh': the credential "
+            "is the logged-in `gh` user and no secret file is read. Drop --secret-file, or "
+            "set token_source = 'cmru' in the [github] table to use a secret file."
+        )
 
 
 def require_project_publish_credentials(
@@ -905,6 +958,13 @@ def _main_tree_secret_advice(
     project_names: Sequence[str],
 ) -> str:
     """Suggest an explicit main-worktree secret path without reading its contents."""
+    if any(getattr(configs.get(name), "token_source", "cmru") == "gh" for name in project_names):
+        # token_source = "gh": no secret file is ever read, so a main-worktree file
+        # (or --secret-file) is irrelevant; the credential is the gh login.
+        return (
+            "token_source = 'gh': the credential is the logged-in `gh` user, not a "
+            f"cmru.secret.toml; {GH_LOGIN_HINT_TEXT} and check `gh auth status`."
+        )
     path_hint: str | None = None
     try:
         families = transaction.project_git_family_groups(
@@ -4016,6 +4076,16 @@ def _preflight_multi_family_release_tag_support(
     return snapshots
 
 
+def _snapshot_source_name(repo_root: Path, base: str) -> str:
+    """Label a snapshot commit by its real source (L4): origin/main or the checked-out commit."""
+    try:
+        if _git(repo_root, "rev-parse", "origin/main") == base:
+            return "origin/main"
+    except (RuntimeError, OSError):
+        pass
+    return "checked-out commit"
+
+
 def _project_git_tag_policy_at_snapshot(
     repo_root: Path,
     base: str,
@@ -4038,11 +4108,11 @@ def _project_git_tag_policy_at_snapshot(
     config_rel = project_config_rel.as_posix()
     content = _read_git_path_at_commit(
         repo_root, base, project_config_rel,
-        source_label=f"origin/main ({base}:{config_rel})",
+        source_label=f"{_snapshot_source_name(repo_root, base)} ({base}:{config_rel})",
     )
     return _parse_project_git_tag_policy(
         content, project_name,
-        f"origin/main ({base}:{config_rel})",
+        f"{_snapshot_source_name(repo_root, base)} ({base}:{config_rel})",
     )
 
 
@@ -4322,7 +4392,7 @@ def _project_config_paths_at_snapshot(
 
     resolved_config_rel, content = _resolve_git_file_at_commit(
         repo_root, base, config_rel,
-        source_label=f"origin/main ({base}:{config_rel.as_posix()})",
+        source_label=f"{_snapshot_source_name(repo_root, base)} ({base}:{config_rel.as_posix()})",
     )
     if resolved_config_rel.name == PROJECT_CONFIG_FILENAME:
         if len(project_names) != 1:
@@ -4331,7 +4401,7 @@ def _project_config_paths_at_snapshot(
             )
         return _resolve_project_config_paths_at_commit(
             repo_root, base, {project_names[0]: config_rel},
-            source_label=f"origin/main ({base})",
+            source_label=f"{_snapshot_source_name(repo_root, base)} ({base})",
         )
     if resolved_config_rel.name != ORCHESTRATION_CONFIG_FILENAME:
         raise RuntimeError(f"Unsupported CMRU config path in Git family: {config_path}")
@@ -4339,11 +4409,11 @@ def _project_config_paths_at_snapshot(
     parsed_paths = _parse_project_config_paths_from_orchestration(
         resolved_config_rel, content, project_names,
         source_label=(
-            f"origin/main ({base}:{resolved_config_rel.as_posix()})"
+            f"{_snapshot_source_name(repo_root, base)} ({base}:{resolved_config_rel.as_posix()})"
         ),
     )
     return _resolve_project_config_paths_at_commit(
-        repo_root, base, parsed_paths, source_label=f"origin/main ({base})",
+        repo_root, base, parsed_paths, source_label=f"{_snapshot_source_name(repo_root, base)} ({base})",
     )
 
 
@@ -4717,6 +4787,7 @@ def _credential_handoff(
     return CredentialHandoff(
         root=github_config.token or "",
         projects={name: configs[name].github_token or "" for name in project_names},
+        token_source=getattr(github_config, "token_source", ""),
     )
 
 
@@ -4910,6 +4981,38 @@ def _worktree_changed_paths(repo_root: Path, *, paths: Optional[List[str]] = Non
         out = _git(repo_root, *args)
         changed.extend(line for line in out.splitlines() if line)
     return list(dict.fromkeys(changed))
+
+
+def _dirty_tracked_outside_projects(
+    repo_root: Path, ordered: Mapping[str, "ProjectConfig"], names: Iterable[str],
+) -> List[str]:
+    """Dirty TRACKED paths in the Git family that lie outside every selected project dir.
+
+    ``_uncommitted_release_paths`` only looks inside each project's own directory,
+    but a HEAD build snapshot also omits uncommitted edits to shared code
+    (``libraries/``, ``tester-base/``, the root config).  Untracked files are not
+    listed: they are noise here and cannot alter a tracked-file build input.
+    """
+    roots: list[str] = []
+    for name in names:
+        project_root = getattr(ordered.get(name), "project_root", None)
+        if project_root is None:
+            continue
+        try:
+            relative = Path(project_root).resolve().relative_to(repo_root.resolve())
+        except ValueError:
+            continue
+        roots.append(relative.as_posix() if relative.parts else ".")
+    changed: list[str] = []
+    try:
+        for command in (("diff", "--name-only"), ("diff", "--cached", "--name-only")):
+            changed.extend(line for line in _git(repo_root, *command).splitlines() if line)
+    except (RuntimeError, OSError):
+        return []  # an advisory warning must never fail the build
+    return [
+        path for path in dict.fromkeys(changed)
+        if not any(root == "." or path == root or path.startswith(root + "/") for root in roots)
+    ]
 
 
 def _uncommitted_release_paths(
@@ -5663,6 +5766,7 @@ def _dispatch(args, runtime):
                 cfg_path, secret_file=selected_secret_file,
             )
         github_config, env_config = _rest[-2], _rest[-1]
+        refuse_secret_file_under_gh(selected_secret_file, github_config)
         git_auth = _git_auth_for_repository(github_config)
         apply_release_env(github_config, env_config)
         ordered = _ordered_configs(configs, project_order)
@@ -5807,9 +5911,20 @@ def _dispatch(args, runtime):
                             )
                     else:
                         # Default: the commit this checkout (or worktree) is on, pushed or not.
-                        # A build never publishes, so it needs no remote-visible source; this
-                        # also lets a feature branch or release-candidate worktree be built as-is.
+                        # This lets a feature branch or release-candidate worktree be built
+                        # as-is.  Its output is recorded as a `head` build (build.json
+                        # source_mode) and `publish --build-output` refuses it unless the
+                        # commit is contained in a freshly fetched origin/main (H1).
                         base = transaction.local_head_commit(transaction_root)
+                        outside = _dirty_tracked_outside_projects(transaction_root, configs, names)
+                        if outside:
+                            shown = ", ".join(outside[:10]) + (
+                                f" (+{len(outside) - 10} more)" if len(outside) > 10 else ""
+                            )
+                            log_warn(
+                                "uncommitted tracked changes outside the selected project "
+                                f"directories are NOT in this HEAD build: {shown}"
+                            )
                         log_info(
                             f"Build source: checked-out commit {base[:12]} "
                             "(use --from-origin-main to build fetched origin/main instead)"
@@ -5838,6 +5953,7 @@ def _dispatch(args, runtime):
                     try:
                         retained = transaction.retain_successful_build_outputs(
                             repo_root, workspace, configs, names,
+                            source_mode="origin-main" if from_origin_main else "head",
                         )
                     except _DOMAIN_ERRORS as exc:
                         log_error(
@@ -5937,6 +6053,21 @@ def _dispatch(args, runtime):
             groups = transaction.project_git_family_groups(
                 repo_root, [configs[name] for name in names]
             )
+            # H1: refuse every HEAD build whose commit origin/main does not contain
+            # BEFORE any push step runs, so a refusal never publishes a prefix.
+            try:
+                for family_root, members in groups.items():
+                    fetched = False
+                    for member in members:
+                        member_name = getattr(member, "name")
+                        transaction.assert_build_source_publishable(
+                            family_root, member_name, build_records[member_name]["manifest"],
+                            git_auth=git_auth, fetched=fetched,
+                        )
+                        if build_records[member_name]["manifest"].get("source_mode") == "head":
+                            fetched = True
+            except CmruError as exc:
+                _exit_for_domain_error(exc)
             for family_root, members in groups.items():
                 family_names = [getattr(project, "name") for project in members]
                 family_configs = _configs_for_git_family(configs, family_names, family_root)
@@ -6179,6 +6310,7 @@ def _release_or_status(verb: str, args, rest: List[str], runtime=None) -> None:
             cfg_path, secret_file=selected_secret_file,
         )
     github_config, env_config = _rest[-2], _rest[-1]
+    refuse_secret_file_under_gh(selected_secret_file, github_config)
     git_auth = _git_auth_for_repository(github_config)
     transaction_child = transaction.is_transaction_child(repo_root)
     # CLI-01: only a release owns the aggregate log. ``status`` is read-only and

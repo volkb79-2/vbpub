@@ -428,6 +428,50 @@ def local_main_divergence(repo_root: Path, *, ref: str = "main") -> tuple[int, i
         ) from exc
 
 
+#: How a retained build's source commit was chosen: the checked-out commit
+#: (``head``, possibly unpushed) or the fetched ``origin/main`` (``origin-main``).
+BUILD_SOURCE_MODES = ("head", "origin-main")
+
+
+def assert_build_source_publishable(
+    repo_root: Path, project_name: str, manifest: Mapping[str, Any],
+    *, git_auth: GitHubGitAuth | None = None, fetched: bool = False,
+) -> None:
+    """Refuse to publish a ``head`` build whose commit origin/main does not contain (H1).
+
+    A default ``cmru build`` snapshots the checked-out commit, which may be an
+    unpushed or feature-branch commit.  Such bytes are good locally but must not
+    become a normal published artifact: publication requires the source commit to
+    be an ancestor of a freshly fetched ``origin/main``.  ``origin-main`` builds
+    are unchanged; a record without ``source_mode`` predates the field (every
+    build then was an origin/main build) and keeps working.
+    """
+    mode = manifest.get("source_mode")
+    if mode is None:
+        print(
+            f"[INFO] {project_name}: build record has no source_mode (written before "
+            "HEAD builds existed); treated as an origin-main build", flush=True,
+        )
+        return
+    if mode == "origin-main":
+        return
+    commit = str(manifest.get("source_commit", ""))
+    if not fetched:
+        fetch_origin_main(repo_root, git_auth=git_auth)
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "merge-base", "--is-ancestor", commit, "origin/main"],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        raise UnsafeRecord(
+            f"{project_name}: this build used the checked-out commit {commit[:12]} (a HEAD "
+            "build), which is not contained in the freshly fetched origin/main, so its bytes "
+            "must not be published as a normal artifact. Push/merge that commit to origin/main "
+            "and publish again, or rebuild from the published source with "
+            "`cmru build --from-origin-main` and publish that output."
+        )
+
+
 def local_head_commit(repo_root: Path) -> str:
     """Return the full commit id the caller's checkout (or worktree) is on."""
     return _git(repo_root, "rev-parse", "HEAD")
@@ -1828,11 +1872,15 @@ def _validate_build_output_tree(
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise RuntimeError(f"{project_name}: invalid retained build manifest: {manifest_path}") from exc
+    base_keys = {
+        "schema_version", "kind", "publication", "project", "build_id",
+        "source_commit", "source_commit_date", "source_tree_changes", "logs", "artifacts",
+    }
     if not isinstance(manifest, dict) or (
-        set(manifest) != {
-            "schema_version", "kind", "publication", "project", "build_id",
-            "source_commit", "source_commit_date", "source_tree_changes", "logs", "artifacts",
-        }
+        # ``source_mode`` is optional: records written before it existed (the
+        # origin/main-only era) are still valid and are treated as origin-main.
+        set(manifest) not in (base_keys, base_keys | {"source_mode"})
+        or manifest.get("source_mode", "origin-main") not in BUILD_SOURCE_MODES
         or manifest.get("schema_version") != 1
         or manifest.get("kind") != "cmru-local-build"
         or manifest.get("publication") not in {"eligible", "forbidden"}
@@ -2150,6 +2198,7 @@ def retain_successful_build_outputs(
     workspace: ReleaseWorkspace,
     projects: Mapping[str, object],
     project_names: Sequence[str],
+    source_mode: str = "origin-main",
 ) -> list[Path]:
     """Copy a successful non-release build's evidence into the caller checkout.
 
@@ -2231,6 +2280,7 @@ def retain_successful_build_outputs(
                 "build_id": output_id,
                 "source_commit": source_commit,
                 "source_commit_date": source_date,
+                "source_mode": source_mode,
                 "source_tree_changes": source_changes,
                 "logs": _safe_digest_tree(staged_logs),
                 "artifacts": copied_artifacts,

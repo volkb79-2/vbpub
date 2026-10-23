@@ -86,7 +86,7 @@ def test_build_failing_after_the_snapshot_started_stays_exit_1(monkeypatch, tmp_
 def test_build_child_failure_retains_worktree_and_propagates_status(monkeypatch, tmp_path, capsys):
     workspace = _prepare_build(monkeypatch, tmp_path)
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: 7)
-    monkeypatch.setattr(cli.transaction, "retain_successful_build_outputs", lambda *args: (_ for _ in ()).throw(AssertionError("retain")))
+    monkeypatch.setattr(cli.transaction, "retain_successful_build_outputs", lambda *args, **_kw: (_ for _ in ()).throw(AssertionError("retain")))
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args: (_ for _ in ()).throw(AssertionError("remove")))
     exc = cli.main(["build", "demo", "--from-origin-main", "--config", str(tmp_path / "cmru.toml")])
     assert exc == 7
@@ -97,7 +97,7 @@ def test_build_child_failure_retains_worktree_and_propagates_status(monkeypatch,
 def test_build_retention_failure_keeps_worktree_and_returns_generic_failure(monkeypatch, tmp_path, capsys):
     _prepare_build(monkeypatch, tmp_path)
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: 0)
-    monkeypatch.setattr(cli.transaction, "retain_successful_build_outputs", lambda *args: (_ for _ in ()).throw(RuntimeError("missing logs")))
+    monkeypatch.setattr(cli.transaction, "retain_successful_build_outputs", lambda *args, **_kw: (_ for _ in ()).throw(RuntimeError("missing logs")))
     removed = []
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda workspace: removed.append(workspace))
     exc = cli.main(["build", "demo", "--from-origin-main", "--config", str(tmp_path / "cmru.toml")])
@@ -110,7 +110,7 @@ def test_build_cleanup_failure_reports_retained_outputs_and_does_not_hide_error(
     workspace = _prepare_build(monkeypatch, tmp_path)
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: 0)
     retained = [tmp_path / "demo" / "artifacts" / "build-id"]
-    monkeypatch.setattr(cli.transaction, "retain_successful_build_outputs", lambda *args: retained)
+    monkeypatch.setattr(cli.transaction, "retain_successful_build_outputs", lambda *args, **_kw: retained)
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args: (_ for _ in ()).throw(RuntimeError("busy worktree")))
     exc = cli.main(["build", "demo", "--from-origin-main", "--config", str(tmp_path / "cmru.toml")])
     assert exc == 1
@@ -127,7 +127,7 @@ def test_dirty_retained_build_does_not_suggest_publication(monkeypatch, tmp_path
         tmp_path / "demo" / "artifacts" / "build-id",
     ]
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: 0)
-    monkeypatch.setattr(cli.transaction, "retain_successful_build_outputs", lambda *args: retained)
+    monkeypatch.setattr(cli.transaction, "retain_successful_build_outputs", lambda *args, **_kw: retained)
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *_args: None)
     monkeypatch.setattr(
         cli.transaction,

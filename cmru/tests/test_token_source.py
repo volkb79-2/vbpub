@@ -65,6 +65,7 @@ def _write(tmp_path: Path, token_source: str | None, *, secret: bool = False) ->
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
+    config.reset_gh_token_cache()  # the lookup is cached once per process (H2)
     for name in ("GITHUB_PUSH_PAT", "GITHUB_TOKEN", "GH_TOKEN", "CMRU_RELEASE_TRANSACTION_CHILD"):
         monkeypatch.delenv(name, raising=False)
 
@@ -88,10 +89,14 @@ def test_gh_source_runs_the_fixed_command_with_a_minimal_env(tmp_path, monkeypat
     monkeypatch.setenv("SOME_OTHER", "x")
     calls = _fake_gh(monkeypatch)
     forge = load_forge_config(_write(tmp_path, '"gh"'))
+    assert calls == []  # H2: config load never runs gh
     assert forge.github.token == SECRET  # trailing newline stripped
     assert forge.github.token_source == "gh"
-    assert forge.project_tokens == {"alpha": SECRET}
-    assert calls and calls[0]["argv"] == ["gh", "auth", "token", "--hostname", "github.com"]
+    assert set(forge.project_tokens) == {"alpha"}
+    assert SECRET not in repr(forge.project_tokens) and SECRET not in repr(forge.github)
+    assert forge.project_tokens["alpha"].resolve() == SECRET
+    assert len(calls) == 1  # one cached lookup per process, however often it is read
+    assert calls[0]["argv"] == ["gh", "auth", "token", "--hostname", "github.com"]
     env = calls[0]["env"]
     assert "GH_TOKEN" not in env and "GITHUB_TOKEN" not in env and "SOME_OTHER" not in env
     assert calls[0]["capture_output"] is True
@@ -146,8 +151,9 @@ def test_invalid_token_source_is_a_config_error(tmp_path, capsys, value):
 
 def test_gh_binary_missing_is_a_config_error(tmp_path, monkeypatch, capsys):
     _fake_gh(monkeypatch, raises=FileNotFoundError("gh"))
+    forge = load_forge_config(_write(tmp_path, '"gh"'))  # loads: validation only
     with pytest.raises(SystemExit) as exc:
-        load_forge_config(_write(tmp_path, '"gh"'))
+        forge.github.token
     assert exc.value.code == 2
     assert "`gh` CLI is not installed" in capsys.readouterr().err
 
@@ -157,19 +163,21 @@ def test_gh_failure_or_empty_token_is_a_config_error_with_login_hint(
     tmp_path, monkeypatch, capsys, stdout, returncode,
 ):
     _fake_gh(monkeypatch, stdout=stdout, returncode=returncode)
+    forge = load_forge_config(_write(tmp_path, '"gh"'))
     with pytest.raises(SystemExit) as exc:
-        load_forge_config(_write(tmp_path, '"gh"'))
+        forge.github.token
     assert exc.value.code == 2
     err = capsys.readouterr().err
     assert "gh auth login" in err
-    assert "gh auth refresh -h github.com -s read:packages,write:packages" in err
+    assert "gh auth refresh -h github.com -s read:packages,write:packages,delete:packages" in err
     assert SECRET not in err  # even a failing gh that printed a token is never echoed
 
 
 def test_gh_timeout_is_a_config_error(tmp_path, monkeypatch, capsys):
-    _fake_gh(monkeypatch, raises=subprocess.TimeoutExpired(["gh"], 30))
+    _fake_gh(monkeypatch, raises=subprocess.TimeoutExpired(["gh"], 15))
+    forge = load_forge_config(_write(tmp_path, '"gh"'))
     with pytest.raises(SystemExit) as exc:
-        load_forge_config(_write(tmp_path, '"gh"'))
+        forge.github.token
     assert exc.value.code == 2
     assert "gh auth login" in capsys.readouterr().err
 

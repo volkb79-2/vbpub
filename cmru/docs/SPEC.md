@@ -1742,9 +1742,20 @@ valid in `cmru.secret.toml` (refused with the same pointer).
   is needed in a worktree, and `GITHUB_PUSH_PAT`/`GITHUB_TOKEN` do not shadow the login. A
   missing `gh` binary, a non-zero exit or an empty result is a configuration error (exit 2)
   with the hint `gh auth login`; for GHCR the account additionally needs
-  `gh auth refresh -h github.com -s read:packages,write:packages`. The token is never logged
-  and flows through the same reserved-credential handling as a PAT (protected runner
-  environment, private release handoff; never step env tables, manifests, logs or argv).
+  `gh auth refresh -h github.com -s read:packages,write:packages,delete:packages`
+  (`delete:packages` is what `cmru cleanup` uses). The token is never logged. It is resolved
+  LAZILY and cached once per process: config load only validates `token_source`, and `gh`
+  runs (15 s timeout) the first time a credential is actually used (release/publish/build
+  handoff, publish-credential check, cleanup, GHCR/registry calls, HTTPS Git transport), so
+  `status`, `dependencies`, `run` and tests that load the estate config need no `gh` login.
+  It flows through the reserved-credential handling: handed to transaction children over the
+  private pipe, and injected into project steps only for the `push` step, a step that
+  declares a registry `login`, or one listing `GITHUB_PUSH_PAT` in `required_env`; build,
+  test, prepare and clean steps get none, and `GH_TOKEN`/`GH_ENTERPRISE_TOKEN`/`GITHUB_TOKEN`
+  are cleared from every step. (`token_source = "cmru"` keeps its previous environment
+  placement; see KI-96.) Never in step env tables, manifests, logs or argv. `--secret-file`
+  is refused under `gh`. A transaction child that loads a snapshot predating the mandatory key
+  adopts the parent's declared `token_source` (carried in the credential handoff).
 - `token_source = "cmru"`: the resolution below (environment, then secret files) applies.
 
 1. `GITHUB_PUSH_PAT` env var, then `GITHUB_TOKEN` env var.
@@ -2151,7 +2162,10 @@ state without them. On child success it MUST copy that project's logs to
 `project.release.artifact_dirs` directory to
 `<project>/artifacts/<commit-date>_<full-commit>/`, write a `build.json` SHA-256
 inventory, then remove the worktree. The coordinate is the built HEAD's UTC commit timestamp
-and full SHA; an existing coordinate is an error, never an overwrite. `build.json` MUST record
+and full SHA; an existing coordinate is an error, never an overwrite. `build.json` MUST record the build source mode (`source_mode`: `head` or `origin-main`) and
+commit; `publish --build-output` of a `head` build MUST be refused (exit 4) unless its commit is an
+ancestor of a freshly fetched `origin/main` (a record without `source_mode` predates the field and is
+treated as `origin-main`). `build.json` MUST record
 the source identity, artifact and log inventories, and any tracked or untracked source-tree
 changes. Any non-empty `source_tree_changes` makes the record ineligible for publication; CMRU
 MUST refuse real and dry-run `publish --build-output` for it. Projects MUST ignore their expected

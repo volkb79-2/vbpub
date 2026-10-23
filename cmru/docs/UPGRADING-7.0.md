@@ -33,7 +33,8 @@ else changes: your `cmru.secret.toml` keeps working untouched. `token_source` is
 
 1. `gh auth login` (once per user).
 2. For GHCR work, grant the package scopes once:
-   `gh auth refresh -h github.com -s read:packages,write:packages`.
+   `gh auth refresh -h github.com -s read:packages,write:packages,delete:packages`
+   (`delete:packages` is needed by `cmru cleanup`).
 3. Set `token_source = "gh"`.
 
 Under `"gh"`, `GITHUB_PUSH_PAT`/`GITHUB_TOKEN` in the environment do not shadow the login, and
@@ -48,3 +49,40 @@ fine-grained PAT limited to one repository would not.
   `--from-origin-main` restores the old fetched-`origin/main` snapshot; `--allow-uncommitted`
   builds the committed state past uncommitted project edits (the refusal now names it).
 - `cmru release --skip-gates REASON` (CMRU-SKIP-01), see CONSUMERS.md.
+
+## Older transactions, old branches and 6.x controllers (honest limits)
+
+The key is mandatory in the config the controller loads, so:
+
+- **A controller (`cmru` 7.x) whose own checked-out config lacks `token_source`** refuses at
+  once (exit 2), before any worktree is created. Add the key first.
+- **An in-flight release transaction started by 6.x** (`release --resume`), **`--from-worktree`
+  from an older branch** and **a default HEAD build on an older branch**: the 7.x parent
+  declares its `token_source` in the credential handoff, and the child adopts it when the
+  snapshot it loads lacks the key. These now work. A project step that re-invokes `cmru` below
+  such a child does not receive that declaration and still needs the key in the snapshot.
+- **A released 6.2.x `cmru` rejects `token_source` as an unknown key.** No single config works
+  for both a 6.2.x and a 7.x controller. Upgrade every machine that runs `cmru` against the
+  estate before committing the key, or keep the key out of branches a 6.x controller still builds.
+
+## Credential exposure notes
+
+- Under `"gh"` the token is fetched lazily (only commands that need a credential run `gh`) and
+  injected only into publishing steps (`push`, steps with a registry `login`, steps listing
+  `GITHUB_PUSH_PAT` in `required_env`); other steps never see it. Under `"cmru"` the token is still
+  exported to the whole process environment as before (KI-96).
+- `gh` stores its token in plaintext in `~/.config/gh/hosts.yml`: the same exposure as
+  `cmru.secret.toml`, but typically with broader scopes (the account's full `repo` scope).
+- `cmru doctor` reports the declared source even when the config otherwise fails to load. Under
+  `"gh"` it checks only that `gh auth token` returns a token: that command does not validate the
+  token against GitHub and says nothing about scopes (use `gh auth status`).
+- `--secret-file` is refused under `"gh"`.
+
+## HEAD builds and publication
+
+`cmru build` records `source_mode` (`head` | `origin-main`) in `build.json`. `cmru publish
+--build-output` refuses (exit 4) a `head` build whose commit is not contained in a freshly
+fetched `origin/main`; push/merge the commit, or rebuild with `--from-origin-main`. Records written
+before this field existed are treated as `origin-main` builds. A HEAD build now also warns about
+dirty tracked files outside the selected project directories (`libraries/`, root config), which the
+HEAD snapshot omits.
