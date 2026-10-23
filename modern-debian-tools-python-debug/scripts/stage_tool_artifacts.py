@@ -120,21 +120,32 @@ def _sha512(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _git_out(*args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(PROJECT_ROOT), *args], capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+
 def _artifact_cache_dir() -> Path:
-    """Return a local cache shared by all worktrees of this repository."""
+    """Return a local cache shared by all worktrees of this repository.
+
+    Default: `artifacts/cache/tool-artifacts` of THIS project in the main checkout (the git common
+    dir's parent), so every release worktree reuses one cache. `artifacts/` is gitignored and holds
+    only local, regenerable data; nothing is written under `.git`. A repository without a normal
+    main checkout (bare, or a common dir that is not named `.git`) uses the project's own
+    `artifacts/cache`. `MDT_ARTIFACT_CACHE_DIR` overrides everything.
+    """
     configured = os.getenv("MDT_ARTIFACT_CACHE_DIR")
     if configured:
         return Path(configured).expanduser().resolve()
-    result = subprocess.run(
-        ["git", "-C", str(PROJECT_ROOT), "rev-parse", "--git-common-dir"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    common = Path(result.stdout.strip())
+    common = Path(_git_out("rev-parse", "--git-common-dir"))
     if not common.is_absolute():
         common = (PROJECT_ROOT / common).resolve()
-    return common / "mdt-artifact-cache"
+    if common.name != ".git":
+        return PROJECT_ROOT / "artifacts" / "cache" / "tool-artifacts"
+    toplevel = Path(_git_out("rev-parse", "--show-toplevel")).resolve()
+    relative = PROJECT_ROOT.resolve().relative_to(toplevel)
+    return common.parent / relative / "artifacts" / "cache" / "tool-artifacts"
 
 
 def _cache_entry(url: str) -> tuple[Path, Path]:

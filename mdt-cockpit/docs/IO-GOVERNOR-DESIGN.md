@@ -61,19 +61,38 @@ A single small service, `mdt-io-governor.service` (Python stdlib, `cli-extended`
 `/var/lib/mdt/io-governor/`. **It performs no IO of its own and runs no benchmark**: it only reads what the kernel already exposes, keeps the
 evidence, and moves settings in small bounded steps. iobench stays the only thing that produces a calibrated model, and only when an operator runs it.
 
-### 3.0 Objective: prod latency, not throughput
+### 3.0 Objective: protect declared workloads, not throughput
 
-The governor exists to protect the production workload on this host (the Soulmask game server): its IO latency must stay low and **swapping
-must not stall it**. Throughput of builds is secondary and is given up first. Consequences:
+The governor is generic: it knows nothing about any application. The operator declares a **protect list** (`IO_GOV_PROTECT`), the workloads whose
+IO latency must stay low (here the game server, on another host a database) and whose swapping must not stall them. Everything else
+(builds, gates, dev containers) is the **governed** side and gives way first. Throughput of the governed side is secondary.
 
-* The controlled variable is **latency seen by prod**, not utilisation: device read/write latency percentiles, the game cgroup's `io.pressure`
-  and D-state time, and the **swap devices' own latency** (`/sys/block/<disk>/<part>/stat` for the swap partitions: swap IO is charged to the
-  page owner's cgroup, so a game that swaps is limited by the same device the builds load).
-* The levers are the ones the dev tier already has: dev-tier caps (`io.max` on `dev.slice`), the io.cost model and QoS latency targets
-  (`rlat`/`wlat`), and weights. The governor tightens dev limits when prod latency or swap latency degrades, and relaxes them only while prod is calm.
-* A **swap-aware rule**: when swap IO share rises and swap-in latency or the game's pressure climbs, dev limits are cut harder and faster than
-  for ordinary load (swap-in is on the game's critical path; a build's write burst is not).
-* Prod harm always wins over any estimate of capacity: the proven-bound logic below only decides how far dev limits may *relax*.
+* **Targets are cgroups, not PIDs.** A PID changes at every container restart; the cgroup path does not. An entry is a cgroup path or glob
+  (`/sys/fs/cgroup/system.slice/foo.service`), or `docker:<container name>`, which the governor re-resolves to the container's current scope
+  (`docker inspect`-equivalent from `/sys/fs/cgroup` names and the daemon's id) whenever the path disappears or the container restarts.
+* **Signals per target, cheapest first** (all plain procfs/sysfs reads, no tracing, no IO of our own):
+
+  | signal | source | cost | tells |
+  |---|---|---|---|
+  | stall time | the target cgroup's `io.pressure` (`some`/`full` cumulative `total`, deltas per tick) | one small file read | the fraction of time its tasks waited for IO |
+  | its IO rates | the cgroup's `io.stat` per device (`rbytes wbytes rios wios`) | one file read | who is doing the IO, and how much |
+  | blocked threads | `cgroup.threads` + the state field of `/proc/<tid>/stat`, sampled each tick: threads in `D` | O(threads) reads per tick | IO or reclaim stalls an average hides; the same measure the earlier stall recorder used |
+  | device and swap latency | `/sys/block/<disk>/stat`, and the swap partitions read from `/proc/swaps` (auto-detected, no config) | a few reads | the device latency the targets actually see; swap IO is charged to the page owner's cgroup, so a protected workload that swaps depends on it |
+
+* **Optional deep mode: per-cgroup block latency** (`IO_GOV_TRACE=off|on`, default off). The 2026-10-20 investigation used two `bpftrace` programs
+  (`scripts/gstammtisch-guide/tools/io-stall/`): `dstall.bt`, which watches `sched_switch` for threads of one TGID blocked in D state >= 20 ms and
+  prints total and count per kernel stack, and `wb_delay.bt`, which times `write()` to writeback. Both were pinned to one PID. The governor version would attach a tracepoint
+  on `block_rq_issue`/`block_rq_complete` and key the latency histogram by the target's **cgroup id** (`bpf_get_current_cgroup_id()` at issue time),
+  so it survives restarts. Cost: the tracepoints fire per request (tens of thousands per second at our peak) and `sched_switch` fires on every context
+  switch host-wide with the filter inside the program, so it is real CPU work and needs root, BTF and `bpftrace`/libbpf. Therefore it is off by default,
+  time-boxed (`RuntimeMaxSec`), and only started on a hint from the cheap signals (a target's stall time above threshold for N ticks). Fsync latency of a
+  target cannot be observed without issuing IO, so it is out of scope.
+* The levers are the ones the governed tier already has: its caps (`io.max` on `dev.slice`), the io.cost model and QoS latency targets
+  (`rlat`/`wlat`) and weights. The governor tightens the governed side when a protected target's stall time, blocked-thread count or swap latency degrades,
+  and relaxes only while all targets are calm.
+* **Swap-aware rule:** when swap IO share rises and swap latency or a target's pressure climbs, governed limits are cut harder and faster than for ordinary
+  load (swap-in is on the protected workload's critical path; a build's write burst is not).
+* Harm to a protected target always wins over any estimate of capacity: the proven-bound logic below only decides how far limits may *relax*.
 
 ### 3.0a Covariates the guest can see
 
@@ -91,7 +110,7 @@ must not stall it**. Throughput of builds is secondary and is given up first. Co
 
 * Device: `/sys/block/<dev>/stat` deltas -> throughput, IOPS, mean latency, busy %, queue depth (the sampler used for this document).
 * Controller: `cost.vrate`, per-cgroup `cost.usage` / `cost.wait` / `cost.indelay` from `io.stat`; the clamps from `io.cost.qos`.
-* Harm: PSI `io.pressure` (host and the game's cgroup), D-state counters where the stall recorder exists.
+* Harm: PSI `io.pressure` (host and every protected target's cgroup), blocked-thread counts and swap-device latency (3.0).
 * A **plateau** is >= 60 s with the device busy >= 70 % and throughput within +-15 %. Each plateau is appended to iobench's `ceilings.jsonl`
   with `source: governor` (IOB-CEI-01 requires duration >= 60 s, direction and workload class). This is the population step iobench's
   D-011 says is missing: until now the history is `single-run`.
@@ -146,7 +165,7 @@ Inputs are the model basis (iobench D-IOC-2: the worst sustained plateau per dir
 | vrate at the max clamp for > 10 min with latency under target | model too low | as above |
 | vrate at the min clamp for > 10 min with latency under target | clamp or request-slot issue | do not touch the model; log, and let the operator or the A/B settle `min` and `nr_requests` |
 | latency percentile over target for > 2 min while vrate is at min | device slower than model | lower the model one step |
-| game `io.pressure full avg10` >= 2 for > 1 min | harm | freeze all increases, step dev caps down |
+| a protected target's `io.pressure` stall time above threshold for > 1 min, or its blocked threads persistently > 0 | harm | freeze all increases, step the governed caps down |
 
 Rules shared by every move: a step is at most 25 %; a cooldown of 30 min between steps in the same direction; the model never goes below
 0.7 x the worst recorded plateau or above the best proven plateau; `min`/`max` of the QoS follow iobench R6 from the same history; dev caps stay
@@ -173,13 +192,13 @@ uses as a bound.
 
 * Modes `off` | `observe` | `enforce-down` | `enforce` (default `observe`); dry-run logs "would set X to Y because Z".
 * Fail-open to the last good values; a governor crash changes nothing.
-* Writes only the dev-tier caps, the model and the QoS of the configured root disk. Never `io.max` of the game or system slices.
+* Writes only the dev-tier caps, the model and the QoS of the configured root disk. Never `io.max` of a protected target or the system slices.
 * Every change is a journal line with before, after, rule and evidence, and an entry in `ceilings.jsonl`.
 
 ## 4. Configuration (host-setup.env, wizard step "IO governance")
 
 `IO_GOVERNOR=off|observe|enforce-down|enforce`, `IO_GOV_STEP_PCT=25`, `IO_GOV_COOLDOWN_MIN=30`, `IO_GOV_FLOOR_PCT=70`, `IO_GOV_{R,W}_FLOOR` / `IO_GOV_{R,W}_CEIL` (the range it may never leave),
-`IO_GOV_GAME_CGROUP=` (the cgroup whose pressure freezes increases), `IO_GOV_SWAP_DEVS=` (swap partitions to watch), `IO_GOV_FILL_WARN=80`. The wizard proposes the first model from an iobench result when one exists.
+`IO_GOV_PROTECT=` (the watch list: cgroup paths/globs or `docker:<name>`; its pressure freezes increases), `IO_GOV_TRACE=off|on`, `IO_GOV_FILL_WARN=80` (swap partitions come from `/proc/swaps`). The wizard proposes the first model from an iobench result when one exists.
 
 ## 5. Phases
 
@@ -187,7 +206,7 @@ uses as a bound.
 |---|---|---|
 | P0 | `observe` mode: the sampler as a service, journal + `ceilings.jsonl` plateaus, no writes | two weeks of plateaus; the 25 % windows fire on a replay of the 2026-10-20 -> 2026-10-23 shift |
 | P1 | `recalibrate_recommended` surfaced in `mdt doctor` and the wizard | operator sees the warning within 24 h of a real shift |
-| P2 | `enforce-down` | a simulated ceiling drop lowers caps and model within two windows without game harm |
+| P2 | `enforce-down` | a simulated ceiling drop lowers caps and model within two windows without harm to a protected target |
 | P3 | `enforce` (increases on saturated windows only, bounded by the ceiling) | build time before/after; no step outside floor/ceiling in a replay with injected bursts |
 
 Tests: replay of recorded traces (the logs from this session are the first two), a table-driven decision test for section 3.2, and the VM

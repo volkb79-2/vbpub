@@ -389,7 +389,7 @@ Also tracked from iobench `BACKLOG.md` (the optional IOGOV item).
 
 ## MDT-024 - move the mdt-buildkitd cache onto a compressed btrfs subvolume in `devcontainers-cow` (2026-10-23)
 
-**Status:** PLAN, not applied. Today the cache is the Docker named volume `mdt-buildkitd-cache` (93 GB, snapshotter `runc-overlayfs`,
+**Status:** IMPLEMENTED 2026-10-23 as host-setup key `DEV_BUILDKITD_CACHE` (a Docker volume name, the default, or an absolute host path); the cold-cache trial on `/srv/devcontainers-cow/buildkitd-cache` was started the same day, results to be added here. Today the cache is the Docker named volume `mdt-buildkitd-cache` (93 GB, snapshotter `runc-overlayfs`,
 owner 1000:1000, no userns remap) on the root ext4, so BuildKit's write bursts share the root journal with everything else
 (HOST-IO-INTERFERENCE: that shared journal is what stalled the game's fsync path). `devcontainers-cow` is a separate btrfs filesystem
 (own transaction stream, 194 GB, nearly empty, mounted `noatime,discard=async` at `/srv/devcontainers-cow`).
@@ -398,11 +398,10 @@ owner 1000:1000, no userns remap) on the root ext4, so BuildKit's write bursts s
 1. `btrfs subvolume create /srv/devcontainers-cow/buildkitd-cache` (the subvolume name is a path below the top level, BTRFS-COW.md 2.1).
 2. `btrfs property set /srv/devcontainers-cow/buildkitd-cache compression zstd` (BTRFS-COW.md policy: no `compress=` mount option; never `chattr +C`, it disables compression).
 3. `chown 1000:1000 /srv/devcontainers-cow/buildkitd-cache && chmod 2755 ...` (the rootless worker is uid 1000).
-4. host-setup: a key `BUILDKITD_CACHE_DIR` in `/etc/mdt/host-setup.env` on the HOST (value `/srv/devcontainers-cow/buildkitd-cache`; empty = the Docker
+4. host-setup: a key `DEV_BUILDKITD_CACHE` in `/etc/mdt/host-setup.env` on the HOST (value `/srv/devcontainers-cow/buildkitd-cache`; empty = the Docker
    volume, the current behaviour). It is a host path, not a devcontainer path: `install.sh` renders it into `units/mdt-buildkitd.service.in` as
    `-v <host path>:/home/user/.local/share/buildkit` (the part after the colon is the path inside the buildkitd container). The key exists only so the
-   unit does not hardcode a host layout (hosts without btrfs keep the volume), with `RequiresMountsFor=` and an `ExecStartPre` that refuses unless the path is on btrfs
-   (`stat -f -c %T`); the mount is `nofail`, and a missing mount must not make Docker create the directory on the root ext4.
+   unit does not hardcode a host layout (hosts without btrfs keep the volume), with an `ExecStartPre` that refuses unless a host path exists as a real directory (the mount is `nofail`, and a missing mount must not make Docker create the directory on the root ext4); install.sh also checks the owner is 1000:1000. btrfs is not required: any filesystem path works.
 5. `buildkitd.toml`: `[worker.oci] gc = true` with `gckeepstorage` (MB) well below the pool, which the VM harness also uses (BTRFS-COW-OPTIONS A17).
 6. Start with a cold cache (no migration; it is disposable and crosses filesystems). Afterwards remove the old volume and the stale `buildx_buildkit_*_state` volumes.
 
@@ -417,7 +416,7 @@ under each release worktree's `build/oci-layouts`. Only BuildKit's own cache and
 
 ## MDT-025 - 61 GB inside `vbpub/.git` are dead build caches plus a growing artifact cache (2026-10-23)
 
-**Status:** FOUND; cleanup waits for the operator's go (`git` objects themselves are only 160 MB).
+**Status:** DONE 2026-10-23. The three dead `mdt-buildkit-cache*` directories (54 GB) were deleted (`.git` is now 218 MB), and `mdt-artifact-cache` was moved to `mdt-cockpit/artifacts/cache/tool-artifacts` (gitignored). `stage_tool_artifacts.py` now defaults there: the main checkout's project `artifacts/cache/tool-artifacts`, shared by every worktree (test: `test_default_artifact_cache_is_the_main_checkouts_gitignored_artifacts_dir_shared_by_worktrees`). Still open: an age/LRU prune (`stage_tool_artifacts.py prune --older-than`).
 
 | path under `.git/` | size | writer | state |
 |---|---|---|---|

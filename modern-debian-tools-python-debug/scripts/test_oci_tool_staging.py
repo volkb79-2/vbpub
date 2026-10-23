@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import io
+import os
 import subprocess
 import sys
 import tarfile
@@ -83,6 +84,28 @@ class OciToolStagingTests(unittest.TestCase):
                 self.assertEqual(staging._restore_cached_download(url, destination), url)
 
             self.assertEqual(destination.read_bytes(), payload)
+
+    def test_default_artifact_cache_is_the_main_checkouts_gitignored_artifacts_dir_shared_by_worktrees(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            main = Path(temp).resolve() / "main"
+            (main / "proj").mkdir(parents=True)
+
+            def git(*args: str) -> None:
+                subprocess.run(["git", "-C", str(main), *args], check=True, capture_output=True)
+
+            git("init", "-q")
+            (main / "proj" / "f").write_text("x")
+            git("add", ".")
+            git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "x")
+            worktree = Path(temp).resolve() / "wt"
+            git("worktree", "add", "-q", str(worktree), "-b", "b")
+            expected = main / "proj" / "artifacts" / "cache" / "tool-artifacts"
+            environ = {k: v for k, v in os.environ.items() if k != "MDT_ARTIFACT_CACHE_DIR"}
+            with mock.patch.dict(os.environ, environ, clear=True):
+                for root in (main / "proj", worktree / "proj"):
+                    with mock.patch.object(staging, "PROJECT_ROOT", root):
+                        self.assertEqual(staging._artifact_cache_dir(), expected)
+                        self.assertNotIn(".git", staging._artifact_cache_dir().parts)
 
     def test_github_asset_digest_parser_is_strict(self) -> None:
         digest = "a" * 64

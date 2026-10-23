@@ -842,6 +842,7 @@ def _config_value_validators() -> dict[str, Validator]:
         "IO_COST_MODEL": validate_io_cost_model,
         "IO_COST_QOS": validate_io_cost_qos,
         "DEV_BUILDKITD_IMAGE": validate_buildkit_image,
+        "DEV_BUILDKITD_CACHE": validate_buildkit_cache,
         "DEV_BUILDKITD_MAX_PARALLELISM": validate_positive_int,
         "BUILDX_ACCIDENTAL_CONTAINER_POLICY": validate_guard_policy,
         "DEVCONTAINER_MISSING_BIND_SOURCE_POLICY": validate_missing_bind_source_policy,
@@ -1612,6 +1613,19 @@ def validate_nonempty(value: str) -> str | None:
     """
     if not value:
         return "a non-empty value is required"
+    return None
+
+
+def validate_buildkit_cache(value: str) -> str | None:
+    """A Docker volume name or an absolute host path, shell-safe (the value is sourced and rendered into a unit)."""
+    if not value:
+        return None  # empty keeps the historical volume
+    if value.startswith("/"):
+        if not re.fullmatch(r"/[A-Za-z0-9._/+-]+", value):
+            return f"{value!r}: an absolute path may contain only letters, digits and . _ / + -"
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", value):
+        return f"{value!r} is neither an absolute path nor a Docker volume name (letters, digits and . _ -)"
     return None
 
 

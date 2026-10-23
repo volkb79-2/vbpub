@@ -1564,6 +1564,16 @@ done
         self.assertIsNone(WIZARD.validate_buildkit_image("moby/buildkit:buildx-stable-1-rootless"))
         self.assertIsNone(WIZARD.validate_buildkit_image("registry:5000/team/buildkit@sha256:abc123"))
         self.assertIsNotNone(WIZARD.validate_buildkit_image("$(touch /tmp/pwned)"))
+        # the cache source: a Docker volume name or an absolute host path, shell-safe, empty keeps the volume
+        for good in ("", "mdt-buildkitd-cache", "/srv/devcontainers-cow/buildkitd-cache"):
+            self.assertIsNone(WIZARD.validate_buildkit_cache(good), good)
+        for bad in ("relative/dir", "/srv/a b", "$(touch /tmp/pwned)", "/srv/x;rm", "-v"):
+            self.assertIsNotNone(WIZARD.validate_buildkit_cache(bad), bad)
+        unit = (ROOT / "units/mdt-buildkitd.service.in").read_text()
+        self.assertIn("-v @DEV_BUILDKITD_CACHE@:/home/user/.local/share/buildkit", unit)
+        self.assertNotIn("-v mdt-buildkitd-cache:", unit)  # no hardcoded cache source in the unit
+        self.assertIn('case "$cache" in /*)', unit)  # a bind source must exist: never silently created on the root fs
+        self.assertIn('DEV_BUILDKITD_CACHE="mdt-buildkitd-cache"', (ROOT / "host-setup.env.example").read_text())
 
     def test_guaranteed_sibling_memory_min_confirms_and_updates_shared_key(self) -> None:
         values = {"DEV_MEMORY_MIN_GUARANTEED_CEILING": "1G"}

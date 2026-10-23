@@ -484,6 +484,31 @@ if [ -z "${DEV_BUILDKITD_IMAGE:-}" ]; then
   echo "ERROR: DEV_BUILDKITD_IMAGE is empty; refusing to start the managed BuildKit service" >&2
   exit 2
 fi
+# The BuildKit cache source: a Docker volume name or an absolute host path (host-setup.env.example). An empty value
+# keeps the historical volume. A host path must already exist as a real directory owned by the worker's uid (1000).
+DEV_BUILDKITD_CACHE="${DEV_BUILDKITD_CACHE:-mdt-buildkitd-cache}"
+case "$DEV_BUILDKITD_CACHE" in
+  /*)
+    if ! printf '%s' "$DEV_BUILDKITD_CACHE" | grep -Eq '^/[A-Za-z0-9._/+-]+$'; then
+      echo "ERROR: DEV_BUILDKITD_CACHE=$DEV_BUILDKITD_CACHE has characters outside letters, digits and . _ / + -" >&2
+      exit 2
+    fi
+    if [ ! -d "$DEV_BUILDKITD_CACHE" ] || [ -L "$DEV_BUILDKITD_CACHE" ]; then
+      echo "ERROR: DEV_BUILDKITD_CACHE=$DEV_BUILDKITD_CACHE must be an existing real directory (create it, for a btrfs subvolume: btrfs subvolume create)" >&2
+      exit 2
+    fi
+    if [ "$(stat -c %u:%g "$DEV_BUILDKITD_CACHE")" != "1000:1000" ]; then
+      echo "ERROR: DEV_BUILDKITD_CACHE=$DEV_BUILDKITD_CACHE must be owned by 1000:1000 (the rootless BuildKit user): chown 1000:1000 $DEV_BUILDKITD_CACHE" >&2
+      exit 2
+    fi
+    ;;
+  *)
+    if ! printf '%s' "$DEV_BUILDKITD_CACHE" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$'; then
+      echo "ERROR: DEV_BUILDKITD_CACHE=$DEV_BUILDKITD_CACHE is neither an absolute path nor a Docker volume name" >&2
+      exit 2
+    fi
+    ;;
+esac
 
 # Device node for the static IO*Max lines (render-time; the runtime script
 # re-discovers independently, so an install-time miss only drops the statics).
@@ -794,7 +819,7 @@ DEV_GATES_MEMORY_MIN DEV_GATES_MEMORY_LOW DEV_GATES_MEMORY_HIGH DEV_GATES_MEMORY
 DEV_GATES_CPU_WEIGHT DEV_GATES_CPU_QUOTA DEV_GATES_IO_WEIGHT DEV_GATES_OOM_PRESSURE_LIMIT \
 DEV_GATES_ZSWAP_WRITEBACK \
 DEV_BUILDKITD_MEMORY_MIN DEV_BUILDKITD_MEMORY_LOW DEV_BUILDKITD_MEMORY_HIGH DEV_BUILDKITD_MEMORY_MAX DEV_BUILDKITD_MEMORY_SWAP_MAX \
-DEV_BUILDKITD_CPU_WEIGHT DEV_BUILDKITD_CPU_QUOTA DEV_BUILDKITD_IO_WEIGHT DEV_BUILDKITD_IMAGE \
+DEV_BUILDKITD_CPU_WEIGHT DEV_BUILDKITD_CPU_QUOTA DEV_BUILDKITD_IO_WEIGHT DEV_BUILDKITD_IMAGE DEV_BUILDKITD_CACHE \
 DEV_BUILDKITD_MAX_PARALLELISM \
 DEV_BUILDKITD_ZSWAP_WRITEBACK \
 DEV_STATIC_RBW DEV_STATIC_WBW DEV_STATIC_RIOPS DEV_STATIC_WIOPS \

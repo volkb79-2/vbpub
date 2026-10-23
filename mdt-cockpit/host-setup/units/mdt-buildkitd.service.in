@@ -72,6 +72,9 @@ RuntimeDirectoryMode=01777
 RuntimeDirectoryPreserve=yes
 # Clear any stale container from an unclean shutdown before starting fresh
 # (the "-" prefix makes a failure here non-fatal — nothing to clear is fine).
+# A bind-mounted cache directory (DEV_BUILDKITD_CACHE is an absolute path) must already exist as a real directory:
+# `docker run -v` would otherwise create it, silently, on the root filesystem when the intended mount is absent.
+ExecStartPre=/bin/sh -ec 'cache="@DEV_BUILDKITD_CACHE@"; case "$cache" in /*) [ -d "$cache" ] && [ ! -L "$cache" ] || { echo "BuildKit cache directory $cache is missing or not a real directory" >&2; exit 1; } ;; esac'
 ExecStartPre=-/usr/bin/docker rm -f mdt-buildkitd
 ExecStartPre=-/usr/bin/docker pull @DEV_BUILDKITD_IMAGE@
 # ExecStartPost seals this directory to 0711. Restore only drifted metadata
@@ -91,7 +94,7 @@ ExecStart=/usr/bin/docker run --rm --name mdt-buildkitd \
   --security-opt apparmor=unconfined \
   -v /run/mdt-buildkitd:/run/buildkit \
   -v /etc/mdt/buildkitd.toml:/etc/buildkit/buildkitd.toml:ro \
-  -v mdt-buildkitd-cache:/home/user/.local/share/buildkit \
+  -v @DEV_BUILDKITD_CACHE@:/home/user/.local/share/buildkit \
   @DEV_BUILDKITD_IMAGE@ \
   --config /etc/buildkit/buildkitd.toml \
   --addr unix:///run/buildkit/buildkitd.sock \
