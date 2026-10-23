@@ -372,3 +372,17 @@ at lines 582–583 and 602–606; on `TimeoutExpired` Python kills only the dire
 2. The script has no read timeout on cgroup files (`scripts/mdt-cgroup-io-limits.sh:66,108,110`: `cat "$cur/io.max"`,
    `cat "$cg/io.latency"`, `cat "$cg/io.max"`). On a real host a hung cgroup read would block the same way; a bounded
    read (for example `timeout 5 cat`) would turn that into a visible error.
+
+
+## MDT-023 - IO governor: the io.cost model, QoS and dev caps go stale when the sustained ceiling moves (2026-10-23)
+
+**Status:** DESIGN written, nothing implemented: `docs/IO-GOVERNOR-DESIGN.md`.
+
+**Observed.** On gstammtisch the sustained write ceiling went 516 MB/s (2026-07-08) -> 14-18 MB/s (2026-10-20) -> 330-350 MB/s (2026-10-23)
+with the same disk identity, so identity-based baselines never noticed. The `DEV_IO_WBPS_MAX=10M` pin made the mdt-cockpit build step take 4694 s
+instead of about 1100-1200 s, and the 14.7 MB/s `IO_COST_MODEL` was 23x low (vrate compensated at 2000-2800). With the corrected model vrate sat on
+the QoS floor (50) in 58 of 77 samples while latency was far under target.
+
+**Next.** P0 observe-only service feeding `libraries/iobench` `ceilings.jsonl` (`source: governor`, IOB-CEI-01), then `recalibrate_recommended` in
+`mdt doctor`, then enforce-down, then enforce with a quiet-window probe. Open: why vrate pins at the floor (A/B `nr_requests`, `min` 50 vs 100).
+Also tracked from iobench `BACKLOG.md` (the optional IOGOV item).

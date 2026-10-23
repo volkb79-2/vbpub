@@ -2379,3 +2379,20 @@ drops `stale-record` entries; it touches no worktree. Tests (`tests/test_gate_sn
 leftover branch is kept, and each lookalike condition stays `retained` with its own reason. An existing assertion in
 `tests/test_release_gate.py` now expects the more precise reason for the registered-but-missing case.
 
+
+
+### KI-93 - `cmru build` of a project with a release gate fails `dirty-tree` on its own generated outputs
+
+**Status:** OPEN. Found 2026-10-23 with `cmru build mdt-cockpit`.
+
+**Observed.** The `prepare` step succeeded (the image built), then the `run-tests` step failed: `run-gate: refusing to judge a dirty tree ... has 6
+uncommitted change(s)` (first: `mdt-cockpit/package-manifests-versioned/...`), lane `release` verdict `NOT_RUN`, exit 3. The 6 files are the
+project's declared `commit_generated` outputs that `prepare` writes.
+
+**Mechanism (suspected).** `cmru release` commits the prepared generated inputs before the gate (`prepare release inputs` commit,
+`_commit_prepared_generated`); the isolated `cmru build` runs the same gate without that commit, so a gate lane with `clean_tree = true` always
+sees a dirty tree for any project that generates committed files.
+
+**Fix direction.** Make the build transaction commit the declared generated outputs in its worktree before judging (as release does), or run the
+build's tests with the gate's clean-tree check scoped to the declared `commit_generated` paths; add a test with a project that generates a
+committed file.
