@@ -2,7 +2,9 @@
 
 This document is the pasteable adoption contract for MDT's host governance and
 managed BuildKit backend. Host setup is intentionally manual because it
-changes systemd, Docker, and cgroup policy.
+changes systemd, Docker, and cgroup policy. For the end-to-end picture of how a devcontainer is
+created, initialised and started, read
+[DEVCONTAINER-MECHANISMS.md](DEVCONTAINER-MECHANISMS.md) first.
 
 ## PWMCP browser service
 
@@ -524,18 +526,8 @@ entries plus the Debian default. See [One PATH order](DESIGN-GUIDE.md#one-path-o
 
 ## Shell selection and configuration
 
-### Which shell a VS Code terminal opens
-
-VS Code chooses in this order:
-
-1. `terminal.integrated.defaultProfile.linux`, if set. It can come from the workspace
-   `.vscode/settings.json`, the devcontainer's `customizations.vscode.settings`, or the user
-   or remote-machine settings.
-2. Otherwise the container user's login shell from `/etc/passwd` (`$SHELL`). The `vscode` user
-   has `/bin/bash`.
-
-The templates set no terminal profile, so a consumer gets **bash** unless it opts in. For zsh,
-add this to the devcontainer's settings block:
+A VS Code terminal opens **bash** unless the devcontainer sets
+`terminal.integrated.defaultProfile.linux` (the templates do not). To get zsh in VS Code:
 
 ```jsonc
 "customizations": { "vscode": { "settings": {
@@ -543,40 +535,11 @@ add this to the devcontainer's settings block:
 } } }
 ```
 
-To change the shell for every entry point, including `docker exec` and the `userEnvProbe`
-shell, change the login shell in the image instead (`chsh -s /usr/bin/zsh vscode`).
-
-### What runs when a terminal opens
-
-VS Code starts an interactive shell. It is a login shell only if the profile asks for `-l`;
-the default Linux profiles do not.
-
-| Shell | Files processed, in order |
-|---|---|
-| bash, interactive non-login | `/etc/bash.bashrc`, `~/.bashrc` |
-| bash, login | `/etc/profile` (which sources `/etc/profile.d/*.sh`), then the first of `~/.bash_profile`, `~/.bash_login`, `~/.profile`. The stock `~/.profile` sources `~/.bashrc`. |
-| zsh, any | `/etc/zsh/zshenv`, `~/.zshenv`, then for interactive shells `/etc/zsh/zshrc`, `~/.zshrc` (loads Oh My Zsh) |
-| zsh, login (extra) | `/etc/zsh/zprofile` and `~/.zprofile` before `zshrc`; `/etc/zsh/zlogin` and `~/.zlogin` after it. The image's `~/.zprofile` only sources `~/.profile`. |
-| zsh, on exit | `/etc/zsh/zlogout`, `~/.zlogout` |
-
-`~/.bashrc` also installs a `DEBUG` trap (`preexec`) that sets the terminal title.
-
-Things that affect the terminal but are not shell startup files:
-
-- **`userEnvProbe`**: the Dev Containers extension runs the user's shell once to capture the
-  environment for the VS Code server. The default is `loginInteractiveShell`, so it reads the
-  login and interactive files above.
-- **`containerEnv` and `remoteEnv`** from the devcontainer.json.
-- **Shell integration** (`terminal.integrated.shellIntegration.enabled`): VS Code injects its
-  own script and then sources your rc files.
-- **Python extension activation**: `python.terminal.activateEnvironment` can run an activate
-  script in each new terminal. Set it to `false` to prevent that.
-- **Lifecycle commands** (`postCreateCommand`, `postStartCommand`, `postAttachCommand`, and
-  the `finalize.post.d/*` hooks) run per container start or attach, not per terminal.
-
-Your own files in `~` persist through the home mount (see
-[Persistent AI CLI state](#persistent-ai-cli-state)). The files under `/etc` belong to the
-image; create your own file to override rather than editing them.
+Put settings that must apply in both shells in `~/.config/mdt-cockpit/shell.env` (exports),
+`ai.env` (keys) and `aliases.sh` (aliases, interactive only); `profile.sh` sources them in bash
+and zsh alike. The full startup-file order for both shells, the flow diagram, the bash-versus-zsh
+compatibility notes and the troubleshooting table are in
+[How an mdt devcontainer works, end to end](DEVCONTAINER-MECHANISMS.md#8-shell-selection-and-startup).
 
 ## VM-backed test runners
 

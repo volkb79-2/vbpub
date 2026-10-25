@@ -2,7 +2,8 @@
 
 This is the **canonical** reference for the lifecycle hooks an mdt-based devcontainer wires up,
 the complete persistent home, and moving from the previous layout. Consuming repos point here and keep only
-their project-specific notes.
+their project-specific notes. For the whole picture in one place (host setup through terminal
+startup, shell selection included) read [docs/DEVCONTAINER-MECHANISMS.md](docs/DEVCONTAINER-MECHANISMS.md).
 
 The shipped template uses `shutdownAction: "none"`; the devcontainer remains running when its
 attached Dev Containers session disconnects. `CODEX_SQLITE_HOME` points at the shared SQLite

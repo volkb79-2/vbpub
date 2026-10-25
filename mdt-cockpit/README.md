@@ -810,6 +810,7 @@ production-quality. Windows as of June 2026:
 | Document | Covers |
 |---|---|
 | [USAGE.md](USAGE.md) | Consuming the image day to day |
+| [docs/DEVCONTAINER-MECHANISMS.md](docs/DEVCONTAINER-MECHANISMS.md) | **Start here.** Every devcontainer mechanism end to end: host prerequisites, bootstrap, create-time mounts and env, finalizer, filesystem split, shell selection and startup files, troubleshooting |
 | [DEVCONTAINER-LIFECYCLE.md](DEVCONTAINER-LIFECYCLE.md) | Build → create → start ordering, what runs when, host resource governance |
 | [host-setup/README.md](host-setup/README.md) | Installing the host cgroup tiers and narrow cgprofile observer setup |
 | [host-setup/CGROUP-NOTES.md](host-setup/CGROUP-NOTES.md) | What slice units can't express; BFQ caveats |
