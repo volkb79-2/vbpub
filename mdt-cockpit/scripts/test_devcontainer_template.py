@@ -149,7 +149,10 @@ def test_image_defines_the_command_path_once_and_the_login_hook_only_restores_it
     assert "/opt/mdt/venv/bin:/opt/mdt/npm/bin" not in profile
 
 
-def test_bootstrap_derives_every_active_home_bind_source() -> None:
+def test_bootstrap_derives_every_active_home_bind_source(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "proj"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
     host_home = Path("/host/home")
     original_home = bootstrap.HOME
     bootstrap.HOME = host_home
@@ -164,8 +167,8 @@ def test_bootstrap_derives_every_active_home_bind_source() -> None:
 
     assert derived == [
         host_home / ".ssh",
-        host_home / "mdt-cockpit-home",
-        host_home / "mdt-cockpit-tmp",
+        host_home / "mdt-cockpit-proj-home",
+        host_home / "mdt-cockpit-proj-tmp",
     ]
 
 

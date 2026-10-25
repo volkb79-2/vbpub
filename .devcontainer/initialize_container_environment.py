@@ -377,11 +377,23 @@ def _remove_jsonc_trailing_commas(text: str) -> str:
     return "".join(output)
 
 
-def to_home_dir(source: str):
-    """Resolve a mount source to a host $HOME-relative path, or None to skip."""
+def _expand_local_vars(source: str) -> str:
+    """Expand the devcontainer variables a mount source may use, as the CLI does.
+
+    initializeCommand runs in the local workspace folder, so its basename is
+    `${localWorkspaceFolderBasename}`. Left unexpanded, the literal spelling was
+    created as a host directory.
+    """
     s = source.replace("${localEnv:HOME}", str(HOME))
+    s = s.replace("${localWorkspaceFolderBasename}", Path.cwd().name)
     if s.startswith("~"):
         s = str(HOME) + s[1:]
+    return s
+
+
+def to_home_dir(source: str):
+    """Resolve a mount source to a host $HOME-relative path, or None to skip."""
+    s = _expand_local_vars(source)
     p = Path(s)
     try:
         p.relative_to(HOME)
@@ -392,10 +404,7 @@ def to_home_dir(source: str):
 
 def has_directory_marker(source: str) -> bool:
     """Whether the raw mount source ends in `/`, MDT's missing-dir hint."""
-    s = source.replace("${localEnv:HOME}", str(HOME))
-    if s.startswith("~"):
-        s = str(HOME) + s[1:]
-    return s.endswith("/")
+    return _expand_local_vars(source).endswith("/")
 
 
 def _mode_for(p: Path, role: str | None = None) -> int:

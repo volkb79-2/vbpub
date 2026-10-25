@@ -136,10 +136,10 @@
     // and a new home starts empty. create-by-spelling creates this missing source
     // as a directory; set the policy to `fail` to require it to exist already.
     // Any further mount source is named ${localEnv:HOME}/mdt-cockpit-<purpose>.
-    "source=${localEnv:HOME}/mdt-cockpit-home/,target=/home/vscode,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt-cockpit-${localWorkspaceFolderBasename}-home/,target=/home/vscode,type=bind,consistency=cached",
 
     // ── Persisted host-backed /tmp (mode 1777) ─────────────────────────────────
-    "source=${localEnv:HOME}/mdt-cockpit-tmp/,target=/tmp,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt-cockpit-${localWorkspaceFolderBasename}-tmp/,target=/tmp,type=bind,consistency=cached",
 
     // ── Optional btrfs copy-on-write area (OFF by default; docs/BTRFS-COW.md) ───
     // Snapshots/rollback, reflinked copies and per-directory compression for tools such
