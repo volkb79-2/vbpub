@@ -561,6 +561,22 @@ case "${WATCHER_MEMORY_POLICY:-}" in
     ;;
 esac
 
+echo "== inotify watch budget (VS Code workspace watcher, MDT-003) =="
+want_watches=$(awk -F= '/^[[:space:]]*fs\.inotify\.max_user_watches[[:space:]]*=/ {gsub(/[[:space:]]/,"",$2); print $2}' \
+  "$(dirname "$0")/etc/sysctl.d/99-inotify.conf" /etc/sysctl.d/99-mdt-inotify.conf 2>/dev/null | tail -1)
+have_watches=$(cat /proc/sys/fs/inotify/max_user_watches 2>/dev/null || echo "")
+want_watches="${want_watches:-524288}"
+if [ -z "$have_watches" ]; then
+  warn "fs.inotify.max_user_watches unreadable"
+elif [ "$have_watches" -ge "$want_watches" ]; then
+  ok "fs.inotify.max_user_watches=$have_watches (>= $want_watches)"
+else
+  fail "fs.inotify.max_user_watches=$have_watches < $want_watches — VS Code reports 'unable to watch for file changes' on large workspaces; re-run install.sh"
+fi
+[ -f /etc/sysctl.d/99-mdt-inotify.conf ] \
+  && ok "/etc/sysctl.d/99-mdt-inotify.conf present (persists across reboots)" \
+  || warn "/etc/sysctl.d/99-mdt-inotify.conf missing — the value will not survive a reboot; re-run install.sh"
+
 echo "== container placement (informational) =="
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   docker ps --format '{{.Names}}' | while read -r n; do

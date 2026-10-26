@@ -893,6 +893,15 @@ mkdir -p /etc/systemd/system/docker.socket.d
 install -m 0644 "$HERE/units/docker-api-socket.conf" \
   /etc/systemd/system/docker.socket.d/50-mdt-dedicated-api-socket.conf
 
+# VS Code (and every other inotify consumer of the host user) shares one
+# fs.inotify.max_user_watches budget; the kernel default (~8k) is exhausted by a
+# large workspace ("unable to watch for file changes ... ENOSPC"). Fixed path, no
+# template variables, so installed directly. `sysctl -p <file>` applies only this
+# file now; the sysctl.d copy re-applies it at every boot. MDT-003.
+install -m 0644 "$HERE/etc/sysctl.d/99-inotify.conf" /etc/sysctl.d/99-mdt-inotify.conf
+sysctl -q -p /etc/sysctl.d/99-mdt-inotify.conf \
+  || { echo "ERROR: sysctl -p failed for /etc/sysctl.d/99-mdt-inotify.conf" >&2; exit 1; }
+
 # /run/cgprofile tmpfiles.d entry (RG-55 A2/D-30, M5): the directory
 # templates/devcontainer.json bind-mounts to reach the cgroup-profiler
 # daemon's control socket. The observer directory has a separate rule so its

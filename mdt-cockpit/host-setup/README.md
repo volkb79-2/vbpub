@@ -624,6 +624,18 @@ runtime): reboot or set it by hand. `mdt-host-check.sh` reports each key as OK, 
 Why these values and what they cost (sequential reads fell from about 1.2-1.4 GB/s to 0.25-0.3 GB/s at 64 KB): see the
 DESIGN-GUIDE section on MDT-HS-05 and `scripts/gstammtisch-guide/HOST-IO-INTERFERENCE.md` sections 4.2-4.5 and 5.
 
+### inotify watch budget (MDT-003)
+
+VS Code watches every directory of the open workspace, and all of the host user's inotify consumers share one
+`fs.inotify.max_user_watches` budget. The kernel default (about 8k) is exhausted by a large repository, which VS Code
+reports as "unable to watch for file changes in this large workspace (ENOSPC)". install.sh copies
+`etc/sysctl.d/99-inotify.conf` (524288) to `/etc/sysctl.d/99-mdt-inotify.conf` and applies it with `sysctl -p`;
+`mdt-host-check.sh` FAILs when the live value is below it and warns when the persisted file is missing.
+A raised limit is only half the fix: generated trees (git worktrees, run-gate and pytest output) can still consume most
+of it. The devcontainer template therefore sets `files.watcherExclude` and `search.exclude` under
+`customizations.vscode.settings`; trim those patterns to the consumer repo. The cost: the Source Control view does not
+live-refresh inside a worktree under `.worktrees/`.
+
 ### IO scheduler and io.cost (MDT-HS-07)
 
 The wizard (step 9, after the writeback keys) asks three more keys and install.sh renders, applies and verifies them:
