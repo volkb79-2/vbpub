@@ -255,7 +255,28 @@
   "customizations": {
     "vscode": {
       "settings": {
-        "python.defaultInterpreterPath": "python3"
+        "python.defaultInterpreterPath": "python3",
+        // Keep VS Code's inotify watcher off generated trees. Each watched directory costs one
+        // fs.inotify.max_user_watches slot, shared by every process of the host user; git worktrees
+        // and run/test output dwarf the real source tree. Without these, the watcher exhausts the
+        // limit ("unable to watch for file changes ... ENOSPC"). Trade-off: the Source Control view
+        // does not live-refresh inside a worktree under .worktrees/. Trim to your repo's layout.
+        "files.watcherExclude": {
+          "**/.git/objects/**": true,
+          "**/.git/subtree-cache/**": true,
+          "**/node_modules/**": true,
+          "**/.worktrees/**": true,
+          "**/.run-gate/**": true,
+          "**/pytest-of-*/**": true,
+          "**/.venv/**": true,
+          "**/__pycache__/**": true,
+          "**/.hypothesis/**": true
+        },
+        "search.exclude": {
+          "**/.worktrees": true,
+          "**/.run-gate": true,
+          "**/pytest-of-*": true
+        }
       },
       "extensions": [
         // Python & linting
@@ -286,7 +307,6 @@
       ]
     }
   },
-
   // Keep this devcontainer available when the attached Dev Containers session disconnects.
   "shutdownAction": "none"
 }
