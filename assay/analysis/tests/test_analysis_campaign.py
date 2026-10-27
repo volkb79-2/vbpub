@@ -19,6 +19,7 @@ from assay.candidate_identity import candidate_id_from_fields
 from assay.cli import main
 from assay.verdict import MUTATION_BUCKETS
 from assay_analysis import campaign as campaign_api
+from tests.core.test_b110_pilot_select import _valid_fixture as _valid_selector_fixture
 
 
 def _repository(tmp_path: Path, document: dict) -> tuple[Path, str, Path]:
@@ -612,7 +613,22 @@ def test_pilot_selection_summary_is_plan_bound_and_never_qualifying(
 def test_b110_analysis_accepts_output_from_the_real_selector(tmp_path, monkeypatch):
     fixture = _fixture_document("r2_pass")
     root, head, _verdict = _repository(tmp_path, fixture)
-    rows = _plan_rows(fixture)
+    # The real selector is specific to Assay's own scanner source, so the plan it
+    # reads is the selector test-suite's committed fixture, not the verdict
+    # fixture's synthetic rows.
+    rows, _files = _valid_selector_fixture(root)
+    for number, row in enumerate(rows):
+        # The campaign analysis re-derives every plan row's identity.
+        row["mutated_file_sha256"] = hashlib.sha256(f"mutant-{number}".encode()).hexdigest()
+        row["id"] = candidate_id_from_fields(**{key: row[key] for key in (
+            "path", "source_sha256", "start_byte", "end_byte",
+            "mutated_file_sha256", "operator")})
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(root), "commit", "-qm", "selector fixture"], check=True)
+    head = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
     _install_plan(monkeypatch, fixture, rows)
     plan_path, _synthetic_selection, _ids, _digest = _write_pilot_inputs(
         tmp_path,
@@ -632,7 +648,7 @@ def test_b110_analysis_accepts_output_from_the_real_selector(tmp_path, monkeypat
             "--out", str(candidate_path),
             "--report", str(selection_path),
             "--seed", "b110-analysis-golden",
-            "--size", "1",
+            "--size", "9",
         ],
         check=False,
         capture_output=True,
@@ -645,10 +661,14 @@ def test_b110_analysis_accepts_output_from_the_real_selector(tmp_path, monkeypat
     assert candidate_path.read_text(encoding="utf-8").splitlines()[1:] == selected_ids
 
     progress = tmp_path / "b110-pilot-progress.jsonl"
+    outcomes = {"claims": [{
+        "rigor": "R2",
+        "mutation": {"killed": [{"candidate_id": row["id"]} for row in rows]},
+    }]}
     _write_pilot_progress(
         progress,
         head=head,
-        document=fixture,
+        document=outcomes,
         rows=rows,
         selected_ids=selected_ids,
         selection_sha256=selection["selection_sha256"],

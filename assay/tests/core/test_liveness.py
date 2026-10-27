@@ -22,7 +22,7 @@ DECIDES once it is running.
 
 from __future__ import annotations
 
-from conftest import completed_process, timeout_expired
+from conftest import completed_process
 
 import io
 import json
@@ -885,8 +885,6 @@ def test_liveness_injected_plan_runs_through_execute_plan_despite_no_consent(
     assert injection.active is True
 
     def _fake_runner(argv, *, env, cwd, timeout):
-        import subprocess
-
         assert "-p" in argv and "assay_liveness_plugin" in argv
         return completed_process(args=list(argv), returncode=0, stdout="", stderr="")
 

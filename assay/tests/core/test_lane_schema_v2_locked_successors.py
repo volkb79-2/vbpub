@@ -51,9 +51,8 @@ five is itself testing omission mode.
 
 from __future__ import annotations
 
-from conftest import completed_process, timeout_expired
+from conftest import completed_process
 
-import subprocess
 import tomllib
 from pathlib import Path
 

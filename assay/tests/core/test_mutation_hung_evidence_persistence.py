@@ -6,10 +6,9 @@ used by ``--resume`` and the candidate event in the progress stream.
 
 from __future__ import annotations
 
-from conftest import completed_process, process_tree_evidence_dict, timeout_expired
+from conftest import completed_process, process_tree_evidence_dict
 
 import json
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 

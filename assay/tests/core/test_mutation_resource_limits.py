@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 import threading
 from dataclasses import replace
@@ -11,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import completed_process, timeout_expired
+from conftest import completed_process
 from conftest import (
     GitRepo,
     make_deadline,

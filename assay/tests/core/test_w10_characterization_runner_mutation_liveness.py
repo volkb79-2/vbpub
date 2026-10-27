@@ -9,11 +9,10 @@ source; never edited to follow the refactor.
 
 from __future__ import annotations
 
-from conftest import completed_process, timeout_expired
+from conftest import completed_process
 
 import json
 import math
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 

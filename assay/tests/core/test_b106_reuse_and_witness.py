@@ -6,7 +6,6 @@ import hashlib
 import io
 import json
 import os
-import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -26,7 +25,7 @@ from assay.resource_limits import ResourceLimitCounters
 from assay.reuse import classify_candidate, load_reuse_source, prior_only_candidates
 from assay.verdict import Mutation, MutationExecution, MutationWitnessReceipt
 from assay.verify import verify_document
-from conftest import completed_process, isolated_process_runner, timeout_expired
+from conftest import completed_process, isolated_process_runner
 from conftest import (
     TESTS_ROOT,
     GitRepo,

@@ -21,9 +21,8 @@ independently re-derive.
 
 from __future__ import annotations
 
-from conftest import completed_process, timeout_expired
+from conftest import completed_process
 
-import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path

@@ -38,6 +38,7 @@ RESOURCE_OBSERVER_SOURCE="/run/cgprofile/observer/resource-observer.sock"
 RESOURCE_OBSERVER_DIRECTORY_SOURCE="$(dirname "$RESOURCE_OBSERVER_SOURCE")"
 RESOURCE_OBSERVER_TARGET_DIRECTORY="/run/cgprofile-observer"
 RESOURCE_OBSERVER_TARGET="$RESOURCE_OBSERVER_TARGET_DIRECTORY/resource-observer.sock"
+# shellcheck source=/dev/null
 source "$(dirname "${BASH_SOURCE[0]}")/resource-observer-gid.sh"
 
 resource_observer_gid() {

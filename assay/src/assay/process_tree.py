@@ -317,8 +317,10 @@ class ProcessTreeWindow:
                     "native process-tree isolation requires SIGCHLD to be waitable"
                 )
             if not self._prior_subreaper:
-                _set_subreaper(True)
+                # Claim the change before attempting it: an enable that fails
+                # part-way must still be restored to the prior (disabled) state.
                 self._changed_subreaper = True
+                _set_subreaper(True)
             if _has_any_children():
                 raise ProcessTreeError(
                     "cannot start an isolated command while the caller already "

@@ -409,6 +409,7 @@ def _committed_r2_plan_sha256(
             "assay.cli",
             "plan",
             lane,
+            "--json",
             "--file",
             str(config_path),
             "--allow-dirty",

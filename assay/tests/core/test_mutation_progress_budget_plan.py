@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 import io
-import os
-import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path

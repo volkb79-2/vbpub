@@ -2135,7 +2135,9 @@ def test_a_green_tester_then_a_green_harness_marks_the_phase_once_between_tester
         if value == "--group-add"
     ]
     assert group_ids and all(group_id.isdigit() for group_id in group_ids)
-    assert "994" in group_ids
+    # The launcher adds the Docker socket's group; the fixture socket is created
+    # by this process, so its group is our effective gid (not a host-specific 994).
+    assert str(os.getegid()) in group_ids
     assert "--cidfile" in launch
     mounts = [launch[i + 1] for i, value in enumerate(launch[:-1]) if value == "--mount"]
     assert "type=bind,src=/host/vbpub,dst=/host/vbpub" in mounts
@@ -2370,6 +2372,8 @@ def test_a_hung_sql_log_stream_is_bounded_and_exit_cleanup_still_removes_the_run
     assert production_wait in source
     short_functions = tmp_path / "gate-functions-short-log-wait.sh"
     short_functions.write_text(source.replace(production_wait, production_wait[:-2] + "1"), encoding="utf-8")
+    # The gate functions source this helper relative to their own location.
+    shutil.copyfile(_OBSERVER_GID_HELPER, tmp_path / _OBSERVER_GID_HELPER.name)
     proc = run_bash(
         f"run_registered_tester_container() {{ echo stubbed-tester; }}\n"
         "run_b145_bounded_wait_acceptance_probe() { :; }\n"

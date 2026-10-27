@@ -32,7 +32,7 @@ import sys
 from pathlib import Path, PurePosixPath
 
 import pytest
-from conftest import completed_process, timeout_expired
+from conftest import completed_process
 from conftest import (
     FakeAdapter,
     GitRepo,

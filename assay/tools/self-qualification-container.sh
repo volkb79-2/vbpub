@@ -285,7 +285,7 @@ host_workspace_root="${ASSAY_GATE_HOST_WORKSPACE_ROOT:-$workspace_fsroot}"
 if ! command -v docker >/dev/null 2>&1; then
   die 'Docker is required to launch the cgroup-visible tester-unified runner'
 fi
-for required_command in timeout setsid od tr paste rg grep sort sed; do
+for required_command in timeout setsid od tr paste grep sort sed; do
   command -v "$required_command" >/dev/null 2>&1 \
     || die "required host command is unavailable: $required_command"
 done
@@ -327,7 +327,7 @@ if ! active_names="$(docker_bounded ps --no-trunc --format '{{.Names}}')"; then
   printf 'ASSAY_GATE_INCONCLUSIVE=host check failed (docker ps) — rerun\n' >&2
   exit 3
 fi
-active_gates="$(printf '%s\n' "$active_names" | rg '^run-gate-' || true)"
+active_gates="$(printf '%s\n' "$active_names" | grep '^run-gate-' || true)"
 if [[ -n "$active_gates" ]]; then
   printf 'ASSAY_GATE_INCONCLUSIVE=host busy — rerun: %s\n' \
     "$(printf '%s' "$active_gates" | paste -sd, -)" >&2

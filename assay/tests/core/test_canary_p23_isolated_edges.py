@@ -18,12 +18,11 @@ tested as one.
 
 from __future__ import annotations
 
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-from conftest import completed_process, timeout_expired
+from conftest import completed_process
 from conftest import (
     GitRepo,
     make_deadline,

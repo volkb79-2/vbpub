@@ -9,7 +9,7 @@ effect of some larger scenario.
 
 from __future__ import annotations
 
-from conftest import completed_process, timeout_expired
+from conftest import timeout_expired
 
 import json
 import os

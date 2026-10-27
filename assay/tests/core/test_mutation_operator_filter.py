@@ -15,9 +15,8 @@ satisfy a result-only assertion while doubling the lane's real work.
 
 from __future__ import annotations
 
-from conftest import completed_process, timeout_expired
+from conftest import completed_process
 
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 

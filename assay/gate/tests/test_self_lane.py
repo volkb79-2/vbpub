@@ -106,8 +106,9 @@ def test_b105_run_gate_lanes_use_the_observer_enabled_bare_host_wrapper():
     assert "--cgroupns=private" in wrapper
     assert "--cgroupns=host" not in wrapper
     assert 'ASSAY_RESOURCE_OBSERVER_SOCKET=$RESOURCE_OBSERVER_TARGET' in wrapper
-    assert 'RESOURCE_OBSERVER_TARGET="/run/cgprofile-observer/resource-observer.sock"' in wrapper
-    assert 'dst=$RESOURCE_OBSERVER_TARGET,readonly' in wrapper
+    assert 'RESOURCE_OBSERVER_TARGET_DIRECTORY="/run/cgprofile-observer"' in wrapper
+    assert 'RESOURCE_OBSERVER_TARGET="$RESOURCE_OBSERVER_TARGET_DIRECTORY/resource-observer.sock"' in wrapper
+    assert 'dst=$RESOURCE_OBSERVER_TARGET_DIRECTORY,readonly' in wrapper
     assay_lanes = load_lane_file(SELF_LANE_FILE)
     for lane_id in (QUALIFICATION_ID, PREFLIGHT_ID):
         assert "ASSAY_RESOURCE_OBSERVER_SOCKET" in assay_lanes.lane(lane_id).env_passthrough
@@ -648,7 +649,7 @@ def test_b105_builds_identical_wheels_from_same_oid_with_different_checkout_mtim
 @pytest.mark.parametrize(
     ("stored_digest", "expected_digest", "expected_calls", "expected_status"),
     [
-        ("a" * 64, "a" * 64, ["plan", "run"], 0),
+        ("a" * 64, "a" * 64, ["plan --json", "run"], 0),
         ("a" * 64, "b" * 64, [], 2),
     ],
 )
@@ -991,7 +992,7 @@ def test_b131_analysis_r2_pilot_is_a_separate_exact_source_measurement_gate():
     pilot = _shell_function_body(script, "run_analysis_r2_pilot")
     assert "local state_dir=.assay/analysis-r2-pilot-state-${source_commit:0:12}" in pilot
     assert '--campaign "$campaign" --lane analysis-r2 --hours 2' in pilot
-    assert '"$assay_bin" plan analysis-r2 --file assay.toml --cold-witness' in pilot
+    assert '"$assay_bin" plan analysis-r2 --json --file assay.toml --cold-witness' in pilot
     assert '"$assay_bin" run analysis-r2 --file assay.toml' in pilot
     for marker in (
         "--candidates-file", "--cold-witness", "--resume", "--state-dir",

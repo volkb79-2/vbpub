@@ -6,7 +6,6 @@ import hashlib
 import json
 import math
 import os
-import subprocess
 from concurrent.futures import Future as ConcurrentFuture
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,7 +16,7 @@ from assay.adapters.python import PythonAdapter
 from assay.errors import AssayError, Outcome, ReasonCode
 from assay.mutation import MutationDiscoveryError, MutationStateError
 from assay.verdict import Mutation
-from conftest import completed_process, timeout_expired
+from conftest import completed_process
 from conftest import (
     GitRepo,
     make_deadline,
