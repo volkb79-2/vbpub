@@ -848,7 +848,8 @@ class TestManagedIdentityLifecycle:
     def test_create_persists_atomic_ready_record(self, tmp_repo, fake_generate_env):
         record = worktree.create(tmp_repo, "logical-one", base="main")
         stored = json.loads(record.record_path.read_text(encoding="utf-8"))
-        assert stored["schema_version"] == 5
+        assert stored["schema_version"] == 6
+        assert stored["base_branch_ref"] == "main"
         assert stored["adopted"] is False
         assert stored["checkout_reset_pending"] is False
         assert stored["network_id"] is None
@@ -1241,7 +1242,7 @@ class TestManagedIdentityLifecycle:
     ):
         created = worktree.create(tmp_repo, "legacy-ready")
         legacy = replace(
-            created, schema_version=2, initial_overlay=None,
+            created, base_branch_ref=None, schema_version=2, initial_overlay=None,
             overlay_intent_known=False,
             checkout_reset_pending=None, network_id=None,
         )
@@ -1271,6 +1272,7 @@ class TestManagedIdentityLifecycle:
         interrupted = worktree.read_instance_record(legacy.record_path)
         assert interrupted.state == "allocating"
         assert interrupted.schema_version == 5
+        assert interrupted.base_branch_ref is None
         assert interrupted.overlay_intent_known is False
         assert interrupted.initial_overlay_pending is False
         assert interrupted.adopted is None
@@ -1280,6 +1282,7 @@ class TestManagedIdentityLifecycle:
 
         assert ensured.state == "ready"
         assert ensured.schema_version == 5
+        assert ensured.base_branch_ref is None
         assert ensured.overlay_intent_known is False
         assert generated.is_file()
 
@@ -1289,7 +1292,7 @@ class TestManagedIdentityLifecycle:
         created = worktree.create(tmp_repo, "legacy-v3-partial", profile="core")
         legacy = replace(
             created,
-            schema_version=3,
+            base_branch_ref=None, schema_version=3,
             state="allocating",
             recovery_status=None,
             checkout_reset_pending=None,
@@ -1313,7 +1316,7 @@ class TestManagedIdentityLifecycle:
         overlay = created.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
         original_overlay = overlay.read_bytes()
         legacy_v3 = replace(
-            created, schema_version=3, initial_overlay_pending=False,
+            created, base_branch_ref=None, schema_version=3, initial_overlay_pending=False,
             checkout_reset_pending=None, network_id=None,
         )
         worktree._write_instance_record(legacy_v3)
@@ -1340,7 +1343,9 @@ class TestManagedIdentityLifecycle:
         repaired = worktree.ensure(tmp_repo, "logical-one")
 
         assert repaired.state == "ready"
+        # The migration upgrades to v5 only and never invents a branch.
         assert repaired.schema_version == 5
+        assert repaired.base_branch_ref is None
         assert repaired.instance_id == created.instance_id
         assert repaired.network == created.network
         assert facts.is_file()
@@ -1759,7 +1764,7 @@ class TestManagedIdentityLifecycle:
         # takes the repair path instead.
         partial = replace(
             record,
-            schema_version=2,
+            base_branch_ref=None, schema_version=2,
             state="recovery-required",
             recovery_status="env-generation-failed",
             initial_overlay=None,
@@ -2362,6 +2367,86 @@ class TestForkPointProvenance:
             )
 
 
+class TestBaseBranchRef:
+    """Schema v6: ``base_branch_ref`` is decided once, at allocation."""
+
+    @staticmethod
+    def _stored(record):
+        return json.loads(record.record_path.read_text(encoding="utf-8"))
+
+    def test_local_branch_name_is_recorded(self, tmp_repo, fake_generate_env):
+        record = worktree.create(tmp_repo, "by-name", base="main")
+        assert record.schema_version == 6
+        assert record.base_branch_ref == "main"
+        assert self._stored(record)["base_branch_ref"] == "main"
+        assert record.base_ref == _git(["rev-parse", "main"], tmp_repo).stdout.strip()
+
+    def test_refs_heads_spelling_is_canonicalised(self, tmp_repo, fake_generate_env):
+        record = worktree.create(tmp_repo, "by-ref", base="refs/heads/main")
+        assert record.base_branch_ref == "main"
+
+    def test_tag_sha_head_and_remote_tracking_names_record_null(
+        self, tmp_repo, fake_generate_env
+    ):
+        sha = _git(["rev-parse", "main"], tmp_repo).stdout.strip()
+        assert _git(["tag", "release-1", sha], tmp_repo).returncode == 0
+        assert _git(
+            ["update-ref", "refs/remotes/origin/main", sha], tmp_repo
+        ).returncode == 0
+        for logical, base in (
+            ("by-tag", "release-1"),
+            ("by-sha", sha),
+            ("by-head", "HEAD"),
+            ("by-remote", "origin/main"),
+            ("by-full-remote", "refs/remotes/origin/main"),
+        ):
+            record = worktree.create(tmp_repo, logical, base=base)
+            assert record.base_branch_ref is None, base
+            assert self._stored(record)["base_branch_ref"] is None, base
+            assert record.base_ref == sha
+
+    def test_branch_moved_between_resolution_and_check_records_null(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        real_git = worktree._git
+
+        def moved(args, cwd):
+            if any(str(a) == "refs/heads/main^{commit}" for a in args):
+                return subprocess.CompletedProcess(args, 0, "f" * 40 + "\n", "")
+            return real_git(args, cwd)
+
+        monkeypatch.setattr(worktree, "_git", moved)
+        record = worktree.create(tmp_repo, "moved", base="main")
+        assert record.base_branch_ref is None
+
+    def test_missing_branch_is_null(self, tmp_repo):
+        sha = _git(["rev-parse", "main"], tmp_repo).stdout.strip()
+        assert worktree._local_base_branch(tmp_repo, "no-such-branch", sha) is None
+        assert worktree._local_base_branch(tmp_repo, "main", "e" * 40) is None
+        assert worktree._local_base_branch(tmp_repo, "main", sha) == "main"
+
+    def test_ensure_keeps_the_persisted_value(self, tmp_repo, fake_generate_env):
+        created = worktree.create(tmp_repo, "kept", base="main")
+        ensured = worktree.ensure(tmp_repo, "kept")
+        assert ensured.base_branch_ref == "main"
+        (tmp_repo / "later.txt").write_text("later\n", encoding="utf-8")
+        assert _git(["add", "later.txt"], tmp_repo).returncode == 0
+        assert _git(["commit", "-m", "advance main"], tmp_repo).returncode == 0
+        again = worktree.ensure(tmp_repo, "kept")
+        assert again.base_branch_ref == "main"
+        assert again.base_ref == created.base_ref
+        assert self._stored(again)["base_branch_ref"] == "main"
+
+    def test_adopt_records_null(self, tmp_repo, fake_generate_env):
+        wt_path = tmp_repo.parent / "adopted-v6"
+        assert _git(["worktree", "add", "-b", "adopted-v6", str(wt_path), "main"],
+                    tmp_repo).returncode == 0
+        record = worktree.adopt(tmp_repo, "adopted-v6", str(wt_path))
+        assert record.schema_version == 6
+        assert record.base_branch_ref is None
+        assert self._stored(record)["base_branch_ref"] is None
+
+
 class TestRunGateReadsTheRealRecord:
     """The seam itself, run for real ONCE rather than trusted.
 
@@ -2377,9 +2462,8 @@ class TestRunGateReadsTheRealRecord:
     `to_dict()` and the reader stopped agreeing.
 
     So: produce a record with the REAL `worktree.create()`, and feed it to
-    the REAL reader from the installed `run-gate` wheel. Skipped when that
-    package is not installed, which is every checkout of ciu outside this
-    monorepo.
+    the REAL reader from the installed `run-gate` wheel. A missing Run-Gate
+    package FAILS the test (a missing optional dependency is never a skip).
     """
 
     @staticmethod
@@ -2389,7 +2473,10 @@ class TestRunGateReadsTheRealRecord:
         except ModuleNotFoundError as exc:
             if exc.name != "run_gate":
                 raise
-            pytest.skip("Run-Gate wheel is not installed in this environment")
+            pytest.fail(
+                "run_gate is not importable: the seam tests need a Run-Gate "
+                "reader that understands record schema 6"
+            )
         return run_gate
 
     def test_a_real_ciu_record_is_ACCEPTED_by_run_gates_real_reader(
@@ -2435,26 +2522,49 @@ class TestRunGateReadsTheRealRecord:
     def test_an_adopt_record_is_refused_by_the_real_reader(
         self, tmp_repo, fake_generate_env
     ):
-        """`adopt()` records no fork point AND a frozen commit id as
-        `base_ref`, and the real reader refuses on the latter first — the
-        must-be-a-LOCAL-BRANCH clause, which is precisely the split the
-        run-gate side documents (round 1's false green is caught there, not
-        by the fork-point or containment clauses). Pinning WHICH clause
-        fires matters: if the ordering ever changed so that adopt fell
-        through to a later clause, this would go red rather than silently
-        relying on a guard that no longer runs first."""
+        """`adopt()` records no fork point and a null `base_branch_ref`; the
+        real reader refuses on the null branch with the explicit-`--base`
+        remedy. Pinning WHICH clause fires matters: if the ordering ever
+        changed so that adopt fell through to a later clause, this would go
+        red rather than silently relying on a guard that no longer runs."""
         rg = self._run_gate()
         wt_path = tmp_repo.parent / "adopted"
         assert _git(["worktree", "add", "-b", "adopted", str(wt_path), "main"],
                     tmp_repo).returncode == 0
         record = worktree.adopt(tmp_repo, "adopted-one", str(wt_path))
         assert record.fork_point_sha is None
+        assert record.base_branch_ref is None
         base, found, why = rg.recorded_worktree_base(
             record.git_worktree_path, record.git_worktree_path, record.ciu_root
         )
         assert base is None
         assert found == record.record_path
-        assert "does not name a local branch" in why
+        assert "'base_branch_ref' is null" in why
+        assert "--base" in why
+
+    def test_a_schema_five_sha_record_is_refused_with_the_base_remedy(
+        self, tmp_repo, fake_generate_env
+    ):
+        """Records written by ciu 7.17.0 keep a frozen-SHA `base_ref` and no
+        `base_branch_ref`; they stay valid for ciu but the real reader
+        refuses them and names the explicit `--base` remedy."""
+        rg = self._run_gate()
+        created = worktree.create(tmp_repo, "legacy-five", base="main")
+        v5 = replace(created, schema_version=5, base_branch_ref=None)
+        worktree._write_instance_record(v5)
+        tree = created.git_worktree_path
+        (tree / "feature.txt").write_text("work\n", encoding="utf-8")
+        assert _git(["add", "-A"], tree).returncode == 0
+        assert _git(["commit", "-m", "branch work"], tree).returncode == 0
+        stored = json.loads(created.record_path.read_text(encoding="utf-8"))
+        assert stored["schema_version"] == 5
+        assert "base_branch_ref" not in stored
+
+        base, found, why = rg.recorded_worktree_base(tree, tree, created.ciu_root)
+
+        assert base is None
+        assert found == created.record_path
+        assert "--base" in why
 
 
 class TestManagedRecordValidation:
@@ -2585,6 +2695,106 @@ class TestManagedRecordValidation:
         raw = change(self.raw_v5(tmp_path))
         with pytest.raises(worktree.WorktreeError, match=message):
             worktree._record_from_dict(raw, tmp_path / "record.json")
+
+    @classmethod
+    def raw_v6(cls, tmp_path: Path, base_branch_ref="main") -> dict:
+        return {
+            **cls.raw_v5(tmp_path),
+            "schema_version": 6,
+            "base_branch_ref": base_branch_ref,
+        }
+
+    @pytest.mark.parametrize("value", ["main", "feature/x", None])
+    def test_schema_six_base_branch_ref_round_trips(self, tmp_path, value):
+        raw = self.raw_v6(tmp_path, value)
+
+        record = worktree._record_from_dict(raw, tmp_path / "record.json")
+
+        assert record.schema_version == 6
+        assert record.base_branch_ref == value
+        assert record.to_dict() == raw
+
+    def test_schema_five_json_has_no_base_branch_ref_key(self, tmp_path):
+        record = worktree._record_from_dict(
+            self.raw_v5(tmp_path), tmp_path / "record.json"
+        )
+        assert record.base_branch_ref is None
+        assert "base_branch_ref" not in record.to_dict()
+
+    @pytest.mark.parametrize(
+        ("change", "message"),
+        [
+            (lambda raw: {k: v for k, v in raw.items() if k != "base_branch_ref"}, "missing"),
+            (lambda raw: {**raw, "base_branch_ref": ""}, "malformed base_branch_ref"),
+            (lambda raw: {**raw, "base_branch_ref": " main"}, "malformed base_branch_ref"),
+            (lambda raw: {**raw, "base_branch_ref": "main "}, "malformed base_branch_ref"),
+            (lambda raw: {**raw, "base_branch_ref": "ma in"}, "malformed base_branch_ref"),
+            (lambda raw: {**raw, "base_branch_ref": "ma\x07in"}, "malformed base_branch_ref"),
+            (lambda raw: {**raw, "base_branch_ref": "ma\x7fin"}, "malformed base_branch_ref"),
+            (lambda raw: {**raw, "base_branch_ref": 7}, "malformed base_branch_ref"),
+            (lambda raw: {**raw, "base_branch_ref": ["main"]}, "malformed base_branch_ref"),
+        ],
+    )
+    def test_schema_six_rejects_malformed_base_branch_ref(
+        self, tmp_path, change, message
+    ):
+        raw = change(self.raw_v6(tmp_path))
+        with pytest.raises(worktree.WorktreeError, match=message):
+            worktree._record_from_dict(raw, tmp_path / "record.json")
+
+    @pytest.mark.parametrize("version", [1, 2, 3, 4, 5])
+    def test_base_branch_ref_is_rejected_before_schema_six(self, tmp_path, version):
+        raw = self.raw_v5(tmp_path)
+        raw["schema_version"] = version
+        if version < 5:
+            raw.pop("checkout_reset_pending")
+            raw.pop("network_id")
+        if version < 4:
+            raw.pop("initial_overlay_pending")
+            raw.pop("adopted")
+        if version < 3:
+            raw.pop("initial_overlay")
+            raw.pop("overlay_intent_known")
+        if version < 2:
+            raw.pop("lease")
+        raw["base_branch_ref"] = "main"
+        with pytest.raises(worktree.WorktreeError, match="unknown=.*base_branch_ref"):
+            worktree._record_from_dict(raw, tmp_path / "record.json")
+
+    def test_to_dict_refuses_base_branch_ref_before_schema_six(self, tmp_path):
+        record = worktree._record_from_dict(
+            self.raw_v5(tmp_path), tmp_path / "record.json"
+        )
+        with pytest.raises(ValueError, match="schema version 6"):
+            replace(record, base_branch_ref="main").to_dict()
+
+    @pytest.mark.parametrize("value", ["", " main", "ma in", 7])
+    def test_to_dict_refuses_malformed_base_branch_ref_at_schema_six(
+        self, tmp_path, value
+    ):
+        record = worktree._record_from_dict(
+            self.raw_v6(tmp_path), tmp_path / "record.json"
+        )
+        with pytest.raises(ValueError, match="clean branch name or null"):
+            replace(record, base_branch_ref=value).to_dict()
+
+    def test_reading_a_schema_five_record_does_not_upgrade_it(self, tmp_path):
+        checkout = tmp_path / "checkout"
+        checkout.mkdir()
+        raw = self.raw_v5(tmp_path)
+        raw["git_worktree_path"] = str(checkout)
+        raw["state"] = "allocating"
+        raw["checkout_reset_pending"] = False
+        raw["fork_point_sha"] = "b" * 40
+        path = checkout / worktree.WORKTREE_INSTANCE_RECORD
+        text = json.dumps(raw, indent=2, sort_keys=True) + "\n"
+        path.write_text(text, encoding="utf-8")
+
+        record = worktree.read_instance_record(path)
+
+        assert record.schema_version == 5
+        assert record.base_branch_ref is None
+        assert path.read_text(encoding="utf-8") == text
 
     def test_generated_name_rejects_naive_clock(self):
         with pytest.raises(worktree.WorktreeError, match="timezone-aware"):

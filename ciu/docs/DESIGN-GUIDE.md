@@ -32,7 +32,7 @@ write that first publishes `ready`. Root repair can later move a ready record
 through `allocating`; if that repair is interrupted, the false marker survives
 and a retry does not mistake the repair for unfinished first-time setup. This
 is why operator edits and deletions remain intact even across a failed repair.
-New schema-v5 allocations also record whether CIU created or adopted the
+New schema-v5 and later allocations also record whether CIU created or adopted the
 checkout; a legacy ready record keeps an unknown origin during migration. A
 network name alone does not prove ownership: CIU records the Docker object id
 after verification and labels networks it creates with the instance id. Every
@@ -309,7 +309,7 @@ could silently discard a concurrent lease or opaque metadata field.
 Root discovery uses the allocated checkout's recorded commit rather than
 re-reading a symbolic base such as `main` in the primary checkout. New CIU
 records use their `fork_point_sha`; an adopted record uses its recorded full-SHA
-`base_ref`; an older record with only a symbolic base can use the shared
+`base_ref` (from schema v6 the frozen SHA is always `base_ref`, and the moving local branch, if any, is the separate `base_branch_ref`, decided once at create and never inferred from the SHA); an older record with only a symbolic base can use the shared
 workspace's `base_commit` only while the checkout still points there. A partial
 allocation with a saved fork point resumes against that exact commit and keeps
 later commits. If a no-fork-point target cannot be confirmed, `ensure` refuses
