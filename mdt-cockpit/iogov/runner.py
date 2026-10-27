@@ -17,7 +17,7 @@ from . import __version__
 from . import covariates as cov
 from . import safeio
 from .bench import run_bench, tick_reads
-from .budget import BudgetExceeded, DailyBudget, READ_BLOCK, compute_budget
+from .budget import BudgetExceeded, DailyBudget, READ_BLOCK, compute_budget, spent_budget
 from .collectors import Collector, passive_summary, settings_epoch
 from .config import Config
 from .devices import Disk, detect, is_block_node
@@ -27,7 +27,7 @@ from .journal import Journal, prune as prune_journal, read_records
 from .rawread import RawReader, RawReadError, write_denied
 from .recognizer import Engine
 from .scratch import ScratchBusy, plan_region, remove_stale
-from .state import finite, validate_state
+from .state import budget_damaged, finite, validate_state
 
 DAY = 86400.0
 
@@ -101,9 +101,7 @@ def exclusive(rt: Runtime):
         return
     loaded = False
     try:
-        rt.state, problems = validate_state(safeio.load_json(rt.path("state.json")))
-        if problems:  # dropped to defaults; said once in the journal (the cleaned state is saved at the end of this run)
-            rt.journal.append("note", kind="state_repair", text="state.json: fields dropped to their defaults: " + "; ".join(problems)[:2000])
+        _load_state(rt)
         rt.engine = _load_engine(rt)
         loaded = True
         yield True
@@ -119,6 +117,32 @@ def exclusive(rt: Runtime):
         raise
     finally:
         lock.release()
+
+
+def _load_state(rt: Runtime) -> None:
+    """Load, validate and (if anything had to change) REPAIR state.json before the run uses it.
+
+    A damaged budget slot, or a state file that exists but cannot be parsed, fails CLOSED: today's byte caps count as spent. The repaired
+    state is saved at once, so a later early return cannot leave the damage (and the repair note) to repeat on every run."""
+
+    path = rt.path("state.json")
+    now = rt.env.wall()
+    try:
+        raw = safeio.load_json(path, strict=True)
+        corrupt = None
+    except safeio.CorruptFile as exc:
+        raw, corrupt = {}, str(exc)
+    rt.state, problems = validate_state(raw, now)
+    if corrupt is not None:
+        problems.insert(0, f"state.json: unusable ({corrupt[:120]}); today's budget counted as spent")
+        rt.state["budget"] = spent_budget(rt.cfg, rt.env.wall)
+    elif budget_damaged(problems):
+        rt.state["budget"] = spent_budget(rt.cfg, rt.env.wall)
+        problems.append("budget: today's budget counted as spent (fail closed)")
+    if problems:
+        rt.save()  # the clean file first: the note below must never repeat because a run returned before its own save
+        text = f"state.json repaired: {len(problems)} problem(s): " + "; ".join(problems)
+        rt.journal.append("note", kind="state_repair", text=text[:2000] + (" ..." if len(text) > 2000 else ""))
 
 
 def _read_resets(rt: Runtime) -> list[float]:
@@ -164,7 +188,8 @@ def _log_skip(rt: Runtime, kind: str, reasons: list[str], ctx: dict | None = Non
     sig = "|".join(sorted(r.split(":")[0] for r in reasons))
     logged = rt.state.setdefault("skip_logged", {}).get(kind, {})
     now = rt.env.wall()
-    if logged.get("sig") == sig and now - logged.get("t", 0) < rt.cfg.skip_log_interval_s:
+    t = logged.get("t", 0.0)
+    if logged.get("sig") == sig and _finite(t) and t <= now and now - t < rt.cfg.skip_log_interval_s:
         return
     rt.state["skip_logged"][kind] = {"sig": sig, "t": now}
     rt.journal.append("skip", kind=kind, reasons=reasons, ctx=ctx or {})
@@ -414,7 +439,7 @@ def run_bench_cmd(rt: Runtime, force: bool = False) -> int:
         escalate = (
             plan.mode == "file"
             and rt.state.get("last_bench") is not None
-            and (not _finite(last_esc) or now - last_esc >= cfg.escalation_every_h * 3600.0)
+            and (not _finite(last_esc) or last_esc > now or now - last_esc >= cfg.escalation_every_h * 3600.0)
         )
         interval = cfg.bench_interval_h * 3600.0
         jitter = (env.rng.random() * 2 - 1) * cfg.bench_jitter * interval

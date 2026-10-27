@@ -53,7 +53,14 @@ useful config: `data_paths = [...]` (the disks behind them are detected) and `pr
 The config path must be a regular file, or a root-owned symlink to one (a managed-config layout) whose whole chain is trusted: every hop
 root-owned, and every directory above every hop and above the final file root-owned and not group/other-writable; the target must be
 root- or self-owned, not writable by group/others, and at most 1 MiB. A FIFO, device node, non-root symlink, or a link into a directory the
-service user could write is refused.
+service user could write is refused. "Trusted directory" means root-owned, not other-writable, and group-writable only with the sticky bit:
+a link into Debian's `/usr/local` (2775 root:staff) is refused (any staff member could swap the link; use `/etc/iogov`), a link into a
+`/nix/store`-style 1775 directory is accepted. At most 8 symlink hops.
+
+State hygiene: `state.json` is validated against one schema on every load (`iogov/state.py`); invalid fields are dropped to their defaults,
+the repaired file is saved at once and one `note` (`kind: state_repair`) says what was dropped. A damaged budget slot, or a state file that
+exists but cannot be parsed, counts today's byte caps as spent (fail closed: one day without probes, never a reset cap). Keys a newer
+version wrote are preserved.
 
 The service units are `Type=oneshot`, so their runtime bound is `TimeoutStartSec` (tick 10 min, bench 30 min) followed by `TimeoutStopSec`;
 a run stuck in a kernel syscall is killed by that, and the next run cleans up (design note section 5). The rendered units are checked with

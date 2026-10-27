@@ -33,10 +33,10 @@ def _num(v):
     return v if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else None
 
 
-def clean_state(state: dict) -> tuple[dict, list[str]]:
+def clean_state(state: dict, now: float | None = None) -> tuple[dict, list[str]]:
     """The one state validator (`state.validate_state`), for `status`: (usable fields, names of the fields dropped)."""
 
-    out, problems = validate_state(state)
+    out, problems = validate_state(state, now)
     return out, [p.split(":", 1)[0] for p in problems]
 
 
@@ -283,7 +283,7 @@ def status(cfg, wall) -> str:
     now = wall()
     lines = ["iogov status"]
     try:
-        state, problems = clean_state(load_state(cfg.state_file()))
+        state, problems = clean_state(load_state(cfg.state_file()), now)
     except (safeio.CorruptFile, safeio.UnsafePath) as exc:
         state, problems = {}, []
         lines.append(f"  corrupt state: {exc}")

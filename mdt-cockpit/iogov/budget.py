@@ -46,6 +46,18 @@ class TokenBucket:
 READ_BLOCK = 4096
 
 
+def today_str(wall) -> str:
+    return dt.datetime.fromtimestamp(wall(), dt.timezone.utc).strftime("%Y-%m-%d")
+
+
+def spent_budget(cfg: Config, wall) -> dict:
+    """A budget slot for today with both byte caps already consumed: what a DAMAGED or unreadable slot is replaced with. Failing closed
+    costs at most one day of probes; failing open would hand a damaged file the whole cap again."""
+
+    return {"day": today_str(wall), "read_bytes": cfg.max_read_bytes_per_day, "write_bytes": cfg.max_write_bytes_per_day,
+            "read_ops": 0, "write_ops": 0, "sync_ops": 0}
+
+
 class DailyBudget:
     """Counters per UTC day inside the state dict.
 
@@ -62,10 +74,12 @@ class DailyBudget:
         self._day = None
 
     def _today(self) -> dict:
-        day = dt.datetime.fromtimestamp(self.wall(), dt.timezone.utc).strftime("%Y-%m-%d")
+        day = today_str(self.wall)
         b = self.state.get("budget")
-        if not valid_budget(b):  # a damaged slot (NaN, string, missing counter) can never widen a cap: it is rebuilt from zero
+        if b is None:  # first run ever: nothing spent
             b = self.state["budget"] = {}
+        elif not valid_budget(b):  # a damaged slot (NaN, string, missing counter) FAILS CLOSED: today counts as fully spent
+            b = self.state["budget"] = spent_budget(self.cfg, self.wall)
         if b.get("day") != day:
             b.clear()
             b.update({"day": day, "read_bytes": 0, "write_bytes": 0, "read_ops": 0, "write_ops": 0, "sync_ops": 0})
@@ -114,7 +128,7 @@ class DailyBudget:
         self.persist()
 
     def remaining(self, kind: str) -> int:
-        return self._cap(kind) - self._today()[f"{kind}_bytes"]
+        return max(0, self._cap(kind) - self._today()[f"{kind}_bytes"])  # a counter above the cap (lowered cap) is "spent", not negative
 
     def snapshot(self) -> dict:
         return dict(self._today())

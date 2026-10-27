@@ -279,7 +279,10 @@ def load(path: str | None = None) -> Config:
 
 
 def _trusted_dir(d: str) -> str | None:
-    """None when `d` is a directory owned by root and not group/other-writable, else the reason."""
+    """None when `d` is a directory owned by root that nobody but root can replace entries in, else the reason.
+    Other-writable is never trusted. Group-writable is trusted only with the sticky bit (entries can then be replaced only by their
+    owner: `/nix/store` 1775 root:nixbld qualifies, Debian's `/usr/local` 2775 root:staff does not, since any staff member could swap a
+    root-owned link there)."""
 
     try:
         st = os.stat(d)
@@ -289,14 +292,17 @@ def _trusted_dir(d: str) -> str | None:
         return "not a directory"
     if st.st_uid != 0:
         return f"owned by uid {st.st_uid}, not root"
-    if st.st_mode & 0o022:
-        return f"group/other writable (mode {oct(st.st_mode & 0o7777)})"
+    if st.st_mode & 0o002:
+        return f"other writable (mode {oct(st.st_mode & 0o7777)})"
+    if st.st_mode & 0o020 and not st.st_mode & stat.S_ISVTX:
+        return f"group writable without the sticky bit (mode {oct(st.st_mode & 0o7777)}): entries can be replaced by group members"
     return None
 
 
-def _ancestors(p: str) -> list[str]:
+def _ancestors(d: str) -> list[str]:
+    """Every directory from `d` (a REAL path: symlinked directories already resolved) up to the root."""
+
     out = []
-    d = os.path.dirname(os.path.abspath(p)) or "/"
     while True:
         out.append(d)
         parent = os.path.dirname(d)
@@ -305,26 +311,33 @@ def _ancestors(p: str) -> list[str]:
         d = parent
 
 
-def _resolve_config_link(path: str, max_hops: int = 8) -> str:
-    """Follow a chain of root-owned symlinks by hand. Every hop must be root-owned, and every directory above every hop and above the final
-    file must be root-owned and not group/other-writable: a root-owned link into a service-writable directory is NOT a trusted config."""
+MAX_CONFIG_LINK_HOPS = 8
+
+
+def _resolve_config_link(path: str, max_hops: int = MAX_CONFIG_LINK_HOPS) -> str:
+    """Follow a chain of root-owned symlinks by hand. Each hop is placed in its REAL directory first (symlinked directories resolved by the
+    kernel's rules, so what is checked is what will be opened); the hop must be root-owned, and every directory above it and above the
+    final file must be trusted (`_trusted_dir`): a root-owned link into a service-writable directory is NOT a trusted config. A cycle or a
+    chain longer than `max_hops` is refused."""
 
     cur = os.path.abspath(path)
-    for _ in range(max_hops):
+    for _ in range(max_hops + 1):
+        parent_real = os.path.realpath(os.path.dirname(cur))
+        cur = os.path.join(parent_real, os.path.basename(cur))
         try:
             lst = os.lstat(cur)
         except OSError as exc:
             raise ConfigError(f"{path}: {cur}: {exc.strerror or exc}") from None
         if stat.S_ISLNK(lst.st_mode) and lst.st_uid != 0:
             raise ConfigError(f"{path}: symlink {cur} must be root-owned (is uid {lst.st_uid})")
-        for d in _ancestors(cur):
+        for d in _ancestors(parent_real):
             why = _trusted_dir(d)
             if why:
                 raise ConfigError(f"{path}: directory {d} on the symlink chain is not trusted ({why})")
         if not stat.S_ISLNK(lst.st_mode):
             return cur
-        cur = os.path.normpath(os.path.join(os.path.dirname(cur), os.readlink(cur)))
-    raise ConfigError(f"{path}: more than {max_hops} symlink hops")
+        cur = os.path.normpath(os.path.join(parent_real, os.readlink(cur)))
+    raise ConfigError(f"{path}: more than {max_hops} symlink hops (a loop, or a chain nobody should trust)")
 
 
 def effective(cfg: Config) -> dict:

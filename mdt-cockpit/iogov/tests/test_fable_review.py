@@ -790,7 +790,7 @@ def test_u1_every_state_field_class_is_validated_and_dropped_with_its_name():
     for bad_dev in (dict(dev, stride=0), dict(dev, counter=-1), dict(dev, witness=[NAN]), dict(dev, witness="x"), dict(dev, n_blocks=1.0)):
         assert "devices" not in validate_state({"devices": {"vda": bad_dev}})[0], bad_dev
     out, problems = validate_state({"mystery": 1, "last_tick": 1.0})
-    assert out == {"last_tick": 1.0} and problems == ["mystery: unknown key"]
+    assert out == {"last_tick": 1.0, "mystery": 1} and problems == []  # unknown keys are preserved (downgrade-safe), not reported
     assert validate_state([]) == ({}, ["state: not an object"])
 
 
@@ -818,13 +818,15 @@ def test_u3_a_damaged_state_file_is_repaired_once_journalled_and_every_schedule_
     recs = records(world)
     notes = [r for r in recs if r["type"] == "note" and r.get("kind") == "state_repair"]
     assert len(notes) == 1
-    for name in ("last_prune", "last_escalation", "last_full", "backoff", "budget", "mystery"):
+    for name in ("last_prune", "last_escalation", "last_full", "backoff", "budget"):
         assert name + ":" in notes[0]["text"], name
+    assert "mystery" not in notes[0]["text"]  # an unknown key is preserved, not a problem
     starts = [r for r in recs if r["type"] == "run_start"]
     assert starts[-1]["full"]  # a NaN last_full.t does not suppress the hourly full record
     from iogov.state import validate_state
     saved = json.loads(sj.read_text())
-    assert validate_state(saved)[1] == [] and "mystery" not in saved  # repaired once: the next run finds a clean file
+    assert validate_state(saved)[1] == [] and saved["mystery"] == 1  # repaired once (unknown key kept): the next run finds a clean file
+    assert saved["budget"]["read_bytes"] == cfg.max_read_bytes_per_day  # the damaged budget failed closed
     clock.t += 60
     run_tick(build(cfg, env))
     assert len([r for r in records(world) if r["type"] == "note" and r.get("kind") == "state_repair"]) == 1
@@ -861,3 +863,198 @@ def test_u5_bench_due_treats_an_implausible_next_bench_as_due(world):
         assert bench_due(rt), bad
     rt.state = {"next_bench": env.wall() + 100}
     assert not bench_due(rt)
+
+
+# ===== V1-V6: the final adversarial review of f2aa25ee3 ==============================================================
+
+HUGE_INT = 10 ** 400  # math.isfinite(HUGE_INT) raises OverflowError: must never reach it
+
+
+def test_v1_a_huge_json_integer_is_dropped_not_a_crash(world):
+    from iogov.state import count, finite, validate_state
+    assert finite(HUGE_INT) is False and count(HUGE_INT) is False and finite(-HUGE_INT) is False
+    for key in ("last_tick", "last_bench", "next_bench", "last_escalation", "last_prune", "skip_passive_t"):
+        out, problems = validate_state({key: HUGE_INT})
+        assert key not in out and problems[0].startswith(key + ":")
+    for raw in ({"last_full": {"epoch": "e", "t": HUGE_INT}}, {"backoff": {"tick": {"n": 1, "until": HUGE_INT}}},
+                {"bench_fail": {"n": 0, "disabled_at": HUGE_INT}}, {"skip_logged": {"tick": {"sig": "s", "t": HUGE_INT}}},
+                {"budget": _budget(read_bytes=HUGE_INT)}, {"devices": {"vda": {"n_blocks": HUGE_INT, "stride": 1, "start": 0, "counter": 0}}}):
+        out, problems = validate_state(raw)
+        assert not out and len(problems) == 1, raw
+    env, _ = make_env()
+    cfg = world.config()
+    run_tick(build(cfg, env))
+    sj = world.state / "state.json"
+    st = json.loads(sj.read_text())
+    st["last_tick"] = HUGE_INT
+    sj.write_text(json.dumps(st))
+    assert "out of range ignored: last_tick" in status(cfg, env.wall)
+    assert run_tick(build(cfg, env)) == 0  # not exit 3, and repaired
+    assert [r for r in records(world) if r["type"] == "note" and r.get("kind") == "state_repair"]
+    assert json.loads(sj.read_text())["last_tick"] < 1e11
+
+
+def test_v2_a_damaged_or_unreadable_budget_fails_closed_for_the_day(world):
+    cfg = world.config()
+    wall = lambda: 1_790_000_000.0  # noqa: E731
+    today = "2026-09-21"
+    for bad in (NAN, "x", -5, 1.5, HUGE_INT):
+        st = {"budget": _budget(day=today, read_bytes=bad)}
+        b = DailyBudget(st, cfg, wall)
+        assert b.reserve("read", 4096) == 0 and b.remaining("read") == 0 and b.remaining("write") == 0, bad  # spent, not reset
+        assert st["budget"]["read_bytes"] == cfg.max_read_bytes_per_day and st["budget"]["day"] == today
+    b = DailyBudget({}, cfg, wall)
+    assert b.reserve("read", 4096) == 4096  # a first run has nothing spent
+    b = DailyBudget({"budget": _budget(day=today, read_bytes=cfg.max_read_bytes_per_day * 3)}, cfg, wall)
+    assert b.remaining("read") == 0  # a counter above the (lowered) cap is "spent", never negative
+    # end to end: a damaged slot, then an unparseable file
+    env, _ = make_env()
+    run_tick(build(cfg, env))
+    sj = world.state / "state.json"
+    st = json.loads(sj.read_text())
+    st["budget"]["read_bytes"] = "x"
+    sj.write_text(json.dumps(st))
+    assert run_tick(build(cfg, env)) == 0
+    recs = records(world)
+    note = [r for r in recs if r["type"] == "note" and r.get("kind") == "state_repair"][-1]
+    assert "fail closed" in note["text"] and [r for r in recs if r["type"] == "run_end"][-1]["status"] == "budget"
+    assert json.loads(sj.read_text())["budget"]["read_bytes"] == cfg.max_read_bytes_per_day
+    sj.write_text("garbage {")
+    assert run_tick(build(cfg, env)) == 0
+    recs = records(world)
+    note = [r for r in recs if r["type"] == "note" and r.get("kind") == "state_repair"][-1]
+    assert "unusable" in note["text"] and [r for r in recs if r["type"] == "run_end"][-1]["status"] == "budget"
+    assert json.loads(sj.read_text())["budget"]["write_bytes"] == cfg.max_write_bytes_per_day
+
+
+def test_v3_unknown_keys_survive_and_a_repair_note_is_written_once_even_when_runs_return_early(world):
+    env, clock = make_env()
+    cfg = world.config(backoff_base_s=3600.0)
+    world.set_pressure(40.0, 0.0)
+    run_tick(build(cfg, env))  # gated: one hour of backoff, passive snapshot taken
+    world.set_pressure(0.0, 0.0)
+    sj = world.state / "state.json"
+    st = json.loads(sj.read_text())
+    st["zz_new"] = {"from": "a newer version"}
+    sj.write_text(json.dumps(st))
+    for _ in range(3):
+        clock.t += 60
+        assert run_tick(build(cfg, env)) == 0  # every one returns before its own save (backed off, passive not due)
+    assert not [r for r in records(world) if r["type"] == "note" and r.get("kind") == "state_repair"]
+    assert json.loads(sj.read_text())["zz_new"] == {"from": "a newer version"}  # preserved, not nagged about
+    st = json.loads(sj.read_text())
+    st["last_prune"] = "x"
+    sj.write_text(json.dumps(st))
+    for _ in range(3):
+        clock.t += 60
+        assert run_tick(build(cfg, env)) == 0
+        assert "last_prune" not in json.loads(sj.read_text())  # repaired and saved by the FIRST early-returning run
+    assert len([r for r in records(world) if r["type"] == "note" and r.get("kind") == "state_repair"]) == 1
+
+
+def test_v4_future_dated_timestamps_are_dropped_and_cannot_freeze_dedup_or_escalation(world):
+    from iogov.state import FUTURE_SLACK_S, validate_state
+    env, clock = make_env()
+    now = env.wall()
+    far = now + 100 * 86400
+    raw = {"skip_logged": {"tick": {"sig": "s", "t": far}}, "last_escalation": far, "next_bench": far,
+           "bench_fail": {"n": 0, "disabled_at": far}, "last_full": {"epoch": "e", "t": far}, "backoff": {"tick": {"n": 1, "until": far}},
+           "last_tick": now + 3 * 86400}
+    out, problems = validate_state(raw, now)
+    assert out == {"last_tick": now + 3 * 86400} and len(problems) == 6 and all("not in the future" in p for p in problems)
+    assert validate_state({"next_bench": now + FUTURE_SLACK_S - 1}, now)[1] == []
+    assert validate_state(raw)[1] == []  # without a clock the bound is MAX_EPOCH only (clock-free callers)
+    cfg = world.config()
+    run_tick(build(cfg, env))
+    sj = world.state / "state.json"
+    st = json.loads(sj.read_text())
+    st["skip_logged"] = {"tick": {"sig": "io_pressure_high", "t": now + 3600}}  # within the slack: valid, but still in the future
+    sj.write_text(json.dumps(st))
+    world.set_pressure(40.0, 0.0)
+    clock.t += 60
+    run_tick(build(cfg, env))
+    assert [r for r in records(world) if r["type"] == "skip"]  # the dedup did not swallow it
+    world.set_pressure(0.0, 0.0)
+    st = json.loads(sj.read_text())
+    st["last_escalation"] = far
+    st["last_bench"] = env.wall()
+    st["backoff"] = {}
+    sj.write_text(json.dumps(st))
+    run_bench_cmd(build(cfg, env), force=True)
+    assert [r for r in records(world) if r["type"] == "bench"][-1]["region"]["escalated"] is True
+
+
+def _mock_root_dirs(monkeypatch, modes: dict | None = None, user_owned: set | None = None):
+    """Every directory looks root-owned 0755 (what a real /etc layout has), except `modes` (path -> mode) and `user_owned` (real stat);
+    every symlink looks root-owned."""
+
+    real_stat, real_lstat = os.stat, os.lstat
+    modes, user_owned = modes or {}, user_owned or set()
+
+    def as_root(st, mode):
+        return os.stat_result((mode, st.st_ino, st.st_dev, st.st_nlink, 0, 0) + tuple(st)[6:])
+
+    def stat_(p, *a, **k):
+        st = real_stat(p, *a, **k)
+        if stat.S_ISDIR(st.st_mode) and str(p) not in user_owned:
+            return as_root(st, stat.S_IFDIR | modes.get(str(p), 0o755))
+        return st
+
+    def lstat_(p, *a, **k):
+        st = real_lstat(p, *a, **k)
+        if stat.S_ISLNK(st.st_mode):
+            return as_root(st, st.st_mode)
+        if stat.S_ISDIR(st.st_mode) and str(p) not in user_owned:
+            return as_root(st, stat.S_IFDIR | modes.get(str(p), 0o755))
+        return st
+
+    monkeypatch.setattr(os, "stat", stat_)
+    monkeypatch.setattr(os, "lstat", lstat_)
+
+
+def test_v5_symlink_chain_group_writable_sticky_hops_and_loops(world, monkeypatch):
+    real = world.root / "real.toml"
+    real.write_text("read_iops_max = 7.0\n")
+    d = world.root / "d"
+    d.mkdir()
+    link = d / "cfg.toml"
+    link.symlink_to(real)
+    _mock_root_dirs(monkeypatch, modes={str(d): 0o775})
+    with pytest.raises(ConfigError, match="group writable without the sticky bit"):
+        load(str(link))  # Debian's /usr/local 2775 root:staff: a staff member could swap the link
+    monkeypatch.undo()
+    _mock_root_dirs(monkeypatch, modes={str(d): 0o1775})
+    assert load(str(link)).read_iops_max == 7.0  # /nix/store-like 1775: entries can only be replaced by their owner
+    monkeypatch.undo()
+    _mock_root_dirs(monkeypatch, modes={str(d): 0o757})
+    with pytest.raises(ConfigError, match="other writable"):
+        load(str(link))
+    monkeypatch.undo()
+    # a symlinked DIRECTORY on the way: what is checked is the real directory the kernel will open
+    udir = world.root / "userdir"
+    udir.mkdir()
+    (udir / "cfg.toml").symlink_to(real)
+    dlink = world.root / "dlink"
+    dlink.symlink_to(udir)
+    _mock_root_dirs(monkeypatch, user_owned={str(udir)})
+    with pytest.raises(ConfigError, match="userdir .* not trusted"):
+        load(str(dlink / "cfg.toml"))
+    monkeypatch.undo()
+    # hop limit and loops
+    _mock_root_dirs(monkeypatch)
+    prev = real
+    for i in range(9):
+        hop = world.root / f"hop{i}.toml"
+        hop.symlink_to(prev)
+        prev = hop
+    assert load(str(world.root / "hop7.toml")).read_iops_max == 7.0  # 8 hops: the documented maximum
+    with pytest.raises(ConfigError, match="more than 8 symlink hops"):
+        load(str(world.root / "hop8.toml"))  # 9 hops
+    a, b = world.root / "a.toml", world.root / "b.toml"
+    a.symlink_to(b)
+    b.symlink_to(a)
+    with pytest.raises(ConfigError, match="a.toml"):
+        load(str(a))  # a loop is refused as "not found" (the kernel cannot resolve it) and would hit the hop limit otherwise
+    from iogov.config import _resolve_config_link
+    with pytest.raises(ConfigError, match="more than 8 symlink hops"):
+        _resolve_config_link(str(a))
