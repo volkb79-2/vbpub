@@ -2487,3 +2487,8 @@ ancestor of origin/main or that cannot be ruled out; this makes the printed "ori
 prefixes and retires an origin-only branch whose commits are all in origin/main. "no exact managed CMRU build or release branch or worktree path named ..." is
 what it prints when `git ls-remote` finds the branch absent from origin (already deleted or never pushed); pinned by `test_ki98_origin_only_candidate_branch_is_retired`.
 **Not fixed here.** KI-91 (a failed `--dry-run` leaves a candidate with no scope record) is unchanged.
+
+### KI-99 - R2 mutation campaign owed for the cmru 7.0.0 provisional release (operator waiver 2026-10-27)
+
+**Status:** OPEN. The operator waived R2 for the cmru 7.0.0 release on 2026-10-27 ("release and deploy new cmru now without r2"), using the existing KI-79 mechanism (`gate-provisional`, window `>= 7.0.0`, `< 7.1.0`). Only the `mutation` lane is waived; every other gate must pass for the release to proceed. 7.0.0 therefore has no mutation evidence (marker `.assay/mutation-postponed-cmru.json` in the release gate evidence, release notes state it). KI-79 carries the mechanism and window.
+**Close when:** one full-`gate` R2 run against the exact `cmru-v7.0.0` tag (prerequisites as in KI-79 Follow-up) is done, survivors are triaged and fixed or backported, and the report is retained. Deadline: before 7.1.0 (the guard refuses to defer it) or the first release judged worth R2, whichever is first. It is the same campaign as KI-79's obligation; one run on the 7.0.0 tag satisfies both.
