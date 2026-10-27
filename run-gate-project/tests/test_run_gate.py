@@ -15824,6 +15824,7 @@ class TestResumeAndProgressAlways:
 
     def test_state_root_dry_run_discloses_probe_without_running_it(
             self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
         calls = []
 
         def run(argv, **_kwargs):
@@ -15963,6 +15964,7 @@ class TestResumeAndProgressAlways:
             self, tmp_path, monkeypatch, capfd):
         """The judge prints its executed argv and writes a valid verdict, so
         both the handover and the normal closed-result path are exercised."""
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
         cfg = ASSAY_LANE_CFG.replace('environment = "tester-unified"',
                                      'environment = "bare-host"', 1)
         TestComparisonBasePassthrough._project(self, tmp_path, monkeypatch, cfg)
@@ -15973,6 +15975,7 @@ class TestResumeAndProgressAlways:
               *"lanes --json"*) echo '{"inventory_schema": 1, "lanes": [
                   {"name": "ui_unit", "base_source": "request", "rigor": ["R0"],
                    "external_tools": [], "argv0": null, "language": null}]}' ;;
+              analyze*) exit 0 ;;  # B108-2: the closeout call must not rewrite the verdict
               *) echo "JUDGE-ARGV: $*"
                  mkdir -p .assay
                  cat > .assay/verdict-ui_unit.json <<'JSON'
@@ -24625,6 +24628,7 @@ class TestBareHostProfilingWiring:
 
     def test_bare_host_rusage_fallback_stall_terminates_group_and_keeps_rusage(
             self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
         class Watch:
             def __init__(self):
                 self.calls = 0
@@ -24692,6 +24696,7 @@ class TestBareHostProfilingWiring:
 
     def test_bare_host_rusage_fallback_is_polled_at_the_progress_cadence(
             self, tmp_path, monkeypatch):
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
         class Watch:
             def __init__(self):
                 self.calls = 0
@@ -24733,6 +24738,7 @@ class TestBareHostProfilingWiring:
 
     def test_bare_host_watch_failure_degrades_to_unwatched_rusage_wait(
             self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
         class Watch:
             def __init__(self):
                 self.calls = 0
@@ -24807,6 +24813,7 @@ class TestBareHostProfilingWiring:
 
     def test_bare_host_daemon_watch_failure_uses_progress_fallback(
             self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
         class Client:
             def watch(self, session):
                 raise OSError("planted daemon watch failure")
@@ -24846,6 +24853,7 @@ class TestBareHostProfilingWiring:
 
     def test_bare_host_reattach_failure_keeps_lane_exit_via_fallback(
             self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
         class DaemonWatch:
             def drain(self):
                 return []
@@ -24912,6 +24920,7 @@ class TestBareHostProfilingWiring:
         announcement is printed exactly once on stdout, even across further
         idle polls served by the fallback, and the profiler warning names the
         second idle."""
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
         class DaemonWatch:
             def drain(self):
                 return []
@@ -24982,6 +24991,7 @@ class TestBareHostProfilingWiring:
         """Same double-idle path with NO progress fallback: no in-process
         announcement, the warning says liveness continues without the daemon,
         and the lane exit code is unaffected."""
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
         class DaemonWatch:
             def drain(self):
                 return []
