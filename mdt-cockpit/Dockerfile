@@ -1121,9 +1121,9 @@ RUN set -euo pipefail; \
         echo "crane=$(crane version 2>&1 | head -1)"; \
         echo "gdu=$(gdu --version 2>&1 | awk '/^Version:/ { sub(/^v/, "", $2); print $2; exit }')"; \
         echo "dust=$(dust --version 2>&1 | awk '{ print $2; exit }')"; \
-        echo "ov=$(ov --version 2>&1 | head -1)"; \
+        echo "ov=$(ov --version 2>&1 | awk '/^ov version/ { print $3; exit }')"; \
         echo "dry=${DRY_VER}"; \
-        echo "yazi=$(yazi --version 2>&1 | head -1)"; \
+        echo "yazi=$(yazi --version 2>&1 | awk '/Version:/ { print $2; exit }')"; \
         echo "sss=unreleased script, default-branch commit ${SSS_VER}"; \
         echo "regctl=$(regctl version 2>&1 | awk '/^VCSTag:/ { sub(/^v/, "", $2); print $2; exit }')"; \
         if command -v claude >/dev/null 2>&1; then \
