@@ -622,7 +622,7 @@ KI-97 turns that into a hard failure after both images were pushed), and GitHub 
 package's visibility, so the sync can only verify. The safe order therefore creates and opens the package BEFORE
 the release, which makes the release's own sync a no-op:
 1. *Preflight (read-only, no push):* `gh api /users/volkb79-2/packages/container/pwmcp-ocr --jq '{visibility,repository:.repository.full_name}'`
-   (404 = not yet created), the same for `pwmcp` (expect `public` and `volkb79-2/vbpub`), and
+   (404 = not created, or, with a token lacking `read:packages`, not readable; the checks below need that scope), the same for `pwmcp` (expect `public` and `volkb79-2/vbpub`), and
    `gh api /repos/volkb79-2/vbpub --jq .visibility` (the visibility the sync mirrors). Confirm the base digest with
    `docker buildx imagetools inspect debian:trixie-slim` against `DEBIAN_IMAGE_DIGEST` in
    `containers/ocr/Dockerfile` (`python3 scripts/resolve-playwright-version.py --refresh` if it differs; no age
@@ -631,14 +631,14 @@ the release, which makes the release's own sync a no-op:
    prepare phase instead of editing `cmru.vars`.
 2. *Token:* the release PAT needs `write:packages` (and `read:packages`, which the visibility lookup uses) for a
    NEW package under the account (PWMCP-01 notes a PAT once lacked it).
-3. *Bootstrap push (operator, once):* from a checkout of the merged tree, `docker login ghcr.io`, then
-   `docker buildx bake -f pwmcp/docker-bake.hcl pwmcp-ocr --set 'pwmcp-ocr.tags=ghcr.io/volkb79-2/pwmcp-ocr:bootstrap' --push`
-   (use the same managed builder the release uses). This creates `pwmcp-ocr` under a throwaway tag, so no
+3. *Bootstrap push (operator, once):* from a checkout of the merged tree, `docker login ghcr.io`, then, INSIDE the `pwmcp/` directory (the bake
+   context is `.` there), `docker buildx bake --builder "$BUILDX_BUILDER" pwmcp-ocr --set 'pwmcp-ocr.tags=ghcr.io/volkb79-2/pwmcp-ocr:bootstrap' --push`
+   (the same managed builder the release uses; check the plan first with `docker buildx bake pwmcp-ocr --print`). This creates `pwmcp-ocr` under a throwaway tag, so no
    release tag exists before the release. The `org.opencontainers.image.source` label links the package to the repository.
 4. *Open it (GHCR UI, once):* Your packages -> pwmcp-ocr -> Package settings -> Change visibility -> Public. Re-run
    the preflight and require `public` and `volkb79-2/vbpub`.
 5. *Release as usual.* The push step now finds the package immediately and the sync verifies `public == public`
-   without any API write. After the release you may delete the `bootstrap` version in the UI.
+   without any API write. After the release, the `bootstrap` tag may be removed, but deleting a package VERSION in the UI deletes every tag on that digest: compare digests first (`docker buildx imagetools inspect` of `:bootstrap` and `:<release>`) and do not delete if they are equal.
 6. *If the sync hard-fails anyway* (cmru KI-97, package lookup 404 for > 25 s): both images are already in GHCR
    but the transaction failed in its push step. There is NO sync-only verb in `build-push.py` (do not look for
    one). Do not use `cmru release --resume` without `--set-version` (the mistaken v1.0.0 release of

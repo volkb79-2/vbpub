@@ -179,3 +179,66 @@ def test_curated_frames_are_byte_identical_members_of_the_full_series() -> None:
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         assert digest in by_hash, f"{path.name} is not a frame of the pinned series"
         assert (frames / by_hash[digest]).read_bytes() == path.read_bytes()
+
+
+def test_fetch_repairs_a_damaged_tree_and_never_replaces_foreign_files(mini, tmp_path: Path) -> None:
+    _, root, pin, tar_path = mini
+    download = lambda url: tar_path.read_bytes()  # noqa: E731
+    out = cc.fetch(tmp_path / "cache", pin, root, download)
+    (out / "0001_3s.png").write_bytes(b"damaged")
+    assert cc.fetch(tmp_path / "cache", pin, root, download) == out
+    cc.verify_frames(out, cc.load_index(pin, root))
+    assert [p.name for p in (tmp_path / "cache").iterdir()] == ["frames"]  # no staging, no aside left
+    assert (out.stat().st_mode & 0o755) == 0o755  # readable by the gate's uid
+    foreign = tmp_path / "other" / "frames"
+    foreign.mkdir(parents=True)
+    (foreign / "01-curated.png").write_bytes(b"keep")
+    with pytest.raises(cc.CorpusError, match="not corpus frames"):
+        cc.fetch(tmp_path / "other", pin, root, download)
+    assert (foreign / "01-curated.png").read_bytes() == b"keep"
+
+
+def test_verify_frames_rejects_missing_extra_symlink_and_wrong_dimensions(mini, tmp_path: Path) -> None:
+    frames, root, pin, _ = mini
+    index = cc.load_index(pin, root)
+    cc.verify_frames(frames, index)
+    (frames / "0009_9s.png").write_bytes(b"x")
+    with pytest.raises(cc.CorpusError, match="extra"):
+        cc.verify_frames(frames, index)
+    (frames / "0009_9s.png").unlink()
+    wrong = {k: dict(v, width=9) for k, v in index.items()}
+    with pytest.raises(cc.CorpusError, match="dimensions"):
+        cc.verify_frames(frames, wrong)
+    victim = frames / "0001_3s.png"
+    data = victim.read_bytes()
+    victim.unlink()
+    (tmp_path / "t.png").write_bytes(data)
+    victim.symlink_to(tmp_path / "t.png")
+    with pytest.raises(cc.CorpusError, match="regular file"):
+        cc.verify_frames(frames, index)
+
+
+def test_redirects_only_to_https_github_asset_hosts() -> None:
+    import urllib.request
+    handler = cc._HttpsOnlyRedirects()
+    req = urllib.request.Request("https://github.com/x")
+    for bad in ("http://github.com/y", "https://example.org/y"):
+        with pytest.raises(cc.CorpusError, match="refusing a redirect"):
+            handler.redirect_request(req, None, 302, "Found", {}, bad)
+    assert handler.redirect_request(req, None, 302, "Found", {}, "https://objects.githubusercontent.com/y") is not None
+
+
+def test_a_typo_in_the_explicit_directory_is_an_error_even_with_a_trailing_slash(
+        mini, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    frames, root, pin, _ = mini
+    assets = tmp_path / "assets.json"
+    assets.write_text(json.dumps({"schema": 1, "assets": [pin]}))
+    typo = tmp_path / "typo"
+    monkeypatch.setenv(cc.ENV_DIR, str(typo) + "/")
+    with pytest.raises(cc.CorpusError, match="no frames/"):
+        cc.locate(search=[typo, frames.parent], assets_file=assets, corpus_root=root)
+
+
+def test_main_reports_errors_without_a_traceback(capsys: pytest.CaptureFixture[str]) -> None:
+    assert cc.main(["package", "/nonexistent", "--out", "/tmp/x.tar", "--asset", "nope"]) == 1
+    assert "unknown asset" in capsys.readouterr().err

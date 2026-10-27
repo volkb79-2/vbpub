@@ -44,7 +44,15 @@ ASSETS_FILE = CORPUS_ROOT / "CORPUS-ASSETS.json"
 #: Where a verified corpus is looked for, first hit wins. The tester image installs to the second entry.
 ENV_DIR = "PWMCP_CONSOLE_CORPUS_DIR"
 IMAGE_DIR = Path("/opt/pwmcp-console-corpus")
-CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "pwmcp-console-corpus"
+def _cache_dir() -> Path:
+    base = os.environ.get("XDG_CACHE_HOME", "")
+    if base.startswith("/"):
+        return Path(base) / "pwmcp-console-corpus"
+    home = os.environ.get("HOME", "")
+    return Path(home or "/tmp") / ".cache" / "pwmcp-console-corpus"
+
+
+CACHE_DIR = _cache_dir()
 
 ALLOWED_URL_PREFIX = "https://github.com/volkb79-2/vbpub/releases/download/"
 ALLOWED_REDIRECT_HOSTS = frozenset({
@@ -55,6 +63,7 @@ ALLOWED_REDIRECT_HOSTS = frozenset({
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _FRAME = re.compile(r"[0-9]{4}_[0-9]+s\.png")
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+MAX_ASSET_BYTES = 64 << 20
 
 
 class CorpusError(Exception):
@@ -115,6 +124,8 @@ def load_index(pin: dict, corpus_root: Path = CORPUS_ROOT) -> dict[str, dict]:
             name, digest = record["file"], record["sha256"]
         except (ValueError, KeyError, TypeError) as exc:
             raise CorpusError(f"{path}:{number}: bad record: {exc}") from exc
+        if not isinstance(record.get("width"), int) or not isinstance(record.get("height"), int):
+            raise CorpusError(f"{path}:{number}: width and height are required")
         if not _FRAME.fullmatch(str(name)) or not _SHA256.fullmatch(str(digest)):
             raise CorpusError(f"{path}:{number}: unexpected file name or digest")
         if name in index:
@@ -136,7 +147,10 @@ def verify_frames(directory: Path, index: dict[str, dict]) -> None:
 
     if not directory.is_dir():
         raise CorpusError(f"{directory} is not a directory")
-    present = {p.name for p in directory.iterdir()}
+    try:
+        present = {p.name for p in directory.iterdir()}
+    except OSError as exc:
+        raise CorpusError(f"cannot list {directory}: {exc}") from exc
     if present != set(index):
         missing, extra = sorted(set(index) - present), sorted(present - set(index))
         raise CorpusError(f"{directory}: missing {missing[:5]} extra {extra[:5]} ({len(missing)} missing, {len(extra)} extra)")
@@ -144,10 +158,14 @@ def verify_frames(directory: Path, index: dict[str, dict]) -> None:
         path = directory / name
         if path.is_symlink() or not path.is_file():
             raise CorpusError(f"{path} is not a regular file")
-        if sha256_file(path) != record["sha256"]:
+        try:
+            digest = sha256_file(path)
+            head = path.read_bytes()[:32]
+        except OSError as exc:
+            raise CorpusError(f"cannot read {path}: {exc}") from exc
+        if digest != record["sha256"]:
             raise CorpusError(f"{path}: sha256 differs from the series manifest")
-        size = (record.get("width"), record.get("height"))
-        if None not in size and png_size(path.read_bytes()[:32]) != size:
+        if png_size(head) != (record["width"], record["height"]):
             raise CorpusError(f"{path}: PNG dimensions differ from the series manifest")
 
 
@@ -191,7 +209,7 @@ def _download(url: str) -> bytes:
     request = urllib.request.Request(url, headers={"User-Agent": "pwmcp-console-corpus"})
     try:
         with opener.open(request, timeout=120) as response:
-            return response.read()
+            return response.read(MAX_ASSET_BYTES + 1)
     except (OSError, ValueError) as exc:
         raise CorpusError(f"cannot download {url}: {exc}") from exc
 
@@ -226,16 +244,26 @@ def fetch(dest: Path, pin: dict, corpus_root: Path = CORPUS_ROOT,
     except CorpusError:
         pass
     data = download(pin["url"])
-    if len(data) != pin["size"] or hashlib.sha256(data).hexdigest() != pin["sha256"]:
+    if len(data) > MAX_ASSET_BYTES or len(data) != pin["size"] or hashlib.sha256(data).hexdigest() != pin["sha256"]:
         raise CorpusError(f"{pin['asset']}: size or sha256 differs from the pin in CORPUS-ASSETS.json; refusing it")
+    if frames.is_dir() and any(not _FRAME.fullmatch(child.name) for child in frames.iterdir()):
+        raise CorpusError(f"{frames} exists, is not a verified corpus and holds files that are not corpus frames; refusing to replace it")
     dest.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=".corpus-", dir=dest))
     try:
         _extract(data, index, staging)
         verify_frames(staging, index)
+        staging.chmod(0o755)
+        aside = dest / f".old-{os.getpid()}"
         if frames.exists():
-            shutil.rmtree(frames)
-        staging.rename(frames)
+            frames.rename(aside)
+        try:
+            staging.rename(frames)
+        except OSError as exc:
+            if aside.exists():
+                aside.rename(frames)
+            raise CorpusError(f"cannot install {frames}: {exc}") from exc
+        shutil.rmtree(aside, ignore_errors=True)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     return frames
@@ -257,13 +285,16 @@ def locate(asset_id: str | None = None, *, search: Iterable[Path] | None = None,
     problems = []
     for root in roots:
         frames = root / "frames"
+        explicit = os.environ.get(ENV_DIR) and Path(os.environ[ENV_DIR]).resolve() == root.resolve()
         if not frames.is_dir():
+            if explicit:
+                raise CorpusError(f"{ENV_DIR}={root} is set but has no frames/ directory")
             problems.append(f"{frames}: absent")
             continue
         try:
             verify_frames(frames, index)
         except CorpusError as exc:
-            if str(root) == os.environ.get(ENV_DIR):
+            if explicit:
                 raise CorpusError(f"{ENV_DIR}={root} is set but does not verify: {exc}") from exc
             problems.append(str(exc))
             continue
@@ -285,7 +316,7 @@ def main(argv: list[str] | None = None) -> int:
     pk.add_argument("--out", type=Path, required=True)
     pk.add_argument("--asset", default=None)
     fe = sub.add_parser("fetch", help="download, verify and extract the pinned asset")
-    fe.add_argument("--dest", type=Path, default=None, help=f"default: the first writable of {IMAGE_DIR} / {CACHE_DIR}")
+    fe.add_argument("--dest", type=Path, default=None, help=f"default: {CACHE_DIR}")
     fe.add_argument("--asset", default=None)
     ve = sub.add_parser("verify", help="verify a directory of frames against the committed index")
     ve.add_argument("frames_dir", type=Path)
@@ -297,7 +328,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "package":
             # the pin may still hold a placeholder digest while it is being created: read it unvalidated
             raw = json.loads(ASSETS_FILE.read_text(encoding="utf-8"))["assets"]
-            pin = next(a for a in raw if args.asset in (None, a["id"]))
+            pin = next((a for a in raw if args.asset in (None, a["id"])), None)
+            if pin is None:
+                raise CorpusError(f"unknown asset {args.asset!r}")
             result = package(args.frames_dir, args.out, pin)
             print(json.dumps({"asset": pin["asset"], **result}))
         elif args.command == "fetch":
