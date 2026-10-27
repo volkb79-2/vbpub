@@ -341,6 +341,165 @@ reading a page that its owner has explicitly closed to automation acceptable. Wh
 given Anubis deployment lifts its block under these presets is not verified (see
 `KNOWN_ISSUES_TODO_BACKLOG.md` PWMCP-09).
 
+## OCR sidecar (PWMCP-11 phase 1, opt-in, off by default)
+
+**What it is.** A second, STATELESS container in the same ciu stack that turns an image
+into text: you POST a PNG/JPEG, it runs native Tesseract 5 and returns the recognised
+text plus a confidence (0-100) and a box for every line and word. It exists because some
+consoles are one `<canvas>` (for example a VNC web console), so Playwright snapshots carry
+no text and an agent could only read screenshots visually. It returns **TEXT AND
+CONFIDENCE, not decisions**: deciding what a screen means (and what to do about it)
+stays with the caller.
+
+**Non-goal of this phase.** No watching, no waiting for text, no sending keys. Those are
+phases 2 and 3 of PWMCP-11 and do not exist yet.
+
+**Enable it.** Nothing changes unless you do (default `enabled = false`, and a default render
+of the compose file is byte-identical to before). In `ciu.toml.j2`:
+
+```toml
+[pwmcp.ocr]
+enabled = true            # renders the second service
+# name = "pwmcp-ocr"      # service alias on the stack network (the only way to reach it)
+# port = 8941             # 8939 admin API, 8940 run-server admin, 8941 OCR
+# engines = "tesseract"   # advertised in /contract
+# max_bytes = 8388608     # request body limit (8 MiB)
+# max_dim = 4096          # max image width/height in pixels
+# max_scaled_pixels = 24000000   # max width*height after scale (24 MP)
+# body_deadline_s = 10    # total time to receive a request body
+# timeout_s = 20          # per-request recognition timeout
+# mem_limit = "512m"      # narrowing caps; ciu governance owns cgroup_parent
+# cpus = "1.0"
+```
+
+The URL the contract advertises (`ocr_url`, for example `http://pwmcp-ocr:8941`) is a docker-DNS
+alias that resolves only on the stack network; a CLI running anywhere else must pass `--sidecar-url`
+or set `PWMCP_OCR_URL` to an address it can reach (the sidecar publishes no host port by default).
+
+The sidecar is reachable only on the stack network (no published port, no Traefik route, in
+either deployment mode), runs as uid 1000 with all capabilities dropped, a read-only root
+filesystem and a small tmpfs, needs no outbound network, and runs under `nice`. The
+pwmcp container learns its URL as `PWMCP_OCR_URL` (only rendered when enabled), and the
+gateway `/contract` advertises it as `ocr.url` / `ocr.engines`; servers without the feature
+simply lack the block and old clients ignore it.
+
+**HTTP API** (`http://<alias>:<port>`):
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /health` | `200 {"status":"ok"}` when Tesseract is usable, else `503` |
+| `GET /v1/engines` | engine names, availability, versions, installed languages |
+| `POST /v1/ocr` | body = the PNG/JPEG bytes (`Content-Length` required); query below |
+
+Query parameters of `POST /v1/ocr` (unknown or repeated ones are a 400): `engine`
+(`tesseract` default; `glyphgrid` is registered but answers `501
+{"error":"engine not implemented","code":"engine_unavailable"}` until phase 2), `lang`
+(default `eng`; must be installed), `psm` (3, 4, **6** default = uniform block, suited to
+consoles, 7, 11, 13), `scale` (integer 1-8, default 1; upscales before recognition because
+Tesseract wants glyphs of roughly 30 px or more; boxes are reported in ORIGINAL pixels),
+`whitelist` (printable ASCII, at most 128 characters, passed as one argv element, never
+through a shell), `min_conf` (0-100, NO default: words BELOW it are flagged, never removed) and
+`drop_low_conf` (`0`/`1`, default 0, needs `min_conf`: the explicit opt-in to really remove the flagged
+words). The response:
+
+```json
+{"engine":"tesseract","engine_version":"5.x","lang":"eng","psm":6,"width":1280,"height":800,
+ "elapsed_ms":210,"text":"...",
+ "lines":[{"text":"...","conf":93.1,"conf_mean":93.1,"conf_min":88.0,"low_conf_words":null,"box":[x,y,w,h]}],
+ "words":[{"text":"...","conf":95.0,"box":[x,y,w,h],"line":0,"low_conf":null}],
+ "min_conf_applied":null,"low_conf_words":null,"unscored_words":0,"drop_low_conf":false,"dropped_words":0}
+```
+
+> **Confidence is NOT calibrated: do not treat "unflagged" or "high" as "correct".** Tesseract read a garbled
+> TrueNAS installer dialog at a mean confidence of 91%, and misread digits (`10.0.2.15` as `16.0.2.15`,
+> `9)` as `3)`). `low_conf` is a hint, never a safety check. Missing or fuzzy-matched text means UNKNOWN.
+> Anything that will later trigger a keystroke needs an EXACT match of a known screen signature (or the
+> glyph-grid engine, phase 2), never merely "unflagged". Without `min_conf` nothing is assessed at all.
+
+**The result is complete; doubt is flagged, not deleted.** `text`, `lines[].text` and `words[]` always
+contain every recognised word whatever its confidence. `min_conf` only sets the threshold: words below it
+get `low_conf: true`, each line reports `conf_mean` (unweighted; `conf` is an alias kept for
+compatibility), `conf_min` (the weakest word, so a high mean cannot hide a doubtful token such as the
+`[y/N]` of `Continue? [y/N]`) and `low_conf_words`, and the top level reports `low_conf_words` (total),
+`min_conf_applied`, `drop_low_conf` and `dropped_words`. Callers that match on this text (phases 2 and 3
+will) must look at the flags. WITHOUT a `min_conf` nothing was assessed, so `low_conf`, per-line `low_conf_words`, the top-level
+`low_conf_words` and `min_conf_applied` are JSON `null` (not `false`/`0`, which would read as "confident").
+A word the engine returned without any confidence (`unscored_words` counts them) has `conf: null`, is kept,
+and counts as flagged once a threshold is given. `pwmcp ocr --min-conf N` prints a warning when any word is
+flagged, and when the sidecar predates this contract (it may then have dropped words silently:
+`completeness_unknown` in the library result).
+
+Errors are `{"error":"...","code":"..."}` with a 4xx/5xx status and never echo image bytes:
+400 bad parameters, 411 no `Content-Length`, 413 body or image too large, 415 not a decodable
+PNG/JPEG, 429 `busy` (ONE recognition runs at a time; retry), 501 engine not implemented or
+Tesseract missing, 504 timeout, 500 engine failure (a fixed message; the engine's own diagnostics are logged server-side only). Every error the HTTP layer itself produces (bad request line, 414, 431, an unsupported method) uses the same JSON shape. Transparent PNGs are composited onto white. `GET /health` is 200 only when the Tesseract binary AND the default language's traineddata are present. A frame with no recognisable text is a
+valid `200` with empty `text`.
+
+**Limits** (all configurable): 8 MiB body, 4096x4096 pixels (checked on the image header
+before any pixel is decoded), 8192 px per side after `scale` (400 `invalid_scale`) and 24 megapixels after `scale` (413
+`scaled_image_too_large`), 10 s TOTAL to receive the body (408 `request_timeout`), 10 s TOTAL to receive the request
+line and headers (408 `header_timeout`), 16 concurrent connections (further ones get a JSON 503 `overloaded`), 20 s per request,
+one concurrent recognition, 512 MiB of memory.
+
+**Agent workflow.** Take the screenshot with the MCP `browser_take_screenshot` tool, save it
+to a file, then recognise it:
+
+```bash
+pwmcp ocr --image console.png                       # recognised text only
+pwmcp ocr --image console.png --format tsv --min-conf 60 --scale 2
+cat console.png | pwmcp ocr --image - --json        # full result with confidences and boxes
+pwmcp ocr "$CONSOLE_URL" --selector canvas --scale 2 --wait-ms 1000   # capture + recognise
+```
+
+The URL form opens the page in a fresh context exactly like `inspect` (server-level user
+agent included), waits for the element to be visible, captures it, recognises it and closes
+the context. The element is captured with Playwright's compositor screenshot (works for 2D
+and WebGL canvases, never trips over a tainted canvas) so the image is the element as
+DISPLAYED, not the canvas's intrinsic bitmap; use `--scale` for small text. `--region
+x,y,w,h` limits the capture to a rectangle of the element. The sidecar URL defaults to
+`$PWMCP_OCR_URL`, else the `ocr_url` the contract advertises; `--sidecar-url` overrides both.
+If none is known, `pwmcp ocr` exits 2 with a message naming `ocr.enabled`. From Python:
+`pwmcp_client.ocr.recognize(image_bytes, sidecar_url=..., psm=6, scale=2)` returns an
+`OcrResult`.
+
+**Gate dependency.** The registered pwmcp gate lanes judge `containers/ocr/ocr_service.py` at 100% line and
+branch coverage and run every test that needs an optional dependency. The lanes therefore DEPEND ON THE
+TESTER IMAGE CARRYING THE `pwmcp-client` `test` extra (pytest, pillow, websockets, jinja2, pyyaml, declared in
+`client/pyproject.toml` by the tester-unified change that lands separately on main, which also rebuilds the
+image) plus `node` and `sh`. Operator policy (2026-10-27): a test that needs an optional module or binary
+FAILS when it is missing, with a message naming it and the `test` extra; skipping is the opt-in. One helper
+(`tests/_testdeps.py`, used by every site in `tests/` and `client/tests/`) implements it, and a test forbids
+bare `pytest.importorskip` / `skipif(... is None)`. On a developer machine without a dependency, set
+`PWMCP_ALLOW_MISSING_TEST_DEPS=1` to skip those tests cleanly; the gate lanes set nothing, so they cannot
+skip. The one deliberate exception is the real-Tesseract test: `tesseract` legitimately exists only in the
+sidecar image, so it skips with an explicit reason, and fails instead when `PWMCP_REQUIRE_TESSERACT=1` (set it
+only in a lane that runs inside the OCR image; none exists today, the gate runs in the tester image).
+Until the tester image is rebuilt the lanes are RED by design. The judged Python targets are the client
+package (`__init__`, `cli`, `contract`, `diagnostics`, `ocr`, `session`, `user_agent`), `build-push.py`,
+`scripts/resolve-playwright-version.py` and `containers/ocr/ocr_service.py`. The Node code
+(`containers/pwmcp/ua-override/index.js`, the run-server and MCP gateways, the admin server) is outside the
+Python judge entirely and is exercised only by the subprocess tests.
+
+**The sidecar image exists from the NEXT pwmcp release.** `pwmcp.ocr.image.tag` defaults to the
+resolver-managed pwmcp coordinate, and the current published release (`1.64.0-r3`) shipped WITHOUT the
+OCR image: with `pwmcp.ocr.enabled = true` against it, the image pull fails. Until a release that
+includes it is published, build it locally and point the config at it:
+
+```bash
+# from the pwmcp/ directory; tag it with the coordinate your config renders (the default is shown)
+docker build -f containers/ocr/Dockerfile -t ghcr.io/volkb79-2/pwmcp-ocr:1.64.0-r3 .
+```
+
+Compose renders `image: <registry>/<namespace>/<name>:<tag>` from `[pwmcp.ocr.image]` with
+`pull_policy: missing`, so an image already present under that exact name is used and never pulled.
+To use a different name instead, set `registry`, `namespace`, `name` and `tag` under `[pwmcp.ocr.image]`
+in your `ciu.toml.j2` (together with `enabled = true` under `[pwmcp.ocr]`).
+
+**What was and was not verified.** See `KNOWN_ISSUES_TODO_BACKLOG.md` PWMCP-11: the service,
+client, CLI and compose rendering are tested offline against a fake `tesseract`; real
+Tesseract accuracy on console frames, the TSV column layout of the packaged Tesseract, the
+image build, the second-image release wiring and the wiring under a real `ciu up` are not verified until an image is built and a release is cut.
+
 ## KSM Opt-In (default on)
 
 Every process in the container opts into Kernel Samepage Merging (KSM) by
@@ -439,6 +598,42 @@ pwmcp-v1.63.0-r4
 Releases up to and including `1.64.0-r2` carry the bundle without the `v`
 (`pwmcp-<version>.tar.xz`). The installer (`get.py`) requests only the `v`-prefixed name, so it
 cannot install those releases (PWMCP-08); pin a later release.
+
+**Two images, one release.** (The OCR image exists from the NEXT release after `1.64.0-r3`.) A release builds and pushes BOTH `ghcr.io/volkb79-2/pwmcp:<tag>` and the
+optional OCR sidecar `ghcr.io/volkb79-2/pwmcp-ocr:<tag>` (and their `latest`) with the same `<tag>`
+(`1.64.0-r3` style) in one `docker buildx bake all`; the bundle's `ciu.defaults.toml.j2` pins both
+(`[pwmcp.unified.image] tag` and `[pwmcp.ocr.image] tag`, kept equal by
+`scripts/resolve-playwright-version.py`), so a consumer that enables `pwmcp.ocr.enabled` gets the sidecar
+built with that release. The sidecar's `debian:trixie-slim` base is pinned by manifest digest like the
+Playwright base: `--refresh` re-resolves it and `--check` refuses a tag-only or inconsistent pin.
+`pwmcp.contract.json` carries no image coordinates and is unchanged. Not yet exercised by a real release
+(see `KNOWN_ISSUES_TODO_BACKLOG.md` PWMCP-11). `bake all --push` builds and pushes the two targets CONCURRENTLY, so no order is guaranteed. A PARTIAL push
+looks like this: one image (and its `latest`) is in GHCR and the other is missing or stale, the step fails
+and no GitHub release or git tag has been made yet. Recovery: fix the cause (token scope, network, builder)
+and re-run the push step of the SAME prepared transaction; pushing is idempotent for identical content. Do
+not publish the bundle until `docker buildx imagetools inspect` shows BOTH `pwmcp:<tag>` and
+`pwmcp-ocr:<tag>`; if a half-pushed tag must be abandoned, the operator deletes the stray package version
+in the GHCR UI. (A version-bump release cut by mistake is the recovery that went wrong on 2026-09-08.)
+
+**First release of the OCR image: checklist.** The first push creates a GHCR package that has never existed.
+1. *Before the release:* confirm the base digest is current with
+   `docker buildx imagetools inspect debian:trixie-slim` and compare it with `DEBIAN_IMAGE_DIGEST` in
+   `containers/ocr/Dockerfile`; run `python3 scripts/resolve-playwright-version.py --refresh` if it differs
+   (no age window is applied to this rolling base, by design, decided 2026-10-27). A release transaction
+   PREPARED before the `DEBIAN_RELEASE` / `DEBIAN_IMAGE_DIGEST` keys existed fails closed on the new
+   `cmru.vars` keys: re-run the prepare phase instead of editing `cmru.vars`.
+2. *Token:* confirm the release token has `write:packages` for a NEW package under the account
+   (PWMCP-01 notes the PAT once lacked it).
+3. *After the push:* expect `pwmcp-ocr` to be created PRIVATE and possibly not yet linked to the repository
+   (the `org.opencontainers.image.source` label in `containers/ocr/Dockerfile` is what links it). Make it
+   public once in the GHCR UI (Your packages -> pwmcp-ocr -> Package settings -> Change visibility);
+   it persists for all later pushes.
+4. *If the visibility sync hard-fails after BOTH images were pushed* (cmru KI-97: a brand-new package can be
+   "not visible yet" for longer than the 6x5 s retry): the images are already published, so do NOT redo the
+   release. Re-run ONLY the sync step (`GHCR_PACKAGE_NAMES=pwmcp,pwmcp-ocr` and the release identity
+   exported, then the visibility part of `build-push.py`, or set the package public in the UI). Never use
+   `cmru release --resume` without `--set-version`: that mistake produced the wrong v1.0.0 release of
+   2026-09-08 (see the nyxloom-cmru-adoption incident record).
 
 The release notes embed the SHA256 digest. Verify any downloaded bundle with:
 

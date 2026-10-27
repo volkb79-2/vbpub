@@ -3,7 +3,7 @@
 This file records consumer-facing product gaps for later triage. Normative
 behavior remains in the product specification and consumer documentation.
 
-Last updated: 2026-10-17 (PWMCP-04 delayed page hydration and multi-match selector wait).
+Last updated: 2026-10-27 (PWMCP-11 OCR sidecar and console watching program, phase 1 on branch).
 
 ## PWMCP-01 — Provide a rendered-page inspection command
 
@@ -284,3 +284,143 @@ same browser`. Sequential use works. `containers/pwmcp/supervisord.shared.conf:2
 broke the shared-browser mode on 2026-07-13, so the fix is not "add the flag". **Acceptance.** Either concurrent
 sessions are served (per-session contexts on the one browser) or the `pwmcp-fetch` skill and the error text say
 plainly that fetches must be serialised; today the error names a flag the service cannot take.
+
+## PWMCP-11 — OCR sidecar and console watching (program)
+
+**Status: phase 1 FIXED-ON-BRANCH (2026-10-27), release wiring for the second image included (FIXED-ON-BRANCH, unverified until a real release is cut); phases 2 and 3 OPEN.**
+
+**Need.** Automating a host console through a web console. The Netcup SCP "Screen" is ONE 1280x800 `<canvas>`
+fed by a VNC WebSocket, so Playwright snapshots carry no text and an agent was interpreting screenshots
+visually. Wanted: MECHANICAL recognition of what a text console (Debian installer, TrueNAS installer, shells)
+shows. Origin: a Codex session driving a TrueNAS relaxed unattended install on a Netcup host (rollout
+`01a14d1b-bec6-7671-80b8-a5c53ff976ee`, 2026-10-18; read it with
+`nyxloom-harness extract --format codex --preset watch <rollout.jsonl>`).
+
+**Operator decisions (2026-10-27).**
+- OCR runs in a STATELESS SIDECAR container: pwmcp posts a PNG and gets text + word boxes + confidence (or a
+  glyph-grid text screen); pwmcp keeps the browser and the watch loop. The sidecar lives under
+  `containers/` in the same ciu/compose stack with its own service alias and is released WITH pwmcp (one
+  contract, one set of gates).
+- Engines: Tesseract (native, pluggable interface) first, then exact glyph-grid matching for fixed-font text
+  consoles (Debian installer, TrueNAS installer).
+- Watching: in-browser canvas change detection (hash on animation frames, debounce), then OCR on change,
+  exposed as `wait_for_text(pattern|regex, timeout, stable)`. The WebSocket frame event is only an optional
+  wake-up hint (66 frames in 15 s with unchanged text), never the decision. Unrecognised screens are
+  INDETERMINATE.
+- A guarded expect-and-send primitive in pwmcp is OFF unless a config flag enables it ("flag only": no
+  allowlist, no rules file). Consumers may still own policy (for example the Netcup protected-server check).
+- Test corpus: the local QEMU VM harness (`testing/vm/vmctl`) captures first; live Netcup captures verify
+  afterwards. Finish/reboot screens of the TrueNAS install were never observed; only the ready signature
+  ("Console setup" plus management URLs) is known.
+
+**Phases.**
+1. (FIXED-ON-BRANCH) The sidecar (`containers/ocr/`: Dockerfile, `ocr_service.py`; Tesseract via the CLI,
+   pluggable engine registry with `glyphgrid` registered-but-501), compose/ciu wiring (`pwmcp.ocr.*`, default
+   off, alias `pwmcp-ocr`, port 8941 because 8940 is the run-server admin port), the `/contract` `ocr` block,
+   `pwmcp_client.ocr.recognize`, `pwmcp ocr`, docs and offline tests. Returns text and confidence only.
+2. (OPEN) `wait_for_text` watcher (in-browser canvas change detection on the shared browser's already-open
+   page; the shared-browser mode from P03 is the natural home) and the glyph-grid engine fed by VM-harness
+   captures. Needs the PWMCP-10 concurrency answer first, since a watcher holds the one shared browser.
+3. (OPEN) Guarded expect-and-send, OFF unless a config flag enables it.
+
+**Release wiring: FIXED-ON-BRANCH (operator decision 2026-10-27: extend the existing release so ONE pwmcp
+release builds, publishes and records BOTH images under one contract).** No release was cut and nothing was
+built, pushed or run through cmru/ciu/docker/the gate, so this stays UNVERIFIED until a real release is cut.
+- Image: `ghcr.io/volkb79-2/pwmcp-ocr` (sibling of `ghcr.io/volkb79-2/pwmcp`, the repository naming
+  convention), tagged `<PWMCP_VERSION>` (the SAME coordinate, e.g. `1.64.0-r3`) and `latest`.
+- Build/push: a `pwmcp-ocr` target in `docker-bake.hcl` (same context `.`, no extra platform/cache policy),
+  added to the `all` group, so the existing `build-push.py --build/--push` bake builds and pushes both.
+  `GHCR_PACKAGE_NAMES` is `pwmcp,pwmcp-ocr`, so the existing visibility sync runs for both packages. The main
+  image has no signing/provenance step, so none is added.
+- Base pin: `debian:trixie-slim` pinned by multi-arch manifest digest in `containers/ocr/Dockerfile`
+  (`DEBIAN_RELEASE`, `DEBIAN_IMAGE_DIGEST`), `docker-bake.hcl` and `cmru.vars`. The mechanism is the same as
+  the Playwright base: `scripts/resolve-playwright-version.py --refresh` resolves the digest (Docker Hub,
+  anonymous HEAD) and rewrites all projections; `--check` (CMRU's prepare phase) fails if they disagree, are
+  not a sha256, the FROM lost its digest, or `[pwmcp.ocr.image] tag` differs from the pwmcp release.
+  `containers/ocr/Dockerfile` is in cmru's `commit_generated`, so a refreshed pin is committed. The loader
+  (`scripts/_vars.py`) now requires the two keys, so an old `cmru.vars` fails closed. The digest was read
+  from Docker Hub on 2026-10-27 (`sha256:62bd423a...`).
+- Coordinate/contract: `pwmcp.ocr.image.tag` defaults to the pwmcp tag and the resolver keeps them equal.
+  `pwmcp.contract.json` carries no image coordinates (not for the main image either) and is UNCHANGED, as is
+  `get.py`; consumers pin images through the bundle's `ciu.defaults.toml.j2`, which now has both. Neither
+  mdt-cockpit (it reads only the contract `release` and `get.py`) nor `topos/pwmcp-instance/UPSTREAM.toml`
+  (vendored copy at 1.61.0-r6) needs a change; topos picks the OCR defaults up on its next re-vendor.
+- STILL OPEN / decisions not made: (a) DECIDED BY DESIGN, 2026-10-27: no age window for the rolling Debian base
+  digest (a rolling OS tag whose newer digests are mostly security rebuilds, which a window would only delay);
+  the digest is whatever the tag points to at `--refresh`. (b) The second GHCR package is created on first push; the existing
+  mirror-repo-visibility sync is applied to it, which assumes the release PAT may create and administer it.
+  (c) Whether to also register `debian:trixie-slim` as a cmru `[versions.targets."oci.*"]` target (mdt-cockpit
+  has advisory ones); NOT added, because it could not be validated without running cmru and a failed load
+  would break the release. (d) cmru's own artifact accounting still lists `artifacts = ["oci-image",
+  "bundle"]`; whether it needs to enumerate the second image is not checkable without running cmru. (e) The
+  main image's unpinned `debian:bookworm-slim` KSM builder stage is untouched.
+
+**Result contract (reviewed 2026-10-27).** The sidecar result is COMPLETE: `min_conf` flags words below it
+(`low_conf`, per-line `conf_mean` / `conf_min` / `low_conf_words`, top-level `low_conf_words` and
+`min_conf_applied`) and never deletes them; removal is the explicit `drop_low_conf=1` opt-in. Phases 2-3 match
+on this text and send keystrokes, so doubt must stay visible.
+
+**Phase 2-3 hazards / required inputs** (from the Opus review and the TrueNAS capture; that corpus is on another
+branch, to be merged after this one):
+- (a) `text` joins a line's words with single spaces, so the console's column layout is lost. Phase 2 needs a
+  grid/rows output for console frames (a fixed 160x50 character grid at 1280x800), not free text.
+- (b) `_capture_element` captures at CSS size, which RESAMPLES the exact 8x16 px cell grid. Phase 2 must capture
+  the canvas's intrinsic bitmap (and verify the size), not a displayed-size screenshot.
+- (c) Tesseract reads light-on-black console text at 92-100% but FAILS black-on-grey installer dialogs (needs
+  colour-aware preprocessing: invert/threshold) and mis-reads digits (`10.0.2.15` -> `16.0.2.15`, `9)` -> `3)`).
+  Exact values need glyph matching: the console is an exact 8x16 px cell grid.
+- (d) Confidence is NOT calibrated: a garbled dialog read at 91% mean confidence. `low_conf` is a hint; an
+  unflagged word is not verified; without `min_conf` the flags are null. Keystrokes need an EXACT match of a
+  known screen signature or the glyph-grid engine, never "unflagged".
+- (e) UNMEASURED: whether the 512m limit holds for 24 MP scaled images, and the R2 mutation runtime on the newly
+  judged files (about 380 mutation sites); expect the r2 lane budget of 4h to matter.
+- The container `mem_limit`/`cpus`/`pids_limit` keys are author-set and replace (are not clamped by) the ciu
+  governance overlay's per-service value (author-set keys win): their interaction with a live overlay is UNVERIFIED.
+
+**First release of the OCR image: checklist** (also in README "Release Model"): confirm the base digest with
+`docker buildx imagetools inspect debian:trixie-slim` (and `--refresh` if it differs); a transaction prepared
+before the new `cmru.vars` keys fails closed; confirm the token has `write:packages` for a new package
+(PWMCP-01); expect `pwmcp-ocr` to be created PRIVATE and unlinked and make it public once in the GHCR UI
+(the `org.opencontainers.image.source` label links it); if the visibility sync hard-fails after both images
+were pushed (cmru KI-97) re-run ONLY the sync step, never `cmru release --resume` without `--set-version`
+(the 2026-09-08 v1.0.0 incident). The sidecar image exists from the NEXT release after `1.64.0-r3`; until
+then enabling `pwmcp.ocr` needs a local build (README). The pwmcp gate lanes depend on the tester
+image carrying the pwmcp-client `test` extra (pytest, pillow, websockets, jinja2, pyyaml) plus node and sh.
+Operator policy 2026-10-27: a test needing an optional module or binary FAILS when it is missing (clear message
+naming it and the extra); skipping is the opt-in, `PWMCP_ALLOW_MISSING_TEST_DEPS=1` on a developer machine.
+One helper (`tests/_testdeps.py`) serves every site; the lanes set nothing. The real-Tesseract test keeps an
+explicit skip (the binary exists only in the sidecar image) and fails when `PWMCP_REQUIRE_TESSERACT=1` (set only
+in a lane that runs inside the OCR image; none exists today). `client/src/pwmcp_client/user_agent.py` (PWMCP-09) and the sidecar are judged targets at 100% line and branch
+(user_agent.py was 73% before: its `_main` and platform/hint branches had no in-process tests). The Node code
+(`ua-override/index.js`, the two gateways, the admin server) is outside the Python judge and is exercised only by
+the subprocess tests. Not judged: `get.py` (generated by `cmru get-py`, 1093 statements), `installer/adapter.py`,
+`scripts/build-bundle.py`, `scripts/publish-bundle.py`, `scripts/prepare-client-wheels.py`, `scripts/_vars.py`
+(partly covered, see the report). The controller owns the tester-unified change and
+image rebuild and the `test` extra in `client/pyproject.toml` (not touched on this branch: keep it verbatim on merge).
+
+**UNVERIFIED until an image is built and run.**
+- Real Tesseract behaviour: the TSV column layout assumption (12 columns, level 5 = word, `conf` -1 for
+  layout rows) matches the documented format and the fake used by the tests, but was not checked against the
+  packaged binary; `tesseract stdin stdout ... tsv` reading from stdin and `--list-langs` / `--version`
+  output shapes are likewise assumed.
+- Recognition accuracy on real console frames (fonts, colours, `--psm 6` vs `11`, `--scale`), and whether
+  the Debian `tesseract-ocr-eng` data (fast or best) is good enough. The ONE real-engine test
+  (`tests/test_ocr_service.py::test_real_tesseract_recognises_rendered_console_lines`) skips unless
+  `tesseract`, Pillow and DejaVu Sans Mono are present; it did NOT run in the implementing worktree.
+- The release wiring end to end: `docker buildx bake all` against the managed BuildKit builder building both
+  targets (the `bake --print` plan was NOT run: no docker here), the push, the GHCR visibility sync for the
+  new `pwmcp-ocr` package, cmru's handling of the extra `commit_generated` path, and `cmru release pwmcp`
+  itself. Offline tests check the committed inputs against each other and the push loop's package list only.
+- The image build (`containers/ocr/Dockerfile`: package names on the pinned Debian release, uid 1000,
+  read-only rootfs with only `/tmp` writable, `nice` entrypoint) and the healthcheck.
+- The compose wiring under a real `ciu up` (that the narrowing `mem_limit`/`memswap_limit`/`cpus` coexist
+  with the governance overlay, that `read_only` plus tmpfs is accepted, the `$INSTANCE_ID` container name,
+  alias resolution from the pwmcp container). The offline tests render the template with plain Jinja
+  (`StrictUndefined`, as ciu does), not through ciu.
+- Element capture of a real canvas through Playwright's compositor screenshot (chosen over `toDataURL`
+  because it does not fail on tainted or WebGL canvases): the image is the DISPLAYED size, not the canvas's
+  intrinsic 1280x800 bitmap unless the page is shown at that size. The fake browser in the tests cannot
+  show this.
+- Gate coverage: `client/src/pwmcp_client/ocr.py` was added to the `assay.toml` judged targets (100% line
+  and branch measured locally); the sidecar `containers/ocr/ocr_service.py` is tested but deliberately NOT a
+  judged target yet, and the registered gate was not run.

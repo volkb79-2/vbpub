@@ -153,9 +153,9 @@ def test_config_surface_is_wired_end_to_end() -> None:
     assert "`user_agent`" in readme and "PWMCP_USER_AGENT" in readme
 
 
-def test_compose_line_renders_valid_yaml_and_escapes_dollar_for_compose() -> None:
-    jinja2 = pytest.importorskip("jinja2")
-    yaml = pytest.importorskip("yaml")
+def test_compose_line_renders_valid_yaml_and_escapes_dollar_for_compose(optional_module) -> None:
+    jinja2 = optional_module("jinja2", "jinja2 is needed to render the compose line")
+    yaml = optional_module("yaml", "PyYAML is needed to parse the rendered compose line")
     compose = (PWMCP / "ciu.compose.yml.j2").read_text(encoding="utf-8")
     (line,) = [ln.strip() for ln in compose.splitlines() if ln.strip().startswith("PWMCP_USER_AGENT:")]
     template = jinja2.Environment().from_string(line)

@@ -407,6 +407,403 @@
       "signature": "sha256:9200057479e4fe21594325ee014371c99a67908d401e759b99331122657a44e6"
     },
     {
+      "id": "case:route:entrypoint:pwmcp/ocr/argument-shape/argument:route:entrypoint:pwmcp/ocr/url",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:pwmcp/ocr/url"
+      ],
+      "route_id": "route:entrypoint:pwmcp/ocr",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:pwmcp/ocr/url"
+      },
+      "signature": "sha256:0b098a9cf91ec8651a55ae1d78200b51aac637cc60d2542f968a138cdbf1c3f9"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/ocr/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:pwmcp/ocr/--contract",
+        "option:route:entrypoint:pwmcp/ocr/--wait-ms",
+        "option:route:entrypoint:pwmcp/ocr/--timeout-ms",
+        "option:route:entrypoint:pwmcp/ocr/--engine",
+        "option:route:entrypoint:pwmcp/ocr/--lang",
+        "option:route:entrypoint:pwmcp/ocr/--psm",
+        "option:route:entrypoint:pwmcp/ocr/--scale",
+        "option:route:entrypoint:pwmcp/ocr/--format",
+        "option:route:entrypoint:pwmcp/ocr/--ignore-https-errors"
+      ],
+      "route_id": "route:entrypoint:pwmcp/ocr",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:pwmcp/ocr/--contract",
+          "option:route:entrypoint:pwmcp/ocr/--wait-ms",
+          "option:route:entrypoint:pwmcp/ocr/--timeout-ms",
+          "option:route:entrypoint:pwmcp/ocr/--engine",
+          "option:route:entrypoint:pwmcp/ocr/--lang",
+          "option:route:entrypoint:pwmcp/ocr/--psm",
+          "option:route:entrypoint:pwmcp/ocr/--scale",
+          "option:route:entrypoint:pwmcp/ocr/--format",
+          "option:route:entrypoint:pwmcp/ocr/--ignore-https-errors"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:17b7626867c08b42fa8345dc6cbc43d809f2179e5d92df1d7c8c8cc61e19c1af"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/ocr/option-choice/option:route:entrypoint:pwmcp/ocr/--format/1e1d0f251d",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:pwmcp/ocr/--format"
+      ],
+      "route_id": "route:entrypoint:pwmcp/ocr",
+      "shape": {
+        "choice": "text",
+        "option_id": "option:route:entrypoint:pwmcp/ocr/--format"
+      },
+      "signature": "sha256:cc1d3fdc9330ab633a09c6ae48e861cea65c6bafbcb9ed417bd1ddf4d166a651"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/ocr/option-choice/option:route:entrypoint:pwmcp/ocr/--format/4e23b39204",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:pwmcp/ocr/--format"
+      ],
+      "route_id": "route:entrypoint:pwmcp/ocr",
+      "shape": {
+        "choice": "json",
+        "option_id": "option:route:entrypoint:pwmcp/ocr/--format"
+      },
+      "signature": "sha256:9d6ac119416d8804f035880a5556392d0aa154720cc937368ae3a78c6bb5d08d"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/ocr/option-choice/option:route:entrypoint:pwmcp/ocr/--format/84206304c2",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:pwmcp/ocr/--format"
+      ],
+      "route_id": "route:entrypoint:pwmcp/ocr",
+      "shape": {
+        "choice": "tsv",
+        "option_id": "option:route:entrypoint:pwmcp/ocr/--format"
+      },
+      "signature": "sha256:22c553a9b1edf1ea4ea4cbd68e9c8a217a1fe8e58ae0afe305ec1c9ee1f9309a"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/ocr/option-choice/option:route:entrypoint:pwmcp/ocr/--psm/3fdba35f04",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:pwmcp/ocr/--psm"
+      ],
+      "route_id": "route:entrypoint:pwmcp/ocr",
+      "shape": {
+        "choice": 13,
+        "option_id": "option:route:entrypoint:pwmcp/ocr/--psm"
+      },
+      "signature": "sha256:beb5c0b416200f45dbbbd0cc533049f91804eb6f232fbf4b6c80c20ef3bd1d3e"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/ocr/option-choice/option:route:entrypoint:pwmcp/ocr/--psm/4b227777d4",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:pwmcp/ocr/--psm"
+      ],
+      "route_id": "route:entrypoint:pwmcp/ocr",
+      "shape": {
+        "choice": 4,
+        "option_id": "option:route:entrypoint:pwmcp/ocr/--psm"
+      },
+      "signature": "sha256:4210502f5b8de5baa620844038465b21fe4f0013ab86aec3a3cb5db346d03c62"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/ocr/option-choice/option:route:entrypoint:pwmcp/ocr/--psm/4e07408562",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:pwmcp/ocr/--psm"
+      ],
+      "route_id": "route:entrypoint:pwmcp/ocr",
+      "shape": {
+        "choice": 3,
+        "option_id": "option:route:entrypoint:pwmcp/ocr/--psm"
+      },
+      "signature": "sha256:c63fff73457a88f23b21dbade7d2bda7b3edb3b9901a2f311146ae16050ccb5b"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/ocr/option-choice/option:route:entrypoint:pwmcp/ocr/--psm/4fc82b26ae",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:pwmcp/ocr/--psm"
+      ],
+      "route_id": "route:entrypoint:pwmcp/ocr",
+      "shape": {
+        "choice": 11,
+        "option_id": "option:route:entrypoint:pwmcp/ocr/--psm"
+      },
+      "signature": "sha256:af79102b782948581290fdc8ff8d9904f93d9555b14a6bc954ad99a694b424b5"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/ocr/option-choice/option:route:entrypoint:pwmcp/ocr/--psm/7902699be4",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:pwmcp/ocr/--psm"
+      ],
+      "route_id": "route:entrypoint:pwmcp/ocr",
+      "shape": {
+        "choice": 7,
+        "option_id": "option:route:entrypoint:pwmcp/ocr/--psm"
+      },
+      "signature": "sha256:8c41b75febfa84632a54ebfd0ea6aebe3ac5dda0c60cdd5a4babcdc382f01f8a"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/ocr/option-choice/option:route:entrypoint:pwmcp/ocr/--psm/e7f6c01177",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:pwmcp/ocr/--psm"
+      ],
+      "route_id": "route:entrypoint:pwmcp/ocr",
+      "shape": {
+        "choice": 6,
+        "option_id": "option:route:entrypoint:pwmcp/ocr/--psm"
+      },
+      "signature": "sha256:e1019c8d6a4d06d0e85114960333b480b896b7144eb3645fd3dbf11f363cdc4a"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--contract/--contract",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/ocr/--contract"
+      ],
+      "route_id": "route:entrypoint:pwmcp/ocr",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/ocr/--contract",
+        "spelling": "--contract"
+      },
+      "signature": "sha256:dc24395f5f0e758088c7199bf3d97644a734b88d075f19d3500222b034640cc5"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/ocr/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:pwmcp/ocr",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/ocr/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:75f4ed53e702fa31b6a8a8167a9f1a27b8fdc19b44a9f162714b2d1d38d31e1a"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--engine/--engine",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/ocr/--engine"
+      ],
+      "route_id": "route:entrypoint:pwmcp/ocr",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/ocr/--engine",
+        "spelling": "--engine"
+      },
+      "signature": "sha256:c9b45eab27215c4566b339ae310a97f63ef36142d49da1acbca7cfa7ddb702ff"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--format/--format",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/ocr/--format"
+      ],
+      "route_id": "route:entrypoint:pwmcp/ocr",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/ocr/--format",
+        "spelling": "--format"
+      },
+      "signature": "sha256:c2a6bbf5f897c06c67a08760ddf147f165137bb6e932ea66285775456d91a0e0"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--ignore-https-errors/--ignore-https-errors",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/ocr/--ignore-https-errors"
+      ],
+      "route_id": "route:entrypoint:pwmcp/ocr",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/ocr/--ignore-https-errors",
+        "spelling": "--ignore-https-errors"
+      },
+      "signature": "sha256:ae33d9ad4f1226213ffbec2921012f7affb06305fad35300b928e1517d2dea41"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--image/--image",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/ocr/--image"
+      ],
+      "route_id": "route:entrypoint:pwmcp/ocr",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/ocr/--image",
+        "spelling": "--image"
+      },
+      "signature": "sha256:a6466a847490ffd7c5d3422406b36c9b7e0bd467b42a615128b86ce4585f2de6"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/ocr/--json"
+      ],
+      "route_id": "route:entrypoint:pwmcp/ocr",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/ocr/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:e02b7b738f6397be5578bfea6b8ac7a50d0eb143ba650e5a16c3f5f37ca987fe"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--lang/--lang",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/ocr/--lang"
+      ],
+      "route_id": "route:entrypoint:pwmcp/ocr",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/ocr/--lang",
+        "spelling": "--lang"
+      },
+      "signature": "sha256:a25b3f6d8fe256f176cc995f393eeb19bc62fe9e374a0491e597c820f9abc59c"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--min-conf/--min-conf",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/ocr/--min-conf"
+      ],
+      "route_id": "route:entrypoint:pwmcp/ocr",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/ocr/--min-conf",
+        "spelling": "--min-conf"
+      },
+      "signature": "sha256:22f5e02ccca328b70d675fcbcad011d76027ac94563b7effd8c46ff5acffe323"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--output/--output",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/ocr/--output"
+      ],
+      "route_id": "route:entrypoint:pwmcp/ocr",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/ocr/--output",
+        "spelling": "--output"
+      },
+      "signature": "sha256:30b92532d20a1ebc5601a827a4d87d0366d5f13326092b4ca43a1779fb61d186"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--psm/--psm",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/ocr/--psm"
+      ],
+      "route_id": "route:entrypoint:pwmcp/ocr",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/ocr/--psm",
+        "spelling": "--psm"
+      },
+      "signature": "sha256:cbbfbd66cce4fd48a7fa41760a3a283576e22cd3ec176acb41aad3a48d980b13"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--region/--region",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/ocr/--region"
+      ],
+      "route_id": "route:entrypoint:pwmcp/ocr",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/ocr/--region",
+        "spelling": "--region"
+      },
+      "signature": "sha256:28704f316ef347952020818bf6df93d72fd56956b271b73c6b472784cb72dae4"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--scale/--scale",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/ocr/--scale"
+      ],
+      "route_id": "route:entrypoint:pwmcp/ocr",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/ocr/--scale",
+        "spelling": "--scale"
+      },
+      "signature": "sha256:b0cc53e1da14623b0e7e2b43160e6f8dccdff717c78981e43a518a450906b9ac"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--selector/--selector",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/ocr/--selector"
+      ],
+      "route_id": "route:entrypoint:pwmcp/ocr",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/ocr/--selector",
+        "spelling": "--selector"
+      },
+      "signature": "sha256:5146407ab056c45e018b8647d3313d105310ef5afee85da7a78a21c3eb7332f6"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--sidecar-url/--sidecar-url",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/ocr/--sidecar-url"
+      ],
+      "route_id": "route:entrypoint:pwmcp/ocr",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/ocr/--sidecar-url",
+        "spelling": "--sidecar-url"
+      },
+      "signature": "sha256:42686cf2bae8f66162d88c412995fb92ab8208a10df9e2873e9376859a2b2329"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--timeout-ms/--timeout-ms",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/ocr/--timeout-ms"
+      ],
+      "route_id": "route:entrypoint:pwmcp/ocr",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/ocr/--timeout-ms",
+        "spelling": "--timeout-ms"
+      },
+      "signature": "sha256:458833e379db9e55e5059138b957ca82b42878960ac171d97ff1568185586fef"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--wait-ms/--wait-ms",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/ocr/--wait-ms"
+      ],
+      "route_id": "route:entrypoint:pwmcp/ocr",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/ocr/--wait-ms",
+        "spelling": "--wait-ms"
+      },
+      "signature": "sha256:f0054a58b3c84172de78229d008cfebcfab9cd48d5b94783f908b2eba662a7c0"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--whitelist/--whitelist",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/ocr/--whitelist"
+      ],
+      "route_id": "route:entrypoint:pwmcp/ocr",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/ocr/--whitelist",
+        "spelling": "--whitelist"
+      },
+      "signature": "sha256:0cb7fa07b282e3b6a90297799fc914fce2dc83e097a082a9fe64dc3df4dc6e0a"
+    },
+    {
       "id": "case:route:entrypoint:pwmcp/skills/check/exclusive-conflict/target/option:route:entrypoint:pwmcp/skills/check/--dest/option:route:entrypoint:pwmcp/skills/check/--harness",
       "kind": "exclusive-conflict",
       "members": [
@@ -1833,6 +2230,746 @@
       "subcommands": [],
       "subcommands_required": false,
       "summary": "inspect a rendered webpage through the remote PWMCP browser",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--contract",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "pwmcp contract URL or JSON file",
+          "dest": "contract",
+          "effective_default": "http://pwmcp:3000/contract",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--contract"
+          ],
+          "help_group": "CONTRACT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/ocr/--contract",
+          "kind": "option",
+          "metavar": "URL_OR_FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": "http://pwmcp:3000/contract"
+          },
+          "parser_path": [
+            "ocr"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "page URL to open in the remote browser and capture an element from (needs --selector); omit when using --image",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:pwmcp/ocr/url",
+          "kind": "argument",
+          "metavar": "URL",
+          "minimum_values": 0,
+          "name": "url",
+          "nargs": "?",
+          "parser_kwargs": {
+            "default": null,
+            "nargs": "?"
+          },
+          "parser_path": [
+            "ocr"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--image",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "recognise this local PNG/JPEG file, or '-' for standard input (the usual path: save a screenshot with the MCP browser_take_screenshot tool, then OCR it)",
+          "dest": "image",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--image"
+          ],
+          "help_group": "INPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/ocr/--image",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "ocr"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--selector",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "CSS selector of the element (e.g. a console canvas) to capture from the page",
+          "dest": "selector",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--selector"
+          ],
+          "help_group": "INPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/ocr/--selector",
+          "kind": "option",
+          "metavar": "CSS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "ocr"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--region",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "capture only this rectangle of the element: x,y,w,h in pixels, relative to the element",
+          "dest": "region",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--region"
+          ],
+          "help_group": "INPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/ocr/--region",
+          "kind": "option",
+          "metavar": "x,y,w,h",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "ocr"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--wait-ms",
+          "choices": null,
+          "const": null,
+          "default": 0,
+          "default_present": true,
+          "description": "wait this long after the element is visible, before capturing it",
+          "dest": "wait_ms",
+          "effective_default": 0,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--wait-ms"
+          ],
+          "help_group": "WAIT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/ocr/--wait-ms",
+          "kind": "option",
+          "metavar": "MILLISECONDS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 0,
+            "type": {
+              "callable": "builtins.int"
+            }
+          },
+          "parser_path": [
+            "ocr"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--timeout-ms",
+          "choices": null,
+          "const": null,
+          "default": 30000,
+          "default_present": true,
+          "description": "navigation, capture and sidecar timeout in milliseconds",
+          "dest": "timeout_ms",
+          "effective_default": 30000,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--timeout-ms"
+          ],
+          "help_group": "WAIT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/ocr/--timeout-ms",
+          "kind": "option",
+          "metavar": "MILLISECONDS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 30000,
+            "type": {
+              "callable": "builtins.int"
+            }
+          },
+          "parser_path": [
+            "ocr"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--engine",
+          "choices": null,
+          "const": null,
+          "default": "tesseract",
+          "default_present": true,
+          "description": "recognition engine (the sidecar lists them at /v1/engines)",
+          "dest": "engine",
+          "effective_default": "tesseract",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--engine"
+          ],
+          "help_group": "RECOGNITION",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/ocr/--engine",
+          "kind": "option",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": "tesseract"
+          },
+          "parser_path": [
+            "ocr"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--lang",
+          "choices": null,
+          "const": null,
+          "default": "eng",
+          "default_present": true,
+          "description": "Tesseract language code(s), e.g. eng or eng+deu",
+          "dest": "lang",
+          "effective_default": "eng",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--lang"
+          ],
+          "help_group": "RECOGNITION",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/ocr/--lang",
+          "kind": "option",
+          "metavar": "LANG",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": "eng"
+          },
+          "parser_path": [
+            "ocr"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--psm",
+          "choices": [
+            3,
+            4,
+            6,
+            7,
+            11,
+            13
+          ],
+          "const": null,
+          "default": 6,
+          "default_present": true,
+          "description": "page segmentation mode: 3 auto, 4 columns, 6 uniform block (default; consoles), 7 single line, 11 sparse text, 13 raw line",
+          "dest": "psm",
+          "effective_default": 6,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--psm"
+          ],
+          "help_group": "RECOGNITION",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/ocr/--psm",
+          "kind": "option",
+          "metavar": "MODE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              3,
+              4,
+              6,
+              7,
+              11,
+              13
+            ],
+            "default": 6,
+            "type": {
+              "callable": "builtins.int"
+            }
+          },
+          "parser_path": [
+            "ocr"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--scale",
+          "choices": null,
+          "const": null,
+          "default": 1,
+          "default_present": true,
+          "description": "upscale the image by this integer factor before recognition (1-8); Tesseract wants glyphs of about 30 px or more; reported boxes stay in original pixels",
+          "dest": "scale",
+          "effective_default": 1,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--scale"
+          ],
+          "help_group": "RECOGNITION",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/ocr/--scale",
+          "kind": "option",
+          "metavar": "FACTOR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 1,
+            "type": {
+              "callable": "builtins.int"
+            }
+          },
+          "parser_path": [
+            "ocr"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--whitelist",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "only recognise these characters (printable ASCII, at most 128)",
+          "dest": "whitelist",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--whitelist"
+          ],
+          "help_group": "RECOGNITION",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/ocr/--whitelist",
+          "kind": "option",
+          "metavar": "CHARS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "ocr"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--min-conf",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "flag words whose confidence (0-100) is below N as low_conf; they are still returned, never removed. Without it nothing is assessed (low_conf is null, not false). Tesseract confidence is NOT calibrated: a 91 percent mean confidence read a garbled dialog and 10.0.2.15 as 16.0.2.15; a flag is a hint, never a safety check, and acting on text needs an EXACT match of a known screen signature",
+          "dest": "min_conf",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--min-conf"
+          ],
+          "help_group": "RECOGNITION",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/ocr/--min-conf",
+          "kind": "option",
+          "metavar": "CONF",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "builtins.float"
+            }
+          },
+          "parser_path": [
+            "ocr"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.float"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--sidecar-url",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "OCR sidecar base URL; default: $PWMCP_OCR_URL, else the ocr_url the pwmcp contract advertises (set ocr.enabled on the server)",
+          "dest": "sidecar_url",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--sidecar-url"
+          ],
+          "help_group": "SIDECAR",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/ocr/--sidecar-url",
+          "kind": "option",
+          "metavar": "URL",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "ocr"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--format",
+          "choices": [
+            "text",
+            "json",
+            "tsv"
+          ],
+          "const": null,
+          "default": "text",
+          "default_present": true,
+          "description": "text (the complete recognised text only), json (full result) or tsv (one row per word, with a low_conf column); --json implies json",
+          "dest": "format",
+          "effective_default": "text",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--format"
+          ],
+          "help_group": "OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/ocr/--format",
+          "kind": "option",
+          "metavar": "FORMAT",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "text",
+              "json",
+              "tsv"
+            ],
+            "default": "text"
+          },
+          "parser_path": [
+            "ocr"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--output",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "write the result to a file instead of stdout",
+          "dest": "output",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--output"
+          ],
+          "help_group": "OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/ocr/--output",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "ocr"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ignore-https-errors",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "accept invalid HTTPS certificates when opening the page (URL mode only)",
+          "dest": "ignore_https_errors",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--ignore-https-errors"
+          ],
+          "help_group": "TLS",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/ocr/--ignore-https-errors",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "ocr"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "recognise text in an image (a screenshot file, stdin, or a page element) through the OCR sidecar",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:pwmcp/ocr",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "ocr"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "ocr"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "recognise text in an image (a screenshot file, stdin, or a page element) through the OCR sidecar",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null

@@ -15,6 +15,7 @@ import urllib.request
 from pathlib import Path
 
 import pytest
+from _testdeps import optional_module, require_binary
 
 PWMCP_ROOT = Path(__file__).resolve().parents[1]
 CONTAINER = PWMCP_ROOT / "containers" / "pwmcp"
@@ -39,13 +40,13 @@ def _wrap(prefix: str, env: dict[str, str]) -> list[str]:
     return result.stdout.splitlines()
 
 
-@pytest.mark.skipif(SH is None, reason="sh is needed")
+@pytest.mark.usefixtures("require_sh")
 def test_wrapper_is_a_no_op_without_an_override() -> None:
     assert _wrap("--user-agent=", {}) == ["base-arg"]
     assert _wrap("--user-agent=", {"PWMCP_USER_AGENT_RESOLVED": ""}) == ["base-arg"]
 
 
-@pytest.mark.skipif(SH is None, reason="sh is needed")
+@pytest.mark.usefixtures("require_sh")
 def test_wrapper_appends_the_ua_as_one_argv_element() -> None:
     assert _wrap("--user-agent=", {"PWMCP_USER_AGENT_RESOLVED": EDGE}) == [
         "base-arg", f"--user-agent={EDGE}",
@@ -55,7 +56,7 @@ def test_wrapper_appends_the_ua_as_one_argv_element() -> None:
     ]
 
 
-@pytest.mark.skipif(SH is None, reason="sh is needed")
+@pytest.mark.usefixtures("require_sh")
 def test_wrapper_rejects_a_malformed_invocation() -> None:
     result = subprocess.run([SH or "sh", str(WRAPPER), "--user-agent=", "x"], capture_output=True, text=True)
     assert result.returncode == 2
@@ -92,12 +93,12 @@ def _gateway_contract(extra_env: dict[str, str]) -> dict[str, object]:
         process.wait(timeout=3)
 
 
-@pytest.mark.skipif(NODE is None, reason="Node.js is needed")
+@pytest.mark.usefixtures("require_node")
 def test_gateway_contract_publishes_the_default_when_unset() -> None:
     assert _gateway_contract({})["user_agent"] == {"value": None, "source": "default"}
 
 
-@pytest.mark.skipif(NODE is None, reason="Node.js is needed")
+@pytest.mark.usefixtures("require_node")
 def test_gateway_contract_publishes_the_active_override_and_its_source() -> None:
     contract = _gateway_contract({
         "PWMCP_USER_AGENT_RESOLVED": EDGE,
@@ -119,7 +120,7 @@ class _FakeCdpHttp(http.server.BaseHTTPRequestHandler):
         return None
 
 
-@pytest.mark.skipif(NODE is None, reason="Node.js is needed")
+@pytest.mark.usefixtures("require_node")
 @pytest.mark.parametrize(
     ("env", "expected"),
     [
@@ -155,7 +156,7 @@ def test_admin_health_reports_the_override(env: dict[str, str], expected: tuple[
     assert (health["userAgent"], health["userAgentSource"]) == expected
 
 
-@pytest.mark.skipif(NODE is None, reason="Node.js is needed")
+@pytest.mark.usefixtures("require_node")
 def test_ua_override_without_an_override_exits_cleanly_and_says_so() -> None:
     env = {k: v for k, v in os.environ.items() if not k.startswith("PWMCP_")}
     result = subprocess.run([NODE or "node", str(UA_OVERRIDE)], env=env, capture_output=True, text=True, timeout=10)
@@ -163,7 +164,7 @@ def test_ua_override_without_an_override_exits_cleanly_and_says_so() -> None:
     assert "no user-agent override configured" in result.stdout
 
 
-@pytest.mark.skipif(NODE is None, reason="Node.js is needed")
+@pytest.mark.usefixtures("require_node")
 def test_ua_override_builds_cdp_params_with_matching_metadata() -> None:
     script = (
         f"const {{buildParams}} = require({json.dumps(str(UA_OVERRIDE))});"
@@ -214,7 +215,7 @@ def _run_snippet(tmp_path: Path, user_agent: str | None, *, mode: str = "per-ses
     return result, marker, generated
 
 
-@pytest.mark.skipif(SH is None, reason="sh is needed")
+@pytest.mark.usefixtures("require_sh")
 @pytest.mark.parametrize("value", [None, "", "default"])
 def test_entrypoint_off_by_default_never_calls_python_and_keeps_the_config(tmp_path: Path, value: str | None) -> None:
     result, marker, generated = _run_snippet(tmp_path, value, mode="shared")
@@ -225,7 +226,7 @@ def test_entrypoint_off_by_default_never_calls_python_and_keeps_the_config(tmp_p
     assert "user agent: default (no override)" in result.stderr
 
 
-@pytest.mark.skipif(SH is None, reason="sh is needed")
+@pytest.mark.usefixtures("require_sh")
 def test_entrypoint_invalid_user_agent_is_fatal(tmp_path: Path) -> None:
     result, _marker, _generated = _run_snippet(tmp_path, "edge-window", real_python=True)
     assert result.returncode != 0
@@ -233,7 +234,7 @@ def test_entrypoint_invalid_user_agent_is_fatal(tmp_path: Path) -> None:
     assert "src=" not in result.stdout  # never got as far as exporting a value
 
 
-@pytest.mark.skipif(SH is None, reason="sh is needed")
+@pytest.mark.usefixtures("require_sh")
 def test_entrypoint_override_resolves_logs_and_adds_ua_override_only_in_shared_mode(tmp_path: Path) -> None:
     shared, _m, generated = _run_snippet(tmp_path / "a", "edge-windows", mode="shared", real_python=True)
     assert shared.returncode == 0, shared.stderr
@@ -253,9 +254,8 @@ def test_shipped_shared_config_has_no_ua_override_program_but_the_fragment_does(
 
 
 def test_ua_override_sends_metadata_for_existing_and_newly_attached_targets() -> None:
-    websockets = pytest.importorskip("websockets")
-    if NODE is None:
-        pytest.skip("Node.js is needed")
+    websockets = optional_module("websockets", "the websockets package is needed to drive the ua-override CDP client")
+    require_binary("node", "Node.js runs the ua-override program under test")
     import asyncio
 
     seen: list[dict[str, object]] = []

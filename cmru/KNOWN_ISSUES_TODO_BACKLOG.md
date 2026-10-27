@@ -2443,3 +2443,19 @@ credential pipe, exactly as with a secret-file token. This is hygiene, not a bou
 `GITHUB_PUSH_PAT` in `required_env`); projects whose other steps read it (for example `mdt-cockpit` and `modern-debian-tools-python-debug`
 `prepare`, whose resolver/stager use the paginated Releases API) must declare `required_env` first; stop handing credentials to `build` children
 unless a step needs them.
+
+
+### KI-97 - `mirror_package_visibility` hard-fails the release for a brand-new GHCR package that is not visible yet
+
+**Status:** OPEN (filed 2026-10-27 from the pwmcp OCR-sidecar release wiring review; nothing was run, this is read from `src/cmru/ghcr.py`).
+`GitHubPackages.mirror_package_visibility` retries the package lookup `retries=6` times, `delay=5` s apart (about 25 s), and then calls `_fail(...)`
+(`GHCR package <name> is not visible yet; cannot sync visibility`), which aborts the step. That is a HARD failure, unlike the non-fatal `[WARN]`
+the same function logs when the visibility API is unsupported (KI-01). It bites the FIRST push of a package that did not exist before: pwmcp
+now pushes a second image, `pwmcp-ocr`, in the same `build-push.py --push` step that syncs visibility for `GHCR_PACKAGE_NAMES=pwmcp,pwmcp-ocr`. A brand-new
+package can be absent from the packages API for longer than 25 s, or can be created private so the lookup is not authorised for the token, and the
+failure arrives AFTER both images were pushed and while the release transaction is mid-flight, where the only tempting recovery
+(`cmru release --resume` without `--set-version`) is the one that caused the mistaken v1.0.0 release of 2026-09-08.
+**Direction.** A package that cannot be found after the retries on a FIRST push should degrade to the same non-fatal `[WARN]` with the one-time UI
+remediation (set the package public once, link it to the repository), because the image push itself succeeded; make `retries`/`delay`
+configurable; and let a project distinguish "package must already exist" (hard) from "may be new" (warn). Until then pwmcp documents the manual
+recovery (re-run ONLY the visibility sync; see pwmcp/README.md "First release of the OCR image").

@@ -36,6 +36,9 @@ _REQUIRED_KEYS = (
     "MCP_PROXY_VERSION",
     "LIGHTHOUSE_VERSION",
     "PWMCP_VERSION",
+    # the OCR sidecar's digest-pinned Debian base (built by the same bake "all" group)
+    "DEBIAN_RELEASE",
+    "DEBIAN_IMAGE_DIGEST",
 )
 
 # Canonical locations relative to this file's position.
