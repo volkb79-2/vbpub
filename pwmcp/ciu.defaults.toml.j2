@@ -161,7 +161,9 @@ max_dim = 4096                    # max image width/height in pixels
 max_scaled_pixels = 24000000      # max width*height after --scale (24 MP), checked before resizing
 body_deadline_s = 10              # TOTAL time allowed to receive a request body (slow-client guard)
 timeout_s = 20                    # per-request recognition timeout
-# NARROWING caps only (the governance overlay owns cgroup_parent and the stack ceiling).
+# Author-set caps: they replace the governance overlay's per-service values (author-set keys win), so they
+# are chosen small and are NOT clamped by a lower stack ceiling; the overlay still supplies cgroup_parent.
+# The interaction with a live overlay is unverified (PWMCP-11).
 mem_limit = "512m"                # one tesseract run on a console frame is well under this; also the swap total
 cpus = "1.0"
 pids_limit = 128
@@ -172,7 +174,7 @@ run_as_gid = 1000
 registry = "ghcr.io"
 namespace = "volkb79-2"
 name = "pwmcp-ocr"
-tag = "1.64.0-r3"                 # SAME coordinate as [pwmcp.unified.image] tag; kept equal by the release resolver. NOTE: the OCR image exists from the NEXT release; 1.64.0-r3 has none (build locally until then, README)
+tag = "1.64.0-r3"                 # SAME coordinate as [pwmcp.unified.image] tag; kept equal by the release resolver. NOTE: this tag is rewritten at every release. 1.64.0-r3 shipped WITHOUT the OCR image; the first release made after the OCR wiring landed is the first to publish it (until then, build locally, README). From then on this default always names an existing image
 
 [pwmcp.hardening]
 # Applied in both internal and external modes.

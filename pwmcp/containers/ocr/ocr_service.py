@@ -92,7 +92,7 @@ class ServiceError(Exception):
 @dataclass(frozen=True)
 class Word:
     text: str
-    conf: float
+    conf: float | None  # None: the engine returned the word without a confidence ("unscored")
     box: tuple[int, int, int, int]  # x, y, w, h in the pixels of the image the engine was given
     line: tuple[int, ...]  # engine-defined line identity; words sharing it are one line
 
@@ -104,7 +104,7 @@ class Params:
     psm: int = 6
     scale: int = 1
     whitelist: str | None = None
-    min_conf: float = 0.0  # words BELOW this are flagged low_conf (never silently removed)
+    min_conf: float | None = None  # None = no threshold given: nothing is flagged, and nothing is claimed
     drop_low_conf: bool = False  # opt-in: really remove the flagged words from the result
 
 
@@ -146,9 +146,10 @@ class UnavailableEngine:
 def parse_tsv(tsv: str) -> list[Word]:
     """Parse Tesseract TSV (level, page, block, par, line, word, left, top, width, height, conf, text).
 
-    Only word rows (level 5) with non-empty text and a non-negative confidence are kept: the
-    layout rows (levels 1-4) and ``-1`` confidences carry no recognised text. Empty output is
-    simply an empty list.
+    Only word rows (level 5) with non-empty text are kept (the layout rows, levels 1-4, carry no
+    text). A word row whose confidence is negative (``-1``) is kept as an UNSCORED word with
+    ``conf=None`` rather than dropped: a recognised token must never vanish from the result.
+    Empty output is simply an empty list.
     """
 
     words: list[Word] = []
@@ -167,9 +168,9 @@ def parse_tsv(tsv: str) -> list[Word]:
         except ValueError:
             continue
         text = cols[11].strip(" \t\r")
-        if not text or conf < 0:
+        if not text:
             continue
-        words.append(Word(text, conf, (x, y, w, h), (block, par, line)))
+        words.append(Word(text, conf if conf >= 0 else None, (x, y, w, h), (block, par, line)))
     return words
 
 
@@ -298,17 +299,20 @@ def parse_params(query: str, registry: dict[str, Engine]) -> Params:
                 400, "invalid_whitelist", f"whitelist must be 1-{MAX_WHITELIST} printable ASCII characters"
             )
 
-    min_raw = got.get("min_conf", "0")
-    try:
-        min_conf = float(min_raw)
-    except ValueError:
-        min_conf = float("nan")
-    if not (0 <= min_conf <= 100):
-        raise ServiceError(400, "invalid_min_conf", "min_conf must be a number from 0 to 100")
+    min_conf: float | None = None
+    if "min_conf" in got:
+        try:
+            min_conf = float(got["min_conf"])
+        except ValueError:
+            min_conf = float("nan")
+        if not (0 <= min_conf <= 100):
+            raise ServiceError(400, "invalid_min_conf", "min_conf must be a number from 0 to 100")
 
     drop_raw = got.get("drop_low_conf", "0")
     if drop_raw not in ("0", "1"):
         raise ServiceError(400, "invalid_drop_low_conf", "drop_low_conf must be 0 or 1")
+    if drop_raw == "1" and min_conf is None:
+        raise ServiceError(400, "drop_needs_min_conf", "drop_low_conf=1 needs a min_conf threshold to drop below")
 
     return Params(engine, lang, int(psm_raw), int(scale_f), whitelist, min_conf, drop_raw == "1")
 
@@ -382,6 +386,9 @@ def build_response(
     The result is COMPLETE: every recognised word is returned whatever its confidence.
     ``min_conf`` only FLAGS words below it (``low_conf``); a caller that really wants them
     removed must ask with ``drop_low_conf=1`` (and is told how many were dropped).
+    WITHOUT a ``min_conf`` nothing was assessed: ``low_conf``, ``low_conf_words`` and
+    ``min_conf_applied`` are null (not false/0, which would read as "confident").
+    Tesseract confidence is NOT calibrated: a flag is a hint, an unflagged word is not verified.
     """
 
     def unscale(box: tuple[int, int, int, int]) -> list[int]:
@@ -393,10 +400,16 @@ def build_response(
         x1, y1 = -(-(x + w) // s), -(-(y + h) // s)
         return [x0, y0, x1 - x0 if w > 0 else 0, y1 - y0 if h > 0 else 0]
 
-    def flagged(word: Word) -> bool:
-        return word.conf < params.min_conf
+    threshold = params.min_conf
 
-    total_flagged = sum(1 for w in words if flagged(w))
+    def flagged(word: Word) -> bool | None:
+        # No threshold: None ("not assessed"), never False, which would read as "confident".
+        # An unscored word cannot be vouched for, so with a threshold it counts as flagged.
+        if threshold is None:
+            return None
+        return word.conf is None or word.conf < threshold
+
+    total_flagged = None if threshold is None else sum(1 for w in words if flagged(w))
     kept = [w for w in words if not flagged(w)] if params.drop_low_conf else list(words)
     order: dict[tuple[int, ...], int] = {}
     members: list[list[Word]] = []
@@ -412,13 +425,14 @@ def build_response(
         y0 = min(w.box[1] for w in group)
         x1 = max(w.box[0] + w.box[2] for w in group)
         y1 = max(w.box[1] + w.box[3] for w in group)
-        mean = round(sum(w.conf for w in group) / len(group), 2)
+        scored = [w.conf for w in group if w.conf is not None]
+        mean = round(sum(scored) / len(scored), 2) if scored else None
         lines.append({
             "text": " ".join(w.text for w in group),
             "conf": mean,  # compatibility alias of conf_mean
             "conf_mean": mean,
-            "conf_min": min(w.conf for w in group),
-            "low_conf_words": sum(1 for w in group if flagged(w)),
+            "conf_min": min(scored) if scored else None,
+            "low_conf_words": None if threshold is None else sum(1 for w in group if flagged(w)),
             "box": unscale((x0, y0, x1 - x0, y1 - y0)),
         })
     out_words = [
@@ -436,8 +450,9 @@ def build_response(
         "text": "\n".join(str(line["text"]) for line in lines),
         "lines": lines,
         "words": out_words,
-        "min_conf_applied": params.min_conf,
+        "min_conf_applied": threshold,
         "low_conf_words": total_flagged,
+        "unscored_words": sum(1 for w in words if w.conf is None),
         "drop_low_conf": params.drop_low_conf,
         "dropped_words": len(words) - len(kept),
     }
@@ -598,6 +613,13 @@ def make_handler(service: Service) -> type[BaseHTTPRequestHandler]:
                     if known else ServiceError(404, "not_found", "no such endpoint")
                 )
                 return
+            # Parameters are validated BEFORE the slot is taken and the body is read: a request that
+            # will be rejected must not hold the recognition slot while its body trickles in.
+            try:
+                parse_params(parts.query, service.registry)
+            except ServiceError as err:
+                self._error(err)
+                return
             # One recognition at a time: take the slot BEFORE reading the body so at most one
             # (size-limited) body is ever held in memory; a concurrent caller is told to retry.
             if not service.busy.acquire(blocking=False):
@@ -714,7 +736,6 @@ def make_server(config: Config, registry: dict[str, Engine] | None = None) -> Th
 def main() -> int:
     config = Config.from_env()
     server = make_server(config)
-    print(f"[pwmcp-ocr] listening on {config.host}:{server.server_address[1]}", flush=True)
 
     def stop(_signum: int, _frame: object) -> None:
         # shutdown() blocks until serve_forever() returns, so it must not run on the thread
@@ -723,6 +744,8 @@ def main() -> int:
 
     # As PID 1 a default SIGTERM disposition is ignored by the kernel; install handlers.
     previous = {sig: signal.signal(sig, stop) for sig in (signal.SIGTERM, signal.SIGINT)}
+    # Announce readiness only AFTER the handlers are installed: whoever waits for this line may signal at once.
+    print(f"[pwmcp-ocr] listening on {config.host}:{server.server_address[1]}", flush=True)
     try:
         server.serve_forever()
     finally:

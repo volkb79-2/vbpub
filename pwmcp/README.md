@@ -398,16 +398,23 @@ Query parameters of `POST /v1/ocr` (unknown or repeated ones are a 400): `engine
 consoles, 7, 11, 13), `scale` (integer 1-8, default 1; upscales before recognition because
 Tesseract wants glyphs of roughly 30 px or more; boxes are reported in ORIGINAL pixels),
 `whitelist` (printable ASCII, at most 128 characters, passed as one argv element, never
-through a shell), `min_conf` (0-100, default 0: words BELOW it are flagged, never removed) and
-`drop_low_conf` (`0`/`1`, default 0: the explicit opt-in to really remove the flagged words). The response:
+through a shell), `min_conf` (0-100, NO default: words BELOW it are flagged, never removed) and
+`drop_low_conf` (`0`/`1`, default 0, needs `min_conf`: the explicit opt-in to really remove the flagged
+words). The response:
 
 ```json
 {"engine":"tesseract","engine_version":"5.x","lang":"eng","psm":6,"width":1280,"height":800,
  "elapsed_ms":210,"text":"...",
- "lines":[{"text":"...","conf":93.1,"conf_mean":93.1,"conf_min":88.0,"low_conf_words":0,"box":[x,y,w,h]}],
- "words":[{"text":"...","conf":95.0,"box":[x,y,w,h],"line":0,"low_conf":false}],
- "min_conf_applied":0.0,"low_conf_words":0,"drop_low_conf":false,"dropped_words":0}
+ "lines":[{"text":"...","conf":93.1,"conf_mean":93.1,"conf_min":88.0,"low_conf_words":null,"box":[x,y,w,h]}],
+ "words":[{"text":"...","conf":95.0,"box":[x,y,w,h],"line":0,"low_conf":null}],
+ "min_conf_applied":null,"low_conf_words":null,"unscored_words":0,"drop_low_conf":false,"dropped_words":0}
 ```
+
+> **Confidence is NOT calibrated: do not treat "unflagged" or "high" as "correct".** Tesseract read a garbled
+> TrueNAS installer dialog at a mean confidence of 91%, and misread digits (`10.0.2.15` as `16.0.2.15`,
+> `9)` as `3)`). `low_conf` is a hint, never a safety check. Missing or fuzzy-matched text means UNKNOWN.
+> Anything that will later trigger a keystroke needs an EXACT match of a known screen signature (or the
+> glyph-grid engine, phase 2), never merely "unflagged". Without `min_conf` nothing is assessed at all.
 
 **The result is complete; doubt is flagged, not deleted.** `text`, `lines[].text` and `words[]` always
 contain every recognised word whatever its confidence. `min_conf` only sets the threshold: words below it
@@ -415,7 +422,12 @@ get `low_conf: true`, each line reports `conf_mean` (unweighted; `conf` is an al
 compatibility), `conf_min` (the weakest word, so a high mean cannot hide a doubtful token such as the
 `[y/N]` of `Continue? [y/N]`) and `low_conf_words`, and the top level reports `low_conf_words` (total),
 `min_conf_applied`, `drop_low_conf` and `dropped_words`. Callers that match on this text (phases 2 and 3
-will) must look at the flags. `pwmcp ocr --min-conf N` prints a warning when any word is flagged.
+will) must look at the flags. WITHOUT a `min_conf` nothing was assessed, so `low_conf`, per-line `low_conf_words`, the top-level
+`low_conf_words` and `min_conf_applied` are JSON `null` (not `false`/`0`, which would read as "confident").
+A word the engine returned without any confidence (`unscored_words` counts them) has `conf: null`, is kept,
+and counts as flagged once a threshold is given. `pwmcp ocr --min-conf N` prints a warning when any word is
+flagged, and when the sidecar predates this contract (it may then have dropped words silently:
+`completeness_unknown` in the library result).
 
 Errors are `{"error":"...","code":"..."}` with a 4xx/5xx status and never echo image bytes:
 400 bad parameters, 411 no `Content-Length`, 413 body or image too large, 415 not a decodable
@@ -595,7 +607,13 @@ optional OCR sidecar `ghcr.io/volkb79-2/pwmcp-ocr:<tag>` (and their `latest`) wi
 built with that release. The sidecar's `debian:trixie-slim` base is pinned by manifest digest like the
 Playwright base: `--refresh` re-resolves it and `--check` refuses a tag-only or inconsistent pin.
 `pwmcp.contract.json` carries no image coordinates and is unchanged. Not yet exercised by a real release
-(see `KNOWN_ISSUES_TODO_BACKLOG.md` PWMCP-11). The order is fixed: `pwmcp` first, then `pwmcp-ocr`.
+(see `KNOWN_ISSUES_TODO_BACKLOG.md` PWMCP-11). `bake all --push` builds and pushes the two targets CONCURRENTLY, so no order is guaranteed. A PARTIAL push
+looks like this: one image (and its `latest`) is in GHCR and the other is missing or stale, the step fails
+and no GitHub release or git tag has been made yet. Recovery: fix the cause (token scope, network, builder)
+and re-run the push step of the SAME prepared transaction; pushing is idempotent for identical content. Do
+not publish the bundle until `docker buildx imagetools inspect` shows BOTH `pwmcp:<tag>` and
+`pwmcp-ocr:<tag>`; if a half-pushed tag must be abandoned, the operator deletes the stray package version
+in the GHCR UI. (A version-bump release cut by mistake is the recovery that went wrong on 2026-09-08.)
 
 **First release of the OCR image: checklist.** The first push creates a GHCR package that has never existed.
 1. *Before the release:* confirm the base digest is current with

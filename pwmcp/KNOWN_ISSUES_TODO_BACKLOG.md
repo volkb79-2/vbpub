@@ -360,6 +360,23 @@ built, pushed or run through cmru/ciu/docker/the gate, so this stays UNVERIFIED 
 `min_conf_applied`) and never deletes them; removal is the explicit `drop_low_conf=1` opt-in. Phases 2-3 match
 on this text and send keystrokes, so doubt must stay visible.
 
+**Phase 2-3 hazards / required inputs** (from the Opus review and the TrueNAS capture; that corpus is on another
+branch, to be merged after this one):
+- (a) `text` joins a line's words with single spaces, so the console's column layout is lost. Phase 2 needs a
+  grid/rows output for console frames (a fixed 160x50 character grid at 1280x800), not free text.
+- (b) `_capture_element` captures at CSS size, which RESAMPLES the exact 8x16 px cell grid. Phase 2 must capture
+  the canvas's intrinsic bitmap (and verify the size), not a displayed-size screenshot.
+- (c) Tesseract reads light-on-black console text at 92-100% but FAILS black-on-grey installer dialogs (needs
+  colour-aware preprocessing: invert/threshold) and mis-reads digits (`10.0.2.15` -> `16.0.2.15`, `9)` -> `3)`).
+  Exact values need glyph matching: the console is an exact 8x16 px cell grid.
+- (d) Confidence is NOT calibrated: a garbled dialog read at 91% mean confidence. `low_conf` is a hint; an
+  unflagged word is not verified; without `min_conf` the flags are null. Keystrokes need an EXACT match of a
+  known screen signature or the glyph-grid engine, never "unflagged".
+- (e) UNMEASURED: whether the 512m limit holds for 24 MP scaled images, and the R2 mutation runtime on the newly
+  judged files (about 380 mutation sites); expect the r2 lane budget of 4h to matter.
+- The container `mem_limit`/`cpus`/`pids_limit` keys are author-set and replace (are not clamped by) the ciu
+  governance overlay's per-service value (author-set keys win): their interaction with a live overlay is UNVERIFIED.
+
 **First release of the OCR image: checklist** (also in README "Release Model"): confirm the base digest with
 `docker buildx imagetools inspect debian:trixie-slim` (and `--refresh` if it differs); a transaction prepared
 before the new `cmru.vars` keys fails closed; confirm the token has `write:packages` for a new package

@@ -28,13 +28,16 @@ CANNED = {
     "engine": "tesseract", "engine_version": "5.3.4", "lang": "eng", "psm": 6, "width": 640, "height": 400,
     "elapsed_ms": 12, "text": "Debian GNU/Linux installer\nInstall",
     "lines": [{"text": "Debian GNU/Linux installer", "conf": 93.5, "conf_mean": 93.5, "conf_min": 91.0,
-               "low_conf_words": 0, "box": [8, 8, 300, 16]},
-              {"text": "Install", "conf": 90.0, "conf_mean": 90.0, "conf_min": 90.0, "low_conf_words": 0,
+               "low_conf_words": None, "box": [8, 8, 300, 16]},
+              {"text": "Install", "conf": 90.0, "conf_mean": 90.0, "conf_min": 90.0, "low_conf_words": None,
                "box": [8, 40, 60, 16]}],
-    "words": [{"text": "Debian", "conf": 95.0, "box": [8, 8, 60, 16], "line": 0, "low_conf": False},
-              {"text": "Install", "conf": 90.0, "box": [8, 40, 60, 16], "line": 1, "low_conf": False}],
-    "low_conf_words": 0, "min_conf_applied": 0.0, "drop_low_conf": False, "dropped_words": 0,
+    "words": [{"text": "Debian", "conf": 95.0, "box": [8, 8, 60, 16], "line": 0, "low_conf": None},
+              {"text": "Install", "conf": 90.0, "box": [8, 40, 60, 16], "line": 1, "low_conf": None}],
+    # no min_conf was given: nothing was assessed, so these are null (not false/0)
+    "low_conf_words": None, "min_conf_applied": None, "drop_low_conf": False, "dropped_words": 0,
+    "unscored_words": 0,
 }
+CANNED_DICT = {**CANNED, "completeness_unknown": False}  # what OcrResult.to_dict() adds
 # What a sidecar from before the low_conf contract answered: still understood (defaults fill in).
 OLD_SHAPE = {
     "engine": "tesseract", "engine_version": "5.3.4", "lang": "eng", "psm": 6, "width": 640, "height": 400,
@@ -127,16 +130,17 @@ def test_recognize_parses_the_result(sidecar: Sidecar) -> None:
     assert (result.engine, result.engine_version, result.lang, result.psm) == ("tesseract", "5.3.4", "eng", 6)
     assert (result.width, result.height, result.elapsed_ms) == (640, 400, 12)
     assert result.text.splitlines()[0] == "Debian GNU/Linux installer"
-    assert result.lines[0] == ocr.OcrLine("Debian GNU/Linux installer", 93.5, (8, 8, 300, 16), conf_mean=93.5, conf_min=91.0, low_conf_words=0)
-    assert result.words[1] == ocr.OcrWord("Install", 90.0, (8, 40, 60, 16), 1)
+    assert result.lines[0] == ocr.OcrLine("Debian GNU/Linux installer", 93.5, (8, 8, 300, 16), conf_mean=93.5, conf_min=91.0, low_conf_words=None)
+    assert result.words[1] == ocr.OcrWord("Install", 90.0, (8, 40, 60, 16), 1, None)
+    assert (result.low_conf_words, result.min_conf_applied, result.completeness_unknown) == (None, None, False)
 
 
 def test_recognize_sends_defaults_and_the_image_untouched(sidecar: Sidecar) -> None:
     ocr.recognize(PNG, sidecar_url=sidecar.url + "/")
     (request,) = sidecar.requests
     assert request["path"] == "/v1/ocr" and request["body"] == PNG and request["content_type"] == "image/png"
-    assert request["query"] == {"engine": ["tesseract"], "lang": ["eng"], "psm": ["6"], "scale": ["1"],
-                                "min_conf": ["0"]}
+    # no min_conf unless one was asked for: the sidecar must not be told to assess against an invented threshold
+    assert request["query"] == {"engine": ["tesseract"], "lang": ["eng"], "psm": ["6"], "scale": ["1"]}
 
 
 def test_recognize_sends_every_option(sidecar: Sidecar) -> None:
@@ -230,10 +234,10 @@ def test_malformed_success_responses_are_bad_response(sidecar: Sidecar, payload:
 
 def test_result_round_trips_to_dict_and_tsv() -> None:
     result = ocr.OcrResult.from_dict(CANNED)
-    assert result.to_dict() == CANNED
-    assert json.loads(json.dumps(result.to_dict())) == CANNED
+    assert result.to_dict() == CANNED_DICT
+    assert json.loads(json.dumps(result.to_dict())) == CANNED_DICT
     assert result.to_tsv().splitlines() == [
-        "line\tx\ty\tw\th\tconf\tlow_conf\ttext", "0\t8\t8\t60\t16\t95\t0\tDebian", "1\t8\t40\t60\t16\t90\t0\tInstall"]
+        "line\tx\ty\tw\th\tconf\tlow_conf\ttext", "0\t8\t8\t60\t16\t95\t\tDebian", "1\t8\t40\t60\t16\t90\t\tInstall"]  # empty low_conf: not assessed
     # a missing engine_version is allowed (an unavailable engine reports none)
     assert ocr.OcrResult.from_dict({**CANNED, "engine_version": None}).engine_version is None
 
@@ -241,8 +245,10 @@ def test_result_round_trips_to_dict_and_tsv() -> None:
 def test_an_older_sidecar_without_the_low_conf_fields_is_still_understood() -> None:
     result = ocr.OcrResult.from_dict(OLD_SHAPE)
     assert result.lines[0].conf_mean == result.lines[0].conf == result.lines[0].conf_min == 90.0
-    assert result.lines[0].low_conf_words == 0 and result.words[0].low_conf is False
-    assert (result.low_conf_words, result.min_conf_applied, result.drop_low_conf, result.dropped_words) == (0, 0.0, False, 0)
+    assert result.lines[0].low_conf_words is None and result.words[0].low_conf is None
+    assert (result.low_conf_words, result.min_conf_applied, result.drop_low_conf, result.dropped_words) == (None, None, False, 0)
+    # ... but it is marked: such a sidecar may have silently DROPPED words below a min_conf
+    assert result.completeness_unknown is True
 
 
 def test_low_confidence_words_are_flagged_in_the_result_and_the_tsv() -> None:
@@ -261,7 +267,7 @@ def test_low_confidence_words_are_flagged_in_the_result_and_the_tsv() -> None:
 def test_tsv_neutralises_whitespace_inside_words() -> None:
     odd = {**CANNED, "words": [{"text": "a\tb\nc", "conf": 80.5, "box": [1, 2, 3, 4], "line": 0}]}
     row = ocr.OcrResult.from_dict(odd).to_tsv().splitlines()[1]
-    assert row == "0\t1\t2\t3\t4\t80.5\t0\ta b c"
+    assert row == "0\t1\t2\t3\t4\t80.5\t\ta b c"
 
 
 # ------------------------------------------------------------------ review follow-up
@@ -546,6 +552,61 @@ def test_https_urls_use_the_tls_connection_class(monkeypatch: pytest.MonkeyPatch
     assert used == [("sidecar.example", 8443)] and caught.value.code == "unreachable"
 
 
+# ------------------------------------------------------------------ review round 4
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["http://host:99999", "http://host:abc", "http://host:-1", "http://host/a b", "http://host/a\tb",
+     "http://host/a\x00b", "http://host/base?x=1", "http://host/base#frag", "http://host/base?", "http://host:70000/x"],
+)
+def test_malformed_sidecar_urls_are_an_ocr_error_not_a_stray_exception(url: str) -> None:
+    with pytest.raises(ocr.OcrError) as caught:
+        ocr.resolve_sidecar_url(url)
+    assert caught.value.code == "bad_url"
+    with pytest.raises(ocr.OcrError):
+        ocr.recognize(PNG, sidecar_url=url)
+
+
+def test_a_bad_sidecar_url_through_the_cli_exits_2(work: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert run("ocr", "--image", "screen.png", "--sidecar-url", "http://host:99999/x?token=secret") == 2
+    err = capsys.readouterr().err
+    assert "Traceback" not in err and "secret" not in err and "token" not in err
+
+
+def test_a_valid_sidecar_url_with_a_port_and_path_still_works(sidecar: Sidecar) -> None:
+    assert ocr.resolve_sidecar_url("http://host:8941/base/") == "http://host:8941/base"
+    assert ocr.resolve_sidecar_url("http://[::1]:8941") == "http://[::1]:8941"
+
+
+def test_a_sidecar_that_predates_the_contract_is_flagged_incomplete_and_the_cli_warns(
+    work: Path, sidecar: Sidecar, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sidecar.reply = (200, json.dumps(OLD_SHAPE).encode())
+    assert ocr.recognize(PNG, sidecar_url=sidecar.url, min_conf=50).completeness_unknown is True
+    assert run("ocr", "--image", "screen.png", "--sidecar-url", sidecar.url, "--min-conf", "50") == 0
+    assert "predates the low_conf contract" in capsys.readouterr().err
+    assert run("ocr", "--image", "screen.png", "--sidecar-url", sidecar.url) == 0  # no threshold asked: nothing to warn about
+    assert capsys.readouterr().err == ""
+
+
+def test_an_unscored_word_round_trips_as_null() -> None:
+    value = {**CANNED, "unscored_words": 1,
+             "words": [{"text": "TRUE", "conf": None, "box": [0, 0, 5, 5], "line": 0, "low_conf": True}],
+             "lines": [{"text": "TRUE", "conf": None, "conf_mean": None, "conf_min": None, "low_conf_words": 1,
+                        "box": [0, 0, 5, 5]}]}
+    result = ocr.OcrResult.from_dict(value)
+    assert result.words[0].conf is None and result.lines[0].conf_mean is None and result.unscored_words == 1
+    assert result.to_tsv().splitlines()[1] == "0\t0\t0\t5\t5\t\t1\tTRUE"  # empty conf, flagged 1
+
+
+def test_cli_min_conf_is_only_sent_when_given(work: Path, sidecar: Sidecar) -> None:
+    assert run("ocr", "--image", "screen.png", "--sidecar-url", sidecar.url) == 0
+    assert "min_conf" not in sidecar.requests[0]["query"]
+    assert run("ocr", "--image", "screen.png", "--sidecar-url", sidecar.url, "--min-conf", "0") == 0
+    assert sidecar.requests[1]["query"]["min_conf"] == ["0"]  # an explicit 0 IS a threshold
+
+
 # ------------------------------------------------------------------ CLI (--image)
 
 
@@ -590,7 +651,7 @@ def test_cli_empty_stdin_and_empty_or_missing_file(work: Path, sidecar: Sidecar,
 
 def test_cli_global_json_prints_the_full_result(work: Path, sidecar: Sidecar, capsys: pytest.CaptureFixture[str]) -> None:
     assert run("ocr", "--image", "screen.png", "--sidecar-url", sidecar.url, "--json") == 0
-    assert json.loads(capsys.readouterr().out) == CANNED
+    assert json.loads(capsys.readouterr().out) == CANNED_DICT
 
 
 def test_cli_format_json_works_without_the_global_flag(work: Path, sidecar: Sidecar,
@@ -601,7 +662,7 @@ def test_cli_format_json_works_without_the_global_flag(work: Path, sidecar: Side
 
 def test_cli_tsv(work: Path, sidecar: Sidecar, capsys: pytest.CaptureFixture[str]) -> None:
     assert run("ocr", "--image", "screen.png", "--sidecar-url", sidecar.url, "--format", "tsv") == 0
-    assert capsys.readouterr().out.splitlines()[1] == "0\t8\t8\t60\t16\t95\t0\tDebian"
+    assert capsys.readouterr().out.splitlines()[1] == "0\t8\t8\t60\t16\t95\t\tDebian"
 
 
 def test_cli_json_and_tsv_contradict(work: Path, sidecar: Sidecar, capsys: pytest.CaptureFixture[str]) -> None:
@@ -611,7 +672,7 @@ def test_cli_json_and_tsv_contradict(work: Path, sidecar: Sidecar, capsys: pytes
 
 def test_cli_output_file_in_each_format(work: Path, sidecar: Sidecar, capsys: pytest.CaptureFixture[str]) -> None:
     for fmt, check in (("text", lambda t: t == "Debian GNU/Linux installer\nInstall\n"),
-                       ("json", lambda t: json.loads(t) == CANNED),
+                       ("json", lambda t: json.loads(t) == CANNED_DICT),
                        ("tsv", lambda t: t.startswith("line\tx"))):
         assert run("ocr", "--image", "screen.png", "--sidecar-url", sidecar.url, "--format", fmt,
                    "--output", f"out.{fmt}") == 0

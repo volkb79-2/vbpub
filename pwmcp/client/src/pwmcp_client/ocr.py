@@ -5,6 +5,14 @@ confidence (0-100) and boxes (pixels of the ORIGINAL image). It returns TEXT AND
 never a decision: callers decide what a screen means. The result is COMPLETE: every recognised
 word is present whatever its confidence; ``min_conf`` only FLAGS words below it (``low_conf``)
 unless the caller explicitly asks for ``drop_low_conf``. Standard library only (http.client).
+
+READ THIS BEFORE ACTING ON A RESULT. Tesseract confidence is NOT calibrated: a high confidence does
+not mean the text is right (a garbled TrueNAS dialog was read at a mean confidence of 91%, and
+digits were misread: 10.0.2.15 as 16.0.2.15, 9) as 3)). ``low_conf`` is a hint, never a safety
+check. Without a ``min_conf`` nothing was assessed: ``low_conf`` / ``low_conf_words`` /
+``min_conf_applied`` are ``None`` (NOT False/0, which would read as "confident"). Missing or
+fuzzy-matched text means UNKNOWN. Anything that will trigger a keystroke later needs an EXACT match
+of a known screen signature (or the glyph-grid engine), never merely "unflagged".
 """
 
 from __future__ import annotations
@@ -12,6 +20,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import re
 import urllib.parse
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -45,20 +54,20 @@ class OcrNotConfigured(OcrError):
 @dataclass(frozen=True)
 class OcrWord:
     text: str
-    conf: float
+    conf: float | None  # None: returned by the engine without a confidence ("unscored")
     box: tuple[int, int, int, int]  # x, y, w, h
     line: int
-    low_conf: bool = False  # conf is below the requested min_conf (the word is still returned)
+    low_conf: bool | None = None  # below the requested min_conf; None = no threshold was given (not assessed)
 
 
 @dataclass(frozen=True)
 class OcrLine:
     text: str
-    conf: float  # alias of conf_mean (kept for compatibility)
+    conf: float | None  # alias of conf_mean (kept for compatibility)
     box: tuple[int, int, int, int]
-    conf_mean: float = 0.0
-    conf_min: float = 0.0  # the weakest word on the line: a high mean can hide a doubtful token
-    low_conf_words: int = 0
+    conf_mean: float | None = None
+    conf_min: float | None = None  # the weakest word on the line: a high mean can hide a doubtful token
+    low_conf_words: int | None = None  # None = no threshold was given
 
 
 @dataclass(frozen=True)
@@ -73,10 +82,14 @@ class OcrResult:
     text: str
     lines: tuple[OcrLine, ...]
     words: tuple[OcrWord, ...]
-    low_conf_words: int = 0  # words below min_conf over the whole frame
-    min_conf_applied: float = 0.0
+    low_conf_words: int | None = None  # words below min_conf over the whole frame; None = no threshold given
+    min_conf_applied: float | None = None
     drop_low_conf: bool = False
     dropped_words: int = 0
+    unscored_words: int = 0  # words the engine returned without any confidence (kept, counted)
+    # True when the sidecar predates the completeness contract (its answer lacks ``min_conf_applied``):
+    # it may have silently DROPPED words below a min_conf, so the result cannot be called complete.
+    completeness_unknown: bool = False
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "OcrResult":
@@ -92,14 +105,16 @@ class OcrResult:
                 text=str(value["text"]),
                 lines=tuple(_line(row) for row in value["lines"]),
                 words=tuple(
-                    OcrWord(str(row["text"]), float(row["conf"]), _box(row["box"]), int(row["line"]),
-                            bool(row.get("low_conf", False)))
+                    OcrWord(str(row["text"]), _opt(row["conf"], float), _box(row["box"]), int(row["line"]),
+                            _opt(row.get("low_conf"), bool))
                     for row in value["words"]
                 ),
-                low_conf_words=int(value.get("low_conf_words", 0)),
-                min_conf_applied=float(value.get("min_conf_applied", 0.0)),
+                low_conf_words=_opt(value.get("low_conf_words"), int),
+                min_conf_applied=_opt(value.get("min_conf_applied"), float),
                 drop_low_conf=bool(value.get("drop_low_conf", False)),
                 dropped_words=int(value.get("dropped_words", 0)),
+                unscored_words=int(value.get("unscored_words", 0)),
+                completeness_unknown="min_conf_applied" not in value,
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise OcrError(f"the OCR sidecar returned an unexpected response ({type(exc).__name__}: {exc})",
@@ -114,13 +129,23 @@ class OcrResult:
         return data
 
     def to_tsv(self) -> str:
-        """Tab-separated words: ``line x y w h conf low_conf text`` (low_conf 1/0) with a header row."""
+        """Tab-separated words: ``line x y w h conf low_conf text`` with a header row.
+
+        ``low_conf`` is 1/0, or EMPTY when no min_conf threshold was given (not assessed, not "0");
+        ``conf`` is empty for an unscored word.
+        """
 
         rows = ["line\tx\ty\tw\th\tconf\tlow_conf\ttext"]
         for word in self.words:
             text = " ".join(word.text.split())
-            rows.append("\t".join(map(str, (word.line, *word.box, f"{word.conf:g}", int(word.low_conf), text))))
+            conf = "" if word.conf is None else f"{word.conf:g}"
+            flag = "" if word.low_conf is None else str(int(word.low_conf))  # empty = not assessed
+            rows.append("\t".join(map(str, (word.line, *word.box, conf, flag, text))))
         return "\n".join(rows)
+
+
+def _opt(value: Any, kind: Any) -> Any:
+    return None if value is None else kind(value)
 
 
 def _box(value: Any) -> tuple[int, int, int, int]:
@@ -129,12 +154,12 @@ def _box(value: Any) -> tuple[int, int, int, int]:
 
 
 def _line(row: dict[str, Any]) -> OcrLine:
-    conf = float(row["conf"])
+    conf = _opt(row["conf"], float)
     return OcrLine(
         str(row["text"]), conf, _box(row["box"]),
-        conf_mean=float(row.get("conf_mean", conf)),
-        conf_min=float(row.get("conf_min", conf)),
-        low_conf_words=int(row.get("low_conf_words", 0)),
+        conf_mean=_opt(row.get("conf_mean", conf), float),
+        conf_min=_opt(row.get("conf_min", conf), float),
+        low_conf_words=_opt(row.get("low_conf_words"), int),
     )
 
 
@@ -148,15 +173,20 @@ def resolve_sidecar_url(explicit: str | None = None, *, contract: object | None 
     try:
         parsed = urllib.parse.urlsplit(url)
         host = parsed.hostname
+        _ = parsed.port  # raises ValueError for a non-numeric or out-of-range port
         has_userinfo = bool(parsed.username or parsed.password or "@" in parsed.netloc)
     except ValueError:
-        raise OcrError(f"OCR sidecar URL is malformed: {shown}", code="bad_url") from None
+        raise OcrError(f"OCR sidecar URL is malformed (bad host or port): {shown}", code="bad_url") from None
     if has_userinfo:
         raise OcrError(
             f"OCR sidecar URL must not contain credentials (userinfo): {shown}", code="bad_url"
         )
     if parsed.scheme not in {"http", "https"} or not host:
         raise OcrError(f"OCR sidecar URL must be an absolute http(s) URL, got {shown}", code="bad_url")
+    if "?" in url or "#" in url:
+        raise OcrError(f"OCR sidecar URL must be a base URL without a query string or fragment: {shown}", code="bad_url")
+    if re.search(r"[\s\x00-\x1f\x7f]", url):
+        raise OcrError(f"OCR sidecar URL must not contain spaces or control characters: {shown!r}", code="bad_url")
     return url.rstrip("/")
 
 
@@ -257,16 +287,16 @@ def recognize(
     psm: int = 6,
     scale: int = 1,
     whitelist: str | None = None,
-    min_conf: float = 0.0,
+    min_conf: float | None = None,
     drop_low_conf: bool = False,
     timeout: float = 30.0,
 ) -> OcrResult:
     """Recognise text in a PNG/JPEG via the OCR sidecar.
 
     ``sidecar_url`` defaults to ``$PWMCP_OCR_URL``; resolve it from the contract with
-    :func:`resolve_sidecar_url` when that is not set. The result is complete: words below
-    ``min_conf`` are flagged ``low_conf`` (and counted), not removed, unless ``drop_low_conf`` is
-    set. Raises :class:`OcrNotConfigured` when no URL is known and :class:`OcrError` (with the
+    :func:`resolve_sidecar_url` when that is not set. The result is complete: with a ``min_conf``,
+    words below it are flagged ``low_conf`` (and counted), not removed, unless ``drop_low_conf`` is
+    set (which requires a ``min_conf``). Without one nothing is assessed and the flags are ``None``. Raises :class:`OcrNotConfigured` when no URL is known and :class:`OcrError` (with the
     sidecar's ``code`` and HTTP ``status``) on any failure; it never returns a partial result.
     """
 
@@ -278,8 +308,9 @@ def recognize(
         "lang": lang,
         "psm": str(psm),
         "scale": str(scale),
-        "min_conf": f"{min_conf:g}",
     }
+    if min_conf is not None:
+        query["min_conf"] = f"{min_conf:g}"
     if whitelist is not None:
         query["whitelist"] = whitelist
     if drop_low_conf:

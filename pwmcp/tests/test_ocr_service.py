@@ -198,7 +198,7 @@ REGISTRY = {"tesseract": svc.UnavailableEngine("tesseract", "x"), "glyphgrid": s
 
 
 def test_params_defaults() -> None:
-    assert svc.parse_params("", REGISTRY) == svc.Params("tesseract", "eng", 6, 1, None, 0.0)
+    assert svc.parse_params("", REGISTRY) == svc.Params("tesseract", "eng", 6, 1, None, None)
 
 
 def test_params_full_set() -> None:
@@ -349,16 +349,18 @@ def test_ocr_success_shape_and_exact_engine_argv(running: Running, fake: Fake) -
     assert isinstance(body["elapsed_ms"], int)
     assert body["text"] == "Debian installer\nmaybe"
     assert body["lines"] == [
-        {"text": "Debian installer", "conf": 92.38, "conf_mean": 92.38, "conf_min": 88.25, "low_conf_words": 0,
+        {"text": "Debian installer", "conf": 92.38, "conf_mean": 92.38, "conf_min": 88.25, "low_conf_words": None,
          "box": [10, 10, 180, 16]},
-        {"text": "maybe", "conf": 42.0, "conf_mean": 42.0, "conf_min": 42.0, "low_conf_words": 0, "box": [10, 34, 60, 16]},
+        {"text": "maybe", "conf": 42.0, "conf_mean": 42.0, "conf_min": 42.0, "low_conf_words": None, "box": [10, 34, 60, 16]},
     ]
     assert body["words"] == [
-        {"text": "Debian", "conf": 96.5, "box": [10, 10, 80, 16], "line": 0, "low_conf": False},
-        {"text": "installer", "conf": 88.25, "box": [100, 10, 90, 16], "line": 0, "low_conf": False},
-        {"text": "maybe", "conf": 42.0, "box": [10, 34, 60, 16], "line": 1, "low_conf": False},
+        {"text": "Debian", "conf": 96.5, "box": [10, 10, 80, 16], "line": 0, "low_conf": None},
+        {"text": "installer", "conf": 88.25, "box": [100, 10, 90, 16], "line": 0, "low_conf": None},
+        {"text": "maybe", "conf": 42.0, "box": [10, 34, 60, 16], "line": 1, "low_conf": None},
     ]
-    assert (body["min_conf_applied"], body["low_conf_words"], body["drop_low_conf"], body["dropped_words"]) == (0.0, 0, False, 0)
+    # NO threshold was given: nothing was assessed, so the flags are null (NOT false/0, which reads as "confident")
+    assert (body["min_conf_applied"], body["low_conf_words"]) == (None, None)
+    assert (body["drop_low_conf"], body["dropped_words"], body["unscored_words"]) == (False, 0, 0)
     (call,) = fake.calls()
     assert call["argv"] == ["stdin", "stdout", "-l", "eng", "--psm", "6", "tsv"]
     assert call["png"] == [100, 50]
@@ -404,7 +406,12 @@ def test_min_conf_flags_words_but_never_removes_them(running: Running) -> None:
     assert [(line["low_conf_words"], line["conf_min"]) for line in body["lines"]] == [(1, 88.25), (1, 42.0)]
     assert (body["min_conf_applied"], body["low_conf_words"], body["dropped_words"]) == (90.0, 2, 0)
     nothing_flagged = running.request("POST", "/v1/ocr", png())[1]
-    assert nothing_flagged["low_conf_words"] == 0 and not any(w["low_conf"] for w in nothing_flagged["words"])
+    assert nothing_flagged["low_conf_words"] is None and all(w["low_conf"] is None for w in nothing_flagged["words"])
+    assert nothing_flagged["min_conf_applied"] is None
+    assert all(line["low_conf_words"] is None for line in nothing_flagged["lines"])
+    explicit_zero = running.request("POST", "/v1/ocr?min_conf=0", png())[1]  # a threshold of 0 IS an assessment
+    assert explicit_zero["low_conf_words"] == 0 and explicit_zero["min_conf_applied"] == 0.0
+    assert all(w["low_conf"] is False for w in explicit_zero["words"])
     everything = running.request("POST", "/v1/ocr?min_conf=100", png())[1]
     assert everything["text"] == "Debian installer\nmaybe" and everything["low_conf_words"] == 3
 
@@ -437,6 +444,7 @@ def test_drop_low_conf_is_an_explicit_opt_in_that_reports_what_it_dropped(runnin
     assert none_left["text"] == "" and none_left["lines"] == [] and none_left["words"] == []
     assert none_left["dropped_words"] == 3
     assert running.request("POST", "/v1/ocr?drop_low_conf=2", png())[1]["code"] == "invalid_drop_low_conf"
+    assert running.request("POST", "/v1/ocr?drop_low_conf=1", png())[1]["code"] == "drop_needs_min_conf"
     assert running.request("POST", "/v1/ocr?drop_low_conf=0", png())[0] == 200
 
 

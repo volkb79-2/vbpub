@@ -83,6 +83,14 @@ def test_a_present_binary_is_returned(strict) -> None:
     assert Path(require_binary(Path(sys.executable).name, "python itself")).name
 
 
+def test_a_module_missing_for_one_test_does_not_abort_the_others(tmp_path: Path) -> None:
+    """test_ocr_stack without jinja2: the jinja2-using tests FAIL individually, the rest still RUN and pass."""
+
+    result = _pytest(tmp_path, "tests/test_ocr_stack.py", hide="jinja2")
+    last = result.stdout.splitlines()[-1]
+    assert " failed" in last and " passed" in last and "Interrupted" not in result.stdout, result.stdout[-600:]
+
+
 def test_module_level_skip_is_allowed_only_when_asked_for(lenient) -> None:
     with pytest.raises(pytest.skip.Exception) as caught:
         optional_module(GONE, "module scope", module_level=True)
@@ -125,10 +133,11 @@ def test_every_site_fails_by_default_and_skips_on_opt_in(tmp_path: Path, hidden:
     default = _pytest(tmp_path, node, hide=hidden)
     assert default.returncode != 0, default.stdout[-800:]
     assert hidden in default.stdout and "'test' extra" in default.stdout and ALLOW_VAR in default.stdout
-    assert "passed" not in default.stdout.splitlines()[-1]
+    last = default.stdout.splitlines()[-1]
+    # per-test: a fixture-based site reports an ERROR at setup, an in-test site a FAILURE; never an aborted collection
+    assert (" failed" in last or " error" in last) and "Interrupted" not in default.stdout, default.stdout[-800:]
     optin = _pytest(tmp_path, node, hide=hidden, env={ALLOW_VAR: "1"})
-    # (a module-level skip collects nothing: pytest exits 5, still "skipped, not failed")
-    assert optin.returncode in (0, 5) and "skipped" in optin.stdout, optin.stdout[-800:]
+    assert optin.returncode == 0 and "skipped" in optin.stdout, optin.stdout[-800:]
 
 
 def test_a_missing_node_fails_by_default_and_skips_on_opt_in(tmp_path: Path) -> None:

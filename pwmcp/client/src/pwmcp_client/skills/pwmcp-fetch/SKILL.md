@@ -91,7 +91,11 @@ pwmcp ocr "$URL" --selector canvas --scale 2       # open, capture the element, 
 the environment owner to enable it rather than guessing a URL (`--sidecar-url` /
 `$PWMCP_OCR_URL` override discovery). The text is always COMPLETE: `--min-conf N` only flags words
 below N as `low_conf` (per-line `conf_min`, top-level `low_conf_words`; a warning is printed), it never
-deletes them, so check the flags before trusting a short token such as `[y/N]`. The result is TEXT AND CONFIDENCE, not a decision:
+deletes them, so check the flags before trusting a short token such as `[y/N]`. Without `--min-conf` nothing is
+assessed and the flags are null (not false). **Confidence is NOT calibrated**: a garbled dialog read at 91%
+mean confidence and `10.0.2.15` came back as `16.0.2.15`, so a flag is a hint, never a safety check, and
+missing or fuzzy-matched text means UNKNOWN; never act (send keys) on anything short of an EXACT match of a
+known screen signature. The result is TEXT AND CONFIDENCE, not a decision:
 low-confidence or empty output means "unknown", so re-capture (try `--scale 2` or `3`, or
 `--psm 11` for sparse text) instead of acting on a guess. It does not watch a screen and
 does not send keys; re-run it yourself after each action you take.

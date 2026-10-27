@@ -429,7 +429,6 @@
         "option:route:entrypoint:pwmcp/ocr/--lang",
         "option:route:entrypoint:pwmcp/ocr/--psm",
         "option:route:entrypoint:pwmcp/ocr/--scale",
-        "option:route:entrypoint:pwmcp/ocr/--min-conf",
         "option:route:entrypoint:pwmcp/ocr/--format",
         "option:route:entrypoint:pwmcp/ocr/--ignore-https-errors"
       ],
@@ -443,7 +442,6 @@
           "option:route:entrypoint:pwmcp/ocr/--lang",
           "option:route:entrypoint:pwmcp/ocr/--psm",
           "option:route:entrypoint:pwmcp/ocr/--scale",
-          "option:route:entrypoint:pwmcp/ocr/--min-conf",
           "option:route:entrypoint:pwmcp/ocr/--format",
           "option:route:entrypoint:pwmcp/ocr/--ignore-https-errors"
         ],
@@ -452,7 +450,7 @@
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:3a8c3aad64316d079b93937436bc748a232c6ca89065e45ba358388beb9b6bd3"
+      "signature": "sha256:17b7626867c08b42fa8345dc6cbc43d809f2179e5d92df1d7c8c8cc61e19c1af"
     },
     {
       "id": "case:route:entrypoint:pwmcp/ocr/option-choice/option:route:entrypoint:pwmcp/ocr/--format/1e1d0f251d",
@@ -686,7 +684,7 @@
         "option_id": "option:route:entrypoint:pwmcp/ocr/--min-conf",
         "spelling": "--min-conf"
       },
-      "signature": "sha256:c2e0dfde2e14eb516b74d3691c9384565ee827919890862a14d3b0373dc41954"
+      "signature": "sha256:22f5e02ccca328b70d675fcbcad011d76027ac94563b7effd8c46ff5acffe323"
     },
     {
       "id": "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--output/--output",
@@ -2717,11 +2715,11 @@
           "canonical": "--min-conf",
           "choices": null,
           "const": null,
-          "default": 0.0,
+          "default": null,
           "default_present": true,
-          "description": "flag words whose confidence (0-100) is below N as low_conf; they are still returned, never removed",
+          "description": "flag words whose confidence (0-100) is below N as low_conf; they are still returned, never removed. Without it nothing is assessed (low_conf is null, not false). Tesseract confidence is NOT calibrated: a 91 percent mean confidence read a garbled dialog and 10.0.2.15 as 16.0.2.15; a flag is a hint, never a safety check, and acting on text needs an EXACT match of a known screen signature",
           "dest": "min_conf",
-          "effective_default": 0.0,
+          "effective_default": null,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
@@ -2735,7 +2733,7 @@
           "minimum_values": 1,
           "nargs": null,
           "parser_kwargs": {
-            "default": 0.0,
+            "default": null,
             "type": {
               "callable": "builtins.float"
             }

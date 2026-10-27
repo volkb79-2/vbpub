@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import runpy
+import shutil
 import subprocess
 import sys
 import urllib.error
@@ -908,9 +910,76 @@ def test_refresh_accepts_zero_age_window(
     assert '"playwright==1.2.3"' in files["client_project"].read_text()
 
 
-def test_resolver_module_entrypoint_runs_committed_check(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(sys, "argv", ["resolve-playwright-version.py", "--check"])
+def test_resolver_module_entrypoint_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    # --dry-run exercises the script entrypoint without reading or writing ANY project file. (It used to run
+    # `--check` against the live tree, which made the test depend on untracked local state: see below.)
+    monkeypatch.setattr(sys, "argv", ["resolve-playwright-version.py", "--check", "--dry-run"])
     runpy.run_path(str(MODULE_PATH), run_name="__main__")
+
+
+# ------------------------------------------------------------------ the committed projection, in a CLEAN checkout
+
+PWMCP_DIR = Path(__file__).resolve().parents[1]
+# Everything that is not in git: generated, built, local. A clean checkout has none of it.
+_UNTRACKED = shutil.ignore_patterns("ciu.toml.j2", "cmru.vars", "__pycache__", "dist", "bundle", "wheels", ".assay",
+                                    ".pytest_cache", ".coverage*", "coverage.json", "vendor")
+
+
+def _clean_checkout(tmp_path: Path) -> Path:
+    clean = tmp_path / "pwmcp"
+    shutil.copytree(PWMCP_DIR, clean, ignore=_UNTRACKED)
+    return clean
+
+
+def _check(clean: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, str(clean / "scripts" / "resolve-playwright-version.py"), "--check"],
+        cwd=clean, capture_output=True, text=True, check=False, timeout=120,
+    )
+
+
+def test_the_committed_projection_is_consistent_in_a_clean_checkout(tmp_path: Path) -> None:
+    """`--check` on the TRACKED files only: green here means green in any clean checkout and in the gate image.
+
+    The earlier test ran `--check` on the live tree, so a stale maintainer-local, gitignored `ciu.toml.j2`
+    (1.61.0 while the defaults said 1.64.0) made it fail in the tester image yet pass elsewhere. A stale
+    TRACKED projection (defaults, bake, Dockerfiles, contract, client requirements) fails THIS test.
+    """
+
+    clean = _clean_checkout(tmp_path)
+    assert not (clean / "ciu.toml.j2").exists() and not (clean / "cmru.vars").exists()
+    done = _check(clean)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "Validated committed release projection" in done.stdout
+    assert (clean / "cmru.vars").is_file()  # written into the copy, never into the live tree
+
+
+def test_a_stale_tracked_projection_is_caught(tmp_path: Path) -> None:
+    clean = _clean_checkout(tmp_path)
+    defaults = clean / "ciu.defaults.toml.j2"
+    defaults.write_text(re.sub(r'(\[pwmcp\.unified\.image\][^\[]*tag\s*=\s*)"[^"]+"', r'\1"1.61.0-r2"',
+                               defaults.read_text(encoding="utf-8"), flags=re.DOTALL), encoding="utf-8")
+    done = _check(clean)
+    assert done.returncode != 0 and "projections disagree" in done.stderr, done.stdout + done.stderr
+
+
+def test_a_stale_local_override_is_named_as_such(tmp_path: Path) -> None:
+    """The case that bit the tester-image run: a gitignored ciu.toml.j2 older than the defaults."""
+
+    clean = _clean_checkout(tmp_path)
+    text = (clean / "ciu.defaults.toml.j2").read_text(encoding="utf-8")
+    stale = re.sub(r'playwright_version\s*=\s*"[^"]+"', 'playwright_version = "1.61.0"', text)
+    stale = re.sub(r'(\[pwmcp\.unified\.image\][^\[]*tag\s*=\s*)"[^"]+"', r'\1"1.61.0-r2"', stale, flags=re.DOTALL)
+    (clean / "ciu.toml.j2").write_text(stale, encoding="utf-8")
+    done = _check(clean)
+    assert done.returncode != 0
+    assert "local gitignored override" in done.stderr and "1.61.0" in done.stderr, done.stderr
+
+
+def test_the_local_override_is_gitignored_so_it_cannot_reach_main() -> None:
+    ignore = (PWMCP_DIR / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert "ciu.toml.j2" in [line.strip() for line in ignore]
+    assert "local gitignored override" in resolver.OVERRIDE_LABEL
 
 
 # ------------------------------------------------------------------ OCR sidecar image in the same release
@@ -1063,3 +1132,10 @@ def test_duplicate_ocr_image_sections_are_refused_when_read(tmp_path: Path) -> N
         resolver._read_ocr_toml_tag(toml)
     toml.write_text('[pwmcp.unified.image]\ntag = "a"\n', encoding="utf-8")
     assert resolver._read_ocr_toml_tag(toml) is None
+
+
+def test_dry_run_previews_both_modes_without_touching_anything(capsys: pytest.CaptureFixture[str]) -> None:
+    resolver.main(["--check", "--dry-run"])
+    assert "validate the committed version projection" in capsys.readouterr().err
+    resolver.main(["--refresh", "--age-window-days", "3", "--dry-run"])
+    assert "at least 3 days old" in capsys.readouterr().err

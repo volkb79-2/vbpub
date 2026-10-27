@@ -25,8 +25,21 @@ PWMCP_ROOT = Path(__file__).resolve().parents[1]
 GATEWAY = PWMCP_ROOT / "containers" / "pwmcp" / "run-server-gateway" / "index.js"
 NODE = shutil.which("node")
 
-jinja2 = optional_module("jinja2", "jinja2 renders the compose template", module_level=True)
-yaml = optional_module("yaml", "PyYAML parses the rendered compose file", module_level=True)
+class _Lazy:
+    """A module that is imported (or its absence reported) when a test first USES it, so a missing
+    dependency fails each affected test individually instead of aborting collection of the session."""
+
+    def __init__(self, name: str, reason: str) -> None:
+        self._name, self._reason = name, reason
+
+    def __getattr__(self, attribute: str):
+        if attribute.startswith("_"):  # pytest probes module attributes (__test__, _pytestfixturefunction ...) while collecting
+            raise AttributeError(attribute)
+        return getattr(optional_module(self._name, self._reason), attribute)
+
+
+jinja2 = _Lazy("jinja2", "jinja2 renders the compose template")
+yaml = _Lazy("yaml", "PyYAML parses the rendered compose file")
 
 
 def _defaults() -> dict:

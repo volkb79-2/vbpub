@@ -65,6 +65,9 @@ CLIENT_REQUIREMENTS_FILE = PWMCP_DIR / "client" / "requirements-runtime.txt"
 CLIENT_PROJECT_FILE = PWMCP_DIR / "client" / "pyproject.toml"
 DOCKERFILE = PWMCP_DIR / "containers" / "pwmcp" / "Dockerfile"
 OCR_DOCKERFILE = PWMCP_DIR / "containers" / "ocr" / "Dockerfile"
+# ciu.toml.j2 is a maintainer's LOCAL, gitignored override (pwmcp/.gitignore): it is not in a clean checkout
+# or in the release, but when it exists next to the defaults it must agree with them, so a stale one is named.
+OVERRIDE_LABEL = "ciu.toml.j2 (local gitignored override: run --refresh to rewrite it, or delete it)"
 DOCKER_HUB_TOKEN_URL = "https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/{repository}:pull"
 DOCKER_HUB_MANIFEST_URL = "https://registry-1.docker.io/v2/library/{repository}/manifests/{tag}"
 LIGHTHOUSE_PACKAGE_FILE = PWMCP_DIR / "containers" / "pwmcp" / "lighthouse-mcp" / "package.json"
@@ -758,11 +761,11 @@ def check_committed_inputs() -> None:
     if TOML_OVERRIDE_FILE.exists():
         _assert_same(
             "PWMCP override Playwright version",
-            {DEFAULTS_FILE.name: playwright_version, TOML_OVERRIDE_FILE.name: _read_toml_playwright_version(TOML_OVERRIDE_FILE)},
+            {DEFAULTS_FILE.name: playwright_version, OVERRIDE_LABEL: _read_toml_playwright_version(TOML_OVERRIDE_FILE)},
         )
         _assert_same(
             "PWMCP override release version",
-            {DEFAULTS_FILE.name: release_tag, TOML_OVERRIDE_FILE.name: _read_toml_release_tag(TOML_OVERRIDE_FILE)},
+            {DEFAULTS_FILE.name: release_tag, OVERRIDE_LABEL: _read_toml_release_tag(TOML_OVERRIDE_FILE)},
         )
         override_ocr = _read_ocr_toml_tag(TOML_OVERRIDE_FILE)
         if override_ocr is not None and override_ocr != release_tag:

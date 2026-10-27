@@ -113,10 +113,16 @@ The usual agent path is: save a screenshot with the MCP `browser_take_screenshot
 `pwmcp ocr --image FILE`. `--psm 6` (uniform block) is the default and suits consoles;
 `--scale N` upscales small text first; `--whitelist CHARS` restricts the alphabet;
 `--min-conf N` FLAGS words below N as `low_conf` (they stay in the text and the result, and a warning is
-printed; the full result carries `conf_min` / `low_conf_words` per line); `--engine`/`--lang` select another engine or language.
+printed; the full result carries `conf_min` / `low_conf_words` per line); without it nothing is assessed
+and the flags are `null`, not `false`; `--engine`/`--lang` select another engine or language.
 `--format text|json|tsv` (and the global `--json`) choose the output; `--output PATH` writes it
 to a file. The sidecar URL is `--sidecar-url`, else `$PWMCP_OCR_URL`, else the `ocr_url` in the
 contract; with none of them the command exits 2 and names `ocr.enabled`.
+
+**Confidence is NOT calibrated.** A garbled TrueNAS dialog read at a mean 91% confidence and digits were
+misread (`10.0.2.15` as `16.0.2.15`), so a high or unflagged result proves nothing: a flag is a hint, never
+a safety check, missing or fuzzy-matched text means UNKNOWN, and anything that will later trigger a keystroke
+needs an EXACT match of a known screen signature (or the glyph-grid engine), never merely "unflagged".
 
 It reports text and confidence only. It does not watch a screen for changes and does not send
 keys; treat low-confidence or empty results as "unknown", not as evidence.

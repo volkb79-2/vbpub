@@ -156,9 +156,13 @@ services:
   # ── OCR sidecar (opt-in: pwmcp.ocr.enabled) ───────────────────────────────
   # Stateless Tesseract wrapper (containers/ocr). Reachable ONLY on the stack network
   # under the alias below: no `ports:`, no Traefik labels, in either deployment mode.
-  # GOVERNANCE: cgroup_parent / blkio come from the ciu governance overlay (S15.3: ciu
-  # never overwrites a key the author set, so this service emits NO cgroup_parent). The
-  # mem/cpu keys below only NARROW the stack ceiling and are set as a coherent pair.
+  # GOVERNANCE: cgroup_parent / blkio come from the ciu governance overlay; this service emits
+  # NO cgroup_parent so it inherits them. The mem/cpu/pids keys below are AUTHOR-SET, and ciu
+  # never overwrites an author-set key (ciu SPEC: "author-set keys always win"), so they REPLACE
+  # the overlay's per-service value rather than being clamped by it: they are chosen small, but a
+  # stack ceiling lower than these would NOT lower them. The host slice (cgroup_parent) stays
+  # the real backstop. Set as a coherent mem/memswap pair. How this interacts with a live
+  # overlay is UNVERIFIED (PWMCP-11).
   {{ pwmcp.ocr.name | tojson }}:
     image: {{ pwmcp.ocr.image.registry }}/{{ pwmcp.ocr.image.namespace }}/{{ pwmcp.ocr.image.name }}:{{ pwmcp.ocr.image.tag }}
     pull_policy: missing

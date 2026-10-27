@@ -364,6 +364,11 @@ def _ocr(args: argparse.Namespace, runtime: CliRuntime) -> None:
     except ocr_module.OcrError as exc:
         raise CliFailure(f"pwmcp ocr failed: {exc}", hint="GET <sidecar>/v1/engines lists what the sidecar offers") from exc
 
+    if result.completeness_unknown and args.min_conf is not None:
+        runtime.output.warn(
+            "the OCR sidecar predates the low_conf contract: it may have silently dropped the words below "
+            f"--min-conf {args.min_conf:g}, so this result cannot be called complete; upgrade the sidecar"
+        )
     if result.low_conf_words:
         runtime.output.warn(
             f"{result.low_conf_words} word(s) are below --min-conf {result.min_conf_applied:g} and flagged "
@@ -592,10 +597,13 @@ def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
             ),
             OptionSpec(
                 ("--min-conf",),
-                "flag words whose confidence (0-100) is below N as low_conf; they are still returned, never removed",
+                "flag words whose confidence (0-100) is below N as low_conf; they are still returned, never removed. "
+                "Without it nothing is assessed (low_conf is null, not false). Tesseract confidence is NOT calibrated: "
+                "a 91 percent mean confidence read a garbled dialog and 10.0.2.15 as 16.0.2.15; a flag is a hint, never a safety "
+                "check, and acting on text needs an EXACT match of a known screen signature",
                 group="RECOGNITION",
                 metavar="CONF",
-                parser_kwargs={"type": float, "default": 0.0},
+                parser_kwargs={"type": float, "default": None},
             ),
             OptionSpec(
                 ("--sidecar-url",),

@@ -146,6 +146,24 @@ def test_drain_tolerates_a_client_that_vanishes(fake) -> None:
 # ------------------------------------------------------------------ signals
 
 
+def _signal_once_installed(sig: int) -> threading.Thread:
+    """Signal the pytest process ONLY once main() has provably replaced the handler for ``sig``."""
+
+    original = signal.getsignal(sig)
+
+    def run() -> None:
+        deadline = time.monotonic() + 15
+        while signal.getsignal(sig) is original:
+            if time.monotonic() > deadline:
+                return  # never installed: do not signal an unprepared pytest process
+            time.sleep(0.01)
+        os.kill(os.getpid(), sig)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread
+
+
 @pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT])
 def test_main_shuts_down_cleanly_on_sigterm_and_sigint(monkeypatch, capsys, sig) -> None:
     """PID 1 gets no default SIGTERM action: main() must install handlers that stop the server."""
@@ -168,7 +186,7 @@ def test_main_shuts_down_cleanly_on_sigterm_and_sigint(monkeypatch, capsys, sig)
 
     monkeypatch.setattr(svc, "make_server", lambda config: Stub())
     before = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGINT)}
-    threading.Timer(0.3, lambda: os.kill(os.getpid(), sig)).start()
+    _signal_once_installed(sig)
     assert svc.main() == 0
     assert "listening on" in capsys.readouterr().out
     assert stopped.is_set() and events["closed"] is True
@@ -184,6 +202,7 @@ def test_real_server_process_stops_on_sigterm(tmp_path: Path) -> None:
     env = {**os.environ, "OCR_PORT": str(number), "OCR_BIND": "127.0.0.1", "PYTHONDONTWRITEBYTECODE": "1"}
     process = subprocess.Popen([sys.executable, str(SERVICE_PATH)], env=env, stdout=subprocess.PIPE, text=True)
     try:
+        # "listening" is printed only AFTER the handlers are installed, so signalling right away is safe
         assert "listening on" in process.stdout.readline()
         process.send_signal(signal.SIGTERM)
         assert process.wait(timeout=10) == 0
@@ -485,7 +504,7 @@ def test_module_entrypoint_runs_main_and_stops_on_sigterm(monkeypatch) -> None:
     probe.close()
     monkeypatch.setenv("OCR_PORT", str(number))
     monkeypatch.setenv("OCR_BIND", "127.0.0.1")
-    threading.Timer(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
+    _signal_once_installed(signal.SIGTERM)
     with pytest.raises(SystemExit) as caught:
         runpy.run_path(str(SERVICE_PATH), run_name="__main__")
     assert caught.value.code == 0
@@ -521,3 +540,71 @@ def test_the_drain_gives_up_after_its_time_budget(fake) -> None:
         assert raw.startswith(b"HTTP/1.0 413")
     finally:
         small.close()
+
+
+# ------------------------------------------------------------------ unscored words
+
+
+def test_a_word_row_with_text_but_no_confidence_is_kept_not_dropped() -> None:
+    row = "5\t1\t1\t1\t1\t1\t0\t0\t5\t5\t-1\tTRUE"
+    (word,) = svc.parse_tsv(row)
+    assert (word.text, word.conf) == ("TRUE", None)
+    assert svc.parse_tsv("5\t1\t1\t1\t1\t1\t0\t0\t5\t5\t-1\t") == []  # no text: nothing to keep
+
+
+@needs_pil
+def test_unscored_words_are_counted_and_never_vouched_for(running, fake) -> None:
+    header = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n"
+    (fake.dir / "tsv").write_text(
+        header
+        + "5\t1\t1\t1\t1\t1\t0\t0\t60\t16\t90\tContinue?\n"
+        + "5\t1\t1\t1\t1\t2\t70\t0\t60\t16\t-1\t[y/N]\n"
+        + "5\t1\t1\t1\t2\t1\t0\t20\t60\t16\t-1\tAlone\n",
+        encoding="utf-8",
+    )
+    plain = running.request("POST", "/v1/ocr", png())[1]
+    assert plain["text"] == "Continue? [y/N]\nAlone" and plain["unscored_words"] == 2
+    assert [w["conf"] for w in plain["words"]] == [90.0, None, None]
+    assert plain["lines"][0]["conf_mean"] == 90.0 and plain["lines"][0]["conf_min"] == 90.0  # scored words only
+    assert plain["lines"][1]["conf_mean"] is None and plain["lines"][1]["conf_min"] is None and plain["lines"][1]["conf"] is None
+    assert plain["words"][1]["low_conf"] is None  # no threshold: not assessed
+    flagged = running.request("POST", "/v1/ocr?min_conf=50", png())[1]
+    assert [w["low_conf"] for w in flagged["words"]] == [False, True, True]  # an unscored word is flagged, not trusted
+    assert flagged["low_conf_words"] == 2 and flagged["lines"][1]["low_conf_words"] == 1
+    dropped = running.request("POST", "/v1/ocr?min_conf=50&drop_low_conf=1", png())[1]
+    assert dropped["text"] == "Continue?" and dropped["dropped_words"] == 2 and dropped["unscored_words"] == 2
+
+
+# ------------------------------------------------------------------ rejected requests do not hold the slot
+
+
+def test_invalid_parameters_are_refused_before_the_body_is_awaited(fake) -> None:
+    server = start(fake, body_deadline_s=30.0, socket_timeout_s=30.0)
+    try:
+        with socket.create_connection(("127.0.0.1", server.port), timeout=10) as sock:
+            # headers only, the 5000-byte body NEVER comes; a valid request would sit in the body read
+            sock.sendall(b"POST /v1/ocr?psm=5 HTTP/1.0\r\nContent-Length: 5000\r\n\r\n")
+            sock.settimeout(5)
+            raw = sock.recv(4096)
+            assert raw.startswith(b"HTTP/1.0 400") and b"invalid_psm" in raw
+            # ... and the recognition slot is not held by that still-open connection
+            status, body, _ = server.request("POST", "/v1/ocr?psm=5", b"x")
+            assert (status, body["code"]) == (400, "invalid_psm")  # answered by validation, not 429
+    finally:
+        server.close()
+
+
+@needs_pil
+def test_a_valid_request_still_takes_the_slot_before_its_body(fake) -> None:
+    fake.mode("block")
+    server = start(fake)
+    holder = threading.Thread(target=lambda: server.request("POST", "/v1/ocr", png()))
+    try:
+        holder.start()
+        fake.wait_started()
+        status, body, _ = server.request("POST", "/v1/ocr", png())
+        assert (status, body["code"]) == (429, "busy")
+    finally:
+        fake.release()
+        holder.join(timeout=30)
+        server.close()
