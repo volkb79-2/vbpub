@@ -28,6 +28,10 @@ inferred from the r3 canaries.
   recovery, durable DAMON pool provenance) are filed with their design held on
   a park ref and are NOT in this release; CP-28/CP-29 (monitor mode, cheap
   collector gaps), CP-30 (R2) and CP-31 (socket-absence diagnosis) are filed.
+- Fix (wave review r1): `stop` joins the sampling worker outside the daemon-wide
+  lock. Previously a worker that was itself finishing (session error, enforced
+  stall kill) needed that lock, so the join timed out and `stop` answered a
+  spurious `stop-incomplete` after the full 10 s while holding the lock.
 - Docs (Sol B6 / records): the observer mount is described as the dedicated
   directory (not "only that node"), and stale CP-13 is closed. Release
   qualification for 1.1.0 is the registered `r0-r1` and `r3` lanes run from a

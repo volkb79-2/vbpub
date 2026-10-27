@@ -2207,7 +2207,20 @@ class SessionServer:
                 return self._stop_response(session_id, on_disk, already_stopped=True)
             if sess.finished:
                 return self._stop_response(session_id, sess.summary_doc, already_stopped=True)
-            if not self._finalize_session_locked(sess, aborted_reason=None):
+            worker = sess.thread
+        # Join the sampling worker OUTSIDE the daemon-wide lock. The worker's
+        # own terminal paths (a session error, an enforced stall kill) take
+        # that lock to finalize; joining under it would make a worker that is
+        # merely finishing look wedged and answer a spurious `stop-incomplete`
+        # (review CGP-110 wave r1).
+        sess.stop_event.set()
+        if worker is not None and worker is not threading.current_thread():
+            worker.join(timeout=STOP_JOIN_SECONDS)
+        with self._lock:
+            if sess.finished:
+                # The worker finalized itself while we waited.
+                return self._stop_response(session_id, sess.summary_doc, already_stopped=True)
+            if not self._finalize_session_locked(sess, aborted_reason=None, prejoined=True):
                 # Sol B2: the sampling worker did not exit in time. The
                 # session stays live and owns its placement and DAMON
                 # resources; no finished manifest was written. The caller can
@@ -2236,6 +2249,7 @@ class SessionServer:
 
     def _finalize_session_locked(
         self, sess: _Session, *, aborted_reason: Optional[str], force: bool = False,
+        prejoined: bool = False,
     ) -> bool:
         """Stop ``sess``'s thread and write its final summary/manifest.
         Called with :attr:`_lock` held — every caller (``stop``, shutdown,
@@ -2259,7 +2273,9 @@ class SessionServer:
         sess.stop_event.set()
         worker_alive = False
         if sess.thread is not None and sess.thread is not threading.current_thread():
-            sess.thread.join(timeout=STOP_JOIN_SECONDS)
+            # `prejoined`: the caller already waited a full bound outside the
+            # daemon-wide lock; only re-check liveness here.
+            sess.thread.join(timeout=0 if prejoined else STOP_JOIN_SECONDS)
             if sess.thread.is_alive():
                 sess.stop_attempts += 1
                 if not force and sess.stop_attempts < STOP_FORCE_AFTER_ATTEMPTS:

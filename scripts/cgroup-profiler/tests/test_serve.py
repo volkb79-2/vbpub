@@ -2645,8 +2645,13 @@ def test_observe_liveness_after_close_never_reaches_the_kill(
         target_metrics={}, host_metrics={}, pids=[],
     )
     assert kills == []
-    # And entering already closed returns before touching the tracker at all.
-    sess.watch = None
+    # And entering already closed returns before touching the tracker at all
+    # (a tracker that fails the test if it is observed).
+    class _MustNotObserve:
+        def observe(self, _sample):
+            raise AssertionError("observed after close")
+
+    sess.watch = _MustNotObserve()
     sess.closed = True
     simple_server._observe_liveness(
         sess, mono=2.0, record=_sample_record(2), abs_target=abs_target,
@@ -4321,3 +4326,53 @@ def test_cli_host_v1(tmp_path, capsys):
     finally:
         server.request_shutdown()
         accept_thread.join(timeout=5.0)
+
+
+def test_shutdown_that_cannot_finalize_a_session_logs_and_leaves_it_for_recovery(
+    simple_server, monkeypatch, capsys,
+):
+    """Sol S1/S9: if shutdown cannot take a wedged worker's session lock, the
+    daemon does not hang; it says so and the next start recovers the session."""
+    sess, release, closed, released = _wedge(simple_server, monkeypatch)
+    holding = threading.Event()
+
+    def hold_forever():
+        with sess.lock:
+            holding.set()
+            release.wait()
+
+    threading.Thread(target=hold_forever, daemon=True).start()
+    assert holding.wait(timeout=5.0)
+    simple_server._stop_all_sessions(aborted_reason="daemon-stopped")
+    assert not sess.finished and closed == [] and released == []
+    assert "could not be finalized at shutdown" in capsys.readouterr().err
+    release.set()
+
+
+def test_stop_while_the_worker_finalizes_itself_is_not_a_spurious_incomplete(
+    simple_server, monkeypatch,
+):
+    """Review CGP-110 wave r1: the worker's own terminal paths (session error,
+    enforced stall kill) take the daemon-wide lock. `stop` must not join the
+    worker while holding that lock, or a worker that is merely finishing
+    looks wedged and `stop` answers `stop-incomplete` after the full bound."""
+    monkeypatch.setattr(serve, "STOP_JOIN_SECONDS", 5.0)
+    started = simple_server._dispatch(_start_req())
+    sess = simple_server._sessions[started["session"]]
+    sess.stop_event.set()
+    sess.thread.join(timeout=5.0)
+    sess.stop_event.clear()
+
+    def finishing_worker():
+        sess.stop_event.wait()
+        with simple_server._lock:
+            if not sess.finished:
+                simple_server._finalize_session_locked(sess, aborted_reason=None)
+
+    sess.thread = threading.Thread(target=finishing_worker, daemon=True)
+    sess.thread.start()
+    began = time.monotonic()
+    response = simple_server._dispatch(_wire("stop", session=sess.session_id))
+    assert response["ok"] is True, response
+    assert time.monotonic() - began < 4.0
+    assert sess.finished and sess.stop_attempts == 0
