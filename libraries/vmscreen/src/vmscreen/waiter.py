@@ -8,7 +8,7 @@ from typing import Any, Callable
 from .errors import NoExactText, WaitTimeout
 
 
-def wait_for(read: Callable[[], Any], pattern: str, timeout: float, interval: float = 0.5, *, literal: bool = False, accept_unverified: bool = False,
+def wait_for(read: Callable[[], Any], pattern: str, timeout: float, interval: float = 0.5, *, literal: bool = False, accept_unverified: bool = False, accept_partial: bool = False,
              clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
     """Poll ``read()`` (returns an object with ``.text`` and ``.source``) until ``pattern`` matches.
 
@@ -25,8 +25,8 @@ def wait_for(read: Callable[[], Any], pattern: str, timeout: float, interval: fl
             result = read()
             last_text = result.text
             exact = getattr(result, "exact", True)
-            if exact == "unverified" and not accept_unverified:
-                last_note = f"{result.source} text unverified: {getattr(result, 'exact_reason', '')}"  # never match on text we cannot vouch for
+            if (exact == "unverified" and not accept_unverified) or (exact == "partial" and not accept_partial):
+                last_note = f"{result.source} text {exact}: {getattr(result, 'exact_reason', '')}"  # never match on text we cannot vouch for
                 m = None
             else:
                 m = rx.search(result.text)

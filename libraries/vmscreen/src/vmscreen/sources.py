@@ -7,7 +7,7 @@
 
 ``exact`` values: True (decoded buffer agrees with the screendump on every comparable cell), "unverified" (decoded but the
 cross-check failed or could not run: the reason is in ``exact_reason``), "stream" (serial: complete log text, not a screen),
-False (nothing).
+"partial" (every cell verified except the ``uncertain_cells``, which show U+FFFD in the text), False (nothing).
 """
 from __future__ import annotations
 
@@ -136,35 +136,52 @@ def read_vga(client, dump_dir: str | None = None, blink_mode: bool = True, stabl
             break
     screen = textmode.decode_buffer(buf, det.cols, det.rows, blink_mode)
     ver = pixels.verify_ink(png, det.cols, det.rows, det.cell_w, det.cell_h, buf, det.cursor, blink_mode)
+    uncertain = ver.get("uncertain_cells", []) if ver["ok"] is True else []
+    for u in uncertain:  # a visible placeholder instead of a character we cannot vouch for
+        old = screen.cells[u["row"]][u["col"]]
+        screen.cells[u["row"]][u["col"]] = textmode.Cell("\ufffd", old.fg, old.bg, old.blink)
     if not stable:
         exact, reason = "unverified", f"the screen changed during all {STABLE_ATTEMPTS} reads (text, BDA and screendump are not from one instant)"
+    elif ver["ok"] is True and uncertain:
+        exact, reason = "partial", f"{len(uncertain)} cell(s) could not be verified and show U+FFFD (see uncertain_cells); all other cells agree with the screendump"
     elif ver["ok"] is True:
         exact, reason = True, ""
     else:
         exact, reason = "unverified", ver.get("reason", "cross-check against the screendump failed")
-    geometry = det.as_dict() | {"blink_mode": blink_mode}
+    geometry = det.as_dict() | {"blink_mode": blink_mode, "uncertain_cells": uncertain}
     return TextResult("vga-text", "screen", screen.text(), screen.lines, geometry, screen, buf, png,
                       [{"source": "vga-text", "ok": True, "reason": det.reason}], exact, reason, ver, dict(ASSUMPTIONS))
 
 
 _ESC_BYTES = re.compile(rb"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[()#][0-9A-Za-z]|\x1b[=>78DEHMNOc]")
-HEAD = 64  # bytes of the log's start fingerprinted by a mark
+HEAD = 64  # bytes of the log's start, and of the window ENDING at the offset, fingerprinted by a mark
+_MARK_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)\.([0-9a-f]{16})\.(\d+)\.([0-9a-f]{16})", re.ASCII)
+
+
+def _h(b: bytes) -> str:
+    return hashlib.sha256(b).hexdigest()[:16]
 
 
 def make_mark(path: str) -> str:
-    """``OFFSET.INODE.HEADLEN.HEADHASH`` of a serial log now.  Passed back as ``mark=``, it detects a log that was truncated or
-    replaced and has regrown past the offset (a bare byte offset cannot)."""
-    st = os.stat(path)
-    head = Path(path).read_bytes()[:HEAD]
-    return f"{st.st_size}.{st.st_ino}.{len(head)}.{hashlib.sha256(head).hexdigest()[:16]}"
+    """``OFFSET.INODE.HEADLEN.HEADHASH.TAILLEN.TAILHASH`` of a serial log now: the first 64 bytes AND the last 64 bytes before the
+    offset are fingerprinted, so a log truncated and regrown by a restarted VM that prints the same banner is still caught (its
+    content before the offset differs).  Reads two small windows only (seek), never the whole log."""
+    with open(path, "rb") as f:
+        size = os.fstat(f.fileno()).st_size
+        ino = os.fstat(f.fileno()).st_ino
+        head = f.read(HEAD)
+        tl = min(HEAD, size)
+        f.seek(size - tl)
+        tail = f.read(tl)
+    return f"{size}.{ino}.{len(head)}.{_h(head)}.{len(tail)}.{_h(tail)}"
 
 
-def parse_mark(token: str) -> tuple[int, int, int, str]:
-    try:
-        off, ino, n, h = token.split(".")
-        return int(off), int(ino), int(n), h
-    except ValueError as exc:
-        raise ValueError(f"malformed serial mark {token!r} (expected the output of `vmscreen mark`)") from exc
+def parse_mark(token: str) -> tuple[int, int, int, str, int, str]:
+    m = _MARK_RE.fullmatch(token)  # strict: ASCII digits only, no sign, underscore or whitespace
+    if m is None:
+        raise ValueError(f"malformed serial mark {token!r} (expected the output of `vmscreen mark`)")
+    off, ino, hn, hh, tn, th = m.groups()
+    return int(off), int(ino), int(hn), hh, int(tn), th
 
 
 def _boundary(raw: bytes, offset: int) -> int:
@@ -182,42 +199,50 @@ def _boundary(raw: bytes, offset: int) -> int:
 def read_serial(path: str, from_offset: int = 0, mark: str | None = None) -> TextResult:
     def fail(msg: str) -> NoExactText:
         return NoExactText(msg, [{"source": "serial", "ok": False, "reason": msg}])
-    ino = hn = hh = None
+    ino = hn = hh = tn = th = None
     if mark is not None:
-        from_offset, ino, hn, hh = parse_mark(mark)
+        from_offset, ino, hn, hh, tn, th = parse_mark(mark)
     try:
         raw = Path(path).read_bytes()
         st = os.stat(path)
     except OSError as exc:
         raise fail(f"serial log unreadable: {exc}") from exc
-    if mark is not None and (st.st_ino != ino or len(raw) < hn or hashlib.sha256(raw[:hn]).hexdigest()[:16] != hh):
-        raise fail("serial log was truncated or replaced since the mark (inode or first bytes changed): marks no longer apply")
+    if mark is not None and (st.st_ino != ino or tn > from_offset or len(raw) < max(hn, from_offset) or _h(raw[:hn]) != hh
+                             or _h(raw[from_offset - tn:from_offset]) != th):
+        raise fail("serial log was truncated or replaced since the mark (inode, first bytes or the bytes before the offset changed): "
+                   "marks no longer apply")
     if from_offset > len(raw):
         raise fail(f"serial log is {len(raw)} bytes, shorter than --from-offset {from_offset} (truncated or rotated?)")
     start = _boundary(raw, from_offset)
     lines = serialtext.render(raw[start:]).split("\n")
+    empty = not "".join(lines).strip()
     return TextResult("serial", "stream", "\n".join(lines), lines,
-                      {"log": path, "bytes": len(raw), "from_offset": from_offset, "start": start}, None, b"", None,
+                      {"log": path, "bytes": len(raw), "from_offset": from_offset, "start": start, "empty": empty}, None, b"", None,
                       [{"source": "serial", "ok": True, "reason": f"{len(raw) - start} bytes of serial output"}], "stream",
+                      "the serial log has no text (empty log, or nothing after the offset)" if empty else
                       "text the guest printed to the serial port (rendered log, not a screen)")
 
 
 def read_text(client, *, source: str = "auto", serial_log: str | None = None, dump_dir: str | None = None,
               blink_mode: bool = True, from_offset: int = 0, mark: str | None = None) -> TextResult:
-    """Try the sources in order (a, b); the winner's ``tried`` lists every attempt and why the others did not apply.  In ``auto`` a
-    VGA result that is only ``unverified`` counts as a failed attempt: later sources are tried, and the unverified text (flagged)
-    is returned only if nothing else applies.  ``--source vga`` returns it as is."""
+    """Try the sources in order (a, b); the winner's ``tried`` lists every attempt and why the others did not apply.
+
+    In ``auto``, a VGA result that is only ``unverified``/``partial`` and an EMPTY serial result (empty log, nothing after the
+    offset; typical when the console is on tty0) each count as a failed attempt.  Order of last resort: the flagged VGA text, else
+    the empty serial result (exit 0, empty text, ``exact: "stream"``, reason says it is empty; ``wait-text`` simply keeps polling).
+    ``--source vga`` / ``--source serial`` return their result as is."""
     if source not in SOURCES:
         raise ValueError(f"unknown source {source!r}")
     tried: list[dict[str, Any]] = []
     fallback: TextResult | None = None
+    empty_serial: TextResult | None = None
     if source in ("auto", "vga"):
         try:
             res = read_vga(client, dump_dir, blink_mode)
             if res.exact is True or source == "vga":
                 res.tried = tried + res.tried
                 return res
-            tried.append({"source": "vga-text", "ok": False, "reason": f"decoded but unverified: {res.exact_reason}"})
+            tried.append({"source": "vga-text", "ok": False, "reason": f"decoded but {res.exact}: {res.exact_reason}"})
             fallback = res
         except NoExactText as exc:
             tried += exc.tried
@@ -225,15 +250,22 @@ def read_text(client, *, source: str = "auto", serial_log: str | None = None, du
         if serial_log:
             try:
                 res = read_serial(serial_log, from_offset, mark)
-                res.tried = tried + res.tried
-                return res
+                if source == "auto" and res.geometry["empty"]:
+                    tried.append({"source": "serial", "ok": False, "reason": res.exact_reason})
+                    empty_serial = res
+                else:
+                    res.tried = tried + res.tried
+                    return res
             except NoExactText as exc:
                 tried += exc.tried
         else:
             tried.append({"source": "serial", "ok": False, "reason": "no --serial-log given"})
     if fallback is not None:
-        fallback.tried = tried + [{"source": "vga-text", "ok": True, "reason": "returned UNVERIFIED because no other source applied"}]
+        fallback.tried = tried + [{"source": "vga-text", "ok": True, "reason": f"returned {fallback.exact.upper()} because no other source applied"}]
         return fallback
+    if empty_serial is not None:
+        empty_serial.tried = tried
+        return empty_serial
     if source == "auto":
         tried.append({"source": "vcs", "ok": False, "reason": "not implemented: needs a guest shell channel (see README)"})
     tried.append({"source": "none", "ok": False,

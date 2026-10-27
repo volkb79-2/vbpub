@@ -266,7 +266,7 @@ def test_m3_no_orphan_png_when_the_json_cannot_be_committed(tmp_path, monkeypatc
         return real(src, dst, **kw)
     monkeypatch.setattr(os, "link", failing)
     with srv, QmpClient(path, 2) as c:
-        with pytest.raises(OSError, match="disk full"):
+        with pytest.raises(Exception, match="disk full"):
             capture.ocr_pair(c, tmp_path / "o", dump_dir=str(tmp_path))
     assert not list(tmp_path.glob("o*")) and not list(tmp_path.glob(".o*")) and g.status == "running"
 

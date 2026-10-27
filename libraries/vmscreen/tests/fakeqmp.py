@@ -46,10 +46,12 @@ class FakeQmp:
 
     def __init__(self, path: Path, handlers: dict[str, Callable[[dict], Any]] | None = None, *, greeting: bool = True,
                  events: bool = False, silent: set[str] | None = None, junk_on: str | None = None,
-                 drop_reply: set[str] | None = None) -> None:
+                 drop_reply: set[str] | None = None, bad_utf8_once: set[str] | None = None) -> None:
         self.path = str(path)
         self.handlers = handlers or {}
         self.greeting, self.events, self.silent, self.junk_on = greeting, events, silent or set(), junk_on
+        self.bad_utf8_once = bad_utf8_once or set()  # answer the first such command with undecodable bytes
+        self._cur = None
         self.drop_reply = drop_reply or set()  # run the handler, then never answer (a lost reply)
         self.log: list[tuple[str, dict]] = []
         self._srv = socket.socket(socket.AF_UNIX)
@@ -82,6 +84,7 @@ class FakeQmp:
             if self._stop:
                 conn.close()
                 return
+            self._cur = conn
             try:
                 with conn, conn.makefile("rw", encoding="utf-8") as f:
                     self._conn(f)
@@ -105,6 +108,11 @@ class FakeQmp:
             name, args = msg["execute"], msg.get("arguments", {})
             self.log.append((name, args))
             if name in self.silent:
+                continue
+            if name in self.bad_utf8_once:
+                self.bad_utf8_once.discard(name)
+                f.flush()
+                self._cur.sendall(b"\xff\xfe\n")
                 continue
             if name == self.junk_on:
                 send("this is not json")

@@ -12,6 +12,7 @@ import re
 
 MAX_COL = 4096  # cursor movement is clamped: ESC[300000000G must not allocate a 300 MB line
 MAX_PARAM = 1_000_000
+MAX_CELLS = 4_000_000  # total cells kept: when exceeded the OLDEST lines are dropped (the newest output is what a wait needs)
 
 _TOKEN = re.compile(
     r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"          # OSC
@@ -24,6 +25,7 @@ _TOKEN = re.compile(
 def render(raw: bytes) -> str:
     lines: list[list[str]] = [[]]
     col = 0
+    total = 0  # cells in the finished lines (the current line is bounded by MAX_COL)
     for m in _TOKEN.finditer(raw.decode("utf-8", errors="replace")):
         params, final, short, ch = m.group(1), m.group(2), m.group(3), m.group(4)
         if final is not None:
@@ -51,17 +53,28 @@ def render(raw: bytes) -> str:
                     del lines[-1][col:]
                 elif n == 1:
                     del lines[:-1]
+                    total = 0
                     for i in range(min(col + 1, len(lines[-1]))):
                         lines[-1][i] = " "
                 elif n in (2, 3):
                     lines[:] = [[]]
+                    total = 0
         elif short == "c":
             lines[:] = [[]]
             col = 0
+            total = 0
         elif ch is not None:
             if ch == "\n":
+                total += len(lines[-1])
                 lines.append([])
                 col = 0
+                if total > MAX_CELLS:
+                    drop, freed = 0, 0
+                    while total - freed > MAX_CELLS // 2 and drop < len(lines) - 1:
+                        freed += len(lines[drop])
+                        drop += 1
+                    del lines[:drop]
+                    total -= freed
             elif ch == "\r":
                 col = 0
             elif ch == "\b":

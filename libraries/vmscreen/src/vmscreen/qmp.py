@@ -60,7 +60,7 @@ class QmpClient:
     def _read_message(self) -> dict[str, Any]:
         try:
             line = self._file.readline()
-        except (OSError, TimeoutError) as exc:
+        except (OSError, TimeoutError, ValueError) as exc:  # ValueError: UnicodeDecodeError from the text wrapper
             raise QmpError(f"QMP read failed ({type(exc).__name__}: {exc})") from exc
         if not line:
             raise QmpError("QMP socket closed by QEMU")

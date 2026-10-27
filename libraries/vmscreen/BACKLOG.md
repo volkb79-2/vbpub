@@ -26,3 +26,7 @@
   revisit only for a paused guest.
 * **VMS-BL-12 serial amplification.** Columns are clamped to 4096, but each input line can still render up to 4096 columns of
   padding; a sparse line representation would remove the factor.
+* **VMS-BL-13 cursor colour.** An uncertain cursor-shaped cell could be settled by comparing the block's colour with the attribute's fg
+  through the DAC palette (not readable via QMP) or by a pixel-accurate glyph render (VMS-BL-10); until then it stays `partial`.
+* **VMS-BL-14 signal after commit.** A signal that arrives after the files are committed but before the handlers are restored is
+  dropped (the work is done); a re-raise would need the commit to report it.

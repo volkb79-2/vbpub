@@ -43,7 +43,7 @@ SERIAL = _value(("--serial-log",), "The guest's serial log file (QEMU -serial fi
 SOURCE = _value(("--source",), "Exact-text source: auto tries vga then serial.", "NAME", "SOURCES", choices=sources.SOURCES, default="auto")
 NO_BLINK = _flag(("--no-blink-mode",), "Decode attribute bit 7 as a bright background instead of blink. QMP cannot read the attribute-controller "
                  "mode bit, so this is a declared assumption (recorded in the output), not a detection.", "SOURCES")
-FROM_OFFSET = _value(("--from-offset",), "Serial source: ignore the first N bytes of the log (see `vmscreen mark`).", "BYTES", "SOURCES", type=int, default=0)
+FROM_OFFSET = _value(("--from-offset",), "Serial source: ignore the first N bytes of the log (see `vmscreen mark`).", "BYTES", "SOURCES", type=int)
 COMMON = (QMP, QMP_TIMEOUT, DUMP_DIR)
 MARK = _value(("--mark",), "Serial source: a token from `vmscreen mark`; like --from-offset, and additionally refuses a log that was "
               "truncated or replaced since (inode and first bytes are checked).", "TOKEN", "SOURCES")
@@ -88,12 +88,14 @@ def build_cli(cli_identity: CliIdentity | None = None, client_factory: ClientFac
 
     def reader(client: QmpClient, args: Any, mark: str | None = None) -> Callable[[], sources.TextResult]:
         mark = mark or args.mark
-        if args.from_offset < 0:
+        if mark is not None and args.from_offset is not None:
+            raise CliFailure("--mark (or --since-mark) and --from-offset both set the start: give only one", exit_code=2)
+        if args.from_offset is not None and args.from_offset < 0:
             raise CliFailure("--from-offset must be >= 0", exit_code=2)
         if mark is not None:
             sources.parse_mark(mark)  # malformed token: usage error (ValueError -> exit 2)
         return lambda: sources.read_text(client, source=args.source, serial_log=args.serial_log, dump_dir=args.dump_dir,
-                                         blink_mode=not args.no_blink_mode, from_offset=args.from_offset, mark=mark)
+                                         blink_mode=not args.no_blink_mode, from_offset=args.from_offset or 0, mark=mark)
 
     def positive(name: str, value: float | None, *, allow_zero: bool = False) -> None:
         if value is not None and (value < 0 or (value == 0 and not allow_zero)):
@@ -132,7 +134,7 @@ def build_cli(cli_identity: CliIdentity | None = None, client_factory: ClientFac
             res.text = "\n".join(res.text.split("\n")[-args.tail:])
         _emit(runtime, {"ok": True, "tail": args.tail} | res.as_dict(include_cells=args.cells), res.text)
         if not runtime.json_mode:
-            label = {True: "exact", "unverified": f"UNVERIFIED: {res.exact_reason}", "stream": "serial stream, not a screen"}.get(res.exact, str(res.exact))
+            label = {True: "exact", "unverified": f"UNVERIFIED: {res.exact_reason}", "partial": f"PARTIAL: {res.exact_reason}", "stream": "serial stream, not a screen"}.get(res.exact, str(res.exact))
             runtime.output.info(f"source: {res.source} ({res.scope}, {label})")
         return 0
 
@@ -149,17 +151,20 @@ def build_cli(cli_identity: CliIdentity | None = None, client_factory: ClientFac
         if args.since_mark:
             if not args.serial_log:
                 raise CliFailure("--since-mark needs --serial-log", exit_code=2)
+            if args.mark is not None or args.from_offset is not None:
+                raise CliFailure("--since-mark cannot be combined with --mark or --from-offset", exit_code=2)
             mark = sources.make_mark(args.serial_log)  # only output written from now on can satisfy the wait
+        real_offset = sources.parse_mark(mark)[0] if mark else (args.from_offset or 0)
         with connect(args) as client:
             out = waiter.wait_for(reader(client, args, mark), args.pattern, args.timeout, args.interval, literal=args.literal,
-                                  accept_unverified=args.accept_unverified)
-        _emit(runtime, {"ok": True, "mark": mark, "from_offset": args.from_offset} | out, f"matched {out['matched']!r} via {out['source']} ({out['exact']}) after {out['elapsed_s']}s")
+                                  accept_unverified=args.accept_unverified, accept_partial=args.accept_partial)
+        _emit(runtime, {"ok": True, "mark": mark, "from_offset": real_offset} | out, f"matched {out['matched']!r} via {out['source']} ({out['exact']}) after {out['elapsed_s']}s")
         return 0
 
     @guarded
     def mark(args: Any, runtime: CliRuntime) -> int:
         token = sources.make_mark(args.serial_log)
-        size = int(token.split(".")[0])
+        size = sources.parse_mark(token)[0]
         _emit(runtime, {"ok": True, "serial_log": args.serial_log, "offset": size, "mark": token}, token)
         return 0
 
@@ -189,7 +194,7 @@ def build_cli(cli_identity: CliIdentity | None = None, client_factory: ClientFac
         positive("--qmp-timeout", args.qmp_timeout)
         with connect(args) as client:
             out = capture.ocr_pair(client, Path(args.out), dump_dir=args.dump_dir, blink_mode=not args.no_blink_mode,
-                                   pause=not args.no_pause, allow_inexact=args.allow_inexact, force=args.force,
+                                   pause=not args.no_pause, allow_inexact=args.allow_inexact, accept_partial=args.accept_partial, force=args.force,
                                    reconnect=lambda: connect(args))
         _emit(runtime, {"ok": True} | out, f"{out['png']} + {out['json']} (exact={out['exact']})")
         return 0
@@ -229,9 +234,10 @@ def build_cli(cli_identity: CliIdentity | None = None, client_factory: ClientFac
                                        _flag(("--literal",), "Treat PATTERN as a literal string.", "WAIT"),
                                        _flag(("--since-mark",), "Serial source: only output written after this command started can match (a previous boot's "
                                              "'login:' cannot satisfy the wait).", "WAIT"),
-                                       _flag(("--accept-unverified",), "Also match VGA text whose cross-check against the screendump failed.", "WAIT")),
+                                       _flag(("--accept-unverified",), "Also match VGA text whose cross-check against the screendump failed.", "WAIT"),
+                                       _flag(("--accept-partial",), "Also match VGA text with uncertain cells (shown as U+FFFD).", "WAIT")),
         handler=wait_text))
-    registry.register(VerbSpec("mark", None, "Print a mark of a serial log (OFFSET.INODE.HEADLEN.HEADHASH): --mark TOKEN skips everything written so far and rejects a log replaced since.",
+    registry.register(VerbSpec("mark", None, "Print a mark of a serial log (OFFSET.INODE.HEADLEN.HEADHASH.TAILLEN.TAILHASH): --mark TOKEN skips everything written so far and rejects a log replaced since.",
                                group=VerbGroup.EXPLORATION.value, examples=("vmscreen mark --serial-log serial.log",),
                                options=(_value(("--serial-log",), "The serial log file.", "FILE", "SOURCES", required=True),), handler=mark))
     registry.register(VerbSpec(
@@ -252,6 +258,7 @@ def build_cli(cli_identity: CliIdentity | None = None, client_factory: ClientFac
         options=COMMON + (_value(("--out",), "Output prefix; .png and .json are appended.", "PREFIX", "OUTPUT", required=True), NO_BLINK,
                           _flag(("--no-pause",), "Do not pause the guest (pair may straddle a redraw).", "OUTPUT"),
                           _flag(("--allow-inexact",), "On a graphical or UNVERIFIED screen write PNG + sidecar with the exact flag/reason instead of exit 4.", "OUTPUT"),
+                          _flag(("--accept-partial",), "Accept a screen whose cells are all verified except cursor-shaped uncertain cells (listed in the sidecar).", "OUTPUT"),
                           _flag(("--force",), "Overwrite an existing PREFIX.png / PREFIX.json.", "OUTPUT")),
         handler=ocr_pair))
     registry.register(VerbSpec("probe", None, "Report which exact-text sources apply right now and why the others do not.",

@@ -131,13 +131,15 @@ def cursor_pixels(row, col, scanlines=(14, 15), width=9):
     return {(col * 9 + dx, row * 16 + dy) for dx in range(width) for dy in scanlines}
 
 
-def test_f3_one_cursor_block_in_a_blank_cell_is_tolerated_and_recorded(tmp_path):
+def test_f3_one_cursor_block_in_a_blank_cell_is_partial_not_exact(tmp_path):
     g = guest()
     g.extra_ink = cursor_pixels(10, 20)  # Linux moved the cursor; the BDA still says (5, 2)
     srv, path = serve(tmp_path, g)
     with srv, QmpClient(path, 2) as c:
         res = sources.read_vga(c, str(tmp_path))
-    assert res.exact is True and res.verification["cursor_tolerated"] == {"row": 10, "col": 20} and res.verification["mismatched"] == 0
+    assert res.exact == "partial" and res.verification["mismatched"] == 0
+    assert res.verification["uncertain_cells"][0]["row"] == 10 and res.verification["uncertain_cells"][0]["col"] == 20
+    assert res.screen.cells[10][20].char == "\ufffd" and res.lines[10].endswith("\ufffd") and res.geometry["uncertain_cells"]
 
 
 @pytest.mark.parametrize("name,ink", [
@@ -152,7 +154,7 @@ def test_f3_anything_else_stays_strict(tmp_path, name, ink):
     srv, path = serve(tmp_path, g)
     with srv, QmpClient(path, 2) as c:
         res = sources.read_vga(c, str(tmp_path))
-    assert res.exact == "unverified" and "cursor_tolerated" not in res.verification, name
+    assert res.exact == "unverified" and "uncertain_cells" not in res.verification, name
 
 
 # ---------------------------------------------------------------- F4: hostile escape parameters

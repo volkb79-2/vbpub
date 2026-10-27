@@ -78,8 +78,11 @@ def cell_has_ink(rows: list[bytearray], bpp: int, x0: int, y0: int, cw: int, ch:
 
 
 def cursor_shaped(rows: list[bytearray], bpp: int, x0: int, y0: int, cw: int, ch: int) -> bool:
-    """Is the cell's non-background ink exactly one filled rectangle that spans (nearly) the cell width and lies in the lower half?
-    That is how QEMU draws a text cursor (a block of the bottom scanlines); a glyph never is.  Background = the cell's top-left pixel."""
+    """Is the cell's non-background ink exactly one filled rectangle on the LAST TWO scanlines (14-15 of 16, 12-13 of 14, 6-7 of 8:
+    the standard underline cursor) spanning the cell width (or width - 1 in a 9-dot cell)?  Background = the cell's top-left pixel.
+    The cursor colour is the attribute's fg, but the DAC palette is not readable through QMP, so colour is not checked.  Glyphs
+    such as ``_`` (one scanline), the lower-half block (eight) or a thicker bar do not match; a two-scanline bar still cannot be
+    told from the cursor, which is why the cell is reported as UNCERTAIN, never as verified."""
     bg = bytes(rows[y0][x0 * bpp:(x0 + 1) * bpp])
     xs: list[int] = []
     ys: list[int] = []
@@ -93,7 +96,7 @@ def cursor_shaped(rows: list[bytearray], bpp: int, x0: int, y0: int, cw: int, ch
     if not count:
         return False
     w, h = max(xs) - min(xs) + 1, max(ys) - min(ys) + 1
-    return count == w * h and w >= cw - 1 and min(ys) - y0 >= ch // 2
+    return count == w * h and w >= cw - 1 and min(ys) - y0 == ch - 2 and max(ys) - y0 == ch - 1
 
 
 def verify_ink(png: bytes, cols: int, nrows: int, cell_w: int, cell_h: int, buf: bytes, cursor: tuple[int, int] | None,
@@ -124,10 +127,13 @@ def verify_ink(png: bytes, cols: int, nrows: int, cell_w: int, cell_h: int, buf:
             if expected != seen:
                 mismatches.append({"row": r, "col": c, "expected_ink": expected, "seen_ink": seen})
     # Linux moves the cursor through the CRTC without touching the BIOS data area, and QEMU draws it: ONE cell that is blank in the
-    # buffer but carries a cursor-shaped block is that stale cursor, not a wrong page.  Anything else stays strict.
+    # buffer but carries a cursor-shaped block is most likely that stale cursor, not a wrong page: it is NOT counted as verified
+    # (uncertain_cells), the rest of the screen is.  Anything else stays strict.
     if len(mismatches) == 1 and not mismatches[0]["expected_ink"] and mismatches[0]["seen_ink"] and cursor_shaped(
             rows, bpp, mismatches[0]["col"] * cell_w, mismatches[0]["row"] * cell_h, cell_w, cell_h):
-        out["cursor_tolerated"] = {"row": mismatches[0]["row"], "col": mismatches[0]["col"]}
+        out["uncertain_cells"] = [{"row": mismatches[0]["row"], "col": mismatches[0]["col"],
+                                   "reason": "cursor-shaped ink (two bottom scanlines) in a cell the buffer says is blank: "
+                                             "the stale cursor, or a glyph of that shape; the buffer character cannot be vouched for"}]
         mismatches = []
     out.update(compared=compared, skipped=skipped, mismatched=len(mismatches), mismatches=mismatches[:5], ok=not mismatches and compared > 0)
     if compared == 0:

@@ -66,6 +66,7 @@
         "option:route:entrypoint:vmscreen/ocr-pair/--no-blink-mode",
         "option:route:entrypoint:vmscreen/ocr-pair/--no-pause",
         "option:route:entrypoint:vmscreen/ocr-pair/--allow-inexact",
+        "option:route:entrypoint:vmscreen/ocr-pair/--accept-partial",
         "option:route:entrypoint:vmscreen/ocr-pair/--force"
       ],
       "route_id": "route:entrypoint:vmscreen/ocr-pair",
@@ -75,6 +76,7 @@
           "option:route:entrypoint:vmscreen/ocr-pair/--no-blink-mode",
           "option:route:entrypoint:vmscreen/ocr-pair/--no-pause",
           "option:route:entrypoint:vmscreen/ocr-pair/--allow-inexact",
+          "option:route:entrypoint:vmscreen/ocr-pair/--accept-partial",
           "option:route:entrypoint:vmscreen/ocr-pair/--force"
         ],
         "required_argument_values": {},
@@ -84,7 +86,20 @@
           "option:route:entrypoint:vmscreen/ocr-pair/--out"
         ]
       },
-      "signature": "sha256:fb75de115d22bd70eb8af45ecb26ccdafe456fb972646da73619eba3521c75bb"
+      "signature": "sha256:a78fb1df772d0a7d4b01e0b23632dac2a999c29225e0d454d064d682dc2368eb"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/ocr-pair/option-spelling/option:route:entrypoint:vmscreen/ocr-pair/--accept-partial/--accept-partial",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/ocr-pair/--accept-partial"
+      ],
+      "route_id": "route:entrypoint:vmscreen/ocr-pair",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/ocr-pair/--accept-partial",
+        "spelling": "--accept-partial"
+      },
+      "signature": "sha256:d73eae3340d24da0318d4b9f7d4debc7bb563e8ab17b4674fb6409c5fe00eb9e"
     },
     {
       "id": "case:route:entrypoint:vmscreen/ocr-pair/option-spelling/option:route:entrypoint:vmscreen/ocr-pair/--allow-inexact/--allow-inexact",
@@ -222,23 +237,21 @@
       "members": [
         "option:route:entrypoint:vmscreen/probe/--qmp-timeout",
         "option:route:entrypoint:vmscreen/probe/--source",
-        "option:route:entrypoint:vmscreen/probe/--no-blink-mode",
-        "option:route:entrypoint:vmscreen/probe/--from-offset"
+        "option:route:entrypoint:vmscreen/probe/--no-blink-mode"
       ],
       "route_id": "route:entrypoint:vmscreen/probe",
       "shape": {
         "defaulted_options": [
           "option:route:entrypoint:vmscreen/probe/--qmp-timeout",
           "option:route:entrypoint:vmscreen/probe/--source",
-          "option:route:entrypoint:vmscreen/probe/--no-blink-mode",
-          "option:route:entrypoint:vmscreen/probe/--from-offset"
+          "option:route:entrypoint:vmscreen/probe/--no-blink-mode"
         ],
         "required_argument_values": {},
         "required_arguments": [],
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:4fdd99ef93c112acdc4dc8a35a4d5b96bff87a1ddad11a9c5fe33900ff29de6f"
+      "signature": "sha256:bbf5850ef95f7dd67ae37bc2fc3214e01708feb7291d512569743c76e6de6770"
     },
     {
       "id": "case:route:entrypoint:vmscreen/probe/option-choice/option:route:entrypoint:vmscreen/probe/--source/529ad75351",
@@ -316,7 +329,7 @@
         "option_id": "option:route:entrypoint:vmscreen/probe/--from-offset",
         "spelling": "--from-offset"
       },
-      "signature": "sha256:e9251f39e13dab529767b7389f667d240f93373428c137ff1f69fd6fdc03e06f"
+      "signature": "sha256:dd88d5909f161488b7e99b88c3e21adb386e5a7250e453a93286caa54638061c"
     },
     {
       "id": "case:route:entrypoint:vmscreen/probe/option-spelling/option:route:entrypoint:vmscreen/probe/--json/--json",
@@ -1314,7 +1327,6 @@
         "option:route:entrypoint:vmscreen/text/--qmp-timeout",
         "option:route:entrypoint:vmscreen/text/--source",
         "option:route:entrypoint:vmscreen/text/--no-blink-mode",
-        "option:route:entrypoint:vmscreen/text/--from-offset",
         "option:route:entrypoint:vmscreen/text/--cells"
       ],
       "route_id": "route:entrypoint:vmscreen/text",
@@ -1323,7 +1335,6 @@
           "option:route:entrypoint:vmscreen/text/--qmp-timeout",
           "option:route:entrypoint:vmscreen/text/--source",
           "option:route:entrypoint:vmscreen/text/--no-blink-mode",
-          "option:route:entrypoint:vmscreen/text/--from-offset",
           "option:route:entrypoint:vmscreen/text/--cells"
         ],
         "required_argument_values": {},
@@ -1331,7 +1342,7 @@
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:6551df2db16563c32003ab094ab7b688701cea596593b1f9d49e7e2211fc8974"
+      "signature": "sha256:5089c8aaa3896e6971cc731330173a859c2f3017e06c4ec803289572894ba392"
     },
     {
       "id": "case:route:entrypoint:vmscreen/text/option-choice/option:route:entrypoint:vmscreen/text/--source/529ad75351",
@@ -1422,7 +1433,7 @@
         "option_id": "option:route:entrypoint:vmscreen/text/--from-offset",
         "spelling": "--from-offset"
       },
-      "signature": "sha256:49943677df9247e53b13af988d19e0025f78cdfbb9346366ebb5263ee450d111"
+      "signature": "sha256:a717eeffac9d24ffcfdc71497fac8ace0ea7a7a23491123082622fb6c502acd7"
     },
     {
       "id": "case:route:entrypoint:vmscreen/text/option-spelling/option:route:entrypoint:vmscreen/text/--json/--json",
@@ -1548,12 +1559,12 @@
         "option:route:entrypoint:vmscreen/wait-text/--qmp-timeout",
         "option:route:entrypoint:vmscreen/wait-text/--source",
         "option:route:entrypoint:vmscreen/wait-text/--no-blink-mode",
-        "option:route:entrypoint:vmscreen/wait-text/--from-offset",
         "option:route:entrypoint:vmscreen/wait-text/--timeout",
         "option:route:entrypoint:vmscreen/wait-text/--interval",
         "option:route:entrypoint:vmscreen/wait-text/--literal",
         "option:route:entrypoint:vmscreen/wait-text/--since-mark",
-        "option:route:entrypoint:vmscreen/wait-text/--accept-unverified"
+        "option:route:entrypoint:vmscreen/wait-text/--accept-unverified",
+        "option:route:entrypoint:vmscreen/wait-text/--accept-partial"
       ],
       "route_id": "route:entrypoint:vmscreen/wait-text",
       "shape": {
@@ -1561,12 +1572,12 @@
           "option:route:entrypoint:vmscreen/wait-text/--qmp-timeout",
           "option:route:entrypoint:vmscreen/wait-text/--source",
           "option:route:entrypoint:vmscreen/wait-text/--no-blink-mode",
-          "option:route:entrypoint:vmscreen/wait-text/--from-offset",
           "option:route:entrypoint:vmscreen/wait-text/--timeout",
           "option:route:entrypoint:vmscreen/wait-text/--interval",
           "option:route:entrypoint:vmscreen/wait-text/--literal",
           "option:route:entrypoint:vmscreen/wait-text/--since-mark",
-          "option:route:entrypoint:vmscreen/wait-text/--accept-unverified"
+          "option:route:entrypoint:vmscreen/wait-text/--accept-unverified",
+          "option:route:entrypoint:vmscreen/wait-text/--accept-partial"
         ],
         "required_argument_values": {
           "argument:route:entrypoint:vmscreen/wait-text/pattern": 1
@@ -1577,7 +1588,7 @@
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:8f2a5afea0fcef3476d94d13c81e18cdf83b4138a1bdb55d0235e07cec7e0351"
+      "signature": "sha256:911cc980b6624fb6a75af7f59f63aa3ad1c32741beb4948fe977e511f504252f"
     },
     {
       "id": "case:route:entrypoint:vmscreen/wait-text/option-choice/option:route:entrypoint:vmscreen/wait-text/--source/529ad75351",
@@ -1617,6 +1628,19 @@
         "option_id": "option:route:entrypoint:vmscreen/wait-text/--source"
       },
       "signature": "sha256:293639c93de9935afeaafb076275c49c2066e7da0b61d9f1ee328b77c2e5a7f3"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/wait-text/option-spelling/option:route:entrypoint:vmscreen/wait-text/--accept-partial/--accept-partial",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/wait-text/--accept-partial"
+      ],
+      "route_id": "route:entrypoint:vmscreen/wait-text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/wait-text/--accept-partial",
+        "spelling": "--accept-partial"
+      },
+      "signature": "sha256:7b751d43687a220c5124a358368cee257fe60156eb4c1612884e81de2b92d996"
     },
     {
       "id": "case:route:entrypoint:vmscreen/wait-text/option-spelling/option:route:entrypoint:vmscreen/wait-text/--accept-unverified/--accept-unverified",
@@ -1668,7 +1692,7 @@
         "option_id": "option:route:entrypoint:vmscreen/wait-text/--from-offset",
         "spelling": "--from-offset"
       },
-      "signature": "sha256:b40d4dff46e9941a50a7e000b3b7fe8e08215e28e5c797dda5cceb985f787495"
+      "signature": "sha256:19fd6e1af5d03c7dfb9d77e36887a27bb3552a68aa3faaf556119f986274a038"
     },
     {
       "id": "case:route:entrypoint:vmscreen/wait-text/option-spelling/option:route:entrypoint:vmscreen/wait-text/--interval/--interval",
@@ -1900,7 +1924,7 @@
       "confirmation": false,
       "constraints": [],
       "delegated_metadata": [],
-      "description": "Print a mark of a serial log (OFFSET.INODE.HEADLEN.HEADHASH): --mark TOKEN skips everything written so far and rejects a log replaced since.",
+      "description": "Print a mark of a serial log (OFFSET.INODE.HEADLEN.HEADHASH.TAILLEN.TAILHASH): --mark TOKEN skips everything written so far and rejects a log replaced since.",
       "group": "EXPLORATION",
       "id": "route:entrypoint:vmscreen/mark",
       "kind": "invocation",
@@ -1942,7 +1966,7 @@
       "subcommand_groups": [],
       "subcommands": [],
       "subcommands_required": false,
-      "summary": "Print a mark of a serial log (OFFSET.INODE.HEADLEN.HEADHASH): --mark TOKEN skips everything written so far and rejects a log replaced since.",
+      "summary": "Print a mark of a serial log (OFFSET.INODE.HEADLEN.HEADHASH.TAILLEN.TAILHASH): --mark TOKEN skips everything written so far and rejects a log replaced since.",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null
@@ -2202,6 +2226,44 @@
           "help_group": "OUTPUT",
           "hidden": false,
           "id": "option:route:entrypoint:vmscreen/ocr-pair/--allow-inexact",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "ocr-pair"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--accept-partial",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Accept a screen whose cells are all verified except cursor-shaped uncertain cells (listed in the sidecar).",
+          "dest": "accept_partial",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--accept-partial"
+          ],
+          "help_group": "OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/ocr-pair/--accept-partial",
           "kind": "option",
           "metavar": null,
           "minimum_values": 0,
@@ -2577,11 +2639,11 @@
           "canonical": "--from-offset",
           "choices": null,
           "const": null,
-          "default": 0,
+          "default": null,
           "default_present": true,
           "description": "Serial source: ignore the first N bytes of the log (see `vmscreen mark`).",
           "dest": "from_offset",
-          "effective_default": 0,
+          "effective_default": null,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
@@ -2595,7 +2657,7 @@
           "minimum_values": 1,
           "nargs": null,
           "parser_kwargs": {
-            "default": 0,
+            "default": null,
             "type": {
               "callable": "builtins.int"
             }
@@ -4479,11 +4541,11 @@
           "canonical": "--from-offset",
           "choices": null,
           "const": null,
-          "default": 0,
+          "default": null,
           "default_present": true,
           "description": "Serial source: ignore the first N bytes of the log (see `vmscreen mark`).",
           "dest": "from_offset",
-          "effective_default": 0,
+          "effective_default": null,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
@@ -4497,7 +4559,7 @@
           "minimum_values": 1,
           "nargs": null,
           "parser_kwargs": {
-            "default": 0,
+            "default": null,
             "type": {
               "callable": "builtins.int"
             }
@@ -4974,11 +5036,11 @@
           "canonical": "--from-offset",
           "choices": null,
           "const": null,
-          "default": 0,
+          "default": null,
           "default_present": true,
           "description": "Serial source: ignore the first N bytes of the log (see `vmscreen mark`).",
           "dest": "from_offset",
-          "effective_default": 0,
+          "effective_default": null,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
@@ -4992,7 +5054,7 @@
           "minimum_values": 1,
           "nargs": null,
           "parser_kwargs": {
-            "default": 0,
+            "default": null,
             "type": {
               "callable": "builtins.int"
             }
@@ -5230,6 +5292,44 @@
           "help_group": "WAIT",
           "hidden": false,
           "id": "option:route:entrypoint:vmscreen/wait-text/--accept-unverified",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "wait-text"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--accept-partial",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Also match VGA text with uncertain cells (shown as U+FFFD).",
+          "dest": "accept_partial",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--accept-partial"
+          ],
+          "help_group": "WAIT",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/wait-text/--accept-partial",
           "kind": "option",
           "metavar": null,
           "minimum_values": 0,
