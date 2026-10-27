@@ -106,6 +106,20 @@ rebuilding the image this way (about 2 minutes); the previous image is kept as `
 tester-unified/build-image.sh --wheel-dir run-gate-project/dist --tag tester-unified:local
 ```
 
+For an image that serves ANOTHER tool's release gate (cmru, assay, ciu, ...) use the published Run-Gate
+wheel instead of the development wheel in `run-gate-project/dist`:
+
+```bash
+tester-unified/build-image.sh --run-gate-release 24.0.1 --tag tester-unified:local
+```
+
+`--run-gate-release X.Y.Z` downloads `run_gate-X.Y.Z-py3-none-any.whl` and its `.sha256` sidecar from the
+`run-gate-vX.Y.Z` GitHub release, verifies the digest and builds from exactly those bytes. CMRU's release
+gate refuses any tester image whose `org.vbpub.run-gate.version` / `wheel-sha256` labels are not the published
+wheel of the installed Run-Gate; an image built from the source tree carries `X.Y.Z.devN+gHASH` and is only
+valid for Run-Gate's own candidate gate (`tools/release_candidate.py` builds that one itself). Overriding the
+image with `RUN_GATE_TESTER_UNIFIED_IMAGE` is the escape hatch for a one-off, not the supported flow.
+
 The image labels and `/etc/tester-unified-run-gate-wheel.json` record that
 wheel's version and SHA-256. The builder verifies the loaded labels, and
 Run-Gate's release lane checks the in-container identity against its

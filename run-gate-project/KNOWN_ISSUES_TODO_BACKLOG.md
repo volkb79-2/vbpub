@@ -6301,7 +6301,7 @@ Run-Gate continues to own its inner argv, state-root checks, deadlines, verdict 
 
 ## RG-102 — Run-Gate should delegate CIU-backed ephemeral lanes to `ciu run`
 
-**Status:** OPEN — coordinated follow-up package after the current release wave. Severity: Medium. Type: feature. SPEC owners: Run-Gate R-07/R-19a/RG-89 environment-launch contract; CIU S10.8/S8 owns one-shot Compose lifecycle. Depends on CIU-141. Related: RG-89, RG-99, CIU-113/118/141.
+**Status:** OPEN (2026-10-27: blocked, CIU-141 `ciu run` is not on main) — coordinated follow-up package after the current release wave. Severity: Medium. Type: feature. SPEC owners: Run-Gate R-07/R-19a/RG-89 environment-launch contract; CIU S10.8/S8 owns one-shot Compose lifecycle. Depends on CIU-141. Related: RG-89, RG-99, CIU-113/118/141.
 
 **Observed.** Run-Gate's current `mode = "ephemeral"` starts a raw Docker container from an image. That is appropriate for independent environments, but a CIU-managed test-runner already has the complete service declaration: instance network, CIU-rendered secrets, mounts, cgroup parent and user. Starting it outside CIU either duplicates those settings in Run-Gate configuration or bypasses CIU's authority. Keeping the service persistently `up` solely for `docker exec` recreates the shared `/tmp`, process-reaping and cross-lane-leftover risks of RG-99.
 
@@ -6327,7 +6327,7 @@ Run-Gate continues to own its inner argv, state-root checks, deadlines, verdict 
 
 ## RG-105 — `DEFAULT_HOST_IMAGE` still names the 8 GB MDT cockpit image; move it onto `tester-base`
 
-**Status:** OPEN (filed by mdt-cockpit MDTC-02 / tester-base, 2026-10-18; CHANGES.md checked: no
+**Status:** OPEN (2026-10-27: blocked on the first tester-base release digest; not started) (filed by mdt-cockpit MDTC-02 / tester-base, 2026-10-18; CHANGES.md checked: no
 earlier entry, SPEC.md:130 documents the current default).
 
 **Observed.** `run-gate-project/run_gate.py` (`DEFAULT_HOST_IMAGE`, run-gate 24.0.1 line 521; filed against the pre-24 `run-gate.py:384`) is the floating
@@ -6353,7 +6353,7 @@ grep over the tree finds no remaining MDT-cockpit image reference in run-gate co
 
 ## RG-106 — environments have no `user` key; a root-run `host` environment (tester-base) can leave root-owned files in the bind-mounted worktree
 
-**Status:** OPEN (filed by mdt-cockpit MDTC-02 fix round 2, 2026-10-19, operator decision D-007; to be implemented
+**Status:** PARTIALLY FIXED 2026-10-27 (wave-run-gate-20261027): `user = "invoker"` / numeric `uid[:gid]` implemented with oracles 1-4 (validator, resolution, existing `--user` argv at both launch sites); oracle 5 (refuse an image without a passwd entry for the resolved uid) remains OPEN. Original filing: (filed by mdt-cockpit MDTC-02 fix round 2, 2026-10-19, operator decision D-007; to be implemented
 in the release program's Run-Gate wave). CHANGES.md checked: no entry mentions an environment `user`. Sits next to
 RG-105 (the `DEFAULT_HOST_IMAGE` literal), which it completes.
 
@@ -6410,7 +6410,7 @@ reason when the checkout has no tags. A checked-in lane that is red for an envir
 
 ## RG-108 — `stop-pending` / `finalization-failed` sessions are treated as unavailable, dropping the CGProfile session id and kill evidence
 
-**Status:** OPEN (renumbered 2026-10-21 from the duplicate `RG-105` of park/stash@2; `RG-105` stays the merged
+**Status:** OPEN, PARKED 2026-10-27 (cgprofile 1.1.0 ships CP-24 only as a backlog entry, no `stop-pending` daemon behaviour, so nothing in this wave needs it; it must land before the CP-24 daemon is installed). Filed (renumbered 2026-10-21 from the duplicate `RG-105` of park/stash@2; `RG-105` stays the merged
 `DEFAULT_HOST_IMAGE` item). Severity Medium. Tracked in the RG-55 finish plan as W9 / "RG-105(a)". Design only, in the
 parked CP-24 packet (`park/stash-2026-10-17-park-cp-24-25-26-work-from-cgprofile-rel`); no code on main.
 
@@ -6422,7 +6422,7 @@ unavailable", discarding both.
 
 ## RG-109 — a SIGTERM to `run-gate` leaves the detached lane container running
 
-**Status:** OPEN (found 2026-10-21 ~03:50 UTC, filed by BL-01; severity: medium). No existing entry covers it (checked this
+**Status:** OPEN, NEEDS AN OPERATOR DECISION (2026-10-27 triage: the in-flight record + `docker logs -f` follow design (SPEC R-15/R-17, RW-14: a second invocation FOLLOWS a live run) deliberately lets a detached lane outlive its client, so `stop and remove on SIGTERM` contradicts the adoption contract; choose between (a) stop+remove on SIGTERM/SIGINT, (b) keep adoption and print the exact `docker rm -f <name>` line on interruption. Not implemented in 24.0.2). Filed (found 2026-10-21 ~03:50 UTC, filed by BL-01; severity: medium). No existing entry covers it (checked this
 file and `CHANGES.md` for SIGTERM, signal, orphan and stale-container wording: the nearest are RG-44 `GONE_SIGNALS`, an unrelated
 docker-stderr match, and the ticket release on SIGTERM at the transient-ticket section, which is about the runner lock, not
 the container).
@@ -6457,3 +6457,15 @@ command names it).
 
 **Observation only (not a defect filed here; controller-reported).** The same run printed `cgprofile ctl version could not reach the daemon at
 /run/cgprofile/ctl.sock` (exit 3) as a profiling WARNING. It degrades profiling, not the verdict.
+
+## RG-110 — a tester-unified image built from the source tree carries a development Run-Gate wheel, which CMRU's release gate refuses
+
+**Status:** FIXED IN CANDIDATE 2026-10-27 (wave-run-gate-20261027): `tester-unified/build-image.sh --run-gate-release X.Y.Z` builds from the published wheel (`tester-unified/fetch-run-gate-release.py`, sidecar-verified); the default stays the source wheel for Run-Gate's own candidate gate. Severity Medium (blocks every other tool's gated release until the image is hand-restored).
+
+**Observed.** `tester-unified:local` rebuilt on 2026-10-27 (`build-image.sh --wheel-dir run-gate-project/dist`) labelled `org.vbpub.run-gate.version=24.0.2.dev542+g0c152cddf`. `cmru/tools/run_release_gate.py::_check_tester_image_identity` requires the selected image's `org.vbpub.run-gate.version` / `wheel-sha256` labels to equal the PUBLISHED wheel of the installed Run-Gate (24.0.1), so the cmru release gate refused it and needed `RUN_GATE_TESTER_UNIFIED_IMAGE=tester-unified:prev-20261027` (the 24.0.1 image). The code is behaving as designed; the build flow had no way to produce the image the gate wants.
+
+**Oracles.** The fetcher refuses a digest mismatch, a malformed sidecar, a non-SemVer version and a non-empty destination; `build-image.sh` rejects `--run-gate-release` with `--wheel-dir`. Open: the controller rebuilds the image with the flag (tester-unified stream), and the image must be rebuilt again after each Run-Gate release so its labels follow the installed judge.
+
+## RG-111 — the 24.0.2 release gate runs with the R2 mutation campaign waived (operator, 2026-10-27)
+
+**Status:** OPEN (the waiver is the item). The wave policy waives R2 for every release (cmru 7.0.0 style `gate-provisional`, KI-79 window); all other lanes and the regular tests stay mandatory. Closing it means one full R2 campaign over the run-gate sources changed since `run-gate-v24.0.1` (the RG-55 baseline-liveness bound, B108 phase 2 closeout, v6 worktree-record reader, RG-106 `user`), run after the waiver window closes.

@@ -133,7 +133,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
 - **environment** — a named container/host execution fact set: `image`
   (required for container modes), `image_env` (optional valid environment
   variable name selecting an invocation-specific image in `ephemeral` mode),
-  `cgroup_slice` or `cgroup_slice_env` (at most one, optional), `mode`
+  `cgroup_slice` or `cgroup_slice_env` (at most one, optional), `user`
+  (optional, container modes only: `"invoker"` = the invoking process's
+  `uid:gid`, or a numeric `uid[:gid]`; passed as `--user` to every container
+  the environment starts, RG-106), `mode`
   (required, exactly one of
   `"ephemeral"`, `"exec"`, or `"host"`), `forward_env` (optional list of
   environment-variable names). The names `host` and `bare-host` are ordinary
@@ -1205,9 +1208,38 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     **not** a `ValueError`), a missing/non-string/blank `base_ref`, and each
     rejection above. Nothing this read does can raise or block: it is a
     better DEFAULT, never a requirement, and a malformed record must not be
-    able to abort a gate run. `schema_version`, `state` and `lease` are NOT
-    inspected — validating fields run-gate does not use would turn a
-    forward-compatible read into a new drift surface.
+    able to abort a gate run. `state` and `lease` are NOT inspected —
+    validating fields run-gate does not use would turn a forward-compatible
+    read into a new drift surface. `schema_version` is read for exactly one
+    purpose, choosing which of the two readings below applies.
+  - **Schema v6 — `base_branch_ref` is the moving anchor.** From ciu schema
+    v6, `base_ref` is the PINNED full commit id the worktree was forked from
+    and `fork_point_sha` the same immutable fork commit; the symbolic base
+    moves to a separate key, `base_branch_ref`: a canonical LOCAL branch name,
+    or JSON null when ciu could not name one (an adopted checkout, a tag, a
+    raw commit). A pinned SHA cannot detect that the base absorbed the tree —
+    it is an ancestor of HEAD forever, so `merge-base(SHA, HEAD)` is the SHA
+    whatever `main` does — so the clauses of this rule (live local branch,
+    `merge-base` equals the fork point, base does not already contain HEAD,
+    non-empty judged diff) run against `refs/heads/<base_branch_ref>`, and
+    what is handed downstream is the validated `fork_point_sha`. The branch is
+    never inferred from the SHA, a tag, a remote-tracking ref or a default.
+    A v6 record is **refused** (degrading to `R-35`'s fall-through, with the
+    reason printed and an explicit `--base` as the remedy) when
+    `base_branch_ref` is absent, null, blank or not a plain string, is not
+    gate-safe text (`R-35b`), or does not resolve — by its full
+    `refs/heads/` name — to a live local branch in this tree (which also
+    rejects `refs/heads/x`/`heads/x` spellings, tags, remote-tracking refs and
+    revision syntax); when `base_ref` is not a full commit id, `fork_point_sha`
+    is missing or malformed, or the two disagree; when `branch` no longer
+    describes the tree; and when the branch absorbed this tree
+    (`merge-base` moved: the MOVED reason). A `schema_version` that is not a
+    positive integer is refused; one newer than 6 is refused rather than read
+    as v6. A record with no `schema_version` keeps the legacy reading.
+  - **Schemas v1–v5 keep the symbolic `base_ref` reading** described above,
+    unchanged. A v1–v5 record whose `base_ref` is a frozen SHA fails the
+    live-local-branch clause with a reason that says to pass an explicit
+    `--base`; a `base_branch_ref` key in such a record is never consulted.
   - **What is handed downstream is the verified FORK COMMIT**, not the
     branch name. Equality has just established that both spellings resolve
     to the same commit, and an OID cannot be moved by another session
@@ -1688,6 +1720,46 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     An unknown state probe result is ERROR, never a writable-root
     certification. For `doctor`, a confirmed missing or unwritable root is
     FAIL and an indeterminate probe is SKIP.
+  - **Campaign closeout (B108 phase 2).** For a `kind = "assay"` lane only,
+    live runs only, the inner script (every runner) captures the lane's own
+    exit status, then runs `assay analyze campaign <assay_lane> --file
+    assay.toml --expected-commit <judged commit> --progress <the lane's
+    progress path> --state-dir <the lane's state dir> [--request-base <the
+    run's>] [--verdict <the lane's verdict> --command-exit <captured exit>]
+    --format json|text` with the SAME judge command, writes the two renderings
+    to `.assay/campaign-<assay_lane>.{json,txt}` (stderr to `.err`, both exit
+    statuses to `.exit`), and exits with the captured lane status. `--verdict`
+    and `--command-exit` are passed only when the verdict file exists. The
+    stale files are deleted at script start, and the analysis is bounded by
+    `timeout 900` when `timeout` exists. No argument is derived or guessed;
+    the judged commit is the one Run-Gate already resolved. After the lane's
+    result is final, the host reads those four files from beside the verdict,
+    checks them, retains the JSON and text as
+    `<evidence dir>/lanes/<lane>/<run id>.campaign.{json,txt}` (0600, never
+    overwriting) and records `closeout` in the run record. Its closed
+    `status` vocabulary is `complete`, `incomplete`, `evidence_error` (the
+    analysis's own status, retained verbatim), `unavailable` (absent or
+    zero-byte output, unreadable or oversize file, unresolved commit),
+    `invalid` (output that is not this lane's or this commit's, whose text
+    disagrees with its JSON, whose exits are not the ones that status
+    documents, or whose verified verdict differs from the lane result),
+    `retention_error` and `not_applicable` (the verified verdict's claims are a
+    nonempty list of objects, each passing the verified-claim checks of
+    `_observer_unavailable_rollup` (`source == "computed"`,
+    `verified_by_assay is True`, a recognized unique `rigor`, a recognized
+    `status`, a string-or-null `reason_code`), and none is R2; a malformed,
+    unverified, forged, partial, duplicated or unrecognized claim set proves
+    nothing and is analyzed instead; R-38 still
+    reads no inventory). **The closeout never
+    alters the lane:** verdict, `exit_code`, `reason`, `assay_outcome`, log
+    and gate exit are computed first and are not inputs to anything the
+    closeout does except as a comparison; every closeout failure is a
+    `WARNING` naming its status and saying the lane verdict and exit are
+    unchanged. A `kind = "command"` lane, including one whose argv runs
+    `assay run`, never triggers a closeout: it has no resolved Assay
+    artifact paths and Run-Gate does not infer them. No lane key opts a
+    command lane in for this release (Assay decision A-497). A lane stopped by its
+    budget or killed produces none. A `--dry-run` produces none.
 
 - `R-39` **Re-attach: a lane's container outlives its client, and is found
   again (RG-35).** A container lane runs detached (`R-15`) and is removed by

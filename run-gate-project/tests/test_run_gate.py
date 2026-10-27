@@ -3675,6 +3675,765 @@ exit 0
         assert "JUDGE-REACHED-R0" not in captured.out
 
 
+class TestAssayCampaignCloseout:
+    """B108 phase 2 (SPEC R-38 "Campaign closeout"): a registered
+    `kind = "assay"` lane is followed, inside the same script, by Assay's own
+    `analyze campaign` over the lane's OWN verdict/progress/state paths; the
+    text and JSON closeouts are retained with the gate evidence.
+
+    The fake judge below is deliberately dumb: it answers `run` with a
+    controlled exit and `analyze` with a controlled document. Every oracle
+    asserts on what Run-Gate does with those answers -- the original lane
+    verdict and exit must survive every closeout outcome unchanged."""
+
+    _COMMIT = "a" * 40
+    _JUDGE = """\
+#!/bin/sh
+case "$*" in
+  *"lanes --json"*) cat <<'JSON'
+@INVENTORY@
+JSON
+    exit 0 ;;
+  *--version*) echo "assay 9.0.0"; exit 0 ;;
+esac
+printf '%s\\n' "$*" >> "$FAKE_CONTROL/calls"
+if [ "$1" = "run" ]; then
+  if [ -f "$FAKE_CONTROL/kill_parent" ]; then kill -9 "$PPID"; fi
+  verdict=""; previous=""
+  for argument in "$@"; do
+    if [ "$previous" = "--verdict-json" ]; then verdict=$argument; fi
+    previous=$argument
+  done
+  if [ -n "$verdict" ]; then mkdir -p "$(dirname "$verdict")"; echo '{}' > "$verdict"; fi
+  exit "$(cat "$FAKE_CONTROL/run_exit")"
+fi
+if [ "$1" = "analyze" ]; then
+  lane=$3; commit=""; fmt=""; previous=""
+  for argument in "$@"; do
+    if [ "$previous" = "--expected-commit" ]; then commit=$argument; fi
+    if [ "$previous" = "--format" ]; then fmt=$argument; fi
+    previous=$argument
+  done
+  mode=$(cat "$FAKE_CONTROL/analyze")
+  run_exit=$(cat "$FAKE_CONTROL/run_exit")
+  case "$run_exit" in
+    0) outcome=PASS ;; 1) outcome=FAIL ;; 4) outcome=BUDGET_EXCEEDED ;;
+    *) outcome=ERROR ;;
+  esac
+  status=incomplete; code=3; verdict_exit=$run_exit
+  case "$mode" in
+    crash) echo "analysis exploded" >&2; exit 9 ;;
+    unsupported) echo "assay: error: unrecognized arguments: campaign" >&2; exit 2 ;;
+    empty) exit 0 ;;
+    disagree) outcome=PASS; verdict_exit=0; status=complete; code=0 ;;
+    ok) ;;
+  esac
+  if [ "$fmt" = text ]; then
+    printf '%s: %s outcome=%s planned=1 completed=1 pending=0\\n' "$lane" "$status" "$outcome"
+  else
+    printf '{"schema_version":2,"analysis":"mutation_campaign","status":"%s","lane":"%s","expected_commit":"%s","verdict":{"outcome":"%s","exit_code":%s,"observed_command_exit":%s}}\\n' "$status" "$lane" "$commit" "$outcome" "$verdict_exit" "$verdict_exit"
+  fi
+  exit "$code"
+fi
+exit 64
+"""
+
+    # -- the generated script (executed, with a fake judge) -----------------
+
+    def _script(self, tmp_path, analyze, run_exit, **lane_extra):
+        control = tmp_path / "control"
+        control.mkdir(exist_ok=True)
+        (control / "analyze").write_text(analyze)
+        (control / "run_exit").write_text(str(run_exit))
+        judge = tmp_path / "bin" / "assay"
+        judge.parent.mkdir(exist_ok=True)
+        judge.write_text(self._JUDGE.replace("@INVENTORY@", _inventory(
+            name="unit", rigor=["R0"])))
+        judge.chmod(0o755)
+        repo = tmp_path / "repo"
+        project = repo / "proj"
+        project.mkdir(parents=True, exist_ok=True)
+        (repo / ".run-gate").mkdir(exist_ok=True)
+        lane = {"assay_lane": "unit", "assay_command": [str(judge)],
+                "pins": {}, **lane_extra}
+        inner = run_gate.build_assay_inner(
+            lane, project, repo, worktree=repo, state_root=repo / ".run-gate",
+            closeout_commit=self._COMMIT)
+        env = dict(os.environ, FAKE_CONTROL=str(control))
+        return project, inner, env, control
+
+    def _execute(self, project, inner, env):
+        return subprocess.run(["bash", "-c", inner], cwd=project, env=env,
+                              capture_output=True, text=True)
+
+    @pytest.mark.parametrize("run_exit", [0, 1, 2, 4, 7])
+    @pytest.mark.parametrize("analyze", ["ok", "crash", "unsupported",
+                                         "empty", "disagree"])
+    def test_script_exit_is_the_judges_exit_whatever_the_analysis_does(
+            self, tmp_path, analyze, run_exit):
+        project, inner, env, _control = self._script(
+            tmp_path, analyze, run_exit)
+        proc = self._execute(project, inner, env)
+        assert proc.returncode == run_exit, proc.stderr
+        # the analysis was attempted exactly as the script promises, in both
+        # renderings, and never wrote into the lane's own output stream
+        assert (project / ".assay" / "campaign-unit.exit").is_file()
+        assert "analysis exploded" not in proc.stdout + proc.stderr
+
+    def test_analysis_binds_the_lanes_own_paths_commit_and_exit(self, tmp_path):
+        project, inner, env, control = self._script(tmp_path, "ok", 1)
+        assert self._execute(project, inner, env).returncode == 1
+        calls = (control / "calls").read_text().splitlines()
+        analyses = [call for call in calls if call.startswith("analyze ")]
+        assert len(analyses) == 2
+        state = tmp_path / "repo" / ".run-gate" / "assay-state" / "proj"
+        for call, fmt in zip(analyses, ("json", "text")):
+            assert call == (
+                f"analyze campaign unit --file assay.toml "
+                f"--expected-commit {self._COMMIT} "
+                f"--progress .assay/progress-unit.jsonl "
+                f"--state-dir {state} "
+                f"--verdict .assay/verdict-unit.json --command-exit 1 "
+                f"--format {fmt}")
+        assert (project / ".assay" / "campaign-unit.exit").read_text() \
+            == "3 3\n"
+
+    def test_request_base_is_passed_to_the_analysis_like_the_run(self, tmp_path):
+        project, _inner, env, control = self._script(tmp_path, "ok", 0)
+        lane = {"assay_lane": "unit", "pins": {},
+                "assay_command": [str(tmp_path / "bin" / "assay")]}
+        inner = run_gate.build_assay_inner(
+            lane, project, tmp_path / "repo", "deadbeef",
+            worktree=tmp_path / "repo", state_root=tmp_path / "repo" / ".run-gate",
+            closeout_commit=self._COMMIT)
+        assert self._execute(project, inner, env).returncode == 0
+        analysis = [c for c in (control / "calls").read_text().splitlines()
+                    if c.startswith("analyze ")][0]
+        assert "--request-base deadbeef" in analysis
+
+    def test_a_lane_without_a_verdict_gets_no_command_exit_binding(self, tmp_path):
+        """`--command-exit` is only meaningful against a verified verdict;
+        Assay refuses it otherwise, so it is never passed without one."""
+        project, inner, env, control = self._script(tmp_path, "ok", 0)
+        # a judge that writes no verdict (it never touches .assay/verdict-*)
+        assert self._execute(project, inner, env).returncode == 0
+        verdictless = inner.replace(
+            "if [ -f .assay/verdict-unit.json ]", "if [ -f /nonexistent/verdict ]")
+        assert verdictless != inner
+        (control / "calls").unlink()
+        assert self._execute(project, verdictless, env).returncode == 0
+        analysis = [c for c in (control / "calls").read_text().splitlines()
+                    if c.startswith("analyze ")][0]
+        assert "--verdict" not in analysis and "--command-exit" not in analysis
+
+    def test_a_failed_setup_runs_neither_the_judge_nor_the_analysis(
+            self, tmp_path):
+        project, _inner, env, control = self._script(tmp_path, "ok", 0)
+        lane = {"assay_lane": "unit",
+                "assay_command": [str(tmp_path / "bin" / "assay")],
+                "pins": {"judge": {"sha256": "missing.sha256"}}}
+        inner = run_gate.build_assay_inner(
+            lane, project, tmp_path / "repo", worktree=tmp_path / "repo",
+            state_root=tmp_path / "repo" / ".run-gate",
+            closeout_commit=self._COMMIT)
+        proc = self._execute(project, inner, env)
+        assert proc.returncode != 0
+        assert not (control / "calls").exists()
+        assert not (project / ".assay" / "campaign-unit.json").exists()
+
+    def test_a_killed_lane_leaves_no_closeout_of_an_earlier_run(self, tmp_path):
+        project, inner, env, control = self._script(tmp_path, "ok", 0)
+        assay = project / ".assay"
+        assay.mkdir()
+        for suffix in run_gate.ASSAY_CLOSEOUT_SUFFIXES:
+            (assay / f"campaign-unit.{suffix}").write_text("STALE")
+        (control / "kill_parent").write_text("")
+        proc = self._execute(project, inner, env)
+        assert proc.returncode != 0  # SIGKILL of the script itself
+        assert [p.name for p in assay.glob("campaign-unit.*")] == []
+
+    def test_without_a_commit_the_script_is_the_pre_closeout_script(self, tmp_path):
+        lane = {"assay_lane": "unit", "assay_command": ["assay"], "pins": {}}
+        inner = run_gate.build_assay_inner(lane, Path("/p"), Path("/r"))
+        assert "campaign" not in inner and "rc=" not in inner
+        assert inner.rstrip().split()[-2] == "--state-dir"
+        with_commit = run_gate.build_assay_inner(
+            lane, Path("/p"), Path("/r"), closeout_commit=self._COMMIT)
+        assert "campaign-unit.json" in with_commit
+        assert 'exit "$rc"; }' in with_commit
+
+    # -- the host collector (no shell) --------------------------------------
+
+    def _doc(self, **over):
+        document = {"schema_version": 2, "analysis": "mutation_campaign",
+                    "status": "incomplete", "lane": "unit",
+                    "expected_commit": self._COMMIT,
+                    "verdict": {"outcome": "FAIL", "exit_code": 1,
+                                "observed_command_exit": 1}}
+        document.update(over)
+        return document
+
+    def _seed(self, tmp_path, document=None, *, text=None, exits="3 3\n",
+              err=None):
+        assay = tmp_path / "proj" / ".assay"
+        assay.mkdir(parents=True, exist_ok=True)
+        document = self._doc() if document is None else document
+        body = json.dumps(document) if isinstance(document, dict) else document
+        (assay / "campaign-unit.json").write_text(body)
+        (assay / "campaign-unit.txt").write_text(
+            f"unit: {document['status']} outcome=FAIL planned=1\n"
+            if text is None else text)
+        if exits is not None:
+            (assay / "campaign-unit.exit").write_text(exits)
+        if err is not None:
+            (assay / "campaign-unit.err").write_text(err)
+        return assay / "verdict-unit.json"
+
+    def _collect(self, tmp_path, monkeypatch, verdict_path, *, commit=None,
+                 result=None, verdict_document=None, run_id="run1"):
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR,
+                           str(tmp_path / "evidence"))
+        result = result or run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL")
+        return run_gate.collect_assay_closeout(
+            {"assay_lane": "unit"}, "unit", run_id, commit or self._COMMIT,
+            verdict_path, result, verdict_document)
+
+    def test_a_coherent_closeout_is_retained_verbatim_and_named(
+            self, tmp_path, monkeypatch):
+        verdict = self._seed(tmp_path)
+        closeout = self._collect(tmp_path, monkeypatch, verdict)
+        assert closeout["status"] == "incomplete"
+        assert closeout["analysis_status"] == "incomplete"
+        assert closeout["analysis_exit"] == 3
+        json_path, text_path = Path(closeout["json_path"]), Path(closeout["text_path"])
+        assert json_path.parent == tmp_path / "evidence" / "lanes" / "unit"
+        assert json_path.name == "run1.campaign.json"
+        assert text_path.name == "run1.campaign.txt"
+        source = verdict.parent
+        assert json_path.read_bytes() == (source / "campaign-unit.json").read_bytes()
+        assert text_path.read_bytes() == (source / "campaign-unit.txt").read_bytes()
+        assert json_path.stat().st_mode & 0o777 == 0o600
+        assert closeout["json_sha256"] == hashlib.sha256(
+            json_path.read_bytes()).hexdigest()
+        assert closeout["text_sha256"] == hashlib.sha256(
+            text_path.read_bytes()).hexdigest()
+
+    def test_a_lane_with_no_r2_claim_has_no_campaign_and_retains_nothing(
+            self, tmp_path, monkeypatch):
+        verdict = self._seed(tmp_path)
+        closeout = self._collect(
+            tmp_path, monkeypatch, verdict,
+            verdict_document={"claims": [
+                self._claim("R0"), self._claim("R1")]})
+        assert closeout["status"] == "not_applicable"
+        assert closeout["json_path"] is None
+        assert not (tmp_path / "evidence").exists()
+
+    @staticmethod
+    def _claim(rigor, status="PASS", **over):
+        claim = {"rigor": rigor, "status": status, "source": "computed",
+                 "verified_by_assay": True, "reason_code": None}
+        claim.update(over)
+        return claim
+
+    @pytest.mark.parametrize("claims", [
+        [{"rigor": "R0", "status": "PASS", "source": "computed",
+          "verified_by_assay": True}, "R1"],                  # non-dict entry
+        [{"rigor": "R0", "status": "PASS", "source": "computed",
+          "verified_by_assay": True}, None],
+        [{"rigor": "R0", "status": "PASS", "source": "computed",
+          "verified_by_assay": True},
+         {"status": "PASS", "source": "computed",
+          "verified_by_assay": True}],                        # no rigor
+        [{"rigor": None, "status": "PASS", "source": "computed",
+          "verified_by_assay": True}],
+        [{"rigor": 1, "status": "PASS", "source": "computed",
+          "verified_by_assay": True}],
+        [{"rigor": "R9", "status": "PASS", "source": "computed",
+          "verified_by_assay": True}],
+        [{"rigor": "r2", "status": "PASS", "source": "computed",
+          "verified_by_assay": True}],
+        [{"rigor": ["R2"], "status": "PASS", "source": "computed",
+          "verified_by_assay": True}],
+        [{"rigor": "R0", "source": "computed", "verified_by_assay": True}],
+        [{"rigor": "R0", "status": "GREEN", "source": "computed",
+          "verified_by_assay": True}],                        # unknown status
+        [{"rigor": "R0", "status": 0, "source": "computed",
+          "verified_by_assay": True}],
+        # forged / unverified metadata: a plausible R0/R1 list that Assay
+        # never computed or verified must not prove "no R2"
+        [{"rigor": "R0", "status": "PASS"}],                  # both missing
+        [{"rigor": "R0", "status": "PASS", "source": "computed"}],
+        [{"rigor": "R0", "status": "PASS", "verified_by_assay": True}],
+        [{"rigor": "R0", "status": "PASS", "source": "computed",
+          "verified_by_assay": False}],
+        [{"rigor": "R0", "status": "PASS", "source": "computed",
+          "verified_by_assay": "true"}],                      # truthy, not True
+        [{"rigor": "R0", "status": "PASS", "source": "computed",
+          "verified_by_assay": 1}],
+        [{"rigor": "R0", "status": "PASS", "source": "adjudicated",
+          "verified_by_assay": True}],
+        [{"rigor": "R0", "status": "PASS", "source": "attested",
+          "verified_by_assay": True}],
+        [{"rigor": "R0", "status": "PASS", "source": None,
+          "verified_by_assay": True}],
+        [{"rigor": "R0", "status": "PASS", "source": "computed",
+          "verified_by_assay": True, "reason_code": 5}],     # bad reason_code
+        [{"rigor": "R0", "status": "PASS", "source": "computed",
+          "verified_by_assay": True, "reason_code": ["X"]}],
+        # one good claim does not launder an unverified sibling
+        [{"rigor": "R0", "status": "PASS", "source": "computed",
+          "verified_by_assay": True},
+         {"rigor": "R1", "status": "PASS", "source": "computed",
+          "verified_by_assay": False}],
+        # duplicates and a real R2
+        [{"rigor": "R1", "status": "PASS", "source": "computed",
+          "verified_by_assay": True},
+         {"rigor": "R1", "status": "PASS", "source": "computed",
+          "verified_by_assay": True}],
+        [{"rigor": "R0", "status": "PASS", "source": "computed",
+          "verified_by_assay": True},
+         {"rigor": "R2", "status": "PASS", "source": "computed",
+          "verified_by_assay": True}],
+        [], {"R0": "PASS"}, "R0", None,
+    ])
+    def test_malformed_unverified_or_incomplete_claims_never_prove_not_applicable(
+            self, tmp_path, monkeypatch, claims):
+        assert run_gate.claims_prove_no_r2(claims) is False
+        verdict = self._seed(tmp_path)
+        closeout = self._collect(
+            tmp_path, monkeypatch, verdict,
+            verdict_document={"claims": claims},
+            run_id=f"run-{abs(hash(repr(claims)))}")
+        # the closeout is analyzed and retained, not declared absent
+        assert closeout["status"] == "incomplete"
+        assert closeout["json_path"] is not None
+
+    def test_only_a_verified_wellformed_claim_set_without_r2_is_not_applicable(
+            self):
+        good = [self._claim("R0"),
+                self._claim("R1", "FAIL", reason_code="COVERAGE_BELOW_FLOOR")]
+        assert run_gate.claims_prove_no_r2(good) is True
+        assert run_gate.claims_prove_no_r2(good[:1]) is True
+        absent = {k: v for k, v in good[0].items() if k != "reason_code"}
+        assert run_gate.claims_prove_no_r2([absent]) is True
+        assert run_gate.claims_prove_no_r2(
+            good + [self._claim("R2")]) is False
+        for key, value in (("verified_by_assay", False), ("source", "attested")):
+            forged = [dict(good[0], **{key: value})]
+            assert run_gate.claims_prove_no_r2(forged) is False
+
+    def test_an_r2_claim_or_unreadable_claims_never_read_as_not_applicable(
+            self, tmp_path, monkeypatch):
+        verdict = self._seed(tmp_path)
+        for document in ({"claims": [{"rigor": "R2"}]}, {"claims": []},
+                         {"claims": "x"}, {}, None):
+            closeout = self._collect(
+                tmp_path, monkeypatch, verdict, verdict_document=document,
+                run_id=f"run-{abs(hash(repr(document)))}")
+            assert closeout["status"] == "incomplete", document
+
+    @pytest.mark.parametrize("name,mutate", [
+        ("another lane", lambda d: d.update(lane="other")),
+        ("another commit", lambda d: d.update(expected_commit="b" * 40)),
+        ("unknown status", lambda d: d.update(status="done")),
+        ("wrong analysis kind", lambda d: d.update(analysis="progress")),
+        ("verdict outcome differs", lambda d: d["verdict"].update(outcome="PASS")),
+        ("verdict exit differs", lambda d: d["verdict"].update(exit_code=2)),
+        ("observed exit differs",
+         lambda d: d["verdict"].update(observed_command_exit=0)),
+    ])
+    def test_a_closeout_that_is_not_this_lanes_this_commit_is_invalid(
+            self, tmp_path, monkeypatch, name, mutate):
+        document = self._doc()
+        mutate(document)
+        verdict = self._seed(tmp_path, document)
+        closeout = self._collect(tmp_path, monkeypatch, verdict)
+        assert closeout["status"] == "invalid", name
+        # still retained for forensics -- invalid is a closeout status, not a
+        # reason to lose the bytes -- and the lane result is not an input
+        assert closeout["json_path"] is not None
+
+    def test_a_closeout_cannot_promote_a_failed_lane(self, tmp_path, monkeypatch):
+        document = self._doc(status="complete", verdict={
+            "outcome": "PASS", "exit_code": 0, "observed_command_exit": 0})
+        verdict = self._seed(tmp_path, document, exits="0 0\n",
+                             text="unit: complete outcome=PASS planned=1\n")
+        result = run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL")
+        closeout = self._collect(tmp_path, monkeypatch, verdict, result=result)
+        assert closeout["status"] == "invalid"
+        assert result == run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL")
+
+    @pytest.mark.parametrize("exits", [None, "0 0\n", "3 0\n", "3 2\n", "x\n"])
+    def test_exits_must_be_the_ones_the_status_documents(
+            self, tmp_path, monkeypatch, exits):
+        verdict = self._seed(tmp_path, exits=exits)
+        assert self._collect(tmp_path, monkeypatch, verdict)["status"] \
+            == "invalid"
+
+    def test_text_that_disagrees_with_the_json_status_is_invalid(
+            self, tmp_path, monkeypatch):
+        verdict = self._seed(tmp_path, text="unit: complete outcome=PASS\n")
+        assert self._collect(tmp_path, monkeypatch, verdict)["status"] \
+            == "invalid"
+
+    def test_an_analysis_refusal_is_its_own_status_not_a_lane_failure(
+            self, tmp_path, monkeypatch):
+        refusal = {"schema_version": 2, "kind": "assay-campaign-analysis",
+                   "status": "evidence_error", "lane": "unit",
+                   "expected_commit": self._COMMIT,
+                   "errors": [{"source": "progress", "message": "torn"}],
+                   "errors_truncated": False}
+        verdict = self._seed(tmp_path, refusal, exits="2 2\n",
+                             text=json.dumps(refusal))
+        closeout = self._collect(tmp_path, monkeypatch, verdict)
+        assert closeout["status"] == "evidence_error"
+        assert closeout["analysis_exit"] == 2
+
+    def test_missing_files_are_unavailable_never_an_empty_or_zero_closeout(
+            self, tmp_path, monkeypatch):
+        assay = tmp_path / "proj" / ".assay"
+        assay.mkdir(parents=True)
+        (assay / "campaign-unit.err").write_text(
+            "assay: error: unrecognized arguments: campaign\n")
+        closeout = self._collect(tmp_path, monkeypatch, assay / "verdict-unit.json")
+        assert closeout["status"] == "unavailable"
+        assert "unrecognized arguments: campaign" in closeout["reason"]
+        assert closeout["json_path"] is None
+        assert not (tmp_path / "evidence").exists()
+
+    def test_an_empty_closeout_is_no_analysis_not_a_zero_campaign(
+            self, tmp_path, monkeypatch):
+        assay = tmp_path / "proj" / ".assay"
+        assay.mkdir(parents=True)
+        for suffix in ("json", "txt"):
+            (assay / f"campaign-unit.{suffix}").write_text("")
+        (assay / "campaign-unit.exit").write_text("0 0\n")
+        closeout = self._collect(tmp_path, monkeypatch, assay / "verdict-unit.json")
+        assert closeout["status"] == "unavailable"
+        assert closeout["analysis_exit"] == 0
+        assert closeout["json_path"] is None
+        assert not (tmp_path / "evidence").exists()
+
+    def test_a_symlinked_or_oversized_artifact_is_refused_by_name(
+            self, tmp_path, monkeypatch):
+        verdict = self._seed(tmp_path)
+        target = tmp_path / "elsewhere.json"
+        target.write_text(json.dumps(self._doc()))
+        link = verdict.parent / "campaign-unit.json"
+        link.unlink()
+        link.symlink_to(target)
+        closeout = self._collect(tmp_path, monkeypatch, verdict)
+        assert closeout["status"] == "unavailable"
+        assert "campaign-unit.json" in closeout["reason"]
+        link.unlink()
+        with link.open("wb") as stream:
+            stream.truncate(run_gate.ASSAY_CLOSEOUT_MAX_BYTES + 1)
+        closeout = self._collect(tmp_path, monkeypatch, verdict, run_id="run2")
+        assert closeout["status"] == "unavailable"
+        assert "is over" in closeout["reason"]
+
+    def test_an_unresolved_commit_requests_no_analysis(self, tmp_path, monkeypatch):
+        verdict = self._seed(tmp_path)
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR, str(tmp_path / "e"))
+        closeout = run_gate.collect_assay_closeout(
+            {"assay_lane": "unit"}, "unit", "r", None, verdict,
+            run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL"), None)
+        assert closeout["status"] == "unavailable"
+        assert "commit" in closeout["reason"]
+
+    def test_unwritable_evidence_is_retention_error_and_never_overwrites(
+            self, tmp_path, monkeypatch):
+        verdict = self._seed(tmp_path)
+        first = self._collect(tmp_path, monkeypatch, verdict)
+        assert first["status"] == "incomplete"
+        before = Path(first["json_path"]).read_bytes()
+        again = self._collect(tmp_path, monkeypatch, verdict)  # same run id
+        assert again["status"] == "retention_error"
+        assert Path(first["json_path"]).read_bytes() == before
+        blocker = tmp_path / "blocker"
+        blocker.write_text("a file, not a directory")
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR, str(blocker / "x"))
+        broken = run_gate.collect_assay_closeout(
+            {"assay_lane": "unit"}, "unit", "run3", self._COMMIT, verdict,
+            run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL"), None)
+        assert broken["status"] == "retention_error"
+        assert broken["json_sha256"] is not None
+
+    def test_finish_never_raises_and_never_returns_a_lane_result(
+            self, tmp_path, monkeypatch, capsys):
+        def explode(*_a, **_k):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(run_gate, "collect_assay_closeout", explode)
+        record = {"run_id": "r"}
+        result = run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL")
+        closeout = run_gate.finish_assay_closeout(
+            {"assay_lane": "unit"}, "unit", record, self._COMMIT,
+            tmp_path / "v.json", result, None)
+        assert closeout["status"] == "unavailable"
+        assert "RuntimeError: boom" in closeout["reason"]
+        assert record["closeout"] == closeout
+        assert result == run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL")
+        assert "WARNING: assay closeout unavailable" in capsys.readouterr().err
+
+    # -- registered lanes through main() ------------------------------------
+
+    def _project(self, tmp_path, monkeypatch, *, analyze, run_exit, cfg=None):
+        cfg = cfg or ASSAY_LANE_CFG.replace(
+            'environment = "tester-unified"', 'environment = "bare-host"', 1)
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, cfg)
+        (proj / "assay.toml").write_text("# judged by the fake judge\n")
+        commit_all(repo, "assay config")
+        control = tmp_path / "control"
+        control.mkdir()
+        (control / "analyze").write_text(analyze)
+        (control / "run_exit").write_text(str(run_exit))
+        monkeypatch.setenv("FAKE_CONTROL", str(control))
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR,
+                           str(tmp_path / "evidence"))
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda p, **k: Path("/phys/host/root"))
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ["run-gate"])
+        fake_docker(tmp_path, monkeypatch)
+        install_fake_assay(monkeypatch, self._JUDGE.replace(
+            "@INVENTORY@", _inventory(rigor=["R0", "R1"])))
+        seen = []
+        real = run_gate.finish_assay_closeout
+
+        def spy(*args, **kwargs):
+            seen.append(real(*args, **kwargs))
+            return seen[-1]
+
+        monkeypatch.setattr(run_gate, "finish_assay_closeout", spy)
+        return repo, proj, control, seen
+
+    _EXPECTED = {0: "PASS", 1: "FAIL", 2: "ERROR", 4: "BUDGET_EXCEEDED"}
+
+    def test_registered_lane_retains_text_and_json_with_gate_evidence(
+            self, tmp_path, monkeypatch, capfd):
+        _repo, _proj, _control, seen = self._project(
+            tmp_path, monkeypatch, analyze="ok", run_exit=1)
+        assert run_gate.main(["ui-unit"]) == run_gate.VERDICT_EXIT_CODES["FAIL"]
+        out = capfd.readouterr()
+        assert "verdict FAIL" in out.out
+        assert "assay closeout: campaign incomplete" in out.out
+        assert "unchanged" in out.out
+        [closeout] = seen
+        assert closeout["status"] == "incomplete"
+        document = json.loads(Path(closeout["json_path"]).read_text())
+        assert document["lane"] == "ui_unit"
+        assert document["expected_commit"] == run_gate.head_commit(_repo)
+        text = Path(closeout["text_path"]).read_text()
+        assert text.startswith("ui_unit: incomplete ")
+        # the closeout is filed under the GATE's lane name, where the lane
+        # log of the same run lives
+        assert Path(closeout["json_path"]).parent == (
+            tmp_path / "evidence" / "lanes" / "ui-unit")
+        assert Path(closeout["text_path"]).parent \
+            == Path(closeout["json_path"]).parent
+
+    @pytest.mark.parametrize("analyze", ["ok", "crash", "unsupported", "empty",
+                                         "disagree"])
+    @pytest.mark.parametrize("run_exit", [0, 1, 2, 4])
+    def test_the_lane_verdict_and_exit_are_independent_of_the_closeout(
+            self, tmp_path, monkeypatch, capfd, analyze, run_exit):
+        _repo, _proj, _control, seen = self._project(
+            tmp_path, monkeypatch, analyze=analyze, run_exit=run_exit)
+        expected = self._EXPECTED[run_exit]
+        assert run_gate.main(["ui-unit"]) == run_gate.VERDICT_EXIT_CODES[expected]
+        out = capfd.readouterr()
+        assert f"verdict {expected}" in out.out
+        assert len(seen) == 1
+        if analyze in ("crash", "unsupported", "empty"):
+            # a failed analysis leaves empty files: that is no closeout
+            assert seen[0]["status"] == "unavailable"
+            assert seen[0]["json_path"] is None
+            assert "assay closeout unavailable" in out.err
+            assert not list((tmp_path / "evidence").rglob("*.campaign.*"))
+        elif analyze == "disagree" and run_exit != 0:
+            # the closeout claims a complete PASS; the lane result stands
+            assert seen[0]["status"] == "invalid"
+            assert "assay closeout invalid" in out.err
+            assert "verdict PASS" not in out.out
+        elif analyze == "disagree":
+            assert seen[0]["status"] == "complete"
+        else:
+            assert seen[0]["status"] == "incomplete"
+
+    def test_evidence_that_cannot_be_written_is_named_and_the_lane_stands(
+            self, tmp_path, monkeypatch, capfd):
+        _repo, _proj, _control, seen = self._project(
+            tmp_path, monkeypatch, analyze="ok", run_exit=1)
+        blocker = tmp_path / "blocker"
+        blocker.write_text("not a directory")
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR, str(blocker / "ev"))
+        assert run_gate.main(["ui-unit"]) == run_gate.VERDICT_EXIT_CODES["FAIL"]
+        out = capfd.readouterr()
+        assert seen[0]["status"] == "retention_error"
+        assert "assay closeout retention_error" in out.err
+        assert "verdict FAIL" in out.out
+
+    def test_a_command_lane_that_wraps_assay_is_never_analyzed_by_inference(
+            self, tmp_path, monkeypatch, capfd):
+        cfg = """\
+            schema_version = 1
+
+            [lanes.wrap]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["bash", "-c", "cd {worktree}/proj && mkdir -p .assay && echo '{}' > .assay/progress-ui_unit.jsonl && assay run ui_unit --file assay.toml --verdict-json .assay/verdict-ui_unit.json --progress .assay/progress-ui_unit.jsonl"]
+            clean_tree = false
+        """
+        _repo, _proj, control, seen = self._project(
+            tmp_path, monkeypatch, analyze="ok", run_exit=0, cfg=cfg)
+        assert run_gate.main(["wrap"]) == 0
+        capfd.readouterr()
+        assert seen == []
+        assert [line.split()[0] for line in
+                (control / "calls").read_text().splitlines()] == ["run"]
+        assert not (tmp_path / "evidence").exists() or not list(
+            (tmp_path / "evidence").rglob("*.campaign.*"))
+
+    @pytest.mark.parametrize("name,body,text,exits", [
+        ("json is not UTF-8", b"\xff\xfe", "unit: incomplete x\n", "3 3\n"),
+        ("json is an array", b"[]", "unit: incomplete x\n", "3 3\n"),
+        ("refusal without its kind", json.dumps({
+            "status": "evidence_error", "lane": "unit",
+            "expected_commit": "a" * 40}).encode(), "{}", "2 2\n"),
+        ("refusal text is not JSON", json.dumps({
+            "kind": "assay-campaign-analysis", "status": "evidence_error",
+            "lane": "unit", "expected_commit": "a" * 40}).encode(),
+         "not json", "2 2\n"),
+        ("refusal text says another status", json.dumps({
+            "kind": "assay-campaign-analysis", "status": "evidence_error",
+            "lane": "unit", "expected_commit": "a" * 40}).encode(),
+         json.dumps({"status": "complete"}), "2 2\n"),
+        ("complete without a verdict has no documented exit", json.dumps({
+            "analysis": "mutation_campaign", "status": "complete",
+            "lane": "unit", "expected_commit": "a" * 40}).encode(),
+         "unit: complete x\n", "0 0\n"),
+    ])
+    def test_every_other_way_a_closeout_can_be_incoherent_is_invalid(
+            self, tmp_path, monkeypatch, name, body, text, exits):
+        assay = tmp_path / "proj" / ".assay"
+        assay.mkdir(parents=True)
+        (assay / "campaign-unit.json").write_bytes(body)
+        (assay / "campaign-unit.txt").write_text(text)
+        (assay / "campaign-unit.exit").write_text(exits)
+        closeout = self._collect(tmp_path, monkeypatch, assay / "verdict-unit.json")
+        assert closeout["status"] == "invalid", name
+
+    def test_text_that_is_not_utf8_is_invalid(self, tmp_path, monkeypatch):
+        verdict = self._seed(tmp_path)
+        (verdict.parent / "campaign-unit.txt").write_bytes(b"\xff\xfe")
+        assert self._collect(tmp_path, monkeypatch, verdict)["status"] == "invalid"
+
+    def test_a_directory_in_place_of_a_closeout_file_is_named(
+            self, tmp_path, monkeypatch):
+        verdict = self._seed(tmp_path)
+        (verdict.parent / "campaign-unit.txt").unlink()
+        (verdict.parent / "campaign-unit.txt").mkdir()
+        closeout = self._collect(tmp_path, monkeypatch, verdict)
+        assert closeout["status"] == "unavailable"
+        assert "campaign-unit.txt" in closeout["reason"]
+
+    def test_stderr_is_only_a_bounded_hint_and_never_refuses_the_closeout(
+            self, tmp_path, monkeypatch):
+        assay = tmp_path / "proj" / ".assay"
+        assay.mkdir(parents=True)
+        (assay / "campaign-unit.err").write_text(
+            "first\n" + "x" * 10_000 + "\nlast line\n")
+        closeout = self._collect(tmp_path, monkeypatch, assay / "verdict-unit.json")
+        assert closeout["status"] == "unavailable"
+        assert "analysis stderr: " in closeout["reason"]
+        assert len(closeout["reason"]) < 1500
+        assert "first" not in closeout["reason"]
+
+    def test_the_disclosure_line_matches_each_status(self, tmp_path, capsys):
+        result = run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL")
+        quiet = run_gate._closeout_record("not_applicable", "no campaign")
+        run_gate.report_assay_closeout(quiet, result)
+        captured = capsys.readouterr()
+        assert captured.out == "" and captured.err == ""
+        done = run_gate._closeout_record(
+            "incomplete", None, json_path="/e/j", text_path="/e/t")
+        run_gate.report_assay_closeout(done, result)
+        captured = capsys.readouterr()
+        assert "campaign incomplete" in captured.out
+        assert "lane verdict FAIL (exit 1) is unchanged" in captured.out
+        assert captured.err == ""
+        retained = run_gate._closeout_record(
+            "invalid", "disagrees", json_path="/e/j", text_path="/e/t")
+        run_gate.report_assay_closeout(retained, result)
+        captured = capsys.readouterr()
+        assert "WARNING: assay closeout invalid: disagrees" in captured.err
+        assert "retained json /e/j" in captured.err and captured.out == ""
+        bare = run_gate._closeout_record("unavailable", "nothing")
+        run_gate.report_assay_closeout(bare, result)
+        assert "retained" not in capsys.readouterr().err
+        with pytest.raises(ValueError):
+            run_gate._closeout_record("passed")
+
+    def test_a_disclosure_failure_cannot_change_the_lane_either(
+            self, tmp_path, monkeypatch, capsys):
+        def explode(*_a, **_k):
+            raise RuntimeError("print failed")
+
+        verdict = self._seed(tmp_path)
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR, str(tmp_path / "e"))
+        monkeypatch.setattr(run_gate, "report_assay_closeout", explode)
+        result = run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL")
+        closeout = run_gate.finish_assay_closeout(
+            {"assay_lane": "unit"}, "unit", None, self._COMMIT, verdict,
+            result, None)
+        assert closeout["status"] == "incomplete"
+        assert "could not be reported: print failed" in capsys.readouterr().err
+        assert result == run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL")
+
+    def test_a_run_without_a_record_still_gets_a_unique_evidence_name(
+            self, tmp_path, monkeypatch):
+        verdict = self._seed(tmp_path)
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR, str(tmp_path / "e"))
+        result = run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL")
+        names = set()
+        for _ in range(2):
+            closeout = run_gate.finish_assay_closeout(
+                {"assay_lane": "unit"}, "unit", None, self._COMMIT, verdict,
+                result, None)
+            assert closeout["status"] == "incomplete"
+            names.add(Path(closeout["json_path"]).name)
+        assert len(names) == 2
+
+    def test_whitespace_only_stderr_adds_no_hint(self, tmp_path, monkeypatch):
+        assay = tmp_path / "proj" / ".assay"
+        assay.mkdir(parents=True)
+        (assay / "campaign-unit.err").write_text("  \n\n")
+        closeout = self._collect(tmp_path, monkeypatch, assay / "verdict-unit.json")
+        assert closeout["status"] == "unavailable"
+        assert "analysis stderr" not in closeout["reason"]
+
+    def test_every_closeout_status_is_documented_where_adopters_look(self):
+        """The vocabulary is closed and public: a status added to the code
+        but not to all four documents must turn this red."""
+        for name in ("SPEC.md", "README.md", "CONSUMERS.md",
+                     "docs/DESIGN-GUIDE.md"):
+            body = (RUN_GATE_DIR / name).read_text(encoding="utf-8")
+            for status in run_gate.ASSAY_CLOSEOUT_STATUSES:
+                assert f"`{status}`" in body, (name, status)
+        assert set(run_gate.ASSAY_CLOSEOUT_STATUSES) == {
+            "complete", "incomplete", "evidence_error", "unavailable",
+            "invalid", "retention_error", "not_applicable"}
+
+    def test_a_dry_run_never_collects_a_closeout(self, tmp_path, monkeypatch):
+        _repo, _proj, _control, seen = self._project(
+            tmp_path, monkeypatch, analyze="ok", run_exit=0)
+        run_gate.main(["--dry-run", "ui-unit"])
+        assert seen == []
+
+
 class TestExecDisclosure:
     """Review fix (R-05/R-28): exec lanes disclose mechanics exactly like
     ephemeral lanes do — the governing slice (naming-only: docker exec can
@@ -9793,6 +10552,249 @@ def make_feature_repo(tmp_path: Path) -> Path:
     return repo
 
 
+def write_v6_record(directory: Path, *, drop=(), **over) -> Path:
+    """A ciu worktree record in schema v6, as the producer contract fixes it:
+    `base_ref` and `fork_point_sha` are the SAME pinned fork commit and
+    `base_branch_ref` names the moving local branch (or is null). `drop`
+    removes keys outright, which `**over` cannot express (None is a value)."""
+    pinned = fork_sha(directory, "main")
+    fields = {"schema_version": 6, "base_ref": pinned,
+              "fork_point_sha": pinned, "base_branch_ref": "main"}
+    fields.update(over)
+    path = write_instance_record(directory, **fields)
+    if drop:
+        doc = json.loads(path.read_text())
+        for key in drop:
+            doc.pop(key, None)
+        path.write_text(json.dumps(doc, indent=2))
+    return path
+
+
+class TestRecordedWorktreeBaseSchemaV6:
+    """R-35a: ciu schema v6 pins `base_ref` to a SHA and names the moving
+    base in `base_branch_ref`. The freshness anchor must be that branch — the
+    pinned SHA is an ancestor of HEAD forever, so a reader anchored on it can
+    never see the base absorb the tree — and the branch is never inferred."""
+
+    def test_pinned_sha_with_a_local_branch_is_accepted_and_returns_the_fork(
+            self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        record = write_v6_record(repo)
+        pinned = git_head(repo, "main")
+        doc = json.loads(record.read_text())
+        assert doc["base_ref"] == doc["fork_point_sha"] == pinned   # not a branch
+        assert run_gate.recorded_worktree_base(repo, repo) == (
+            pinned, record, "")
+
+    def test_a_record_in_a_nested_ciu_root_is_found_like_any_other(
+            self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        proj = repo / "proj"
+        proj.mkdir()
+        record = write_v6_record(proj)
+        assert run_gate.recorded_worktree_base(repo, repo, proj) == (
+            git_head(repo, "main"), record, "")
+
+    @pytest.mark.parametrize("how", ["merge", "fast-forward"])
+    def test_a_base_that_absorbed_the_branch_is_refused_as_moved(
+            self, tmp_path, how):
+        """The absorption oracle, end to end: the record was healthy when
+        written; `main` then absorbed the branch and the branch kept going."""
+        repo = make_feature_repo(tmp_path)
+        write_v6_record(repo)
+        if how == "merge":
+            git(repo, "checkout", "-q", "main")
+            git(repo, "merge", "-q", "--no-ff", "-m", "merge feature",
+                "feature")
+            git(repo, "checkout", "-q", "feature")
+        else:
+            git(repo, "branch", "-f", "main", "feature")
+        (repo / "after.txt").write_text("more\n")
+        commit_all(repo, "one more")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "MOVED since the record was written" in why
+
+    def test_a_reader_anchored_on_the_pinned_sha_accepts_the_absorbed_record(
+            self, tmp_path):
+        """Controlled wrong implementation: the same checks with the pinned
+        SHA as the freshness anchor ACCEPT the record that the real reader
+        refuses — which is exactly what makes the absorption oracle above
+        discriminating rather than decorative."""
+        repo = make_feature_repo(tmp_path)
+        record = write_v6_record(repo)
+        git(repo, "branch", "-f", "main", "feature")
+        (repo / "after.txt").write_text("more\n")
+        commit_all(repo, "one more")
+        doc = json.loads(record.read_text())
+
+        wrong = run_gate._fork_base_if_unmoved(
+            repo, doc, doc["base_ref"], "pinned", "refs/heads/main")
+        assert wrong == (doc["fork_point_sha"], "")           # false green
+        assert run_gate.merge_base_of(repo, doc["base_ref"]) == \
+            doc["fork_point_sha"]                              # blind anchor
+        assert run_gate.merge_base_of(repo, "refs/heads/main") != \
+            doc["fork_point_sha"]                              # real anchor
+        real, _found, why = run_gate.recorded_worktree_base(repo, repo)
+        assert real is None and "MOVED" in why
+
+    def test_null_base_branch_ref_is_refused_with_the_base_remedy(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        write_v6_record(repo, base_branch_ref=None)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "'base_branch_ref' is null" in why
+        assert "--base" in why
+
+    def test_missing_base_branch_ref_is_refused(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        write_v6_record(repo, drop=("base_branch_ref",))
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "no 'base_branch_ref' key" in why
+
+    @pytest.mark.parametrize("value", [
+        "", "   ", " main", "main ", 7, True, ["main"], {"name": "main"},
+        "main;touch /tmp/PWNED", "-main", "ma in", "bad\x00ref", "main~1",
+    ])
+    def test_malformed_or_unsafe_base_branch_ref_is_refused(
+            self, tmp_path, value):
+        repo = make_feature_repo(tmp_path)
+        write_v6_record(repo, base_branch_ref=value)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None and why
+
+    @pytest.mark.parametrize("value", [
+        "gone", "refs/heads/main", "heads/main", "origin/main", "v1.0.0",
+        "HEAD",
+    ])
+    def test_a_name_that_is_not_a_canonical_live_local_branch_is_refused(
+            self, tmp_path, value):
+        """Deleted/renamed branches, non-canonical spellings, a remote-tracking
+        ref, a tag and revision syntax never stand in for the branch — and the
+        branch is never recovered from the pinned SHA that is sitting right
+        there in the same record."""
+        repo = make_feature_repo(tmp_path)
+        git(repo, "update-ref", "refs/remotes/origin/main", "main")
+        git(repo, "tag", "v1.0.0", "main")
+        write_v6_record(repo, base_branch_ref=value)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "does not name a local branch in this tree" in why
+
+    def test_a_tag_spelled_like_a_branch_is_not_that_branch(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        git(repo, "tag", "release", "main")
+        write_v6_record(repo, base_branch_ref="release")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "does not name a local branch in this tree" in why
+
+    @pytest.mark.parametrize(("over", "drop", "fragment"), [
+        ({"base_ref": "main"}, (), "not the pinned full commit id"),
+        ({"base_ref": "a" * 12}, (), "not the pinned full commit id"),
+        ({}, ("base_ref",), "not the pinned full commit id"),
+        ({}, ("fork_point_sha",), "no usable 'fork_point_sha'"),
+        ({"fork_point_sha": "abc"}, (), "no usable 'fork_point_sha'"),
+        ({"fork_point_sha": 7}, (), "no usable 'fork_point_sha'"),
+        ({"fork_point_sha": "b" * 40}, (), "disagree"),
+    ], ids=["symbolic-base-ref", "abbreviated-base-ref", "no-base-ref",
+            "no-fork", "short-fork", "non-string-fork", "inconsistent"])
+    def test_missing_malformed_or_inconsistent_sha_evidence_is_refused(
+            self, tmp_path, over, drop, fragment):
+        repo = make_feature_repo(tmp_path)
+        write_v6_record(repo, drop=drop, **over)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert fragment in why
+
+    def test_a_record_for_another_branch_is_refused(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        write_v6_record(repo, branch="some-other-task")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "no longer describes it" in why
+
+    def test_a_tree_with_no_work_of_its_own_is_refused(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        write_v6_record(repo)
+        git(repo, "checkout", "-q", "main")
+        git(repo, "checkout", "-q", "-B", "feature", "main")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "already contains this tree's HEAD" in why
+
+    @pytest.mark.parametrize("version", ["6", 6.0, True, 0, -1, [6]])
+    def test_a_malformed_schema_version_is_refused(self, tmp_path, version):
+        repo = make_feature_repo(tmp_path)
+        write_v6_record(repo, schema_version=version)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "schema_version" in why
+
+    def test_a_newer_schema_is_refused_not_guessed_at(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        write_v6_record(repo, schema_version=7)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "newer than the v6" in why and "--base" in why
+
+
+class TestRecordedWorktreeBaseLegacySchemas:
+    """v1-v5 keep the symbolic-`base_ref` reading; a frozen SHA there is
+    refused (never promoted to a branch), with the explicit-`--base` remedy."""
+
+    @pytest.mark.parametrize("version", [1, 2, 3, 4, 5])
+    def test_a_symbolic_local_base_ref_is_still_accepted(self, tmp_path, version):
+        repo = make_feature_repo(tmp_path)
+        record = write_instance_record(repo, schema_version=version,
+                                       base_ref="main")
+        assert run_gate.recorded_worktree_base(repo, repo) == (
+            git_head(repo, "main"), record, "")
+
+    def test_a_record_with_no_schema_version_keeps_its_legacy_reading(
+            self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        path = write_instance_record(repo, base_ref="main")
+        doc = json.loads(path.read_text())
+        doc.pop("schema_version")
+        path.write_text(json.dumps(doc))
+        assert run_gate.recorded_worktree_base(repo, repo) == (
+            git_head(repo, "main"), path, "")
+
+    @pytest.mark.parametrize("version", [1, 5])
+    def test_a_pinned_sha_base_ref_is_refused_with_the_base_remedy(
+            self, tmp_path, version):
+        repo = make_feature_repo(tmp_path)
+        pinned = git_head(repo, "main")
+        write_instance_record(repo, schema_version=version, base_ref=pinned,
+                              fork_point_sha=pinned)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "does not name a local branch in this tree" in why
+        assert "--base" in why
+
+    def test_a_stray_base_branch_ref_in_a_v5_record_is_never_used(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        pinned = git_head(repo, "main")
+        write_instance_record(repo, schema_version=5, base_ref=pinned,
+                              fork_point_sha=pinned, base_branch_ref="main")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "does not name a local branch in this tree" in why
+
+    def test_a_symbolic_base_that_absorbed_the_branch_is_still_moved(
+            self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, schema_version=5, base_ref="main")
+        git(repo, "branch", "-f", "main", "feature")
+        (repo / "after.txt").write_text("more\n")
+        commit_all(repo, "one more")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "MOVED since the record was written" in why
+
+
 class TestRecordedWorktreeBase:
     """RG-51 unit level: `recorded_worktree_base` reads ANOTHER project's
     serialized output, so every documented shape and every degenerate one is
@@ -10508,14 +11510,23 @@ class TestRecordedWorktreeBase:
         assert run_gate.recorded_worktree_base(repo, repo)[0] == \
             fork_sha(repo, legal)
 
-    def test_an_unknown_schema_version_still_reads(self, tmp_path):
-        """`base_ref` is present and identical in every schema ciu has
-        shipped, and nothing here validates a field it does not use — so a
-        future v3 with new keys must NOT start falling back."""
+    def test_unknown_extra_keys_in_a_known_schema_still_read(self, tmp_path):
+        """`base_ref` is present and identical in every schema v1-v5, and
+        nothing here validates a field it does not use — so a record with new
+        KEYS in a known schema must NOT start falling back."""
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref="main", schema_version=5,
+                              lease=None, some_future_key={"a": 1})
+        assert run_gate.recorded_worktree_base(repo, repo)[0] == fork_sha(repo)
+
+    def test_a_schema_newer_than_the_reader_fails_closed(self, tmp_path):
+        """v6 changed the MEANING of `base_ref` (symbolic -> pinned SHA), so a
+        future schema may do it again: it is refused with the `--base` remedy
+        rather than guessed at (supersedes the pre-v6 "unknown still reads")."""
         repo = make_feature_repo(tmp_path)
         write_instance_record(repo, base_ref="main", schema_version=99,
                               lease=None, some_future_key={"a": 1})
-        assert run_gate.recorded_worktree_base(repo, repo)[0] == fork_sha(repo)
+        assert run_gate.recorded_worktree_base(repo, repo)[0] is None
 
     def test_a_record_carrying_only_base_ref_is_refused(self, tmp_path):
         """Before CIU-106 this was enough. It no longer is: without a
@@ -28542,6 +29553,51 @@ class TestRG78AndRG76DirectOracles:
             assert changed
             assert tomllib.loads(migrated)["environments"] == {
                 "bare-host": {"mode": "host"}}
+
+    def test_environment_user_invoker_resolves_to_the_invoking_identity(self, monkeypatch):
+        """RG-106: `user = "invoker"` derives uid:gid; a literal passes; absent stays absent."""
+        monkeypatch.setattr(run_gate.os, "getuid", lambda: 1234)
+        monkeypatch.setattr(run_gate.os, "getgid", lambda: 5678)
+        monkeypatch.delenv(run_gate.HOST_IMAGE_ENV_VAR, raising=False)
+        central = {"environments": {
+            "derived": {"mode": "ephemeral", "image": "base:local", "user": "invoker"},
+            "literal": {"mode": "exec", "image": "base:local", "user": "1000:1000"},
+            "plain": {"mode": "ephemeral", "image": "base:local"},
+        }}
+        def resolve(name):
+            return run_gate.resolve_environment(
+                {"environment": name}, "unit", {}, central,
+                Path("run-gate.toml"), Path("run-gate.root.toml"))[0]
+        assert resolve("derived")["user"] == "1234:5678"
+        assert resolve("literal")["user"] == "1000:1000"
+        assert "user" not in resolve("plain")
+        # The central table itself is never mutated by a resolution.
+        assert central["environments"]["derived"]["user"] == "invoker"
+
+    def test_environment_user_rejects_malformed_values_and_host_mode(self):
+        for value in ("root", "1000:", ":1000", "1:2:3", "-1", 1000, True, ""):
+            with pytest.raises(run_gate.GateError, match="'user' must be"):
+                run_gate._validate_environment(
+                    "e", {"mode": "ephemeral", "image": "base:local", "user": value},
+                    "run-gate.toml")
+        with pytest.raises(run_gate.GateError, match="cannot be declared for mode"):
+            run_gate._validate_environment(
+                "e", {"mode": "host", "user": "invoker"}, "run-gate.toml")
+        for value in ("invoker", "1000", "1000:100"):
+            run_gate._validate_environment(
+                "e", {"mode": "ephemeral", "image": "base:local", "user": value},
+                "run-gate.toml")
+
+    def test_declared_user_wins_over_the_host_image_override_default(self, monkeypatch):
+        monkeypatch.setattr(run_gate.os, "getuid", lambda: 1)
+        monkeypatch.setattr(run_gate.os, "getgid", lambda: 2)
+        monkeypatch.setenv(run_gate.HOST_IMAGE_ENV_VAR, "operator:v2")
+        central = {"environments": {"host": {
+            "mode": "ephemeral", "image": "d:v1", "user": "7:8"}}}
+        resolved, _ = run_gate.resolve_environment(
+            {"environment": "host"}, "unit", {}, central,
+            Path("run-gate.toml"), Path("run-gate.root.toml"))
+        assert resolved["image"] == "operator:v2" and resolved["user"] == "7:8"
 
     def test_environment_image_override_requires_valid_name_and_container_mode(self):
         for value in ("", "1IMAGE", "IMAGE-NAME"):

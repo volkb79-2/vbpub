@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 wheel_dir="$repo_root/run-gate-project/dist"
+run_gate_release=""
 image_tag="tester-unified:local"
 cgroup_parent="${CGROUP_PARENT_DEV_GATES:-}"
 base_image=""
@@ -11,13 +12,14 @@ cli_extended_sha256=""
 no_cache=0
 
 usage() {
-  echo "usage: $0 [--wheel-dir DIR] [--tag IMAGE] [--base-image IMAGE] [--cli-extended-resolve pinned|latest|local] [--cli-extended-wheel-sha256 HEX (required for latest and local)] [--no-cache] [--cgroup-parent SLICE]" >&2
+  echo "usage: $0 [--wheel-dir DIR | --run-gate-release X.Y.Z] [--tag IMAGE] [--base-image IMAGE] [--cli-extended-resolve pinned|latest|local] [--cli-extended-wheel-sha256 HEX (required for latest and local)] [--no-cache] [--cgroup-parent SLICE]" >&2
   exit 2
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --wheel-dir) wheel_dir=${2:?}; shift 2 ;;
+    --run-gate-release) run_gate_release=${2:?}; shift 2 ;;
     --tag) image_tag=${2:?}; shift 2 ;;
     --base-image) base_image=${2:?}; shift 2 ;;
     --cli-extended-resolve) cli_extended_resolve=${2:?}; shift 2 ;;
@@ -25,7 +27,7 @@ while [[ $# -gt 0 ]]; do
     --no-cache) no_cache=1; shift ;;
     --cgroup-parent) cgroup_parent=${2:?}; shift 2 ;;
     -h|--help)
-      echo "usage: $0 [--wheel-dir DIR] [--tag IMAGE] [--base-image IMAGE] [--cli-extended-resolve pinned|latest|local] [--cli-extended-wheel-sha256 HEX] [--no-cache] [--cgroup-parent SLICE]"
+      echo "usage: $0 [--wheel-dir DIR | --run-gate-release X.Y.Z] [--tag IMAGE] [--base-image IMAGE] [--cli-extended-resolve pinned|latest|local] [--cli-extended-wheel-sha256 HEX] [--no-cache] [--cgroup-parent SLICE]"
       exit 0
       ;;
     *) usage ;;
@@ -33,6 +35,18 @@ while [[ $# -gt 0 ]]; do
 done
 
 build_args=()
+if [[ -n "$run_gate_release" ]]; then
+  # The image for ANOTHER tool's release gate must carry the PUBLISHED Run-Gate wheel (CMRU's gate
+  # compares the labels with the published release of the installed Run-Gate). The default source
+  # wheel (run-gate-project/dist) is a development version and is refused there.
+  [[ "$wheel_dir" == "$repo_root/run-gate-project/dist" ]] || {
+    echo "--run-gate-release and --wheel-dir are mutually exclusive" >&2
+    exit 2
+  }
+  wheel_dir="$(mktemp -d "${TMPDIR:-/tmp}/tester-unified-run-gate-release.XXXXXX")"
+  trap 'rm -rf "$wheel_dir"' EXIT
+  python3 "$repo_root/tester-unified/fetch-run-gate-release.py" --version "$run_gate_release" --dest "$wheel_dir" >/dev/null
+fi
 if [[ -n "$base_image" ]]; then
   build_args+=(--build-arg "TESTER_UNIFIED_BASE_IMAGE=$base_image")
   expected_base_image="$base_image"
@@ -116,7 +130,7 @@ run_gate_sha256=${identity[1]}
 run_gate_filename=${identity[2]}
 
 wheel_stage="$(mktemp -d "${TMPDIR:-/tmp}/tester-unified-run-gate-wheel.XXXXXX")"
-trap 'rm -rf "$wheel_stage"' EXIT
+trap 'rm -rf "$wheel_stage" ${run_gate_release:+"$wheel_dir"}' EXIT
 cp -- "$wheel_dir/$run_gate_filename" "$wheel_stage/$run_gate_filename"
 printf '%s  %s\n' "$run_gate_sha256" "$wheel_stage/$run_gate_filename" \
   | sha256sum --check --status || {

@@ -9,6 +9,45 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Added
+- A live `kind = "assay"` lane now runs Assay's `analyze campaign` over its own
+  verdict, progress, state directory, judged commit and actual exit, and
+  retains the JSON and text closeouts as
+  `<evidence dir>/lanes/<lane>/<run id>.campaign.{json,txt}` with a `closeout`
+  entry in the run record. The lane's verdict, exit and reason are never
+  inputs to or outputs of the closeout; its own outcome is one of `complete`,
+  `incomplete`, `evidence_error`, `unavailable`, `invalid`, `retention_error`
+  or `not_applicable` (only for claims that are all computed, verified by
+  Assay, with valid unique rigors/statuses and reason codes, none R2; malformed
+  or unverified claims are analyzed instead). A `kind = "command"` lane is
+  never analyzed and has no opt-in (B108 phase 2, SPEC R-38, Assay A-497).
+
+### Changed
+- Add (RG-110): `tester-unified/build-image.sh --run-gate-release X.Y.Z` builds
+  the tester image from the PUBLISHED Run-Gate wheel (`fetch-run-gate-release.py`
+  verifies the release's `.sha256` sidecar), which is what CMRU's release gate
+  requires of the image it selects; the default stays the source-tree wheel for
+  Run-Gate's own candidate gate.
+- Add (RG-106): an environment may declare `user = "invoker"` (the invoking
+  process's `uid:gid`, derived at resolve time) or a numeric `uid[:gid]` for a
+  container mode; it is passed as `--user` to the lane and probe containers, so
+  files written into the bind-mounted worktree are owned by the worktree's
+  owner even on an image that runs as root. A malformed value, or `user` on a
+  `mode = "host"` environment, is refused at load. A declared `user` wins over
+  the `RUN_GATE_HOST_IMAGE` default. The check that the image has a passwd
+  entry for the resolved uid is not implemented (RG-106 oracle 5 stays open).
+- Fix: a ciu worktree record whose schema is newer than the reader (v7+) is
+  refused with the explicit-`--base` remedy instead of being read as v1-v5
+  (v6 already changed the meaning of `base_ref`). Supersedes the pre-v6
+  "unknown schema still reads" test.
+- Fix: read ciu worktree record schema v6. `base_ref` is now a pinned fork SHA
+  there, so Run-Gate takes the moving base from the new `base_branch_ref` (a
+  canonical local branch name) for its absorption/freshness checks and returns
+  the validated `fork_point_sha`; a null, missing, malformed or unsafe branch,
+  or missing/inconsistent SHA evidence, is refused with a reason and an
+  explicit-`--base` remedy. v1-v5 keep the symbolic `base_ref` reading, and a
+  frozen-SHA `base_ref` there is refused with the same remedy. The branch is
+  never inferred from a SHA, tag, remote-tracking ref or default.
 - Fix (RG-55, baseline liveness): the in-process assay progress fallback now
   bounds the R2 baseline. It follows Assay's `command_started` /
   `command_running` heartbeat (300 s minimum idle bound, reset by each tick)

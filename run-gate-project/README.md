@@ -298,6 +298,23 @@ calibration can include completed profiled FAIL runs with `--include-failed`,
 and `footprint --write --lane <name>` merges selected lanes into an existing
 manifest. See [failure evidence and footprint updates](CONSUMERS.md#failure-evidence-and-selective-footprint-updates).
 
+A live `kind = "assay"` lane also gets an automatic **campaign closeout**:
+after `assay run`, Run-Gate runs Assay's `analyze campaign` over the lane's own
+verdict, progress, state directory, judged commit and actual exit, and retains
+the JSON and text under `<evidence dir>/lanes/<lane>/<run id>.campaign.*`.
+The closeout is information only. It never changes the lane's verdict, exit or
+reason; its own condition is a separate `status` (`complete`, `incomplete`,
+`evidence_error`, `unavailable`, `invalid`, `retention_error` or
+`not_applicable`) printed beside the unchanged lane result. `not_applicable`
+needs a verdict whose claims are all `source = "computed"` and
+`verified_by_assay = true`, with valid unique rigors and statuses and a valid
+reason code, none of them R2; malformed or unverified claims are analyzed
+instead. A
+`kind = "command"` lane is never analyzed, even if it wraps Assay, and no key
+opts it in (Assay decision A-497). See the
+[adoption guide](CONSUMERS.md#automatic-assay-campaign-closeout-b108-phase-2)
+and the [design rationale](docs/DESIGN-GUIDE.md#the-closeout-is-evidence-never-a-verdict-b108-phase-2).
+
 ### Version probe
 
 `run-gate --version` prints exactly one `run-gate X.Y.Z` line from installed
@@ -419,6 +436,10 @@ directory:
 ```
 run-gate <lane>          # run one gate lane
 run-gate <lane> --base REF   # comparison base for a lane that delegates it
+                         # (default inside a `ciu worktree`: its recorded fork commit, found
+                         #  through the branch ciu records as `base_branch_ref` in record schema v6
+                         #  or the symbolic `base_ref` in v1-v5; an unusable record is ignored with
+                         #  a reason and `@{upstream}` applies — see CONSUMERS "recorded fork point")
 run-gate doctor          # preflight: docker, slices, git, images, assay toolchains (sequence lanes: each member's environment)
 run-gate doctor --worktree B   # … for tree B's state, not this checkout's
 run-gate --check-env --worktree B   # … same redirect for the drift/toolchain report
