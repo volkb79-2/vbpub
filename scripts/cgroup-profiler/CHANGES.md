@@ -13,6 +13,21 @@ Release scope (CGP-110): the six blockers of the cgprofile-v1.0.0 Sol review.
 registered `r0-r1` and `r3` lanes are the qualification. No R2 verdict may be
 inferred from the r3 canaries.
 
+- Release qualification and acceptance evidence (2026-10-27 release wave):
+  the registered `r0-r1` and `r3` lanes ran on the exact release tree
+  (results in `nyxloom-trove/reports/cgprofile-1.1.0-RELEASE-EVIDENCE.md`).
+  R2 is waived for this release and tracked as CP-30. Operator decision
+  2026-10-27: the live acceptance evidence for 1.1.0 is the read-only
+  observation made the same day, in which the collectors (`sample_cgroup`,
+  `read_limits`) were run from a root observation container against the real
+  host cgroup tree with `host_cgroup_view` true; its capability matrix is
+  recorded in CP-28 (Evidence). The separate bounded observer acceptance
+  probe (`tools/observer-live-acceptance.py`) was NOT run for 1.1.0; CP-20
+  stays `carved` until it is.
+- Backlog: CP-24/25/26 (bounded sampler-owned stop, evidence-preserving
+  recovery, durable DAMON pool provenance) are filed with their design held on
+  a park ref and are NOT in this release; CP-28/CP-29 (monitor mode, cheap
+  collector gaps), CP-30 (R2) and CP-31 (socket-absence diagnosis) are filed.
 - Docs (Sol B6 / records): the observer mount is described as the dedicated
   directory (not "only that node"), and stale CP-13 is closed. Release
   qualification for 1.1.0 is the registered `r0-r1` and `r3` lanes run from a
