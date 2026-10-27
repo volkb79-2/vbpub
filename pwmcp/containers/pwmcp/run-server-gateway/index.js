@@ -101,6 +101,12 @@ function requestHandler(req, res) {
         max_clients: maxClients,
         idle_recycle_seconds: idleRecycle,
       };
+      // PWMCP-09: publish the server-level user-agent override (value null = browser default)
+      // so clients that create their own context (pwmcp inspect) apply and report it.
+      contract.user_agent = {
+        value: process.env.PWMCP_USER_AGENT_RESOLVED || null,
+        source: process.env.PWMCP_USER_AGENT_SOURCE || "default",
+      };
       const body = Buffer.from(JSON.stringify(contract));
       res.writeHead(200, { "content-type": "application/json", "content-length": body.length });
       return res.end(body);

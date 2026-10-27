@@ -235,7 +235,19 @@ No existing release works with `get.py`; only a release published after A does.
 
 ## PWMCP-09 — pages protected by Anubis answer "Access Denied" to the managed browser; a human sees them fine
 
-**Status: OPEN (filed 2026-10-27, operator request).** Found while reading <https://git.azlux.fr/Azlux/sss>
+**Status: IN PROGRESS, FIXED-ON-BRANCH for the configurable user agent (option 3); acceptance part 2 (`blocked-by-site` detection) still OPEN.**
+**Decision (operator, 2026-10-27): option 3, with selectable presets**, as an explicit, recorded, opt-in
+feature (off by default): config key `user_agent` / `PWMCP_USER_AGENT` with presets `edge-windows`,
+`chrome-windows`, `firefox-windows`, or a custom string; the UA string and its matching client-hint
+brands only (no navigator.webdriver, plugin or canvas changes); every `pwmcp inspect` result carries
+`user_agent` and `user_agent_source`; `pwmcp inspect --user-agent` for one call. Details: README
+"Overridable User Agent". **STILL UNVERIFIED: whether Anubis actually lifts the block** under any
+preset (nothing was run against a live deployment from the implementing worktree), whether Chromium
+omits `Sec-CH-UA` for the Firefox preset's empty brand list, and the container wiring (supervisord
+wrapper, `ua-override`, entrypoint) until an image is built and run. Open: the `blocked-by-site`
+classification of recognised Anubis/Cloudflare block pages and the skill wording for that outcome.
+
+*Original filing:* (filed 2026-10-27, operator request). Found while reading <https://git.azlux.fr/Azlux/sss>
 through the `pwmcp-fetch` recipe.
 
 **Evidence.** `browser_navigate` + `browser_evaluate document.body.innerText` returned "Oh noes! Access

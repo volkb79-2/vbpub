@@ -93,15 +93,22 @@ def _install_review_browser(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
         def screenshot(self, **_kwargs: object) -> bytes:
             return b"reviewed screenshot"
 
+    class FakeCdp:
+        def send(self, _method: str, _params: object) -> None:
+            return None
+
     class FakeContext:
         def new_page(self) -> FakePage:
             return FakePage()
+
+        def new_cdp_session(self, _page: object) -> FakeCdp:
+            return FakeCdp()
 
         def close(self) -> None:
             return None
 
     class FakeBrowser:
-        def new_context(self, *, ignore_https_errors: bool) -> FakeContext:
+        def new_context(self, *, ignore_https_errors: bool, user_agent: str | None = None) -> FakeContext:
             context_options.append(ignore_https_errors)
             return FakeContext()
 

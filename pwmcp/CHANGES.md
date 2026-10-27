@@ -4,6 +4,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Added
+- pwmcp: overridable user agent (PWMCP-09, opt-in, off by default). Config key `user_agent` (`PWMCP_USER_AGENT`): presets `edge-windows`, `chrome-windows`, `firefox-windows`, or a custom string; overrides the UA string and its matching client-hint brands (no other fingerprint surface). `pwmcp inspect` reports `user_agent` / `user_agent_source` in every result and gains `--user-agent` for one call; `/contract` and the shared-mode admin health report the active value. Not verified against a live Anubis deployment.
+
 <!-- cmru: release history -->
 
 ## [1.64.0-r3] - 2026-10-21

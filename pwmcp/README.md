@@ -249,6 +249,79 @@ configuration and the admin endpoint (`POST /browser/reset`,
 [docs/SECURITY.md](docs/SECURITY.md#p03-shared-browser-mode--risk-posture)
 for the risk posture.
 
+## Overridable User Agent (PWMCP-09, opt-in, off by default)
+
+Some sites refuse the managed browser because it presents itself as
+`HeadlessChrome` (for example `Mozilla/5.0 (X11; Linux x86_64) ... HeadlessChrome/156.0.0.0 ...`);
+Anubis-protected pages answer "Access Denied". The operator decided (2026-10-27) to
+support a configurable user agent as an explicit, recorded, opt-in feature. Nothing
+changes unless it is configured.
+
+**Set it** with the ciu/config key `user_agent` (in `ciu.toml.j2`, next to
+`browser_mode`; default `"default"`). ciu exports it to the container as
+`PWMCP_USER_AGENT`, and the entrypoint validates it and applies it when the browser is
+launched. An invalid value is a fatal entrypoint error. The active value is logged once
+at container start.
+
+| Value | User agent presented |
+|---|---|
+| `default` (or unset) | no override: the browser's own identity, exactly as before |
+| `edge-windows` | `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0` |
+| `chrome-windows` | `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36` |
+| `firefox-windows` | `Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:158.0) Gecko/20100101 Firefox/158.0` |
+| anything else | a CUSTOM raw string: printable ASCII, 1-512 characters, no CR/LF, no leading or trailing space |
+
+The table lives in exactly one file, `client/src/pwmcp_client/user_agent.py`
+(stdlib only). The client imports it and the image carries the same file as
+`/opt/pwmcp/pwmcp_user_agent.py`, which the entrypoint runs; there is no second copy.
+
+**What is overridden.** The user-agent string, and the client-hint brand metadata that
+matches it (`Sec-CH-UA`, `navigator.userAgentData.brands`, platform), because Chromium's
+`--user-agent` alone leaves `HeadlessChrome` in the hints:
+
+- `per-session` mode: `playwright-mcp --user-agent` and
+  `chrome-devtools-mcp --chrome-arg=--user-agent=...` (via `containers/pwmcp/pwmcp-ua-args.sh`,
+  which adds the flag only when an override is configured). `playwright-mcp` derives the
+  hints from the UA.
+- `shared` mode: the shared Chromium is launched with `--user-agent=...`, and the
+  `ua-override` program (`containers/pwmcp/ua-override/index.js`) attaches over CDP to the
+  loopback endpoint and calls `Emulation.setUserAgentOverride` with the matching
+  `userAgentMetadata` on every page, existing and new.
+- `pwmcp inspect` / the Python client (the run-server path): the service publishes the
+  setting in `/contract` (`user_agent.value`, `user_agent.source`); `pwmcp inspect`
+  creates its context with that UA and sets the same CDP override with metadata.
+- The Firefox preset sends an EMPTY client-hint brand list (Firefox sends none). Whether
+  Chromium then omits `Sec-CH-UA` entirely, rather than sending an empty one, is unverified.
+- A custom string with no recognisable `Chrome/x.y.z.w` or `Firefox/N` token overrides the
+  UA string only; `pwmcp inspect` warns that client-hint metadata was not set.
+- `lighthouse-mcp` launches its own per-audit browser and is NOT overridden.
+
+**What is not overridden, on purpose.** No `navigator.webdriver` patching, no plugin or
+canvas spoofing, no other fingerprint surface. This is an identity string and its matching
+hints, not an anti-detection layer.
+
+**Transparency.** Every `pwmcp inspect` result carries the active user agent and its
+source (`default`, `preset:<name>`, or `custom`), so spoofed identity is never mistaken for
+the default: with `--json` the object is `{"content": ..., "user_agent": ...,
+"user_agent_source": ...}` (a screenshot or `--output` run prints
+`{"output", "format", "user_agent", "user_agent_source"}`); in text mode stdout stays exactly the page
+content and one `[INFO] user agent: ... (source: ...)` line goes to stderr (shown even
+with `--quiet`). `user_agent` is what the page itself reported (`navigator.userAgent`),
+falling back to the configured value. In shared mode the admin API
+`GET /browser/health` additionally returns `userAgent` and `userAgentSource`
+(`null` / `default` when not overridden).
+
+**Per call.** `pwmcp inspect URL --user-agent <preset|string>` presents that identity for
+one inspection only, overriding the server-level setting; `--user-agent default` presents
+the browser's own. The inspection runs in a fresh browser context that is closed
+afterwards, which is the restore. It is validated before connecting.
+
+**Responsibility.** Use this for pages you are entitled to read. It does not solve
+interactive challenges (proof-of-work or CAPTCHA pages), and it does not make
+reading a page that its owner has explicitly closed to automation acceptable. Whether a
+given Anubis deployment lifts its block under these presets is not verified (see
+`KNOWN_ISSUES_TODO_BACKLOG.md` PWMCP-09).
+
 ## KSM Opt-In (default on)
 
 Every process in the container opts into Kernel Samepage Merging (KSM) by

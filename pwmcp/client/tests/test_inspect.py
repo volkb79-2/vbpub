@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import builtins
+import json
 import sys
 import types
 from pathlib import Path
@@ -9,6 +10,11 @@ import pytest
 
 from pwmcp_client import cli as cli_module
 from pwmcp_client import session
+from pwmcp_client import user_agent as ua_module
+from pwmcp_client.contract import PwmcpContract
+
+
+DEFAULT_IDENTITY_LINE = "[INFO] user agent: browser default (not reported) (source: default)\n"
 
 
 def _install_cli_browser(
@@ -16,6 +22,9 @@ def _install_cli_browser(
     *,
     connect_error: Exception | None = None,
     navigation_fails: bool = False,
+    contract: object | None = None,
+    reported_user_agent: str | None = None,
+    cdp_fails: bool = False,
 ) -> dict[str, object]:
     calls: dict[str, object] = {
         "connect": [],
@@ -28,6 +37,7 @@ def _install_cli_browser(
         "context_options": [],
         "context_closed": [],
         "closed": [],
+        "cdp": [],
     }
 
     class FakePlaywrightError(Exception):
@@ -71,16 +81,29 @@ def _install_cli_browser(
             calls["screenshots"].append(kwargs)
             return b"fake image bytes"
 
+        def evaluate(self, expression: str) -> str | None:
+            calls["evaluate"] = expression
+            return reported_user_agent
+
+    class FakeCdp:
+        def send(self, method: str, params: object) -> None:
+            if cdp_fails:
+                raise FakePlaywrightError("cdp refused")
+            calls["cdp"].append({"method": method, "params": params})
+
     class FakeContext:
         def new_page(self) -> FakePage:
             return FakePage()
+
+        def new_cdp_session(self, _page: object) -> FakeCdp:
+            return FakeCdp()
 
         def close(self) -> None:
             calls["context_closed"].append(True)
 
     class FakeBrowser:
-        def new_context(self, *, ignore_https_errors: bool) -> FakeContext:
-            calls["context_options"].append({"ignore_https_errors": ignore_https_errors})
+        def new_context(self, **options: object) -> FakeContext:
+            calls["context_options"].append(options)
             return FakeContext()
 
     class FakeLease:
@@ -98,7 +121,10 @@ def _install_cli_browser(
             calls["connect"].append(kwargs)
             if connect_error:
                 raise connect_error
-            return FakeLease()
+            lease = FakeLease()
+            if contract is not None:
+                lease.contract = contract
+            return lease
 
     sync_api = types.ModuleType("playwright.sync_api")
     sync_api.Error = FakePlaywrightError
@@ -129,7 +155,7 @@ def test_inspect_text_navigates_remotely_waits_and_closes_lease(
     ]) == 0
     captured = capsys.readouterr()
     assert captured.out == "rendered page text\n"
-    assert captured.err == ""
+    assert captured.err == DEFAULT_IDENTITY_LINE
     assert calls["connect"] == [{
         "contract_url": "contract.json",
         "label": "pwmcp-inspect",
@@ -145,6 +171,7 @@ def test_inspect_text_navigates_remotely_waits_and_closes_lease(
     assert calls["first_matches"] == ["#content"]
     assert calls["wait_for"] == [{"state": "visible", "timeout": 4000}]
     assert calls["context_options"] == [{"ignore_https_errors": False}]
+    assert calls["cdp"] == []  # no override configured: no user-agent emulation at all
     assert calls["context_closed"] == [True]
     assert calls["closed"] == [True]
 
@@ -158,7 +185,7 @@ def test_inspect_can_ignore_https_errors_for_its_context(
     ]) == 0
     captured = capsys.readouterr()
     assert captured.out == "rendered page text\n"
-    assert captured.err == ""
+    assert captured.err == DEFAULT_IDENTITY_LINE
     assert calls["context_options"] == [{"ignore_https_errors": True}]
     assert calls["context_closed"] == [True]
 
@@ -282,3 +309,136 @@ def test_inspect_reports_output_write_failure(
 
 def test_inspect_requires_a_url() -> None:
     assert cli_module.main(["inspect"]) == 2
+
+
+# --- PWMCP-09: overridable user agent ---------------------------------------------
+
+
+def _contract(**overrides: object) -> PwmcpContract:
+    fields: dict[str, object] = {
+        "schema_version": 1,
+        "release": "1.0.0",
+        "playwright_version": "1.64.0",
+        "protocol_version": "1.64",
+        "ws_url": "ws://pwmcp:3000/",
+        "health_url": "http://pwmcp:3000/health",
+        "default_lease_seconds": 1800,
+        "max_lease_seconds": 7200,
+        "max_clients": 2,
+        "idle_recycle_seconds": 30,
+    }
+    fields.update(overrides)
+    return PwmcpContract(**fields)  # type: ignore[arg-type]
+
+
+def test_per_call_preset_sets_context_ua_client_hints_and_reports_source(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls = _install_cli_browser(monkeypatch, contract=_contract())
+    edge = ua_module.PRESETS["edge-windows"]
+    assert cli_module.main(["inspect", "https://example.test", "--user-agent", "edge-windows"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "rendered page text\n"
+    assert captured.err == f"[INFO] user agent: {edge} (source: preset:edge-windows)\n"
+    assert calls["context_options"] == [{"ignore_https_errors": False, "user_agent": edge}]
+    (cdp,) = calls["cdp"]
+    assert cdp["method"] == "Emulation.setUserAgentOverride"
+    assert cdp["params"] == ua_module.cdp_override_params(edge)
+    brands = {b["brand"] for b in cdp["params"]["userAgentMetadata"]["brands"]}
+    assert "Microsoft Edge" in brands and "HeadlessChrome" not in brands
+    assert calls["context_closed"] == [True]  # the override dies with the context
+
+
+def test_json_result_carries_content_user_agent_and_source(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_cli_browser(monkeypatch)
+    assert cli_module.main(["inspect", "https://example.test", "--json", "--user-agent", "my-bot/1.0"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "content": "rendered page text",
+        "user_agent": "my-bot/1.0",
+        "user_agent_source": "custom",
+    }
+
+
+def test_json_result_for_the_default_names_default_source(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_cli_browser(monkeypatch, reported_user_agent="Mozilla/5.0 HeadlessChrome/156.0.0.0")
+    assert cli_module.main(["inspect", "https://example.test", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["user_agent_source"] == "default"
+    assert payload["user_agent"] == "Mozilla/5.0 HeadlessChrome/156.0.0.0"  # measured, not assumed
+
+
+def test_server_level_override_published_in_the_contract_is_applied_and_reported(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    chrome = ua_module.PRESETS["chrome-windows"]
+    calls = _install_cli_browser(
+        monkeypatch,
+        contract=_contract(user_agent=chrome, user_agent_source="preset:chrome-windows"),
+    )
+    assert cli_module.main(["inspect", "https://example.test"]) == 0
+    assert calls["context_options"] == [{"ignore_https_errors": False, "user_agent": chrome}]
+    assert "(source: preset:chrome-windows)" in capsys.readouterr().err
+
+
+def test_per_call_default_beats_the_server_level_override(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls = _install_cli_browser(
+        monkeypatch, contract=_contract(user_agent="x", user_agent_source="custom")
+    )
+    assert cli_module.main(["inspect", "https://example.test", "--user-agent", "default"]) == 0
+    assert calls["context_options"] == [{"ignore_https_errors": False}]
+    assert "(source: default)" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("bad", ["bad\r\nagent", "café", "x" * 513, " padded "])
+def test_invalid_per_call_user_agent_is_rejected_before_connecting(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], bad: str
+) -> None:
+    calls = _install_cli_browser(monkeypatch)
+    assert cli_module.main(["inspect", "https://example.test", "--user-agent", bad]) == 1
+    assert "--user-agent is invalid" in capsys.readouterr().err
+    assert calls["connect"] == []
+
+
+def test_client_hint_failure_is_reported_not_silent_and_keeps_the_ua_string(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls = _install_cli_browser(monkeypatch, cdp_fails=True)
+    assert cli_module.main(["inspect", "https://example.test", "--user-agent", "firefox-windows"]) == 0
+    captured = capsys.readouterr()
+    assert "client-hint metadata not applied" in captured.err
+    assert calls["context_options"][0]["user_agent"] == ua_module.PRESETS["firefox-windows"]
+    assert captured.out == "rendered page text\n"
+
+
+def test_custom_ua_without_a_browser_token_warns_that_hints_are_not_set(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls = _install_cli_browser(monkeypatch)
+    assert cli_module.main(["inspect", "https://example.test", "--user-agent", "my-bot/1.0"]) == 0
+    assert "client-hint metadata not set" in capsys.readouterr().err
+    assert calls["cdp"] == []
+
+
+def test_contract_parses_the_published_user_agent_and_defaults_when_absent() -> None:
+    base = {
+        "schema_version": 1, "release": "1", "playwright": {"python": "1.64.0", "protocol": "1.64"},
+        "endpoints": {"playwright_ws": "ws://x/", "health": "http://x/health"},
+        "run_server": {"limits": {
+            "default_lease_seconds": 1, "max_lease_seconds": 2, "max_clients": 1,
+            "idle_recycle_seconds": 1}},
+    }
+    absent = PwmcpContract.from_dict(base)
+    assert (absent.user_agent, absent.user_agent_source) == (None, "default")
+    published = PwmcpContract.from_dict({**base, "user_agent": {"value": None, "source": "default"}})
+    assert published.user_agent is None
+    active = PwmcpContract.from_dict(
+        {**base, "user_agent": {"value": "ua", "source": "preset:edge-windows"}}
+    )
+    assert (active.user_agent, active.user_agent_source) == ("ua", "preset:edge-windows")
