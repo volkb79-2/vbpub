@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -222,6 +223,22 @@ def test_the_final_dockerfile_assertion_checks_exactly_the_lines_the_patcher_wri
     assert "exit 1" in final
     # nothing after the assertion may run an apt step that could reconcile the conffile
     assert "apt-get" not in final and "dpkg" not in final
+
+
+def test_the_build_only_dpkg_setting_is_removed_after_the_last_apt_step_and_before_the_final_assertions() -> None:
+    """MDT_BUILD_UNSAFE_IO writes /etc/dpkg/dpkg.cfg.d/99-mdt-build-unsafe-io for the build; the shipped
+    image must not keep it. The removal is pinned to exactly one `RUN rm -f` of that path, placed after the
+    last apt/dpkg install step (so the setting covers every package install) and before the read-only
+    final assertions (so `RUN true` or a move behind them cannot pass)."""
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    drop_in = "/etc/dpkg/dpkg.cfg.d/99-mdt-build-unsafe-io"
+    writes = [m.start() for m in re.finditer(re.escape(f'echo "force-unsafe-io" > {drop_in}'), dockerfile)]
+    removals = [m.start() for m in re.finditer(re.escape(f"RUN rm -f {drop_in}"), dockerfile)]
+    assert len(writes) == 1 and len(removals) == 1, (writes, removals)
+    last_apt = max(m.start() for m in re.finditer(r"apt-get install|dpkg -i", dockerfile))
+    final_assertions = dockerfile.index("RUN mdt-perms check /opt/mdt /srv")
+    assert writes[0] < last_apt < removals[0] < final_assertions
+    assert dockerfile.count(drop_in) == 2, "the drop-in path appears exactly in its write and its removal"
 
 
 def test_the_dockerfile_patches_etc_profile_with_this_script_and_writes_the_entries_file() -> None:

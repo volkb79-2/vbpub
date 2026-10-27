@@ -40,8 +40,9 @@ pwmcp inspect https://example.com --format snapshot --output page.yml
 pwmcp inspect https://example.com --format screenshot --output page.png --full-page
 ```
 
-The MDT devcontainer template exposes `/srv/pwmcp-instance/bin` on remote
-process `PATH` and sets `PWMCP_MCP_URL=http://pwmcp:8931/mcp`. Agent harnesses
+The MDT image puts `/srv/pwmcp-instance/bin` on `PATH` (the template sets no
+`PATH`; see its `containerEnv` comment) and the devcontainer template sets
+`PWMCP_MCP_URL=http://pwmcp:8931/mcp`. Agent harnesses
 still need an HTTP MCP server entry pointing at that URL; installing the
 packaged PWMCP skill does not change a harness's MCP configuration. A consumer
 using another devcontainer must expose its installed CLI on `PATH` and ensure
@@ -413,7 +414,7 @@ mount flags. The standalone check-only form does not repair:
 
 ```bash
 host-escape -- systemctl show dev-interactive.slice -p MemoryMax
-host-escape -- docker inspect dstdns-devcontainer-vb
+host-escape -- docker inspect <container-name>
 host-escape -- /usr/local/sbin/mdt-cgroup-io-limits.sh dev.slice --all --systemd   # dev-tier IO caps really in force
 host-escape                         # interactive host shell
 mdt doctor --check-only             # inspect cgroup2 flags without repair
@@ -478,6 +479,18 @@ check runs before container creation.
 The actual file may contain other JSONC properties. The source path is a host
 path and must already exist; `--mount` is deliberate because a missing source
 must stop container creation rather than become an empty directory.
+
+The host service preserves this directory across stop/start so installer-driven
+BuildKit restarts do not strand a running container's bind mount on a deleted
+inode. After upgrading from a host setup that did not preserve it, check the
+mount from inside an existing devcontainer with
+`findmnt -T /run/mdt-buildkitd -o SOURCE`. If the source ends in `//deleted`,
+rebuild that devcontainer once; future service restarts retain the mount's
+directory identity. The same mount rule applies to `/run/docker-api`: keep the
+directory-level mount from the MDT template, since its socket entry can be
+recreated safely inside the stable directory. See the [directory bind-mount
+design](DESIGN-GUIDE.md#directory-bind-mount-identity) and the
+[BuildKit socket design](DESIGN-GUIDE.md#managed-buildkit-socket-access).
 
 After the image is rebuilt, `postCreateCommand` runs
 `finalize_container_environment.py`. It validates/reuses the named remote and
@@ -602,8 +615,9 @@ a second hand-written tester command in `cmru.toml`.
 
 ### Persistent AI CLI state
 
-The vendored template mounts one host directory, `${localEnv:HOME}/mdt-cockpit-home/`, over
-`/home/vscode`. This keeps every agent state root and all other home data across rebuilds.
+The vendored template mounts one host directory per checkout,
+`${localEnv:HOME}/mdt-cockpit-${localWorkspaceFolderBasename}-home/`, over `/home/vscode`. This
+keeps every agent state root and all other home data across rebuilds.
 
 | Tool | Persistent home path | Durable state |
 |---|---|---|
@@ -719,10 +733,12 @@ lives in a folder outside every repo and the container opens a directory of repo
 ([templates/host-folder](../templates/host-folder/README.md)). An optional per-user btrfs copy-on-write area
 is described in [BTRFS-COW.md](BTRFS-COW.md).
 
-The template binds the complete home from `${localEnv:HOME}/mdt-cockpit-home/`; the host
-initializer prepares that directory (mode `0700`) and `${localEnv:HOME}/mdt-cockpit-tmp/` (mode
-`1777`, the separate `/tmp` mount). The new home starts **empty**. Nothing is migrated: there is
-no stopped-container step, no marker file, and no startup refusal.
+The template binds the complete home from
+`${localEnv:HOME}/mdt-cockpit-${localWorkspaceFolderBasename}-home/`; the host initializer
+expands the variable to the checkout's folder name and prepares that directory (mode `0700`) and
+`${localEnv:HOME}/mdt-cockpit-${localWorkspaceFolderBasename}-tmp/` (mode `1777`, the separate
+`/tmp` mount). The new home starts **empty**. Nothing is migrated: there is no stopped-container
+step, no marker file, and no startup refusal.
 
 If you used the previous split-mount template, the initializer prints one informational line
 while `~/mdt--mounted-folders/` still holds files and the new home is empty. Copy what you want by
@@ -754,9 +770,9 @@ version = "7.11.0"
 
 [[artifact]]
 name = "pwmcp-bundle"
-path = "/path/to/pwmcp-1.64.0-r3.tar.xz"
+path = "/path/to/pwmcp-1.64.0-r4.tar.xz"
 sha256 = "<64 hex digits>"
-version = "1.64.0-r3"
+version = "1.64.0-r4"
 ```
 
 ```bash
@@ -836,6 +852,13 @@ refused with a message pointing here. aider is the documented exception: `aider-
 exact upstream `main` commit and the version it builds, until an aider release supports Python 3.14.
 The R16 tools (claude, codex, reasonix, opencode, pi) keep following upstream latest with an exact
 recorded version and no age window.
+
+**First-party wheels and PWMCP have no age window either** (operator decision 2026-10-27: the 14-day
+buffer is for third-party tools and dependencies only). The wheels in `pip/wheels.list` (`cli-extended`,
+`ciu`, `cmru`, `topos`, `nyxloom`) always install their newest published `<name>-v*` release, and the
+PWMCP bundle is the release named by `pwmcp/pwmcp.contract.json` at the source commit (`get.py` verifies
+it). The third-party staged tools (`gdu`, `dust`, `ov`, `dry`, `yazi`, `sss`) take the newest release at
+least `MDT_TOOL_MIN_AGE_DAYS` old (default: the estate's `versions.age_window_days`).
 
 ## Release consumer
 

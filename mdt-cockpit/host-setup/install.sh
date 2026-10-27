@@ -316,14 +316,57 @@ echo "== config =="
 CONFIG_DIR=/etc/mdt
 CONFIG_PATH="$CONFIG_DIR/host-setup.env"
 BUILDX_CONFIG_DIR=/etc/mdt/buildx
+# The two Docker paths the end-of-run restart reminder looks at (overridable for the tests only).
+MDT_DOCKER_DAEMON_JSON="${MDT_DOCKER_DAEMON_JSON:-/etc/docker/daemon.json}"
+MDT_DOCKER_API_SOCK="${MDT_DOCKER_API_SOCK:-/run/docker-api/docker.sock}"
+# What the RUNNING dockerd has not picked up yet: prints `daemon-json` when daemon.json is newer
+# than docker.service's main process (or that start time is unknown) and `api-socket` when the
+# additional API listener is not there; prints nothing when nothing is pending, so a re-run after
+# the restart stays silent. The PID comes from systemd, not `pidof dockerd`: pidof also matches a
+# DinD/gate container's dockerd (newer, so the reminder would be suppressed), and an empty
+# pipeline result would abort the script under pipefail.
+_mdt_docker_restart_pending() {
+  local pid lstart started="" mtime
+  pid="$(systemctl show -p MainPID --value docker.service 2>/dev/null || true)"
+  if [ -n "$pid" ] && [ "$pid" != 0 ]; then
+    lstart="$(ps -o lstart= -p "$pid" 2>/dev/null || true)"
+    if [ -n "$lstart" ]; then  # `date -d ""` would mean today 00:00, not "unknown"
+      started="$(date -d "$lstart" +%s 2>/dev/null || true)"
+    fi
+  fi
+  mtime="$(stat -c %Y "$MDT_DOCKER_DAEMON_JSON" 2>/dev/null || echo 0)"
+  if [ -z "$started" ] || [ "$mtime" -gt "$started" ]; then echo daemon-json; fi
+  if [ ! -S "$MDT_DOCKER_API_SOCK" ]; then echo api-socket; fi
+}
 # Replace (or append) the marked block of KEY=VALUE lines in a pam_env-style file such as
 # /etc/environment: idempotent, keeps every other line byte for byte, never duplicates a
 # key that is already set OUTSIDE the block (that is reported, not overwritten).
+# The block's structure in a target file: either no marker at all, or exactly one
+# `# BEGIN mdt-buildkit ...` line followed by exactly one `# END mdt-buildkit` line (trailing
+# whitespace tolerated). Anything else (an orphan BEGIN, an END before its BEGIN, duplicates)
+# would make the replace below drop or keep the wrong lines, so it prints the defect and returns
+# 2. Called in the pre-flight (before the COMMIT POINT) so a damaged /etc/environment refuses the
+# whole run before any file is installed, and again by the installer itself.
+_mdt_environment_block_structure() {
+  local target="$1"
+  [ -f "$target" ] || return 0
+  awk '
+    /^# BEGIN mdt-buildkit[[:space:]]/ { begins++; if (begins > 1) bad = "more than one BEGIN marker"; next }
+    /^# END mdt-buildkit[[:space:]]*$/ { ends++; if (ends > 1) bad = "more than one END marker"; if (!begins) bad = "END marker before its BEGIN"; next }
+    END {
+      if (!bad && begins && !ends) bad = "BEGIN marker without END";
+      if (bad) { print bad; exit 2 }
+    }' "$target"
+}
 _mdt_install_environment_block() {
-  local block_file="$1" target="$2" tmp key
-  tmp="$(mktemp "${target}.mdt.XXXXXXXX")"
+  local block_file="$1" target="$2" tmp key defect
   [ -f "$target" ] || : > "$target"
-  awk '/^# BEGIN mdt-buildkit /{skip=1} !skip{print} /^# END mdt-buildkit$/{skip=0}' "$target" > "$tmp"
+  if ! defect="$(_mdt_environment_block_structure "$target")"; then
+    echo "ERROR: $target: $defect in the '# BEGIN mdt-buildkit' block; repair it by hand (host-setup/README.md, 'Recovering a damaged /etc/environment block') before re-running" >&2
+    return 2
+  fi
+  tmp="$(mktemp "${target}.mdt.XXXXXXXX")"
+  awk '/^# BEGIN mdt-buildkit[[:space:]]/{skip=1} !skip{print} /^# END mdt-buildkit[[:space:]]*$/{skip=0}' "$target" > "$tmp" || { rm -f -- "$tmp"; return 1; }
   while IFS= read -r key; do
     case "$key" in \#*|"") continue ;; esac
     key="${key%%=*}"
@@ -416,7 +459,8 @@ log(){ echo "$*" >&2; }
 MISSING_KEYS=$(_mdt_missing_declared_keys "$CANDIDATE_PATH" "$HERE/host-setup.env.example" required | sed 's/^/ /' | tr -d '\n')
 MISSING_OPTIONAL=$(_mdt_missing_declared_keys "$CANDIDATE_PATH" "$HERE/host-setup.env.example" optional | wc -l)
 if [ "$MISSING_OPTIONAL" -gt 0 ]; then
-  echo "NOTICE: $MISSING_OPTIONAL runtime-optional key(s) are absent from $CONFIG_PATH (the DEV_IO_*_MAX pins, IO_BASELINE_ROTATIONAL_FLAG and the IO_WRITEBACK_*/IO_ROOT_QUEUE_* writeback keys, which read as `kernel`); they are treated as NOT SET. Run install.sh --wizard to review and add them." >&2
+  # Single quotes on purpose: a backtick pair inside double quotes is a command substitution.
+  echo "NOTICE: $MISSING_OPTIONAL runtime-optional key(s) are absent from $CONFIG_PATH (the DEV_IO_*_MAX pins, IO_BASELINE_ROTATIONAL_FLAG and the IO_WRITEBACK_*/IO_ROOT_QUEUE_* writeback keys, which read as 'kernel'); they are treated as NOT SET. Run install.sh --wizard to review and add them." >&2
 fi
 if [ -n "$MISSING_KEYS" ]; then
   echo "ERROR: /etc/mdt/host-setup.env is missing declared keys:${MISSING_KEYS}" >&2
@@ -763,6 +807,14 @@ elif [ "${_host_swap_bytes:-}" = 0 ]; then
   echo "WARN: no swap detected (/proc/meminfo SwapTotal=0) — MemorySwapMax auto-detect skipped; explicit host-setup.env values (if any) still apply"
 else
   echo "WARN: could not read /proc/meminfo's SwapTotal — MemorySwapMax auto-detect skipped; set DEV_SWAP_MAX and the *_MEMORY_SWAP_MAX values explicitly if this host has swap"
+fi
+
+# /etc/environment's marked block must be replaceable before anything is installed: a refusal
+# inside _mdt_install_environment_block would otherwise leave units and the shim installed
+# with the environment block missing (half-installed host).
+if ! _env_defect="$(_mdt_environment_block_structure /etc/environment)"; then
+  echo "ERROR: /etc/environment: $_env_defect in the '# BEGIN mdt-buildkit' block; repair it by hand (host-setup/README.md, 'Recovering a damaged /etc/environment block') before re-running" >&2
+  exit 2
 fi
 
 # === COMMIT POINT: nothing above this line mutates the host (MDT-HS-02) ===
@@ -1206,8 +1258,8 @@ fi
 if [ "$AUTO_RESTART_DOCKER" = 1 ]; then
   echo "== docker restart (--restart-docker flag set) =="
   echo "restarting docker.socket and docker.service..."
-  systemctl restart docker.socket docker.service
-  if [ $? -eq 0 ]; then
+  # Not `cmd; if [ $? ... ]`: under `set -e` a failed restart would exit before the test.
+  if systemctl restart docker.socket docker.service; then
     echo "docker restarted successfully"
   else
     echo "WARNING: docker restart failed — see 'systemctl status docker.socket docker.service' for details"
@@ -1215,20 +1267,15 @@ if [ "$AUTO_RESTART_DOCKER" = 1 ]; then
   fi
 else
   echo "== done — verify with: mdt-host-check.sh =="
-  # Remind only about what the RUNNING dockerd has not picked up yet: daemon.json newer than dockerd's start,
-  # or the extra API socket not listening. A re-run after the restart stays silent.
-  dockerd_pid="$(pidof dockerd 2>/dev/null | cut -d' ' -f1)"
-  dockerd_started=""
-  if [ -n "$dockerd_pid" ]; then
-    dockerd_started="$(date -d "$(ps -o lstart= -p "$dockerd_pid" 2>/dev/null)" +%s 2>/dev/null || true)"
-  fi
-  daemon_json_mtime="$(stat -c %Y /etc/docker/daemon.json 2>/dev/null || echo 0)"
-  if [ -z "$dockerd_started" ] || [ "$daemon_json_mtime" -gt "$dockerd_started" ]; then
-    echo "== REMINDER: /etc/docker/daemon.json's cgroup-parent change needs a scheduled"
+  # Remind only about what the RUNNING dockerd has not picked up yet (see _mdt_docker_restart_pending).
+  _pending="$(_mdt_docker_restart_pending)"
+  if printf '%s\n' "$_pending" | grep -qx daemon-json; then
+    echo "== REMINDER: $MDT_DOCKER_DAEMON_JSON changed since dockerd started (or dockerd's start"
+    echo "   time is unknown): the cgroup-parent/log/live-restore keys need a scheduled"
     echo "   'systemctl restart docker' to take effect — this restarts every running"
     echo "   container. Not done automatically by this script."
   fi
-  if [ ! -S /run/docker-api/docker.sock ]; then
+  if printf '%s\n' "$_pending" | grep -qx api-socket; then
     echo "== REMINDER: the new /run/docker-api/docker.sock listener needs a scheduled"
     echo "   'systemctl restart docker.socket docker.service' to take effect — dockerd"
     echo "   only picks up newly-added listen sockets at its own startup, so restarting"

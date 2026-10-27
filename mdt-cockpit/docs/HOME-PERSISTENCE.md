@@ -1,7 +1,8 @@
 # The persistent `vscode` home (fresh-home design)
 
-The supported template mounts one host directory at `/home/vscode`:
-`${localEnv:HOME}/mdt-cockpit-home/` (mode `0700`). The home is **user state**: it
+The supported template mounts one host directory per checkout at `/home/vscode`:
+`${localEnv:HOME}/mdt-cockpit-${localWorkspaceFolderBasename}-home/` (mode `0700`; the host
+initializer expands the variable to the checkout's folder name). The home is **user state**: it
 survives container rebuilds, the image never puts anything into it, and a new home
 **starts empty**. Image-owned tools live outside the mount (`/opt/mdt`, `/srv`) and every
 image default is wired where its tool reads system-wide configuration (`/etc`,
@@ -30,8 +31,8 @@ want by hand ([below](#moving-from-modern-debian-tools-python-debug)).
 5. `PATH` is defined once, by the image ([One PATH order](DESIGN-GUIDE.md#one-path-order)).
    `~/.local/bin` is **last**: it holds the user's own additions and never shadows an
    image tool. The template does not set `PATH` or `NPM_CONFIG_PREFIX`.
-6. The host bootstrap creates the two sources (`mdt-cockpit-home` `0700`, `mdt-cockpit-tmp`
-   `1777`), names any further source `mdt-cockpit-<purpose>`, and — when the previous
+6. The host bootstrap creates the two sources (`mdt-cockpit-<checkout>-home` `0700`,
+   `mdt-cockpit-<checkout>-tmp` `1777`), names any further source `mdt-cockpit-<purpose>`, and — when the previous
    `~/mdt--mounted-folders/` still holds files while the new home is empty — prints one
    informational line pointing here. That line never changes the exit status.
 
@@ -42,7 +43,7 @@ Contents below a listed directory inherit that directory's owner and persistence
 
 | Path or path class | Owner / role | Policy |
 |---|---|---|
-| `/home/vscode` | `vscode` home and mount point | Empty in the image; the whole directory is bind-mounted from `mdt-cockpit-home/`. |
+| `/home/vscode` | `vscode` home and mount point | Empty in the image; the whole directory is bind-mounted from `mdt-cockpit-<checkout>-home/`. |
 | `.zshrc` | comment-only stub | The only file the finalizer ever writes (only when none of `.zshenv`, `.zprofile`, `.zshrc`, `.zlogin` exists). Yours from then on. |
 | `.bashrc`, `.bash_logout`, `.profile`, `.zprofile` | optional user shell startup | **Not created.** bash and zsh load the image defaults from `/etc/bash.bashrc` and `/etc/zsh/zshrc`; create your own file to add to or override them. |
 | `.config/mdt-cockpit/` | **your** MDT overrides: `ai.env`, optional `shell.env`, `aliases.sh` | Not created by the image. Sourced after the image's own files. Examples: `/usr/local/share/mdt-cockpit/*.example`. |
@@ -88,7 +89,10 @@ Stop the container first (so SQLite WAL/SHM files are quiescent), then, on the h
 
 ```bash
 OLD=~/mdt--mounted-folders
-NEW=~/mdt-cockpit-home
+# Run from the checkout's folder: its basename is ${localWorkspaceFolderBasename}, so the new
+# home is ~/mdt-cockpit-<basename>-home (for a checkout in ~/src/myrepo: ~/mdt-cockpit-myrepo-home).
+CHECKOUT=$(basename "$PWD")
+NEW=~/mdt-cockpit-${CHECKOUT}-home
 mkdir -p "$NEW" "$NEW/.config/mdt-cockpit" "$NEW/.local/share"
 
 for item in .claude .claude.json .ssh .gnupg .minisign .claudelink .pi .reasonix .openclaw \
@@ -110,6 +114,38 @@ done
 Run it as the host user who owns the cockpit — Dev Containers maps `vscode` to that user's uid,
 so `cp -a` keeps every file readable inside the container. Verify logins and keys, then delete
 the old directory yourself when you are satisfied.
+
+### Moving from the shared `~/mdt-cockpit-home/`
+
+Templates vendored before the per-checkout naming mounted one shared `~/mdt-cockpit-home/` and
+`~/mdt-cockpit-tmp/` for every checkout. Re-vendoring the template changes the mount source, so the
+next rebuild starts with a **new, empty** home: logins, keys and histories are still in the old
+directory, not lost. Either move the old home into place for the checkout that should inherit it,
+or keep sharing on purpose:
+
+```bash
+# Option A: this checkout inherits the shared home (run from the checkout's folder, container stopped).
+CHECKOUT=$(basename "$PWD")
+[ -e ~/mdt-cockpit-"${CHECKOUT}"-home ] || mv ~/mdt-cockpit-home ~/mdt-cockpit-"${CHECKOUT}"-home
+[ -e ~/mdt-cockpit-"${CHECKOUT}"-tmp ] || mv ~/mdt-cockpit-tmp ~/mdt-cockpit-"${CHECKOUT}"-tmp
+# Option B: keep ONE shared home for every checkout: edit the two mount sources in
+# .devcontainer/devcontainer.json back to ${localEnv:HOME}/mdt-cockpit-home/ and
+# ${localEnv:HOME}/mdt-cockpit-tmp/ (the role comes from the target, so the modes stay).
+```
+
+A second checkout that should share state with the first can symlink its sources to the first
+checkout's directories (`ln -s ~/mdt-cockpit-myrepo-home ~/mdt-cockpit-myrepo-2-home`); the
+initializer accepts an existing directory or symlink as the source.
+
+**`${localWorkspaceFolderBasename}` is the folder name, nothing more.** A git worktree opened
+from `.claude/worktrees/agent-1234/` or `.worktrees/feature-x/` gets `~/mdt-cockpit-agent-1234-home/`,
+a fresh empty home with no logins or keys; so does a second clone under a different folder name,
+while two unrelated repositories that happen to share a folder name share a home. Symlink or rename
+as above when that is not what you want.
+
+**Mount-spec pitfall.** The sources are Docker `--mount` specs, which split on commas. A checkout
+folder whose name contains a comma (or `=`) breaks the mount string; rename the folder, or spell the
+two sources by hand in `devcontainer.json` without the variable.
 
 **Do not copy** the old image's runtime payloads — they are replaced by the new image and
 would shadow it or point at paths that no longer exist:

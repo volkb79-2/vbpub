@@ -2,6 +2,27 @@
 
 All notable changes to this project are recorded here. Entries marked `cmru: generated` are produced from the project-scoped release range before the release gate runs.
 
+## [Unreleased]
+
+### Changed
+- The devcontainer templates mount one home and one `/tmp` **per checkout**:
+  `${localEnv:HOME}/mdt-cockpit-${localWorkspaceFolderBasename}-home/` and `-tmp/` (the vendored
+  initializer expands the variable to the checkout's folder name). The shared `~/mdt-cockpit-home/`
+  is no longer the template default; an existing shared home is not moved automatically, see
+  `docs/HOME-PERSISTENCE.md` "Moving from the shared `~/mdt-cockpit-home/`" (a git worktree checkout
+  gets a fresh, empty home).
+- Age policy (operator decision 2026-10-27): first-party wheels (`cli-extended`, `ciu`, `cmru`, `topos`,
+  `nyxloom`) and the PWMCP bundle have no age window; the 14-day buffer applies to third-party tools only.
+  `MDT_TOOL_MIN_AGE_DAYS` defaults to the estate's `versions.age_window_days`.
+
+### Fixed
+- The image manifest records bare versions (grype, lazydocker, glances, copilot, claude, codex and every
+  other banner are normalised; aider no longer records its usage banner), lists every first-party wheel
+  and derives the system-package inventory from `apt/packages.list`.
+- host-setup: `install.sh` validates the `/etc/environment` block before the commit point, never aborts
+  silently when dockerd is not running, and `mdt-host-check.sh` checks the inotify setting against the
+  policy minimum instead of the installed file's own value.
+
 <!-- cmru: release history -->
 
 ## [source-1bc10c5a6b68] - 2026-10-27
@@ -189,7 +210,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - mdt-cockpit: handoff MDTC-01 (fresh-home redesign + runtime tests) (d834ea8eb)
 - mdt-cockpit: baseline fork with full-home persistence (pre-review) (ad46d4fa1)
 
-## UNRELEASED
+## Detailed notes for the 2026-10-21 to 2026-10-23 source releases (hand-written)
+
+These entries describe changes (MDT-HS-07, MDT-HS-08, MDTC-04, MDTC-05) that already shipped in the generated source releases above; the block was a leftover draft under a bare unreleased heading and is kept only for its prose detail.
 
 ### Fixed (MDT-HS-08)
 - host-setup: every build on the host now reaches `mdt-managed` whoever starts it. Live incident 2026-10-22: VS Code Remote-SSH "Reopen in Container" failed with `No such container: buildx_buildkit_keen_mestorf0` because the Dev Containers CLI (a child of VS Code's non-login SSH server, user shell zsh) never read `/etc/profile.d`, fell back to a stale per-user `docker-container` builder, and `mdt-buildkit-guard` removed its worker. New `docker-buildx` Docker CLI plugin shim (`host-setup/scripts/docker-buildx-shim.sh` -> `/usr/local/lib/docker/cli-plugins/docker-buildx`, ahead of the packaged plugin in Docker's search order) selects `mdt-managed` when `BUILDX_BUILDER` is unset or the CLI-injected `default`, registers the `remote` node (`default-load=true`) in the caller's own Buildx state on first use, never falls back to the built-in builder, and leaves a named builder, a non-`unix://` `DOCKER_HOST`, the metadata handshake and `MDT_BUILDX_PASSTHROUGH=1` alone. A marked `BUILDX_BUILDER`/`BUILDKIT_HOST` block in `/etc/environment` covers PAM sessions; `install.sh` proves a fresh user with an empty environment resolves `mdt-managed` (exit 2 otherwise). Design, measurements and rejected alternatives: `docs/BUILD-ARCHITECTURE.md` "Making every build use mdt-managed". Oracle `host-setup/tests/test_docker_buildx_shim.py`

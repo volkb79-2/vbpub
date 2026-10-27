@@ -11,13 +11,17 @@ from __future__ import annotations
 import argparse
 from mdt_cli import MdtArgumentParser
 import json
+import re
 from pathlib import Path
 from typing import Mapping, Sequence
 
 
 PACKAGE_LIST_FILE = Path(__file__).resolve().parent.parent / "apt" / "packages.list"
 
-FIRST_PARTY_WHEEL_NAMES = ("CIU", "cmru")
+# One entry per pip/wheels.list name (the Dockerfile's manifest RUN prints `<name>=<version>` for
+# each; `CIU` keeps its historical capitalised key). scripts/test_oci_tool_staging.py pins the
+# three in sync, so a wheel added to the list cannot silently vanish from the manifest.
+FIRST_PARTY_WHEEL_NAMES = ("CIU", "cmru", "topos", "nyxloom", "cli-extended")
 AI_CLI_TOOL_NAMES = ("aider", "antigravity", "claude", "claudelink", "codex", "copilot", "openclaw", "opencode", "pi", "reasonix")
 CONTAINER_INSPECTION_TOOL_NAMES = (
     "crane",
@@ -47,7 +51,7 @@ CUSTOM_TOOL_EXCLUSIONS = (
 INSTALLATION_SOURCES: dict[str, str] = {
     "Node Runtime": "source: nodesource apt repo (https://deb.nodesource.com)",
     "Python & PHP Runtime": "source: Debian trixie apt / sury.org PHP repo (https://packages.sury.org/php)",
-    "First-Party Wheels": "source: built from source, installed via pip",
+    "First-Party Wheels": "source: this repository's GitHub releases (pip/wheels.list), installed offline via pip",
     "AI CLI Tools": "source: npm / PyPI / GitHub Releases",
     "Container Inspection Tools": "source: GitHub Releases (pre-built binaries)",
     "Security & Debug Tools": "source: GitHub Releases (pre-built binaries, sha256-verified)",
@@ -80,10 +84,11 @@ POLICY_NOTES = {
         "Some tools are compiled from source (nvim, htop); the rest are pre-built binaries."
     ),
     "System Packages": (
-        "**Version policy:** Debian repository versions (prefer backports when available). "
-        "System packages come from the Debian Trixie main repos; devcontainer-features "
-        "are installed via the features CLI.  Exception: `skopeo` is pulled from "
-        "Debian testing (pin-priority 701) for a newer version than trixie provides."
+        "**Version policy:** Debian repository versions (stable 500, stable-backports 600; "
+        "the Docker, PostgreSQL, Redis and PHP vendor repositories at 700). The list is "
+        "apt/packages.list plus the vendor-repository packages; the template declares no "
+        "devcontainer features. Exception: `skopeo` is pulled from Debian testing "
+        "(a temporary pin of 701 during its own install step) for a newer version than trixie provides."
     ),
     "Python Packages": (
         "**Version policy:** PyPI latest at image build time (resolved via pip install). "
@@ -176,6 +181,35 @@ def read_key_value_file(path: Path) -> dict[str, str]:
     if not path.exists():
         return {}
     return parse_key_value_lines(path.read_text(encoding="utf-8").splitlines())
+
+
+# ── Version normalisation ────────────────────────────────────────────────────
+# The Dockerfile's manifest RUN records what each tool prints for `--version`: a bare version
+# for some, a banner (`gh version 2.103.3 (2026-10-26)`, `GitHub Copilot CLI 1.0.92-4.`,
+# `Glances version:<TAB>4.5.8`) for most. The manifest shows the VERSION, so every recorded
+# value goes through `normalise_version` when the custom-tooling file is read (MDT-034). A value
+# without a version-looking token (`not-installed`, `true`, an unexpected label line) is kept
+# as recorded, so garbage stays visible instead of being hidden; the fixtures in
+# scripts/test_oci_tool_staging.py are the real banners of the 20261027 build.
+VERSION_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9_.])v?(\d+(?:\.\d+)+(?:[.\-+][0-9A-Za-z.\-+]*[0-9A-Za-z])?)"
+)
+# Values that are not versions by design: sss (an unreleased script, commit recorded in prose),
+# ksm-optin (a build switch) and the Node runtime (rendered as node/npm print it).
+VERSION_PASSTHROUGH = frozenset({"sss", "ksm-optin", "node", "npm"})
+
+
+def normalise_version(name: str, raw: str) -> str:
+    """The bare version in a `--version` banner, or the banner unchanged when it has none."""
+    value = (raw or "").strip()
+    if name in VERSION_PASSTHROUGH or value in ("", "not-installed"):
+        return value
+    match = VERSION_TOKEN.search(value)
+    return match.group(1) if match else value
+
+
+def normalise_versions(tools: Mapping[str, str]) -> dict[str, str]:
+    return {name: normalise_version(name, version) for name, version in tools.items()}
 
 
 def read_list_file(path: Path) -> list[str]:
@@ -1015,7 +1049,7 @@ def _parse_args() -> argparse.Namespace:
 
 def _run_installed(args: argparse.Namespace) -> int:
     output_path = Path(args.output)
-    custom_tooling = read_key_value_file(Path(args.custom_tooling_file))
+    custom_tooling = normalise_versions(read_key_value_file(Path(args.custom_tooling_file)))
     python_packages = read_list_file(Path(args.python_packages_file))
     system_packages = read_list_file(Path(args.system_packages_file))
     artifact_map = _load_artifact_map(args.artifact_metadata)
@@ -1045,7 +1079,7 @@ def _run_unified(args: argparse.Namespace) -> int:
     if source_path and source_path.exists():
         source_content = source_path.read_text(encoding="utf-8")
 
-    custom_tooling = read_key_value_file(Path(args.custom_tooling_file))
+    custom_tooling = normalise_versions(read_key_value_file(Path(args.custom_tooling_file)))
     python_packages = read_list_file(Path(args.python_packages_file))
     system_packages = read_list_file(Path(args.system_packages_file))
     artifact_map = _load_artifact_map(args.artifact_metadata)

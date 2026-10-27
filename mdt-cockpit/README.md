@@ -11,6 +11,9 @@ development, CI, and VS Code devcontainers; its first release has not been publi
 }
 ```
 
+(The vendored templates track the PHP flavour, `trixie-py3.14-php8.5-latest`; both tags are
+published by every release.)
+
 Consumer repos should reference a published image rather than building from this
 Dockerfile. A ready-made devcontainer definition — mounts, host cgroup placement, and the
 bootstrap hook — is in [`templates/`](templates/README.md); the lifecycle it implements is
@@ -61,6 +64,11 @@ the runtime integration around it:
 
 The Docker tools are **clients only** — neither image runs a daemon. In the native image
 `docker version` needs an explicitly configured remote `DOCKER_HOST` or a mounted socket.
+The VSC template uses a directory-level `/run/docker-api` mount so replacing
+the socket entry does not invalidate the mount; host setup keeps that directory
+in place. A mounted directory remains attached to its old inode if its host
+path is removed and recreated, so the host must preserve that directory
+identity. See the [directory bind-mount design](docs/DESIGN-GUIDE.md#directory-bind-mount-identity).
 
 Both families create the `vscode` user when the base does not, so consumers can use
 `remoteUser: "vscode"` with either.
@@ -81,9 +89,10 @@ Agents in the connected devcontainer can use the MCP endpoint
 `http://pwmcp:8931/mcp`; Playwright clients use `ws://pwmcp:3000/`. The service
 uses PWMCP's existing internal policy: no authentication and no host-published
 ports. The generated installer and exact client wheels are verified and
-versioned with PWMCP. The vendored devcontainer template exposes the CLI path
-and `PWMCP_MCP_URL`; consumers using another harness must register that HTTP
-MCP endpoint in their harness configuration. See [MDT's PWMCP consumer guide](docs/CONSUMERS.md#pwmcp-browser-service).
+versioned with PWMCP. The image puts `/srv/pwmcp-instance/bin` on `PATH` (the
+template sets no `PATH`) and the vendored devcontainer template sets
+`PWMCP_MCP_URL`; consumers using another harness must register that HTTP
+MCP endpoint in their harness configuration. See [MDT's PWMCP consumer guide](docs/CONSUMERS.md#pwmcp-browser-service)
 and [PWMCP's install and design notes](../pwmcp/README.md#standalone-instance-for-mdt-and-other-devcontainers).
 
 ## Tags and variants
@@ -133,8 +142,8 @@ flavor should follow the same pattern — a new tag segment, never a new package
 | Venv | Path | Contents |
 |---|---|---|
 | Primary | `/opt/mdt/venv` | Full toolkit — see below; first on `PATH`, `python` resolves here (no `VIRTUAL_ENV`, no home symlink) |
-| Secondary 3.11 | `/opt/mdt/venvs/py311` | Lean: `pip`, `uv`, `debugpy`, `ruff` |
-| Secondary 3.9 | `/opt/mdt/venvs/py39` | Lean: `pip`, `uv`, `debugpy`, `ruff` |
+| Secondary 3.11 | `/opt/mdt/venvs/py311` | Lean: `uv`, `debugpy`, `ruff` (no `pip`: created by `uv venv`, install with `uv pip install --python /opt/mdt/venvs/py311/bin/python ...`) |
+| Secondary 3.9 | `/opt/mdt/venvs/py39` | Lean: `uv`, `debugpy`, `ruff` (same `uv pip` recipe) |
 
 Secondary venvs exist only in the multi-Python targets and are baked at build time — no
 post-create download. VS Code discovers them automatically (`Python: Select Interpreter`),
@@ -159,7 +168,7 @@ and `isort`, so neither is installed.
 > repo's AI instruction files.
 
 Debian packages come from [`apt/packages.list`](apt/packages.list); first-party wheels
-(`ciu`, `cmru`, `topos`, and `nyxloom`) are staged from their GitHub releases into
+(`cli-extended`, `ciu`, `cmru`, `topos`, and `nyxloom`) are staged from their GitHub releases into
 [`pip/`](pip/). Their runtime dependencies are deliberately installed in the primary
 toolkit before the wheel layer, because that layer uses `pip --no-index`; the
 `rich>=15.0.0` and `pygments>=2.21.0` floors in `requirements/toolkit.txt` are part of
@@ -222,8 +231,19 @@ command cannot be used, see the [update table](docs/DESIGN-GUIDE.md#how-the-ai-c
 Reasonix with `npm install -g reasonix@latest`. `PATH` is one definition ([One PATH order](docs/DESIGN-GUIDE.md#one-path-order)):
 `/opt/mdt/bin`, the primary venv, `/opt/mdt/npm/bin`, PWMCP, the base image's own entries, and
 `~/.local/bin` **last** — so a tool in `~/.local/bin` never silently shadows an image tool.
-Rebuild the image to refresh its tool versions (`gdu`, `dust`, `ov`, `dry`, `yazi`, `sss` resolve the newest
-release at least `MDT_TOOL_MIN_AGE_DAYS`, default 14, old at build time).
+Rebuild the image to refresh its tool versions. **Age policy (operator decision 2026-10-27):**
+third-party tools get a vetting buffer, first-party ones do not.
+
+- *Third-party, aged:* `gdu`, `dust`, `ov`, `dry`, `yazi`, `sss` resolve the newest release at least
+  `MDT_TOOL_MIN_AGE_DAYS` old at build time (default: the estate's `versions.age_window_days` in
+  `cmru.orchestration.toml`, 14); `copilot`, `openclaw`, `claudelink` and aider's dependencies are
+  held to the same window by the `cmru versions` record and `aider-main-pin.toml` (below); apt
+  packages (`tmux`, `broot`, ...) follow Debian's own release process.
+- *First-party, no age window:* the wheels in [`pip/wheels.list`](pip/wheels.list) (`cli-extended`,
+  `ciu`, `cmru`, `topos`, `nyxloom`) always install their newest published release (the highest-semver
+  `<name>-v*` GitHub release, resolved by `scripts/resolve-devcontainers-release.py`), and the PWMCP
+  bundle installs the release named by `pwmcp/pwmcp.contract.json` at the source commit. The split is
+  pinned by `scripts/test_oci_tool_staging.py`.
 
 Node 26 comes from NodeSource because Debian 13 ships Node 20, which is too old for the
 npm-based CLIs.
@@ -357,12 +377,16 @@ containers built from the same layers.
 
 ### Complete persistent home
 
-The vendored template mounts one host directory, `${localEnv:HOME}/mdt-cockpit-home/` (mode
-`0700`), over `/home/vscode`. Agent logins, keys, histories, shell preferences, caches,
-worktrees, and arbitrary user-created home data therefore survive image rebuilds without
-maintaining a list of individual mount points. `/tmp` is a second host-backed source,
-`${localEnv:HOME}/mdt-cockpit-tmp/` (mode `1777`); any further source is named
-`${localEnv:HOME}/mdt-cockpit-<purpose>`.
+The vendored template mounts one host directory per checkout,
+`${localEnv:HOME}/mdt-cockpit-${localWorkspaceFolderBasename}-home/` (mode `0700`; for a
+checkout named `myrepo` that is `~/mdt-cockpit-myrepo-home/`), over `/home/vscode`. Agent
+logins, keys, histories, shell preferences, caches, worktrees, and arbitrary user-created home
+data therefore survive image rebuilds without maintaining a list of individual mount points, and
+two checkouts on one host never share a home. `/tmp` is a second host-backed source,
+`${localEnv:HOME}/mdt-cockpit-${localWorkspaceFolderBasename}-tmp/` (mode `1777`); any further
+source is named `${localEnv:HOME}/mdt-cockpit-<purpose>`. The role of a source (home or `/tmp`)
+comes from its mount target, so a consumer may spell the sources differently (for example one
+shared `~/mdt-cockpit-home/`).
 
 **A new home starts empty and stays that way.** The image leaves `/home/vscode` empty and ships
 no copy of any default into it: image-owned runtimes and CLIs live under `/opt/mdt` and `/srv`,
@@ -526,6 +550,8 @@ Host installation and the guard policy are documented in
 [the managed BuildKit architecture](docs/BUILD-ARCHITECTURE.md#managed-buildkit-backend).
 The service exposes its socket only to the host `docker` group; see the
 [socket-access design](docs/DESIGN-GUIDE.md#managed-buildkit-socket-access).
+It preserves the `/run/mdt-buildkitd` directory across service restarts so
+existing devcontainer bind mounts keep reaching the socket.
 The host wizard also writes `DEV_BUILDKITD_MAX_PARALLELISM` into the managed
 daemon configuration; it limits one BuildKit daemon's internal solver work and
 is independent of release repack concurrency.
@@ -809,7 +835,7 @@ naming is fully flexible.
 ### Python version support
 
 CPython has no odd/even stability distinction — all released minor versions are
-production-quality. Windows as of June 2026:
+production-quality. Support windows as of June 2026:
 
 | Version | EOL | Status |
 |---|---|---|

@@ -26,9 +26,9 @@ What ships here and where it is wired:
 | `mc.ini` | `/etc/mc/mc.ini` | mc reads it when the user has no `~/.config/mc/ini` |
 | `nanorc` | `include` line appended to `/etc/nanorc` | nano reads `~/.nanorc` after it |
 | `tmux.conf` | `/etc/tmux.conf` | tmux reads `~/.tmux.conf` after it; tmux is opt-in and nothing starts it. Prefix Ctrl+Space (Ctrl+B and Ctrl+O collide with Claude Code, mc and vim) |
-| `gitconfig` | appended to `/etc/gitconfig` | delta as pager, zdiff3, `push.autoSetupRemote`; `~/.gitconfig` and repository config override |
+| `gitconfig` | appended to `/etc/gitconfig` | `core.pager=delta` (terminal output only; `interactive.diffFilter`, `delta.navigate`, `delta.line-numbers`), `merge.conflictStyle=zdiff3`, `diff.colorMoved=default`, `push.autoSetupRemote=true`, `init.defaultBranch=main`; `~/.gitconfig` and repository config override |
 | `inputrc` | appended to `/etc/inputrc` | readline defaults. A user `~/.inputrc` REPLACES `/etc/inputrc`: start it with `$include /etc/inputrc` |
-| `vimrc.local` | `/etc/vim/vimrc.local` | sourced by Debian's `/etc/vim/vimrc`; `~/.vimrc` overrides |
+| `vimrc.local` | `/etc/vim/vimrc.local` | sourced by Debian's `/etc/vim/vimrc`: `syntax on`, `hidden`, 4-space `expandtab`, `ignorecase smartcase incsearch hlsearch`, `wildmenu`, `scrolloff=5`, `ttimeoutlen=50`, `nomodeline`; `~/.vimrc` overrides |
 | `nvim/sysinit.vim` | `/etc/xdg/nvim/sysinit.vim`, beside the NvChad tree | redirects a starter-style tree's lazy lockfile into the state directory while the user has no `~/.config/nvim/init.lua` or `init.vim` (Neovim itself starts the tree from `$XDG_CONFIG_DIRS`) |
 | `path-hook.sh` | `/usr/local/share/mdt-cockpit/path-hook.sh`, sourced by `/etc/profile.d/50-mdt-cockpit.sh` and `/etc/zsh/zprofile` | merges the image's managed `PATH` entries (from `/usr/local/share/mdt-cockpit/path-entries`) into a login shell's `PATH`, also a cleared one; `/etc/profile` is patched to keep an inherited `PATH` |
 | `lesspipe.sh` | `LESSOPEN` in `shell.env` | syntax-highlighting preprocessor for `less` |

@@ -1,4 +1,3 @@
-if command -v batcat >/dev/null 2>&1; then alias bat='batcat --paging=never'; fi
 alias ll='ls -l'
 alias la='ls -la'
 alias gs='git status -sb'

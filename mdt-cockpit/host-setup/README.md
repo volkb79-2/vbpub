@@ -36,7 +36,7 @@ dev.slice                    ONE absolute IOPS/bandwidth/CPU/swap ceiling —
 │                             rg-<token> — the admission capacity object;
 │                             see "dev-gates: why" below. ALSO gets a
 │                             tighter IOPS sub-ceiling (bandwidth untouched)
-├── dev-background.slice     long-running dev stacks (dstdns, ...) — explicit
+├── dev-background.slice     long-running dev stacks (an app under development, ...) — explicit
 │                            opt-in (compose cgroup_parent, docker run
 │                            --cgroup-parent) OR caught by the Docker
 │                            daemon-wide default (/etc/docker/daemon.json)
@@ -79,9 +79,9 @@ DESIGN-2026-09-12-liveness-placement-admission.md`).
 |---|---|---|
 | `dev-interactive.slice` | devcontainers (IDE + AI agents) via devcontainer.json runArg | responsive: soft-protected working set (`MemoryLow`), generous `MemoryHigh`, cold tail compressed into zswap and allowed to drain to disk from there (`DEV_INTERACTIVE_ZSWAP_WRITEBACK`), never OOM-killed |
 | `dev-gates.slice` | gate/lane containers + placed lane leaves `rg-<token>`, via explicit `docker run --cgroup-parent` or `$CGROUP_PARENT_DEV_GATES` | the admission capacity object: bounded memory+swap, `systemd-oomd` kills inside the tier first — a gate is disposable, a stack is not |
-| `dev-background.slice` | long-running dev stacks (dstdns, ...), via compose `cgroup_parent`, explicit `docker run --cgroup-parent`, **or** the Docker daemon-wide default | bounded: hard memory+swap caps (relaxed swap given ample host swap — size for yours), `systemd-oomd` kills inside the tier first |
+| `dev-background.slice` | long-running dev stacks (an app under development, ...), via compose `cgroup_parent`, explicit `docker run --cgroup-parent`, **or** the Docker daemon-wide default | bounded: hard memory+swap caps (relaxed swap given ample host swap — size for yours), `systemd-oomd` kills inside the tier first |
 | `dev-buildkitd.slice` | exactly one container: the host-managed rootless BuildKit worker (`mdt-buildkitd.service`, plain `docker run --cgroup-parent=`, never through a Buildx driver — see `plan-buildkitd-service.md`) | one shared build cache across every consuming project; hard `CPUQuota` auto-detected as `nproc - DEV_SUBSLICE_CPU_RESERVE_CORES` cores (default 3, same as every other child) unless overridden; active-build latency-sensitive, so `CPUWeight`/`IOWeight` sit between interactive's and background's; also gets a tighter runtime IOPS sub-ceiling (bandwidth untouched), same as `dev-gates.slice` |
-| (production tiers) | e.g. `wings.slice` for game servers | owned elsewhere — this companion never touches them, it only keeps dev work from starving them |
+| (production tiers) | e.g. a production service's own top-level slice | owned elsewhere — this companion never touches them, it only keeps dev work from starving them |
 
 `dev.slice` (the shared parent) carries the **one** absolute IOPS/bandwidth
 ceiling for every child combined — not one per tier. That is
@@ -282,6 +282,20 @@ zswap choices. See [`../docs/BUILD-ARCHITECTURE.md`](../docs/BUILD-ARCHITECTURE.
 for the design decisions and [`../docs/CONSUMERS.md`](../docs/CONSUMERS.md) for
 pasteable consumer configuration.
 
+### Recovering a damaged `/etc/environment` block
+
+install.sh keeps `BUILDX_BUILDER`/`BUILDKIT_HOST` for PAM sessions in a marked block of
+`/etc/environment` (`# BEGIN mdt-buildkit ...` to `# END mdt-buildkit`, from
+`etc/environment.mdt-buildkit`), replaced in place on every run. Before anything is installed (the
+pre-flight, ahead of the commit point) it checks that the file has either no marker or exactly one
+BEGIN followed by one END; an orphan BEGIN, an END before its BEGIN or duplicate markers refuse the
+whole run with `ERROR: /etc/environment: <defect> in the '# BEGIN mdt-buildkit' block`, because the
+replace would otherwise drop every line after the orphan marker (`PATH` included). Recovery: open
+`/etc/environment` as root, delete every line from the first `# BEGIN mdt-buildkit` to the last
+`# END mdt-buildkit` (and any stray marker), keep the rest, then re-run install.sh, which appends a
+fresh block. A trailing-whitespace END line is accepted as is. `mdt-host-check.sh` does not inspect
+this file; the oracle is `host-setup/tests/test_install_runtime_blocks.py`.
+
 ## dev-gates: why
 
 `dev-gates.slice` is a SIBLING of `dev-interactive.slice`/`dev-background.slice`
@@ -295,9 +309,9 @@ stacks. It is the **admission capacity object**: its `memory.max` is what
 (design doc `run-gate-project/nyxloom-trove/
 DESIGN-2026-09-12-liveness-placement-admission.md` D-6/D-19).
 
-Filed from a real, measured incident (memory `soulmask-memory-pressure-
-findings.md`, 2026-08-04): gates used to share `dev-background.slice` with the
-~4 GiB `dstdns` stack, so a gate started with only ~2 GiB of headroom before
+Filed from a real, measured incident (2026-08-04): gates used to share
+`dev-background.slice` with a ~4 GiB long-running application stack, so a gate
+started with only ~2 GiB of headroom before
 `dev-background.slice`'s own `memory.high` began throttling it — an unrelated
 long-running stack was silently eating a gate's budget. `dev-gates.slice`
 gives gates their own ceiling, `systemd-oomd` protection (a gate is
@@ -606,7 +620,7 @@ runtime-optional: an env file without them reads as `kernel`. Bounds: `dirty_bac
 `nr_requests` at least 4, `max_sectors_kb` between 4 and the disk's `max_hw_sectors_kb` (read from the derived disk at
 install time). The wizard proposes from a current benchmark result when one exists (the IOB-02 `result.json`,
 `/var/lib/iobench/result.json` or `$IOBENCH_RESULT`; absent means no benchmark), else the existing value, else
-`kernel`; the gstammtisch-measured values are printed as a labelled example, never a default. install.sh writes
+`kernel`; the values measured on the reference host are printed as a labelled example, never a default. install.sh writes
 `/etc/sysctl.d/90-mdt-io-writeback.conf` (only the set keys) and `/etc/udev/rules.d/61-mdt-io-queue.rules` (matching
 `KERNEL==<DEVNAME>` of the whole disk under `/`, derived with the MDT-HS-04 helpers; it sorts after
 `60-mdt-bfq-scheduler.rules` because a scheduler change resets `nr_requests`), applies them, reads `/proc/sys/vm/*` and
@@ -622,15 +636,31 @@ least one of model/serial/size/wwn match that disk. A
 key set back to `kernel` loses MDT's line but its running value cannot be restored (the kernel's boot value is unknown at
 runtime): reboot or set it by hand. `mdt-host-check.sh` reports each key as OK, MISMATCH, not managed, could not read, or LIVE ONLY, NOT PERSISTED (in force, but MDT's file is missing), and notices a later `sysctl.d` / `/etc/sysctl.conf` / udev file that sets the same key and would override MDT at boot.
 Why these values and what they cost (sequential reads fell from about 1.2-1.4 GB/s to 0.25-0.3 GB/s at 64 KB): see the
-DESIGN-GUIDE section on MDT-HS-05 and `scripts/gstammtisch-guide/HOST-IO-INTERFERENCE.md` sections 4.2-4.5 and 5.
+DESIGN-GUIDE section on MDT-HS-05 and the reference host's guide at the repository root (`scripts/<host>-guide/HOST-IO-INTERFERENCE.md`, sections 4.2-4.5 and 5).
+
+### Docker restart: the end-of-run reminder and `--restart-docker`
+
+Two of install.sh's changes reach the running `dockerd` only at its next start: the merged
+`/etc/docker/daemon.json` keys (cgroup-parent, live-restore, log options) and the additional API
+listener `/run/docker-api/docker.sock` (the `docker.socket` drop-in
+`/etc/systemd/system/docker.socket.d/50-mdt-dedicated-api-socket.conf`, the directory the devcontainer
+template bind-mounts; `dockerd` picks up a newly added listen socket only at its own startup). install.sh
+never restarts Docker on its own: it ends with a REMINDER only while something is pending (daemon.json
+newer than `docker.service`'s main process, or the socket not listening), so a re-run after the restart
+is silent. `--restart-docker` performs `systemctl restart docker.socket docker.service` at the end of
+the run instead; it restarts every running container, so schedule it.
 
 ### inotify watch budget (MDT-003)
 
 VS Code watches every directory of the open workspace, and all of the host user's inotify consumers share one
 `fs.inotify.max_user_watches` budget. The kernel default (about 8k) is exhausted by a large repository, which VS Code
 reports as "unable to watch for file changes in this large workspace (ENOSPC)". install.sh copies
-`etc/sysctl.d/99-inotify.conf` (524288) to `/etc/sysctl.d/99-mdt-inotify.conf` and applies it with `sysctl -p`;
-`mdt-host-check.sh` FAILs when the live value is below it and warns when the persisted file is missing.
+`etc/sysctl.d/99-inotify.conf` (524288) to `/etc/sysctl.d/99-mdt-inotify.conf` and applies it with `sysctl -p`
+only when the live value is below it (a failure to apply is a warning, the file applies at the next boot);
+`mdt-host-check.sh` FAILs when the live value is below the installed file's value and warns when the persisted
+file is missing or no longer carries that value. The installed file is unconditional: a host that sets a higher
+value in an earlier-sorting `sysctl.d` file is lowered to 524288 at the next boot — raise the value in
+`/etc/sysctl.d/99-mdt-inotify.conf` (or an even later file) in that case.
 A raised limit is only half the fix: generated trees (git worktrees, run-gate and pytest output) can still consume most
 of it. The devcontainer template therefore sets `files.watcherExclude` and `search.exclude` under
 `customizations.vscode.settings`; trim those patterns to the consumer repo. The cost: the Source Control view does not
@@ -644,7 +674,7 @@ The wizard (step 9, after the writeback keys) asks three more keys and install.s
 rrandiops wbps wseqiops wrandiops`, quoted) and `IO_COST_QOS` (`off`, which writes `enable=0`, or `rpct rlat wpct wlat min
 max`, quoted; the policy default is `off`). They are runtime-optional: EMPTY or ABSENT means not managed, an old env file
 keeps the legacy BFQ rule and writes no io.cost line until the wizard is run (a NOTICE says so). The wizard proposes the
-model from an identity-verified IOB-02 benchmark result, else the existing value, else `kernel`; the gstammtisch values are a
+model from an identity-verified IOB-02 benchmark result, else the existing value, else `kernel`; the reference host's values are a
 labelled example only. install.sh renders `60-mdt-io-scheduler.rules` for the derived whole disk (replacing the BFQ rule;
 a non-MDT `60-bfq-scheduler.rules` is retired only when it is byte-identical to a known repo copy, otherwise kept with a WARN
 and, if it would override, the scheduler is not reported as verified), applies the queue rule (61) after it, then writes
@@ -658,11 +688,11 @@ log line (a disk re-add or a scheduler switch reverts them); empty keys are neve
 
 ### Memory watermarks and boost (not managed yet)
 
-host-setup does not own `vm.watermark_scale_factor`, `vm.watermark_boost_factor` or `vm.min_free_kbytes` yet; on gstammtisch they are set by hand
+host-setup does not own `vm.watermark_scale_factor`, `vm.watermark_boost_factor` or `vm.min_free_kbytes` yet; on the reference host they are set by hand
 (`wsf` 50, `boost` 0 since 2026-10-20), and a stuck watermark boost once forced all reclaim into the allocating threads. The wizard and
 `mdt-host-check.sh` follow-up is recorded as MDT-021 in `KNOWN_ISSUES_TODO_BACKLOG.md`. Why, and the measured failure: DESIGN-GUIDE, "Memory
 watermarks and watermark boost are kernel settings this host-setup does not own yet", which points at the canonical record in
-`scripts/gstammtisch-guide/MEMORY-ARCHITECTURE.md`.
+the reference host's guide (`scripts/<host>-guide/MEMORY-ARCHITECTURE.md` at the repository root).
 
 ### Pausing the re-assert for IO experiments, and restarting mdt-buildkitd (MDT-HS-07)
 
@@ -750,8 +780,11 @@ the service and restarting it interrupts active builds; the installer says so
 and waits for the new socket before verifying/reusing the builder. Existing
 `mdt-managed` drift is refused rather than deleted. Schedule the restart, run
 host setup, then rebuild devcontainers so their mandatory socket mount and
-explicit environment are present. A running devcontainer is not required to
-register the builder.
+explicit environment are present. The preserved runtime directory means this
+restart does not invalidate an already-running container's bind mount. If a
+container was created before this preservation was installed and its mount
+source shows `//deleted`, rebuild that container once to bind the current host
+directory. A running devcontainer is not required to register the builder.
 
 Reboot-survival works in three layers; each exists because the previous one
 cannot express the next:
@@ -1045,8 +1078,11 @@ sudo rm /etc/systemd/system/{dev,dev-interactive,dev-background,dev-gates,dev-me
         /etc/systemd/system/docker-.scope.d/50-default-limits.conf \
         /etc/systemd/system/mdt-dev-governance-reconcile.{service,timer} \
         /usr/local/sbin/{mdt-dev-governance-reconcile.sh,mdt-container-io-events-watcher.sh,mdt-container-io-caps.lib.sh,mdt-container-memory-inotify-watcher.py,mdt-slice-memory-min-low-audit.py,mdt-io-baseline.py,mdt-host-check.sh} \
-        /etc/modules-load.d/mdt-bfq.conf /etc/udev/rules.d/60-mdt-bfq-scheduler.rules
+        /etc/modules-load.d/mdt-bfq.conf /etc/udev/rules.d/60-mdt-bfq-scheduler.rules \
+        /etc/sysctl.d/99-mdt-inotify.conf /etc/systemd/system/docker.socket.d/50-mdt-dedicated-api-socket.conf
 sudo systemctl daemon-reload
+# The docker.socket drop-in removal takes effect at the next scheduled
+# `systemctl restart docker.socket docker.service` (restarts every container).
 sudo rm -rf /etc/mdt /var/lib/mdt        # config + benchmark results
 # existing containers keep their current placement until recreated. A later
 # MDT devcontainer rebuild refuses startup until the installed slice units return.

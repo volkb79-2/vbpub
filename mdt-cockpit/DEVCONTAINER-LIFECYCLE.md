@@ -80,17 +80,19 @@ finalize discovers and runs hooks from your repo's `.devcontainer/` (no need to 
 `.devcontainer/finalize.post.d/10-<repo>-ciu.sh` that exports `REPO_ROOT`, runs `ciu env generate`,
 installs repo deps, etc. mdt provides the bracket; the consumer owns the contents.
 
-## Complete persistent home — `mdt-cockpit-home`
+## Complete persistent home — `mdt-cockpit-<checkout>-home`
 
-The template binds `${localEnv:HOME}/mdt-cockpit-home/` to `/home/vscode`.
+The template binds `${localEnv:HOME}/mdt-cockpit-${localWorkspaceFolderBasename}-home/` (one
+directory per checkout; the initializer expands the variable to the checkout's folder name) to
+`/home/vscode`.
 It persists the entire home: agent credentials and sessions, `.config`, `.local`, shell startup
 files, caches, worktrees stored below home, and any other user-created files. A new host source is
 created as a real directory with mode `0700`, and **a new home starts empty**.
 
 | Host source | Container target | Notes |
 |---|---|---|
-| `~/mdt-cockpit-home` | `/home/vscode` | complete persistent home, mode `0700` on creation |
-| `~/mdt-cockpit-tmp` | `/tmp` | independent host-backed scratch/worktree storage, mode `1777` |
+| `~/mdt-cockpit-<checkout>-home` | `/home/vscode` | complete persistent home, mode `0700` on creation |
+| `~/mdt-cockpit-<checkout>-tmp` | `/tmp` | independent host-backed scratch/worktree storage, mode `1777` |
 | `~/.ssh` (native host) | `/run/mdt/host-ssh` (ro) | host SSH keys remain available outside the home mount |
 
 The image keeps executables and runtimes outside the home mount, in the `mdt` group tree:

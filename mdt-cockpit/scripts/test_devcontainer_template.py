@@ -21,8 +21,10 @@ MOUNT_RE = re.compile(
     r'^\s*"(?P<spec>source=(?P<source>[^,"]+),target=(?P<target>[^,"]+),'
     r'type=(?P<type>[^,"]+)(?:,[^"]*)?)",?\s*$'
 )
-HOME_SOURCE = "${localEnv:HOME}/mdt-cockpit-home/"
-TMP_SOURCE = "${localEnv:HOME}/mdt-cockpit-tmp/"
+# The template spells both sources per checkout (one home per repository folder); the
+# initializer owns the spelling and expands it for the checkout it runs in.
+HOME_SOURCE = "${localEnv:HOME}/" + bootstrap.HOME_SOURCE_SPELLING + "/"
+TMP_SOURCE = "${localEnv:HOME}/" + bootstrap.TMP_SOURCE_SPELLING + "/"
 DOC_ANCHOR = (
     "https://github.com/volkb79-2/vbpub/blob/main/mdt-cockpit/docs/HOME-PERSISTENCE.md"
     "#moving-from-modern-debian-tools-python-debug"
@@ -179,8 +181,8 @@ def test_bootstrap_creates_a_private_home_and_a_sticky_tmp(
 
     assert bootstrap.main() == 0
 
-    assert (host_home / "mdt-cockpit-home").stat().st_mode & 0o7777 == 0o700
-    assert (host_home / "mdt-cockpit-tmp").stat().st_mode & 0o7777 == 0o1777
+    assert (host_home / bootstrap.HOME_SOURCE_NAME).stat().st_mode & 0o7777 == 0o700
+    assert (host_home / bootstrap.TMP_SOURCE_NAME).stat().st_mode & 0o7777 == 0o1777
 
 
 CUSTOM_HOME = ("${localEnv:HOME}/mdt-cockpit-vbpub-home/", "/home/vscode")
@@ -197,8 +199,8 @@ def test_bootstrap_modes_follow_the_mount_target_not_the_source_name(
     assert (host_home / "mdt-cockpit-vbpub-home").stat().st_mode & 0o7777 == 0o700
     assert (host_home / "mdt-cockpit-vbpub-tmp").stat().st_mode & 0o7777 == 0o1777
     # the canonical names are not created just because the template spells them
-    assert not (host_home / "mdt-cockpit-home").exists()
-    assert not (host_home / "mdt-cockpit-tmp").exists()
+    assert not (host_home / bootstrap.HOME_SOURCE_NAME).exists()
+    assert not (host_home / bootstrap.TMP_SOURCE_NAME).exists()
 
 
 def test_bootstrap_reasserts_sticky_tmp_on_a_custom_named_source(
@@ -266,9 +268,9 @@ def test_bootstrap_notes_old_split_state_but_never_fails_or_migrates(
     notes = [line for line in captured.err.splitlines() if "NOTE" in line]
     assert len(notes) == 1
     assert DOC_ANCHOR in notes[0]
-    assert "mdt-cockpit-home" in notes[0]
+    assert f"~/{bootstrap.HOME_SOURCE_NAME}/" in notes[0]
     # Nothing was read into, copied to, or removed from either place.
-    assert list((host_home / "mdt-cockpit-home").iterdir()) == []
+    assert list((host_home / bootstrap.HOME_SOURCE_NAME).iterdir()) == []
     assert (old_codex / "auth.json").read_text(encoding="utf-8") == "secret"
 
 
@@ -284,7 +286,7 @@ def test_bootstrap_note_names_the_custom_home_source_actually_mounted(
     notes = [line for line in capsys.readouterr().err.splitlines() if "NOTE" in line]
     assert len(notes) == 1
     assert "~/mdt-cockpit-vbpub-home/" in notes[0]
-    assert "~/mdt-cockpit-home/" not in notes[0]
+    assert f"~/{bootstrap.HOME_SOURCE_NAME}/" not in notes[0]
 
 
 def test_bootstrap_policy_banner_lists_the_variable_and_allowed_values(
@@ -339,8 +341,8 @@ def test_bootstrap_stays_silent_once_the_new_home_has_content(
     host_home = _bootstrap_home(monkeypatch, tmp_path, [HOME_SOURCE])
     (host_home / "mdt--mounted-folders").mkdir()
     (host_home / "mdt--mounted-folders" / "leftover").write_text("old", encoding="utf-8")
-    (host_home / "mdt-cockpit-home").mkdir()
-    (host_home / "mdt-cockpit-home" / ".bash_history").write_text("ls\n", encoding="utf-8")
+    (host_home / bootstrap.HOME_SOURCE_NAME).mkdir()
+    (host_home / bootstrap.HOME_SOURCE_NAME / ".bash_history").write_text("ls\n", encoding="utf-8")
 
     assert bootstrap.main() == 0
 
@@ -446,7 +448,7 @@ def test_bootstrap_refuses_conflicting_source_markers_without_fallback_creation(
 
     assert bootstrap.main() == 1
     assert not (host_home / "mdt-cockpit-conflicted").exists()
-    assert not (host_home / "mdt-cockpit-home").exists()
+    assert not (host_home / bootstrap.HOME_SOURCE_NAME).exists()
     err = capsys.readouterr().err
     assert "conflicting file/directory source spellings" in err
     assert "Spell every mount of this source the same way" in err
@@ -507,8 +509,8 @@ def test_bootstrap_main_uses_complete_fallback_when_template_is_unreadable(
         (path, expected_type, "create-by-spelling")
         for path, expected_type in bootstrap.fallback_bind_paths()
     ]
-    assert (host_home / "mdt-cockpit-home", "directory", "create-by-spelling") in ensured
-    assert (host_home / "mdt-cockpit-tmp", "directory", "create-by-spelling") in ensured
+    assert (host_home / bootstrap.HOME_SOURCE_NAME, "directory", "create-by-spelling") in ensured
+    assert (host_home / bootstrap.TMP_SOURCE_NAME, "directory", "create-by-spelling") in ensured
     assert (host_home / ".ssh", "directory", "create-by-spelling") in ensured
 
 
@@ -801,18 +803,40 @@ def test_bootstrap_checks_slices_before_preparing_host_sources(
         ROOT / "templates" / "README.md",
         ROOT / "DEVCONTAINER-LIFECYCLE.md",
         ROOT / "docs" / "CONSUMERS.md",
+        ROOT / "docs" / "DESIGN-GUIDE.md",
         ROOT / "USAGE.md",
         ROOT / "README.md",
     ],
 )
 def test_user_facing_docs_match_persistence_targets(path: Path) -> None:
     text = path.read_text(encoding="utf-8")
-    assert "mdt-cockpit-home" in text, path
+    # The template spelling, verbatim: one home per checkout.
+    assert bootstrap.HOME_SOURCE_SPELLING in text, path
     assert "complete" in text.lower(), path
     assert "home-vscode" not in text, path
     # The old parent may be NAMED (to explain what to copy from), but no doc may
     # still show it as a mount source.
     assert "localEnv:HOME}/mdt--mounted-folders" not in text, path
+
+
+def test_the_shell_snippets_in_home_persistence_paste_cleanly() -> None:
+    """`NEW=~/mdt-cockpit-<checkout>-home` once shipped in the migration snippet: pasted, bash parses
+    `<checkout>` as a redirection. Every fenced bash block must parse and pass shellcheck."""
+    import shutil
+
+    # shellcheck ships in tester-base (hence tester-unified, where the smoke lane runs); a missing
+    # optional tool must fail, not silently skip the lint.
+    assert shutil.which("shellcheck"), "shellcheck is required (tester-base provides it)"
+    text = (ROOT / "docs" / "HOME-PERSISTENCE.md").read_text(encoding="utf-8")
+    blocks = re.findall(r"```bash\n(.*?)```", text, re.S)
+    assert len(blocks) >= 2, "the manual-copy and the shared-home snippets"
+    for block in blocks:
+        code = "\n".join(line for line in block.splitlines() if not line.lstrip().startswith("#"))
+        assert "<checkout>" not in code and "<basename>" not in code, "a placeholder in code would be a redirection when pasted"
+        syntax = subprocess.run(["bash", "-n"], input=block, capture_output=True, text=True)
+        assert syntax.returncode == 0, syntax.stderr
+        lint = subprocess.run(["shellcheck", "-s", "bash", "-S", "warning", "-"], input=block, capture_output=True, text=True)
+        assert lint.returncode == 0, lint.stdout
 
 
 def test_manual_copy_replaces_the_retired_migration_in_every_user_doc() -> None:
