@@ -232,3 +232,43 @@ fake release, so the template is compared with itself. `pwmcp/tests/test_script_
   `mdt-local-dev` context. Its image is provenance-marked as local-dev and not a releasable image, so (c)
   unblocks a developer build only.
 No existing release works with `get.py`; only a release published after A does.
+
+## PWMCP-09 — pages protected by Anubis answer "Access Denied" to the managed browser; a human sees them fine
+
+**Status: OPEN (filed 2026-10-27, operator request).** Found while reading <https://git.azlux.fr/Azlux/sss>
+through the `pwmcp-fetch` recipe.
+
+**Evidence.** `browser_navigate` + `browser_evaluate document.body.innerText` returned "Oh noes! Access
+Denied: error code 4d1dbaddfcc0f385 ... Protected by Anubis ... version v1.28.2" (WebFetch got the same
+page, code 9e4edb5b6b850c41). The browser's identity as measured through the same endpoint:
+`navigator.userAgent` = `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko)
+HeadlessChrome/156.0.0.0 Safari/537.36`, `navigator.webdriver` = false, 5 plugins. The operator opens the
+same URL in their own browser without a block. The word "Access Denied" (not a proof-of-work challenge page)
+is Anubis answering a deny rule, which is consistent with the `HeadlessChrome` token, but that cause is NOT
+yet verified: nothing was changed to test it.
+
+**Why this is not simply "spoof a normal browser".** Anubis is deployed to refuse automated clients. Making the
+managed browser present as a non-headless user agent to defeat an explicit deny rule is circumvention of the
+site owner's access control, so it is a decision to take deliberately, not a silent default in the shared
+service. What the managed browser may legitimately do, in increasing order of intrusiveness, for the operator's
+own reading of a public page:
+1. Report what it is: document that these hosts are unreachable by design and have the consumer use another
+   source (the GitHub mirror of the same project worked on 2026-10-27).
+2. Operator-solved session handoff: the operator opens the page in their own browser, and the cookie Anubis
+   sets is imported into a named, expiring PWMCP browser context for that host (explicit, per host, logged).
+3. A configurable `--user-agent` (off by default, recorded in every result) for hosts the operator owns or
+   has permission to read automatically.
+
+**Acceptance.** A decision recorded among 1-3, then: `pwmcp inspect` reports a recognised Anubis/Cloudflare-style
+block as `blocked-by-site` (distinct from empty content and from timeout) with the block's error code, so an agent
+does not mistake it for page content; the `pwmcp-fetch` skill documents the outcome.
+
+## PWMCP-10 — two concurrent clients collide on the single shared browser ("Browser is already in use")
+
+**Status: OPEN (filed 2026-10-27).** Running four `browser_navigate` clients in parallel against
+`http://pwmcp:8931/mcp` made all but one fail with: `Browser is already in use for
+/tmp/.cache/ms-playwright-mcp/mcp-chrome-for-testing-8a5edab, use --isolated to run multiple instances of the
+same browser`. Sequential use works. `containers/pwmcp/supervisord.shared.conf:27,114` records that `--isolated`
+broke the shared-browser mode on 2026-07-13, so the fix is not "add the flag". **Acceptance.** Either concurrent
+sessions are served (per-session contexts on the one browser) or the `pwmcp-fetch` skill and the error text say
+plainly that fetches must be serialised; today the error names a flag the service cannot take.
