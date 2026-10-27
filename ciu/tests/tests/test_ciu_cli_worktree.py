@@ -436,7 +436,6 @@ class TestCapabilitiesDispatch:
             "worktree.lease.v1",
             "worktree.lifecycle-json.v1",
             "worktree.reap.v1",
-            "worktree.rm-root-retry.v1",
             "worktree.up.v1",
         ]
 
