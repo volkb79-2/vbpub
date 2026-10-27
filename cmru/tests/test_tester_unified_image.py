@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib.util
 import fnmatch
 import hashlib
+import http.client
 import json
 import posixpath
 import os
@@ -121,12 +122,15 @@ TESTER_REQUIREMENTS_GENERATION_RUN = (
 )
 TESTER_DEPENDENCY_BOOTSTRAP_RUN = (
     "/usr/local/bin/python3.14 -m venv --copies /opt/tester-venv && "
-    "/opt/tester-venv/bin/pip install --no-cache-dir --upgrade pip && "
-    "/opt/tester-venv/bin/pip install --no-cache-dir -r /tmp/tester-requirements.txt && "
+    '/opt/tester-venv/bin/pip install --no-cache-dir --uploaded-prior-to '
+    '"${PIP_MIN_RELEASE_AGE}" --upgrade pip && '
+    '/opt/tester-venv/bin/pip install --no-cache-dir --uploaded-prior-to '
+    '"${PIP_MIN_RELEASE_AGE}" -r /tmp/tester-requirements.txt && '
     "/opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps "
     "/tmp/cli-extended-release/*.whl && /usr/local/bin/python3.14 -m venv "
     "/tmp/internal-build-venv && /tmp/internal-build-venv/bin/pip install "
-    "--no-cache-dir -r /tmp/internal-build-requirements.txt"
+    '--no-cache-dir --uploaded-prior-to "${PIP_MIN_RELEASE_AGE}" '
+    "-r /tmp/internal-build-requirements.txt"
 )
 CMRU_SOURCE_TREE_CLEAN_RUN = (
     "rm -rf /src/cmru /src/libraries/worktree /src/run-gate-project"
@@ -337,7 +341,7 @@ def test_generator_emits_the_third_party_closure_and_expands_self_extras(tmp_pat
 @pytest.mark.parametrize(
     "bad",
     ["Worktree", "cmru==1", "assay", "ciu>=1",
-     "nyxloom", "topos[dev]>=1", "CGroup.Profiler", "run_gate"],
+     "nyxloom", "topos[dev]>=1", "CGroup.Profiler", "run_gate", "iobench", "vmscreen>=0"],
 )
 def test_generator_refuses_estate_internal_names_in_dependencies(tmp_path, bad):
     """BG-05: a PyPI-default pip must never be asked for an estate-internal
@@ -431,10 +435,8 @@ def test_generator_deduplicates_and_prints_one_requirement_per_line(tmp_path, ca
     assert len(lines) == len(set(lines)) and lines[-1] == "build"
 
 
-def test_real_estate_trees_have_no_internal_requirement_in_the_pypi_bound_closure(tmp_path):
-    """The generator against the REAL pyprojects, laid out as the Dockerfile
-    COPYs them: cmru now declares ``cli-extended`` (KI-51), the closure must
-    still be accepted, and no cli-extended line may be in it."""
+def _real_estate_layout(tmp_path):
+    """The REAL pyprojects laid out as the Dockerfile COPYs them."""
     for name in ("ciu", "cmru", "assay", "topos", "nyxloom"):
         (tmp_path / name).symlink_to(REPO_ROOT / name)
     (tmp_path / "cgroup-profiler").symlink_to(REPO_ROOT / "scripts" / "cgroup-profiler")
@@ -442,6 +444,14 @@ def test_real_estate_trees_have_no_internal_requirement_in_the_pypi_bound_closur
     (tmp_path / "pwmcp" / "client").symlink_to(REPO_ROOT / "pwmcp" / "client")
     (tmp_path / "libraries").mkdir()
     (tmp_path / "libraries" / "cli-extended").symlink_to(REPO_ROOT / "libraries" / "cli-extended")
+    return tmp_path
+
+
+def test_real_estate_trees_have_no_internal_requirement_in_the_pypi_bound_closure(tmp_path):
+    """The generator against the REAL pyprojects, laid out as the Dockerfile
+    COPYs them: cmru now declares ``cli-extended`` (KI-51), the closure must
+    still be accepted, and no cli-extended line may be in it."""
+    _real_estate_layout(tmp_path)
     closure = list(gen.requirements(tmp_path))
     names = {gen.requirement_name(item) for item in closure}
     assert not names & gen.ESTATE_INTERNAL
@@ -1343,7 +1353,7 @@ def test_dockerfile_installs_estate_internal_packages_only_offline_from_copied_s
     assert "--no-index --no-deps /tmp/internal-wheels/*.whl" in code
     # The PyPI-bound requirements come from the refusing generator.
     assert "gen-requirements.py --root /src" in code
-    assert "pip install --no-cache-dir -r /tmp/tester-requirements.txt" in code
+    assert '-r /tmp/tester-requirements.txt' in code
     # Relative layout cmru's pyproject packages (`../libraries/worktree/src`);
     # cli-extended source is NOT copied (it is a wheel dependency).
     assert "COPY libraries/worktree/ /src/libraries/worktree/" in code
@@ -1503,6 +1513,8 @@ def test_dockerfile_no_cli_extended_reaches_pip_except_the_sha256_verified_relea
             r"|--upgrade pip$",
             command,
         ), command
+        # Aged-latest: every index-capable install carries the release-age filter.
+        assert '--uploaded-prior-to "${PIP_MIN_RELEASE_AGE}"' in command, command
     assert "/src/libraries/cli-extended" not in code
     assert "libraries/cli-extended" not in code
 
@@ -1852,6 +1864,50 @@ def test_fetcher_turns_a_failed_wheel_download_into_a_clean_exit(tmp_path):
         fetcher.fetch_wheel(fetcher.POINTER_URL, None, None, tmp_path / "x", "0.2.0", pointer_only)
     assert caught.value.code == "fetch-cli-extended: cannot download " + _BASE + _WHEEL_NAME + ": connection reset"
     assert not (tmp_path / "x").exists()
+
+
+def test_fetcher_refuses_a_destination_it_cannot_stage_into(tmp_path):
+    """Review round 2 (Sonnet): the cli-extended fetcher must refuse the same way the run-gate
+    fetcher does instead of a raw FileExistsError."""
+    fetcher = _load_fetcher()
+    fetch, _ = _fake_release()
+    blocker = tmp_path / "blocker"
+    blocker.write_bytes(b"")
+    with pytest.raises(SystemExit, match="cannot stage"):
+        fetcher.fetch_wheel(fetcher.POINTER_URL, None, None, blocker, "0.2.0", fetch)
+    assert blocker.read_bytes() == b""
+
+
+def test_fetcher_does_not_write_through_a_symlink_planted_at_the_wheel_name(tmp_path):
+    fetcher = _load_fetcher()
+    fetch, _ = _fake_release()
+    victim = tmp_path / "victim"
+    victim.write_bytes(b"original")
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    (dest / _WHEEL_NAME).symlink_to(victim)
+    with pytest.raises(SystemExit, match="cannot stage"):
+        fetcher.fetch_wheel(fetcher.POINTER_URL, None, None, dest, "0.2.0", fetch)
+    assert victim.read_bytes() == b"original"
+    assert sorted(p.name for p in dest.iterdir()) == [_WHEEL_NAME]  # the symlink, and no partial file
+
+
+def test_fetcher_leaves_no_partial_file_when_staging_fails(tmp_path, monkeypatch):
+    """The wheel is written to a temporary name and linked into place; a failure between the two
+    removes the temporary file so a retry into the same directory is not refused."""
+    fetcher = _load_fetcher()
+    fetch, _ = _fake_release()
+    dest = tmp_path / "dest"
+
+    def boom(src, dst, **kwargs):
+        raise OSError("no link for you")
+
+    monkeypatch.setattr(os, "link", boom)
+    with pytest.raises(SystemExit, match="cannot stage .*no link for you"):
+        fetcher.fetch_wheel(fetcher.POINTER_URL, None, None, dest, "0.2.0", fetch)
+    assert list(dest.iterdir()) == []
+    monkeypatch.undo()
+    assert fetcher.fetch_wheel(fetcher.POINTER_URL, None, None, dest, "0.2.0", fetch).read_bytes() == b"wheel-bytes"
 
 
 # --- B2: HTTPS only across redirects, to allowlisted hosts only ---------------
@@ -4505,3 +4561,343 @@ def test_run_gate_host_environment_names_tester_base_and_no_lane_runs_there():
         if found:
             users[str(config.relative_to(REPO_ROOT))] = found
     assert users == {}, users
+
+
+def test_dockerfile_ages_third_party_packages_by_default_fourteen_days():
+    text = DOCKERFILE.read_text("utf-8")
+    assert re.search(r"^ARG PIP_MIN_RELEASE_AGE=P14D$", text, re.MULTILINE)
+    assert 'LABEL org.vbpub.tester-unified.min-release-age="${PIP_MIN_RELEASE_AGE}"' in text
+    # No fixed third-party pins were introduced into the closure install.
+    assert "==" not in "\n".join(
+        c for c in _pip_commands(_dockerfile_run_lines()) if "-r /tmp/" in c
+    )
+
+
+def _load_run_gate_fetcher():
+    spec = importlib.util.spec_from_file_location(
+        "fetch_run_gate_wheel", GENERATOR.with_name("fetch-run-gate-wheel.py"),
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _fake_run_gate_release(version="24.1.0", *, sidecar=None, pointer_sha=None, wheel=b"rg-wheel"):
+    fetcher = _load_run_gate_fetcher()
+    digest = hashlib.sha256(wheel).hexdigest()
+    name = fetcher._asset_name(version)
+    url = fetcher._asset_url(version)
+    pointer = {
+        "project": "run-gate", "version": version, "tag": f"run-gate-v{version}",
+        "asset": name, "url": url, "sha256": pointer_sha or digest,
+    }
+    files = {
+        fetcher.POINTER_URL: json.dumps(pointer).encode(),
+        url: wheel,
+        url + ".sha256": f"{sidecar or digest}  {name}\n".encode(),
+    }
+
+    def fetch(requested):
+        if requested not in files:
+            raise OSError(f"unexpected url {requested}")
+        return files[requested]
+
+    return fetcher, fetch, digest, name
+
+
+def test_run_gate_fetcher_stages_the_published_wheel_from_the_latest_pointer(tmp_path):
+    fetcher, fetch, digest, name = _fake_run_gate_release()
+    wheel = fetcher.fetch_wheel(None, tmp_path / "stage", fetch)
+    assert wheel.name == name and wheel.read_bytes() == b"rg-wheel"
+    assert hashlib.sha256(wheel.read_bytes()).hexdigest() == digest
+
+
+def test_run_gate_fetcher_takes_a_pinned_version_without_the_pointer(tmp_path):
+    fetcher, fetch, _, name = _fake_run_gate_release("24.0.1")
+    assert fetcher.fetch_wheel("24.0.1", tmp_path / "s", fetch).name == name
+
+
+@pytest.mark.parametrize("version", ["24.0", "24.0.1.dev1", "v24.0.1", "24.0.1+local", ""])
+def test_run_gate_fetcher_refuses_non_stable_versions(tmp_path, version):
+    fetcher, fetch, _, _ = _fake_run_gate_release()
+    with pytest.raises(SystemExit, match="not a stable"):
+        fetcher.fetch_wheel(version, tmp_path / "s", fetch)
+
+
+def test_run_gate_fetcher_refuses_a_sidecar_pointer_or_bytes_that_disagree(tmp_path):
+    fetcher, fetch, _, _ = _fake_run_gate_release(sidecar="0" * 64)
+    with pytest.raises(SystemExit, match="sha256 mismatch"):
+        fetcher.fetch_wheel("24.1.0", tmp_path / "a", fetch)
+    assert not (tmp_path / "a").exists()
+    fetcher, fetch, _, _ = _fake_run_gate_release(pointer_sha="1" * 64)
+    with pytest.raises(SystemExit, match="disagree"):
+        fetcher.fetch_wheel(None, tmp_path / "b", fetch)
+    assert not (tmp_path / "b").exists()
+    fetcher, fetch, _, _ = _fake_run_gate_release(sidecar="not-a-digest")
+    with pytest.raises(SystemExit, match="no valid sha256"):
+        fetcher.fetch_wheel("24.1.0", tmp_path / "c", fetch)
+
+
+def test_run_gate_fetcher_refuses_a_pointer_for_another_project_or_asset(tmp_path):
+    fetcher, _, _, _ = _fake_run_gate_release()
+    for key, value in (("project", "cmru"), ("tag", "run-gate-v9.9.9"),
+                       ("asset", "run_gate-9.9.9-py3-none-any.whl"),
+                       ("url", "https://example.invalid/run_gate-24.1.0-py3-none-any.whl"),
+                       ("version", "24.1.0.dev1")):
+        pointer = {
+            "project": "run-gate", "version": "24.1.0", "tag": "run-gate-v24.1.0",
+            "asset": fetcher._asset_name("24.1.0"), "url": fetcher._asset_url("24.1.0"),
+            "sha256": "2" * 64,
+        }
+        pointer[key] = value
+        with pytest.raises(SystemExit):
+            fetcher.resolve(None, fetcher.POINTER_URL, lambda _u, p=pointer: json.dumps(p).encode())
+
+
+def test_run_gate_fetcher_refuses_a_second_wheel_in_the_stage_directory(tmp_path):
+    fetcher, fetch, _, _ = _fake_run_gate_release()
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    (stage / "run_gate-1.0.0-py3-none-any.whl").write_bytes(b"x")
+    with pytest.raises(SystemExit, match="already holds"):
+        fetcher.fetch_wheel(None, stage, fetch)
+
+
+def test_run_gate_fetcher_turns_download_failures_into_clean_exits(tmp_path):
+    fetcher, _, _, _ = _fake_run_gate_release()
+
+    def broken(_url):
+        raise OSError("boom")
+
+    with pytest.raises(SystemExit, match="cannot read the release pointer"):
+        fetcher.fetch_wheel(None, tmp_path / "s", broken)
+    with pytest.raises(SystemExit, match="cannot read the checksum sidecar"):
+        fetcher.fetch_wheel("24.1.0", tmp_path / "s", broken)
+
+
+def test_run_gate_fetcher_turns_a_truncated_download_into_a_clean_refusal(tmp_path, monkeypatch):
+    """A body shorter than its Content-Length surfaces as ``http.client.IncompleteRead``, which is
+    NOT an ``OSError``: unless the shared transport converts it, both fetchers die with a traceback
+    (the digest check never runs) instead of refusing with their own message."""
+    fetcher, _, _, _ = _fake_run_gate_release()
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            raise http.client.IncompleteRead(b"partial", 100)
+
+    class Opener:
+        def open(self, url, timeout=None):
+            return Response()
+
+    monkeypatch.setattr(fetcher._net, "_opener", lambda url: Opener())
+    with pytest.raises(OSError, match="IncompleteRead"):
+        fetcher._net._urlopen_bytes(fetcher.POINTER_URL)
+    with pytest.raises(SystemExit, match="cannot read the release pointer"):
+        fetcher.fetch_wheel(None, tmp_path / "s")
+    assert not (tmp_path / "s").exists()
+
+
+def test_run_gate_fetcher_refuses_a_destination_it_cannot_stage_into(tmp_path):
+    fetcher, fetch, _, _ = _fake_run_gate_release()
+    blocker = tmp_path / "blocker"
+    blocker.write_bytes(b"")
+    with pytest.raises(SystemExit, match="cannot stage"):
+        fetcher.fetch_wheel(None, blocker, fetch)
+    assert blocker.read_bytes() == b""
+
+
+def test_run_gate_fetcher_leaves_no_partial_wheel_when_staging_fails(tmp_path, monkeypatch):
+    """A truncated run_gate-*.whl left behind would make the retry refuse ("already holds")."""
+    fetcher, fetch, _, name = _fake_run_gate_release()
+    dest = tmp_path / "stage"
+
+    def boom(src, dst, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "link", boom)
+    with pytest.raises(SystemExit, match="cannot stage .*disk full"):
+        fetcher.fetch_wheel(None, dest, fetch)
+    assert list(dest.iterdir()) == []
+    monkeypatch.undo()
+    assert fetcher.fetch_wheel(None, dest, fetch).name == name
+
+
+def test_run_gate_fetcher_main_prints_the_staged_path(tmp_path, monkeypatch, capsys):
+    fetcher, fetch, _, name = _fake_run_gate_release("24.1.0")
+    monkeypatch.setattr(fetcher._net, "_urlopen_bytes", fetch)
+    assert fetcher.main(["--dest", str(tmp_path / "s"), "--version", "24.1.0"]) == 0
+    assert capsys.readouterr().out.strip() == str(tmp_path / "s" / name)
+
+
+def _run_build_image(tmp_path, *args, stub_fetcher=None, env=None):
+    """Run a COPY of build-image.sh whose repo root is a scratch tree (exit 2 happens before docker)."""
+    root = tmp_path / "repo"
+    (root / "tester-unified").mkdir(parents=True)
+    source = GENERATOR.parent
+    (root / "tester-unified" / "build-image.sh").write_text((source / "build-image.sh").read_text("utf-8"))
+    (root / "tester-unified" / "Dockerfile").write_text((source / "Dockerfile").read_text("utf-8"))
+    fetcher = root / "tester-unified" / "fetch-run-gate-wheel.py"
+    fetcher.write_text(stub_fetcher or "raise SystemExit('stub fetcher must not run')\n")
+    scratch = tmp_path / "tmp"
+    scratch.mkdir()
+    return subprocess.run(
+        ["bash", str(root / "tester-unified" / "build-image.sh"), *args],
+        capture_output=True, text=True, check=False,
+        env={"PATH": os.environ["PATH"], "TMPDIR": str(scratch), **(env or {})},
+    ), scratch
+
+
+def test_build_image_refuses_published_and_wheel_dir_together_before_any_fetch(tmp_path):
+    result, scratch = _run_build_image(tmp_path, "--run-gate-published", "latest", "--wheel-dir", "x")
+    assert result.returncode == 2 and "mutually exclusive" in result.stderr
+    assert list(scratch.iterdir()) == []
+
+
+@pytest.mark.parametrize("age", ["14", "P14", "14D", "P1W", "P14D;x"])
+def test_build_image_rejects_malformed_pip_age_durations(tmp_path, age):
+    result, _ = _run_build_image(tmp_path, "--pip-min-release-age", age)
+    assert result.returncode == 2 and "ISO-8601 day duration" in result.stderr
+
+
+def test_build_image_checks_the_cgroup_parent_before_downloading(tmp_path):
+    result, scratch = _run_build_image(tmp_path, "--run-gate-published", "latest")
+    assert result.returncode == 2 and "CGROUP_PARENT_DEV_GATES" in result.stderr
+    assert "stub fetcher must not run" not in result.stderr
+    assert list(scratch.iterdir()) == []
+
+
+def test_build_image_removes_the_published_staging_directory_when_it_stops_early(tmp_path):
+    stub = (
+        "import sys\nfrom pathlib import Path\n"
+        "dest = Path(sys.argv[sys.argv.index('--dest') + 1])\n"
+        "(dest / 'run_gate-1.0.0-py3-none-any.whl').write_bytes(b'x')\n"
+        "print('staged', file=sys.stderr)\n"
+    )
+    # The cgroup parent is given, so the fetch runs; the missing `cmru` binary then stops the script.
+    result, scratch = _run_build_image(
+        tmp_path, "--run-gate-published", "1.0.0", "--cgroup-parent", "dev-gates.slice",
+        stub_fetcher=stub,
+        env={"PATH": "/usr/bin:/bin"},
+    )
+    assert "staged" in result.stderr and result.returncode != 0
+    assert list(scratch.iterdir()) == []
+
+
+def test_build_image_stops_when_the_fetcher_refuses(tmp_path):
+    result, scratch = _run_build_image(
+        tmp_path, "--run-gate-published", "latest", "--cgroup-parent", "dev-gates.slice",
+        stub_fetcher="raise SystemExit(1)\n",
+    )
+    assert result.returncode == 2
+    assert list(scratch.iterdir()) == []
+
+
+#: Operator decision 2026-10-27: our own tools have NO age window (always the latest published
+#: release); the 14-day aged-latest rule is for third-party dependencies only. The generator's
+#: floor is that list (plus the derived project names); these path markers are how the Dockerfiles
+#: refer to first-party inputs (``$1`` is the staged wheel a ``set -- <first-party glob>`` in the same
+#: RUN selected: the Run-Gate wheel, or the local-mode cli-extended wheel).
+_FIRST_PARTY_MARKERS = ("cli-extended", "cli_extended", "run-gate", "run_gate", "internal-wheels", "/src/", "$1")
+#: The only things an aged (index-bound) pip command may install.
+_AGED_TARGETS = {"pip", "build", "-r /tmp/tester-requirements.txt", "-r /tmp/internal-build-requirements.txt"}
+
+
+def _pip_install_commands(dockerfile) -> list[list[str]]:
+    """Tokenised ``pip install`` / ``pip wheel`` commands of a Dockerfile's RUN lines (comments
+    dropped, continuations joined, split at ``&&`` and ``;``)."""
+    text = "\n".join(
+        line for line in dockerfile.read_text("utf-8").splitlines() if not line.lstrip().startswith("#")
+    )
+    flat = re.sub(r"\\\n\s*", " ", text)
+    commands = []
+    for part in re.split(r"\s*(?:&&|;|\|\||\n)\s*", flat):
+        tokens = shlex.split(part) if re.search(r"\bpip\b", part) else []
+        if any(token.endswith("pip") for token in tokens) and ("install" in tokens or "wheel" in tokens):
+            commands.append(tokens)
+    return commands
+
+
+def _pip_targets(tokens: list[str]) -> list[str]:
+    """What a tokenised pip command installs: positionals, ``-r FILE`` and ``-w DIR`` kept as pairs,
+    other options dropped."""
+    start = tokens.index("install") + 1 if "install" in tokens else tokens.index("wheel") + 1
+    targets, index = [], start
+    while index < len(tokens):
+        token = tokens[index]
+        if token in ("-r", "-w"):
+            targets.append(f"{token} {tokens[index + 1]}")
+            index += 2
+        elif token == "--uploaded-prior-to":
+            index += 2
+        elif token.startswith("-"):
+            index += 1
+        else:
+            targets.append(token)
+            index += 1
+    return targets
+
+
+def test_the_age_window_never_applies_to_a_first_party_package(tmp_path):
+    """Operator decision 2026-10-27: first-party packages (cmru, assay, run-gate, ciu, cli-extended, topos,
+    nyxloom, pwmcp, cgroup-profiler, iobench, vmscreen, worktree) are always the latest published release and
+    never pass through ``--uploaded-prior-to``. In the two images that means: every aged pip command is
+    index-bound and installs only pip, build or a generator-produced requirements file; every command that
+    installs a first-party input is ``--no-index`` and carries no age; and the generated closures name no
+    first-party distribution. tester-base runs no pip at all."""
+    for name in ("iobench", "vmscreen", "worktree", "cli-extended", "run-gate", "cgroup-profiler", "pwmcp-client"):
+        assert name in gen.ESTATE_INTERNAL, name
+    tester_base = REPO_ROOT / "tester-base" / "Dockerfile"
+    assert not re.search(r"\bpip\b", tester_base.read_text("utf-8"))
+    # A global age setting (pip reads PIP_UPLOADED_PRIOR_TO, or a pip.conf key, for EVERY invocation,
+    # including the ones inside `python -m build`'s isolated environment and any later first-party
+    # install into the venv) would apply the window to first-party packages invisibly to the
+    # per-command checks below. None of the three images may set one. TB-08 proposes exactly such an
+    # ENV for wheel-builder's run-time backend installs: adopting it means revisiting this guard
+    # (e.g. asserting the env is unset for any first-party install), not deleting it.
+    for dockerfile in (DOCKERFILE, WHEEL_BUILDER, tester_base):
+        code = "\n".join(
+            line for line in dockerfile.read_text("utf-8").splitlines() if not line.lstrip().startswith("#")
+        )
+        assert "PIP_UPLOADED_PRIOR_TO" not in code, dockerfile.name
+        assert not re.search(r"pip\.conf|PIP_CONFIG_FILE|uploaded[-_]prior[-_]to\s*=", code), dockerfile.name
+
+    aged, first_party = [], []
+    for dockerfile in (DOCKERFILE, WHEEL_BUILDER):
+        for tokens in _pip_install_commands(dockerfile):
+            targets = _pip_targets(tokens)
+            names_first_party = any(
+                gen.normalized(target) in gen.ESTATE_INTERNAL or any(marker in target for marker in _FIRST_PARTY_MARKERS)
+                for target in targets
+            )
+            if "--uploaded-prior-to" in tokens:
+                aged.append(targets)
+                assert "--no-index" not in tokens, tokens
+                assert set(targets) <= _AGED_TARGETS, (dockerfile.name, targets)
+                assert not names_first_party, (dockerfile.name, targets)
+            if names_first_party:
+                first_party.append(targets)
+                assert "--no-index" in tokens, (dockerfile.name, tokens)
+                assert "--uploaded-prior-to" not in tokens, (dockerfile.name, tokens)
+    assert len(aged) == 5, aged  # pip + closure + build backends (tester-unified), pip + build (wheel-builder)
+    assert len(first_party) == 4, first_party  # cli-extended, cmru source wheel, cmru install, Run-Gate
+
+    # The two requirements files an aged pip reads, generated from the real pyprojects.
+    _real_estate_layout(tmp_path)
+    closure = {gen.requirement_name(item) for item in gen.requirements(tmp_path)}
+    backends = {gen.requirement_name(item) for item in gen.build_requirements(tmp_path, ["cmru/pyproject.toml"])}
+    assert not (closure | backends) & gen.ESTATE_INTERNAL, (closure | backends) & gen.ESTATE_INTERNAL
+
+
+def test_wheel_builder_ages_its_pip_installs_and_pins_nothing():
+    text = (GENERATOR.parents[1] / "wheel-builder" / "Dockerfile").read_text("utf-8")
+    assert re.search(r"^ARG PIP_MIN_RELEASE_AGE=P14D$", text, re.MULTILINE)
+    installs = [line for line in text.splitlines() if "/opt/wheel-builder-venv/bin/pip install" in line]
+    assert len(installs) == 2
+    for line in installs:
+        assert '--uploaded-prior-to "${PIP_MIN_RELEASE_AGE}"' in line and "==" not in line

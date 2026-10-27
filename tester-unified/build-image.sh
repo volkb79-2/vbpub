@@ -3,21 +3,26 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 wheel_dir="$repo_root/run-gate-project/dist"
+wheel_dir_given=0
 image_tag="tester-unified:local"
 cgroup_parent="${CGROUP_PARENT_DEV_GATES:-}"
 base_image=""
 cli_extended_resolve=""
 cli_extended_sha256=""
 no_cache=0
+run_gate_published=""
+pip_min_release_age=""
 
 usage() {
-  echo "usage: $0 [--wheel-dir DIR] [--tag IMAGE] [--base-image IMAGE] [--cli-extended-resolve pinned|latest|local] [--cli-extended-wheel-sha256 HEX (required for latest and local)] [--no-cache] [--cgroup-parent SLICE]" >&2
+  echo "usage: $0 [--wheel-dir DIR | --run-gate-published VERSION|latest] [--pip-min-release-age DURATION] [--tag IMAGE] [--base-image IMAGE] [--cli-extended-resolve pinned|latest|local] [--cli-extended-wheel-sha256 HEX (required for latest and local)] [--no-cache] [--cgroup-parent SLICE]" >&2
   exit 2
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --wheel-dir) wheel_dir=${2:?}; shift 2 ;;
+    --wheel-dir) wheel_dir=${2:?}; wheel_dir_given=1; shift 2 ;;
+    --run-gate-published) run_gate_published=${2:?}; shift 2 ;;
+    --pip-min-release-age) pip_min_release_age=${2:?}; shift 2 ;;
     --tag) image_tag=${2:?}; shift 2 ;;
     --base-image) base_image=${2:?}; shift 2 ;;
     --cli-extended-resolve) cli_extended_resolve=${2:?}; shift 2 ;;
@@ -25,14 +30,37 @@ while [[ $# -gt 0 ]]; do
     --no-cache) no_cache=1; shift ;;
     --cgroup-parent) cgroup_parent=${2:?}; shift 2 ;;
     -h|--help)
-      echo "usage: $0 [--wheel-dir DIR] [--tag IMAGE] [--base-image IMAGE] [--cli-extended-resolve pinned|latest|local] [--cli-extended-wheel-sha256 HEX] [--no-cache] [--cgroup-parent SLICE]"
+      echo "usage: $0 [--wheel-dir DIR | --run-gate-published VERSION|latest] [--pip-min-release-age DURATION] [--tag IMAGE] [--base-image IMAGE] [--cli-extended-resolve pinned|latest|local] [--cli-extended-wheel-sha256 HEX (required for latest and local)] [--no-cache] [--cgroup-parent SLICE]"
+      echo "  --wheel-dir DIR            install the one run_gate-*.whl in DIR (default: run-gate-project/dist, a developer build)"
+      echo "  --run-gate-published X.Y.Z|latest"
+      echo "                             install the PUBLISHED Run-Gate wheel instead (run-gate-vX.Y.Z, or the run-gate-latest pointer),"
+      echo "                             digest-verified by fetch-run-gate-wheel.py; the only kind of image the CMRU release gate accepts"
+      echo "  --pip-min-release-age PnD  THIRD-PARTY releases must be at least n days old (pip --uploaded-prior-to; default P14D);"
+      echo "                             pair with --no-cache so the dependency layer is re-resolved. First-party wheels"
+      echo "                             (run-gate, cli-extended, cmru) are never aged: always the published release"
       exit 0
       ;;
     *) usage ;;
   esac
 done
 
+published_stage=""
+wheel_stage=""
+trap 'rm -rf ${published_stage:+"$published_stage"} ${wheel_stage:+"$wheel_stage"}' EXIT
 build_args=()
+if [[ -n "$pip_min_release_age" ]]; then
+  [[ "$pip_min_release_age" =~ ^P[0-9]+D$ ]] || {
+    echo "--pip-min-release-age must be an ISO-8601 day duration such as P14D" >&2
+    exit 2
+  }
+  build_args+=(--build-arg "PIP_MIN_RELEASE_AGE=$pip_min_release_age")
+fi
+if [[ -n "$run_gate_published" ]]; then
+  (( ! wheel_dir_given )) || {
+    echo "--run-gate-published and --wheel-dir are mutually exclusive" >&2
+    exit 2
+  }
+fi
 if [[ -n "$base_image" ]]; then
   build_args+=(--build-arg "TESTER_UNIFIED_BASE_IMAGE=$base_image")
   expected_base_image="$base_image"
@@ -46,6 +74,8 @@ fi
 }
 if (( no_cache )); then
   build_args+=(--no-cache)
+elif [[ -n "$pip_min_release_age" ]]; then
+  echo "warning: --pip-min-release-age without --no-cache can reuse a cached dependency layer resolved earlier" >&2
 fi
 # The digest the installed cli-extended wheel must have, whatever the mode. The
 # image labels it (org.vbpub.cli-extended.wheel-sha256) and the build verifies the
@@ -88,6 +118,18 @@ if [[ -z "$cgroup_parent" ]]; then
   exit 2
 fi
 
+if [[ -n "$run_gate_published" ]]; then
+  # The CMRU release gate accepts only an image carrying the PUBLISHED Run-Gate wheel (exact version and
+  # sha256 of the stable release the host judge came from). Stage that wheel, digest-verified, instead of
+  # a developer build from run-gate-project/dist. Done after every cheap argument and environment check so a
+  # refusal costs no download; the EXIT trap above removes the staging directory on every path.
+  published_stage="$(mktemp -d "${TMPDIR:-/tmp}/tester-unified-run-gate-published.XXXXXX")"
+  fetch_args=(--dest "$published_stage")
+  [[ "$run_gate_published" == latest ]] || fetch_args+=(--version "$run_gate_published")
+  python3 "$repo_root/tester-unified/fetch-run-gate-wheel.py" "${fetch_args[@]}" >&2 || exit 2
+  wheel_dir="$published_stage"
+fi
+
 # Reuse CMRU's supported host-systemd probe before BuildKit starts. A malformed
 # slice name can be auto-created by systemd as an unlimited transient unit, so
 # passing it through to Buildx without this host-side check is not sufficient.
@@ -116,7 +158,6 @@ run_gate_sha256=${identity[1]}
 run_gate_filename=${identity[2]}
 
 wheel_stage="$(mktemp -d "${TMPDIR:-/tmp}/tester-unified-run-gate-wheel.XXXXXX")"
-trap 'rm -rf "$wheel_stage"' EXIT
 cp -- "$wheel_dir/$run_gate_filename" "$wheel_stage/$run_gate_filename"
 printf '%s  %s\n' "$run_gate_sha256" "$wheel_stage/$run_gate_filename" \
   | sha256sum --check --status || {
