@@ -31037,10 +31037,18 @@ class TestLaneDeadlineEnforcement:
         assert captured.err == ""
 
     def test_main_converts_dependency_system_exit_to_closed_error(self,
-                                                                 monkeypatch):
+                                                                 monkeypatch,
+                                                                 capsys):
         monkeypatch.setattr(run_gate, "_dispatch",
                             lambda _argv: (_ for _ in ()).throw(SystemExit(255)))
         assert run_gate.main(["unit"]) == 2
+        err = capsys.readouterr().err
+        assert ("interrupted before a closed result (exit status 255); "
+                "verdict ERROR, exit 2") in err   # RG-109: never silent
+        monkeypatch.setattr(run_gate, "_dispatch",
+                            lambda _argv: (_ for _ in ()).throw(KeyboardInterrupt()))
+        assert run_gate.main(["unit"]) == 2
+        assert "(exit status SIGINT); verdict ERROR, exit 2" in capsys.readouterr().err
         with pytest.raises(SystemExit) as caught:
             run_gate._sigterm_as_exit(signal.SIGTERM, None)
         assert caught.value.code == 128 + signal.SIGTERM
