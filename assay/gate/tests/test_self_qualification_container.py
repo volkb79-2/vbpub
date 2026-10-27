@@ -4081,7 +4081,7 @@ def test_runner_cancellation_stops_and_removes_its_owned_container(
             ):
                 break
             if proc.poll() is not None:
-                pytest.fail("launcher exited before reaching docker wait")
+                pytest.fail("launcher exited before reaching docker wait" + f": {proc.communicate()[1][-600:]!r}")
             time.sleep(0.05)
         else:
             pytest.fail("launcher did not reach docker wait")
@@ -4142,7 +4142,7 @@ def test_cancellation_during_launch_reconciles_cidfile_and_owned_name(
             if state_path.exists():
                 break
             if proc.poll() is not None:
-                pytest.fail("launcher exited before the ambiguous creation window")
+                pytest.fail("launcher exited before the ambiguous creation window" + f": {proc.communicate()[1][-600:]!r}")
             time.sleep(0.05)
         else:
             pytest.fail("docker run did not create its container")

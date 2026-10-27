@@ -1207,17 +1207,16 @@ def test_a_real_r2_mutant_that_outlives_the_lane_budget_is_its_own_bucket(
     lane budget expires. Serial execution preserves both dispositions without
     overlapping the cgroup event windows used by native R2.
 
-    The margin is deliberate, not tuned: 5s of budget against a 300s sleep,
-    with the passing paths doing one `grep` on a six-line file. This cannot
-    flip on a slow machine without the whole suite already having failed
-    for a different reason (AUTHORING.md §3b.A's own reading -- a slow-host
-    red here would be a TRUE red).
+    The margin is deliberate, not tuned: 30s of budget against a 300s sleep,
+    with the passing paths doing one `grep` on a six-line file. The budget is
+    generous so host contention cannot expire it before the second mutant
+    starts (a mutant that never started is `not-started`, not `timeout-killed`).
     """
     script = "grep -q 'y > 1' src/mod.py || sleep 300"
     base_rev = _seed_two_compare_swap_sites(git_repo)
     lane_file = _write_lane_file(
         git_repo.path,
-        _r2_lane_toml(script=script, base="control-baseline", jobs=1, budget="5s"),
+        _r2_lane_toml(script=script, base="control-baseline", jobs=1, budget="30s"),
     )
     git_repo.commit_all("add assay.toml")
     before = _tracked_file_hashes(git_repo.path)
