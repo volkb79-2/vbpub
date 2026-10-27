@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 
 import pytest
+from _testdeps import REQUIRED
 
 PWMCP_ROOT = Path(__file__).resolve().parents[1]
 SERVICE_PATH = PWMCP_ROOT / "containers" / "ocr" / "ocr_service.py"
@@ -38,7 +39,11 @@ try:
     from PIL import Image  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover - environment dependent
     Image = None
-needs_pil = pytest.mark.skipif(Image is None, reason=PIL_REASON)
+# The registered gate sets PWMCP_REQUIRE_TEST_DEPS=1 (assay.toml lane env): there a missing Pillow FAILS
+# these tests (conftest.py fixture) instead of letting ~40 of them skip and the gate go green.
+needs_pil = (
+    pytest.mark.usefixtures("require_pillow") if REQUIRED else pytest.mark.skipif(Image is None, reason=PIL_REASON)
+)
 
 # Real Tesseract TSV (levels 1-4 are layout rows with conf -1 and no text; level 5 are words).
 TSV = "\n".join([
@@ -66,7 +71,8 @@ if args == ["--version"]:
     sys.exit(0)
 if args == ["--list-langs"]:
     print('List of available languages in "/usr/share/tessdata/" (2):')
-    print("eng")
+    if mode != "osdonly":
+        print("eng")
     print("osd")
     sys.exit(0)
 data = sys.stdin.buffer.read()
@@ -76,6 +82,11 @@ with open(os.path.join(here, "calls.log"), "a") as log:
 open(os.path.join(here, "started"), "w").write("1")
 if mode == "sleep":
     time.sleep(float(open(os.path.join(here, "sleep")).read()))
+if mode == "block":  # held until the test creates the "release" file: no wall-clock windows
+    for _ in range(3000):
+        if os.path.exists(os.path.join(here, "release")):
+            break
+        time.sleep(0.02)
 if mode == "fail":
     sys.stderr.write("Error: could not initialise\\nfatal: boom\\n")
     sys.exit(3)
@@ -97,6 +108,15 @@ class Fake:
     def mode(self, name: str, sleep: float = 0.0) -> None:
         (self.dir / "mode").write_text(name, encoding="utf-8")
         (self.dir / "sleep").write_text(str(sleep), encoding="utf-8")
+
+    def release(self) -> None:
+        (self.dir / "release").write_text("1", encoding="utf-8")
+
+    def wait_started(self, timeout: float = 10.0) -> None:
+        deadline = time.monotonic() + timeout
+        while not (self.dir / "started").exists():
+            assert time.monotonic() < deadline, "the engine never started"
+            time.sleep(0.01)
 
     def calls(self) -> list[dict[str, object]]:
         log = self.dir / "calls.log"
@@ -274,6 +294,13 @@ def test_health_ok_and_unavailable(fake: Fake) -> None:
         assert ok.request("GET", "/health")[:2] == (200, {"status": "ok"})
         status, body, _ = gone.request("GET", "/health")
         assert status == 503 and body["status"] == "unavailable" and "not found" in body["reason"]
+        fake.mode("osdonly")  # the binary runs but the default language's traineddata is missing
+        no_data = start(fake)
+        try:
+            status, body, _ = no_data.request("GET", "/health")
+            assert status == 503 and "traineddata" in body["reason"] and "eng" in body["reason"]
+        finally:
+            no_data.close()
     finally:
         ok.close()
         gone.close()
@@ -326,14 +353,16 @@ def test_ocr_success_shape_and_exact_engine_argv(running: Running, fake: Fake) -
     assert isinstance(body["elapsed_ms"], int)
     assert body["text"] == "Debian installer\nmaybe"
     assert body["lines"] == [
-        {"text": "Debian installer", "conf": 92.38, "box": [10, 10, 180, 16]},
-        {"text": "maybe", "conf": 42.0, "box": [10, 34, 60, 16]},
+        {"text": "Debian installer", "conf": 92.38, "conf_mean": 92.38, "conf_min": 88.25, "low_conf_words": 0,
+         "box": [10, 10, 180, 16]},
+        {"text": "maybe", "conf": 42.0, "conf_mean": 42.0, "conf_min": 42.0, "low_conf_words": 0, "box": [10, 34, 60, 16]},
     ]
     assert body["words"] == [
-        {"text": "Debian", "conf": 96.5, "box": [10, 10, 80, 16], "line": 0},
-        {"text": "installer", "conf": 88.25, "box": [100, 10, 90, 16], "line": 0},
-        {"text": "maybe", "conf": 42.0, "box": [10, 34, 60, 16], "line": 1},
+        {"text": "Debian", "conf": 96.5, "box": [10, 10, 80, 16], "line": 0, "low_conf": False},
+        {"text": "installer", "conf": 88.25, "box": [100, 10, 90, 16], "line": 0, "low_conf": False},
+        {"text": "maybe", "conf": 42.0, "box": [10, 34, 60, 16], "line": 1, "low_conf": False},
     ]
+    assert (body["min_conf_applied"], body["low_conf_words"], body["drop_low_conf"], body["dropped_words"]) == (0.0, 0, False, 0)
     (call,) = fake.calls()
     assert call["argv"] == ["stdin", "stdout", "-l", "eng", "--psm", "6", "tsv"]
     assert call["png"] == [100, 50]
@@ -370,13 +399,49 @@ def test_scale_odd_factor_rounds_boxes(running: Running) -> None:
 
 
 @needs_pil
-def test_min_conf_filters_words_and_rebuilds_lines(running: Running) -> None:
+def test_min_conf_flags_words_but_never_removes_them(running: Running) -> None:
     body = running.request("POST", "/v1/ocr?min_conf=90", png())[1]
-    assert [w["text"] for w in body["words"]] == ["Debian"]
-    assert body["lines"] == [{"text": "Debian", "conf": 96.5, "box": [10, 10, 80, 16]}]
-    assert body["text"] == "Debian"
-    nothing = running.request("POST", "/v1/ocr?min_conf=100", png())[1]
-    assert nothing["text"] == "" and nothing["lines"] == [] and nothing["words"] == []
+    # the result is COMPLETE: every recognised word and the whole text, whatever its confidence
+    assert [w["text"] for w in body["words"]] == ["Debian", "installer", "maybe"]
+    assert body["text"] == "Debian installer\nmaybe"
+    assert [w["low_conf"] for w in body["words"]] == [False, True, True]  # 96.5 ok; 88.25 and 42 flagged
+    assert [(line["low_conf_words"], line["conf_min"]) for line in body["lines"]] == [(1, 88.25), (1, 42.0)]
+    assert (body["min_conf_applied"], body["low_conf_words"], body["dropped_words"]) == (90.0, 2, 0)
+    nothing_flagged = running.request("POST", "/v1/ocr", png())[1]
+    assert nothing_flagged["low_conf_words"] == 0 and not any(w["low_conf"] for w in nothing_flagged["words"])
+    everything = running.request("POST", "/v1/ocr?min_conf=100", png())[1]
+    assert everything["text"] == "Debian installer\nmaybe" and everything["low_conf_words"] == 3
+
+
+@needs_pil
+def test_a_prompt_with_one_doubtful_word_comes_back_complete(running: Running, fake: Fake) -> None:
+    header = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n"
+    (fake.dir / "tsv").write_text(
+        header
+        + "5\t1\t1\t1\t1\t1\t0\t0\t60\t16\t96\tContinue?\n"
+        + "5\t1\t1\t1\t1\t2\t70\t0\t60\t16\t10\t[y/N]\n",
+        encoding="utf-8",
+    )
+    body = running.request("POST", "/v1/ocr?min_conf=50", png())[1]
+    assert body["text"] == "Continue? [y/N]"  # the doubtful token is NOT silently deleted
+    assert body["low_conf_words"] == 1
+    assert body["lines"][0]["low_conf_words"] == 1 and body["lines"][0]["conf_min"] == 10.0
+    assert body["lines"][0]["conf_mean"] == 53.0 == body["lines"][0]["conf"]
+    assert [w["low_conf"] for w in body["words"]] == [False, True]
+
+
+@needs_pil
+def test_drop_low_conf_is_an_explicit_opt_in_that_reports_what_it_dropped(running: Running) -> None:
+    body = running.request("POST", "/v1/ocr?min_conf=90&drop_low_conf=1", png())[1]
+    assert [w["text"] for w in body["words"]] == ["Debian"] and body["text"] == "Debian"
+    assert body["lines"] == [{"text": "Debian", "conf": 96.5, "conf_mean": 96.5, "conf_min": 96.5,
+                              "low_conf_words": 0, "box": [10, 10, 80, 16]}]
+    assert (body["drop_low_conf"], body["dropped_words"], body["low_conf_words"]) == (True, 2, 2)
+    none_left = running.request("POST", "/v1/ocr?min_conf=100&drop_low_conf=1", png())[1]
+    assert none_left["text"] == "" and none_left["lines"] == [] and none_left["words"] == []
+    assert none_left["dropped_words"] == 3
+    assert running.request("POST", "/v1/ocr?drop_low_conf=2", png())[1]["code"] == "invalid_drop_low_conf"
+    assert running.request("POST", "/v1/ocr?drop_low_conf=0", png())[0] == 200
 
 
 @needs_pil
@@ -502,7 +567,7 @@ def test_decompression_bomb_is_refused_before_decoding() -> None:
     bomb = png(20000, 20000, mode="1")
     with pytest.raises(svc.ServiceError) as caught:
         svc.prepare_image(bomb, svc.Params(), config)
-    assert caught.value.status in (413, 415)
+    assert (caught.value.status, caught.value.code) == (413, "image_too_large")  # Pillow's bomb error, not a 415
 
 
 @needs_pil
@@ -518,7 +583,7 @@ def test_gif_and_bmp_are_not_accepted_formats(running: Running) -> None:
         out = io.BytesIO()
         Image.new("RGB", (8, 8)).save(out, format=fmt)
         status, resp, _ = running.request("POST", "/v1/ocr", out.getvalue())
-        assert (status, resp["code"]) == (415, "unsupported_image") and "PNG and JPEG" in resp["error"]
+        assert (status, resp["code"]) == (415, "unsupported_image") and "PNG or JPEG" in resp["error"]
 
 
 @needs_pil
@@ -530,12 +595,11 @@ def test_truncated_pixel_data_is_415(running: Running) -> None:
 
 @needs_pil
 def test_recognition_timeout_is_504_and_the_slot_is_released(fake: Fake) -> None:
-    fake.mode("sleep", 5)
+    fake.mode("block")  # never released: only the service's own timeout can end it
     quick = start(fake, timeout_s=0.4)
     try:
-        started = time.monotonic()
         status, body, _ = quick.request("POST", "/v1/ocr", png())
-        assert (status, body["code"]) == (504, "timeout") and time.monotonic() - started < 4
+        assert (status, body["code"]) == (504, "timeout")
         fake.mode("ok")
         assert quick.request("POST", "/v1/ocr", png())[0] == 200
     finally:
@@ -544,23 +608,23 @@ def test_recognition_timeout_is_504_and_the_slot_is_released(fake: Fake) -> None
 
 @needs_pil
 def test_one_recognition_at_a_time_second_caller_gets_429(fake: Fake) -> None:
-    fake.mode("sleep", 1.5)
+    fake.mode("block")
     both = start(fake)
     first: list[tuple[int, dict, dict]] = []
     thread = threading.Thread(target=lambda: first.append(both.request("POST", "/v1/ocr", png())))
     try:
         thread.start()
-        deadline = time.monotonic() + 5
-        while not (fake.dir / "started").exists() and time.monotonic() < deadline:
-            time.sleep(0.02)
+        fake.wait_started()  # the first request is provably inside the engine now
         status, body, headers = both.request("POST", "/v1/ocr", png())
         assert (status, body["code"]) == (429, "busy") and headers.get("Retry-After") == "1"
-        thread.join(timeout=10)
+        fake.release()
+        thread.join(timeout=30)
         assert first[0][0] == 200  # the in-flight request was not disturbed
         fake.mode("ok")
         assert both.request("POST", "/v1/ocr", png())[0] == 200  # slot free again
     finally:
-        thread.join(timeout=10)
+        fake.release()
+        thread.join(timeout=30)
         both.close()
 
 
@@ -604,8 +668,15 @@ def test_unexpected_exception_is_a_generic_500_that_leaks_nothing(fake: Fake) ->
 def test_client_that_vanishes_mid_upload_does_not_crash_the_service(running: Running) -> None:
     with socket.create_connection(("127.0.0.1", running.port), timeout=5) as sock:
         sock.sendall(b"POST /v1/ocr HTTP/1.0\r\nContent-Length: 100000\r\n\r\npartial")
-    # The slot must be free again for the next caller (here: a routing error proves liveness).
-    assert running.request("GET", "/health")[0] == 200
+    # The slot must be free again: a POST (which needs the slot) is answered by validation, not 429.
+    # The handler notices the vanished client within moments; poll for that instead of sleeping.
+    deadline = time.monotonic() + 10
+    while True:
+        status, body, _ = running.request("POST", "/v1/ocr?psm=5", b"x")
+        if status != 429 or time.monotonic() > deadline:
+            break
+        time.sleep(0.02)
+    assert (status, body["code"]) == (400, "invalid_psm")
 
 
 def test_stalled_upload_times_out_and_frees_the_slot(fake: Fake) -> None:

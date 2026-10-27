@@ -50,8 +50,10 @@ def test_ocr_target_uses_the_ocr_dockerfile_with_the_pwmcp_build_context() -> No
     main = _block("target", "pwmcp-latest")
     assert 'dockerfile = "containers/ocr/Dockerfile"' in block
     assert re.search(r'context\s*=\s*"\."', block) and re.search(r'context\s*=\s*"\."', main)  # same context rules
-    assert "platforms" not in block and "platforms" not in main  # same platform policy as the main image
-    assert "cache" not in block.replace("cache-", "") or "cache" in main  # no cache setting the main image lacks
+    keys = lambda text: set(re.findall(r"^  (\w[\w-]*)\s*=", text, re.MULTILINE))  # noqa: E731
+    # exactly the same set of settings as the main target (context, dockerfile, args, tags): no extra
+    # platforms/cache/output/labels/pull policy that would make the two images build differently
+    assert keys(block) == keys(main) == {"context", "dockerfile", "args", "tags"}
 
 
 def test_ocr_tags_use_the_same_release_coordinate_in_their_own_repository() -> None:
@@ -100,21 +102,23 @@ def test_prepared_coordinate_requires_the_ocr_base_pin() -> None:
     assert not _vars._is_complete(complete)  # a pre-OCR cmru.vars fails closed instead of building unpinned
 
 
-def test_the_committed_check_projects_both_images_into_cmru_vars() -> None:
-    scratch = PWMCP / "cmru.vars"
-    before = scratch.read_text(encoding="utf-8") if scratch.exists() else None
-    try:
-        done = subprocess.run([sys.executable, str(PWMCP / "scripts" / "resolve-playwright-version.py"), "--check"],
-                              capture_output=True, text=True, check=False, cwd=PWMCP)
-        assert done.returncode == 0, done.stderr
-        written = scratch.read_text(encoding="utf-8")
-        assert "GHCR_PACKAGE_NAMES=pwmcp,pwmcp-ocr" in written
-        assert f"DEBIAN_IMAGE_DIGEST={_bake_var('DEBIAN_IMAGE_DIGEST')}" in written
-    finally:
-        if before is None:
-            scratch.unlink(missing_ok=True)
-        else:
-            scratch.write_text(before, encoding="utf-8")
+def test_the_committed_check_projects_both_images_into_cmru_vars(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Runs the real committed-input check, but writes the prepared coordinate to a temp file."""
+
+    spec = importlib.util.spec_from_file_location("pwmcp_resolver_wiring", PWMCP / "scripts" / "resolve-playwright-version.py")
+    assert spec and spec.loader
+    resolver = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = resolver
+    spec.loader.exec_module(resolver)
+    target = tmp_path / "cmru.vars"
+    live = PWMCP / "cmru.vars"
+    before = live.read_bytes() if live.exists() else None
+    monkeypatch.setattr(resolver, "RELEASE_VARS_FILE", target)
+    resolver.check_committed_inputs()
+    written = target.read_text(encoding="utf-8")
+    assert "GHCR_PACKAGE_NAMES=pwmcp,pwmcp-ocr" in written
+    assert f"DEBIAN_IMAGE_DIGEST={_bake_var('DEBIAN_IMAGE_DIGEST')}" in written
+    assert (live.read_bytes() if live.exists() else None) == before  # the live prepared file is untouched
 
 
 def test_push_syncs_visibility_for_both_packages_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -133,3 +137,25 @@ def test_push_syncs_visibility_for_both_packages_by_default(monkeypatch: pytest.
     build_push.do_push()
     assert baked[0][-2:] == ["all", "--push"]  # one bake of the "all" group pushes both images
     assert synced == [["pwmcp", "pwmcp-ocr"]]
+
+
+def test_the_ocr_image_carries_the_main_images_label_set() -> None:
+    main = (PWMCP / "containers" / "pwmcp" / "Dockerfile").read_text(encoding="utf-8")
+    for label in ("org.opencontainers.image.source", "org.opencontainers.image.documentation"):
+        wanted = re.search(label + r'="([^"]+)"', main).group(1)
+        assert f'{label}="{wanted}"' in OCR_DOCKERFILE  # the same repository link: it links the GHCR package
+    assert 'org.opencontainers.image.title="pwmcp-ocr"' in OCR_DOCKERFILE
+    assert "org.opencontainers.image.description=" in OCR_DOCKERFILE
+
+
+def test_the_docs_state_the_decisions_and_the_first_release_checklist() -> None:
+    readme = (PWMCP / "README.md").read_text(encoding="utf-8")
+    backlog = (PWMCP / "KNOWN_ISSUES_TODO_BACKLOG.md").read_text(encoding="utf-8")
+    for text in (readme, backlog):
+        assert "write:packages" in text and "KI-97" in text and "--set-version" in text
+        assert "imagetools inspect debian:trixie-slim" in text
+        assert "NEXT" in text and "PWMCP_REQUIRE_TEST_DEPS" in text.replace("PWMCP_REQUIRE_TEST_DEPS=1", "PWMCP_REQUIRE_TEST_DEPS")
+    assert "DECIDED BY DESIGN, 2026-10-27" in backlog and "open operator decision" not in (readme + backlog).lower()
+    assert "400 `invalid_scale`" in readme and "`drop_low_conf`" in readme
+    cmru = (PWMCP.parent / "cmru" / "KNOWN_ISSUES_TODO_BACKLOG.md").read_text(encoding="utf-8")
+    assert "KI-97 - `mirror_package_visibility` hard-fails" in cmru

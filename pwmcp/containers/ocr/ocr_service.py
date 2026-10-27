@@ -17,6 +17,7 @@ image bytes are never echoed.  One recognition runs at a time (a second concurre
 
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import os
@@ -29,18 +30,20 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
+from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Protocol
 from urllib.parse import parse_qs, urlsplit
 
 DEFAULT_ENGINE = "tesseract"
+DEFAULT_LANG = "eng"
 ALLOWED_PSM = (3, 4, 6, 7, 11, 13)
 MAX_SCALE = 8
 MAX_SCALED_DIM = 8192
 MAX_WHITELIST = 128
 # Tesseract language codes: three letters, optional script/variant suffix, joined by '+'.
 _LANG_RE = re.compile(r"^[a-z]{3}(_[A-Za-z]{1,12})?(\+[a-z]{3}(_[A-Za-z]{1,12})?)*$")
-_KNOWN_PARAMS = frozenset({"engine", "lang", "psm", "scale", "whitelist", "min_conf"})
+_KNOWN_PARAMS = frozenset({"engine", "lang", "psm", "scale", "whitelist", "min_conf", "drop_low_conf"})
 
 
 @dataclass(frozen=True)
@@ -54,6 +57,8 @@ class Config:
     socket_timeout_s: float = 30.0
     body_deadline_s: float = 10.0  # TOTAL time allowed to receive a request body (slow-client guard)
     max_scaled_pixels: int = 24_000_000  # width*height AFTER --scale, checked before resizing
+    header_deadline_s: float = 10.0  # TOTAL time allowed to receive the request line + headers
+    max_connections: int = 16  # concurrent handler threads; further connections get a JSON 503
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "Config":
@@ -67,6 +72,8 @@ class Config:
             tesseract=env.get("OCR_TESSERACT", cls.tesseract),
             body_deadline_s=float(env.get("OCR_BODY_DEADLINE_S", cls.body_deadline_s)),
             max_scaled_pixels=int(env.get("OCR_MAX_SCALED_PIXELS", cls.max_scaled_pixels)),
+            header_deadline_s=float(env.get("OCR_HEADER_DEADLINE_S", cls.header_deadline_s)),
+            max_connections=int(env.get("OCR_MAX_CONNECTIONS", cls.max_connections)),
         )
 
 
@@ -95,7 +102,8 @@ class Params:
     psm: int = 6
     scale: int = 1
     whitelist: str | None = None
-    min_conf: float = 0.0
+    min_conf: float = 0.0  # words BELOW this are flagged low_conf (never silently removed)
+    drop_low_conf: bool = False  # opt-in: really remove the flagged words from the result
 
 
 class Engine(Protocol):
@@ -296,7 +304,11 @@ def parse_params(query: str, registry: dict[str, Engine]) -> Params:
     if not (0 <= min_conf <= 100):
         raise ServiceError(400, "invalid_min_conf", "min_conf must be a number from 0 to 100")
 
-    return Params(engine, lang, int(psm_raw), int(scale_f), whitelist, min_conf)
+    drop_raw = got.get("drop_low_conf", "0")
+    if drop_raw not in ("0", "1"):
+        raise ServiceError(400, "invalid_drop_low_conf", "drop_low_conf must be 0 or 1")
+
+    return Params(engine, lang, int(psm_raw), int(scale_f), whitelist, min_conf, drop_raw == "1")
 
 
 def prepare_image(body: bytes, params: Params, config: Config) -> tuple[bytes, int, int]:
@@ -311,12 +323,15 @@ def prepare_image(body: bytes, params: Params, config: Config) -> tuple[bytes, i
 
     Image.MAX_IMAGE_PIXELS = config.max_dim * config.max_dim
     try:
-        image = Image.open(io.BytesIO(body))
-        fmt, (width, height) = image.format, image.size
-    except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError) as exc:
+        # Only the PNG and JPEG plugins ever see untrusted bytes.
+        image = Image.open(io.BytesIO(body), formats=["PNG", "JPEG"])
+        width, height = image.size
+    except Image.DecompressionBombError as exc:  # more than 2x the pixel budget, found from the header alone
+        raise ServiceError(413, "image_too_large", f"image exceeds {config.max_dim}x{config.max_dim} pixels") from exc
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
         raise ServiceError(415, "unsupported_image", "body is not a decodable PNG or JPEG image") from exc
-    if fmt not in ("PNG", "JPEG"):
-        raise ServiceError(415, "unsupported_image", "only PNG and JPEG images are accepted")
+    # A multi-picture JPEG (MPO, e.g. from some cameras) is a JPEG container: its first frame is used.
+    # (formats=["PNG","JPEG"] above means the image is a PNG, a JPEG or its MPO variant: nothing else can get here)
     if width > config.max_dim or height > config.max_dim:
         raise ServiceError(413, "image_too_large", f"image exceeds {config.max_dim}x{config.max_dim} pixels")
     if width * params.scale > MAX_SCALED_DIM or height * params.scale > MAX_SCALED_DIM:
@@ -360,7 +375,12 @@ def _flatten(image: "object") -> "object":
 def build_response(
     words: list[Word], params: Params, width: int, height: int, engine: Engine, elapsed_ms: int
 ) -> dict[str, object]:
-    """Assemble the JSON: boxes un-scaled to original pixels, min_conf applied, lines rebuilt."""
+    """Assemble the JSON: boxes un-scaled to original pixels, lines rebuilt from the words.
+
+    The result is COMPLETE: every recognised word is returned whatever its confidence.
+    ``min_conf`` only FLAGS words below it (``low_conf``); a caller that really wants them
+    removed must ask with ``drop_low_conf=1`` (and is told how many were dropped).
+    """
 
     def unscale(box: tuple[int, int, int, int]) -> list[int]:
         # Outward rounding: the original-pixel box always contains the scaled one, and a box
@@ -371,7 +391,11 @@ def build_response(
         x1, y1 = -(-(x + w) // s), -(-(y + h) // s)
         return [x0, y0, x1 - x0 if w > 0 else 0, y1 - y0 if h > 0 else 0]
 
-    kept = [w for w in words if w.conf >= params.min_conf]
+    def flagged(word: Word) -> bool:
+        return word.conf < params.min_conf
+
+    total_flagged = sum(1 for w in words if flagged(w))
+    kept = [w for w in words if not flagged(w)] if params.drop_low_conf else list(words)
     order: dict[tuple[int, ...], int] = {}
     members: list[list[Word]] = []
     for word in kept:
@@ -386,13 +410,18 @@ def build_response(
         y0 = min(w.box[1] for w in group)
         x1 = max(w.box[0] + w.box[2] for w in group)
         y1 = max(w.box[1] + w.box[3] for w in group)
+        mean = round(sum(w.conf for w in group) / len(group), 2)
         lines.append({
             "text": " ".join(w.text for w in group),
-            "conf": round(sum(w.conf for w in group) / len(group), 2),
+            "conf": mean,  # compatibility alias of conf_mean
+            "conf_mean": mean,
+            "conf_min": min(w.conf for w in group),
+            "low_conf_words": sum(1 for w in group if flagged(w)),
             "box": unscale((x0, y0, x1 - x0, y1 - y0)),
         })
     out_words = [
-        {"text": w.text, "conf": w.conf, "box": unscale(w.box), "line": order[w.line]} for w in kept
+        {"text": w.text, "conf": w.conf, "box": unscale(w.box), "line": order[w.line], "low_conf": flagged(w)}
+        for w in kept
     ]
     return {
         "engine": params.engine,
@@ -405,6 +434,10 @@ def build_response(
         "text": "\n".join(str(line["text"]) for line in lines),
         "lines": lines,
         "words": out_words,
+        "min_conf_applied": params.min_conf,
+        "low_conf_words": total_flagged,
+        "drop_low_conf": params.drop_low_conf,
+        "dropped_words": len(words) - len(kept),
     }
 
 
@@ -415,9 +448,15 @@ class Service:
     busy: threading.Lock = field(default_factory=threading.Lock)
 
     def health(self) -> tuple[int, dict[str, object]]:
-        if self.registry[DEFAULT_ENGINE].available():
-            return 200, {"status": "ok"}
-        return 503, {"status": "unavailable", "reason": self.registry[DEFAULT_ENGINE].unavailable_reason()}
+        engine = self.registry[DEFAULT_ENGINE]
+        if not engine.available():
+            return 503, {"status": "unavailable", "reason": engine.unavailable_reason()}
+        # The binary alone is not enough: without the default language's traineddata every
+        # recognition would fail. (The language list is cached after the first successful read.)
+        if DEFAULT_LANG not in engine.languages():
+            return 503, {"status": "unavailable",
+                         "reason": f"no traineddata for the default language {DEFAULT_LANG!r} is installed"}
+        return 200, {"status": "ok"}
 
     def engines(self) -> dict[str, object]:
         return {"engines": [
@@ -451,18 +490,57 @@ def make_handler(service: Service) -> type[BaseHTTPRequestHandler]:
         timeout = service.config.socket_timeout_s  # a stalled upload cannot hold the slot forever
         server_version = "pwmcp-ocr"
         sys_version = ""
+        _header_timer = threading.Timer(0, lambda: None)  # never started; replaced per request
+
+        def handle_one_request(self) -> None:
+            # A TOTAL deadline for the request line + headers (a per-recv timeout alone lets a
+            # client trickle one byte at a time forever).
+            timer = threading.Timer(service.config.header_deadline_s, self._header_deadline)
+            timer.daemon = True
+            self._header_timer = timer
+            timer.start()
+            try:
+                super().handle_one_request()
+            finally:
+                timer.cancel()
+
+        def parse_request(self) -> bool:
+            ok = super().parse_request()
+            self._header_timer.cancel()  # the headers are in; the body has its own deadline
+            return ok
+
+        def _header_deadline(self) -> None:
+            body = json.dumps({"error": "request line and headers not received in time",
+                               "code": "header_timeout"}).encode("utf-8")
+            with contextlib.suppress(OSError):
+                self.connection.sendall(
+                    b"HTTP/1.0 408 Request Timeout\r\nContent-Type: application/json\r\n"
+                    b"Content-Length: %d\r\nConnection: close\r\n\r\n" % len(body) + body
+                )
+            with contextlib.suppress(OSError):
+                self.connection.shutdown(socket.SHUT_RDWR)  # unblocks the pending read
+
+        def send_error(self, code: int, message: str | None = None, explain: str | None = None) -> None:
+            """Every error the stdlib generates (400/414/431/501...) uses the JSON error shape."""
+
+            self.request_version = "HTTP/1.0"  # always answer in full, even for a request line that never parsed
+            status = HTTPStatus(code)  # the stdlib only ever passes real status codes
+            self.log_error("code %d", code)
+            self._send(code, {"error": status.phrase.lower(), "code": status.name.lower()})
 
         def _send(self, status: int, payload: dict[str, object], *, extra: dict[str, str] | None = None) -> None:
             body = json.dumps(payload).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Connection", "close")
-            for key, value in (extra or {}).items():
-                self.send_header(key, value)
-            self.end_headers()
-            self.wfile.write(body)
             self.close_connection = True
+            with contextlib.suppress(OSError):  # the client may already be gone (no traceback noise)
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Connection", "close")
+                for key, value in (extra or {}).items():
+                    self.send_header(key, value)
+                self.end_headers()
+                if self.command != "HEAD":
+                    self.wfile.write(body)
 
         def _error(self, err: ServiceError) -> None:
             extra = {"Retry-After": "1"} if err.status == 429 else None
@@ -479,18 +557,19 @@ def make_handler(service: Service) -> type[BaseHTTPRequestHandler]:
             second so a still-sending client reads the status instead of ECONNRESET.
             """
 
-            try:
+            with contextlib.suppress(OSError):  # the peer may already be gone
                 self.connection.shutdown(socket.SHUT_WR)
                 deadline = time.monotonic() + 1.0
                 budget = 1024 * 1024
-                while budget > 0 and time.monotonic() < deadline:
-                    self.connection.settimeout(max(deadline - time.monotonic(), 0.01))
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if budget <= 0 or remaining <= 0:
+                        break
+                    self.connection.settimeout(remaining)
                     chunk = self.rfile.read1(min(65536, budget))
                     if not chunk:
                         break
                     budget -= len(chunk)
-            except OSError:
-                pass
 
         def do_GET(self) -> None:  # noqa: N802 - http.server API
             path = urlsplit(self.path).path
@@ -506,6 +585,10 @@ def make_handler(service: Service) -> type[BaseHTTPRequestHandler]:
 
         def do_POST(self) -> None:  # noqa: N802 - http.server API
             parts = urlsplit(self.path)
+            # Any rejection while a body is still on the wire gets the bounded drain, so the
+            # client reads the status instead of a connection reset. Cleared once it is read.
+            declared = self.headers.get("Content-Length", "")
+            self._unread_body = bool(re.fullmatch(r"[0-9]+", declared)) and (len(declared) > 18 or int(declared) > 0)
             if parts.path != "/v1/ocr":
                 known = parts.path in ("/health", "/v1/engines")
                 self._error(
@@ -516,7 +599,6 @@ def make_handler(service: Service) -> type[BaseHTTPRequestHandler]:
             # One recognition at a time: take the slot BEFORE reading the body so at most one
             # (size-limited) body is ever held in memory; a concurrent caller is told to retry.
             if not service.busy.acquire(blocking=False):
-                self._unread_body = True
                 self._error(ServiceError(429, "busy", "another recognition is in progress; retry shortly"))
                 return
             # The slot is released BEFORE the reply is written: a client that sends its next
@@ -551,7 +633,6 @@ def make_handler(service: Service) -> type[BaseHTTPRequestHandler]:
             if raw is None or not re.fullmatch(r"[0-9]+", raw):
                 raise ServiceError(411, "length_required", "Content-Length is required")
             if len(raw) > 18 or int(raw) > service.config.max_bytes:
-                self._unread_body = True
                 raise ServiceError(413, "payload_too_large", f"body exceeds {service.config.max_bytes} bytes")
             length = int(raw)
             if length == 0:
@@ -582,20 +663,50 @@ def make_handler(service: Service) -> type[BaseHTTPRequestHandler]:
                 ) from exc
             finally:
                 self.connection.settimeout(service.config.socket_timeout_s)
+            self._unread_body = False
             return b"".join(chunks)
 
         def log_message(self, fmt: str, *args: object) -> None:
             # Access log without the query string (a whitelist is operator data) or any body.
-            sys.stderr.write(f"{self.address_string()} {self.command} {urlsplit(self.path).path} -> {args[1] if len(args) > 1 else ''}\n")
+            # (self.path / self.command do not exist yet for a request line that never parsed)
+            path = urlsplit(getattr(self, "path", "")).path
+            command = getattr(self, "command", None) or "-"
+            sys.stderr.write(f"{self.address_string()} {command} {path} -> {args[1] if len(args) > 1 else ''}\n")
 
     return Handler
 
 
+class BoundedServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer with a cap on concurrent handler threads: the rest get a JSON 503."""
+
+    daemon_threads = True
+
+    def __init__(self, address: tuple[str, int], handler: type[BaseHTTPRequestHandler], max_connections: int) -> None:
+        self._slots = threading.BoundedSemaphore(max_connections)
+        super().__init__(address, handler)
+
+    def process_request(self, request: "socket.socket", client_address: object) -> None:  # type: ignore[override]
+        if not self._slots.acquire(blocking=False):
+            body = json.dumps({"error": "too many connections; retry shortly", "code": "overloaded"}).encode("utf-8")
+            with contextlib.suppress(OSError):
+                request.sendall(
+                    b"HTTP/1.0 503 Service Unavailable\r\nContent-Type: application/json\r\n"
+                    b"Retry-After: 1\r\nContent-Length: %d\r\nConnection: close\r\n\r\n" % len(body) + body
+                )
+            self.shutdown_request(request)
+            return
+        super().process_request(request, client_address)
+
+    def process_request_thread(self, request: "socket.socket", client_address: object) -> None:  # type: ignore[override]
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
+
+
 def make_server(config: Config, registry: dict[str, Engine] | None = None) -> ThreadingHTTPServer:
     service = Service(config, registry if registry is not None else build_registry(config))
-    server = ThreadingHTTPServer((config.host, config.port), make_handler(service))
-    server.daemon_threads = True
-    return server
+    return BoundedServer((config.host, config.port), make_handler(service), config.max_connections)
 
 
 def main() -> int:

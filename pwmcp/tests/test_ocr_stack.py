@@ -19,13 +19,14 @@ import urllib.request
 from pathlib import Path
 
 import pytest
+from _testdeps import optional_module
 
 PWMCP_ROOT = Path(__file__).resolve().parents[1]
 GATEWAY = PWMCP_ROOT / "containers" / "pwmcp" / "run-server-gateway" / "index.js"
 NODE = shutil.which("node")
 
-jinja2 = pytest.importorskip("jinja2", reason="jinja2 is needed to render the compose template")
-yaml = pytest.importorskip("yaml", reason="PyYAML is needed to parse the rendered compose file")
+jinja2 = optional_module("jinja2", "jinja2 is needed to render the compose template")
+yaml = optional_module("yaml", "PyYAML is needed to parse the rendered compose file")
 
 
 def _defaults() -> dict:
@@ -69,10 +70,24 @@ def test_defaults_ship_ocr_disabled_with_the_documented_keys() -> None:
 @pytest.mark.parametrize("env_options", [{}, {"trim_blocks": True}, {"trim_blocks": True, "lstrip_blocks": True}],
                          ids=["ciu-env", "trim_blocks", "trim+lstrip"])
 def test_default_render_is_byte_identical_to_the_pre_ocr_template(env_options: dict) -> None:
-    """The DEFAULT render (ocr disabled or absent) equals the render of the template at 85f5fa992."""
+    """The DEFAULT render (ocr disabled or absent) equals the render of the template at 85f5fa992.
+
+    This is deliberately strict: it proves the OCR feature changed NOTHING for existing deployments.
+    It also means ANY later edit to ciu.compose.yml.j2 (OCR-related or not) fails it, on purpose, so
+    that a change to what every deployment renders is a conscious one. To make such an edit:
+      1. make the edit and review `git diff` of the default render by hand;
+      2. regenerate the golden from the PREVIOUS reviewed template, i.e. run
+         `git show HEAD:pwmcp/ciu.compose.yml.j2 > pwmcp/tests/golden/ciu.compose.yml.j2.<short-hash>`
+         (the template as committed BEFORE your edit, OCR blocks stripped if present) and point GOLDEN at it;
+      3. say in the commit message that the default render changed and why.
+    """
 
     old = _render(template_path=GOLDEN, strip_ocr=True, **env_options)
-    assert _render(**env_options).encode() == old.encode()
+    assert _render(**env_options).encode() == old.encode(), (
+        "the default render of ciu.compose.yml.j2 changed. If that is intended, follow the 'regenerate the "
+        "golden deliberately' procedure in this test's docstring; if not, the template edit leaks into "
+        "deployments that never enabled OCR."
+    )
     assert _render(strip_ocr=True, **env_options).encode() == old.encode()
     assert _render(lambda p: p["ocr"].update(enabled=False), **env_options).encode() == old.encode()
     # also with external mode on, where the template has the most conditional blocks
@@ -131,6 +146,18 @@ def test_enabled_exports_the_url_to_the_pwmcp_container_only() -> None:
     env = compose["services"]["pwmcp"]["environment"]
     assert env["PWMCP_OCR_URL"] == "http://pwmcp-ocr:8941" and env["PWMCP_OCR_ENGINES"] == "tesseract"
     assert "PWMCP_OCR_URL" not in compose["services"]["pwmcp-ocr"]["environment"]
+
+
+def test_hostile_values_stay_valid_yaml_in_the_env_and_the_service_names() -> None:
+    def tweak(pwmcp: dict) -> None:
+        pwmcp["ocr"].update(enabled=True, engines='tesseract, "x": {y}\n- z $HOME', name="o: cr #1")
+
+    compose = yaml.safe_load(_render(tweak))
+    env = compose["services"]["pwmcp"]["environment"]
+    assert env["PWMCP_OCR_ENGINES"].replace("$$", "$") == 'tesseract, "x": {y}\n- z $HOME'
+    assert env["PWMCP_OCR_URL"] == "http://o: cr #1:8941"
+    ocr = compose["services"]["o: cr #1"]
+    assert ocr["container_name"] == "proj-t1-o: cr #1" and ocr["networks"]["default"]["aliases"] == ["o: cr #1"]
 
 
 def test_custom_name_port_and_limits_flow_through() -> None:

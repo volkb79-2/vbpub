@@ -345,15 +345,33 @@ built, pushed or run through cmru/ciu/docker/the gate, so this stays UNVERIFIED 
   `get.py`; consumers pin images through the bundle's `ciu.defaults.toml.j2`, which now has both. Neither
   mdt-cockpit (it reads only the contract `release` and `get.py`) nor `topos/pwmcp-instance/UPSTREAM.toml`
   (vendored copy at 1.61.0-r6) needs a change; topos picks the OCR defaults up on its next re-vendor.
-- STILL OPEN / decisions not made: (a) no 14-day age window on the Debian digest: a rolling OS tag has no
-  package age, and a window would hold back security rebuilds, so the digest is whatever the tag points to at
-  `--refresh`; say so if you want a window. (b) The second GHCR package is created on first push; the existing
+- STILL OPEN / decisions not made: (a) DECIDED BY DESIGN, 2026-10-27: no age window for the rolling Debian base
+  digest (a rolling OS tag whose newer digests are mostly security rebuilds, which a window would only delay);
+  the digest is whatever the tag points to at `--refresh`. (b) The second GHCR package is created on first push; the existing
   mirror-repo-visibility sync is applied to it, which assumes the release PAT may create and administer it.
   (c) Whether to also register `debian:trixie-slim` as a cmru `[versions.targets."oci.*"]` target (mdt-cockpit
   has advisory ones); NOT added, because it could not be validated without running cmru and a failed load
   would break the release. (d) cmru's own artifact accounting still lists `artifacts = ["oci-image",
   "bundle"]`; whether it needs to enumerate the second image is not checkable without running cmru. (e) The
   main image's unpinned `debian:bookworm-slim` KSM builder stage is untouched.
+
+**Result contract (reviewed 2026-10-27).** The sidecar result is COMPLETE: `min_conf` flags words below it
+(`low_conf`, per-line `conf_mean` / `conf_min` / `low_conf_words`, top-level `low_conf_words` and
+`min_conf_applied`) and never deletes them; removal is the explicit `drop_low_conf=1` opt-in. Phases 2-3 match
+on this text and send keystrokes, so doubt must stay visible.
+
+**First release of the OCR image: checklist** (also in README "Release Model"): confirm the base digest with
+`docker buildx imagetools inspect debian:trixie-slim` (and `--refresh` if it differs); a transaction prepared
+before the new `cmru.vars` keys fails closed; confirm the token has `write:packages` for a new package
+(PWMCP-01); expect `pwmcp-ocr` to be created PRIVATE and unlinked and make it public once in the GHCR UI
+(the `org.opencontainers.image.source` label links it); if the visibility sync hard-fails after both images
+were pushed (cmru KI-97) re-run ONLY the sync step, never `cmru release --resume` without `--set-version`
+(the 2026-09-08 v1.0.0 incident). The sidecar image exists from the NEXT release after `1.64.0-r3`; until
+then enabling `pwmcp.ocr` needs a local build (README). The pwmcp gate lanes depend on Pillow being in the
+tester image carrying the pwmcp-client `test` extra (pytest, pillow, websockets, jinja2, pyyaml): the lanes set
+`PWMCP_REQUIRE_TEST_DEPS=1`, so a missing optional dependency FAILS its tests instead of skipping them (a
+developer machine without them still skips); the controller owns the tester-unified change and image rebuild,
+and the `test` extra in `client/pyproject.toml` (not touched on this branch: keep it verbatim on merge).
 
 **UNVERIFIED until an image is built and run.**
 - Real Tesseract behaviour: the TSV column layout assumption (12 columns, level 5 = word, `conf` -1 for

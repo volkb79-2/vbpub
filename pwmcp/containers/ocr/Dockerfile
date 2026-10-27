@@ -7,8 +7,10 @@
 #   docker build -f containers/ocr/Dockerfile -t pwmcp-ocr:dev .
 #
 # Freshness / version policy: every package comes from the Debian archive of the pinned
-# release (tesseract-ocr 5.x, python3-pil); there is no pinned download, so no >= floor with
-# a 14-day vetting window applies here.
+# release (tesseract-ocr 5.x, python3-pil); there is no pinned download, so no >= floor applies.
+# No 14-day age window is applied to the Debian BASE DIGEST: it is a rolling OS tag whose newer
+# digests are mostly security rebuilds, which a window would only delay. Decided by design,
+# 2026-10-27 (PWMCP-11).
 #
 # The base is pinned by multi-arch manifest DIGEST exactly like the main image's Playwright
 # base. DEBIAN_RELEASE and DEBIAN_IMAGE_DIGEST are projections kept identical in this file,
@@ -18,6 +20,13 @@
 ARG DEBIAN_RELEASE=trixie
 ARG DEBIAN_IMAGE_DIGEST=sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad
 FROM debian:${DEBIAN_RELEASE}-slim@${DEBIAN_IMAGE_DIGEST}
+
+# Same label set as the main image: org.opencontainers.image.source is what links the GHCR
+# package to the repository (and lets the package inherit its access and visibility settings).
+LABEL org.opencontainers.image.title="pwmcp-ocr" \
+      org.opencontainers.image.description="Stateless OCR sidecar for pwmcp: Tesseract behind a small HTTP API (text and confidence only)" \
+      org.opencontainers.image.source="https://github.com/volkb79-2/vbpub" \
+      org.opencontainers.image.documentation="https://github.com/volkb79-2/vbpub/tree/main/pwmcp"
 
 # tesseract-ocr-eng is the English traineddata; add tesseract-ocr-<lang> packages for more.
 # python3-pil decodes/validates the image and does the optional integer upscaling.

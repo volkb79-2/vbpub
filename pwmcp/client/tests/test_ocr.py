@@ -10,10 +10,11 @@ import http.client
 import http.server
 import io
 import json
+import socket
+import struct
 import sys
 import threading
 import types
-import urllib.error
 from pathlib import Path
 
 import pytest
@@ -26,10 +27,20 @@ PNG = b"\x89PNG\r\n\x1a\n" + b"rest-of-a-png"
 CANNED = {
     "engine": "tesseract", "engine_version": "5.3.4", "lang": "eng", "psm": 6, "width": 640, "height": 400,
     "elapsed_ms": 12, "text": "Debian GNU/Linux installer\nInstall",
-    "lines": [{"text": "Debian GNU/Linux installer", "conf": 93.5, "box": [8, 8, 300, 16]},
-              {"text": "Install", "conf": 90.0, "box": [8, 40, 60, 16]}],
-    "words": [{"text": "Debian", "conf": 95.0, "box": [8, 8, 60, 16], "line": 0},
-              {"text": "Install", "conf": 90.0, "box": [8, 40, 60, 16], "line": 1}],
+    "lines": [{"text": "Debian GNU/Linux installer", "conf": 93.5, "conf_mean": 93.5, "conf_min": 91.0,
+               "low_conf_words": 0, "box": [8, 8, 300, 16]},
+              {"text": "Install", "conf": 90.0, "conf_mean": 90.0, "conf_min": 90.0, "low_conf_words": 0,
+               "box": [8, 40, 60, 16]}],
+    "words": [{"text": "Debian", "conf": 95.0, "box": [8, 8, 60, 16], "line": 0, "low_conf": False},
+              {"text": "Install", "conf": 90.0, "box": [8, 40, 60, 16], "line": 1, "low_conf": False}],
+    "low_conf_words": 0, "min_conf_applied": 0.0, "drop_low_conf": False, "dropped_words": 0,
+}
+# What a sidecar from before the low_conf contract answered: still understood (defaults fill in).
+OLD_SHAPE = {
+    "engine": "tesseract", "engine_version": "5.3.4", "lang": "eng", "psm": 6, "width": 640, "height": 400,
+    "elapsed_ms": 12, "text": "Install",
+    "lines": [{"text": "Install", "conf": 90.0, "box": [8, 40, 60, 16]}],
+    "words": [{"text": "Install", "conf": 90.0, "box": [8, 40, 60, 16], "line": 0}],
 }
 
 
@@ -116,7 +127,7 @@ def test_recognize_parses_the_result(sidecar: Sidecar) -> None:
     assert (result.engine, result.engine_version, result.lang, result.psm) == ("tesseract", "5.3.4", "eng", 6)
     assert (result.width, result.height, result.elapsed_ms) == (640, 400, 12)
     assert result.text.splitlines()[0] == "Debian GNU/Linux installer"
-    assert result.lines[0] == ocr.OcrLine("Debian GNU/Linux installer", 93.5, (8, 8, 300, 16))
+    assert result.lines[0] == ocr.OcrLine("Debian GNU/Linux installer", 93.5, (8, 8, 300, 16), conf_mean=93.5, conf_min=91.0, low_conf_words=0)
     assert result.words[1] == ocr.OcrWord("Install", 90.0, (8, 40, 60, 16), 1)
 
 
@@ -130,11 +141,12 @@ def test_recognize_sends_defaults_and_the_image_untouched(sidecar: Sidecar) -> N
 
 def test_recognize_sends_every_option(sidecar: Sidecar) -> None:
     ocr.recognize(b"\xff\xd8jpeg", sidecar_url=sidecar.url, engine="glyphgrid", lang="eng+deu", psm=7, scale=3,
-                  whitelist=";rm -rf & 09", min_conf=61.5)
+                  whitelist=";rm -rf & 09", min_conf=61.5, drop_low_conf=True)
     (request,) = sidecar.requests
     assert request["content_type"] == "image/jpeg"
     assert request["query"] == {"engine": ["glyphgrid"], "lang": ["eng+deu"], "psm": ["7"], "scale": ["3"],
-                                "min_conf": ["61.5"], "whitelist": [";rm -rf & 09"]}
+                                "min_conf": ["61.5"], "whitelist": [";rm -rf & 09"],
+                                "drop_low_conf": ["1"]}
     ocr.recognize(b"raw", sidecar_url=sidecar.url)
     assert sidecar.requests[1]["content_type"] == "application/octet-stream"
 
@@ -221,15 +233,35 @@ def test_result_round_trips_to_dict_and_tsv() -> None:
     assert result.to_dict() == CANNED
     assert json.loads(json.dumps(result.to_dict())) == CANNED
     assert result.to_tsv().splitlines() == [
-        "line\tx\ty\tw\th\tconf\ttext", "0\t8\t8\t60\t16\t95\tDebian", "1\t8\t40\t60\t16\t90\tInstall"]
+        "line\tx\ty\tw\th\tconf\tlow_conf\ttext", "0\t8\t8\t60\t16\t95\t0\tDebian", "1\t8\t40\t60\t16\t90\t0\tInstall"]
     # a missing engine_version is allowed (an unavailable engine reports none)
     assert ocr.OcrResult.from_dict({**CANNED, "engine_version": None}).engine_version is None
+
+
+def test_an_older_sidecar_without_the_low_conf_fields_is_still_understood() -> None:
+    result = ocr.OcrResult.from_dict(OLD_SHAPE)
+    assert result.lines[0].conf_mean == result.lines[0].conf == result.lines[0].conf_min == 90.0
+    assert result.lines[0].low_conf_words == 0 and result.words[0].low_conf is False
+    assert (result.low_conf_words, result.min_conf_applied, result.drop_low_conf, result.dropped_words) == (0, 0.0, False, 0)
+
+
+def test_low_confidence_words_are_flagged_in_the_result_and_the_tsv() -> None:
+    doubtful = {**CANNED, "text": "Continue? [y/N]", "low_conf_words": 1, "min_conf_applied": 50.0,
+                "lines": [{"text": "Continue? [y/N]", "conf": 53.0, "conf_mean": 53.0, "conf_min": 10.0,
+                           "low_conf_words": 1, "box": [0, 0, 130, 16]}],
+                "words": [{"text": "Continue?", "conf": 96.0, "box": [0, 0, 60, 16], "line": 0, "low_conf": False},
+                          {"text": "[y/N]", "conf": 10.0, "box": [70, 0, 60, 16], "line": 0, "low_conf": True}]}
+    result = ocr.OcrResult.from_dict(doubtful)
+    assert result.text == "Continue? [y/N]" and result.low_conf_words == 1
+    assert [w.low_conf for w in result.words] == [False, True]
+    assert result.lines[0].conf_min == 10.0 and result.lines[0].low_conf_words == 1
+    assert result.to_tsv().splitlines()[2].split("\t")[-2:] == ["1", "[y/N]"]
 
 
 def test_tsv_neutralises_whitespace_inside_words() -> None:
     odd = {**CANNED, "words": [{"text": "a\tb\nc", "conf": 80.5, "box": [1, 2, 3, 4], "line": 0}]}
     row = ocr.OcrResult.from_dict(odd).to_tsv().splitlines()[1]
-    assert row == "0\t1\t2\t3\t4\t80.5\ta b c"
+    assert row == "0\t1\t2\t3\t4\t80.5\t0\ta b c"
 
 
 # ------------------------------------------------------------------ review follow-up
@@ -293,45 +325,225 @@ def test_redirect_through_the_cli_is_a_clean_failure(work: Path, sidecar: Sideca
     assert "redirect" in capsys.readouterr().err
 
 
-class _Opener:
-    def __init__(self, error: BaseException) -> None:
-        self.error = error
+class RawServer:
+    """A TCP server whose one connection is handled by ``behave(conn)``: for failure modes HTTP servers avoid."""
 
-    def open(self, *_a: object, **_k: object) -> None:
-        raise self.error
+    def __init__(self, behave) -> None:
+        self.listener = socket.socket()
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen(4)
+        self.url = f"http://127.0.0.1:{self.listener.getsockname()[1]}"
+        self.done = threading.Event()
+
+        def run() -> None:
+            try:
+                conn, _ = self.listener.accept()
+                with conn:
+                    behave(conn)
+            except OSError:
+                pass
+            finally:
+                self.done.set()
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def close(self) -> None:
+        self.listener.close()
 
 
-@pytest.mark.parametrize(
-    "error",
-    [
-        ConnectionResetError(104, "reset"),
-        BrokenPipeError(32, "pipe"),
-        http.client.RemoteDisconnected("closed"),
-        urllib.error.URLError(ConnectionResetError(104, "reset")),
-        urllib.error.URLError(BrokenPipeError(32, "pipe")),
-    ],
-)
-def test_a_hang_up_during_the_upload_reads_as_busy_or_rejected_not_unreachable(
-    monkeypatch: pytest.MonkeyPatch, error: BaseException
-) -> None:
-    monkeypatch.setattr(ocr, "_OPENER", _Opener(error))
+def _read_headers(conn: socket.socket) -> bytes:
+    data = b""
+    while b"\r\n\r\n" not in data:
+        chunk = conn.recv(65536)
+        if not chunk:
+            break
+        data += chunk
+    return data
+
+
+def _read_request(conn: socket.socket) -> None:
+    """Take the whole request (headers + body) so closing later does not RST away our reply."""
+
+    data = _read_headers(conn)
+    length = int(data.lower().split(b"content-length: ")[1].split(b"\r\n")[0])
+    have = len(data.split(b"\r\n\r\n", 1)[1])
+    while have < length:
+        have += len(conn.recv(65536))
+
+
+def _reset(conn: socket.socket) -> None:
+    conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))  # close() sends RST
+
+
+def test_a_hang_up_during_the_upload_reads_as_busy_or_rejected_not_unreachable() -> None:
+    def behave(conn: socket.socket) -> None:
+        _read_headers(conn)
+        _reset(conn)  # slam the door while the client is still sending its body
+
+    server = RawServer(behave)
+    try:
+        with pytest.raises(ocr.OcrError) as caught:
+            ocr.recognize(b"\x89PNG\r\n\x1a\n" + b"x" * 30_000_000, sidecar_url=server.url, timeout=20)
+        assert caught.value.code == "busy_or_rejected"
+        assert "busy or rejected" in str(caught.value) and "retry" in str(caught.value)
+        assert "unreachable" not in str(caught.value)
+    finally:
+        server.close()
+
+
+@pytest.mark.parametrize("how", ["close", "reset"])
+def test_a_hang_up_after_the_full_upload_is_a_sidecar_error_not_busy(how: str) -> None:
+    def behave(conn: socket.socket) -> None:
+        data = _read_headers(conn)
+        length = int(data.lower().split(b"content-length: ")[1].split(b"\r\n")[0])
+        have = len(data.split(b"\r\n\r\n", 1)[1])
+        while have < length:  # take the WHOLE body, then drop the connection without answering
+            have += len(conn.recv(65536))
+        if how == "reset":
+            _reset(conn)
+
+    server = RawServer(behave)
+    try:
+        with pytest.raises(ocr.OcrError) as caught:
+            ocr.recognize(PNG, sidecar_url=server.url, timeout=10)
+        assert caught.value.code == "sidecar_error", caught.value
+        assert "busy or rejected" not in str(caught.value) and "check its logs" in str(caught.value)
+    finally:
+        server.close()
+
+
+def test_a_truncated_answer_is_a_sidecar_error() -> None:
+    def behave(conn: socket.socket) -> None:
+        _read_request(conn)
+        conn.sendall(b"HTTP/1.0 200 OK\r\nContent-Length: 500\r\n\r\n{\"engine\": ")
+
+    server = RawServer(behave)
+    try:
+        with pytest.raises(ocr.OcrError) as caught:
+            ocr.recognize(PNG, sidecar_url=server.url, timeout=10)
+        assert caught.value.code == "sidecar_error"
+    finally:
+        server.close()
+
+
+def test_an_error_reply_whose_body_cannot_be_read_still_reports_the_status() -> None:
+    def behave(conn: socket.socket) -> None:
+        _read_request(conn)
+        conn.sendall(b"HTTP/1.0 500 Internal Server Error\r\nContent-Length: 500\r\n\r\n{\"er")
+
+    server = RawServer(behave)
+    try:
+        with pytest.raises(ocr.OcrError) as caught:
+            ocr.recognize(PNG, sidecar_url=server.url, timeout=10)
+        assert caught.value.code == "sidecar_error"  # the truncated body is the more specific fact
+    finally:
+        server.close()
+
+
+def test_a_sidecar_that_never_answers_times_out_with_its_own_code() -> None:
+    release = threading.Event()
+
+    def behave(conn: socket.socket) -> None:
+        _read_headers(conn)
+        release.wait(10)
+
+    server = RawServer(behave)
+    try:
+        with pytest.raises(ocr.OcrError) as caught:
+            ocr.recognize(PNG, sidecar_url=server.url, timeout=0.3)
+        assert caught.value.code == "timeout" and "did not answer in time" in str(caught.value)
+    finally:
+        release.set()
+        server.close()
+
+
+def test_a_malformed_status_line_is_a_sidecar_error() -> None:
+    def behave(conn: socket.socket) -> None:
+        _read_request(conn)
+        conn.sendall(b"NOT HTTP AT ALL\r\n\r\n")
+
+    server = RawServer(behave)
+    try:
+        with pytest.raises(ocr.OcrError) as caught:
+            ocr.recognize(PNG, sidecar_url=server.url, timeout=10)
+        assert caught.value.code == "sidecar_error"
+    finally:
+        server.close()
+
+
+def test_an_oversized_answer_is_refused(monkeypatch: pytest.MonkeyPatch, sidecar: Sidecar) -> None:
+    monkeypatch.setattr(ocr, "MAX_RESPONSE_BYTES", 10)
+    sidecar.reply = (200, json.dumps(CANNED).encode())
     with pytest.raises(ocr.OcrError) as caught:
-        ocr.recognize(PNG, sidecar_url="http://pwmcp-ocr:8941")
-    assert caught.value.code == "busy_or_rejected"
-    assert "busy or rejected" in str(caught.value) and "retry" in str(caught.value)
-    assert "unreachable" not in str(caught.value)
+        ocr.recognize(PNG, sidecar_url=sidecar.url)
+    assert caught.value.code == "bad_response" and "oversized" in str(caught.value)
 
 
-@pytest.mark.parametrize(
-    "error",
-    [urllib.error.URLError(ConnectionRefusedError(111, "refused")), urllib.error.URLError("name resolution"),
-     ConnectionRefusedError(111, "refused"), TimeoutError("timed out")],
-)
-def test_connection_failures_before_the_upload_stay_unreachable(monkeypatch: pytest.MonkeyPatch, error: BaseException) -> None:
-    monkeypatch.setattr(ocr, "_OPENER", _Opener(error))
+def test_a_close_delimited_answer_is_read_up_to_the_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    def behave(conn: socket.socket) -> None:
+        _read_request(conn)
+        conn.sendall(b"HTTP/1.0 200 OK\r\n\r\n" + json.dumps(CANNED).encode())  # no Content-Length
+
+    server = RawServer(behave)
+    try:
+        assert ocr.recognize(PNG, sidecar_url=server.url, timeout=10).engine == "tesseract"
+    finally:
+        server.close()
+    monkeypatch.setattr(ocr, "MAX_RESPONSE_BYTES", 10)
+    server = RawServer(behave)
+    try:
+        with pytest.raises(ocr.OcrError) as caught:
+            ocr.recognize(PNG, sidecar_url=server.url, timeout=10)
+        assert caught.value.code == "bad_response" and "oversized" in str(caught.value)
+    finally:
+        server.close()
+
+
+def test_a_path_prefix_in_the_sidecar_url_is_kept(sidecar: Sidecar) -> None:
+    ocr.recognize(PNG, sidecar_url=sidecar.url + "/ocr/")
+    assert sidecar.requests[0]["path"] == "/ocr/v1/ocr"
+
+
+def test_dns_failure_and_refusal_stay_unreachable() -> None:
     with pytest.raises(ocr.OcrError) as caught:
-        ocr.recognize(PNG, sidecar_url="http://pwmcp-ocr:8941/")
-    assert caught.value.code == "unreachable" and "http://pwmcp-ocr:8941 is unreachable" in str(caught.value)
+        ocr.recognize(PNG, sidecar_url="http://no-such-host.invalid:9", timeout=5)
+    assert caught.value.code == "unreachable" and "connect phase" in str(caught.value)
+
+
+def test_a_slow_upload_that_times_out_is_a_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    release = threading.Event()
+
+    def behave(conn: socket.socket) -> None:
+        release.wait(10)  # never reads: the client's send buffer fills
+
+    server = RawServer(behave)
+    try:
+        with pytest.raises(ocr.OcrError) as caught:
+            ocr.recognize(b"\x89PNG\r\n\x1a\n" + b"x" * 60_000_000, sidecar_url=server.url, timeout=0.5)
+        assert caught.value.code == "timeout" and "upload phase" in str(caught.value)
+    finally:
+        release.set()
+        server.close()
+
+
+def test_https_urls_use_the_tls_connection_class(monkeypatch: pytest.MonkeyPatch) -> None:
+    used = []
+
+    class Fake:
+        def __init__(self, host: str, port: int, timeout: float) -> None:
+            self.host, self.port = host, port
+
+        def connect(self) -> None:
+            used.append((self.host, self.port))
+            raise ConnectionRefusedError(111, "refused")
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(http.client, "HTTPSConnection", Fake)
+    with pytest.raises(ocr.OcrError) as caught:
+        ocr.recognize(PNG, sidecar_url="https://sidecar.example:8443")
+    assert used == [("sidecar.example", 8443)] and caught.value.code == "unreachable"
 
 
 # ------------------------------------------------------------------ CLI (--image)
@@ -389,7 +601,7 @@ def test_cli_format_json_works_without_the_global_flag(work: Path, sidecar: Side
 
 def test_cli_tsv(work: Path, sidecar: Sidecar, capsys: pytest.CaptureFixture[str]) -> None:
     assert run("ocr", "--image", "screen.png", "--sidecar-url", sidecar.url, "--format", "tsv") == 0
-    assert capsys.readouterr().out.splitlines()[1] == "0\t8\t8\t60\t16\t95\tDebian"
+    assert capsys.readouterr().out.splitlines()[1] == "0\t8\t8\t60\t16\t95\t0\tDebian"
 
 
 def test_cli_json_and_tsv_contradict(work: Path, sidecar: Sidecar, capsys: pytest.CaptureFixture[str]) -> None:
@@ -446,14 +658,43 @@ def test_cli_url_comes_from_the_contract(work: Path, sidecar: Sidecar, capsys: p
     assert "Debian" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("contract_file", ["contract.json", "absent.json"])
-def test_cli_without_any_sidecar_url_exits_2_and_names_ocr_enabled(
-    work: Path, contract_file: str, capsys: pytest.CaptureFixture[str]
+def test_cli_a_server_that_does_not_advertise_ocr_exits_2_and_names_ocr_enabled(
+    work: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # old/disabled server (contract has no ocr block) and an unreachable contract both land here
-    assert run("ocr", "--image", "screen.png", "--contract", contract_file) == 2
+    assert run("ocr", "--image", "screen.png", "--contract", "contract.json") == 2
     err = capsys.readouterr().err
-    assert "ocr.enabled" in err and "Traceback" not in err
+    assert "ocr.enabled" in err and "Traceback" not in err and "cannot reach" not in err
+
+
+def test_cli_an_unreachable_server_is_reported_as_such_not_as_ocr_not_enabled(
+    work: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert run("ocr", "--image", "screen.png", "--contract", "absent.json") == 1
+    err = capsys.readouterr().err
+    assert "cannot reach the pwmcp server" in err and "absent.json" in err  # the underlying problem is shown
+    assert "--sidecar-url" in err and "ocr.enabled" not in err.split("Hint")[0]
+
+
+def test_cli_low_confidence_words_are_included_flagged_and_warned_about(
+    work: Path, sidecar: Sidecar, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sidecar.reply = (200, json.dumps({
+        **CANNED, "text": "Continue? [y/N]", "low_conf_words": 1, "min_conf_applied": 50.0,
+        "lines": [{"text": "Continue? [y/N]", "conf": 53.0, "conf_mean": 53.0, "conf_min": 10.0,
+                   "low_conf_words": 1, "box": [0, 0, 130, 16]}],
+        "words": [{"text": "Continue?", "conf": 96.0, "box": [0, 0, 60, 16], "line": 0, "low_conf": False},
+                  {"text": "[y/N]", "conf": 10.0, "box": [70, 0, 60, 16], "line": 0, "low_conf": True}],
+    }).encode())
+    args = ("ocr", "--image", "screen.png", "--sidecar-url", sidecar.url, "--min-conf", "50")
+    assert run(*args) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "Continue? [y/N]\n"  # complete: the doubtful token is still there
+    assert "1 word(s) are below --min-conf 50" in captured.err
+    assert run(*args, "--format", "tsv") == 0
+    assert capsys.readouterr().out.splitlines()[2].split("\t")[-2:] == ["1", "[y/N]"]
+    assert run(*args, "--json") == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["low_conf_words"] == 1 and out["words"][1]["low_conf"] is True
 
 
 def test_cli_usage_errors(work: Path, sidecar: Sidecar, capsys: pytest.CaptureFixture[str]) -> None:

@@ -62,8 +62,8 @@ services:
 {% if pwmcp.ocr is defined and pwmcp.ocr.enabled %}
       # PHASE-1 OCR sidecar (opt-in, OFF by default): published in the gateway /contract as
       # ocr.url / ocr.engines. Rendered only when enabled so a default render is unchanged.
-      PWMCP_OCR_URL: "http://{{ pwmcp.ocr.name }}:{{ pwmcp.ocr.port }}"
-      PWMCP_OCR_ENGINES: "{{ pwmcp.ocr.engines }}"
+      PWMCP_OCR_URL: {{ ("http://%s:%s" % (pwmcp.ocr.name, pwmcp.ocr.port)) | tojson | replace("$", "$$") }}
+      PWMCP_OCR_ENGINES: {{ pwmcp.ocr.engines | tojson | replace("$", "$$") }}
 {% endif %}      PWMCP_RUN_SERVER_PORT: "{{ pwmcp.unified.ws_port }}"
       PWMCP_RUN_SERVER_UPSTREAM_PORT: "{{ pwmcp.run_server.upstream_port }}"
       # Validate the external Host before proxying, then use loopback Host and
@@ -159,10 +159,10 @@ services:
   # GOVERNANCE: cgroup_parent / blkio come from the ciu governance overlay (S15.3: ciu
   # never overwrites a key the author set, so this service emits NO cgroup_parent). The
   # mem/cpu keys below only NARROW the stack ceiling and are set as a coherent pair.
-  {{ pwmcp.ocr.name }}:
+  {{ pwmcp.ocr.name | tojson }}:
     image: {{ pwmcp.ocr.image.registry }}/{{ pwmcp.ocr.image.namespace }}/{{ pwmcp.ocr.image.name }}:{{ pwmcp.ocr.image.tag }}
     pull_policy: missing
-    container_name: {{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ pwmcp.ocr.name }}
+    container_name: {{ ("%s-%s-%s" % (deploy.project_name, deploy.environment_tag, pwmcp.ocr.name)) | tojson }}
     user: "{{ pwmcp.ocr.run_as_uid }}:{{ pwmcp.ocr.run_as_gid }}"
     cap_drop:
       - ALL
@@ -194,7 +194,7 @@ services:
     networks:
       default:
         aliases:
-          - {{ pwmcp.ocr.name }}
+          - {{ pwmcp.ocr.name | tojson }}
 {% endif +%}
 networks:
   # default = the project network. As the image SOURCE's own standalone build-test

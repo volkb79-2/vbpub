@@ -332,12 +332,21 @@ def _ocr(args: argparse.Namespace, runtime: CliRuntime) -> None:
 
     # Resolve the sidecar BEFORE any capture, so a missing configuration fails fast.
     contract = None
-    if not (args.sidecar_url or os.environ.get(ocr_module.OCR_URL_ENV)):
-        contract, _problem = try_load_contract(args.contract)
+    problem = ""
+    discovered = not (args.sidecar_url or os.environ.get(ocr_module.OCR_URL_ENV))
+    if discovered:
+        contract, problem = try_load_contract(args.contract)
+        if contract is None:
+            # Distinct from "the server does not advertise OCR": here we do not know either way.
+            raise CliFailure(
+                f"cannot reach the pwmcp server to learn the OCR sidecar URL: {problem}",
+                hint=f"start the pwmcp stack, fix --contract, or skip discovery with --sidecar-url / {ocr_module.OCR_URL_ENV}",
+            )
     try:
         sidecar_url = ocr_module.resolve_sidecar_url(args.sidecar_url, contract=contract)
     except ocr_module.OcrError as exc:
-        raise CliFailure(str(exc), exit_code=2, hint="set pwmcp.ocr.enabled = true in the stack config") from exc
+        hint = "set pwmcp.ocr.enabled = true in the stack config" if isinstance(exc, ocr_module.OcrNotConfigured) else None
+        raise CliFailure(str(exc), exit_code=2, hint=hint) from exc
 
     image = _capture_element(args, runtime) if args.url else _ocr_image_bytes(args)
     try:
@@ -355,6 +364,11 @@ def _ocr(args: argparse.Namespace, runtime: CliRuntime) -> None:
     except ocr_module.OcrError as exc:
         raise CliFailure(f"pwmcp ocr failed: {exc}", hint="GET <sidecar>/v1/engines lists what the sidecar offers") from exc
 
+    if result.low_conf_words:
+        runtime.output.warn(
+            f"{result.low_conf_words} word(s) are below --min-conf {result.min_conf_applied:g} and flagged "
+            "low_conf; they are still included in the result"
+        )
     payload: object
     if fmt == "json":
         payload = result.to_dict()
@@ -578,7 +592,7 @@ def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
             ),
             OptionSpec(
                 ("--min-conf",),
-                "drop words whose confidence (0-100) is below this",
+                "flag words whose confidence (0-100) is below N as low_conf; they are still returned, never removed",
                 group="RECOGNITION",
                 metavar="CONF",
                 parser_kwargs={"type": float, "default": 0.0},
@@ -592,7 +606,7 @@ def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
             ),
             OptionSpec(
                 ("--format",),
-                "text (recognised text only), json (full result) or tsv (one row per word); --json implies json",
+                "text (the complete recognised text only), json (full result) or tsv (one row per word, with a low_conf column); --json implies json",
                 group="OUTPUT",
                 metavar="FORMAT",
                 parser_kwargs={"choices": ("text", "json", "tsv"), "default": "text"},

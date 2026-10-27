@@ -2,16 +2,17 @@
 
 ``recognize`` posts image bytes to the sidecar and returns the text, per-line and per-word
 confidence (0-100) and boxes (pixels of the ORIGINAL image). It returns TEXT AND CONFIDENCE,
-never a decision: callers decide what a screen means. Standard library only (urllib).
+never a decision: callers decide what a screen means. The result is COMPLETE: every recognised
+word is present whatever its confidence; ``min_conf`` only FLAGS words below it (``low_conf``)
+unless the caller explicitly asks for ``drop_low_conf``. Standard library only (http.client).
 """
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
-import urllib.error
 import urllib.parse
-import urllib.request
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -19,6 +20,7 @@ from .session import PwmcpError
 
 DEFAULT_ENGINE = "tesseract"
 OCR_URL_ENV = "PWMCP_OCR_URL"
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 # Named in the message so an operator who sees it knows which switch to flip.
 NOT_CONFIGURED = (
     "no OCR sidecar URL is known: enable `ocr.enabled` (pwmcp.ocr.enabled in the ciu stack) so the "
@@ -46,13 +48,17 @@ class OcrWord:
     conf: float
     box: tuple[int, int, int, int]  # x, y, w, h
     line: int
+    low_conf: bool = False  # conf is below the requested min_conf (the word is still returned)
 
 
 @dataclass(frozen=True)
 class OcrLine:
     text: str
-    conf: float
+    conf: float  # alias of conf_mean (kept for compatibility)
     box: tuple[int, int, int, int]
+    conf_mean: float = 0.0
+    conf_min: float = 0.0  # the weakest word on the line: a high mean can hide a doubtful token
+    low_conf_words: int = 0
 
 
 @dataclass(frozen=True)
@@ -67,6 +73,10 @@ class OcrResult:
     text: str
     lines: tuple[OcrLine, ...]
     words: tuple[OcrWord, ...]
+    low_conf_words: int = 0  # words below min_conf over the whole frame
+    min_conf_applied: float = 0.0
+    drop_low_conf: bool = False
+    dropped_words: int = 0
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "OcrResult":
@@ -80,13 +90,16 @@ class OcrResult:
                 height=int(value["height"]),
                 elapsed_ms=int(value["elapsed_ms"]),
                 text=str(value["text"]),
-                lines=tuple(
-                    OcrLine(str(row["text"]), float(row["conf"]), _box(row["box"])) for row in value["lines"]
-                ),
+                lines=tuple(_line(row) for row in value["lines"]),
                 words=tuple(
-                    OcrWord(str(row["text"]), float(row["conf"]), _box(row["box"]), int(row["line"]))
+                    OcrWord(str(row["text"]), float(row["conf"]), _box(row["box"]), int(row["line"]),
+                            bool(row.get("low_conf", False)))
                     for row in value["words"]
                 ),
+                low_conf_words=int(value.get("low_conf_words", 0)),
+                min_conf_applied=float(value.get("min_conf_applied", 0.0)),
+                drop_low_conf=bool(value.get("drop_low_conf", False)),
+                dropped_words=int(value.get("dropped_words", 0)),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise OcrError(f"the OCR sidecar returned an unexpected response ({type(exc).__name__}: {exc})",
@@ -101,18 +114,28 @@ class OcrResult:
         return data
 
     def to_tsv(self) -> str:
-        """Tab-separated words: ``line x y w h conf text`` with a header row."""
+        """Tab-separated words: ``line x y w h conf low_conf text`` (low_conf 1/0) with a header row."""
 
-        rows = ["line\tx\ty\tw\th\tconf\ttext"]
+        rows = ["line\tx\ty\tw\th\tconf\tlow_conf\ttext"]
         for word in self.words:
             text = " ".join(word.text.split())
-            rows.append("\t".join(map(str, (word.line, *word.box, f"{word.conf:g}", text))))
+            rows.append("\t".join(map(str, (word.line, *word.box, f"{word.conf:g}", int(word.low_conf), text))))
         return "\n".join(rows)
 
 
 def _box(value: Any) -> tuple[int, int, int, int]:
     x, y, w, h = (int(v) for v in value)
     return x, y, w, h
+
+
+def _line(row: dict[str, Any]) -> OcrLine:
+    conf = float(row["conf"])
+    return OcrLine(
+        str(row["text"]), conf, _box(row["box"]),
+        conf_mean=float(row.get("conf_mean", conf)),
+        conf_min=float(row.get("conf_min", conf)),
+        low_conf_words=int(row.get("low_conf_words", 0)),
+    )
 
 
 def resolve_sidecar_url(explicit: str | None = None, *, contract: object | None = None) -> str:
@@ -159,15 +182,70 @@ def _content_type(image: bytes) -> str:
     return "application/octet-stream"
 
 
-# Internal sidecar traffic must never be routed through an HTTP(S)_PROXY from the environment.
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """A 3xx is an error: the image must never be re-POSTed to another host."""
-
-    def redirect_request(self, *_args: object, **_kwargs: object) -> None:  # type: ignore[override]
-        return None
+# A reset or broken pipe WHILE the image is being sent means the sidecar hung up early: busy, or it
+# rejected the request (size limit, one recognition at a time). It says nothing after a full upload.
+_RESET = (ConnectionResetError, BrokenPipeError)
 
 
-_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+def _post(base: str, query: str, body: bytes, content_type: str, timeout: float) -> tuple[int, bytes]:
+    """POST ``body`` and return (status, response bytes), classifying failures by PHASE.
+
+    http.client is used directly (not urllib): it never consults proxy environment variables for
+    this internal service, never follows a redirect (a 3xx is returned as-is and treated as an
+    error, so the image cannot be re-POSTed to another host), and shows whether a failure happened
+    while connecting, while uploading or while waiting for the answer.
+    """
+
+    parts = urllib.parse.urlsplit(base)
+    factory = http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
+    conn = factory(parts.hostname, parts.port, timeout=timeout)  # type: ignore[arg-type]
+    shown = _redact(base)
+    phase = "connect"
+    try:
+        conn.connect()
+        phase = "upload"
+        conn.putrequest("POST", f"{parts.path.rstrip('/')}/v1/ocr?{query}", skip_host=True, skip_accept_encoding=True)
+        conn.putheader("Host", parts.netloc.rpartition("@")[2])
+        conn.putheader("Content-Type", content_type)
+        conn.putheader("Content-Length", str(len(body)))
+        conn.putheader("User-Agent", "pwmcp-client-ocr/0.1")
+        conn.endheaders(body)
+        phase = "response"
+        response = conn.getresponse()
+        if response.length is not None and response.length > MAX_RESPONSE_BYTES:
+            raise OcrError("the OCR sidecar returned an oversized response", code="bad_response")
+        # A declared length is read in full (a cut-short answer raises IncompleteRead on every Python);
+        # a close-delimited body is read up to the cap.
+        data = response.read(MAX_RESPONSE_BYTES + 1) if response.length is None else response.read()
+        if len(data) > MAX_RESPONSE_BYTES:
+            raise OcrError("the OCR sidecar returned an oversized response", code="bad_response")
+        status = response.status
+    except TimeoutError as exc:
+        raise OcrError(f"the OCR sidecar at {shown} did not answer in time ({phase} phase, {timeout:g} s)",
+                       code="timeout") from exc
+    except _RESET as exc:
+        if phase == "upload":
+            raise OcrError(
+                f"the OCR sidecar at {shown} closed the connection while the image was being sent: it is "
+                "busy or rejected the request (limits: body size, one recognition at a time); retry shortly",
+                code="busy_or_rejected",
+            ) from exc
+        raise _sidecar_error(shown, phase, exc) from exc
+    except http.client.HTTPException as exc:  # RemoteDisconnected, IncompleteRead, malformed reply
+        raise _sidecar_error(shown, phase, exc) from exc
+    except OSError as exc:
+        raise OcrError(f"the OCR sidecar at {shown} is unreachable ({phase} phase): {exc}", code="unreachable") from exc
+    finally:
+        conn.close()
+    return status, data
+
+
+def _sidecar_error(shown: str, phase: str, exc: BaseException) -> OcrError:
+    return OcrError(
+        f"the OCR sidecar at {shown} broke the connection during the {phase} phase ({type(exc).__name__}); "
+        "the image was received or being answered, so it may have crashed or restarted: check its logs",
+        code="sidecar_error",
+    )
 
 
 def recognize(
@@ -180,14 +258,16 @@ def recognize(
     scale: int = 1,
     whitelist: str | None = None,
     min_conf: float = 0.0,
+    drop_low_conf: bool = False,
     timeout: float = 30.0,
 ) -> OcrResult:
     """Recognise text in a PNG/JPEG via the OCR sidecar.
 
     ``sidecar_url`` defaults to ``$PWMCP_OCR_URL``; resolve it from the contract with
-    :func:`resolve_sidecar_url` when that is not set. Raises :class:`OcrNotConfigured` when
-    no URL is known and :class:`OcrError` (with the sidecar's ``code`` and HTTP ``status``)
-    on any failure; it never returns a partial result.
+    :func:`resolve_sidecar_url` when that is not set. The result is complete: words below
+    ``min_conf`` are flagged ``low_conf`` (and counted), not removed, unless ``drop_low_conf`` is
+    set. Raises :class:`OcrNotConfigured` when no URL is known and :class:`OcrError` (with the
+    sidecar's ``code`` and HTTP ``status``) on any failure; it never returns a partial result.
     """
 
     if not image_bytes:
@@ -202,25 +282,13 @@ def recognize(
     }
     if whitelist is not None:
         query["whitelist"] = whitelist
-    request = urllib.request.Request(
-        f"{base}/v1/ocr?{urllib.parse.urlencode(query)}",
-        data=image_bytes,
-        method="POST",
-        headers={"Content-Type": _content_type(image_bytes), "User-Agent": "pwmcp-client-ocr/0.1"},
-    )
+    if drop_low_conf:
+        query["drop_low_conf"] = "1"
+    status, data = _post(base, urllib.parse.urlencode(query), image_bytes, _content_type(image_bytes), timeout)
+    if status != 200:
+        raise _http_error(status, data)
     try:
-        with _OPENER.open(request, timeout=timeout) as response:
-            payload = json.load(response)
-    except urllib.error.HTTPError as exc:
-        raise _http_error(exc) from exc
-    except urllib.error.URLError as exc:
-        if isinstance(exc.reason, _RESET):
-            raise _rejected(base) from exc
-        raise OcrError(f"the OCR sidecar at {_redact(base)} is unreachable: {exc.reason}", code="unreachable") from exc
-    except _RESET as exc:
-        raise _rejected(base) from exc
-    except OSError as exc:
-        raise OcrError(f"the OCR sidecar at {_redact(base)} is unreachable: {exc}", code="unreachable") from exc
+        payload = json.loads(data.decode("utf-8"))
     except ValueError as exc:
         raise OcrError("the OCR sidecar returned a non-JSON response", code="bad_response") from exc
     if not isinstance(payload, dict):
@@ -228,31 +296,18 @@ def recognize(
     return OcrResult.from_dict(payload)
 
 
-# A reset or broken pipe AFTER connecting means the sidecar hung up while the image was being
-# sent (busy, or it rejected the request early); that is not "unreachable".
-_RESET = (ConnectionResetError, BrokenPipeError)
-
-
-def _rejected(base: str) -> OcrError:
-    return OcrError(
-        f"the OCR sidecar at {_redact(base)} closed the connection while the image was being sent: it is "
-        "busy or rejected the request (limits: body size, one recognition at a time); retry shortly",
-        code="busy_or_rejected",
-    )
-
-
-def _http_error(exc: urllib.error.HTTPError) -> OcrError:
-    if 300 <= exc.code < 400:
+def _http_error(status: int, data: bytes) -> OcrError:
+    if 300 <= status < 400:
         return OcrError(
-            f"the OCR sidecar answered with a redirect ({exc.code}); redirects are never followed",
-            code="redirect", status=exc.code,
+            f"the OCR sidecar answered with a redirect ({status}); redirects are never followed",
+            code="redirect", status=status,
         )
-    code, message = "http_error", f"HTTP {exc.code}"
+    code, message = "http_error", f"HTTP {status}"
     try:
-        body = json.loads(exc.read(65536).decode("utf-8", "replace"))
+        body = json.loads(data.decode("utf-8", "replace"))
         if isinstance(body, dict):
             code = str(body.get("code") or code)
             message = str(body.get("error") or message)
     except ValueError:
         pass
-    return OcrError(f"the OCR sidecar refused the request ({exc.code} {code}): {message}", code=code, status=exc.code)
+    return OcrError(f"the OCR sidecar refused the request ({status} {code}): {message}", code=code, status=status)

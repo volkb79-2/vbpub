@@ -89,7 +89,9 @@ pwmcp ocr "$URL" --selector canvas --scale 2       # open, capture the element, 
 
 `pwmcp ocr` exits 2 with a message naming `ocr.enabled` when no sidecar is configured; ask
 the environment owner to enable it rather than guessing a URL (`--sidecar-url` /
-`$PWMCP_OCR_URL` override discovery). The result is TEXT AND CONFIDENCE, not a decision:
+`$PWMCP_OCR_URL` override discovery). The text is always COMPLETE: `--min-conf N` only flags words
+below N as `low_conf` (per-line `conf_min`, top-level `low_conf_words`; a warning is printed), it never
+deletes them, so check the flags before trusting a short token such as `[y/N]`. The result is TEXT AND CONFIDENCE, not a decision:
 low-confidence or empty output means "unknown", so re-capture (try `--scale 2` or `3`, or
 `--psm 11` for sparse text) instead of acting on a guess. It does not watch a screen and
 does not send keys; re-run it yourself after each action you take.

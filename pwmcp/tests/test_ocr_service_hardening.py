@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 import pytest
-from test_ocr_service import SERVICE_PATH, Fake, Image, fake, needs_pil, png, running, start, svc  # noqa: F401
+from test_ocr_service import SERVICE_PATH, Fake, Image, Running, fake, needs_pil, png, running, start, svc  # noqa: F401
 
 # ------------------------------------------------------------------ TSV
 
@@ -97,14 +97,12 @@ def test_busy_slot_is_released_on_every_error_path(running) -> None:
 
 @needs_pil
 def test_429_reply_is_readable_by_a_client_still_sending_a_large_body(fake) -> None:
-    fake.mode("sleep", 2.0)
+    fake.mode("block")
     both = start(fake)
     thread = threading.Thread(target=lambda: both.request("POST", "/v1/ocr", png()))
     try:
         thread.start()
-        deadline = time.monotonic() + 5
-        while not (fake.dir / "started").exists() and time.monotonic() < deadline:
-            time.sleep(0.02)
+        fake.wait_started()
         payload = b"x" * 400_000
         raw = b""
         with socket.create_connection(("127.0.0.1", both.port), timeout=10) as sock:
@@ -114,7 +112,8 @@ def test_429_reply_is_readable_by_a_client_still_sending_a_large_body(fake) -> N
                 raw += chunk
         assert raw.startswith(b"HTTP/1.0 429") and b'"busy"' in raw
     finally:
-        thread.join(timeout=15)
+        fake.release()
+        thread.join(timeout=30)
         both.close()
 
 
@@ -271,3 +270,332 @@ def test_scaled_pixel_count_is_capped_before_resizing(fake) -> None:
     with pytest.raises(svc.ServiceError) as caught:
         svc.prepare_image(png(4000, 2000), svc.Params(scale=2), svc.Config())  # 32 MP > the 24 MP default
     assert caught.value.code == "scaled_image_too_large"
+
+
+# ------------------------------------------------------------------ stdlib-generated errors are JSON
+
+
+def _exchange(port: int, data: bytes) -> bytes:
+    with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
+        sock.sendall(data)
+        sock.shutdown(socket.SHUT_WR)
+        raw = b""
+        while chunk := sock.recv(65536):
+            raw += chunk
+    return raw
+
+
+def _json_of(raw: bytes) -> dict:
+    assert raw.startswith(b"HTTP/1.0 "), raw[:60]
+    head, _, body = raw.partition(b"\r\n\r\n")
+    assert b"application/json" in head and b"<html" not in body.lower()
+    return json.loads(body)
+
+
+def test_a_bad_request_line_gets_json_not_a_traceback_or_html(running, capfd) -> None:
+    raw = _exchange(running.port, b"GARBAGE\r\n\r\n")
+    assert raw.split(b" ", 2)[1] == b"400"
+    assert _json_of(raw) == {"error": "bad request", "code": "bad_request"}
+    assert "Traceback" not in capfd.readouterr().err
+    assert running.request("GET", "/health")[0] == 200  # the service lives on
+
+
+def test_an_overlong_request_line_is_a_json_414(running) -> None:
+    raw = _exchange(running.port, b"GET /" + b"a" * 80_000 + b" HTTP/1.0\r\n\r\n")
+    assert raw.split(b" ", 2)[1] == b"414"
+    assert _json_of(raw)["code"] in ("request_uri_too_long", "uri_too_long")  # the enum was renamed in Python 3.14
+
+
+def test_too_many_headers_is_a_json_431(running) -> None:
+    raw = _exchange(running.port, b"GET /health HTTP/1.0\r\n" + b"X-A: b\r\n" * 150 + b"\r\n")
+    assert raw.split(b" ", 2)[1] == b"431"
+    assert _json_of(raw)["code"] == "request_header_fields_too_large"
+
+
+@pytest.mark.parametrize("method", ["PUT", "DELETE", "PATCH", "OPTIONS"])
+def test_unsupported_methods_get_a_json_501(running, method: str) -> None:
+    raw = _exchange(running.port, method.encode() + b" /v1/ocr HTTP/1.0\r\n\r\n")
+    assert raw.split(b" ", 2)[1] == b"501"
+    assert _json_of(raw) == {"error": "not implemented", "code": "not_implemented"}
+
+
+def test_a_head_request_gets_headers_only(running) -> None:
+    raw = _exchange(running.port, b"HEAD /nope HTTP/1.0\r\n\r\n")
+    # HEAD is not implemented by this service (501), so the stdlib error path answers without a body
+    assert raw.split(b" ", 2)[1] == b"501" and raw.endswith(b"\r\n\r\n")
+
+
+# ------------------------------------------------------------------ drains for every rejection
+
+
+@pytest.mark.parametrize("target", ["/nope", "/health", "/v1/ocr?psm=5", "/v1/ocr?engine=glyphgrid"])
+def test_any_rejection_with_a_body_on_the_wire_is_readable_by_the_sender(running, target: str) -> None:
+    payload = b"x" * 300_000
+    raw = b""
+    with socket.create_connection(("127.0.0.1", running.port), timeout=10) as sock:
+        sock.sendall(b"POST " + target.encode() + b" HTTP/1.0\r\nContent-Length: %d\r\n\r\n" % len(payload))
+        sock.sendall(payload)
+        while chunk := sock.recv(65536):
+            raw += chunk
+    assert raw.split(b" ", 2)[1] in (b"404", b"405", b"400", b"501"), raw[:40]
+    assert _json_of(raw)["code"]
+
+
+# ------------------------------------------------------------------ images
+
+
+@needs_pil
+def test_only_the_png_and_jpeg_plugins_parse_untrusted_bytes(running) -> None:
+    for fmt in ("GIF", "BMP", "TIFF", "WEBP", "ICO"):
+        out = io.BytesIO()
+        try:
+            Image.new("RGB", (8, 8)).save(out, format=fmt)
+        except (OSError, KeyError, ValueError):  # a codec this Pillow build lacks
+            continue
+        status, resp, _ = running.request("POST", "/v1/ocr", out.getvalue())
+        assert (status, resp["code"]) == (415, "unsupported_image"), fmt
+
+
+@needs_pil
+def test_a_multi_picture_jpeg_is_decoded_as_its_first_frame(running) -> None:
+    out = io.BytesIO()
+    first = Image.new("RGB", (64, 32), "white")
+    first.save(out, format="MPO", save_all=True, append_images=[Image.new("RGB", (64, 32), "black")])
+    status, resp, _ = running.request("POST", "/v1/ocr", out.getvalue())
+    assert status == 200, resp
+    assert (resp["width"], resp["height"]) == (64, 32)
+
+
+# ------------------------------------------------------------------ deadlines and connection cap
+
+
+def test_trickled_headers_hit_the_total_header_deadline(fake) -> None:
+    quick = start(fake, header_deadline_s=0.5, socket_timeout_s=5.0)
+    try:
+        started = time.monotonic()
+        raw = b""
+        with socket.create_connection(("127.0.0.1", quick.port), timeout=10) as sock:
+            sock.settimeout(0.1)
+            sock.sendall(b"GET /health HTTP/1.0\r\n")
+            while time.monotonic() - started < 6 and not raw:
+                try:
+                    sock.sendall(b"X-Slow: 1\r\n")  # a header line every ~0.15 s, never idle for a recv timeout
+                except OSError:
+                    break
+                time.sleep(0.15)
+                try:
+                    raw = sock.recv(4096)
+                except TimeoutError:
+                    continue
+        assert raw.startswith(b"HTTP/1.0 408") and b"header_timeout" in raw
+        assert time.monotonic() - started < 4
+        assert quick.request("GET", "/health")[0] == 200
+    finally:
+        quick.close()
+
+
+def test_a_prompt_client_is_not_hit_by_the_header_deadline(fake) -> None:
+    quick = start(fake, header_deadline_s=0.5)
+    try:
+        assert quick.request("GET", "/health")[0] == 200
+        time.sleep(0.8)  # long past the header deadline: the timer must have been cancelled
+        assert quick.request("GET", "/health")[0] == 200
+    finally:
+        quick.close()
+
+
+def test_excess_connections_get_a_json_503_and_slots_come_back(fake) -> None:
+    capped = start(fake, max_connections=2, socket_timeout_s=10.0, header_deadline_s=30.0)
+    idle = []
+    try:
+        for _ in range(2):  # two connections that say nothing keep both handler slots busy
+            idle.append(socket.create_connection(("127.0.0.1", capped.port), timeout=10))
+        deadline = time.monotonic() + 5
+        while True:  # wait until both are being handled
+            status, body, headers = capped.request("GET", "/health")
+            if status == 503 or time.monotonic() > deadline:
+                break
+            time.sleep(0.02)
+        assert (status, body["code"]) == (503, "overloaded") and headers.get("Retry-After") == "1"
+        for sock in idle:
+            sock.close()
+        deadline = time.monotonic() + 5
+        while capped.request("GET", "/health")[0] != 200:
+            assert time.monotonic() < deadline, "handler slots were never released"
+            time.sleep(0.02)
+    finally:
+        for sock in idle:
+            sock.close()
+        capped.close()
+
+
+# ------------------------------------------------------------------ engine/service edge paths
+
+
+def test_body_deadline_already_expired_is_a_408(fake) -> None:
+    instant = start(fake, body_deadline_s=0.0)
+    try:
+        status, body, _ = instant.request("POST", "/v1/ocr", b"x" * 10)
+        assert (status, body["code"]) == (408, "request_timeout")
+    finally:
+        instant.close()
+
+
+def test_an_oserror_inside_the_engine_drops_the_connection_without_a_reply(fake) -> None:
+    class Resetting(svc.UnavailableEngine):
+        def available(self) -> bool:
+            return True
+
+        def recognize(self, png_bytes, params, timeout_s):
+            raise ConnectionResetError("peer went away")
+
+    server = Running(svc.Config(host="127.0.0.1", port=0), {"tesseract": Resetting("tesseract")})
+    try:
+        if Image is not None:
+            with socket.create_connection(("127.0.0.1", server.port), timeout=10) as sock:
+                body = png()
+                sock.sendall(b"POST /v1/ocr HTTP/1.0\r\nContent-Length: %d\r\n\r\n" % len(body) + body)
+                assert sock.recv(4096) == b""  # closed, nothing written
+        # (without Pillow the request is rejected earlier; the branch itself is covered where Pillow exists)
+    finally:
+        server.close()
+
+
+def test_version_and_languages_survive_an_engine_that_cannot_start(fake) -> None:
+    fake.binary.write_text("#!/nonexistent/interpreter\n", encoding="utf-8")
+    engine = svc.TesseractEngine(str(fake.binary))
+    assert engine.available()
+    assert engine.version() == "unknown"
+    assert engine.languages() == []
+
+
+def test_languages_are_read_once_and_cached(fake) -> None:
+    engine = svc.TesseractEngine(str(fake.binary))
+    assert engine.languages() == ["eng", "osd"]
+    fake.binary.write_text("#!/nonexistent/interpreter\n", encoding="utf-8")
+    assert engine.languages() == ["eng", "osd"]  # cached: not re-run
+
+
+def test_module_entrypoint_runs_main_and_stops_on_sigterm(monkeypatch) -> None:
+    import runpy
+
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    number = probe.getsockname()[1]
+    probe.close()
+    monkeypatch.setenv("OCR_PORT", str(number))
+    monkeypatch.setenv("OCR_BIND", "127.0.0.1")
+    threading.Timer(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
+    with pytest.raises(SystemExit) as caught:
+        runpy.run_path(str(SERVICE_PATH), run_name="__main__")
+    assert caught.value.code == 0
+
+
+def test_config_header_deadline_and_connection_cap_from_env() -> None:
+    config = svc.Config.from_env({"OCR_HEADER_DEADLINE_S": "3", "OCR_MAX_CONNECTIONS": "5"})
+    assert (config.header_deadline_s, config.max_connections) == (3.0, 5)
+    assert (svc.Config().header_deadline_s, svc.Config().max_connections) == (10.0, 16)
+
+
+# ------------------------------------------------------------------ PWMCP_REQUIRE_TEST_DEPS (fail, never skip, in the gate)
+
+
+def _pytest_without_pillow(tmp_path: Path, require: bool) -> subprocess.CompletedProcess:
+    hidden = tmp_path / "hide" / "PIL"
+    hidden.mkdir(parents=True, exist_ok=True)
+    (hidden / "__init__.py").write_text("raise ImportError('Pillow hidden for this test')\n", encoding="utf-8")
+    pwmcp = Path(__file__).resolve().parents[1]
+    env = {k: v for k, v in os.environ.items() if k != "PWMCP_REQUIRE_TEST_DEPS"}
+    env["PYTHONPATH"] = os.pathsep.join([str(tmp_path / "hide"), str(pwmcp / "client" / "src")])
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    if require:
+        env["PWMCP_REQUIRE_TEST_DEPS"] = "1"
+    return subprocess.run(
+        [sys.executable, "-m", "pytest", "tests/test_ocr_service.py", "-q", "-p", "no:cacheprovider",
+         "--cli-case-partial", "-k", "test_rgba_or_palette or flattened"],
+        cwd=pwmcp, env=env, capture_output=True, text=True, check=False, timeout=120,
+    )
+
+
+def test_a_missing_pillow_skips_normally_but_fails_when_the_gate_requires_it(tmp_path: Path) -> None:
+    relaxed = _pytest_without_pillow(tmp_path, require=False)
+    assert relaxed.returncode == 0 and "skipped" in relaxed.stdout, relaxed.stdout
+    required = _pytest_without_pillow(tmp_path, require=True)
+    assert required.returncode != 0, required.stdout
+    assert "PWMCP_REQUIRE_TEST_DEPS=1 but PIL (Pillow) is not importable" in required.stdout
+
+
+def test_the_gate_lanes_set_the_switch_and_judge_the_sidecar() -> None:
+    import tomllib
+
+    lanes = tomllib.loads((Path(__file__).resolve().parents[1] / "assay.toml").read_text(encoding="utf-8"))["lanes"]
+    for name in ("r1", "r2"):
+        assert lanes[name]["env"]["PWMCP_REQUIRE_TEST_DEPS"] == "1"
+        assert "containers/ocr/ocr_service.py" in lanes[name]["judge"]["targets"]
+        assert "client/src/pwmcp_client/ocr.py" in lanes[name]["judge"]["targets"]
+
+
+def test_the_drain_gives_up_after_its_byte_budget(fake) -> None:
+    small = start(fake, max_bytes=1000)
+    try:
+        raw = b""
+        payload = b"x" * 1_500_000  # more than the 1 MiB drain budget
+        with socket.create_connection(("127.0.0.1", small.port), timeout=10) as sock:
+            sock.sendall(b"POST /v1/ocr HTTP/1.0\r\nContent-Length: %d\r\n\r\n" % len(payload))
+            try:
+                sock.sendall(payload)
+            except OSError:
+                pass  # the service stopped reading after its budget: expected
+            try:
+                while chunk := sock.recv(65536):
+                    raw += chunk
+            except OSError:
+                pass
+        assert raw.startswith(b"HTTP/1.0 413")
+    finally:
+        small.close()
+
+
+def test_no_test_uses_a_bare_importorskip_so_no_skip_can_turn_the_gate_green() -> None:
+    root = Path(__file__).resolve().parents[1]
+    offenders = [
+        str(path.relative_to(root))
+        for tree in ("tests", "client/tests")
+        for path in sorted((root / tree).glob("*.py"))
+        if path.name not in {"test_ocr_service_hardening.py", "_testdeps.py", "conftest.py"}
+        and "pytest.importorskip(" in path.read_text(encoding="utf-8")
+    ]
+    assert offenders == [], f"use optional_module (skips locally, FAILS under PWMCP_REQUIRE_TEST_DEPS=1): {offenders}"
+
+
+def _pytest_with_hidden(tmp_path: Path, hidden: str, node: str, require: bool) -> subprocess.CompletedProcess:
+    stub = tmp_path / "hide" / hidden
+    stub.mkdir(parents=True, exist_ok=True)
+    (stub / "__init__.py").write_text(f"raise ImportError('{hidden} hidden for this test')\n", encoding="utf-8")
+    pwmcp = Path(__file__).resolve().parents[1]
+    env = {k: v for k, v in os.environ.items() if k != "PWMCP_REQUIRE_TEST_DEPS"}
+    env["PYTHONPATH"] = os.pathsep.join([str(tmp_path / "hide"), str(pwmcp / "client" / "src")])
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    if require:
+        env["PWMCP_REQUIRE_TEST_DEPS"] = "1"
+    return subprocess.run(
+        [sys.executable, "-m", "pytest", node, "-q", "-p", "no:cacheprovider", "--cli-case-partial"],
+        cwd=pwmcp, env=env, capture_output=True, text=True, check=False, timeout=180,
+    )
+
+
+@pytest.mark.parametrize(
+    ("hidden", "node"),
+    [
+        ("jinja2", "tests/test_ocr_stack.py"),  # module-level optional_module
+        ("yaml", "client/tests/test_user_agent.py::test_compose_line_renders_valid_yaml_and_escapes_dollar_for_compose"),
+        ("websockets", "tests/test_user_agent_server.py::test_ua_override_sends_metadata_for_existing_and_newly_attached_targets"),
+    ],
+)
+def test_every_optional_dependency_skips_locally_and_fails_in_the_gate(tmp_path: Path, hidden: str, node: str) -> None:
+    relaxed = _pytest_with_hidden(tmp_path, hidden, node, require=False)
+    # (a module-level skip collects no tests: pytest exits 5, which is still "skipped, not failed")
+    assert relaxed.returncode in (0, 5) and "skipped" in relaxed.stdout, relaxed.stdout[-600:]
+    required = _pytest_with_hidden(tmp_path, hidden, node, require=True)
+    assert required.returncode != 0, required.stdout[-600:]
+    assert f"PWMCP_REQUIRE_TEST_DEPS=1 but {hidden} is not importable" in required.stdout, required.stdout[-600:]

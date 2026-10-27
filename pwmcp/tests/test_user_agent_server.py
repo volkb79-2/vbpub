@@ -15,6 +15,7 @@ import urllib.request
 from pathlib import Path
 
 import pytest
+from _testdeps import optional_module
 
 PWMCP_ROOT = Path(__file__).resolve().parents[1]
 CONTAINER = PWMCP_ROOT / "containers" / "pwmcp"
@@ -253,7 +254,7 @@ def test_shipped_shared_config_has_no_ua_override_program_but_the_fragment_does(
 
 
 def test_ua_override_sends_metadata_for_existing_and_newly_attached_targets() -> None:
-    websockets = pytest.importorskip("websockets")
+    websockets = optional_module("websockets", "the websockets package is needed to drive the ua-override CDP client")
     if NODE is None:
         pytest.skip("Node.js is needed")
     import asyncio
