@@ -105,10 +105,15 @@ changed bands only (they are local), re-extracts only changed cells (and unchang
 and decodes the whole screen. It falls back to the full pipeline when: first frame / other size, more than `max_dirty` (0.25) of the text rows changed,
 pixels outside the grid rows changed, the frame is an integer upscale or `resampled`, the cached tiling no longer compresses the screen (>= 12 non-blank
 cells and description length <= 0.5, the same gates as a fresh search), the new decode is not `ok`, or a changed ink cell is unknown to the atlas (stale
-phase / foreign content). Contract: identical rows/conf/flags/unknown_cells/aliases/font/probe to a fresh `read_image` on all 242 frames (98 incremental, 144
-full fallbacks) and on synthetic edits; `grid_report` is the one of the frame that established the geometry. Geometry is an assumption that is
-re-verified by those gates, not a proof that a fresh search would pick the same tiling; every cell is still an exact lookup, so a stale tiling can only
-produce UNKNOWN or the full path, never a wrong exact cell.
+phase / foreign content). Contract: the whole result dict equals a fresh `read_image` of the same frame, except `session` and `grid_report` (the latter is the
+length/contrast/candidates report of the search that established the cached geometry; an incremental frame runs no search, so it differs by design). Verified
+on all 242 frames (98 incremental, 144 full fallbacks) and on synthetic edits. Geometry is an assumption re-verified by the gates above, not a proof that a
+fresh search would pick the same tiling. The safety argument (an argument, not a proof) is that every cell is still an exact lookup, the evidence floor and
+font share are recomputed over the whole new screen, and an ink cell in a changed area that the atlas does not know sends the frame to the full pipeline, so
+a stale tiling shows up as UNKNOWN cells or the full path instead of silently producing exact cells. The "pixels outside the grid" check covers only the
+full-width bands above the first grid row and below the last one; left/right sub-cell strips inside the grid rows are not checked separately: such a change
+marks its text row as changed (the row test is full width), so the probe numbers are updated from it, and no cell contains those pixels, so no cell
+value can depend on them. `GlyphReader` instances and `reference_mode()` are not thread-safe (mutable per-sequence state / a module global).
 
 Rejected (measured on the same frames): **numpy** - the vectorised MDL step is 3x faster per call (0.25 -> 0.08 ms) but the whole frame gains about
 15-20% (detect_grid 89 -> ~60 ms), numpy is in neither the OCR image (`python3-pil` only) nor the `pwmcp-client` test extra, and an optional second path

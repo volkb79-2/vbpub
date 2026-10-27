@@ -150,11 +150,13 @@ def test_committed_corpus_frame_identical_to_reference(atlas, path):
 
 
 # ----------------------------------------------------------------------------- GlyphReader (geometry cache + dirty cells)
-CONTENT = ("rows", "conf", "flags", "unknown_cells", "aliases", "font", "font_share", "status", "grid", "probe")
+# The WHOLE result dict is compared, minus ``session`` (reader bookkeeping) and ``grid_report``: that one reports the length/contrast/candidates of the
+# detect_grid run that ESTABLISHED the cached geometry (an incremental frame runs no search), so it differs from a fresh read by design.
+NOT_COMPARED = ("session", "grid_report")
 
 
 def same_content(a, b):
-    return all(canon(a.get(k)) == canon(b.get(k)) for k in CONTENT)
+    return all(canon(a.get(k)) == canon(b.get(k)) for k in (set(a) | set(b)) - set(NOT_COMPARED))
 
 
 def paste_cells(im, cells, src_cell=(40, 10), w=8, h=16):
@@ -254,3 +256,200 @@ def test_reader_synthetic_text_updates_match_full_reads():
         got = rd.read(im)
         assert got["session"]["path"] == "incremental", got["session"]
         assert same_content(got, gg.read_image(im, a, grid_hints=[(8, 16)]))
+
+
+# ----------------------------------------------------------------------------- reader gates: each fallback has a test that fails without it
+# (the mutation evidence - the guarded line removed in a throwaway copy - is in the commit message / report)
+import learn_atlas as la  # noqa: E402
+
+ROWS, COLS = 4, 30
+
+
+def syn_atlas(lines, rows=ROWS, cols=COLS):
+    im = render(lines, cols=cols, rows=rows)
+    g = gg.detect_grid(im)
+    ex = gg.extract(im, gg.grid_with_origin(g, im.size, 0, 0))
+    pairs, _ = la.align(ex, lines)
+    a = gg.Atlas()
+    for p in pairs:
+        if p["kind"] == "glyph":
+            for src in ("t1", "t2"):
+                a.add("syn", 8, 16, p["key"], p["char"], src)
+    return a
+
+
+def screen_lines(rows=ROWS, cols=COLS, seed=3):
+    return [ln.ljust(cols) for ln in text_lines(rows, cols, seed)]
+
+
+def new_reader(a, **kw):
+    return gg.GlyphReader(a, grid_hints=[(8, 16)], **kw)
+
+
+def test_reader_reevaluates_unchanged_tied_cells_when_the_colour_ranking_flips():
+    """A half-grey/half-black cell is an exact tie: its bitmap depends on which colour is more common in the WHOLE frame.  Repainting other rows
+    flips that ranking, so the unchanged tied cell must be re-extracted (``redo |= tied``): the reader says 'B' like a fresh read, not the stale 'A'."""
+    lines = screen_lines()
+    a = syn_atlas(lines)
+    grey, black = (170, 170, 170), (0, 0, 0)
+
+    def tie_key(rank):
+        blk = Image.new("RGB", (8, 16), black)
+        blk.paste(grey, (0, 0, 8, 8))
+        return gg.normalise_cell(blk, rank)[1]
+    k_a, k_b = tie_key({grey: 1, black: 2}), tie_key({grey: 9, black: 2})
+    assert k_a != k_b
+    for src in ("t1", "t2"):
+        a.add("syn", 8, 16, k_a, "A", src)
+        a.add("syn", 8, 16, k_b, "B", src)
+    first = render(lines, cols=COLS, rows=ROWS)
+    first.paste(black, (0, 0, 8, 16))
+    first.paste(grey, (0, 0, 8, 8))
+    rd = new_reader(a, max_dirty=0.5)
+    r0 = rd.read(first)
+    assert r0["rows"][0][0] == "A", r0["rows"][0][:3]
+    second = first.copy()
+    second.paste(grey, (0, 32, COLS * 8, 64))               # rows 2-3 solid grey: grey is now the more common colour
+    got, ref = rd.read(second), gg.read_image(second, a, grid_hints=[(8, 16)])
+    assert got["session"]["path"] == "incremental"
+    assert ref["rows"][0][0] == "B" and got["rows"][0][0] == "B" and same_content(got, ref)
+
+
+def blocky_screen(lines, odd_cells=(), rows=ROWS, cols=COLS):
+    """Screen whose every glyph is a 2x2-blocky 3x6 bitmap (6x12 pixels, margins like a real font): the whole frame is an exact nearest 2x upscale.  ``odd_cells`` get one odd pixel (not an upscale)."""
+    rng = random.Random(9)
+    bmp = {}
+    for ch in sorted(set("".join(lines)) - {" "}):
+        bmp[ch] = [rng.getrandbits(3) | 2 for _ in range(6)]
+    im = Image.new("RGB", (cols * 8, rows * 16), (0, 0, 0))
+    px = im.load()
+    for r, ln in enumerate(lines):
+        for c, ch in enumerate(ln):
+            if ch == " ":
+                continue
+            for gy in range(6):
+                for gx in range(3):
+                    if bmp[ch][gy] >> (2 - gx) & 1:
+                        for dy in range(2):
+                            for dx in range(2):
+                                px[c * 8 + 2 + gx * 2 + dx, r * 16 + 2 + gy * 2 + dy] = (170, 170, 170)
+    for (r, c) in odd_cells:
+        px[c * 8 + 1, r * 16 + 3] = (170, 170, 170)          # a lone pixel breaks the 2x2 blocks
+    return im
+
+
+def test_reader_gate_integer_upscale():
+    lines = screen_lines(14, 60)
+    full = blocky_screen(lines, rows=14, cols=60)
+    g = gg.detect_grid(full, hints=[(8, 16)])
+    ex = gg.extract(full, gg.grid_with_origin(g, full.size, 0, 0))
+    a = gg.Atlas()
+    for row, ln in zip(ex.rows, lines):
+        for cell, ch in zip(row, ln):
+            if cell.kind == "glyph":
+                for src in ("t1", "t2"):
+                    a.add("syn", 8, 16, cell.key, ch, src)
+    prev = blocky_screen(lines, odd_cells=[(0, 59), (1, 59)], rows=14, cols=60)
+    assert gg._integer_upscale(prev) == 1 and gg._integer_upscale(full) == 2
+    rd = new_reader(a, max_dirty=1.0)
+    assert rd.read(prev)["status"] == "ok"
+    got = rd.read(full)
+    assert got["session"]["path"] == "full" and same_content(got, gg.read_image(full, a, grid_hints=[(8, 16)]))
+
+
+def test_reader_gate_mdl_tiling_no_longer_compresses_the_screen():
+    """Almost-empty new frame: a fresh search refuses it ('no fixed grid', < 12 non-blank cells); the cached tiling must not read it instead."""
+    lines = screen_lines()
+    a = syn_atlas(lines)
+    rd = new_reader(a, max_dirty=1.0)
+    assert rd.read(render(lines, cols=COLS, rows=ROWS))["status"] == "ok"
+    sparse = render(["".join(lines[0][:10])], cols=COLS, rows=ROWS)
+    fresh = gg.read_image(sparse, a, grid_hints=[(8, 16)])
+    assert fresh["status"] == "no_grid"
+    got = rd.read(sparse)
+    assert got["session"]["path"] == "full" and got["status"] == "no_grid"
+
+
+def test_reader_gate_status_not_ok_goes_through_the_full_pipeline():
+    """Erasing one of exactly 8 known glyphs drops the screen under the evidence floor (>= 8 exact cells): the new decode is no_font."""
+    lines = screen_lines()
+    known = sorted(set("".join(lines)) - {" "})[:8]
+    unknown_ch = sorted(set("".join(lines)) - {" "})[8]
+    row = "".join(known) + unknown_ch * 12
+    base = render([row], cols=COLS, rows=ROWS)
+    g = gg.detect_grid(base, hints=[(8, 16)])
+    ex = gg.extract(base, gg.grid_with_origin(g, base.size, 0, 0))
+    a = gg.Atlas()
+    for cell, ch in zip(ex.rows[0][:8], known):
+        for src in ("t1", "t2"):
+            a.add("syn", 8, 16, cell.key, ch, src)
+    rd = new_reader(a, max_dirty=1.0)
+    r0 = rd.read(base)
+    assert r0["status"] == "ok" and r0["session"]["path"] == "full"
+    erased = base.copy()
+    erased.paste((0, 0, 0), (0, 0, 8, 16))                    # first known glyph -> blank: 7 exact cells left
+    fresh = gg.read_image(erased, a, grid_hints=[(8, 16)])
+    assert fresh["status"] == "no_font"
+    got = rd.read(erased)
+    assert got["session"]["path"] == "full" and same_content(got, fresh)
+
+
+def test_reader_gate_unknown_ink_in_a_changed_cell():
+    lines = screen_lines()
+    a = syn_atlas(lines)
+    rd = new_reader(a)
+    base = render(lines, cols=COLS, rows=ROWS)
+    rd.read(base)
+    edited = base.copy()
+    rng = random.Random(4)
+    for y in range(3, 13):                                    # a glyph the atlas has never seen, in one changed cell
+        for x in range(1, 7):
+            edited.putpixel((8 * 5 + x, 16 * 1 + y), (170, 170, 170) if rng.random() < 0.5 else (0, 0, 0))
+    got = rd.read(edited)
+    assert got["session"]["path"] == "full" and same_content(got, gg.read_image(edited, a, grid_hints=[(8, 16)]))
+
+
+def test_reader_gate_probe_resampled_new_frame():
+    """Smooth ramps appear in a strip right of the grid (changed pixels, no changed cell): only the updated scale probe can notice; the frame is
+    ``resampled`` for a fresh read and must not be read from the cached geometry."""
+    rows, cols = 14, 60
+    lines = screen_lines(rows, cols)
+    a = syn_atlas(lines, rows, cols)
+    base = Image.new("RGB", (cols * 8 + 16, rows * 16), (0, 0, 0))
+    base.paste(render(lines, cols=cols, rows=rows), (0, 0))
+    rd = new_reader(a, max_dirty=1.0)
+    assert rd.read(base)["status"] == "ok"
+    smooth = base.copy()
+    px = smooth.load()
+    for y in range(rows * 16):
+        for x in range(cols * 8, cols * 8 + 16):
+            v = 10 + (x - cols * 8) * 15
+            px[x, y] = (v, v, v)
+    fresh = gg.read_image(smooth, a, grid_hints=[(8, 16)])
+    assert fresh["status"] == "resampled"
+    got = rd.read(smooth)
+    assert got["session"]["path"] == "full" and got["status"] == "resampled"
+
+
+def test_reader_probe_band_margin_covers_the_vertical_window_two_rows_above_a_change():
+    """A changed pixel row starts or ends a vertical 3-pixel ramp window that begins TWO rows away.  The updated probe numbers must equal a fresh probe,
+    which needs the +-2 band margin (+-1 loses the window)."""
+    rows, cols = 14, 60
+    lines = screen_lines(rows, cols)
+    a = syn_atlas(lines, rows, cols)
+    base = render(lines, cols=cols, rows=rows)
+    px = base.load()
+    for x in range(0, 24 * 8):
+        px[x, 16 * 6 - 2], px[x, 16 * 6 - 1] = (0, 0, 0), (128, 128, 128)     # bottom two pixel rows of text row 5: black, mid-grey
+    rd = new_reader(a, max_dirty=0.5)
+    rd.read(base)
+    edited = base.copy()
+    edited.paste((255, 255, 255), (0, 16 * 6, 24 * 8, 16 * 7))                 # 24 cells of row 6 become solid white (blank/fill cells)
+    got, fresh = rd.read(edited), gg.read_image(edited, a, grid_hints=[(8, 16)])
+    assert got["session"]["path"] == "incremental"
+    assert got["probe"]["ramp_ratio"] > base_ramp(base) and got["probe"] == fresh["probe"]
+    assert same_content(got, fresh)
+
+
+def base_ramp(im):
+    return round(gg.ramp_ratio(im), 5)

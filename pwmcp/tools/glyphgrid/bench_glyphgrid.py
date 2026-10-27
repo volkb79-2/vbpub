@@ -28,7 +28,9 @@ import glyphgrid as gg  # noqa: E402
 
 FIX = os.path.join(HERE, "..", "..", "tests", "fixtures", "glyphgrid")
 STAGES = ("load_image", "probe_scale", "detect_grid", "choose_extraction", "decode")
-CONTENT = ("rows", "conf", "flags", "unknown_cells", "aliases", "font", "font_share", "status", "grid", "probe")
+# the whole result dict is compared except bookkeeping: ``session``, and ``grid_report`` (length/contrast/candidates of the detect_grid run that
+# ESTABLISHED the cached geometry; an incremental frame runs no search, so it differs from a fresh read by design)
+NOT_COMPARED = ("session", "grid_report")
 
 
 def atlas_default():
@@ -100,7 +102,7 @@ def main():
             times[r["session"]["path"]].append(time.perf_counter() - t)
             paths[r["session"]["path"]] += 1
             ref = gg.read_image(f, atlas)
-            if any(canon(r.get(k)) != canon(ref.get(k)) for k in CONTENT):
+            if any(canon(r.get(k)) != canon(ref.get(k)) for k in (set(r) | set(ref)) - set(NOT_COMPARED)):
                 bad.append(os.path.basename(f))
         print("paths", dict(paths), "| identical content to a fresh read_image on %d/%d frames%s" % (
             len(files) - len(bad), len(files), "" if not bad else "; DIFFERENT: %s" % bad))

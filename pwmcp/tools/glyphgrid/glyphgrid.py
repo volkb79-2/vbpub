@@ -55,7 +55,7 @@ _REFERENCE = os.environ.get("GLYPHGRID_REFERENCE") == "1"
 
 @contextlib.contextmanager
 def reference_mode(on: bool = True):
-    """Run the unoptimised reference implementation inside the block (used by the identity tests)."""
+    """Run the unoptimised reference implementation inside the block (used by the identity tests).  NOT thread-safe: it flips a module global."""
     global _REFERENCE
     old, _REFERENCE = _REFERENCE, bool(on)
     try:
@@ -1233,7 +1233,10 @@ class GlyphReader:
     unchanged: every cell is still read by exact lookup, the evidence floor and font share are re-evaluated on the whole new screen, and a
     stale geometry can only make cells UNKNOWN / the screen ``no_font`` (and then triggers the full path), never produce a wrong exact cell.
     Output equality with ``read_image`` on the same frame is asserted by the tests on synthetic edits and on the real 242-frame series
-    (rows, conf, flags, unknown cells, aliases, font); ``grid_report`` carries the geometry of the frame that established it.
+    (the whole result dict except ``session`` and ``grid_report``, which describes the search that established the cached geometry).
+
+    NOT thread-safe: an instance holds mutable per-sequence state (previous frame, cells, colour census); use one reader per sequence and
+    thread.  ``reference_mode()`` is a module global and is not thread-safe either.
     """
 
     def __init__(self, atlas: Atlas, font: str | None = None, max_hamming: int = 0, auto_unscale: bool = True,
