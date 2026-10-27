@@ -64,7 +64,7 @@ inferred from the r3 canaries.
 - Backlog: CP-24/25/26 (bounded sampler-owned stop, evidence-preserving
   recovery, durable DAMON pool provenance) are filed with their design held on
   a park ref and are NOT in this release; CP-28/CP-29 (monitor mode, cheap
-  collector gaps), CP-30 (R2) and CP-31 (socket-absence diagnosis) are filed.
+  collector gaps), CP-30 (R2), CP-31 (socket-absence diagnosis, incl. a socket unlinked under a running daemon) and CP-32..CP-38 (review follow-ups) are filed.
 - Fix (wave review r1): `stop` joins the sampling worker outside the daemon-wide
   lock. Previously a worker that was itself finishing (session error, enforced
   stall kill) needed that lock, so the join timed out and `stop` answered a
