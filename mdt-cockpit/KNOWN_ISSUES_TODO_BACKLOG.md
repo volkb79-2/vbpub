@@ -464,3 +464,125 @@ Fix direction: a `stage_tool_artifacts.py prune --older-than` and a unit test; n
 ## MDT-026 - optional fsync-free BuildKit cache operations (2026-10-23)
 
 **Status:** ANALYSED, not implemented. `libeatmydata` cannot affect `buildkitd` (static Go binary, raw syscalls); it can only help dynamic processes in `RUN` steps. Options and recommendation: `docs/BUILDKITD-FLOWS.md` section 7 (Dockerfile build ARG with `dpkg --force-unsafe-io` / `eatmydata`, default off, measure first; a seccomp no-op filter for the daemon is unverified). Architecture and flows of the whole BuildKit setup: `docs/BUILDKITD-FLOWS.md`.
+
+<!-- MDT-028..MDT-031 are taken by the iogov review branch (iogov-fable-review-20261027); the entries below
+     were filed by the mdt-cockpit deep review of 2026-10-27 and start at MDT-032 to avoid a collision. -->
+
+## MDT-032 - `cmru release` never runs the smoke lane, and the release lane skips every pytest-style staging test (2026-10-27)
+
+`cmru.toml` `[steps.run-tests]` runs `run-gate release` and `run-gate oci-push` only. The `release` lane is
+`python -m unittest scripts.test_release_flow scripts.test_oci_tool_staging scripts.test_oci_push_lane`, and
+unittest collects only `TestCase` classes: the pytest-style functions in `scripts/test_oci_tool_staging.py` (the
+aged-latest resolver, sss, yazi/dust digests, the manifest-RUN and age-policy pins) and the whole `smoke` lane
+(`pytest scripts host-setup/tests`) are not part of a release. Measured: the smoke lane had been RED on `main`
+since 5a0517dc0 / b3b1a0366 (five failures: the per-checkout home spelling vs the tests and docs, a date-bound
+waiver test, the dpkg clean-up after the final assertions) and the 2026-10-27 release still passed. Fix: make
+the `release` lane run `pytest` over those modules (tester-unified has `/opt/tester-venv/bin/pytest`) or add
+`run-gate smoke` to `run-tests`; `test_release_flow.py` should assert the lane runs every test function.
+
+## MDT-033 - build inputs COPYed to `/tmp` are baked into the image layers (2026-10-27)
+
+`COPY apt/packages.list`, `pip/wheels.list`, `pip/wheels/`, `requirements/`, `package-manifests-versioned/`,
+`customization/`, `scripts/mdt_cli.py`, `apt/backports.sources.in` and `build/tool-artifacts-staging/tool-versions.env`
+land under `/tmp` and are never removed (only the four installer scripts and `ai-tool-versions.env` are, Dockerfile
+"RUN rm -f ..."). Small (about 350 KB plus the wheels) but they ship in every native image's `/tmp` (the VSC template
+hides them under the host-backed `/tmp` mount), and the manifest RUN now relies on `/tmp/packages.list` still being
+there. Fix: bind-mount the build inputs (`--mount=type=bind,source=...`) in the RUNs that read them, or end the build
+with one `rm -rf` of the known list and an `image-runtime` assertion that the native image's `/tmp` is empty
+(the whiteout still leaves the bytes in earlier layers; bind mounts are the real fix).
+
+## MDT-034 - the manifest's Version column records raw `--version` banners for most tools (2026-10-27)
+
+Only ov, gdu, dust, yazi, regctl, nvim, lnav and shellcheck are normalised. `claude` records
+`2.1.311 (Claude Code)`, `codex` `codex-cli 0.164.0`, `copilot` `GitHub Copilot CLI 1.0.92-4.`, `dive` `dive 0.13.1`,
+`glances` `Glances version:<TAB>4.5.8`, `b2` `b2 command line tool, version 5.0.2 (b2sdk ...)`, `consul`/`vault`/`gh`/
+`delta`/`fd`/`rga`/`ripgrep`/`htop`/`node` likewise; the 20261021 and 20261022 manifests recorded `copilot` as
+`Package extraction took 18189ms` (a first-run log line). The aider row regressed to its usage banner on 20261027
+(fixed: the manifest RUN no longer exports the staged `AIDER_*` variables and reads the distribution version). Fix:
+one normaliser in `manifest_sections.py` (first semver-looking token per line, with per-tool exceptions) applied
+when the custom-tooling file is read, with a test over the recorded banners; the staged version
+(`tool-versions.env`) is the better source for every staged tool and already present in that RUN.
+
+## MDT-035 - `INSTALL_COPILOT`, `INSTALL_CLAUDELINK`, `INSTALL_PI` and `PI_VERSION` are not wired through bake (2026-10-27)
+
+The Dockerfile declares them as ARGs and `scripts/install_ai_cli_tools.py` / `stage_tool_artifacts.py` honour the
+switches, but `docker-bake.hcl` declares no variables for them and `cmru.toml` `bake_set_vars` does not forward
+them (it forwards `INSTALL_REASONIX`/`INSTALL_OPENCLAW`, which the bake file does not declare either). An operator
+`INSTALL_COPILOT=false ./build-push.py --build` skips copilot at staging (`_vetted_ai_cli_versions`), while the
+image build still runs with the ARG default `true` and no `COPILOT_VER`. Fix: declare the four in the bake file
+and `bake_set_vars`, and add a test that every `INSTALL_*`/`*_VERSION` ARG of the Dockerfile is forwarded
+(`scripts/test_ai_cli_versions.py` already reads the Dockerfile).
+
+## MDT-036 - the aged-latest resolvers inspect only the newest 30 releases / commits (2026-10-27)
+
+`_resolve_latest_aged_release` requests `releases?per_page=30` and `_resolve_sss_commit` `commits?...&per_page=30`
+without pagination. A repository that publishes more than 30 releases (or commits on the default branch) inside the
+age window fails closed with "no stable release published on or before ...". Unlikely for the six tools, but the
+failure message does not say why. Fix: follow the `Link: rel="next"` header until a qualifying entry is found (bounded
+to a few pages), or say "newest 30 inspected" in the error.
+
+## MDT-037 - `mdt-host-check.sh` does not check the dedicated Docker API socket or a pending daemon restart (2026-10-27)
+
+install.sh installs the `docker.socket` drop-in (`/run/docker-api/docker.sock`, the directory the devcontainer
+template bind-mounts) and merges `/etc/docker/daemon.json`, and reminds about the restart only at the end of its own
+run. check.sh verifies neither: the listener present and `0660 root:docker`, the drop-in installed, and daemon.json
+newer than `docker.service`'s main process (the same test install.sh uses). A host that applied setup but never
+restarted Docker passes `mdt-host-check.sh` while every new devcontainer refuses to start on the missing mount
+source. Fix: three checks, the restart one a WARN.
+
+## MDT-038 - the inotify sysctl file can lower a higher host value at boot (2026-10-27)
+
+install.sh raises the live `fs.inotify.max_user_watches` only when it is below 524288 but installs
+`/etc/sysctl.d/99-mdt-inotify.conf` unconditionally; `sysctl --system` applies it at boot after any earlier-sorting
+file, so a host that set 1048576 elsewhere is lowered at the next boot (the README now says so). Fix: write
+`max(current, 524288)` into the file, and let check.sh reuse `_check_io_override` to notice a later file or
+`/etc/sysctl.conf` overriding it (as it does for the writeback keys).
+
+## MDT-039 - install.sh usage drift and a post-commit-point refusal (2026-10-27)
+
+The header's one-line synopsis omits `--restart-buildkitd` and `--require-damon-disable` (which `usage()`
+lists); `--observer-only` rejects `--wizard`/`--reset`/`--with-baseline`/`--restart-docker` but silently accepts
+`--restart-buildkitd` and `--require-damon-disable`; `provision_cgprofile_observer /` runs after the units are
+rendered but before `daemon-reload` and can return 2 (observer-directory drift, missing docker group), leaving a
+half-installed host. Fix: complete the synopsis and the option matrix; move the observer drift checks into the
+pre-flight section (before the COMMIT POINT) and keep only the write after it.
+
+## MDT-040 - the PWMCP installer URL requires the source commit to be on GitHub when the image builds (2026-10-27)
+
+`build-push.py pwmcp_build_inputs()` points the in-image `install_pwmcp_instance.py` at
+`raw.githubusercontent.com/<owner>/<repo>/<HEAD>/pwmcp/get.py` with the sha256 of the local file. The release's
+`prepare` step therefore needs that commit pushed before the image build fetches it; a build from an unpushed
+worktree commit fails at the PWMCP layer with an HTTP 404, and the message does not say why. The 2026-10-27 release
+worked, so cmru's transaction evidently satisfies this; document the ordering in `docs/BUILD-ARCHITECTURE.md` and
+make `install_pwmcp_instance.py` say "is this commit pushed?" on a 404. Related: `docs/CONSUMERS.md` and
+`local-dev-artifacts.toml.example` show `1.64.0-r4` while `pwmcp/pwmcp.contract.json` still names `1.64.0-r3`
+(forward references until pwmcp-v1.64.0-r4 ships; the image installs the contract's release).
+
+## MDT-041 - host and project names in the design docs and build inputs (2026-10-27)
+
+User-facing docs are host-agnostic since this review (README, CONSUMERS, templates, host-setup README, USAGE).
+`docs/DESIGN-GUIDE.md` still names the reference host twelve times and a production slice, `apt/packages.list` and
+`requirements/toolkit.txt` comments name a consumer project, and two host-setup README pointers now read
+`scripts/<host>-guide/...` because the guide lives at the repository root under the host's name. Fix: genericise
+the design doc ("the reference host"), move the measurements it cites into `handoff/` (exempt), and give the
+host guide a host-neutral directory name or an in-repo alias.
+
+## MDT-042 - the README's tool inventory is incomplete (2026-10-27)
+
+The "Shell and CLI tooling" tables never name `bat`, `rg`, `rga`, `yq`, `gh`, `grpcurl`, `consul`, `vault`,
+`awscli`, `b2`, `hadolint`, `grype`, `cdebug`, `shellcheck`, `ncdu`, `httpie`, `w3m`, `sshfs`, `skopeo`, `minisign`,
+`sqlite3`, `strace`, `gdb`, the sysstat/iotop family or the QEMU/VM packages, all of which the image installs
+(`zswap-status` in the README is an alias from `aliases.sh`, not a binary). Fix: one compact table generated from
+`apt/packages.list` plus the staged-tool list, or a pointer to the generated manifest as the complete inventory,
+with a docs-in-sync test that every staged tool name appears in the README.
+
+## MDT-043 - decision record: `pwmcp-client` wheel in `/opt/mdt/venv` (2026-10-27)
+
+`pip/wheels.list` has no `pwmcp-client`; the client ships inside the PWMCP bundle (`/srv/pwmcp-instance`, on `PATH`
+first through `/srv/pwmcp-instance/bin`), so `pwmcp` resolves and the runtime lane checks it. Recommendation of the
+2026-10-27 review: do NOT add it to the venv. A second copy would have to match the bundle's version exactly (the
+bundle is pinned by `pwmcp.contract.json`, the wheel would follow `pwmcp-client-latest`), both would be on `PATH`,
+and nothing in the cockpit imports it as a library. Revisit only if a cockpit tool needs `import pwmcp_client`;
+then install the wheel that the SAME bundle release carries, never a separately resolved one. The iogov/iomon
+tooling (IO governor, iomon scripts) stays host-side for the same reason the `topos` daemon does: it needs cgroup
+and block-device access the devcontainer does not have; the image may carry read-only clients once they exist.
