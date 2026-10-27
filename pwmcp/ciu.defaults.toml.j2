@@ -97,8 +97,8 @@ browser_mode = "per-session"
 # HeadlessChrome) | "edge-windows" | "chrome-windows" | "firefox-windows" | any other
 # value = a custom raw UA string (printable ASCII, 1-512 chars). Exported to the container
 # as PWMCP_USER_AGENT; an invalid value is a fatal entrypoint error. It overrides the UA
-# string and its matching client-hint brands ONLY (no stealth tricks). Every `pwmcp inspect`
-# result reports the active UA and its source. Use it for pages you are entitled to read;
+# string and its matching client-hint brands ONLY (no stealth tricks). When active, every `pwmcp inspect`
+# result reports the UA and its source (nothing is added in default mode). Use it for pages you are entitled to read;
 # it does not solve interactive challenges. See README.md "Overridable user agent".
 user_agent = "default"
 # Admin HTTP API port (shared mode only) -- internal Docker network only,

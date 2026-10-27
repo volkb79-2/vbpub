@@ -85,9 +85,10 @@ resources. Use it only for a trusted target with a known certificate problem;
 it does not change PWMCP service defaults. See the
 [design rationale](DESIGN-GUIDE.md#certificate-errors-during-inspection).
 
-Every result reports the user agent it presented and its source
-(`user_agent`, `user_agent_source`: `default`, `preset:<name>`, `custom`) as JSON
-fields with `--json`, or one `[INFO] user agent:` line on stderr otherwise.
+When an override is active (server-level or `--user-agent`), the result reports the
+user agent it presented and its source (`user_agent`, `user_agent_source`:
+`preset:<name>` or `custom`) as JSON fields with `--json`, or one `[INFO] user agent:`
+line on stderr otherwise. With no override nothing is added: no field, no line.
 `--user-agent PRESET_OR_STRING` presents another identity for that one call
 (`edge-windows`, `chrome-windows`, `firefox-windows`, `default`, or a custom
 string); the server-level default is the `user_agent` config key. See

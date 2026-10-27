@@ -3,16 +3,13 @@
 from __future__ import annotations
 
 import http.server
-import http.server
 import json
 import os
-import sys
-import threading
-import sys
-import threading
 import shutil
 import socket
 import subprocess
+import sys
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -333,3 +330,12 @@ def test_ua_override_sends_metadata_for_existing_and_newly_attached_targets() ->
     time.sleep(0.2)
     resumed = {m["sessionId"] for m in list(seen) if m.get("method") == "Runtime.runIfWaitingForDebugger"}
     assert {"S-T-existing", "S-new"} <= resumed  # attached targets are never left paused
+
+
+def test_the_dockerfile_part_destination_is_the_one_the_entrypoint_reads_and_supervisord_uses_the_chosen_conf() -> None:
+    dockerfile = (CONTAINER / "Dockerfile").read_text(encoding="utf-8")
+    entrypoint = (CONTAINER / "entrypoint.sh").read_text(encoding="utf-8")
+    destination = "/etc/supervisor/conf.d/pwmcp-ua-override.part"
+    assert f"supervisord.ua-override.part {destination}" in dockerfile
+    assert destination in entrypoint
+    assert 'exec supervisord -c "$SUPERVISOR_CONF"' in entrypoint
