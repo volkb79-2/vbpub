@@ -32,6 +32,12 @@ the MDT host setup before starting: the initializer checks the declared cgroup
 slices and creates missing bind sources. See the
 [host cgroup preflight](../docs/CONSUMERS.md#host-cgroup-preflight).
 
+## Integrated terminal (opt-in)
+
+The template sets zsh as the VS Code terminal shell, a 10000-line scrollback and persistent terminal
+sessions. Key passthrough for `mc`/vim/agent CLIs, a tmux terminal profile and client-side keybindings
+are copy-in files: see [`vscode/README.md`](vscode/README.md).
+
 ## Persistent paths
 
 | Host source | Container target | Policy |

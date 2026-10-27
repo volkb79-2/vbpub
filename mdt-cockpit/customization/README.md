@@ -25,6 +25,10 @@ What ships here and where it is wired:
 | `htoprc` | `/etc/htoprc` | htop reads it when the user has no `~/.config/htop/htoprc` |
 | `mc.ini` | `/etc/mc/mc.ini` | mc reads it when the user has no `~/.config/mc/ini` |
 | `nanorc` | `include` line appended to `/etc/nanorc` | nano reads `~/.nanorc` after it |
+| `tmux.conf` | `/etc/tmux.conf` | tmux reads `~/.tmux.conf` after it; tmux is opt-in and nothing starts it. Prefix Ctrl+Space (Ctrl+B and Ctrl+O collide with Claude Code, mc and vim) |
+| `gitconfig` | appended to `/etc/gitconfig` | delta as pager, zdiff3, `push.autoSetupRemote`; `~/.gitconfig` and repository config override |
+| `inputrc` | appended to `/etc/inputrc` | readline defaults. A user `~/.inputrc` REPLACES `/etc/inputrc`: start it with `$include /etc/inputrc` |
+| `vimrc.local` | `/etc/vim/vimrc.local` | sourced by Debian's `/etc/vim/vimrc`; `~/.vimrc` overrides |
 | `nvim/sysinit.vim` | `/etc/xdg/nvim/sysinit.vim`, beside the NvChad tree | redirects a starter-style tree's lazy lockfile into the state directory while the user has no `~/.config/nvim/init.lua` or `init.vim` (Neovim itself starts the tree from `$XDG_CONFIG_DIRS`) |
 | `path-hook.sh` | `/usr/local/share/mdt-cockpit/path-hook.sh`, sourced by `/etc/profile.d/50-mdt-cockpit.sh` and `/etc/zsh/zprofile` | merges the image's managed `PATH` entries (from `/usr/local/share/mdt-cockpit/path-entries`) into a login shell's `PATH`, also a cleared one; `/etc/profile` is patched to keep an inherited `PATH` |
 | `lesspipe.sh` | `LESSOPEN` in `shell.env` | syntax-highlighting preprocessor for `less` |

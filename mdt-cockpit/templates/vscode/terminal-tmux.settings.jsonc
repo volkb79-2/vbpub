@@ -1,0 +1,15 @@
+// OPT-IN: a "tmux" terminal profile. Merge into the settings layer you use (see README.md).
+// Pick "tmux" from the terminal dropdown; it attaches to the session "main" or creates it
+// (-A). /etc/tmux.conf in the image supplies the defaults (prefix Ctrl+Space, mouse, true colour).
+// It is not the default profile: tmux stays a per-user decision.
+{
+  "terminal.integrated.profiles.linux": {
+    "tmux": {
+      "path": "tmux",
+      "args": ["new-session", "-A", "-s", "main"],
+      "icon": "terminal-tmux"
+    }
+  }
+  // To open tmux in every new terminal instead, uncomment:
+  // , "terminal.integrated.defaultProfile.linux": "tmux"
+}

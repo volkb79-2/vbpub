@@ -90,6 +90,41 @@ class Contract:
         self.assertIn("alias mine='true'", result.stdout)
         self.assertIn("alias gs='git status -sb'", result.stdout, "an image alias the user did not touch survives")
 
+    # tmux / git / readline / vim: non-interactive observables ----------------------
+    def test_tmux_reads_the_system_conf_and_a_user_conf_overrides_it(self) -> None:
+        """Observable: the prefix and history-limit tmux reports for a detached server."""
+        default = self.box("tmux new-session -d -s probe && tmux show-options -g prefix history-limit mouse")
+        self.assertOk(default)
+        self.assertIn("prefix C-Space", default.stdout)
+        self.assertIn("history-limit 10000", default.stdout)
+        self.assertIn("mouse on", default.stdout)
+        override = self.box(
+            "printf 'set -g prefix C-a\\n' > ~/.tmux.conf; tmux new-session -d -s probe && tmux show-options -g prefix"
+        )
+        self.assertIn("prefix C-a", override.stdout)
+
+    def test_git_uses_the_system_defaults_and_the_users_gitconfig_overrides_them(self) -> None:
+        default = self.box("git config --get core.pager; git config --get merge.conflictStyle; git config --get push.autoSetupRemote")
+        self.assertOk(default)
+        self.assertEqual(default.stdout.split(), ["delta", "zdiff3", "true"])
+        override = self.box("git config --global core.pager cat; git config --get core.pager")
+        self.assertEqual(override.stdout.split(), ["cat"])
+
+    def test_readline_defaults_are_appended_to_the_system_inputrc_and_a_user_inputrc_replaces_it(self) -> None:
+        """Observable: bind -p output; a user ~/.inputrc replaces /etc/inputrc unless it includes it."""
+        default = self.box("bash -ic 'bind -p' 2>/dev/null | grep -F -e history-search-backward -e backward-kill-word")
+        self.assertOk(default)
+        self.assertIn('"\\e[A": history-search-backward', default.stdout)
+        replaced = self.box("printf 'set bell-style none\\n' > ~/.inputrc; bash -ic 'bind -p' 2>/dev/null | grep -c history-search-backward || true")
+        self.assertEqual(replaced.stdout.strip(), "0")
+
+    def test_vim_reads_the_system_vimrc_local(self) -> None:
+        """Observable: shiftwidth/expandtab as vim reports them in ex mode."""
+        result = self.box("vim -es -c 'redir @a | set shiftwidth? expandtab? | redir END' -c 'put a' -c '%p' -c 'q!' /dev/null")
+        self.assertOk(result)
+        self.assertRegex(result.stdout, r"shiftwidth=4")
+        self.assertIn("expandtab", result.stdout)
+
     # zsh --------------------------------------------------------------------------
     def test_zsh_loads_the_system_default_and_the_users_zshrc_overrides_it(self) -> None:
         """Observable: the Ctrl-R binding (fzf integration from the shipped zshrc)."""

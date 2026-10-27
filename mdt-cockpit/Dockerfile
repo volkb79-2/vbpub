@@ -355,6 +355,15 @@ RUN set -euo pipefail; \
     install -D -m 0644 /tmp/customization/lnav/formats/nyxloom/nyxloom_events.json /etc/lnav/formats/nyxloom/nyxloom_events.json; \
     install -m 0644 /tmp/customization/htoprc /etc/htoprc; \
     install -D -m 0644 /tmp/customization/mc.ini /etc/mc/mc.ini; \
+    install -m 0644 /tmp/customization/tmux.conf "${share_dir}/tmux.conf"; \
+    install -m 0644 /tmp/customization/tmux.conf /etc/tmux.conf; \
+    install -m 0644 /tmp/customization/gitconfig "${share_dir}/gitconfig"; \
+    cat /tmp/customization/gitconfig >> /etc/gitconfig; \
+    install -m 0644 /tmp/customization/inputrc "${share_dir}/inputrc"; \
+    test -f /etc/inputrc; \
+    cat /tmp/customization/inputrc >> /etc/inputrc; \
+    install -m 0644 /tmp/customization/vimrc.local "${share_dir}/vimrc.local"; \
+    install -D -m 0644 /tmp/customization/vimrc.local /etc/vim/vimrc.local; \
     test -f /etc/nanorc && test -f /etc/bash.bashrc && test -f /etc/zsh/zshrc && test -f /etc/zsh/zprofile; \
     printf '\n# mdt-cockpit defaults (nano reads ~/.nanorc afterwards, so a user setting wins).\ninclude "%s/nanorc"\n' "${share_dir}" >> /etc/nanorc; \
     printf '\n# mdt-cockpit interactive defaults (your ~/.bashrc runs afterwards).\n[ -r %s/bashrc ] && . %s/bashrc\n' "${share_dir}" "${share_dir}" >> /etc/bash.bashrc; \

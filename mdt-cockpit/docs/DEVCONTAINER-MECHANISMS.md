@@ -211,13 +211,9 @@ VS Code picks the terminal shell in this order:
    remote-machine settings).
 2. Otherwise the login shell in `/etc/passwd`. The image creates `vscode` with `/bin/bash`.
 
-The templates set no terminal profile, so a terminal opens **bash**. To get zsh in VS Code, add:
-
-```jsonc
-"customizations": { "vscode": { "settings": {
-  "terminal.integrated.defaultProfile.linux": "zsh"
-} } }
-```
+The templates set `terminal.integrated.defaultProfile.linux` to `zsh`, so a VS Code terminal opens **zsh**.
+Remove or override that setting (any settings layer) to get bash. Opt-in key, tmux and font files for the
+integrated terminal are in [`../templates/vscode/`](../templates/vscode/README.md).
 
 This changes the VS Code terminal only. `docker exec`, `ssh`, tasks and `$SHELL` still use bash. To
 change them as well, change the login shell (`chsh -s /usr/bin/zsh vscode`, or in the image).

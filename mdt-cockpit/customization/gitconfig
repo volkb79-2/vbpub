@@ -1,0 +1,18 @@
+# mdt-cockpit system git defaults, installed as /etc/gitconfig (the lowest-precedence
+# file: ~/.gitconfig and a repository's own config override every key here).
+[core]
+	# Only used when output is a terminal; piped output (scripts, agents) is untouched.
+	pager = delta
+[interactive]
+	diffFilter = delta --color-only
+[delta]
+	navigate = true
+	line-numbers = true
+[merge]
+	conflictStyle = zdiff3
+[diff]
+	colorMoved = default
+[push]
+	autoSetupRemote = true
+[init]
+	defaultBranch = main

@@ -40,6 +40,19 @@ applies it; check.sh verifies the live value and the persisted file; the devcont
 `pytest-of-*` (measured: ~312k of 524288 watches in use, ~284k directories in this repo, mostly worktrees and gate output).
 See `host-setup/README.md`, "inotify watch budget".
 
+## MDT-0NN - terminal key profile: verify, pick the documented default, and add remaining image tools
+
+Opened 2026-10-27. (1) `templates/vscode/` ships two opt-in key profiles and a client-side
+`keybindings.json` snippet; whether `workbench.action.terminal.sendSequence` keybindings still fire with
+`sendKeybindingsToShell` enabled, and whether `terminal.integrated.enableKittyKeyboardProtocol` exists in the
+deployed VS Code, are UNVERIFIED. Run the README recipe on the Windows client, then name one profile the
+documented default. (2) Requested for the image, not yet installed (need the pinned/checksummed staging
+path in `scripts/stage_tool_artifacts.py`): `ov` (pager), `dry` (Docker TUI), `yazi` (file manager), and
+`sss` (<https://git.azlux.fr/Azlux/sss>, not yet identified: the host blocks automated fetches). `dive`
+is already installed. (3) `tmux` and `broot` come from Debian packages; the `tmux.conf`, `gitconfig`,
+`inputrc` and `vimrc.local` defaults have runtime tests in `tests/runtime/test_system_defaults.py` that
+have not been run against a built image.
+
 ## MDT-004 - move to a persisted `/home/vscode` in mdt-cockpit
 
 **CLOSED 2026-10-18 (MDTC-01, Phase 1; runtime acceptance is MDT-010).** Redesigned as a

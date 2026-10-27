@@ -274,6 +274,8 @@ Container and system inspection, in-image:
 | `htop` | GitHub-sourced build with a shipped default config |
 | `zswap-status` | prints kernel zswap counters directly from sysfs/debugfs |
 | `lnav` | ncurses log/JSONL viewer with SQL queries over parsed fields — see below |
+| `tmux` | terminal multiplexer, **opt-in** (nothing starts it); `/etc/tmux.conf` ships the defaults, prefix Ctrl+Space — see [`templates/vscode/`](templates/vscode/README.md) |
+| `broot` | interactive directory tree navigator (Debian package) |
 
 apt priorities (`/etc/apt/preferences.d/debian-priorities`, by archive name): `stable-backports` **600** >
 `stable` **500** > `testing`, `oldstable`, `oldstable-backports` **100** (visible, never automatic). Backports
@@ -292,6 +294,12 @@ the shell defaults prefer `nvim` as `$EDITOR` when present. Every default is wir
 tool reads system-wide configuration — see [System-wide defaults](docs/DESIGN-GUIDE.md#system-wide-defaults).
 GitHub-release tools keep their manpages and completions where upstream ships them; `fd` is
 installed as both `fd` and Debian-compatible `fdfind`.
+
+Which modern replacements are worth shipping is guided by the community list
+[modern-unix](https://github.com/ibraheemdev/modern-unix) (a reference for candidates, not a
+specification: each tool is added deliberately, pinned and checksum-verified like the rest). System-wide
+git (`delta` as pager), readline, vim and tmux defaults are listed in
+[`customization/README.md`](customization/README.md).
 
 #### `lnav`: JSONL inspection
 

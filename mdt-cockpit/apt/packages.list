@@ -60,3 +60,5 @@ w3m                # terminal web browser — render STATIC HTML readably; JS-re
 wget               # downloader (alternative to curl)
 xz-utils           # xz (de)compression (e.g. the shellcheck tarball)
 skopeo             # inspect / copy OCI images without a Docker daemon (base install from trixie; upgraded from Debian testing in a separate RUN layer)
+tmux               # terminal multiplexer (opt-in; /etc/tmux.conf ships the defaults, nothing starts it)
+broot              # interactive directory tree navigator (modern-unix: tree)

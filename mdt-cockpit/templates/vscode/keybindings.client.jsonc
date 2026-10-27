@@ -1,0 +1,27 @@
+// CLIENT-SIDE keybindings. keybindings.json belongs to the VS Code user profile on the machine
+// running the VS Code window (Windows for you), NOT to the devcontainer: a devcontainer.json cannot
+// set keybindings. Open "Preferences: Open Keyboard Shortcuts (JSON)" and merge these entries.
+[
+  // Shift+Backspace deletes the previous word in bash/readline. A terminal sends the same byte for
+  // Backspace and Shift+Backspace, so VS Code injects Alt+Backspace (ESC DEL) instead.
+  {
+    "key": "shift+backspace",
+    "command": "workbench.action.terminal.sendSequence",
+    "when": "terminalFocus",
+    "args": { "text": "\u001b\u007f" }
+  },
+  // A way back to the editor that no terminal program uses.
+  {
+    "key": "ctrl+shift+escape",
+    "command": "workbench.action.focusActiveEditorGroup",
+    "when": "terminalFocus"
+  }
+  // Shift+Enter as a newline in agent CLIs, only if the program does not already receive it
+  // (CSI-u form, as documented by OpenCode). Fallback: "\u001b\r" sends Alt+Enter instead.
+  // , {
+  //   "key": "shift+enter",
+  //   "command": "workbench.action.terminal.sendSequence",
+  //   "when": "terminalFocus",
+  //   "args": { "text": "\u001b[13;2u" }
+  // }
+]

@@ -1,0 +1,22 @@
+// OPT-IN terminal key profile "terminal-first": most keys go to the terminal while it has focus.
+// Merge into the settings layer you use (workspace .vscode/settings.json, the devcontainer's
+// customizations.vscode.settings, or User settings). See README.md for the layers and the test recipe.
+//
+// Cost: while a terminal has focus, shortcuts such as Ctrl+P, Ctrl+F and F1 reach the program in
+// the terminal, not VS Code. Click out of the terminal (or use the editor-focus key from
+// keybindings.client.jsonc) to get them back.
+//
+// UNTESTED COMBINATION: whether your own workbench.action.terminal.sendSequence keybindings
+// (keybindings.client.jsonc) still fire with sendKeybindingsToShell on is unverified; see README.md
+// "Verify before you rely on it".
+{
+  "terminal.integrated.sendKeybindingsToShell": true,
+  // Ctrl+K, Ctrl+X ... reach the program at once instead of waiting for a VS Code chord's second key.
+  "terminal.integrated.allowChords": false,
+  // Alt+<letter> reaches the program instead of opening a menu.
+  "terminal.integrated.allowMnemonics": false
+  // Shift+Enter and other modified keys in agent CLIs. NAME UNVERIFIED against your VS Code
+  // version (from a third-party note): uncomment, open a NEW terminal, test, and remove it if
+  // control sequences such as "[99;5u" appear.
+  // , "terminal.integrated.enableKittyKeyboardProtocol": true
+}

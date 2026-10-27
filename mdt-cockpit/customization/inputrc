@@ -1,0 +1,16 @@
+
+# >>> mdt-cockpit readline defaults (appended to /etc/inputrc)
+# A user ~/.inputrc REPLACES /etc/inputrc; start it with `$include /etc/inputrc` to keep these.
+set completion-ignore-case on
+set show-all-if-ambiguous on
+set colored-stats on
+set mark-symlinked-directories on
+# Up/Down search history for what is already typed (plain history on an empty line).
+"\e[A": history-search-backward
+"\e[B": history-search-forward
+# Ctrl+arrows move by word, Ctrl+Delete and Alt+Backspace delete by word.
+"\e[1;5C": forward-word
+"\e[1;5D": backward-word
+"\e[3;5~": kill-word
+"\e\C-?": backward-kill-word
+# <<< mdt-cockpit readline defaults
