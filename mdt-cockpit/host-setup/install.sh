@@ -898,9 +898,15 @@ install -m 0644 "$HERE/units/docker-api-socket.conf" \
 # large workspace ("unable to watch for file changes ... ENOSPC"). Fixed path, no
 # template variables, so installed directly. `sysctl -p <file>` applies only this
 # file now; the sysctl.d copy re-applies it at every boot. MDT-003.
+# Non-fatal: an unprivileged or read-only /proc/sys must not abort the governance install.
+# Never lowers a limit the host already has above ours.
 install -m 0644 "$HERE/etc/sysctl.d/99-inotify.conf" /etc/sysctl.d/99-mdt-inotify.conf
-sysctl -q -p /etc/sysctl.d/99-mdt-inotify.conf \
-  || { echo "ERROR: sysctl -p failed for /etc/sysctl.d/99-mdt-inotify.conf" >&2; exit 1; }
+_want_watches=$(awk -F= '/^[[:space:]]*fs\.inotify\.max_user_watches[[:space:]]*=/ {gsub(/[[:space:]]/,"",$2); print $2}' /etc/sysctl.d/99-mdt-inotify.conf | tail -1)
+_have_watches=$(cat /proc/sys/fs/inotify/max_user_watches 2>/dev/null || echo 0)
+if [ "${_have_watches:-0}" -lt "${_want_watches:-0}" ]; then
+  sysctl -q -p /etc/sysctl.d/99-mdt-inotify.conf \
+    || echo "WARN: could not apply fs.inotify.max_user_watches now; /etc/sysctl.d/99-mdt-inotify.conf applies it at next boot" >&2
+fi
 
 # /run/cgprofile tmpfiles.d entry (RG-55 A2/D-30, M5): the directory
 # templates/devcontainer.json bind-mounts to reach the cgroup-profiler

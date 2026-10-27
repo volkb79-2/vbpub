@@ -5,7 +5,7 @@ Nothing here is applied by the template. Each file is a copy-in snippet; pick wh
 | File | Where it applies | What it does |
 |---|---|---|
 | `terminal-keys-terminal-first.settings.jsonc` | settings (container or user) | Sends most keys to the terminal while it has focus. |
-| `terminal-keys-balanced.settings.jsonc` | settings (container or user) | Keeps VS Code shortcuts, releases the keys mc, vim, readline, tmux and agent CLIs use. |
+| `terminal-keys-balanced.settings.jsonc` | settings (container or user) | Keeps most VS Code shortcuts; releases a listed set (Ctrl+J, Ctrl+P/E, F1, Ctrl+F, F3-F11 family) to the terminal. The file lists what each removal costs. |
 | `terminal-tmux.settings.jsonc` | settings (container or user) | Adds a "tmux" terminal profile (attach-or-create session `main`). |
 | `keybindings.client.jsonc` | **client** `keybindings.json` | Shift+Backspace as delete-word, an editor-focus key, optional Shift+Enter. |
 
@@ -50,6 +50,6 @@ a service) or inside tmux in a container that stays up (`shutdownAction: "none"`
 
 ## Entering the container without VS Code
 
-On the Docker host: `docker exec -it -u vscode <folder>-devcontainer-<USER> zsh`. That shell lacks
+On the Docker host: `docker exec -it -u vscode <container> zsh`, where the container is `<folder>-devcontainer-<USER>` (per-repo template) or `mdt-cockpit-<USER>` (host-folder template); `docker ps --format '{{.Names}}'` lists it. That shell lacks
 VS Code's environment (`SSH_AUTH_SOCK`, `BROWSER`, the git credential helper). A tmux session started in a
 VS Code terminal can be attached from there with `tmux attach -t main`.

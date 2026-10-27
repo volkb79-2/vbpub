@@ -10,9 +10,10 @@
     "when": "terminalFocus",
     "args": { "text": "\u001b\u007f" }
   },
-  // A way back to the editor that no terminal program uses.
+  // A way back to the editor. Not Ctrl+Shift+Escape: Windows reserves it for Task Manager and never
+  // delivers it. Ctrl+Shift+E overrides the Explorer shortcut only while a terminal has focus.
   {
-    "key": "ctrl+shift+escape",
+    "key": "ctrl+shift+e",
     "command": "workbench.action.focusActiveEditorGroup",
     "when": "terminalFocus"
   }

@@ -345,6 +345,10 @@ with an empty home.
 | nano | `include` appended to `/etc/nanorc` | none | `/etc/nanorc`, then `~/.nanorc`/`~/.config/nano/nanorc` (per-setting override) |
 | htop | `/etc/htoprc` | none (htop writes its own file when you save settings) | `~/.config/htop/htoprc`, `~/.htoprc`, then `/etc/htoprc` |
 | mc | `/etc/mc/mc.ini` | none | `~/.config/mc/ini`, then `/etc/mc/mc.ini`, then `/usr/share/mc/mc.ini` |
+| tmux | `/etc/tmux.conf` | none (tmux is opt-in) | `/etc/tmux.conf`, then `~/.tmux.conf` or `~/.config/tmux/tmux.conf` (later settings win) |
+| git | appended to `/etc/gitconfig` | none | system, then `~/.gitconfig`, then the repository's config (later wins) |
+| readline (bash) | appended to `/etc/inputrc` | none | `~/.inputrc` REPLACES `/etc/inputrc`; start it with `$include /etc/inputrc` to keep the defaults. zsh gets the same keys from `zshrc`, not from inputrc |
+| vim | `/etc/vim/vimrc.local`, sourced by Debian's `/etc/vim/vimrc` | none | `/etc/vim/vimrc`, then `~/.vimrc` (later wins) |
 | Neovim / NvChad | `/etc/xdg/nvim/` (tree + `sysinit.vim`) | none (a starter-style tree would keep its plugins in `~/.local/share/nvim`) | Neovim itself starts `$XDG_CONFIG_DIRS/nvim/init.lua` while the user has no `init.lua`/`init.vim`, so creating one replaces the default; `sysinit.vim` only redirects a `configs.lazy` lockfile into `~/.local/state/nvim` (proven with a fixture tree, not with the shipped one - MDT-011) |
 | less | `LESSOPEN` in `shell.env` | none | environment variable |
 | MDT shell files | `/usr/local/share/mdt-cockpit/{shell.env,aliases.sh}` | none | the user's `~/.config/mdt-cockpit/` files are sourced *after* and may override; `ai.env` has no image default |

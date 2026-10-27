@@ -34,6 +34,19 @@ fi
 # fzf is unavailable or its integration is disabled.
 bindkey -e
 bindkey '^R' history-incremental-search-backward
+# Same word and history keys as customization/inputrc gives bash. Both arrow encodings
+# (normal and application cursor mode); Ctrl+arrows, Ctrl+Delete, Alt+Backspace.
+autoload -Uz up-line-or-beginning-search down-line-or-beginning-search
+zle -N up-line-or-beginning-search
+zle -N down-line-or-beginning-search
+bindkey '^[[A' up-line-or-beginning-search
+bindkey '^[OA' up-line-or-beginning-search
+bindkey '^[[B' down-line-or-beginning-search
+bindkey '^[OB' down-line-or-beginning-search
+bindkey '^[[1;5C' forward-word
+bindkey '^[[1;5D' backward-word
+bindkey '^[[3;5~' kill-word
+bindkey '^[^?' backward-kill-word
 
 # Debian packages provide these without requiring a framework such as Oh My Zsh.
 if [[ -r /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh ]]; then

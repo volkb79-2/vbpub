@@ -8,6 +8,8 @@ set mark-symlinked-directories on
 # Up/Down search history for what is already typed (plain history on an empty line).
 "\e[A": history-search-backward
 "\e[B": history-search-forward
+"\eOA": history-search-backward
+"\eOB": history-search-forward
 # Ctrl+arrows move by word, Ctrl+Delete and Alt+Backspace delete by word.
 "\e[1;5C": forward-word
 "\e[1;5D": backward-word

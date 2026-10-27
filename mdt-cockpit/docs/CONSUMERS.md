@@ -527,7 +527,7 @@ entries plus the Debian default. See [One PATH order](DESIGN-GUIDE.md#one-path-o
 ## Shell selection and configuration
 
 A VS Code terminal opens **bash** unless the devcontainer sets
-`terminal.integrated.defaultProfile.linux` (the templates do not). To get zsh in VS Code:
+`terminal.integrated.defaultProfile.linux` (the templates set it to `zsh`). To set it yourself:
 
 ```jsonc
 "customizations": { "vscode": { "settings": {

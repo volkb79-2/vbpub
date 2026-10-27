@@ -1,11 +1,18 @@
 // OPT-IN terminal key profile "balanced": VS Code shortcuts keep working, and the keys that
 // mc, vim, readline, tmux and agent CLIs need are released to the terminal. Merge into the settings
 // layer you use (see README.md). A leading "-" removes a command from VS Code's skip-shell list,
-// so its key is sent to the program instead.
+// so the key that runs it is sent to the program instead.
 //
 // Keep ONE key profile: do not combine this file with terminal-keys-terminal-first.settings.jsonc.
-// The list is not exhaustive. When a key is still stolen, run "Developer: Toggle Keyboard
-// Shortcuts Troubleshooting", press the key once in the terminal and add the command it names.
+// UNVERIFIED: the command ids below were taken from third-party notes and VS Code's skip-shell
+// list as remembered; an id that is not in the list does nothing. When a key is still stolen, run
+// "Developer: Toggle Keyboard Shortcuts Troubleshooting", press the key once in the terminal and
+// add the command it names.
+//
+// What each removal costs while a terminal has focus (the shortcut stops working there):
+//   togglePanel (Ctrl+J), quickOpen (Ctrl+P, Ctrl+E), showCommands (F1 and Ctrl+Shift+P),
+//   focusFindWidget (Ctrl+F in the terminal), findNext/findPrevious (F3, Shift+F3),
+//   goTo*Reference (F4, Shift+F4), debug.* and toggleFullScreen (F5-F11 family).
 {
   "terminal.integrated.sendKeybindingsToShell": false,
   "terminal.integrated.allowChords": false,
@@ -35,9 +42,6 @@
     "-workbench.action.debug.stepOver",
     "-workbench.action.debug.stepInto",
     "-workbench.action.debug.stepOut",
-    "-workbench.action.toggleFullScreen",
-    // PageUp / PageDown in less, mc, vim and agent transcripts
-    "-workbench.action.terminal.scrollUpPage",
-    "-workbench.action.terminal.scrollDownPage"
+    "-workbench.action.toggleFullScreen"
   ]
 }

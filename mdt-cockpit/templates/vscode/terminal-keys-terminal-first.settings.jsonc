@@ -3,8 +3,8 @@
 // customizations.vscode.settings, or User settings). See README.md for the layers and the test recipe.
 //
 // Cost: while a terminal has focus, shortcuts such as Ctrl+P, Ctrl+F and F1 reach the program in
-// the terminal, not VS Code. Click out of the terminal (or use the editor-focus key from
-// keybindings.client.jsonc) to get them back.
+// the terminal, not VS Code. Click out of the terminal (or use the editor-focus key,
+// Ctrl+Shift+E, from keybindings.client.jsonc) to get them back.
 //
 // UNTESTED COMBINATION: whether your own workbench.action.terminal.sendSequence keybindings
 // (keybindings.client.jsonc) still fire with sendKeybindingsToShell on is unverified; see README.md

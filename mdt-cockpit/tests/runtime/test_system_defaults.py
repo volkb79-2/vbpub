@@ -92,8 +92,10 @@ class Contract:
 
     # tmux / git / readline / vim: non-interactive observables ----------------------
     def test_tmux_reads_the_system_conf_and_a_user_conf_overrides_it(self) -> None:
-        """Observable: the prefix and history-limit tmux reports for a detached server."""
-        default = self.box("tmux new-session -d -s probe && tmux show-options -g prefix history-limit mouse")
+        """Observable: the prefix, history-limit and mouse values tmux reports (one option per call)."""
+        default = self.box(
+            "tmux new-session -d -s probe && for o in prefix history-limit mouse; do tmux show-options -g $o; done"
+        )
         self.assertOk(default)
         self.assertIn("prefix C-Space", default.stdout)
         self.assertIn("history-limit 10000", default.stdout)
@@ -111,19 +113,22 @@ class Contract:
         self.assertEqual(override.stdout.split(), ["cat"])
 
     def test_readline_defaults_are_appended_to_the_system_inputrc_and_a_user_inputrc_replaces_it(self) -> None:
-        """Observable: bind -p output; a user ~/.inputrc replaces /etc/inputrc unless it includes it."""
-        default = self.box("bash -ic 'bind -p' 2>/dev/null | grep -F -e history-search-backward -e backward-kill-word")
-        self.assertOk(default)
-        self.assertIn('"\\e[A": history-search-backward', default.stdout)
-        replaced = self.box("printf 'set bell-style none\\n' > ~/.inputrc; bash -ic 'bind -p' 2>/dev/null | grep -c history-search-backward || true")
+        """Observable: the exact binding line in `bind -p`; a user ~/.inputrc replaces /etc/inputrc."""
+        line = "'\"\\e[A\": history-search-backward'"
+        default = self.box(f"bash -ic 'bind -p' 2>/dev/null | grep -cF {line} || true")
+        self.assertEqual(default.stdout.strip(), "1")
+        replaced = self.box(
+            f"printf 'set bell-style none\\n' > ~/.inputrc; bash -ic 'bind -p' 2>/dev/null | grep -cF {line} || true"
+        )
         self.assertEqual(replaced.stdout.strip(), "0")
 
     def test_vim_reads_the_system_vimrc_local(self) -> None:
-        """Observable: shiftwidth/expandtab as vim reports them in ex mode."""
-        result = self.box("vim -es -c 'redir @a | set shiftwidth? expandtab? | redir END' -c 'put a' -c '%p' -c 'q!' /dev/null")
+        """Observable: shiftwidth and expandtab. `vim -es` skips initialisation, so load the system vimrc explicitly."""
+        result = self.box(
+            "vim -N -u /etc/vim/vimrc -es -c 'call writefile([\"SW=\".&sw.\" ET=\".&et], \"/dev/stdout\")' -c 'q!'"
+        )
         self.assertOk(result)
-        self.assertRegex(result.stdout, r"shiftwidth=4")
-        self.assertIn("expandtab", result.stdout)
+        self.assertIn("SW=4 ET=1", result.stdout)
 
     # zsh --------------------------------------------------------------------------
     def test_zsh_loads_the_system_default_and_the_users_zshrc_overrides_it(self) -> None:
@@ -181,6 +186,8 @@ class Contract:
         sources = {
             "/etc/htoprc": "customization/htoprc",
             "/etc/mc/mc.ini": "customization/mc.ini",
+            "/etc/tmux.conf": "customization/tmux.conf",
+            "/etc/vim/vimrc.local": "customization/vimrc.local",
             "/etc/xdg/nvim/sysinit.vim": "customization/nvim/sysinit.vim",
             "/usr/local/share/mdt-cockpit/bashrc": "customization/bashrc",
             "/usr/local/share/mdt-cockpit/zshrc": "customization/zshrc",

@@ -40,7 +40,7 @@ applies it; check.sh verifies the live value and the persisted file; the devcont
 `pytest-of-*` (measured: ~312k of 524288 watches in use, ~284k directories in this repo, mostly worktrees and gate output).
 See `host-setup/README.md`, "inotify watch budget".
 
-## MDT-0NN - terminal key profile: verify, pick the documented default, and add remaining image tools
+## MDT-027 - terminal key profile: verify, pick the documented default, and add remaining image tools
 
 Opened 2026-10-27. (1) `templates/vscode/` ships two opt-in key profiles and a client-side
 `keybindings.json` snippet; whether `workbench.action.terminal.sendSequence` keybindings still fire with

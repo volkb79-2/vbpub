@@ -1129,7 +1129,7 @@ RUN set -euo pipefail; \
     /opt/mdt/venv/bin/pip list --format=freeze > "${python_packages_file}"; \
     dpkg-query -W -f='${Package}=${Version}\n' \
         bash-completion ca-certificates locales curl bind9-dnsutils fuse3 gdb git git-lfs gnupg gzip httpie iputils-ping jq less lsb-release lsof man-db mc nano \
-        netcat-openbsd ncdu openssl python3-venv psmisc rsync sqlite3 strace sshfs tar tree unzip vim w3m wget xz-utils skopeo \
+        netcat-openbsd ncdu openssl python3-venv psmisc rsync sqlite3 strace sshfs tar tree unzip vim w3m wget xz-utils skopeo tmux broot \
         postgresql-client redis-tools > "${system_packages_file}"; \
     if [ "${INSTALL_PHP}" = "true" ]; then \
         dpkg-query -W -f='${Package}=${Version}\n' \

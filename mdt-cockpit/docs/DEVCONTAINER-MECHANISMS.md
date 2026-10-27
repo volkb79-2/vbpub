@@ -153,8 +153,8 @@ see:
   environment for the server. It runs the login **and** interactive startup files, so a slow or
   noisy rc file affects every VS Code start.
 - **`customizations.vscode.settings` and `extensions`** come from the `devcontainer.json`.
-  The template sets `python.defaultInterpreterPath` only; it sets no terminal profile (see
-  [Shell selection](#shell-selection)).
+  The template sets `python.defaultInterpreterPath`, the zsh terminal profile, scrollback, persistent
+  sessions and the watcher/Git excludes (see [Shell selection](#shell-selection)).
 - **`shutdownAction: "none"`** keeps the container running when the VS Code window closes.
 
 ## 6. `postCreateCommand`: finalizer (phase 4)
@@ -344,7 +344,7 @@ is a less standard language; scripts should stay bash or POSIX sh.
 | Symptom | Cause | Fix |
 |---|---|---|
 | A directory named like `mdt-cockpit-${localWorkspaceFolderBasename}-home` appears in `$HOME` | The initializer creates sources before the Dev Containers CLI substitutes variables and expanded only `${localEnv:HOME}` | Use an initializer that also expands `${localWorkspaceFolderBasename}` (current template); remove the stray empty directories. Do not use other `${...}` variables in `$HOME` bind sources. |
-| Terminal opens bash, expected zsh | No terminal profile set; passwd shell is bash | [Shell selection](#shell-selection) |
+| Terminal opens bash, expected zsh | The profile setting was removed or overridden in a settings layer; passwd shell is bash | [Shell selection](#shell-selection) |
 | `PATH` entry missing in a login shell | Entry set in a file only bash reads | `containerEnv.PATH`, or `shell.env` |
 | Alias or function missing in zsh | Defined in `~/.bashrc` or a bash-guarded `/etc/profile.d` script | Move to `~/.config/mdt-cockpit/aliases.sh` |
 | Container refuses to start at phase 1 | A slice is missing, transient or not installed | `sudo ./host-setup/install.sh --wizard`, `sudo mdt-host-check.sh` |

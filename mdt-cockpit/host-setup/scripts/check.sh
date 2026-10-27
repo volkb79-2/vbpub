@@ -847,8 +847,13 @@ case "${WATCHER_MEMORY_POLICY:-}" in
 esac
 
 echo "== inotify watch budget (VS Code workspace watcher, MDT-003) =="
-want_watches=$(awk -F= '/^[[:space:]]*fs\.inotify\.max_user_watches[[:space:]]*=/ {gsub(/[[:space:]]/,"",$2); print $2}' \
-  "$(dirname "$0")/etc/sysctl.d/99-inotify.conf" /etc/sysctl.d/99-mdt-inotify.conf 2>/dev/null | tail -1)
+# The threshold is the value the installer applied; 524288 when that file is absent (e.g. never installed).
+want_watches=""
+for _wf in "$(dirname "$0")/../etc/sysctl.d/99-inotify.conf" /etc/sysctl.d/99-mdt-inotify.conf; do
+  [ -r "$_wf" ] || continue
+  want_watches=$(awk -F= '/^[[:space:]]*fs\.inotify\.max_user_watches[[:space:]]*=/ {gsub(/[[:space:]]/,"",$2); print $2}' "$_wf" | tail -1)
+  [ -n "$want_watches" ] && break
+done
 have_watches=$(cat /proc/sys/fs/inotify/max_user_watches 2>/dev/null || echo "")
 want_watches="${want_watches:-524288}"
 if [ -z "$have_watches" ]; then
