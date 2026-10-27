@@ -486,19 +486,27 @@ class Probe(threading.Thread):
 # Output
 # --------------------------------------------------------------------------
 class Writer:
+    """Size-capped, segment-rotating JSONL writer.  Thread-safe: every public method takes one
+    lock, so concurrent writers (the eBPF supervisor's reader threads plus its main loop) can
+    never see a segment closed under them."""
+
     def __init__(self, out_dir, cap_bytes, segment_bytes=SEGMENT_BYTES, prefix="samples-"):
         self.dir, self.cap, self.seg_max, self.prefix = out_dir, cap_bytes, segment_bytes, prefix
         self.f, self.size = None, 0
+        self._lock = threading.Lock()
+        self._seq = 0
 
     def _open(self):
         if self.f:
             self.f.close()
-        name = self.prefix + dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ") + ".jsonl"
+        self._seq += 1
+        name = (self.prefix + dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+                + f"-{self._seq:04d}.jsonl")
         self.f = open(os.path.join(self.dir, name), "a", buffering=1)
         self.size = 0
-        self.enforce_cap()
+        self._enforce_cap()
 
-    def enforce_cap(self):
+    def _enforce_cap(self):
         files = sorted(x for x in os.listdir(self.dir) if x.startswith(self.prefix))
         sizes = {x: os.path.getsize(os.path.join(self.dir, x)) for x in files}
         total = sum(sizes.values())
@@ -508,16 +516,23 @@ class Writer:
             os.unlink(os.path.join(self.dir, x))
             total -= sizes[x]
 
+    def enforce_cap(self):
+        with self._lock:
+            self._enforce_cap()
+
     def write(self, obj):
         line = json.dumps(obj, separators=(",", ":")) + "\n"
-        if self.f is None or self.size + len(line) > self.seg_max:
-            self._open()
-        self.f.write(line)
-        self.size += len(line)
+        with self._lock:
+            if self.f is None or self.size + len(line) > self.seg_max:
+                self._open()
+            self.f.write(line)
+            self.size += len(line)
 
     def close(self):
-        if self.f:
-            self.f.close()
+        with self._lock:
+            if self.f:
+                self.f.close()
+                self.f = None
 
 
 # --------------------------------------------------------------------------
@@ -682,6 +697,9 @@ def cmd_run(a):
     return 0
 
 
+DEFAULT_BPF_NAME = "iomon-bpf-20261027"
+
+
 def cmd_stop(a):
     p = os.path.join(a.out, "STOP")
     open(p, "w").close()
@@ -690,6 +708,13 @@ def cmd_stop(a):
     if os.path.isdir(bpf):
         open(os.path.join(bpf, "STOP-BPF"), "w").close()
         print("STOP-BPF marker written:", bpf)
+        print(f"If the collector container is still up after ~60 s: docker stop -t 60 {a.bpf_name}")
+    else:
+        why = "dangling symlink" if os.path.islink(bpf) else "missing"
+        print(f"WARNING: {bpf} is {why}: the eBPF collector (if one is running) was NOT told to stop.\n"
+              f"WARNING: stop it by exact name: docker stop -t 60 {a.bpf_name}\n"
+              f"WARNING: (the container name given to run.sh --name; default {DEFAULT_BPF_NAME}), or "
+              f"touch STOP-BPF in its output directory.", file=sys.stderr)
     return 0
 
 
@@ -1058,7 +1083,7 @@ def analyze_bpf(recs, t0, t1, shorts, out=print):
                 f"io-psi total d(some/full)={dv['io_psi'].get('some', {}).get('tot', 0) / 1e3:.0f}/"
                 f"{dv['io_psi'].get('full', {}).get('tot', 0) / 1e3:.0f} ms  "
                 f"mem.high events d={dv['mem_events'].get('high')}  mem-psi some d={dv['memory_psi'].get('some', {}).get('tot', 0) / 1e3:.0f} ms")
-        for name in ("wings.slice", "dev.slice"):
+        for name in sorted(k for k in f1 if k.endswith(".slice")):  # slices the collector was told to watch
             b = f1.get(name)
             if b:
                 dv = counter_delta(f0.get(name), b)
@@ -1142,6 +1167,7 @@ def main(argv=None):
     an.add_argument("--gap", type=float, default=10.0)
     s = sub.add_parser("stop")
     s.add_argument("--out", required=True)
+    s.add_argument("--bpf-name", default=DEFAULT_BPF_NAME, help="collector container name (for the docker stop hint)")
     a = ap.parse_args(argv)
     return {"run": cmd_run, "analyze": cmd_analyze, "stop": cmd_stop}[a.cmd](a)
 

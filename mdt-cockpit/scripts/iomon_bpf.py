@@ -15,7 +15,10 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import logging
+import logging.handlers
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -32,8 +35,16 @@ MEM_STAT_KEYS = ("anon", "file", "file_dirty", "file_writeback", "pgmajfault", "
                  "swapcached", "pswpin", "pswpout")
 
 
+FULL_ID = re.compile(r"[0-9a-f]{64}")
+DEFAULT_SLICES = ("wings.slice", "dev.slice", "dev-background.slice", "dev-interactive.slice")  # examples
+SLICE_NAME = re.compile(r"[A-Za-z0-9_.@:-]+\.slice")
+
+
 def resolve_scope(ident):
-    """Container ID (>= 12 hex chars) -> (scope dir, kernfs id) or (None, 0)."""
+    """Full 64-hex container ID -> (scope dir, kernfs id) or (None, 0).  Anything else (empty,
+    short prefix, glob characters) is rejected instead of being fed to glob()."""
+    if not isinstance(ident, str) or not FULL_ID.fullmatch(ident):
+        return None, 0
     for pat in (f"{HOSTCG}/*/docker-{ident}*.scope", f"{HOSTCG}/*/*/docker-{ident}*.scope"):
         for p in glob.glob(pat):
             return p, os.stat(p).st_ino
@@ -80,12 +91,17 @@ def parse_io_stat(text):
 
 
 def parse_psi(text):
+    """PSI file -> {'some': {a10, tot}, ...}; a malformed line is skipped, never raised."""
     out = {}
     for line in (text or "").splitlines():
         p = line.split()
-        if p:
+        if not p:
+            continue
+        try:
             kv = dict(x.split("=", 1) for x in p[1:])
             out[p[0]] = {"a10": float(kv["avg10"]), "tot": int(kv["total"])}
+        except (ValueError, KeyError):
+            continue
     return out
 
 
@@ -153,6 +169,8 @@ def preload_check(scope):
     if not scope:
         return out
     for pid in (read(f"{scope}/cgroup.procs") or "").split():
+        if not pid.isdigit():
+            continue
         maps = read(f"/proc/{pid}/maps")
         comm = (read(f"/proc/{pid}/comm") or "?").strip()
         if maps is None:
@@ -171,26 +189,41 @@ class Bpf:
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
         self.helper_errors = 0
         for fn in (self._out, self._err):
-            threading.Thread(target=fn, daemon=True).start()
+            threading.Thread(target=self._guard, args=(fn,), daemon=True).start()
+
+    def _guard(self, fn):
+        """A reader thread must never die silently: log and keep reading the next line."""
+        try:
+            fn()
+        except Exception as e:  # noqa: BLE001
+            self.log(f"bpftrace[{self.name}] reader {fn.__name__} died: {e!r}")
+
+    def _handle_out(self, line):
+        line = line.strip()
+        if not line:
+            return
+        try:
+            o = json.loads(line)
+        except ValueError:
+            o = {"type": "raw", "line": line[:500]}
+        if not isinstance(o, dict):
+            o = {"type": "raw", "line": line[:500]}
+        if o.get("type") == "helper_error":
+            self.helper_errors += 1
+            return
+        if o.get("type") == "printf":
+            try:
+                o = json.loads(o["data"])
+            except (ValueError, KeyError, TypeError):
+                pass
+        self.w.write({"k": "bpf", "t": round(time.time(), 3), "src": self.name, "o": o})
 
     def _out(self):
         for line in self.p.stdout:
-            line = line.strip()
-            if not line:
-                continue
             try:
-                o = json.loads(line)
-            except ValueError:
-                o = {"type": "raw", "line": line[:500]}
-            if o.get("type") == "helper_error":
-                self.helper_errors += 1
-                continue
-            if o.get("type") == "printf":
-                try:
-                    o = json.loads(o["data"])
-                except ValueError:
-                    pass
-            self.w.write({"k": "bpf", "t": round(time.time(), 3), "src": self.name, "o": o})
+                self._handle_out(line)
+            except Exception as e:  # noqa: BLE001 - one bad line/record must not end the reader
+                self.log(f"bpftrace[{self.name}] dropped a record: {e!r}")
 
     def _err(self):
         for line in self.p.stderr:
@@ -203,32 +236,75 @@ class Bpf:
         except (OSError, IndexError, ValueError):
             return 0
 
-    def stop(self):
+    def signal_stop(self):
         if self.p.poll() is None:
-            self.p.send_signal(signal.SIGINT)
             try:
-                self.p.wait(10)
-            except subprocess.TimeoutExpired:
-                self.p.kill()
+                self.p.send_signal(signal.SIGINT)
+            except OSError:
+                pass
+
+    def stop(self, timeout=10.0):
+        self.signal_stop()
+        try:
+            self.p.wait(timeout)
+        except subprocess.TimeoutExpired:
+            self.p.kill()
+            self.p.wait()
+
+
+STOP_BUDGET = 15.0  # total seconds for all bpftrace children; docker stop -t 60 leaves ample margin
+
+
+def stop_all(procs, budget=STOP_BUDGET):
+    """SIGINT every child at once, then wait on ONE shared deadline (not 10 s per child), kill
+    the stragglers.  Worst case ~budget seconds regardless of the number of children."""
+    for p in procs:
+        p.signal_stop()
+    deadline = time.monotonic() + budget
+    for p in procs:
+        p.stop(max(deadline - time.monotonic(), 0.1))
+
+
+def make_logger(out_dir, max_bytes=2_000_000, backups=1):
+    """Rotating log: hard maximum on disk is max_bytes * (backups + 1)."""
+    lg = logging.getLogger("iomon_bpf")
+    lg.setLevel(logging.INFO)
+    lg.propagate = False
+    for h in list(lg.handlers):
+        lg.removeHandler(h)
+        h.close()
+    h = logging.handlers.RotatingFileHandler(os.path.join(out_dir, "iomon-bpf.log"),
+                                             maxBytes=max_bytes, backupCount=backups)
+    h.setFormatter(logging.Formatter("%(asctime)sZ %(message)s"))
+    h.formatter.converter = time.gmtime
+    lg.addHandler(h)
+    return lg.info
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="/out")
-    ap.add_argument("--container", action="append", required=True, help="container ID (>=12 hex)")
+    ap.add_argument("--container", action="append", required=True, help="full 64-hex container ID")
+    ap.add_argument("--slice", action="append", dest="slices", default=None,
+                    help="extra top-level cgroup slice to sample (repeatable; default: examples %s)"
+                    % ", ".join(DEFAULT_SLICES))
     ap.add_argument("--max-hours", type=float, default=8.0)
     ap.add_argument("--cap-mb", type=float, default=80.0)
     ap.add_argument("--interval", type=float, default=5.0)
     a = ap.parse_args()
     if len(a.container) > 2:
         sys.exit("at most two watched containers (bpftrace params $1/$2)")
+    for c in a.container:
+        if not FULL_ID.fullmatch(c):
+            sys.exit(f"--container must be a full 64-hex ID, got {c[:20]!r}")
+    for sl in a.slices or ():
+        if not SLICE_NAME.fullmatch(sl):
+            sys.exit(f"bad --slice name {sl!r}")
+    slices = tuple(a.slices) if a.slices is not None else DEFAULT_SLICES
     stopf = os.path.join(a.out, "STOP-BPF")
     legacy_stop = os.path.join(a.out, "STOP")
     w = Writer(a.out, int(a.cap_mb * 2**20), prefix="bpf-")
-    logf = open(os.path.join(a.out, "iomon-bpf.log"), "a", buffering=1)
-
-    def log(msg):
-        logf.write(time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()) + "Z " + msg + "\n")
+    log = make_logger(a.out)
 
     stop = threading.Event()
     for s in (signal.SIGTERM, signal.SIGINT):
@@ -243,7 +319,7 @@ def main():
             ids.append(ino)
         while len(ids) < 2:
             ids.append(0)
-        for extra in ("wings.slice", "dev.slice", "dev-background.slice", "dev-interactive.slice"):
+        for extra in slices:
             scopes[extra] = f"{HOSTCG}/{extra}" if os.path.isdir(f"{HOSTCG}/{extra}") else None
         return scopes, ids
 
@@ -266,38 +342,39 @@ def main():
             if time.monotonic() > end:
                 log("max runtime")
                 break
-            now = time.monotonic()
-            if now - last_map > 300:
-                w.write({"k": "cgmap", "t": round(time.time(), 3), "ids": {v: k for k, v in cgmap().items()}})
-                last_map = now
-            if now - last_res > 30:
-                last_res = now
-                ns, nids = resolve()
-                if nids != ids or any(p.p.poll() is not None for p in procs):
-                    log(f"restart bpftrace: ids {ids}->{nids} alive={[p.p.poll() is None for p in procs]}")
-                    for p in procs:
-                        p.stop()
-                    scopes, ids = ns, nids
-                    w.write({"k": "bpf_meta", "t": round(time.time(), 3), "cgroup_ids": ids, "scopes": scopes})
-                    procs = [Bpf("blk", "blk.bt", ids, w, log), Bpf("stall", "stall.bt", ids, w, log),
-                             Bpf("sync", "sync.bt", ids, w, log)]
-            if now - last_pre > 600:
-                last_pre = now
-                for name in [i[:12] for i in idents]:
-                    w.write({"k": "preload", "t": round(time.time(), 3), "ct": name,
-                             "procs": preload_check(scopes.get(name))})
-            rec = {"k": "cg", "t": round(time.time(), 3), "cg": cg_snapshot(scopes)}
-            if int(rec["t"]) % 60 < a.interval:
-                cpu = sum(p.cpu_ticks() for p in procs)
-                wall = time.monotonic()
-                rec["bpftrace_cpu_pct"] = round((cpu - last_cpu) / tick / max(wall - last_wall, 1e-9) * 100, 3)
-                rec["helper_errors"] = sum(p.helper_errors for p in procs)
-                last_cpu, last_wall = cpu, wall
-            w.write(rec)
+            try:
+                now = time.monotonic()
+                if now - last_map > 300:
+                    w.write({"k": "cgmap", "t": round(time.time(), 3), "ids": {v: k for k, v in cgmap().items()}})
+                    last_map = now
+                if now - last_res > 30:
+                    last_res = now
+                    ns, nids = resolve()
+                    if nids != ids or any(p.p.poll() is not None for p in procs):
+                        log(f"restart bpftrace: ids {ids}->{nids} alive={[p.p.poll() is None for p in procs]}")
+                        stop_all(procs)
+                        scopes, ids = ns, nids
+                        w.write({"k": "bpf_meta", "t": round(time.time(), 3), "cgroup_ids": ids, "scopes": scopes})
+                        procs = [Bpf("blk", "blk.bt", ids, w, log), Bpf("stall", "stall.bt", ids, w, log),
+                                 Bpf("sync", "sync.bt", ids, w, log)]
+                if now - last_pre > 600:
+                    last_pre = now
+                    for name in [i[:12] for i in idents]:
+                        w.write({"k": "preload", "t": round(time.time(), 3), "ct": name,
+                                 "procs": preload_check(scopes.get(name))})
+                rec = {"k": "cg", "t": round(time.time(), 3), "cg": cg_snapshot(scopes)}
+                if int(rec["t"]) % 60 < a.interval:
+                    cpu = sum(p.cpu_ticks() for p in procs)
+                    wall = time.monotonic()
+                    rec["bpftrace_cpu_pct"] = round((cpu - last_cpu) / tick / max(wall - last_wall, 1e-9) * 100, 3)
+                    rec["helper_errors"] = sum(p.helper_errors for p in procs)
+                    last_cpu, last_wall = cpu, wall
+                w.write(rec)
+            except Exception as e:  # noqa: BLE001 - one bad sample must not end the supervisor
+                log(f"sample iteration failed: {e!r}")
             stop.wait(a.interval)
     finally:
-        for p in procs:
-            p.stop()
+        stop_all(procs)
         w.close()
         for f in (stopf, legacy_stop):
             try:
