@@ -489,7 +489,7 @@ silently select a namespace setting or add a lane option that substitutes for
 kernel visibility. Candidate-time reader errors still use B145's
 `ERROR/EXEC_FAILED`, since a successful preflight cannot prove that
 observability stayed stable later. See
-the [design rationale](DESIGN-GUIDE.md#native-r2-cgroup-visibility-preflight-b148).
+the [design rationale](DESIGN-GUIDE.md#native-r2-cgroup-observation-b148a-494).
 
 From a clean Assay worktree, capture the gate output under `.assay/` so it does
 not dirty the judged tree:

@@ -312,8 +312,8 @@ assay exists to close that gap mechanically, not by policy:
   `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`. R0/R1 evidence is retained
   and independent R3 can still run. `assay plan --json` and `assay lanes --json`
   report current availability. See the
-  [design](docs/DESIGN-GUIDE.md#native-r2-cgroup-observation-b148-a-494)
-  and [consumer guidance](docs/CONSUMERS.md#native-r2-cgroup-observation-b148-a-494).
+  [design](docs/DESIGN-GUIDE.md#native-r2-cgroup-observation-b148a-494)
+  and [consumer guidance](docs/CONSUMERS.md#native-r2-cgroup-observation-b148a-494).
   If observation is lost or becomes ambiguous after the pre-candidate check,
   Assay stops R2 with `ERROR/EXEC_FAILED`; it never records that attempt as a
   product failure or mutation kill. Run-Gate reports the pre-candidate

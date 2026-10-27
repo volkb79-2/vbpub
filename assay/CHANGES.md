@@ -17,6 +17,14 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   B131 pilot checkers refuse records without it.
 - `assay plan` prints a human summary by default; the machine-readable plan is
   `assay plan --json` (B166). Scripts that parse its stdout must add `--json`.
+- The `assay analyze campaign` report is schema version 2 (was 1): `schema_version`
+  is const 2, `qualifying` is a boolean (always false for pilots and sharded
+  analyses) rather than const true, `complete_blockers` gains `shard_not_merged`,
+  and pilot analysis adds `plan_json`/`selection_file` evidence. Parsers pinned to
+  version 1 or to `qualifying == true` must be updated.
+- A coverage lane that pairs coverage with pytest fail-fast now warns
+  (`lane_validation_warnings`); the test extras pin `pytest-cov==7.1.0` and
+  `hypothesis==6.169.0` for the reviewed cold-witness hook implementations.
 - Native R2 reports `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` when the
   complete cgroup counter hierarchy is unavailable before any candidate starts;
   Run-Gate must be a release that maps it to an infrastructure error.

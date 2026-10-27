@@ -21,11 +21,13 @@ from analysis.tests.test_analysis_campaign import (
     _write_progress,
 )
 from assay.candidate_identity import candidate_id_from_fields
+from tests.conftest import process_tree_evidence_dict
 
 BUCKETS = ("killed", "survived", "crashed", "budget_exceeded", "equivalent", "hung")
 
 
-def _entry(row):
+def _entry(row, bucket="killed"):
+    leader = "timeout-killed" if bucket in {"hung", "budget_exceeded"} else "exited"
     return {
         **{key: row[key] for key in (
             "path", "lineno", "start_byte", "end_byte", "operator", "description",
@@ -34,6 +36,7 @@ def _entry(row):
         "replacement_sha256": "c" * 64,
         "candidate_id": row["id"],
         "execution": {"mode": "full"},
+        "process_tree_evidence": process_tree_evidence_dict(leader_status=leader),
         "resource_limit_evidence": {
             "cgroup_version": 2,
             "pids_events": {"max": {"before": 0, "after": 0, "delta": 0}},
@@ -62,7 +65,7 @@ def _verdict_document(by_bucket, *, outcome, exit_code, reason, policy=None):
     claim["mutation"] = {
         "candidate_count": len(everything),
         "total": len(everything),
-        **{bucket: [_entry(row) for row in by_bucket.get(bucket, [])] for bucket in BUCKETS},
+        **{bucket: [_entry(row, bucket) for row in by_bucket.get(bucket, [])] for bucket in BUCKETS},
         "candidate_ids": [row["id"] for row in everything],
     }
     return document, everything
@@ -211,7 +214,7 @@ def test_a_multi_shard_with_every_small_plan_candidate_is_still_incomplete(
 
 def test_a_multi_shard_empty_plan_is_still_incomplete(tmp_path, monkeypatch):
     document, _everything = _verdict_document(
-        {}, outcome="PASS", exit_code=0, reason=None,
+        {}, outcome="INCONCLUSIVE", exit_code=5, reason="NO_MUTANTS",
         policy={"shard_index": 0, "shard_count": 2},
     )
     root, head, verdict = _repository(tmp_path, document)
@@ -228,14 +231,14 @@ def test_a_multi_shard_empty_plan_is_still_incomplete(tmp_path, monkeypatch):
             "reason": "no_candidates",
         },
         {
-            "event": "verdict_written", "outcome": "PASS", "exit_code": 0,
-            "reason_code": None,
+            "event": "verdict_written", "outcome": "INCONCLUSIVE", "exit_code": 5,
+            "reason_code": "NO_MUTANTS",
             "emitted_at": (support.RUN_START + timedelta(seconds=15)).isoformat(),
             "elapsed_s": 15.0,
         },
     ])
 
-    code, out, err = _invoke(root, head, verdict, progress, command_exit=0)
+    code, out, err = _invoke(root, head, verdict, progress, command_exit=5)
 
     assert (code, err) == (3, "")
     result = json.loads(out)
@@ -331,6 +334,7 @@ def test_a_never_started_leftover_under_a_non_timeout_reason_is_unresolved(tmp_p
     extra["lineno"] += 50
     extra["mutated_file_sha256"] = "ab" * 32
     extra.pop("kill_signal", None)
+    extra["process_tree_evidence"] = process_tree_evidence_dict(leader_status="not-started")
     extra["candidate_id"] = candidate_id_from_fields(**{k: extra[k] for k in (
         "path", "source_sha256", "start_byte", "end_byte", "mutated_file_sha256", "operator")})
     mutation["budget_exceeded"] = [extra]
