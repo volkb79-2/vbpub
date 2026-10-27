@@ -11,7 +11,7 @@ Items the IOB-03 P3 review wave deliberately did not do. Each names why it waits
   * N-r3-1 (fixed): an abort now stops the probe unit (`systemctl stop`, allowlisted for `iobench-probe-*` only, then waits for `is-active` to leave, bounded 30 s; a still-active unit is a `unit_not_stopped` restore warning).
   * N-r3-2 (fixed): the post-`killpg` reap is bounded (`REAP_TIMEOUT_S`); a pipe-holding survivor no longer hangs the run.
   * N-r3-3 (fixed): `devio.assert_writer_bound` refuses a device writer without `--exclusive_open=1` (RealHost and FakeHost alike).
-  * N-r3-4 (fixed for fio): exactly one `--filename=`, only `--ioengine=libaio`, no `--output`/`--append-terse`/`--status-interval`/`--lockfile`, abbreviations of those refused. Still open: the `systemd-run` allowlist only requires a `RuntimeMaxSec=` token (it does not pin `--unit=iobench-probe-*`/`--slice=`/`python3 -c`).
+  * N-r3-4 (fixed for fio): an exact key allowlist (the keys `FioJob.argv()` emits, each once, `--ioengine=libaio` only); abbreviations, `--output`, `--trigger-cmd`, `--write_lat_log` and repeats are refused. Still open: the `systemd-run` allowlist only requires a `RuntimeMaxSec=` token (it does not pin `--unit=iobench-probe-*`/`--slice=`/`python3 -c`), and a non-target fio writer spawned with plain `spawn` (work-dir load files) has no `assert_writer_bound`.
   * NIT (open): the `--cmdhelp=exclusive_open` probe is a prefix match.
 * **IOB-BL-07 review r3 SHOULDs, estimators (review B).**
   * R3-1: a ladder with fewer than three usable rungs still completes without a `limits[]` entry. It should be flagged.

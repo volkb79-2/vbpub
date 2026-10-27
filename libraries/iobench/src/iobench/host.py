@@ -86,8 +86,13 @@ def check_argv(argv: Sequence[str]) -> None:
         raise HostError(f"argv outside the allowlist: {' '.join(argv[:3])} ...")
 
 
-_FIO_FORBIDDEN = ("--exec_prerun", "--exec_postrun", "--daemonize", "--server", "--client", "--write_iolog", "--read_iolog", "--ioscheduler",
-                  "--output", "--append-terse", "--status-interval", "--lockfile")
+# Exactly the keys FioJob.argv() emits (tests/test_review_d.py pins the two together). An allowlist, not a denylist: fio accepts
+# unambiguous abbreviations (`--ioeng=`) and ships option families that run commands or write files (`--trigger-cmd`, `--write_lat_log`,
+# `--output`), so anything iobench does not build is refused by name, abbreviated or not.
+_FIO_KEYS = frozenset((
+    "--name", "--filename", "--rw", "--bs", "--iodepth", "--ioengine", "--direct", "--time_based", "--runtime", "--offset", "--size",
+    "--numjobs", "--group_reporting", "--output-format", "--percentile_list", "--log_avg_msec", "--write_bw_log", "--write_iops_log",
+    "--exclusive_open", "--readonly", "--io_size", "--write_hist_log", "--log_hist_msec", "--log_hist_coarseness", "--rate_iops", "--fsync"))
 _FIO_ENGINES = ("--ioengine=libaio",)  # the only engine iobench builds; `exec` (and any other) runs or reaches outside the planned job (review A N-r3-4)
 
 
@@ -97,11 +102,9 @@ def _fio_allowed(a: list[str]) -> bool:
         return False
     if len(a) == 2 and keys[0] in ("--version", "--cmdhelp"):
         return True
-    if keys.count("--filename") != 1:  # exactly one target: a repeated --filename= would add files the extent checks never saw
+    if len(set(keys)) != len(keys) or not set(keys) <= _FIO_KEYS:  # a repeated key (`--filename=`, `--exclusive_open=0` after `=1`) is a second say
         return False
-    if any(f.startswith(k) for k in keys for f in _FIO_FORBIDDEN):  # getopt accepts unambiguous abbreviations: `--out=` must not slip past `--output`
-        return False
-    return all(t in _FIO_ENGINES for t in a[1:] if t.split("=")[0] == "--ioengine")
+    return "--filename" in keys and all(t in _FIO_ENGINES for t in a[1:] if t.split("=")[0] == "--ioengine")
 
 
 _ALLOWED = {
@@ -112,7 +115,7 @@ _ALLOWED = {
     "swapon": lambda a: a[1].startswith("--show"),
     "fallocate": lambda a: a[1] in ("-l", "-p"),
     "docker": lambda a: a[1] == "ps",
-    "systemctl": lambda a: a[1] == "is-active" or a[1:3] == ["show", "-p"] or (a[1] == "stop" and len(a) == 3 and a[2].startswith("iobench-probe-")),
+    "systemctl": lambda a: a[1] == "is-active" or a[1:3] == ["show", "-p"] or (a[1] == "stop" and len(a) == 3 and re.fullmatch(r"iobench-probe-[A-Za-z0-9_-]+(\.service)?", a[2]) is not None),
     "systemd-run": lambda a: any(t.startswith("RuntimeMaxSec=") for t in a),
 }
 
@@ -178,7 +181,9 @@ def _reap(proc: "subprocess.Popen[str]") -> None:
     try:
         proc.communicate(timeout=REAP_TIMEOUT_S)
     except subprocess.TimeoutExpired:
-        pass  # leave it to the kernel; the caller raises its own error
+        for pipe in (proc.stdout, proc.stderr):  # leave the process to the kernel (the caller raises its own error) but do not leak the descriptors
+            if pipe is not None:
+                pipe.close()
 
 
 class _ProcHandle:

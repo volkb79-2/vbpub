@@ -111,6 +111,7 @@ def wait_inflight_zero(host: Host, disk: str, timeout_s: float = INFLIGHT_WAIT_S
 
 
 UNIT_STOP_WAIT_S = 30.0
+UNIT_LIVE_STATES = ("active", "activating", "deactivating", "reloading", "refreshing")
 
 
 def stop_unit(host: Host, unit: str, timeout_s: float = UNIT_STOP_WAIT_S) -> bool:
@@ -118,10 +119,13 @@ def stop_unit(host: Host, unit: str, timeout_s: float = UNIT_STOP_WAIT_S) -> boo
     RuntimeMaxSec and recreates its output file after cleanup), so an abort stops the unit itself. False when it is still active after ``timeout_s``."""
     try:
         host.run(devio.unit_stop_argv(unit), timeout=timeout_s)
-    except Exception:  # noqa: BLE001 -- a stop that timed out or failed to start is judged by the is-active wait below, never raised from an abort path
+    except Aborted:
+        raise  # the operator's second signal ends the wait
+    except Exception:  # noqa: BLE001 -- a stop that timed out or failed to start is judged by the state wait below
         pass
     waited = 0.0
-    while devio.probe(host, f"systemctl is-active {unit}", devio.unit_active_argv(unit), ok=(0, 3, 4)).returncode == 0:
+    # `is-active` answers 3 for activating/deactivating too; ActiveState names the stages, so a unit still stopping is not read as gone
+    while devio.probe(host, f"systemctl show {unit}", devio.unit_state_argv(unit)).stdout.strip() in UNIT_LIVE_STATES:
         if waited >= timeout_s:
             return False
         host.sleep(1.0)

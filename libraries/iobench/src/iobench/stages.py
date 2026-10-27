@@ -148,8 +148,14 @@ class Runner:
             raise
 
     def stop_units(self, units: Sequence[str]) -> None:
+        """Never raises: this runs inside the abort path, and a failure here must not replace the Aborted being raised."""
         for unit in units:
-            if not restore.stop_unit(self.host, unit):
+            try:
+                stopped = restore.stop_unit(self.host, unit)
+            except Exception as exc:  # noqa: BLE001 -- includes a refused probe and the operator's second signal
+                self.safety.report.warnings.append(f"unit_not_stopped: {unit} could not be confirmed stopped ({exc})")
+                continue
+            if not stopped:
                 self.safety.report.warnings.append(f"unit_not_stopped: {unit} was still active {restore.UNIT_STOP_WAIT_S:.0f} s after the abort")
 
     def _check_job(self, job: FioJob) -> None:

@@ -182,6 +182,10 @@ def probe(host: Host, name: str, argv: Sequence[str], ok: Sequence[int] = (0,)) 
     return res
 
 
+def unit_state_argv(unit: str) -> list[str]:
+    return ["systemctl", "show", "-p", "ActiveState", "--value", unit]
+
+
 def unit_stop_argv(unit: str) -> list[str]:
     return ["systemctl", "stop", unit]
 

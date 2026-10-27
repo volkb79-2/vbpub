@@ -809,6 +809,8 @@ class FakeHost:
             return self._fallocate(argv[3], int(argv[2]))
         if name == "docker":
             return RunResult(0, "".join(c + "\n" for c in self.containers), "")
+        if name == "systemctl" and argv[1] == "show" and argv[3] == "ActiveState":
+            return RunResult(0, "active\n" if argv[-1] in self.active_units else "inactive\n", "")
         if name == "systemctl" and argv[1] == "show":
             known = argv[-1] in self.active_units or argv[-1] in self.known_units
             return RunResult(0, "loaded\n" if known else "not-found\n", "")

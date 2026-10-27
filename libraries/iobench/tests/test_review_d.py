@@ -124,7 +124,9 @@ BASE = ["fio", "--ioengine=libaio", "--iodepth=32", "--filename=/dev/vda7"]
 
 
 @pytest.mark.parametrize("extra", [["--output=/etc/cron.d/x"], ["--out=/etc/cron.d/x"], ["--ioengine=exec"], ["--filename=/dev/vdb"],
-                                   ["--ioengine=psync"], ["--lockfile=x"], ["--status-interval=1"]])
+                                   ["--ioengine=psync"], ["--lockfile=x"], ["--status-interval=1"],
+                                   ["--ioeng=exec:/bin/sh"], ["--trigger-cmd=sh"], ["--write_lat_log=/etc/x"], ["--exclusive_open=1", "--exclusive_open=0"],
+                                   ["--exclusive_ope=0"], ["--iodepth=1"], ["-o", "x"]])
 def test_bl06_n_r3_4_fio_options_outside_what_iobench_builds_are_refused(extra):
     assert not is_allowed_argv(BASE + extra)
 
@@ -135,3 +137,71 @@ def test_bl06_n_r3_4_what_iobench_builds_still_passes():
     assert not is_allowed_argv(["fio", "--version", "--output=x"])
     job = devio.FioJob("w", DEV, "randread", 4096, 32, 5, 0, 1 << 30, prefix="/tmp/w")
     assert is_allowed_argv(job.argv())
+
+
+def test_bl06_n_r3_4_the_key_allowlist_is_exactly_what_the_builder_emits():
+    emitted = set()
+    for rw, kwargs in (("randread", {}), ("write", dict(exclusive=True, hist=True, rate_iops=5, fsync=1, io_size=4096, metric="bw")),
+                       ("randwrite", dict(metric="iops"))):
+        argv = devio.FioJob("n", DEV, rw, 4096, 1, 5, 0, 4096, prefix="/run/iobench/n", **kwargs).argv()
+        assert is_allowed_argv(argv)
+        emitted |= {t.split("=")[0] for t in argv[1:]}
+    assert emitted <= host_mod._FIO_KEYS and host_mod._FIO_KEYS - emitted <= {"--write_clat_hist_log"}
+
+
+# -- review round 1: the abort path never raises; a unit still stopping is not gone -----------------------------------------------
+def test_bl06_stop_unit_waits_out_a_deactivating_unit():
+    from iobench.testing import standard_host
+    host = standard_host()
+    states = iter(["deactivating", "deactivating", "inactive"])
+    real = type(host).run
+
+    def run(argv, timeout=None):
+        if argv[1] == "show":
+            return host_mod.RunResult(0, next(states) + "\n", "")
+        return real(host, argv, timeout)
+
+    host.run = run
+    t0 = host.now()
+    assert restore.stop_unit(host, "iobench-probe-x", timeout_s=10.0) is True and host.now() - t0 >= 2
+
+
+def test_bl06_stop_unit_reraises_the_operators_second_signal_and_stop_units_does_not_raise():
+    from iobench.errors import Aborted, Refusal
+    from iobench.testing import standard_host
+    from types import SimpleNamespace
+    from iobench.stages import Runner
+
+    def stop_units(units):
+        ns = SimpleNamespace(host=host, safety=SimpleNamespace(report=SimpleNamespace(warnings=[])))
+        Runner.stop_units(ns, units)
+        return ns.safety.report.warnings
+
+    host = standard_host()
+    real = type(host).run
+
+    def second_signal(argv, timeout=None):
+        if argv[1] == "stop":
+            raise Aborted("second signal during a blocking command")
+        return real(host, argv, timeout)
+
+    host.run = second_signal
+    with pytest.raises(Aborted):
+        restore.stop_unit(host, "iobench-probe-x")
+    assert any("could not be confirmed stopped" in w for w in stop_units(["iobench-probe-x"]))
+
+    def broken(argv, timeout=None):
+        if argv[1] == "show":
+            return host_mod.RunResult(1, "", "boom")
+        return real(host, argv, timeout)
+
+    host.run = broken
+    with pytest.raises(Refusal):
+        restore.stop_unit(host, "iobench-probe-x")
+    assert any("could not be confirmed stopped" in w for w in stop_units(["iobench-probe-x"]))
+
+
+def test_bl06_stop_is_allowlisted_only_for_plain_probe_unit_names():
+    for bad in ("iobench-probe-*", "iobench-probe-x.mount", "iobench-probe-x y", "iobench-probe-"):
+        assert not is_allowed_argv(["systemctl", "stop", bad])
+    assert is_allowed_argv(["systemctl", "stop", "iobench-probe-r1a2-s4.service"])
