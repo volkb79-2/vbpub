@@ -22,11 +22,19 @@ import glyphgrid as gg  # noqa: E402
 from imagegen import atlasbuild, engines, fonts, render, transforms  # noqa: E402
 from imagegen.__main__ import main as cli  # noqa: E402
 from imagegen.evaluate import evaluate, score  # noqa: E402
+from imagegen.screens import Screen  # noqa: E402
+import _testdeps  # noqa: E402
 from imagegen.suite import TRANSFORMS, build_suite  # noqa: E402
 
 BITMAP = ("vga-8x16", "unifont-16", "edk2-8x19")
 SCREENS = ("alphabet", "installer", "random")
-BLOCKS = {chr(c) for c in range(0x2580, 0x25A0)}  # sub-cell block elements: >= half ink / uniform cells, see IMAGEGEN-FINDINGS.md
+# glyph-grid defect (GLYPHGRID-FINDINGS.md "complement twins"): the font-exact FIXTURE atlas reads these clean cells as confident
+# wrong characters; every one is a complement twin (or solid-block-as-blank) and is flagged A by the generator.
+FIXTURE_ALPHABET_MISREADS = {
+    "vga-8x16": [("▄", "▀"), ("█", " ")],
+    "unifont-16": [("▇", "▔"), ("█", " "), ("▉", "▕"), ("▙", "▝"), ("▛", "▗"), ("▜", "▖"), ("▟", "▘")],
+    "edk2-8x19": [("█", " ")],
+}
 
 
 def need_dejavu():
@@ -34,9 +42,10 @@ def need_dejavu():
         missing("DejaVu Sans Mono", "install fonts-dejavu-core (the vector-font cases render with it)")
 
 
-def ink_wrong(truth, reading, ignore=()):
-    n, wrong = score(truth, reading)
-    return n, [w for w in wrong if w[2] not in ignore]
+def non_ambiguous_wrong(truth, reading):
+    """(counts, wrong cells NOT flagged ambiguous): the only wrong-confident class tolerated is the documented complement-twin one."""
+    n, wrong, _ = score(truth, reading)
+    return n, [w for w in wrong if "A" not in w["flags"]]
 
 
 # ----------------------------------------------------------------------------- determinism
@@ -82,7 +91,8 @@ def test_truth_schema_and_geometry():
     assert (sc["cols"], sc["rows"]) == (80, 25) and len(sc["cells"]) == 25 and len(sc["cells"][0]) == 80
     assert im["png_sha256"] == hashlib.sha256(png).hexdigest()
     assert im["base_size"] == [640, 400] and im["size"] == [1284, 800]
-    assert t["geometry"] == {"sx": 2.0, "sy": 2.0, "ox": 7.0, "oy": 1.0, "exact": True}
+    assert t["geometry"] == {"sx": 2.0, "sy": 2.0, "ox": 7.0, "oy": 1.0, "exact": True, "clip": [7.0, 1.0, 1284.0, 800.0]}
+    assert set(t["env"]) == {"pillow", "zlib", "libjpeg"} and t["env"]["pillow"]
     assert [x["name"] for x in t["transforms"]] == ["nn-upscale", "offset", "letterbox"]
     r, c = sc["cursor"]
     assert "C" in sc["cells"][r][c][3]
@@ -92,16 +102,61 @@ def test_truth_schema_and_geometry():
     assert ("#000000", "#aaaaaa") in fg_bg and ("#ffffff", "#0000aa") in fg_bg  # black-on-grey, white-on-blue
 
 
-def test_rendered_pixels_match_truth_cells():
+def _rgb(h):
+    return tuple(int(h[i:i + 2], 16) for i in (1, 3, 5))
+
+
+@pytest.mark.parametrize("fid", BITMAP)
+@pytest.mark.parametrize("screen", SCREENS)
+def test_rendered_pixels_match_truth_cells(fid, screen):
+    """Every cell's pixels are EXACTLY the font's glyph bitmap for the truth char in the truth colours (cursor cell: plus underline)."""
     from PIL import Image
-    png, t = render.generate("vga-8x16", "installer", [], seed=1)
+    font = fonts.load_font(fid)
+    png, t = render.generate(font, screen, [], seed=1)
     im = Image.open(io.BytesIO(png)).convert("RGB")
-    cw, ch = t["font"]["cell_w"], t["font"]["cell_h"]
+    cw, ch = font.cell_w, font.cell_h
     for r, row in enumerate(t["screen"]["cells"]):
-        for c, (_, fg, bg, fl) in enumerate(row):
-            cols = {px for _, px in (im.crop((c * cw, r * ch, c * cw + cw, r * ch + ch)).getcolors(cw * ch))}
-            allowed = {tuple(int(h[i:i + 2], 16) for i in (1, 3, 5)) for h in (fg, bg)}
-            assert cols <= allowed
+        for c, (tch, fg, bg, fl) in enumerate(row):
+            mask = font.draw(tch)
+            if "C" in fl:
+                mask = mask.copy()
+                mask.paste(255, (0, ch - 3, cw, ch - 1))
+            want = Image.composite(Image.new("RGB", (cw, ch), _rgb(fg)), Image.new("RGB", (cw, ch), _rgb(bg)), mask)
+            assert im.crop((c * cw, r * ch, c * cw + cw, r * ch + ch)).tobytes() == want.tobytes(), (fid, screen, r, c, tch)
+
+
+def test_cursor_underline_is_drawn_in_the_cell_fg_on_two_scan_lines():
+    font = fonts.load_font("vga-8x16")
+    fg, bg = (10, 200, 30), (1, 2, 3)
+    s = Screen("t", 3, 1)
+    s.put(0, 1, " ", fg, bg)
+    s.cursor = (0, 1)
+    px = render.render_screen(font, s)
+    for x in range(8, 16):
+        assert [px.getpixel((x, y)) for y in (12, 13, 14, 15)] == [bg, fg, fg, bg]
+    s.cursor = None
+    assert render.render_screen(font, s).getpixel((9, 13)) == bg
+
+
+def test_put_sets_reverse_and_box_flags_and_swaps_colours():
+    s = Screen("t", 8, 1, (5, 5, 5), (9, 9, 9))
+    s.put(0, 0, "ab", (1, 1, 1), (2, 2, 2))
+    s.put(0, 2, "cd", (1, 1, 1), (2, 2, 2), reverse=True)
+    s.put(0, 4, "─", (1, 1, 1), (2, 2, 2))
+    s.put(0, 5, "e")  # inherits the cell's colours
+    row = s.cells[0]
+    assert [c.flags for c in row[:6]] == ["", "", "R", "R", "B", ""]
+    assert (row[0].fg, row[0].bg) == ((1, 1, 1), (2, 2, 2)) and (row[2].fg, row[2].bg) == ((2, 2, 2), (1, 1, 1))
+    assert (row[5].fg, row[5].bg) == ((5, 5, 5), (9, 9, 9)) and s.bg == (9, 9, 9)
+
+
+def test_alphabet_label_column_layout():
+    _, t = render.generate("vga-8x16", "alphabet")
+    text = t["screen"]["text"]
+    assert text[1].startswith("     0 1 2 3 4 5 6 7 8 9 A B C D E F")
+    assert text[2].startswith("0020:") and text[2][5] == " " and text[2][7] == "!"
+    assert text[3].startswith("0030:0 1 2") and text[3][5 + 2 * 15] == "?"
+    assert t["screen"]["cells"][3][4][0] == ":"
 
 
 def test_reverse_video_swaps_colours_and_is_flagged():
@@ -118,8 +173,26 @@ def test_ambiguous_flag_marks_shared_bitmaps():
     assert font.ambiguous_with("I") == ["l", "|"] or font.ambiguous_with("I") == ["|", "l"]
     _, t = render.generate(font, "alphabet")
     flagged = {cell[0] for row in t["screen"]["cells"] for cell in row if "A" in cell[3]}
-    assert flagged == {"l", "|", "I"}
+    assert {c for c in flagged if not 0x2580 <= ord(c) <= 0x259F} == {"l", "|", "I"}  # plus the complement-twin blocks
     assert not any(font.ambiguous_with(c) for c in "ABC")
+
+
+def test_complement_twins_and_solid_cells_are_ambiguous():
+    """A cell reader takes the minority colour as ink, so a bitmap and its fg/bg complement are indistinguishable."""
+    vga = fonts.load_font("vga-8x16")
+    assert vga.ambiguous_with("▄") == ["▀"] and vga.ambiguous_with("▀") == ["▄"]
+    assert " " in vga.ambiguous_with("█")
+    uni = fonts.load_font("unifont-16")
+    assert "▔" in uni.ambiguous_with("▇") and "▕" in uni.ambiguous_with("▉") and "▝" in uni.ambiguous_with("▙")
+    _, t = render.generate("vga-8x16", "alphabet")
+    flagged = {cell[0] for row in t["screen"]["cells"] for cell in row if "A" in cell[3]}
+    assert {"▄", "▀", "█"} <= flagged
+    assert not any(vga.ambiguous_with(c) for c in "ABCabc0123")
+
+
+def test_vector_font_has_no_complement_logic():
+    need_dejavu()
+    assert fonts.load_font("dejavu-mono-16").ambiguous_with("A") == []
 
 
 # ----------------------------------------------------------------------------- transforms
@@ -139,6 +212,47 @@ def test_transform_geometry_and_sizes():
     assert im.size == (16, 16) and im.getpixel((4, 6)) == (255, 255, 255) and geo["ox"] == 1 and geo["oy"] == 2
     im, geo, _ = transforms.apply_chain(_base(), ["letterbox:2,1,3,4"])
     assert im.size == (21, 21) and im.getpixel((5, 5)) == (255, 255, 255)
+
+
+def test_scale_composes_with_offsets_in_either_order():
+    _, geo, _ = transforms.apply_chain(_base(), ["offset:2,4", "scale:1.5,bilinear"])
+    assert (geo["ox"], geo["oy"], geo["sx"]) == (3.0, 6.0, 1.5) and geo["clip"] == [3.0, 6.0, 24.0, 24.0]
+    _, geo, _ = transforms.apply_chain(_base(), ["scale:1.5,bilinear", "offset:2,4"])
+    assert (geo["ox"], geo["oy"]) == (2.0, 4.0) and geo["clip"] == [2.0, 4.0, 24.0, 24.0]
+    _, geo, _ = transforms.apply_chain(_base(), ["nn-upscale:2", "letterbox:3,1,0,0"])
+    assert (geo["ox"], geo["oy"]) == (3.0, 1.0) and geo["clip"] == [3.0, 1.0, 35.0, 33.0]
+
+
+def test_offset_crops_the_far_edge_and_records_it():
+    im, geo, _ = transforms.apply_chain(_base(), ["offset:3,1"], fill=(7, 7, 7))
+    assert geo["clip"] == [3.0, 1.0, 16.0, 16.0] and im.getpixel((0, 0)) == (7, 7, 7) and im.getpixel((2, 8)) == (7, 7, 7)
+    im, geo, _ = transforms.apply_chain(_base(), ["offset:-2,0"])
+    assert geo["clip"][0] == 0 and geo["clip"][2] == 14.0
+
+
+def test_letterbox_and_offset_fill_with_the_screen_background_not_the_corner():
+    from PIL import Image
+    png, _ = render.generate("vga-8x16", "installer", ["letterbox:2"])
+    im = Image.open(io.BytesIO(png)).convert("RGB")
+    assert im.getpixel((0, 0)) == (0, 0, 170)  # the installer page background, not the grey title bar beside it
+    assert im.getpixel((2, 2)) == (170, 170, 170)  # the title-bar corner sits inside the border
+
+
+def test_subpixel_shifts_the_origin_by_the_third_pixel_quantum():
+    _, geo, _ = transforms.apply_chain(_base(), ["subpixel:0.33"])
+    assert geo["ox"] == pytest.approx(1 / 3) and geo["clip"][0] == pytest.approx(1 / 3) and geo["exact"]
+    _, geo, _ = transforms.apply_chain(_base(), ["subpixel:0.66,fringe"])
+    assert geo["ox"] == pytest.approx(2 / 3) and not geo["exact"]
+
+
+def test_noise_seed_depends_on_chain_position_and_global_seed():
+    base = _base()
+    once, _, _ = transforms.apply_chain(base, ["noise:8"], seed=1)
+    twice_chain, _, _ = transforms.apply_chain(base, ["noise:8", "noise:8"], seed=1)
+    twice_same_pos, _, _ = transforms.apply_chain(once, ["noise:8"], seed=1)  # second noise drawn at position 0 again
+    assert twice_chain.tobytes() != twice_same_pos.tobytes()
+    assert transforms.apply_chain(base, ["noise:8"], seed=2)[0].tobytes() != once.tobytes()
+    assert transforms.apply_chain(base, ["noise:8"], seed=1)[0].tobytes() == once.tobytes()
 
 
 def test_transform_effects():
@@ -181,34 +295,42 @@ def gen_atlas():
     return atlasbuild.build_atlas(BITMAP)
 
 
+def _reads(eng, fid, screen, chain=(), seed=7):
+    png, t = render.generate(fid, screen, list(chain), seed=seed)
+    return t, eng.read(png, t)
+
+
 @pytest.mark.parametrize("fid", BITMAP)
 @pytest.mark.parametrize("screen", SCREENS)
-def test_round_trip_clean_is_exact(gen_atlas, fid, screen):
-    """Atlas learned from generator pages reads the generated clean screens back: every non-block ink cell exact, none wrong.
-
-    Excluded and documented: block elements (>= half-ink cells have no unique fg/bg bitmap; solid cells are fill), see findings."""
-    png, t = render.generate(fid, screen, [], seed=7)
-    eng = engines.OracleGridEngine(gen_atlas)
-    rd = eng.read(png, t)
+def test_round_trip_clean_is_exact_except_ambiguous_cells(gen_atlas, fid, screen):
+    """Atlas learned from generator pages reads the generated clean screens back: every cell NOT flagged ambiguous is exact (a
+    solid or complement-twin cell may be declined or, for the solid block, misread: see the pin below)."""
+    t, rd = _reads(engines.OracleGridEngine(gen_atlas), fid, screen)
     assert rd.status == "ok"
-    n, wrong = ink_wrong(t, rd, ignore=BLOCKS)
-    assert wrong == [] and n["spurious"] == 0
-    got = {}
-    ch, cw = t["font"]["cell_h"], t["font"]["cell_w"]
-    for x0, y0, _, _, o in rd.emissions:
-        got[(int(y0 // ch), int(x0 // cw))] = o
-    misses = [(r, c, cell[0]) for r, row in enumerate(t["screen"]["cells"]) for c, cell in enumerate(row)
-              if cell[0] != " " and cell[0] not in BLOCKS and "C" not in cell[3] and got.get((r, c)) != cell[0]]
-    assert misses == []
+    n, wrong, _ = score(t, rd)
+    assert [w for w in wrong if "A" not in w["flags"]] == [] and n["spurious"] == 0
+    assert n["exact"] + n["unknown"] + n["wrong"] == n["ink"]
+    sc = t["screen"]
+    non_amb_ink = sum(1 for row in sc["cells"] for c in row if c[0] != " " and "A" not in c[3] and "C" not in c[3])
+    assert n["exact"] >= non_amb_ink and n["unknown"] <= n["ambiguous"]
 
 
-def test_the_solid_block_reads_blank_is_pinned_as_a_known_finding(gen_atlas):
-    """glyph-grid reads an isolated U+2588 as a confident blank (uniform cell, no text beside it): the one wrong-confident
-    on clean screens.  If this starts failing, glyph-grid fixed it: update IMAGEGEN-FINDINGS.md."""
-    png, t = render.generate("vga-8x16", "alphabet", [], seed=1)
-    rd = engines.OracleGridEngine(gen_atlas).read(png, t)
-    n, wrong = score(t, rd)
-    assert [w[2:] for w in wrong] == [("█", " ")]
+def test_the_solid_block_reads_blank_is_pinned_for_the_generated_atlas(gen_atlas):
+    """An isolated U+2588 reads as a confident blank (uniform cell, no text beside it)."""
+    for fid in BITMAP:
+        t, rd = _reads(engines.OracleGridEngine(gen_atlas), fid, "alphabet")
+        _, wrong, _ = score(t, rd)
+        assert [(w["truth"], w["got"]) for w in wrong] == [("█", " ")], fid
+
+
+@pytest.mark.parametrize("fid", BITMAP)
+def test_fixture_atlas_misreads_complement_twins_pinned(fid):
+    """glyph-grid DEFECT (GLYPHGRID-FINDINGS.md, complement twins): the font-exact fixture atlas answers these clean cells
+    CONFIDENTLY and WRONGLY (polarity lost).  Pinned so a glyph-grid fix shows up as this test failing: then update the docs."""
+    t, rd = _reads(engines.make("glyph-grid-oracle"), fid, "alphabet")
+    _, wrong, _ = score(t, rd)
+    assert sorted((w["truth"], w["got"]) for w in wrong) == sorted(FIXTURE_ALPHABET_MISREADS[fid])
+    assert all("A" in w["flags"] for w in wrong)  # the generator knew these cells were undecidable
 
 
 TRANSFORM_CHAINS = [c for _, c in TRANSFORMS]
@@ -217,12 +339,12 @@ TRANSFORM_CHAINS = [c for _, c in TRANSFORMS]
 @pytest.mark.parametrize("fid", ["vga-8x16", "edk2-8x19"])
 @pytest.mark.parametrize("engine_name", ["glyph-grid", "glyph-grid-oracle"])
 def test_degrades_to_unknown_never_wrong_confident(gen_atlas, fid, engine_name):
-    """Under every transform the engines either read exactly or decline; a wrong confident char is a failure."""
+    """Under every transform a wrong-confident cell may only be an ambiguous (flag A) one; nothing else may be misread."""
     eng = engines.GlyphGridEngine(gen_atlas) if engine_name == "glyph-grid" else engines.OracleGridEngine(gen_atlas)
     for screen in ("installer", "random"):
         for chain in TRANSFORM_CHAINS:
-            png, t = render.generate(fid, screen, chain, seed=3)
-            n, wrong = ink_wrong(t, eng.read(png, t), ignore=BLOCKS)
+            t, rd = _reads(eng, fid, screen, chain, seed=3)
+            n, wrong = non_ambiguous_wrong(t, rd)
             assert wrong == [] and n["spurious"] == 0, (fid, screen, chain, wrong[:5])
 
 
@@ -232,7 +354,7 @@ def test_real_engine_refuses_what_it_cannot_ground(gen_atlas):
     assert eng.read(png).status == "resampled"
     png, t = render.generate("vga-8x16", "installer", [], seed=1)
     rd = eng.read(png)
-    n, wrong = score(t, rd)
+    n, wrong, _ = score(t, rd)
     assert rd.status == "ok" and n["exact"] >= 350 and wrong == []
 
 
@@ -240,20 +362,137 @@ def test_vector_font_is_refused_not_misread(gen_atlas):
     need_dejavu()
     png, t = render.generate("dejavu-mono-16", "installer", [], seed=1)
     rd = engines.GlyphGridEngine(gen_atlas).read(png)
-    n, wrong = score(t, rd)
-    assert rd.status != "ok" and n["exact"] == 0 and wrong == []
+    n, wrong, _ = score(t, rd)
+    assert rd.status != "ok" and n["exact"] == 0 and wrong == [] and n["answered"] == 0
+
+
+def test_oracle_converts_the_origin_by_the_integer_scale(gen_atlas):
+    eng = engines.OracleGridEngine(gen_atlas)
+    t, rd = _reads(eng, "vga-8x16", "installer", ["letterbox:3,1,0,0", "nn-upscale:2"], seed=1)  # ox=6, oy=2 -> origin (3, 1) after /2
+    n, wrong, _ = score(t, rd)
+    assert rd.status == "ok" and n["exact"] >= 350 and wrong == []
+    t, rd = _reads(eng, "vga-8x16", "installer", ["nn-upscale:2", "offset:1,0"], seed=1)  # odd offset after upscaling: not attempted
+    assert rd.status == "oracle_n/a" and rd.emissions == []
+    t, rd = _reads(eng, "vga-8x16", "installer", ["scale:1.5,lanczos"], seed=1)
+    assert rd.status == "oracle_n/a"
+
+
+def test_atlas_learning_skips_cursor_cells():
+    font = fonts.load_font("vga-8x16")
+    s = Screen("t", 6, 1)
+    s.put(0, 0, "ABC", (170, 170, 170), (0, 0, 0))
+    s.cursor = (0, 1)  # the cursor sits on 'B': its bitmap carries the underline
+    atlas = gg.Atlas()
+    atlasbuild.learn_screen(atlas, font, "page", s)
+    chars = {c for g in atlas.fonts["gen:vga-8x16"]["glyphs"].values() for c in g["c"]}
+    assert chars == {"A", "C"}
+
+
+def test_offset_cropped_cells_are_not_scored_and_explain_the_gap():
+    """offset:1,1 crops the last column and row (80 + 25 - 1 = 104 cells): they are `cropped`, not misses."""
+    eng = engines.make("glyph-grid-oracle")
+    t_clean, rd_clean = _reads(eng, "vga-8x16", "installer", [], seed=1)
+    t, rd = _reads(eng, "vga-8x16", "installer", ["offset:1,1"], seed=1)
+    n, wrong, _ = score(t, rd)
+    nc, _, _ = score(t_clean, rd_clean)
+    assert n["cropped"] == 104 and nc["cropped"] == 0 and wrong == []
+    assert n["ink"] == nc["ink"] and n["exact"] == nc["exact"]  # the installer has no ink in the cropped strip: nothing was lost
+
+
+# ----------------------------------------------------------------------------- scoring
+def _truth(cells_text="AB", extra_geo=None):
+    _, t = render.generate("vga-8x16", "installer", [])
+    for row in t["screen"]["cells"]:
+        for cell in row:
+            cell[0], cell[3] = " ", ""
+    for i, ch in enumerate(cells_text):
+        t["screen"]["cells"][2][i][0] = ch
+    t["screen"]["cursor"] = None
+    t["geometry"].update(extra_geo or {})
+    return t
+
+
+def _em(r, c, ch, conf=None):
+    e = (c * 8 + 1, r * 16 + 1, c * 8 + 7, r * 16 + 15, ch)
+    return e + (conf,) if conf is not None else e
+
+
+def test_scoring_spurious_and_outside_grid_count_as_wrong():
+    t = _truth("AB")
+    n, wrong, _ = score(t, engines.Reading("ok", [_em(2, 0, "A"), _em(2, 1, "B"), _em(5, 5, "x"), _em(30, 3, "y"), _em(5, 6, " "), _em(31, 0, " ")]))
+    assert (n["exact"], n["wrong"], n["spurious"], n["answered"], n["ink"]) == (2, 2, 2, 2, 2) and wrong == []
+
+
+def test_scoring_declined_then_confident_is_not_a_conflict_but_two_confident_disagreements_are():
+    t = _truth("AB")
+    n, wrong, _ = score(t, engines.Reading("ok", [_em(2, 0, None), _em(2, 0, "A"), _em(2, 1, "B"), _em(2, 1, None)]))
+    assert (n["exact"], n["wrong"], n["unknown"]) == (2, 0, 0)
+    n, wrong, _ = score(t, engines.Reading("ok", [_em(2, 0, "A"), _em(2, 0, "Z"), _em(2, 1, "B")]))
+    assert (n["exact"], n["wrong"], n["unknown"]) == (1, 1, 0) and wrong[0]["truth"] == "A"
+    n, _, _ = score(t, engines.Reading("ok", [_em(2, 0, None)]))
+    assert (n["unknown"], n["answered"], n["answered_images"]) == (2, 0, 0)
+
+
+def test_scoring_cursor_cells_are_not_scored():
+    t = _truth("AB")
+    t["screen"]["cells"][2][1][3] = "C"
+    n, wrong, _ = score(t, engines.Reading("ok", [_em(2, 0, "A"), _em(2, 1, "Q")]))
+    assert (n["ink"], n["exact"], n["wrong"]) == (1, 1, 0)
+    t["screen"]["cells"][3][0][3] = "C"  # a blank cursor cell with a spurious emission: also not scored
+    n, _, _ = score(t, engines.Reading("ok", [_em(3, 0, "q")]))
+    assert n["wrong"] == 0
+
+
+def test_scoring_ambiguous_cells_are_scored_like_others_and_counted_separately():
+    t = _truth("AB")
+    t["screen"]["cells"][2][0][3] = "A"
+    n, wrong, _ = score(t, engines.Reading("ok", [_em(2, 0, "Z"), _em(2, 1, "B")]))
+    assert (n["ink"], n["ambiguous"], n["wrong"], n["wrong_ambiguous"], n["exact"]) == (2, 1, 1, 1, 1)
+    n, _, _ = score(t, engines.Reading("ok", []))
+    assert (n["ink"], n["unknown"], n["ambiguous"], n["wrong_ambiguous"]) == (2, 2, 1, 0)
+
+
+def test_scoring_geometry_maps_emissions_through_scale_offset_and_skips_cropped_cells():
+    t = _truth("AB", {"sx": 2.0, "sy": 2.0, "ox": 5.0, "oy": 3.0, "clip": [5.0, 3.0, 1285.0, 803.0]})
+    em = [(5 + 0 * 16 + 2, 3 + 2 * 32 + 2, 5 + 14, 3 + 2 * 32 + 30, "A"), (5 + 16 + 2, 3 + 2 * 32 + 2, 5 + 30, 3 + 2 * 32 + 30, "B")]
+    n, wrong, _ = score(t, engines.Reading("ok", em))
+    assert (n["exact"], n["wrong"], n["cropped"]) == (2, 0, 0)
+    t["geometry"]["clip"] = [5.0, 3.0, 5.0 + 16 * 79, 803.0]  # the last column is cropped
+    n, _, _ = score(t, engines.Reading("ok", em))
+    assert n["cropped"] == 25
+
+
+def test_confidence_distribution_of_wrong_cells_is_collected():
+    t = _truth("AB")
+    n, wrong, confs = score(t, engines.Reading("ok", [_em(2, 0, "A", 97.0), _em(2, 1, "Z", 91.5), _em(9, 9, "q", 80.0)]))
+    assert confs == {"exact": [97.0], "wrong": [91.5, 80.0]} and wrong[0]["conf"] == 91.5
+    from imagegen.evaluate import conf_summary
+    assert "median 97" in conf_summary(confs) and "n=2 min 80" in conf_summary(confs)
 
 
 # ----------------------------------------------------------------------------- engines
-def test_tesseract_tsv_parsing_and_scoring():
-    head = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext"
-    tsv = head + "\n5\t1\t1\t1\t1\t1\t0\t0\t16\t16\t90\tHI\n5\t1\t1\t1\t1\t2\t24\t0\t8\t16\t95\tx\n4\t1\t1\t1\t1\t0\t0\t0\t8\t8\t-1\t\n"
-    em = engines.parse_tsv(tsv)
-    assert [e[4] for e in em] == ["H", "I", "x"]
-    _, t = render.generate("vga-8x16", "installer", [])
+HOCR = """<span class='ocr_line'>
+<span class='ocrx_word' title='bbox 0 0 48 48'>
+<span class='ocrx_cinfo' title='x_bboxes 0 0 24 48; x_conf 97.5'>H</span>
+<span class='ocrx_cinfo' title='x_bboxes 24 0 48 48; x_conf 61.0'>&amp;</span></span>
+<span class='ocrx_word' title='bbox 72 0 96 48'><span class='ocrx_cinfo' title='x_bboxes 72 0 96 48; x_conf 88.0'>x</span></span>
+<span class='ocrx_cinfo' title='x_bboxes 1 1 2 2; x_conf 50'>ab</span></span>"""
+
+
+def test_tesseract_hocr_char_boxes_parse_and_one_wrong_char_does_not_shift_the_rest():
+    em = engines.parse_hocr(HOCR, scale=3)
+    assert [(e[4], e[5]) for e in em] == [("H", 97.5), ("&", 61.0), ("x", 88.0)]
+    assert em[0][:4] == (0.0, 0.0, 8.0, 16.0) and em[2][:4] == (24.0, 0.0, 32.0, 16.0)
+    t = _truth("")  # row 0: H I _ y ; the third emission lands in column 3 whatever the middle char was read as
     t["screen"]["cells"][0][0][0], t["screen"]["cells"][0][1][0], t["screen"]["cells"][0][3][0] = "H", "I", "y"
-    n, wrong = score(t, engines.Reading("ok", em))
-    assert n["exact"] == 2 and n["wrong"] == 1 and wrong == [(0, 3, "y", "x")]
+    n, wrong, confs = score(t, engines.Reading("ok", em))
+    assert n["exact"] == 1 and n["wrong"] == 2  # row 0: H exact; '&' is not 'I'; 'x' is not 'y'
+    assert sorted((w["truth"], w["got"]) for w in wrong) == [("I", "&"), ("y", "x")] and confs["wrong"] == [61.0, 88.0]
+
+
+def test_missing_dependency_policy_is_the_repo_one():
+    """The engine's opt-out is the SAME variable as tests/_testdeps.py; the real-engine test uses the conftest sidecar rule."""
+    assert engines.ALLOW_VAR == _testdeps.ALLOW_VAR
 
 
 def test_missing_tesseract_fails_unless_opted_out(monkeypatch):
@@ -270,8 +509,8 @@ def test_real_tesseract_reads_a_clean_screen(real_tesseract):
     """Real engine (sidecar image only): must emit characters; accuracy is measured in IMAGEGEN-FINDINGS.md, not asserted."""
     eng = engines.make("tesseract")
     png, t = render.generate("vga-8x16", "installer", ["nn-upscale:2"], seed=1)
-    n, _ = score(t, eng.read(png))
-    assert n["exact"] > 0
+    n, _, confs = score(t, eng.read(png))
+    assert n["exact"] > 0 and confs["exact"]
 
 
 # ----------------------------------------------------------------------------- CLI / suite
@@ -283,9 +522,9 @@ def test_cli_generate_and_suite_and_eval(tmp_path, capsys):
     suite = tmp_path / "s"
     idx, skipped = build_suite(str(suite), ["vga-8x16"], ("installer",), [[], ["nn-upscale:2"], ["jpeg:50"]], seed=1)
     assert len(idx) == 3 and skipped == [] and (suite / "suite.json").exists()
-    agg, details = evaluate(str(suite), engines.make("glyph-grid-oracle"), "label")
+    agg, details, _ = evaluate(str(suite), engines.make("glyph-grid-oracle"), "label")
     assert set(agg) == {"clean", "nn-upscale-2", "jpeg-50"} and agg["clean"]["exact"] > 350 and agg["clean"]["wrong"] == 0
-    assert agg["jpeg-50"]["exact"] == 0 and agg["jpeg-50"]["wrong"] == 0
+    assert agg["jpeg-50"]["exact"] == 0 and agg["jpeg-50"]["wrong"] == 0 and agg["jpeg-50"]["answered"] == 0
     assert len(details) == 3
 
 
@@ -297,3 +536,19 @@ def test_cli_eval_tesseract_missing_policy(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv(engines.ALLOW_VAR, "1")
     assert cli([sub, "--suite", str(tmp_path), "--engine", "tesseract"]) == 0
     assert "SKIP" in capsys.readouterr().out
+
+
+# ----------------------------------------------------------------------------- environment-dependent bytes
+# PNG bytes depend on Pillow's encoder and its zlib build; JPEG on libjpeg.  A golden hash is only claimed for an environment
+# listed here (record a new one when the tester image's Pillow changes); anywhere else the test still asserts same-environment
+# determinism and that the truth records the versions that produced the bytes.
+GOLDEN_PNG_SHA256 = {"12.1.1": "f2d778b6526c72d52c713a371b7d9f5038201f088c083a19628d7cc9d23dae47"}  # zlib 1.3.1
+
+
+def test_golden_png_hash_for_recorded_environments_and_environment_recorded_in_truth():
+    from PIL import __version__
+    png, t = render.generate("vga-8x16", "alphabet", [], seed=0)
+    assert t["env"]["pillow"] == __version__ and t["image"]["png_sha256"] == hashlib.sha256(png).hexdigest()
+    assert hashlib.sha256(render.generate("vga-8x16", "alphabet", [], seed=0)[0]).hexdigest() == t["image"]["png_sha256"]
+    if __version__ in GOLDEN_PNG_SHA256:
+        assert t["image"]["png_sha256"] == GOLDEN_PNG_SHA256[__version__]

@@ -57,10 +57,24 @@ class CellFont:
     def key(self, ch):
         return self._keys[ch]
 
+    def _complement(self, k):
+        rb = (self.cell_w + 7) // 8
+        mask = (((1 << self.cell_w) - 1) << (rb * 8 - self.cell_w)).to_bytes(rb, "big")
+        return bytes(b ^ mask[i % rb] for i, b in enumerate(k))
+
     def ambiguous_with(self, ch):
-        """Other repertoire characters drawing the identical bitmap (an alias set: no reader can tell them apart)."""
+        """Other characters no reader can tell from ``ch``: the same bitmap (alias set), or its fg/bg COMPLEMENT (a cell reader
+        takes the minority colour as ink, so polarity is lost: lower half block vs upper half block), or a blank for a solid cell."""
         k = self._keys.get(ch)
-        return sorted(self._shared.get(k, set()) - {ch}) if k is not None else []
+        if k is None:
+            return []
+        out = set(self._shared.get(k, set())) - {ch}
+        if self.kind == "bitmap":
+            ck = self._complement(k)
+            out |= {c for c, v in self._keys.items() if v == ck and c != ch}
+            if not any(ck):
+                out.add(" ")  # solid cell == blank cell of the ink colour
+        return sorted(out)
 
     def _make_mask(self, ch):
         return Image.frombytes("1", (self.cell_w, self.cell_h), self._keys[ch]).convert("L")

@@ -13,6 +13,12 @@ from .screens import build
 from .transforms import apply_chain
 
 
+def env():
+    """Versions the PNG/JPEG bytes depend on (Pillow and its zlib/libjpeg): same bytes are guaranteed only within one environment."""
+    from PIL import __version__, features
+    return {"pillow": __version__, "zlib": features.version("zlib"), "libjpeg": features.version("jpg")}
+
+
 def hexcol(c):
     return "#%02x%02x%02x" % tuple(c)
 
@@ -52,7 +58,7 @@ def truth_for(font, screen, specs, seed, geo, log, base_size, size, png):
     for r, row in enumerate(screen.cells):
         cells.append([[c.ch, hexcol(c.fg), hexcol(c.bg), c.flags + ("C" if screen.cursor == (r, i) else "")] for i, c in enumerate(row)])
     return {
-        "format": FORMAT, "seed": seed, "label": label(specs), "font": font.describe(),
+        "format": FORMAT, "env": env(), "seed": seed, "label": label(specs), "font": font.describe(),
         "screen": {"name": screen.name, "cols": screen.cols, "rows": screen.rows,
                    "cursor": list(screen.cursor) if screen.cursor else None, "text": screen.text_rows(), "cells": cells},
         "transforms": log, "geometry": geo,
@@ -66,7 +72,7 @@ def generate(font, screen_name, specs=(), seed=0):
         font = load_font(font)
     screen = build(screen_name, font, seed)
     base = render_screen(font, screen)
-    im, geo, log = apply_chain(base, list(specs), seed)
+    im, geo, log = apply_chain(base, list(specs), seed, fill=screen.bg)
     png = png_bytes(im)
     return png, truth_for(font, screen, list(specs), seed, geo, log, base.size, im.size, png)
 

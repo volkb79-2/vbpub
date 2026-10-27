@@ -62,7 +62,7 @@ USER root
 # therefore installed only when `docker` is absent from PATH (the upstream Python base), decided by the
 # capability it provides, not by a package name. Compose is a separate step below.
 RUN set -eu \
- && packages="ca-certificates curl git jq openssh-client util-linux" \
+ && packages="ca-certificates curl git jq openssh-client util-linux fonts-dejavu-core" \
  && if ! command -v docker >/dev/null 2>&1; then packages="$packages docker-cli"; fi \
  && apt-get update \
  && apt-get install -y --no-install-recommends $packages \

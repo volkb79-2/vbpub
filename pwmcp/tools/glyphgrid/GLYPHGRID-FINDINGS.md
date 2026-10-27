@@ -4,6 +4,30 @@
 > screen, a new ISO or a new font.** The leave-one-frame-out numbers are inflated by near-duplicate frames (12/13, 19/20,
 > 05/06, 09/10/11); the leave-screen-group-out numbers below are the honest ones.
 
+## Open defects found by the imagegen generator (2026-10-27; measured with `imagegen`, see `imagegen/IMAGEGEN-FINDINGS.md`)
+
+**D-1 complement-bitmap characters read as `F`/`e` with the wrong polarity twin (wrong-confident, real).** `normalise_cell` takes the
+MINORITY colour of a two-colour cell as ink, so a glyph and its fg/bg complement produce one bitmap or the other depending only on
+which side has fewer pixels (ties: the frame-wide colour frequency). The font-exact atlas holds both characters as distinct entries
+and answers with whichever bitmap came out, so a clean 1:1 frame is read as a confident wrong character:
+vga-8x16 `U+2584` as `U+2580`; unifont-16 `U+2587` as `U+2594`, `U+2589` as `U+2595`, `U+2599` as `U+259D`, `U+259B` as `U+2597`,
+`U+259C` as `U+2596`, `U+259F` as `U+2598`; and every font's isolated solid block `U+2588` as a confident blank (uniform cell, the `f`
+fill rule only fires next to text). Reproduce (oracle = true grid, so grid detection is not involved):
+`python3 -m imagegen generate --font unifont-16 --screen alphabet --seed 7 -o D` then
+`python3 -m imagegen read --engine glyph-grid-oracle --truth D/unifont-16__alphabet__clean__s7.json D/unifont-16__alphabet__clean__s7.png`
+(the pinned pairs are tested: `pwmcp/tests/test_imagegen.py::test_fixture_atlas_misreads_complement_twins_pinned`).
+**Proposed fix (glyphgrid.py, separate branch):** when an atlas bitmap has a complement twin (or is all-ones / all-zero) in the same
+font, treat the pair as an alias set (`a`, ambiguity set, UNKNOWN character) unless the colours disambiguate, i.e. polarity is
+recoverable only from a reference (the ink colour is not the minority colour but a colour known from the neighbouring text cells);
+foreground = minority loses polarity, so a polarity-free key must never resolve to a single character. Solid cells next to
+nothing must read `f`/unknown, never blank, when their colour differs from the page background.
+
+**D-2 grid detection refuses clean 1:1 font-exact screens** (`no_grid`, description length above the 0.5 gate) for screens with
+little repetition: a code chart and random text (about 75 % ink cells, no blank cells to compress); `grid_hints` naming one atlas
+font does not bypass the gate. **D-3** an 8x19 (EDK2) installer screen is detected as 8x16 (`origin_y` 1, 29 rows, font_share 0.01);
+**D-4** content offset by (1, 1) gets origin (0, 15) and `no_font`. Reproducers and hypotheses: `imagegen/IMAGEGEN-FINDINGS.md`,
+"Known defects".
+
 ## Revision 4 (review of the font-file commit): closing the ways a wrong character could still read as font-exact
 
 1. **Cross-font collisions.** VGA and Unifont share the 8x16 cell and 10 box-drawing bitmaps mean different characters in the two fonts. `decode` now

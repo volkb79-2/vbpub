@@ -13,19 +13,23 @@ from .render import render_screen
 from .screens import alphabet, installer, random_text
 
 
+def learn_screen(atlas, font, src, screen):
+    """Add every ink cell of one rendered page (cursor cells excluded: the underline changes their bitmap) as source ``src``."""
+    im = render_screen(font, screen)
+    grid = {"cell_w": font.cell_w, "cell_h": font.cell_h, "origin_x": 0, "origin_y": 0, "cols": screen.cols, "rows": screen.rows, "status": "ok"}
+    ex = gg.extract(im, grid)
+    for r, row in enumerate(ex.rows):
+        for c, cell in enumerate(row):
+            ch = screen.cells[r][c].ch
+            if cell.kind == "glyph" and ch != " " and screen.cursor != (r, c):
+                atlas.add("gen:" + font.id, font.cell_w, font.cell_h, cell.key, ch, source=src)
+
+
 def learn_pages(atlas, font):
     pages = [("alphabet:" + s, alphabet(font, s)) for s in ("grey-on-black", "white-on-blue", "black-on-grey")]
     pages += [("installer", installer(font)), ("random:101", random_text(font, 101)), ("random:102", random_text(font, 102))]
-    name = "gen:" + font.id
     for src, screen in pages:
-        im = render_screen(font, screen)
-        grid = {"cell_w": font.cell_w, "cell_h": font.cell_h, "origin_x": 0, "origin_y": 0, "cols": screen.cols, "rows": screen.rows, "status": "ok"}
-        ex = gg.extract(im, grid)
-        for r, row in enumerate(ex.rows):
-            for c, cell in enumerate(row):
-                ch = screen.cells[r][c].ch
-                if cell.kind == "glyph" and ch != " " and screen.cursor != (r, c):
-                    atlas.add(name, font.cell_w, font.cell_h, cell.key, ch, source=src)
+        learn_screen(atlas, font, src, screen)
     return len(pages)
 
 

@@ -27,8 +27,13 @@ def parse(spec):
     return name, [_num(x) for x in rest.split(",")] if rest else []
 
 
-def _corner(im):
-    return im.getpixel((0, 0))
+def _fill(im, geo):
+    return geo.get("fill") or im.getpixel((0, 0))
+
+
+def _scale_clip(geo, fx, fy):
+    l, t, r, b = geo["clip"]
+    geo["clip"] = [l * fx, t * fy, r * fx, b * fy]
 
 
 def _lut(fn):
@@ -38,6 +43,7 @@ def _lut(fn):
 def t_nn_upscale(im, p, rng, geo):
     k = int(p[0])
     geo.update(sx=geo["sx"] * k, sy=geo["sy"] * k, ox=geo["ox"] * k, oy=geo["oy"] * k)
+    _scale_clip(geo, k, k)
     return im.resize((im.width * k, im.height * k), Image.NEAREST)
 
 
@@ -46,6 +52,7 @@ def t_scale(im, p, rng, geo):
     w, h = max(1, round(im.width * f)), max(1, round(im.height * f))
     fx, fy = w / im.width, h / im.height
     geo.update(sx=geo["sx"] * fx, sy=geo["sy"] * fy, ox=geo["ox"] * fx, oy=geo["oy"] * fy)
+    _scale_clip(geo, fx, fy)
     return im.resize((w, h), FILTERS[flt])
 
 
@@ -78,19 +85,24 @@ def t_contrast(im, p, rng, geo):
 
 
 def t_offset(im, p, rng, geo):
-    """Shift content by (dx, dy) inside the same canvas; the exposed edge takes the colour of the top-left pixel."""
+    """Shift content by (dx, dy) inside the same canvas: the far edge is CROPPED (recorded in geometry ``clip``), the exposed edge
+    is filled with the screen background colour."""
     dx, dy = int(p[0]), int(p[1] if len(p) > 1 else p[0])
-    out = Image.new("RGB", im.size, _corner(im))
+    out = Image.new("RGB", im.size, _fill(im, geo))
     out.paste(im, (dx, dy))
+    l, t, r, b = geo["clip"]
+    geo["clip"] = [max(0, l + dx), max(0, t + dy), min(im.width, r + dx), min(im.height, b + dy)]
     geo.update(ox=geo["ox"] + dx, oy=geo["oy"] + dy)
     return out
 
 
 def t_letterbox(im, p, rng, geo):
-    """Add borders l,t,r,b (one value = all four) in the colour of the top-left pixel; the canvas grows."""
+    """Add borders l,t,r,b (one value = all four) in the screen background colour; the canvas grows."""
     l, t, r, b = (int(x) for x in (p * 4 if len(p) == 1 else p))
-    out = Image.new("RGB", (im.width + l + r, im.height + t + b), _corner(im))
+    out = Image.new("RGB", (im.width + l + r, im.height + t + b), _fill(im, geo))
     out.paste(im, (l, t))
+    c = geo["clip"]
+    geo["clip"] = [c[0] + l, c[1] + t, c[2] + l, c[3] + t]
     geo.update(ox=geo["ox"] + l, oy=geo["oy"] + t)
     return out
 
@@ -122,6 +134,8 @@ def t_subpixel(im, p, rng, geo):
         big = Image.merge("RGB", (sh(r, s - 1), sh(g, s), sh(b, s + 1)))
     else:
         big = Image.merge("RGB", (sh(r, s), sh(g, s), sh(b, s)))
+    c = geo["clip"]
+    geo["clip"] = [c[0] + s / 3.0, c[1], c[2] + s / 3.0, c[3]]
     geo.update(ox=geo["ox"] + s / 3.0, exact=not fringe and geo["exact"])
     return big.resize((w, h), Image.BOX)
 
@@ -132,11 +146,15 @@ TRANSFORMS = {
 }
 
 
-def apply_chain(im, specs, seed=0):
-    """-> (image, geometry, [{spec, name, params}]).  ``geometry``: sx, sy (output px per source px), ox, oy (px), exact."""
-    geo = {"sx": 1.0, "sy": 1.0, "ox": 0.0, "oy": 0.0, "exact": True}
-    log = []
+def apply_chain(im, specs, seed=0, fill=None):
+    """-> (image, geometry, [{spec, name, params}]).  ``geometry``: sx, sy (output px per source px), ox, oy (px), exact, and
+    ``clip`` = [l, t, r, b], the part of the output still showing source content (``offset`` crops the far edge).
+    ``fill``: RGB used for offset/letterbox borders (default: the top-left pixel)."""
     im = im.convert("RGB")
+    geo = {"sx": 1.0, "sy": 1.0, "ox": 0.0, "oy": 0.0, "exact": True, "clip": [0.0, 0.0, float(im.width), float(im.height)]}
+    if fill is not None:
+        geo["fill"] = tuple(fill)
+    log = []
     for i, spec in enumerate(specs):
         name, params = parse(spec)
         if name not in TRANSFORMS:
@@ -144,4 +162,5 @@ def apply_chain(im, specs, seed=0):
         rng = random.Random("%s:%d:%s" % (seed, i, name))
         im = TRANSFORMS[name](im, params, rng, geo)
         log.append({"spec": spec, "name": name, "params": params, "size": list(im.size)})
+    geo.pop("fill", None)
     return im, geo, log

@@ -33,6 +33,7 @@ class Cell:
 class Screen:
     def __init__(self, name, cols, rows, fg=PAL["grey"], bg=PAL["black"]):
         self.name, self.cols, self.rows = name, cols, rows
+        self.bg = bg  # the page background: what letterbox/offset borders are filled with
         self.cells = [[Cell(" ", fg, bg) for _ in range(cols)] for _ in range(rows)]
         self.cursor = None
 

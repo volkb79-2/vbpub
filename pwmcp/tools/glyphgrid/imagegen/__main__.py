@@ -5,7 +5,7 @@ import os
 import sys
 
 from .engines import EngineMissing, EngineSkipped, make
-from .evaluate import evaluate, markdown
+from .evaluate import conf_summary, evaluate, markdown
 from .fonts import DEFAULT_ATLAS, available_ids
 from .render import write
 from .suite import SCREENS, build_suite
@@ -44,12 +44,28 @@ def cmd_eval(a):
     except EngineMissing as e:
         print("FAIL:", e, file=sys.stderr)
         return 2
-    agg, details = evaluate(a.suite, eng, a.by)
+    agg, details, confs = evaluate(a.suite, eng, a.by)
     print("engine: %s%s" % (eng.name, "  atlas: %s" % (a.atlas or DEFAULT_ATLAS) if eng.name.startswith("glyph-grid") else ""))
     print(markdown(agg, a.by))
+    if confs["exact"] or confs["wrong"]:
+        print(conf_summary(confs))
     if a.json:
         with open(a.json, "w", encoding="utf-8") as f:
             json.dump({"engine": eng.name, "by": a.by, "groups": agg, "images": details}, f, indent=1, ensure_ascii=False)
+    return 0
+
+
+def cmd_read(a):
+    eng = make(a.engine, a.atlas)
+    with open(a.image, "rb") as f:
+        rd = eng.read(f.read(), json.load(open(a.truth)) if a.truth else None)
+    print("status:", rd.status, rd.note)
+    if rd.emissions:
+        rows = {}
+        for e in rd.emissions:
+            rows.setdefault(round(e[1]), []).append((e[0], e[4] if e[4] is not None else "\ufffd"))
+        for y in sorted(rows):
+            print("".join(c for _, c in sorted(rows[y])))
     return 0
 
 
@@ -81,6 +97,12 @@ def main(argv=None):
     e.add_argument("--prescale", type=int, default=3, help="tesseract: Lanczos enlargement before OCR")
     e.add_argument("--json", help="write full per-image results")
     e.set_defaults(fn=cmd_eval)
+    r = sp.add_parser("read", help="read one image with an engine and print status + text (reproducer for known defects)")
+    r.add_argument("image")
+    r.add_argument("--engine", default="glyph-grid", choices=("glyph-grid", "glyph-grid-oracle"))
+    r.add_argument("--atlas")
+    r.add_argument("--truth", help="truth JSON (required by the oracle engine)")
+    r.set_defaults(fn=cmd_read)
     a = ap.parse_args(argv)
     return a.fn(a)
 

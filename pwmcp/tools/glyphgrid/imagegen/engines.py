@@ -4,8 +4,10 @@ A Reading is a status plus a list of emissions ``(x0, y0, x1, y1, ch)`` in INPUT
 character (``" "`` = confident blank) or ``None`` (the engine declined: UNKNOWN).  Missing optional dependencies FAIL by
 default (``PWMCP_ALLOW_MISSING_TEST_DEPS=1`` turns that into a clean skip), like pwmcp/tests/_testdeps.py.
 """
+import html
 import io
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -95,9 +97,11 @@ class OracleGridEngine(GlyphGridEngine):
 
 
 class TesseractEngine:
-    """Tesseract via pytesseract or the CLI.  Words are spread over columns by their boxes; every emitted character is
-    treated as CONFIDENT (that is the measurement: how often is it confidently wrong).  ``prescale`` is the usual
-    Lanczos enlargement fed to Tesseract (its tiny-text accuracy is poor without one); boxes are mapped back."""
+    """Tesseract via the CLI with per-CHARACTER boxes and confidences (hOCR ``hocr_char_boxes=1``: ``ocrx_cinfo`` spans carry
+    ``x_bboxes`` and ``x_conf``), so one misread glyph cannot shift the columns of the rest of a word.  Every emitted character
+    is treated as CONFIDENT whatever its confidence (the measurement: how often is it confidently wrong); the confidence is kept
+    on the emission and summarised for exact vs wrong cells.  ``prescale`` is the usual Lanczos enlargement fed to Tesseract.
+    NOT yet run against a real Tesseract here (no binary on this host): the parser is tested on canned hOCR only."""
 
     name = "tesseract"
 
@@ -107,12 +111,13 @@ class TesseractEngine:
         if self.binary is None:
             missing("the `tesseract` binary", "install tesseract-ocr; the OCR sidecar image has it")
 
-    def _run_tsv(self, im):
+    def _run_hocr(self, im):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "in.png")
             im.save(p)
             cp = subprocess.run(["nice", "-n", "10", self.binary, p, "stdout", "-l", self.lang, "--psm", str(self.psm),
-                                 "-c", "preserve_interword_spaces=1", "tsv"], capture_output=True, text=True, timeout=120)
+                                 "-c", "hocr_char_boxes=1", "-c", "preserve_interword_spaces=1", "hocr"],
+                                capture_output=True, text=True, timeout=120)
         if cp.returncode != 0:
             raise RuntimeError("tesseract failed: %s" % cp.stderr.strip()[:300])
         return cp.stdout
@@ -121,21 +126,25 @@ class TesseractEngine:
         im = Image.open(io.BytesIO(png)).convert("RGB")
         s = self.prescale
         big = im.resize((im.width * s, im.height * s), Image.LANCZOS) if s > 1 else im
-        return Reading("ok", parse_tsv(self._run_tsv(big), s))
+        return Reading("ok", parse_hocr(self._run_hocr(big), s))
 
 
-def parse_tsv(tsv, scale=1):
-    """Tesseract TSV -> emissions: each character of a word gets an equal slice of the word box (columns are inferred, not seen)."""
+_CINFO = re.compile(r"<span class=['\"]ocrx_cinfo['\"] title=['\"]([^'\"]*)['\"][^>]*>(.*?)</span>", re.S)
+
+
+def parse_hocr(hocr, scale=1):
+    """hOCR character spans -> emissions ``(x0, y0, x1, y1, ch, conf)`` in input pixels."""
     em = []
-    lines = tsv.splitlines()
-    for line in lines[1:]:
-        f = line.split("\t")
-        if len(f) < 12 or f[0] != "5" or not f[11].strip():
+    for title, text in _CINFO.findall(hocr):
+        m = re.search(r"x_bboxes (\d+) (\d+) (\d+) (\d+)", title)
+        if not m:
             continue
-        left, top, w, h = (int(x) / scale for x in f[6:10])
-        word = f[11].strip()
-        for i, chv in enumerate(word):
-            em.append((left + w * i / len(word), top, left + w * (i + 1) / len(word), top + h, chv))
+        ch = html.unescape(re.sub(r"<[^>]+>", "", text)).strip()
+        if len(ch) != 1:
+            continue
+        c = re.search(r"x_conf ([\d.]+)", title)
+        x0, y0, x1, y1 = (int(v) / scale for v in m.groups())
+        em.append((x0, y0, x1, y1, ch, float(c.group(1)) if c else None))
     return em
 
 
