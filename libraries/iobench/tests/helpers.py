@@ -59,14 +59,14 @@ def make_host(size: int = R1002_SIZE, *, cache: dict | None = None, read: dict |
     host = testing.standard_host(sc, target_size=size)
     if cache is not None:
         host.devices["/dev/vda7"].cache = CacheModel(**cache)
-    host.dynamic["/sys/fs/cgroup/wings.slice/io.pressure"] = lambda: "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+    host.dynamic["/sys/fs/cgroup/game-server.slice/io.pressure"] = lambda: "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
     guard.init_device(host, "/dev/vda7", own=True, expect_size=size, expect_partuuid=R1002_PARTUUID, expect_serial=None, created=CREATED)
     return host
 
 
 def config(**kw) -> stages.Config:
     base = dict(target="/dev/vda7", tool_version="0.1.0", work_dir="/bench/w", confirm_quiet_window=True,
-                protect_cgroup="wings.slice", abort_psi=40.0)
+                protect_cgroup="game-server.slice", abort_psi=40.0)
     base.update(kw)
     return stages.Config(**base)
 

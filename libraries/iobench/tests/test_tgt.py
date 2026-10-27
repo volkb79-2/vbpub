@@ -489,7 +489,7 @@ def file_host(free=40 * GIB, size=6 * GIB, discard=False, **sc):
     scn = Scenario(read=DirScenario(iops_max=21600, lat_us=300), write=DirScenario(iops_max=3600, lat_us=440, bps_cap_seq=14e6, bps_cap_rand=14e6),
                    noise_cv=0.02, **sc)
     host = standard_host(scn, workdir_free=free)
-    host.dynamic["/sys/fs/cgroup/wings.slice/io.pressure"] = lambda: "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+    host.dynamic["/sys/fs/cgroup/game-server.slice/io.pressure"] = lambda: "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
     if discard:
         host.mounts = [(ns, dev, mp, src, fs, opts + ",discard" if mp == "/bench" else opts) for ns, dev, mp, src, fs, opts in host.mounts]
     guard.init_file(host, "/bench/target.img", size=size, own=True, expect_fs_uuid=FILE_FS, confirm_quiet_window=False,

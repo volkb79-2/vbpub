@@ -69,8 +69,8 @@ def test_bl06_n_r3_1_stop_unit_survives_a_failing_stop_command():
 
 def test_bl06_stop_is_allowlisted_only_for_probe_units():
     check_argv(devio.unit_stop_argv("iobench-probe-run-1"))
-    for bad in (["systemctl", "stop", "wings.service"], ["systemctl", "stop"], ["systemctl", "restart", "iobench-probe-x"],
-                ["systemctl", "stop", "iobench-probe-x", "wings.service"]):
+    for bad in (["systemctl", "stop", "game-server.service"], ["systemctl", "stop"], ["systemctl", "restart", "iobench-probe-x"],
+                ["systemctl", "stop", "iobench-probe-x", "game-server.service"]):
         assert not is_allowed_argv(bad)
 
 

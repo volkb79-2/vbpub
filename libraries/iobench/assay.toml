@@ -47,6 +47,7 @@ targets = [
   "src/iobench/matrix.py",
   "src/iobench/plan.py",
   "src/iobench/plausibility.py",
+  "src/iobench/probe_source.py",
   "src/iobench/proposals.py",
   "src/iobench/restore.py",
   "src/iobench/result.py",

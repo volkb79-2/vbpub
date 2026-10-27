@@ -299,7 +299,7 @@ def test_arc_05_fakehost_sysfs_and_forbidden():
     with pytest.raises(FileNotFoundError):
         h.write_sysfs("/sys/nothing", "1")
     with pytest.raises(HostError):
-        h.write_sysfs("/sys/fs/cgroup/wings.slice/io.max", "8:0 rbps=1")
+        h.write_sysfs("/sys/fs/cgroup/game-server.slice/io.max", "8:0 rbps=1")
     for bad in (["fstrim", "/"], ["systemctl", "set-property", "x", "IOWeight=1"], ["systemctl", "daemon-reload"],
                 ["mount", "a", "b"], ["dd", "of=/dev/vda7"], ["systemd-run", "-pIOWeight=3"]):
         with pytest.raises(HostError):
@@ -311,8 +311,8 @@ def test_arc_05_fakehost_sysfs_and_forbidden():
     assert h.run(["fio", "--version"]).stdout.startswith("fio-")
     h.containers = ["a", "b"]
     assert h.run(devio.docker_ps_argv()).stdout == "a\nb\n"
-    h.active_units.add("wings")
-    assert h.run(devio.unit_active_argv("wings")).returncode == 0
+    h.active_units.add("game-server")
+    assert h.run(devio.unit_active_argv("game-server")).returncode == 0
     assert h.run(devio.unit_active_argv("other")).returncode == 3
     assert [a[0] for a in h.argv_log][-1] == "systemctl"
 
@@ -414,9 +414,10 @@ def test_arc_05_workdir_load_and_probe_models():
     fs = load.with_(name="fs", fsync=16, rw="randwrite", bs=4096)
     res = devio.collect(h, fs, h.spawn(fs.argv()).wait(), 0.0)
     assert res.stats.iops == pytest.approx(800, rel=0.01)
-    unit = devio.probe_unit_argv("iobench-probe-u", "iobench.slice", 130, "pass", ["/bench/w", "/run/iobench/probe.out", "60", "0.5"])
+    from iobench.sweep import PROBE_SOURCE
+    unit = devio.probe_unit_argv("iobench-probe-u", "iobench.slice", 130, PROBE_SOURCE, ["/bench/w", "/run/iobench/.iobench-probe-u", "60", "0.5"])
     h.spawn(unit).wait()
-    lats = sorted(float(x) for x in h.read_text("/run/iobench/probe.out").split())
+    lats = sorted(float(x) for x in h.read_text("/run/iobench/.iobench-probe-u").split())
     assert len(lats) == 120 and lats[118] == 64000.0
     with pytest.raises(HostError):
         h.spawn(["systemd-run", "python3", "-c", "x", "a", "b", "60", "0.5"])

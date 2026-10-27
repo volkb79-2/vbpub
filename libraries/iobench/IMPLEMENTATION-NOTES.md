@@ -166,4 +166,14 @@ Earlier findings B1..B4 (journal ownership, dirty-ratio coupling, container name
 | the probe file was journalled once per cell | nit | `register_file` dedupes | `test_rev_e_register_file_journals_each_file_once` |
 | RealHost: `import ctypes` inside `preexec_fn` (post-fork import); file-target marker open followed symlinks | nit (RealHost, untested until ACC-01) | `_PRCTL` resolved at import; `O_NOFOLLOW` for file targets | none (host.py is outside the unit gate) |
 
+Second round (independent Sonnet review of the first commit, same day; `tests/test_review_e.py`):
+
+| Finding | Severity | Fix | Test |
+|---|---|---|---|
+| the load-file rule searched the whole `--filename`: `/dev/sda:/tmp/iobench-x` (fio opens both), `/dev/mapper/iobench-lv`, `/etc/iobench-x`, a trailing newline all passed | high | `SCRATCH_NAME.fullmatch` on the basename; `_clean_path` (absolute, normalised, no `:`/`,`/whitespace/control); `_contained` against `Host.scratch_roots` (realpath of the parent under a root; absent, regular file or directory; never a symlink or device node); S0 authorises the run's log dir and the work dir | `test_rev_e_unbound_fio_writer_*`, `test_rev_e_scratch_name_*`, `test_rev_e_fakehost_refuses_*` |
+| the unit shape checked `bool(script)` only: any script ran as root | high | `a[9] == probe_source.PROBE_SOURCE` (new leaf module, re-exported by `sweep`); every other slot a literal; `DIR`/`OUT` contained, `OUT` iobench-named | `test_rev_e_probe_unit_argv_*`, `test_rev_e_probe_unit_paths_*` |
+| fio log prefixes (`--write_*_log`) took any path; `--offset=-5` only refused on the bound path | medium | log prefixes contained (bound or not); every numeric key `[0-9]+`; `--ioengine`/`--output-format` literal, `--direct`/`--exclusive_open` in {0,1} | `test_rev_e_fio_log_prefixes_*`, `test_rev_e_fio_values_are_typed_*` |
+| mutation survivors (anchor, `-p` slot, `bound=True`, `check_argv` in `discard_range`) | medium | tests: anchored name in both consumers; `--uid=0`/`--setenv=` in the `-p` slot; RealHost `write_range`/`discard_range` on a fake `subprocess.Popen` asserting `check_argv(bound=True, host=self)` ran and refusals raise before any process; AST rule for every `subprocess` call site | `test_rev_e_realhost_*`, `test_rev_e_every_subprocess_call_site_*` |
+| host names in code and tests | low | `restore.py` hints and the test estate use `game-server.*`; `cli.py` examples and `tests/cli_cases.py` keep theirs because `docs/cli-surface.json`/`cli-review.toml` are generated from them (IOB-BL-15) | |
+
 Judged and left (BACKLOG IOB-BL-09..16): scratch directory cleanup, hosts without docker, file targets on disk-less filesystems, the reclaim-driven stall class the io.pressure guard does not see, the dry-run name mismatch, `_ProcHandle` descriptors, the host-agnostic docs pass, the diskstats row. The iogov division of labour and the IOB-REL-01 prerequisites are in BACKLOG.md.

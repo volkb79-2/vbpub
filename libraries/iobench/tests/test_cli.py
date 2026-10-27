@@ -23,7 +23,7 @@ def test_cli_01_commands_and_exit_codes():
     code, out, _ = run(host, "check", "--json")
     assert code == 4 and json.loads(out)["state"] == "absent"
     code, out, _ = run(host, "calibrate", "--target", "/dev/vda7", "--work-dir", "/bench/w", "--dry-run", "--assume-r-est", "1.36e9", "--json",
-                       "--confirm-quiet-window", "--protect-cgroup", "wings.slice", "--abort-psi", "40")
+                       "--confirm-quiet-window", "--protect-cgroup", "game-server.slice", "--abort-psi", "40")
     assert code == 0 and not host.write_log
     code, out, _ = run(host, "target", "show", "/dev/vda7", "--json")
     assert code == 0 and json.loads(out)["target"] == "/dev/vda7"
@@ -73,12 +73,12 @@ def test_cli_10_surface_matches_registry():
 from helpers import R1002_PARTUUID, R1002_SIZE  # noqa: E402,F401
 from iobench import testing  # noqa: E402
 
-GUARDS = ["--confirm-quiet-window", "--protect-cgroup", "wings.slice", "--abort-psi", "40"]
+GUARDS = ["--confirm-quiet-window", "--protect-cgroup", "game-server.slice", "--abort-psi", "40"]
 
 
 def fresh_host():
     host = testing.standard_host(target_size=R1002_SIZE)
-    host.dynamic["/sys/fs/cgroup/wings.slice/io.pressure"] = lambda: "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+    host.dynamic["/sys/fs/cgroup/game-server.slice/io.pressure"] = lambda: "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
     return host
 
 

@@ -21,6 +21,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Protocol, Sequence
 
+from .probe_source import PROBE_SOURCE
+
 TAIL_BYTES = 1024 * 1024
 
 
@@ -71,17 +73,47 @@ FORBIDDEN_ARGV0 = ("mkfs", "mount", "umount", "fstrim", "dd")
 _IO_LIMIT_TOKEN = re.compile(r"^(?:-p=?|--property=)?(?:block)?io(?:device)?(?:weight|read|write|latency)[a-z]*=", re.IGNORECASE)
 # The names iobench gives the files it creates in a work dir (the matrix load files, the probe files); the restore journal
 # accepts only these for removal, and an UNBOUND fio writer (plain `spawn`, no `write_range` binding) may write only to one of them.
-SCRATCH_FILE = re.compile(r"(^|/)(iobench-[^/]*|\.iobench[^/]*)$")
+# Anchored on the whole basename: `xiobench-y`, `iobench-lv` under /dev/mapper (wrong directory) or a name with `:` never fit.
+SCRATCH_NAME = re.compile(r"(iobench-|\.iobench)[A-Za-z0-9_.-]*")
 _FIO_WRITE_RW = ("write", "randwrite")
+_FIO_PATH_KEYS = ("--filename", "--write_bw_log", "--write_iops_log", "--write_hist_log")  # every allowlisted key whose value names a path
+
+
+def is_scratch_name(path: str) -> bool:
+    return SCRATCH_NAME.fullmatch(posixpath.basename(path)) is not None
 
 
 def _fio_opt(argv: Sequence[str], key: str) -> str | None:
     return next((t.partition("=")[2] for t in argv[1:] if t.partition("=")[0] == key), None)
 
 
-def check_argv(argv: Sequence[str], *, bound: bool = False) -> None:
+def _clean_path(value: str) -> bool:
+    """An absolute, normalised path with no `:` (fio splits a file list on it), `,`, whitespace or control character, no `..`."""
+    if not value.startswith("/") or value.endswith("/") or posixpath.normpath(value) != value:
+        return False
+    return not any(c in ":," or c.isspace() or ord(c) < 32 or ord(c) == 127 for c in value)
+
+
+def _contained(host: Any, value: str, *, directory: bool = False) -> bool:
+    """``value`` lies inside one of the Host's authorised scratch roots: syntactically clean, its parent (or itself, for a directory)
+    resolves under a root (symlink escapes are resolved away), and it is either absent, a regular file or (``directory``) a directory;
+    a symlink or a device node in that place is refused."""
+    if host is None or not _clean_path(value):
+        return False
+    real = host.realpath(value if directory else posixpath.dirname(value))
+    if not any(real == root or real.startswith(root + "/") for root in (host.realpath(r) for r in host.scratch_roots)):
+        return False
+    st = host.stat(value)
+    if st is None:
+        return not directory
+    return (st.is_dir if directory else st.is_file) and not st.is_symlink
+
+
+def check_argv(argv: Sequence[str], *, bound: bool = False, host: Any = None) -> None:
     """Refuse argv that could change an io.max-style limit or a filesystem, and (unless ``bound``) any argv that writes or discards
-    without the extent binding of ``Host.write_range`` / ``Host.discard_range``: a plain ``run``/``spawn`` can never reach a target."""
+    without the extent binding of ``Host.write_range`` / ``Host.discard_range``: a plain ``run``/``spawn`` can never reach a target.
+    Every path an argv names (a load file, a fio log prefix, the probe's directory and output file) must lie inside a scratch root
+    the ``host`` authorised (``Host.allow_scratch``); without a host no path is authorised."""
     base = os.path.basename(argv[0])
     if base.startswith("mkfs") or base in FORBIDDEN_ARGV0:
         raise HostError(f"forbidden command: {base}")
@@ -94,15 +126,22 @@ def check_argv(argv: Sequence[str], *, bound: bool = False) -> None:
             raise HostError(f"forbidden argument: {token}")
     if not is_allowed_argv(argv):
         raise HostError(f"argv outside the allowlist: {' '.join(argv[:3])} ...")
+    if base == "fio" and len(argv) > 2:
+        for key in _FIO_PATH_KEYS[1:]:  # the log prefixes: fio creates `<prefix>_<kind>.1.log` there, bound or not
+            value = _fio_opt(argv, key)
+            if value is not None and not _contained(host, value):
+                raise HostError(f"fio {key}={value}: a log prefix must lie inside an authorised scratch directory")
+    if base == "systemd-run" and not (_contained(host, argv[10], directory=True) and _contained(host, argv[11]) and is_scratch_name(argv[11])):
+        raise HostError("probe unit: the directory and the output file must lie inside an authorised scratch directory")
     if bound:
         return
     if base == "blkdiscard" or (base == "fallocate" and argv[1] == "-p"):
         raise HostError(f"{base} runs only through Host.discard_range, bound to the authorised extent: {' '.join(argv)}")
     if base == "fio" and _fio_opt(argv, "--rw") in _FIO_WRITE_RW:
         filename = _fio_opt(argv, "--filename") or ""
-        if not SCRATCH_FILE.search(filename):
+        if not (is_scratch_name(filename) and _contained(host, filename)):
             raise HostError(f"fio writer on {filename}: a target writer runs only through Host.write_range; "
-                            "an unbound writer may only create an iobench-* load file")
+                            "an unbound writer may only create an iobench-* load file inside an authorised scratch directory")
 
 
 # Exactly the keys FioJob.argv() emits (tests/test_review_d.py pins the two together). An allowlist, not a denylist: fio accepts
@@ -114,9 +153,13 @@ _FIO_KEYS = frozenset((
     "--exclusive_open", "--readonly", "--io_size", "--write_hist_log", "--log_hist_msec", "--log_hist_coarseness", "--rate_iops", "--fsync"))
 _FIO_ENGINES = ("--ioengine=libaio",)  # the only engine iobench builds; `exec` (and any other) runs or reaches outside the planned job (review A N-r3-4)
 _FIO_RW = ("read", "write", "randread", "randwrite")  # `trim`/`trimwrite`/`randtrim` DISCARD; `rw`/`randrw`/`readwrite` mix: none is a planned workload
+_FIO_INT_KEYS = ("--bs", "--iodepth", "--direct", "--runtime", "--offset", "--size", "--numjobs", "--log_avg_msec", "--exclusive_open",
+                 "--io_size", "--log_hist_msec", "--log_hist_coarseness", "--rate_iops", "--fsync")  # non-negative integers only (`--offset=-5` is refused here)
+_FIO_FIXED = {"--ioengine": "libaio", "--output-format": "json", "--direct": None, "--exclusive_open": None}
 _PROBE_UNIT = re.compile(r"iobench-probe-[A-Za-z0-9_-]+")
 _SLICE = re.compile(r"[A-Za-z0-9_.-]+\.slice")
 _NUMBER = re.compile(r"[0-9]+(\.[0-9]+)?")
+_INT = re.compile(r"[0-9]+")
 
 
 def _fio_allowed(a: list[str]) -> bool:
@@ -129,20 +172,30 @@ def _fio_allowed(a: list[str]) -> bool:
         return False
     if "--rw" in keys and _fio_opt(a, "--rw") not in _FIO_RW:
         return False
-    return "--filename" in keys and all(t in _FIO_ENGINES for t in a[1:] if t.split("=")[0] == "--ioengine")
+    for key in _FIO_INT_KEYS:
+        value = _fio_opt(a, key)
+        if value is not None and _INT.fullmatch(value) is None:
+            return False
+    for key, want in _FIO_FIXED.items():
+        value = _fio_opt(a, key)
+        if value is not None and (value != want if want is not None else value not in ("0", "1")):
+            return False
+    return "--filename" in keys and all(_clean_path(_fio_opt(a, key) or "") for key in _FIO_PATH_KEYS if key in keys)
 
 
 def _systemd_run_allowed(a: list[str]) -> bool:
-    """Exactly the shape ``devio.probe_unit_argv`` builds: a waited, collected, lifetime-bounded probe unit in a slice, running the
-    probe script with its four arguments (an absolute directory, an absolute output file, a duration and an interval).  Any other
-    property (`-p ExecStartPre=`), command or argument count is refused: `RuntimeMaxSec=` alone used to be enough (IOB-BL-06)."""
-    if len(a) != 14 or a[1] != "--wait" or a[4] != "--collect" or a[5] != "-p" or a[7:9] != ["python3", "-c"]:
+    """Exactly the shape ``devio.probe_unit_argv`` builds: a waited, collected, lifetime-bounded probe unit in a slice, running THE
+    probe script (byte for byte ``probe_source.PROBE_SOURCE``: the unit runs as root, any other script is arbitrary code) with its
+    four arguments (an absolute directory, an absolute output file, a duration and an interval; the paths are bound to the scratch
+    roots in ``check_argv``).  Every other slot is a literal: another property (`-p ExecStartPre=`, `--uid=`, `--setenv=`), command
+    or argument count is refused.  `RuntimeMaxSec=` alone used to be enough (IOB-BL-06)."""
+    if len(a) != 14 or a[1] != "--wait" or a[4] != "--collect" or a[5] != "-p" or a[7] != "python3" or a[8] != "-c" or a[9] != PROBE_SOURCE:
         return False
     unit, slice_name = a[2].partition("=")[2], a[3].partition("=")[2]
     return (a[2].startswith("--unit=") and _PROBE_UNIT.fullmatch(unit) is not None
             and a[3].startswith("--slice=") and _SLICE.fullmatch(slice_name) is not None
-            and re.fullmatch(r"RuntimeMaxSec=[0-9]+", a[6]) is not None and bool(a[9])
-            and a[10].startswith("/") and a[11].startswith("/") and all(_NUMBER.fullmatch(t) for t in a[12:14]))
+            and re.fullmatch(r"RuntimeMaxSec=[0-9]+", a[6]) is not None
+            and _clean_path(a[10]) and _clean_path(a[11]) and all(_NUMBER.fullmatch(t) for t in a[12:14]))
 
 
 _ALLOWED = {
@@ -201,6 +254,7 @@ class Host(Protocol):
     def unlock(self) -> None: ...
     def signal_pending(self) -> str | None: ...
     def install_signals(self) -> None: ...
+    def allow_scratch(self, path: str) -> None: ...
 
 
 try:  # resolved in the parent: an import inside the forked child is not fork-safe (preexec_fn)
@@ -268,6 +322,11 @@ class RealHost:
         self._lock_fd: Any = None
         self._signal: str | None = None
         self._escalated = False  # a second signal arrived while the first was still pending
+        self.scratch_roots: list[str] = []  # the directories an unbound argv may name (the run's log dir, the verified work dir)
+
+    def allow_scratch(self, path: str) -> None:
+        if path not in self.scratch_roots:
+            self.scratch_roots.append(path)
 
     def now(self) -> float:
         return time.time()
@@ -282,7 +341,7 @@ class RealHost:
         return os.environ.get(name)
 
     def run(self, argv: Sequence[str], timeout: float | None = None) -> RunResult:
-        check_argv(argv)
+        check_argv(argv, host=self)
         return self._run_polled(argv, timeout)
 
     def _run_polled(self, argv: Sequence[str], timeout: float | None) -> RunResult:
@@ -307,7 +366,7 @@ class RealHost:
                 raise subprocess.TimeoutExpired(list(argv), timeout)
 
     def spawn(self, argv: Sequence[str]) -> Handle:
-        check_argv(argv)
+        check_argv(argv, host=self)
         return _ProcHandle(argv)
 
     def read_text(self, path: str) -> str:
@@ -458,7 +517,7 @@ class RealHost:
         self._verify_live(target)
         self._check_extent(target, offset, length)
         devio.assert_writer_bound(argv, target, offset, length)  # the argv writes exactly the authorised extent
-        check_argv(argv, bound=True)
+        check_argv(argv, bound=True, host=self)
         return _ProcHandle(argv)
 
     def discard_range(self, argv: Sequence[str], target: TargetRef, offset: int, length: int) -> RunResult:
@@ -466,7 +525,7 @@ class RealHost:
         self._verify_live(target)
         self._check_extent(target, offset, length)
         devio.assert_discard_bound(argv, target, offset, length)
-        check_argv(argv, bound=True)
+        check_argv(argv, bound=True, host=self)
         return self._run_polled(argv, None)
 
     # -- single instance and signals --------------------------------------

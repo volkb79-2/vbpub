@@ -10,7 +10,7 @@ from typing import Any, Sequence
 
 from . import devio
 from .errors import Aborted, Refusal, VerificationFailure
-from .host import SCRATCH_FILE, Host, HostError  # noqa: F401  (SCRATCH_FILE: one definition, shared with the argv rule of host.check_argv)
+from .host import Host, HostError, is_scratch_name  # one naming rule, shared with the argv rule of host.check_argv
 
 JOURNAL = "/run/iobench/restore.json"
 LOCK = "/run/iobench/lock"
@@ -145,7 +145,7 @@ def _validate_guards(host: Host, protect_cgroup: str, abort_psi: float) -> None:
         psi_some_avg10(host, protect_cgroup)
     except (OSError, StopIteration, KeyError, ValueError) as exc:
         raise Refusal("protect_cgroup_unreadable", f"cannot read the io.pressure of {protect_cgroup} ({type(exc).__name__}); the abort guard would not work",
-                      "name an existing cgroup with PSI enabled (for example wings.slice)") from exc
+                      "name an existing cgroup with PSI enabled (for example game-server.slice)") from exc
 
 
 def live_preflight(host: Host, *, confirm_quiet_window: bool, installer: bool, production_pattern: str | None,
@@ -154,7 +154,7 @@ def live_preflight(host: Host, *, confirm_quiet_window: bool, installer: bool, p
     if installer:
         if (protect_cgroup is None) != (abort_psi is None):
             raise Refusal("abort_guard_incomplete", "--protect-cgroup and --abort-psi must be given together; half a guard never aborts",
-                          "pass both (for example --protect-cgroup wings.slice --abort-psi 40) or neither")
+                          "pass both (for example --protect-cgroup game-server.slice --abort-psi 40) or neither")
         if protect_cgroup is not None and abort_psi is not None:
             _validate_guards(host, protect_cgroup, abort_psi)
         return {"containers_active": 0, "confirmed_quiet_window": confirm_quiet_window, "bypassed": True}
@@ -162,7 +162,7 @@ def live_preflight(host: Host, *, confirm_quiet_window: bool, installer: bool, p
         pattern = None if production_pattern is None else re.compile(production_pattern)
     except re.error as exc:
         raise Refusal("production_pattern_invalid", f"--production-pattern {production_pattern!r} is not a valid regular expression ({exc})",
-                      "pass a Python regular expression, for example '^wings'") from exc
+                      "pass a Python regular expression, for example '^game-server'") from exc
     names = [n for n in devio.probe(host, "docker ps", devio.docker_ps_argv()).stdout.split() if pattern is None or pattern.search(n)]
     units = [u for u in production_units if unit_is_active(host, u)]
     if (names or units) and not confirm_quiet_window:
@@ -170,7 +170,7 @@ def live_preflight(host: Host, *, confirm_quiet_window: bool, installer: bool, p
                       "rerun with --confirm-quiet-window in an agreed window")
     if protect_cgroup is None or abort_psi is None:
         raise Refusal("abort_guard_required", "live-host runs need --protect-cgroup and --abort-psi (there are no defaults)",
-                      "pass --protect-cgroup <cgroup> and --abort-psi <threshold> (for example wings.slice and 40)")
+                      "pass --protect-cgroup <cgroup> and --abort-psi <threshold> (for example game-server.slice and 40)")
     _validate_guards(host, protect_cgroup, abort_psi)
     return {"containers_active": len(names), "units_active": units, "confirmed_quiet_window": confirm_quiet_window}
 
@@ -180,7 +180,7 @@ def unit_is_active(host: Host, unit: str) -> bool:
     load = devio.probe(host, f"systemctl show {unit}", devio.unit_loadstate_argv(unit)).stdout.strip()
     if load == "not-found":
         raise Refusal("unit_not_found", f"--production-unit {unit} does not exist (LoadState=not-found); a typo would be read as inactive",
-                      "name an existing unit, for example wings.service")
+                      "name an existing unit, for example game-server.service")
     return devio.probe(host, f"systemctl is-active {unit}", devio.unit_active_argv(unit), ok=(0, 3)).returncode == 0
 
 
@@ -389,7 +389,7 @@ def parse_journal(text: str) -> dict[str, Any]:
         if not knob_allowed(entry["path"]):
             raise bad(f"knob outside the allowlist: {entry['path']}")
     for path in doc["files"]:
-        if not (isinstance(path, str) and posixpath.isabs(path) and ".." not in path.split("/") and SCRATCH_FILE.search(path)):
+        if not (isinstance(path, str) and posixpath.isabs(path) and ".." not in path.split("/") and is_scratch_name(path)):
             raise bad(f"file outside the iobench naming: {path!r}")
     for ratio_path, value in doc["coupled"].items():
         if ratio_path not in COUPLED_RATIO.values() or not isinstance(value, str):

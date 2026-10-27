@@ -534,6 +534,7 @@ class FakeHost:
         self.unit_stop_sticks = True  # False models a unit that stays active after `systemctl stop` (a stuck unit)
         self.probe_start_delay_s = 2.0  # the transient unit starts a little after the fio jobs it observes
         self.fio_options: set[str] = {"exclusive_open"}  # the options the installed (fake) fio documents
+        self.scratch_roots: list[str] = []  # authorised by the Runner (and by standard_host for the test estate), like RealHost
         init_pid, init_mnt = "pid:[4026531836]", "mnt:[4026531841]"
         self.ns_links: dict[str, str] = {"/proc/self/ns/pid": init_pid, "/proc/1/ns/pid": init_pid,
                                          "/proc/self/ns/mnt": init_mnt, "/proc/1/ns/mnt": init_mnt}
@@ -622,8 +623,10 @@ class FakeHost:
         if path in self.symlinks:
             return StatInfo(0, 1, 1, False, False, True)
         real = self._resolve(path)
-        if real in self.devices and self.devices[real].kind == "file":
+        if real in self.devices:
             dev = self.devices[real]
+            if dev.kind != "file":  # a device node: like os.lstat, neither a regular file nor a directory
+                return StatInfo(dev.size, 0, 1, False, False, False)
             return StatInfo(dev.size, dev.inode or 0, self.nlinks.get(real, 1), False, True, False)
         if real in self.files:
             return StatInfo(len(self.files[real]), hash(real) & 0xFFFFFF, self.nlinks.get(real, 1), False, True, False)
@@ -783,8 +786,12 @@ class FakeHost:
 
     # -- processes -----------------------------------------------------------
     def _log(self, argv: Sequence[str], *, bound: bool = False) -> None:
-        check_argv(argv, bound=bound)  # the same rule RealHost applies: an unbound run/spawn never writes or discards a target
+        check_argv(argv, bound=bound, host=self)  # the same rule RealHost applies: an unbound run/spawn never writes or discards a target
         self.argv_log.append(list(argv))
+
+    def allow_scratch(self, path: str) -> None:
+        if path not in self.scratch_roots:
+            self.scratch_roots.append(path)
 
     def run(self, argv: Sequence[str], timeout: float | None = None) -> RunResult:
         self._log(argv)
@@ -1032,5 +1039,7 @@ def standard_host(scenario: Scenario | None = None, *, target_size: int = R1002_
     host.makedirs("/bench")
     host.makedirs("/run")
     host.makedirs("/sys/fs/cgroup")
+    host.allow_scratch("/run/iobench")  # the test estate's scratch places (a Runner authorises its own run dir and work dir on S0)
+    host.allow_scratch("/bench")
     host.put("/proc/sys/kernel/osrelease", "7.2.9\n")
     return host

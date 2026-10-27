@@ -27,7 +27,7 @@ requirements and the result schema.
 iobench target init /dev/vda7 --i-own-this-device --expect-size 435853320192 --expect-partuuid 3e1f7a52-5b6d-4c1e-9a0d-7b2d0c1e0007
 
 # calibrate once per host / storage class (a live host needs the three guard flags)
-iobench calibrate --target /dev/vda7 --work-dir /bench/iobench-work --profile standard --confirm-quiet-window --protect-cgroup wings.slice --abort-psi 40
+iobench calibrate --target /dev/vda7 --work-dir /bench/iobench-work --profile standard --confirm-quiet-window --protect-cgroup game-server.slice --abort-psi 40
 
 # ask whether the result is usable, and read the proposals
 iobench check --json; echo "exit=$?"
