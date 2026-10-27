@@ -983,6 +983,12 @@ RUN set -euo pipefail; \
     inventory_manifest="${manifest_dir}/installed-tools-manifest.md"; \
     mkdir -p "${manifest_dir}"; \
     \
+    # Build-time-resolved versions of the tools that report no version themselves (dry, sss): this RUN is a \
+    # separate shell from the tool-install RUN, so it reads the same staged file. \
+    set -a; . /tmp/tool-artifacts-staging/tool-versions.env; set +a; \
+    : "${DRY_VER:?Missing DRY_VER from the staged tool-versions.env}"; \
+    : "${SSS_VER:?Missing SSS_VER from the staged tool-versions.env}"; \
+    \
     # Derive target package name from PACKAGE_MANIFEST_SOURCE if set
     # (e.g. "package-manifests-versioned/mdt-cockpit/...").
     _pkg_name=""; \
