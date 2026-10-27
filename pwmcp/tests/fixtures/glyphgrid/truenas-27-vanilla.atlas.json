@@ -1,0 +1,2304 @@
+{
+ "fonts": {
+  "f8x16-1": {
+   "cell_h": 16,
+   "cell_w": 8,
+   "glyphs": {
+    "00000000000000000000000000ff0000": {
+     "c": {
+      "_": 19
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "11-progress-start-over-dialog",
+      "09-password-empty",
+      "10-password-filled",
+      "08-auth-method",
+      "03-live-login-banner"
+     ]
+    },
+    "00000000000000000000181800000000": {
+     "c": {
+      ".": 75
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "11-progress-start-over-dialog",
+      "09-password-empty",
+      "10-password-filled",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "04-installer-console-setup",
+      "07-erase-warning",
+      "03-live-login-banner",
+      "14-installation-succeeded",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "00000000000000000018181830000000": {
+     "c": {
+      ",": 7
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "07-erase-warning",
+      "03-live-login-banner",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "00000000000000fe0000000000000000": {
+     "c": {
+      "-": 22
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "04-installer-console-setup",
+      "07-erase-warning",
+      "03-live-login-banner"
+     ]
+    },
+    "000000000018187e1818000000000000": {
+     "c": {
+      "+": 2
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "03-live-login-banner"
+     ]
+    },
+    "0000000000663cff3c66000000000000": {
+     "c": {
+      "*": 51
+     },
+     "f": [
+      "11-progress-start-over-dialog",
+      "10-password-filled",
+      "06-choose-destination-selected",
+      "03-live-login-banner",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "000000000076cccccccccc7c0c0c1e00": {
+     "c": {
+      "q": 4
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "000000000076cccccccccc7c0ccc7800": {
+     "c": {
+      "g": 147
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "11-progress-start-over-dialog",
+      "09-password-empty",
+      "10-password-filled",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "04-installer-console-setup",
+      "08-auth-method",
+      "07-erase-warning",
+      "03-live-login-banner",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "0000000000780c7ccccccc7600000000": {
+     "c": {
+      "a": 292
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "11-progress-start-over-dialog",
+      "09-password-empty",
+      "10-password-filled",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "04-installer-console-setup",
+      "08-auth-method",
+      "07-erase-warning",
+      "03-live-login-banner",
+      "14-installation-succeeded",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "00000000007cc660380cc67c00000000": {
+     "c": {
+      "s": 204
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "11-progress-start-over-dialog",
+      "09-password-empty",
+      "10-password-filled",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "04-installer-console-setup",
+      "08-auth-method",
+      "07-erase-warning",
+      "03-live-login-banner",
+      "14-installation-succeeded",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "00000000007cc6c0c0c0c67c00000000": {
+     "c": {
+      "c": 163
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "11-progress-start-over-dialog",
+      "09-password-empty",
+      "10-password-filled",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "04-installer-console-setup",
+      "08-auth-method",
+      "07-erase-warning",
+      "03-live-login-banner",
+      "14-installation-succeeded",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "00000000007cc6c6c6c6c67c00000000": {
+     "c": {
+      "o": 196
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "11-progress-start-over-dialog",
+      "09-password-empty",
+      "10-password-filled",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "04-installer-console-setup",
+      "08-auth-method",
+      "07-erase-warning",
+      "03-live-login-banner",
+      "14-installation-succeeded",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "00000000007cc6fec0c0c67c00000000": {
+     "c": {
+      "e": 299
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "11-progress-start-over-dialog",
+      "09-password-empty",
+      "10-password-filled",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "04-installer-console-setup",
+      "08-auth-method",
+      "07-erase-warning",
+      "03-live-login-banner",
+      "14-installation-succeeded",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "00000000007e00007e00000000000000": {
+     "c": {
+      "=": 17
+     },
+     "f": [
+      "18-kernel-boot-log"
+     ]
+    },
+    "0000000000c66c3838386cc600000000": {
+     "c": {
+      "x": 88
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "03-live-login-banner"
+     ]
+    },
+    "0000000000c6c6c6c6c66c3800000000": {
+     "c": {
+      "v": 31
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "11-progress-start-over-dialog",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "08-auth-method",
+      "07-erase-warning",
+      "03-live-login-banner",
+      "14-installation-succeeded",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "0000000000c6c6c6c6c6c67e060cf800": {
+     "c": {
+      "y": 44
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "13-progress-complete",
+      "11-progress-start-over-dialog",
+      "09-password-empty",
+      "10-password-filled",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "04-installer-console-setup",
+      "03-live-login-banner",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "0000000000c6c6d6d6d6fe6c00000000": {
+     "c": {
+      "w": 30
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "11-progress-start-over-dialog",
+      "09-password-empty",
+      "10-password-filled",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "04-installer-console-setup",
+      "07-erase-warning",
+      "03-live-login-banner"
+     ]
+    },
+    "0000000000cccccccccccc7600000000": {
+     "c": {
+      "u": 93
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "11-progress-start-over-dialog",
+      "09-password-empty",
+      "10-password-filled",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "04-installer-console-setup",
+      "08-auth-method",
+      "07-erase-warning",
+      "03-live-login-banner",
+      "14-installation-succeeded",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "0000000000dc66666666666600000000": {
+     "c": {
+      "n": 301
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "11-progress-start-over-dialog",
+      "09-password-empty",
+      "10-password-filled",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "04-installer-console-setup",
+      "08-auth-method",
+      "07-erase-warning",
+      "03-live-login-banner",
+      "14-installation-succeeded",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "0000000000dc66666666667c6060f000": {
+     "c": {
+      "p": 69
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "11-progress-start-over-dialog",
+      "09-password-empty",
+      "10-password-filled",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "04-installer-console-setup",
+      "07-erase-warning",
+      "03-live-login-banner",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "0000000000dc7666606060f000000000": {
+     "c": {
+      "r": 269
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "11-progress-start-over-dialog",
+      "09-password-empty",
+      "10-password-filled",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "04-installer-console-setup",
+      "08-auth-method",
+      "07-erase-warning",
+      "03-live-login-banner",
+      "14-installation-succeeded",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "0000000000ecfed6d6d6d6c600000000": {
+     "c": {
+      "m": 71
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "11-progress-start-over-dialog",
+      "09-password-empty",
+      "10-password-filled",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "04-installer-console-setup",
+      "08-auth-method",
+      "07-erase-warning",
+      "03-live-login-banner",
+      "14-installation-succeeded",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "0000000000fecc183060c6fe00000000": {
+     "c": {
+      "z": 6
+     },
+     "f": [
+      "18-kernel-boot-log"
+     ]
+    },
+    "0000000002060c183060c08000000000": {
+     "c": {
+      "/": 21
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "04-installer-console-setup",
+      "03-live-login-banner",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "00000000181800000018180000000000": {
+     "c": {
+      ":": 27
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "11-progress-start-over-dialog",
+      "09-password-empty",
+      "10-password-filled",
+      "07-erase-warning",
+      "03-live-login-banner",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "00000000181800000018183000000000": {
+     "c": {
+      ";": 1
+     },
+     "f": [
+      "03-live-login-banner"
+     ]
+    },
+    "00000000c2c60c183060c68600000000": {
+     "c": {
+      "%": 101
+     },
+     "f": [
+      "12-progress-extracting",
+      "13-progress-complete",
+      "11-progress-start-over-dialog",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "000000060c18306030180c0600000000": {
+     "c": {
+      "<": 13
+     },
+     "f": [
+      "11-progress-start-over-dialog",
+      "09-password-empty",
+      "10-password-filled",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "04-installer-console-setup",
+      "08-auth-method",
+      "07-erase-warning",
+      "14-installation-succeeded"
+     ]
+    },
+    "0000006030180c060c18306000000000": {
+     "c": {
+      ">": 13
+     },
+     "f": [
+      "11-progress-start-over-dialog",
+      "09-password-empty",
+      "10-password-filled",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "04-installer-console-setup",
+      "08-auth-method",
+      "07-erase-warning",
+      "14-installation-succeeded"
+     ]
+    },
+    "0000006c6cfe6c6c6cfe6c6c00000000": {
+     "c": {
+      "#": 1
+     },
+     "f": [
+      "03-live-login-banner"
+     ]
+    },
+    "0000007cc6c6dedededcc07c00000000": {
+     "c": {
+      "@": 1
+     },
+     "f": [
+      "18-kernel-boot-log"
+     ]
+    },
+    "00000606000e06060606060666663c00": {
+     "c": {
+      "j": 1
+     },
+     "f": [
+      "18-kernel-boot-log"
+     ]
+    },
+    "00000c18303030303030180c00000000": {
+     "c": {
+      "(": 5
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "08-auth-method"
+     ]
+    },
+    "00000c1c3c6cccfe0c0c0c1e00000000": {
+     "c": {
+      "4": 70
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "04-installer-console-setup",
+      "03-live-login-banner"
+     ]
+    },
+    "0000103030fc30303030361c00000000": {
+     "c": {
+      "t": 387
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "11-progress-start-over-dialog",
+      "09-password-empty",
+      "10-password-filled",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "04-installer-console-setup",
+      "08-auth-method",
+      "07-erase-warning",
+      "03-live-login-banner",
+      "14-installation-succeeded",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "000010386cc6c6fec6c6c6c600000000": {
+     "c": {
+      "A": 25
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "04-installer-console-setup",
+      "08-auth-method",
+      "07-erase-warning",
+      "03-live-login-banner",
+      "14-installation-succeeded",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "00001818003818181818183c00000000": {
+     "c": {
+      "i": 326
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "11-progress-start-over-dialog",
+      "09-password-empty",
+      "10-password-filled",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "08-auth-method",
+      "07-erase-warning",
+      "03-live-login-banner",
+      "14-installation-succeeded",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "00001838781818181818187e00000000": {
+     "c": {
+      "1": 57
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "04-installer-console-setup",
+      "08-auth-method",
+      "03-live-login-banner"
+     ]
+    },
+    "0000183c3c3c18181800181800000000": {
+     "c": {
+      "!": 1
+     },
+     "f": [
+      "14-installation-succeeded"
+     ]
+    },
+    "00001c0c0c3c6ccccccccc7600000000": {
+     "c": {
+      "d": 133
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "11-progress-start-over-dialog",
+      "09-password-empty",
+      "10-password-filled",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "04-installer-console-setup",
+      "08-auth-method",
+      "07-erase-warning",
+      "03-live-login-banner",
+      "14-installation-succeeded",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "00001c36323078303030307800000000": {
+     "c": {
+      "f": 54
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "11-progress-start-over-dialog",
+      "09-password-empty",
+      "10-password-filled",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "08-auth-method",
+      "07-erase-warning",
+      "03-live-login-banner",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "000030180c0c0c0c0c0c183000000000": {
+     "c": {
+      ")": 5
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "08-auth-method"
+     ]
+    },
+    "00003818181818181818183c00000000": {
+     "c": {
+      "l": 135
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "11-progress-start-over-dialog",
+      "09-password-empty",
+      "10-password-filled",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "04-installer-console-setup",
+      "08-auth-method",
+      "07-erase-warning",
+      "03-live-login-banner",
+      "14-installation-succeeded",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "00003860c0c0fcc6c6c6c67c00000000": {
+     "c": {
+      "6": 45
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "03-live-login-banner",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "0000386cc6c6d6d6c6c66c3800000000": {
+     "c": {
+      "0": 79
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "11-progress-start-over-dialog",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "04-installer-console-setup",
+      "03-live-login-banner",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "00003c0c0c0c0c0c0c0c0c3c00000000": {
+     "c": {
+      "]": 124
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "11-progress-start-over-dialog",
+      "06-choose-destination-selected",
+      "05-choose-destination-media"
+     ]
+    },
+    "00003c18181818181818183c00000000": {
+     "c": {
+      "I": 21
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "04-installer-console-setup",
+      "08-auth-method",
+      "07-erase-warning",
+      "03-live-login-banner",
+      "14-installation-succeeded"
+     ]
+    },
+    "00003c30303030303030303c00000000": {
+     "c": {
+      "[": 124
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "11-progress-start-over-dialog",
+      "06-choose-destination-selected",
+      "05-choose-destination-media"
+     ]
+    },
+    "00003c66c2c0c0c0c0c2663c00000000": {
+     "c": {
+      "C": 31
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "11-progress-start-over-dialog",
+      "09-password-empty",
+      "10-password-filled",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "04-installer-console-setup",
+      "08-auth-method",
+      "03-live-login-banner",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "00003c66c2c0c0dec6c6663a00000000": {
+     "c": {
+      "G": 11
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "07-erase-warning",
+      "03-live-login-banner"
+     ]
+    },
+    "0000666666663c181818183c00000000": {
+     "c": {
+      "Y": 3
+     },
+     "f": [
+      "03-live-login-banner"
+     ]
+    },
+    "00007cc606063c060606c67c00000000": {
+     "c": {
+      "3": 78
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "04-installer-console-setup",
+      "03-live-login-banner",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "00007cc6060c183060c0c6fe00000000": {
+     "c": {
+      "2": 39
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "04-installer-console-setup",
+      "08-auth-method",
+      "03-live-login-banner",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "00007cc6c60c18181800181800000000": {
+     "c": {
+      "?": 1
+     },
+     "f": [
+      "07-erase-warning"
+     ]
+    },
+    "00007cc6c660380c06c6c67c00000000": {
+     "c": {
+      "S": 29
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "04-installer-console-setup",
+      "07-erase-warning",
+      "03-live-login-banner",
+      "14-installation-succeeded"
+     ]
+    },
+    "00007cc6c6c67cc6c6c6c67c00000000": {
+     "c": {
+      "8": 24
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "03-live-login-banner",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "00007cc6c6c67e0606060c7800000000": {
+     "c": {
+      "9": 27
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete"
+     ]
+    },
+    "00007cc6c6c6c6c6c6c6c67c00000000": {
+     "c": {
+      "O": 16
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "11-progress-start-over-dialog",
+      "09-password-empty",
+      "10-password-filled",
+      "08-auth-method",
+      "07-erase-warning",
+      "03-live-login-banner",
+      "14-installation-succeeded"
+     ]
+    },
+    "00007e7e5a1818181818183c00000000": {
+     "c": {
+      "T": 24
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "04-installer-console-setup",
+      "07-erase-warning",
+      "03-live-login-banner",
+      "14-installation-succeeded"
+     ]
+    },
+    "0000c6c66c7c38387c6cc6c600000000": {
+     "c": {
+      "X": 3
+     },
+     "f": [
+      "18-kernel-boot-log"
+     ]
+    },
+    "0000c6c6c6c6c6c6c66c381000000000": {
+     "c": {
+      "V": 5
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "07-erase-warning"
+     ]
+    },
+    "0000c6c6c6c6c6c6c6c6c67c00000000": {
+     "c": {
+      "U": 25
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "04-installer-console-setup",
+      "08-auth-method",
+      "07-erase-warning",
+      "03-live-login-banner"
+     ]
+    },
+    "0000c6c6c6c6d6d6d6feee6c00000000": {
+     "c": {
+      "W": 4
+     },
+     "f": [
+      "08-auth-method",
+      "07-erase-warning",
+      "03-live-login-banner"
+     ]
+    },
+    "0000c6e6f6fedecec6c6c6c600000000": {
+     "c": {
+      "N": 22
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "04-installer-console-setup",
+      "07-erase-warning",
+      "03-live-login-banner",
+      "14-installation-succeeded"
+     ]
+    },
+    "0000c6eefefed6c6c6c6c6c600000000": {
+     "c": {
+      "M": 22
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "08-auth-method",
+      "07-erase-warning",
+      "03-live-login-banner",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "0000e06060666c78786c66e600000000": {
+     "c": {
+      "k": 21
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "11-progress-start-over-dialog",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "07-erase-warning",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "0000e060606c7666666666e600000000": {
+     "c": {
+      "h": 33
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "04-installer-console-setup",
+      "08-auth-method",
+      "07-erase-warning",
+      "03-live-login-banner",
+      "14-installation-succeeded",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "0000e06060786c666666667c00000000": {
+     "c": {
+      "b": 39
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "11-progress-start-over-dialog",
+      "09-password-empty",
+      "10-password-filled",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "04-installer-console-setup",
+      "08-auth-method",
+      "07-erase-warning",
+      "03-live-login-banner",
+      "14-installation-succeeded"
+     ]
+    },
+    "0000e666666c78786c6666e600000000": {
+     "c": {
+      "K": 12
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "11-progress-start-over-dialog",
+      "09-password-empty",
+      "10-password-filled",
+      "08-auth-method",
+      "14-installation-succeeded"
+     ]
+    },
+    "0000f06060606060606266fe00000000": {
+     "c": {
+      "L": 12
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "07-erase-warning",
+      "03-live-login-banner"
+     ]
+    },
+    "0000f86c6666666666666cf800000000": {
+     "c": {
+      "D": 10
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "03-live-login-banner"
+     ]
+    },
+    "0000fc6666667c60606060f000000000": {
+     "c": {
+      "P": 28
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "11-progress-start-over-dialog",
+      "09-password-empty",
+      "10-password-filled",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "07-erase-warning",
+      "03-live-login-banner",
+      "14-installation-succeeded"
+     ]
+    },
+    "0000fc6666667c66666666fc00000000": {
+     "c": {
+      "B": 12
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "06-choose-destination-selected",
+      "05-choose-destination-media",
+      "07-erase-warning",
+      "03-live-login-banner",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "0000fc6666667c6c666666e600000000": {
+     "c": {
+      "R": 26
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "11-progress-start-over-dialog",
+      "09-password-empty",
+      "10-password-filled",
+      "04-installer-console-setup",
+      "07-erase-warning",
+      "03-live-login-banner",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "0000fe6662687868606060f000000000": {
+     "c": {
+      "F": 4
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "13-progress-complete",
+      "11-progress-start-over-dialog"
+     ]
+    },
+    "0000fe6662687868606266fe00000000": {
+     "c": {
+      "E": 87
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "11-progress-start-over-dialog",
+      "09-password-empty",
+      "10-password-filled",
+      "07-erase-warning",
+      "03-live-login-banner"
+     ]
+    },
+    "0000fec0c0c0fc060606c67c00000000": {
+     "c": {
+      "5": 53
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "03-live-login-banner"
+     ]
+    },
+    "0000fec606060c183030303000000000": {
+     "c": {
+      "7": 37
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "12-progress-extracting",
+      "13-progress-complete",
+      "04-installer-console-setup",
+      "03-live-login-banner",
+      "02-live-copy-squashfs"
+     ]
+    },
+    "0000fec6860c183060c2c6fe00000000": {
+     "c": {
+      "Z": 1
+     },
+     "f": [
+      "18-kernel-boot-log"
+     ]
+    },
+    "00303030600000000000000000000000": {
+     "c": {
+      "'": 8
+     },
+     "f": [
+      "18-kernel-boot-log"
+     ]
+    },
+    "00666666240000000000000000000000": {
+     "c": {
+      "\"": 8
+     },
+     "f": [
+      "18-kernel-boot-log",
+      "11-progress-start-over-dialog",
+      "09-password-empty",
+      "10-password-filled"
+     ]
+    }
+   },
+   "phases": [
+    [
+     0,
+     0
+    ]
+   ]
+  },
+  "f8x16-2": {
+   "cell_h": 16,
+   "cell_w": 8,
+   "glyphs": {
+    "0000000000000000000000007f000000": {
+     "c": {
+      "-": 26,
+      "_": 2
+     },
+     "f": [
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "000000000000000000000000ffff0000": {
+     "c": {
+      "_": 1
+     },
+     "f": [
+      "20-console-setup-duplicated-redraw"
+     ]
+    },
+    "00000000000000000000180808100000": {
+     "c": {
+      ",": 4
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00000000000000000000181800000000": {
+     "c": {
+      ".": 26
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "000000000000003c0000000000000000": {
+     "c": {
+      "-": 8
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00000000007e0000007e000000000000": {
+     "c": {
+      "=": 4
+     },
+     "f": [
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "0000000008492a1c2a49080000000000": {
+     "c": {
+      "*": 1
+     },
+     "f": [
+      "01-grub-iso-menu"
+     ]
+    },
+    "00000000181800000018180000000000": {
+     "c": {
+      ":": 54
+     },
+     "f": [
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "000000003a4642424242463a02020000": {
+     "c": {
+      "q": 1
+     },
+     "f": [
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "000000003c42023e4242463a00000000": {
+     "c": {
+      "a": 48
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "000000003c4240300c02423c00000000": {
+     "c": {
+      "s": 63
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "000000003c4240404040423c00000000": {
+     "c": {
+      "c": 34
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "000000003c4242424242423c00000000": {
+     "c": {
+      "o": 75
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "000000003c42427e4040423c00000000": {
+     "c": {
+      "e": 124
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00000000414949494949493600000000": {
+     "c": {
+      "w": 16
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00000000424224181824424200000000": {
+     "c": {
+      "x": 3
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00000000424242242424181800000000": {
+     "c": {
+      "v": 2
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "000000004242424242261a02023c0000": {
+     "c": {
+      "y": 3
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00000000424242424242463a00000000": {
+     "c": {
+      "u": 38
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "000000005c6242404040404000000000": {
+     "c": {
+      "r": 66
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "000000005c6242424242424200000000": {
+     "c": {
+      "n": 66
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "000000005c6242424242625c40400000": {
+     "c": {
+      "p": 27
+     },
+     "f": [
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00000000764949494949494900000000": {
+     "c": {
+      "m": 12
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "000000023a44444438203c42423c0000": {
+     "c": {
+      "g": 20
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00000202040808101020404000000000": {
+     "c": {
+      "/": 26
+     },
+     "f": [
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "0000040c142444447e04040400000000": {
+     "c": {
+      "4": 17
+     },
+     "f": [
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00000818280808080808083e00000000": {
+     "c": {
+      "1": 38
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00001010107c10101010100c00000000": {
+     "c": {
+      "t": 112
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "000018242442427e4242424200000000": {
+     "c": {
+      "A": 4
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "0000182442464a526242241800000000": {
+     "c": {
+      "0": 36
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00001c2040407c424242423c00000000": {
+     "c": {
+      "6": 9
+     },
+     "f": [
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00003c4242020c102040407e00000000": {
+     "c": {
+      "2": 22
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00003c4242021c020242423c00000000": {
+     "c": {
+      "3": 12
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00003c424240300c0242423c00000000": {
+     "c": {
+      "S": 13
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00003c42424040404042423c00000000": {
+     "c": {
+      "C": 19
+     },
+     "f": [
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00003c424240404e4242463a00000000": {
+     "c": {
+      "G": 2
+     },
+     "f": [
+      "01-grub-iso-menu"
+     ]
+    },
+    "00003c4242423c424242423c00000000": {
+     "c": {
+      "8": 6
+     },
+     "f": [
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00003c4242423e020202043800000000": {
+     "c": {
+      "9": 6
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00003c42424242424242423c00000000": {
+     "c": {
+      "O": 6
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00003e08080808080808083e00000000": {
+     "c": {
+      "I": 5
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00004040404040404040407e00000000": {
+     "c": {
+      "L": 4
+     },
+     "f": [
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00004242424242424242423c00000000": {
+     "c": {
+      "U": 4
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "000042626252524a4a46464200000000": {
+     "c": {
+      "N": 6
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00007c4242427c404040404000000000": {
+     "c": {
+      "P": 4
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00007c4242427c424242427c00000000": {
+     "c": {
+      "B": 1
+     },
+     "f": [
+      "01-grub-iso-menu"
+     ]
+    },
+    "00007c4242427c484444424200000000": {
+     "c": {
+      "R": 5
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00007e02020404040808080800000000": {
+     "c": {
+      "7": 9
+     },
+     "f": [
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00007e4040407c020202423c00000000": {
+     "c": {
+      "5": 37
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00007e4040407c404040404000000000": {
+     "c": {
+      "F": 1
+     },
+     "f": [
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00007e4040407c404040407e00000000": {
+     "c": {
+      "E": 2
+     },
+     "f": [
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00007f08080808080808080800000000": {
+     "c": {
+      "T": 9
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "000202023a4642424242463a00000000": {
+     "c": {
+      "d": 23
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "000404000c0404040404040448300000": {
+     "c": {
+      "j": 1
+     },
+     "f": [
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00040808101010101010080804000000": {
+     "c": {
+      "(": 3
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00080800180808080808083e00000000": {
+     "c": {
+      "i": 51
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "000c1010107c10101010101000000000": {
+     "c": {
+      "f": 51
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "000e080808080808080808080e000000": {
+     "c": {
+      "[": 9
+     },
+     "f": [
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00180808080808080808083e00000000": {
+     "c": {
+      "l": 33
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00201010080808080808101020000000": {
+     "c": {
+      ")": 26
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00404040444850605048444200000000": {
+     "c": {
+      "k": 9
+     },
+     "f": [
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "004040405c6242424242424200000000": {
+     "c": {
+      "h": 29
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "004040405c6242424242625c00000000": {
+     "c": {
+      "b": 13
+     },
+     "f": [
+      "01-grub-iso-menu",
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "00701010101010101010101070000000": {
+     "c": {
+      "]": 9
+     },
+     "f": [
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    },
+    "08080808000000000000000000000000": {
+     "c": {
+      "'": 2
+     },
+     "f": [
+      "01-grub-iso-menu"
+     ]
+    },
+    "10080000000000000000000000000000": {
+     "c": {
+      "`": 2
+     },
+     "f": [
+      "01-grub-iso-menu"
+     ]
+    },
+    "22222222000000000000000000000000": {
+     "c": {
+      "\"": 4
+     },
+     "f": [
+      "20-console-setup-duplicated-redraw",
+      "19-console-setup-with-kernel-noise"
+     ]
+    }
+   },
+   "phases": [
+    [
+     2,
+     12
+    ],
+    [
+     0,
+     2
+    ]
+   ]
+  },
+  "f8x19-3": {
+   "cell_h": 19,
+   "cell_w": 8,
+   "glyphs": {
+    "00000000000000000000181800000000000000": {
+     "c": {
+      ".": 20
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "00000000000000000018181830000000000000": {
+     "c": {
+      ",": 1
+     },
+     "f": [
+      "16-grub-installed-menu"
+     ]
+    },
+    "000000000000007e0000000000000000000000": {
+     "c": {
+      "-": 6
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "000000000018187e1818000000000000000000": {
+     "c": {
+      "+": 1
+     },
+     "f": [
+      "17-grub-booting-installed"
+     ]
+    },
+    "00000000006c38fe386c000000000000000000": {
+     "c": {
+      "*": 1
+     },
+     "f": [
+      "16-grub-installed-menu"
+     ]
+    },
+    "000000000076cccccccccccc7c0ccc78000000": {
+     "c": {
+      "g": 7
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "0000000000780c0c7ccccccc76000000000000": {
+     "c": {
+      "a": 16
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "00000000007cc6c07c0606c67c000000000000": {
+     "c": {
+      "s": 10
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "00000000007cc6c0c0c0c0c67c000000000000": {
+     "c": {
+      "c": 11
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "00000000007cc6c6c6c6c6c67c000000000000": {
+     "c": {
+      "o": 22
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "00000000007cc6c6fec0c0c67c000000000000": {
+     "c": {
+      "e": 31
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "0000000000c66c38386c6cc6c6000000000000": {
+     "c": {
+      "x": 5
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "0000000000c6c6c6c6c6c6c67e060cf8000000": {
+     "c": {
+      "y": 2
+     },
+     "f": [
+      "16-grub-installed-menu"
+     ]
+    },
+    "0000000000c6c6c6d6d6feee6c000000000000": {
+     "c": {
+      "w": 2
+     },
+     "f": [
+      "16-grub-installed-menu"
+     ]
+    },
+    "0000000000cccccccccccc7830000000000000": {
+     "c": {
+      "v": 2
+     },
+     "f": [
+      "16-grub-installed-menu"
+     ]
+    },
+    "0000000000cccccccccccccc76000000000000": {
+     "c": {
+      "u": 11
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "0000000000dc666060606060f0000000000000": {
+     "c": {
+      "r": 16
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "0000000000dc66666666666666000000000000": {
+     "c": {
+      "n": 21
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "0000000000dc6666666666667c6060f0000000": {
+     "c": {
+      "p": 2
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "0000000000eceefed6d6d6d6d6000000000000": {
+     "c": {
+      "m": 7
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "0000181800381818181818183c000000000000": {
+     "c": {
+      "i": 24
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "0006060c0c181830306060c0c0000000000000": {
+     "c": {
+      "/": 3
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "0010303030fc3030303030361c000000000000": {
+     "c": {
+      "t": 21
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "0010386cc6c6c6fec6c6c6c6c6000000000000": {
+     "c": {
+      "A": 4
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "0018387818181818181818187e000000000000": {
+     "c": {
+      "1": 6
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "001c0c0c0c3c6ccccccccccc7e000000000000": {
+     "c": {
+      "d": 12
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "001e3330303078303030303078000000000000": {
+     "c": {
+      "f": 3
+     },
+     "f": [
+      "16-grub-installed-menu"
+     ]
+    },
+    "0038181818181818181818183c000000000000": {
+     "c": {
+      "l": 11
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "00386cc6c6c6d6d6c6c6c66c38000000000000": {
+     "c": {
+      "0": 7
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "003c60c0c0c0fcc6c6c6c6c67c000000000000": {
+     "c": {
+      "6": 1
+     },
+     "f": [
+      "17-grub-booting-installed"
+     ]
+    },
+    "003c66c2c0c0c0c0c0c0c2663c000000000000": {
+     "c": {
+      "C": 3
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "003c66c2c0c0c0dec6c6c6663c000000000000": {
+     "c": {
+      "G": 5
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "007cc60606060c183060c0c2fe000000000000": {
+     "c": {
+      "2": 6
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "007cc6c6c660380c0606c6c67c000000000000": {
+     "c": {
+      "S": 8
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "007cc6c6c6c67cc6c6c6c6c67c000000000000": {
+     "c": {
+      "8": 1
+     },
+     "f": [
+      "17-grub-booting-installed"
+     ]
+    },
+    "007cc6c6c6c67e060606060c78000000000000": {
+     "c": {
+      "9": 1
+     },
+     "f": [
+      "16-grub-installed-menu"
+     ]
+    },
+    "007cc6c6c6c6c6c6c6c6c6c67c000000000000": {
+     "c": {
+      "O": 1
+     },
+     "f": [
+      "16-grub-installed-menu"
+     ]
+    },
+    "00c6c6c6c6c6c6c6c6c6c6c67c000000000000": {
+     "c": {
+      "U": 6
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "00c6e6f6f6f6dececec6c6c6c6000000000000": {
+     "c": {
+      "N": 7
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "00e06060607c6666666666667c000000000000": {
+     "c": {
+      "b": 4
+     },
+     "f": [
+      "16-grub-installed-menu"
+     ]
+    },
+    "00e06060607c766666666666e6000000000000": {
+     "c": {
+      "h": 6
+     },
+     "f": [
+      "16-grub-installed-menu"
+     ]
+    },
+    "00e06060666c7870786c6c66e6000000000000": {
+     "c": {
+      "k": 1
+     },
+     "f": [
+      "17-grub-booting-installed"
+     ]
+    },
+    "00f060606060606060606266fe000000000000": {
+     "c": {
+      "L": 6
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "00fc30303030303030303030fc000000000000": {
+     "c": {
+      "I": 1
+     },
+     "f": [
+      "16-grub-installed-menu"
+     ]
+    },
+    "00fc66666666667c60606060f0000000000000": {
+     "c": {
+      "P": 1
+     },
+     "f": [
+      "16-grub-installed-menu"
+     ]
+    },
+    "00fc666666667c6666666666fc000000000000": {
+     "c": {
+      "B": 2
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "00fc666666667c786c6c6666e6000000000000": {
+     "c": {
+      "R": 4
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "00fcfcb4303030303030303078000000000000": {
+     "c": {
+      "T": 4
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "00fe666260647c6460606060f0000000000000": {
+     "c": {
+      "F": 2
+     },
+     "f": [
+      "16-grub-installed-menu"
+     ]
+    },
+    "00fe66626068786860606266fe000000000000": {
+     "c": {
+      "E": 1
+     },
+     "f": [
+      "16-grub-installed-menu"
+     ]
+    },
+    "00fec0c0c0c0fc06060606c67c000000000000": {
+     "c": {
+      "5": 1
+     },
+     "f": [
+      "17-grub-booting-installed"
+     ]
+    },
+    "00fec60606060c181818181818000000000000": {
+     "c": {
+      "7": 3
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "18181830000000000000000000000000000000": {
+     "c": {
+      "'": 3
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    },
+    "30180000000000000000000000000000000000": {
+     "c": {
+      "`": 3
+     },
+     "f": [
+      "16-grub-installed-menu",
+      "17-grub-booting-installed"
+     ]
+    }
+   },
+   "phases": [
+    [
+     0,
+     12
+    ]
+   ]
+  }
+ },
+ "format": "glyphgrid-atlas/1"
+}

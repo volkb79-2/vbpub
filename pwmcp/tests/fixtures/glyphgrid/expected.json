@@ -1,0 +1,26 @@
+{
+ "crop-14-dialog.png": {
+  "font": "f8x16-1",
+  "rows": {}
+ },
+ "crop-18-kernel.png": {
+  "font": "f8x16-1",
+  "rows": {
+   "0": "[    0.000000] random: crng init done",
+   "1": "[    0.114507] Kernel command line: BOOT_IMAGE=/ROOT/27.0.0-RC.1@/boot/vmlinuz-6",
+   "2": ".18.52-production+truenas root=ZFS=boot-pool/ROOT/27.0.0-RC.1 ro libata.allow_tp",
+   "3": "m=1 amd_iommu=on iommu=pt kvm_amd.npt=1 kvm_amd.avic=1 intel_iommu=on zfsforce=1",
+   "4": " nvme_core.multipath=N",
+   "5": "[    0.115315] AMD-Vi: Unknown option - 'on'"
+  }
+ },
+ "crop-20-menu.png": {
+  "font": "f8x16-2",
+  "rows": {
+   "0": "The web user interface is at:",
+   "1": "http://10.0.2.15",
+   "2": "http://[fec0::5054:ff:fe12:3456]",
+   "3": "https://10.0.2.15"
+  }
+ }
+}
