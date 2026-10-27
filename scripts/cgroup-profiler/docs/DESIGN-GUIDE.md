@@ -114,7 +114,10 @@ source systemd units. If that empties a Docker-created `.scope`, systemd may
 retire the source unit immediately; the recorded unit/subgroup is then no
 longer a valid exact restoration target. Before the initial transfer,
 cgprofile inventories each recorded source unit's full cgroup subtree and
-requires at least one non-moving process to remain. It repeats the check
+requires at least one non-moving process to remain, and requires every
+selected, still-live process to be listed in its own recorded source unit
+(a process that left it since capture would otherwise be moved out of an
+unrelated unit and restored to a stale origin). It repeats the check
 immediately before each later migration from an origin unit. A known final
 member produces `place-refused:origin-scope-would-empty`; unavailable or
 inconsistent membership produces `place-refused:identity-unavailable`. Both
@@ -152,9 +155,9 @@ cockpit receives only the cgprofile ctl surface; it does not need the system
 bus. P1 and P6 introduced the observer and opt-in placement capabilities in
 separate implementation tranches. RW-434 settles their combined tree as the
 first 1.0.0 release, including the system-bus manager bridge and writable host
-cgroup view required for explicit placement; there is no separate planned
-1.1.0 release for those capabilities. Any later version increment requires
-genuine post-1.0.0 changes. An operator with unrestricted
+cgroup view required for explicit placement; 1.1.0 changes none of those
+capabilities (it carries the Sol-review fixes and the daemon slice guard, see
+`CHANGES.md`). An operator with unrestricted
 Docker access already has host-administrator authority, but that does not
 make these daemon mounts irrelevant: a compromised daemon process can exercise
 the mounted cgroupfs and systemd manager authority directly, beyond normal
@@ -314,8 +317,10 @@ itself remains 1.
 The observer is a distinct listener, not a read-only bind of `ctl.sock`:
 filesystem read-only does not restrict the verbs of an AF_UNIX service. The
 listener accepts one `resource-limits` query and no start/stop/placement
-operation. Run-Gate validates the fixed socket and mounts only that node
-read-only, forwarding its observed group ID. It does not add a Docker socket,
+operation. Run-Gate validates the fixed socket path and bind-mounts its
+dedicated `/run/cgprofile/observer` DIRECTORY read-only (so a daemon restart
+that replaces the socket inode stays resolvable), forwarding the socket's
+observed group ID; the control socket's directory is never mounted. It does not add a Docker socket,
 host PID namespace, host cgroup namespace, or a second daemon.
 
 The observer request is one newline-terminated JSON line, at most 4096 bytes
@@ -702,3 +707,73 @@ project's documentation, changelog or release configuration claims one. A
 later R2 result applies only to the exact tree and base it judged. Passing
 `r0-r1` and `r3` qualifies a release for exactly what those lanes test; it is
 not mutation evidence.
+
+## An unverified DAMON teardown is a reported fact, not a log line
+
+DAMON is optional evidence, so a failed or unverifiable kdamond teardown must
+not change the workload verdict or turn `stop` into an error. But the old
+behavior logged `cleanup_confirmed=False` and then returned the same
+successful stop as a session whose DAMON was never on, so a consumer could not
+tell "off" from "possibly still running". The daemon therefore reports the
+disposition separately and additively: `summary.damon_cleanup` (also in the
+manifest) is `{confirmed, slot, quarantined}`. `confirmed` is True only when the
+owner affirmatively verified its teardown; an exception from the owner, or no
+confirmation property at all, is unconfirmed. `quarantined` states whether the
+daemon will refuse to reuse that slot, so "unverified" is never read as a
+no-reuse guarantee it did not establish.
+
+## `stop` finalizes only after the sampler has exited
+
+`stop` used to join the sampling thread for ten seconds and then release
+placement, close DAMON, write `finished` and answer `ok: true` whether or not
+the thread had exited. A blocked sampler could then append samples to a
+finalized session. Finalization is now conditional on the worker being gone:
+a live worker leaves the session live, with its placement and DAMON resources
+held and no `finished` manifest, and `stop` answers `stop-incomplete`. The
+caller retries; the same session finalizes once the worker exits. Daemon
+shutdown logs the incomplete stop and leaves the manifest `running`, which the
+next start recovers as an orphan. This is deliberately NOT the CP-24 stop
+protocol (bounded finalization with kill evidence); it only forbids the false
+completion.
+
+## The daemon proves the slice it is in, not a slice by name
+
+Docker and systemd accept any `cgroup_parent` and auto-create an uninstalled
+slice without limits, so a daemon whose compose file names `cgprofile.slice`
+can still run unbounded next to production workloads. `serve` therefore refuses
+to start unless the cgroup it is actually running in, derived from the host
+proc view (`/proc/<host pid>/cgroup` normalized through the cgroup-namespace
+root, the same path derivation placement uses), is under the top-level
+`cgprofile.slice` and that slice's `memory.max` is a finite positive integer.
+A bounded `cgprofile.slice` that merely exists while the container was created
+under another parent, or a nested look-alike, does not pass (name for object).
+Zero is refused: it is finite but a slice that can hold no memory is a
+misconfiguration, and `read_int` folds `max`, empty, unreadable and garbage
+into one "not a number" outcome, so the message names every cause.
+
+Rejected alternatives: reading `LoadState` from inside the container (the
+daemon has no view of `/etc/systemd/system` or the host systemd, so it cannot
+be proven there); a flag to run unbounded anyway (the point is that unbounded
+must not look governed). The pre-creation Docker-host `LoadState=loaded` probe
+remains the complete fix and is CIU-150, outside the 1.1.0 window. The
+refusal runs after container creation, so on `restart: unless-stopped` a host
+without the unit crash-loops; that loud failure is intended.
+
+### A wedged worker has a bounded way out
+
+`stop-incomplete` alone would let a permanently wedged sampler hold placement
+and DAMON forever. The third consecutive incomplete `stop` therefore finalizes
+anyway (`stop_forced: sampler-still-running`, aborted manifest, resources
+released) and daemon shutdown forces the same way; a late sample from the
+worker is discarded because the session is finished. If the worker holds the
+session lock the forced path refuses rather than deadlock the daemon. The
+`finished` flag is set only after release, so finalization first sets a
+`closed` flag under the session lock; every sample-side action that touches
+placement, DAMON or the records re-checks it under that same lock, which closes
+the window in which a late sample could migrate or recommit after release began.
+The liveness stall kill and the DAMON `collect()`/disable paths are guarded the
+same way, and finalization acquires the session lock once, bounded, so a
+worker wedged inside a locked action costs one failed finalize (orphan
+recovery on restart) rather than a daemon-wide hang. Known
+limit: each attempt joins for up to 10 s while holding the server-wide lock, so
+a wedged sampler delays every verb for that long per retry.

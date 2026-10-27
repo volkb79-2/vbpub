@@ -671,6 +671,21 @@ This contract number is independent of the control protocol's `contract: 1`;
 ceiling_s, on_stall, progress_stream}}`). run-gate copies them into
 `resources` verbatim; history stats gain nothing new in v1.1.
 
+`damon_cleanup` (cgprofile 1.1.0, additive; present only when a DAMON owner
+was closed for the session): `{confirmed: bool, slot: int|null, quarantined:
+bool}`. `confirmed: false` means the kdamond teardown could not be verified
+(it may still be active); `quarantined: true` means the daemon will not reuse
+that slot. It is a separate fact from `damon.status`: an unverified teardown
+and "DAMON off" must not look alike. It never changes the workload verdict
+and the daemon still answers `stop` `ok: true` with the summary. A consumer
+that needs a clean DAMON registry must check `confirmed`.
+
+`stop_forced` (cgprofile 1.1.0, additive): `"sampler-still-running"` when the
+daemon finalized the session while its sampling worker was still alive
+(bounded escalation after repeated `stop-incomplete`, or shutdown). Resources
+are released and the manifest is `aborted`. Both keys are optional Summary
+keys; the contract number stays 1 and the Summary schema stays v1.1.
+
 ### 8.8 New error codes
 
 `peer-refused` (socket carrier), `place-refused:no-token`,

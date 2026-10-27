@@ -9,6 +9,7 @@ zero*, so nothing here ever substitutes 0 for a missing file.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -171,6 +172,12 @@ def read_pressure(path: str) -> Dict[str, float]:
     ``total`` is microseconds of stall and is the only field worth
     differentiating over time; the avg* fields are the kernel's own decaying
     averages and are recorded as-is.
+
+    A value that ``float()`` accepts but that is not a finite number (the
+    literal texts ``nan``, ``inf``, or an overflowing ``1e999``) is dropped
+    like a non-numeric one: the kernel never writes those, and letting one
+    through would put a bare ``NaN``/``Infinity`` token -- which is not JSON
+    -- into every JSONL line this package shares with other consumers.
     """
     out: Dict[str, float] = {}
     lines = read_lines(path)
@@ -184,9 +191,12 @@ def read_pressure(path: str) -> Dict[str, float]:
         for kv in parts[1:]:
             key, _, val = kv.partition("=")
             try:
-                out[f"{kind}_{key}"] = float(val)
+                number = float(val)
             except ValueError:
                 continue
+            if not math.isfinite(number):
+                continue
+            out[f"{kind}_{key}"] = number
     return out
 
 

@@ -196,7 +196,9 @@ interleave cleanly; readers must tolerate a truncated final line.
     "/dev.slice/dev-background.slice": {
       "mem":     {"current": 0, "peak": 0, "swap_current": 0, "swap_peak": 0, "zswap_current": 0},
       "memstat": {"anon": 0, "file": 0, "...": 0},
-      "memev":   {"low": 0, "high": 0, "max": 0, "oom": 0, "oom_kill": 0},
+      "memev":   {"low": 0, "high": 0, "max": 0, "oom": 0, "oom_kill": 0},   // memory.events.local
+      "memev_h": {"low": 0, "high": 0, "max": 0, "oom": 0, "oom_kill": 0},   // memory.events (hierarchical), since 1.1.0
+      "swapev":  {"high": 0, "max": 0, "fail": 0},                           // memory.swap.events, since 1.1.0 (fail = swap-out allocation failures)
       "psi_mem": {"some_avg10": 0.0, "some_total": 0, "full_avg10": 0.0, "full_total": 0},
       "psi_cpu": {...}, "psi_io": {...},
       "cpu":     {"usage_usec": 0, "user_usec": 0, "system_usec": 0,
@@ -233,7 +235,8 @@ docstring says *"must"*, a test asserts it.
 ### 4.1 `metrics.py` (agent A)
 
 ```python
-GROUPS: tuple[str, ...] = ("mem", "memstat", "memev", "psi", "cpu", "io", "pids", "cgstat")
+GROUPS: tuple[str, ...] = ("mem", "memstat", "memev", "psi", "cpu", "io", "pids", "cgstat",
+                           "swapev", "memev_h")   # the last two since 1.1.0 (CP-29)
 
 def sample_cgroup(abs_path: str, groups: Optional[Set[str]] = None) -> Dict[str, Any]
 def sample_proc(pid: int) -> Dict[str, Any]          # {} if the pid is gone
@@ -244,6 +247,22 @@ def memstat_rates(prev: Dict, cur: Dict, dt: float) -> Dict[str, Optional[float]
 ```
 
 `psi` is one group producing three keys (`psi_mem`, `psi_cpu`, `psi_io`).
+`memev` is `memory.events.local` (this level's own breaches); `memev_h` is the
+hierarchical `memory.events` (self plus descendants), kept as a separate group
+so a parent's count never dilutes the per-level reading. `swapev` is
+`memory.swap.events` (`high`, `max`, `fail`); `fail` counts swap ALLOCATION
+failures (a swap-out refused because `memory.swap.max` or the host's swap was
+exhausted; never a swap-in) and is the only cgroup-level evidence of swap
+exhaustion. Both read `{}` when the file is absent, never zeros, like every
+other group.
+
+Target option grammar (`lib/targets.py` `_parse_options`): the options of a
+`--target`/`--observe` spec are the text after the LAST `@`, and only when
+every comma-separated item's key is one of `follow`, `nofollow`, `metrics`,
+`as`, `role`, `subpath`; otherwise the whole text is the value, because `@` is
+legal in a cgroup name (`/user.slice/user-1000.slice/user@1000.service`). A
+trailing bare `@` is the escape for a name whose last `@`-segment is itself an
+option word (`cgroup:/a@follow@` is the path `/a@follow` with no options).
 
 `memstat_rates` must expose at minimum, all per second and all `None`-safe:
 `pgfault`, `pgmajfault`, `pgscan`, `pgsteal`, `pswpin`, `pswpout`, `zswpin`,
@@ -407,7 +426,9 @@ class Detector:
 ```
 
 Kinds to detect: `memory_high_breach` (`memory.events.high` increased),
-`memory_max_breach`, `oom_kill`, `psi_spike`, `swap_burst`, `zswap_refault`,
+`memory_max_breach`, `oom_kill`, `swap_fail` (`memory.swap.events.fail`
+increased: a swap-out allocation refused by `memory.swap.max` or host swap
+exhaustion, since 1.1.0), `psi_spike`, `swap_burst`, `zswap_refault`,
 `cpu_throttled`, `limit_drift`, `cgroup_appeared`, `cgroup_disappeared`,
 `victim_pressure` (an *observer*-role target whose `rfd/s` crosses the warn
 line — the correlation event the whole tool exists for).
@@ -730,7 +751,13 @@ admission.md` §A1 (D-27..D-29), §A2 (D-30), A3 (D-31), and A4 (D-32); the wire
   systemd unit (`infra/cgprofile.slice`) the operator installs once per
   host, never software the daemon writes itself (see `infra/README.md`);
   `ctl host`'s `daemon_slice`/`gates_slice` blocks (§8.5) report presence
-  either way rather than assuming installation happened.
+  rather than assuming installation happened. Since 1.1.0 (Sol B4) the daemon
+  does not merely report: `serve` refuses to start unless the daemon's OWN
+  cgroup (derived from the host proc view) is under `cgprofile.slice` and that
+  slice's `memory.max` is finite and positive (unlimited, zero, empty,
+  unreadable and non-numeric all refuse), because an implicitly auto-created
+  slice is unbounded and a "governed-looking" daemon without limits is the
+  silent-default hazard. Unprovable counts as unbounded.
 - **D-30 — the socket carrier, host-visible.** `/run/cgprofile/ctl.sock`
   is bind-mounted to the host, `SO_PEERCRED`-gated
   (`CGPROFILE_ALLOW_UIDS`), so a consumer that should not or cannot use

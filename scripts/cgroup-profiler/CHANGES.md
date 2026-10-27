@@ -10,6 +10,179 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 
 <!-- cmru: release history -->
 
+## [1.1.0] - 2026-10-27
+<!-- cmru: generated -->
+<!-- cmru: source-end=2562ebfbaf982205030d72fe6452aa0b21c639b6 -->
+
+### Fixed
+- fix(cgprofile): review follow-ups to 3e50df9cc: last-@ target option grammar (user@1000.service), swap.events fail = swap-out allocation failures, serve fail-fast documented, docker inspect -- (753d2fa6b)
+- fix(cgprofile): pre-release review of 1.1.0: swapev/memev_h collector groups, swap_fail event, canonical cgroup: paths, slice-name validation, exact-type docker inspect, finite PSI (3e50df9cc)
+- fix(cgprofile): join the sampler outside the daemon-wide lock in stop; cover the two uncovered CGP-110 branches; file review NITs N9-N12 (wave review r1) (420ac1554)
+- fix(cgprofile): bounded finalize lock; guard liveness kill and DAMON paths after close (review CGP-110 r3) (6ea5ef2fb)
+- fix(cgprofile): close the use-after-release window; document stop_forced in PROTOCOL (review CGP-110 r2) (5d80e02ce)
+- fix(cgprofile): CGP-110 review fixes: own-cgroup slice proof, wedged-worker escalation, shutdown force (ac7e17e7b)
+- fix(cgprofile): serve refuses to run under an unbounded cgprofile.slice (Sol B4) (353d90c95)
+- fix(cgprofile): stop must not claim completion while the sampler is running (Sol B2) (a3a314837)
+- fix(cgprofile): report an unconfirmed DAMON teardown to the consumer (Sol B3) (c201d69b6)
+- fix(cgprofile): refuse placement of a selected pid absent from its recorded origin (Sol B1) (98d25e37d)
+
+### Changed
+- Merge cgp-110-20261021 (6ea5ef2fb): CGP-110 / Sol blockers B1-B6 for cgprofile 1.1.0 (keep CIU-150 and CIU-151) (68762c9ca)
+- Merge origin/main into int-02-20261021 (gate the integrated tree) (62497cb0a)
+- BL-01: review fixes - label facts vs hypotheses, drop out-of-repo citations (e79dd01aa)
+- BL-01: renumber filed entries to free IDs (RG-108->RG-109, CIU-150->CIU-151, CP-24->CP-27) (4d384174c)
+- BL-01: file backlog entries RG-108, CIU-150 (+ CIU-134 third reproduction), CP-24 (d5761487d)
+- docs/test: INT-02 review fixes I-01..I-07 (f4267688a)
+- Merge cmru-candidate-integrated-20261017 (03c2f5bab) (INT-01 step 2) (66bd6c9f9)
+
+### Documentation
+- docs(cgprofile): final-tree gate results for 1.1.0 (r0-r1, r3 on 753d2fa6b), CP-38, CP-31 socket-unlink reproduction (fe8c2a6da)
+- docs(cgprofile): pre-release review backlog (CP-32..CP-37), review notes on CP-27/28/29, evidence addendum for 3e50df9cc (7a47e42f9)
+- docs(cgprofile): final gate table for 1.1.0 evidence (677a56d0c)
+- docs(cgprofile): record the 1.1.0 gate results (r0-r1 PASS, r3 PASS, R2 waived) (ab19854ea)
+- docs(cgprofile): 1.1.0 release evidence, R2 waiver (CP-30), socket-absence diagnosis (CP-31), CP-24/25/26 backlog entries with the park-ref pointer (d354b5e78)
+- docs(cgroup-profiler): file CP-28 monitor mode (standing named-scope sampler) and CP-29 cheap collector gaps; reference iomon vbpub@d1a19a159, iogov vbpub@2db1712aa (05bc30373)
+- docs(cgprofile): release-qualification state and stale records (Sol B6) (0ee87b042)
+
+### Testing
+- test(cgprofile): round-2 review nits (release in finally, assert already_stopped) (a8e3e9a90)
+- test(cgprofile): the serve CLI tests declare a bounded daemon slice (Sol B4 follow-up) (c4c1277ae)
+- test(cgprofile): add the bounded live contract-2 observer acceptance probe (Sol B5) (a8bb82b9f)
+- test(cgprofile): declare sequential pytest options (6d5852307)
+- test(cgprofile): enable selective R2 diagnostics (5e5c6916f)
+- test(cgprofile): refuse retirement when cgroup is unknown (8109072e9)
+
+<!-- cmru: pending release notes begin -->
+Release scope (CGP-110): the six blockers of the cgprofile-v1.0.0 Sol review.
+**No R2 (mutation) pass for 1.1.0**: R2 is deferred by operator policy; the
+registered `r0-r1` and `r3` lanes are the qualification. No R2 verdict may be
+inferred from the r3 canaries.
+
+- Release qualification and acceptance evidence (2026-10-27 release wave):
+  the registered `r0-r1` and `r3` lanes ran on the exact release tree
+  (results in `nyxloom-trove/reports/cgprofile-1.1.0-RELEASE-EVIDENCE.md`).
+  R2 is waived for this release and tracked as CP-30. Operator decision
+  2026-10-27: the live acceptance evidence for 1.1.0 is the read-only
+  observation made the same day, in which the collectors (`sample_cgroup`,
+  `read_limits`) were run from a root observation container against the real
+  host cgroup tree with `host_cgroup_view` true; its capability matrix is
+  recorded in CP-28 (Evidence). The separate bounded observer acceptance
+  probe (`tools/observer-live-acceptance.py`) was NOT run for 1.1.0; CP-20
+  stays `carved` until it is.
+- Add (CP-29 items 1 and 2, pre-release review 2026-10-27): two additive
+  sample groups, `swapev` (`memory.swap.events`: `high`, `max`, `fail`) and
+  `memev_h` (hierarchical `memory.events`; `memev` stays
+  `memory.events.local`). Both are in `metrics.GROUPS`, so the one-shot
+  collector samples them by default and the daemon records them per tick;
+  neither changes the contract-1 Summary. A new counter event kind,
+  `swap_fail` (severity `serious`), fires when `fail` increases; `fail`
+  counts swap-out ALLOCATION failures (`memory.swap.max` or host swap
+  exhausted), never swap-ins. An absent file reads as `{}`, never as zeros.
+- Fix (pre-release review): a `cgroup:` target is canonicalised
+  (`//`, `/./`, trailing `/` collapse) and a `..` component is refused —
+  previously `cgroup:/../..@follow` walked out of the mounted cgroup tree.
+  A slice name with an empty hierarchy component (`a--b`, `-a`, `a-`) or a
+  `/` is refused instead of expanding to a phantom `a-.slice` level.
+- **Changed behaviour (pre-release review):** `serve` validates
+  `--observe-slices` and `--gates-slice` at start and refuses (exit 2) an
+  unusable unit name. Previously the daemon started and every `ctl host`/
+  `ctl status` then failed as a daemon fault (exit 3). Under the compose
+  `restart: unless-stopped` policy the refusal is a restart loop until the
+  flag is corrected, exactly like the slice guard; fail-fast is intended.
+- Fix (pre-release review, pre-existing): the target option grammar split
+  at the FIRST `@`, so a real cgroup name containing `@`
+  (`/user.slice/user-1000.slice/user@1000.service`) was truncated to
+  `.../user` and `1000.service` read as an option. Options are now the text
+  after the LAST `@`, and only when every item's key is a known option word
+  (`follow`, `nofollow`, `metrics`, `as`, `role`, `subpath`); a trailing
+  bare `@` is the escape for a name ending in an option word. `cgprofile
+  run`/`attach` role tagging goes through the same grammar.
+- Fix (pre-release review): `container:` lookup runs `docker inspect --type
+  container -- <ref>` (a same-named image or volume can no longer be
+  mistaken for the container, a ref starting with `-` is not a flag) and
+  requires a 64-hex `Id`; a hung Docker CLI is a "cannot resolve" refusal,
+  not a `TimeoutExpired` traceback.
+- Fix (pre-release review): a PSI field whose text parses as a non-finite
+  float (`nan`, `inf`, `1e999`) is dropped, so a corrupted file can never put
+  a bare `NaN`/`Infinity` token (not JSON) into `samples.jsonl.gz`.
+- Docs: README/DESIGN-GUIDE no longer claim "no planned 1.1.0 release".
+- Backlog: CP-24/25/26 (bounded sampler-owned stop, evidence-preserving
+  recovery, durable DAMON pool provenance) are filed with their design held on
+  a park ref and are NOT in this release; CP-28/CP-29 (monitor mode, cheap
+  collector gaps), CP-30 (R2), CP-31 (socket-absence diagnosis, incl. a socket unlinked under a running daemon) and CP-32..CP-38 (review follow-ups) are filed.
+- Fix (wave review r1): `stop` joins the sampling worker outside the daemon-wide
+  lock. Previously a worker that was itself finishing (session error, enforced
+  stall kill) needed that lock, so the join timed out and `stop` answered a
+  spurious `stop-incomplete` after the full 10 s while holding the lock.
+- Docs (Sol B6 / records): the observer mount is described as the dedicated
+  directory (not "only that node"), and stale CP-13 is closed. Release
+  qualification for 1.1.0 is the registered `r0-r1` and `r3` lanes run from a
+  clean exact tree plus the Bake build and post-deploy revision-label checks
+  (CP-21); the code side of CP-21, including the dirty-source refusal in
+  `cmru/build-initial-standalone.sh`, is already on main. No R2 (mutation)
+  verdict exists or is claimed for 1.1.0.
+- Add (Sol B5): `tools/observer-live-acceptance.py`, a read-only probe for the
+  live contract-2 observer acceptance from a gated peer (contract-1 refusal,
+  well-formed local maps, sibling-only versus enforced-at-ancestor deltas),
+  with the operator procedure in `docs/CONSUMERS.md`. The live run itself is
+  NOT part of this change and is required before CP-20 is closed.
+- **BREAKING / operational (Sol B4):** `cgprofile serve` now refuses to start
+  (exit 2) unless the slice the daemon is ACTUALLY IN is bounded: its own
+  cgroup (derived from the host proc view, not looked up by name) must sit
+  under the top-level `cgprofile.slice` and that slice must carry a finite,
+  positive `memory.max` (unlimited, zero, empty, unreadable and non-numeric
+  values are all refused; zero because a slice that can hold no memory is a
+  misconfiguration, not containment). Hosts without the installed unit
+  (`sudo cp infra/cgprofile.slice /etc/systemd/system/ && sudo systemctl
+  daemon-reload`, then recreate the container, since its cgroup parent is
+  chosen at creation) refuse, and with the compose `restart: unless-stopped`
+  the container CRASH-LOOPS until the unit is installed. Install the unit
+  BEFORE upgrading. A non-container or development `serve` run has no
+  `cgprofile.slice` ancestry and is refused too. The pre-creation Docker-host
+  `LoadState=loaded` probe the review asked for is NOT delivered in 1.1.0: it
+  is CIU-150 (`ciu/KNOWN_ISSUES_TODO_BACKLOG.md`), explicitly outside this
+  window; the daemon's own refusal is the interim fail-closed guard and runs
+  after container creation. The documentation that said the daemon "still
+  serves" without the unit, and a `doctor` message the code never emitted, are
+  corrected.
+- Fix (Sol B2): `stop` no longer claims completion while the sampling worker is
+  still running. If the worker does not exit within 10 s the daemon answers the
+  new error `stop-incomplete`, writes no `finished` manifest or summary, and
+  keeps the session's placement and DAMON resources; a retry after the worker
+  exits finalizes normally. Previously the join result was ignored, so a blocked
+  sampler could append records to a finalized session. A permanently wedged
+  worker cannot hold resources forever: the third consecutive incomplete `stop`
+  (`STOP_FORCE_AFTER_ATTEMPTS`) finalizes anyway, releasing placement and DAMON,
+  writing an `aborted` manifest with reason `sampler-still-running` and an
+  additive `summary.stop_forced`; a late sample from the worker is discarded.
+  Daemon shutdown (SIGTERM) forces the same way instead of stranding resources.
+- Fix (Sol S7/S8/S9, closed-session paths): `_observe_liveness` returns when the
+  session is closed and re-checks before a stall kill, so a kill can never reach
+  a leaf that release is restoring; the DAMON `collect()` runs only while open
+  and `_disable_damon_for_session` is a no-op once closed (no second close, the
+  cleanup disposition is not overwritten). Finalize takes the session lock ONCE
+  with a bounded acquire (`STOP_JOIN_SECONDS`) and keeps it for the whole
+  section; if a worker is wedged inside a locked action it returns False
+  instead of hanging the daemon-wide lock, and a restart recovers the session
+  as an orphan.
+- Fix (Sol S6, use-after-release): finalization now sets a `closed` flag under
+  the session lock BEFORE it releases placement and closes DAMON, and the
+  sample path (migrate, DAMON recommit, summary accumulation, every record
+  append) runs only while the flag is clear, under the same lock. A wedged
+  worker's sample that arrives between the flag and the release is discarded.
+- Fix (Sol B3): an unconfirmed DAMON teardown is no longer indistinguishable
+  from "DAMON off". `stop` (and `summary.json`/`manifest.json`) now carry
+  `damon_cleanup: {confirmed, slot, quarantined}` whenever a DAMON owner was
+  closed, including after a runtime DAMON failure. The workload verdict and the
+  `ok: true` stop are unchanged.
+- Fix (Sol B1): placement now requires every selected, still-live process to
+  be listed in its recorded origin unit's census immediately before transfer.
+  A process that left the unit since capture is refused
+  (`place-refused:identity-unavailable`) and no scope is created or attached,
+  instead of being moved out of an unrelated unit and later restored to a stale
+  origin.
+<!-- cmru: pending release notes end -->
+
 ## [1.0.0] - 2026-10-17
 <!-- cmru: generated -->
 <!-- cmru: source-end=f4933a2d5a6d1f1ab460d5ff85caeed269af7a99 -->

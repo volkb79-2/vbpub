@@ -1872,10 +1872,12 @@ class TestDelegatedScopeMigration:
         assert len(attach_calls) == calls_before
         assert (root / SCOPE_CGROUP / "cgroup.procs").read_text() == "202\n"
 
-    def test_origin_scope_check_allows_candidates_not_currently_in_the_unit(
+    def test_origin_scope_check_allows_exited_candidates_not_in_the_unit(
         self, tmp_path,
     ):
-        plc = _placement(_fake_cgroup_root(tmp_path))
+        plc = _placement(
+            _fake_cgroup_root(tmp_path), pid_exists=lambda pid: pid != 101,
+        )
         plc.pid_records[101] = {
             "origin_unit": f"docker-{CONTAINER_ID}.scope",
             "origin_unit_cgroup": "/" + SCOPE_CGROUP,
@@ -1883,6 +1885,43 @@ class TestDelegatedScopeMigration:
 
         assert plc._origin_scope_retains_unmoved_process([101])
         assert plc.error is None
+
+    def test_origin_scope_check_refuses_a_live_candidate_missing_from_its_origin(
+        self, tmp_path,
+    ):
+        # Sol B1: the selected process left its recorded unit after capture;
+        # an unrelated keeper still lives there, so the old intersection was
+        # empty and the check passed.
+        plc = _placement(_fake_cgroup_root(tmp_path))
+        plc.pid_records[101] = {
+            "origin_unit": f"docker-{CONTAINER_ID}.scope",
+            "origin_unit_cgroup": "/" + SCOPE_CGROUP,
+        }
+
+        assert not plc._origin_scope_retains_unmoved_process([101])
+        assert plc.error == placement.REFUSED_IDENTITY_UNAVAILABLE
+
+    def test_apply_creates_no_scope_when_a_selected_pid_left_its_origin(
+        self, tmp_path,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        created: List[str] = []
+        attach_calls: List[Any] = []
+        plc = _placement(
+            root, scope_created=created.append, attach_calls=attach_calls,
+        )
+        real_members = plc._origin_unit_pids
+        # The selected process 101 has left the recorded unit; the unrelated
+        # keeper remains.
+        plc._origin_unit_pids = lambda cgroup: [
+            pid for pid in (real_members(cgroup) or []) if pid != 101
+        ]
+
+        plc.apply([101])
+
+        assert plc.error == placement.REFUSED_IDENTITY_UNAVAILABLE
+        assert not plc.placed
+        assert created == [] and attach_calls == []
 
     def test_later_descendants_are_moved_once_and_inherit_verified_ancestry(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
@@ -2244,6 +2283,9 @@ class TestPlacementTransactionRefusals:
         else:
             locations = iter([origin, origin, "/dev.slice/escaped.scope"])
             plc = _placement(root, pid_cgroup=lambda _pid: next(locations))
+            # The selected process is a genuine member of its origin unit.
+            procs = root / SCOPE_CGROUP / "cgroup.procs"
+            procs.write_text(procs.read_text() + "101\n")
 
         plc.apply([101])
 
@@ -2416,6 +2458,13 @@ class TestPlacementMigrationEdges:
         record.update({"pid": pid, "start_time_ticks": str(pid * 97), "state": "prepared"})
         lane.pid_records[pid] = record
         locations = {pid: record["origin_cgroup"]}
+        # The new process really is a member of its recorded origin unit: the
+        # origin census must list a live selected PID (Sol B1).
+        origin_procs = (
+            Path(lane.cgroup_root) / record["origin_cgroup"].lstrip("/")
+            / "cgroup.procs"
+        )
+        origin_procs.write_text(origin_procs.read_text() + f"{pid}\n")
         lane._pid_cgroup = lambda member: locations.get(member)
         lane._pid_exists = lambda _member: True
         lane._pid_start_time = lambda member: str(member * 97)

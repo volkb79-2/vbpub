@@ -402,7 +402,12 @@ see the consumer note for the live probe and safe host procedure.
   step, once per host, **before** the first `ciu up` on that host: see
   `infra/README.md` (`sudo cp infra/cgprofile.slice
   /etc/systemd/system/ && sudo systemctl daemon-reload`). Not installed →
-  the daemon still starts, under an implicitly-created, unbounded slice;
+  `serve` REFUSES to start (exit 2): systemd would auto-create an unbounded
+  slice and the daemon would look governed while running unlimited. The
+  daemon's OWN cgroup must be under `cgprofile.slice`, whose `memory.max` must
+  be finite and positive (unlimited, zero, empty, unreadable and non-numeric are
+  all refused); with `restart: unless-stopped` a host without the unit
+  crash-loops. Pre-creation `LoadState` proof is CIU-150, not in 1.1.0.
   `ctl host` reports the actual `daemon_slice.memory_min_bytes` and
   `memory_high_bytes` (a zero or null floor means no memory reservation).
   This is a
@@ -487,9 +492,10 @@ see the consumer note for the live probe and safe host procedure.
   compromised privileged daemon. The rationale and deferred broker option are in the
   [RG-55 placement design](../../run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md#a3-placement-ownership-correction-delegated-scope-below-dev-gatesslice-2026-09-30).
   P1 and P6 were implemented in separate work tranches, but RW-434 settles
-  their combined tree as the first 1.0.0 release; there is no planned separate
-  1.1.0 release for these already-merged capabilities. Any future version
-  increment requires genuine post-1.0.0 changes. These are operational
+  their combined tree as the first 1.0.0 release; 1.1.0 carries no new
+  placement capability — its changes are the Sol-review fixes, the slice
+  guard, the additive `swapev`/`memev_h` sample groups and the `swap_fail`
+  event listed in `CHANGES.md`. These are operational
   authority paths, not kernel-enforced containment. `ciu up` remains the
   managed lifecycle, with no alternate host-namespace launcher.
 
