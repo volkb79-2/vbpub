@@ -81,6 +81,8 @@ def test_skip_gates_does_not_execute_run_tests_and_runs_every_other_step(monkeyp
     workspace = _workspace(tmp_path)
     calls = []
     monkeypatch.setattr(transaction, "write_release_progress", lambda *a: calls.append("progress"))
+    monkeypatch.setattr(transaction, "start_untagged_publication_record", lambda *a: None)
+    monkeypatch.setattr(transaction, "mark_untagged_publication_started", lambda *a: None)
     monkeypatch.setattr(cli, "apply_project_release_env", lambda *a: None)
     monkeypatch.setattr(cli, "_prepare_release_projects", lambda *a, **k: calls.append("prepare"))
     monkeypatch.setattr(transaction, "push_backup_branch", lambda *a, **k: calls.append("backup"))
@@ -146,6 +148,8 @@ def test_a_versioning_commit_rechecks_instead_of_rerunning_a_skipped_gate(monkey
 
     monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
     monkeypatch.setattr(cli.transaction, "write_release_progress", lambda *a: None)
+    monkeypatch.setattr(cli.transaction, "start_untagged_publication_record", lambda *a: None)
+    monkeypatch.setattr(cli.transaction, "mark_untagged_publication_started", lambda *a: None)
     monkeypatch.setattr(cli.transaction, "push_backup_branch", lambda *a, **k: None)
     monkeypatch.setattr(cli.transaction, "promote_workspace", lambda *a, **k: None)
     monkeypatch.setattr(cli.transaction, "write_release_result", lambda *a, **k: None)
@@ -584,6 +588,8 @@ def test_a_skipped_candidate_mismatch_does_not_talk_about_a_gate_receipt(monkeyp
     receipts = iter(("gated", "elsewhere"))
     for name, value in (
         ("write_release_progress", lambda *a: None),
+        ("start_untagged_publication_record", lambda *a: None),
+        ("mark_untagged_publication_started", lambda *a: None),
         ("push_backup_branch", lambda *a, **k: None),
     ):
         monkeypatch.setattr(transaction, name, value)

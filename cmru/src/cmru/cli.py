@@ -3635,6 +3635,9 @@ def _release_projects_sequentially(
     # stale checkpoint and misreport the last completed source candidate.
     # Returning "the run's base" is exactly equivalent to "nothing has fully
     # succeeded yet in this run".
+    # KI-98: BEFORE the seed below, because the seed's own file is how a resumed
+    # (older) transaction is told apart from a brand-new one.
+    transaction.start_untagged_publication_record(repo_root, workspace)
     transaction.write_release_progress(repo_root, workspace, workspace.base)
 
     released: List[str] = []
@@ -3666,6 +3669,9 @@ def _release_projects_sequentially(
                 _assert_release_candidate_unchanged(
                     repo_root, name, candidate_sha, phase="before untagged release",
                 )
+                # KI-98: durable BEFORE anything can publish, so `cmru abandon`
+                # can tell "failed before publishing" from "unknown".
+                transaction.mark_untagged_publication_started(repo_root, workspace, name)
                 _run_untagged_project(
                     repo_root, configs, name,
                     github_config=github_config, env_config=env_config,
@@ -7664,6 +7670,7 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
         dict[str, str],
         bool,
     ]] = []
+    untagged_records: dict[str, list[str] | None] = {}
     for workspace in selected:
         scope: list[str] = []
         remote_assets: list[str] = []
@@ -7810,7 +7817,13 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
                 repo_root, git_auth=git_auth, context="inspect origin release tags",
             )
             tag_prefixes = _release_tag_prefixes_for_scope(scope, scoped_configs)
-            if not tag_prefixes:
+            # KI-98: a scope with NO git_tag project owns no tag namespace; an
+            # empty prefix set then simply means there are no tag refs to check.
+            # Only a tagged project without a usable prefix is unclassifiable.
+            if not tag_prefixes and any(
+                name in scoped_configs and getattr(scoped_configs[name], "git_tag", False)
+                for name in scope
+            ):
                 raise RuntimeError("release scope has no usable Git tag prefix")
             scoped_remote_tags = _release_tag_ref_records(tag_ref_records, tag_prefixes)
             initial_tag_refs = transaction.read_release_tag_snapshot(repo_root, workspace)
@@ -7962,6 +7975,41 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
                 )
             untagged = [name for name in scope if name not in scoped_configs or not scoped_configs[name].git_tag]
             if untagged:
+                # KI-98: an untagged project is provably unpublished when this
+                # transaction's own record (written before any publication
+                # starts) exists and neither names the project nor holds a
+                # result for it. No record (older transaction) stays withheld.
+                started = transaction.read_untagged_publication_record(repo_root, workspace)
+                untagged_records[workspace.branch] = started
+                if started is not None:
+                    unproven = [
+                        name for name in untagged
+                        if name not in scoped_configs or name in started or name in results
+                    ]
+                    if len(unproven) < len(untagged):
+                        # A --no-build untagged project is promoted without any
+                        # mark; a crash after promotion leaves no trace but the
+                        # source already being in origin/main.
+                        tip = run_local_git(
+                            repo_root, "rev-parse", "refs/heads/" + workspace.branch,
+                            capture_output=True, text=True, check=False,
+                        )
+                        tip_oid = (tip.stdout or "").strip() if tip.returncode == 0 else ""
+                        if tip_oid != str(base_commit):
+                            promoted_src = run_local_git(
+                                repo_root, "merge-base", "--is-ancestor",
+                                "refs/heads/" + workspace.branch, remote_main,
+                                capture_output=True, text=True, check=False,
+                            )
+                            if promoted_src.returncode != 1:
+                                remote_assets.append("origin/refs/heads/main")
+                                raise RuntimeError(
+                                    "the candidate source is already in origin/main (or that "
+                                    "could not be ruled out), so an untagged project may have "
+                                    "been promoted: inspect before abandoning"
+                                )
+                    untagged = unproven
+            if untagged:
                 remote_assets.extend(f"external publication state unknown for {name}" for name in untagged)
                 raise RuntimeError(
                     "transaction scope contains project(s) that can publish without a Git tag, "
@@ -8096,6 +8144,11 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
                 transaction.list_local_tag_refs(repo_root), tag_prefixes,
             ) != expected_local_tags:
                 raise RuntimeError("local release tags changed after confirmation")
+            if workspace.branch in untagged_records and (
+                transaction.read_untagged_publication_record(repo_root, workspace)
+                != untagged_records[workspace.branch]
+            ):
+                raise RuntimeError("untagged publication record changed after confirmation")
         except _DOMAIN_ERRORS as exc:
             raise CliFailure(
                 "origin state changed or could not be rechecked after confirmation; "

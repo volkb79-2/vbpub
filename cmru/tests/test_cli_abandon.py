@@ -77,6 +77,8 @@ def _install_candidate_facts(monkeypatch, root, candidates):
     monkeypatch.setattr(transaction, "read_release_tag_snapshot", lambda *_: {})
     monkeypatch.setattr(transaction, "read_release_tag_attempts", lambda *_: None)
     monkeypatch.setattr(transaction, "list_local_tag_refs", lambda *_: {})
+    # No untagged-publication record: an older transaction (KI-98).
+    monkeypatch.setattr(transaction, "read_untagged_publication_record", lambda *_: None)
     monkeypatch.setattr(transaction, "backup_was_pushed", lambda _root, _ws: False)
     monkeypatch.setattr(transaction, "backup_was_removed", lambda _root, _ws: False)
     project_names = {
@@ -128,7 +130,7 @@ def _install_abandon_inspection(
     monkeypatch.setattr(
         cli, "run_local_git",
         lambda _root, *args, **_kwargs: SimpleNamespace(
-            returncode=outcomes.get(args[2], 1), stdout="", stderr="",
+            returncode=outcomes.get(args[2] if len(args) > 2 else args[-1], 1), stdout="", stderr="",
         ),
     )
 
@@ -1008,7 +1010,10 @@ def test_abandon_refuses_a_baseline_tag_that_disappeared_from_origin(
     assert "origin/refs/tags/alpha-v9" in output
 
 
-def test_abandon_refuses_a_scope_without_a_git_tag_prefix(monkeypatch, tmp_path, capsys):
+def test_abandon_a_scope_without_a_git_tag_project_and_without_a_record_stays_withheld(
+    monkeypatch, tmp_path, capsys,
+):
+    # Was "no usable Git tag prefix" before KI-98; the prefix is no longer the blocker.
     candidate = _workspace(tmp_path, "cmru-release-20260924_120000-alpha-ab12cd")
     _install_abandon_inspection(
         monkeypatch, tmp_path, candidate,
@@ -1016,7 +1021,7 @@ def test_abandon_refuses_a_scope_without_a_git_tag_prefix(monkeypatch, tmp_path,
     )
 
     assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.REFUSED
-    assert "no usable Git tag prefix" in capsys.readouterr().out
+    assert "can publish without a Git tag" in capsys.readouterr().out
 
 
 def test_abandon_refuses_scope_with_a_project_that_can_publish_without_a_tag(
@@ -1584,3 +1589,357 @@ def test_abandon_reports_indeterminate_local_evidence_without_abandoning(
         with pytest.raises(CliFailure, match="nothing was abandoned"):
             _invoke_abandon(candidate, branch=candidate.branch, dry_run=False)
         assert expected in capsys.readouterr().out
+
+
+# --- KI-98: a scope with no git_tag project (mdt-cockpit) is abandonable ------
+
+_UNTAGGED_BRANCH = "cmru-release-20261027_103450-mdt-cockpit-8b3px3"
+
+
+def _untagged_case(monkeypatch, tmp_path, *, record, scope=None, configs=None, **kwargs):
+    candidate = _workspace(tmp_path, _UNTAGGED_BRANCH)
+    _install_abandon_inspection(
+        monkeypatch, tmp_path, candidate, scope=scope or ["mdt-cockpit"],
+        configs=configs or {"mdt-cockpit": SimpleNamespace(git_tag=False)},
+        snapshot={}, **kwargs,
+    )
+    monkeypatch.setattr(
+        transaction, "read_untagged_publication_record", lambda *_: record, raising=False,
+    )
+    return candidate
+
+
+def test_ki98_git_tag_false_failed_candidate_is_abandoned(monkeypatch, tmp_path, capsys):
+    candidate = _untagged_case(monkeypatch, tmp_path, record=[])
+    calls = []
+    monkeypatch.setattr(
+        transaction, "abandon_workspace", lambda _root, ws, **kw: calls.append(kw),
+    )
+
+    assert _invoke_abandon(candidate, branch=candidate.branch, dry_run=False, yes=True) == 0
+
+    assert "Withheld" not in capsys.readouterr().out
+    # An empty prefix set means "no tag refs", and is handed down as such.
+    assert calls[0]["release_tag_prefixes"] == ()
+    assert calls[0]["expected_remote_tag_refs"] == {}
+    assert calls[0]["expected_local_tag_refs"] == {}
+    assert calls[0]["local_tags_to_remove"] == {}
+
+
+def test_ki98_dry_run_reports_the_untagged_candidate_without_mutating(
+    monkeypatch, tmp_path, capsys,
+):
+    candidate = _untagged_case(monkeypatch, tmp_path, record=[])
+    monkeypatch.setattr(
+        transaction, "abandon_workspace",
+        lambda *_a, **_k: pytest.fail("dry-run called abandon_workspace"),
+    )
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == 0
+
+    output = capsys.readouterr().out
+    assert f"Candidate: {candidate.branch}" in output
+    assert "transaction scope: mdt-cockpit" in output
+    assert "local release tags removed: none" in output
+    assert "Withheld" not in output
+    assert "No branch, worktree, metadata, or remote state was changed" in output
+
+
+def test_ki98_untagged_project_whose_publication_began_stays_withheld(
+    monkeypatch, tmp_path, capsys,
+):
+    candidate = _untagged_case(monkeypatch, tmp_path, record=["mdt-cockpit"])
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.REFUSED
+    assert "can publish without a Git tag" in capsys.readouterr().out
+
+
+def test_ki98_untagged_scope_without_a_publication_record_stays_withheld(
+    monkeypatch, tmp_path, capsys,
+):
+    # A transaction from before the record existed cannot prove non-publication.
+    candidate = _untagged_case(monkeypatch, tmp_path, record=None)
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.REFUSED
+    assert "can publish without a Git tag" in capsys.readouterr().out
+
+
+def test_ki98_tag_attempt_in_a_scope_without_tagged_projects_is_still_refused(
+    monkeypatch, tmp_path, capsys,
+):
+    candidate = _untagged_case(
+        monkeypatch, tmp_path, record=[], attempts={"refs/tags/mdt-cockpit-v1": "d" * 40},
+    )
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.REFUSED
+    assert "outside the recorded project scope" in capsys.readouterr().out
+
+
+def test_ki98_mixed_scope_still_refuses_when_a_tagged_project_lacks_a_prefix(
+    monkeypatch, tmp_path, capsys,
+):
+    candidate = _untagged_case(
+        monkeypatch, tmp_path, record=[], scope=["alpha", "mdt-cockpit"],
+        configs={
+            "alpha": SimpleNamespace(git_tag=True),
+            "mdt-cockpit": SimpleNamespace(git_tag=False),
+        },
+    )
+    monkeypatch.setattr(cli, "_release_tag_prefixes_for_scope", lambda *_a: ())
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.REFUSED
+    assert "no usable Git tag prefix" in capsys.readouterr().out
+
+
+def test_ki98_mixed_scope_with_unpublished_untagged_project_uses_only_tagged_prefixes(
+    monkeypatch, tmp_path, capsys,
+):
+    candidate = _untagged_case(
+        monkeypatch, tmp_path, record=[], scope=["alpha", "mdt-cockpit"],
+        configs={
+            "alpha": SimpleNamespace(git_tag=True, prefix="alpha-v"),
+            "mdt-cockpit": SimpleNamespace(git_tag=False),
+        },
+    )
+    calls = []
+    monkeypatch.setattr(
+        transaction, "abandon_workspace", lambda _root, ws, **kw: calls.append(kw),
+    )
+
+    assert _invoke_abandon(candidate, branch=candidate.branch, dry_run=False, yes=True) == 0
+    assert calls[0]["release_tag_prefixes"] == ("alpha-v",)
+
+
+def test_ki98_abandon_workspace_with_empty_prefixes_ignores_unrelated_tags(
+    monkeypatch, tmp_path,
+):
+    # Pre-fix, an empty prefix tuple meant "ALL tags" in the recheck, so the
+    # empty expected snapshot never matched a real origin with other tags.
+    _real_git(tmp_path, "init", "-q")
+    other = "d" * 40
+    workspace = SimpleNamespace(
+        repo_root=tmp_path, path=tmp_path / "workspace", branch="cmru-release-test",
+        context=None,
+    )
+
+    def run_remote(_root, *args, **_kwargs):
+        out = f"{other}\trefs/tags/pwmcp-v1\n" if args[:3] == ("ls-remote", "--tags", "origin") else ""
+        return SimpleNamespace(returncode=0, stdout=out, stderr="")
+
+    removed = []
+    monkeypatch.setattr(transaction, "run_remote_git", run_remote)
+    monkeypatch.setattr(transaction, "backup_was_pushed", lambda *_: False)
+    monkeypatch.setattr(transaction, "backup_was_removed", lambda *_: False)
+    monkeypatch.setattr(transaction, "remove_workspace", lambda ws: removed.append(ws))
+    monkeypatch.setattr(transaction, "forget_release_scope", lambda *_: None)
+    monkeypatch.setattr(
+        transaction, "list_local_tag_refs", lambda *_: {"refs/tags/pwmcp-v1": other},
+    )
+    monkeypatch.setattr(
+        transaction, "run_local_git",
+        lambda *_a, **_k: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    transaction.abandon_workspace(
+        tmp_path, workspace, expected_remote_tag_refs={}, release_tag_prefixes=(),
+        expected_local_tag_refs={},
+    )
+    assert removed == [workspace]
+
+
+def test_ki98_untagged_publication_record_roundtrip_and_forget(tmp_path):
+    _real_git(tmp_path, "init", "-q")
+    ws = _workspace(tmp_path, _UNTAGGED_BRANCH)
+    assert transaction.read_untagged_publication_record(tmp_path, ws) is None
+    transaction.start_untagged_publication_record(tmp_path, ws)
+    assert transaction.read_untagged_publication_record(tmp_path, ws) == []
+    transaction.mark_untagged_publication_started(tmp_path, ws, "mdt-cockpit")
+    transaction.start_untagged_publication_record(tmp_path, ws)  # a retry keeps it
+    assert transaction.read_untagged_publication_record(tmp_path, ws) == ["mdt-cockpit"]
+    transaction.forget_release_scope(tmp_path, ws)
+    assert transaction.read_untagged_publication_record(tmp_path, ws) is None
+
+
+def test_ki98_origin_only_candidate_branch_is_retired(monkeypatch, tmp_path, capsys):
+    # Characterisation: the KI-35 path already handles an origin-only branch whose
+    # commits are all in origin/main (it needs no tag prefix). A branch absent from
+    # origin is the only way to get "no exact managed ... named".
+    branch = "cmru-release-20261027_110937-mdt-cockpit-zn0uvi"
+    monkeypatch.setattr(cli, "_current_git_root", lambda: tmp_path)
+    monkeypatch.setattr(transaction, "list_cmru_workspaces", lambda _root: [])
+    monkeypatch.setattr(cli, "_resolve_config", lambda _p: tmp_path / "cmru.toml")
+    monkeypatch.setattr(cli, "load_config", lambda _p: _loaded_config(tmp_path, {}))
+    candidate = transaction.RemoteCandidate(branch, "a" * 40, "b" * 40, 0)
+    monkeypatch.setattr(transaction, "inspect_remote_candidate", lambda *_a, **_k: candidate)
+    retired = []
+    monkeypatch.setattr(
+        transaction, "retire_remote_candidate", lambda _root, c, **_k: retired.append(c.branch),
+    )
+
+    assert _invoke_abandon(None, branch=branch, dry_run=True) == 0
+    assert retired == []
+    assert _invoke_abandon(None, branch=branch, dry_run=False, yes=True) == 0
+    assert retired == [branch]
+    assert "Retire (origin-only candidate)" in capsys.readouterr().out
+
+
+# --- KI-98 review follow-up --------------------------------------------------
+
+_REAL_READ_UNTAGGED = transaction.read_untagged_publication_record
+
+
+def _real_record_case(monkeypatch, tmp_path, **kwargs):
+    """An untagged-scope candidate whose publication record is read from disk."""
+    _real_git(tmp_path, "init", "-q")
+    candidate = _workspace(tmp_path, _UNTAGGED_BRANCH)
+    _install_abandon_inspection(
+        monkeypatch, tmp_path, candidate, scope=["mdt-cockpit"],
+        configs={"mdt-cockpit": SimpleNamespace(git_tag=False)}, snapshot={}, **kwargs,
+    )
+    monkeypatch.setattr(transaction, "read_untagged_publication_record", _REAL_READ_UNTAGGED)
+    return candidate
+
+
+def test_ki98_resumed_legacy_transaction_never_gets_a_record_and_stays_withheld(
+    monkeypatch, tmp_path, capsys,
+):
+    # An old cmru published untagged X, crashed before write_release_result; the
+    # NEW cmru resumes (its progress seed already exists) and fails at a gate
+    # before X is marked. Abandon must still withhold.
+    candidate = _real_record_case(monkeypatch, tmp_path)
+    transaction.write_release_progress(tmp_path, candidate, "a" * 40)  # the old run's seed
+    transaction.start_untagged_publication_record(tmp_path, candidate)
+    assert _REAL_READ_UNTAGGED(tmp_path, candidate) is None
+    transaction.mark_untagged_publication_started(tmp_path, candidate, "mdt-cockpit")
+    assert _REAL_READ_UNTAGGED(tmp_path, candidate) is None  # marking never upgrades
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.REFUSED
+    assert "can publish without a Git tag" in capsys.readouterr().out
+
+
+def test_ki98_brand_new_transaction_gets_a_record_and_is_abandonable(
+    monkeypatch, tmp_path, capsys,
+):
+    candidate = _real_record_case(monkeypatch, tmp_path)
+    transaction.start_untagged_publication_record(tmp_path, candidate)
+    transaction.write_release_progress(tmp_path, candidate, "a" * 40)
+    assert _REAL_READ_UNTAGGED(tmp_path, candidate) == []
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == 0
+    assert "Withheld" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("content", ["{not json", '{"started": "mdt-cockpit"}', "[]", '{"started": [1]}'])
+def test_ki98_corrupt_real_record_reaching_abandon_is_withheld(
+    monkeypatch, tmp_path, capsys, content,
+):
+    candidate = _real_record_case(monkeypatch, tmp_path)
+    transaction._ensure_scope_dir(tmp_path)
+    transaction._untagged_publication_path(tmp_path, candidate).write_text(content)
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.REFUSED
+    assert "untagged publication record" in capsys.readouterr().out
+
+
+def test_ki98_untagged_source_already_in_origin_main_is_withheld(
+    monkeypatch, tmp_path, capsys,
+):
+    # --no-build promotes the source with no mark; crash before the progress write.
+    candidate = _untagged_case(
+        monkeypatch, tmp_path, record=[],
+        merge_codes={f"refs/heads/{_UNTAGGED_BRANCH}": 0},
+    )
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.REFUSED
+    assert "already in origin/main" in capsys.readouterr().out
+
+
+def test_ki98_untagged_source_promotion_that_cannot_be_ruled_out_is_withheld(
+    monkeypatch, tmp_path, capsys,
+):
+    candidate = _untagged_case(
+        monkeypatch, tmp_path, record=[],
+        merge_codes={f"refs/heads/{_UNTAGGED_BRANCH}": 128},
+    )
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.REFUSED
+    assert "already in origin/main" in capsys.readouterr().out
+
+
+def test_ki98_publication_record_changed_after_confirmation_aborts(monkeypatch, tmp_path):
+    candidate = _untagged_case(monkeypatch, tmp_path, record=[])
+    monkeypatch.setattr(
+        transaction, "abandon_workspace",
+        lambda *_a, **_k: pytest.fail("abandoned despite a changed record"),
+    )
+    runtime = _Runtime()
+    confirm = runtime.confirm
+
+    def confirm_then_publish(prompt):
+        monkeypatch.setattr(
+            transaction, "read_untagged_publication_record", lambda *_: ["mdt-cockpit"],
+        )
+        return confirm(prompt)
+
+    runtime.confirm = confirm_then_publish
+    with pytest.raises(CliFailure, match="nothing was abandoned"):
+        _invoke_abandon(candidate, branch=candidate.branch, dry_run=False, runtime=runtime)
+
+
+def test_ki98_mixed_scope_with_tag_on_origin_and_unmarked_untagged_project_is_withheld(
+    monkeypatch, tmp_path, capsys,
+):
+    candidate = _untagged_case(
+        monkeypatch, tmp_path, record=[], scope=["alpha", "mdt-cockpit"],
+        configs={
+            "alpha": SimpleNamespace(git_tag=True, prefix="alpha-v"),
+            "mdt-cockpit": SimpleNamespace(git_tag=False),
+        },
+        remote_tags={"refs/tags/alpha-v1": "d" * 40, "refs/tags/alpha-v1^{}": "d" * 40},
+    )
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.REFUSED
+    assert "selected-scope release tag refs that changed" in capsys.readouterr().out
+
+
+def test_ki98_mixed_scope_with_tagged_project_in_results_and_unmarked_untagged_is_withheld(
+    monkeypatch, tmp_path, capsys,
+):
+    configs = {
+        "alpha": SimpleNamespace(git_tag=True, prefix="alpha-v"),
+        "beta": SimpleNamespace(git_tag=False),
+    }
+    candidate, *_ = _install_feature_abandon_case(
+        monkeypatch, tmp_path, scope=["alpha", "beta"], configs=configs,
+        results={"alpha": "alpha-v1.0.0"},
+    )
+    monkeypatch.setattr(transaction, "read_untagged_publication_record", lambda *_: [])
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.REFUSED
+    assert "partial publication results" in capsys.readouterr().out
+
+
+def test_ki98_publication_record_writes_are_atomic_and_durable(monkeypatch, tmp_path):
+    _real_git(tmp_path, "init", "-q")
+    ws = _workspace(tmp_path, _UNTAGGED_BRANCH)
+    synced, replaced = [], []
+    real_fsync, real_replace = transaction.os.fsync, transaction.os.replace
+    monkeypatch.setattr(transaction.os, "fsync", lambda fd: (synced.append(fd), real_fsync(fd)))
+    monkeypatch.setattr(
+        transaction.os, "replace", lambda a, b: (replaced.append((str(a), str(b))), real_replace(a, b)),
+    )
+    transaction.start_untagged_publication_record(tmp_path, ws)
+    assert len(synced) == 2  # the temp file, then the directory
+    assert len(replaced) == 1
+    src, dst = replaced[0]
+    assert Path(src).parent == Path(dst).parent and src != dst
+
+    # A failed replace leaves the previous record intact and no temp file behind.
+    def boom(_a, _b):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(transaction.os, "replace", boom)
+    with pytest.raises(OSError):
+        transaction.mark_untagged_publication_started(tmp_path, ws, "mdt-cockpit")
+    monkeypatch.setattr(transaction.os, "replace", real_replace)
+    assert _REAL_READ_UNTAGGED(tmp_path, ws) == []
+    assert [p.name for p in Path(dst).parent.iterdir() if p.name.endswith(".tmp")] == []

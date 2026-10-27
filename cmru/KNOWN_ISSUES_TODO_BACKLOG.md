@@ -2459,3 +2459,31 @@ failure arrives AFTER both images were pushed and while the release transaction 
 remediation (set the package public once, link it to the repository), because the image push itself succeeded; make `retries`/`delay`
 configurable; and let a project distinguish "package must already exist" (hard) from "may be new" (warn). Until then pwmcp documents the manual
 recovery (re-run ONLY the visibility sync; see pwmcp/README.md "First release of the OCR image").
+
+### KI-98 - `cmru abandon` hard-refuses a release scope with no `git_tag` project (mdt-cockpit)
+
+**Status:** FIXED 2026-10-27 (unreleased; tests in `tests/test_cli_abandon.py` `test_ki98_*`). Observed 2026-10-27 on mdt-cockpit candidate
+`cmru-release-20261027_103450-mdt-cockpit-8b3px3` (worktree retained after a failed release): `Withheld ... reason: release scope has no usable Git tag prefix`.
+**Mechanism.** `mdt-cockpit/cmru.toml` sets `git_tag=false`, so `_release_tag_prefixes_for_scope` returns `()`; `_abandon_locked` read that as "unusable"
+(`if not tag_prefixes: raise`) although an empty set only means there are no tag refs to check. Further empty-prefix traps sat behind it:
+(1) `transaction._tag_refs_for_prefixes(refs, ())` means ALL tags, so `abandon_workspace`'s post-confirmation recheck compared an empty expected snapshot with
+every tag on origin and would have refused "origin release tags changed"; (2) the "untagged project can publish without a Git tag" guard refused every
+scope containing an untagged project unconditionally, because nothing recorded whether an untagged publication had started (`write_release_result` runs only
+AFTER `_run_untagged_project`); (3) the `outside_scope` tag-attempt check flags every attempt when the prefix set is empty, which is correct (a scope with no
+tagged project must have no tag attempts) and is kept and pinned by a test.
+**Fix.** The prefix refusal fires only when the scope contains a `git_tag=true` project that lacks a prefix. `abandon_workspace(release_tag_prefixes=...)`
+now distinguishes `None` (all tags, legacy callers) from an empty sequence (none). Each transaction writes `<token>.untagged-publish.json` at start
+(`start_untagged_publication_record`) and marks a project in it BEFORE `_run_untagged_project` (`mark_untagged_publication_started`); `abandon` treats an
+untagged project as provably unpublished only when that record exists and names neither it nor a result for it. The record is written atomically and durably
+(temp file, fsync, `os.replace`, directory fsync), is re-read after the confirmation and the abandon is refused if it changed, and is removed with the other
+sidecars (`forget_release_scope`).
+**Legacy transactions stay withheld.** `start_untagged_publication_record` runs BEFORE the progress seed and creates the record only for a brand-new branch
+token: when a progress, result or tag-attempt/absence record already exists (an older cmru run, possibly resumed by this one, may have published an untagged
+project without a trace) no record is created and `mark_untagged_publication_started` never creates one either. Pinned by the resume scenario test. A
+`--no-build` untagged project promotes the source without any mark, so abandon also withholds when the candidate tip (when it differs from the base) is an
+ancestor of origin/main or that cannot be ruled out; this makes the printed "origin/main is unchanged" true for every candidate an untagged scope can reach.
+`or name in results` in the plan is kept as defence in depth: a result implies a mark in new code but not in a hand-edited or mixed-version record.
+**Origin-only candidates.** `cmru-release-20261027_110937-mdt-cockpit-zn0uvi` needed no code change: the KI-35 path (`_abandon_remote_candidate`) never touches tag
+prefixes and retires an origin-only branch whose commits are all in origin/main. "no exact managed CMRU build or release branch or worktree path named ..." is
+what it prints when `git ls-remote` finds the branch absent from origin (already deleted or never pushed); pinned by `test_ki98_origin_only_candidate_branch_is_retired`.
+**Not fixed here.** KI-91 (a failed `--dry-run` leaves a candidate with no scope record) is unchanged.

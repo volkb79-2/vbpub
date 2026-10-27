@@ -1695,6 +1695,7 @@ def forget_release_scope(repo_root: Path, workspace: ReleaseWorkspace) -> None:
     (_scope_dir(repo_root) / f"{_release_token(workspace)}.tag-absent.json").unlink(missing_ok=True)
     _forget_release_progress(repo_root, workspace)
     (_scope_dir(repo_root) / f"{_release_token(workspace)}.results.json").unlink(missing_ok=True)
+    _untagged_publication_path(repo_root, workspace).unlink(missing_ok=True)
     _forget_plan_refused(repo_root, workspace)
     _forget_backup_pushed(repo_root, workspace)
 
@@ -3095,6 +3096,91 @@ def read_release_progress(repo_root: Path, workspace: ReleaseWorkspace) -> str |
     return sha or None
 
 
+def _untagged_publication_path(repo_root: Path, workspace: ReleaseWorkspace) -> Path:
+    return _scope_dir(repo_root) / f"{_release_token(workspace)}.untagged-publish.json"
+
+
+def _atomic_write_durable(path: Path, text: str) -> None:
+    """Write *text* so a crash leaves the old content or the new, never a torn file:
+    temp file in the same directory, fsync it, ``os.replace``, fsync the directory."""
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def start_untagged_publication_record(repo_root: Path, workspace: ReleaseWorkspace) -> None:
+    """Create the (empty) record of untagged publications this transaction began.
+
+    Its presence proves the transaction was run by code that marks a publication
+    BEFORE it starts, so `abandon` can trust an absent entry (KI-98). It is
+    created ONLY for a brand-new transaction: if the branch token already has a
+    progress, result, or tag-attempt/absence record, an older cmru may already
+    have published an untagged project without leaving a trace, so no record is
+    created and `abandon` keeps withholding (legacy). An existing record is kept.
+    Call it BEFORE the run seeds its own progress record.
+    """
+    path = _untagged_publication_path(repo_root, workspace)
+    if path.exists():
+        return
+    scope_dir = _ensure_scope_dir(repo_root)
+    token = _release_token(workspace)
+    if any(
+        (scope_dir / f"{token}{suffix}").exists()
+        for suffix in (".progress", ".results.json", ".tag-attempts.json", ".tag-absent.json")
+    ):
+        return
+    _atomic_write_durable(path, json.dumps({"started": []}) + "\n")
+
+
+def mark_untagged_publication_started(
+    repo_root: Path, workspace: ReleaseWorkspace, project: str,
+) -> None:
+    """Durably note that *project*'s untagged build/publish is about to run.
+
+    A legacy transaction (no record) stays record-less: marking must never
+    upgrade it to "trusted".
+    """
+    current = read_untagged_publication_record(repo_root, workspace)
+    if current is None:
+        return
+    if project not in current:
+        current.append(project)
+    _atomic_write_durable(
+        _untagged_publication_path(repo_root, workspace),
+        json.dumps({"started": sorted(current)}) + "\n",
+    )
+
+
+def read_untagged_publication_record(
+    repo_root: Path, workspace: ReleaseWorkspace,
+) -> list[str] | None:
+    """Projects whose untagged publication began, or None when no record exists
+    (a transaction from before KI-98: publication state cannot be proven)."""
+    path = _untagged_publication_path(repo_root, workspace)
+    if not path.exists():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"cannot read untagged publication record {path}") from exc
+    started = raw.get("started") if isinstance(raw, dict) else None
+    if not isinstance(started, list) or not all(isinstance(n, str) for n in started):
+        raise RuntimeError(f"untagged publication record is malformed: {path}")
+    return list(started)
+
+
 def _forget_release_progress(repo_root: Path, workspace: ReleaseWorkspace) -> None:
     (_scope_dir(repo_root) / f"{_release_token(workspace)}.progress").unlink(missing_ok=True)
 
@@ -3188,7 +3274,7 @@ def abandon_workspace(
     expected_remote_main_oid: str | None = None,
     allow_missing_remote_candidate: bool = False,
     expected_remote_tag_refs: Mapping[str, str] | None = None,
-    release_tag_prefixes: Sequence[str] = (),
+    release_tag_prefixes: Sequence[str] | None = None,
     expected_local_tag_refs: Mapping[str, str] | None = None,
     local_tags_to_remove: Mapping[str, str] | None = None,
 ) -> None:
@@ -3268,11 +3354,11 @@ def abandon_workspace(
         current_tag_refs = parse_ls_remote_refs(
             tags.stdout, namespace="refs/tags/", description="origin release tag lookup",
         )
-        current_tag_refs = _tag_refs_for_prefixes(current_tag_refs, release_tag_prefixes)
+        current_tag_refs = _scoped_tag_refs(current_tag_refs, release_tag_prefixes)
         if current_tag_refs != dict(expected_remote_tag_refs):
             raise RuntimeError("origin release tags changed after abandonment inspection; retained transaction was not removed")
     if expected_local_tag_refs is not None:
-        current_local_tag_refs = _tag_refs_for_prefixes(
+        current_local_tag_refs = _scoped_tag_refs(
             list_local_tag_refs(repo_root), release_tag_prefixes,
         )
         if current_local_tag_refs != dict(expected_local_tag_refs):
@@ -3457,6 +3543,19 @@ def _tag_refs_for_prefixes(
         if any(name.startswith(prefix) for prefix in prefixes):
             selected[ref] = oid
     return selected
+
+
+def _scoped_tag_refs(
+    tag_refs: Mapping[str, str], prefixes: Sequence[str] | None,
+) -> dict[str, str]:
+    """``None`` selects every tag (legacy callers); an EMPTY sequence selects none.
+
+    A release scope with no tagged project owns no tag namespace, so an empty
+    prefix set must not widen to "all tags" (KI-98).
+    """
+    if prefixes is not None and len(prefixes) == 0:
+        return {}
+    return _tag_refs_for_prefixes(tag_refs, prefixes or ())
 
 
 PROMOTE_MERGE_ATTEMPTS = 3
