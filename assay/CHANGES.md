@@ -9,6 +9,24 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   older verdicts, and v12-v15 reuse state starts cold under the new judge
   identity. Upgrade to Assay 10.0.0 and follow the
   [v15-to-v16 migration notes](docs/CONSUMERS.md#migration-notes-v15-to-v16).
+- Native R2 requires `judge.mutation.jobs = 1` (and `--pilot-jobs 1` /
+  `--project-jobs 1` for bounded pilots): candidate runs share the lane's cgroup
+  event counters. Change native R2 lane configs in the same consumer commit that
+  repins Assay.
+- Executed native R2 state records require `process_tree_evidence`; the B110 and
+  B131 pilot checkers refuse records without it.
+- `assay plan` prints a human summary by default; the machine-readable plan is
+  `assay plan --json` (B166). Scripts that parse its stdout must add `--json`.
+- Native R2 reports `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` when the
+  complete cgroup counter hierarchy is unavailable before any candidate starts;
+  Run-Gate must be a release that maps it to an infrastructure error.
+
+### Release notes
+- 10.0.0 is a provisional release for mutation purposes: the R2 mutation campaign
+  was waived by operator decision on 2026-10-27 (release wave waiver; see B169).
+  No R2 pass is claimed. Every other gate (R0, R1 line and branch coverage, the
+  analysis lane, the independent self-hosting witness and the distribution build)
+  ran.
 
 ### Added
 - Native R2 records process-tree evidence for executed candidates and
@@ -25,6 +43,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Emit schema-valid non-qualifying campaign summaries for sharded analyses.
 - Treat a complete `0/1` shard as whole-plan qualification because it contains
   the full deterministic candidate inventory.
+- Prove that a truncated `analyze campaign` list can be continued to its last
+  record: `adverse.<bucket>.next_offset` is the `--offset` for
+  `--outcome <bucket>` in `candidate_details` (B108).
 
 <!-- cmru: release history -->
 

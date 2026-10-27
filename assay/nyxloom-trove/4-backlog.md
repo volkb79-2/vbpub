@@ -13112,3 +13112,27 @@ Unchecked items are a failed deliverable, not a suggestion.
 > yet meet the standard. A green development-shell run is not evidence; run the
 > declared isolated gate.
 ~~~~
+
+## B169 — R2 mutation campaign owed for the assay 10.0.0 provisional release (operator waiver 2026-10-27)
+
+**Status: OPEN.** The operator waived the R2 mutation campaign for every
+release of the 2026-10-27 wave, assay 10.0.0 included. The assay release gate
+(`tools/tester-unified-gate.sh`, the `tester-unified` and `analysis` lanes plus
+the independent self-hosting witness and the distribution build) never ran R2;
+the full-source `self-qualification` (R0-R3) and `analysis-r2` qualification
+lanes were not run for this release, so 10.0.0 has no mutation evidence and no
+R2 pass is claimed. The CHANGES release notes say so.
+
+**Close when:** one full `self-qualification` run and one `analysis-r2` run are
+completed against the exact `assay-v10.0.0` tag through the registered
+Run-Gate lanes, survivors are triaged and fixed or backported, and the report
+is retained. Deadline: before the next assay release judged worth R2 (the
+same obligation as cmru KI-99 and the other wave members).
+
+**B108 note (2026-10-27 integration):** phase 1 (`assay analyze campaign`)
+is shipped in this release under integration hashes; the leftover truncated-list
+continuation oracles (`test_o10b`, `test_o10c`) and docs landed in the wave
+branch. Phase 2 (automatic Run-Gate closeout; Assay-side docs plus decision
+A-497) is NOT landed: its Run-Gate implementation exists only in a parked
+stash (`On run-gate-rg93-git-metadata-20261013`, parked as
+`park/stash-2026-10-17-park-rg-93-dirty-worktree-before-prerequ`), so B108 stays open.

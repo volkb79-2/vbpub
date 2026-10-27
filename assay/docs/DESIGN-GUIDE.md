@@ -4820,6 +4820,19 @@ name (CD18), judges nothing, and every estimate it prints is diagnostic.
   the registered B110/B131 plans use one worker because shared cgroup event
   counters cannot attribute overlapping candidate windows.
 
+#### Continuing a truncated list
+
+Every list the analysis bounds says so: `matching_total` is the exact number of
+matching candidates before the cap, and `next_offset` is `null` only when the
+page reached the end. The four `adverse` lists and `candidate_details` share
+one ordering (path, line, candidate id), so `adverse.<bucket>.next_offset` is
+also the `--offset` that `--outcome <bucket>` pages on in `candidate_details`.
+Following it visits every remaining record once, with `matching_total`
+unchanged. `unresolved` (never-started `budget_exceeded` candidates after a
+lane timeout) is a convenience subset: its `matching_total` is exact and its
+members are also `budget_exceeded` rows, so `--outcome budget_exceeded` pages
+all of them. A cap never turns the unseen part into zero.
+
 #### Analyze a bounded pilot
 
 Schema v2 accepts `--plan-json` and `--selection-file` together for the B110

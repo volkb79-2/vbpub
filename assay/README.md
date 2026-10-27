@@ -101,7 +101,9 @@ an installed wheel or zipapp needs nothing extra:
   report is limited to 16 MiB. Refusal JSON is limited to 64 KiB and each
   input-derived error detail to 768 characters; long details are truncated
   while preserving the named refusal. Exceeding a limit is a named evidence
-  error, never a partial report or an invented zero.
+  error, never a partial report or an invented zero. A truncated list reports
+  its full `matching_total` and a `next_offset`; continue it with
+  `--outcome <bucket> --offset <next_offset>` until `next_offset` is `null`.
 
 <!-- assay-analysis-example -->
 ```bash
