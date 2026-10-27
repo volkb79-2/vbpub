@@ -1192,6 +1192,7 @@ class TestRenderedInstaller:
             + f"owner = {central['github']['owner']!r}\n"
             + f"repo = {central['github']['repo']!r}\n"
             + f"owner_type = {central['github']['owner_type']!r}\n"
+            + f"token_source = {central['github']['token_source']!r}\n"
             + "\n[targets]\n"
             + f"host = {central['targets']['host']!r}\n"
             + f"registry = {central['targets']['registry']!r}\n"

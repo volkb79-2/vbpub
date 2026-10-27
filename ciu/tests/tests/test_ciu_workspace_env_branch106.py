@@ -157,11 +157,12 @@ def test_managed_startup_verifies_network_before_and_after_ensure(
     from ciu import worktree
 
     def verify(
-        root, *, expected_instance_id, expected_network, allow_allocating_instance
+        root, *, expected_instance_id, expected_network, allow_allocating_instance,
+        allocation_lock_held,
     ):
         events.append((
             "verify", root, expected_instance_id, expected_network,
-            allow_allocating_instance,
+            allow_allocating_instance, allocation_lock_held,
         ))
 
     monkeypatch.setattr(worktree, "verify_own_runtime_network", verify)
@@ -181,9 +182,9 @@ def test_managed_startup_verifies_network_before_and_after_ensure(
     )
 
     assert events == [
-        ("verify", tmp_path.resolve(), "managed-1", "managed-net", False),
+        ("verify", tmp_path.resolve(), "managed-1", "managed-net", False, False),
         ("ensure", "managed-net"),
-        ("verify", tmp_path.resolve(), "managed-1", "managed-net", False),
+        ("verify", tmp_path.resolve(), "managed-1", "managed-net", False, False),
         ("connect", "managed-net"),
     ]
 

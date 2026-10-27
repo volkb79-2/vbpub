@@ -19,6 +19,16 @@ def _patch_repo_root(monkeypatch, tmp_path):
     monkeypatch.setattr(dev, "resolve_repo_root", lambda *_a, **_kw: tmp_path)
 
 
+@pytest.fixture
+def selected_ciu_root(monkeypatch, tmp_path):
+    """Pretend a CIU root was selected (initial overlay / network options
+    require one; S16). Returns the root."""
+    monkeypatch.setattr(
+        cli, "_resolve_worktree_ciu_root_cli", lambda *_a, **_kw: tmp_path
+    )
+    return tmp_path
+
+
 class TestWorktreeCreateDispatch:
     def test_selected_ciu_root_resolves_from_cwd_or_explicit_target(
         self, tmp_path, capsys
@@ -150,7 +160,7 @@ class TestWorktreeCreateDispatch:
 
 
 class TestWorktreeCreateSharedInfraDispatch:
-    def test_forwards_shared_infra_flags(self, monkeypatch, capsys):
+    def test_forwards_shared_infra_flags(self, monkeypatch, selected_ciu_root, capsys):
         seen = {}
 
         def fake_create(
@@ -244,7 +254,7 @@ class TestWorktreeCreateSharedInfraDispatch:
         }
 
     def test_partial_shared_infra_error_surfaces_as_exit_2(
-        self, monkeypatch, capsys
+        self, monkeypatch, selected_ciu_root, capsys
     ):
         def fake_create(*_a, **_kw):
             raise wt_mod.WorktreeError("[S16.1] partial group")
@@ -254,7 +264,7 @@ class TestWorktreeCreateSharedInfraDispatch:
         assert "partial group" in capsys.readouterr().err
 
     def test_ref_services_alone_reaches_the_all_or_nothing_refusal(
-        self, monkeypatch, capsys
+        self, monkeypatch, selected_ciu_root, capsys
     ):
         """O12 (CLI half): the new flag is OPTIONAL but not standalone — it
         joins the existing all-or-nothing group, so supplying only it is
@@ -450,6 +460,7 @@ class TestCapabilitiesDispatch:
             "worktree.lease.v1",
             "worktree.lifecycle-json.v1",
             "worktree.reap.v1",
+            "worktree.rm-root-retry.v1",
             "worktree.up.v1",
         ]
 
@@ -515,7 +526,7 @@ class TestManagedLifecycleDispatch:
         assert seen["path"] == "/tmp/existing"
 
     def test_profile_flag_forwards_on_create_ensure_and_adopt(
-        self, monkeypatch
+        self, monkeypatch, selected_ciu_root
     ):
         seen = {}
 
@@ -707,7 +718,7 @@ class TestManagedLifecycleDispatch:
 
     @pytest.mark.parametrize("verb", ["create", "ensure"])
     def test_ref_services_flag_forwards_on_create_and_ensure(
-        self, monkeypatch, verb
+        self, monkeypatch, selected_ciu_root, verb
     ):
         """O4/O9 (CLI half): registered on the shared create/ensure options
         function, so both lifecycle spellings accept it identically."""
@@ -728,7 +739,7 @@ class TestManagedLifecycleDispatch:
         assert seen["shared_infra_ref_services"] == "secrets=vault"
 
     def test_ref_services_flag_forwards_on_adopt_and_defaults_to_none(
-        self, monkeypatch
+        self, monkeypatch, selected_ciu_root
     ):
         seen = {}
 
@@ -804,6 +815,12 @@ class TestWorktreeUpExecDispatch:
 
         monkeypatch.setattr("ciu.workspace.resolve_worktree_git_root", fake_resolve)
 
+        def fake_ciu_root(git_root, define_root, start_dir):
+            seen["ciu_root_args"] = (git_root, define_root)
+            return None
+
+        monkeypatch.setattr(cli, "_resolve_worktree_ciu_root_cli", fake_ciu_root)
+
         def fake_exec(repo_root, logical, argv):
             seen.update(repo_root=repo_root, logical=logical, argv=argv)
             return 0
@@ -813,6 +830,7 @@ class TestWorktreeUpExecDispatch:
             ["exec", "logical-one", "--root-folder", "/r", "--", "pwd"]
         ) == 0
         assert seen["define_root"] == "/r"
+        assert seen["ciu_root_args"] == (Path("/resolved"), "/r")
         assert seen["repo_root"] == Path("/resolved")
         assert seen["argv"] == ["--", "pwd"]
 

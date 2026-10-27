@@ -68,6 +68,7 @@ def test_bootstrap_env_init_reloads_generated_network_then_probes_tls(
     """
     env_path = tmp_path / "ciu.env"
     events: list[tuple[str, str | None]] = []
+    kwargs_seen: list[dict[str, object]] = []
 
     def generate(root: Path) -> Path:
         assert root == tmp_path
@@ -85,12 +86,16 @@ def test_bootstrap_env_init_reloads_generated_network_then_probes_tls(
     monkeypatch.setattr(
         workspace_env,
         "ensure_workspace_network",
-        lambda name: events.append(("network", name)),
+        lambda name, **kwargs: events.append(("network", name)) or kwargs_seen.append(kwargs),
     )
     monkeypatch.setattr(workspace_env, "_check_tls_access", lambda: events.append(("tls", None)))
 
     assert workspace_env.bootstrap_env_init(tmp_path) == env_path
     assert events == [("generate", None), ("network", "generated-net"), ("tls", None)]
+    assert len(kwargs_seen) == 1
+    assert kwargs_seen[0]["verify_managed_instance"] is True
+    assert kwargs_seen[0]["allocation_lock_held"] is False
+    assert kwargs_seen[0]["allow_allocating_instance"] is False
 
 
 def test_bootstrap_env_init_generated_identity_beats_inconsistent_caller_network(
@@ -113,7 +118,7 @@ def test_bootstrap_env_init_generated_identity_beats_inconsistent_caller_network
     events: list[str] = []
     monkeypatch.setenv("DOCKER_NETWORK_INTERNAL", "caller-net")
     monkeypatch.setattr(workspace_env, "generate_ciu_env", lambda _root: env_path)
-    monkeypatch.setattr(workspace_env, "ensure_workspace_network", events.append)
+    monkeypatch.setattr(workspace_env, "ensure_workspace_network", lambda name, **_kw: events.append(name))
     monkeypatch.setattr(workspace_env, "_check_tls_access", lambda: None)
 
     assert workspace_env.bootstrap_env_init(tmp_path) == env_path
@@ -137,7 +142,7 @@ def test_bootstrap_env_init_consistent_caller_network_stays_silent(
     monkeypatch.delenv("REPO_NAME", raising=False)
     monkeypatch.delenv("INSTANCE_ID", raising=False)
     monkeypatch.setattr(workspace_env, "generate_ciu_env", lambda _root: env_path)
-    monkeypatch.setattr(workspace_env, "ensure_workspace_network", events.append)
+    monkeypatch.setattr(workspace_env, "ensure_workspace_network", lambda name, **_kw: events.append(name))
     monkeypatch.setattr(workspace_env, "_check_tls_access", lambda: None)
 
     assert workspace_env.bootstrap_env_init(tmp_path) == env_path
@@ -161,7 +166,7 @@ def test_bootstrap_env_init_warns_on_network_failure_but_still_probes_tls(
     monkeypatch.setattr(
         workspace_env,
         "ensure_workspace_network",
-        lambda _name: (_ for _ in ()).throw(workspace_env.WorkspaceEnvError("daemon unavailable")),
+        lambda _name, **_kw: (_ for _ in ()).throw(workspace_env.WorkspaceEnvError("daemon unavailable")),
     )
     monkeypatch.setattr(workspace_env, "_check_tls_access", lambda: events.append("tls"))
 
@@ -191,7 +196,7 @@ def test_bootstrap_env_init_machine_facts_override_ambient_values(
     monkeypatch.setenv("ENV_TYPE", "native")
     monkeypatch.delenv("DOCKER_NETWORK_INTERNAL", raising=False)
     monkeypatch.setattr(workspace_env, "generate_ciu_env", lambda _root: env_path)
-    monkeypatch.setattr(workspace_env, "ensure_workspace_network", events.append)
+    monkeypatch.setattr(workspace_env, "ensure_workspace_network", lambda name, **_kw: events.append(name))
     monkeypatch.setattr(workspace_env, "_check_tls_access", lambda: None)
 
     workspace_env.bootstrap_env_init(tmp_path)

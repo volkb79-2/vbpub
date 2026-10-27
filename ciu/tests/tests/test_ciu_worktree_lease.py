@@ -129,7 +129,8 @@ class TestSchemaVersionConstants:
         assert worktree.WORKTREE_INSTANCE_OVERLAY_SCHEMA_VERSION == 3
         assert worktree.WORKTREE_INSTANCE_OVERLAY_PENDING_SCHEMA_VERSION == 4
         assert worktree.WORKTREE_INSTANCE_BASE_SCHEMA_VERSION == 1
-        assert worktree.WORKTREE_INSTANCE_SCHEMA_VERSIONS == {1, 2, 3, 4}
+        assert worktree.WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION == 5
+        assert worktree.WORKTREE_INSTANCE_SCHEMA_VERSIONS == {1, 2, 3, 4, 5}
 
     def test_lease_vocabularies_are_closed(self):
         assert worktree.WORKTREE_LEASE_MODES == {"held", "perpetual"}
@@ -313,8 +314,10 @@ class TestReadingV1AndV2Records:
         assert record.to_dict() == raw
 
     def test_v4_record_with_overlay_pending_marker_reads_and_round_trips(self, tmp_path):
+        # A pending recovery marker is only coherent on a record that is not
+        # yet `ready` (a ready record with a pending marker is refused).
         raw = {
-            **_raw_v1(tmp_path),
+            **_raw_v1(tmp_path, state="allocating"),
             "schema_version": 4,
             "lease": None,
             "initial_overlay": None,
@@ -555,6 +558,17 @@ class TestLeaseTransitions:
 
 
 class TestOwnRecordOperations:
+    @pytest.fixture(autouse=True)
+    def _git_family(self, tmp_path):
+        # The allocation lock lives in the Git common dir, so even an
+        # "unmanaged" checkout (no instance record) must be a real Git family.
+        # It needs a resolvable HEAD too: the shared lease mirror discovers the
+        # Git context before concluding the checkout has no neutral record.
+        assert _git(["init", "-b", "main"], tmp_path).returncode == 0
+        assert _git(["config", "user.email", "t@example.com"], tmp_path).returncode == 0
+        assert _git(["config", "user.name", "Test"], tmp_path).returncode == 0
+        assert _git(["commit", "--allow-empty", "-m", "init"], tmp_path).returncode == 0
+
     def _write(self, root: Path, raw: dict) -> Path:
         path = worktree.instance_record_path(root)
         path.write_text(json.dumps(raw, indent=2, sort_keys=True) + "\n", "utf-8")
@@ -936,7 +950,7 @@ class TestTeardownClearsTheLease:
 
         shared = worktree._shared_worktree()
 
-        def fail_remove(_shared_record):
+        def fail_remove(_shared_record, **_kwargs):
             # Snapshot the CIU adapter record at the exact moment the neutral
             # checkout removal would run, then refuse it. The product lease
             # was cleared only after `ciu clean` succeeded.
@@ -973,7 +987,7 @@ class TestTeardownClearsTheLease:
 
         shared = worktree._shared_worktree()
 
-        def fail_remove(_shared_record):
+        def fail_remove(_shared_record, **_kwargs):
             seen.append(record.record_path.read_text(encoding="utf-8"))
             raise worktree.WorktreeError("locked")
 

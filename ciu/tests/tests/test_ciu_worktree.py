@@ -575,6 +575,7 @@ class TestCreateRemoveList:
                 lambda: pytest.fail("--root-escalation yes must not prompt"),
             )
 
+        monkeypatch.setenv("PHYSICAL_REPO_ROOT", str(tmp_repo))
         physical_checkout = worktree.to_physical_path(target, repo_root=tmp_repo)
         physical_git_dir = Path(
             _git(["rev-parse", "--absolute-git-dir"], target).stdout.strip()
@@ -748,6 +749,7 @@ class TestCreateRemoveList:
             builtins, "input",
             lambda: pytest.fail("--root-escalation yes must not prompt"),
         )
+        monkeypatch.setenv("PHYSICAL_REPO_ROOT", str(tmp_repo))
         physical_checkout = worktree.to_physical_path(target, repo_root=tmp_repo)
         helper_calls = []
 
@@ -1230,6 +1232,7 @@ class TestManagedIdentityLifecycle:
         legacy = replace(
             created, schema_version=2, initial_overlay=None,
             overlay_intent_known=False,
+            checkout_reset_pending=None, network_id=None,
         )
         worktree._write_instance_record(legacy)
         generated = legacy.ciu_root / "ciu.instance.generated.toml"
@@ -1278,6 +1281,8 @@ class TestManagedIdentityLifecycle:
             schema_version=3,
             state="allocating",
             recovery_status=None,
+            checkout_reset_pending=None,
+            network_id=None,
         )
         worktree._write_instance_record(legacy)
         before = legacy.record_path.read_bytes()
@@ -1298,6 +1303,7 @@ class TestManagedIdentityLifecycle:
         original_overlay = overlay.read_bytes()
         legacy_v3 = replace(
             created, schema_version=3, initial_overlay_pending=False,
+            checkout_reset_pending=None, network_id=None,
         )
         worktree._write_instance_record(legacy_v3)
         context = worktree._ensure_shared_record(tmp_repo, created)
@@ -1736,12 +1742,19 @@ class TestManagedIdentityLifecycle:
         self, tmp_repo, fake_generate_env
     ):
         record = worktree.create(tmp_repo, "legacy-overlay-intent")
+        # A genuinely legacy partial record: written before overlay intent
+        # (and the one-time completion marker, schema v4+) existed. A v4+
+        # record with a cleared pending marker is a completed allocation and
+        # takes the repair path instead.
         partial = replace(
             record,
+            schema_version=2,
             state="recovery-required",
             recovery_status="env-generation-failed",
             initial_overlay=None,
             overlay_intent_known=False,
+            checkout_reset_pending=None,
+            network_id=None,
         )
         worktree._write_instance_record(partial)
 
@@ -1818,7 +1831,9 @@ class TestManagedIdentityLifecycle:
     ):
         calls = 0
 
-        def full_failure(path: Path, *, identity_only: bool = False) -> int:
+        def full_failure(
+            path: Path, *, identity_only: bool = False, allocation_lock_held: bool = False
+        ) -> int:
             nonlocal calls
             calls += 1
             write_instance_facts(
@@ -1845,7 +1860,9 @@ class TestManagedIdentityLifecycle:
         assert _git(["add", "."], other).returncode == 0
         assert _git(["commit", "-m", "init"], other).returncode == 0
 
-        def changes(path: Path, *, identity_only: bool = False) -> int:
+        def changes(
+            path: Path, *, identity_only: bool = False, allocation_lock_held: bool = False
+        ) -> int:
             suffix = "one" if identity_only else "two"
             write_instance_facts(
                 path, instance_id=suffix, network=f"network-{suffix}"
@@ -1875,7 +1892,9 @@ class TestManagedIdentityLifecycle:
     ):
         monkeypatch.setattr(worktree, "_docker_network_details", lambda _network: None)
 
-        def fail_full_generation(root: Path, *, identity_only: bool = False) -> int:
+        def fail_full_generation(
+            root: Path, *, identity_only: bool = False, allocation_lock_held: bool = False
+        ) -> int:
             if identity_only:
                 return fake_generate_env(root, identity_only=True)
             return 9
@@ -1901,7 +1920,9 @@ class TestManagedIdentityLifecycle:
 
         refused = worktree.read_instance_record(partial.record_path)
         assert refused.state == "recovery-required"
-        assert refused.recovery_status == "runtime-collision"
+        # An unlabeled same-name network is *unproven* ownership (distinct from
+        # a network labeled for another instance, which is `runtime-collision`).
+        assert refused.recovery_status == "runtime-verification-failed"
         assert refused.adopted is False
         assert refused.logical_name == "network-retry"
 
@@ -2128,21 +2149,25 @@ class TestForkPointProvenance:
         real = worktree._git
 
         def flaky(args, cwd, **kwargs):
-            if args[:2] == ["rev-parse", "--verify"]:
+            if args[:2] == ["rev-parse", "--verify"] and "HEAD^{commit}" in args:
+                # Only the post-allocation HEAD probe; the earlier base
+                # verification (`<base>^{commit}`) must still succeed.
                 return subprocess.CompletedProcess(args, 128, "", "boom")
             return real(args, cwd, **kwargs)
 
         monkeypatch.setattr(worktree, "_git", flaky)
         with pytest.raises(
             worktree.WorktreeError,
-            match="could not determine the allocated worktree commit",
+            match="could not checkpoint its exact HEAD",
         ):
             worktree.create(tmp_repo, "logical-one", base="main")
         record = worktree.find_instance_record(tmp_repo, "logical-one")
         assert record is not None
         assert record.fork_point_sha is None
         assert record.state == "recovery-required"
-        assert record.recovery_status == "env-generation-failed"
+        # The initial reset already ran, so the record is parked as
+        # checkout-incomplete (never re-reset automatically).
+        assert record.recovery_status == "checkout-incomplete"
 
     @pytest.mark.parametrize(
         "output", ["", "   \n", "not-a-sha", "deadbeef",
@@ -2162,21 +2187,25 @@ class TestForkPointProvenance:
         real = worktree._git
 
         def odd(args, cwd, **kwargs):
-            if args[:2] == ["rev-parse", "--verify"]:
+            if args[:2] == ["rev-parse", "--verify"] and "HEAD^{commit}" in args:
+                # Only the post-allocation HEAD probe; the earlier base
+                # verification (`<base>^{commit}`) must still succeed.
                 return subprocess.CompletedProcess(args, 0, output, "")
             return real(args, cwd, **kwargs)
 
         monkeypatch.setattr(worktree, "_git", odd)
         with pytest.raises(
             worktree.WorktreeError,
-            match="could not determine the allocated worktree commit",
+            match="could not checkpoint its exact HEAD",
         ):
             worktree.create(tmp_repo, "logical-one", base="main")
         record = worktree.find_instance_record(tmp_repo, "logical-one")
         assert record is not None
         assert record.fork_point_sha is None
         assert record.state == "recovery-required"
-        assert record.recovery_status == "env-generation-failed"
+        # The initial reset already ran, so the record is parked as
+        # checkout-incomplete (never re-reset automatically).
+        assert record.recovery_status == "checkout-incomplete"
 
     def test_base_ref_is_snapshotted_before_allocation_and_validation(
         self, tmp_repo, fake_generate_env, monkeypatch
@@ -2734,8 +2763,8 @@ class TestManagedRecordValidation:
         second = worktree.create(rootless_repo, "generic-two")
 
         assert [record.state for record in writes] == [
-            "allocating", "allocating", "ready",
-            "allocating", "allocating", "ready",
+            "allocating", "allocating", "allocating", "ready",
+            "allocating", "allocating", "allocating", "ready",
         ]
         for record in (first, second):
             assert record.state == "ready"
@@ -2763,7 +2792,8 @@ class TestManagedRecordValidation:
         assert ready.instance_id
         assert ready.network
         assert [record.state for record in writes] == [
-            "allocating", "allocating", "allocating", "ready",
+            "allocating", "allocating", "allocating", "allocating",
+            "allocating", "ready",
         ]
 
     def test_ciu_root_ready_record_still_rejects_null_identity(self, tmp_path):
@@ -4330,7 +4360,7 @@ def test_generated_allocation_recovery_does_not_apply_adopt_head_guard(
     base_sha = _git(["rev-parse", "HEAD"], tmp_repo).stdout.strip()
     attempts = 0
 
-    def fail_first_generation(path, *, identity_only=False):
+    def fail_first_generation(path, *, identity_only=False, allocation_lock_held=False):
         nonlocal attempts
         attempts += 1
         if attempts == 1:
@@ -4385,7 +4415,35 @@ def test_adopted_record_fact_controls_the_no_reset_marker(
         base_ref=(base_sha if base_ref == "full-sha" else base_ref),
         adopted=adopted,
     )
+    # A created record that never checkpointed its post-reset HEAD resumes the
+    # initial reset only while BOTH durable markers still prove the reset has
+    # not started: the local pending flag and the shared `not-started` phase.
+    # (Otherwise recovery is operator-directed and never repeats the reset.)
+    resumes_reset = (
+        fork_point is None and recovery_status == "checkout-incomplete"
+        and not adopted
+    )
+    if resumes_reset:
+        edited = replace(edited, checkout_reset_pending=True)
     worktree._write_instance_record(edited)
+    if resumes_reset:
+        worktree._write_shared_ciu_record_snapshot(
+            worktree._ensure_shared_record(tmp_repo, edited),
+            edited,
+            checkout_reset_phase="not-started",
+        )
+        # Make the checkout genuinely unpopulated, as `--no-checkout` leaves
+        # it: empty index, no working-tree files except Git's own pointer and
+        # the (untracked, excluded) CIU record.
+        checkout = edited.git_worktree_path
+        assert _git(["read-tree", "--empty"], checkout).returncode == 0
+        for child in checkout.iterdir():
+            if child.name in {".git", worktree.WORKTREE_INSTANCE_RECORD}:
+                continue
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
 
     real_write = worktree._write_instance_record
     attempted = []
@@ -4393,6 +4451,12 @@ def test_adopted_record_fact_controls_the_no_reset_marker(
     def interrupt_after_transition(candidate):
         real_write(candidate)
         attempted.append(candidate)
+        if resumes_reset and len(attempted) == 1:
+            # The resumed reset first checkpoints its exact HEAD (clearing the
+            # pending marker); the recovery classification is the NEXT write.
+            assert candidate.fork_point_sha == base_sha
+            assert candidate.checkout_reset_pending is False
+            return
         raise KeyboardInterrupt("pause after recovery classification")
 
     monkeypatch.setattr(worktree, "_write_instance_record", interrupt_after_transition)
@@ -4400,12 +4464,13 @@ def test_adopted_record_fact_controls_the_no_reset_marker(
         worktree.ensure(tmp_repo, "recovery-shape")
 
     assert attempted
+    classified = attempted[-1]
     if adopted:
-        assert attempted[0].state == "recovery-required"
-        assert attempted[0].recovery_status == "env-generation-failed"
+        assert classified.state == "recovery-required"
+        assert classified.recovery_status == "env-generation-failed"
     else:
-        assert attempted[0].state == "allocating"
-        assert attempted[0].recovery_status is None
+        assert classified.state == "allocating"
+        assert classified.recovery_status is None
 
 
 @pytest.mark.parametrize("resume", [False, True])
@@ -4723,6 +4788,9 @@ def test_ensure_probe_permission_error_is_not_network_absence(
     tmp_repo, fake_generate_env, monkeypatch
 ):
     record = worktree.create(tmp_repo, "network-probe-denied")
+    # `fake_generate_env` stubs the network-existence probe itself; this test
+    # is about that probe's real Docker call, so restore it (create is done).
+    monkeypatch.undo()
     monkeypatch.setattr(
         worktree.procutil,
         "docker",
