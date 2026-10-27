@@ -27,9 +27,13 @@ FORMAT = "glyphgrid-atlas/1"
 
 # confidence letters used in the per-row ``conf`` strings
 CONF_EXACT, CONF_BLANK, CONF_UNKNOWN, CONF_NEAREST, CONF_CONFLICT, CONF_MULTI = "e", "b", "u", "n", "x", "m"
+CONF_FONT = "F"     # exact, character taken from an authoritative FONT FILE (not from screenshots)
+CONF_ALIAS = "a"    # font-exact bitmap shared by several characters of the repertoire: ambiguity set, no pick
 CONF_SINGLE = "s"   # bitmap known, but confirmed by fewer than ``min_groups`` independent screens: NOT exact
 CONF_FILL = "f"     # uniform cell whose colour differs from the text background next to it (solid block, fill)
-TEXTLIKE = (CONF_EXACT, CONF_BLANK)
+TEXTLIKE = (CONF_EXACT, CONF_FONT, CONF_BLANK)
+EXACTLIKE = (CONF_EXACT, CONF_FONT)
+HIT = ("exact", "font", "alias")
 FILL_CHAR = "\u2588"
 MAX_PIXELS = 8_000_000
 RAMP_THRESHOLD = 0.04  # calibrated on the even-numbered corpus frames, tested on the odd ones (eval --probe)
@@ -436,8 +440,13 @@ def boxlike(key: bytes, w: int, h: int) -> bool:
     left, right = 1 << (w - 1), 1
     if rows[0] or rows[-1] or any((r & left) and (r & right) for r in rows):
         return True
-    ink = [r for r in rows if r]
-    # a horizontal bar of at most two pixel rows spanning (nearly) the cell: '_', '-', '=' style rules
+    return barlike(key, w, h)
+
+
+def barlike(key: bytes, w: int, h: int) -> bool:
+    """A horizontal bar of at most two pixel rows spanning (nearly) the cell: '_', '-', '=' style rules, cursors."""
+    rb = (w + 7) // 8
+    ink = [r for r in (int.from_bytes(key[y * rb:(y + 1) * rb], "big") >> (rb * 8 - w) for y in range(h)) if r]
     return bool(ink) and len(ink) <= 2 and max(bin(r).count("1") for r in ink) >= w - 2
 
 
@@ -521,9 +530,22 @@ class Atlas:
             g["f"].append(source)
 
     def conflicts(self):
-        return [(fn, k, g) for fn, f in self.fonts.items() for k, g in f["glyphs"].items() if len(g["c"]) > 1]
+        return [(fn, k, g) for fn, f in self.fonts.items() for k, g in f["glyphs"].items()
+                if len(g["c"]) > 1 and not g.get("font_exact")]
 
     # lookup
+    @classmethod
+    def merge(cls, *atlases: "Atlas") -> "Atlas":
+        """Union of atlases with distinct font names (e.g. the font-file atlas + a learned atlas of another console)."""
+        fonts, groups = {}, {}
+        for a in atlases:
+            for name, f in a.fonts.items():
+                if name in fonts:
+                    raise ValueError("font name %r occurs in two atlases" % name)
+                fonts[name] = f
+            groups.update(a.groups)
+        return cls(fonts, groups)
+
     def n_groups(self, font: str, key: bytes) -> int:
         """Independent screens (distinct groups; an ungrouped source is its own group) that confirm this bitmap."""
         g = self.fonts.get(font, {}).get("glyphs", {}).get(key.hex())
@@ -536,6 +558,8 @@ class Atlas:
         g = self.fonts.get(font, {}).get("glyphs", {}).get(key.hex())
         if g is None:
             return None
+        if g.get("font_exact"):  # verified by the font file, not by screenshots: no group rule, aliases stay a set
+            return ("alias", sorted(g["c"])) if len(g["c"]) > 1 else ("font", next(iter(g["c"])))
         if len(g["c"]) > 1:
             return "conflict", sorted(g["c"])
         ch = next(iter(g["c"]))
@@ -606,12 +630,13 @@ def decode(ex: Extraction, atlas: Atlas, font: str | None = None, max_hamming: i
                     k = seen.get(c.key)
                     if k is None:
                         k = seen[c.key] = atlas.lookup(fn, c.key)
-                    hit += bool(k and k[0] == "exact")
+                    hit += bool(k and k[0] in HIT)
         fscores[fn] = (hit, n)
     chosen = max(fscores, key=lambda f: (fscores[f][0], f)) if fscores else None
     floor_ok = bool(chosen) and fscores[chosen][0] >= min_hits and fscores[chosen][0] >= min_share * fscores[chosen][1]
     rows, conf, unknown, cells, flags = [], [], [], [], []
     memo = {}
+    aliases = {}
 
     def neighbour_text_bg_differs(row, ci, c):
         for j in (ci - 1, ci + 1):
@@ -634,6 +659,8 @@ def decode(ex: Extraction, atlas: Atlas, font: str | None = None, max_hamming: i
                     if r is None:
                         r = memo[key] = _decode_glyph(atlas, chosen, c.key, max_hamming, min_groups, margin)
                     ch, st = r[0], r[1]
+                    if st == CONF_ALIAS:
+                        aliases[(c.row, c.col)] = r[2]["aliases"]
             elif neighbour_text_bg_differs(row, ci, c):
                 ch, st = FILL_CHAR, CONF_FILL
             chars.append(ch)
@@ -645,9 +672,9 @@ def decode(ex: Extraction, atlas: Atlas, font: str | None = None, max_hamming: i
         ci = 0
         while ci < len(row):
             c = row[ci]
-            if cf[ci] == CONF_EXACT and c.kind == "glyph" and isbox(c.key):
+            if cf[ci] in EXACTLIKE and c.kind == "glyph" and isbox(c.key):
                 cj = ci
-                while cj + 1 < len(row) and row[cj + 1].kind == "glyph" and row[cj + 1].key == c.key and cf[cj + 1] == CONF_EXACT:
+                while cj + 1 < len(row) and row[cj + 1].kind == "glyph" and row[cj + 1].key == c.key and cf[cj + 1] in EXACTLIKE:
                     cj += 1
                 if cj - ci + 1 >= rule_run:
                     left = row[ci - 1] if ci > 0 else None
@@ -663,13 +690,13 @@ def decode(ex: Extraction, atlas: Atlas, font: str | None = None, max_hamming: i
                 fl[cursor[1]] = "c"
         else:
             inked = [i for i, x in enumerate(cf) if x != CONF_BLANK]
-            if inked and cf[inked[-1]] == CONF_EXACT and row[inked[-1]].kind == "glyph" and isbox(row[inked[-1]].key) and fl[inked[-1]] == ".":
+            if inked and cf[inked[-1]] in EXACTLIKE and row[inked[-1]].kind == "glyph" and barlike(row[inked[-1]].key, w, h) and fl[inked[-1]] == ".":
                 fl[inked[-1]] = "c"
         flags.append("".join(fl))
     for r, row in enumerate(ex.rows):
         for ci, c in enumerate(row):
             st = conf[r][ci]
-            if st in (CONF_UNKNOWN, CONF_CONFLICT, CONF_MULTI, CONF_SINGLE, CONF_FILL):
+            if st in (CONF_UNKNOWN, CONF_CONFLICT, CONF_MULTI, CONF_SINGLE, CONF_FILL, CONF_ALIAS):
                 if c.kind == "glyph" and floor_ok:
                     ev = memo[(chosen, c.key)][2]
                 elif c.kind == "multicolor":
@@ -687,7 +714,8 @@ def decode(ex: Extraction, atlas: Atlas, font: str | None = None, max_hamming: i
     res = {"status": "no_font" if (has_glyph and not floor_ok) else "ok",
            "grid": {k: g[k] for k in ("cell_w", "cell_h", "origin_x", "origin_y", "cols", "rows")},
            "font": chosen, "font_scores": {k: list(v) for k, v in fscores.items()}, "rows": rows, "conf": conf, "flags": flags,
-           "unknown_cells": unknown, "max_hamming": max_hamming, "min_groups": min_groups}
+           "unknown_cells": unknown, "max_hamming": max_hamming, "min_groups": min_groups,
+           "aliases": {"%d,%d" % k: v for k, v in aliases.items()}}
     if res["status"] == "no_font":
         res["message"] = "no atlas font reads this screen (need >= %d ordinary cells and >= %d%% of them): every cell UNKNOWN" % (min_hits, int(min_share * 100))
     if max_hamming > 0 and chosen:
@@ -706,6 +734,10 @@ def _decode_glyph(atlas, font, key, max_hamming, min_groups=2, margin=2):
     r = atlas.lookup(font, key, min_groups)
     if r and r[0] == "exact":
         return r[1], CONF_EXACT, None
+    if r and r[0] == "font":
+        return r[1], CONF_FONT, None
+    if r and r[0] == "alias":
+        return UNKNOWN_CHAR, CONF_ALIAS, {"reason": "font-exact bitmap shared by several characters (ambiguity set)", "aliases": r[1]}
     if r and r[0] == "single":
         return UNKNOWN_CHAR, CONF_SINGLE, {"reason": "single-source: confirmed by %d independent screen group(s), need %d" % (atlas.n_groups(font, key), min_groups),
                                            "would_read": r[1]}
@@ -767,6 +799,36 @@ def choose_extraction(im, grid: dict, atlas: Atlas, font: str | None = None):
         hits = _count_hits(ex, atlas, font)
         if best is None or hits > best[1]:
             best = (ex, hits)
+    ffonts = [fn for fn in atlas.fonts_for(grid["cell_w"], grid["cell_h"])
+              if atlas.fonts[fn].get("origin", {}).get("kind") == "font-file" and (font is None or fn == font)]
+    if ffonts:
+        best = _phase_search_fonts(im, grid, atlas, ffonts, best)
+    return best
+
+
+def _phase_search_fonts(im, grid, atlas, ffonts, best):
+    """Font-FILE atlases carry no learned phase: try every cell origin on a few dense rows and accept the winner only
+    with a large, unambiguous margin (thousands of exact glyph hits cannot happen by chance at a wrong phase)."""
+    ex0 = best[0]
+    n_all = sum(1 for row in ex0.rows for c in row if c.kind == "glyph")
+    if best[1] >= 0.6 * max(n_all, 1):
+        return best
+    dense = sorted(range(len(ex0.rows)), key=lambda r: -sum(1 for c in ex0.rows[r] if c.kind == "glyph"))[:6]
+    rows = sorted({min(max(r + d, 0), grid["rows"] - 1) for r in dense for d in (-1, 0, 1)})
+    scores = []
+    for oy in range(grid["cell_h"]):
+        for ox in range(grid["cell_w"]):
+            g = grid_with_origin(grid, im.size, ox, oy)
+            e = extract(im, g, rows)
+            scores.append((max(_count_hits(e, atlas, fn) for fn in ffonts), ox, oy))
+    scores.sort(reverse=True)
+    top = scores[0]
+    second = next((x for x in scores[1:] if (x[1], x[2]) != (top[1], top[2])), (0, 0, 0))
+    if top[0] >= 30 and top[0] >= 2 * second[0] + 1:
+        ex = extract(im, grid_with_origin(grid, im.size, top[1], top[2]))
+        h = _count_hits(ex, atlas, None)
+        if h > best[1]:
+            return ex, h
     return best
 
 
@@ -783,7 +845,7 @@ def _count_hits(ex, atlas, font):
                     r = seen.get(k)
                     if r is None:
                         r = seen[k] = atlas.lookup(fn, c.key)
-                    n += bool(r and r[0] == "exact")
+                    n += bool(r and r[0] in HIT)
         best = max(best, n)
     return best
 
@@ -821,7 +883,8 @@ def region(res: dict, row0: int, row1: int, col0: int, col1: int, exclude_flagge
     return "\n".join(text), bad
 
 
-def find_phrase(res: dict, phrase: str, exclude_flagged: bool = True, word_boundary: bool | None = None):
+def find_phrase(res: dict, phrase: str, exclude_flagged: bool = True, word_boundary: bool | None = None,
+                allow_alias: bool = False):
     """Occurrences of ``phrase`` on a single row built ONLY from exact/blank cells.
 
     Cells flagged rule-line ('r') or cursor ('c') are excluded by default; 'fill', 'single-source' and unknown
@@ -831,6 +894,8 @@ def find_phrase(res: dict, phrase: str, exclude_flagged: bool = True, word_bound
     if word_boundary is None:
         word_boundary = phrase[:1].isalnum() or phrase[-1:].isalnum()
     hits = []
+    if allow_alias and res.get("aliases"):
+        hits.extend(_find_alias(res, phrase, exclude_flagged, word_boundary))
     for r, s in enumerate(res["rows"]):
         start = 0
         while True:
@@ -848,3 +913,26 @@ def find_phrase(res: dict, phrase: str, exclude_flagged: bool = True, word_bound
                     continue
             hits.append({"row": r, "col": i, "unknown_in_row": sum(1 for c in range(len(s)) if not _ok_cell(res, r, c, exclude_flagged))})
     return hits
+
+
+def _find_alias(res, phrase, exclude_flagged, word_boundary):
+    """Matches where some cells are font-exact ALIAS cells whose ambiguity set contains the phrase character.
+    Reported with ``ambiguous: True`` and the cells involved: the reading is not unique, a keystroke decision must not rely on it."""
+    out = []
+    for r, s in enumerate(res["rows"]):
+        for i in range(0, len(s) - len(phrase) + 1):
+            amb, ok = [], True
+            for k, ch in enumerate(phrase):
+                c = i + k
+                if res["conf"][r][c] == CONF_ALIAS:
+                    if ch in res["aliases"].get("%d,%d" % (r, c), []):
+                        amb.append((r, c))
+                    else:
+                        ok = False
+                        break
+                elif not _ok_cell(res, r, c, exclude_flagged) or s[c] != ch:
+                    ok = False
+                    break
+            if ok and amb:
+                out.append({"row": r, "col": i, "ambiguous": True, "alias_cells": amb})
+    return out

@@ -494,3 +494,131 @@ def test_real_title_underline_ground_truth_conflict(real):
     assert gg.find_phrase(res, "_" * 13) == []
     res = gg.read_image(path, corrected, grid_hints=[(8, 16)])
     assert res["conf"][2][:13] == "s" * 13
+
+
+# ----------------------------------------------------------------------------- font-file atlases (font-exact evidence)
+import gzip  # noqa: E402
+import struct  # noqa: E402
+
+import fontfiles as ff  # noqa: E402
+
+A_ROWS = [0, 0, 0, 0x3C, 0x42, 0x42, 0x3E, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+B_ROWS = [0x40, 0x40, 0x40, 0x5C, 0x62, 0x42, 0x62, 0x5C, 0, 0, 0, 0, 0, 0, 0, 0]
+C_ROWS = [0, 0, 0, 0x3C, 0x40, 0x40, 0x40, 0x3C, 0, 0, 0, 0, 0, 0, 0, 0]
+TEST_ROWS = {"a": A_ROWS, "b": B_ROWS, "c": C_ROWS}
+
+
+def _psf1(path, glyph_rows, gz=False):
+    data = b"\x36\x04\x00\x10" + b"".join(bytes(glyph_rows.get(i, [0] * 16)) for i in range(256))
+    open(path, "wb").write(gzip.compress(data) if gz else data)
+
+
+def _pf2(path, glyphs, asc=14, desc=2):
+    """glyphs: {codepoint: (w, h, xoff, yoff, rows[int])}"""
+    names = [(b"NAME", b"Test\0"), (b"ASCE", struct.pack(">H", asc)), (b"DESC", struct.pack(">H", desc))]
+    head = 12 + sum(8 + len(v) for _, v in names) + 8 + 9 * len(glyphs) + 8
+    chix, dat = b"", b""
+    for cp, (w, h, xo, yo, rows) in sorted(glyphs.items()):
+        bits = "".join(format(r, "0%db" % w) for r in rows)
+        bits += "0" * (-len(bits) % 8)
+        chix += struct.pack(">IBI", cp, 0, head + len(dat))
+        dat += struct.pack(">HHhhh", w, h, xo, yo, 8) + int(bits, 2).to_bytes(len(bits) // 8, "big")
+    out = b"FILE" + struct.pack(">I", 4) + b"PFF2"
+    out += b"".join(n + struct.pack(">I", len(v)) + v for n, v in names)
+    out += b"CHIX" + struct.pack(">I", len(chix)) + chix + b"DATA" + struct.pack(">I", len(dat)) + dat
+    open(path, "wb").write(out)
+
+
+def test_psf1_loader_gzip_and_cell_rendering(tmp_path):
+    p = tmp_path / "t.psf.gz"
+    _psf1(p, {ord("A"): [0, 0, 0x18, 0x24, 0x42, 0x7E, 0x42, 0x42] + [0] * 8}, gz=True)
+    font = ff.load_psf(str(p))
+    assert (font.cell_w, font.cell_h, len(font.glyphs)) == (8, 16, 256) and len(font.sha256) == 64
+    g = next(g for g in font.glyphs if g[0] == [ord("A")])
+    assert ff.render_cell(font, g)[2] == 0x18
+
+
+def test_pf2_loader_places_glyph_by_baseline(tmp_path):
+    p = tmp_path / "t.pf2"
+    _pf2(p, {0x41: (6, 3, 1, 11, [0b001100, 0b010010, 0b111111])})
+    font = ff.load_pf2(str(p))
+    assert (font.ascent, font.descent, font.cell_h) == (14, 2, 16)
+    cell = ff.render_cell(font, font.glyphs[0])
+    # top row = ascent - (yoff + h) = 0, xoff 1: 0b001100 shifted into an 8-wide cell at x offset 1
+    assert cell[0] == 0b00011000 and cell[2] == 0b01111110 and cell[3] == 0
+
+
+def _font_atlas(tmp_path, same=False):
+    rows = {ord(k): v for k, v in TEST_ROWS.items()}
+    if same:  # a second ASCII character with exactly the bitmap of 'c' -> alias set {'c', 'e'}
+        rows[ord("e")] = list(C_ROWS)
+    p = tmp_path / "t.psf"
+    _psf1(p, rows)
+    atlas = gg.Atlas()
+    info = ff.build_font_atlas(atlas, "font:test", ff.load_psf(str(p)), "ascii")
+    return atlas, info
+
+
+def _render_psf_text(text):
+    im = Image.new("RGB", (640, 384), BLACK)
+    px = im.load()
+    for r in range(20):
+        for c, ch in enumerate((text * 20)[:60]):
+            for y, bits in enumerate(TEST_ROWS.get(ch, [0] * 16)):
+                for x in range(8):
+                    if bits >> (7 - x) & 1:
+                        px[c * 8 + x, r * 16 + y] = GREY
+    return im
+
+
+def test_font_atlas_has_provenance_and_font_exact_entries(tmp_path):
+    atlas, info = _font_atlas(tmp_path)
+    f = atlas.fonts["font:test"]
+    assert f["origin"]["kind"] == "font-file" and len(f["origin"]["sha256"]) == 64 and f["origin"]["repertoire"] == "ascii"
+    assert all(g.get("font_exact") for g in f["glyphs"].values()) and info["alias_sets"] == {}
+    assert atlas.conflicts() == []
+    assert gg.Atlas.from_json(atlas.to_json()).fonts == atlas.fonts
+
+
+def test_font_exact_reading_needs_no_transcript_and_no_second_screen(tmp_path):
+    atlas, _ = _font_atlas(tmp_path)
+    res = gg.read_image(_render_psf_text("abc "), atlas, grid_hints=[(8, 16)])  # default min_groups=2
+    assert res["status"] == "ok" and res["rows"][0].startswith("abc abc ")
+    assert set("".join(res["conf"])) <= {"F", "b"}
+    assert gg.find_phrase(res, "abc abc") and res["font"] == "font:test"
+
+
+def test_font_alias_set_is_never_resolved_to_a_pick(tmp_path):
+    atlas, info = _font_atlas(tmp_path, same=True)
+    assert list(info["alias_sets"].values()) == [["c", "e"]]
+    res = gg.read_image(_render_psf_text("abc "), atlas, grid_hints=[(8, 16)])
+    assert res["conf"][0][2] == "a" and res["rows"][0][2] == gg.UNKNOWN_CHAR
+    assert res["aliases"]["0,2"] == ["c", "e"]
+    assert gg.find_phrase(res, "abc") == []                      # a keystroke decision never relies on it
+    amb = gg.find_phrase(res, "abc", allow_alias=True)
+    assert amb and all(h["ambiguous"] for h in amb)
+    assert gg.find_phrase(res, "abx", allow_alias=True) == []    # 'x' is not in the set
+
+
+def test_font_atlas_reads_real_crops_from_the_font_file_alone():
+    atlas = gg.Atlas.load(os.path.join(FIX, "fonts.atlas.json"))
+    res = gg.read_image(os.path.join(FIX, "crop-14-dialog.png"), atlas, grid_hints=[(8, 16)])
+    assert res["status"] == "ok" and res["font"] == "font:vga-8x16"
+    assert len(gg.find_phrase(res, "The TrueNAS installation on vda succeeded!")) == 1  # the '!' is font-exact
+    res = gg.read_image(os.path.join(FIX, "crop-20-title.png"), atlas, grid_hints=[(8, 16)])
+    assert res["font"] == "font:unifont-16" and res["rows"][2][:13] == "_" * 13  # the title underline is '_', per the font
+    assert res["flags"][2][:13] == "r" * 13 and gg.find_phrase(res, "Console setup")
+    assert atlas.fonts["font:unifont-16"]["origin"]["sha256"].startswith("662eb86fc1ea")
+
+
+def test_merge_font_atlas_with_learned_atlas_keeps_evidence_classes(tmp_path):
+    font_atlas, _ = _font_atlas(tmp_path)
+    lines = text_lines(14, 60)
+    learned = learn_from(render(lines), lines)
+    merged = gg.Atlas.merge(font_atlas, learned)
+    assert set(merged.fonts) == {"font:test", "syn"}
+    with pytest.raises(ValueError):
+        gg.Atlas.merge(learned, learned)
+    one = learn_from(render(lines), lines, sources=("only",))
+    res = gg.read_image(render(lines[:6]), gg.Atlas.merge(font_atlas, one), grid_hints=[(8, 16)])
+    assert res["font"] == "syn" and "s" in "".join(res["conf"]) and "e" not in "".join(res["conf"])  # learned single-source stays 's'

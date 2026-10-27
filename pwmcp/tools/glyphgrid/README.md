@@ -10,6 +10,13 @@ Every cell is then either a known glyph (exact match) or an explicit UNKNOWN (`ï
 
 ## Safety contract
 
+**Three evidence classes.** (1) `F` font-exact: the character comes from an authoritative font FILE (sha256 and repertoire recorded in the atlas;
+`build_font_atlas.py`, `fontfiles.py`), no transcript involved; (2) `e` learned from screenshots and confirmed by >= 2 independent screen groups;
+(3) everything else (`s` single-source, `u` unknown, `a` alias set, `x` conflict, `f` fill, `m` multicolour): not evidence. A keystroke decision may rely
+on classes (1) and (2) only, and ambiguity sets (`a`: several characters share one bitmap in the font; the read returns the set in `res["aliases"]`, never a pick)
+are non-unique. Screenshots only VERIFY which font a screen uses (`verify_fonts.py`: share of ink cells that equal a font-file glyph; 99.9% on the TrueNAS
+corpus). The details below describe the learned-atlas rules (class 2) and the common limits.
+
 * **UNKNOWN is never a guess.** The nearest atlas glyph and its Hamming distance are evidence in `unknown_cells`, not output. Tolerant
   matching (`max_hamming > 0`) is OFF by default, needs a margin over the second-best different character and reports the atlas minimum
   pairwise distance (warning when `max_hamming` is at least half of it).
@@ -56,6 +63,17 @@ from glyph-scale transition profile, column pitch and origin by minimum-descript
 cells; refuses photographs/logos and anti-aliased content) -> `extract` (two-colour cells; foreground = the
 minority colour, so light-on-dark, dark-on-grey and reverse video give the same bitmap; 3+ colour cells are
 `multicolor`, uniform cells are blank) -> `decode` (exact dictionary lookup).
+
+## Font-file atlases
+
+```
+python3 build_font_atlas.py --kernel-bzimage vmlinuz-... --pf2 unicode.pf2 --ovmf OVMF_CODE_4M.fd --out fonts.atlas.json   # also --psf/--hex/--bdf
+python3 verify_fonts.py --atlas fonts.atlas.json --bzimage ... --pf2 ... --ovmf ... --corpus CORPUS --series SERIES --out font-verify.json
+atlas = gg.Atlas.merge(gg.Atlas.load("fonts.atlas.json"), learned_atlas)      # font entries first, learned ones for other consoles
+```
+Committed: `pwmcp/tests/fixtures/glyphgrid/fonts.atlas.json` (VGA 8x16 from the Linux kernel, GNU Unifont 16 from GRUB's `unicode.pf2`, EDK2 8x19 from OVMF; 87 KB).
+Runtime needs only the JSON; regeneration needs the source files (Debian: `linux-image-*`, `grub-common`/`fonts-unifont`, `ovmf`, `kbd`/`console-setup-linux`).
+Cell origin is found by exact font hits over all phases (`choose_extraction`, accepted only with a large margin).
 
 ## Learning and evaluation
 

@@ -4,6 +4,66 @@
 > screen, a new ISO or a new font.** The leave-one-frame-out numbers are inflated by near-duplicate frames (12/13, 19/20,
 > 05/06, 09/10/11); the leave-screen-group-out numbers below are the honest ones.
 
+## Revision 3: font-file atlases (authoritative, no transcripts needed)
+
+Console text is drawn from KNOWN bitmap fonts, so the atlas can come from the font files and screenshots only have to VERIFY the font.
+`fontfiles.py` (stdlib loaders: PSF1/PSF2 with unicode table, GRUB PF2, Unifont `.hex`, BDF, raw 256-glyph tables, the kernel's built-in
+font inside a decompressed bzImage, the EDK2 `EFI_NARROW_GLYPH` table inside an OVMF image), `build_font_atlas.py` (generator) and
+`verify_fonts.py` (identification, audit, coverage). Results: `font-verify-results.json`.
+
+**Where the fonts were found** (this devcontainer has none: no `/usr/share/consolefonts`, no kbd, no unifont package): inside the
+artifacts of the corpus itself, read-only, nothing mounted or run.
+
+| screen font (our label) | source | what it is | sha256 (source file) |
+|---|---|---|---|
+| live/installer console, 14 frames (`f8x16-1`) | `/live/filesystem.squashfs` -> `boot/vmlinuz-6.18.52-production+truenas`, decompressed (zstd) | the Linux built-in IBM VGA 8x16 table (`font_vga_8x16`) at 0x14ce900, 256 glyphs, glyph index -> CP437 | bzImage `56e4101631183...` |
+| installed console + ISO GRUB, 3 frames (`f8x16-2`) | ISO `/boot/grub/fonts/unicode.pf2` | GNU Unifont Regular 16 (PF2, ascent 14 + descent 2), 57,248 glyphs | `662eb86fc1ea8963...` |
+| installed GRUB (EFI text console), 2 frames (`f8x19-3`) | `/usr/share/OVMF/OVMF_CODE_4M.fd` (Debian `ovmf 2025.02-8+deb13u1`), LZMA volume at 0xa8 | the TianoCore/EDK2 UEFI console font (`EFI_NARROW_GLYPH`, 8x19, 235 entries): GRUB's EFI console, not a GRUB `.pf2` | `624e06de18b4fa53...` |
+
+So the "installed GRUB 8x19" font is the firmware's, which also explains the 19-pixel row pitch. The atlas stores file name, sha256, repertoire and
+note per font. Generated atlas: `pwmcp/tests/fixtures/glyphgrid/fonts.atlas.json` (87 KB; 146 + 258 + 136 glyph bitmaps for the repertoire printable ASCII + box/block/arrow
+characters). The sidecar needs only that JSON at runtime; to regenerate: Debian `linux-image-*` (kernel font), `grub-common`/`fonts-unifont`
+(`unicode.pf2`), `ovmf` (EDK2 font), or `kbd`/`console-setup-linux` (PSF) with the loaders.
+
+**Identification without transcripts** (grid and cell origin found by exact matches against the font files only; ink cell = any non-blank 2-colour cell):
+
+| font | frames | ink cells | font-exact | share | note |
+|---|---|---|---|---|---|
+| VGA 8x16 (kernel) | 14 corpus | 7871 | 7865 | 99.92% | per frame 99.78-100% |
+| Unifont 16 | 3 | 1838 | 1836 | 99.89% | |
+| EDK2 8x19 | 2 | 648 | 645 | 99.54% | frame 17: 106/107 |
+
+Frame 15 (UEFI logo) is refused (anti-aliased, graphical). Series, 242 frames (no transcripts at all): 230 frames read, 10 no grid (uniform/near-empty), 1 refused
+(logo), 1 `no_font`; **296,782 of 296,891 ink cells (99.963%) are font-exact**: Unifont 197,682/197,698 (99.992%, 109 frames), VGA 96,841/96,899 (99.940%, 116 frames,
+min frame share 99.23%), EDK2 2,259/2,294 (98.47%, 6 frames, including the one `no_font` frame). A font counts as identified when its share is this high on every frame
+of that font; no frame of any font is below 99.07% except the near-empty `no_font` EDK2 frame (13 cells, 0%).
+Box drawing, the block elements and the arrows of the VGA/EDK2/Unifont tables are font-exact too (the repertoire includes them), which is why the dialogs
+now read completely, border cells included.
+
+**What matches nothing (109 cells, 0.037%, 13 of them the `no_font` frame):** the text cursor (VGA: 52 cells, an all-ones bottom-two-rows bar; also the cursor drawn over a glyph, e.g. `00007cc6...ffff`), which is
+not a glyph of any font; 3 VGA cells that ARE glyphs of the full font file outside the repertoire (U+0393 Gamma, U+00E5, U+00C6 in garbled boot output); the
+double dagger (U+2021, Unifont, 4 cells) = the glyph the transcriber could not name (`?`): the font file confirms the transcriber's `‡` guess; a few EDK2 cells that are
+triangles/blocks drawn by GRUB itself (the arrows in the GRUB help text) and are not in the EDK2 table.
+
+**Audit of the transcripts against the font reading** (placement by blank/ink pattern + agreement, never by transcript content for the comparison; 6,840 transcript
+cells that are font-exact): **6,813 agree, 27 disagree, 0 aliases**. The 27: 26 are the title underline of frames 19 and 20 (transcript `-` x13 each, font `_`,
+i.e. the transcript is wrong, independent confirmation of the conflict found earlier; with `ground-truth-corrections.json` applied: 0), 1 is the cursor cell in frame 20
+(transcript `_`, font reading U+2581 because a cursor bar equals that glyph's bitmap: the font file cannot know about the cursor). Every other transcript cell agrees with the font
+reading, including all 1,384 cells of frame 18 (the "possible mis-read digit" caveat in the README is not borne out) and all dialogs; 8 button lines (`< OK >`, `<Cancel>`)
+could not be placed (multi-colour hotkey cells). No alias sets occur in the repertoires `ascii`, `ascii+box`, `latin1` for these fonts; aliases appear only when the repertoire is widened
+(e.g. Cyrillic/Greek lookalikes in Unifont), and then the read returns the SET (status `a`, `res["aliases"]`), never a pick; tests exercise this with a synthetic font.
+
+**Three evidence classes** (what a keystroke decision may rely on):
+1. `F` font-exact: character from the verified font file. May be relied on (provided the font is the identified one for that screen, i.e. the evidence floor passed).
+2. `e` learned, confirmed by >= 2 independent screen groups. May be relied on.
+3. `s` single-source / `u` unknown / `a` alias set / `x` conflict / `f` fill / `m` multicolour: never relied on (an alias set is non-unique; `find_phrase(allow_alias=True)` reports such matches as `ambiguous`).
+Learned entries keep the single-source rule; font entries are not subject to it (the file, not the screens, is the evidence). Use `Atlas.merge(font_atlas, learned_atlas)` for a console whose font is not in a file.
+
+**Still not covered:** fonts not shipped in the corpus (another distro's console font, Terminus/larger HiDPI fonts such as 16x32, the Debian-installer's font), any glyph outside the
+declared repertoire, the cursor (a runtime overlay, not a glyph: flag it, e.g. `cursor=(row, col)`), coloured status cells, graphical (UEFI/BIOS setup) screens, and scaled/anti-aliased captures.
+To cover another system: add its font file (PSF from `console-setup`/`kbd`, or its kernel/firmware image) to `build_font_atlas.py`; no screenshots or transcripts needed beyond the identification check.
+The identification check shows the three fonts here match their files at >= 99.07% per frame (excluding that near-empty frame); it does not prove the file is the font in other builds of the same distro.
+
 ## Revision 2 (review round 1): what changed and the corrected numbers
 
 The first version (commit 04f40ef23) over-claimed. Review found, and this revision fixes:
