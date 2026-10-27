@@ -148,6 +148,7 @@ class FakeGuest:
             self.mem[off], self.mem[off + 1] = ord(ch), attr
 
     display_offset = 0       # the page the "CRTC" actually displays, in bytes from 0xb8000 (the BDA still says 0)
+    extra_ink: set = frozenset()  # additional white pixels in the rendered screendump (e.g. a cursor block)
     graphic_noise = False    # paint ink everywhere: a graphical mode that happens to have a text-sized screendump
 
     def render(self) -> bytes:
@@ -162,6 +163,7 @@ class FakeGuest:
                     code, attr = self.mem[off], self.mem[off + 1]
                     if code not in (0, 0x20, 0xFF) and (attr & 0x0F) != (attr >> 4) & 7:
                         ink |= {(c * 9 + dx, r * 16 + dy) for dx in (1, 2) for dy in (4, 5)}
+        ink = set(ink) | set(self.extra_ink)
         return make_png(w, h, ink, filter_type=getattr(self, "filter_type", 0))
 
     def handlers(self) -> dict[str, Callable[[dict], Any]]:

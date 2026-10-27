@@ -3,16 +3,21 @@
 A LOG renderer, not a terminal emulator.  Handled: LF, CR, BS, TAB, erase-in-line (ESC[K 0/1/2), erase-in-display
 (ESC[J 0/1/2/3 and ESC c), which is what a prompt redraw or a screen clear does, and the COLUMN part of cursor movement
 (ESC[H/f, G, C, D).  Dropped without effect: colours, OSC titles and vertical movement (ESC[nA/B, row of ESC[r;cH), so a
-full-screen curses UI on a serial line is NOT reconstructed.
+full-screen curses UI on a serial line is NOT reconstructed.  Columns are clamped to MAX_COL (a longer line is cut), so hostile
+escape parameters cannot exhaust memory; rows only grow with the input.  An incomplete escape at the end of the input is dropped.
 """
 from __future__ import annotations
 
 import re
 
+MAX_COL = 4096  # cursor movement is clamped: ESC[300000000G must not allocate a 300 MB line
+MAX_PARAM = 1_000_000
+
 _TOKEN = re.compile(
     r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"          # OSC
     r"|\x1b\[([0-?]*)[ -/]*([@-~])"                 # CSI (params, final)
     r"|\x1b([()#][0-9A-Za-z]|[=>78DEHMNOc])"        # short escapes (c = full reset)
+    r"|\x1b(?:\[[0-?]*[ -/]*|\][^\x07\x1b]*\x1b?|[()#])?\Z"  # an incomplete sequence at end of input renders as nothing
     r"|(.)", re.S)
 
 
@@ -22,7 +27,7 @@ def render(raw: bytes) -> str:
     for m in _TOKEN.finditer(raw.decode("utf-8", errors="replace")):
         params, final, short, ch = m.group(1), m.group(2), m.group(3), m.group(4)
         if final is not None:
-            n = int(params) if params.isdigit() else 0
+            n = min(int(params[:12]), MAX_PARAM) if params.isdigit() else 0  # [:12]: no int() on a 5000-digit parameter
             if final == "K":
                 line = lines[-1]
                 if n == 0:
@@ -34,11 +39,11 @@ def render(raw: bytes) -> str:
                     line.clear()
             elif final in "Hf":  # cursor position: the column counts, the row cannot in a log
                 parts = params.split(";")
-                col = int(parts[1]) - 1 if len(parts) > 1 and parts[1].isdigit() and int(parts[1]) > 0 else 0
+                col = min(int(parts[1][:12]) - 1, MAX_COL) if len(parts) > 1 and parts[1].isdigit() and int(parts[1][:12]) > 0 else 0
             elif final == "G":
-                col = max(0, n - 1) if n else 0
+                col = min(max(0, n - 1), MAX_COL) if n else 0
             elif final == "C":
-                col += n or 1
+                col = min(col + (n or 1), MAX_COL)
             elif final == "D":
                 col = max(0, col - (n or 1))
             elif final == "J":
@@ -62,10 +67,10 @@ def render(raw: bytes) -> str:
             elif ch == "\b":
                 col = max(0, col - 1)
             elif ch == "\t":
-                for _ in range(8 - col % 8):
+                for _ in range(min(8 - col % 8, MAX_COL - col)):
                     _put(lines[-1], col, " ")
                     col += 1
-            elif ch >= " ":
+            elif ch >= " " and col < MAX_COL:  # a line longer than MAX_COL is truncated, not an allocation
                 _put(lines[-1], col, ch)
                 col += 1
     return "\n".join("".join(line).rstrip() for line in lines).rstrip("\n")

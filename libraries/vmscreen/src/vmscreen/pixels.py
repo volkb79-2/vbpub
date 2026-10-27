@@ -77,6 +77,25 @@ def cell_has_ink(rows: list[bytearray], bpp: int, x0: int, y0: int, cw: int, ch:
     return any(bytes(rows[y][x0 * bpp:(x0 + cw) * bpp]) != want for y in range(y0, y0 + ch))
 
 
+def cursor_shaped(rows: list[bytearray], bpp: int, x0: int, y0: int, cw: int, ch: int) -> bool:
+    """Is the cell's non-background ink exactly one filled rectangle that spans (nearly) the cell width and lies in the lower half?
+    That is how QEMU draws a text cursor (a block of the bottom scanlines); a glyph never is.  Background = the cell's top-left pixel."""
+    bg = bytes(rows[y0][x0 * bpp:(x0 + 1) * bpp])
+    xs: list[int] = []
+    ys: list[int] = []
+    count = 0
+    for y in range(y0, y0 + ch):
+        for x in range(x0, x0 + cw):
+            if bytes(rows[y][x * bpp:(x + 1) * bpp]) != bg:
+                xs.append(x)
+                ys.append(y)
+                count += 1
+    if not count:
+        return False
+    w, h = max(xs) - min(xs) + 1, max(ys) - min(ys) + 1
+    return count == w * h and w >= cw - 1 and min(ys) - y0 >= ch // 2
+
+
 def verify_ink(png: bytes, cols: int, nrows: int, cell_w: int, cell_h: int, buf: bytes, cursor: tuple[int, int] | None,
                blink_mode: bool) -> dict[str, Any]:
     """Compare predicted blank/ink per cell with the screendump.  ``ok`` is True only with zero mismatches over >= 1 compared cell,
@@ -104,6 +123,12 @@ def verify_ink(png: bytes, cols: int, nrows: int, cell_w: int, cell_h: int, buf:
             compared += 1
             if expected != seen:
                 mismatches.append({"row": r, "col": c, "expected_ink": expected, "seen_ink": seen})
+    # Linux moves the cursor through the CRTC without touching the BIOS data area, and QEMU draws it: ONE cell that is blank in the
+    # buffer but carries a cursor-shaped block is that stale cursor, not a wrong page.  Anything else stays strict.
+    if len(mismatches) == 1 and not mismatches[0]["expected_ink"] and mismatches[0]["seen_ink"] and cursor_shaped(
+            rows, bpp, mismatches[0]["col"] * cell_w, mismatches[0]["row"] * cell_h, cell_w, cell_h):
+        out["cursor_tolerated"] = {"row": mismatches[0]["row"], "col": mismatches[0]["col"]}
+        mismatches = []
     out.update(compared=compared, skipped=skipped, mismatched=len(mismatches), mismatches=mismatches[:5], ok=not mismatches and compared > 0)
     if compared == 0:
         out["reason"] = "no comparable cells"

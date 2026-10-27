@@ -332,6 +332,19 @@
       "signature": "sha256:5ae5c654161fffd180b655ef8675555e1746c3fd416b1102d33a01e069ab1de2"
     },
     {
+      "id": "case:route:entrypoint:vmscreen/probe/option-spelling/option:route:entrypoint:vmscreen/probe/--mark/--mark",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/probe/--mark"
+      ],
+      "route_id": "route:entrypoint:vmscreen/probe",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/probe/--mark",
+        "spelling": "--mark"
+      },
+      "signature": "sha256:34c5980ccc7a9f40bd62238903f4d1032777391c34730e044dcd2705ce01ea7e"
+    },
+    {
       "id": "case:route:entrypoint:vmscreen/probe/option-spelling/option:route:entrypoint:vmscreen/probe/--no-blink-mode/--no-blink-mode",
       "kind": "option-spelling",
       "members": [
@@ -1425,6 +1438,19 @@
       "signature": "sha256:b23047afb83d5d91a255c12446bfca0acf9a8d6b1f87da02f1bb65e23aa8624e"
     },
     {
+      "id": "case:route:entrypoint:vmscreen/text/option-spelling/option:route:entrypoint:vmscreen/text/--mark/--mark",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/text/--mark"
+      ],
+      "route_id": "route:entrypoint:vmscreen/text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/text/--mark",
+        "spelling": "--mark"
+      },
+      "signature": "sha256:75e19b778cec1f03271fc45a4af0df966cb3b5966ea00ec1c390bcd065e91ae9"
+    },
+    {
       "id": "case:route:entrypoint:vmscreen/text/option-spelling/option:route:entrypoint:vmscreen/text/--no-blink-mode/--no-blink-mode",
       "kind": "option-spelling",
       "members": [
@@ -1684,6 +1710,19 @@
       "signature": "sha256:a2d6f15a06711685ade17ddc5bad2eeacb1e34e9a687a288a13a772c49fe846e"
     },
     {
+      "id": "case:route:entrypoint:vmscreen/wait-text/option-spelling/option:route:entrypoint:vmscreen/wait-text/--mark/--mark",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/wait-text/--mark"
+      ],
+      "route_id": "route:entrypoint:vmscreen/wait-text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/wait-text/--mark",
+        "spelling": "--mark"
+      },
+      "signature": "sha256:8d56a8323d6698c28cf69fa511da82f75336b82f95e2a4b29771872e14b1ffed"
+    },
+    {
       "id": "case:route:entrypoint:vmscreen/wait-text/option-spelling/option:route:entrypoint:vmscreen/wait-text/--no-blink-mode/--no-blink-mode",
       "kind": "option-spelling",
       "members": [
@@ -1861,7 +1900,7 @@
       "confirmation": false,
       "constraints": [],
       "delegated_metadata": [],
-      "description": "Print the byte size of a serial log: the --from-offset that skips everything written so far.",
+      "description": "Print a mark of a serial log (OFFSET.INODE.HEADLEN.HEADHASH): --mark TOKEN skips everything written so far and rejects a log replaced since.",
       "group": "EXPLORATION",
       "id": "route:entrypoint:vmscreen/mark",
       "kind": "invocation",
@@ -1903,7 +1942,7 @@
       "subcommand_groups": [],
       "subcommands": [],
       "subcommands_required": false,
-      "summary": "Print the byte size of a serial log: the --from-offset that skips everything written so far.",
+      "summary": "Print a mark of a serial log (OFFSET.INODE.HEADLEN.HEADHASH): --mark TOKEN skips everything written so far and rejects a log replaced since.",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null
@@ -2574,6 +2613,44 @@
           "type": {
             "callable": "builtins.int"
           }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--mark",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Serial source: a token from `vmscreen mark`; like --from-offset, and additionally refuses a log that was truncated or replaced since (inode and first bytes are checked).",
+          "dest": "mark",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--mark"
+          ],
+          "help_group": "SOURCES",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/probe/--mark",
+          "kind": "option",
+          "metavar": "TOKEN",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "probe"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
         }
       ],
       "aliases": [],
@@ -4442,6 +4519,44 @@
         {
           "action": "argparse._StoreAction",
           "before_nested_subcommand": false,
+          "canonical": "--mark",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Serial source: a token from `vmscreen mark`; like --from-offset, and additionally refuses a log that was truncated or replaced since (inode and first bytes are checked).",
+          "dest": "mark",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--mark"
+          ],
+          "help_group": "SOURCES",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/text/--mark",
+          "kind": "option",
+          "metavar": "TOKEN",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "text"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
           "canonical": "--tail",
           "choices": null,
           "const": null,
@@ -4895,6 +5010,44 @@
           "type": {
             "callable": "builtins.int"
           }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--mark",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Serial source: a token from `vmscreen mark`; like --from-offset, and additionally refuses a log that was truncated or replaced since (inode and first bytes are checked).",
+          "dest": "mark",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--mark"
+          ],
+          "help_group": "SOURCES",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/wait-text/--mark",
+          "kind": "option",
+          "metavar": "TOKEN",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "wait-text"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
         },
         {
           "action": "argparse._StoreAction",

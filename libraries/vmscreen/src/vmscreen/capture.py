@@ -54,32 +54,36 @@ def build_sidecar(res: sources.TextResult | None, png: bytes, png_name: str, pau
 def resume_guest(client, reconnect: Callable[[], Any] | None = None, *, healthy: bool = False, attempts: int = RESUME_ATTEMPTS,
                  sleep: Callable[[float], None] = time.sleep) -> None:
     """Make the guest run again and CONFIRM it (query-status).  ``healthy``: try the existing connection first; otherwise (or on
-    failure) close it, because QMP serves one client, and retry over fresh connections."""
-    last: Exception | None = None
+    failure) close it, because QMP serves one client, and retry over fresh connections.  Creating the fresh connection is part
+    of the retried step (a refused or timed-out reconnect costs one attempt, not the whole resume).  When every attempt fails,
+    ResumeFailed says the guest may still be paused and chains the last cause."""
+    last: BaseException | None = None
     if healthy:
         try:
             client.execute("cont")
             if client.execute("query-status").get("status") == "running":
                 return
-        except QmpError as exc:
+        except (QmpError, OSError) as exc:
             last = exc
     client.close()
     for i in range(attempts):
-        fresh = reconnect() if reconnect else client.fresh()
+        fresh = None
         try:
+            fresh = reconnect() if reconnect else client.fresh()
             fresh.connect()
             fresh.execute("cont")
             if fresh.execute("query-status").get("status") == "running":
                 return
             last = QmpError("guest is not running after cont")
-        except QmpError as exc:
+        except (QmpError, OSError) as exc:
             last = exc
         finally:
-            fresh.close()
+            if fresh is not None:
+                fresh.close()
         if i < attempts - 1:
             sleep(0.2)
     raise ResumeFailed(f"could not resume the guest after {attempts} fresh connections ({last}); it may still be PAUSED: "
-                       "run `cont` on its QMP socket")
+                       "run `cont` on its QMP socket") from last
 
 
 class _Signals:
@@ -115,20 +119,45 @@ class _Signals:
             raise SystemExit(code)
 
 
-def _commit(png_path: Path, json_path: Path, png: bytes, side: dict[str, Any]) -> None:
-    """Both files via temp + rename; the JSON is renamed LAST and is the commit marker (an orphan PNG is removed if the
-    JSON cannot be committed)."""
-    tmp_png = png_path.with_name(f".{png_path.name}.{os.getpid()}.tmp")
-    tmp_json = json_path.with_name(f".{json_path.name}.{os.getpid()}.tmp")
+def _commit(png_path: Path, json_path: Path, png: bytes, side: dict[str, Any], force: bool) -> None:
+    """Both files via temp files; the JSON is committed LAST and is the commit marker.
+
+    Without ``force`` creation is exclusive (hard link: fails with FileExistsError if the name appeared since the pre-check),
+    so a concurrent writer's files are never replaced.  With ``force`` the old files are moved to backups first and RESTORED
+    if anything fails.  An orphan PNG is never left behind."""
+    pid = os.getpid()
+    tmp_png = png_path.with_name(f".{png_path.name}.{pid}.tmp")
+    tmp_json = json_path.with_name(f".{json_path.name}.{pid}.tmp")
+    backups: list[tuple[Path, Path]] = []
+    created: list[Path] = []
     try:
         tmp_png.write_bytes(png)
         tmp_json.write_text(json.dumps(side, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
-        os.replace(tmp_png, png_path)
         try:
-            os.replace(tmp_json, json_path)
-        except OSError:
-            png_path.unlink(missing_ok=True)
+            if force:
+                for final in (png_path, json_path):
+                    if final.exists():
+                        bak = final.with_name(f".{final.name}.{pid}.bak")
+                        os.replace(final, bak)
+                        backups.append((bak, final))
+                for tmp, final in ((tmp_png, png_path), (tmp_json, json_path)):
+                    os.replace(tmp, final)
+                    created.append(final)
+            else:
+                for tmp, final in ((tmp_png, png_path), (tmp_json, json_path)):
+                    try:
+                        os.link(tmp, final)
+                    except FileExistsError as exc:
+                        raise OutputExists(f"{final} appeared while capturing (use --force to overwrite)") from exc
+                    created.append(final)
+        except BaseException:
+            for final in created:
+                final.unlink(missing_ok=True)
+            for bak, final in backups:
+                os.replace(bak, final)
             raise
+        for bak, _ in backups:
+            bak.unlink(missing_ok=True)
     finally:
         tmp_png.unlink(missing_ok=True)
         tmp_json.unlink(missing_ok=True)
@@ -158,12 +187,16 @@ def ocr_pair(client, out_prefix: Path, *, dump_dir: str | None, blink_mode: bool
     state: dict[str, Any] = {"resumed": False, "err": None}
 
     def do_resume(healthy: bool) -> None:
+        if state["resumed"]:  # exactly one resume sequence, whatever interrupts the first
+            return
+        state["resumed"] = True
         signals.hold()
         try:
             resume_guest(client, reconnect, healthy=healthy, sleep=sleep)
-        except ResumeFailed as exc:
+        except (ResumeFailed, QmpError, OSError) as exc:
+            if not isinstance(exc, ResumeFailed):
+                exc = ResumeFailed(f"resume failed ({exc}); the guest may still be PAUSED: run `cont` on its QMP socket")
             state["err"] = exc
-        state["resumed"] = True
 
     try:
         try:
@@ -183,12 +216,14 @@ def ocr_pair(client, out_prefix: Path, *, dump_dir: str | None, blink_mode: bool
         if stopped:
             do_resume(err is None)
     finally:
-        if stopped and not state["resumed"]:  # a signal landed between the capture and the resume: still resume
-            do_resume(False)
-            inflight = sys.exc_info()[1]
-            if inflight is not None and state["err"] is not None:
-                inflight.add_note(str(state["err"]))
-        signals.restore()
+        try:
+            if stopped and not state["resumed"]:  # a signal landed between the capture and the resume: still resume
+                do_resume(False)
+                inflight = sys.exc_info()[1]
+                if inflight is not None and state["err"] is not None:
+                    inflight.add_note(str(state["err"]))
+        finally:
+            signals.restore()  # always, whatever the resume did
     resume_err = state["err"]
     if err is not None:
         if resume_err is not None:
@@ -202,5 +237,5 @@ def ocr_pair(client, out_prefix: Path, *, dump_dir: str | None, blink_mode: bool
             raise NoExactText(f"no verified exact text for this screen: {why}", tried)
         reason = why
     side = build_sidecar(res, png, png_path.name, info, reason, tried)
-    _commit(png_path, json_path, png, side)
+    _commit(png_path, json_path, png, side, force)
     return {"png": str(png_path), "json": str(json_path), "exact": side["exact"], "source": side["source"], **info}

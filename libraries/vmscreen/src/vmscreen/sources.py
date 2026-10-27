@@ -11,7 +11,9 @@ False (nothing).
 """
 from __future__ import annotations
 
+import hashlib
 import os
+import re
 import secrets
 import tempfile
 from dataclasses import dataclass, field
@@ -145,43 +147,93 @@ def read_vga(client, dump_dir: str | None = None, blink_mode: bool = True, stabl
                       [{"source": "vga-text", "ok": True, "reason": det.reason}], exact, reason, ver, dict(ASSUMPTIONS))
 
 
-def read_serial(path: str, from_offset: int = 0) -> TextResult:
+_ESC_BYTES = re.compile(rb"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[()#][0-9A-Za-z]|\x1b[=>78DEHMNOc]")
+HEAD = 64  # bytes of the log's start fingerprinted by a mark
+
+
+def make_mark(path: str) -> str:
+    """``OFFSET.INODE.HEADLEN.HEADHASH`` of a serial log now.  Passed back as ``mark=``, it detects a log that was truncated or
+    replaced and has regrown past the offset (a bare byte offset cannot)."""
+    st = os.stat(path)
+    head = Path(path).read_bytes()[:HEAD]
+    return f"{st.st_size}.{st.st_ino}.{len(head)}.{hashlib.sha256(head).hexdigest()[:16]}"
+
+
+def parse_mark(token: str) -> tuple[int, int, int, str]:
+    try:
+        off, ino, n, h = token.split(".")
+        return int(off), int(ino), int(n), h
+    except ValueError as exc:
+        raise ValueError(f"malformed serial mark {token!r} (expected the output of `vmscreen mark`)") from exc
+
+
+def _boundary(raw: bytes, offset: int) -> int:
+    """Move ``offset`` forward out of the middle of an escape sequence or a UTF-8 character, so a mark taken while the guest was
+    mid-write does not start the text with a torn sequence."""
+    lo = max(0, offset - 64)
+    for m in _ESC_BYTES.finditer(raw, lo, offset + 64):
+        if m.start() < offset < m.end():
+            offset = m.end()
+    while offset < len(raw) and 0x80 <= raw[offset] < 0xC0:  # UTF-8 continuation byte
+        offset += 1
+    return offset
+
+
+def read_serial(path: str, from_offset: int = 0, mark: str | None = None) -> TextResult:
+    def fail(msg: str) -> NoExactText:
+        return NoExactText(msg, [{"source": "serial", "ok": False, "reason": msg}])
+    ino = hn = hh = None
+    if mark is not None:
+        from_offset, ino, hn, hh = parse_mark(mark)
     try:
         raw = Path(path).read_bytes()
+        st = os.stat(path)
     except OSError as exc:
-        raise NoExactText(f"serial log unreadable: {exc}", [{"source": "serial", "ok": False, "reason": f"serial log unreadable: {exc}"}]) from exc
+        raise fail(f"serial log unreadable: {exc}") from exc
+    if mark is not None and (st.st_ino != ino or len(raw) < hn or hashlib.sha256(raw[:hn]).hexdigest()[:16] != hh):
+        raise fail("serial log was truncated or replaced since the mark (inode or first bytes changed): marks no longer apply")
     if from_offset > len(raw):
-        msg = f"serial log is {len(raw)} bytes, shorter than --from-offset {from_offset} (truncated or rotated?)"
-        raise NoExactText(msg, [{"source": "serial", "ok": False, "reason": msg}])
-    lines = serialtext.render(raw[from_offset:]).split("\n")
-    return TextResult("serial", "stream", "\n".join(lines), lines, {"log": path, "bytes": len(raw), "from_offset": from_offset}, None, b"", None,
-                      [{"source": "serial", "ok": True, "reason": f"{len(raw) - from_offset} bytes of serial output"}], "stream",
+        raise fail(f"serial log is {len(raw)} bytes, shorter than --from-offset {from_offset} (truncated or rotated?)")
+    start = _boundary(raw, from_offset)
+    lines = serialtext.render(raw[start:]).split("\n")
+    return TextResult("serial", "stream", "\n".join(lines), lines,
+                      {"log": path, "bytes": len(raw), "from_offset": from_offset, "start": start}, None, b"", None,
+                      [{"source": "serial", "ok": True, "reason": f"{len(raw) - start} bytes of serial output"}], "stream",
                       "text the guest printed to the serial port (rendered log, not a screen)")
 
 
 def read_text(client, *, source: str = "auto", serial_log: str | None = None, dump_dir: str | None = None,
-              blink_mode: bool = True, from_offset: int = 0) -> TextResult:
-    """Try the sources in order (a, b); the winner's ``tried`` lists every attempt and why the others did not apply."""
+              blink_mode: bool = True, from_offset: int = 0, mark: str | None = None) -> TextResult:
+    """Try the sources in order (a, b); the winner's ``tried`` lists every attempt and why the others did not apply.  In ``auto`` a
+    VGA result that is only ``unverified`` counts as a failed attempt: later sources are tried, and the unverified text (flagged)
+    is returned only if nothing else applies.  ``--source vga`` returns it as is."""
     if source not in SOURCES:
         raise ValueError(f"unknown source {source!r}")
     tried: list[dict[str, Any]] = []
+    fallback: TextResult | None = None
     if source in ("auto", "vga"):
         try:
             res = read_vga(client, dump_dir, blink_mode)
-            res.tried = tried + res.tried
-            return res
+            if res.exact is True or source == "vga":
+                res.tried = tried + res.tried
+                return res
+            tried.append({"source": "vga-text", "ok": False, "reason": f"decoded but unverified: {res.exact_reason}"})
+            fallback = res
         except NoExactText as exc:
             tried += exc.tried
     if source in ("auto", "serial"):
         if serial_log:
             try:
-                res = read_serial(serial_log, from_offset)
+                res = read_serial(serial_log, from_offset, mark)
                 res.tried = tried + res.tried
                 return res
             except NoExactText as exc:
                 tried += exc.tried
         else:
             tried.append({"source": "serial", "ok": False, "reason": "no --serial-log given"})
+    if fallback is not None:
+        fallback.tried = tried + [{"source": "vga-text", "ok": True, "reason": "returned UNVERIFIED because no other source applied"}]
+        return fallback
     if source == "auto":
         tried.append({"source": "vcs", "ok": False, "reason": "not implemented: needs a guest shell channel (see README)"})
     tried.append({"source": "none", "ok": False,

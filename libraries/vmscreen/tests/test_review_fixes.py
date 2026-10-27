@@ -258,13 +258,13 @@ def test_m3_dotted_prefixes_do_not_collide_and_existing_outputs_are_refused(tmp_
 def test_m3_no_orphan_png_when_the_json_cannot_be_committed(tmp_path, monkeypatch):
     g = guest_with_text()
     srv, path = server(tmp_path, g)
-    real = os.replace
+    real = os.link
 
-    def failing(src, dst):
+    def failing(src, dst, **kw):
         if str(dst).endswith(".json"):
             raise OSError("disk full")
-        return real(src, dst)
-    monkeypatch.setattr(os, "replace", failing)
+        return real(src, dst, **kw)
+    monkeypatch.setattr(os, "link", failing)
     with srv, QmpClient(path, 2) as c:
         with pytest.raises(OSError, match="disk full"):
             capture.ocr_pair(c, tmp_path / "o", dump_dir=str(tmp_path))

@@ -21,3 +21,8 @@
   registers (not reachable through QMP/HMP) would turn `unverified` into a definite answer for page-flipped screens.
 * **VMS-BL-10 glyph identity.** The ink map proves blank/visible only. A cp437 8x16/8x14/8x8 bitmap render compared with the PNG
   would also prove the font assumption; it needs the font bitmaps shipped (licence check) and is the right place to detect 512-glyph consoles.
+* **VMS-BL-11 CRTC cursor.** The stale-cursor case is tolerated by shape (one cursor-shaped block in a blank cell). Reading the CRTC
+  cursor location needs index/data port writes (HMP `o`) into a running guest, which can race the guest's own index-register use;
+  revisit only for a paused guest.
+* **VMS-BL-12 serial amplification.** Columns are clamped to 4096, but each input line can still render up to 4096 columns of
+  padding; a sparse line representation would remove the factor.

@@ -45,7 +45,9 @@ NO_BLINK = _flag(("--no-blink-mode",), "Decode attribute bit 7 as a bright backg
                  "mode bit, so this is a declared assumption (recorded in the output), not a detection.", "SOURCES")
 FROM_OFFSET = _value(("--from-offset",), "Serial source: ignore the first N bytes of the log (see `vmscreen mark`).", "BYTES", "SOURCES", type=int, default=0)
 COMMON = (QMP, QMP_TIMEOUT, DUMP_DIR)
-TEXT_OPTS = (SERIAL, SOURCE, NO_BLINK, FROM_OFFSET)
+MARK = _value(("--mark",), "Serial source: a token from `vmscreen mark`; like --from-offset, and additionally refuses a log that was "
+              "truncated or replaced since (inode and first bytes are checked).", "TOKEN", "SOURCES")
+TEXT_OPTS = (SERIAL, SOURCE, NO_BLINK, FROM_OFFSET, MARK)
 
 
 def _emit(runtime: CliRuntime, obj: Any, human: str | None = None) -> None:
@@ -84,10 +86,14 @@ def build_cli(cli_identity: CliIdentity | None = None, client_factory: ClientFac
         client.connect()
         return client
 
-    def reader(client: QmpClient, args: Any, from_offset: int | None = None) -> Callable[[], sources.TextResult]:
-        off = args.from_offset if from_offset is None else from_offset
+    def reader(client: QmpClient, args: Any, mark: str | None = None) -> Callable[[], sources.TextResult]:
+        mark = mark or args.mark
+        if args.from_offset < 0:
+            raise CliFailure("--from-offset must be >= 0", exit_code=2)
+        if mark is not None:
+            sources.parse_mark(mark)  # malformed token: usage error (ValueError -> exit 2)
         return lambda: sources.read_text(client, source=args.source, serial_log=args.serial_log, dump_dir=args.dump_dir,
-                                         blink_mode=not args.no_blink_mode, from_offset=off)
+                                         blink_mode=not args.no_blink_mode, from_offset=args.from_offset, mark=mark)
 
     def positive(name: str, value: float | None, *, allow_zero: bool = False) -> None:
         if value is not None and (value < 0 or (value == 0 and not allow_zero)):
@@ -139,21 +145,22 @@ def build_cli(cli_identity: CliIdentity | None = None, client_factory: ClientFac
         positive("--qmp-timeout", args.qmp_timeout)
         positive("--interval", args.interval)
         positive("--timeout", args.timeout, allow_zero=True)
-        offset = args.from_offset
+        mark = args.mark
         if args.since_mark:
             if not args.serial_log:
                 raise CliFailure("--since-mark needs --serial-log", exit_code=2)
-            offset = os.path.getsize(args.serial_log)  # only output written from now on can satisfy the wait
+            mark = sources.make_mark(args.serial_log)  # only output written from now on can satisfy the wait
         with connect(args) as client:
-            out = waiter.wait_for(reader(client, args, offset), args.pattern, args.timeout, args.interval, literal=args.literal,
+            out = waiter.wait_for(reader(client, args, mark), args.pattern, args.timeout, args.interval, literal=args.literal,
                                   accept_unverified=args.accept_unverified)
-        _emit(runtime, {"ok": True, "from_offset": offset} | out, f"matched {out['matched']!r} via {out['source']} ({out['exact']}) after {out['elapsed_s']}s")
+        _emit(runtime, {"ok": True, "mark": mark, "from_offset": args.from_offset} | out, f"matched {out['matched']!r} via {out['source']} ({out['exact']}) after {out['elapsed_s']}s")
         return 0
 
     @guarded
     def mark(args: Any, runtime: CliRuntime) -> int:
-        size = os.path.getsize(args.serial_log)
-        _emit(runtime, {"ok": True, "serial_log": args.serial_log, "offset": size}, str(size))
+        token = sources.make_mark(args.serial_log)
+        size = int(token.split(".")[0])
+        _emit(runtime, {"ok": True, "serial_log": args.serial_log, "offset": size, "mark": token}, token)
         return 0
 
     @guarded
@@ -224,7 +231,7 @@ def build_cli(cli_identity: CliIdentity | None = None, client_factory: ClientFac
                                              "'login:' cannot satisfy the wait).", "WAIT"),
                                        _flag(("--accept-unverified",), "Also match VGA text whose cross-check against the screendump failed.", "WAIT")),
         handler=wait_text))
-    registry.register(VerbSpec("mark", None, "Print the byte size of a serial log: the --from-offset that skips everything written so far.",
+    registry.register(VerbSpec("mark", None, "Print a mark of a serial log (OFFSET.INODE.HEADLEN.HEADHASH): --mark TOKEN skips everything written so far and rejects a log replaced since.",
                                group=VerbGroup.EXPLORATION.value, examples=("vmscreen mark --serial-log serial.log",),
                                options=(_value(("--serial-log",), "The serial log file.", "FILE", "SOURCES", required=True),), handler=mark))
     registry.register(VerbSpec(

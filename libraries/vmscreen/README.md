@@ -15,9 +15,9 @@ All take `--qmp SOCK` (or `$VMSCREEN_QMP`), `--qmp-timeout`, `--dump-dir` and `-
 | --- | --- |
 | `probe` | which exact-text source applies right now, and why the others do not (always exit 0 if QMP answers) |
 | `screen --out F.png` | PNG of the display (QMP `screendump`) |
-| `text [--serial-log F] [--source auto\|vga\|serial] [--from-offset N] [--tail N] [--cells] [--no-blink-mode]` | the console as text; the output names the source and says how far it can be trusted (`exact`) |
-| `wait-text PATTERN [--timeout S] [--interval S] [--literal] [--since-mark] [--from-offset N] [--accept-unverified]` | poll until the regex matches; **exit 3 on timeout**, exit 2 on an invalid regex (before connecting) |
-| `mark --serial-log F` | print the log's current byte size: the `--from-offset` that skips everything written so far |
+| `text [--serial-log F] [--source auto\|vga\|serial] [--from-offset N] [--mark TOKEN] [--tail N] [--cells] [--no-blink-mode]` | the console as text; the output names the source and says how far it can be trusted (`exact`) |
+| `wait-text PATTERN [--timeout S] [--interval S] [--literal] [--since-mark] [--from-offset N] [--mark TOKEN] [--accept-unverified]` | poll until the regex matches; **exit 3 on timeout**, exit 2 on an invalid regex (before connecting) |
+| `mark --serial-log F` | print a mark `OFFSET.INODE.HEADLEN.HEADHASH` of the log: `--mark TOKEN` skips everything written so far and refuses a log that was truncated, regrown or replaced since |
 | `send --keys ret,down,ctrl+alt+f2 \| --type TEXT \| --type-file F [--delay S] [--hold-ms MS] [--allow-unknown-keys]` | QMP `send-key`; everything (US-ASCII text, key names against the QEMU qcode list, numbers, files) is validated before connecting, so nothing is half-sent |
 | `ocr-pair --out PREFIX [--allow-inexact] [--no-pause] [--force]` | writes `PREFIX.png` and `PREFIX.json` taken at the same instant; refuses to overwrite without `--force` |
 | `skills install\|check\|list` | the packaged agent skill (`vmscreen`) |
@@ -48,11 +48,18 @@ Tried in order; the result always says which one answered and `tried` lists why 
      fg == bg) or visible; the screendump cell must be uniform or not accordingly. Cursor cell, blink-attribute cells and the full
      block 0xDB are skipped. This catches a shifted page and a graphical mode of the same pixel size (80x25 at 720x400, 80x50);
      it does **not** prove which glyph is drawn;
+   * **cursor**: Linux moves the cursor through the CRTC without updating the BIOS data area, and QEMU draws it. Exactly one
+     cell that the buffer says is blank but that carries a single filled, (nearly) full-width block in its lower half is taken
+     as that cursor: the check stays `true` and the verification record says `cursor_tolerated: {row, col}`. Two such cells, a
+     dot, ink in the upper half or any glyph-shaped ink is not tolerated (strict path). Reading the CRTC cursor registers would
+     need port writes into a running guest and is deliberately not done;
    * **one instant**: PNG, BIOS data area and buffer are read as a set and the screendump is taken again afterwards; a set that
      changed is retried 3 times (`ocr-pair` pauses the guest instead).
 
    `exact` is `true` only when all of that holds; otherwise `"unverified"` with `exact_reason` (and the per-cell `verification`
-   record). `wait-text` never matches unverified text unless `--accept-unverified`; `ocr-pair` refuses it unless
+   record). With `--source auto` (the default) an unverified VGA result counts as a failed attempt and the serial log is tried next; the
+   unverified text is returned (flagged, with a `tried` entry saying so) only when nothing else applies, and `--source vga` returns it
+   as is. `wait-text` never matches unverified text unless `--accept-unverified`; `ocr-pair` refuses it unless
    `--allow-inexact`. The `assumptions` field of every VGA result states what rests on assumption, not detection: the **default
    256-glyph cp437 font** (a 512-glyph or custom-font console may map codes differently) and **blink mode for attribute bit 7**
    (`--no-blink-mode` declares bit 7 a bright background instead; the attribute-controller register is not readable through QMP).
@@ -60,8 +67,11 @@ Tried in order; the result always says which one answered and `tried` lists why 
    applied, erase-in-line (`ESC[K`), erase-in-display (`ESC[J`, `ESC c`) and the column part of cursor movement honoured. This is
    what the guest *printed* to ttyS0, not what is on the screen, and not a terminal emulator: a curses UI on a serial line is not
    reconstructed. A log accumulates across boots, so `wait-text 'login:'` can be satisfied by the previous boot: use
-   `--since-mark` (only output written after the command started counts) or `--from-offset N` (from `vmscreen mark`). A log
-   shorter than the offset (rotated) is an error. `ocr-pair` never uses the serial source.
+   `--since-mark` (only output written after the command started counts) or `--mark TOKEN` / `--from-offset N` (from
+   `vmscreen mark`). A token also fingerprints the inode and the log's first bytes, so a log that was truncated and regrown past
+   the offset, or replaced, is an error; a bare `--from-offset` can only detect a log shorter than the offset. An offset inside a
+   UTF-8 character or an escape sequence moves forward to the end of it, and an incomplete escape at the end of the log renders
+   as nothing. Cursor movement is clamped (4096 columns, longer lines are cut), so hostile escape parameters cannot exhaust memory. `ocr-pair` never uses the serial source.
 3. **`vcs`** (`/dev/vcsa*` from a guest shell channel, or the guest agent). **Not implemented**: it needs a channel into the
    guest (guest-agent `guest-exec`, ssh, or a serial login) and is only valid for the guest's Linux text console, which under
    QEMU is the fbcon on a graphical framebuffer anyway. `cat /dev/vcsa1` in the guest gives chars+attributes; reported as
@@ -118,11 +128,14 @@ On a graphical screen the pair is refused (exit 4) unless `--allow-inexact`, whi
 
 **The guest is never knowingly left paused.** After any failure inside the paused window (QMP timeout, protocol error, a lost
 `stop` reply, SIGINT/SIGTERM) the guest is resumed over a *fresh* connection (a timed-out socket is poisoned; QMP serves one
-client, so the old one is closed first), 3 attempts, confirmed with `query-status`. The original error is what you see; a resume
-failure is attached to it as a note, and only if nothing else failed does `ResumeFailed` (exit 5, "may still be PAUSED") occur.
+client, so the old one is closed first), 3 attempts, confirmed with `query-status`. Creating the fresh connection is part of each retried attempt (a refused reconnect costs one attempt), and the resume sequence
+runs exactly once. The original error is what you see; a resume failure is attached to it as a note, and only if nothing else
+failed does `ResumeFailed` (exit 5, "may still be PAUSED: run `cont`", chained to the last cause) occur. Signal handlers are
+restored in a `finally`.
 A guest that was already paused is left paused. The names are `PREFIX.png` / `PREFIX.json` appended to the prefix (so
-`vm-1.5` and `vm-1.6` never collide); both are written to temp files and renamed, the JSON last, so a PNG without its JSON is
-not left behind.
+`vm-1.5` and `vm-1.6` never collide); both are written to temp files and committed with the JSON last, so a PNG without its JSON is
+not left behind. Without `--force` the files are created exclusively (hard link), so a file that appeared after the pre-check is
+never replaced (`OutputExists`); with `--force` the old files are moved to backups and restored if the commit fails.
 
 Relationship to `pwmcp/tools/console-capture`: that daemon polls `screendump` on a timer, keeps changed frames, and drives
 keys, for **graphical** screens where no text exists. vmscreen is the sibling for **text** screens: instant exact truth.
