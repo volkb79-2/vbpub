@@ -4692,3 +4692,12 @@ def test_build_image_stops_when_the_fetcher_refuses(tmp_path):
     )
     assert result.returncode == 2
     assert list(scratch.iterdir()) == []
+
+
+def test_wheel_builder_ages_its_pip_installs_and_pins_nothing():
+    text = (GENERATOR.parents[1] / "wheel-builder" / "Dockerfile").read_text("utf-8")
+    assert re.search(r"^ARG PIP_MIN_RELEASE_AGE=P14D$", text, re.MULTILINE)
+    installs = [line for line in text.splitlines() if "/opt/wheel-builder-venv/bin/pip install" in line]
+    assert len(installs) == 2
+    for line in installs:
+        assert '--uploaded-prior-to "${PIP_MIN_RELEASE_AGE}"' in line and "==" not in line
