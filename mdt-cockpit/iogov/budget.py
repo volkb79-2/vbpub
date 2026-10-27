@@ -80,7 +80,9 @@ class DailyBudget:
             b = self.state["budget"] = {}
         elif not valid_budget(b):  # a damaged slot (NaN, string, missing counter) FAILS CLOSED: today counts as fully spent
             b = self.state["budget"] = spent_budget(self.cfg, self.wall)
-        if b.get("day") != day:
+        if b.get("day", "") > day:  # the clock went BACKWARDS: the slot is from a "future" day, so it must not be rolled to zero (fails closed)
+            b = self.state["budget"] = spent_budget(self.cfg, self.wall)
+        elif b.get("day") != day:
             b.clear()
             b.update({"day": day, "read_bytes": 0, "write_bytes": 0, "read_ops": 0, "write_ops": 0, "sync_ops": 0})
         return b
