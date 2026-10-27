@@ -397,7 +397,10 @@ Sources checksum-verified (Debian 13.7.0 netinst `a7ef94ac...`, grml-full 2026.0
 * **grml-full 2026.09.** Boot menu is GRUB only (no isolinux in the ISO), font `unicode.pf2` = Unifont 16, 57086 glyphs, bitmap-identical to `font:unifont-16` over the repertoire.
   Console: `/etc/default/console-setup` CODESET=Uni3 FONTFACE=Terminus FONTSIZE=8x16, `setfont /usr/share/consolefonts/Uni3-Terminus16.psf.gz` on every vt: `font:terminus-8x16`
   (the cached file is byte-identical to the Debian package file). The grml kernel's built-in VGA font is again `font:vga-8x16`.
-* **Collisions found by merging** (TrueNAS corpus, 19 frames, 10357 ink cells): merging the 20 "extra" fonts leaves font-exact cells 10346 -> 10346, alias 0 -> 0, homoglyph cells 1886 -> 1886, audit
-  disagreements unchanged. Merging also the 3 near-duplicate fonts (`fixed-8x16` = Unifont's bitmaps, `csvga-8x16` ~ kernel VGA, `terminus-bold-16x32` ~ kernel TER) gives font-exact 7083 /
+* **Collisions found by merging** (TrueNAS corpus: 20 frames, 19 with a detectable grid; 10357 ink cells): merging the extra-tier fonts leaves the CELL counts unchanged (font-exact 10346 -> 10346,
+  alias 0 -> 0, homoglyph 1886 -> 1886, audit disagreements unchanged). The **proof status** did change with the first version of the rival rule: Terminus Bold 8x16 shares digits/letters with VGA, the
+  runner-up share rose from 0.0 to 0.20-0.30 (frame 13 at 0.3016) and `font_proven` flipped on frame 13. Since then a rival blocks the proof only if it reads some bitmap of THIS screen as a
+  different character (`res["font_rivals_blocking"]`): `font_proven` is True on all 19 frames with base+extra (4 of 19 with the ambiguous tier merged too, correctly). Also found by review: an exact
+  2x upscale of an 8x16 screen is a real 16x32 screen of `font:csvga-16x32`; `decode(unscaled=k)` now makes those cells alias sets when the larger font is loaded (NOTICE.md, scale hazards). Merging also the 3 near-duplicate fonts (`fixed-8x16` = Unifont's bitmaps, `csvga-8x16` ~ kernel VGA, `terminus-bold-16x32` ~ kernel TER) gives font-exact 7083 /
   alias 3263: the reader cannot tell those pairs apart on ASCII-mostly screens and now says so (it did not before only because the alternatives were absent from the atlas).
   Consequence for consumers: choose the atlas per target (extra tier by default; ambiguous tier only when the screen font is known).

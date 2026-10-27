@@ -64,24 +64,85 @@ def _manifest_font(kind, path):
     raise ValueError("unknown manifest font kind %r" % kind)
 
 
+def font_mapping(entry):
+    """{bitmap hex: (sorted repertoire characters, sorted other code points)}: the CHARACTER-to-bitmap mapping of an atlas font, not just its keys."""
+    return {k: (sorted(g["c"]), sorted(g.get("x", []))) for k, g in entry["glyphs"].items()}
+
+
+def mapping_differences(a, b):
+    """-> (only_in_a, only_in_b, {bitmap: (a mapping, b mapping)} for bitmaps present in both with a different mapping)."""
+    ma, mb = font_mapping(a), font_mapping(b)
+    return (sorted(set(ma) - set(mb)), sorted(set(mb) - set(ma)), {k: (ma[k], mb[k]) for k in set(ma) & set(mb) if ma[k] != mb[k]})
+
+
+NATIVE_SHARE_LIMIT = 0.5   # same-size fonts that share >= this fraction of the smaller font's bitmaps cannot be told apart on ordinary text
+
+
+def hazard_analysis(fonts, order, base_names):
+    """Mechanical hazards between atlas fonts (``fonts`` name -> atlas font entry; ``order`` = manifest order of the NEW fonts; ``base_names`` = fonts
+    of the base atlas, which come first).  -> {name: {...}} for every new font:
+
+    * ``native``: same cell size, another font earlier in the order (or in the base) shares >= NATIVE_SHARE_LIMIT of the smaller font's bitmaps; lists
+      each such font with shared / differing-character counts.  Such a font is *ambiguous tier* (merging it turns exact reads into alias sets).
+    * ``scale``: for every other font of k times the cell (k = 2..8) or 1/k times it: how many glyphs of the larger font are exact k-fold enlargements
+      of a bitmap of the smaller one (``doublable``) and for how many of those the two fonts draw different characters (``differing``).  A larger
+      font whose doublable glyphs differ in character is a ``scale_hazard``: an integer-upscale capture of the smaller font is indistinguishable from
+      it, and ``glyphgrid.decode(unscaled=k)`` turns those cells into alias sets (needs the larger font LOADED, so it stays in the extra atlas)."""
+    out = {}
+    names = list(base_names) + [n for n in order if n not in base_names]
+    for name in order:
+        me = fonts[name]
+        rec = {"native": [], "scale": []}
+        for other in names:
+            if other == name or other not in fonts:
+                continue
+            of = fonts[other]
+            same = (of["cell_w"], of["cell_h"]) == (me["cell_w"], me["cell_h"])
+            if same:
+                if names.index(other) < names.index(name):
+                    shared = set(of["glyphs"]) & set(me["glyphs"])
+                    if shared and len(shared) >= NATIVE_SHARE_LIMIT * min(len(of["glyphs"]), len(me["glyphs"])):
+                        diff = sum(1 for k in shared if set(of["glyphs"][k]["c"]) != set(me["glyphs"][k]["c"]))
+                        rec["native"].append({"font": other, "shared": len(shared), "differing_chars": diff,
+                                              "fraction_of_smaller": round(len(shared) / min(len(of["glyphs"]), len(me["glyphs"])), 3)})
+                continue
+            for k in range(2, 9):
+                for big, small, bn, sn in ((me, of, name, other), (of, me, other, name)):
+                    if (big["cell_w"], big["cell_h"]) == (small["cell_w"] * k, small["cell_h"] * k):
+                        dbl = diff = 0
+                        for hx, g in big["glyphs"].items():
+                            red = gg.reduce_cell(bytes.fromhex(hx), big["cell_w"], big["cell_h"], k)
+                            sg = small["glyphs"].get(red.hex()) if red is not None else None
+                            if sg is not None:
+                                dbl += 1
+                                diff += set(sg["c"]) != set(g["c"])
+                        if dbl:
+                            rec["scale"].append({"larger": bn, "smaller": sn, "k": k, "glyphs_of_larger": len(big["glyphs"]), "doublable": dbl, "differing_chars": diff})
+        rec["tier"] = "ambiguous" if rec["native"] else "extra"
+        rec["scale_hazard"] = any(x["differing_chars"] for x in rec["scale"] if x["larger"] == name)
+        out[name] = rec
+    return out
+
+
 def build_manifest(manifest_path, src_root, atlas, base_atlas=None, repertoire_default="ascii+box", tier="extra"):
-    """Build the manifest entries of one ``tier`` ("extra" = fonts that merge into the base atlas without making any base read ambiguous;
-    "ambiguous" = near-duplicates of a base/extra font whose merge turns exact reads into alias sets, measured on the TrueNAS corpus; "all")
-    into ``atlas``; -> report dict.  Fails (ValueError) on a sha256 mismatch.
+    """Build the manifest entries of one ``tier`` into ``atlas``; -> report dict.  Fails (ValueError) on a sha256 mismatch.
+
+    Every non-``same_as`` font is first built into a universe together with the base atlas and the other tiers, and ``hazard_analysis`` decides its
+    tier mechanically: ``extra`` fonts merge into the base atlas without making any base read ambiguous; ``ambiguous`` fonts (>= 50% of the smaller
+    font's bitmaps shared with an earlier font of the same cell size) turn exact reads into alias sets, measured on the TrueNAS corpus.  If the manifest
+    says another tier than the analysis, the build FAILS.  Scale hazards (integer-doubles of another font with other characters) are reported and kept
+    in the extra tier on purpose: the unscale guard of ``glyphgrid.decode`` needs the larger font loaded.  ``tier="all"`` builds everything.
 
     Manifest: {"entries": [{"atlas_font": "font:terminus-8x16", "kind": "psf|pf2|kernel-vga-8x16|kernel-ter-16x32", "file": "path under src_root",
-    "sha256": "<of the file as shipped>", "repertoire": "ascii+box", "origin": {"package": ..., "version": ..., "path": ..., "licence": ...},
-    "same_as": "font:vga-8x16"?}]}.
-    * ``same_as``: the file is NOT added; its repertoire bitmaps are compared with that font of ``base_atlas`` and the relation (identical /
-      subset / counts of bitmaps only on either side) is reported.
-    * two entries with one ``atlas_font`` are the same font seen in two places: the second must be bitmap-identical (else ValueError) and is
+    "sha256": "<of the file as shipped>", "repertoire": "ascii+box", "tier": "extra|ambiguous", "origin": {...}, "same_as": "font:vga-8x16"?}]}.
+    * ``same_as``: the file is NOT added; its repertoire bitmaps AND their character mapping are compared with that font of ``base_atlas`` and the
+      relation (identical / subset / counts, mapping differences per bitmap) is reported.  ``identical`` needs the same keys AND the same mapping.
+    * two entries with one ``atlas_font`` are the same font seen in two places: the second must have the identical mapping (else ValueError) and is
       recorded under ``origin.also``."""
     with open(manifest_path, encoding="utf-8") as f:
         man = json.load(f)
-    report = []
+    uni, report, order, wanted_tier = gg.Atlas(), [], [], {}
     for e in man["entries"]:
-        if tier != "all" and not e.get("same_as") and e.get("tier", "extra") != tier:
-            continue
         path = os.path.join(src_root, e["file"])
         got = _file_sha(path)
         if got != e["sha256"]:
@@ -91,34 +152,49 @@ def build_manifest(manifest_path, src_root, atlas, base_atlas=None, repertoire_d
         name, rec = e["atlas_font"], {"atlas_font": e["atlas_font"], "file": e["file"], "sha256": got, "kind": e["kind"]}
         tmp = gg.Atlas()
         ff.build_font_atlas(tmp, "t", font, rep)
-        keys = set(tmp.fonts["t"]["glyphs"])
         if e.get("same_as"):
-            ref = (base_atlas or atlas).fonts.get(e["same_as"])
+            ref = (base_atlas or uni).fonts.get(e["same_as"])
             if ref is None:
                 raise ValueError("%s: same_as %s is not in the base atlas" % (e["file"], e["same_as"]))
-            rk = set(ref["glyphs"])
-            rec.update(same_as=e["same_as"], identical=keys == rk, bitmaps=len(keys), reference_bitmaps=len(rk), only_here=len(keys - rk),
-                       only_reference=len(rk - keys), cell=[font.cell_w, font.cell_h], same_cell=(font.cell_w, font.cell_h) == (ref["cell_w"], ref["cell_h"]),
-                       subset_of_reference=keys <= rk, origin=e.get("origin"))
+            only_here, only_ref, mapdiff = mapping_differences(tmp.fonts["t"], ref)
+            rec.update(same_as=e["same_as"], identical=not (only_here or only_ref or mapdiff), bitmaps=len(tmp.fonts["t"]["glyphs"]), reference_bitmaps=len(ref["glyphs"]),
+                       only_here=len(only_here), only_reference=len(only_ref), mapping_differences=len(mapdiff),
+                       repertoire_char_differences=sum(1 for v in mapdiff.values() if v[0][0] != v[1][0]),
+                       homoglyph_list_differences=sum(1 for v in mapdiff.values() if v[0][0] == v[1][0]),
+                       homoglyph_lists_here_subset_of_reference=all(set(v[0][1]) <= set(v[1][1]) for v in mapdiff.values()),
+                       same_cell=(font.cell_w, font.cell_h) == (ref["cell_w"], ref["cell_h"]),
+                       subset_of_reference=not only_here and all(v[0][0] == v[1][0] for v in mapdiff.values()), origin=e.get("origin"))
             report.append(rec)
             continue
-        if name in atlas.fonts:
-            if set(atlas.fonts[name]["glyphs"]) != keys:
-                raise ValueError("%s: atlas font %s was built from another source and these bitmaps differ" % (e["file"], name))
-            atlas.fonts[name]["origin"].setdefault("also", []).append({"file": os.path.basename(path), "sha256": got, **(e.get("origin") or {})})
-            rec.update(merged_into=name, identical=True, bitmaps=len(keys))
+        if name in uni.fonts:
+            only_here, only_ref, mapdiff = mapping_differences(tmp.fonts["t"], uni.fonts[name])
+            if only_here or only_ref or mapdiff:
+                raise ValueError("%s: atlas font %s was built from another source and its bitmaps/characters differ (%d only here, %d only there, %d with another mapping)"
+                                 % (e["file"], name, len(only_here), len(only_ref), len(mapdiff)))
+            uni.fonts[name]["origin"].setdefault("also", []).append({"file": os.path.basename(path), "sha256": got, **(e.get("origin") or {})})
+            rec.update(merged_into=name, identical=True, mapping_identical=True, bitmaps=len(tmp.fonts["t"]["glyphs"]))
             report.append(rec)
             continue
-        info = ff.build_font_atlas(atlas, name, font, rep, provenance={"provenance": e["origin"]} if e.get("origin") else None)
-        rel = {}   # same-size font-file fonts that share bitmaps with this one: collisions the atlas machinery keeps reporting (cross_font_chars)
-        for other, of in atlas.fonts.items():
-            if other != name and (of["cell_w"], of["cell_h"]) == (font.cell_w, font.cell_h):
-                common = len(set(of["glyphs"]) & keys)
-                if common:
-                    rel[other] = {"shared_bitmaps": common, "identical": common == len(of["glyphs"]) == len(keys)}
-        rec.update(bitmaps=info["glyphs"], cell=[font.cell_w, font.cell_h], alias_sets=len(info["alias_sets"]), homoglyph_sets=len(info["homoglyph_sets"]),
-                   same_size_relations=rel, note=font.note)
+        info = ff.build_font_atlas(uni, name, font, rep, provenance={"provenance": e["origin"]} if e.get("origin") else None)
+        order.append(name)
+        wanted_tier[name] = e.get("tier", "extra")
+        rec.update(bitmaps=info["glyphs"], cell=[font.cell_w, font.cell_h], alias_sets=len(info["alias_sets"]), homoglyph_sets=len(info["homoglyph_sets"]), note=font.note)
         report.append(rec)
+    base_fonts = dict(base_atlas.fonts) if base_atlas else {}
+    ana = hazard_analysis({**base_fonts, **uni.fonts}, order, list(base_fonts))
+    for name in order:
+        if ana[name]["tier"] != wanted_tier[name]:
+            raise ValueError("%s: manifest tier %r but the hazard analysis says %r (%s)" % (name, wanted_tier[name], ana[name]["tier"], json.dumps(ana[name]["native"])))
+        if ana[name]["scale_hazard"]:
+            uni.fonts[name]["origin"]["scale_hazard"] = [x for x in ana[name]["scale"] if x["larger"] == name and x["differing_chars"]]
+    for rec in report:
+        if rec["atlas_font"] in ana and not rec.get("same_as") and not rec.get("merged_into"):
+            rec["analysis"] = ana[rec["atlas_font"]]
+    for name in order:
+        if tier == "all" or ana[name]["tier"] == tier:
+            atlas.fonts[name] = uni.fonts[name]
+    if tier != "all":
+        report = [r for r in report if r.get("same_as") or r["atlas_font"] in atlas.fonts]
     return {"entries": report}
 
 
@@ -179,7 +255,7 @@ def main(argv=None):
     if a.manifest:
         rep = build_manifest(a.manifest, a.src_root or ".", atlas, gg.Atlas.load(a.base_atlas) if a.base_atlas else None, a.repertoire, a.tier)
         for r in rep["entries"]:
-            what = ("same_as %s identical=%s subset=%s" % (r["same_as"], r["identical"], r["subset_of_reference"]) if r.get("same_as") else
+            what = ("same_as %s identical=%s subset=%s mapping_differences=%d" % (r["same_as"], r["identical"], r["subset_of_reference"], r["mapping_differences"]) if r.get("same_as") else
                     "merged into %s" % r["merged_into"] if r.get("merged_into") else "%d bitmaps %s" % (r["bitmaps"], r["cell"]))
             print("%-28s %s  %s" % (r["atlas_font"], what, r["file"]))
         if a.report:

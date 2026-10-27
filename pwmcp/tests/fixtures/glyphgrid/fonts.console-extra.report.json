@@ -1,330 +1,62 @@
 {
  "entries": [
   {
-   "alias_sets": 16,
-   "atlas_font": "font:terminus-8x16",
-   "bitmaps": 110,
-   "cell": [
-    8,
-    16
-   ],
-   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Terminus16.psf.gz",
-   "homoglyph_sets": 70,
-   "kind": "psf",
-   "note": "",
-   "same_size_relations": {},
-   "sha256": "2bc51a16e2bbd3aee7463d8318935f819684579127defff2ef23f092f98c9420"
-  },
-  {
-   "alias_sets": 16,
-   "atlas_font": "font:terminus-bold-8x16",
-   "bitmaps": 110,
-   "cell": [
-    8,
-    16
-   ],
-   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-TerminusBold16.psf.gz",
-   "homoglyph_sets": 71,
-   "kind": "psf",
-   "note": "",
-   "same_size_relations": {
-    "font:terminus-8x16": {
-     "identical": false,
-     "shared_bitmaps": 3
-    }
-   },
-   "sha256": "7c580d03f9ea4e0da24b1db042a4f482d0d021c1f40a5c948f51696d2fbe7fe5"
-  },
-  {
-   "alias_sets": 16,
-   "atlas_font": "font:terminus-8x14",
-   "bitmaps": 110,
-   "cell": [
-    8,
-    14
-   ],
-   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Terminus14.psf.gz",
-   "homoglyph_sets": 70,
-   "kind": "psf",
-   "note": "",
-   "same_size_relations": {},
-   "sha256": "27381672f14435611ca9bf5d017f85da5bcf4c2f3d19b14623268c06cfd1d1da"
-  },
-  {
-   "alias_sets": 16,
-   "atlas_font": "font:terminus-6x12",
-   "bitmaps": 110,
-   "cell": [
-    6,
-    12
-   ],
-   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Terminus12x6.psf.gz",
-   "homoglyph_sets": 75,
-   "kind": "psf",
-   "note": "",
-   "same_size_relations": {},
-   "sha256": "d8fec3bade8da7baaf3ff7b1635fe62e2cdbc0914518bdeedb8b66b8f2ee448a"
-  },
-  {
-   "alias_sets": 16,
-   "atlas_font": "font:terminus-10x18",
-   "bitmaps": 110,
-   "cell": [
-    10,
-    18
-   ],
-   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Terminus18x10.psf.gz",
-   "homoglyph_sets": 71,
-   "kind": "psf",
-   "note": "",
-   "same_size_relations": {},
-   "sha256": "5e4f30fddf41903658003c2fb45e4bb7d870fb753000953f87ee51f46e8690b4"
-  },
-  {
-   "alias_sets": 16,
-   "atlas_font": "font:terminus-10x20",
-   "bitmaps": 110,
-   "cell": [
-    10,
-    20
-   ],
-   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Terminus20x10.psf.gz",
-   "homoglyph_sets": 71,
-   "kind": "psf",
-   "note": "",
-   "same_size_relations": {},
-   "sha256": "51a4aa8a1bbff36fa7ae6b5bd905a9308a64fbf57cfb01c52fe5396a8853d27c"
-  },
-  {
-   "alias_sets": 16,
-   "atlas_font": "font:terminus-11x22",
-   "bitmaps": 110,
-   "cell": [
-    11,
-    22
-   ],
-   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Terminus22x11.psf.gz",
-   "homoglyph_sets": 71,
-   "kind": "psf",
-   "note": "",
-   "same_size_relations": {},
-   "sha256": "817a7aecd5414410e43dd41320539473b617fe217a332ba25f0f219a40011165"
-  },
-  {
-   "alias_sets": 16,
-   "atlas_font": "font:terminus-12x24",
-   "bitmaps": 110,
-   "cell": [
-    12,
-    24
-   ],
-   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Terminus24x12.psf.gz",
-   "homoglyph_sets": 71,
-   "kind": "psf",
-   "note": "",
-   "same_size_relations": {},
-   "sha256": "efc268dcd69ef86e3cd5f5a0bfbf4d0e7ae618334e27198c605b7cd00315616b"
-  },
-  {
-   "alias_sets": 16,
-   "atlas_font": "font:terminus-14x28",
-   "bitmaps": 110,
-   "cell": [
-    14,
-    28
-   ],
-   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Terminus28x14.psf.gz",
-   "homoglyph_sets": 70,
-   "kind": "psf",
-   "note": "",
-   "same_size_relations": {},
-   "sha256": "cd0975a4639fdfce20a24607d458ff32d181805ed71101438f2e59c94156f799"
-  },
-  {
-   "alias_sets": 16,
-   "atlas_font": "font:terminus-16x32",
-   "bitmaps": 110,
-   "cell": [
-    16,
-    32
-   ],
-   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Terminus32x16.psf.gz",
-   "homoglyph_sets": 70,
-   "kind": "psf",
-   "note": "",
-   "same_size_relations": {},
-   "sha256": "a13bd9ced51d694bd0f9c40592dd18e747a441616ed6578d797ee8e33a2e2f69"
-  },
-  {
-   "alias_sets": 16,
-   "atlas_font": "font:terminus-bold-12x24",
-   "bitmaps": 110,
-   "cell": [
-    12,
-    24
-   ],
-   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-TerminusBold24x12.psf.gz",
-   "homoglyph_sets": 71,
-   "kind": "psf",
-   "note": "",
-   "same_size_relations": {
-    "font:terminus-12x24": {
-     "identical": false,
-     "shared_bitmaps": 3
-    }
-   },
-   "sha256": "e939fdac22cd698dd1e57d29ef38e0e366f4dee632d65b794996bb4250f80e1b"
-  },
-  {
-   "alias_sets": 16,
-   "atlas_font": "font:fixed-8x13",
-   "bitmaps": 110,
-   "cell": [
-    8,
-    13
-   ],
-   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Fixed13.psf.gz",
-   "homoglyph_sets": 71,
-   "kind": "psf",
-   "note": "",
-   "same_size_relations": {},
-   "sha256": "74b917d61759843a3df65be96a0fe4aa6978840dca437d90a044dbc7b17a68a7"
-  },
-  {
-   "alias_sets": 16,
-   "atlas_font": "font:fixed-8x14",
-   "bitmaps": 110,
-   "cell": [
-    8,
-    14
-   ],
-   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Fixed14.psf.gz",
-   "homoglyph_sets": 70,
-   "kind": "psf",
-   "note": "",
-   "same_size_relations": {
-    "font:terminus-8x14": {
-     "identical": false,
-     "shared_bitmaps": 26
-    }
-   },
-   "sha256": "df034303323f2e6c396120f28571386c63fe789b7286523d3faba5eb030123ba"
-  },
-  {
-   "alias_sets": 16,
-   "atlas_font": "font:fixed-8x15",
-   "bitmaps": 110,
-   "cell": [
-    8,
-    15
-   ],
-   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Fixed15.psf.gz",
-   "homoglyph_sets": 71,
-   "kind": "psf",
-   "note": "",
-   "same_size_relations": {},
-   "sha256": "707d0fb26c2240241b7af22ace56013812e59ce3ba4d68637af90694748232e2"
-  },
-  {
-   "alias_sets": 16,
-   "atlas_font": "font:fixed-8x18",
-   "bitmaps": 110,
-   "cell": [
-    8,
-    18
-   ],
-   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Fixed18.psf.gz",
-   "homoglyph_sets": 71,
-   "kind": "psf",
-   "note": "",
-   "same_size_relations": {},
-   "sha256": "bd1d6b7d2864c273ef3cb3cc7f26f288829eb42176672359122cb0b123ca36a1"
-  },
-  {
-   "alias_sets": 16,
-   "atlas_font": "font:csvga-8x8",
-   "bitmaps": 110,
-   "cell": [
-    8,
-    8
-   ],
-   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Lat15-VGA8.psf.gz",
-   "homoglyph_sets": 72,
-   "kind": "psf",
-   "note": "",
-   "same_size_relations": {},
-   "sha256": "6c5cf355632e12e8b91682957dc5a5ae55d7ec9247f70123c75d31c36696641d"
-  },
-  {
-   "alias_sets": 16,
-   "atlas_font": "font:csvga-8x14",
-   "bitmaps": 110,
-   "cell": [
-    8,
-    14
-   ],
-   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Lat15-VGA14.psf.gz",
-   "homoglyph_sets": 70,
-   "kind": "psf",
-   "note": "",
-   "same_size_relations": {
-    "font:fixed-8x14": {
-     "identical": false,
-     "shared_bitmaps": 1
-    },
-    "font:terminus-8x14": {
-     "identical": false,
-     "shared_bitmaps": 4
-    }
-   },
-   "sha256": "fe3e804ea8e0fbd37b2ed6b462958bf2887fa7f91fa130f9d61340923613e08a"
-  },
-  {
-   "alias_sets": 16,
-   "atlas_font": "font:csvga-16x28",
-   "bitmaps": 110,
-   "cell": [
-    16,
-    28
-   ],
-   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Lat15-VGA28x16.psf.gz",
-   "homoglyph_sets": 70,
-   "kind": "psf",
-   "note": "",
-   "same_size_relations": {},
-   "sha256": "c4a73dbbe3c37a934a598500a1288f601ffa4d1343ab38a4e019969cd5ed0991"
-  },
-  {
-   "alias_sets": 16,
-   "atlas_font": "font:csvga-16x32",
-   "bitmaps": 110,
-   "cell": [
-    16,
-    32
-   ],
-   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Lat15-VGA32x16.psf.gz",
-   "homoglyph_sets": 72,
-   "kind": "psf",
-   "note": "",
-   "same_size_relations": {
-    "font:terminus-16x32": {
-     "identical": false,
-     "shared_bitmaps": 1
-    }
-   },
-   "sha256": "1765a808e05c9b1ca88b39aef1777b5a330e83576ff6b9dadc54b0df44d0f61a"
-  },
-  {
-   "atlas_font": "font:terminus-8x16",
-   "bitmaps": 110,
-   "file": "grml-full-2026.09-amd64/squashfs/etc/console-setup/cached_Uni3-Terminus16.psf.gz",
-   "identical": true,
-   "kind": "psf",
-   "merged_into": "font:terminus-8x16",
-   "sha256": "2bc51a16e2bbd3aee7463d8318935f819684579127defff2ef23f092f98c9420"
-  },
-  {
    "alias_sets": 0,
+   "analysis": {
+    "native": [],
+    "scale": [
+     {
+      "differing_chars": 0,
+      "doublable": 5,
+      "glyphs_of_larger": 146,
+      "k": 2,
+      "larger": "font:linux-ter16x32",
+      "smaller": "font:unifont-16"
+     },
+     {
+      "differing_chars": 0,
+      "doublable": 3,
+      "glyphs_of_larger": 146,
+      "k": 2,
+      "larger": "font:linux-ter16x32",
+      "smaller": "font:vga-8x16"
+     },
+     {
+      "differing_chars": 0,
+      "doublable": 1,
+      "glyphs_of_larger": 146,
+      "k": 2,
+      "larger": "font:linux-ter16x32",
+      "smaller": "font:terminus-8x16"
+     },
+     {
+      "differing_chars": 0,
+      "doublable": 1,
+      "glyphs_of_larger": 146,
+      "k": 2,
+      "larger": "font:linux-ter16x32",
+      "smaller": "font:terminus-bold-8x16"
+     },
+     {
+      "differing_chars": 0,
+      "doublable": 1,
+      "glyphs_of_larger": 146,
+      "k": 2,
+      "larger": "font:linux-ter16x32",
+      "smaller": "font:fixed-8x16"
+     },
+     {
+      "differing_chars": 0,
+      "doublable": 1,
+      "glyphs_of_larger": 146,
+      "k": 2,
+      "larger": "font:linux-ter16x32",
+      "smaller": "font:csvga-8x16"
+     }
+    ],
+    "scale_hazard": false,
+    "tier": "extra"
+   },
    "atlas_font": "font:linux-ter16x32",
    "bitmaps": 146,
    "cell": [
@@ -335,28 +67,658 @@
    "homoglyph_sets": 20,
    "kind": "kernel-ter-16x32",
    "note": "Terminus Bold 16x32 table (256 glyphs) at 0x12ce6a0 of the decompressed kernel vmlinuz; code points = kernel default unicode map",
-   "same_size_relations": {
-    "font:csvga-16x32": {
-     "identical": false,
-     "shared_bitmaps": 1
-    },
-    "font:terminus-16x32": {
-     "identical": false,
-     "shared_bitmaps": 6
-    }
-   },
    "sha256": "2b2358b37674d2505350528875bb17afae2a36522a9e8a9417eaca65a7da0e08"
   },
   {
-   "atlas_font": "font:vga-8x16",
-   "bitmaps": 146,
+   "alias_sets": 16,
+   "analysis": {
+    "native": [],
+    "scale": [
+     {
+      "differing_chars": 0,
+      "doublable": 1,
+      "glyphs_of_larger": 146,
+      "k": 2,
+      "larger": "font:linux-ter16x32",
+      "smaller": "font:terminus-8x16"
+     },
+     {
+      "differing_chars": 0,
+      "doublable": 1,
+      "glyphs_of_larger": 110,
+      "k": 2,
+      "larger": "font:terminus-16x32",
+      "smaller": "font:terminus-8x16"
+     },
+     {
+      "differing_chars": 0,
+      "doublable": 1,
+      "glyphs_of_larger": 110,
+      "k": 2,
+      "larger": "font:terminus-bold-16x32",
+      "smaller": "font:terminus-8x16"
+     },
+     {
+      "differing_chars": 0,
+      "doublable": 3,
+      "glyphs_of_larger": 110,
+      "k": 2,
+      "larger": "font:csvga-16x32",
+      "smaller": "font:terminus-8x16"
+     }
+    ],
+    "scale_hazard": false,
+    "tier": "extra"
+   },
+   "atlas_font": "font:terminus-8x16",
+   "bitmaps": 110,
    "cell": [
     8,
     16
    ],
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Terminus16.psf.gz",
+   "homoglyph_sets": 70,
+   "kind": "psf",
+   "note": "",
+   "sha256": "2bc51a16e2bbd3aee7463d8318935f819684579127defff2ef23f092f98c9420"
+  },
+  {
+   "alias_sets": 16,
+   "analysis": {
+    "native": [],
+    "scale": [
+     {
+      "differing_chars": 0,
+      "doublable": 1,
+      "glyphs_of_larger": 146,
+      "k": 2,
+      "larger": "font:linux-ter16x32",
+      "smaller": "font:terminus-bold-8x16"
+     },
+     {
+      "differing_chars": 0,
+      "doublable": 1,
+      "glyphs_of_larger": 110,
+      "k": 2,
+      "larger": "font:terminus-16x32",
+      "smaller": "font:terminus-bold-8x16"
+     },
+     {
+      "differing_chars": 0,
+      "doublable": 1,
+      "glyphs_of_larger": 110,
+      "k": 2,
+      "larger": "font:terminus-bold-16x32",
+      "smaller": "font:terminus-bold-8x16"
+     },
+     {
+      "differing_chars": 0,
+      "doublable": 26,
+      "glyphs_of_larger": 110,
+      "k": 2,
+      "larger": "font:csvga-16x32",
+      "smaller": "font:terminus-bold-8x16"
+     }
+    ],
+    "scale_hazard": false,
+    "tier": "extra"
+   },
+   "atlas_font": "font:terminus-bold-8x16",
+   "bitmaps": 110,
+   "cell": [
+    8,
+    16
+   ],
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-TerminusBold16.psf.gz",
+   "homoglyph_sets": 71,
+   "kind": "psf",
+   "note": "",
+   "sha256": "7c580d03f9ea4e0da24b1db042a4f482d0d021c1f40a5c948f51696d2fbe7fe5"
+  },
+  {
+   "alias_sets": 16,
+   "analysis": {
+    "native": [],
+    "scale": [
+     {
+      "differing_chars": 0,
+      "doublable": 4,
+      "glyphs_of_larger": 110,
+      "k": 2,
+      "larger": "font:csvga-16x28",
+      "smaller": "font:terminus-8x14"
+     }
+    ],
+    "scale_hazard": false,
+    "tier": "extra"
+   },
+   "atlas_font": "font:terminus-8x14",
+   "bitmaps": 110,
+   "cell": [
+    8,
+    14
+   ],
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Terminus14.psf.gz",
+   "homoglyph_sets": 70,
+   "kind": "psf",
+   "note": "",
+   "sha256": "27381672f14435611ca9bf5d017f85da5bcf4c2f3d19b14623268c06cfd1d1da"
+  },
+  {
+   "alias_sets": 16,
+   "analysis": {
+    "native": [],
+    "scale": [
+     {
+      "differing_chars": 0,
+      "doublable": 1,
+      "glyphs_of_larger": 110,
+      "k": 2,
+      "larger": "font:terminus-12x24",
+      "smaller": "font:terminus-6x12"
+     },
+     {
+      "differing_chars": 0,
+      "doublable": 1,
+      "glyphs_of_larger": 110,
+      "k": 2,
+      "larger": "font:terminus-bold-12x24",
+      "smaller": "font:terminus-6x12"
+     }
+    ],
+    "scale_hazard": false,
+    "tier": "extra"
+   },
+   "atlas_font": "font:terminus-6x12",
+   "bitmaps": 110,
+   "cell": [
+    6,
+    12
+   ],
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Terminus12x6.psf.gz",
+   "homoglyph_sets": 75,
+   "kind": "psf",
+   "note": "",
+   "sha256": "d8fec3bade8da7baaf3ff7b1635fe62e2cdbc0914518bdeedb8b66b8f2ee448a"
+  },
+  {
+   "alias_sets": 16,
+   "analysis": {
+    "native": [],
+    "scale": [],
+    "scale_hazard": false,
+    "tier": "extra"
+   },
+   "atlas_font": "font:terminus-10x18",
+   "bitmaps": 110,
+   "cell": [
+    10,
+    18
+   ],
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Terminus18x10.psf.gz",
+   "homoglyph_sets": 71,
+   "kind": "psf",
+   "note": "",
+   "sha256": "5e4f30fddf41903658003c2fb45e4bb7d870fb753000953f87ee51f46e8690b4"
+  },
+  {
+   "alias_sets": 16,
+   "analysis": {
+    "native": [],
+    "scale": [],
+    "scale_hazard": false,
+    "tier": "extra"
+   },
+   "atlas_font": "font:terminus-10x20",
+   "bitmaps": 110,
+   "cell": [
+    10,
+    20
+   ],
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Terminus20x10.psf.gz",
+   "homoglyph_sets": 71,
+   "kind": "psf",
+   "note": "",
+   "sha256": "51a4aa8a1bbff36fa7ae6b5bd905a9308a64fbf57cfb01c52fe5396a8853d27c"
+  },
+  {
+   "alias_sets": 16,
+   "analysis": {
+    "native": [],
+    "scale": [],
+    "scale_hazard": false,
+    "tier": "extra"
+   },
+   "atlas_font": "font:terminus-11x22",
+   "bitmaps": 110,
+   "cell": [
+    11,
+    22
+   ],
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Terminus22x11.psf.gz",
+   "homoglyph_sets": 71,
+   "kind": "psf",
+   "note": "",
+   "sha256": "817a7aecd5414410e43dd41320539473b617fe217a332ba25f0f219a40011165"
+  },
+  {
+   "alias_sets": 16,
+   "analysis": {
+    "native": [],
+    "scale": [
+     {
+      "differing_chars": 0,
+      "doublable": 1,
+      "glyphs_of_larger": 110,
+      "k": 2,
+      "larger": "font:terminus-12x24",
+      "smaller": "font:terminus-6x12"
+     }
+    ],
+    "scale_hazard": false,
+    "tier": "extra"
+   },
+   "atlas_font": "font:terminus-12x24",
+   "bitmaps": 110,
+   "cell": [
+    12,
+    24
+   ],
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Terminus24x12.psf.gz",
+   "homoglyph_sets": 71,
+   "kind": "psf",
+   "note": "",
+   "sha256": "efc268dcd69ef86e3cd5f5a0bfbf4d0e7ae618334e27198c605b7cd00315616b"
+  },
+  {
+   "alias_sets": 16,
+   "analysis": {
+    "native": [],
+    "scale": [],
+    "scale_hazard": false,
+    "tier": "extra"
+   },
+   "atlas_font": "font:terminus-14x28",
+   "bitmaps": 110,
+   "cell": [
+    14,
+    28
+   ],
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Terminus28x14.psf.gz",
+   "homoglyph_sets": 70,
+   "kind": "psf",
+   "note": "",
+   "sha256": "cd0975a4639fdfce20a24607d458ff32d181805ed71101438f2e59c94156f799"
+  },
+  {
+   "alias_sets": 16,
+   "analysis": {
+    "native": [],
+    "scale": [
+     {
+      "differing_chars": 0,
+      "doublable": 1,
+      "glyphs_of_larger": 110,
+      "k": 2,
+      "larger": "font:terminus-16x32",
+      "smaller": "font:unifont-16"
+     },
+     {
+      "differing_chars": 0,
+      "doublable": 1,
+      "glyphs_of_larger": 110,
+      "k": 2,
+      "larger": "font:terminus-16x32",
+      "smaller": "font:vga-8x16"
+     },
+     {
+      "differing_chars": 0,
+      "doublable": 1,
+      "glyphs_of_larger": 110,
+      "k": 2,
+      "larger": "font:terminus-16x32",
+      "smaller": "font:terminus-8x16"
+     },
+     {
+      "differing_chars": 0,
+      "doublable": 1,
+      "glyphs_of_larger": 110,
+      "k": 2,
+      "larger": "font:terminus-16x32",
+      "smaller": "font:terminus-bold-8x16"
+     },
+     {
+      "differing_chars": 0,
+      "doublable": 1,
+      "glyphs_of_larger": 110,
+      "k": 2,
+      "larger": "font:terminus-16x32",
+      "smaller": "font:fixed-8x16"
+     },
+     {
+      "differing_chars": 0,
+      "doublable": 1,
+      "glyphs_of_larger": 110,
+      "k": 2,
+      "larger": "font:terminus-16x32",
+      "smaller": "font:csvga-8x16"
+     }
+    ],
+    "scale_hazard": false,
+    "tier": "extra"
+   },
+   "atlas_font": "font:terminus-16x32",
+   "bitmaps": 110,
+   "cell": [
+    16,
+    32
+   ],
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Terminus32x16.psf.gz",
+   "homoglyph_sets": 70,
+   "kind": "psf",
+   "note": "",
+   "sha256": "a13bd9ced51d694bd0f9c40592dd18e747a441616ed6578d797ee8e33a2e2f69"
+  },
+  {
+   "alias_sets": 16,
+   "analysis": {
+    "native": [],
+    "scale": [
+     {
+      "differing_chars": 0,
+      "doublable": 1,
+      "glyphs_of_larger": 110,
+      "k": 2,
+      "larger": "font:terminus-bold-12x24",
+      "smaller": "font:terminus-6x12"
+     }
+    ],
+    "scale_hazard": false,
+    "tier": "extra"
+   },
+   "atlas_font": "font:terminus-bold-12x24",
+   "bitmaps": 110,
+   "cell": [
+    12,
+    24
+   ],
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-TerminusBold24x12.psf.gz",
+   "homoglyph_sets": 71,
+   "kind": "psf",
+   "note": "",
+   "sha256": "e939fdac22cd698dd1e57d29ef38e0e366f4dee632d65b794996bb4250f80e1b"
+  },
+  {
+   "alias_sets": 16,
+   "analysis": {
+    "native": [],
+    "scale": [],
+    "scale_hazard": false,
+    "tier": "extra"
+   },
+   "atlas_font": "font:fixed-8x13",
+   "bitmaps": 110,
+   "cell": [
+    8,
+    13
+   ],
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Fixed13.psf.gz",
+   "homoglyph_sets": 71,
+   "kind": "psf",
+   "note": "",
+   "sha256": "74b917d61759843a3df65be96a0fe4aa6978840dca437d90a044dbc7b17a68a7"
+  },
+  {
+   "alias_sets": 16,
+   "analysis": {
+    "native": [],
+    "scale": [
+     {
+      "differing_chars": 0,
+      "doublable": 1,
+      "glyphs_of_larger": 110,
+      "k": 2,
+      "larger": "font:csvga-16x28",
+      "smaller": "font:fixed-8x14"
+     }
+    ],
+    "scale_hazard": false,
+    "tier": "extra"
+   },
+   "atlas_font": "font:fixed-8x14",
+   "bitmaps": 110,
+   "cell": [
+    8,
+    14
+   ],
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Fixed14.psf.gz",
+   "homoglyph_sets": 70,
+   "kind": "psf",
+   "note": "",
+   "sha256": "df034303323f2e6c396120f28571386c63fe789b7286523d3faba5eb030123ba"
+  },
+  {
+   "alias_sets": 16,
+   "analysis": {
+    "native": [],
+    "scale": [],
+    "scale_hazard": false,
+    "tier": "extra"
+   },
+   "atlas_font": "font:fixed-8x15",
+   "bitmaps": 110,
+   "cell": [
+    8,
+    15
+   ],
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Fixed15.psf.gz",
+   "homoglyph_sets": 71,
+   "kind": "psf",
+   "note": "",
+   "sha256": "707d0fb26c2240241b7af22ace56013812e59ce3ba4d68637af90694748232e2"
+  },
+  {
+   "alias_sets": 16,
+   "analysis": {
+    "native": [],
+    "scale": [],
+    "scale_hazard": false,
+    "tier": "extra"
+   },
+   "atlas_font": "font:fixed-8x18",
+   "bitmaps": 110,
+   "cell": [
+    8,
+    18
+   ],
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Fixed18.psf.gz",
+   "homoglyph_sets": 71,
+   "kind": "psf",
+   "note": "",
+   "sha256": "bd1d6b7d2864c273ef3cb3cc7f26f288829eb42176672359122cb0b123ca36a1"
+  },
+  {
+   "alias_sets": 16,
+   "analysis": {
+    "native": [],
+    "scale": [],
+    "scale_hazard": false,
+    "tier": "extra"
+   },
+   "atlas_font": "font:csvga-8x8",
+   "bitmaps": 110,
+   "cell": [
+    8,
+    8
+   ],
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Lat15-VGA8.psf.gz",
+   "homoglyph_sets": 72,
+   "kind": "psf",
+   "note": "",
+   "sha256": "6c5cf355632e12e8b91682957dc5a5ae55d7ec9247f70123c75d31c36696641d"
+  },
+  {
+   "alias_sets": 16,
+   "analysis": {
+    "native": [],
+    "scale": [
+     {
+      "differing_chars": 0,
+      "doublable": 110,
+      "glyphs_of_larger": 110,
+      "k": 2,
+      "larger": "font:csvga-16x28",
+      "smaller": "font:csvga-8x14"
+     }
+    ],
+    "scale_hazard": false,
+    "tier": "extra"
+   },
+   "atlas_font": "font:csvga-8x14",
+   "bitmaps": 110,
+   "cell": [
+    8,
+    14
+   ],
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Lat15-VGA14.psf.gz",
+   "homoglyph_sets": 70,
+   "kind": "psf",
+   "note": "",
+   "sha256": "fe3e804ea8e0fbd37b2ed6b462958bf2887fa7f91fa130f9d61340923613e08a"
+  },
+  {
+   "alias_sets": 16,
+   "analysis": {
+    "native": [],
+    "scale": [
+     {
+      "differing_chars": 0,
+      "doublable": 4,
+      "glyphs_of_larger": 110,
+      "k": 2,
+      "larger": "font:csvga-16x28",
+      "smaller": "font:terminus-8x14"
+     },
+     {
+      "differing_chars": 0,
+      "doublable": 1,
+      "glyphs_of_larger": 110,
+      "k": 2,
+      "larger": "font:csvga-16x28",
+      "smaller": "font:fixed-8x14"
+     },
+     {
+      "differing_chars": 0,
+      "doublable": 110,
+      "glyphs_of_larger": 110,
+      "k": 2,
+      "larger": "font:csvga-16x28",
+      "smaller": "font:csvga-8x14"
+     }
+    ],
+    "scale_hazard": false,
+    "tier": "extra"
+   },
+   "atlas_font": "font:csvga-16x28",
+   "bitmaps": 110,
+   "cell": [
+    16,
+    28
+   ],
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Lat15-VGA28x16.psf.gz",
+   "homoglyph_sets": 70,
+   "kind": "psf",
+   "note": "",
+   "sha256": "c4a73dbbe3c37a934a598500a1288f601ffa4d1343ab38a4e019969cd5ed0991"
+  },
+  {
+   "alias_sets": 16,
+   "analysis": {
+    "native": [],
+    "scale": [
+     {
+      "differing_chars": 11,
+      "doublable": 12,
+      "glyphs_of_larger": 110,
+      "k": 2,
+      "larger": "font:csvga-16x32",
+      "smaller": "font:unifont-16"
+     },
+     {
+      "differing_chars": 16,
+      "doublable": 105,
+      "glyphs_of_larger": 110,
+      "k": 2,
+      "larger": "font:csvga-16x32",
+      "smaller": "font:vga-8x16"
+     },
+     {
+      "differing_chars": 0,
+      "doublable": 3,
+      "glyphs_of_larger": 110,
+      "k": 2,
+      "larger": "font:csvga-16x32",
+      "smaller": "font:terminus-8x16"
+     },
+     {
+      "differing_chars": 0,
+      "doublable": 26,
+      "glyphs_of_larger": 110,
+      "k": 2,
+      "larger": "font:csvga-16x32",
+      "smaller": "font:terminus-bold-8x16"
+     },
+     {
+      "differing_chars": 0,
+      "doublable": 2,
+      "glyphs_of_larger": 110,
+      "k": 2,
+      "larger": "font:csvga-16x32",
+      "smaller": "font:fixed-8x16"
+     },
+     {
+      "differing_chars": 0,
+      "doublable": 110,
+      "glyphs_of_larger": 110,
+      "k": 2,
+      "larger": "font:csvga-16x32",
+      "smaller": "font:csvga-8x16"
+     }
+    ],
+    "scale_hazard": true,
+    "tier": "extra"
+   },
+   "atlas_font": "font:csvga-16x32",
+   "bitmaps": 110,
+   "cell": [
+    16,
+    32
+   ],
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Lat15-VGA32x16.psf.gz",
+   "homoglyph_sets": 72,
+   "kind": "psf",
+   "note": "",
+   "sha256": "1765a808e05c9b1ca88b39aef1777b5a330e83576ff6b9dadc54b0df44d0f61a"
+  },
+  {
+   "atlas_font": "font:terminus-8x16",
+   "bitmaps": 110,
+   "file": "grml-full-2026.09-amd64/squashfs/etc/console-setup/cached_Uni3-Terminus16.psf.gz",
+   "identical": true,
+   "kind": "psf",
+   "mapping_identical": true,
+   "merged_into": "font:terminus-8x16",
+   "sha256": "2bc51a16e2bbd3aee7463d8318935f819684579127defff2ef23f092f98c9420"
+  },
+  {
+   "atlas_font": "font:vga-8x16",
+   "bitmaps": 146,
    "file": "debian-13.7.0-amd64-netinst/vmlinuz",
+   "homoglyph_list_differences": 0,
+   "homoglyph_lists_here_subset_of_reference": true,
    "identical": true,
    "kind": "kernel-vga-8x16",
+   "mapping_differences": 0,
    "only_here": 0,
    "only_reference": 0,
    "origin": {
@@ -365,6 +727,7 @@
     "path_in_image": "/install.amd/vmlinuz"
    },
    "reference_bitmaps": 146,
+   "repertoire_char_differences": 0,
    "same_as": "font:vga-8x16",
    "same_cell": true,
    "sha256": "2b2358b37674d2505350528875bb17afae2a36522a9e8a9417eaca65a7da0e08",
@@ -373,13 +736,12 @@
   {
    "atlas_font": "font:vga-8x16",
    "bitmaps": 146,
-   "cell": [
-    8,
-    16
-   ],
    "file": "grml-full-2026.09-amd64/iso/kern/vmlinuz",
+   "homoglyph_list_differences": 0,
+   "homoglyph_lists_here_subset_of_reference": true,
    "identical": true,
    "kind": "kernel-vga-8x16",
+   "mapping_differences": 0,
    "only_here": 0,
    "only_reference": 0,
    "origin": {
@@ -387,6 +749,7 @@
     "path_in_image": "/boot/grmlfullamd64/vmlinuz"
    },
    "reference_bitmaps": 146,
+   "repertoire_char_differences": 0,
    "same_as": "font:vga-8x16",
    "same_cell": true,
    "sha256": "5e2698f8628f2dbabd7ae6a377a925feee4dae4d62ca314cd92ec8eb88fd49a9",
@@ -395,13 +758,12 @@
   {
    "atlas_font": "font:grub-unifont-16-subset",
    "bitmaps": 123,
-   "cell": [
-    8,
-    16
-   ],
    "file": "debian-13.7.0-amd64-netinst/font.pf2",
+   "homoglyph_list_differences": 56,
+   "homoglyph_lists_here_subset_of_reference": true,
    "identical": false,
    "kind": "pf2",
+   "mapping_differences": 56,
    "only_here": 0,
    "only_reference": 135,
    "origin": {
@@ -409,6 +771,7 @@
     "path_in_image": "/boot/grub/font.pf2"
    },
    "reference_bitmaps": 258,
+   "repertoire_char_differences": 0,
    "same_as": "font:unifont-16",
    "same_cell": true,
    "sha256": "556e49a42fc9c8b18a31472d2ca74c17f6159040147d2433025692617f39848c",
@@ -417,13 +780,12 @@
   {
    "atlas_font": "font:unifont-16",
    "bitmaps": 258,
-   "cell": [
-    8,
-    16
-   ],
    "file": "grml-full-2026.09-amd64/iso/unicode.pf2",
-   "identical": true,
+   "homoglyph_list_differences": 1,
+   "homoglyph_lists_here_subset_of_reference": true,
+   "identical": false,
    "kind": "pf2",
+   "mapping_differences": 1,
    "only_here": 0,
    "only_reference": 0,
    "origin": {
@@ -431,6 +793,7 @@
     "path_in_image": "/boot/grub/fonts/unicode.pf2"
    },
    "reference_bitmaps": 258,
+   "repertoire_char_differences": 0,
    "same_as": "font:unifont-16",
    "same_cell": true,
    "sha256": "dc6d6a18148cef2a1e2fcba91feed2642f47f85ca9eb0509485265544982d804",

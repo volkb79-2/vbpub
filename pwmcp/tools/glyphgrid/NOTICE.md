@@ -23,24 +23,45 @@ of the downloads verified, **GPG signatures NOT verified**):
 * grml-full 2026.09 amd64 ISO, sha256 `76e8019ff1b68ddb3e49cecb1ea35ecead9e0f1c1ba22c0e819c9b13de939e72` (matches `grml-full-2026.09-amd64.iso.sha256` on download.grml.org).
 * Debian trixie package `console-setup-linux 1.242~deb13u1` (`apt-get download`, deb sha256 `c96eb9386cd8d65dceb0a58726dcef7cf7a0aedca7f514139c225ab391baca27`).
 
-| atlas font | font | licence (package copyright file) | source file, sha256 |
+Licence column legend: **verified** = quoted from a copyright text of the downloaded package (snippets and their sha256 below); **unverified, from memory** = my recollection of the
+upstream licence, NOT checked against any shipped text; do not rely on it.
+
+| atlas font (tier) | font | licence | source file, sha256 |
 |---|---|---|---|
-| `font:terminus-8x16` | Terminus 8x16, `Uni3-Terminus16.psf.gz`; **the console font of the grml image** (`/etc/default/console-setup` FONTFACE=Terminus FONTSIZE=8x16, `cached_Uni3-Terminus16.psf.gz` is byte-identical, `setfont` runs on every vt) | SIL OFL-1.1, (c) 2010 Dimitar Toshkov Zhekov, Reserved Font Name "Terminus Font" (`copyright.fonts` of console-setup) | `2bc51a16e2bbd3ae...` |
-| `font:terminus-bold-8x16`, `-8x14`, `-6x12`, `-10x18`, `-10x20`, `-11x22`, `-12x24`, `-14x28`, `-16x32`, `terminus-bold-12x24`, `terminus-bold-16x32` | the remaining Terminus sizes/weights of `Uni3-Terminus*` (`console-setup` FONTFACE=Terminus/TerminusBold) | OFL-1.1 as above | full sha256 per file in the manifest |
-| `font:fixed-8x13/14/15/16/18` | `Uni3-Fixed{13,14,15,16,18}` (console-setup's default FONTFACE=Fixed) | public domain per `copyright.fonts` (misc-fixed 8x13/7x14/9x15/9x18 sources; the 8x16 source carries the Sony Corp./BIZNET Poland/Bolkhovityanov permissive notice). The BDF-to-PSF-size mapping is inferred from names, not stated | manifest |
-| `font:csvga-8x8/8x14/8x16/16x28/16x32` | `Lat15-VGA{8,14,16,28x16,32x16}` (console-setup FONTFACE=VGA) | MIT/X11-style, (c) 2000-2001 Dmitry Bolkhovityanov (`u_vga16.bdf`); derivation of the other sizes from it is not stated per size | manifest |
-| `font:linux-ter16x32` | Linux kernel `font_ter_16x32` (Terminus **Bold** 16x32, CP437 order), read from Debian `vmlinuz` 6.12.107+deb13-amd64 of the netinst ISO (`/install.amd/vmlinuz`) | GPL-2.0 (kernel); glyphs are Terminus Bold, OFL-1.1 | `2b2358b37674d250...` (bzImage) |
+| `font:terminus-8x16` (extra) | Terminus 8x16, `Uni3-Terminus16.psf.gz`; the console font of the grml image (`/etc/default/console-setup` FONTFACE=Terminus FONTSIZE=8x16, `cached_Uni3-Terminus16.psf.gz` is byte-identical, `setfont` on every vt) | **verified** (snippet T): SIL OFL-1.1, (c) 2010 Dimitar Toshkov Zhekov, Reserved Font Name "Terminus Font" | `2bc51a16e2bbd3ae...` |
+| `font:terminus-bold-8x16`, `-8x14`, `-6x12`, `-10x18`, `-10x20`, `-11x22`, `-12x24`, `-14x28`, `-16x32`, `terminus-bold-12x24` (all extra) | the remaining Terminus sizes/weights of `Uni3-Terminus*` | verified (snippet T), as above | per file in the manifest |
+| `font:terminus-bold-16x32` (**ambiguous**) | `Uni3-TerminusBold32x16`; 108 of 110 repertoire bitmaps equal the kernel's `font_ter_16x32` | verified (snippet T) | manifest |
+| `font:fixed-8x13/14/15/18` (extra), `font:fixed-8x16` (**ambiguous**) | `Uni3-Fixed{13,14,15,16,18}` (console-setup default FONTFACE=Fixed) | verified text (snippet F): the misc-fixed BDFs 8x13/7x14/9x15/9x18 are "Public domain"; the 8x16 BDFs carry the Sony Corp./BIZNET Poland/Bolkhovityanov permissive notice (snippet S). **Which BDF became which `Fixed<N>` PSF is inferred from the names, not stated**; `Fixed16` has all of Unifont's bitmaps, so it may well derive from Unifont (unifont.bdf: "freeware ... attribute my contribution", licence text in the same file), unverified | manifest |
+| `font:csvga-8x8/8x14/16x28/16x32` (extra), `font:csvga-8x16` (**ambiguous**) | `Lat15-VGA{8,14,16,28x16,32x16}` (console-setup FONTFACE=VGA) | verified text (snippet V): `u_vga16.bdf` is MIT/X11-style, (c) 2000, 2001 Dmitry Bolkhovityanov. That the other sizes derive from it is **not stated** (unverified). The package's main `copyright` file additionally says "All console fonts are public domain by nature." (sha256 `9aed29ab...`); the two statements are not reconciled here | manifest |
+| `font:linux-ter16x32` (extra) | Linux kernel `font_ter_16x32` (Terminus **Bold** 16x32, CP437 order), read from Debian `vmlinuz` 6.12.107+deb13-amd64 of the netinst ISO (`/install.amd/vmlinuz`) | **unverified, from memory**: GPL-2.0 for the kernel source; OFL-1.1 for the Terminus glyphs (the bitmaps equal `Uni3-TerminusBold32x16` except ` and ~, measured, which supports Terminus origin but not the licence) | `2b2358b37674d250...` (bzImage) |
+| `font:unifont-16` extra sources, `font:vga-8x16` extra sources, `font:edk2-8x19` (base) | see the table above | **unverified, from memory** (GPL-2.0-or-later with font exception / OFL-1.1 for Unifont; GPL-2.0 kernel; BSD-2-Clause-Patent EDK2) | |
 
-"Also seen" records (verified bitmap-identical to an existing font, NOT added again; see `fonts.console-extra.report.json`):
-Debian kernel `vmlinuz` (`2b2358b3...`) and grml kernel `/boot/grmlfullamd64/vmlinuz` (`5e2698f8628f2dba...`) draw exactly the bitmaps of `font:vga-8x16`;
-grml GRUB `/boot/grub/fonts/unicode.pf2` (`dc6d6a18148cef2a...`, 57086 glyphs) is bitmap-identical to `font:unifont-16` over the repertoire (a different
-file than the TrueNAS one); Debian GRUB `/boot/grub/font.pf2` (`556e49a42fc9c8b1...`, "GNU Unifont Regular 16", 159 glyphs) is a strict SUBSET of
-`font:unifont-16` (123 of its 258 repertoire bitmaps; the box-drawing characters are missing from it).
+Checkable evidence (package `keyboard-configuration 1.242~deb13u1`, deb sha256 `f8b614f910166a74db8b4fe1d28a1b464dc4f4f726ed60ed9cc321e9eff8fed1`; `console-setup-linux`
+carries its docs as a symlink to it): `/usr/share/doc/keyboard-configuration/copyright.fonts.gz` sha256 `e51cd6608b3d3c3e3e71669532a4c59653a8b84060a47651046eb8556b69ee88`
+(decompressed text `adeb95d45c8f1b944dc21032e74ea2e5636e0f4a34a63783fd37044af9852dcb`). Snippets by decompressed line range (`zcat copyright.fonts.gz | sed -n 'A,Bp' | sha256sum`):
 
-Not in the atlas: `fonts.console-ambiguous.atlas.json` holds three fonts that are near-duplicates of another font and, merged with the base atlas, turn
-exact reads into alias sets (measured on the TrueNAS corpus: font-exact cells 10346 -> 7083, alias 0 -> 3263): `font:fixed-8x16` (all 110 repertoire bitmaps are
-Unifont's), `font:csvga-8x16` (105 of 110 bitmaps equal the kernel VGA font), `font:terminus-bold-16x32` (108 of 110 equal the kernel's `font_ter_16x32`).
-Use them only for a target known to show them. The `fonts.console-extra` set merged into the base atlas leaves every number unchanged.
+* **V**, lines 5-8, sha256 `1367be4bddcf2a7afb5a251b10805697694c8e803d54cd306cd36ce7ac4e598d`: `== u_vga16.bdf`, a blank line, `Copyright © 2000, 2001 by Dmitry Bolkhovityanov.  All Rights Reserved.` (the MIT/X11 permission text follows at line 9).
+* **F**, lines 32-38, sha256 `0cb77c55d33e0f6131945090234225a389b93b333c0264aff697c7950d37721a`: `== 7x14B.bdf ... 8x13.bdf ... 9x15.bdf ... 9x18.bdf ...` / `Public domain.  Donated (in unspecified order) by H. Kagotani ...`.
+* **S**, lines 48-52, sha256 `25ca3792e8c0e6dfb5b37bfcacce81cc96f3da0ead6aff02fd530acb683b5ed0`: `== 8x16-IL2.bdf 8x16c.bdf` / `Copyright 1987, 1988, 1989 by Sony Corp.` / `Copyright 1996 BIZNET Poland, Inc.` / `Copyright 2000 by Dmitry Yu. Bolkhovityanov` ...
+* **T**, lines 114-122, sha256 `a2e5fbb4f5e1dff427eb6651f25f47e6938509fcf519045dcaf50642dd7c0b74`: `== ter-u12b.bdf, ter-u12n.bdf, ... ter-u32b.bdf, ter-u32n.bdf` / `Terminus Font is licensed under the SIL Open Font License, Version 1.1.` / `Copyright (c) 2010 Dimitar Toshkov Zhekov,` / `with Reserved Font Name "Terminus Font".`
+* main `copyright` (sha256 `9aed29abee9d52d714b393c54a3394dba936694091a984b6d367fbb68cc5547c`) line 14: `All console fonts are public domain by nature.`
+
+"Also seen" records (not added again; `fonts.console-extra.report.json` has the numbers; `same_as` now compares the repertoire bitmaps AND the character mapping per bitmap):
+Debian kernel `vmlinuz` (`2b2358b3...`) and grml kernel `/boot/grmlfullamd64/vmlinuz` (`5e2698f8628f2dba...`): identical to `font:vga-8x16` (keys and mapping).
+grml GRUB `/boot/grub/fonts/unicode.pf2` (`dc6d6a18148cef2a...`, 57086 glyphs): same repertoire bitmaps and repertoire characters as `font:unifont-16` but **not identical**: for 1 bitmap
+(`m`) its list of other code points that draw it is shorter (U+A773 missing: an older/newer Unifont release). Debian GRUB `/boot/grub/font.pf2` (`556e49a42fc9c8b1...`, "GNU Unifont Regular 16",
+159 glyphs): a SUBSET: 123 of the 258 repertoire bitmaps (the box-drawing characters are missing), the repertoire characters equal, and for 56 of them the homoglyph lists are shorter (fewer code points in the file).
+
+Tiers are decided mechanically by `build_font_atlas.hazard_analysis` and the build FAILS when the manifest tier disagrees: a font that shares >= 50% of the smaller font's bitmaps with an earlier same-size font
+(or a base font) is `ambiguous` (merged with the base atlas it turns exact reads into alias sets: font-exact cells 10346 -> 7083 and alias 0 -> 3263 on the TrueNAS corpus, 19 frames with a grid out of 20).
+The three ambiguous fonts: `font:fixed-8x16` (all 110 repertoire bitmaps are Unifont's, 16 with another character), `font:csvga-8x16` (105 of 110 equal the kernel VGA font), `font:terminus-bold-16x32` (108 of 110 equal the
+kernel's `font_ter_16x32`). Use them only for a target known to show them. The `extra` set merged into the base atlas leaves every cell count and every cell reading of the corpus unchanged (font-exact 10346, alias 0,
+homoglyph 1886; `font_proven` stays True on all 19 frames, the runner-up share rises to 0.2-0.30 because Terminus Bold shares digits/letters with VGA, which does not block proof since it draws them alike).
+
+Scale hazards (integer upscales): `probe_scale` undoes a crisp k-fold upscale, and the exact 2x enlargement of `font:csvga-8x16` IS the real 16x32 screen of `font:csvga-16x32`. Measured by the analysis: `csvga-16x32`
+doubles 105 `font:vga-8x16` bitmaps with 16 different characters and 12 Unifont bitmaps with 11 different ones (heavy box lines read as light ones). `glyphgrid.decode(unscaled=k)` therefore turns any bitmap that a loaded
+font of k times the cell draws with other characters into an alias set. That needs the larger font LOADED, so scale-hazard fonts stay in the extra atlas (`origin.scale_hazard` records the pairs) instead of moving to
+the ambiguous tier; with only the base atlas the wrong F is unavoidable. The real Terminus 16x32 fonts have only 1-5 doublable glyphs per smaller font, all drawn with the same characters (0 differing).
 
 ### Regenerating the atlas at image build time instead of committing bytes (proposal, not implemented)
 

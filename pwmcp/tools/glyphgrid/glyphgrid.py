@@ -459,6 +459,29 @@ def barlike(key: bytes, w: int, h: int) -> bool:
     return bool(ink) and len(ink) <= 2 and max(bin(r).count("1") for r in ink) >= w - 2
 
 
+def reduce_cell(key: bytes, w: int, h: int, k: int):
+    """Exact inverse of a k-fold nearest-neighbour enlargement of a packed cell bitmap (row-major, MSB left): the (w//k)x(h//k) cell, or None when
+    ``key`` is not such an enlargement (some k x k block is not uniform)."""
+    if w % k or h % k:
+        return None
+    rb, nw, nh = (w + 7) // 8, w // k, h // k
+    nrb = (nw + 7) // 8
+    rows = [int.from_bytes(key[y * rb:(y + 1) * rb], "big") >> (rb * 8 - w) for y in range(h)]
+    out = []
+    for y in range(nh):
+        blk = rows[y * k:(y + 1) * k]
+        if any(r != blk[0] for r in blk):
+            return None
+        v = 0
+        for x in range(nw):
+            bits = (blk[0] >> (w - (x + 1) * k)) & ((1 << k) - 1)
+            if bits not in (0, (1 << k) - 1):
+                return None
+            v = (v << 1) | (1 if bits else 0)
+        out.append((v << (nrb * 8 - nw)).to_bytes(nrb, "big"))
+    return b"".join(out)
+
+
 class Atlas:
     """fonts[name] = {"cell_w","cell_h","glyphs": {hex: {"c": {char: count}, "f": [source,...]}}, "phases": [[ox,oy],...]}
 
@@ -647,6 +670,27 @@ class Atlas:
     def fonts_for(self, cell_w, cell_h):
         return [n for n, f in self.fonts.items() if f["cell_w"] == cell_w and f["cell_h"] == cell_h]
 
+    def scale_twins(self, k: int, cell_w: int, cell_h: int) -> dict:
+        """Bitmaps of this cell size that a font-file font of cell ``k*cell`` ALSO produces after an exact k-fold nearest-neighbour reduction:
+        {hex of the reduced bitmap: {characters that font draws}}.  An image that ``probe_scale`` undoes as a crisp k-fold upscale may be a
+        native k*cell screen of such a font (only its k-fold-enlarged glyphs can occur in it): reading it at the reduced size must not treat
+        a bitmap as font-exact when such a font draws another character with it."""
+        ck = ("twins", k, cell_w, cell_h)
+        if ck in self._xcache:
+            return self._xcache[ck]
+        out = {}
+        W, H = cell_w * k, cell_h * k
+        for fn in self.fonts_for(W, H):
+            f = self.fonts[fn]
+            if f.get("origin", {}).get("kind") != "font-file":
+                continue
+            for hx, g in f["glyphs"].items():
+                red = reduce_cell(bytes.fromhex(hx), W, H, k)
+                if red is not None:
+                    out.setdefault(red.hex(), set()).update(g["c"])
+        self._xcache[ck] = out
+        return out
+
     def nearest(self, font: str, key: bytes, limit: int = 3):
         """Evidence only: [(distance, char, hex)] best first over glyphs of ``font``."""
         v = int.from_bytes(key, "big")
@@ -662,7 +706,7 @@ class Atlas:
 # --------------------------------------------------------------------------- decode
 def decode(ex: Extraction, atlas: Atlas, font: str | None = None, max_hamming: int = 0,
            return_cells: bool = False, min_groups: int = 2, min_hits: int = 8, min_share: float = 0.25,
-           margin: int = 2, rule_run: int = 4, cursor=None, font_min_share: float = FONT_MIN_SHARE) -> dict:
+           margin: int = 2, rule_run: int = 4, cursor=None, font_min_share: float = FONT_MIN_SHARE, unscaled: int = 1) -> dict:
     """Exact lookup of every cell.  max_hamming=0 (default): no tolerant matching at all.
 
     * ``font_share`` = share of ordinary (not bar/box-like) ink cells the chosen font reads exactly.  Floor: >= ``min_hits`` cells and
@@ -672,6 +716,8 @@ def decode(ex: Extraction, atlas: Atlas, font: str | None = None, max_hamming: i
       an alias set ``a`` unless the font is proven (share >= font_min_share and no other same-size font above ``PROVEN_RUNNER_UP``).
     * ``F`` font-exact (unique code point); ``H`` unique repertoire character but other code points of the font's full coverage draw the same
       bitmap (``res["aliases"]`` holds the whole set; consumers apply a homoglyph policy); ``a`` several repertoire characters share the bitmap.
+    * ``unscaled=k`` (set by ``read_image`` when ``probe_scale`` undid a k-fold upscale): a font-exact bitmap that a font-file font of cell
+      ``k*cell`` draws as a DIFFERENT character (``Atlas.scale_twins``) is an alias set, never F/H: the capture may be that larger font's native screen.
     * ``min_groups``: a LEARNED glyph is 'exact' only if >= this many independent screen groups confirm it, else 's'.
     * flags (``res["flags"]``): 'r' rule-line, 'c' cursor candidate: cells reading a cursor-shaped glyph (lower blocks, full block) always, a
       bar-like last inked cell of a row, or exactly the cell given by ``cursor=(row, col)`` (then the shape heuristic is off).
@@ -687,6 +733,7 @@ def decode(ex: Extraction, atlas: Atlas, font: str | None = None, max_hamming: i
             v = boxmemo[key] = boxlike(key, w, h)
         return v
 
+    twins = atlas.scale_twins(unscaled, w, h) if unscaled > 1 else {}
     cands = [font] if font else atlas.fonts_for(w, h)
     fscores = {}
     for fn in cands:
@@ -706,7 +753,20 @@ def decode(ex: Extraction, atlas: Atlas, font: str | None = None, max_hamming: i
     floor_ok = bool(chosen) and fscores[chosen][0] >= min_hits and fscores[chosen][0] >= min_share * fscores[chosen][1]
     is_file = bool(chosen) and atlas.fonts[chosen].get("origin", {}).get("kind") == "font-file"
     runner_up = max([(v[0] / v[1] if v[1] else 0.0) for k, v in fscores.items() if k != chosen] or [0.0])
-    proven = is_file and share >= font_min_share and runner_up <= PROVEN_RUNNER_UP
+    # A rival font above PROVEN_RUNNER_UP blocks the proof only if it can actually change a reading on THIS screen: for a rival that is itself a
+    # font file, some inked cell bitmap must be font-exact in both fonts with DIFFERENT characters.  A rival that explains many cells but draws every
+    # one of them with the same character as the chosen font (e.g. a bold face sharing the digits) is not evidence for the rival: the readings are
+    # the same whichever font it is.  A learned (non-file) rival keeps the plain share rule.
+    blocking = []
+    for k, v in fscores.items():
+        if k == chosen or not v[1] or v[0] / v[1] <= PROVEN_RUNNER_UP:
+            continue
+        if not (chosen and atlas.fonts[k].get("origin", {}).get("kind") == "font-file" and atlas.fonts[chosen].get("origin", {}).get("kind") == "font-file"):
+            blocking.append(k)
+            continue
+        if any(_readings_differ(atlas, chosen, k, key) for key in {c.key for row in ex.rows for c in row if c.kind == "glyph"}):
+            blocking.append(k)
+    proven = is_file and share >= font_min_share and not blocking
     mixed = floor_ok and is_file and share < font_min_share
     if mixed:
         floor_ok = False
@@ -733,7 +793,7 @@ def decode(ex: Extraction, atlas: Atlas, font: str | None = None, max_hamming: i
                     key = (chosen, c.key)
                     r = memo.get(key)
                     if r is None:
-                        r = memo[key] = _decode_glyph(atlas, chosen, c.key, max_hamming, min_groups, margin, proven)
+                        r = memo[key] = _decode_glyph(atlas, chosen, c.key, max_hamming, min_groups, margin, proven, twins.get(c.key.hex()))
                     ch, st = r[0], r[1]
                     if st in (CONF_ALIAS, CONF_HOMO):
                         aliases[(c.row, c.col)] = r[2]["aliases"]
@@ -803,7 +863,7 @@ def decode(ex: Extraction, atlas: Atlas, font: str | None = None, max_hamming: i
         status = "mixed_font" if mixed else "no_font"
     res = {"status": status,
            "grid": {k: g[k] for k in ("cell_w", "cell_h", "origin_x", "origin_y", "cols", "rows")},
-           "font": chosen, "font_is_file": is_file, "font_share": round(share, 4), "font_runner_up_share": round(runner_up, 4), "font_proven": bool(proven),
+           "font": chosen, "font_is_file": is_file, "font_share": round(share, 4), "font_runner_up_share": round(runner_up, 4), "font_proven": bool(proven), "font_rivals_blocking": blocking,
            "font_scores": {k: list(v) for k, v in fscores.items()}, "rows": rows, "conf": conf, "flags": flags,
            "unknown_cells": unknown, "max_hamming": max_hamming, "min_groups": min_groups,
            "aliases": {"%d,%d" % k: v for k, v in aliases.items()}}
@@ -821,10 +881,21 @@ def decode(ex: Extraction, atlas: Atlas, font: str | None = None, max_hamming: i
     return res
 
 
-def _decode_glyph(atlas, font, key, max_hamming, min_groups=2, margin=2, proven=True):
+def _readings_differ(atlas, a, b, key) -> bool:
+    """Both fonts are font-exact for this bitmap and read it as different character sets."""
+    ga, gb = atlas.fonts[a]["glyphs"].get(key.hex()), atlas.fonts[b]["glyphs"].get(key.hex())
+    return bool(ga and gb and ga.get("font_exact") and gb.get("font_exact") and set(ga["c"]) != set(gb["c"]))
+
+
+def _decode_glyph(atlas, font, key, max_hamming, min_groups=2, margin=2, proven=True, twin=None):
     if font is None:
         return UNKNOWN_CHAR, CONF_UNKNOWN, {"reason": "no atlas font for this grid"}
     r = atlas.lookup(font, key, min_groups)
+    if twin and r and r[0] in ("font", "homoglyph", "alias"):
+        mine = set(atlas.fonts[font]["glyphs"][key.hex()]["c"])
+        if set(twin) != mine:
+            return UNKNOWN_CHAR, CONF_ALIAS, {"reason": "undone k-fold upscale: a font of the k-fold larger cell draws this bitmap as another character",
+                                              "aliases": sorted(mine | set(twin))}
     if r and r[0] in ("font", "homoglyph"):
         other = atlas.cross_font_chars(font, key)
         if other and not proven:
@@ -963,6 +1034,7 @@ def read_image(src, atlas: Atlas, font: str | None = None, max_hamming: int = 0,
         return {"status": "no_grid", "message": "no fixed grid found", "probe": probe, "grid_report": g,
                 "rows": [], "conf": [], "unknown_cells": []}
     ex, _ = choose_extraction(im, g, atlas, font, decode_kw.pop("max_seconds", 4.0))
+    decode_kw.setdefault("unscaled", probe["integer_upscale"] if auto_unscale else 1)
     res = decode(ex, atlas, font, max_hamming, return_cells, **decode_kw)
     res["probe"] = probe
     res["grid_report"] = {k: g[k] for k in ("length", "contrast", "candidates")}

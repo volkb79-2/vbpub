@@ -2788,6 +2788,24 @@
      "version": "1.242~deb13u1"
     },
     "repertoire": "ascii+box",
+    "scale_hazard": [
+     {
+      "differing_chars": 11,
+      "doublable": 12,
+      "glyphs_of_larger": 110,
+      "k": 2,
+      "larger": "font:csvga-16x32",
+      "smaller": "font:unifont-16"
+     },
+     {
+      "differing_chars": 16,
+      "doublable": 105,
+      "glyphs_of_larger": 110,
+      "k": 2,
+      "larger": "font:csvga-16x32",
+      "smaller": "font:vga-8x16"
+     }
+    ],
     "sha256": "1765a808e05c9b1ca88b39aef1777b5a330e83576ff6b9dadc54b0df44d0f61a"
    }
   },

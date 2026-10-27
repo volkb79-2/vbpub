@@ -87,6 +87,7 @@ def load_psf(path) -> FontFile:
             for entry in tab.split(b"\xff")[:n]:
                 seq = entry.split(b"\xfe")[0]  # only the single code points (ignore combining sequences)
                 maps.append([ord(c) for c in seq.decode("utf-8", "replace")])
+            maps += [[] for _ in range(n - len(maps))]   # a table shorter than the glyph count: the missing glyphs have no code points (as in PSF1), never dropped
         else:
             maps = [[i] for i in range(n)]
     else:
