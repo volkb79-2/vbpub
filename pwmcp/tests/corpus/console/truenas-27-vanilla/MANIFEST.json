@@ -28,8 +28,13 @@
     "tool": "pwmcp/tools/console-capture/console_capture.py",
     "poll_interval_s": 3,
     "keep_rule": "fraction of pixels whose luma differs by more than 48 from the last kept frame >= threshold; a change confined to a 24x40 px box is held one poll and dropped if the next poll is back to the base frame (cursor blink)",
-    "threshold_fraction": {"frames 1-13 (to t=125 s)": 0.0002, "frames 14-242 (daemon restarted at t~130 s)": 0.00002},
-    "threshold_lesson": "0.0002 (=205 px at 1280x800) is too high: the '[*]' checkbox change in the disk picker (about 40 px) was not kept until the threshold was lowered; use ~0.00002 (20 px) at this resolution"
+    "threshold_fraction": {
+      "series 1-13 (first daemon)": 0.0002,
+      "series 14-242 (second daemon, restarted after the Space key)": 2e-05
+    },
+    "threshold_lesson": "0.0002 (=205 px at 1280x800) is too high: the '[*]' checkbox change in the disk picker (about 40 px) was not kept until the threshold was lowered; use ~0.00002 (20 px) at this resolution",
+    "daemon_restart_note": "The restart gap (~38.5 s) was not counted by the old resume arithmetic: elapsed_s labels in file names and keys.jsonl 't' after series 13 are 38.5 s too small. series-manifest.jsonl has elapsed_real_s and keys.jsonl t_real_s (from file mtimes, +-1 s). Series 14 is the first KEPT frame showing [*] (real 166.5 s; the Space was sent at 140.4 s). Fixed in the committed tool (state.json keeps the real t0; the last kept frame is reloaded).",
+    "tool_version_note": "The series was captured with the first version of console_capture.py; the committed tool has since gained timeouts, --max-runtime, DONE-in-finally, deterministic blink phases and resume reload."
   },
   "key_sequence": [
     "GRUB: default entry auto-selected after timeout (no key)",
@@ -44,16 +49,32 @@
     "Installed GRUB: default entry auto-selected; installed system booted to the Console setup menu"
   ],
   "keys_file": "keys.jsonl (every send with timestamp, seconds since capture start)",
-  "timings_s": {
+  "host_safety": "load peak 5.64, MemAvailable minimum 4.74 GiB during the run (guard.log); no abort",
+  "at_s_since_capture_start_real": {
     "uefi_to_iso_grub": 3,
-    "iso_grub_to_installer_menu": 70,
-    "keys_start_to_install_start": 226,
-    "install_start_to_install_complete_dialog": 964,
-    "reboot_selected": 1068,
-    "ovmf_logo_after_reboot": 1080,
-    "installed_grub": 1252,
-    "installed_console_setup_menu": 1850,
-    "vm_quit": 1900
+    "installer_menu": 70,
+    "install_started_password_enter": 265,
+    "finish_dialog": 1003,
+    "reboot_selected": 1106,
+    "ovmf_splash_after_reboot": 1119,
+    "iso_grub_again_with_iso_attached": 1129,
+    "installed_grub": 1291,
+    "kernel_boot_log": 1315,
+    "installed_console_setup_menu": 1889,
+    "vm_quit": 1938,
+    "note": "absolute seconds since capture start, real time (file mtimes), +-1 s"
   },
-  "host_safety": "load peak 5.64, MemAvailable minimum 4.74 GiB during the run (guard.log); no abort"
+  "durations_s": {
+    "iso_grub_to_installer_menu": 67,
+    "install_password_enter_to_finish_dialog": 738,
+    "finish_dialog_to_installed_grub_incl_manual_iso_detach": 288,
+    "installed_grub_to_console_setup_menu": 598,
+    "whole_run": 1938
+  },
+  "ocr_evaluation": {
+    "sidecar_branch": "worktree-agent-a201aaf71c2233a93",
+    "sidecar_commit": "most likely 1af7ab16a: built from that worktree's working tree at ~07:55 UTC; the built code returns complete results with low_conf flags, which 6aaf21b13 and 1c9f5deda do not. The exact commit was not recorded and an uncommitted state cannot be excluded. Image id sha256:2742a6c056c0...",
+    "note": "pwmcp/containers/ocr is not part of this commit"
+  },
+  "paths_note": "Paths under /home/vscode/console-corpus are informative only (the full series, ISO and qcow2 are not in git)."
 }

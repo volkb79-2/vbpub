@@ -1,7 +1,13 @@
 # OCR evaluation: pwmcp OCR sidecar vs this corpus
 
 Date 2026-10-27. Sidecar: branch `worktree-agent-a201aaf71c2233a93`, `pwmcp/containers/ocr/`
-(Dockerfile + `ocr_service.py`, Tesseract 5 from Debian trixie, English traineddata), built unmodified as
+(Dockerfile + `ocr_service.py`, Tesseract 5 from Debian trixie, English traineddata). That directory is NOT part
+of this commit. Which commit exactly: the image was built from that worktree at about 07:55 UTC; the code it
+ran returns complete results with a `low_conf` flag per word, which matches commit `1af7ab16a` (07:50 UTC) and
+NOT `6aaf21b13` (the phase-1 commit, 06:33 UTC); the exact commit was not recorded and an uncommitted state
+cannot be excluded (image id `sha256:2742a6c056c0...`). The branch moved on afterwards (`536bee5fc`, 08:05 UTC, a
+6-line change to `ocr_service.py` plus tests); results may differ with later contracts. The contract
+at the time of the run: words are not dropped by `min_conf`, they are flagged. Built unmodified as
 `pwmcp-ocr-eval:local`, run as `pwmcp-ocr-eval-run` (`--cpus=1 --memory=512m --read-only --tmpfs /tmp`,
 removed afterwards). Requests: `POST /v1/ocr?psm=P&scale=S`, PNG body. Scoring script: `ocr_eval.py`
 (raw per-run output including recognised text: `ocr-results.json`). 20 frames x psm {6, 11} x scale {1, 2, 3}
@@ -13,7 +19,8 @@ posts directly.
 
 Metrics: **char** = 1 - normalised Levenshtein distance to the ground truth (whitespace runs collapsed,
 floored at 0). **line** = share of non-empty ground-truth lines found as an exact (whitespace-collapsed)
-output line. Cells below read `char%/line%`.
+output line, with multiset matching (each OCR line satisfies at most one ground-truth line; duplicated lines in
+frames 12, 13, 20 are credited only as often as they were read). Cells below read `char%/line%`.
 
 ## Per frame
 
@@ -30,26 +37,31 @@ output line. Cells below read `char%/line%`.
 | 09-password-empty | 0/0 | 0/0 | 0/0 | 0/0 | 0/0 | 0/0 |
 | 10-password-filled | 0/0 | 0/0 | 0/0 | 0/0 | 0/0 | 0/0 |
 | 11-progress-start-over-dialog | 0/0 | 0/0 | 0/0 | 0/0 | 0/0 | 0/0 |
-| 12-progress-extracting | 93/45 | 100/92 | 100/98 | 85/0 | 99/0 | 94/0 |
-| 13-progress-complete | 94/41 | 99/88 | 100/94 | 85/4 | 98/0 | 95/2 |
+| 12-progress-extracting | 93/37 | 100/92 | 100/98 | 85/0 | 99/0 | 94/0 |
+| 13-progress-complete | 94/35 | 99/88 | 100/94 | 85/4 | 98/0 | 95/2 |
 | 14-installation-succeeded | 18/25 | 23/25 | 24/50 | 18/25 | 17/0 | 18/0 |
 | 15-uefi-tianocore-logo | 11/0 | 80/0 | 82/0 | 5/0 | 16/0 | 48/0 |
 | 16-grub-installed-menu | 95/38 | 98/75 | 98/75 | 97/50 | 98/75 | 98/62 |
 | 17-grub-booting-installed | 98/67 | 98/67 | 98/67 | 92/33 | 93/33 | 92/33 |
 | 18-kernel-boot-log | 97/45 | 98/59 | 98/66 | 91/14 | 92/14 | 93/14 |
 | 19-console-setup-with-kernel-noise | 95/65 | 95/55 | 93/45 | 90/20 | 94/10 | 93/10 |
-| 20-console-setup-duplicated-redraw | 95/69 | 95/62 | 92/50 | 91/27 | 93/35 | 93/35 |
+| 20-console-setup-duplicated-redraw | 95/69 | 95/62 | 92/50 | 91/23 | 93/23 | 93/23 |
 
 Means over all 20 frames (char / exact-line / fuzzy-line >=0.9 similarity / seconds per request):
 
 | setting | char | line | line fuzzy | s/request |
 |---|---|---|---|---|
-| psm 6 scale 1 | 0.527 | 0.264 | 0.500 | 0.5 |
+| psm 6 scale 1 | 0.527 | 0.257 | 0.440 | 0.5 |
 | psm 6 scale 2 | 0.579 | 0.365 | 0.543 | 0.8 |
 | **psm 6 scale 3** | **0.585** | **0.408** | **0.571** | 1.2 |
-| psm 11 scale 1 | 0.475 | 0.129 | 0.356 | 0.5 |
-| psm 11 scale 2 | 0.506 | 0.152 | 0.334 | 0.9 |
-| psm 11 scale 3 | 0.520 | 0.154 | 0.316 | 1.2 |
+| psm 11 scale 1 | 0.475 | 0.128 | 0.343 | 0.5 |
+| psm 11 scale 2 | 0.506 | 0.147 | 0.323 | 0.9 |
+| psm 11 scale 3 | 0.520 | 0.149 | 0.309 | 1.2 |
+
+(Rescored 2026-10-27 with one-use multiset line matching; the first scoring over-credited
+duplicated ground-truth lines. Changes versus the first numbers: frames 12/13 at p6 s1 line 45/41 ->
+37/35, frame 20 at psm 11 line 27/35/35 -> 23/23/23; fuzzy line means at scale 1 fell from 0.500/0.356 to
+0.440/0.343 and slightly at the other settings; character accuracy is unchanged. Best setting unchanged.)
 
 ## Key phrases (exact, case-sensitive, whitespace-collapsed substring)
 
@@ -91,7 +103,7 @@ Columns: p6s1 p6s2 p6s3 p11s1 p11s2 p11s3; `Y` found, `-` not found.
 consoles. Scale 1 is not enough for 8x16 cells: digits are confused (see below). Scale 2 vs 3 is within
 noise on plain console frames, and scale 3 doubles the cost (about 1.2 s with 1 CPU).
 
-**What reads well** (char >= 93% at psm 6 scale 2-3): plain light-on-black console text, i.e. the live
+**What reads well** (char 92-100% at psm 6 scale 2-3; the lowest is frame 20 at scale 3, 92%): plain light-on-black console text, i.e. the live
 boot text (02, 03), progress screens (12, 13: 98-100%), GRUB text (16, 17), the kernel log (18), and the
 installed Console setup menu (19, 20). The finish *screen* is not among them, see below.
 
@@ -143,13 +155,14 @@ URLs; distinguishing it needs the URL/option lines or the `truenas-installer` ba
 All Linux-console/newt/tty text frames are rendered on a fixed grid: **8 x 16 px cells, 160 columns x 50 rows**
 on the 1280x800 canvas (the VGA 8x16 console font). Measured by autocorrelation of ink row/column sums: row
 periods 16 (or 32/48 where lines alternate), column period 8 on frames 01-03, 12, 13, 19, 20; newt dialogs
-use the same cells (the dialog text in frame 04 starts at x = 408 = 51 x 8 and its lines are 16 px apart,
-y = 327, 343, 359, ...), the autocorrelation on the dialog frames was unreliable because the grey dialog
+use the same cells (the menu entries in frame 04 start at x = 576 = 72 x 8, their row numbers at x = 552, and
+the lines are 16 px apart, y = 327, 343, 359, ...; the body text of the dialogs in frames 05, 07 and 14 starts at x = 408 = 51 x 8), the autocorrelation on the dialog frames was unreliable because the grey dialog
 background is bright (period results 9/4 there are artefacts, ignore). The kernel boot log (frame 18) wraps at 80
 columns (640 px) for the early lines, while later lines run past 100 columns (apparently the console was
 resized during boot; not investigated). Exceptions: the **installed system's GRUB** (16) and the "Booting ..." text (17) are
-drawn differently: 8 px character advance but a 19 px row pitch (16), and about 16 px advance / 38 px pitch in
-frame 17, whose glyphs look enlarged 2x (measured only by autocorrelation, not verified further). The ISO's GRUB (01) has an 8 x 16 grid
+drawn differently from the console: 8 px character advance but a ~19 px row pitch, in the same GRUB font in both
+frames (frame 17: `Loading initial ramdisk ...`, 27 characters, spans x = 240..452, i.e. 8 px per cell; its rows are at
+y = 146, 165, 197, pitch ~19 px). The ISO's GRUB (01) has an 8 x 16 grid
 inside its frame. The TianoCore logo (15) is a bitmap. The cursor is a block in the console and an underscore
 at the prompt, with a blink the capture tool had to suppress. Colours: black text background, light grey
 (about 0xAA) foreground; newt dialogs use black on 0xAA grey; highlighted rows are white on blue; progress lines

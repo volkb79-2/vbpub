@@ -11,9 +11,12 @@ Metrics per (frame, psm, scale):
   char_acc    1 - levenshtein(norm(ocr), norm(truth)) / len(norm(truth)), floored at 0; norm()
               collapses whitespace runs to one space and strips (layout is not scored).
   line_recall fraction of non-empty ground-truth lines that appear as an exact (whitespace-
-              collapsed) line of the OCR output; line_recall_fuzzy uses similarity >= 0.9.
+              collapsed) line of the OCR output, MULTISET matching (each OCR line is used at most
+              once); line_recall_fuzzy uses similarity >= 0.9 with the same one-use rule.
+  --rescore   recompute these from the stored texts in an existing results file (no sidecar).
 """
 import argparse, difflib, json, re, subprocess, sys, time
+from collections import Counter
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -76,10 +79,25 @@ def score(ocr_text, truth):
     acc = max(0.0, 1 - lev(n_o, n_t) / max(len(n_t), 1))
     t_lines = [norm(x) for x in truth.splitlines() if norm(x)]
     o_lines = [norm(x) for x in ocr_text.splitlines() if norm(x)]
-    oset = set(o_lines)
-    exact = sum(1 for t in t_lines if t in oset)
-    fuzzy = sum(1 for t in t_lines
-                if any(difflib.SequenceMatcher(None, t, o).ratio() >= 0.9 for o in o_lines))
+    # multiset matching: every OCR line can satisfy at most ONE ground-truth line, so duplicated
+    # ground-truth lines (frames 12, 13, 20) are only credited as often as they were read
+    avail = Counter(o_lines)
+    exact = 0
+    for t in t_lines:
+        if avail[t] > 0:
+            avail[t] -= 1
+            exact += 1
+    unused = list(o_lines)
+    fuzzy = 0
+    for t in t_lines:
+        best, best_i = 0.0, None
+        for i, o in enumerate(unused):
+            r = difflib.SequenceMatcher(None, t, o).ratio()
+            if r >= 0.9 and r > best:
+                best, best_i = r, i
+        if best_i is not None:
+            unused.pop(best_i)
+            fuzzy += 1
     n = max(len(t_lines), 1)
     return acc, exact / n, fuzzy / n
 
@@ -101,7 +119,19 @@ def main():
     p.add_argument("--out", default=str(HERE / "ocr-results.json"))
     p.add_argument("--psms", default="6,11")
     p.add_argument("--scales", default="1,2,3")
+    p.add_argument("--rescore", metavar="RESULTS_JSON",
+                   help="do not call the sidecar: re-score the stored OCR texts of this results file against the "
+                        "current ground truth and write --out")
     a = p.parse_args()
+    if a.rescore:
+        old = json.loads(Path(a.rescore).read_text())
+        for r in old:
+            if "error" in r:
+                continue
+            truth = (HERE / "ground-truth" / f"{r['frame']}.txt").read_text()
+            r["char_acc"], r["line_recall"], r["line_recall_fuzzy"] = (round(x, 4) for x in score(r["text"], truth))
+        Path(a.out).write_text(json.dumps(old, indent=1))
+        return
     results = []
     for gt in sorted((HERE / "ground-truth").glob("*.txt")):
         stem = gt.stem
