@@ -59,13 +59,12 @@ services:
       # leaves a custom UA containing it intact. Validation is in the entrypoint, which
       # calls the same pwmcp_user_agent.py module the client uses.
       PWMCP_USER_AGENT: {{ pwmcp.unified.user_agent | default("default") | tojson | replace("$", "$$") }}
-      {% if pwmcp.ocr is defined and pwmcp.ocr.enabled %}
+{% if pwmcp.ocr is defined and pwmcp.ocr.enabled %}
       # PHASE-1 OCR sidecar (opt-in, OFF by default): published in the gateway /contract as
       # ocr.url / ocr.engines. Rendered only when enabled so a default render is unchanged.
       PWMCP_OCR_URL: "http://{{ pwmcp.ocr.name }}:{{ pwmcp.ocr.port }}"
       PWMCP_OCR_ENGINES: "{{ pwmcp.ocr.engines }}"
-      {% endif %}
-      PWMCP_RUN_SERVER_PORT: "{{ pwmcp.unified.ws_port }}"
+{% endif %}      PWMCP_RUN_SERVER_PORT: "{{ pwmcp.unified.ws_port }}"
       PWMCP_RUN_SERVER_UPSTREAM_PORT: "{{ pwmcp.run_server.upstream_port }}"
       # Validate the external Host before proxying, then use loopback Host and
       # Origin for the run-server's private upstream connection.
@@ -153,8 +152,7 @@ services:
       - traefik.http.middlewares.{{ pwmcp.unified.name }}-guard.basicauth.users={{ pwmcp.external.guard_user }}:{{ pwmcp.external.guard_htpasswd | replace("$", "$$") }}
       {% endif %}
     {% endif %}
-
-  {% if pwmcp.ocr is defined and pwmcp.ocr.enabled %}
+{% if pwmcp.ocr is defined and pwmcp.ocr.enabled +%}
   # ── OCR sidecar (opt-in: pwmcp.ocr.enabled) ───────────────────────────────
   # Stateless Tesseract wrapper (containers/ocr). Reachable ONLY on the stack network
   # under the alias below: no `ports:`, no Traefik labels, in either deployment mode.
@@ -174,6 +172,8 @@ services:
     tmpfs:
       - /tmp:size=64m,mode=1777
     restart: unless-stopped
+    # PID 1 is the python service; init reaps children and forwards SIGTERM.
+    init: true
     mem_limit: {{ pwmcp.ocr.mem_limit }}
     memswap_limit: {{ pwmcp.ocr.mem_limit }}
     cpus: {{ pwmcp.ocr.cpus }}
@@ -182,9 +182,11 @@ services:
       OCR_PORT: "{{ pwmcp.ocr.port }}"
       OCR_MAX_BYTES: "{{ pwmcp.ocr.max_bytes }}"
       OCR_MAX_DIM: "{{ pwmcp.ocr.max_dim }}"
+      OCR_MAX_SCALED_PIXELS: "{{ pwmcp.ocr.max_scaled_pixels }}"
+      OCR_BODY_DEADLINE_S: "{{ pwmcp.ocr.body_deadline_s }}"
       OCR_TIMEOUT_S: "{{ pwmcp.ocr.timeout_s }}"
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:{{ pwmcp.ocr.port }}/health', timeout=3).status == 200 else 1)"]
+      test: ["CMD", "python3", "-c", "import os,sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:%s/health' % os.environ.get('OCR_PORT', '{{ pwmcp.ocr.port }}'), timeout=3).status == 200 else 1)"]
       interval: {{ pwmcp.health.interval }}
       timeout: {{ pwmcp.health.timeout }}
       retries: {{ pwmcp.health.retries }}
@@ -193,8 +195,7 @@ services:
       default:
         aliases:
           - {{ pwmcp.ocr.name }}
-  {% endif %}
-
+{% endif +%}
 networks:
   # default = the project network. As the image SOURCE's own standalone build-test
   # root, pwmcp CREATES its own network (external_default = false). A VENDORED

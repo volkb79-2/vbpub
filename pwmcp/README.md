@@ -365,10 +365,16 @@ enabled = true            # renders the second service
 # engines = "tesseract"   # advertised in /contract
 # max_bytes = 8388608     # request body limit (8 MiB)
 # max_dim = 4096          # max image width/height in pixels
+# max_scaled_pixels = 24000000   # max width*height after scale (24 MP)
+# body_deadline_s = 10    # total time to receive a request body
 # timeout_s = 20          # per-request recognition timeout
 # mem_limit = "512m"      # narrowing caps; ciu governance owns cgroup_parent
 # cpus = "1.0"
 ```
+
+The URL the contract advertises (`ocr_url`, for example `http://pwmcp-ocr:8941`) is a docker-DNS
+alias that resolves only on the stack network; a CLI running anywhere else must pass `--sidecar-url`
+or set `PWMCP_OCR_URL` to an address it can reach (the sidecar publishes no host port by default).
 
 The sidecar is reachable only on the stack network (no published port, no Traefik route, in
 either deployment mode), runs as uid 1000 with all capabilities dropped, a read-only root
@@ -404,11 +410,12 @@ through a shell) and `min_conf` (0-100, default 0; drops words below it). The re
 Errors are `{"error":"...","code":"..."}` with a 4xx/5xx status and never echo image bytes:
 400 bad parameters, 411 no `Content-Length`, 413 body or image too large, 415 not a decodable
 PNG/JPEG, 429 `busy` (ONE recognition runs at a time; retry), 501 engine not implemented or
-Tesseract missing, 504 timeout, 500 engine failure. A frame with no recognisable text is a
+Tesseract missing, 504 timeout, 500 engine failure (a fixed message; the engine's own diagnostics are logged server-side only). Transparent PNGs are composited onto white. A frame with no recognisable text is a
 valid `200` with empty `text`.
 
 **Limits** (all configurable): 8 MiB body, 4096x4096 pixels (checked on the image header
-before any pixel is decoded), 8192 px after `scale`, 20 s per request, one concurrent
+before any pixel is decoded), 8192 px per side and 24 megapixels after `scale` (413
+`scaled_image_too_large`), 10 s TOTAL to receive the body (408 `request_timeout`), 20 s per request, one concurrent
 recognition, 512 MiB of memory.
 
 **Agent workflow.** Take the screenshot with the MCP `browser_take_screenshot` tool, save it

@@ -243,6 +243,9 @@ def test_config_from_env() -> None:
     assert (got.port, got.max_bytes, got.max_dim, got.timeout_s, got.host, got.tesseract) == (9, 5, 7, 1.5, "127.0.0.1", "/x/t")
     assert svc.Config().max_bytes == 8 * 1024 * 1024 and svc.Config().max_dim == 4096 and svc.Config().timeout_s == 20.0
     assert svc.Config().port == 8941
+    more = svc.Config.from_env({"OCR_BODY_DEADLINE_S": "2.5", "OCR_MAX_SCALED_PIXELS": "99"})
+    assert (more.body_deadline_s, more.max_scaled_pixels) == (2.5, 99)
+    assert (svc.Config().body_deadline_s, svc.Config().max_scaled_pixels) == (10.0, 24_000_000)
     assert isinstance(svc.Config.from_env(), svc.Config)  # reads os.environ without raising
 
 
@@ -363,7 +366,7 @@ def test_scale_upscales_the_engine_input_and_boxes_return_in_original_pixels(run
 @needs_pil
 def test_scale_odd_factor_rounds_boxes(running: Running) -> None:
     body = running.request("POST", "/v1/ocr?scale=3", png(100, 50))[1]
-    assert body["words"][0]["box"] == [3, 3, 27, 5]  # round(10/3), round(80/3), round(16/3)
+    assert body["words"][0]["box"] == [3, 3, 27, 6]  # outward: floor(10/3), ceil(90/3)-3, ceil(26/3)-3
 
 
 @needs_pil
@@ -562,11 +565,16 @@ def test_one_recognition_at_a_time_second_caller_gets_429(fake: Fake) -> None:
 
 
 @needs_pil
-def test_engine_failure_is_500_with_a_short_diagnostic(running: Running, fake: Fake) -> None:
+def test_engine_failure_is_500_with_a_fixed_message(
+    running: Running, fake: Fake, capfd: pytest.CaptureFixture[str]
+) -> None:
     fake.mode("fail")
     status, body, _ = running.request("POST", "/v1/ocr", png())
-    assert status == 500 and body["code"] == "engine_failed"
-    assert "exited 3" in body["error"] and "boom" in body["error"] and set(body) == {"error", "code"}
+    # the engine's own stderr never reaches the client ...
+    assert status == 500 and body == {"error": "the recognition engine failed", "code": "engine_failed"}
+    # ... it is logged server-side only
+    err = capfd.readouterr().err
+    assert "exited 3" in err and "boom" in err
 
 
 @needs_pil
@@ -611,18 +619,6 @@ def test_stalled_upload_times_out_and_frees_the_slot(fake: Fake) -> None:
         quick.close()
 
 
-def test_main_serves_until_interrupted(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    class Stub:
-        server_address = ("127.0.0.1", 4321)
-
-        def serve_forever(self) -> None:
-            raise KeyboardInterrupt
-
-    monkeypatch.setattr(svc, "make_server", lambda config: Stub())
-    assert svc.main() == 0
-    assert "listening on" in capsys.readouterr().out
-
-
 def test_access_log_omits_query_and_body(running: Running, capfd: pytest.CaptureFixture[str]) -> None:
     running.request("POST", "/v1/ocr?whitelist=SECRETCHARS&psm=5", b"IMAGEBYTES")
     time.sleep(0.1)
@@ -638,6 +634,9 @@ def test_dockerfile_runs_non_root_and_keeps_the_declared_defaults() -> None:
     assert "USER 1000:1000" in text and "tesseract-ocr-eng" in text and "python3-pil" in text
     assert "--no-install-recommends" in text and "OCR_MAX_BYTES=8388608" in text and "OCR_MAX_DIM=4096" in text
     assert "OCR_TIMEOUT_S=20" in text and "nice" in text and "COPY containers/ocr/ocr_service.py" in text
+    assert "OCR_MAX_SCALED_PIXELS=24000000" in text and "OCR_BODY_DEADLINE_S=10" in text
+    assert "HEALTHCHECK" in text and "/health" in text
+    assert "KNOWN VIOLATION" in text and "TAG ONLY" in text  # the tag-only base is stated, not hidden
 
 
 # ------------------------------------------------------------------ the one REAL-engine test

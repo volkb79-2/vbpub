@@ -6,12 +6,14 @@ in for the remote one. Nothing here proves the real sidecar's recognition qualit
 
 from __future__ import annotations
 
+import http.client
 import http.server
 import io
 import json
 import sys
 import threading
 import types
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -37,6 +39,7 @@ class Sidecar:
     def __init__(self) -> None:
         self.requests: list[dict[str, object]] = []
         self.reply: tuple[int, bytes] = (200, json.dumps(CANNED).encode())
+        self.reply_headers: dict[str, str] = {}
         outer = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -49,6 +52,8 @@ class Sidecar:
                                        "body": body, "content_type": self.headers["Content-Type"]})
                 status, payload = outer.reply
                 self.send_response(status)
+                for key, value in outer.reply_headers.items():
+                    self.send_header(key, value)
                 self.send_header("content-length", str(len(payload)))
                 self.end_headers()
                 self.wfile.write(payload)
@@ -225,6 +230,108 @@ def test_tsv_neutralises_whitespace_inside_words() -> None:
     odd = {**CANNED, "words": [{"text": "a\tb\nc", "conf": 80.5, "box": [1, 2, 3, 4], "line": 0}]}
     row = ocr.OcrResult.from_dict(odd).to_tsv().splitlines()[1]
     assert row == "0\t1\t2\t3\t4\t80.5\ta b c"
+
+
+# ------------------------------------------------------------------ review follow-up
+
+
+@pytest.mark.parametrize("url", ["http://user:s3cret@host:1", "http://:s3cret@host:1/x", "https://user@host", "http://a@b@host"])
+def test_credentials_in_the_sidecar_url_are_refused_without_echoing_them(url: str) -> None:
+    with pytest.raises(ocr.OcrError) as caught:
+        ocr.resolve_sidecar_url(url)
+    assert caught.value.code == "bad_url" and "credentials" in str(caught.value)
+    assert "s3cret" not in str(caught.value) and "user:" not in str(caught.value)
+    with pytest.raises(ocr.OcrError):
+        ocr.recognize(PNG, sidecar_url=url)
+
+
+def test_cli_refuses_credentials_in_the_url_with_exit_2(work: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert run("ocr", "--image", "screen.png", "--sidecar-url", "http://bob:s3cret@127.0.0.1:9") == 2
+    err = capsys.readouterr().err
+    assert "credentials" in err and "s3cret" not in err and "bob" not in err
+
+
+@pytest.mark.parametrize(
+    ("url", "shown"),
+    [
+        ("ftp://host:9/p?token=abc#frag", "ftp://host:9/p"),
+        ("ftp://[::1]:9/p", "ftp://[::1]:9/p"),
+        ("ftp://host", "ftp://host"),
+        ("http://", "http:<no host>"),
+        ("http://[::1", "<malformed url>"),
+    ],
+)
+def test_urls_are_redacted_in_messages(url: str, shown: str) -> None:
+    assert ocr._redact(url) == shown
+    with pytest.raises(ocr.OcrError) as caught:
+        ocr.resolve_sidecar_url(url)
+    assert "token" not in str(caught.value) and "frag" not in str(caught.value)
+
+
+def test_a_redirect_is_an_error_and_the_image_is_never_sent_elsewhere(sidecar: Sidecar) -> None:
+    elsewhere = Sidecar()
+    try:
+        sidecar.reply = (307, b"")
+        sidecar.reply_headers = {"Location": elsewhere.url + "/v1/ocr"}
+        with pytest.raises(ocr.OcrError) as caught:
+            ocr.recognize(PNG, sidecar_url=sidecar.url)
+        assert (caught.value.code, caught.value.status) == ("redirect", 307)
+        assert "never followed" in str(caught.value)
+        assert elsewhere.requests == [] and len(sidecar.requests) == 1
+        sidecar.reply = (302, b"")
+        with pytest.raises(ocr.OcrError) as again:
+            ocr.recognize(PNG, sidecar_url=sidecar.url)
+        assert again.value.code == "redirect" and elsewhere.requests == []
+    finally:
+        elsewhere.close()
+
+
+def test_redirect_through_the_cli_is_a_clean_failure(work: Path, sidecar: Sidecar, capsys: pytest.CaptureFixture[str]) -> None:
+    sidecar.reply = (301, b"")
+    sidecar.reply_headers = {"Location": "http://evil.invalid/"}
+    assert run("ocr", "--image", "screen.png", "--sidecar-url", sidecar.url) == 1
+    assert "redirect" in capsys.readouterr().err
+
+
+class _Opener:
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+
+    def open(self, *_a: object, **_k: object) -> None:
+        raise self.error
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ConnectionResetError(104, "reset"),
+        BrokenPipeError(32, "pipe"),
+        http.client.RemoteDisconnected("closed"),
+        urllib.error.URLError(ConnectionResetError(104, "reset")),
+        urllib.error.URLError(BrokenPipeError(32, "pipe")),
+    ],
+)
+def test_a_hang_up_during_the_upload_reads_as_busy_or_rejected_not_unreachable(
+    monkeypatch: pytest.MonkeyPatch, error: BaseException
+) -> None:
+    monkeypatch.setattr(ocr, "_OPENER", _Opener(error))
+    with pytest.raises(ocr.OcrError) as caught:
+        ocr.recognize(PNG, sidecar_url="http://pwmcp-ocr:8941")
+    assert caught.value.code == "busy_or_rejected"
+    assert "busy or rejected" in str(caught.value) and "retry" in str(caught.value)
+    assert "unreachable" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [urllib.error.URLError(ConnectionRefusedError(111, "refused")), urllib.error.URLError("name resolution"),
+     ConnectionRefusedError(111, "refused"), TimeoutError("timed out")],
+)
+def test_connection_failures_before_the_upload_stay_unreachable(monkeypatch: pytest.MonkeyPatch, error: BaseException) -> None:
+    monkeypatch.setattr(ocr, "_OPENER", _Opener(error))
+    with pytest.raises(ocr.OcrError) as caught:
+        ocr.recognize(PNG, sidecar_url="http://pwmcp-ocr:8941/")
+    assert caught.value.code == "unreachable" and "http://pwmcp-ocr:8941 is unreachable" in str(caught.value)
 
 
 # ------------------------------------------------------------------ CLI (--image)

@@ -328,7 +328,8 @@ published by `build-push.py` (cmru-prepared coordinate in `cmru.vars`, a remote 
 from `docker-bake.hcl`, GHCR visibility sync) and shipped inside the bundle whose `ciu.defaults.toml.j2` tag
 is rewritten at release. A second image needs: its own bake target and tag scheme (follow the pwmcp
 coordinate `1.64.0-r3` or version independently), a push and visibility-sync step, a base-image digest pin
-(currently tag only) and cmru artifact accounting. `pwmcp.ocr.image.tag` therefore holds the current pwmcp
+(currently tag only: a KNOWN VIOLATION of the repo's digest-pin convention until this lands, to be fixed
+before any release) and cmru artifact accounting. `pwmcp.ocr.image.tag` therefore holds the current pwmcp
 coordinate as a placeholder and the image is not published anywhere.
 
 **UNVERIFIED until an image is built and run.**

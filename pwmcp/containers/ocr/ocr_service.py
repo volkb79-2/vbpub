@@ -22,6 +22,8 @@ import json
 import os
 import re
 import shutil
+import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -50,6 +52,8 @@ class Config:
     timeout_s: float = 20.0
     tesseract: str = "tesseract"
     socket_timeout_s: float = 30.0
+    body_deadline_s: float = 10.0  # TOTAL time allowed to receive a request body (slow-client guard)
+    max_scaled_pixels: int = 24_000_000  # width*height AFTER --scale, checked before resizing
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "Config":
@@ -61,6 +65,8 @@ class Config:
             max_dim=int(env.get("OCR_MAX_DIM", cls.max_dim)),
             timeout_s=float(env.get("OCR_TIMEOUT_S", cls.timeout_s)),
             tesseract=env.get("OCR_TESSERACT", cls.tesseract),
+            body_deadline_s=float(env.get("OCR_BODY_DEADLINE_S", cls.body_deadline_s)),
+            max_scaled_pixels=int(env.get("OCR_MAX_SCALED_PIXELS", cls.max_scaled_pixels)),
         )
 
 
@@ -136,7 +142,11 @@ def parse_tsv(tsv: str) -> list[Word]:
     """
 
     words: list[Word] = []
-    for raw in tsv.splitlines():
+    # Split on "\n" only (a trailing "\r" is stripped): str.splitlines() would also break at
+    # \x0b \x0c \x1c-\x1e \x85 \u2028 \u2029 inside a recognised word.
+    for raw in tsv.split("\n"):
+        if raw.endswith("\r"):
+            raw = raw[:-1]
         cols = raw.split("\t", 11)
         if len(cols) < 12 or cols[0] != "5":
             continue  # header row, layout rows, or a malformed row
@@ -146,7 +156,7 @@ def parse_tsv(tsv: str) -> list[Word]:
             conf = float(cols[10])
         except ValueError:
             continue
-        text = cols[11].strip()
+        text = cols[11].strip(" \t\r")
         if not text or conf < 0:
             continue
         words.append(Word(text, conf, (x, y, w, h), (block, par, line)))
@@ -219,9 +229,10 @@ class TesseractEngine:
         except OSError as exc:
             raise ServiceError(503, "engine_unavailable", "tesseract could not be started") from exc
         if done.returncode != 0:
-            # stderr is the engine's own diagnostics, never image data; keep it short.
+            # The engine's own diagnostics stay server-side (log only); clients get a fixed message.
             detail = done.stderr.decode("utf-8", "replace").strip().splitlines()[-1:] or [""]
-            raise ServiceError(500, "engine_failed", f"tesseract exited {done.returncode}: {detail[0][:200]}")
+            sys.stderr.write(f"[pwmcp-ocr] tesseract exited {done.returncode}: {detail[0][:300]!r}\n")
+            raise ServiceError(500, "engine_failed", "the recognition engine failed")
         return parse_tsv(done.stdout.decode("utf-8", "replace"))
 
 
@@ -310,9 +321,14 @@ def prepare_image(body: bytes, params: Params, config: Config) -> tuple[bytes, i
         raise ServiceError(413, "image_too_large", f"image exceeds {config.max_dim}x{config.max_dim} pixels")
     if width * params.scale > MAX_SCALED_DIM or height * params.scale > MAX_SCALED_DIM:
         raise ServiceError(400, "invalid_scale", f"scaled image would exceed {MAX_SCALED_DIM} pixels")
+    if width * height * params.scale * params.scale > config.max_scaled_pixels:
+        raise ServiceError(
+            413, "scaled_image_too_large",
+            f"scaled image would exceed {config.max_scaled_pixels} pixels; lower scale or send a smaller image",
+        )
     try:
         image.load()
-        flat = image.convert("RGB") if image.mode not in ("L", "RGB") else image
+        flat = _flatten(image)
         if params.scale > 1:
             flat = flat.resize((width * params.scale, height * params.scale), Image.Resampling.BICUBIC)
         out = io.BytesIO()
@@ -322,13 +338,38 @@ def prepare_image(body: bytes, params: Params, config: Config) -> tuple[bytes, i
     return out.getvalue(), width, height
 
 
+def _flatten(image: "object") -> "object":
+    """8-bit L or RGB for the engine: transparency composited onto WHITE, 16-bit scaled down."""
+
+    from PIL import Image
+
+    mode = image.mode  # type: ignore[attr-defined]
+    if mode in ("RGBA", "LA", "PA") or (mode == "P" and "transparency" in image.info):  # type: ignore[attr-defined]
+        rgba = image.convert("RGBA")  # type: ignore[attr-defined]
+        backdrop = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+        return Image.alpha_composite(backdrop, rgba).convert("RGB")
+    if mode in ("I;16", "I;16L", "I;16B", "I;16N", "I"):
+        # 16-bit grayscale: map 0..65535 to 0..255 explicitly instead of clipping.
+        wide = image.convert("I")  # type: ignore[attr-defined]
+        return wide.point(lambda value: value * (1 / 256)).convert("L")
+    if mode in ("L", "RGB"):
+        return image
+    return image.convert("RGB")  # type: ignore[attr-defined]
+
+
 def build_response(
     words: list[Word], params: Params, width: int, height: int, engine: Engine, elapsed_ms: int
 ) -> dict[str, object]:
     """Assemble the JSON: boxes un-scaled to original pixels, min_conf applied, lines rebuilt."""
 
     def unscale(box: tuple[int, int, int, int]) -> list[int]:
-        return [round(v / params.scale) for v in box]
+        # Outward rounding: the original-pixel box always contains the scaled one, and a box
+        # with width/height > 0 can never collapse to 0.
+        s = params.scale
+        x, y, w, h = box
+        x0, y0 = x // s, y // s
+        x1, y1 = -(-(x + w) // s), -(-(y + h) // s)
+        return [x0, y0, x1 - x0 if w > 0 else 0, y1 - y0 if h > 0 else 0]
 
     kept = [w for w in words if w.conf >= params.min_conf]
     order: dict[tuple[int, ...], int] = {}
@@ -426,6 +467,30 @@ def make_handler(service: Service) -> type[BaseHTTPRequestHandler]:
         def _error(self, err: ServiceError) -> None:
             extra = {"Retry-After": "1"} if err.status == 429 else None
             self._send(err.status, {"error": err.message, "code": err.code}, extra=extra)
+            if self._unread_body:
+                self._linger()
+
+        _unread_body = False
+
+        def _linger(self) -> None:
+            """Reading the rest of a rejected upload (bounded) keeps the client from seeing a reset.
+
+            The reply is already sent; half-close, then swallow up to 1 MiB for at most about a
+            second so a still-sending client reads the status instead of ECONNRESET.
+            """
+
+            try:
+                self.connection.shutdown(socket.SHUT_WR)
+                deadline = time.monotonic() + 1.0
+                budget = 1024 * 1024
+                while budget > 0 and time.monotonic() < deadline:
+                    self.connection.settimeout(max(deadline - time.monotonic(), 0.01))
+                    chunk = self.rfile.read1(min(65536, budget))
+                    if not chunk:
+                        break
+                    budget -= len(chunk)
+            except OSError:
+                pass
 
         def do_GET(self) -> None:  # noqa: N802 - http.server API
             path = urlsplit(self.path).path
@@ -451,39 +516,73 @@ def make_handler(service: Service) -> type[BaseHTTPRequestHandler]:
             # One recognition at a time: take the slot BEFORE reading the body so at most one
             # (size-limited) body is ever held in memory; a concurrent caller is told to retry.
             if not service.busy.acquire(blocking=False):
+                self._unread_body = True
                 self._error(ServiceError(429, "busy", "another recognition is in progress; retry shortly"))
                 return
+            # The slot is released BEFORE the reply is written: a client that sends its next
+            # request the instant it has read this reply must never see a spurious 429.
+            outcome: dict[str, object] | ServiceError | None
             try:
-                self._send_result(parts.query)
+                outcome = self._compute(parts.query)
             finally:
                 service.busy.release()
-
-        def _send_result(self, query: str) -> None:
-            try:
-                body = self._read_body()
-                self._send(200, service.recognize(body, query))
-            except ServiceError as err:
-                self._error(err)
-            except (OSError, TimeoutError):
+            if isinstance(outcome, ServiceError):
+                self._error(outcome)
+            elif outcome is None:
                 self.close_connection = True  # client went away or stalled mid-upload
+            else:
+                self._send(200, outcome)
+
+        def _compute(self, query: str) -> "dict[str, object] | ServiceError | None":
+            try:
+                return service.recognize(self._read_body(), query)
+            except ServiceError as err:
+                return err
+            except (OSError, TimeoutError):
+                return None
             except Exception:  # noqa: BLE001 - never leak internals or image data to the client
-                self._error(ServiceError(500, "internal_error", "internal error"))
+                return ServiceError(500, "internal_error", "internal error")
 
         def _read_body(self) -> bytes:
             if "chunked" in self.headers.get("Transfer-Encoding", "").lower():
                 raise ServiceError(411, "length_required", "send Content-Length; chunked bodies are not accepted")
             raw = self.headers.get("Content-Length")
-            if raw is None or not raw.isdigit():
+            # ASCII digits only: str.isdigit() accepts "\u00b2", which int() then rejects (a 500).
+            if raw is None or not re.fullmatch(r"[0-9]+", raw):
                 raise ServiceError(411, "length_required", "Content-Length is required")
-            length = int(raw)
-            if length > service.config.max_bytes:
+            if len(raw) > 18 or int(raw) > service.config.max_bytes:
+                self._unread_body = True
                 raise ServiceError(413, "payload_too_large", f"body exceeds {service.config.max_bytes} bytes")
+            length = int(raw)
             if length == 0:
                 raise ServiceError(400, "empty_body", "empty request body")
-            data = self.rfile.read(length)
-            if len(data) != length:
-                raise ServiceError(400, "short_body", "request body shorter than Content-Length")
-            return data
+            return self._read_exact(length)
+
+        def _read_exact(self, length: int) -> bytes:
+            """Read the body against a TOTAL deadline, not merely a per-recv timeout."""
+
+            deadline = time.monotonic() + service.config.body_deadline_s
+            chunks: list[bytes] = []
+            got = 0
+            try:
+                while got < length:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError
+                    self.connection.settimeout(min(remaining, service.config.socket_timeout_s))
+                    chunk = self.rfile.read1(min(65536, length - got))
+                    if not chunk:
+                        raise ServiceError(400, "short_body", "request body shorter than Content-Length")
+                    chunks.append(chunk)
+                    got += len(chunk)
+            except TimeoutError as exc:
+                raise ServiceError(
+                    408, "request_timeout",
+                    f"request body not received within {service.config.body_deadline_s:g} s",
+                ) from exc
+            finally:
+                self.connection.settimeout(service.config.socket_timeout_s)
+            return b"".join(chunks)
 
         def log_message(self, fmt: str, *args: object) -> None:
             # Access log without the query string (a whitelist is operator data) or any body.
@@ -503,10 +602,20 @@ def main() -> int:
     config = Config.from_env()
     server = make_server(config)
     print(f"[pwmcp-ocr] listening on {config.host}:{server.server_address[1]}", flush=True)
+
+    def stop(_signum: int, _frame: object) -> None:
+        # shutdown() blocks until serve_forever() returns, so it must not run on the thread
+        # serve_forever() occupies (this handler interrupts that very thread).
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    # As PID 1 a default SIGTERM disposition is ignored by the kernel; install handlers.
+    previous = {sig: signal.signal(sig, stop) for sig in (signal.SIGTERM, signal.SIGINT)}
     try:
         server.serve_forever()
-    except KeyboardInterrupt:
-        pass
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+        server.server_close()
     return 0
 
 

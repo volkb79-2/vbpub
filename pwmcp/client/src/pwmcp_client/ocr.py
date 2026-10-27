@@ -121,10 +121,34 @@ def resolve_sidecar_url(explicit: str | None = None, *, contract: object | None 
     url = explicit or os.environ.get(OCR_URL_ENV) or str(getattr(contract, "ocr_url", "") or "")
     if not url:
         raise OcrNotConfigured()
-    parsed = urllib.parse.urlsplit(url)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-        raise OcrError(f"OCR sidecar URL must be an absolute http(s) URL, got {url!r}", code="bad_url")
+    shown = _redact(url)
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        host = parsed.hostname
+        has_userinfo = bool(parsed.username or parsed.password or "@" in parsed.netloc)
+    except ValueError:
+        raise OcrError(f"OCR sidecar URL is malformed: {shown}", code="bad_url") from None
+    if has_userinfo:
+        raise OcrError(
+            f"OCR sidecar URL must not contain credentials (userinfo): {shown}", code="bad_url"
+        )
+    if parsed.scheme not in {"http", "https"} or not host:
+        raise OcrError(f"OCR sidecar URL must be an absolute http(s) URL, got {shown}", code="bad_url")
     return url.rstrip("/")
+
+
+def _redact(url: str) -> str:
+    """The URL without userinfo, query or fragment: safe to put in a message."""
+
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host = parts.hostname or ""
+        if ":" in host:
+            host = f"[{host}]"
+        port = f":{parts.port}" if parts.port else ""
+        return f"{parts.scheme}://{host}{port}{parts.path}" if host else f"{parts.scheme}:<no host>"
+    except ValueError:
+        return "<malformed url>"
 
 
 def _content_type(image: bytes) -> str:
@@ -136,7 +160,14 @@ def _content_type(image: bytes) -> str:
 
 
 # Internal sidecar traffic must never be routed through an HTTP(S)_PROXY from the environment.
-_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A 3xx is an error: the image must never be re-POSTed to another host."""
+
+    def redirect_request(self, *_args: object, **_kwargs: object) -> None:  # type: ignore[override]
+        return None
+
+
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
 
 
 def recognize(
@@ -182,8 +213,14 @@ def recognize(
             payload = json.load(response)
     except urllib.error.HTTPError as exc:
         raise _http_error(exc) from exc
-    except (urllib.error.URLError, OSError) as exc:
-        raise OcrError(f"the OCR sidecar at {base} is unreachable: {exc}", code="unreachable") from exc
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, _RESET):
+            raise _rejected(base) from exc
+        raise OcrError(f"the OCR sidecar at {_redact(base)} is unreachable: {exc.reason}", code="unreachable") from exc
+    except _RESET as exc:
+        raise _rejected(base) from exc
+    except OSError as exc:
+        raise OcrError(f"the OCR sidecar at {_redact(base)} is unreachable: {exc}", code="unreachable") from exc
     except ValueError as exc:
         raise OcrError("the OCR sidecar returned a non-JSON response", code="bad_response") from exc
     if not isinstance(payload, dict):
@@ -191,7 +228,25 @@ def recognize(
     return OcrResult.from_dict(payload)
 
 
+# A reset or broken pipe AFTER connecting means the sidecar hung up while the image was being
+# sent (busy, or it rejected the request early); that is not "unreachable".
+_RESET = (ConnectionResetError, BrokenPipeError)
+
+
+def _rejected(base: str) -> OcrError:
+    return OcrError(
+        f"the OCR sidecar at {_redact(base)} closed the connection while the image was being sent: it is "
+        "busy or rejected the request (limits: body size, one recognition at a time); retry shortly",
+        code="busy_or_rejected",
+    )
+
+
 def _http_error(exc: urllib.error.HTTPError) -> OcrError:
+    if 300 <= exc.code < 400:
+        return OcrError(
+            f"the OCR sidecar answered with a redirect ({exc.code}); redirects are never followed",
+            code="redirect", status=exc.code,
+        )
     code, message = "http_error", f"HTTP {exc.code}"
     try:
         body = json.loads(exc.read(65536).decode("utf-8", "replace"))

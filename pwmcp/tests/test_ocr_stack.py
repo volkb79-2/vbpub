@@ -33,15 +33,18 @@ def _defaults() -> dict:
     return tomllib.loads((PWMCP_ROOT / "ciu.defaults.toml.j2").read_text(encoding="utf-8"))
 
 
-def _render(mutate=None, *, strip_ocr: bool = False) -> str:
+GOLDEN = PWMCP_ROOT / "tests" / "golden" / "ciu.compose.yml.j2.85f5fa992"  # git show 85f5fa992:pwmcp/ciu.compose.yml.j2
+
+
+def _render(mutate=None, *, strip_ocr: bool = False, template_path: Path | None = None, **env_options: bool) -> str:
     context = copy.deepcopy(_defaults())
     if strip_ocr:
         del context["pwmcp"]["ocr"]  # a consumer whose defaults predate the feature
     if mutate is not None:
         mutate(context["pwmcp"])
     deploy = {"project_name": "proj", "environment_tag": "t1", "network_name": "proj-net"}
-    template = (PWMCP_ROOT / "ciu.compose.yml.j2").read_text(encoding="utf-8")
-    env = jinja2.Environment(undefined=jinja2.StrictUndefined, keep_trailing_newline=True)  # as ciu does
+    template = (template_path or PWMCP_ROOT / "ciu.compose.yml.j2").read_text(encoding="utf-8")
+    env = jinja2.Environment(undefined=jinja2.StrictUndefined, keep_trailing_newline=True, **env_options)  # as ciu does
     return env.from_string(template).render(pwmcp=context["pwmcp"], deploy=deploy)
 
 
@@ -61,6 +64,29 @@ def test_defaults_ship_ocr_disabled_with_the_documented_keys() -> None:
     others = [pwmcp["unified"][k] for k in ("ws_port", "mcp_port", "devtools_port", "lighthouse_port", "admin_port")]
     others += [pwmcp["run_server"]["admin_port"], pwmcp["run_server"]["upstream_port"]]
     assert ocr["port"] not in others
+
+
+@pytest.mark.parametrize("env_options", [{}, {"trim_blocks": True}, {"trim_blocks": True, "lstrip_blocks": True}],
+                         ids=["ciu-env", "trim_blocks", "trim+lstrip"])
+def test_default_render_is_byte_identical_to_the_pre_ocr_template(env_options: dict) -> None:
+    """The DEFAULT render (ocr disabled or absent) equals the render of the template at 85f5fa992."""
+
+    old = _render(template_path=GOLDEN, strip_ocr=True, **env_options)
+    assert _render(**env_options).encode() == old.encode()
+    assert _render(strip_ocr=True, **env_options).encode() == old.encode()
+    assert _render(lambda p: p["ocr"].update(enabled=False), **env_options).encode() == old.encode()
+    # also with external mode on, where the template has the most conditional blocks
+    def external(pwmcp: dict) -> None:
+        pwmcp["external"].update(enabled=True, unified_host="pw.example.test", guard_enabled=True,
+                                 guard_htpasswd="$x", guard_user="u")
+        pwmcp["unified"]["expose"] = True
+
+    assert _render(external, **env_options).encode() == _render(external, template_path=GOLDEN, strip_ocr=True,
+                                                                **env_options).encode()
+
+
+def test_golden_copy_is_the_old_template_without_any_ocr_text() -> None:
+    assert "ocr" not in GOLDEN.read_text(encoding="utf-8").lower()
 
 
 def test_default_render_is_unchanged_and_has_only_the_pwmcp_service() -> None:
@@ -92,9 +118,11 @@ def test_enabled_renders_the_sidecar_service_on_the_stack_network_only() -> None
     assert (ocr["mem_limit"], ocr["memswap_limit"], ocr["cpus"], ocr["pids_limit"]) == ("512m", "512m", 1.0, 128)
     assert ocr["restart"] == "unless-stopped"
     assert ocr["environment"] == {"OCR_PORT": "8941", "OCR_MAX_BYTES": "8388608", "OCR_MAX_DIM": "4096",
-                                  "OCR_TIMEOUT_S": "20"}
+                                  "OCR_TIMEOUT_S": "20",
+                                  "OCR_MAX_SCALED_PIXELS": "24000000", "OCR_BODY_DEADLINE_S": "10"}
     assert "cgroup_parent" not in ocr  # the ciu governance overlay owns it (S15.3)
-    assert "8941/health" in ocr["healthcheck"]["test"][-1]
+    assert "/health" in ocr["healthcheck"]["test"][-1] and "OCR_PORT" in ocr["healthcheck"]["test"][-1]
+    assert ocr["init"] is True  # PID 1 must reap and forward SIGTERM
     assert compose["networks"]["default"]["name"] == "proj-net"
 
 
