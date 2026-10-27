@@ -3,7 +3,7 @@
 Lanes produced (all journalled by the runner):
   w_fresh_qd1 / w_fresh_qd4   sequential 64 KiB writes into the NEW scratch file (fresh allocation), each phase with its
                               own periodic fdatasync; durable rate = bytes / (write wall time + sync time)
-  w_over_4k                   4 KiB O_DIRECT|O_DSYNC overwrites at random slots of the written area, qd 1, paced
+  w_over_4k                   4 KiB O_DIRECT overwrites each followed by fdatasync, at random slots of the written area, qd 1, paced
   r_seq                       one bounded sequential read at a random non-zero offset of a raw disk
   r_cold / r_witness          4 KiB raw reads (see tick_reads)
 Every IO is charged to the budget and a rate bucket BEFORE submission; the guard is consulted between IOs.
@@ -15,6 +15,7 @@ import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
+from . import safeio
 from .budget import BudgetExceeded, DailyBudget, TokenBucket
 from .config import Config
 from .env import Env, StopRequested
@@ -38,6 +39,31 @@ def _fill(buf: AlignedBuffer, env: Env, n: int) -> None:
 
 def _lane_base(planned: int) -> dict:
     return {"planned_bytes": planned, "bytes": 0, "valid": False, "aborted": None}
+
+
+def timed_flush(fd: int, cfg: Config, env: Env) -> float:
+    """fdatasync under a watchdog: a flush stuck longer than flush_limit_s raises the stop flag from a monitor thread (a blocked
+    syscall cannot be interrupted, but nothing else is submitted afterwards), and a slow flush ends the lane as 'slow_flush'."""
+
+    timer = threading.Timer(cfg.flush_limit_s, env.stop.set, ("slow_flush",))
+    timer.daemon = True
+    timer.start()
+    t0 = env.mono()
+    try:
+        os.fdatasync(fd)
+    finally:
+        timer.cancel()
+    dt = env.mono() - t0
+    if dt > cfg.flush_limit_s:
+        env.stop.set("slow_flush")
+        raise StopRequested("slow_flush")
+    return dt
+
+
+def _pwrite_all(fd: int, view, offset: int) -> None:
+    n = os.pwrite(fd, view, offset)
+    if n != len(view):
+        raise LaneAbort(f"short_write:{n}/{len(view)}")
 
 
 def seq_write_phase(sc: Scratch, cfg: Config, env: Env, guard: RunGuard, budget: DailyBudget,
@@ -65,7 +91,7 @@ def seq_write_phase(sc: Scratch, cfg: Config, env: Env, guard: RunGuard, budget:
                 buf = local.buf = AlignedBuffer(block)
             _fill(buf, env, block)
             t0 = env.mono()
-            os.pwrite(sc.fd, memoryview(buf.mm)[:block], offset)
+            _pwrite_all(sc.fd, memoryview(buf.mm)[:block], offset)
             dt = env.mono() - t0
             with lock:
                 lat_us.append(int(dt * 1e6))
@@ -74,8 +100,12 @@ def seq_write_phase(sc: Scratch, cfg: Config, env: Env, guard: RunGuard, budget:
         except StopRequested as exc:
             reason.append(exc.reason)
             abort.set()
+        except LaneAbort as exc:
+            reason.append(exc.reason)
+            abort.set()
 
-    per_batch = max(1, cfg.sync_every_bytes // block)
+    max_batch = max(1, cfg.sync_every_bytes // block)
+    per_batch = max_batch
     chunks = length // block
     pos = 0
     pool = ThreadPoolExecutor(max_workers=qd) if qd > 1 else None
@@ -100,14 +130,21 @@ def seq_write_phase(sc: Scratch, cfg: Config, env: Env, guard: RunGuard, budget:
                         break
             else:
                 list(pool.map(do_chunk, offsets))
-            lane["t_write"] += env.mono() - t0
-            t0 = env.mono()
-            os.fdatasync(sc.fd)
-            ds = env.mono() - t0
+            tw = env.mono() - t0
+            lane["t_write"] += tw
+            try:
+                ds = timed_flush(sc.fd, cfg, env)
+            except StopRequested as exc:
+                reason.append(exc.reason)
+                break
             lane["t_sync"] += ds
             lane["syncs"] += 1
             sync_ms.append(round(ds * 1000.0, 3))
             pos += n
+            # adaptive flush size: one flush should cost <= ~250 ms at the rate just measured
+            if tw > 0 and not abort.is_set():
+                rate = n * block / tw
+                per_batch = max(1, min(max_batch, int(rate * 0.25 // block)))
     finally:
         if pool is not None:
             pool.shutdown(wait=True)
@@ -126,6 +163,8 @@ def seq_write_phase(sc: Scratch, cfg: Config, env: Env, guard: RunGuard, budget:
 
 
 def over_4k(sc: Scratch, cfg: Config, env: Env, guard: RunGuard, budget: DailyBudget, written: int) -> dict:
+    """4 KiB overwrites, each followed by its own fdatasync (the durable-write latency), qd 1, paced, slow-IO aware."""
+
     lane = _lane_base(cfg.sync4k_samples * 4096)
     lane["n_planned"] = cfg.sync4k_samples
     slots = written // 4096
@@ -141,12 +180,15 @@ def over_4k(sc: Scratch, cfg: Config, env: Env, guard: RunGuard, budget: DailyBu
             _fill(buf, env, 4096)
             off = env.rng.randrange(slots) * 4096
             t0 = env.mono()
-            os.pwrite(sc.fd_dsync, memoryview(buf.mm)[:4096], off)
+            _pwrite_all(sc.fd, memoryview(buf.mm)[:4096], off)
+            os.fdatasync(sc.fd)
             dt = env.mono() - t0
             lat_us.append(int(dt * 1e6))
             lane["bytes"] += 4096
             guard.note_latency(dt)
     except StopRequested as exc:
+        lane["aborted"] = exc.reason
+    except LaneAbort as exc:
         lane["aborted"] = exc.reason
     except BudgetExceeded as exc:
         lane["aborted"] = f"budget:{exc.what}"
@@ -173,10 +215,14 @@ def seq_read(reader: RawReader, cfg: Config, env: Env, guard: RunGuard, budget: 
     try:
         slots = (reader.size - length) // cfg.seq_read_block
         offset = None
-        for _ in range(8):
+        for _ in range(8):  # looking for a non-zero (allocated) start: every candidate read is guarded, paced and charged
+            guard.check()
             cand = env.rng.randrange(slots + 1) * cfg.seq_read_block
             budget.charge("read", reader.block)
-            if reader.read_at(probe, cand, reader.block).nonzero:
+            bucket.acquire(reader.block)
+            r = reader.read_at(probe, cand, reader.block)
+            guard.note_latency(r.seconds)
+            if r.nonzero:
                 offset = cand
                 break
         if offset is None:
@@ -222,6 +268,7 @@ def run_bench(cfg: Config, env: Env, guard: RunGuard, budget: DailyBudget, plan:
     region = plan.as_dict()
     region["escalated"] = escalate
     abort: str | None = None
+    crashed = False
     try:
         if plan.mode == "file":
             nbytes = plan.escalation_bytes if escalate else plan.probe_bytes
@@ -255,11 +302,17 @@ def run_bench(cfg: Config, env: Env, guard: RunGuard, budget: DailyBudget, plan:
         abort = exc.reason
     except BudgetExceeded as exc:
         abort = f"budget:{exc.what}"
+    except safeio.UnsafePath as exc:  # the scratch name was swapped / is not what we created: stop, never write through it
+        abort = f"unsafe_path:{exc}"[:200]
+    except Exception as exc:  # EIO from a flush, ENOSPC, a bug: an abort that still reports what was done (the caller counts it)
+        abort = f"error:{type(exc).__name__}:{exc}"[:200]
+        crashed = True
     io = {
         "write_bytes": sum(l.get("bytes", 0) for k, l in lanes.items() if k.startswith("w_")),
         "read_bytes": sum(l.get("bytes", 0) for k, l in lanes.items() if k.startswith("r_")),
     }
-    return {"status": "aborted" if abort else "ok", "abort": abort, "lanes": lanes, "region": region, "io": io}
+    return {"status": "aborted" if abort else "ok", "abort": abort, "lanes": lanes, "region": region, "io": io,
+            "crashed": crashed}
 
 
 # ---------------------------------------------------------------------------------------------------------

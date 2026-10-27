@@ -18,7 +18,8 @@ mdt-cockpit/iogov/
   covariates.py         fill, fstrim, discard, provider signal, queue/prio facts + the report-only prevention checker
   episodes.py           `watch`: protected-side distress episodes (stopping-distance data), no probe IO
   recognizer.py         robust baseline + two-sided CUSUM + hysteresis -> recommendations; demand-limited labels
-  gating.py budget.py   kill switches, load gates, backoff, mid-run guard; token buckets, daily budget, worst-case numbers
+  safeio.py             identity, directory checks, no-follow verified opens, locks, atomic JSON
+  gating.py budget.py   kill switches, load gates, backoff, mid-run guard; token buckets, reserved daily budget, worst-case numbers
   journal.py report.py  append-only JSONL (schema v1) and state; `analyze`, `status`
   experiment.py         `quiet-experiment`: plan printer only
   units/*.in            systemd unit / udev templates (NOT installed)
@@ -41,6 +42,7 @@ python3 -m iogov analyze [PATH] [--json] [--lane r_cold] [--no-plots]   # offlin
 python3 -m iogov status                # kill switch, last runs, today's budget, recognizer state, prevention checks
 python3 -m iogov annotate "provider optimise run"          # journal annotation (also: --action, --baseline-reset)
 python3 -m iogov quiet-experiment --knob nr_requests --value 8   # prints a plan; executes nothing
+python3 -m iogov prune [--dry-run]     # delete monthly journal files older than 400 days / beyond 512 MiB (also run daily by `tick`)
 python3 -m iogov cleanup               # remove scratch files left by a killed run
 python3 -m iogov config                # effective configuration
 ```
@@ -49,8 +51,20 @@ Config: `--config FILE`, `$IOGOV_CONFIG`, `/etc/iogov/iogov.toml`, else defaults
 hard ceilings in `config.py` are errors. Minimum useful config: `data_paths = [...]` (the disks behind them are detected) and
 `protected_cgroups` / `containers` for the harm observations.
 
+Identity: **never root by default** (`allow_root = true` or `--allow-root` is required, and then every state/scratch directory must be
+root-owned 0700). State, journal and scratch directories must be real directories owned by the running user and not group/world writable;
+files are opened `O_NOFOLLOW` and verified through the descriptor; `tick` and `bench` exclude each other with `state_dir/run.lock`
+(a second run exits quietly), `watch` has `watch.lock`, state writes take `state.lock`.
+
 Kill switches (any one stops every run and aborts a running one at its next safe point): `touch /etc/iogov/disabled`,
 `touch <state_dir>/DISABLED`, `IOGOV_DISABLE=1`, `enabled = false`, `systemctl stop|mask` of the timers.
+
+Ownership of what the service trusts: `/etc/iogov` must be root-owned 0755, the config file root-owned and not writable by anyone else
+(a config file writable by group/others, or owned by another user, is refused), and the kill-switch file root-owned. Every safety limit in
+the config is clamped to the hard limits in `config.py` (the clamps are listed by `plan` and `config`).
+
+Containers: prefer explicit `container_cgroups = { name = "/sys/fs/cgroup/..." }`. `containers = [...]` alone makes the service read the
+daemon's `config.v2.json` files, which also contain container environment variables (secrets); that access widens what a compromised service sees.
 
 Run the tests: `cd mdt-cockpit && python3 -m pytest iogov/tests -q`. A missing optional dependency fails the test (see
 `tests/_testdeps.py`); `IOGOV_ALLOW_MISSING_TEST_DEPS=1` turns that into a skip on a developer machine.
@@ -62,7 +76,7 @@ Run the tests: `cd mdt-cockpit && python3 -m pytest iogov/tests -q`. A missing o
 3. Read-only access to the one disk: render `units/99-iogov-raw-read.rules.in` into `/etc/udev/rules.d/`, check with
    `udevadm test`, then `udevadm trigger`. Verify with the service user: reading works (`dd if=<node> bs=4k count=1 iflag=direct of=/dev/null`) and
    `test -w <node>` is false. Do not use the `disk` group and do not add CAP_SYS_RAWIO.
-4. Render `units/*.in` by replacing the tokens below, install into `/etc/systemd/system/`, `systemctl daemon-reload`, then enable the
+4. Render `units/*.in` (the services use `StateDirectory=iogov`, `ProtectKernelTunables`, `ProtectControlGroups`, an empty `CapabilityBoundingSet`, `PrivateNetwork`, `SystemCallFilter=@system-service`) by replacing the tokens below, install into `/etc/systemd/system/`, `systemctl daemon-reload`, then enable the
    timers (`iogov-tick.timer`, `iogov-bench.timer`; optionally `iogov-watch.service`). Start with `python3 -m iogov plan` as the service user.
 5. Let it observe for a week before reading anything into `analyze` (the recognizer needs `baseline_windows` = 5 valid daily windows).
 

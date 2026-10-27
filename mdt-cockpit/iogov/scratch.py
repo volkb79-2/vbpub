@@ -8,11 +8,11 @@ removed in `finally` (also on SIGTERM/abort), and stale files from a killed run 
 
 from __future__ import annotations
 
-import fcntl
 import os
 import re
 from dataclasses import dataclass
 
+from . import safeio
 from .config import MiB, Config
 from .env import Env
 
@@ -101,89 +101,105 @@ def plan_region(cfg: Config, disk_bytes: int | None, statvfs=os.statvfs, fstype:
     return RegionPlan("file", region, probe, esc, "ok", **base)
 
 
-def _lock(scratch_dir: str) -> int:
-    os.makedirs(scratch_dir, mode=0o700, exist_ok=True)
-    fd = os.open(os.path.join(scratch_dir, LOCK_NAME), os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        os.close(fd)
+STALE_RE = re.compile(re.escape(PREFIX) + r"[0-9a-f]{12}\.dat")
+
+
+def _lock(scratch_dir: str) -> safeio.FileLock:
+    safeio.ensure_dir(scratch_dir, strict=True)
+    lock = safeio.FileLock(os.path.join(scratch_dir, LOCK_NAME))
+    if not lock.acquire():
         raise ScratchBusy("another iogov run holds the scratch lock")
-    return fd
+    return lock
 
 
-def remove_stale(scratch_dir: str) -> list[str]:
-    """Remove leftovers of a killed run. Only files with our prefix, only while holding the lock."""
+def _remove_stale_files(scratch_dir: str) -> list[str]:
+    """Remove only regular files whose name matches the strict pattern; anything else with the prefix (a directory, a link) is left."""
 
     removed = []
-    if not os.path.isdir(scratch_dir):
-        return removed
-    fd = _lock(scratch_dir)
-    try:
-        for name in sorted(os.listdir(scratch_dir)):
-            if re.fullmatch(re.escape(PREFIX) + r"[0-9a-f]+\.dat", name):
-                os.unlink(os.path.join(scratch_dir, name))
-                removed.append(name)
-    finally:
-        os.close(fd)
+    with os.scandir(scratch_dir) as it:
+        entries = sorted(it, key=lambda e: e.name)
+    for e in entries:
+        if STALE_RE.fullmatch(e.name) and e.is_file(follow_symlinks=False):
+            os.unlink(e.path)
+            removed.append(e.name)
     return removed
 
 
+def remove_stale(scratch_dir: str) -> list[str]:
+    """Remove leftovers of a killed run, while holding the scratch lock."""
+
+    if not os.path.isdir(scratch_dir):
+        return []
+    lock = _lock(scratch_dir)
+    try:
+        return _remove_stale_files(scratch_dir)
+    finally:
+        lock.release()
+
+
 class Scratch:
-    """Context manager owning the lock and the file. `fd` (O_DIRECT) and `fd_dsync` (O_DIRECT|O_DSYNC) are both read/write."""
+    """Context manager owning the lock and the file, used through ONE descriptor (never re-opened by name).
+
+    The file is O_EXCL|O_NOFOLLOW created and verified (regular, ours, 0600, the name still names it); durability of the 4 KiB lane
+    comes from an explicit fdatasync after each pwrite."""
 
     def __init__(self, cfg: Config, env: Env, size: int):
         self.cfg, self.env, self.size = cfg, env, size
         self.path = ""
         self.fd = -1
-        self.fd_dsync = -1
-        self.lock_fd = -1
+        self.lock: safeio.FileLock | None = None
         self.direct = False
         self.removed_stale: list[str] = []
 
     def __enter__(self) -> "Scratch":
         d = self.cfg.scratch_dir
-        self.lock_fd = _lock(d)
+        self.lock = _lock(d)
         try:
-            for name in os.listdir(d):
-                if name.startswith(PREFIX):
-                    os.unlink(os.path.join(d, name))
-                    self.removed_stale.append(name)
+            self.removed_stale = _remove_stale_files(d)
             self.path = os.path.join(d, PREFIX + self.env.urandom(6).hex() + ".dat")
-            base = os.O_RDWR | os.O_CLOEXEC
             direct = getattr(os, "O_DIRECT", 0)
+            base = os.O_RDWR | os.O_CREAT | os.O_EXCL
             try:
-                self.fd = os.open(self.path, base | os.O_CREAT | os.O_EXCL | direct, 0o600)
+                self.fd = safeio.open_file(self.path, base | direct, 0o600)
                 self.direct = bool(direct)
             except OSError as exc:
-                if exc.errno != 22:  # EINVAL: filesystem without O_DIRECT; fall back and say so
+                if exc.errno != 22 or not direct:
                     raise
-                self.fd = os.open(self.path, base | os.O_CREAT | os.O_EXCL, 0o600)
+                # EINVAL: the filesystem has no O_DIRECT (tmpfs). Some of them create the file before refusing: remove OUR random
+                # name and create it again, buffered, and say so in the journal (`direct` false)
+                try:
+                    os.unlink(self.path)
+                except FileNotFoundError:
+                    pass
+                self.fd = safeio.open_file(self.path, base, 0o600)
                 self.direct = False
-            self.fd_dsync = os.open(self.path, base | os.O_DSYNC | (direct if self.direct else 0))
         except BaseException:
             self._cleanup()
             raise
         return self
 
     def _cleanup(self) -> None:
-        for attr in ("fd", "fd_dsync"):
-            fd = getattr(self, attr)
-            if fd >= 0:
+        if self.fd >= 0:
+            if self.path:
                 try:
-                    os.close(fd)
+                    safeio.unlink_if_same(self.path, self.fd)
                 except OSError:
                     pass
-                setattr(self, attr, -1)
-        if self.path:
+            try:
+                os.close(self.fd)
+            except OSError:
+                pass
+            self.fd = -1
+        elif self.path:
             try:
                 os.unlink(self.path)
             except FileNotFoundError:
                 pass
-            self.path_removed = True
-        if self.lock_fd >= 0:
-            os.close(self.lock_fd)
-            self.lock_fd = -1
+            except OSError:
+                pass
+        if self.lock is not None:
+            self.lock.release()
+            self.lock = None
 
     def __exit__(self, *exc) -> None:
         self._cleanup()

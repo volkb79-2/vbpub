@@ -10,21 +10,28 @@ from pathlib import Path
 MiB = 1024 * 1024
 GiB = 1024 * MiB
 
-# Hard ceilings. A config value above one of these is a configuration ERROR, not silently clamped:
-# the worst-case added latency and daily IO in the design note are computed from these numbers.
-HARD = {
-    "qd_high": 8,
-    "read_iops_max": 200.0,
-    "sync4k_iops_max": 500.0,
-    "region_hard_cap": 2 * GiB,
-    "probe_bytes_cap": 256 * MiB,
-    "escalation_bytes_cap": 1 * GiB,
-    "block_bytes": 1 * MiB,
-    "read_samples_per_tick": 64,
-    "sync4k_samples": 4096,
-    "seq_read_bytes": 128 * MiB,
-    "phase_wall_s": 120.0,
+# Hard limits. Every safety-relevant value is CLAMPED into [HARD_MIN, HARD_MAX] when the config is loaded (the clamp is recorded in
+# `Config.clamped` and printed by `plan`/`config`): a typo or a hostile config file can never exceed the budgets in the design note.
+HARD_MAX = {
+    "qd_high": 8, "read_iops_max": 200.0, "sync4k_iops_max": 500.0, "region_hard_cap": 2 * GiB, "region_default": 2 * GiB,
+    "probe_bytes_cap": 256 * MiB, "escalation_bytes_cap": 1 * GiB, "block_bytes": 1 * MiB, "seq_read_block": 1 * MiB,
+    "read_samples_per_tick": 64, "read_max_attempts": 128, "witness_reads": 16, "witness_keep": 64, "sync4k_samples": 4096,
+    "seq_read_bytes": 128 * MiB, "phase_wall_s": 120.0,
+    "max_read_bytes_per_day": 256 * MiB, "max_write_bytes_per_day": 2 * GiB,
+    "write_bps_max": float(512 * MiB), "read_bps_max": float(512 * MiB), "sync_every_bytes": 8 * MiB,
+    "abort_latency_ms": 1000.0, "pressure_recheck_every_ops": 256, "flush_limit_s": 10.0,
+    "tick_pressure_some_max": 25.0, "bench_pressure_some_max": 5.0, "bench_pressure_full_max": 1.0,
+    "protected_pressure_some_max": 5.0, "loadavg_per_cpu_max": 4.0, "bench_governed_write_bps_max": float(16 * MiB),
+    "quiet_governed_write_bps": float(16 * MiB), "bench_max_failures": 20, "backoff_max_s": 86400.0,
 }
+HARD_MIN = {
+    "qd_low": 1, "qd_high": 1, "block_bytes": 4096, "seq_read_block": 4096, "sync_every_bytes": 4096,
+    "read_samples_per_tick": 1, "read_max_attempts": 1, "sync4k_samples": 1, "pressure_recheck_every_ops": 1,
+    "abort_latency_ms": 1.0, "phase_wall_s": 1.0, "flush_limit_s": 0.05, "read_iops_max": 0.1, "sync4k_iops_max": 0.1,
+    "write_bps_max": 4096.0, "read_bps_max": 4096.0, "seq_read_bytes": 4096, "bench_max_failures": 1,
+    "max_read_bytes_per_day": 0, "max_write_bytes_per_day": 0, "bench_interval_h": 1.0, "tick_interval_s": 30.0,
+}
+HARD = HARD_MAX  # kept for old imports
 
 
 class ConfigError(ValueError):
@@ -42,6 +49,9 @@ class Config:
     cgroup_root: str = "/sys/fs/cgroup"
     dev_root: str = "/dev"
     docker_containers_dir: str = "/var/lib/docker/containers"
+    allow_root: bool = False  # running as root is refused unless this (or --allow-root) says so; root also needs a root-owned 0700 scratch dir
+    container_cgroups: dict = field(default_factory=dict)  # name -> cgroup dir: explicit paths, preferred over reading config.v2.json
+    exclude_others: list = field(default_factory=lambda: ["iogov-probe.slice"])  # never reported as "other writers"
     # --- what is measured ------------------------------------------------------------------------------
     enabled: bool = True
     data_paths: list = field(default_factory=list)  # volumes of the protected workload: devices are derived from these
@@ -54,7 +64,6 @@ class Config:
     require_write_denied: bool = False  # refuse raw reads if os.access(W_OK) says the service could write the disk
     # --- read probes (tick) ----------------------------------------------------------------------------
     tick_interval_s: float = 300.0  # the timer period; used by `plan` and the budget computation
-    read_block_bytes: int = 4096
     read_samples_per_tick: int = 12
     read_max_attempts: int = 36
     witness_reads: int = 2
@@ -96,6 +105,7 @@ class Config:
     protected_pressure_some_max: float = 1.0
     loadavg_per_cpu_max: float = 1.5
     bench_governed_write_bps_max: float = float(2 * MiB)
+    flush_limit_s: float = 2.0  # a flush slower than this stops the run (slow_flush)
     abort_latency_ms: float = 250.0  # a single IO slower than this stops further submissions
     pressure_recheck_every_ops: int = 32
     skip_log_interval_s: float = 3600.0
@@ -121,14 +131,20 @@ class Config:
     episode_max_points: int = 300
     canary_latency_ms: float = 50.0  # a probe read slower than this in a tick is journalled as a `harm` observation
     others_top: int = 8
+    bench_max_failures: int = 5  # consecutive crashed benches before the bench lane disables itself (until `annotate --baseline-reset`)
+    journal_max_age_days: float = 400.0
+    journal_max_bytes: int = 512 * MiB
     # --- recognizer ------------------------------------------------------------------------------------
     window_hours: float = 24.0
     baseline_windows: int = 5
     rebaseline_windows: int = 3
     cusum_k: float = 0.5  # log2 units: ignores drift under ~1.4x
-    cusum_h: float = 1.5  # log2 units
+    cusum_h: float = 2.0  # log2 units
     cusum_cap_mult: float = 2.0
-    confirm_windows: int = 2
+    confirm_windows: int = 3
+    max_gap_windows: int = 1  # windows missing between two bad windows break the "consecutive" streak
+    prior_sigma_log2: float = 0.5  # shrinkage prior for the baseline noise estimate
+    prior_weight: float = 5.0
     clear_windows: int = 2
     noise_floor_log2: float = 0.25
     min_samples: dict = field(
@@ -143,6 +159,7 @@ class Config:
     )
     recognize_every_s: float = 3600.0
     lookback_days: int = 120
+    clamped: list = field(default_factory=list)  # filled by from_mapping: what was clamped
 
     def journal_dir(self) -> str:
         return os.path.join(self.state_dir, "journal")
@@ -152,27 +169,37 @@ class Config:
 
 
 def _check(cfg: Config) -> Config:
-    errors = []
-    for key, limit in HARD.items():
-        if getattr(cfg, key) > limit:
-            errors.append(f"{key}={getattr(cfg, key)} exceeds the hard ceiling {limit}")
-    if cfg.qd_low < 1 or cfg.qd_high < cfg.qd_low:
-        errors.append("need 1 <= qd_low <= qd_high")
-    for key in ("read_block_bytes", "block_bytes", "seq_read_block", "sync_every_bytes"):
-        if getattr(cfg, key) % 4096:
-            errors.append(f"{key} must be a multiple of 4096")
-    if cfg.region_default and cfg.region_min > cfg.region_default:
-        errors.append("region_min must not exceed region_default")
-    if cfg.region_default > cfg.region_hard_cap:
-        errors.append("region_default must not exceed region_hard_cap")
-    if cfg.bench_interval_h < 1.0:
-        errors.append("bench_interval_h must be >= 1")
-    if cfg.read_iops_max <= 0 or cfg.sync4k_iops_max <= 0 or cfg.write_bps_max <= 0 or cfg.read_bps_max <= 0:
-        errors.append("rate ceilings must be > 0")
+    changes = {}
+    clamped = []
+    for key, limit in HARD_MAX.items():
+        v = getattr(cfg, key)
+        if v > limit:
+            changes[key] = limit
+            clamped.append(f"{key}: {v} -> {limit} (hard maximum)")
+    for key, limit in HARD_MIN.items():
+        v = changes.get(key, getattr(cfg, key))
+        if v < limit:
+            changes[key] = limit
+            clamped.append(f"{key}: {v} -> {limit} (hard minimum)")
+    for key in ("block_bytes", "seq_read_block", "sync_every_bytes"):
+        v = changes.get(key, getattr(cfg, key))
+        if v % 4096:
+            changes[key] = max(4096, (v // 4096) * 4096)
+            clamped.append(f"{key}: {v} -> {changes[key]} (4096 alignment)")
+    qd_low = changes.get("qd_low", cfg.qd_low)
+    if changes.get("qd_high", cfg.qd_high) < qd_low:
+        changes["qd_high"] = qd_low
+        clamped.append(f"qd_high raised to qd_low {qd_low}")
+    if changes.get("region_default", cfg.region_default) > changes.get("region_hard_cap", cfg.region_hard_cap):
+        changes["region_default"] = changes.get("region_hard_cap", cfg.region_hard_cap)
+        clamped.append("region_default clamped to region_hard_cap")
+    if cfg.region_default and cfg.region_min > changes.get("region_default", cfg.region_default):
+        changes["region_min"] = changes.get("region_default", cfg.region_default)
+        clamped.append("region_min lowered to region_default")
     if not (0 < cfg.cusum_h and 0 < cfg.cusum_k):
-        errors.append("cusum_k and cusum_h must be > 0")
-    if errors:
-        raise ConfigError("; ".join(errors))
+        raise ConfigError("cusum_k and cusum_h must be > 0")
+    if changes or clamped:
+        cfg = dataclasses.replace(cfg, clamped=list(cfg.clamped) + clamped, **changes)
     return cfg
 
 
@@ -212,6 +239,9 @@ def load(path: str | None = None) -> Config:
         import tomllib
     except ImportError as exc:  # pragma: no cover - python < 3.11
         raise ConfigError("python >= 3.11 (tomllib) is required to read the config file") from exc
+    st = os.stat(p)
+    if st.st_mode & 0o022 or st.st_uid not in (0, os.geteuid()):
+        raise ConfigError(f"{path}: refusing a config file that is writable by group/others or owned by another user")
     with p.open("rb") as fh:
         return from_mapping(tomllib.load(fh))
 

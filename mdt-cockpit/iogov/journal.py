@@ -11,9 +11,11 @@ import datetime as dt
 import glob
 import json
 import os
+import re
 from typing import Callable, Iterable, Iterator
 
 from . import SCHEMA_VERSION
+from . import safeio
 
 MAX_LINE_BYTES = 48 * 1024
 
@@ -77,10 +79,12 @@ class Journal:
         data = line.encode()
         if len(data) > MAX_LINE_BYTES:
             raise ValueError(f"journal record of {len(data)} bytes exceeds {MAX_LINE_BYTES}")
-        os.makedirs(self.directory, mode=0o750, exist_ok=True)
-        fd = os.open(self.path_for(t), os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_CLOEXEC, 0o640)
+        safeio.ensure_dir(self.directory)
+        fd = safeio.open_file(self.path_for(t), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o640, private=False)
         try:
-            os.write(fd, data)  # one write(2) per record: O_APPEND keeps concurrent runs from interleaving lines
+            n = os.write(fd, data)  # one write(2) per record: O_APPEND keeps concurrent runs from interleaving lines
+            if n != len(data):
+                raise OSError(f"short journal write ({n} of {len(data)} bytes)")
         finally:
             os.close(fd)
         return rec
@@ -105,8 +109,8 @@ def read_records(path: str | Iterable[str], stats: ReadStats | None = None, sinc
     files = journal_files(path) if isinstance(path, str) else list(path)
     for name in files:
         try:
-            fh = open(name, "r", encoding="utf-8", errors="replace")
-        except FileNotFoundError:
+            fh = os.fdopen(safeio.open_file(name, os.O_RDONLY, private=False), "r", encoding="utf-8", errors="replace")
+        except (FileNotFoundError, safeio.UnsafePath):
             continue
         with fh:
             for line in fh:
@@ -139,21 +143,38 @@ def read_records(path: str | Iterable[str], stats: ReadStats | None = None, sinc
 
 
 def load_state(path: str) -> dict:
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            data = json.load(fh)
-        return data if isinstance(data, dict) else {}
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+    return safeio.load_json(path)
 
 
 def save_state(path: str, state: dict) -> None:
-    os.makedirs(os.path.dirname(path), mode=0o750, exist_ok=True)
-    tmp = f"{path}.tmp.{os.getpid()}"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_CLOEXEC, 0o640)
-    try:
-        os.write(fd, json.dumps(state, sort_keys=True, indent=1).encode())
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    os.replace(tmp, path)
+    safeio.save_json(path, state, lambda n: os.urandom(n).hex())
+
+
+# ---------------------------------------------------------------------------------------------------------
+# retention
+# ---------------------------------------------------------------------------------------------------------
+
+
+def prune(directory: str, now: float, max_age_days: float, max_bytes: int, dry_run: bool = False) -> list[str]:
+    """Delete whole monthly files that are entirely older than max_age_days, then oldest-first while the total exceeds
+    max_bytes. The current month is never deleted. Returns the names removed (or that would be)."""
+
+    files = journal_files(directory) if os.path.isdir(directory) else []
+    cur = dt.datetime.fromtimestamp(now, dt.timezone.utc).strftime("%Y-%m")
+    info = []
+    for f in files:
+        m = re.fullmatch(r"journal-(\d{4})-(\d{2})\.jsonl", os.path.basename(f))
+        if not m or m.group(0)[8:15] == cur:
+            continue
+        y, mo = int(m.group(1)), int(m.group(2))
+        end = dt.datetime(y + (mo == 12), 1 if mo == 12 else mo + 1, 1, tzinfo=dt.timezone.utc).timestamp()
+        info.append((end, f, os.stat(f).st_size))
+    total = sum(os.stat(f).st_size for f in files)
+    removed = []
+    for end, f, size in sorted(info):
+        if now - end > max_age_days * 86400 or total > max_bytes:
+            removed.append(os.path.basename(f))
+            total -= size
+            if not dry_run:
+                os.unlink(f)
+    return removed

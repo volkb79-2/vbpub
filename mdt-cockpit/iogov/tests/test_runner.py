@@ -199,7 +199,7 @@ def test_sigterm_during_bench_cleans_up_and_journals_the_abort(world):
     assert not [n for n in os.listdir(world.scratch) if n.startswith(PREFIX)]
 
 
-def test_a_crash_inside_the_bench_still_removes_the_scratch_file(world, monkeypatch):
+def test_a_crash_inside_the_bench_is_an_abort_that_removes_the_scratch_file_and_saves_state(world, monkeypatch):
     env, _ = make_env()
     cfg = world.config()
     import iogov.bench as bench_mod
@@ -208,16 +208,18 @@ def test_a_crash_inside_the_bench_still_removes_the_scratch_file(world, monkeypa
         raise RuntimeError("boom")
 
     monkeypatch.setattr(bench_mod, "over_4k", boom)
-    with pytest.raises(RuntimeError):
-        run_bench_cmd(build(cfg, env), force=True)
+    assert run_bench_cmd(build(cfg, env), force=True) == 0
+    bench = next(r for r in records(world) if r["type"] == "bench")
+    assert bench["status"] == "aborted" and bench["abort"].startswith("error:RuntimeError")
     assert not [n for n in os.listdir(world.scratch) if n.startswith(PREFIX)]
+    assert json.load(open(world.state / "state.json"))["bench_fail"]["n"] == 1
 
 
 def test_stale_scratch_file_from_a_killed_run_is_removed(world):
     env, _ = make_env()
     cfg = world.config()
-    world.scratch.mkdir()
-    stale = world.scratch / (PREFIX + "deadbeef.dat")
+    world.scratch.mkdir(mode=0o700)
+    stale = world.scratch / (PREFIX + "deadbeef0123.dat")
     stale.write_bytes(b"x" * 4096)
     assert cleanup(cfg) == [stale.name]
     stale.write_bytes(b"x")

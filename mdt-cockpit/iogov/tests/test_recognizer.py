@@ -71,12 +71,12 @@ def test_recovery_after_collapse_clears_quickly_even_after_a_long_collapse():
 
 
 def test_2x_and_4x_shifts_are_detected_with_the_documented_delay():
-    # k=0.5, h=1.5, confirm=2: 2x drift needs S>=1.5 (3 windows) then one more confirming window
+    # k=0.5, h=2.0, confirm=3: 2x drift needs S>=2.0 (4 windows) and then 3 consecutive confirming windows (the third one reports)
     res = run([BASE] * 10 + [BASE / 2] * 10, noise=0.0)
     det = [e for e in res.events if e["kind"] == "shift_detected"]
-    assert det and det[0]["evidence"]["window_start"] == 10 + 3
+    assert det and det[0]["evidence"]["window_start"] == 10 + 5
     res = run([BASE] * 10 + [BASE / 4] * 10, noise=0.0)
-    assert [e for e in res.events if e["kind"] == "shift_detected"][0]["evidence"]["window_start"] == 10 + 1
+    assert [e for e in res.events if e["kind"] == "shift_detected"][0]["evidence"]["window_start"] == 10 + 3
 
 
 def test_gradual_ramp_is_caught_before_it_gets_to_20x():

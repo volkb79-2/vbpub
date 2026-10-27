@@ -14,34 +14,123 @@ import _testdeps
 
 PKG = Path(__file__).resolve().parents[1]
 MODULES = sorted(p for p in PKG.glob("*.py"))
-# the only modules allowed to open anything for writing: journal/state files, the scratch file, the bench writing into it
-WRITERS = {"journal.py", "scratch.py", "bench.py"}
+DANGER_OS = {"open", "write", "pwrite", "ftruncate", "truncate", "unlink", "remove", "rmdir", "mkdir", "makedirs", "chmod", "chown",
+             "utime", "replace", "rename", "link", "symlink", "fdopen", "fsync", "fdatasync", "system", "posix_fadvise", "fallocate",
+             "posix_fallocate", "pwritev", "writev", "popen", "spawnl", "execv", "fork"}
+
+# EVERY call site that can modify the file system, by (module, enclosing function, call). Nothing else may appear, and nothing here
+# is exempt wholesale: a new call site fails this test until a reviewer adds it on purpose.
+ALLOWED_CALLS = {
+    ("bench.py", "_pwrite_all", "os.pwrite"),            # the scratch file only
+    ("bench.py", "over_4k", "os.fdatasync"),             # scratch file
+    ("bench.py", "timed_flush", "os.fdatasync"),         # scratch file
+    ("journal.py", "append", "os.write"),                # the journal record
+    ("journal.py", "prune", "os.unlink"),                # retention: monthly journal files
+    ("journal.py", "read_records", "os.fdopen"),         # read mode (checked below)
+    ("rawread.py", "_open_ro", "os.open"),               # O_RDONLY only (asserted)
+    ("rawread.py", "device_size_and_block", "fcntl.ioctl"),  # BLKGETSIZE64 / BLKSSZGET only (checked below)
+    ("runner.py", "_read_resets", "os.fdopen"),          # read mode
+    ("runner.py", "annotate", "os.write"),               # resets.log line
+    ("safeio.py", "acquire", "fcntl.flock"),
+    ("safeio.py", "release", "fcntl.flock"),
+    ("safeio.py", "ensure_dir", "os.makedirs"),          # state/journal/scratch directory creation
+    ("safeio.py", "ensure_dir", "os.mkdir"),
+    ("safeio.py", "load_json", "os.fdopen"),             # read mode
+    ("safeio.py", "open_file", "os.open"),               # O_NOFOLLOW + verified
+    ("safeio.py", "save_json", "os.fsync"),
+    ("safeio.py", "save_json", "os.replace"),            # state/aggregate atomic replace
+    ("safeio.py", "save_json", "os.write"),
+    ("safeio.py", "unlink_if_same", "os.unlink"),        # removal only if the name still is our inode
+    ("scratch.py", "__enter__", "os.unlink"),            # the O_DIRECT-refused retry removes OUR random name
+    ("scratch.py", "_cleanup", "os.unlink"),             # our own scratch file
+    ("scratch.py", "_remove_stale_files", "os.unlink"),  # strict-regex regular files in the scratch dir
+}
+ALLOWED_PLAIN_OPEN = {("collectors.py", "_read"), ("collectors.py", "_scan"), ("covariates.py", "provider_signal"),
+                      ("runner.py", "disk_bytes"), ("scratch.py", "fstype_of")}  # builtin open(), read mode only
 
 
-def test_only_the_writer_modules_open_files_for_writing():
-    bad = []
+def call_sites():
+    out = []
     for path in MODULES:
-        if path.name in WRITERS:
-            continue
         tree = ast.parse(path.read_text())
+        parents = {}
         for node in ast.walk(tree):
-            if isinstance(node, ast.Attribute) and node.attr in ("O_WRONLY", "O_RDWR", "O_CREAT", "O_TRUNC", "O_APPEND") \
-                    and path.name != "rawread.py":
-                bad.append((path.name, node.attr))
-            if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "open":
-                mode = node.args[1] if len(node.args) > 1 else next((k.value for k in node.keywords if k.arg == "mode"), None)
-                if isinstance(mode, ast.Constant) and set(str(mode.value)) & set("wa+x"):
-                    bad.append((path.name, "open(..., %r)" % mode.value))
-            if isinstance(node, ast.Attribute) and node.attr in ("write_text", "write_bytes", "unlink", "rmdir", "chmod", "chown", "truncate"):
-                bad.append((path.name, node.attr))
-    # rawread.py names the forbidden flags only to ASSERT they are absent
-    assert bad == [], bad
+            for ch in ast.iter_child_nodes(node):
+                parents[ch] = node
+
+        def func_of(n):
+            while n in parents:
+                n = parents[n]
+                if isinstance(n, ast.FunctionDef):
+                    return n.name
+            return "<module>"
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            f = node.func
+            name = None
+            if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name):
+                base = f.value.id
+                if base == "os" and f.attr in DANGER_OS:
+                    name = f"os.{f.attr}"
+                elif base in ("shutil", "subprocess", "fcntl", "ctypes", "signal") and f.attr in (
+                        "ioctl", "flock", "fcntl", "lockf", "copy", "copyfile", "move", "rmtree", "run", "Popen", "call", "kill", "pthread_kill"):
+                    name = f"{base}.{f.attr}"
+            if isinstance(f, ast.Attribute) and f.attr in ("write_text", "write_bytes", "touch", "unlink", "rename", "mkdir",
+                                                           "rmdir", "chmod", "symlink_to", "hardlink_to", "truncate"):
+                if not (isinstance(f.value, ast.Name) and f.value.id == "os"):
+                    name = f".{f.attr}"
+            if isinstance(f, ast.Attribute) and f.attr == "open":
+                v = f.value
+                is_path = (isinstance(v, ast.Call) and getattr(v.func, "id", "") == "Path") or (isinstance(v, ast.Name) and v.id not in ("os", "self"))
+                if is_path:
+                    name = ".open"
+            if isinstance(f, ast.Name) and f.id == "open":
+                name = "open"
+            if name:
+                out.append((path.name, func_of(node), name, node))
+    return out
 
 
-def test_rawread_never_requests_write_access():
+def test_every_fs_modifying_call_site_is_individually_allow_listed():
+    unexpected = []
+    for module, func, name, node in call_sites():
+        if name == "open":
+            ok = (module, func) in ALLOWED_PLAIN_OPEN
+            mode = node.args[1] if len(node.args) > 1 else next((k.value for k in node.keywords if k.arg == "mode"), None)
+            ok = ok and (mode is None or (isinstance(mode, ast.Constant) and not set(str(mode.value)) & set("wax+")))
+        elif name == ".open":
+            ok = (module, func) == ("config.py", "load") and isinstance(node.args[0].value, str) and node.args[0].value == "rb"
+        else:
+            ok = (module, func, name) in ALLOWED_CALLS
+        if not ok:
+            unexpected.append((module, func, name))
+    assert unexpected == [], unexpected
+
+
+def test_fdopen_is_read_only_and_ioctl_is_only_the_two_size_queries():
+    for module, func, name, node in call_sites():
+        if name == "os.fdopen":
+            mode = node.args[1] if len(node.args) > 1 else None
+            assert isinstance(mode, ast.Constant) and mode.value == "r", (module, func)
+        if name == "fcntl.ioctl":
+            assert module == "rawread.py" and isinstance(node.args[1], ast.Name) and node.args[1].id in ("BLKGETSIZE64", "BLKSSZGET")
+    consts = {n.targets[0].id: n.value.value for n in ast.parse((PKG / "rawread.py").read_text()).body
+              if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name) and isinstance(n.value, ast.Constant)}
+    assert consts["BLKGETSIZE64"] == 0x80081272 and consts["BLKSSZGET"] == 0x1268  # not BLKDISCARD (0x1277) or any other request
+
+
+def test_no_fadvise_and_no_shell_out_anywhere():
+    for path in MODULES:
+        src = path.read_text()
+        assert "posix_fadvise" not in src and "DONTNEED" not in src.replace("DONTNEED)", "", 0) or path.name == "test_static.py"
+        assert "subprocess" not in src and "os.system" not in src and "shutil" not in src, path.name
+
+
+def test_rawread_has_a_single_read_only_open():
     src = (PKG / "rawread.py").read_text()
-    uses = re.findall(r"os\.(open|write|pwrite|ftruncate|fsync)\(", src)
-    assert uses == ["open"]  # exactly one os.open (read-only, asserted) and no write-type syscall
+    assert re.findall(r"os\.(open|write|pwrite|ftruncate|fsync)\(", src) == ["open"]
 
 
 def test_no_module_writes_cgroup_sysfs_or_proc_control_files():

@@ -6,7 +6,8 @@ Safety properties (each one is tested):
     close-after-write of a disk makes udev re-probe it (a side effect on the machine we are trying not to disturb);
   * only paths that are block devices (or, in tests, regular files when allowed) and that are in the allow-list of
     detected/configured disks are opened;
-  * read buffers are page-aligned (O_DIRECT) and zeroed after the content check; content is never logged;
+  * read buffers are page-aligned (O_DIRECT), checked in place and zeroed; content is never logged; the only ioctls are the two
+    size queries (BLKGETSIZE64, BLKSSZGET), no discard or any other request exists in this module;
   * every read is charged to the rate buckets and the daily budget BEFORE it is submitted.
 """
 
@@ -70,17 +71,33 @@ def block_at(i: int, n: int, stride: int, start: int) -> int:
     return (start + i * stride) % n
 
 
+_ZERO4K = bytes(4096)
+
+
 class AlignedBuffer:
     def __init__(self, size: int):
         self.size = size
         self.mm = mmap.mmap(-1, size)  # anonymous mmap is page-aligned: valid for O_DIRECT
 
     def nonzero(self, n: int | None = None) -> bool:
+        """True if any byte of the first n is non-zero. Compared in place through a memoryview: no temporary copy of the content."""
+
         n = self.size if n is None else n
-        return int.from_bytes(self.mm[:n], "little") != 0
+        with memoryview(self.mm) as mv:
+            head = mv[: n - n % 8]
+            with head.cast("Q") as words:
+                if any(words):
+                    return True
+            tail = mv[n - n % 8 : n]
+            result = any(tail)
+            tail.release()
+            head.release()
+        return result
 
     def wipe(self) -> None:
-        self.mm[:] = b"\0" * self.size
+        for i in range(0, self.size, 4096):  # in 4 KiB steps: no allocation proportional to the buffer
+            n = min(4096, self.size - i)
+            self.mm[i:i + n] = _ZERO4K[:n]
 
     def close(self) -> None:
         self.mm.close()
@@ -117,9 +134,13 @@ class RawReader:
             self.fd = _open_ro(real, self.direct)
             self.direct_active = self.direct and hasattr(os, "O_DIRECT")
         except OSError as exc:
-            if self.direct and exc.errno == 22:  # EINVAL: O_DIRECT unsupported (e.g. tmpfs in tests)
+            if self.direct and exc.errno == 22 and stat.S_ISREG(st.st_mode):
+                # EINVAL: O_DIRECT unsupported by a REGULAR file's filesystem (tests on tmpfs). A raw disk is never read
+                # through the page cache: for a block device the lane is unsupported and the run skips it.
                 self.fd = _open_ro(real, False)
                 self.direct_active = False
+            elif exc.errno == 22:
+                raise RawReadError(f"{real}: O_DIRECT is not supported here; buffered raw reads are not an option (lane unsupported)")
             else:
                 raise
         self.size, self.logical_block = device_size_and_block(self.fd)
@@ -149,11 +170,6 @@ class RawReader:
         t0 = self.env.mono()
         got = os.preadv(self.fd, [memoryview(buf.mm)[:length]], offset)
         dt = self.env.mono() - t0
-        if not self.direct_active:
-            try:
-                os.posix_fadvise(self.fd, offset, length, os.POSIX_FADV_DONTNEED)
-            except (AttributeError, OSError):
-                pass
         nz = buf.nonzero(got)
         buf.wipe()
         return ReadResult(offset, got, dt, nz)

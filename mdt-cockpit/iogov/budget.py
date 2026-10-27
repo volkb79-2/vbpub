@@ -42,13 +42,23 @@ class TokenBucket:
         return wait
 
 
-class DailyBudget:
-    """Counters per UTC day inside the state dict. `charge` is called BEFORE the IO is submitted."""
+READ_BLOCK = 4096
 
-    def __init__(self, state: dict, cfg: Config, wall):
+
+class DailyBudget:
+    """Counters per UTC day inside the state dict.
+
+    Crash-safe by RESERVATION: a run first reserves its worst-case bytes (counted as spent and persisted BEFORE any IO), per-IO
+    `charge` calls draw from the reservation (and are checked against the daily cap if they exceed it), and `finish()` refunds
+    what was not used. A run that dies without reaching `finish()` keeps its whole reservation charged: conservative on purpose."""
+
+    def __init__(self, state: dict, cfg: Config, wall, persist=None):
         self.state = state
         self.cfg = cfg
         self.wall = wall
+        self.persist = persist or (lambda: None)
+        self.reserved = {"read": 0, "write": 0}
+        self._day = None
 
     def _today(self) -> dict:
         day = dt.datetime.fromtimestamp(self.wall(), dt.timezone.utc).strftime("%Y-%m-%d")
@@ -58,28 +68,47 @@ class DailyBudget:
             b.update({"day": day, "read_bytes": 0, "write_bytes": 0, "read_ops": 0, "write_ops": 0, "sync_ops": 0})
         return b
 
+    def _cap(self, kind: str) -> int:
+        return self.cfg.max_read_bytes_per_day if kind == "read" else self.cfg.max_write_bytes_per_day
+
+    def reserve(self, kind: str, nbytes: int) -> int:
+        """Reserve up to nbytes (what the daily cap still allows); persisted before returning. Returns the amount reserved."""
+
+        b = self._today()
+        self._day = b["day"]
+        take = max(0, min(nbytes, self._cap(kind) - b[f"{kind}_bytes"]))
+        b[f"{kind}_bytes"] += take
+        self.reserved[kind] += take
+        self.persist()
+        return take
+
     def charge(self, kind: str, nbytes: int, ops: int = 1) -> None:
         b = self._today()
-        if kind == "read":
-            if b["read_bytes"] + nbytes > self.cfg.max_read_bytes_per_day:
-                raise BudgetExceeded("daily read byte budget exhausted")
-            b["read_bytes"] += nbytes
-            b["read_ops"] += ops
-        elif kind == "write":
-            if b["write_bytes"] + nbytes > self.cfg.max_write_bytes_per_day:
-                raise BudgetExceeded("daily write byte budget exhausted")
-            b["write_bytes"] += nbytes
-            b["write_ops"] += ops
-        elif kind == "sync":
+        if kind == "sync":
             b["sync_ops"] += ops
-        else:
+            return
+        if kind not in ("read", "write"):
             raise ValueError(kind)
+        from_reserve = min(self.reserved[kind], nbytes)
+        extra = nbytes - from_reserve
+        if extra and b[f"{kind}_bytes"] + extra > self._cap(kind):
+            raise BudgetExceeded(f"daily {kind} byte budget exhausted")
+        self.reserved[kind] -= from_reserve
+        b[f"{kind}_bytes"] += extra
+        b[f"{kind}_ops"] += ops
+
+    def finish(self) -> None:
+        """Refund the unused part of the reservations and persist. Safe to call twice."""
+
+        b = self._today()
+        if b["day"] == self._day:
+            for kind in ("read", "write"):
+                b[f"{kind}_bytes"] = max(0, b[f"{kind}_bytes"] - self.reserved[kind])
+        self.reserved = {"read": 0, "write": 0}
+        self.persist()
 
     def remaining(self, kind: str) -> int:
-        b = self._today()
-        if kind == "read":
-            return self.cfg.max_read_bytes_per_day - b["read_bytes"]
-        return self.cfg.max_write_bytes_per_day - b["write_bytes"]
+        return self._cap(kind) - self._today()[f"{kind}_bytes"]
 
     def snapshot(self) -> dict:
         return dict(self._today())
@@ -101,8 +130,8 @@ def compute_budget(cfg: Config, probe_bytes: int | None = None, region_mode: str
     sync4k = cfg.sync4k_samples * 4096
     write_day = 0.0
     sync_ops_day = 0.0
-    read_day = ticks * (cfg.read_samples_per_tick + cfg.witness_reads) * cfg.read_block_bytes + benches * cfg.seq_read_bytes
-    read_day_worst = ticks * (cfg.read_max_attempts + cfg.witness_reads) * cfg.read_block_bytes + benches * cfg.seq_read_bytes
+    read_day = ticks * (cfg.read_samples_per_tick + cfg.witness_reads) * READ_BLOCK + benches * cfg.seq_read_bytes
+    read_day_worst = ticks * (cfg.read_max_attempts + cfg.witness_reads) * READ_BLOCK + benches * cfg.seq_read_bytes
     read_ops_day = ticks * (cfg.read_samples_per_tick + cfg.witness_reads)
     read_ops_day_worst = ticks * (cfg.read_max_attempts + cfg.witness_reads)
     if region_mode != "none":

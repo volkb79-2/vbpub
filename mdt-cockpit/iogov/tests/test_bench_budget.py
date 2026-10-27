@@ -48,8 +48,8 @@ def test_region_never_exceeds_the_hard_cap_or_the_reserve(world):
     p = plan_region(cfg, 100 * 1024 * GiB, sv(100 * 1024 * GiB, 90 * 1024 * GiB))
     assert p.region_bytes <= cfg.region_hard_cap
     assert p.free_bytes - p.region_bytes >= cfg.free_reserve_bytes
-    with pytest.raises(ConfigError):
-        from_mapping({"region_default": 4 * GiB})
+    clamped = from_mapping({"region_default": 4 * GiB})  # hard limits are CLAMPED (and reported), not merely validated
+    assert clamped.region_default <= 2 * GiB and any("region_default" in c for c in clamped.clamped)
 
 
 def test_fstype_of_picks_the_longest_mount(tmp_path):

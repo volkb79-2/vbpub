@@ -24,5 +24,16 @@ ProtectHome=yes
 PrivateTmp=yes
 ReadWritePaths=@IOGOV_STATE_DIR@ @IOGOV_SCRATCH_DIR@
 LimitCORE=0
+# Read-only view of kernel and cgroup tunables (the tool only READS /sys, /proc and the cgroup tree), no capabilities, no network,
+# a minimal syscall set, and a private state directory that systemd creates for the service user.
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+ProtectKernelModules=yes
+CapabilityBoundingSet=
+PrivateNetwork=yes
+SystemCallFilter=@system-service
+StateDirectory=iogov
+StateDirectoryMode=0700
+UMask=0077
 MemoryDenyWriteExecute=yes
 RestrictAddressFamilies=AF_UNIX

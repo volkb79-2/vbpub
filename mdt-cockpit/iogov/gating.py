@@ -153,7 +153,8 @@ class Backoff:
 
     def blocked(self) -> float:
         until = self.state.get("backoff", {}).get(self.key, {}).get("until", 0.0)
-        return max(0.0, until - self.wall())
+        now = self.wall()
+        return max(0.0, min(until, now + self.cfg.backoff_max_s) - now)  # a backwards clock jump cannot extend a backoff past its cap
 
     def hit(self) -> float:
         slot = self.state.setdefault("backoff", {}).setdefault(self.key, {"n": 0, "until": 0.0})

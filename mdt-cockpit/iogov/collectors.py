@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import time
 
 STAT_FIELDS = (
     "r_ios", "r_merges", "r_sectors", "r_ticks", "w_ios", "w_merges", "w_sectors", "w_ticks",
@@ -93,24 +94,84 @@ def read_loadavg(procfs: str) -> tuple[float, float, float] | None:
         return None
 
 
-def resolve_containers(names: list[str], containers_dir: str, cgroup_root: str) -> dict[str, str | None]:
-    """Container name -> cgroup scope dir, via the daemon's config.v2.json (needs read access) and docker-<id>.scope."""
+class ContainerResolver:
+    """Container name -> cgroup dir. Explicit `container_cgroups` paths win (preferred: config.v2.json also holds container
+    environment variables, i.e. secrets, so reading it widens what a compromised service could see). Otherwise the daemon's
+    config.v2.json files are parsed once and re-parsed only when their mtime changes; the directory listing and the cgroup
+    path discovery are cached for `rescan_s` and a cached path is revalidated with one stat."""
 
-    result: dict[str, str | None] = {n: None for n in names}
-    if not names:
-        return result
-    for cfgfile in glob.glob(os.path.join(containers_dir, "*", "config.v2.json")):
-        try:
-            with open(cfgfile, "r", encoding="utf-8") as fh:
-                data = json.load(fh)
-        except (OSError, ValueError):
-            continue
-        name = str(data.get("Name", "")).lstrip("/")
-        if name in result:
-            cid = os.path.basename(os.path.dirname(cfgfile))
-            hits = glob.glob(os.path.join(cgroup_root, "**", f"docker-{cid}.scope"), recursive=True)
-            result[name] = hits[0] if hits else None
-    return result
+    def __init__(self, cfg, mono=time.monotonic, rescan_s: float = 60.0):
+        self.cfg, self.mono, self.rescan_s = cfg, mono, rescan_s
+        self._parsed: dict[str, tuple] = {}  # config file -> (mtime_ns, name, container id)
+        self._listed_at = -1e18
+        self._files: list[str] = []
+        self._paths: dict[str, tuple[str | None, float]] = {}
+
+    def _scan(self) -> None:
+        now = self.mono()
+        if now - self._listed_at < self.rescan_s:
+            return
+        self._listed_at = now
+        self._files = sorted(glob.glob(os.path.join(self.cfg.docker_containers_dir, "*", "config.v2.json")))
+        self._parsed = {f: v for f, v in self._parsed.items() if f in self._files}
+        for f in self._files:
+            try:
+                mt = os.stat(f).st_mtime_ns
+            except OSError:
+                continue
+            if f in self._parsed and self._parsed[f][0] == mt:
+                continue
+            name = None
+            try:
+                with open(f, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+                if isinstance(data, dict) and isinstance(data.get("Name"), str):
+                    name = data["Name"].lstrip("/")
+            except (OSError, ValueError):
+                pass
+            self._parsed[f] = (mt, name, os.path.basename(os.path.dirname(f)))
+
+    def _discover(self, cid: str) -> str | None:
+        root = self.cfg.cgroup_root
+        for cand in (f"system.slice/docker-{cid}.scope", f"docker/{cid}", f"docker-{cid}.scope"):
+            path = os.path.join(root, cand)
+            if os.path.isdir(path):
+                return path
+        hits = glob.glob(os.path.join(root, "*", f"docker-{cid}.scope")) or glob.glob(os.path.join(root, "**", f"docker-{cid}.scope"), recursive=True)
+        return hits[0] if hits else None
+
+    def resolve(self, names) -> dict[str, str | None]:
+        out: dict[str, str | None] = {}
+        todo = []
+        for n in names:
+            if n in self.cfg.container_cgroups:
+                out[n] = self.cfg.container_cgroups[n]
+            else:
+                todo.append(n)
+        if todo:
+            self._scan()
+            by_name = {v[1]: v[2] for v in self._parsed.values() if v[1]}
+            now = self.mono()
+            for n in todo:
+                cached = self._paths.get(n)
+                if cached and cached[0] and os.path.isdir(cached[0]):
+                    out[n] = cached[0]
+                    continue
+                if cached and now - cached[1] < self.rescan_s:
+                    out[n] = cached[0]
+                    continue
+                cid = by_name.get(n)
+                path = self._discover(cid) if cid else None
+                self._paths[n] = (path, now)
+                out[n] = path
+        return out
+
+
+def resolve_containers(names: list[str], containers_dir: str, cgroup_root: str) -> dict[str, str | None]:
+    """One-shot helper kept for callers without a Collector."""
+
+    from .config import Config
+    return ContainerResolver(Config(docker_containers_dir=containers_dir, cgroup_root=cgroup_root), rescan_s=0.0).resolve(names)
 
 
 class Collector:
@@ -118,6 +179,7 @@ class Collector:
         self.cfg = cfg
         self.disks = disks
         self.env = env
+        self.resolver = ContainerResolver(cfg, env.mono)
 
     # -- single reads -------------------------------------------------------------------------------------
     def system_pressure(self) -> dict | None:
@@ -144,7 +206,7 @@ class Collector:
                 for path in sorted(glob.glob(pattern)) or [pattern]:
                     targets[group][path] = self._cgroup(path)
         targets["others"] = self.others(targets)
-        resolved = resolve_containers(cfg.containers, cfg.docker_containers_dir, cfg.cgroup_root)
+        resolved = self.resolver.resolve(cfg.containers)
         for name, path in resolved.items():
             targets["containers"][name] = self._cgroup(path) if path else None
         return targets
@@ -160,6 +222,8 @@ class Collector:
         for path in sorted(glob.glob(os.path.join(root, "*", "io.stat"))):
             d = os.path.dirname(path)
             if os.path.realpath(d) in known:
+                continue
+            if os.path.basename(d) in self.cfg.exclude_others:
                 continue
             out[os.path.basename(d)] = self._cgroup(d)
         return out

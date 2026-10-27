@@ -30,10 +30,9 @@ def test_config_rejects_unknown_keys_wrong_types_and_values_above_hard_ceilings(
         from_mapping({"nonsense": 1})
     with pytest.raises(ConfigError, match="expected"):
         from_mapping({"read_iops_max": "fast"})
-    with pytest.raises(ConfigError, match="hard ceiling"):
-        from_mapping({"qd_high": 64})
-    with pytest.raises(ConfigError, match="multiple of 4096"):
-        from_mapping({"block_bytes": 5000})
+    c = from_mapping({"qd_high": 64, "block_bytes": 5000, "abort_latency_ms": 1e6, "write_bps_max": 1e15})
+    assert (c.qd_high, c.block_bytes, c.abort_latency_ms, c.write_bps_max) == (8, 4096, 1000.0, float(512 * 1024 * 1024))
+    assert len(c.clamped) == 4
     assert from_mapping({"region_default": 0}).region_default == 0
 
 

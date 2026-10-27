@@ -12,7 +12,7 @@ import glob
 import os
 from collections import deque
 
-from .collectors import _read, parse_pressure, resolve_containers
+from .collectors import ContainerResolver, _read, parse_pressure
 from .env import Env, StopRequested
 from .gating import kill_switch_reason
 
@@ -82,11 +82,12 @@ def dstate_count(procfs: str, cgroup_dirs: list[str]) -> int:
     return n
 
 
-def protected_dirs(cfg) -> list[str]:
+def protected_dirs(cfg, resolver=None) -> list[str]:
     dirs = []
     for pattern in cfg.protected_cgroups:
         dirs += sorted(glob.glob(pattern)) or [pattern]
-    for path in resolve_containers(cfg.containers, cfg.docker_containers_dir, cfg.cgroup_root).values():
+    resolver = resolver or ContainerResolver(cfg)
+    for path in resolver.resolve(cfg.containers).values():
         if path:
             dirs.append(path)
     return dirs
@@ -98,12 +99,13 @@ class ProtectedSampler:
     def __init__(self, cfg, env: Env):
         self.cfg, self.env = cfg, env
         self.prev: dict = {}
+        self.resolver = ContainerResolver(cfg, env.mono)
 
     def sample(self) -> tuple[float, float, float, int, float]:
         cfg = self.cfg
         t = self.env.mono()
         some = full = 0.0
-        dirs = protected_dirs(cfg)
+        dirs = protected_dirs(cfg, self.resolver)
         for d in dirs:
             p = parse_pressure(_read(os.path.join(d, "io.pressure")))
             if not p:

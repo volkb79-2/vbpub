@@ -12,12 +12,14 @@ from . import experiment
 from .env import Env
 from .episodes import watch
 from .report import analyze, status
-from .runner import build, cleanup, plan_text, run_bench_cmd, run_tick
+from . import safeio
+from .runner import annotate, build, cleanup, plan_text, preflight, prune_cmd, run_bench_cmd, run_tick
 
 
 def make_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="iogov", description="Recommend-only recorder of long-term virtual-disk capability shifts.")
     p.add_argument("--config", help="TOML file (default $IOGOV_CONFIG, then /etc/iogov/iogov.toml, then built-in defaults)")
+    p.add_argument("--allow-root", action="store_true", help="permit running as root (otherwise refused); root also needs a root-owned 0700 scratch dir")
     p.add_argument("--version", action="version", version=f"iogov {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("plan", help="dry run: print what a tick/bench would do and cost; touches no device and writes nothing")
@@ -43,6 +45,8 @@ def make_parser() -> argparse.ArgumentParser:
     q = sub.add_parser("quiet-experiment", help="print the plan for an approved nr_requests/io.max test (executes nothing)")
     q.add_argument("--knob", required=True)
     q.add_argument("--value", required=True)
+    pr = sub.add_parser("prune", help="delete monthly journal files older than journal_max_age_days (or beyond journal_max_bytes)")
+    pr.add_argument("--dry-run", action="store_true")
     sub.add_parser("cleanup", help="remove scratch files left by a killed run (under the scratch lock)")
     sub.add_parser("config", help="print the effective configuration")
     return p
@@ -77,8 +81,8 @@ def main(argv: list[str] | None = None, env: Env | None = None) -> int:
         removed = cleanup(cfg)
         print("removed: " + (", ".join(removed) if removed else "nothing"))
         return 0
-    rt = build(cfg, env, load=cmd not in ("plan", "devices") and not getattr(args, "dry_run", False))
-    if cmd == "plan" or getattr(args, "dry_run", False):
+    rt = build(cfg, env, allow_root=args.allow_root)
+    if cmd == "plan" or (cmd in ("tick", "bench") and args.dry_run):
         print(plan_text(rt))
         return 0
     if cmd == "devices":
@@ -88,11 +92,28 @@ def main(argv: list[str] | None = None, env: Env | None = None) -> int:
             print(f"# {note}", file=sys.stderr)
         return 0
     if cmd == "watch":
-        print(f"episodes recorded: {watch(rt, args.max_seconds)}")
+        err = preflight(rt)
+        if err:
+            print(err, file=sys.stderr)
+            return 2
+        lock = safeio.FileLock(rt.path("watch.lock"))
+        if not lock.acquire():
+            print("iogov watch is already running", file=sys.stderr)
+            return 0
+        try:
+            print(f"episodes recorded: {watch(rt, args.max_seconds)}")
+        finally:
+            lock.release()
+        return 0
+    if cmd == "prune":
+        removed = prune_cmd(rt, args.dry_run)
+        print(("would remove: " if args.dry_run else "removed: ") + (", ".join(removed) if removed else "nothing"))
         return 0
     if cmd in ("note", "annotate"):
         kind = "baseline_reset" if args.baseline_reset else ("action" if args.action else "annotation")
-        rec = rt.journal.append("note", text=args.text, kind=kind)
+        rec = annotate(rt, args.text, kind)
+        if isinstance(rec, int):
+            return rec
         print(rec["ts"], rec["kind"])
         return 0
     if cmd == "tick":

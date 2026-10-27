@@ -16,7 +16,7 @@ evidence and emits **recommendations** such as "capability shifted down ~20x on 
 - 4 KiB `O_DIRECT` read probes at arbitrary offsets over the whole raw disk (read-only open), a witness-block lane, and a bounded
   sequential raw read.
 - A mini write bench about every 6 h inside an adaptive scratch **file** (never a device): fresh sequential writes at queue depth 1
-  then 4, 4 KiB `O_DSYNC` overwrites with a latency histogram. The file exists for one run only.
+  then 4, 4 KiB overwrites each followed by `fdatasync` with a latency histogram. The file exists for one run only.
 - Passive collectors: PSI (system and per cgroup), `/sys/block/<dev>/stat` and `inflight`, cgroup `io.stat` for the governed slices,
   the protected cgroups and named containers, and per-interval writes by every other top-level cgroup ("who else writes").
 - Covariates stored per run (never a lookup table): filesystem fill, mount options, last fstrim time and trimmed bytes if a record
@@ -29,6 +29,10 @@ evidence and emits **recommendations** such as "capability shifted down ~20x on 
 - A recognizer (robust baseline, two-sided CUSUM, hysteresis) over per-lane window medians; an offline `analyze` (summary, shifts,
   text plots, harm, demand check) and a `status` that includes the report-only **prevention checker** (fill > 60 %, days since fstrim,
   discard mount option / lvm `issue_discards` / `discard_max_bytes`, snapshot age and provider usage when a signal file exists).
+- Crash-safe operation: everything that must survive a crash (budget reservation, next bench time, failure counters) is persisted before the IO it
+  protects; a crashing bench backs off exponentially and disables itself after 5 consecutive crashes until `iogov annotate --baseline-reset`.
+- Bounded memory and retention: the journal is write-mostly; the recognizer keeps compact per-lane aggregates; `iogov prune` (and a daily automatic prune)
+  deletes monthly files older than 400 days or beyond 512 MiB (oldest first, never the current month).
 - A `quiet-experiment` **definition and plan printer** for an approved `nr_requests` / `io.max` test. It prints; it executes nothing.
 
 **v1 does NOT:**
@@ -61,6 +65,12 @@ evidence and emits **recommendations** such as "capability shifted down ~20x on 
 | Weekly 512 MiB escalation | kept, scaled | `escalation_bytes_cap` 192 MiB, once a week, only if the region allows. |
 | Probe slice at the game's weight | replaced by a LOW weight | Astra: same weight makes the probe a competitor. A probe that waits is merely `contended` and is excluded from the recognizer. |
 | "model-free stall bound" from `nr_requests x max_sectors_kb` | not relied on | Astra: not a guarantee. The numbers in section 5 are stated as in-flight limits of OUR probe, with measured disturbance still to be validated. |
+| `O_DSYNC` second descriptor opened by name | replaced by `pwrite` + explicit `fdatasync` on the one descriptor | Review H3: re-opening the scratch file by name follows a swapped symlink. The 4 KiB lane now times `pwrite`+`fdatasync`; the file is never re-opened. |
+| Validating (erroring on) over-limit config values | replaced by CLAMPING to `HARD_MAX`/`HARD_MIN` | Review M2: a config can never exceed the budgets in this note; clamps are reported. `read_block_bytes` removed (it never changed the real read size). |
+| Whole-journal replay by the runner every hour; 120-day sliding lookback | replaced by persisted per-lane aggregates (`agg.json`) updated incrementally | Review H2/H4: unbounded memory against `MemoryMax=256M`, and a baseline re-derived from a sliding window silently adopted a degraded state after 120 days. |
+| `confirm_windows=2`, `h=1.5`, prior 0.35 | `confirm_windows=3`, `h=2.0`, prior 0.5 | Review L6: measured false-alarm budget (section 7). The price is one more day of detection delay. |
+| Budget saved only at the end of the run | budget RESERVED and persisted before any IO, refunded in `finally` | Review H1: a crash before the end-of-run save lost the charge and the next-due time. |
+| Buffered-read fallback with `posix_fadvise(DONTNEED)` for a raw disk that refuses `O_DIRECT` | removed | Review L4: a raw disk is never read through the page cache; the lane is unsupported and skipped. |
 | CUSUM "alarms in 2 days on 2x" | corrected | With k=0.5 a sustained 2x needs 3 windows to reach h=1.5, and confirmation adds one (tested). |
 
 ## 3. Layout and the 'no write' property
@@ -75,12 +85,26 @@ block of the device is visited once before any repeat, consecutive probes land f
 All-zero blocks (unallocated or genuinely zero) are counted and excluded from latency statistics because a thin backend answers
 them from a fast path; non-zero blocks found become witnesses (up to 16, re-read every tick).
 
+### Identity, files and locks (never root by default)
+
+- **Identity.** `tick`, `bench`, `watch`, `annotate` refuse to run as root unless `allow_root` / `--allow-root` is set; then every directory must be root-owned
+  0700 (the scratch directory always must be 0700). The shipped units run as an unprivileged user.
+- **Directories** (`state_dir`, its `journal/`, `scratch_dir`) must be real directories (not symlinks) owned by the running uid and not group/world writable;
+  otherwise the run refuses (exit 2, nothing written).
+- **Files** are opened `O_NOFOLLOW` (`O_EXCL` when created) and verified through the descriptor: regular file, our uid, mode 0600 for state/lock/scratch
+  files (journal: no group/world write), and the path still names that inode. The scratch file is used through the one descriptor and removed by name only if
+  the name still refers to our inode. State and aggregate files are written to a random-named `O_EXCL|O_NOFOLLOW` temp file, fsynced and atomically replaced.
+- **Locks.** `run.lock` (non-blocking, held for a whole `tick` or `bench`) makes the two exclude each other, and state is loaded only after it is held, so
+  a second run can neither overlap nor clobber state; `watch.lock` allows one `watch`; `state.lock` serialises each atomic state write. `annotate` only appends
+  to the journal (and, for a baseline reset, to `resets.log`), so it needs none.
+- **Config file** must be root- or self-owned and not writable by group/others; `/etc/iogov` and the kill-switch file should be root-owned (README).
+
 ## 4. Schedule
 
 | Run | Period | What |
 |---|---|---|
 | `tick` | 5 min (timer) | per disk: 12 non-zero cold 4 KiB reads (at most 36 attempts), 2 witness reads, passive snapshot (about 1 s) |
-| `bench` | timer every 15 min; due every 6 h +-10 % jitter | region 512 MiB default; probe 64 MiB: fresh sequential 64 KiB writes 16 MiB at qd1, 48 MiB at qd4 (fdatasync every 8 MiB), 256 x 4 KiB O_DSYNC overwrites, 8 MiB sequential raw read; weekly escalation to 192 MiB |
+| `bench` | timer every 15 min; due every 6 h +-10 % jitter | region 512 MiB default; probe 64 MiB: fresh sequential 64 KiB writes 16 MiB at qd1, 48 MiB at qd4 (fdatasync every 8 MiB), 256 x (4 KiB overwrite + fdatasync), 8 MiB sequential raw read; weekly escalation to 192 MiB |
 | `watch` | resident, 1 Hz | procfs/cgroup reads only |
 
 Adaptive region: `min(512 MiB, 1 % of the disk, 25 % of (free - reserve), hard cap 1 GiB)`, reserve = max(2 GiB, 5 % of the filesystem), filesystem
@@ -99,7 +123,16 @@ data by the bench itself (no unwritten-extent fast path), removed in `finally` (
 | in flight at any instant | 1 request, except 4 x 64 KiB during the qd4 phase (a few seconds per bench) | 256 KiB | `qd_high <= 8` (hard), unsynced <= 8 MiB |
 
 Worst-case extra wait a neighbour sees behind our in-flight bytes (256 KiB): 0.74 ms at 340 MiB/s, 16.7 ms at 15 MiB/s, 41.7 ms at
-6 MiB/s; a flush barrier covers at most 8 MiB: 23 ms / 533 ms / 1.3 s at those rates. These are bounds on our own submissions
+6 MiB/s; a flush barrier covers at most 8 MiB: 23 ms / 533 ms / 1.3 s at those rates. **Reservation semantics.** A run reserves its worst-case bytes before any IO (counted against the day and persisted), per-IO charges draw from the
+reservation, and `finish()` refunds the unused part. A run killed before it can refund keeps the whole reservation charged (conservative). Tested: six
+consecutive failing benches stay under the daily write cap, and only the first one performs IO (the failure backs off the next attempt exponentially:
+6 h x 2^n, at most 7 days, persisted).
+
+**Flush bound.** `fdatasync` runs under a watchdog: a flush longer than `flush_limit_s` (2 s, hard max 10 s) raises the stop flag from a monitor thread and the lane
+ends as `slow_flush`; the flush size also adapts so that one flush costs about 250 ms at the write rate just measured (never above `sync_every_bytes` <= 8 MiB).
+Every offset-probe read in the sequential-read lane is guarded, paced and charged like the others.
+
+These are bounds on our own submissions
 under the assumption that the device drains in order; they are NOT a guarantee (provider pauses and flush stalls are unbounded),
 so each IO is also bounded in time: any single IO slower than 250 ms stops further submissions (an already submitted IO cannot be recalled).
 
@@ -123,18 +156,28 @@ so each IO is also bounded in time: any single IO slower than 250 ms stops furth
 
 ## 7. Recognizer
 
-Pure function of the journal (`recognize(records, cfg)`), replayed hourly by the runner (events deduplicated by key) and on demand by `analyze`.
+Pure function of the journal (`recognize(records, cfg)`), folded in incrementally by the runner (persisted in `agg.json`) and replayed by `analyze` through the same `Engine`.
 
 - Lanes: `r_cold@dev`, `r_witness@dev` (4 KiB read latency), `w_over_4k` (durable 4 KiB overwrite latency), `w_fresh_qd1`, `w_fresh_qd4`
   (durable write rate), `r_seq`. Only **quiet** samples enter (no inflight requests, governed writes < 1 MB/s at the tick, gate-passed bench).
 - Window = 24 h. Value = median of pooled latency samples, or median rate. **Capability** = 1e6 / median latency (ops/s) or the rate;
   `x = log2(capability / reference)`.
+- **Closed windows only.** A window is evaluated when a record of a later window arrives or when `close_up_to(now)` passes its end; a partial day never
+  produces a verdict. Events are keyed by `lane|kind|window`.
+- **Persisted state.** Each lane's reference, sigma, phase, CUSUM sums, the last 60 rows, and the open window (<= 4096 values, decimated) live in `agg.json`;
+  the runner updates it incrementally and `analyze` streams the journal through the very same `Engine`, so they agree (tested). A baseline changes only through
+  an operator reset (`resets.log` + journal note; never expires). Pruning the journal does not change the persisted baseline; `analyze` replays only what is retained.
 - Reference = median of the first 5 valid windows (LEARNING until then), noise sigma = MAD-based with a 0.25 floor, **frozen while alarmed**, replaced
   only by `iogov annotate --baseline-reset` (median of the latest 3 windows).
-- Two-sided CUSUM, `k_eff = max(0.5, sigma)`, `h_eff = max(1.5, 3 sigma)`, S capped at 2 h so a long collapse still unwinds. A window counts toward
+- Two-sided CUSUM, `k_eff = max(0.5, sigma)`, `h_eff = max(2.0, 3 sigma)`, sigma = MAD estimate shrunk toward a prior of 0.5 (weight 5 windows), S capped at 2 h so a long collapse still unwinds. A window counts toward
   confirmation only if S >= h **and the window itself is beyond the slack** (a one-day outlier cannot be confirmed by normal days after it);
-  2 consecutive such windows -> `shift_detected` (with factor, direction, "baseline reset suggested"). An alarm clears only after 2
-  consecutive windows back within the slack, or flips explicitly. Delays (tested): 20x and 4x: 2 windows; 2x: 4 windows.
+  3 consecutive such windows (windows missing in between break the streak) -> `shift_detected` (with factor, direction, "baseline reset suggested"). An alarm clears only after 2
+  consecutive windows back within the slack, or flips explicitly. Delays (tested): 20x: 3 windows, 4x: 4 windows, 2x: 6 windows after the step.
+- **False-alarm budget (measured, 300 seeds x 365 days per case, tested):** at most 1 false `shift_detected` per lane-year for Gaussian day-to-day noise up to
+  sigma = 0.5 log2 units (about +-41 %) and for 15 % random 3x slow days on sigma 0.2 (measured 0.8 and 0.5 per year; sigma 0.3: ~0; sigma 0.7 is OUTSIDE the
+  supported range, ~2.4 per year). A lane noisier than sigma 0.5 should not be trusted for shifts smaller than ~4x.
+- **Qualified factors.** A probe sitting at its own rate ceiling (`at_cap`, write_bps_max 256 MiB/s) only shows a lower bound: such shifts say "by at least ~Nx"
+  and `evidence.factor_is_lower_bound` is true. Samples that did not bypass the page cache (`direct` false) never enter the series.
 - `settings_epoch` changes between baseline and a window mark the event "settings changed, the shift may be self-inflicted".
 - **Separate categories.** `recommendation` records are capability shifts only. Protected-workload distress is a different record type (`harm`)
   and a separate section in `analyze`/`status`. A pattern hint (throughput shifted, latency did not: bandwidth/drain-bound; the reverse: per-request
@@ -150,7 +193,7 @@ Pure function of the journal (`recognize(records, cfg)`), replayed hourly by the
 
 | type | required fields (besides common) |
 |---|---|
-| `run_start` | `kind` (tick/bench), `version`, `mode`, `settings_epoch`; also `settings`, `devices`, `notes`, `covariates` |
+| `run_start` | `kind` (tick/bench), `version`, `mode`, `settings_epoch`, `full`; `settings`, `devices`, `notes`, `covariates` only when `full` (settings epoch changed, or hourly): ~2.2 KB per tick, ~0.65 MB/day |
 | `run_end` | `kind`, `status` (ok/aborted/budget), `duration_s`, `io` (+ `abort`) |
 | `skip` | `kind`, `reasons[]` (+ `ctx`): kill switch, pressure, busy device, backoff class, no devices |
 | `probe` | `lane`, `device`, `quiet`, `n`, `zero`, `lat_us[]` (<= 32 samples), `hist[]` (log2 us buckets), `direct`; also `p50 p90 p99 min max attempts errors ctx epoch` |
@@ -160,17 +203,30 @@ Pure function of the journal (`recognize(records, cfg)`), replayed hourly by the
 | `harm` | `kind` (`episode`, `probe_latency`), `evidence` (episode: start/end, `duration_s`, `recovery_s`, peaks, `series[[t_rel, some%, full%, dstate, sys_some_avg10]]` <= 300 points, `settings_epoch`) |
 | `note` | `text`; `kind` annotation / action / baseline_reset |
 
+Other files in `state_dir`: `state.json` (schedule, budget, backoff, failure counters, walk positions), `agg.json` (recognizer aggregates), `resets.log`
+(baseline-reset times), `run.lock`, `watch.lock`, `state.lock`, `scratch/` (one file during a bench, `iogov-scratch.lock`).
+
 ## 9. Assumptions to verify on the host (could not be verified here)
 
 1. Whether raw reads of the whole disk are permitted in the intended runtime context (container vs host, udev ACL, `DeviceAllow`); `O_DIRECT` on the node works for 4 KiB aligned reads (tested only on a regular file / ext4 here).
 2. Logical block size: reads use max(4096, `BLKSSZGET`) alignment; virtio-blk exposing 512 B sectors was assumed.
 3. cgroup v2 paths: `/sys/fs/cgroup/<slice>/io.stat|io.pressure|cgroup.threads`, and that the root `io.stat` exists on this kernel (the "other writers" view degrades gracefully without it). Buffered-write attribution to cgroups on LVM+ext4 is unverified (flusher IO may land in the root cgroup).
-4. `docker:` container name resolution reads `/var/lib/docker/containers/*/config.v2.json` (root-only by default): the service user needs read access or use cgroup paths.
+4. `containers = [...]` name resolution reads `/var/lib/docker/containers/*/config.v2.json` (root-only by default, and it contains container environment variables, i.e. secrets): prefer explicit `container_cgroups` paths. The parse is cached by mtime and discovery is cached for 60 s.
 5. That a low probe-slice IO weight is the right priority (Astra vs Fable disagree); that 4 x 64 KiB in flight and an 8 MiB flush barrier disturb the protected workload within budget at the current device rate (measure with `watch` episodes before and after enabling; run the first bench with the game idle).
-6. That `O_DSYNC` reaches the backend as a flush; sub-100 us durable writes would mean the hypervisor ignores it (recorded in `w_over_4k`, not flagged automatically).
+6. That `fdatasync` reaches the backend as a flush; sub-100 us durable writes would mean the hypervisor ignores it (recorded in `w_over_4k`, not flagged automatically).
 7. `scratch_dir` is on the same filesystem and disk as the data; ext4/xfs behaviour of O_DIRECT overwrites; free-space reserve is adequate on small hosts.
 8. The systemd unit directives (device policy, ReadWritePaths, MemoryDenyWriteExecute with the interpreter) work with the packaged Python.
 9. Provider signals: `provider.json` is written by something the operator provides; without it snapshot age and provider usage are "unknown".
+
+## 9a. Unit hardening, directive by directive
+
+`ProtectKernelTunables=yes` (the tool only reads `/sys` and `/proc`), `ProtectControlGroups=yes` (only reads the cgroup tree; verified: no cgroup file is
+ever written), `ProtectKernelModules=yes`, `CapabilityBoundingSet=` (empty: no capability is needed to `read(2)` an ACL-granted node or write the state dir),
+`PrivateNetwork=yes` with `RestrictAddressFamilies=AF_UNIX` (no network at all), `SystemCallFilter=@system-service`, `StateDirectory=iogov` +
+`StateDirectoryMode=0700` + `UMask=0077` (systemd creates the 0700 state dir for the service user, so the directory checks pass at first start),
+`ProtectSystem=strict`/`ReadWritePaths=` (state and scratch only), `DevicePolicy=closed` + `DeviceAllow=<node> r` (read-only access to exactly one disk),
+`MemoryDenyWriteExecute`, `NoNewPrivileges`, `LimitCORE=0`. No `RuntimeDirectory=`: locks live in the state directory, which must persist across runs.
+These directives are untested on the real host (assumption 8).
 
 ## 10. Known blind spots
 
@@ -178,3 +234,16 @@ Large burst-credit limiters (credit > 64 MiB, escalation 192 MiB weekly); reques
 snapshot-shared data (the fresh file measures allocation into free space, not a CoW overwrite of old data); time-of-day effects when the host is quiet mainly at night
 (daily medians of quiet samples only); hosts that are never calm (bench skips: visible as STALE); a provider that ignores flush. The recognizer reports a
 shift in what the probes measure; whether the game suffers is the `harm` section's job.
+
+## 11. Operator decisions before enabling
+
+1. **Run identity.** A dedicated unprivileged user (`iogov`); root only with `allow_root` and root-owned 0700 directories. Decide the user and who may read its journal.
+2. **`/etc/iogov` ownership.** Root-owned 0755, the config file root-owned 0644 (refused if writable by others), the kill-switch file root-owned. Anyone who can create the
+   kill-switch file can disable the tool; anyone who can edit the config can only move values inside the hard clamps.
+3. **Container access.** Explicit `container_cgroups` paths (recommended) versus giving the service read access to the daemon's `config.v2.json` files (secrets exposure).
+4. **Probe slice weight** (`@IOGOV_IO_WEIGHT@`, default 50 against the game's 1000): low weight protects the game but makes probes `contended` more often (those samples are
+   excluded from the recognizer); measure with `watch` episodes before and after the first benches.
+5. **Retention.** Defaults 400 days / 512 MiB (about 240 MiB per year at one tick per 5 minutes). Shorter retention shortens what `analyze` can replay; the persisted baseline is unaffected.
+6. **Raw reads.** Accept the confidentiality cost of read access to one whole disk (section 6), or do not grant the udev ACL (the tick then reports "cannot open read-only" and only
+   the scratch-file bench and passive collectors run).
+7. **First bench** with the protected workload idle, and the daily write budget (default 1 GiB, hard maximum 2 GiB).

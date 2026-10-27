@@ -93,6 +93,11 @@ def provider_signal(cfg, wall) -> dict | None:
         return None
     if not isinstance(data, dict):
         return None
+    blob = json.dumps(data, sort_keys=True)
+    if len(blob) > 4096:  # never embed an unbounded operator file in the journal: hash and size only
+        import hashlib
+        data = {"sha256": hashlib.sha256(blob.encode()).hexdigest(), "size": len(blob), "truncated": True,
+                **{k: data[k] for k in ("used_bytes", "total_bytes", "snapshot_created") if isinstance(data.get(k), (int, float))}}
     data["file_age_s"] = max(0.0, wall() - mt)
     return data
 
@@ -154,12 +159,17 @@ def prevention(cfg, covariates: dict, wall) -> list[dict]:
     prov = covariates.get("provider")
     if prov:
         snap = prov.get("snapshot_created")
-        if snap:
-            age_h = (wall() - float(snap)) / 3600.0
+        try:
+            age_h = (wall() - float(snap)) / 3600.0 if snap else None
+        except (TypeError, ValueError):
+            age_h = None
+            add("info", "snapshot_unreadable", f"provider snapshot_created {snap!r} is not a number")
+        if age_h is not None:
             if age_h > cfg.snapshot_warn_h:
                 add("warn", "snapshot_age", f"provider snapshot is {age_h:.1f} h old (> {cfg.snapshot_warn_h:g} h)")
-        if prov.get("used_bytes") and prov.get("total_bytes"):
-            pct = 100.0 * prov["used_bytes"] / prov["total_bytes"]
+        ub, tb = prov.get("used_bytes"), prov.get("total_bytes")
+        if isinstance(ub, (int, float)) and isinstance(tb, (int, float)) and tb:
+            pct = 100.0 * ub / tb
             if pct > cfg.provider_used_warn_pct:
                 add("warn", "provider_used", f"provider reports {pct:.0f}% of the allocation used (> {cfg.provider_used_warn_pct:g}%)")
     else:
