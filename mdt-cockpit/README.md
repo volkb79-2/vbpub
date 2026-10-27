@@ -11,6 +11,9 @@ development, CI, and VS Code devcontainers; its first release has not been publi
 }
 ```
 
+(The vendored templates track the PHP flavour, `trixie-py3.14-php8.5-latest`; both tags are
+published by every release.)
+
 Consumer repos should reference a published image rather than building from this
 Dockerfile. A ready-made devcontainer definition — mounts, host cgroup placement, and the
 bootstrap hook — is in [`templates/`](templates/README.md); the lifecycle it implements is
@@ -832,7 +835,7 @@ naming is fully flexible.
 ### Python version support
 
 CPython has no odd/even stability distinction — all released minor versions are
-production-quality. Windows as of June 2026:
+production-quality. Support windows as of June 2026:
 
 | Version | EOL | Status |
 |---|---|---|

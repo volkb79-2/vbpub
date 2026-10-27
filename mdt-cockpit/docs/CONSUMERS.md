@@ -414,7 +414,7 @@ mount flags. The standalone check-only form does not repair:
 
 ```bash
 host-escape -- systemctl show dev-interactive.slice -p MemoryMax
-host-escape -- docker inspect dstdns-devcontainer-vb
+host-escape -- docker inspect <container-name>
 host-escape -- /usr/local/sbin/mdt-cgroup-io-limits.sh dev.slice --all --systemd   # dev-tier IO caps really in force
 host-escape                         # interactive host shell
 mdt doctor --check-only             # inspect cgroup2 flags without repair

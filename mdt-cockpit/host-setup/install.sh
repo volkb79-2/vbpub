@@ -321,9 +321,15 @@ BUILDX_CONFIG_DIR=/etc/mdt/buildx
 # key that is already set OUTSIDE the block (that is reported, not overwritten).
 _mdt_install_environment_block() {
   local block_file="$1" target="$2" tmp key
-  tmp="$(mktemp "${target}.mdt.XXXXXXXX")"
   [ -f "$target" ] || : > "$target"
-  awk '/^# BEGIN mdt-buildkit /{skip=1} !skip{print} /^# END mdt-buildkit$/{skip=0}' "$target" > "$tmp"
+  # A BEGIN marker without its END would make the awk below skip everything that follows it
+  # (PATH and every later line of /etc/environment): refuse instead of truncating.
+  if grep -q '^# BEGIN mdt-buildkit ' "$target" && ! grep -q '^# END mdt-buildkit$' "$target"; then
+    echo "ERROR: $target has a '# BEGIN mdt-buildkit' marker but no '# END mdt-buildkit' line; repair the block by hand before re-running" >&2
+    return 2
+  fi
+  tmp="$(mktemp "${target}.mdt.XXXXXXXX")"
+  awk '/^# BEGIN mdt-buildkit /{skip=1} !skip{print} /^# END mdt-buildkit$/{skip=0}' "$target" > "$tmp" || { rm -f -- "$tmp"; return 1; }
   while IFS= read -r key; do
     case "$key" in \#*|"") continue ;; esac
     key="${key%%=*}"
@@ -416,7 +422,8 @@ log(){ echo "$*" >&2; }
 MISSING_KEYS=$(_mdt_missing_declared_keys "$CANDIDATE_PATH" "$HERE/host-setup.env.example" required | sed 's/^/ /' | tr -d '\n')
 MISSING_OPTIONAL=$(_mdt_missing_declared_keys "$CANDIDATE_PATH" "$HERE/host-setup.env.example" optional | wc -l)
 if [ "$MISSING_OPTIONAL" -gt 0 ]; then
-  echo "NOTICE: $MISSING_OPTIONAL runtime-optional key(s) are absent from $CONFIG_PATH (the DEV_IO_*_MAX pins, IO_BASELINE_ROTATIONAL_FLAG and the IO_WRITEBACK_*/IO_ROOT_QUEUE_* writeback keys, which read as `kernel`); they are treated as NOT SET. Run install.sh --wizard to review and add them." >&2
+  # Single quotes on purpose: a backtick pair inside double quotes is a command substitution.
+  echo "NOTICE: $MISSING_OPTIONAL runtime-optional key(s) are absent from $CONFIG_PATH (the DEV_IO_*_MAX pins, IO_BASELINE_ROTATIONAL_FLAG and the IO_WRITEBACK_*/IO_ROOT_QUEUE_* writeback keys, which read as 'kernel'); they are treated as NOT SET. Run install.sh --wizard to review and add them." >&2
 fi
 if [ -n "$MISSING_KEYS" ]; then
   echo "ERROR: /etc/mdt/host-setup.env is missing declared keys:${MISSING_KEYS}" >&2
@@ -1206,8 +1213,8 @@ fi
 if [ "$AUTO_RESTART_DOCKER" = 1 ]; then
   echo "== docker restart (--restart-docker flag set) =="
   echo "restarting docker.socket and docker.service..."
-  systemctl restart docker.socket docker.service
-  if [ $? -eq 0 ]; then
+  # Not `cmd; if [ $? ... ]`: under `set -e` a failed restart would exit before the test.
+  if systemctl restart docker.socket docker.service; then
     echo "docker restarted successfully"
   else
     echo "WARNING: docker restart failed — see 'systemctl status docker.socket docker.service' for details"
@@ -1216,15 +1223,21 @@ if [ "$AUTO_RESTART_DOCKER" = 1 ]; then
 else
   echo "== done — verify with: mdt-host-check.sh =="
   # Remind only about what the RUNNING dockerd has not picked up yet: daemon.json newer than dockerd's start,
-  # or the extra API socket not listening. A re-run after the restart stays silent.
-  dockerd_pid="$(pidof dockerd 2>/dev/null | cut -d' ' -f1)"
+  # or the extra API socket not listening. A re-run after the restart stays silent. The daemon's PID comes
+  # from systemd, not `pidof dockerd`: pidof also matches a DinD/gate container's dockerd (newer, so the
+  # reminder would be suppressed) and an empty pipeline result would abort the script under pipefail.
+  dockerd_pid="$(systemctl show -p MainPID --value docker.service 2>/dev/null || true)"
   dockerd_started=""
-  if [ -n "$dockerd_pid" ]; then
-    dockerd_started="$(date -d "$(ps -o lstart= -p "$dockerd_pid" 2>/dev/null)" +%s 2>/dev/null || true)"
+  if [ -n "$dockerd_pid" ] && [ "$dockerd_pid" != 0 ]; then
+    dockerd_lstart="$(ps -o lstart= -p "$dockerd_pid" 2>/dev/null || true)"
+    if [ -n "$dockerd_lstart" ]; then  # `date -d ""` would mean today 00:00, not "unknown"
+      dockerd_started="$(date -d "$dockerd_lstart" +%s 2>/dev/null || true)"
+    fi
   fi
   daemon_json_mtime="$(stat -c %Y /etc/docker/daemon.json 2>/dev/null || echo 0)"
   if [ -z "$dockerd_started" ] || [ "$daemon_json_mtime" -gt "$dockerd_started" ]; then
-    echo "== REMINDER: /etc/docker/daemon.json's cgroup-parent change needs a scheduled"
+    echo "== REMINDER: /etc/docker/daemon.json changed since dockerd started (or dockerd's start"
+    echo "   time is unknown): the cgroup-parent/log/live-restore keys need a scheduled"
     echo "   'systemctl restart docker' to take effect — this restarts every running"
     echo "   container. Not done automatically by this script."
   fi

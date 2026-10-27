@@ -847,15 +847,18 @@ case "${WATCHER_MEMORY_POLICY:-}" in
 esac
 
 echo "== inotify watch budget (VS Code workspace watcher, MDT-003) =="
-# The threshold is the value the installer applied; 524288 when that file is absent (e.g. never installed).
+# The threshold is the value the installer applied (the installed file first; the shipped file only
+# when run from a checkout on a host that was never installed); 524288 when neither is readable.
 want_watches=""
-for _wf in "$(dirname "$0")/../etc/sysctl.d/99-inotify.conf" /etc/sysctl.d/99-mdt-inotify.conf; do
+for _wf in /etc/sysctl.d/99-mdt-inotify.conf "$(dirname "$0")/../etc/sysctl.d/99-inotify.conf"; do
   [ -r "$_wf" ] || continue
   want_watches=$(awk -F= '/^[[:space:]]*fs\.inotify\.max_user_watches[[:space:]]*=/ {gsub(/[[:space:]]/,"",$2); print $2}' "$_wf" | tail -1)
   [ -n "$want_watches" ] && break
 done
 have_watches=$(cat /proc/sys/fs/inotify/max_user_watches 2>/dev/null || echo "")
-want_watches="${want_watches:-524288}"
+case "$want_watches" in
+  ''|*[!0-9]*) [ -n "$want_watches" ] && warn "fs.inotify.max_user_watches threshold '$want_watches' is not a number; using 524288"; want_watches=524288 ;;
+esac
 if [ -z "$have_watches" ]; then
   warn "fs.inotify.max_user_watches unreadable"
 elif [ "$have_watches" -ge "$want_watches" ]; then
@@ -863,9 +866,16 @@ elif [ "$have_watches" -ge "$want_watches" ]; then
 else
   fail "fs.inotify.max_user_watches=$have_watches < $want_watches — VS Code reports 'unable to watch for file changes' on large workspaces; re-run install.sh"
 fi
-[ -f /etc/sysctl.d/99-mdt-inotify.conf ] \
-  && ok "/etc/sysctl.d/99-mdt-inotify.conf present (persists across reboots)" \
-  || warn "/etc/sysctl.d/99-mdt-inotify.conf missing — the value will not survive a reboot; re-run install.sh"
+if [ -f /etc/sysctl.d/99-mdt-inotify.conf ]; then
+  # Present AND carrying the key: an edited or truncated file would otherwise pass as "persists".
+  if grep -Eq "^[[:space:]]*fs\.inotify\.max_user_watches[[:space:]]*=[[:space:]]*${want_watches}[[:space:]]*$" /etc/sysctl.d/99-mdt-inotify.conf; then
+    ok "/etc/sysctl.d/99-mdt-inotify.conf sets fs.inotify.max_user_watches=$want_watches (persists across reboots)"
+  else
+    warn "/etc/sysctl.d/99-mdt-inotify.conf present but does not set fs.inotify.max_user_watches=$want_watches; re-run install.sh"
+  fi
+else
+  warn "/etc/sysctl.d/99-mdt-inotify.conf missing — the value will not survive a reboot; re-run install.sh"
+fi
 
 echo "== container placement (informational) =="
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then

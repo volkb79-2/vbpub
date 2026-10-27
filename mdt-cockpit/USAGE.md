@@ -43,26 +43,6 @@ and guidance for attributing load in `top`, Docker stats, and systemd, read
   during the build, so its later CMRU push step also reports an already-published
   terminal state. The affected image currently fails closed in this lane
   because of the repacker defect recorded in the architecture guide.
-- `load` is the configured canonical source-first release mode. The governed
-  BuildKit worker writes unrepacked OCI layouts without loading images into
-  dockerd. After the CMRU gate and source promotion, `build-push.py --push`
-  copies the exact layouts with `regctl` and verifies every remote digest with
-  `crane`. For example, an immutable published coordinate may be
-  `trixie-py3.14-php8.5-20260913`.
-- `push` is an explicit alternate mode. The governed BuildKit worker exports
-  directly to the registry during the build, before the CMRU gate and source
-  promotion. Its later CMRU push step is an explicit already-published terminal
-  state; it does not publish a second time.
-- `repack` is an optional compression experiment. It builds OCI tar streams,
-  extracts them into disk-backed layouts, repacks at `REPACK_TARGET_SIZE`
-  (default `2GB`), validates the candidate structurally and by importing it
-  through BuildKit, and publishes only after those checks. It does not load the
-  original image into dockerd and does not use `skopeo`. Its publication occurs
-  during the build, so its later CMRU push step is also an explicit
-  already-published terminal state. The affected image currently fails closed
-  in this lane because of the repacker defect recorded in the architecture
-  guide.
-
 The value in `cmru.toml` is the project default; the current value is
 `RELEASE_IMAGE_FLOW = "load"`. CMRU runs the configured build, gate, promotion,
 and push steps in that order. The `push` and `repack` alternatives deliberately
@@ -126,7 +106,10 @@ counter. Use that to retry a failed release under the same immutable coordinate.
 
 Environment configuration:
 
-- Copy `.env.sample` to `.env` and adjust values as needed.
+- Release settings live in `cmru.toml` `[env]` (compression, attestations, repack
+  limits) and the release identity in the repository's `cmru.orchestration.toml`; a
+  local-dev build takes its artifact list from a copy of
+  `local-dev-artifacts.toml.example`. There is no `.env` file.
 
 Optional overrides (environment variables):
 
@@ -204,8 +187,8 @@ an invalid OCI layout to the registry.
 For a full direct build-and-publish cycle, `--rebuild` runs `--build` followed
 by `--push`. In the canonical `load` flow this is still a build-then-verified-
 layout-copy sequence; it is not the same as a CMRU release, because it does not
-provide CMRU's gate and source-promotion ordering. Use `./cmru.release.sh` for
-the release lifecycle.
+provide CMRU's gate and source-promotion ordering. Use `cmru release mdt-cockpit`
+(from the repository root) for the release lifecycle.
 
 Ensure you are logged in to the registry (e.g., `docker login ghcr.io`) and that
 `GITHUB_USERNAME` matches your org/user. If `GITHUB_PUSH_PAT` and

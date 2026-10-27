@@ -5,7 +5,7 @@ Nothing here is applied by the template. Each file is a copy-in snippet; pick wh
 | File | Where it applies | What it does |
 |---|---|---|
 | `terminal-keys-terminal-first.settings.jsonc` | settings (container or user) | Sends most keys to the terminal while it has focus. |
-| `terminal-keys-balanced.settings.jsonc` | settings (container or user) | Keeps most VS Code shortcuts; releases a listed set (Ctrl+J, Ctrl+P/E, F1, Ctrl+F, F3-F11 family) to the terminal. The file lists what each removal costs. |
+| `terminal-keys-balanced.settings.jsonc` | settings (container or user) | Keeps most VS Code shortcuts; releases a listed set (Ctrl+J, Ctrl+P/E, F1, F2, Ctrl+F, F3-F11 family) to the terminal. The file lists what each removal costs. |
 | `terminal-tmux.settings.jsonc` | settings (container or user) | Adds a "tmux" terminal profile (attach-or-create session `main`). |
 | `keybindings.client.jsonc` | **client** `keybindings.json` | Shift+Backspace as delete-word, an editor-focus key, optional Shift+Enter. |
 
