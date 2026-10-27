@@ -50,9 +50,15 @@ RUN apt-get update \
 # /home/vscode's permissions are that user's to control — same reasoning tester-unified
 # already documents for its own /opt/tester-venv ("a real interpreter binary, so a
 # runtime home bind cannot shadow it").
+# Aged-latest (estate freshness rule): no version is pinned here, and `--uploaded-prior-to` limits both
+# installs to releases at least PIP_MIN_RELEASE_AGE old (default 14 days), the vetting buffer against a
+# just-shipped regression or supply-chain incident. The age is relative to the build moment: rebuild
+# with --no-cache to pick up newer aged releases.
+ARG PIP_MIN_RELEASE_AGE=P14D
+LABEL org.vbpub.wheel-builder.min-release-age="${PIP_MIN_RELEASE_AGE}"
 RUN /usr/local/bin/python3.14 -m venv --copies /opt/wheel-builder-venv \
- && /opt/wheel-builder-venv/bin/pip install --no-cache-dir --upgrade pip \
- && /opt/wheel-builder-venv/bin/pip install --no-cache-dir build
+ && /opt/wheel-builder-venv/bin/pip install --no-cache-dir --uploaded-prior-to "${PIP_MIN_RELEASE_AGE}" --upgrade pip \
+ && /opt/wheel-builder-venv/bin/pip install --no-cache-dir --uploaded-prior-to "${PIP_MIN_RELEASE_AGE}" build
 
 # The container runs as uid 1003 (matches this devcontainer's host-remapped vscode
 # user, same reasoning as tester-unified/Dockerfile), which the base image has no

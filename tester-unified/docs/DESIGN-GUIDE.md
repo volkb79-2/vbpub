@@ -148,3 +148,24 @@ metadata; a mismatch aborts only the owned container. The only explicit network
 value is `none`. Omitting the option preserves existing Docker selection;
 the launcher does not invent a network name. The Docker socket remains mounted
 for product boundary tests, so this is network isolation, not a security sandbox.
+
+## The image that gates a release: published inputs
+
+The release gate binds three identities: the host's installed Run-Gate judge, the published GitHub release it
+came from, and the selected tester image's Run-Gate labels (`cmru/tools/run_release_gate.py`,
+`_check_run_gate_release_artifacts` and `_check_tester_image_identity`). A tester image therefore has to carry
+the published wheel, byte for byte. `build-image.sh --run-gate-published` stages exactly that through
+`fetch-run-gate-wheel.py`, which requires the `latest.json` pointer, the release's `.sha256` sidecar and the
+downloaded bytes to agree before anything is written (the redirect policy is the one `fetch-cli-extended.py`
+enforces). No age window applies to this first-party wheel: the gate demands the published release, not an aged
+one. CMRU stays source-built (`+tester.unified`) because it is installed only for its dependency closure while the
+suites run against the bound worktree; Assay is not installed at all (run-gate installs the worktree's `assay/`
+at lane runtime), so no published Assay or CMRU wheel is needed in the image.
+
+Third-party packages follow the estate freshness rule instead: nothing is pinned, and pip's
+`--uploaded-prior-to` (pip 26.0 or newer, which the base's bundled pip satisfies) restricts every index-capable
+install to releases uploaded at least `PIP_MIN_RELEASE_AGE` (default `P14D`) ago. A build argument rather than a
+file of pins keeps the "newest, but vetted" policy in one place; the cost is that two builds of the same
+Dockerfile on different days differ, which is why the age is recorded as an image label and a rebuild uses
+`--no-cache`. The Debian/Python base digest and the node image digest are the deliberate exceptions: they are
+digest-pinned and age-checked by `cmru versions` (`tester-base/versions/`).

@@ -4636,3 +4636,12 @@ def test_build_image_offers_the_published_run_gate_wheel_exclusively():
     assert "--run-gate-published" in text and "fetch-run-gate-wheel.py" in text
     assert "mutually exclusive" in text
     assert "--pip-min-release-age" in text and "PIP_MIN_RELEASE_AGE" in text
+
+
+def test_wheel_builder_ages_its_pip_installs_and_pins_nothing():
+    text = (GENERATOR.parents[1] / "wheel-builder" / "Dockerfile").read_text("utf-8")
+    assert re.search(r"^ARG PIP_MIN_RELEASE_AGE=P14D$", text, re.MULTILINE)
+    installs = [line for line in text.splitlines() if "/opt/wheel-builder-venv/bin/pip install" in line]
+    assert len(installs) == 2
+    for line in installs:
+        assert '--uploaded-prior-to "${PIP_MIN_RELEASE_AGE}"' in line and "==" not in line

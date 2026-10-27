@@ -139,3 +139,40 @@ refusal is not a product pass or failure.
 
 See [what the launcher guarantees](../README.md) and
 [why those guarantees are required](DESIGN-GUIDE.md#cockpit-and-gate-boundary).
+
+## Rebuilding the gate image against published tools (release waves)
+
+Run this after a Run-Gate release (and after the tester-base release, so the base is a registry reference)
+and before the next gated release of any other tool. Why the order matters: CMRU's release gate compares the
+host's installed Run-Gate judge with the published release and requires the selected image's
+`org.vbpub.run-gate.version` / `.wheel-sha256` labels to be that same release (see the
+[design guide](DESIGN-GUIDE.md#the-image-that-gates-a-release-published-inputs)); an image built from a
+developer `run-gate-project/dist` wheel can never pass it.
+
+1. Preconditions: the Run-Gate release is published (`gh release view run-gate-v<X.Y.Z>` lists the wheel and its
+   `.sha256`), the host's Run-Gate judge is that version (`run-gate --version`), and the tester-base release is
+   published. After the first tester-base release replace the three base pin sites with its digest reference
+   (`ghcr.io/volkb79-2/tester-base@sha256:<digest>`, as reported by `cmru`): the `ARG TESTER_UNIFIED_BASE_IMAGE=`
+   default in `tester-unified/Dockerfile`, the `ARG WHEEL_BUILDER_BASE_IMAGE=` default in
+   `wheel-builder/Dockerfile` and `[environments.host].image` in `run-gate.root.toml`; run
+   `cmru/tests/test_tester_unified_image.py` and `tester-base/tests/test_docs_in_sync.py` and commit that on its own.
+2. Export the supported builder's environment (the values are those of `cmru.orchestration.toml`):
+   `BUILDX_BUILDER=default` (only the docker-driver builder sees a local base; not needed for a registry base),
+   `CGROUP_PARENT_DEV_GATES`, `CMRU_TESTER_MEMORY`, `CMRU_TESTER_MEMORY_SWAP`, `CMRU_TESTER_CPUS`,
+   `CMRU_TESTER_PIDS_LIMIT`, `CMRU_TESTER_CGROUP_PROBE_IMAGE`, `CMRU_TESTER_CGROUP_PARENT`, and
+   `CMRU_TESTER_UNIFIED_IMAGE` naming an image that still exists (the preflight probes in it).
+3. Build to a branch-specific tag, never the shared one, from a clean checkout of the merged tools:
+   `tester-unified/build-image.sh --run-gate-published latest --no-cache --tag tester-unified:wave-<date>`
+   (about 4 minutes). It fetches the published wheel, verifies pointer, sidecar and bytes, builds CMRU from the
+   checked-out source, resolves every third-party package at least `PIP_MIN_RELEASE_AGE` (14 days) old, and
+   re-reads the identity labels. `wheel-builder` follows the same rule:
+   `docker buildx build --load --no-cache --cgroup-parent "$CGROUP_PARENT_DEV_GATES" -f wheel-builder/Dockerfile -t wheel-builder:wave-<date> .`
+4. Verify before promoting: the labels equal the published release
+   (`docker image inspect --format '{{index .Config.Labels "org.vbpub.run-gate.version"}}' tester-unified:wave-<date>`,
+   and the sha256 label against the release's `.sha256` file), then run a project's registered gate against the
+   exact candidate with `RUN_GATE_TESTER_UNIFIED_IMAGE=tester-unified:wave-<date> run-gate <lane>` (the cmru
+   `coverage` lane exercises the image-contract tests and the whole suite).
+5. Promote: keep the rollback (`docker tag tester-unified:local tester-unified:prev-<date>`), then
+   `docker tag tester-unified:wave-<date> tester-unified:local`. Remove nothing by pattern; use exact tag names.
+6. Re-run step 3 to 5 whenever the host's Run-Gate judge changes version, and when a build must pick up newer
+   aged third-party releases (`--no-cache` is what re-resolves them).
