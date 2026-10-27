@@ -10,7 +10,7 @@ from typing import Any, Sequence
 
 from . import devio
 from .errors import Aborted, Refusal, VerificationFailure
-from .host import Host, HostError
+from .host import SCRATCH_FILE, Host, HostError  # noqa: F401  (SCRATCH_FILE: one definition, shared with the argv rule of host.check_argv)
 
 JOURNAL = "/run/iobench/restore.json"
 LOCK = "/run/iobench/lock"
@@ -29,7 +29,6 @@ COUPLED_RATIO = {
     "/proc/sys/vm/dirty_bytes": "/proc/sys/vm/dirty_ratio",
     "/proc/sys/vm/dirty_background_bytes": "/proc/sys/vm/dirty_background_ratio",
 }
-SCRATCH_FILE = re.compile(r"(^|/)(iobench-[^/]*|\.iobench[^/]*)$")
 
 
 def knob_allowed(path: str) -> bool:
@@ -159,8 +158,12 @@ def live_preflight(host: Host, *, confirm_quiet_window: bool, installer: bool, p
         if protect_cgroup is not None and abort_psi is not None:
             _validate_guards(host, protect_cgroup, abort_psi)
         return {"containers_active": 0, "confirmed_quiet_window": confirm_quiet_window, "bypassed": True}
-    names = [n for n in devio.probe(host, "docker ps", devio.docker_ps_argv()).stdout.split()
-             if production_pattern is None or re.search(production_pattern, n)]
+    try:
+        pattern = None if production_pattern is None else re.compile(production_pattern)
+    except re.error as exc:
+        raise Refusal("production_pattern_invalid", f"--production-pattern {production_pattern!r} is not a valid regular expression ({exc})",
+                      "pass a Python regular expression, for example '^wings'") from exc
+    names = [n for n in devio.probe(host, "docker ps", devio.docker_ps_argv()).stdout.split() if pattern is None or pattern.search(n)]
     units = [u for u in production_units if unit_is_active(host, u)]
     if (names or units) and not confirm_quiet_window:
         raise Refusal("production_running", f"production containers are running ({len(names)}) or listed units are active ({len(units)}); {LIMITATION}",
@@ -190,8 +193,8 @@ def orphan_fio(host: Host) -> list[str]:
             continue
         try:
             argv = host.read_text(f"/proc/{name}/cmdline").split("\0")
-        except OSError:
-            continue  # the process ended while we looked
+        except (OSError, UnicodeDecodeError):
+            continue  # the process ended while we looked, or its arguments are not UTF-8 (any process on the host: not an fio of ours)
         if posixpath.basename(argv[0]) == "fio" and any(a.startswith("--name=run-") for a in argv):
             found.append(name)
     return found
@@ -248,6 +251,8 @@ class Safety:
         self.journal_written = True
 
     def register_file(self, path: str) -> None:
+        if path in self.files:
+            return  # the probe file is registered by every sweep cell: one entry, one unlink
         self.files.append(path)
         self._write_journal()
 

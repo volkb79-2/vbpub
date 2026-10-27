@@ -367,7 +367,7 @@ def test_rev_a_s10_io_limit_spellings_are_refused(token):
 
 
 def test_rev_a_s10_probe_unit_and_fio_argv_pass():
-    check_argv(devio.probe_unit_argv("u", "iobench-probe.slice", 90, "pass", []))
+    check_argv(devio.probe_unit_argv("iobench-probe-u", "iobench-probe.slice", 90, "pass", ["/w", "/w/.iobench-probe-u", "60", "0.5"]))
     check_argv(["fio", "--ioengine=libaio", "--iodepth=32", "--io_size=1M", "--filename=/dev/vda7"])
 
 

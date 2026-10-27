@@ -402,7 +402,7 @@ def test_arc_05_workdir_load_and_probe_models():
     h.put("/proc/sys/vm/dirty_bytes", "0\n")
     h.put("/sys/class/block/vda/queue/nr_requests", "64\n")
     h.sweep_model = lambda knobs: testing.SweepOutcome(probe_p99_us=1000.0 * knobs["nr_requests"], drain_bps=20e6)
-    load = devio.FioJob("load", "/bench/w/f0", "write", 1 << 20, 4, 60, 0, GIB, None, direct=False, prefix="/run/iobench/load")
+    load = devio.FioJob("load", "/bench/w/iobench-f0", "write", 1 << 20, 4, 60, 0, GIB, None, direct=False, prefix="/run/iobench/load")
     handle = h.spawn(load.argv())
     h.sleep(30)
     stats = h._diskstats().split()
@@ -414,7 +414,7 @@ def test_arc_05_workdir_load_and_probe_models():
     fs = load.with_(name="fs", fsync=16, rw="randwrite", bs=4096)
     res = devio.collect(h, fs, h.spawn(fs.argv()).wait(), 0.0)
     assert res.stats.iops == pytest.approx(800, rel=0.01)
-    unit = devio.probe_unit_argv("u", "iobench.slice", 130, "pass", ["/bench/w", "/run/iobench/probe.out", "60", "0.5"])
+    unit = devio.probe_unit_argv("iobench-probe-u", "iobench.slice", 130, "pass", ["/bench/w", "/run/iobench/probe.out", "60", "0.5"])
     h.spawn(unit).wait()
     lats = sorted(float(x) for x in h.read_text("/run/iobench/probe.out").split())
     assert len(lats) == 120 and lats[118] == 64000.0

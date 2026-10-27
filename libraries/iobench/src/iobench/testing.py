@@ -782,8 +782,8 @@ class FakeHost:
         }
 
     # -- processes -----------------------------------------------------------
-    def _log(self, argv: Sequence[str]) -> None:
-        check_argv(argv)
+    def _log(self, argv: Sequence[str], *, bound: bool = False) -> None:
+        check_argv(argv, bound=bound)  # the same rule RealHost applies: an unbound run/spawn never writes or discards a target
         self.argv_log.append(list(argv))
 
     def run(self, argv: Sequence[str], timeout: float | None = None) -> RunResult:
@@ -900,7 +900,7 @@ class FakeHost:
         return self._launch(job, dev)
 
     def write_range(self, argv: Sequence[str], target: TargetRef, offset: int, length: int) -> FakeHandle:
-        self._log(argv)
+        self._log(argv, bound=True)
         dev = self._verify(target)
         dev.check_range(offset, length, "fio")
         job = devio.assert_writer_bound(argv, target, offset, length)  # the same binding RealHost enforces (parity)
@@ -918,7 +918,7 @@ class FakeHost:
         return handle
 
     def discard_range(self, argv: Sequence[str], target: TargetRef, offset: int, length: int) -> RunResult:
-        self._log(argv)
+        self._log(argv, bound=True)
         dev = self._verify(target)
         devio.assert_discard_bound(argv, target, offset, length)
         dev.check_range(offset, length, "discard")

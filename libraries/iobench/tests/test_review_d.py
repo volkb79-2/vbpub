@@ -256,6 +256,8 @@ def test_bl06_sweep_repeat_cells_get_valid_unit_names_and_a_second_signal_stops_
 def test_bl06_fakehost_refuses_unit_names_systemd_would_refuse():
     from iobench.testing import standard_host
     host = standard_host()
-    argv = devio.probe_unit_argv("iobench-probe-run-s4-rep-dirty_bytes/2", "s.slice", 90, "pass", ["/w/x", "10", "0.5"])
-    with pytest.raises(HostError, match="unit name"):
+    argv = devio.probe_unit_argv("iobench-probe-run-s4-rep-dirty_bytes/2", "s.slice", 90, "pass", ["/w", "/w/x", "10", "0.5"])
+    with pytest.raises(HostError, match="allowlist"):  # refused by the pinned systemd-run shape before FakeHost's own unit-name check
         host.spawn(argv)
+    with pytest.raises(HostError, match="unit name"):
+        host._spawn_probe(argv)

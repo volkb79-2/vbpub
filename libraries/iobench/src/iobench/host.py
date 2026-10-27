@@ -8,6 +8,7 @@ is therefore the one core module excluded from the coverage gate.
 """
 from __future__ import annotations
 
+import ctypes
 import fcntl
 import os
 import posixpath
@@ -68,10 +69,19 @@ FORBIDDEN_ARGV_TOKENS = ("set-property", "daemon-reload")
 FORBIDDEN_ARGV0 = ("mkfs", "mount", "umount", "fstrim", "dd")
 # Every spelling of a systemd IO limit: `IOWeight=`, `-pIOWriteBandwidthMax=`, `--property=BlockIOWeight=`, `-p=IO...`, any case.
 _IO_LIMIT_TOKEN = re.compile(r"^(?:-p=?|--property=)?(?:block)?io(?:device)?(?:weight|read|write|latency)[a-z]*=", re.IGNORECASE)
+# The names iobench gives the files it creates in a work dir (the matrix load files, the probe files); the restore journal
+# accepts only these for removal, and an UNBOUND fio writer (plain `spawn`, no `write_range` binding) may write only to one of them.
+SCRATCH_FILE = re.compile(r"(^|/)(iobench-[^/]*|\.iobench[^/]*)$")
+_FIO_WRITE_RW = ("write", "randwrite")
 
 
-def check_argv(argv: Sequence[str]) -> None:
-    """Refuse argv that could change an io.max-style limit or a filesystem."""
+def _fio_opt(argv: Sequence[str], key: str) -> str | None:
+    return next((t.partition("=")[2] for t in argv[1:] if t.partition("=")[0] == key), None)
+
+
+def check_argv(argv: Sequence[str], *, bound: bool = False) -> None:
+    """Refuse argv that could change an io.max-style limit or a filesystem, and (unless ``bound``) any argv that writes or discards
+    without the extent binding of ``Host.write_range`` / ``Host.discard_range``: a plain ``run``/``spawn`` can never reach a target."""
     base = os.path.basename(argv[0])
     if base.startswith("mkfs") or base in FORBIDDEN_ARGV0:
         raise HostError(f"forbidden command: {base}")
@@ -84,6 +94,15 @@ def check_argv(argv: Sequence[str]) -> None:
             raise HostError(f"forbidden argument: {token}")
     if not is_allowed_argv(argv):
         raise HostError(f"argv outside the allowlist: {' '.join(argv[:3])} ...")
+    if bound:
+        return
+    if base == "blkdiscard" or (base == "fallocate" and argv[1] == "-p"):
+        raise HostError(f"{base} runs only through Host.discard_range, bound to the authorised extent: {' '.join(argv)}")
+    if base == "fio" and _fio_opt(argv, "--rw") in _FIO_WRITE_RW:
+        filename = _fio_opt(argv, "--filename") or ""
+        if not SCRATCH_FILE.search(filename):
+            raise HostError(f"fio writer on {filename}: a target writer runs only through Host.write_range; "
+                            "an unbound writer may only create an iobench-* load file")
 
 
 # Exactly the keys FioJob.argv() emits (tests/test_review_d.py pins the two together). An allowlist, not a denylist: fio accepts
@@ -94,6 +113,10 @@ _FIO_KEYS = frozenset((
     "--numjobs", "--group_reporting", "--output-format", "--percentile_list", "--log_avg_msec", "--write_bw_log", "--write_iops_log",
     "--exclusive_open", "--readonly", "--io_size", "--write_hist_log", "--log_hist_msec", "--log_hist_coarseness", "--rate_iops", "--fsync"))
 _FIO_ENGINES = ("--ioengine=libaio",)  # the only engine iobench builds; `exec` (and any other) runs or reaches outside the planned job (review A N-r3-4)
+_FIO_RW = ("read", "write", "randread", "randwrite")  # `trim`/`trimwrite`/`randtrim` DISCARD; `rw`/`randrw`/`readwrite` mix: none is a planned workload
+_PROBE_UNIT = re.compile(r"iobench-probe-[A-Za-z0-9_-]+")
+_SLICE = re.compile(r"[A-Za-z0-9_.-]+\.slice")
+_NUMBER = re.compile(r"[0-9]+(\.[0-9]+)?")
 
 
 def _fio_allowed(a: list[str]) -> bool:
@@ -104,7 +127,22 @@ def _fio_allowed(a: list[str]) -> bool:
         return True
     if len(set(keys)) != len(keys) or not set(keys) <= _FIO_KEYS:  # a repeated key (`--filename=`, `--exclusive_open=0` after `=1`) is a second say
         return False
+    if "--rw" in keys and _fio_opt(a, "--rw") not in _FIO_RW:
+        return False
     return "--filename" in keys and all(t in _FIO_ENGINES for t in a[1:] if t.split("=")[0] == "--ioengine")
+
+
+def _systemd_run_allowed(a: list[str]) -> bool:
+    """Exactly the shape ``devio.probe_unit_argv`` builds: a waited, collected, lifetime-bounded probe unit in a slice, running the
+    probe script with its four arguments (an absolute directory, an absolute output file, a duration and an interval).  Any other
+    property (`-p ExecStartPre=`), command or argument count is refused: `RuntimeMaxSec=` alone used to be enough (IOB-BL-06)."""
+    if len(a) != 14 or a[1] != "--wait" or a[4] != "--collect" or a[5] != "-p" or a[7:9] != ["python3", "-c"]:
+        return False
+    unit, slice_name = a[2].partition("=")[2], a[3].partition("=")[2]
+    return (a[2].startswith("--unit=") and _PROBE_UNIT.fullmatch(unit) is not None
+            and a[3].startswith("--slice=") and _SLICE.fullmatch(slice_name) is not None
+            and re.fullmatch(r"RuntimeMaxSec=[0-9]+", a[6]) is not None and bool(a[9])
+            and a[10].startswith("/") and a[11].startswith("/") and all(_NUMBER.fullmatch(t) for t in a[12:14]))
 
 
 _ALLOWED = {
@@ -116,7 +154,7 @@ _ALLOWED = {
     "fallocate": lambda a: a[1] in ("-l", "-p"),
     "docker": lambda a: a[1] == "ps",
     "systemctl": lambda a: a[1] == "is-active" or a[1:3] == ["show", "-p"] or (a[1] == "stop" and len(a) == 3 and re.fullmatch(r"iobench-probe-[A-Za-z0-9_-]+(\.service)?", a[2]) is not None),
-    "systemd-run": lambda a: any(t.startswith("RuntimeMaxSec=") for t in a),
+    "systemd-run": _systemd_run_allowed,
 }
 
 
@@ -165,10 +203,16 @@ class Host(Protocol):
     def install_signals(self) -> None: ...
 
 
+try:  # resolved in the parent: an import inside the forked child is not fork-safe (preexec_fn)
+    _PRCTL: Any = ctypes.CDLL(None, use_errno=True).prctl
+except (OSError, AttributeError):  # no libc prctl (not Linux): spawning is refused, never run without the parent-death signal
+    _PRCTL = None
+PR_SET_PDEATHSIG = 1
+
+
 def _die_with_parent(parent: int) -> None:
     """Child side of the spawn: SIGKILL this process when iobench itself dies (an orphan fio must not keep writing to the device)."""
-    import ctypes
-    ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGKILL)  # PR_SET_PDEATHSIG
+    _PRCTL(PR_SET_PDEATHSIG, signal.SIGKILL)
     if os.getppid() != parent:  # iobench died between fork and the prctl: the signal will never come
         os._exit(1)
 
@@ -188,6 +232,8 @@ def _reap(proc: "subprocess.Popen[str]") -> None:
 
 class _ProcHandle:
     def __init__(self, argv: Sequence[str]) -> None:
+        if _PRCTL is None:
+            raise HostError("prctl(PR_SET_PDEATHSIG) is unavailable on this host: a child that could outlive iobench is never started")
         self._out = tempfile.TemporaryFile("w+")
         self._err = tempfile.TemporaryFile("w+")
         # its own session/process group (the whole group is killed) and a parent-death signal (S8)
@@ -387,6 +433,8 @@ class RealHost:
         flags = os.O_WRONLY | getattr(os, "O_DIRECT", 0)
         if target.kind == "device":
             flags |= os.O_EXCL  # the kernel refuses (EBUSY) a device that is mounted, swap-active or claimed by md/dm
+        else:
+            flags |= os.O_NOFOLLOW  # a file target was verified as a plain file: a symlink swapped in since is not followed
         try:
             fd = os.open(target.path, flags)
         except OSError as exc:  # EBUSY: the kernel's exclusive open found the device mounted, swap-active or claimed (md/dm)
@@ -410,7 +458,7 @@ class RealHost:
         self._verify_live(target)
         self._check_extent(target, offset, length)
         devio.assert_writer_bound(argv, target, offset, length)  # the argv writes exactly the authorised extent
-        check_argv(argv)
+        check_argv(argv, bound=True)
         return _ProcHandle(argv)
 
     def discard_range(self, argv: Sequence[str], target: TargetRef, offset: int, length: int) -> RunResult:
@@ -418,7 +466,8 @@ class RealHost:
         self._verify_live(target)
         self._check_extent(target, offset, length)
         devio.assert_discard_bound(argv, target, offset, length)
-        return self.run(argv)
+        check_argv(argv, bound=True)
+        return self._run_polled(argv, None)
 
     # -- single instance and signals --------------------------------------
     def lock(self, path: str) -> bool:

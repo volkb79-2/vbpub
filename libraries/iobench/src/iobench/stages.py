@@ -11,7 +11,7 @@ from . import series as S
 from .devio import FioJob, FioResult
 from .errors import Aborted, IobenchError, Refusal, RunFailed, VerificationFailure
 from .extents import Extents
-from .host import TAIL_BYTES, Host, HostError
+from .host import Host, HostError
 from .proposals import DEFAULT_TARGETS
 from .restore import Safety
 
@@ -126,7 +126,10 @@ class Runner:
         sig = self.host.signal_pending()
         if sig is not None:
             raise Aborted(f"signal {sig}")
-        self.watch.check()
+        try:
+            self.watch.check()
+        except (OSError, StopIteration, KeyError, ValueError) as exc:  # the protected cgroup's io.pressure vanished or changed shape
+            raise Aborted(f"the abort guard became unreadable ({type(exc).__name__}: {exc}); a run that cannot be protected does not continue") from exc
 
     def supervise(self, handles: Sequence[Any], on_tick: Any = None, units: Sequence[str] = ()) -> None:
         """Poll until every handle exits, checking signals and the abort rules each second; kill on any exception.

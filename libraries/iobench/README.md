@@ -18,7 +18,7 @@ requirements and the result schema.
 | Plausibility | rejects numbers that are a cache, a burst, a flat provider cap, a moved ceiling or a too-short run; never keys on the `rotational` flag | `IOB-PLA`, `IOB-REF` |
 | Proposals | `proposals.writeback`, `proposals.caps`, `proposals.iocost_model`, `proposals.iocost_qos`, each value with `rule`, `inputs`, `status` | `IOB-DER` |
 | Ceiling history | an append-only list of sustained plateaus from which the vrate bounds derive | `IOB-CEI` |
-| Safety | targets are a dedicated device **or a preallocated file** on an existing filesystem; refuses a target that is mounted, swap, signature-bearing or the root disk, writes nothing without its marker; never touches any cgroup `io.max`; restores every changed runtime knob on every exit; never creates or mounts a filesystem | `IOB-TGT`, `IOB-SAF` |
+| Safety | targets are a dedicated device **or a preallocated file** on an existing filesystem; refuses a target that is mounted, swap, signature-bearing or the root disk, writes nothing without its marker; the Host itself binds every writer and discard to the authorised extent (a plain `run`/`spawn` can only create `iobench-*` load files, never reach a target); never touches any cgroup `io.max`; restores every changed runtime knob on every exit; never creates or mounts a filesystem | `IOB-TGT`, `IOB-SAF`, `IOB-ARC-05` |
 
 ## Quick use
 
@@ -46,7 +46,7 @@ libraries/iobench/
 
 ## Status
 
-Implemented (IOB-03 P3): the measurement core, safety, proposals, the `iobench` CLI over `cli-extended`, and the replay fixtures, all tested on a fake host (`FakeHost` / `FakeFio`). Not yet done: the live
-acceptance run on r1002 (IOB-ACC-01, IOB-03 P4) and the first cmru release (IOB-REL-01; wheel plus sha256). The CLI review cases in `docs/cli-review.toml` record real invocations and
+Implemented (IOB-03 P3, reviewed through wave 2026-10-27): the measurement core, safety, proposals, the `iobench` CLI over `cli-extended`, and the replay fixtures, all tested on a fake host (`FakeHost` / `FakeFio`). Not yet done: the live
+acceptance run on the designated test host (IOB-ACC-01, IOB-03 P4; `RealHost` has never run against a real device, fio or systemd) and the first cmru release (IOB-REL-01; wheel plus sha256). The CLI review cases in `docs/cli-review.toml` record real invocations and
 the outcomes observed on the fake host; an independent semantic review still has to confirm their rationales. The decisions behind it are IOB-D-001..014 and the rulings
 R-1..R-10 in the DESIGN-GUIDE. Nothing here is wired into `mdt-cockpit` or `debian-install-v2` yet (migration phases M1-M4 in the DESIGN-GUIDE).

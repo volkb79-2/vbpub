@@ -148,3 +148,22 @@ A-S1 (bind `RealHost.write_range`/`run` argv to the authorised extent and use th
 
 ### Could not do / left
 IOB-BL-01..05 (BACKLOG.md). The write BPS time proof (IOB-BL-02) was not small. Nothing here ran against a real device, fio or systemd: RealHost changes (`_run_polled` aside) are untested until IOB-ACC-01.
+
+
+## Pre-release review 2026-10-27 (independent, on top of `wave-iobench-20261027`): findings, fixes, tests
+
+Earlier findings B1..B4 (journal ownership, dirty-ratio coupling, container namespace proof, probe return codes) were re-read and are fixed as described; `tests/test_review_e.py` holds every new test (each red before its fix).
+
+| Finding | Severity | Fix | Test |
+|---|---|---|---|
+| `systemd-run` allowlist accepted any command with a `RuntimeMaxSec=` token (IOB-BL-06 "still open") | high (safety) | exact probe-unit shape in `host._systemd_run_allowed` | `test_rev_e_probe_unit_argv_passes_and_only_that_shape_does` |
+| a fio writer through plain `spawn` had no binding (R2-5); `--rw=trim*` (a DISCARD) passed the key allowlist | high (safety) | `check_argv(bound=)`: writers only to `iobench-*` load files unless bound by `write_range`; `--rw` limited to the four planned workloads; `blkdiscard`/`fallocate -p` only through `discard_range`; FakeHost parity through `_log(bound=)` | `test_rev_e_unbound_fio_writer_*`, `test_rev_e_fio_rw_*`, `test_rev_e_discard_argv_*`, `test_rev_e_fakehost_refuses_*` |
+| the matrix kept every cell's 1 GiB + 256 MiB load files until the end (10+ GiB on a work dir checked for 4 GiB; ENOSPC mid-sweep) | medium (robustness; SPEC DRN-01 says "removed behind itself") | `Matrixer.remove_load_files` after each cell's reduction | `test_rev_e_matrix_load_files_are_removed_behind_each_cell` |
+| a work dir on overlay/multi-device fs (allowed with `--installer`) crashed the matrix in `read_knob`/`written_bytes` | medium | `workdir_disk_unknown` refusal in `Matrixer.body` | `test_rev_e_matrix_refuses_a_work_dir_without_a_block_device_behind_it` |
+| the protected cgroup vanishing mid-run ended the run with a traceback (restore ran, exit 1) | medium (safety) | `Runner._tick` turns a guard read failure into `Aborted` | `test_rev_e_an_unreadable_protect_cgroup_aborts_the_run` |
+| a missing probe binary (docker absent) and an invalid `--production-pattern` were tracebacks | low | `probe_failed` on `OSError`; `production_pattern_invalid` | `test_rev_e_a_missing_probe_binary_*`, `test_rev_e_invalid_production_pattern_*` |
+| a non-UTF-8 `/proc/<pid>/cmdline` of any process broke S0 | low | `UnicodeDecodeError` tolerated in `orphan_fio` | `test_rev_e_orphan_scan_survives_*` |
+| the probe file was journalled once per cell | nit | `register_file` dedupes | `test_rev_e_register_file_journals_each_file_once` |
+| RealHost: `import ctypes` inside `preexec_fn` (post-fork import); file-target marker open followed symlinks | nit (RealHost, untested until ACC-01) | `_PRCTL` resolved at import; `O_NOFOLLOW` for file targets | none (host.py is outside the unit gate) |
+
+Judged and left (BACKLOG IOB-BL-09..16): scratch directory cleanup, hosts without docker, file targets on disk-less filesystems, the reclaim-driven stall class the io.pressure guard does not see, the dry-run name mismatch, `_ProcHandle` descriptors, the host-agnostic docs pass, the diskstats row. The iogov division of labour and the IOB-REL-01 prerequisites are in BACKLOG.md.
