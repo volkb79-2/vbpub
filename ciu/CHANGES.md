@@ -126,9 +126,6 @@ the technical detail below it.
 
 ## [Unreleased]
 
-### Added
-- CIU-134: `ciu worktree rm` reports cleanup phases and remaining artifacts. After a confirmed permission blocker, `--root-escalation {ask,yes,no}` can authorize one record-validated retry through CIU's existing S6.5 helper, then removes only the exact Git registration without broad pruning.
-
 ### Changed
 - Worktree instance record schema 6 adds `base_branch_ref`: the canonical local branch name (no `refs/heads/` prefix) that the frozen `base_ref` commit was taken from, or `null` for an adopted checkout, a tag, a raw commit, a remote-tracking ref, `HEAD`, or a branch that did not point at the frozen commit. `create` decides it once, together with the frozen base commit, and persists it with `base_ref`; `ensure` never recomputes it and `adopt` always writes `null`. Records v1-v5 keep their meaning and are not upgraded by reads. v5 records written by 7.17.0 keep a frozen-SHA `base_ref` and no `base_branch_ref`: they remain fully valid for CIU itself, but Run-Gate refuses them and names an explicit `--base` as the remedy.
 

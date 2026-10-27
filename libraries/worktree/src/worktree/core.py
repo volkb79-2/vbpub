@@ -1104,8 +1104,6 @@ def remove_unrecorded_workspace(
     expected_branch: str | None = None,
     purpose: str = "legacy",
     force: bool = False,
-    checkout_recovery: Callable[[WorkspaceContext, Path | None, WorkspaceError], bool] | None = None,
-    on_phase: Callable[[str, str], None] | None = None,
 ) -> None:
     """Remove a legacy linked checkout that predates a shared record.
 
@@ -1123,12 +1121,7 @@ def remove_unrecorded_workspace(
             category="stale-record",
         )
     context = adopt_workspace(source_git_root, target_path, purpose=purpose)
-    remove_workspace(
-        context,
-        force=force,
-        checkout_recovery=checkout_recovery,
-        on_phase=on_phase,
-    )
+    remove_workspace(context, force=force)
 
 
 def remove_workspace(
@@ -1137,8 +1130,6 @@ def remove_workspace(
     cleanup: Callable[[WorkspaceContext], None] | None = None,
     force: bool = False,
     delete_branch: bool = True,
-    checkout_recovery: Callable[[WorkspaceContext, Path | None, WorkspaceError], bool] | None = None,
-    on_phase: Callable[[str, str], None] | None = None,
 ) -> None:
     """Clean adapter resources, then remove the checkout and record.
 
@@ -1148,11 +1139,6 @@ def remove_workspace(
     """
 
     record = _coerce_record(record_or_path)
-
-    def mark(phase: str, status: str) -> None:
-        if on_phase is not None:
-            on_phase(phase, status)
-
     with _workspace_lock(record.git_common_dir):
         current = read_record(record.record_path)
         if not _is_directory(current.worktree_path):
@@ -1183,81 +1169,15 @@ def remove_workspace(
             )
         if cleanup is not None:
             cleanup(current.context())
-
-        # Capture the exact linked-worktree administration directory before
-        # `git worktree remove` runs. Git may remove this registration first,
-        # then fail while recursively deleting an inaccessible descendant;
-        # the checkout's `.git` file is left pointing at the now-missing dir.
-        # Recovery may remove only this captured registration, never a broad
-        # `worktree prune` set.
-        git_dir: Path | None = None
-        try:
-            git_dir = canonical_path(
-                _git(current.worktree_path, "rev-parse", "--absolute-git-dir")
-            )
-            admin_root = canonical_path(current.git_common_dir / "worktrees")
-            git_dir.relative_to(admin_root)
-        except (WorkspaceError, ValueError, OSError):
-            git_dir = None
-
         result = subprocess.run(
             ["git", "worktree", "remove", "--force", str(current.worktree_path)],
             cwd=current.source_git_root, text=True, capture_output=True, check=False,
         )
         if result.returncode:
-            failure = WorkspaceError(
+            raise WorkspaceError(
                 f"git worktree remove failed ({result.returncode}): {(result.stderr or result.stdout).strip()}",
-                category="checkout-removal",
+                category="cleanup-refusal",
             )
-            recovered = False
-            if checkout_recovery is not None:
-                recovered = checkout_recovery(current.context(), git_dir, failure)
-            if not recovered:
-                raise failure
-            if _is_directory(current.worktree_path):
-                raise WorkspaceError(
-                    f"checkout recovery returned, but the exact checkout still exists: "
-                    f"{current.worktree_path}",
-                    category="checkout-removal",
-                )
-            if git_dir is not None and git_dir.exists():
-                raise WorkspaceError(
-                    f"checkout was removed, but its Git registration remains: {git_dir}",
-                    category="checkout-removal",
-                )
-            if any(
-                canonical_path(wt.path) == current.worktree_path
-                for wt in list_git_worktrees(current.source_git_root)
-            ):
-                raise WorkspaceError(
-                    f"checkout was removed, but Git still registers {current.worktree_path}",
-                    category="checkout-removal",
-                )
-            mark("checkout_deletion", "complete")
-            mark("git_registration", "complete")
-        else:
-            if _is_directory(current.worktree_path):
-                raise WorkspaceError(
-                    f"Git reported checkout removal success, but the checkout still exists: "
-                    f"{current.worktree_path}",
-                    category="checkout-removal",
-                )
-            if git_dir is not None and git_dir.exists():
-                raise WorkspaceError(
-                    f"Git reported checkout removal success, but its registration remains: {git_dir}",
-                    category="checkout-removal",
-                )
-            if any(
-                canonical_path(wt.path) == current.worktree_path
-                for wt in list_git_worktrees(current.source_git_root)
-            ):
-                raise WorkspaceError(
-                    f"Git reported checkout removal success, but still registers {current.worktree_path}",
-                    category="checkout-removal",
-                )
-            mark("checkout_deletion", "complete")
-            mark("git_registration", "complete")
-
         if delete_branch and current.branch != "HEAD":
             branch_result = subprocess.run(
                 ["git", "branch", "-D", current.branch],
@@ -1270,11 +1190,7 @@ def remove_workspace(
                     f"{(branch_result.stderr or branch_result.stdout).strip()}",
                     category="cleanup-refusal",
                 )
-            mark("branch_removal", "complete")
-        elif current.branch == "HEAD":
-            mark("branch_removal", "skipped-detached")
         current.record_path.unlink(missing_ok=True)
-        mark("shared_record_removal", "complete")
 
 
 def remove_orphan_workspace(

@@ -288,32 +288,26 @@ class TestWorktreeRmDispatch:
     def test_forwards_yes_and_force(self, monkeypatch, capsys):
         seen = {}
 
-        def fake_remove(repo_root, name, *, yes, force, root_escalation):
-            seen.update(
-                repo_root=repo_root, name=name, yes=yes, force=force,
-                root_escalation=root_escalation,
-            )
+        def fake_remove(repo_root, name, *, yes, force):
+            seen.update(repo_root=repo_root, name=name, yes=yes, force=force)
             return Path("/tmp/repo/.worktrees/mypkg")
 
         monkeypatch.setattr(wt_mod, "remove", fake_remove)
-        assert cli._worktree([
-            "rm", "mypkg", "-y", "--force", "--root-escalation", "yes"
-        ]) == 0
+        assert cli._worktree(["rm", "mypkg", "-y", "--force"]) == 0
         assert seen["name"] == "mypkg"
         assert seen["yes"] is True and seen["force"] is True
-        assert seen["root_escalation"] == "yes"
         assert "removed:" in capsys.readouterr().out
 
     def test_defaults_yes_and_force_false(self, monkeypatch):
         seen = {}
 
-        def fake_remove(repo_root, name, *, yes, force, root_escalation):
-            seen.update(yes=yes, force=force, root_escalation=root_escalation)
+        def fake_remove(repo_root, name, *, yes, force):
+            seen.update(yes=yes, force=force)
             return Path("/tmp/x")
 
         monkeypatch.setattr(wt_mod, "remove", fake_remove)
         cli._worktree(["rm", "mypkg"])
-        assert seen == {"yes": False, "force": False, "root_escalation": "ask"}
+        assert seen == {"yes": False, "force": False}
 
     def test_worktree_error_maps_to_exit_2(self, monkeypatch, capsys):
         def fake_remove(*_a, **_kw):
@@ -420,24 +414,6 @@ class TestWorktreeRmJsonDispatch:
         captured = capsys.readouterr()
         assert captured.out == ""
         assert "[S16] clean failed" in captured.err
-
-    def test_rm_json_emits_partial_removal_report(self, monkeypatch, capsys):
-        report = {
-            "schema_version": 1,
-            "operation": "remove",
-            "status": "partial",
-            "failed_phase": "checkout_deletion",
-            "completed_phases": ["resource_cleanup", "lease_release"],
-        }
-
-        def fail(*_a, **_kw):
-            raise wt_mod.WorktreeRemovalFailure("partial removal", report)
-
-        monkeypatch.setattr(wt_mod, "remove_document", fail)
-        assert cli._worktree(["rm", "mypkg", "--json"]) == 2
-        captured = capsys.readouterr()
-        assert json.loads(captured.out) == report
-        assert captured.err == ""
 
 
 class TestCapabilitiesDispatch:

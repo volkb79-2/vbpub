@@ -330,34 +330,13 @@ only managed instances, each with fresh Git facts.
 ```console
 $ ciu worktree rm pkg-under-test --json
 {"schema_version": 1, "operation": "remove", "status": "removed",
- "removed_path": "...", "instance": {...}, "phases": {...}}
+ "removed_path": "...", "instance": {...}}
 ```
 
 `rm` runs `ciu clean` then `git worktree remove` (that order is normative,
-[SPEC §S16](SPEC.md#s16--worktree-instances-ciu-worktree)). If Git removes its
-registration but cannot delete a permission-protected descendant, CIU checks
-the remaining checkout and its readable CIU/shared records, then asks before
-using its S6.5 helper on that exact checkout. For automation, explicitly allow
-that one retry:
-
-```console
-$ ciu worktree rm pkg-under-test --root-escalation yes --json
-```
-
-`--root-escalation` accepts `ask` (default), `yes`, or `no`. `yes` does not
-bypass the permission and identity checks; it only answers the consent prompt.
-`no` declines the helper. A non-interactive `ask` reports the recovery command.
-If cleanup failed, CIU never offers or performs root-assisted checkout
-deletion; `--force` still only controls whether ordinary removal may proceed
-after a failed `ciu clean`.
-
-A failed removal exits 2. In text mode it names the failed phase and surviving
-artifacts. With `--json`, it emits one error document with `status` `failed` or
-`partial`, `completed_phases`, the per-phase states, exact remaining checkout,
-Git, branch and CIU/shared-record states, and a recovery command when available.
-Git's first failed deletion may already have removed its registration; CIU
-reports that partial state. If a retry is declined or fails, it does not delete
-the branch or any surviving records.
+[SPEC §S16](SPEC.md#s16--worktree-instances-ciu-worktree)). A failed clean or
+git removal raises with exit 2 and **no** success document; the error names
+the retained resources.
 
 ## 5b. Clean up forgotten branches — grounded, never age-based (S16.8)
 
