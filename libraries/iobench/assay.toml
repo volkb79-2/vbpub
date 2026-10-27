@@ -58,6 +58,7 @@ targets = [
 ]
 fail_under = 100.0
 allow_excluded = false
+require_branch = true
 
 [lanes.iobench.judge.coverage]
 format = "coverage-py-json"

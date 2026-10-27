@@ -167,17 +167,19 @@ def test_observer_guards_read_the_host_docker_gid_from_the_runtime_path() -> Non
 
 
 @pytest.mark.parametrize(
-    ("control_gid", "control_mode", "socket_gid", "expected_status"),
+    ("control_gid", "control_mode", "socket_gid", "directory_gid", "expected_status"),
     [
-        (994, "770", 995, 0),
-        (0, "770", 995, 1),
-        (994, "750", 995, 1),
-        (994, "770", 994, 1),
+        (994, "770", 995, 995, 0),
+        (0, "770", 995, 995, 1),
+        (994, "750", 995, 995, 1),
+        (994, "770", 994, 994, 1),
+        # the socket's group must equal its directory's group
+        (994, "770", 995, 996, 1),
     ],
 )
 def test_observer_gid_guard_rejects_wrong_host_group_facts(
     tmp_path: Path, control_gid: int, control_mode: str,
-    socket_gid: int, expected_status: int,
+    socket_gid: int, directory_gid: int, expected_status: int,
 ) -> None:
     observer_dir = tmp_path / "observer"
     observer_dir.mkdir()
@@ -195,11 +197,12 @@ control_dir="$3"
 fact_control_gid="$4"
 fact_control_mode="$5"
 fact_socket_gid="$6"
+fact_directory_gid="$7"
 observer_dir="$(dirname "$observer_socket")"
 stat() {
   local path="${@: -1}"
   case "$path" in
-    "$observer_dir") printf '0 %s 751\n' "$fact_socket_gid" ;;
+    "$observer_dir") printf '0 %s 751\n' "$fact_directory_gid" ;;
     "$observer_socket") printf '0 %s 660\n' "$fact_socket_gid" ;;
     "$control_dir") printf '0 %s %s\n' "$fact_control_gid" "$fact_control_mode" ;;
     *) return 1 ;;
@@ -211,7 +214,7 @@ assay_resource_observer_gid "$observer_socket" "$control_dir"
         [
             "bash", "-c", script, "observer-gid-test",
             str(OBSERVER_GID_HELPER), str(observer_socket), str(control_dir),
-            str(control_gid), control_mode, str(socket_gid),
+            str(control_gid), control_mode, str(socket_gid), str(directory_gid),
         ],
         capture_output=True, text=True, timeout=10,
     )
