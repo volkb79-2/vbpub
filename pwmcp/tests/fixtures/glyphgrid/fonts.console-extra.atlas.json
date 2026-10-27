@@ -13978,7 +13978,7 @@
     "kind": "font-file",
     "note": "",
     "provenance": {
-     "licence": "OFL-1.1 (Terminus Font, (c) 2010 Dimitar Toshkov Zhekov, Reserved Font Name \"Terminus Font\"; copyright.fonts of console-setup)",
+     "licence": "UNVERIFIED: presumably OFL-1.1 (Terminus Font) but the copyright.fonts licence block names only ter-u12, u14, u16, u20, u24, u28, u32; the u18 and u22 sizes this file derives from are not named there",
      "package": "console-setup-linux",
      "path": "/usr/share/consolefonts/Uni3-Terminus18x10.psf.gz",
      "url": "http://deb.debian.org/debian trixie/main amd64 (all)",
@@ -16774,7 +16774,7 @@
     "kind": "font-file",
     "note": "",
     "provenance": {
-     "licence": "OFL-1.1 (Terminus Font, (c) 2010 Dimitar Toshkov Zhekov, Reserved Font Name \"Terminus Font\"; copyright.fonts of console-setup)",
+     "licence": "UNVERIFIED: presumably OFL-1.1 (Terminus Font) but the copyright.fonts licence block names only ter-u12, u14, u16, u20, u24, u28, u32; the u18 and u22 sizes this file derives from are not named there",
      "package": "console-setup-linux",
      "path": "/usr/share/consolefonts/Uni3-Terminus22x11.psf.gz",
      "url": "http://deb.debian.org/debian trixie/main amd64 (all)",

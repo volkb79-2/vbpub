@@ -119,7 +119,10 @@ def hazard_analysis(fonts, order, base_names):
                         if dbl:
                             rec["scale"].append({"larger": bn, "smaller": sn, "k": k, "glyphs_of_larger": len(big["glyphs"]), "doublable": dbl, "differing_chars": diff})
         rec["tier"] = "ambiguous" if rec["native"] else "extra"
-        rec["scale_hazard"] = any(x["differing_chars"] for x in rec["scale"] if x["larger"] == name)
+        # hazard pairs that matter for this font: it is the LARGER one (its own screens are read as the smaller font), or it is the SMALLER one and the
+        # larger font is a BASE font (a screen of that base font is read as this font; the base font is loaded, so the unscale guard sees it)
+        rec["hazard_pairs"] = [x for x in rec["scale"] if x["differing_chars"] and (x["larger"] == name or x["larger"] in base_names)]
+        rec["scale_hazard"] = bool(rec["hazard_pairs"])
         out[name] = rec
     return out
 
@@ -186,7 +189,7 @@ def build_manifest(manifest_path, src_root, atlas, base_atlas=None, repertoire_d
         if ana[name]["tier"] != wanted_tier[name]:
             raise ValueError("%s: manifest tier %r but the hazard analysis says %r (%s)" % (name, wanted_tier[name], ana[name]["tier"], json.dumps(ana[name]["native"])))
         if ana[name]["scale_hazard"]:
-            uni.fonts[name]["origin"]["scale_hazard"] = [x for x in ana[name]["scale"] if x["larger"] == name and x["differing_chars"]]
+            uni.fonts[name]["origin"]["scale_hazard"] = ana[name]["hazard_pairs"]
     for rec in report:
         if rec["atlas_font"] in ana and not rec.get("same_as") and not rec.get("merged_into"):
             rec["analysis"] = ana[rec["atlas_font"]]

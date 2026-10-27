@@ -37,6 +37,8 @@ CONF_HOMO = "H"     # font-exact glyph whose repertoire character is unique but 
 CONF_ALIAS = "a"    # font-exact bitmap shared by several characters of the repertoire: ambiguity set, no pick
 CONF_SINGLE = "s"   # bitmap known, but confirmed by fewer than ``min_groups`` independent screens: NOT exact
 CONF_FILL = "f"     # uniform cell whose colour differs from the text background next to it (solid block, fill)
+CONF_SCALED = "z"   # font-exact bitmap read from a capture that was an undone k-fold upscale WITHOUT a complete larger-font guard: the character is
+                    # shown but NOT actionable (not in TEXTLIKE/EXACTLIKE: find_phrase/region/strict_match refuse it; opt in with ``trust_scale``)
 TEXTLIKE = (CONF_EXACT, CONF_FONT, CONF_BLANK)
 EXACTLIKE = (CONF_EXACT, CONF_FONT, CONF_HOMO)
 HIT = ("exact", "font", "homoglyph", "alias")
@@ -691,6 +693,22 @@ class Atlas:
         self._xcache[ck] = out
         return out
 
+    def scale_guard(self, k: int, cell_w: int, cell_h: int):
+        """-> (twins, guard_fonts, complete) for an undone k-fold upscale.  A capture that is a k-fold enlargement of the cell may be the native
+        screen of a font of ANY cell d*cell with d | k (d >= 2) shown at zoom k/d, so ``twins`` is the union of ``scale_twins(d, ...)`` over every divisor
+        d >= 2 of k (k=4: 2,4; k=6: 2,3,6; k=8: 2,4,8); ``guard_fonts`` lists the font-file fonts of those cells that were checked; ``complete`` = a font
+        exists for EVERY divisor.  ``complete`` is all the loaded atlas can say: it cannot establish that no other larger font exists."""
+        twins, fonts, complete = {}, [], True
+        for d in range(2, k + 1):
+            if k % d:
+                continue
+            found = [fn for fn in self.fonts_for(cell_w * d, cell_h * d) if self.fonts[fn].get("origin", {}).get("kind") == "font-file"]
+            fonts += found
+            complete = complete and bool(found)
+            for hx, chars in self.scale_twins(d, cell_w, cell_h).items():
+                twins.setdefault(hx, set()).update(chars)
+        return twins, sorted(fonts), complete
+
     def nearest(self, font: str, key: bytes, limit: int = 3):
         """Evidence only: [(distance, char, hex)] best first over glyphs of ``font``."""
         v = int.from_bytes(key, "big")
@@ -706,7 +724,7 @@ class Atlas:
 # --------------------------------------------------------------------------- decode
 def decode(ex: Extraction, atlas: Atlas, font: str | None = None, max_hamming: int = 0,
            return_cells: bool = False, min_groups: int = 2, min_hits: int = 8, min_share: float = 0.25,
-           margin: int = 2, rule_run: int = 4, cursor=None, font_min_share: float = FONT_MIN_SHARE, unscaled: int = 1) -> dict:
+           margin: int = 2, rule_run: int = 4, cursor=None, font_min_share: float = FONT_MIN_SHARE, unscaled: int | None = None) -> dict:
     """Exact lookup of every cell.  max_hamming=0 (default): no tolerant matching at all.
 
     * ``font_share`` = share of ordinary (not bar/box-like) ink cells the chosen font reads exactly.  Floor: >= ``min_hits`` cells and
@@ -716,8 +734,10 @@ def decode(ex: Extraction, atlas: Atlas, font: str | None = None, max_hamming: i
       an alias set ``a`` unless the font is proven (share >= font_min_share and no other same-size font above ``PROVEN_RUNNER_UP``).
     * ``F`` font-exact (unique code point); ``H`` unique repertoire character but other code points of the font's full coverage draw the same
       bitmap (``res["aliases"]`` holds the whole set; consumers apply a homoglyph policy); ``a`` several repertoire characters share the bitmap.
-    * ``unscaled=k`` (set by ``read_image`` when ``probe_scale`` undid a k-fold upscale): a font-exact bitmap that a font-file font of cell
-      ``k*cell`` draws as a DIFFERENT character (``Atlas.scale_twins``) is an alias set, never F/H: the capture may be that larger font's native screen.
+    * ``k = unscaled`` (default: ``ex.grid["unscaled"]``, set by ``prepare`` when ``probe_scale`` undid a k-fold upscale; callers cannot forget it):
+      a font-exact bitmap that a font-file font of cell ``d*cell`` (any divisor d >= 2 of k) draws as a DIFFERENT character (``Atlas.scale_guard``) is an
+      alias set, never F/H.  ``res["scale_unverified"] = k`` and ``res["scale_guard_fonts"]`` are always set when k > 1, and unless a font exists for EVERY
+      divisor the remaining F/H cells are capped to ``z`` (CONF_SCALED: shown, not actionable; ``strict_match(trust_scale=True)`` opts in).
     * ``min_groups``: a LEARNED glyph is 'exact' only if >= this many independent screen groups confirm it, else 's'.
     * flags (``res["flags"]``): 'r' rule-line, 'c' cursor candidate: cells reading a cursor-shaped glyph (lower blocks, full block) always, a
       bar-like last inked cell of a row, or exactly the cell given by ``cursor=(row, col)`` (then the shape heuristic is off).
@@ -733,7 +753,9 @@ def decode(ex: Extraction, atlas: Atlas, font: str | None = None, max_hamming: i
             v = boxmemo[key] = boxlike(key, w, h)
         return v
 
-    twins = atlas.scale_twins(unscaled, w, h) if unscaled > 1 else {}
+    k_un = g.get("unscaled", 1) if unscaled is None else unscaled
+    twins, guard_fonts, guard_complete = atlas.scale_guard(k_un, w, h) if k_un > 1 else ({}, [], True)
+    scale_cap = k_un > 1 and not guard_complete
     cands = [font] if font else atlas.fonts_for(w, h)
     fscores = {}
     for fn in cands:
@@ -794,6 +816,9 @@ def decode(ex: Extraction, atlas: Atlas, font: str | None = None, max_hamming: i
                     r = memo.get(key)
                     if r is None:
                         r = memo[key] = _decode_glyph(atlas, chosen, c.key, max_hamming, min_groups, margin, proven, twins.get(c.key.hex()))
+                        if scale_cap and r[1] in (CONF_FONT, CONF_HOMO):
+                            r = memo[key] = (r[0], CONF_SCALED, {"reason": "font-exact after an undone %d-fold upscale; no loaded font for every divisor size, so a "
+                                                                          "larger font cannot be excluded" % k_un, "would_read": r[0], **(r[2] or {})})
                     ch, st = r[0], r[1]
                     if st in (CONF_ALIAS, CONF_HOMO):
                         aliases[(c.row, c.col)] = r[2]["aliases"]
@@ -843,7 +868,7 @@ def decode(ex: Extraction, atlas: Atlas, font: str | None = None, max_hamming: i
     for r, row in enumerate(ex.rows):
         for ci, c in enumerate(row):
             st = conf[r][ci]
-            if st in (CONF_UNKNOWN, CONF_CONFLICT, CONF_MULTI, CONF_SINGLE, CONF_FILL, CONF_ALIAS, CONF_HOMO):
+            if st in (CONF_UNKNOWN, CONF_CONFLICT, CONF_MULTI, CONF_SINGLE, CONF_FILL, CONF_ALIAS, CONF_HOMO, CONF_SCALED):
                 if c.kind == "glyph" and floor_ok:
                     ev = memo[(chosen, c.key)][2]
                 elif c.kind == "multicolor":
@@ -867,6 +892,8 @@ def decode(ex: Extraction, atlas: Atlas, font: str | None = None, max_hamming: i
            "font_scores": {k: list(v) for k, v in fscores.items()}, "rows": rows, "conf": conf, "flags": flags,
            "unknown_cells": unknown, "max_hamming": max_hamming, "min_groups": min_groups,
            "aliases": {"%d,%d" % k: v for k, v in aliases.items()}}
+    if k_un > 1:
+        res.update(scale_unverified=k_un, scale_guard_fonts=guard_fonts, scale_capped=scale_cap)
     if status != "ok":
         res["message"] = ("no atlas font reads this screen (need >= %d ordinary cells and >= %d%% of them): every cell UNKNOWN" % (min_hits, int(min_share * 100))
                           if status == "no_font" else
@@ -936,19 +963,27 @@ def prepare(src, auto_unscale: bool = True, grid_hints=None, atlas: "Atlas | Non
     """
     im = load_image(src)
     probe = probe_scale(im)
+    k = 1
     if probe["integer_upscale"] > 1 and auto_unscale:
-        im = unscale(im, probe["integer_upscale"])
+        k = probe["integer_upscale"]
+        im = unscale(im, k)
     elif probe["resampled"]:
         return None, probe, None
+    im, g = _prepare_grid(im, grid_hints, atlas)
+    g["unscaled"] = k      # carried to every Extraction (grid_with_origin copies it): decode reads the undone scale from there
+    return im, probe, g
+
+
+def _prepare_grid(im, grid_hints, atlas):
     if grid_hints is None and atlas is not None and atlas.fonts:
         sizes = sorted({(f["cell_w"], f["cell_h"]) for f in atlas.fonts.values()})
         g = detect_grid(im, hints=sizes)
         if g["status"] == "ok":
-            return im, probe, g
+            return im, g
         free = detect_grid(im)
         free["hinted_attempt"] = g["reasons"][:1]
-        return im, probe, free
-    return im, probe, detect_grid(im, hints=grid_hints)
+        return im, free
+    return im, detect_grid(im, hints=grid_hints)
 
 
 def choose_extraction(im, grid: dict, atlas: Atlas, font: str | None = None, max_seconds: float = 4.0):
@@ -1034,7 +1069,6 @@ def read_image(src, atlas: Atlas, font: str | None = None, max_hamming: int = 0,
         return {"status": "no_grid", "message": "no fixed grid found", "probe": probe, "grid_report": g,
                 "rows": [], "conf": [], "unknown_cells": []}
     ex, _ = choose_extraction(im, g, atlas, font, decode_kw.pop("max_seconds", 4.0))
-    decode_kw.setdefault("unscaled", probe["integer_upscale"] if auto_unscale else 1)
     res = decode(ex, atlas, font, max_hamming, return_cells, **decode_kw)
     res["probe"] = probe
     res["grid_report"] = {k: g[k] for k in ("length", "contrast", "candidates")}
@@ -1162,7 +1196,18 @@ def find_phrase_ambiguous(res: dict, phrase: str, exclude_flagged: bool = True, 
     return out
 
 
-def strict_match(res: dict, phrase: str, region=None, cursor=None, homoglyphs: str = "latin-only", min_font_share: float = FONT_MIN_SHARE) -> dict:
+def trust_scale(res: dict) -> dict:
+    """Explicit opt-in for a capture that was an undone integer upscale: returns a copy of ``res`` whose capped ``z`` cells count as F, and records the
+    choice (``res["trust_scale"] = True``, ``res["scale_unverified"]`` stays).  Use it only if the capture path is known to be a browser/display zoom of a
+    native 1:1 screen (the cap exists because the loaded atlas cannot exclude a larger native font)."""
+    out = dict(res)
+    out["conf"] = [row.replace(CONF_SCALED, CONF_FONT) for row in res.get("conf", [])]
+    out["trust_scale"] = True
+    return out
+
+
+def strict_match(res: dict, phrase: str, region=None, cursor=None, homoglyphs: str = "latin-only", min_font_share: float = FONT_MIN_SHARE,
+                 trust_scale: bool = False) -> dict:
     """THE decision function for a keystroke consumer.  matched = at least one occurrence whose phrase cells AND both boundary cells are
     F/e/b (homoglyph cells per policy), unflagged, not alias/single/fill/unknown, the screen status is ok and, for a font-file font,
     font_share >= ``min_font_share``.  ``region`` = (row0, row1, col0, col1) restricts the search; ``cursor`` = (row, col) is excluded.
@@ -1172,6 +1217,12 @@ def strict_match(res: dict, phrase: str, region=None, cursor=None, homoglyphs: s
         return {"matched": False, "hits": [], "candidates": [], "reasons": ["screen status %r: %s" % (res.get("status"), res.get("message", ""))]}
     if res.get("font_is_file") and res.get("font_share", 0.0) < min_font_share:
         reasons.append("font_share %.3f < %.2f" % (res["font_share"], min_font_share))
+    if res.get("scale_capped"):
+        if trust_scale:
+            res = globals()["trust_scale"](res)
+        else:
+            reasons.append("capture was an undone %d-fold upscale without a complete larger-font guard: cells are class 'z' (not actionable); "
+                           "pass trust_scale=True only if the capture path is a known zoom of a native 1:1 screen" % res["scale_unverified"])
     hits, cands = [], []
     for r, i in _occurrences(res, phrase, region):
         j = i + len(phrase)
@@ -1190,4 +1241,7 @@ def strict_match(res: dict, phrase: str, region=None, cursor=None, homoglyphs: s
             hits.append({"row": r, "col": i})
     if not cands:
         reasons.append("phrase not present in the read text")
-    return {"matched": bool(hits), "hits": hits, "candidates": cands, "reasons": reasons}
+    out = {"matched": bool(hits), "hits": hits, "candidates": cands, "reasons": reasons}
+    if res.get("scale_unverified"):
+        out.update(scale_unverified=res["scale_unverified"], trust_scale=bool(res.get("trust_scale")))
+    return out

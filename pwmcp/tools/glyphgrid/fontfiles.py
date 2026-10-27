@@ -83,10 +83,16 @@ def load_psf(path) -> FontFile:
         bitmaps = [data[hdrsize + i * bpg:hdrsize + (i + 1) * bpg] for i in range(n)]
         maps = []
         if flags & 1:
-            tab = data[hdrsize + n * bpg:]
-            for entry in tab.split(b"\xff")[:n]:
+            pieces = data[hdrsize + n * bpg:].split(b"\xff")
+            complete, tail = pieces[:-1], pieces[-1]       # every record ends in 0xFF; what follows the last 0xFF is not a record
+            if len(complete) < n and tail:
+                raise ValueError("PSF2 unicode table of %s ends inside entry %d of %d (no terminator)" % (path, len(complete), n))
+            for i, entry in enumerate(complete[:n]):
                 seq = entry.split(b"\xfe")[0]  # only the single code points (ignore combining sequences)
-                maps.append([ord(c) for c in seq.decode("utf-8", "replace")])
+                try:
+                    maps.append([ord(c) for c in seq.decode("utf-8")])
+                except UnicodeDecodeError:
+                    raise ValueError("PSF2 unicode table of %s: entry %d is not valid UTF-8" % (path, i))
             maps += [[] for _ in range(n - len(maps))]   # a table shorter than the glyph count: the missing glyphs have no code points (as in PSF1), never dropped
         else:
             maps = [[i] for i in range(n)]

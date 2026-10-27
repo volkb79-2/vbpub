@@ -3,6 +3,7 @@
   {
    "alias_sets": 0,
    "analysis": {
+    "hazard_pairs": [],
     "native": [],
     "scale": [
      {
@@ -72,6 +73,7 @@
   {
    "alias_sets": 16,
    "analysis": {
+    "hazard_pairs": [],
     "native": [],
     "scale": [
      {
@@ -125,6 +127,7 @@
   {
    "alias_sets": 16,
    "analysis": {
+    "hazard_pairs": [],
     "native": [],
     "scale": [
      {
@@ -178,6 +181,7 @@
   {
    "alias_sets": 16,
    "analysis": {
+    "hazard_pairs": [],
     "native": [],
     "scale": [
      {
@@ -207,6 +211,7 @@
   {
    "alias_sets": 16,
    "analysis": {
+    "hazard_pairs": [],
     "native": [],
     "scale": [
      {
@@ -244,6 +249,7 @@
   {
    "alias_sets": 16,
    "analysis": {
+    "hazard_pairs": [],
     "native": [],
     "scale": [],
     "scale_hazard": false,
@@ -264,6 +270,7 @@
   {
    "alias_sets": 16,
    "analysis": {
+    "hazard_pairs": [],
     "native": [],
     "scale": [],
     "scale_hazard": false,
@@ -284,6 +291,7 @@
   {
    "alias_sets": 16,
    "analysis": {
+    "hazard_pairs": [],
     "native": [],
     "scale": [],
     "scale_hazard": false,
@@ -304,6 +312,7 @@
   {
    "alias_sets": 16,
    "analysis": {
+    "hazard_pairs": [],
     "native": [],
     "scale": [
      {
@@ -333,6 +342,7 @@
   {
    "alias_sets": 16,
    "analysis": {
+    "hazard_pairs": [],
     "native": [],
     "scale": [],
     "scale_hazard": false,
@@ -353,6 +363,7 @@
   {
    "alias_sets": 16,
    "analysis": {
+    "hazard_pairs": [],
     "native": [],
     "scale": [
      {
@@ -422,6 +433,7 @@
   {
    "alias_sets": 16,
    "analysis": {
+    "hazard_pairs": [],
     "native": [],
     "scale": [
      {
@@ -451,6 +463,7 @@
   {
    "alias_sets": 16,
    "analysis": {
+    "hazard_pairs": [],
     "native": [],
     "scale": [],
     "scale_hazard": false,
@@ -471,6 +484,7 @@
   {
    "alias_sets": 16,
    "analysis": {
+    "hazard_pairs": [],
     "native": [],
     "scale": [
      {
@@ -500,6 +514,7 @@
   {
    "alias_sets": 16,
    "analysis": {
+    "hazard_pairs": [],
     "native": [],
     "scale": [],
     "scale_hazard": false,
@@ -520,6 +535,7 @@
   {
    "alias_sets": 16,
    "analysis": {
+    "hazard_pairs": [],
     "native": [],
     "scale": [],
     "scale_hazard": false,
@@ -540,6 +556,7 @@
   {
    "alias_sets": 16,
    "analysis": {
+    "hazard_pairs": [],
     "native": [],
     "scale": [],
     "scale_hazard": false,
@@ -560,6 +577,7 @@
   {
    "alias_sets": 16,
    "analysis": {
+    "hazard_pairs": [],
     "native": [],
     "scale": [
      {
@@ -589,6 +607,7 @@
   {
    "alias_sets": 16,
    "analysis": {
+    "hazard_pairs": [],
     "native": [],
     "scale": [
      {
@@ -634,6 +653,24 @@
   {
    "alias_sets": 16,
    "analysis": {
+    "hazard_pairs": [
+     {
+      "differing_chars": 11,
+      "doublable": 12,
+      "glyphs_of_larger": 110,
+      "k": 2,
+      "larger": "font:csvga-16x32",
+      "smaller": "font:unifont-16"
+     },
+     {
+      "differing_chars": 16,
+      "doublable": 105,
+      "glyphs_of_larger": 110,
+      "k": 2,
+      "larger": "font:csvga-16x32",
+      "smaller": "font:vga-8x16"
+     }
+    ],
     "native": [],
     "scale": [
      {

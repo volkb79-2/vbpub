@@ -322,7 +322,8 @@ def test_unscale_guard_synthetic_larger_font_makes_conflicting_bitmaps_alias(tmp
     ff.build_font_atlas(big, "font:big", ff.load_psf(str(tmp_path / "b.psf")), "ascii")
     im = _render_font(big.fonts["font:big"], ["ZBZBZBZB ZBZBZBZB"] * 8, cols=20, rows=10)
     only_small = gg.read_image(im, a)
-    assert only_small["conf"][0][0] == "F" and only_small["rows"][0][0] == "A"              # without the larger font loaded the wrong F is unavoidable (documented)
+    # without the larger font loaded the reading is wrong ('A' for 'Z') but is capped to the non-actionable class z: never F
+    assert only_small["conf"][0][0] == "z" and only_small["rows"][0][0] == "A" and only_small["scale_unverified"] == 2 and only_small["scale_guard_fonts"] == []
     both = gg.read_image(im, gg.Atlas.merge(a, big))
     assert both["conf"][0][0] == "a" and both["conf"][0][1] == "F" and both["rows"][0][1] == "B"      # same character in both: stays F
 
@@ -413,3 +414,228 @@ def test_committed_manifest_tiers_equal_the_mechanical_analysis_of_the_committed
     assert {n: a["tier"] for n, a in ana.items()} == want
     assert {n for n, a in ana.items() if a["scale_hazard"]} == {"font:csvga-16x32"}
     assert set(extra.fonts) >= {"font:csvga-16x32", "font:csvga-16x28"}      # the larger fonts stay loaded: the unscale guard needs them
+
+
+# ----------------------------------------------------------------------------- second review: every divisor, carried k, capped class z, mutation kills
+def _zoom(im, m):
+    return im.resize((im.size[0] * m, im.size[1] * m), Image.NEAREST) if m > 1 else im
+
+
+def _placeholder_font(cw, ch, seed=1):
+    """A font-file font of cell cw x ch with ONE unrelated glyph: it only makes 'a font of this size exists' true for the guard."""
+    import random
+    rng = random.Random(seed + cw)
+    rb = (cw + 7) // 8
+    key = bytes(rng.getrandbits(8) | 0x01 for _ in range(rb * ch))
+    return {"cell_w": cw, "cell_h": ch, "glyphs": {key.hex(): {"c": {"§": 1}, "f": ["x"], "font_exact": True}},
+            "origin": {"kind": "font-file", "sha256": "0" * 64, "file": "placeholder"}}
+
+
+def _guard_complete_atlas(cell, divisors):
+    base, extra = _load("fonts.atlas.json", "fonts.console-extra.atlas.json")
+    a = gg.Atlas.merge(base, extra)
+    for d in divisors:
+        a.fonts.setdefault("font:placeholder-%dx%d" % (cell[0] * d, cell[1] * d), _placeholder_font(cell[0] * d, cell[1] * d))
+    return a
+
+
+@pytest.mark.parametrize("zoom,k", [(1, 2), (2, 4), (3, 6), (4, 8)])
+def test_real_csvga_16x32_screen_at_any_zoom_is_never_a_wrong_f(zoom, k):
+    """A real csvga-16x32 screen (2x of 8x16) at browser zoom m is a 2m-fold enlargement: probe_scale returns the LARGEST k, the divisor-2 font must
+    still be consulted.  Guard made 'complete' with placeholder fonts for the other divisor sizes so the cap does not hide the alias logic."""
+    base, extra = _load("fonts.atlas.json", "fonts.console-extra.atlas.json")
+    lines = [l[:40] for l in DENSE]
+    im = _zoom(_render_font(extra.fonts["font:csvga-16x32"], lines), zoom)
+    assert gg.probe_scale(im)["integer_upscale"] == k
+    divs = [d for d in range(2, k + 1) if k % d == 0]
+    atlas = _guard_complete_atlas((8, 16), divs)
+    res = gg.read_image(im, atlas)
+    assert res["status"] == "ok" and res["font"] == "font:vga-8x16" and res["scale_unverified"] == k and res["scale_capped"] is False
+    assert "font:csvga-16x32" in res["scale_guard_fonts"] and len(res["scale_guard_fonts"]) >= len(divs)
+    assert _wrong_font_exact(res, lines) == []
+    assert res["conf"][0][:6] == "aaaaaa"                          # heavy box characters: alias sets at every zoom, never the light ones
+    assert set(res["conf"][0][7:12]) <= set("FH") and res["conf"][0][7:11] == "FFFF"
+
+
+@pytest.mark.parametrize("zoom,k", [(1, 2), (2, 4)])
+def test_csvga_16x28_non_square_pair_is_guarded_at_k2_and_k4(zoom, k):
+    base, extra = _load("fonts.atlas.json", "fonts.console-extra.atlas.json")
+    lines = [l[:40] for l in DENSE if l.isascii()] or ["Hello World 0123456789"]
+    ascii_lines = ["Hello World 0123456789 ~ ` | _", "The quick brown fox jumps over the lazy dog"] * 4
+    im = _zoom(_render_font(extra.fonts["font:csvga-16x28"], ascii_lines, cols=40, rows=8), zoom)
+    assert gg.probe_scale(im)["integer_upscale"] == k
+    atlas = _guard_complete_atlas((8, 14), [d for d in range(2, k + 1) if k % d == 0])
+    res = gg.read_image(im, atlas)
+    assert res["status"] == "ok" and res["grid"]["cell_w"] == 8 and res["grid"]["cell_h"] == 14
+    assert "font:csvga-16x28" in res["scale_guard_fonts"] and _wrong_font_exact(res, ascii_lines) == []
+
+
+@pytest.mark.parametrize("zoom,k", [(2, 4), (3, 6), (4, 8)])
+def test_incomplete_guard_caps_font_exact_cells_to_class_z_and_trust_scale_is_explicit(zoom, k):
+    base, extra = _load("fonts.atlas.json", "fonts.console-extra.atlas.json")
+    lines = [l[:40] for l in DENSE]
+    im = _zoom(_render_font(extra.fonts["font:csvga-16x32"], lines), zoom)
+    res = gg.read_image(im, gg.Atlas.merge(base, extra))              # no font of 32x64 / 24x48 / ... exists
+    assert res["scale_unverified"] == k and res["scale_capped"] is True and "font:csvga-16x32" in res["scale_guard_fonts"]
+    flat = "".join(res["conf"])
+    assert "z" in flat and "F" not in flat and "H" not in flat and _wrong_font_exact(res, lines) == []
+    assert gg.find_phrase(res, "Hello World") == [] and gg.region(res, 0, 1, 7, 18)[1] > 0
+    sm = gg.strict_match(res, "Hello World")
+    assert sm["matched"] is False and sm["scale_unverified"] == k and sm["trust_scale"] is False and any("not actionable" in r for r in sm["reasons"])
+    trusted = gg.strict_match(res, "Hello World", trust_scale=True)
+    assert trusted["matched"] is True and trusted["trust_scale"] is True and trusted["scale_unverified"] == k
+    assert gg.find_phrase(gg.trust_scale(res), "Hello World") and "z" in "".join(res["conf"])       # the original result is not modified
+
+
+def test_plain_1to1_read_has_no_scale_fields_and_k2_with_base_extra_is_complete():
+    base, extra = _load("fonts.atlas.json", "fonts.console-extra.atlas.json")
+    res = gg.read_image(os.path.join(FIX, "crop-14-dialog.png"), base, grid_hints=[(8, 16)])
+    assert "scale_unverified" not in res
+    lines = [l[:40] for l in DENSE]
+    res = gg.read_image(_zoom(_render_font(extra.fonts["font:csvga-16x32"], lines), 1), gg.Atlas.merge(base, extra))
+    assert res["scale_unverified"] == 2 and res["scale_capped"] is False         # 16x32 fonts are loaded: the divisor-2 guard is complete
+
+
+def test_prepare_carries_k_so_verify_fonts_and_eval_paths_cannot_bypass_the_guard(tmp_path):
+    base, extra = _load("fonts.atlas.json", "fonts.console-extra.atlas.json")
+    atlas = gg.Atlas.merge(base, extra)
+    lines = [l[:40] for l in DENSE]
+    p = tmp_path / "big.png"
+    _render_font(extra.fonts["font:csvga-16x32"], lines).save(p)
+    im, probe, g = gg.prepare(str(p), atlas=atlas)
+    assert g["unscaled"] == 2 and probe["integer_upscale"] == 2
+    ex, _ = gg.choose_extraction(im, g, atlas)
+    assert ex.grid["unscaled"] == 2
+    res = gg.decode(ex, atlas)                                        # the verify_fonts.py / eval_glyphgrid.py call: NO unscaled argument
+    assert res["scale_unverified"] == 2 and _wrong_font_exact(res, lines) == [] and res["conf"][0][:6] == "aaaaaa"
+    import verify_fonts as vf
+    got, why = vf.read_frame(str(p), atlas)
+    assert why == "ok" and got[1]["conf"][0][:6] == "aaaaaa"
+    # a 1:1 capture carries k=1
+    q = tmp_path / "plain.png"
+    Image.open(os.path.join(FIX, "crop-14-dialog.png")).save(q)
+    assert gg.prepare(str(q), atlas=atlas)[2]["unscaled"] == 1
+
+
+def _enlarged_font(tmp_path, name, rows, k, char_of_glyph0):
+    """16-row 8-wide 'rows' enlarged k-fold into a (8k)x(16k) PSF2 whose glyph 0 draws ``char_of_glyph0`` and glyph 1 a second, equal-in-both character."""
+    def enl(rs):
+        out = []
+        for r in rs:
+            v = 0
+            for x in range(8):
+                v = (v << k) | (((1 << k) - 1) if r >> (7 - x) & 1 else 0)
+            out += [v] * k
+        return out
+    w, h = 8 * k, 16 * k
+    other = [0, 0, 0x7C, 0x42, 0x7C, 0x42, 0x42, 0x7C, 0, 0, 0, 0, 0, 0, 0, 0]
+    glyphs = [(enl(rows), char_of_glyph0), (enl(other), "B")]
+    (tmp_path / name).write_bytes(_psf2_bytes(w, h, glyphs))
+    return ff.load_psf(str(tmp_path / name))
+
+
+R_SMALL = [0, 0, 0x18, 0x24, 0x42, 0x7E, 0x42, 0x42, 0x42, 0x42, 0, 0, 0, 0, 0, 0]
+
+
+@pytest.mark.parametrize("zoom,k,fonts_k", [(1, 3, 3), (2, 6, 3), (2, 4, 2), (1, 8, 8), (4, 8, 2)])
+def test_guard_unions_every_divisor_synthetic(tmp_path, zoom, k, fonts_k):
+    """Native font of k_f = fonts_k x the cell, shown at zoom: total k.  Placeholder fonts make the guard complete for every divisor of k; only the
+    union over divisors reaches the real font (an exact-k lookup or a range(2, 3) loop misses it for 4/6/8 and for 3)."""
+    small = ff.load_psf(str(_write(tmp_path, "s.psf", _psf2_bytes(8, 16, [(R_SMALL, "A"), ([0, 0, 0x7C, 0x42, 0x7C, 0x42, 0x42, 0x7C, 0, 0, 0, 0, 0, 0, 0, 0], "B")]))))
+    big = _enlarged_font(tmp_path, "b.psf", R_SMALL, fonts_k, "Z")
+    a = gg.Atlas()
+    ff.build_font_atlas(a, "font:s", small, "ascii")
+    b = gg.Atlas()
+    ff.build_font_atlas(b, "font:b", big, "ascii")
+    atlas = gg.Atlas.merge(a, b)
+    for d in range(2, k + 1):
+        if k % d == 0 and d != fonts_k:
+            atlas.fonts["font:ph%d" % d] = _placeholder_font(8 * d, 16 * d)
+    cols, rows = max(1, 640 // (8 * fonts_k)), 6
+    line = ("ZBZB BZBZ " * 20)[:cols]
+    im = _zoom(_render_font(b.fonts["font:b"], [line] * rows, cols=cols, rows=rows), zoom)
+    assert gg.probe_scale(im)["integer_upscale"] == k
+    res = gg.read_image(im, atlas)
+    assert res["scale_unverified"] == k and res["scale_capped"] is False
+    first = next(i for i, ch in enumerate(line) if ch == "Z")
+    assert res["conf"][0][first] == "a"                                  # 'A' by the small font, 'Z' by the large one: alias set
+    assert _wrong_font_exact(res, [line] * rows) == []
+
+
+def _write(tmp_path, name, data):
+    p = tmp_path / name
+    p.write_bytes(data)
+    return p
+
+
+def test_alias_cells_also_get_the_twin_characters(tmp_path):
+    """Skipping the 'alias' branch of the twin lookup would leave the alias set without the larger font's character."""
+    two = _psf2_bytes(8, 16, [(R_SMALL, "AÀ"), ([0, 0, 0x7C, 0x42, 0x7C, 0x42, 0x42, 0x7C, 0, 0, 0, 0, 0, 0, 0, 0], "B")])
+    small = ff.load_psf(str(_write(tmp_path, "s.psf", two)))
+    a = gg.Atlas()
+    ff.build_font_atlas(a, "font:s", small, "latin1")                          # glyph 0 draws BOTH 'A' and U+00C0 inside the repertoire: an alias set
+    assert len(next(iter(a.fonts["font:s"]["glyphs"].values()))["c"]) == 2
+    big = _enlarged_font(tmp_path, "b.psf", R_SMALL, 2, "Z")
+    b = gg.Atlas()
+    ff.build_font_atlas(b, "font:b", big, "latin1")
+    atlas = gg.Atlas.merge(a, b)
+    im = _render_font(b.fonts["font:b"], ["ZBZB BZBZ"] * 8, cols=16, rows=8)
+    res = gg.read_image(im, atlas)
+    assert res["conf"][0][0] == "a" and "Z" in res["aliases"]["0,0"] and "A" in res["aliases"]["0,0"]
+
+
+def test_font_mapping_includes_homoglyph_lists_same_as_and_merge_notice_them(tmp_path):
+    """Same bitmaps, same repertoire characters, but a different list of OTHER code points: not identical, and a merge of two sources is refused."""
+    rows2 = [0, 0, 0x7C, 0x42, 0x7C, 0x42, 0x42, 0x7C, 0, 0, 0, 0, 0, 0, 0, 0]
+    (tmp_path / "ref.psf").write_bytes(_psf2_bytes(8, 16, [(R_SMALL, "AА"), (rows2, "B")]))
+    (tmp_path / "less.psf").write_bytes(_psf2_bytes(8, 16, [(R_SMALL, "A"), (rows2, "B")]))
+    base = gg.Atlas()
+    ff.build_font_atlas(base, "font:ref", ff.load_psf(str(tmp_path / "ref.psf")), "ascii")
+    ent = _entry(tmp_path, "less.psf", "font:l", same_as="font:ref")
+    ent["kind"] = "psf"
+    rep = bfa.build_manifest(_manifest(tmp_path, [ent]), str(tmp_path), gg.Atlas(), base)["entries"][0]
+    assert rep["identical"] is False and rep["mapping_differences"] == 1 and rep["homoglyph_list_differences"] == 1 and rep["repertoire_char_differences"] == 0
+    assert rep["homoglyph_lists_here_subset_of_reference"] is True and rep["subset_of_reference"] is True
+    assert bfa.mapping_differences(base.fonts["font:ref"], base.fonts["font:ref"]) == ([], [], {})
+    with pytest.raises(ValueError, match="another mapping|differ"):
+        bfa.build_manifest(_manifest(tmp_path, [_entry(tmp_path, "ref.psf", "font:q"), _entry(tmp_path, "less.psf", "font:q")]), str(tmp_path), gg.Atlas())
+
+
+def test_hazard_analysis_flags_a_new_smaller_font_doubled_by_a_larger_base_font(tmp_path):
+    small = ff.load_psf(str(_write(tmp_path, "s.psf", _psf2_bytes(8, 16, [(R_SMALL, "A")]))))
+    big = _enlarged_font(tmp_path, "b.psf", R_SMALL, 2, "Q")
+    s_at, b_at = gg.Atlas(), gg.Atlas()
+    ff.build_font_atlas(s_at, "font:small", small, "ascii")
+    ff.build_font_atlas(b_at, "font:big", big, "ascii")
+    ana = bfa.hazard_analysis({**s_at.fonts, **b_at.fonts}, ["font:small"], ["font:big"])["font:small"]       # big is a BASE font, small is the new one
+    assert ana["scale_hazard"] is True and ana["hazard_pairs"][0]["larger"] == "font:big" and ana["hazard_pairs"][0]["differing_chars"] == 1
+    k3 = _enlarged_font(tmp_path, "b3.psf", R_SMALL, 3, "Q")
+    k3_at = gg.Atlas()
+    ff.build_font_atlas(k3_at, "font:big3", k3, "ascii")
+    ana = bfa.hazard_analysis({**s_at.fonts, **k3_at.fonts}, ["font:big3"], ["font:small"])["font:big3"]
+    assert ana["scale_hazard"] is True and ana["scale"][0]["k"] == 3         # a loop restricted to k=2 would miss this
+
+
+def test_psf2_table_ending_mid_entry_or_with_bad_utf8_fails_loudly(tmp_path):
+    full = _psf2_bytes(8, 4, [([0xF0, 0, 0, 0xF0], "A"), ([1, 2, 3, 4], "B")])
+    cut = full[:-1]                                                   # "...A\\xff" + "B" without its terminator: the second entry is cut
+    p = _write(tmp_path, "cut.psf", cut)
+    with pytest.raises(ValueError, match="ends inside entry"):
+        ff.load_psf(str(p))
+    bad = _psf2_bytes(8, 4, [([0xF0, 0, 0, 0xF0], b"A\xc3"), ([1, 2, 3, 4], "B")])
+    with pytest.raises(ValueError, match="not valid UTF-8"):
+        ff.load_psf(str(_write(tmp_path, "bad.psf", bad)))
+
+
+def test_notice_snippet_hashes_are_computed_and_checked(tmp_path):
+    import notice_hashes as nh
+    text = "\n".join("line %d" % i for i in range(1, 130)) + "\n"
+    assert nh.snippet_sha256(text, 5, 8) == hashlib.sha256(b"line 5\nline 6\nline 7\nline 8\n").hexdigest()
+    assert nh.snippet_sha256(text, 5, 8) != nh.snippet_sha256(text, 5, 9)
+    res = nh.check_text(text)
+    assert not any(v[2] for v in res.values())                         # a different text matches none of the recorded real hashes
+    notice = open(os.path.join(HERE, "..", "tools", "glyphgrid", "NOTICE.md"), encoding="utf-8").read()
+    assert nh.check_notice(notice) == []
+    wrong = notice.replace(nh.SNIPPETS["V"][2], nh.SNIPPETS["T"][2], 1)
+    assert any("snippet V" in p for p in nh.check_notice(wrong))
+    assert "u18" in notice and "unverified" in notice.lower()

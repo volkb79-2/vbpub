@@ -33,6 +33,13 @@ corpus). The details below describe the learned-atlas rules (class 2) and the co
   nearest-neighbour upscales. Crisp non-integer scaling, integer scaling with an odd offset/letterbox, or a canvas of another size than the guest
   framebuffer pass it; only the evidence floor (no atlas font matches) contains those, which is a property of the atlas, not a guarantee.
   The capture path must deliver the intrinsic bitmap and the consumer must verify canvas width/height against the guest framebuffer size independently.
+* **Undone integer upscales are NOT actionable unless guarded.** The probe undoes the largest crisp k; a k-fold enlargement of a cell may be the native screen of a
+  font of cell d*cell (d | k, d >= 2) at zoom k/d (a real 16x32 Lat15-VGA screen is exactly the 2x enlargement of an 8x16 one, and its 2x browser zoom is 4x). `prepare` carries
+  k in `grid["unscaled"]` and `decode` reads it from the Extraction (no caller can forget it). For k > 1: `res["scale_unverified"] = k`, `res["scale_guard_fonts"]` lists the larger
+  fonts checked; a bitmap that any loaded font of cell d*cell draws as another character is an alias set `a`; and unless a loaded font exists for EVERY divisor d, all remaining F/H
+  cells are capped to class **`z`** (character shown, not actionable; `find_phrase`/`region`/`strict_match` refuse it; `res["scale_capped"]`). The atlas cannot establish that no larger
+  font exists, so browser-zoomed 8x16 captures are non-actionable BY DESIGN; the explicit opt-in is `strict_match(res, phrase, trust_scale=True)` (or `glyphgrid.trust_scale(res)`), which records
+  `trust_scale` and `scale_unverified` in the result.
 * An atlas bitmap labelled with two different characters is a **conflict** (ground-truth error or two glyphs that look equal): never resolved
   by majority, the cell reads UNKNOWN.
 * **Numbers are same-ISO, same-screens**: see GLYPHGRID-FINDINGS.md (leave-one-frame-out is optimistic; leave-screen-group-out is the honest figure).
