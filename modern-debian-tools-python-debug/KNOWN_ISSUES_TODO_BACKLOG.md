@@ -34,11 +34,7 @@ host-setup should configure
 
 ## MDT-003 - integrate `fs.inotify.max_user_watches`
 
-**CLOSED 2026-10-26.** install.sh installs `etc/sysctl.d/99-inotify.conf` as `/etc/sysctl.d/99-mdt-inotify.conf` and
-applies it; check.sh verifies the live value and the persisted file; the devcontainer templates and vbpub's own
-`.devcontainer/devcontainer.json` set `files.watcherExclude`/`search.exclude` for `.worktrees`, `.run-gate` and
-`pytest-of-*` (measured: ~312k of 524288 watches in use, ~284k directories in this repo, mostly worktrees and gate output).
-See `host-setup/README.md`, "inotify watch budget".
+see `modern-debian-tools-python-debug/host-setup/etc/sysctl.d/99-inotify.conf`
 
 ## MDT-004 - move to a persisted `/home/vscode` in mdt-cockpit
 
