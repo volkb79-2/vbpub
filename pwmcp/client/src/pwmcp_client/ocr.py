@@ -17,6 +17,7 @@ of a known screen signature (or the glyph-grid engine), never merely "unflagged"
 
 from __future__ import annotations
 
+import dataclasses
 import http.client
 import json
 import os
@@ -94,6 +95,12 @@ class OcrResult:
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "OcrResult":
         try:
+            if value.get("min_conf_applied") is None and (
+                value.get("low_conf_words") is not None
+                or any(row.get("low_conf") is not None for row in value.get("words", ()))
+            ):
+                # flags without a threshold cannot be interpreted (which threshold?): refuse, never guess
+                raise ValueError("low_conf flags are present but min_conf_applied is null")
             return cls(
                 engine=str(value["engine"]),
                 engine_version=None if value.get("engine_version") is None else str(value["engine_version"]),
@@ -324,7 +331,12 @@ def recognize(
         raise OcrError("the OCR sidecar returned a non-JSON response", code="bad_response") from exc
     if not isinstance(payload, dict):
         raise OcrError("the OCR sidecar returned a non-object response", code="bad_response")
-    return OcrResult.from_dict(payload)
+    result = OcrResult.from_dict(payload)
+    if min_conf is None and result.min_conf_applied == 0.0 and result.low_conf_words == 0:
+        # No threshold was asked for, yet the answer says "assessed at 0, nothing below it": the shape of
+        # a previous-round sidecar (default min_conf 0, low_conf false). That is not an assessment.
+        result = dataclasses.replace(result, completeness_unknown=True)
+    return result
 
 
 def _http_error(status: int, data: bytes) -> OcrError:

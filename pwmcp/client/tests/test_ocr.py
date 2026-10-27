@@ -591,7 +591,7 @@ def test_a_sidecar_that_predates_the_contract_is_flagged_incomplete_and_the_cli_
 
 
 def test_an_unscored_word_round_trips_as_null() -> None:
-    value = {**CANNED, "unscored_words": 1,
+    value = {**CANNED, "unscored_words": 1, "min_conf_applied": 50.0, "low_conf_words": 1,
              "words": [{"text": "TRUE", "conf": None, "box": [0, 0, 5, 5], "line": 0, "low_conf": True}],
              "lines": [{"text": "TRUE", "conf": None, "conf_mean": None, "conf_min": None, "low_conf_words": 1,
                         "box": [0, 0, 5, 5]}]}
@@ -973,3 +973,45 @@ def test_ocr_verb_is_listed_in_the_cli_help(capsys: pytest.CaptureFixture[str]) 
     assert run("ocr", "--help") == 0
     out = capsys.readouterr().out
     assert "--sidecar-url" in out and "--image" in out and "pwmcp ocr --image console.png" in out
+
+
+# ------------------------------------------------------------------ review round 5
+
+
+def test_flags_without_a_threshold_are_refused_not_guessed() -> None:
+    inconsistent = {**CANNED, "low_conf_words": 2, "min_conf_applied": None}
+    with pytest.raises(ocr.OcrError) as caught:
+        ocr.OcrResult.from_dict(inconsistent)
+    assert caught.value.code == "bad_response" and "min_conf_applied is null" in str(caught.value)
+    words = {**CANNED, "words": [{"text": "x", "conf": 5.0, "box": [0, 0, 1, 1], "line": 0, "low_conf": True}]}
+    with pytest.raises(ocr.OcrError):
+        ocr.OcrResult.from_dict(words)
+
+
+def test_the_cli_reports_an_inconsistent_sidecar_cleanly_not_with_a_traceback(
+    work: Path, sidecar: Sidecar, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sidecar.reply = (200, json.dumps({**CANNED, "low_conf_words": 3, "min_conf_applied": None}).encode())
+    assert run("ocr", "--image", "screen.png", "--sidecar-url", sidecar.url, "--min-conf", "50") == 1
+    err = capsys.readouterr().err
+    assert "unexpected response" in err and "Traceback" not in err and "TypeError" not in err
+
+
+PREVIOUS_ROUND = {  # default min_conf 0, answers "assessed at 0, nothing below it" whatever the caller asked
+    **CANNED, "min_conf_applied": 0.0, "low_conf_words": 0,
+    "lines": [{**line, "low_conf_words": 0} for line in CANNED["lines"]],
+    "words": [{**word, "low_conf": False} for word in CANNED["words"]],
+}
+
+
+def test_a_previous_round_sidecar_answer_is_not_taken_as_an_assessment_when_none_was_asked(sidecar: Sidecar) -> None:
+    sidecar.reply = (200, json.dumps(PREVIOUS_ROUND).encode())
+    unasked = ocr.recognize(PNG, sidecar_url=sidecar.url)
+    assert unasked.completeness_unknown is True and unasked.low_conf_words == 0
+    asked = ocr.recognize(PNG, sidecar_url=sidecar.url, min_conf=0)  # an explicit 0 really is an assessment
+    assert asked.completeness_unknown is False
+    nonzero = {**PREVIOUS_ROUND, "low_conf_words": 1}
+    sidecar.reply = (200, json.dumps(nonzero).encode())
+    assert ocr.recognize(PNG, sidecar_url=sidecar.url).completeness_unknown is False  # it flagged something: not that shape
+    sidecar.reply = (200, json.dumps(CANNED).encode())
+    assert ocr.recognize(PNG, sidecar_url=sidecar.url).completeness_unknown is False  # the current contract: nulls

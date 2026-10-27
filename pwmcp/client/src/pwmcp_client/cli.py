@@ -371,6 +371,7 @@ def _ocr(args: argparse.Namespace, runtime: CliRuntime) -> None:
         )
     if result.low_conf_words:
         runtime.output.warn(
+            # (OcrResult.from_dict refuses flags without a threshold, so min_conf_applied is a number here)
             f"{result.low_conf_words} word(s) are below --min-conf {result.min_conf_applied:g} and flagged "
             "low_conf; they are still included in the result"
         )

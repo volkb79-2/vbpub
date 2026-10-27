@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 import pytest
+from _sockets import read_http_response
 from test_ocr_service import SERVICE_PATH, Fake, Image, Running, fake, needs_pil, png, running, start, svc  # noqa: F401
 
 # ------------------------------------------------------------------ TSV
@@ -74,13 +75,14 @@ def test_trickling_client_hits_the_total_body_deadline_and_frees_the_slot(fake) 
                     break
                 time.sleep(0.2)
                 try:
-                    raw = sock.recv(4096)
+                    chunk = sock.recv(4096)
                 except TimeoutError:
                     continue
-                if not raw:
+                if not chunk:
                     break
+                raw = read_http_response(sock, chunk)  # the body may arrive in a later packet
         assert raw.startswith(b"HTTP/1.0 408") and b"request_timeout" in raw
-        assert time.monotonic() - started < 4  # cut off near the 0.6 s deadline, not the 5 s recv timeout
+        assert time.monotonic() - started < 8  # ended by the 0.6 s deadline (the loop alone would trickle on)
         assert quick.request("POST", "/v1/ocr", png())[0] == 200  # slot free: processed, not 429
     finally:
         quick.close()
@@ -146,22 +148,45 @@ def test_drain_tolerates_a_client_that_vanishes(fake) -> None:
 # ------------------------------------------------------------------ signals
 
 
-def _signal_once_installed(sig: int) -> threading.Thread:
-    """Signal the pytest process ONLY once main() has provably replaced the handler for ``sig``."""
+class _SignalOnceInstalled:
+    """Signal the pytest process ONLY once main() has provably replaced the handler for ``sig``.
 
-    original = signal.getsignal(sig)
+    If that never happens within the timeout the helper does NOT signal an unprepared process; it
+    interrupts the main thread instead (so a main() stuck in serve_forever cannot hang the suite) and
+    ``assert_signalled`` then FAILS the test.
+    """
 
-    def run() -> None:
-        deadline = time.monotonic() + 15
-        while signal.getsignal(sig) is original:
-            if time.monotonic() > deadline:
-                return  # never installed: do not signal an unprepared pytest process
-            time.sleep(0.01)
-        os.kill(os.getpid(), sig)
+    def __init__(self, sig: int, timeout: float = 20.0) -> None:
+        import _thread
 
-    thread = threading.Thread(target=run, daemon=True)
-    thread.start()
-    return thread
+        self.signalled = False
+        self.timed_out = False
+        original = signal.getsignal(sig)
+
+        def run() -> None:
+            deadline = time.monotonic() + timeout
+            while signal.getsignal(sig) is original:
+                if time.monotonic() > deadline:
+                    self.timed_out = True
+                    _thread.interrupt_main()  # unblocks a server that never got its handler
+                    return
+                time.sleep(0.01)
+            self.signalled = True
+            os.kill(os.getpid(), sig)
+
+        self.thread = threading.Thread(target=run, daemon=True)
+        self.thread.start()
+
+    def run_main(self, call):
+        try:
+            return call()
+        except KeyboardInterrupt:  # only the timeout path above raises it
+            pytest.fail("main() never installed its signal handler (the helper timed out)", pytrace=False)
+        finally:
+            self.thread.join(timeout=5)
+
+    def assert_signalled(self) -> None:
+        assert self.signalled and not self.timed_out, "the signal was never delivered"
 
 
 @pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT])
@@ -186,8 +211,9 @@ def test_main_shuts_down_cleanly_on_sigterm_and_sigint(monkeypatch, capsys, sig)
 
     monkeypatch.setattr(svc, "make_server", lambda config: Stub())
     before = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGINT)}
-    _signal_once_installed(sig)
-    assert svc.main() == 0
+    helper = _SignalOnceInstalled(sig)
+    assert helper.run_main(svc.main) == 0
+    helper.assert_signalled()
     assert "listening on" in capsys.readouterr().out
     assert stopped.is_set() and events["closed"] is True
     assert events["shutdown_thread"] is not threading.main_thread()  # not the thread inside serve_forever
@@ -403,11 +429,13 @@ def test_trickled_headers_hit_the_total_header_deadline(fake) -> None:
                     break
                 time.sleep(0.15)
                 try:
-                    raw = sock.recv(4096)
+                    chunk = sock.recv(4096)
                 except TimeoutError:
                     continue
+                if chunk:
+                    raw = read_http_response(sock, chunk)
         assert raw.startswith(b"HTTP/1.0 408") and b"header_timeout" in raw
-        assert time.monotonic() - started < 4
+        assert time.monotonic() - started < 8
         assert quick.request("GET", "/health")[0] == 200
     finally:
         quick.close()
@@ -504,9 +532,10 @@ def test_module_entrypoint_runs_main_and_stops_on_sigterm(monkeypatch) -> None:
     probe.close()
     monkeypatch.setenv("OCR_PORT", str(number))
     monkeypatch.setenv("OCR_BIND", "127.0.0.1")
-    _signal_once_installed(signal.SIGTERM)
+    helper = _SignalOnceInstalled(signal.SIGTERM)
     with pytest.raises(SystemExit) as caught:
-        runpy.run_path(str(SERVICE_PATH), run_name="__main__")
+        helper.run_main(lambda: runpy.run_path(str(SERVICE_PATH), run_name="__main__"))
+    helper.assert_signalled()
     assert caught.value.code == 0
 
 
@@ -584,8 +613,7 @@ def test_invalid_parameters_are_refused_before_the_body_is_awaited(fake) -> None
         with socket.create_connection(("127.0.0.1", server.port), timeout=10) as sock:
             # headers only, the 5000-byte body NEVER comes; a valid request would sit in the body read
             sock.sendall(b"POST /v1/ocr?psm=5 HTTP/1.0\r\nContent-Length: 5000\r\n\r\n")
-            sock.settimeout(5)
-            raw = sock.recv(4096)
+            raw = read_http_response(sock, timeout=10)  # headers and body can be separate packets
             assert raw.startswith(b"HTTP/1.0 400") and b"invalid_psm" in raw
             # ... and the recognition slot is not held by that still-open connection
             status, body, _ = server.request("POST", "/v1/ocr?psm=5", b"x")

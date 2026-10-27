@@ -555,9 +555,12 @@ def make_handler(service: Service) -> type[BaseHTTPRequestHandler]:
                 self.send_header("Connection", "close")
                 for key, value in (extra or {}).items():
                     self.send_header(key, value)
-                self.end_headers()
+                # Status line, headers and body leave in ONE write, so a client never sees a headers-only
+                # packet (end_headers() would flush the headers first and write the body separately).
+                self._headers_buffer.append(b"\r\n")
                 if self.command != "HEAD":
-                    self.wfile.write(body)
+                    self._headers_buffer.append(body)
+                self.flush_headers()
 
         def _error(self, err: ServiceError) -> None:
             extra = {"Retry-After": "1"} if err.status == 429 else None
