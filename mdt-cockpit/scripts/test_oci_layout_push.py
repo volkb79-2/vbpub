@@ -17,6 +17,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -90,6 +91,8 @@ class OciLayoutPushTests(unittest.TestCase):
         cls.registry_name = "mdt-oci-push-test-registry"
         _docker("rm", "-f", cls.registry_name, check=False)
         _docker("run", "-d", "--rm", "--name", cls.registry_name, "-p", "0:5000", "registry:2")
+        # tearDownClass does not run when setUpClass raises; this does.
+        cls.addClassCleanup(_docker, "rm", "-f", cls.registry_name, check=False)
         inspected = json.loads(_docker("inspect", cls.registry_name).stdout)
         port = inspected[0]["NetworkSettings"]["Ports"]["5000/tcp"][0]["HostPort"]
         cls.registry = cls._reachable_registry_host(port)
@@ -112,13 +115,20 @@ class OciLayoutPushTests(unittest.TestCase):
 
     @staticmethod
     def _reachable_registry_host(port: str) -> str:
-        for host in ("127.0.0.1", "172.17.0.1"):
-            probe = subprocess.run(
-                ["curl", "-sf", "-o", "/dev/null", f"http://{host}:{port}/v2/"],
-                capture_output=True,
-            )
-            if probe.returncode == 0:
-                return f"{host}:{port}"
+        # `docker run -d` returns before the registry process listens: a single immediate probe
+        # races its start-up (seen once under host load, passing on the identical rerun). Poll.
+        deadline = time.monotonic() + 30
+        while True:
+            for host in ("127.0.0.1", "172.17.0.1"):
+                probe = subprocess.run(
+                    ["curl", "-sf", "-o", "/dev/null", f"http://{host}:{port}/v2/"],
+                    capture_output=True,
+                )
+                if probe.returncode == 0:
+                    return f"{host}:{port}"
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.5)
         precondition_outcome(_required(), [f"local registry:2 (port {port}) reachable from this process"])
         raise AssertionError("unreachable")  # precondition_outcome always raises for a non-empty list
 
