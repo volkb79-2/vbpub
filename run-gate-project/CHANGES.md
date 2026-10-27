@@ -20,9 +20,10 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   or `not_applicable` (only for claims that are all computed, verified by
   Assay, with valid unique rigors/statuses and reason codes, none R2; malformed
   or unverified claims are analyzed instead). A `kind = "command"` lane is
-  never analyzed and has no opt-in (B108 phase 2, SPEC R-38, Assay A-497).
-
-### Changed
+  never analyzed and has no opt-in (B108 phase 2, SPEC R-38, Assay A-497). The analysis only uses budget
+  the lane did not need: it gets at most half of what remains of the lane's
+  `budget` (capped at 900 s per call) and is skipped when under 20 s remain, so
+  it can never turn a lane that finished in budget into BUDGET_EXCEEDED.
 - Add (RG-110): `tester-unified/build-image.sh --run-gate-release X.Y.Z` builds
   the tester image from the PUBLISHED Run-Gate wheel (`fetch-run-gate-release.py`
   verifies the release's `.sha256` sidecar), which is what CMRU's release gate
@@ -36,6 +37,8 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   non-`ephemeral` environment, is refused at load. A declared `user` wins over
   the `RUN_GATE_HOST_IMAGE` default. The check that the image has a passwd
   entry for the resolved uid is not implemented (RG-106 oracle 5 stays open).
+
+### Changed
 - Fix: a ciu worktree record whose schema is newer than the reader (v7+) is
   refused with the explicit-`--base` remedy instead of being read as v1-v5
   (v6 already changed the meaning of `base_ref`). Supersedes the pre-v6

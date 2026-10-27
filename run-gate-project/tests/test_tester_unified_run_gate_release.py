@@ -43,7 +43,7 @@ def test_digest_mismatch_writes_nothing(tmp_path):
     module = _load()
     with pytest.raises(SystemExit, match="sha256 mismatch"):
         module.fetch_release("24.0.1", tmp_path / "w", _fetcher(b"x", "0" * 64))
-    assert not list((tmp_path / "w").glob("*.whl")) if (tmp_path / "w").exists() else True
+    assert list((tmp_path / "w").glob("*.whl")) == []
 
 
 @pytest.mark.parametrize("version", ["24.0.2.dev3+gabc", "24.0", "v24.0.1", "latest", ""])

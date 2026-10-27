@@ -3862,6 +3862,40 @@ exit 64
         assert "campaign-unit.json" in with_commit
         assert 'exit "$rc"; }' in with_commit
 
+    def _run_inner(self, tmp_path, budget):
+        """Execute the real inner script with a recording fake judge."""
+        project = tmp_path / "proj"
+        project.mkdir(exist_ok=True)
+        (tmp_path / ".run-gate").mkdir(exist_ok=True)
+        fake = tmp_path / "fake-assay"
+        log = tmp_path / "calls.log"
+        fake.write_text(f'#!/bin/sh\necho "$1" >> {log}\nexit 0\n')
+        fake.chmod(0o755)
+        lane = {"assay_lane": "unit", "assay_command": [str(fake)], "pins": {}}
+        if budget is not None:
+            lane["budget"] = budget
+        inner = run_gate.build_assay_inner(
+            lane, project, tmp_path, closeout_commit=self._COMMIT)
+        done = subprocess.run(["bash", "-c", inner], cwd=project,
+                              capture_output=True, text=True, timeout=60)
+        calls = log.read_text().split() if log.exists() else []
+        return done, calls
+
+    def test_the_closeout_runs_inside_a_roomy_budget_and_keeps_the_lane_exit(self, tmp_path):
+        done, calls = self._run_inner(tmp_path, "1h")
+        assert done.returncode == 0, done.stderr
+        assert calls == ["run", "analyze", "analyze"]
+
+    def test_the_closeout_is_skipped_when_the_lane_budget_is_nearly_spent(self, tmp_path):
+        done, calls = self._run_inner(tmp_path, "10s")
+        assert done.returncode == 0, done.stderr
+        assert calls == ["run"]  # no analysis eats the lane's remaining budget
+
+    def test_the_closeout_without_a_declared_budget_still_runs(self, tmp_path):
+        done, calls = self._run_inner(tmp_path, None)
+        assert done.returncode == 0, done.stderr
+        assert calls == ["run", "analyze", "analyze"]
+
     # -- the host collector (no shell) --------------------------------------
 
     def _doc(self, **over):

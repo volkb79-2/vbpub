@@ -11083,16 +11083,38 @@ def assay_closeout_group(lane: dict, run_text: str, command: str,
     run_one = (
         '${__rg_co_t[@]+"${__rg_co_t[@]}"} '
         f'{command} "${{__rg_co_a[@]}}" --format')
+    # The closeout runs inside the lane's budgeted scope (the exec wrapper's
+    # `timeout` and the post-exit budget check). It must therefore never eat
+    # the budget the lane itself earned: it gets at most half of what is LEFT
+    # (bash `$SECONDS` counts from the script start), capped at the fixed
+    # analysis timeout, and is skipped outright when under 20 s remain, so a
+    # lane that finished inside its budget is never turned into
+    # BUDGET_EXCEEDED by the analysis.
+    budget = lane.get("budget")
+    budget_s = budget_seconds(budget) if isinstance(budget, str) else 0
+    if budget_s:
+        left = (f"__rg_co_left=$(({budget_s} - SECONDS)); "
+                f"__rg_co_cap=$((__rg_co_left / 2 - 5)); "
+                f"if [ \"$__rg_co_cap\" -gt {ASSAY_CLOSEOUT_TIMEOUT_SECONDS} ]; "
+                f"then __rg_co_cap={ASSAY_CLOSEOUT_TIMEOUT_SECONDS}; fi; ")
+        gate_open = 'if [ "$__rg_co_cap" -ge 5 ]; then '
+        gate_close = "fi; "
+        cap = '$__rg_co_cap'
+    else:
+        left, gate_open, gate_close = "", "", ""
+        cap = str(ASSAY_CLOSEOUT_TIMEOUT_SECONDS)
     return (
         "{ rc=0; " + run_text + ' || rc=$?; set +e; '
         f"__rg_co_a=({shlex.join(base_args)}); "
         f"if [ -f {q(verdict)} ]; then "
         f'__rg_co_a+=(--verdict {q(verdict)} --command-exit "$rc"); fi; '
+        + left + gate_open +
         "__rg_co_t=(); if command -v timeout >/dev/null 2>&1; then "
-        f"__rg_co_t=(timeout {ASSAY_CLOSEOUT_TIMEOUT_SECONDS}); fi; "
+        f"__rg_co_t=(timeout {cap}); fi; "
         f"{run_one} json >{rel['json']} 2>{rel['err']}; __rg_co_j=$?; "
         f"{run_one} text >{rel['txt']} 2>>{rel['err']}; __rg_co_x=$?; "
         f"printf '%s %s\\n' \"$__rg_co_j\" \"$__rg_co_x\" >{rel['exit']}; "
+        + gate_close +
         'exit "$rc"; }')
 
 
