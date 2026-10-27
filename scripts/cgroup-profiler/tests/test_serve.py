@@ -4343,10 +4343,12 @@ def test_shutdown_that_cannot_finalize_a_session_logs_and_leaves_it_for_recovery
 
     threading.Thread(target=hold_forever, daemon=True).start()
     assert holding.wait(timeout=5.0)
-    simple_server._stop_all_sessions(aborted_reason="daemon-stopped")
-    assert not sess.finished and closed == [] and released == []
-    assert "could not be finalized at shutdown" in capsys.readouterr().err
-    release.set()
+    try:
+        simple_server._stop_all_sessions(aborted_reason="daemon-stopped")
+        assert not sess.finished and closed == [] and released == []
+        assert "could not be finalized at shutdown" in capsys.readouterr().err
+    finally:
+        release.set()
 
 
 def test_stop_while_the_worker_finalizes_itself_is_not_a_spurious_incomplete(
@@ -4374,5 +4376,6 @@ def test_stop_while_the_worker_finalizes_itself_is_not_a_spurious_incomplete(
     began = time.monotonic()
     response = simple_server._dispatch(_wire("stop", session=sess.session_id))
     assert response["ok"] is True, response
+    assert response["already_stopped"] is True   # the worker finalized itself
     assert time.monotonic() - began < 4.0
     assert sess.finished and sess.stop_attempts == 0
