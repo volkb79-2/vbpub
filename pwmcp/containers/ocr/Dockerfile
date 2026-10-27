@@ -9,12 +9,15 @@
 # Freshness / version policy: every package comes from the Debian archive of the pinned
 # release (tesseract-ocr 5.x, python3-pil); there is no pinned download, so no >= floor with
 # a 14-day vetting window applies here.
-# KNOWN VIOLATION of the repo's digest-pin convention: the base is referenced by TAG ONLY.
-# The main image pins its base by manifest digest; pinning this one is part of the release
-# wiring that is still awaiting an operator decision (KNOWN_ISSUES_TODO_BACKLOG.md PWMCP-11).
-# Do not treat the tag-only base as acceptable for a release.
+#
+# The base is pinned by multi-arch manifest DIGEST exactly like the main image's Playwright
+# base. DEBIAN_RELEASE and DEBIAN_IMAGE_DIGEST are projections kept identical in this file,
+# docker-bake.hcl and cmru.vars by scripts/resolve-playwright-version.py (--refresh resolves the
+# digest of debian:<release>-slim from Docker Hub; --check, run by CMRU's prepare phase, fails
+# if they disagree or the digest is not a sha256). Do not edit them by hand.
 ARG DEBIAN_RELEASE=trixie
-FROM debian:${DEBIAN_RELEASE}-slim
+ARG DEBIAN_IMAGE_DIGEST=sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad
+FROM debian:${DEBIAN_RELEASE}-slim@${DEBIAN_IMAGE_DIGEST}
 
 # tesseract-ocr-eng is the English traineddata; add tesseract-ocr-<lang> packages for more.
 # python3-pil decodes/validates the image and does the optional integer upscaling.

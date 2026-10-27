@@ -442,7 +442,7 @@ If none is known, `pwmcp ocr` exits 2 with a message naming `ocr.enabled`. From 
 **What was and was not verified.** See `KNOWN_ISSUES_TODO_BACKLOG.md` PWMCP-11: the service,
 client, CLI and compose rendering are tested offline against a fake `tesseract`; real
 Tesseract accuracy on console frames, the TSV column layout of the packaged Tesseract, the
-image build and the wiring under a real `ciu up` are not verified until an image is built.
+image build, the second-image release wiring and the wiring under a real `ciu up` are not verified until an image is built and a release is cut.
 
 ## KSM Opt-In (default on)
 
@@ -542,6 +542,16 @@ pwmcp-v1.63.0-r4
 Releases up to and including `1.64.0-r2` carry the bundle without the `v`
 (`pwmcp-<version>.tar.xz`). The installer (`get.py`) requests only the `v`-prefixed name, so it
 cannot install those releases (PWMCP-08); pin a later release.
+
+**Two images, one release.** A release builds and pushes BOTH `ghcr.io/volkb79-2/pwmcp:<tag>` and the
+optional OCR sidecar `ghcr.io/volkb79-2/pwmcp-ocr:<tag>` (and their `latest`) with the same `<tag>`
+(`1.64.0-r3` style) in one `docker buildx bake all`; the bundle's `ciu.defaults.toml.j2` pins both
+(`[pwmcp.unified.image] tag` and `[pwmcp.ocr.image] tag`, kept equal by
+`scripts/resolve-playwright-version.py`), so a consumer that enables `pwmcp.ocr.enabled` gets the sidecar
+built with that release. The sidecar's `debian:trixie-slim` base is pinned by manifest digest like the
+Playwright base: `--refresh` re-resolves it and `--check` refuses a tag-only or inconsistent pin.
+`pwmcp.contract.json` carries no image coordinates and is unchanged. Not yet exercised by a real release
+(see `KNOWN_ISSUES_TODO_BACKLOG.md` PWMCP-11).
 
 The release notes embed the SHA256 digest. Verify any downloaded bundle with:
 

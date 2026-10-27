@@ -287,7 +287,7 @@ plainly that fetches must be serialised; today the error names a flag the servic
 
 ## PWMCP-11 — OCR sidecar and console watching (program)
 
-**Status: phase 1 FIXED-ON-BRANCH (2026-10-27); phases 2 and 3 OPEN.**
+**Status: phase 1 FIXED-ON-BRANCH (2026-10-27), release wiring for the second image included (FIXED-ON-BRANCH, unverified until a real release is cut); phases 2 and 3 OPEN.**
 
 **Need.** Automating a host console through a web console. The Netcup SCP "Screen" is ONE 1280x800 `<canvas>`
 fed by a VNC WebSocket, so Playwright snapshots carry no text and an agent was interpreting screenshots
@@ -323,14 +323,37 @@ shows. Origin: a Codex session driving a TrueNAS relaxed unattended install on a
    captures. Needs the PWMCP-10 concurrency answer first, since a watcher holds the one shared browser.
 3. (OPEN) Guarded expect-and-send, OFF unless a config flag enables it.
 
-**Release wiring NOT done (needs a decision, not a mechanical addition).** The main image is built and
-published by `build-push.py` (cmru-prepared coordinate in `cmru.vars`, a remote BuildKit builder, a tag set
-from `docker-bake.hcl`, GHCR visibility sync) and shipped inside the bundle whose `ciu.defaults.toml.j2` tag
-is rewritten at release. A second image needs: its own bake target and tag scheme (follow the pwmcp
-coordinate `1.64.0-r3` or version independently), a push and visibility-sync step, a base-image digest pin
-(currently tag only: a KNOWN VIOLATION of the repo's digest-pin convention until this lands, to be fixed
-before any release) and cmru artifact accounting. `pwmcp.ocr.image.tag` therefore holds the current pwmcp
-coordinate as a placeholder and the image is not published anywhere.
+**Release wiring: FIXED-ON-BRANCH (operator decision 2026-10-27: extend the existing release so ONE pwmcp
+release builds, publishes and records BOTH images under one contract).** No release was cut and nothing was
+built, pushed or run through cmru/ciu/docker/the gate, so this stays UNVERIFIED until a real release is cut.
+- Image: `ghcr.io/volkb79-2/pwmcp-ocr` (sibling of `ghcr.io/volkb79-2/pwmcp`, the repository naming
+  convention), tagged `<PWMCP_VERSION>` (the SAME coordinate, e.g. `1.64.0-r3`) and `latest`.
+- Build/push: a `pwmcp-ocr` target in `docker-bake.hcl` (same context `.`, no extra platform/cache policy),
+  added to the `all` group, so the existing `build-push.py --build/--push` bake builds and pushes both.
+  `GHCR_PACKAGE_NAMES` is `pwmcp,pwmcp-ocr`, so the existing visibility sync runs for both packages. The main
+  image has no signing/provenance step, so none is added.
+- Base pin: `debian:trixie-slim` pinned by multi-arch manifest digest in `containers/ocr/Dockerfile`
+  (`DEBIAN_RELEASE`, `DEBIAN_IMAGE_DIGEST`), `docker-bake.hcl` and `cmru.vars`. The mechanism is the same as
+  the Playwright base: `scripts/resolve-playwright-version.py --refresh` resolves the digest (Docker Hub,
+  anonymous HEAD) and rewrites all projections; `--check` (CMRU's prepare phase) fails if they disagree, are
+  not a sha256, the FROM lost its digest, or `[pwmcp.ocr.image] tag` differs from the pwmcp release.
+  `containers/ocr/Dockerfile` is in cmru's `commit_generated`, so a refreshed pin is committed. The loader
+  (`scripts/_vars.py`) now requires the two keys, so an old `cmru.vars` fails closed. The digest was read
+  from Docker Hub on 2026-10-27 (`sha256:62bd423a...`).
+- Coordinate/contract: `pwmcp.ocr.image.tag` defaults to the pwmcp tag and the resolver keeps them equal.
+  `pwmcp.contract.json` carries no image coordinates (not for the main image either) and is UNCHANGED, as is
+  `get.py`; consumers pin images through the bundle's `ciu.defaults.toml.j2`, which now has both. Neither
+  mdt-cockpit (it reads only the contract `release` and `get.py`) nor `topos/pwmcp-instance/UPSTREAM.toml`
+  (vendored copy at 1.61.0-r6) needs a change; topos picks the OCR defaults up on its next re-vendor.
+- STILL OPEN / decisions not made: (a) no 14-day age window on the Debian digest: a rolling OS tag has no
+  package age, and a window would hold back security rebuilds, so the digest is whatever the tag points to at
+  `--refresh`; say so if you want a window. (b) The second GHCR package is created on first push; the existing
+  mirror-repo-visibility sync is applied to it, which assumes the release PAT may create and administer it.
+  (c) Whether to also register `debian:trixie-slim` as a cmru `[versions.targets."oci.*"]` target (mdt-cockpit
+  has advisory ones); NOT added, because it could not be validated without running cmru and a failed load
+  would break the release. (d) cmru's own artifact accounting still lists `artifacts = ["oci-image",
+  "bundle"]`; whether it needs to enumerate the second image is not checkable without running cmru. (e) The
+  main image's unpinned `debian:bookworm-slim` KSM builder stage is untouched.
 
 **UNVERIFIED until an image is built and run.**
 - Real Tesseract behaviour: the TSV column layout assumption (12 columns, level 5 = word, `conf` -1 for
@@ -341,6 +364,10 @@ coordinate as a placeholder and the image is not published anywhere.
   the Debian `tesseract-ocr-eng` data (fast or best) is good enough. The ONE real-engine test
   (`tests/test_ocr_service.py::test_real_tesseract_recognises_rendered_console_lines`) skips unless
   `tesseract`, Pillow and DejaVu Sans Mono are present; it did NOT run in the implementing worktree.
+- The release wiring end to end: `docker buildx bake all` against the managed BuildKit builder building both
+  targets (the `bake --print` plan was NOT run: no docker here), the push, the GHCR visibility sync for the
+  new `pwmcp-ocr` package, cmru's handling of the extra `commit_generated` path, and `cmru release pwmcp`
+  itself. Offline tests check the committed inputs against each other and the push loop's package list only.
 - The image build (`containers/ocr/Dockerfile`: package names on the pinned Debian release, uid 1000,
   read-only rootfs with only `/tmp` writable, `nice` entrypoint) and the healthcheck.
 - The compose wiring under a real `ciu up` (that the narrowing `mem_limit`/`memswap_limit`/`cpus` coexist

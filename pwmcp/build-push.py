@@ -226,7 +226,7 @@ def do_push() -> None:
     run(["docker", "buildx", "bake", *_builder_args(builder), "all", "--push"], cwd=PWMCP_DIR)
     package_names = [
         name.strip()
-        for name in (os.environ.get("GHCR_PACKAGE_NAMES") or "pwmcp").split(",")
+        for name in (os.environ.get("GHCR_PACKAGE_NAMES") or "pwmcp,pwmcp-ocr").split(",")
         if name.strip()
     ]
     sync_ghcr_package_visibility(package_names)

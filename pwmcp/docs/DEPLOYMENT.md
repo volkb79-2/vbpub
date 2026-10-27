@@ -198,8 +198,9 @@ python3 scripts/resolve-playwright-version.py --check
 To deliberately refresh the projection, use the explicit upstream operation.
 It applies the temporary two-day default age window (overridable with
 `--age-window-days`), updates
-`ciu.defaults.toml.j2` (`unified.image.tag`), `ciu.toml.j2`, `docker-bake.hcl`,
-and the Dockerfile's Playwright manifest digest. Then complete the release:
+`ciu.defaults.toml.j2` (`unified.image.tag` and the OCR sidecar's `ocr.image.tag`, which ride the
+same release coordinate), `ciu.toml.j2`, `docker-bake.hcl`, the Dockerfile's Playwright manifest digest
+and the OCR sidecar Dockerfile's `debian:<release>-slim` manifest digest. Then complete the release:
 
 ```bash
 # Explicit upstream refresh (normally owned by CMRU FEAT-03):

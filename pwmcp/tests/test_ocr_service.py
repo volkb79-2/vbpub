@@ -636,7 +636,7 @@ def test_dockerfile_runs_non_root_and_keeps_the_declared_defaults() -> None:
     assert "OCR_TIMEOUT_S=20" in text and "nice" in text and "COPY containers/ocr/ocr_service.py" in text
     assert "OCR_MAX_SCALED_PIXELS=24000000" in text and "OCR_BODY_DEADLINE_S=10" in text
     assert "HEALTHCHECK" in text and "/health" in text
-    assert "KNOWN VIOLATION" in text and "TAG ONLY" in text  # the tag-only base is stated, not hidden
+    assert "@${DEBIAN_IMAGE_DIGEST}" in text and "KNOWN VIOLATION" not in text  # base pinned by digest
 
 
 # ------------------------------------------------------------------ the one REAL-engine test

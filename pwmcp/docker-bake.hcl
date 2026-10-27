@@ -47,6 +47,16 @@ variable "PWMCP_VERSION" {
   default = "1.64.0-r3"
 }
 
+// OCR sidecar base (containers/ocr/Dockerfile): debian:<release>-slim pinned by manifest digest.
+// Projections of the same values live in that Dockerfile and cmru.vars; the resolver keeps them equal.
+variable "DEBIAN_RELEASE" {
+  default = "trixie"
+}
+
+variable "DEBIAN_IMAGE_DIGEST" {
+  default = "sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad"
+}
+
 variable "OCI_SOURCE" {
   default = "https://github.com/volkb79-2/vbpub"
 }
@@ -77,6 +87,21 @@ target "pwmcp-latest" {
   ]
 }
 
+// The OCR sidecar ships with every pwmcp release under the SAME release coordinate, in its own
+// GHCR repository (pwmcp-ocr), so a stack bundle's two image tags always match.
+target "pwmcp-ocr" {
+  context    = "."
+  dockerfile = "containers/ocr/Dockerfile"
+  args = {
+    DEBIAN_RELEASE      = "${DEBIAN_RELEASE}"
+    DEBIAN_IMAGE_DIGEST = "${DEBIAN_IMAGE_DIGEST}"
+  }
+  tags = [
+    "${REGISTRY}/${NAMESPACE}/pwmcp-ocr:${PWMCP_VERSION}",
+    "${REGISTRY}/${NAMESPACE}/pwmcp-ocr:latest",
+  ]
+}
+
 group "all" {
-  targets = ["pwmcp-latest"]
+  targets = ["pwmcp-latest", "pwmcp-ocr"]
 }
