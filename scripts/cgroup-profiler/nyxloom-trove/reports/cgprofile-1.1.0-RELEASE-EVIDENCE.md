@@ -37,4 +37,15 @@ slice unit, and any CGP-110 stop/finalize race (unit-tested with fakes only). CP
 
 ## Gate results
 
-See the sections below, appended after the runs.
+Run through the supported verb `run-gate --worktree <wave worktree> <lane>` from `scripts/cgroup-profiler`, installed run-gate 24.0.1.
+
+| Lane | Tree | Result |
+|---|---|---|
+| r0-r1 (run 1) | merge `68762c9ca` + docs `d354b5e78` | FAIL exit 2: 2625 passed, coverage 99% (two CGP-110 lines uncovered: `serve.py` 1819 and 3160; the shipped `_observe_liveness` closed-entry test used a null tracker and returned on the wrong branch) |
+| r0-r1 (run 2) | `420ac1554` | PASS exit 0: 2627 passed, 8667 statements / 3236 branches, 100% line and branch (fail_under = 100) |
+| r3 | `420ac1554` | PASS exit 0: 7 canaries rejected, 0 survived |
+| r2 | - | WAIVED (operator, 2026-10-27), CP-30 |
+
+Review: round 1 (fresh Sonnet reviewer) found a real regression (`stop` joined the sampler under the daemon-wide lock, so a
+worker that was itself finishing produced a spurious `stop-incomplete`); fixed in `420ac1554` with a test that fails without the fix,
+and MINOR findings N9-N12 filed under CP-27. See the wave report for later rounds.
