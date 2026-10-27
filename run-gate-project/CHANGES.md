@@ -24,11 +24,14 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   the lane did not need: it gets at most half of what remains of the lane's
   `budget` (capped at 900 s per call) and is skipped when under 20 s remain, so
   it can never turn a lane that finished in budget into BUDGET_EXCEEDED.
-- Add (RG-110): `tester-unified/build-image.sh --run-gate-release X.Y.Z` builds
-  the tester image from the PUBLISHED Run-Gate wheel (`fetch-run-gate-release.py`
-  verifies the release's `.sha256` sidecar), which is what CMRU's release gate
-  requires of the image it selects; the default stays the source-tree wheel for
-  Run-Gate's own candidate gate.
+- Note (RG-110): a tester-unified image for ANOTHER tool's release gate is built
+  from the PUBLISHED Run-Gate wheel with `tester-unified/build-image.sh
+  --run-gate-published latest|X.Y.Z` (staged, digest-verified, by
+  `tester-unified/fetch-run-gate-wheel.py`; runbook in
+  `tester-unified/docs/CONSUMERS.md`). That mechanism shipped from the
+  tester-image stream; this wave's duplicate (`--run-gate-release`,
+  `fetch-run-gate-release.py`) was dropped at merge. The default stays the
+  source-tree wheel for Run-Gate's own candidate gate.
 - Add (RG-106): an environment may declare `user = "invoker"` (the invoking
   process's `uid:gid`, derived at resolve time) or a numeric `uid[:gid]` for an
   `ephemeral` environment; it is passed as `--user` to the lane and probe containers, so

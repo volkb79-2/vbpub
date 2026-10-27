@@ -106,19 +106,28 @@ rebuilding the image this way (about 2 minutes); the previous image is kept as `
 tester-unified/build-image.sh --wheel-dir run-gate-project/dist --tag tester-unified:local
 ```
 
-For an image that serves ANOTHER tool's release gate (cmru, assay, ciu, ...) use the published Run-Gate
-wheel instead of the development wheel in `run-gate-project/dist`:
+### The image that gates a release: published inputs, aged third parties
+
+A `--wheel-dir run-gate-project/dist` image carries a developer build (`24.0.2.dev...`). CMRU's release
+gate refuses it: it accepts only an image whose Run-Gate labels are the exact version and sha256 of the
+PUBLISHED stable release the host judge came from. The image that gates other tools' releases is therefore
+built with the published wheel, staged and digest-verified by `fetch-run-gate-wheel.py`:
 
 ```bash
-tester-unified/build-image.sh --run-gate-release 24.0.1 --tag tester-unified:local
+# latest stable (the run-gate-latest pointer), or an explicit X.Y.Z; --no-cache so the aged third-party
+# layer is re-resolved rather than reused
+tester-unified/build-image.sh --run-gate-published latest --no-cache --tag tester-unified:wave-<date>
 ```
 
-`--run-gate-release X.Y.Z` downloads `run_gate-X.Y.Z-py3-none-any.whl` and its `.sha256` sidecar from the
-`run-gate-vX.Y.Z` GitHub release, verifies the digest and builds from exactly those bytes. CMRU's release
-gate refuses any tester image whose `org.vbpub.run-gate.version` / `wheel-sha256` labels are not the published
-wheel of the installed Run-Gate; an image built from the source tree carries `X.Y.Z.devN+gHASH` and is only
-valid for Run-Gate's own candidate gate (`tools/release_candidate.py` builds that one itself). Overriding the
-image with `RUN_GATE_TESTER_UNIFIED_IMAGE` is the escape hatch for a one-off, not the supported flow.
+Three statements of the wheel digest must agree before the build (the pointer, the release's `.sha256`
+sidecar, the downloaded bytes). `--run-gate-published` and `--wheel-dir` are mutually exclusive. CMRU itself
+stays source-built (`+tester.unified`, installed for its dependency closure; the suites run against the bound
+worktree); Assay is not installed in the image (run-gate installs the selected worktree's `assay/` at lane
+runtime). Third-party packages are never pinned in the Dockerfile: every index-capable `pip install` carries
+`--uploaded-prior-to ${PIP_MIN_RELEASE_AGE}` (default `P14D`, label `org.vbpub.tester-unified.min-release-age`),
+so the build resolves the newest release that is at least 14 days old. Override with
+`--pip-min-release-age P21D` (day durations only). The Debian base digest and the node image digest keep their
+own age records (`cmru versions`).
 
 The image labels and `/etc/tester-unified-run-gate-wheel.json` record that
 wheel's version and SHA-256. The builder verifies the loaded labels, and

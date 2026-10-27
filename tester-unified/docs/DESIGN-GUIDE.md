@@ -36,9 +36,10 @@ copied Assay tree, because the judged worktree is the source of truth.
 ## The installed Run-Gate CLI
 
 Some CMRU steps invoke Run-Gate after CMRU has started tester-unified. The image
-installs the exact Run-Gate wheel built from the selected checkout, exposes its
-console script from `/opt/tester-venv`, and puts that environment first on
-`PATH`. The supported image builder passes one wheel through a named BuildKit
+installs one exact Run-Gate wheel (a developer build from the selected checkout via
+`--wheel-dir`, or the published release via `--run-gate-published` for the image that
+gates releases, see below), exposes its console script from `/opt/tester-venv`, and
+puts that environment first on `PATH`. The supported image builder passes one wheel through a named BuildKit
 context, verifies its digest during the build, and checks the installed
 metadata version against the wheel's version. This keeps command lookup
 independent of the base image's private `/home/vscode/.venv`, which uid 1003
@@ -148,3 +149,40 @@ metadata; a mismatch aborts only the owned container. The only explicit network
 value is `none`. Omitting the option preserves existing Docker selection;
 the launcher does not invent a network name. The Docker socket remains mounted
 for product boundary tests, so this is network isolation, not a security sandbox.
+
+## The image that gates a release: published inputs
+
+The release gate binds three identities: the host's installed Run-Gate judge, the published GitHub release it
+came from, and the selected tester image's Run-Gate labels (`cmru/tools/run_release_gate.py`,
+`_check_run_gate_release_artifacts` and `_check_tester_image_identity`). A tester image therefore has to carry
+the published wheel, byte for byte. `build-image.sh --run-gate-published` stages exactly that through
+`fetch-run-gate-wheel.py`, which requires the `latest.json` pointer, the release's `.sha256` sidecar and the
+downloaded bytes to agree before anything is written (the redirect policy is the one `fetch-cli-extended.py`
+enforces). No age window applies to this first-party wheel: the gate demands the published release, not an aged
+one. CMRU stays source-built (`+tester.unified`) because it is installed only for its dependency closure while the
+suites run against the bound worktree; Assay is not installed at all (run-gate installs the worktree's `assay/`
+at lane runtime), so no published Assay or CMRU wheel is needed in the image.
+
+Third-party packages follow the estate freshness rule instead: nothing is pinned, and pip's
+`--uploaded-prior-to` (pip 26.0 or newer, which the base's bundled pip satisfies) restricts every index-capable
+install to releases uploaded at least `PIP_MIN_RELEASE_AGE` (default `P14D`) ago. A build argument rather than a
+file of pins keeps the "newest, but vetted" policy in one place; the cost is that two builds of the same
+Dockerfile on different days differ, which is why the age is recorded as an image label and a rebuild uses
+`--no-cache`. The duration is pip's own vocabulary (`P<n>D`, whole days; `build-image.sh` only pre-checks the
+spelling), the cutoff is computed when pip runs, and pip fails closed: a link without `upload-time` metadata (an
+index that is not PyPI-compatible on that point, such as a bare mirror) is an installation error, not a silently
+ignored window. First-party packages have no age window at all (operator decision 2026-10-27: our own tools are
+always the latest published release; the 14-day rule is for third-party dependencies only), and the image honours
+that structurally rather than by exemption: a first-party name never reaches an index-bound pip (released wheels
+`--no-index --no-deps`, cmru source-built offline, the generator refusing the names), which
+`test_the_age_window_never_applies_to_a_first_party_package` in `cmru/tests/test_tester_unified_image.py` asserts. The
+Debian/Python base digest and the node image digest are the deliberate exceptions: they are
+digest-pinned and age-checked by `cmru versions` (`tester-base/versions/`). `wheel-builder` ages the two installs
+baked into it the same way; the build backends that `python -m build` installs at run time are a separate matter
+(tester-base backlog TB-08).
+
+Three checks bind an image to a Run-Gate and agree at one point only (the consumer runbook,
+[where the rebuild sits in the release order](CONSUMERS.md#where-the-rebuild-sits-in-the-release-order-and-the-bootstrap),
+spells out the order): cmru's gate wants the published bytes, ciu's preflight wants the checkout's bytes, and
+run-gate's own release builds its candidate image from the candidate wheel with the previous image as the
+preflight host. The last is the bootstrap; the first two coincide while the checkout is at the released commit.

@@ -10,10 +10,12 @@
 # Stateless tool image: no project source is baked in. The project directory is
 # supplied via bind mount at run time (cmd_wheel_build mounts the repo root and runs
 # the build against the bind-mounted source), so this image only needs the build
-# frontend itself. Reproducibility of the actual wheel bytes comes from each
-# project's own pinned `[build-system].requires` (setuptools/wheel/setuptools_scm),
-# which `python -m build`'s isolation installs fresh per invocation — this image does
-# not need to pin those itself.
+# frontend itself. The wheel bytes depend on each project's `[build-system].requires`,
+# which `python -m build`'s isolation installs fresh per invocation AT RUN TIME, from the
+# index and outside the age window below (it covers only the two installs baked here):
+# exact pins (cmru, ciu, run-gate-project, assay, cli-extended, topos, nyxloom) make that
+# resolution reproducible; floors (pwmcp-client `setuptools>=77`, cgroup-profiler
+# `setuptools>=68`) do not. Aging the run-time installs too is tester-base backlog TB-08.
 #
 # Both ciu and cmru declare artifacts = ["wheel"] and fall through the same built-in
 # handler — this one image covers both, same as tester-unified covers every
@@ -50,9 +52,15 @@ RUN apt-get update \
 # /home/vscode's permissions are that user's to control — same reasoning tester-unified
 # already documents for its own /opt/tester-venv ("a real interpreter binary, so a
 # runtime home bind cannot shadow it").
+# Aged-latest (estate freshness rule): no version is pinned here, and `--uploaded-prior-to` limits both
+# installs to releases at least PIP_MIN_RELEASE_AGE old (default 14 days), the vetting buffer against a
+# just-shipped regression or supply-chain incident. The age is relative to the build moment: rebuild
+# with --no-cache to pick up newer aged releases.
+ARG PIP_MIN_RELEASE_AGE=P14D
+LABEL org.vbpub.wheel-builder.min-release-age="${PIP_MIN_RELEASE_AGE}"
 RUN /usr/local/bin/python3.14 -m venv --copies /opt/wheel-builder-venv \
- && /opt/wheel-builder-venv/bin/pip install --no-cache-dir --upgrade pip \
- && /opt/wheel-builder-venv/bin/pip install --no-cache-dir build
+ && /opt/wheel-builder-venv/bin/pip install --no-cache-dir --uploaded-prior-to "${PIP_MIN_RELEASE_AGE}" --upgrade pip \
+ && /opt/wheel-builder-venv/bin/pip install --no-cache-dir --uploaded-prior-to "${PIP_MIN_RELEASE_AGE}" build
 
 # The container runs as uid 1003 (matches this devcontainer's host-remapped vscode
 # user, same reasoning as tester-unified/Dockerfile), which the base image has no
