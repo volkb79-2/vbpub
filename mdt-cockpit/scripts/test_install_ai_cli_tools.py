@@ -364,6 +364,8 @@ def test_stage_resolves_opencode_from_npm_package(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(stage, "_resolve_claude_code_version", lambda _value: "claude")
     monkeypatch.setattr(stage, "_resolve_pypi_version", lambda _value, package: f"resolved-{package}")
     monkeypatch.setattr(stage, "_resolve_version", lambda _value, repo: f"resolved-{repo}")
+    monkeypatch.setattr(stage, "_resolve_latest_aged_release", lambda repo, **_k: f"resolved-{repo}")
+    monkeypatch.setattr(stage, "_resolve_sss_commit", lambda _value: "e" * 40)
 
     resolved = stage._resolve_versions()
 

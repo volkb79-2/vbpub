@@ -189,7 +189,7 @@ class Contract:
     def test_the_pwmcp_cli_is_present_and_runs(self) -> None:
         self._check_commands([("pwmcp", "pwmcp", "/srv/pwmcp-instance/bin")])
 
-    def test_the_pinned_inspection_and_terminal_tools_are_installed_and_run(self) -> None:
+    def test_the_inspection_and_terminal_tools_are_installed_and_run(self) -> None:
         for command in ("ov --version", "yazi --version", "ya --version"):
             with self.subTest(command=command):
                 result = self.sh(f"{command} </dev/null")
@@ -200,7 +200,7 @@ class Contract:
         self.assertOk(self.sh("test -x /usr/local/bin/dry"), "dry is installed and executable")
 
     def test_sss_is_an_executable_bash_script(self) -> None:
-        # sss is an unreleased script pinned by commit; it re-runs itself with sudo when not root, so it is
+        # sss is an unreleased script resolved from the default branch at build time; it re-runs itself with sudo when not root, so it is
         # only checked for presence and shebang here, never executed.
         result = self.sh("test -x /usr/local/bin/sss && head -1 /usr/local/bin/sss")
         self.assertOk(result, "sss presence")

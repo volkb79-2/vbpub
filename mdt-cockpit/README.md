@@ -222,7 +222,8 @@ command cannot be used, see the [update table](docs/DESIGN-GUIDE.md#how-the-ai-c
 Reasonix with `npm install -g reasonix@latest`. `PATH` is one definition ([One PATH order](docs/DESIGN-GUIDE.md#one-path-order)):
 `/opt/mdt/bin`, the primary venv, `/opt/mdt/npm/bin`, PWMCP, the base image's own entries, and
 `~/.local/bin` **last** — so a tool in `~/.local/bin` never silently shadows an image tool.
-Rebuild the image to refresh its pinned tool versions.
+Rebuild the image to refresh its tool versions (`gdu`, `dust`, `ov`, `dry`, `yazi`, `sss` resolve the newest
+release at least `MDT_TOOL_MIN_AGE_DAYS`, default 14, old at build time).
 
 Node 26 comes from NodeSource because Debian 13 ships Node 20, which is too old for the
 npm-based CLIs.
@@ -268,12 +269,12 @@ Container and system inspection, in-image:
 | `lazydocker` | Docker/Compose TUI — lifecycle, logs, exec, stats |
 | `glances` | broader host resource view with Docker awareness |
 | `dive` | image-layer inspection |
-| `dry` | Docker terminal UI for containers, images, networks and volumes (static binary, pinned 0.13.0) |
-| `ov` | terminal pager, a feature-rich alternative to `less` (pinned 0.55.0, from the upstream `.deb`) |
-| `yazi` | terminal file manager, with its `ya` helper (glibc build, pinned 26.9.1; optional helpers such as fzf/zoxide/ImageMagick are not required) |
-| `sss` | colourised `ss` that adds PID, user and Docker container names — unreleased script pinned by commit `f182bf6` (it re-runs itself with `sudo` when not root) |
-| `gdu` | interactive disk-usage analyzer (static build, pinned 5.38.0) |
-| `dust` | `du` with a tree view and bars (static musl build, pinned 1.2.6) |
+| `dry` | Docker terminal UI for containers, images, networks and volumes (static binary; newest release at least 14 days old, resolved at build time) |
+| `ov` | terminal pager, a feature-rich alternative to `less` (newest release at least 14 days old, resolved at build time, from the upstream `.deb`) |
+| `yazi` | terminal file manager, with its `ya` helper (glibc build; newest release at least 14 days old, resolved at build time, sha256 from the GitHub release asset digest; optional helpers such as fzf/zoxide/ImageMagick are not required) |
+| `sss` | colourised `ss` that adds PID, user and Docker container names — an unreleased script: the newest default-branch commit at least 14 days old, resolved at build time, sha256 recorded at staging (it re-runs itself with `sudo` when not root) |
+| `gdu` | interactive disk-usage analyzer (static build; newest release at least 14 days old, resolved at build time) |
+| `dust` | `du` with a tree view and bars (static musl build; newest release at least 14 days old, resolved at build time, sha256 from the GitHub release asset digest) |
 | `syft` | SBOM generation, image/package inventory |
 | `htop` | GitHub-sourced build with a shipped default config |
 | `zswap-status` | prints kernel zswap counters directly from sysfs/debugfs |

@@ -143,10 +143,12 @@ PROJECT_HOMES = {
 
 # Policy labels per tool (appended to version cell).
 TOOL_POLICIES: dict[str, str] = {  # tool → policy label; falls back to "latest" or "apt"
-    "ov": "pinned",
-    "dry": "pinned",
-    "yazi": "pinned (sha256 in stage_tool_artifacts.py)",
-    "sss": "unreleased script, pinned by commit",
+    "gdu": "latest, >= 14 days old",
+    "dust": "latest, >= 14 days old",
+    "ov": "latest, >= 14 days old",
+    "dry": "latest, >= 14 days old",
+    "yazi": "latest, >= 14 days old",
+    "sss": "default-branch commit, >= 14 days old",
 }
 
 

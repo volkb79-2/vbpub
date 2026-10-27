@@ -320,11 +320,10 @@ visible for `apt-cache policy` and `apt install -t testing <pkg>`, never auto-se
 
 ## gdu and dust
 
-Both are static linux/amd64 binaries pinned to the newest release at least 14 days old when pinned
-(estate freshness rule), not "latest": a bump is a deliberate edit in `scripts/stage_tool_artifacts.py`.
-gdu is checked against upstream `sha256sums.txt`. dust publishes no checksum file, so its sha256 is pinned
-in the same file (it equals the digest GitHub records for the asset) and written to an offline sidecar that
-the Dockerfile re-verifies. The gdu sums file comes from the same origin as the archive, so it guards
+Both are static linux/amd64 binaries, not hard-pinned: each build resolves the newest release at least
+`MDT_TOOL_MIN_AGE_DAYS` (default 14) days old (estate freshness rule). gdu is checked against upstream
+`sha256sums.txt`. dust publishes no checksum file, so its sha256 is the asset `digest` GitHub records in the
+release object (fail closed when absent), written to an offline sidecar that the Dockerfile re-verifies. The gdu sums file comes from the same origin as the archive, so it guards
 against corruption, not against a compromised release (upstream's detached `.asc` is not verified); this is
 the same trust model as crane and regctl.
 

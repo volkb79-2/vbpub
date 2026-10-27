@@ -351,50 +351,141 @@ def _resolve_version(requested: str | None, repo: str) -> str:
     return _resolve_latest_release(repo)
 
 
-# gdu and dust are pinned, not "latest": estate freshness rule = the newest release that is at least
-# 14 days old when pinned (gdu 5.38.0 released 2026-10-05, dust 1.2.6 released 2026-09-16; pinned 2026-10-21).
-# Bumping needs a deliberate edit here, never a silent float.
-GDU_PINNED_VERSION = "5.38.0"
-DUST_PINNED_VERSION = "1.2.6"
-# dust publishes no checksum file or signature (assets are bare tarballs), so its sha256 is pinned here per
-# version. It was computed over the downloaded asset and equals the digest GitHub itself records for it
-# (`gh api repos/bootandy/dust/releases/tags/v1.2.6`). A new dust version without an entry here fails staging.
-DUST_PINNED_SHA256 = {
-    "1.2.6": "cbf2cb5c9d6227e46fc4b29c03dc43b8632020dfc5cf269d263d6e29c399e044",
-}
-
-# ov, dry, yazi and sss (added 2026-10-27, all pinned; every release is older than 14 days).
-#   ov    0.55.0 (2026-09-29)  .deb + upstream checksums file; the .deb digest is ALSO pinned below.
-#   dry   0.13.0 (2026-03-29)  plain binary + upstream checksums file; the binary digest is ALSO pinned below.
-#   yazi  26.9.1 (2026-09-01)  glibc zip; upstream publishes NO checksum file, so the pinned digest is the only source.
-#   sss   unreleased           a single bash script with no releases or tags: pinned by full commit + sha256 of the raw file.
-# The pinned digests are the operator-supplied source of truth; a checksums file that disagrees fails staging.
-OV_PINNED_VERSION = "0.55.0"
-OV_PINNED_SHA256 = {
-    "0.55.0": "1630090bf9c056e11d694870a20d63f1e95ff2d1c04f656cc297f7abdda8fb4f",  # ov_0.55.0_amd64.deb
-}
-DRY_PINNED_VERSION = "0.13.0"
-DRY_PINNED_SHA256 = {
-    "0.13.0": "c160dea554c74544f68f1de5d406a9d211462caa75cab46c2ae8a46df28e0e36",  # dry-linux-amd64
-}
-YAZI_PINNED_VERSION = "26.9.1"
-YAZI_PINNED_SHA256 = {
-    "26.9.1": "a02fe91d3304294048c681f010f1100856872a4e98ecf6927328e888d40a6ad2",  # yazi-x86_64-unknown-linux-gnu.zip
-}
-SSS_PINNED_COMMIT = "f182bf63c2df74f002a54e3d21e3aa92974d0bdd"
-SSS_PINNED_SHA256 = {
-    "f182bf63c2df74f002a54e3d21e3aa92974d0bdd": "c146d43cbc22f4128155f2e26e93fc32424d47a810f36cc6ff433b7786727cad",
-}
+# gdu, dust, ov, dry, yazi and sss (2026-10-27): NO hard pins (operator decision). The version is re-selected at every mdt-cockpit build as the
+# newest release that is at least MDT_TOOL_MIN_AGE_DAYS (default 14) old: prefer the latest, but keep a vetting
+# buffer against a just-shipped regression or supply-chain incident (estate freshness rule). No digest tables:
+#   gdu   archive verified against the upstream sha256sums.txt (fail closed when its line is missing).
+#   dust  upstream publishes NO checksum file: the digest is the GitHub API release asset `digest`, like yazi.
+#   ov    .deb verified against the upstream ov_<ver>_checksums.txt (fail closed when its line is missing).
+#   dry   binary verified against the upstream dry_checksums.txt (fail closed when its line is missing).
+#   yazi  upstream publishes NO checksum file: the digest is `assets[].digest` (sha256:<hex>) of the GitHub API
+#         release object, fail closed when absent; written to the offline sidecar the Dockerfile re-checks.
+#   sss   a single bash script with no releases or tags: the commit is the newest one on the default branch that
+#         is at least MDT_TOOL_MIN_AGE_DAYS old; its sha256 cannot be known in advance, so it is computed at staging
+#         and recorded (first-use trust) in the sidecar and the staging metadata.
+MIN_AGE_DAYS_ENV = "MDT_TOOL_MIN_AGE_DAYS"
+DEFAULT_MIN_AGE_DAYS = 14
+GITHUB_API = "https://api.github.com"
+SHA40_RE = re.compile(r"[0-9a-f]{40}")
 
 
-def _resolve_pinned_version(requested: str | None, default: str, label: str) -> str:
-    value = (requested or "").strip()
-    if value == "latest":
+def _min_age_days() -> int:
+    """The vetting buffer in days: MDT_TOOL_MIN_AGE_DAYS (integer >= 0), default 14. The only reader."""
+    raw = (os.getenv(MIN_AGE_DAYS_ENV) or "").strip()
+    if not raw:
+        return DEFAULT_MIN_AGE_DAYS
+    if not re.fullmatch(r"[0-9]+", raw):
+        raise StageError(f"{MIN_AGE_DAYS_ENV} must be an integer >= 0, got {raw!r}")
+    return int(raw)
+
+
+def _warn(message: str) -> None:
+    print(f"[WARNING] {message}", file=os.sys.stderr)
+
+
+def _github_time(value: object, what: str) -> datetime:
+    text = str(value or "").strip()
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise StageError(f"{what}: unreadable timestamp {text!r}") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _age_days(min_age_days: int | None) -> int:
+    return _min_age_days() if min_age_days is None else min_age_days
+
+
+def _age_cutoff(min_age_days: int | None, now: datetime | None) -> datetime:
+    return (now or datetime.now(timezone.utc)) - timedelta(days=_age_days(min_age_days))
+
+
+def _resolve_latest_aged_release(repo: str, *, min_age_days: int | None = None, now: datetime | None = None) -> str:
+    """Newest non-draft, non-prerelease release published at least `min_age_days` ago; version without leading v."""
+    cutoff = _age_cutoff(min_age_days, now)
+    releases = _fetch_json(f"{GITHUB_API}/repos/{repo}/releases?per_page=30", headers=_github_api_headers())
+    if not isinstance(releases, list):
+        raise StageError(f"Unexpected releases payload for {repo}")
+    best: tuple[datetime, str] | None = None
+    for release in releases:
+        if not isinstance(release, dict) or release.get("draft") or release.get("prerelease"):
+            continue
+        tag = str(release.get("tag_name") or "").strip().removeprefix("v")
+        if not tag or not release.get("published_at"):
+            continue
+        published = _github_time(release.get("published_at"), f"{repo} release {tag}")
+        if published <= cutoff and (best is None or published > best[0]):
+            best = (published, tag)
+    if best is None:
         raise StageError(
-            f"{label}: 'latest' is not accepted; it is pinned to a release at least 14 days old. "
-            "Set an explicit version or edit the pin in stage_tool_artifacts.py"
+            f"{repo}: no stable release published on or before {cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')} "
+            f"among the newest 30 (age buffer {MIN_AGE_DAYS_ENV})"
         )
-    return value or default
+    return best[1]
+
+
+def _resolve_aged_version(
+    requested: str | None, repo: str, variable: str, *, min_age_days: int | None = None, now: datetime | None = None
+) -> str:
+    """Explicit value accepted as given (warning when younger than the cutoff); unset/`latest` = aged latest."""
+    value = (requested or "").strip()
+    if not value or value == "latest":
+        return _resolve_latest_aged_release(repo, min_age_days=min_age_days, now=now)
+    cutoff = _age_cutoff(min_age_days, now)
+    try:
+        release = _fetch_json(
+            f"{GITHUB_API}/repos/{repo}/releases/tags/v{value.removeprefix('v')}", headers=_github_api_headers()
+        )
+        published = _github_time(release.get("published_at"), f"{repo} release {value}")
+    except StageError as exc:
+        _warn(f"{variable}={value}: could not determine the release age ({exc}); accepted as given")
+        return value
+    if published > cutoff:
+        age = (now or datetime.now(timezone.utc)) - published
+        _warn(
+            f"{variable}={value} is only {age.total_seconds() / 86400:.1f} days old, younger than the "
+            f"{_age_days(min_age_days)}-day buffer; accepted because it was set explicitly"
+        )
+    return value
+
+
+def _resolve_sss_commit(requested: str | None, *, min_age_days: int | None = None, now: datetime | None = None) -> str:
+    """Full commit of azlux/sss: explicit 40-hex, or the newest default-branch commit at least min_age_days old."""
+    value = (requested or "").strip()
+    if value and value != "latest":
+        if not SHA40_RE.fullmatch(value):
+            raise StageError(f"SSS_VERSION must be a full 40-hex commit (lowercase), got {value!r}")
+        return value
+    cutoff = _age_cutoff(min_age_days, now)
+    repo = "azlux/sss"
+    info = _fetch_json(f"{GITHUB_API}/repos/{repo}", headers=_github_api_headers())
+    branch = str(info.get("default_branch") or "").strip() if isinstance(info, dict) else ""
+    if not branch:
+        raise StageError(f"{repo}: cannot determine the default branch")
+    until = urllib.parse.quote(cutoff.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    commits = _fetch_json(
+        f"{GITHUB_API}/repos/{repo}/commits?sha={urllib.parse.quote(branch)}&until={until}&per_page=30",
+        headers=_github_api_headers(),
+    )
+    if not isinstance(commits, list):
+        raise StageError(f"Unexpected commits payload for {repo}")
+    best: tuple[datetime, str] | None = None
+    for item in commits:  # `until` may be ignored: filter by the committer date ourselves
+        sha = str(item.get("sha") or "").strip().lower() if isinstance(item, dict) else ""
+        date = ((item.get("commit") or {}).get("committer") or {}).get("date") if isinstance(item, dict) else None
+        if not SHA40_RE.fullmatch(sha) or not date:
+            continue
+        committed = _github_time(date, f"{repo} commit {sha[:12]}")
+        if committed <= cutoff and (best is None or committed > best[0]):
+            best = (committed, sha)
+    if best is None:
+        raise StageError(
+            f"{repo}: no commit on {branch} committed on or before {cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')} "
+            f"({MIN_AGE_DAYS_ENV})"
+        )
+    return best[1]
 
 
 def _resolve_npm_version(requested: str | None, package_name: str) -> str:
@@ -974,15 +1065,12 @@ def _stage_gdu(version: str, records: list[StagedArtifact]) -> None:
 
 
 def _stage_dust(version: str, records: list[StagedArtifact]) -> None:
-    # Static (musl) linux/amd64 build. Upstream publishes no checksum file, so the sha256 is pinned in
-    # DUST_PINNED_SHA256 and written to an offline sidecar for the Dockerfile to repeat the check.
-    expected_sha256 = DUST_PINNED_SHA256.get(version)
-    if expected_sha256 is None:
-        raise StageError(
-            f"dust {version} has no pinned sha256 (upstream publishes no checksum file); "
-            "add the verified digest to DUST_PINNED_SHA256 in stage_tool_artifacts.py"
-        )
+    # Static (musl) linux/amd64 build. Upstream publishes no checksum file, so the expected sha256 is the asset
+    # `digest` GitHub records in the release object (fail closed when absent); it is written to an offline
+    # sidecar for the Dockerfile to repeat the check.
     asset_name = f"dust-v{version}-x86_64-unknown-linux-musl.tar.gz"
+    release = _fetch_json(f"{GITHUB_API}/repos/bootandy/dust/releases/tags/v{version}", headers=_github_api_headers())
+    expected_sha256 = _parse_github_asset_sha256(release, asset_name)
     archive_url = f"https://github.com/bootandy/dust/releases/download/v{version}/{asset_name}"
     archive_path = DOWNLOADS_DIR / f"dust-{version}.tar.gz"
     sidecar_path = DOWNLOADS_DIR / f"dust-{version}.sha256"
@@ -1003,23 +1091,12 @@ def _stage_dust(version: str, records: list[StagedArtifact]) -> None:
         final_url=archive_final_url,
         path=archive_path,
         kind="tar.gz",
-        verification="sha256 pinned in stage_tool_artifacts.py (upstream publishes no checksum) + archive contains dust",
+        verification="sha256 from the GitHub release asset digest (upstream publishes no checksum) + archive contains dust",
     )
 
 
-def _pinned_sha256(tool: str, version: str, table: dict[str, str]) -> str:
-    expected = table.get(version)
-    if expected is None:
-        raise StageError(
-            f"{tool} {version} has no pinned sha256; add the verified digest to "
-            f"{tool.upper()}_PINNED_SHA256 in stage_tool_artifacts.py"
-        )
-    return expected
-
-
 def _stage_ov(version: str, records: list[StagedArtifact]) -> None:
-    # noborus/ov pager: <name>_<ver>_amd64.deb + ov_<ver>_checksums.txt, plus the pinned digest.
-    expected_pinned = _pinned_sha256("ov", version, OV_PINNED_SHA256)
+    # noborus/ov pager: <name>_<ver>_amd64.deb verified against the upstream ov_<ver>_checksums.txt.
     deb_name = f"ov_{version}_amd64.deb"
     base_url = f"https://github.com/noborus/ov/releases/download/v{version}"
     deb_url = f"{base_url}/{deb_name}"
@@ -1029,12 +1106,10 @@ def _stage_ov(version: str, records: list[StagedArtifact]) -> None:
 
     sums_final_url = _download(sums_url, sums_path)
     deb_final_url = _download(deb_url, deb_path)
-    expected_sha256 = _parse_hashicorp_sha256(sums_path, deb_name)
+    expected_sha256 = _parse_hashicorp_sha256(sums_path, deb_name)  # fail closed: raises when the line is missing
     actual_sha256 = _sha256(deb_path)
-    if expected_sha256 != actual_sha256 or expected_pinned != actual_sha256:
-        raise StageError(
-            f"ov checksum mismatch: checksums file {expected_sha256}, pinned {expected_pinned}, got {actual_sha256}"
-        )
+    if expected_sha256 != actual_sha256:
+        raise StageError(f"ov checksum mismatch: expected {expected_sha256}, got {actual_sha256}")
     _record_artifact(
         records,
         tool="ov",
@@ -1043,7 +1118,7 @@ def _stage_ov(version: str, records: list[StagedArtifact]) -> None:
         final_url=deb_final_url,
         path=deb_path,
         kind="deb",
-        verification="sha256 from ov_<ver>_checksums.txt and pinned in stage_tool_artifacts.py + dpkg deb",
+        verification="sha256 from upstream ov_<ver>_checksums.txt",
     )
     _record_artifact(
         records,
@@ -1058,8 +1133,7 @@ def _stage_ov(version: str, records: list[StagedArtifact]) -> None:
 
 
 def _stage_dry(version: str, records: list[StagedArtifact]) -> None:
-    # moncho/dry Docker TUI: plain linux/amd64 binary + dry_checksums.txt, plus the pinned digest.
-    expected_pinned = _pinned_sha256("dry", version, DRY_PINNED_SHA256)
+    # moncho/dry Docker TUI: plain linux/amd64 binary verified against the upstream dry_checksums.txt.
     asset_name = "dry-linux-amd64"
     base_url = f"https://github.com/moncho/dry/releases/download/v{version}"
     binary_url = f"{base_url}/{asset_name}"
@@ -1069,12 +1143,10 @@ def _stage_dry(version: str, records: list[StagedArtifact]) -> None:
 
     sums_final_url = _download(sums_url, sums_path)
     binary_final_url = _download(binary_url, binary_path)
-    expected_sha256 = _parse_hashicorp_sha256(sums_path, asset_name)
+    expected_sha256 = _parse_hashicorp_sha256(sums_path, asset_name)  # fail closed: raises when the line is missing
     actual_sha256 = _sha256(binary_path)
-    if expected_sha256 != actual_sha256 or expected_pinned != actual_sha256:
-        raise StageError(
-            f"dry checksum mismatch: checksums file {expected_sha256}, pinned {expected_pinned}, got {actual_sha256}"
-        )
+    if expected_sha256 != actual_sha256:
+        raise StageError(f"dry checksum mismatch: expected {expected_sha256}, got {actual_sha256}")
     _record_artifact(
         records,
         tool="dry",
@@ -1083,7 +1155,7 @@ def _stage_dry(version: str, records: list[StagedArtifact]) -> None:
         final_url=binary_final_url,
         path=binary_path,
         kind="binary",
-        verification="sha256 from dry_checksums.txt and pinned in stage_tool_artifacts.py",
+        verification="sha256 from upstream dry_checksums.txt",
     )
     _record_artifact(
         records,
@@ -1098,10 +1170,12 @@ def _stage_dry(version: str, records: list[StagedArtifact]) -> None:
 
 
 def _stage_yazi(version: str, records: list[StagedArtifact]) -> None:
-    # sxyazi/yazi file manager, glibc (gnu) build. Upstream publishes no checksum file, so the sha256 is pinned
-    # in YAZI_PINNED_SHA256 and written to an offline sidecar for the Dockerfile to repeat the check.
-    expected_sha256 = _pinned_sha256("yazi", version, YAZI_PINNED_SHA256)
+    # sxyazi/yazi file manager, glibc (gnu) build. Upstream publishes no checksum file, so the expected sha256 is
+    # the asset `digest` GitHub records in the release object (fail closed when absent); it is written to an
+    # offline sidecar for the Dockerfile to repeat the check.
     asset_name = "yazi-x86_64-unknown-linux-gnu.zip"
+    release = _fetch_json(f"{GITHUB_API}/repos/sxyazi/yazi/releases/tags/v{version}", headers=_github_api_headers())
+    expected_sha256 = _parse_github_asset_sha256(release, asset_name)
     archive_url = f"https://github.com/sxyazi/yazi/releases/download/v{version}/{asset_name}"
     archive_path = DOWNLOADS_DIR / f"yazi-{version}.zip"
     sidecar_path = DOWNLOADS_DIR / f"yazi-{version}.sha256"
@@ -1123,27 +1197,25 @@ def _stage_yazi(version: str, records: list[StagedArtifact]) -> None:
         final_url=archive_final_url,
         path=archive_path,
         kind="zip",
-        verification="sha256 pinned in stage_tool_artifacts.py (upstream publishes no checksum) + archive contains yazi and ya",
+        verification="sha256 from the GitHub release asset digest (upstream publishes no checksum) + archive contains yazi and ya",
     )
 
 
 def _stage_sss(commit: str, records: list[StagedArtifact]) -> None:
-    # azlux/sss: one bash script, no releases or tags. Pinned by full commit; the sha256 of the raw file at that
-    # commit is pinned in SSS_PINNED_SHA256 and written to an offline sidecar for the Dockerfile to repeat.
-    expected_sha256 = _pinned_sha256("sss", commit, SSS_PINNED_SHA256)
-    if not re.fullmatch(r"[0-9a-f]{40}", commit):
-        raise StageError(f"sss must be pinned by a full 40-hex commit, got {commit!r}")
+    # azlux/sss: one bash script, no releases or tags. `commit` was resolved at build time from the default branch
+    # (see _resolve_sss_commit). Its sha256 cannot be pinned in advance: it is computed here, recorded in the
+    # sidecar (the Dockerfile repeats the check) and in the staging metadata (first-use trust).
+    if not SHA40_RE.fullmatch(commit):
+        raise StageError(f"sss must be identified by a full 40-hex commit, got {commit!r}")
     script_url = f"https://raw.githubusercontent.com/azlux/sss/{commit}/sss"
     script_path = DOWNLOADS_DIR / f"sss-{commit}"
     sidecar_path = DOWNLOADS_DIR / f"sss-{commit}.sha256"
 
     script_final_url = _download(script_url, script_path)
-    actual_sha256 = _sha256(script_path)
-    if expected_sha256 != actual_sha256:
-        raise StageError(f"sss checksum mismatch: expected {expected_sha256}, got {actual_sha256}")
     if not script_path.read_bytes().startswith(b"#!/usr/bin/env bash\n"):
         raise StageError("Downloaded sss script does not start with '#!/usr/bin/env bash'")
-    sidecar_path.write_text(f"{expected_sha256}  {script_path.name}\n", encoding="utf-8")
+    actual_sha256 = _sha256(script_path)
+    sidecar_path.write_text(f"{actual_sha256}  {script_path.name}\n", encoding="utf-8")
 
     _record_artifact(
         records,
@@ -1153,7 +1225,10 @@ def _stage_sss(commit: str, records: list[StagedArtifact]) -> None:
         final_url=script_final_url,
         path=script_path,
         kind="script",
-        verification="unreleased script pinned by commit; sha256 pinned in stage_tool_artifacts.py + bash shebang",
+        verification=(
+            "unreleased script, resolved from the default branch at build time; "
+            "sha256 recorded at staging (first-use trust) + bash shebang"
+        ),
     )
 
 
@@ -2016,12 +2091,12 @@ def _resolve_versions() -> dict[str, str]:
         ),
         "REGCTL_VER": _resolve_version(os.getenv("REGCTL_VERSION"), "regclient/regclient"),
         "B2_VER": _resolve_version(os.getenv("B2_VERSION"), "Backblaze/B2_Command_Line_Tool"),
-        "GDU_VER": _resolve_pinned_version(os.getenv("GDU_VERSION"), GDU_PINNED_VERSION, "GDU_VERSION"),
-        "DUST_VER": _resolve_pinned_version(os.getenv("DUST_VERSION"), DUST_PINNED_VERSION, "DUST_VERSION"),
-        "OV_VER": _resolve_pinned_version(os.getenv("OV_VERSION"), OV_PINNED_VERSION, "OV_VERSION"),
-        "DRY_VER": _resolve_pinned_version(os.getenv("DRY_VERSION"), DRY_PINNED_VERSION, "DRY_VERSION"),
-        "YAZI_VER": _resolve_pinned_version(os.getenv("YAZI_VERSION"), YAZI_PINNED_VERSION, "YAZI_VERSION"),
-        "SSS_VER": _resolve_pinned_version(os.getenv("SSS_VERSION"), SSS_PINNED_COMMIT, "SSS_VERSION"),
+        "GDU_VER": _resolve_aged_version(os.getenv("GDU_VERSION"), "dundee/gdu", "GDU_VERSION"),
+        "DUST_VER": _resolve_aged_version(os.getenv("DUST_VERSION"), "bootandy/dust", "DUST_VERSION"),
+        "OV_VER": _resolve_aged_version(os.getenv("OV_VERSION"), "noborus/ov", "OV_VERSION"),
+        "DRY_VER": _resolve_aged_version(os.getenv("DRY_VERSION"), "moncho/dry", "DRY_VERSION"),
+        "YAZI_VER": _resolve_aged_version(os.getenv("YAZI_VERSION"), "sxyazi/yazi", "YAZI_VERSION"),
+        "SSS_VER": _resolve_sss_commit(os.getenv("SSS_VERSION")),
         "BAT_VER": _resolve_version(os.getenv("BAT_VERSION"), "sharkdp/bat"),
         "FD_VER": _resolve_version(os.getenv("FD_VERSION"), "sharkdp/fd"),
         "RIPGREP_VER": _resolve_version(os.getenv("RIPGREP_VERSION"), "BurntSushi/ripgrep"),

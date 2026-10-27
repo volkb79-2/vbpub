@@ -525,12 +525,12 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     tar -xzf "${DOWNLOADS_DIR}/gdu-${GDU_VER}.tgz" -C /tmp/gdu-extract; \
     require_file /tmp/gdu-extract/gdu_linux_amd64_static; \
     install -m 755 /tmp/gdu-extract/gdu_linux_amd64_static /usr/local/bin/gdu; \
-    # dust: upstream publishes no checksum file; the staged sidecar carries the sha256 pinned in stage_tool_artifacts.py. \
+    # dust: upstream publishes no checksum file; the staged sidecar carries the GitHub release asset digest. \
     require_file "${DOWNLOADS_DIR}/dust-${DUST_VER}.sha256"; \
     require_file "${DOWNLOADS_DIR}/dust-${DUST_VER}.tar.gz"; \
     (cd "${DOWNLOADS_DIR}" && sha256sum -c "dust-${DUST_VER}.sha256"); \
     install_from_tar "${DOWNLOADS_DIR}/dust-${DUST_VER}.tar.gz" dust /tmp/dust-extract; \
-    # ov (pager): .deb verified against the staged upstream checksums file (staging also checks the pinned digest). \
+    # ov (pager): .deb verified against the staged upstream checksums file. \
     require_file "${DOWNLOADS_DIR}/ov-${OV_VER}-checksums.txt"; \
     require_file "${DOWNLOADS_DIR}/ov_${OV_VER}_amd64.deb"; \
     (cd "${DOWNLOADS_DIR}" && grep "ov_${OV_VER}_amd64.deb" "ov-${OV_VER}-checksums.txt" | sha256sum -c -); \
@@ -542,14 +542,14 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     test -n "${EXPECTED_DRY_SHA256}" || { echo "[ERROR] no dry-linux-amd64 line in the staged dry checksums file" >&2; exit 1; }; \
     echo "${EXPECTED_DRY_SHA256}  ${DOWNLOADS_DIR}/dry-${DRY_VER}-linux-amd64" | sha256sum -c -; \
     install -m 755 "${DOWNLOADS_DIR}/dry-${DRY_VER}-linux-amd64" /usr/local/bin/dry; \
-    # yazi (file manager, glibc zip): upstream publishes no checksum file; the staged sidecar carries the pinned sha256. \
+    # yazi (file manager, glibc zip): upstream publishes no checksum file; the staged sidecar carries the GitHub release asset digest. \
     require_file "${DOWNLOADS_DIR}/yazi-${YAZI_VER}.sha256"; \
     require_file "${DOWNLOADS_DIR}/yazi-${YAZI_VER}.zip"; \
     (cd "${DOWNLOADS_DIR}" && sha256sum -c "yazi-${YAZI_VER}.sha256"); \
     unzip -q -o "${DOWNLOADS_DIR}/yazi-${YAZI_VER}.zip" -d /tmp/yazi-extract; \
     install -m 755 "$(find /tmp/yazi-extract -type f -name yazi -print -quit)" /usr/local/bin/yazi; \
     install -m 755 "$(find /tmp/yazi-extract -type f -name ya -print -quit)" /usr/local/bin/ya; \
-    # sss (unreleased bash script pinned by commit; SSS_VER is the full commit): sidecar carries the pinned sha256. \
+    # sss (unreleased bash script; SSS_VER is the full default-branch commit resolved at staging): sidecar carries the sha256 recorded at staging. \
     require_file "${DOWNLOADS_DIR}/sss-${SSS_VER}.sha256"; \
     require_file "${DOWNLOADS_DIR}/sss-${SSS_VER}"; \
     (cd "${DOWNLOADS_DIR}" && sha256sum -c "sss-${SSS_VER}.sha256"); \
@@ -1118,7 +1118,7 @@ RUN set -euo pipefail; \
         echo "ov=$(ov --version 2>&1 | head -1)"; \
         echo "dry=${DRY_VER}"; \
         echo "yazi=$(yazi --version 2>&1 | head -1)"; \
-        echo "sss=unreleased script pinned by commit ${SSS_VER}"; \
+        echo "sss=unreleased script, default-branch commit ${SSS_VER}"; \
         echo "regctl=$(regctl version 2>&1 | awk '/^VCSTag:/ { sub(/^v/, "", $2); print $2; exit }')"; \
         if command -v claude >/dev/null 2>&1; then \
             echo "claude=$(claude --version 2>&1 | head -1)"; \
