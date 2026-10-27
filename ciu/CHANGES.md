@@ -126,6 +126,9 @@ the technical detail below it.
 
 ## [Unreleased]
 
+### Added
+- CIU-134: `ciu worktree rm` reports cleanup phases and remaining artifacts. After a confirmed permission blocker, `--root-escalation {ask,yes,no}` can authorize one record-validated retry through CIU's existing S6.5 helper, then removes only the exact Git registration without broad pruning.
+
 ## [7.16.0] - 2026-10-07
 <!-- cmru: generated -->
 <!-- cmru: source-end=5a9154b69c381545422c6f896f269a8f947b287b -->

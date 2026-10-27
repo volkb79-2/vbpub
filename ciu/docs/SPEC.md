@@ -4259,7 +4259,7 @@ adopted checkout during resume.
   `worktree up` after allocation; a failure returns the child's status and
   retains the checkout for retry. The primary checkout does not consume this
   linked-worktree setting.
-- **`worktree rm NAME [-y] [--force]`** — runs `ciu clean` INSIDE the worktree
+- **`worktree rm NAME [-y] [--force] [--root-escalation {ask,yes,no}]`** — runs `ciu clean` INSIDE the worktree
   under that worktree's own identity — its `[ciu.instance.generated]` facts
   overlaid on an ambient environment (S3.1c clauses 1/7; its `ciu.env` before
   CIU-75), and only then `git worktree remove`. A rootless generic record is
@@ -4271,7 +4271,8 @@ adopted checkout during resume.
   volumes, so it strands `vol-*` dirs owned by image UIDs that an unprivileged
   `rm -rf` cannot delete; and removing the checkout first destroys the rendered
   config that tells CIU what to clean. A failed clean ABORTS the removal unless
-  `--force`.
+  `--force`. A permission-specific Git deletion failure may use the separately
+  consented, exact-target recovery in S16.12; `--force` does not authorize it.
 - **`worktree list`** — the native Git worktree inventory, including unmanaged
   linked checkouts, with the primary marked.
 
@@ -4664,7 +4665,7 @@ lifecycle verbs (`create`/`ensure`/`adopt`) with `--json`,
 **exactly one JSON document on stdout** (`schema_version: 1`); diagnostics go
 to stderr. The `operation` vocabulary is closed (`create | ensure | adopt |
 inspect | lease | list | remove`) and the `status` vocabulary is closed
-(`allocating | ready | recovery-required | removed`); a `recovery-required`
+(`allocating | ready | recovery-required | removed | failed | partial`); a `recovery-required`
 instance additionally carries a closed `recovery_status`
 (`checkout-incomplete | env-generation-failed | runtime-collision |
 runtime-verification-failed`). The
@@ -4685,9 +4686,11 @@ family-scan rules). `list --json` emits an array of the same per-instance
 documents, primary first in git's own order.
 
 Removal captures the validated pre-state (the instance record, when managed)
-and emits success only after BOTH `ciu clean` and `git worktree remove`
-complete; a failure is the existing `WorktreeError` identifying the retained
-resources — never a success document.
+and emits success only after resource cleanup, checkout deletion, Git
+registration removal, branch removal, and record removal complete. On failure,
+`--json` emits one `failed` or `partial` removal document with the failed phase,
+completed phases, and fresh states for the checkout, Git registration, branch,
+CIU record, and shared record.
 
 ### S16.5 — Capability discovery (D-009)
 
@@ -4698,7 +4701,8 @@ instead of inferring features from SemVer. An identifier is added only when
 its code path ships in the same release. Shipped identifiers:
 `worktree.branches.v1`, `worktree.identity.v1`, `worktree.inspect.v1`,
 `worktree.lease.v1`, `worktree.lifecycle-json.v1`, `worktree.reap.v1`,
-`worktree.up.v1`, `worktree.exec-local.v1`, and `worktree.exec-target.v1`.
+`worktree.up.v1`, `worktree.exec-local.v1`, `worktree.exec-target.v1`, and
+`worktree.rm-root-retry.v1`.
 
 ### S16.6 — Exact selected-worktree control (`worktree up` / `worktree exec`)
 
@@ -5328,6 +5332,44 @@ uncertain.
 `adopt` with no overlay flags records known `null` intent and preserves any
 pre-existing operator overlay. If adopt flags would create an overlay where
 one already exists, adoption refuses before writing either lifecycle record.
+
+### S16.12 — Permission-specific worktree-removal recovery (CIU-134)
+
+`ciu worktree rm NAME` accepts `--root-escalation {ask,yes,no}`, defaulting
+to `ask`. The flag does not change the required cleanup order. CIU MUST finish
+`ciu clean` successfully before offering or performing privileged checkout
+deletion. `--force` may authorize the existing ordinary-removal path after a
+failed `ciu clean`, but never grants root consent and disables the privileged
+retry for that invocation.
+
+If `git worktree remove --force` fails, CIU MUST inspect only the residual
+logical checkout for a concrete `EACCES`/`EPERM` blocker, including an
+unreadable or non-writable descendant. Git's message may say only
+`Directory not empty`; stderr text alone is not proof of a permission error.
+Before offering escalation, CIU MUST re-read the CIU/shared ownership records
+and verify their exact checkout path, branch, and Git-family root. If these
+facts are missing, unreadable, ambiguous, or mismatched, CIU refuses the root
+helper. `ask` prompts only after these checks; non-interactive `ask` returns a
+partial report with the `--root-escalation yes` recovery command. `no` makes no
+privileged call. `yes` skips the prompt but does not skip permission or
+identity validation.
+
+The privileged retry MUST remove only the validated physical checkout path
+through CIU's S6.5 helper. If Git's captured per-worktree administration
+directory still exists after that, CIU may remove only that exact directory
+after proving it is beneath this Git family's `worktrees/` directory. CIU
+MUST verify the checkout is absent and Git no longer lists its exact path
+before deleting the branch. It MUST NOT run an unscoped `git worktree prune`.
+The shared workspace record is removed last; any failed phase leaves the
+branch and all surviving records available for inspection.
+
+`--json` emits one `failed` or `partial` removal document on failure, with the
+failed phase, completed phases, and fresh states for the checkout, Git
+registration, branch, CIU record, and shared record. Text mode names the same
+phase and artifacts. A failed cleanup or a non-permission Git error never
+prompts or invokes the helper.
+
+Capability id: `worktree.rm-root-retry.v1`.
 
 ## S17 — Image provenance
 
