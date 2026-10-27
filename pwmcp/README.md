@@ -615,25 +615,36 @@ not publish the bundle until `docker buildx imagetools inspect` shows BOTH `pwmc
 `pwmcp-ocr:<tag>`; if a half-pushed tag must be abandoned, the operator deletes the stray package version
 in the GHCR UI. (A version-bump release cut by mistake is the recovery that went wrong on 2026-09-08.)
 
-**First release of the OCR image: checklist.** The first push creates a GHCR package that has never existed.
-1. *Before the release:* confirm the base digest is current with
-   `docker buildx imagetools inspect debian:trixie-slim` and compare it with `DEBIAN_IMAGE_DIGEST` in
-   `containers/ocr/Dockerfile`; run `python3 scripts/resolve-playwright-version.py --refresh` if it differs
-   (no age window is applied to this rolling base, by design, decided 2026-10-27). A release transaction
-   PREPARED before the `DEBIAN_RELEASE` / `DEBIAN_IMAGE_DIGEST` keys existed fails closed on the new
-   `cmru.vars` keys: re-run the prepare phase instead of editing `cmru.vars`.
-2. *Token:* confirm the release token has `write:packages` for a NEW package under the account
-   (PWMCP-01 notes the PAT once lacked it).
-3. *After the push:* expect `pwmcp-ocr` to be created PRIVATE and possibly not yet linked to the repository
-   (the `org.opencontainers.image.source` label in `containers/ocr/Dockerfile` is what links it). Make it
-   public once in the GHCR UI (Your packages -> pwmcp-ocr -> Package settings -> Change visibility);
-   it persists for all later pushes.
-4. *If the visibility sync hard-fails after BOTH images were pushed* (cmru KI-97: a brand-new package can be
-   "not visible yet" for longer than the 6x5 s retry): the images are already published, so do NOT redo the
-   release. Re-run ONLY the sync step (`GHCR_PACKAGE_NAMES=pwmcp,pwmcp-ocr` and the release identity
-   exported, then the visibility part of `build-push.py`, or set the package public in the UI). Never use
-   `cmru release --resume` without `--set-version`: that mistake produced the wrong v1.0.0 release of
-   2026-09-08 (see the nyxloom-cmru-adoption incident record).
+**First release of the OCR image: checklist.** The first push creates a GHCR package that has never existed
+(checked read-only on 2026-10-27: `pwmcp` is public and linked to the repository, `pwmcp-ocr` answers 404). A new
+package is created PRIVATE, can be "not visible yet" for longer than the visibility sync's 6 x 5 s retry (cmru
+KI-97 turns that into a hard failure after both images were pushed), and GitHub has no API to change a container
+package's visibility, so the sync can only verify. The safe order therefore creates and opens the package BEFORE
+the release, which makes the release's own sync a no-op:
+1. *Preflight (read-only, no push):* `gh api /users/volkb79-2/packages/container/pwmcp-ocr --jq '{visibility,repository:.repository.full_name}'`
+   (404 = not yet created), the same for `pwmcp` (expect `public` and `volkb79-2/vbpub`), and
+   `gh api /repos/volkb79-2/vbpub --jq .visibility` (the visibility the sync mirrors). Confirm the base digest with
+   `docker buildx imagetools inspect debian:trixie-slim` against `DEBIAN_IMAGE_DIGEST` in
+   `containers/ocr/Dockerfile` (`python3 scripts/resolve-playwright-version.py --refresh` if it differs; no age
+   window for this rolling base, by design, 2026-10-27). A release transaction PREPARED before the
+   `DEBIAN_RELEASE` / `DEBIAN_IMAGE_DIGEST` keys existed fails closed on the new `cmru.vars` keys: re-run the
+   prepare phase instead of editing `cmru.vars`.
+2. *Token:* the release PAT needs `write:packages` (and `read:packages`, which the visibility lookup uses) for a
+   NEW package under the account (PWMCP-01 notes a PAT once lacked it).
+3. *Bootstrap push (operator, once):* from a checkout of the merged tree, `docker login ghcr.io`, then
+   `docker buildx bake -f pwmcp/docker-bake.hcl pwmcp-ocr --set 'pwmcp-ocr.tags=ghcr.io/volkb79-2/pwmcp-ocr:bootstrap' --push`
+   (use the same managed builder the release uses). This creates `pwmcp-ocr` under a throwaway tag, so no
+   release tag exists before the release. The `org.opencontainers.image.source` label links the package to the repository.
+4. *Open it (GHCR UI, once):* Your packages -> pwmcp-ocr -> Package settings -> Change visibility -> Public. Re-run
+   the preflight and require `public` and `volkb79-2/vbpub`.
+5. *Release as usual.* The push step now finds the package immediately and the sync verifies `public == public`
+   without any API write. After the release you may delete the `bootstrap` version in the UI.
+6. *If the sync hard-fails anyway* (cmru KI-97, package lookup 404 for > 25 s): both images are already in GHCR
+   but the transaction failed in its push step. There is NO sync-only verb in `build-push.py` (do not look for
+   one). Do not use `cmru release --resume` without `--set-version` (the mistaken v1.0.0 release of
+   2026-09-08); follow exactly the recovery steps cmru printed for the failed step (whether the tag was
+   rolled back decides between resume and abandon-and-re-release; pushing identical content is idempotent).
+   Doing steps 3 and 4 first is what prevents this case.
 
 The release notes embed the SHA256 digest. Verify any downloaded bundle with:
 

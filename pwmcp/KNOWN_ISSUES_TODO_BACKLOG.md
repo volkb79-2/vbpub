@@ -3,7 +3,7 @@
 This file records consumer-facing product gaps for later triage. Normative
 behavior remains in the product specification and consumer documentation.
 
-Last updated: 2026-10-27 (PWMCP-11 OCR sidecar and console watching program, phase 1 on branch).
+Last updated: 2026-10-27 (release wave: pwmcp 1.64.0-r4 readiness, console-corpus release asset, PWMCP-12).
 
 ## PWMCP-01 — Provide a rendered-page inspection command
 
@@ -424,3 +424,23 @@ image rebuild and the `test` extra in `client/pyproject.toml` (not touched on th
 - Gate coverage: `client/src/pwmcp_client/ocr.py` was added to the `assay.toml` judged targets (100% line
   and branch measured locally); the sidecar `containers/ocr/ocr_service.py` is tested but deliberately NOT a
   judged target yet, and the registered gate was not run.
+
+**Release readiness (wave 2026-10-27, read-only checks plus a dry run).** `cmru release --dry-run pwmcp` plans
+`pwmcp-v1.64.0-r3 -> pwmcp-v1.64.0-r4` once the committed inputs carry the r4 coordinate (before that it stops with a
+stale `CHANGES.md` r3 cursor error, because `PWMCP_VERSION` was still r3). The prepare commit moves only the
+revision: `--refresh` with its default 2-day window would pick Playwright 1.64.1, and the estate 14-day freshness rule
+would DOWNGRADE to 1.63.0 (PyPI), so Playwright stays at the already released 1.64.0. Remaining unverified: the real
+two-target bake/push, GHCR creation of `pwmcp-ocr` (404 on 2026-10-27), the pwmcp-client wheel staging (needs the
+network). The first-publish procedure is in README "Release Model"; the README step that claimed a
+"sync-only" re-run was wrong (`build-push.py` has no such verb) and was rewritten around a pre-release bootstrap push.
+
+## PWMCP-12 — the pwmcp 1.64.0-r4 release ships without an R2 (mutation) pass
+
+**Status: OPEN (filed 2026-10-27; operator waiver for the 2026-10-27 release wave).** pwmcp's release step runs
+`run-gate r1` only (`cmru.toml` `[steps.run-tests]`); the `r2` mutation lane (budget 4h, `resource_observer =
+"cgprofile"`) is not part of the release path, so there is no deferral marker to write: r4 is released with R0/R1
+evidence and NO R2 evidence. Newly judged and never mutation-tested: `containers/ocr/ocr_service.py` (about 380
+mutation sites, unmeasured runtime), `client/src/pwmcp_client/user_agent.py`, and the canvas/login modules if they
+land in the judged set. **Close by:** one `run-gate r2` on a branch created at the published `pwmcp-v1.64.0-r4` tag
+(same prerequisites as any R2: the cgprofile observer reachable, capacity evidence), triage of survivors, and a
+recorded verdict here. Until then the release notes say "R2 waived (PWMCP-12)".

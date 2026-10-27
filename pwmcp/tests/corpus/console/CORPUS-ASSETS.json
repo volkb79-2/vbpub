@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "assets": [
+    {
+      "id": "truenas-27-vanilla-series",
+      "release_tag": "pwmcp-console-corpus-truenas-27-vanilla-v1",
+      "asset": "pwmcp-console-corpus-truenas-27-vanilla-v1.tar",
+      "url": "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-console-corpus-truenas-27-vanilla-v1/pwmcp-console-corpus-truenas-27-vanilla-v1.tar",
+      "sha256": "38b287087c42b45e47d25083363490e7853fd043d2a5f8be26dffec4bd480eb2",
+      "size": 5365760,
+      "frames": 242,
+      "series_manifest": "truenas-27-vanilla/series-manifest.jsonl"
+    }
+  ]
+}
