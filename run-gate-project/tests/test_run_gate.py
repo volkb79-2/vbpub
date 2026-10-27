@@ -4340,6 +4340,26 @@ exit 64
         assert closeout["status"] == "unavailable"
         assert "campaign-unit.txt" in closeout["reason"]
 
+    def test_read_closeout_artifact_bounds_and_refuses_non_regular_files(self, tmp_path):
+        read = run_gate._read_closeout_artifact
+        assert read(tmp_path / "absent", 10) == (None, None)
+        data, why = read(tmp_path, 10)
+        assert data is None and "is not a regular file" in why
+        big = tmp_path / "big.json"
+        big.write_bytes(b"x" * 50)
+        data, why = read(big, 10)
+        assert data is None and "is over 10 bytes" in why
+        data, why = read(big, 10, truncate=True)
+        assert data == b"x" * 10 and why is None
+        small = tmp_path / "small.json"
+        small.write_bytes(b"{}")
+        assert read(small, 10) == (b"{}", None)
+
+    def test_the_stderr_hint_is_empty_for_blank_output(self):
+        assert run_gate._closeout_stderr_hint(None) == ""
+        assert run_gate._closeout_stderr_hint(b"  \n\n") == ""
+        assert run_gate._closeout_stderr_hint(b"a\nb") == "; analysis stderr: b"
+
     def test_stderr_is_only_a_bounded_hint_and_never_refuses_the_closeout(
             self, tmp_path, monkeypatch):
         assay = tmp_path / "proj" / ".assay"
