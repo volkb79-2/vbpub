@@ -47,6 +47,29 @@ Run through the supported verb `run-gate --worktree <wave worktree> <lane>` from
 | r0-r1 (run 3) | `a8e3e9a90` (test-only nits after round-2 review) | PASS exit 0: 2627 passed, 100% line and branch |
 | r2 | - | WAIVED (operator, 2026-10-27), CP-30 |
 
+## Post-gate changes: pre-release deep review (branch `fable-cgprofile-20261027`, 2026-10-27)
+
+A one-time deep review of the tool before the cut landed `3e50df9cc` on top of `677a56d0c`. It CHANGES `lib/`
+(`metrics.py`, `summary.py`, `events.py`, `util.py`, `targets.py`, `serve.py`) and `cgprofile.py`, so the gate
+table above does NOT cover the release tree any more: **`r0-r1` and `r3` must be re-run on the final tree** (the
+cmru release gate does both) before 1.1.0 is cut. Evidence for the review commit itself, measured in a scratch venv
+built from `requirements.txt` (+ `coverage`, see CP-32) on the devcontainer, not through the registered lane:
+
+| Check | Result |
+|---|---|
+| full suite, pre-change tree (`677a56d0c`) | 2624 passed, 3 failed: the three `tests/test_docs.py` cases that import the installed `run_gate` wheel, absent from the scratch venv (environment, not product; the registered lane runs in tester-unified where the wheel exists) |
+| the 32 new tests against the pre-change tree | 30 failed, 2 passed (the two are regression pins: default-group selection and root-path spellings) |
+| full suite, review tree (`3e50df9cc`) | 2656 passed, same 3 environment failures |
+| coverage, review tree | 100% line and branch on every module (`coverage report` lists no file below 100%) |
+
+What the review changed (details in `CHANGES.md` [Unreleased] and the commit): additive sample groups `swapev` and
+`memev_h` (CP-29 items 1-2) and the `swap_fail` event; `cgroup:` path canonicalisation with `..` refused; slice-name
+validation (`a--b`, `-a`, `a/b` refused, also at `serve` start for `--observe-slices`/`--gates-slice`);
+`docker inspect --type container` with a 64-hex `Id` check and a resolve-failure instead of a `TimeoutExpired`
+traceback; non-finite PSI fields dropped. None of it touches the contract-1 wire shapes, the Summary document, the
+goldens in `tests/fixtures/rg55/`, or the slice guard. Backlog items filed by the review: CP-32 to CP-37; CP-27,
+CP-28 and CP-29 carry dated review notes.
+
 Review: round 1 (fresh Sonnet reviewer) found a real regression (`stop` joined the sampler under the daemon-wide lock, so a
 worker that was itself finishing produced a spurious `stop-incomplete`); fixed in `420ac1554` with a test that fails without the fix,
 and MINOR findings N9-N12 filed under CP-27. Round 2 (fresh Sonnet reviewer) on the fix: READY, two test nits applied. The r3 run is on `420ac1554`; the later commits change tests and docs only (`git diff 420ac1554 HEAD -- lib` is empty at the time of writing, re-run r3 on the final release tree via the cmru release gate).

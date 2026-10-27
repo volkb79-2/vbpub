@@ -81,3 +81,37 @@ Related: CP-1 (retention), CP-2 (mounted socket), CP-8 (liveness/watch streaming
 ## Next step
 
 Operator picks the daemon-vs-subcommand direction; then a design note in `DESIGN.md` (new section) and a carve into: (a) collectors + schema, (b) monitor runner + rotation, (c) analyze episodes, (d) iogov/iomon migration.
+
+## Updates
+
+### 2026-10-27 (pre-release review of 1.1.0, branch fable-cgprofile-20261027): code reality versus the plan
+
+Checked each per-component decision above against `lib/` as of 1.1.0:
+
+- Collectors: `swapev` and `memev_h` now exist (CP-29 items 1-2 delivered); `io.stat`, three PSI files,
+  `memory.stat`, `cpu.stat`, `pids` were already there. The per-cgroup record shape (DESIGN.md §3.1) is the schema
+  candidate for open question 4; it is keyed by cgroup path and additive by group, which is what iogov needs.
+  `psi_*` values are now guaranteed finite (a non-finite PSI field is dropped), so the JSONL is strict-parser safe.
+- Target resolution: `cgroup:` paths are canonical and cannot leave the mounted tree, slice names are validated;
+  BUT a `container:` target is resolved once and never re-resolved after a restart, and bare names/`label:` use
+  `docker ps` inventories. The exact-name re-resolution the acceptance list requires is CP-35 and is a
+  prerequisite for carve (b).
+- Sampler: `Sampler` already supports a fixed cadence (the daemon sets `hot_interval == idle_interval` and
+  `hot_threshold=2.0`); a monitor needs the same trick plus a `max_duration`-free run and rotation. Nothing in
+  `sampler.py` blocks open question 2; a `fixed_interval` config field would make the intent explicit.
+- Store: `RunDir.append` is one `os.write` per record, gzip member per line; there is no rotation, size bound or
+  age bound (open question 5). The daemon writes `samples.jsonl.gz` + `host.jsonl` (plain text) per tick;
+  `host.jsonl` is the one that grows unbounded at 1 s cadence over days.
+- Daemon: `ctl start` is hard-wired to `containerid:` + `--meta` + a gate scope; `ctl host` hardcodes `dev.slice`
+  and reads memory/cpu only (CP-36). Extending `serve` (open question 1) means a second session kind; a separate
+  `monitor` subcommand reusing `sampler.py`/`metrics.py`/`store.py` touches no contract-1 surface and is the
+  smaller first step. The daemon's serial accept loop (CP-33) argues against hosting a long-lived monitor on the
+  same socket until admission is bounded.
+- Privileges: the read-only observation of 2026-10-27 (root container, host cgroup tree read-only, no host
+  namespaces) is sufficient for every collector in the acceptance list; only `/proc/diskstats` (host `/proc` bind,
+  already present for the helper) is extra. `attach --mode direct` is refused without a host view (correct).
+- Events: `events.Detector` is per-tick and edge-triggered; a PSI stall EPISODE (duration, pre/post context) is a
+  different object and does not fit `_threshold_event` (open question 6 stands).
+
+Net: carve (a) (collectors + schema) is now mostly done; (b) depends on CP-35 and a rotation design; (c) and (d) are
+unblocked by nothing in the code.

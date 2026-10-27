@@ -39,3 +39,14 @@ Measured 2026-10-27 against the host cgroup tree, `lib.metrics.sample_cgroup` al
 ## Updates
 
 Parent: CP-28. Related: CP-20 (local and hierarchical events), CP-7 (limits table).
+
+### 2026-10-27 (pre-release review, branch fable-cgprofile-20261027)
+
+- Items 1 and 2 are DELIVERED in 1.1.0: `metrics.GROUPS` gains `swapev` (`memory.swap.events`) and `memev_h`
+  (hierarchical `memory.events`); both are sampled by default by the one-shot collector and recorded per tick by the
+  daemon (`summary._TARGET_GROUPS`), the Summary is unchanged, and `events.py` emits `swap_fail` on a `fail` delta.
+  The absent-file oracle (`{}`, never zeros) and the "memev stays local" oracle are in `tests/test_metrics.py`.
+- Item 4 (io PSI and io.stat in `ctl host`) is absorbed by CP-36 together with the hardcoded `dev.slice` root.
+- Items 3, 5 and 6 (io control-plane snapshot, device-name mapping, `/proc/diskstats`) stay open here. Note for
+  item 3: `io.prio.class` does not exist on the measured kernel's cgroups and `io.latency` is not compiled in, so
+  the snapshot must record "absent" per file, exactly as the acceptance line already says.

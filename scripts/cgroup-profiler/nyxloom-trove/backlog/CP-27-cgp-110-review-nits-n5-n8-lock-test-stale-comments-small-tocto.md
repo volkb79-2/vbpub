@@ -57,3 +57,10 @@ they be filed. The branch was merged into the 1.1.0 wave branch on 2026-10-27; t
 - **N11.** In the forced path `thread.join` (10 s) and the `sess.lock` acquire (10 s) both run under the daemon-wide lock: up to 20 s
   per call with other verbs blocked (bounded, not hung). Consider joining outside the lock (as `stop` now does) for shutdown too.
 - **N12.** `cgprofile.py` calls `daemon_slice_problem` twice (cosmetic double read); a stray blank line at `serve.py` near line 138.
+
+### 2026-10-27 (pre-release review, branch fable-cgprofile-20261027)
+
+- N12: the stray blank line in `lib/serve.py` is removed. The double `daemon_slice_problem` read in `cmd_serve`
+  (`daemon_slice_bounded` then `daemon_slice_problem` for the message) is KEPT on purpose: `daemon_slice_bounded`
+  is the monkeypatch seam four existing tests use to skip the guard; collapsing it to one call means re-pointing
+  those tests. Cosmetic, accepted. N5-N11 are unchanged and still open.
