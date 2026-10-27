@@ -675,3 +675,99 @@ def test_notice_snippet_hashes_are_computed_and_checked(tmp_path):
     wrong = notice.replace(nh.SNIPPETS["V"][2], nh.SNIPPETS["T"][2], 1)
     assert any("snippet V" in p for p in nh.check_notice(wrong))
     assert "u18" in notice and "unverified" in notice.lower()
+
+
+# ----------------------------------------------------------------------------- third review: pre-cap class kept, flags, caches, PSF1, NOTICE hashes, reader pin
+@pytest.mark.parametrize("policy", ["latin-only", "none", "declared-repertoire"])
+@pytest.mark.parametrize("phrase", ["Hello World", "Hello", "World", "quick brown"])
+def test_trust_scale_restores_h_cells_and_applies_the_same_homoglyph_policy_as_the_1to1_read(policy, phrase):
+    """k=4 (2x zoom of the 16x32 screen, capped) + trust_scale must decide exactly like the uncapped k=2 reading of the same screen, for every policy."""
+    base, extra = _load("fonts.atlas.json", "fonts.console-extra.atlas.json")
+    atlas = gg.Atlas.merge(base, extra)
+    lines = [l[:40] for l in DENSE]
+    src = _render_font(extra.fonts["font:csvga-16x32"], lines)
+    ref = gg.read_image(src, atlas)                                    # k=2: guard complete, nothing capped
+    capped = gg.read_image(_zoom(src, 2), atlas)                       # k=4: capped
+    assert ref["scale_capped"] is False and capped["scale_capped"] is True and "H" in ref["conf"][0]
+    assert set(capped["conf"][0][7:18]) == {"z", "b"} and capped["scale_precap"]["0,11"] == "H"
+    assert any(v == "H" for v in capped["scale_precap"].values())
+    trusted = gg.trust_scale(capped)
+    assert trusted["conf"] == ref["conf"] and trusted["flags"] == ref["flags"] and trusted["rows"] == ref["rows"]
+    a = gg.strict_match(ref, phrase, homoglyphs=policy)
+    b = gg.strict_match(capped, phrase, homoglyphs=policy, trust_scale=True)
+    assert (a["matched"], a["hits"]) == (b["matched"], b["hits"])
+    assert gg.strict_match(capped, phrase, homoglyphs=policy)["matched"] is False          # without the opt-in nothing is actionable
+    assert gg.find_phrase(trusted, phrase, homoglyphs=policy) == gg.find_phrase(ref, phrase, homoglyphs=policy)
+
+
+def _bar_font_atlas(tmp_path):
+    """Synthetic 8x16 font whose glyphs DECODE: 'A', 'B', a cursor-shaped lower bar U+2581 and a rule piece U+2500."""
+    rows_b = [0, 0, 0x7C, 0x42, 0x7C, 0x42, 0x42, 0x7C, 0, 0, 0, 0, 0, 0, 0, 0]
+    bar = [0] * 14 + [0xFF, 0xFF]
+    rule = [0] * 8 + [0xFF] + [0] * 7
+    (tmp_path / "bar.psf").write_bytes(_psf2_bytes(8, 16, [(R_SMALL, "A"), (rows_b, "B"), (bar, "▁"), (rule, "─")]))
+    a = gg.Atlas()
+    ff.build_font_atlas(a, "font:bar", ff.load_psf(str(tmp_path / "bar.psf")), "ascii+box")
+    return a
+
+
+def test_capped_cells_keep_rule_and_cursor_flags_of_their_precap_class(tmp_path):
+    atlas = _bar_font_atlas(tmp_path)
+    ent = atlas.fonts["font:bar"]
+    lines = ["ABABABABAB"] * 8 + ["─" * 8, "ABAB▁"]
+    ref = gg.read_image(_render_font(ent, lines, cols=12, rows=10), atlas, grid_hints=[(8, 16)])
+    assert ref["conf"][8][:4] == "FFFF" and ref["flags"][8][:4] == "rrrr" and ref["flags"][9][4] == "c"          # 1:1: rule run and cursor candidate
+    z3 = gg.read_image(_zoom(_render_font(ent, lines, cols=12, rows=10), 3), atlas, grid_hints=[(8, 16)])
+    assert z3["scale_unverified"] == 3 and z3["scale_capped"] is True and set(z3["conf"][0][:10]) == {"z"}
+    assert z3["flags"] == ref["flags"]                                    # flags as if the cells were F
+    t = gg.trust_scale(z3)
+    assert t["conf"] == ref["conf"] and t["flags"] == ref["flags"]
+    for phrase in ("ABAB", "────", "AB▁"):
+        assert gg.strict_match(t, phrase)["matched"] == gg.strict_match(ref, phrase)["matched"]
+    assert gg.strict_match(t, "\u2500\u2500\u2500\u2500")["matched"] is False     # the rule run stays refused (flag r)
+
+
+def test_atlas_add_clears_derived_caches():
+    big = {"cell_w": 16, "cell_h": 32, "glyphs": {}, "origin": {"kind": "font-file", "sha256": "0" * 64}}
+    rows = [[0, 0, 0x18, 0x24, 0x42, 0x7E, 0x42, 0x42, 0x42, 0x42, 0, 0, 0, 0, 0, 0][i // 2] for i in range(32)]
+    key16 = b"".join(int("".join("11" if v >> (7 - x) & 1 else "00" for x in range(8)), 2).to_bytes(2, "big") for v in rows)
+    a = gg.Atlas({"font:big": big})
+    assert a.scale_twins(2, 8, 16) == {}                                  # cached empty
+    a.add("font:big", 16, 32, key16, "Z")
+    twins = a.scale_twins(2, 8, 16)
+    assert list(twins.values()) == [{"Z"}]
+
+
+def test_psf1_unicode_table_with_an_unterminated_final_record_fails_loudly(tmp_path):
+    p = tmp_path / "t.psf"
+    p.write_bytes(_psf1_bytes({0: [0xFF] * 8}, mode=2, table=_u16(0x41, 0xFFFF) + _u16(0x42, 0x43)))        # second record never ends
+    with pytest.raises(ValueError, match="no 0xFFFF terminator"):
+        ff.load_psf(str(p))
+    q = tmp_path / "odd.psf"
+    q.write_bytes(_psf1_bytes({0: [0xFF] * 8}, mode=2, table=_u16(0x41, 0xFFFF) + b"\x42"))
+    with pytest.raises(ValueError):
+        ff.load_psf(str(q))
+    ok = tmp_path / "ok.psf"
+    ok.write_bytes(_psf1_bytes({0: [0xFF] * 8}, mode=2, table=_u16(0x41, 0xFFFF)))                       # a table that is simply shorter: padded, as before
+    assert [g[0] for g in ff.load_psf(str(ok)).glyphs[:2]] == [[0x41], []]
+
+
+def test_check_notice_rejects_any_unrecorded_sha256():
+    import notice_hashes as nh
+    notice = open(os.path.join(HERE, "..", "tools", "glyphgrid", "NOTICE.md"), encoding="utf-8").read()
+    assert nh.check_notice(notice) == []
+    extra = notice + "\nbogus `" + "ab" * 32 + "`\n"
+    assert any("not a recorded one" in p for p in nh.check_notice(extra))
+    assert nh.check_notice(notice + "\nprefix `" + "ab" * 8 + "...`\n") == []          # a truncated prefix is not a full hash claim
+
+
+def test_glyph_reader_stores_no_session_for_an_undone_upscale_so_an_identical_frame_is_a_full_pass():
+    """Pins the ``integer_upscale == 1`` session condition: with a session an identical k>1 frame would be returned as 'identical' without the guard path."""
+    base, extra = _load("fonts.atlas.json", "fonts.console-extra.atlas.json")
+    atlas = gg.Atlas.merge(base, extra)
+    im = _zoom(_render_font(extra.fonts["font:csvga-16x32"], [l[:40] for l in DENSE]), 2)
+    reader = gg.GlyphReader(atlas)
+    assert [reader.read(im)["session"]["path"] for _ in range(3)] == ["full", "full", "full"]
+    plain = gg.GlyphReader(base, grid_hints=[(8, 16)])
+    crop = Image.open(os.path.join(FIX, "crop-14-dialog.png")).convert("RGB")
+    assert [plain.read(crop)["session"]["path"] for _ in range(2)] == ["full", "identical"]               # k == 1 keeps its session

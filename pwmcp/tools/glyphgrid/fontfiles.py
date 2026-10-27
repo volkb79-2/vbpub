@@ -44,20 +44,29 @@ def _read(path):
 def _psf1_entries(table: bytes, n: int):
     """PSF1 unicode table -> list (one per glyph) of single code points.  Records are UCS-2LE values ended by 0xFFFF; a 0xFFFE inside a
     record starts a combining sequence, which is not a code point of the glyph, so the rest of that record is ignored.  A truncated table
-    yields empty lists for the missing glyphs."""
+    yields empty lists for the missing glyphs; a final record that has started but is not terminated by 0xFFFF (or an odd trailing byte) raises
+    ValueError, as for PSF2."""
     out, pos = [], 0
     for _ in range(n):
-        cps, seq = [], False
+        cps, seq, closed = [], False, False
+        if pos >= len(table):
+            out.append(cps)
+            continue
         while pos + 2 <= len(table):
             v = struct.unpack_from("<H", table, pos)[0]
             pos += 2
             if v == 0xFFFF:
+                closed = True
                 break
             if v == 0xFFFE:
                 seq = True
             elif not seq:
                 cps.append(v)
+        if not closed:
+            raise ValueError("PSF1 unicode table ends inside a record (no 0xFFFF terminator)")
         out.append(cps)
+    if pos < len(table) and len(table) - pos < 2 and out:
+        raise ValueError("PSF1 unicode table ends with a stray byte")
     return out
 
 

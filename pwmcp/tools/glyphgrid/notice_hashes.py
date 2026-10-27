@@ -19,6 +19,15 @@ SNIPPETS = {
     "S": (48, 52, "25ca3792e8c0e6dfb5b37bfcacce81cc96f3da0ead6aff02fd530acb683b5ed0"),
     "T": (114, 122, "1367be4bddcf2a7afb5a251b10805697694c8e803d54cd306cd36ce7ac4e598d"),
 }
+# sha256 values NOTICE.md may quote besides the snippets/file hashes (ISOs, debs, kernels, font files, the base fonts); NOTICE.md must not carry any other
+KNOWN_OTHER_SHA256 = (
+    "515a0252e72f1a6c86d603fa4d1661333029fe9a4804d0a7a28d24fe4f63498e",     # TrueNAS 27.0.0-RC.1 ISO
+    "a7ef94ac2fb9a7fec454552abd629b7cc9d5155c886165a45649f5ce6167e355",     # Debian 13.7.0 amd64 netinst ISO
+    "76e8019ff1b68ddb3e49cecb1ea35ecead9e0f1c1ba22c0e819c9b13de939e72",     # grml-full 2026.09 amd64 ISO
+    "c96eb9386cd8d65dceb0a58726dcef7cf7a0aedca7f514139c225ab391baca27",     # console-setup-linux 1.242~deb13u1 deb
+    "f8b614f910166a74db8b4fe1d28a1b464dc4f4f726ed60ed9cc321e9eff8fed1",     # keyboard-configuration 1.242~deb13u1 deb
+    "9aed29abee9d52d714b393c54a3394dba936694091a984b6d367fbb68cc5547c",     # its main copyright file
+)
 FILE_SHA256 = "e51cd6608b3d3c3e3e71669532a4c59653a8b84060a47651046eb8556b69ee88"            # copyright.fonts.gz as shipped
 TEXT_SHA256 = "adeb95d45c8f1b944dc21032e74ea2e5636e0f4a34a63783fd37044af9852dcb"            # decompressed
 
@@ -49,6 +58,9 @@ def check_notice(notice: str) -> list:
     for h in (FILE_SHA256, TEXT_SHA256):
         if h not in notice:
             bad.append("file hash %s not in NOTICE.md" % h[:12])
+    allowed = {h for _, _, h in SNIPPETS.values()} | {FILE_SHA256, TEXT_SHA256} | set(KNOWN_OTHER_SHA256)
+    for h in sorted(set(re.findall(r"(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])", notice)) - allowed):
+        bad.append("NOTICE.md contains a 64-hex sha256 that is not a recorded one: %s" % h)
     return bad
 
 

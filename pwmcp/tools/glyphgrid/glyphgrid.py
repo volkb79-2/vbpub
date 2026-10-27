@@ -774,6 +774,7 @@ class Atlas:
 
     # learning
     def add(self, font: str, cell_w: int, cell_h: int, key: bytes, char: str, source: str = "", phase=None):
+        self._xcache.clear()     # cross-font / scale-twin caches are derived from the glyph tables
         f = self.fonts.setdefault(font, {"cell_w": cell_w, "cell_h": cell_h, "glyphs": {}})
         if phase is not None:
             ph = [phase[0] % cell_w, phase[1] % cell_h]
@@ -1005,6 +1006,7 @@ def decode(ex: Extraction, atlas: Atlas, font: str | None = None, max_hamming: i
     rows, conf, unknown, cells, flags = [], [], [], [], []
     memo = {}
     aliases = {}
+    precap = {}     # (row, col) -> F | H for cells capped to class z
 
     def neighbour_text_bg_differs(row, ci, c):
         for j in (ci - 1, ci + 1):
@@ -1027,11 +1029,16 @@ def decode(ex: Extraction, atlas: Atlas, font: str | None = None, max_hamming: i
                     if r is None:
                         r = memo[key] = _decode_glyph(atlas, chosen, c.key, max_hamming, min_groups, margin, proven, twins.get(c.key.hex()))
                         if scale_cap and r[1] in (CONF_FONT, CONF_HOMO):
+                            # keep the class the cell would have had (F or H) and its homoglyph set: ``trust_scale`` restores exactly that, and the
+                            # flag pass (rule line / cursor) treats the cell as that class, so the cap never loosens any 1:1 rule
                             r = memo[key] = (r[0], CONF_SCALED, {"reason": "font-exact after an undone %d-fold upscale; no loaded font for every divisor size, so a "
-                                                                          "larger font cannot be excluded" % k_un, "would_read": r[0], **(r[2] or {})})
+                                                                          "larger font cannot be excluded" % k_un, "would_read": r[0], "precap": r[1],
+                                                                 **({"aliases": r[2]["aliases"]} if r[1] == CONF_HOMO else {})})
                     ch, st = r[0], r[1]
-                    if st in (CONF_ALIAS, CONF_HOMO):
+                    if st in (CONF_ALIAS, CONF_HOMO) or (st == CONF_SCALED and "aliases" in r[2]):
                         aliases[(c.row, c.col)] = r[2]["aliases"]
+                    if st == CONF_SCALED:
+                        precap[(c.row, c.col)] = r[2]["precap"]
             elif neighbour_text_bg_differs(row, ci, c):
                 ch, st = FILL_CHAR, CONF_FILL
             chars.append(ch)
@@ -1046,7 +1053,9 @@ def decode(ex: Extraction, atlas: Atlas, font: str | None = None, max_hamming: i
         rows.append("".join(chars))
         conf.append("".join(cf))
     iscur = lambda st, ch: st in EXACTLIKE and ch in CURSOR_CHARS  # noqa: E731
-    for r, (row, cf) in enumerate(zip(ex.rows, conf)):
+    # flags (rule line, cursor) are computed as if the capped cells kept their pre-cap class
+    conf_eff = ["".join(precap.get((r, ci), ch) if ch == CONF_SCALED else ch for ci, ch in enumerate(cf)) for r, cf in enumerate(conf)] if precap else conf
+    for r, (row, cf) in enumerate(zip(ex.rows, conf_eff)):
         fl = ["."] * len(row)
         ci = 0
         while ci < len(row):
@@ -1103,7 +1112,8 @@ def decode(ex: Extraction, atlas: Atlas, font: str | None = None, max_hamming: i
            "unknown_cells": unknown, "max_hamming": max_hamming, "min_groups": min_groups,
            "aliases": {"%d,%d" % k: v for k, v in aliases.items()}}
     if k_un > 1:
-        res.update(scale_unverified=k_un, scale_guard_fonts=guard_fonts, scale_capped=scale_cap)
+        res.update(scale_unverified=k_un, scale_guard_fonts=guard_fonts, scale_capped=scale_cap,
+                   scale_precap={"%d,%d" % k: v for k, v in precap.items()})
     if status != "ok":
         res["message"] = ("no atlas font reads this screen (need >= %d ordinary cells and >= %d%% of them): every cell UNKNOWN" % (min_hits, int(min_share * 100))
                           if status == "no_font" else
@@ -1370,7 +1380,9 @@ class GlyphReader:
         res = read_image(im, self.atlas, self.font, self.max_hamming, self.auto_unscale, grid_hints=self.grid_hints, _capture=cap,
                          **self.decode_kw)
         self._st = None
-        if cap and cap["probe"]["integer_upscale"] == 1 and res.get("status") == "ok" and not _REFERENCE:
+        # no ``integer_upscale == 1`` test: for k > 1 the stored image is the UNSCALED one, so the next raw frame never has the same size and the incremental
+        # path is unreachable (removing the test changes no observable result; pinned by test_glyph_reader_stores_no_session_for_an_undone_upscale...)
+        if cap and res.get("status") == "ok" and not _REFERENCE:
             ex, state = cap["ex"], cap["state"]
             g = ex.grid
             if g["cell_h"] >= 5 and cap["im"].mode == "RGB":
@@ -1589,11 +1601,13 @@ def find_phrase_ambiguous(res: dict, phrase: str, exclude_flagged: bool = True, 
 
 
 def trust_scale(res: dict) -> dict:
-    """Explicit opt-in for a capture that was an undone integer upscale: returns a copy of ``res`` whose capped ``z`` cells count as F, and records the
+    """Explicit opt-in for a capture that was an undone integer upscale: returns a copy of ``res`` whose capped ``z`` cells get back the class they had
+    before the cap (F, or H with its homoglyph set, so the caller's homoglyph policy applies exactly as at 1:1), and records the
     choice (``res["trust_scale"] = True``, ``res["scale_unverified"]`` stays).  Use it only if the capture path is known to be a browser/display zoom of a
     native 1:1 screen (the cap exists because the loaded atlas cannot exclude a larger native font)."""
     out = dict(res)
-    out["conf"] = [row.replace(CONF_SCALED, CONF_FONT) for row in res.get("conf", [])]
+    pre = res.get("scale_precap", {})
+    out["conf"] = ["".join(pre.get("%d,%d" % (r, ci), CONF_FONT) if ch == CONF_SCALED else ch for ci, ch in enumerate(row)) for r, row in enumerate(res.get("conf", []))]
     out["trust_scale"] = True
     return out
 
