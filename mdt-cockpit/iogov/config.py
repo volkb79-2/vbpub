@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -251,16 +252,24 @@ def load(path: str | None = None) -> Config:
         import tomllib
     except ImportError as exc:  # pragma: no cover - python < 3.11
         raise ConfigError("python >= 3.11 (tomllib) is required to read the config file") from exc
+    # The config path may be a symlink (a managed-config layout), but only a ROOT-owned one; its target must then pass every check a
+    # plain file must pass. Anything else that is not a regular file (FIFO, device node, directory) is refused before any open.
+    target = path
+    lst = os.lstat(path)
+    if stat.S_ISLNK(lst.st_mode):
+        if lst.st_uid != 0:
+            raise ConfigError(f"{path}: a symlinked config path must itself be root-owned (is uid {lst.st_uid})")
+        target = os.path.realpath(path)
     try:
-        safeio.refuse_non_regular(path)  # a FIFO, device node or symlink at the config path is refused before any open
+        safeio.refuse_non_regular(target)
     except safeio.UnsafePath as exc:
         raise ConfigError(str(exc)) from None
-    st = os.stat(p)
+    st = os.stat(target)
     if st.st_mode & 0o022 or st.st_uid not in (0, os.geteuid()):
         raise ConfigError(f"{path}: refusing a config file that is writable by group/others or owned by another user")
     if st.st_size > MAX_CONFIG_BYTES:
         raise ConfigError(f"{path}: {st.st_size} bytes exceeds the {MAX_CONFIG_BYTES} byte limit")
-    text = safeio.read_text(path, MAX_CONFIG_BYTES, follow=False)
+    text = safeio.read_text(target, MAX_CONFIG_BYTES, follow=False)
     if text is None:
         raise ConfigError(f"{path}: cannot be read")
     try:

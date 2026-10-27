@@ -88,6 +88,11 @@ evidence and emits **recommendations** such as "capability shifted down ~20x on 
 | Backed-off tick ran the gate every 5 min | at most one passive-on-skip record (and gate read) per `skip_passive_interval_s` (15 min; 1-60 min), reason `backoff:until=<t>` | Third review (S4): the evidence of a busy host at bounded cost. |
 | "Any user may run analyze/status" | root or the service user | Third review (S5): the state directory is 0700; the docs now say what the install makes true. |
 | Removed config keys were errors | deprecation warning for one release (`DEPRECATED_KEYS`), ignored and listed by `plan`/`config` | Third review (S7): an upgraded host must not stop ticking over an old key. |
+| `RuntimeMaxSec=` as the hung-syscall backstop | `TimeoutStartSec=` (tick 10 min, bench 30 min); rendered units pass `systemd-analyze verify` in a test | Fourth review (T1): `RuntimeMaxSec=` is ignored on `Type=oneshot` units; the claimed backstop did nothing. |
+| Refused state load still saved `{}` | `exclusive` persists only after a successful load; a refused state file is left untouched | Fourth review (T2): a wrong-mode/owner, symlinked or FIFO `state.json` was replaced by an empty one, resetting budget and backoffs exactly when the state was suspect. |
+| `resets.log` decoded strictly | `errors="replace"`, bad lines skipped | Fourth review (T3): one stray byte made every run exit 3. |
+| Config path must be a regular file | a ROOT-owned symlink is accepted when its target passes every check | Fourth review: managed-config layouts symlink `/etc/<tool>/<file>`. |
+| Journal limits counted characters | bytes, from the binary layer | Fourth review. NaN/inf in persisted numbers (`skip_passive_t`, `next_bench`, `backoff.until`) are treated as absent; an internal error also leaves a journal `note` (`kind: error`). |
 
 ## 3. Layout and the 'no write' property
 
@@ -168,7 +173,8 @@ so each IO is also bounded in time: any single IO slower than 250 ms stops furth
 
 **What the watchdog cannot do, and the backstop.** The flush watchdog only sets the stop flag: a `fdatasync` (or a raw read) blocked in the
 kernel is not interrupted, and until it returns the process cannot refund its budget or remove the scratch file. The hard backstop is the
-unit: `RuntimeMaxSec` (tick 10 min, bench 30 min) makes systemd send SIGTERM, `TimeoutStopSec` (30 s / 60 s) later SIGKILL. A killed run is
+unit: `TimeoutStartSec` (tick 10 min, bench 30 min; for a `Type=oneshot` service this IS the runtime bound, `RuntimeMaxSec=` is ignored
+there, which `systemd-analyze verify` reports and a test checks) makes systemd send SIGTERM, `TimeoutStopSec` (30 s / 60 s) later SIGKILL. A killed run is
 handled by design, not by luck (tested): the reservation stays charged (it was persisted before the IO; nothing refunds it), `next_bench`
 and the failure counter were persisted before the IO (so a hung bench backs off, and disables itself after `bench_max_failures`), and the
 leftover scratch file is removed by `ExecStopPost=cleanup` or by the next run under the scratch lock.

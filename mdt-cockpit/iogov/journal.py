@@ -152,24 +152,25 @@ def read_records(path: str | Iterable[str], stats: ReadStats | None = None, sinc
             stats.unreadable.append(f"{os.path.basename(name)}: {exc}")
             continue
         with fh:
-            consumed = 0
+            consumed = 0  # BYTES (the limits are byte limits): lines are read from the binary layer and decoded afterwards
+            raw_lines = fh.buffer
             while True:
-                line = fh.readline(MAX_LINE_READ)
-                if not line:
+                raw = raw_lines.readline(MAX_LINE_READ)
+                if not raw:
                     break
-                consumed += len(line)
-                if len(line) >= MAX_LINE_READ and not line.endswith("\n"):
+                consumed += len(raw)
+                if len(raw) >= MAX_LINE_READ and not raw.endswith(b"\n"):
                     stats.oversized += 1
                     while consumed <= MAX_FILE_BYTES:  # discard the remainder of the oversized line in bounded chunks
-                        rest = fh.readline(MAX_LINE_READ)
+                        rest = raw_lines.readline(MAX_LINE_READ)
                         consumed += len(rest)
-                        if not rest or rest.endswith("\n"):
+                        if not rest or rest.endswith(b"\n"):
                             break
-                    line = ""
+                    raw = b""
                 if consumed > MAX_FILE_BYTES:
                     stats.truncated.append(os.path.basename(name))
                     break
-                line = line.strip()
+                line = raw.decode("utf-8", errors="replace").strip()
                 if not line:
                     continue
                 try:

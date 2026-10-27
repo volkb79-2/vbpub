@@ -10,6 +10,7 @@ from __future__ import annotations
 import collections
 import datetime as dt
 import json
+import math
 import os
 import time
 
@@ -26,9 +27,9 @@ MAX_NOTES = 500
 
 
 def _num(v):
-    """A number from an untrusted nested value, else None (bool is not a number here)."""
+    """A finite number from an untrusted nested value, else None (bool is not a number here; NaN/inf are not usable values)."""
 
-    return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+    return v if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else None
 
 
 def clean_state(state: dict) -> tuple[dict, list[str]]:

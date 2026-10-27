@@ -9,6 +9,7 @@ survive a crash (budget reservation, next bench time, failure counters) is persi
 from __future__ import annotations
 
 import contextlib
+import math
 import os
 import sys
 from dataclasses import dataclass, field
@@ -98,15 +99,21 @@ def exclusive(rt: Runtime):
     if not lock.acquire():
         yield False
         return
+    loaded = False
     try:
         rt.state = safeio.load_json(rt.path("state.json"))
         rt.engine = _load_engine(rt)
+        loaded = True
         yield True
     except BaseException:
-        try:  # an unexpected failure still persists what the run had decided (reservation, backoff, skip dedup) while the lock is held
-            rt.save()
-        except Exception:
-            pass
+        # An unexpected failure persists what the run had decided (reservation, backoff, skip dedup) while the lock is held, but ONLY if the
+        # state was loaded: a refused load (wrong mode/owner, symlink, FIFO) must leave the untrusted file exactly as it is, never replace it
+        # with an empty state (that would reset the budget and the backoffs precisely when the state is suspect).
+        if loaded:
+            try:
+                rt.save()
+            except Exception:
+                pass
         raise
     finally:
         lock.release()
@@ -118,7 +125,7 @@ def _read_resets(rt: Runtime) -> list[float]:
         fd = safeio.open_file(rt.path("resets.log"), os.O_RDONLY)
     except FileNotFoundError:
         return out
-    with os.fdopen(fd, "r") as fh:
+    with os.fdopen(fd, "r", errors="replace") as fh:  # a stray non-UTF-8 byte must not stop the service: the line is skipped, not the run
         for line in fh.read(safeio.MAX_JSON_BYTES).splitlines():  # bounded: one float per line, a few lines per year
             try:
                 out.append(float(line.strip()))
@@ -227,7 +234,12 @@ def _guarded(fn):
         except safeio.UnsafePath as exc:
             return _refuse(f"iogov: refusing to continue: {exc}")
         except Exception as exc:
-            return _refuse(f"iogov: internal error, run abandoned: {type(exc).__name__}: {exc}"[:300], 3)
+            msg = f"iogov: internal error, run abandoned: {type(exc).__name__}: {exc}"[:300]
+            try:  # also in the journal, so `analyze` shows the gap; best effort (the journal may be what failed)
+                rt.journal.append("note", text=msg, kind="error")
+            except Exception:
+                pass
+            return _refuse(msg, 3)
 
     wrapper.__name__ = fn.__name__
     wrapper.__doc__ = fn.__doc__
@@ -258,7 +270,7 @@ def run_tick(rt: Runtime) -> int:
         blocked = backoff.blocked() > 0
         now = env.wall()
         last_passive = rt.state.get("skip_passive_t", 0.0)
-        passive_due = not isinstance(last_passive, (int, float)) or now - last_passive >= cfg.skip_passive_interval_s or last_passive > now
+        passive_due = (not _finite(last_passive) or now - last_passive >= cfg.skip_passive_interval_s or last_passive > now)
         if blocked and not passive_due:
             return 0  # backing off and the rate-limited passive snapshot is not due: no gate read, no sleep, nothing
         gate = Gate(cfg, rt.collector, env).check("tick")
@@ -328,8 +340,16 @@ def run_tick(rt: Runtime) -> int:
     return 0
 
 
+def _finite(v) -> bool:
+    """A real, finite number from the persisted state (a NaN/inf/non-number there must never freeze a schedule or a rate limit)."""
+
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
 def bench_due(rt: Runtime) -> bool:
     nxt = rt.state.get("next_bench", 0.0)
+    if not _finite(nxt):
+        return True
     now = rt.env.wall()
     if nxt - now > 7 * DAY + 3600:  # the wall clock went backwards: a due time must never be further away than the longest backoff
         return True

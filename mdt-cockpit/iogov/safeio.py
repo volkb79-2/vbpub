@@ -156,7 +156,7 @@ def read_text(path: str, limit: int = MAX_TEXT_BYTES, follow: bool = True) -> st
                 break
             chunks.append(b)
             total += len(b)
-    except OSError:
+    except (OSError, ValueError):  # ValueError: a negative read size can only come from a broken loop bound; never let it escape
         return None
     finally:
         os.close(fd)

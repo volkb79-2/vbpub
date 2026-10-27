@@ -405,7 +405,7 @@ def test_s2_journal_reads_are_bounded_per_line_per_file_and_per_run(world, monke
     with open(f, "a") as fh:
         fh.write('{"v": 1, "ts": "x", "t": 1.0, "type": "note", "text": "' + "x" * 20000 + '"}\n')  # one oversized line
         fh.write('{"v": 1, "ts": "x", "t": 2.0, "type": "note", "text": "after"}\n')
-        fh.write('{"a":' * 1500 + "\n")  # 7.5 KB, within the line limit, nested beyond what the parser accepts: torn, not a crash
+        fh.write('{"a":' * 500 + "\n")  # unterminated: a plain JSONDecodeError, torn (the RecursionError case is test_t6, real limits)
     stats = ReadStats()
     got = list(read_records(cfg.journal_dir(), stats))
     assert len(got) == n + 1 and got[-1]["text"] == "after" and stats.oversized == 1 and stats.torn == 1
@@ -475,6 +475,8 @@ def test_s3_an_unexpected_exception_is_a_one_line_error_with_state_saved_and_the
     err = capsys.readouterr().err
     assert "internal error" in err and "RuntimeError: boom" in err and "Traceback" not in err
     assert (world.state / "state.json").exists()
+    notes = [r for r in records(world) if r["type"] == "note" and r.get("kind") == "error"]
+    assert len(notes) == 1 and "RuntimeError: boom" in notes[0]["text"]  # the gap is visible in the journal, not only on stderr
     monkeypatch.undo()
     assert run_tick(build(cfg, env)) == 0 and [r for r in records(world) if r["type"] == "probe"]  # the lock was released
 
@@ -505,7 +507,7 @@ def test_s6_units_have_a_hard_backstop_and_a_killed_bench_is_cleaned_up_by_the_n
     units = PKG / "units"
     for name, limit in (("iogov-tick.service.in", "10min"), ("iogov-bench.service.in", "30min")):
         text = (units / name).read_text()
-        assert f"RuntimeMaxSec={limit}" in text and re.search(r"^TimeoutStopSec=\d+$", text, re.M) and "ExecStopPost=" in text
+        assert f"TimeoutStartSec={limit}" in text and re.search(r"^TimeoutStopSec=\d+$", text, re.M) and "ExecStopPost=" in text
     env, clock = make_env()
     cfg = world.config()
     # SIGKILL runs no `finally`: neither the scratch cleanup nor the budget refund happen; only what was persisted BEFORE the IO survives.
@@ -531,3 +533,187 @@ def test_s6_units_have_a_hard_backstop_and_a_killed_bench_is_cleaned_up_by_the_n
     run_bench_cmd(build(cfg, env), force=True)  # the next run also starts from a clean scratch dir and records what it removed
     bench = [r for r in records(world) if r["type"] == "bench"][-1]
     assert bench["status"] == "ok" and bench["region"]["stale_removed"] == [] and state(world)["bench_fail"]["n"] == 0
+
+
+# ===== T1-T9: the Sonnet review of 4e6f87f37 =========================================================================
+
+
+TOKENS = {
+    "IOGOV_USER": "iogov", "IOGOV_PYTHON": "/usr/bin/python3", "IOGOV_PYTHONPATH": "/opt/iogov", "IOGOV_CONFIG": "/etc/iogov/iogov.toml",
+    "IOGOV_STATE_DIR": "/var/lib/iogov", "IOGOV_SCRATCH_DIR": "/var/lib/iogov/scratch", "IOGOV_KILL_SWITCH_FILE": "/etc/iogov/disabled",
+    "IOGOV_DISK_NODE": "/dev/null", "IOGOV_DISK_ID_PATH": "pci-0000:00:04.0", "IOGOV_IO_WEIGHT": "50", "IOGOV_TICK_INTERVAL": "5min",
+}
+
+
+def render_units(into: Path) -> list[Path]:
+    out = []
+    for src in sorted((PKG / "units").glob("*.in")):
+        text = src.read_text()
+        for tok, val in TOKENS.items():
+            text = text.replace(f"@{tok}@", val)
+        assert not re.search(r"@IOGOV_[A-Z_]+@", text), src.name  # every real token rendered (the slice's comment mentions `@IOGOV_*@`)
+        dst = into / src.name[: -len(".in")]
+        dst.write_text(text)
+        out.append(dst)
+    return out
+
+
+def test_t1_oneshot_units_bound_their_runtime_with_timeoutstartsec_not_runtimemaxsec(tmp_path):
+    import subprocess
+    from _testdeps import require_binary
+    for name, limit in (("iogov-tick.service.in", "10min"), ("iogov-bench.service.in", "30min")):
+        text = (PKG / "units" / name).read_text()
+        assert "Type=oneshot" in text and f"TimeoutStartSec={limit}" in text
+        assert not re.search(r"^RuntimeMaxSec=", text, re.M), f"{name}: RuntimeMaxSec= is ignored on Type=oneshot units"
+    analyze_bin = require_binary("systemd-analyze", "verifies the rendered unit templates (a directive systemd ignores is a silent safety hole)")
+    rendered = render_units(tmp_path)
+    units = [p for p in rendered if p.suffix in (".service", ".timer", ".slice")]
+    proc = subprocess.run([analyze_bin, "verify", "--man=no", *[str(p) for p in units]], cwd=tmp_path, capture_output=True, text=True, timeout=60)
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out
+    for bad in ("Ignoring", "has no effect", "Unknown key", "Unknown section", "Failed to parse"):
+        assert bad not in out, out
+
+
+def test_t2_a_refused_state_load_leaves_the_state_file_untouched(world, monkeypatch):
+    env, _ = make_env()
+    cfg = world.config()
+    run_tick(build(cfg, env))
+    sj = world.state / "state.json"
+    good = sj.read_bytes()
+    assert json.loads(good)["last_tick"]
+    # (a) wrong mode
+    os.chmod(sj, 0o644)
+    assert run_tick(build(cfg, env)) == 2 and sj.read_bytes() == good and stat.S_IMODE(os.stat(sj).st_mode) == 0o644
+    os.chmod(sj, 0o600)
+    # (b) wrong owner (the running uid is made to look different)
+    monkeypatch.setattr(safeio, "euid", lambda: os.geteuid() + 1)
+    assert run_tick(build(cfg, env)) == 2 and sj.read_bytes() == good
+    monkeypatch.undo()
+    # (c) a symlink in place of the file
+    target = world.root / "elsewhere.json"
+    target.write_bytes(good)
+    os.rename(sj, world.root / "keep.json")
+    sj.symlink_to(target)
+    assert run_tick(build(cfg, env)) == 2 and sj.is_symlink() and target.read_bytes() == good
+    sj.unlink()
+    # (d) a FIFO in place of the file
+    os.mkfifo(sj)
+    done, box = _finishes(lambda: run_tick(build(cfg, env)))
+    assert done and box["r"] == 2 and stat.S_ISFIFO(os.lstat(sj).st_mode)
+    sj.unlink()
+    os.rename(world.root / "keep.json", sj)
+    assert run_tick(build(cfg, env)) == 0 and json.loads(sj.read_bytes())["last_tick"] >= json.loads(good)["last_tick"]
+
+
+def test_t3_a_non_utf8_resets_log_does_not_stop_the_service(world):
+    env, _ = make_env()
+    cfg = world.config()
+    run_tick(build(cfg, env))
+    p = world.state / "resets.log"
+    p.write_bytes(b"\xff\xfe\n1.0\n")
+    os.chmod(p, 0o600)
+    rt = build(cfg, env)
+    assert run_tick(rt) == 0 and rt.engine.resets == [1.0]
+
+
+def test_t4_a_regular_file_swapped_for_a_fifo_between_lstat_and_open_cannot_block(world, monkeypatch):
+    p = world.root / "swapped"
+    p.write_text("{}")
+    real_open = os.open
+
+    def swap_then_open(path, flags, *a, **k):  # the race: the lstat has passed, now the name points at a FIFO
+        if str(path) == str(p) and not stat.S_ISFIFO(os.lstat(p).st_mode):
+            os.unlink(p)
+            os.mkfifo(p)
+        return real_open(path, flags, *a, **k)
+
+    monkeypatch.setattr(os, "open", swap_then_open)
+    done, box = _finishes(lambda: safeio.open_file(str(p), os.O_RDONLY, any_owner=True))
+    assert done, "the open blocked on the FIFO: O_NONBLOCK is missing"
+    assert isinstance(box.get("exc"), safeio.UnsafePath) and "not a regular file" in str(box["exc"])
+    assert stat.S_ISFIFO(os.lstat(p).st_mode)  # the race really happened: the lstat saw a file, the open got a FIFO
+
+
+def test_t5_read_text_caps_a_regular_file_larger_than_the_limit(tmp_path, monkeypatch):
+    p = tmp_path / "big"
+    p.write_bytes(b"a" * (70000) + b"\n")  # more than one 64 KiB read chunk and more than the limit
+    got = []
+    real_read = os.read
+    monkeypatch.setattr(os, "read", lambda fd, n: (lambda b: (got.append(len(b)), b)[1])(real_read(fd, n)))
+    assert safeio.read_text(str(p), limit=4096) == "a" * 4096
+    assert sum(got) <= 4096 + 1  # the bytes actually pulled from the kernel are bounded too, not only the returned slice
+    got.clear()
+    assert safeio.read_text(str(p), limit=65536 + 100) == "a" * (65536 + 100) and sum(got) <= 65536 + 101
+    got.clear()
+    assert safeio.read_text(str(p)) == "a" * 70000 + "\n" and sum(got) == 70001
+    assert safeio.read_text(str(tmp_path), limit=10) is None  # a directory: not a regular file, no read
+
+
+def test_t6_journal_limits_at_their_real_defaults_and_a_parser_recursion_error(world):
+    env, _ = make_env()
+    cfg = world.config()
+    run_tick(build(cfg, env))
+    f = next((world.state / "journal").glob("journal-*.jsonl"))
+    n = len(records(world))
+    with open(f, "ab") as fh:
+        fh.write(b'{"v": 1, "ts": "x", "t": 1.0, "type": "note", "text": "' + b"x" * (journal_mod.MAX_LINE_READ + 1000) + b'"}\n')
+        fh.write(b"[" * 100000 + b"]" * 100000 + b"\n")  # closed, 200 KB, nested beyond the parser's recursion limit
+        fh.write(b'{"v": 1, "ts": "x", "t": 2.0, "type": "note", "text": "after"}\n')
+    with pytest.raises(RecursionError):
+        json.loads("[" * 100000 + "]" * 100000)  # the premise of the case on this interpreter
+    stats = ReadStats()
+    got = list(read_records(cfg.journal_dir(), stats))
+    assert len(got) == n + 1 and got[-1]["text"] == "after" and stats.oversized == 1 and stats.torn == 1
+
+
+def test_t7_nan_in_persisted_numbers_never_freezes_a_schedule_or_the_rate_limit(world):
+    env, clock = make_env()
+    cfg = world.config(backoff_base_s=3600.0)
+    world.set_pressure(40.0, 0.0)
+    run_tick(build(cfg, env))  # gated: backoff + a passive record
+    sj = world.state / "state.json"
+    st = json.loads(sj.read_text())
+    st["skip_passive_t"] = float("nan")
+    st["next_bench"] = float("nan")
+    sj.write_text(json.dumps(st))
+    clock.t += 60
+    run_tick(build(cfg, env))  # NaN last-passive time: treated as "never", so the snapshot is due again
+    assert len([r for r in records(world) if r["type"] == "passive"]) == 2
+    from iogov.runner import bench_due
+    rt = build(cfg, env)
+    rt.state = {"next_bench": float("nan")}
+    assert bench_due(rt)
+    from iogov.report import clean_state
+    cleaned, problems = clean_state({"next_bench": float("nan"), "last_tick": float("inf"), "last_bench": 5.0})
+    assert problems == ["last_tick", "next_bench"] and cleaned == {"last_bench": 5.0}
+    assert "wrong type ignored: next_bench" in status(cfg, env.wall)  # the NaN next_bench written above; last_tick there is valid
+
+
+def test_t8_a_symlinked_config_path_is_accepted_only_when_the_link_is_root_owned(world, monkeypatch):
+    real = world.root / "real.toml"
+    real.write_text('read_iops_max = 7.0\n')
+    link = world.root / "link.toml"
+    link.symlink_to(real)
+    with pytest.raises(ConfigError, match="root-owned"):
+        load(str(link))  # a symlink owned by the running user is not trusted
+    real_lstat = os.lstat
+    monkeypatch.setattr(os, "lstat", lambda p, *a, **k: os.stat_result((stat.S_IFLNK | 0o777, 0, 0, 1, 0, 0) + tuple(real_lstat(p)[6:])) if str(p) == str(link) else real_lstat(p, *a, **k))
+    assert load(str(link)).read_iops_max == 7.0  # a root-owned link whose target passes every check
+    os.chmod(real, 0o666)
+    with pytest.raises(ConfigError, match="writable"):
+        load(str(link))  # the target is checked like a plain file
+
+
+def test_t9_journal_file_limit_counts_bytes_not_characters(world, monkeypatch):
+    env, _ = make_env()
+    cfg = world.config()
+    (world.state / "journal").mkdir(parents=True)
+    f = world.state / "journal" / "journal-2026-01.jsonl"
+    line = ('{"v": 1, "ts": "x", "t": 1.0, "type": "note", "text": "' + "é" * 200 + '"}\n')  # 252 characters, 452 bytes
+    f.write_text(line + line, encoding="utf-8")
+    os.chmod(f, 0o600)
+    monkeypatch.setattr(journal_mod, "MAX_FILE_BYTES", 700)
+    stats = ReadStats()
+    got = list(read_records(cfg.journal_dir(), stats))
+    assert len(got) == 1 and stats.truncated == [f.name]  # 452 + 452 bytes > 700, although 504 characters < 700

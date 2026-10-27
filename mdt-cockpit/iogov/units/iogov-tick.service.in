@@ -15,9 +15,10 @@ IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 KillSignal=SIGTERM
 TimeoutStopSec=30
-# Hard backstop: a syscall blocked in the kernel (a hung read) cannot see the stop flag. After RuntimeMaxSec systemd sends SIGTERM, after
-# TimeoutStopSec more SIGKILL; the next run then refunds nothing (the reservation stays charged) and removes any leftover under the lock.
-RuntimeMaxSec=10min
+# Hard backstop: a syscall blocked in the kernel (a hung read) cannot see the stop flag. For Type=oneshot the runtime bound is
+# TimeoutStartSec (RuntimeMaxSec= is IGNORED on oneshot units): after it systemd sends SIGTERM, after TimeoutStopSec more SIGKILL; the next
+# run then refunds nothing (the reservation stays charged) and removes any leftover under the lock.
+TimeoutStartSec=10min
 # The unit can read exactly one disk, read-only, and cannot write anywhere but its own state directory.
 DevicePolicy=closed
 DeviceAllow=@IOGOV_DISK_NODE@ r

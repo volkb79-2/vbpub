@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass, field
 
@@ -157,7 +158,7 @@ class Backoff:
     def until(self) -> float:
         slot = self.state.get("backoff", {}).get(self.key, {})
         v = slot.get("until", 0.0) if isinstance(slot, dict) else 0.0
-        return float(v) if isinstance(v, (int, float)) else 0.0
+        return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else 0.0
 
     def blocked(self) -> float:
         now = self.wall()

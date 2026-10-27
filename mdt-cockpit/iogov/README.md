@@ -50,6 +50,12 @@ python3 -m iogov config                # effective configuration
 Config: `--config FILE`, `$IOGOV_CONFIG`, `/etc/iogov/iogov.toml`, else defaults. Flat TOML; an unknown key or a wrong type is an
 error; a value beyond the hard limits in `config.py` is clamped to the limit (the clamps are printed by `plan` and `config`). Minimum
 useful config: `data_paths = [...]` (the disks behind them are detected) and `protected_cgroups` / `containers` for the harm observations.
+The config path must be a regular file, or a root-owned symlink to one (a managed-config layout); the target must be root- or self-owned,
+not writable by group/others, and at most 1 MiB. A FIFO, device node or non-root symlink at that path is refused.
+
+The service units are `Type=oneshot`, so their runtime bound is `TimeoutStartSec` (tick 10 min, bench 30 min) followed by `TimeoutStopSec`;
+a run stuck in a kernel syscall is killed by that, and the next run cleans up (design note section 5). The rendered units are checked with
+`systemd-analyze verify` by the tests.
 
 `analyze` and `status` are read-only and are run by **root or the service user** (`sudo -u iogov python3 -m iogov status`): the state directory
 is 0700 and service-owned, so no third identity can reach it; the readers accept any file owner (root reading the service user's files), open
