@@ -885,9 +885,11 @@ def aggregate_bpf(recs):
                 if typ == "map":
                     if isinstance(val, dict):
                         for k, v in val.items():
+                            if not isinstance(v, (int, float)):
+                                continue
                             m = maps.setdefault(name, {})
                             m[k] = m.get(k, 0) + v if not name.endswith(("_ppm", "lagging", "shortages")) else max(m.get(k, 0), v)
-                    else:
+                    elif isinstance(val, (int, float)):
                         m = maps.setdefault(name, {})
                         m[""] = max(m.get("", 0), val) if name.endswith(("_ppm", "lagging", "shortages")) else m.get("", 0) + val
                 elif typ == "hist":
@@ -1083,6 +1085,30 @@ def analyze_bpf(recs, t0, t1, shorts, out=print):
                 out(f"  {name}: swap.current {a.get('m_swap.current', 0) / 2**20:.0f}->{b.get('m_swap.current', 0) / 2**20:.0f} MiB; "
                     f"majfault/s={((dv.get('pgmajfault') or 0) / dtw):.1f} refault_anon/s={((dv.get('workingset_refault_anon') or 0) / dtw):.1f} "
                     f"zswpout/s={((dv.get('zswpout') or 0) / dtw):.1f} zswpin/s={((dv.get('zswpin') or 0) / dtw):.1f}")
+    out("\n(8) Durability syscalls (fsync/fdatasync/sync_file_range/msync/syncfs) and O_SYNC/O_DSYNC opens")
+    sn = M.get("@sync_n", {})
+    if sn:
+        for k, v in sorted(sn.items(), key=lambda x: (x[0].split(",")[0] == "0", x[0].split(",")[0], -x[1]))[:24]:
+            wn, comm, probe = k.split(",", 2)
+            out(f"  {who.get(wn, wn):8} {v:7d}  {comm:18} {probe.rsplit(':', 1)[-1].replace('sys_enter_', '')}")
+    else:
+        out("  none observed")
+    for k, h in sorted(H.get("@sync_us", {}).items()):
+        out(f"  latency {who[k]:8} {_lat_line(h)}")
+    for k, v in sorted(M.get("@osync_open", {}).items(), key=lambda x: -x[1])[:8]:
+        wn, comm = k.split(",", 1)
+        out(f"  O_SYNC/O_DSYNC openat: {who.get(wn, wn):8} {v:6d} {comm}")
+    pre = [r for r in recs if r.get("k") == "preload"]
+    if pre:
+        out("  preload mappings (name match only, latest check):")
+        seen = {}
+        for r in pre:
+            seen[r["ct"]] = r
+        for ct, r in seen.items():
+            for p in r["procs"]:
+                flags = (f"eatmydata={p.get('eatmydata')} ksm-optin={p.get('ksm-optin')}"
+                         if p.get("readable") else "unreadable")
+                out(f"    {ct} pid={p['pid']} comm={p['comm']} {flags}")
     cpu = [r["bpftrace_cpu_pct"] for r in win if "bpftrace_cpu_pct" in r]
     if cpu:
         out(f"\ncollector overhead: bpftrace CPU avg={sum(cpu) / len(cpu):.2f}% max={max(cpu):.2f}% of one core; "

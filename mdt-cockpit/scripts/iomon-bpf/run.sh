@@ -36,7 +36,7 @@ echo "starting $NAME (image $IMAGE, out $HOST_OUT, scripts $HOST_SCRIPTS, ${HOUR
 setsid nohup timeout -s TERM -k 60 "$(python3 -c "print(int(float('$HOURS')*3600)+120)")" \
   docker run --rm --name "$NAME" --user 0 --init --pid=host --cpus 1 --memory 1g --pids-limit 256 \
   --cgroup-parent="${CGROUP_PARENT_DEV_BACKGROUND:-dev-background.slice}" \
-  --cap-add SYS_ADMIN --cap-add BPF --cap-add PERFMON --cap-add SYS_RESOURCE --cap-add SYSLOG \
+  --cap-add SYS_ADMIN --cap-add BPF --cap-add PERFMON --cap-add SYS_RESOURCE --cap-add SYSLOG --cap-add SYS_PTRACE \
   --security-opt apparmor=unconfined --read-only --tmpfs /tmp -w /tmp \
   -v /sys/kernel/tracing:/sys/kernel/tracing:ro -v /sys/kernel/debug:/sys/kernel/debug:ro \
   -v /sys/kernel/btf:/sys/kernel/btf:ro -v /sys/fs/cgroup:/hostcg:ro \

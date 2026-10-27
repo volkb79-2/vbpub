@@ -142,6 +142,27 @@ def cgmap(max_depth=4, max_dirs=3000):
     return m
 
 
+PRELOAD_NAMES = ("eatmydata", "ksm-optin")
+
+
+def preload_check(scope):
+    """Read-only: for each process in a cgroup scope report whether a mapping of the named
+    preload libraries exists.  Only the match flags and comm leave this function - never the
+    maps content."""
+    out = []
+    if not scope:
+        return out
+    for pid in (read(f"{scope}/cgroup.procs") or "").split():
+        maps = read(f"/proc/{pid}/maps")
+        comm = (read(f"/proc/{pid}/comm") or "?").strip()
+        if maps is None:
+            out.append({"pid": int(pid), "comm": comm, "readable": False})
+            continue
+        out.append({"pid": int(pid), "comm": comm, "readable": True,
+                    **{n: any(n in line for line in maps.splitlines()) for n in PRELOAD_NAMES}})
+    return out
+
+
 class Bpf:
     def __init__(self, name, script, ids, w, log):
         self.name, self.script, self.ids, self.w, self.log = name, script, ids, w, log
@@ -230,7 +251,9 @@ def main():
     log(f"start containers={idents} cgroup_ids={ids} scopes={scopes}")
     w.write({"k": "bpf_meta", "t": round(time.time(), 3), "containers": [i[:12] for i in idents],
              "cgroup_ids": ids, "scopes": scopes})
-    procs = [Bpf("blk", "blk.bt", ids, w, log), Bpf("stall", "stall.bt", ids, w, log)]
+    procs = [Bpf("blk", "blk.bt", ids, w, log), Bpf("stall", "stall.bt", ids, w, log),
+             Bpf("sync", "sync.bt", ids, w, log)]
+    last_pre = 0.0
     end = time.monotonic() + a.max_hours * 3600
     last_map = last_res = 0.0
     last_cpu, last_wall = sum(p.cpu_ticks() for p in procs), time.monotonic()
@@ -256,7 +279,13 @@ def main():
                         p.stop()
                     scopes, ids = ns, nids
                     w.write({"k": "bpf_meta", "t": round(time.time(), 3), "cgroup_ids": ids, "scopes": scopes})
-                    procs = [Bpf("blk", "blk.bt", ids, w, log), Bpf("stall", "stall.bt", ids, w, log)]
+                    procs = [Bpf("blk", "blk.bt", ids, w, log), Bpf("stall", "stall.bt", ids, w, log),
+                             Bpf("sync", "sync.bt", ids, w, log)]
+            if now - last_pre > 600:
+                last_pre = now
+                for name in [i[:12] for i in idents]:
+                    w.write({"k": "preload", "t": round(time.time(), 3), "ct": name,
+                             "procs": preload_check(scopes.get(name))})
             rec = {"k": "cg", "t": round(time.time(), 3), "cg": cg_snapshot(scopes)}
             if int(rec["t"]) % 60 < a.interval:
                 cpu = sum(p.cpu_ticks() for p in procs)
