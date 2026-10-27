@@ -14,9 +14,6 @@ from pwmcp_client import user_agent as ua_module
 from pwmcp_client.contract import PwmcpContract
 
 
-DEFAULT_IDENTITY_LINE = "[INFO] user agent: browser default (not reported) (source: default)\n"
-
-
 def _install_cli_browser(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -155,7 +152,7 @@ def test_inspect_text_navigates_remotely_waits_and_closes_lease(
     ]) == 0
     captured = capsys.readouterr()
     assert captured.out == "rendered page text\n"
-    assert captured.err == DEFAULT_IDENTITY_LINE
+    assert captured.err == ""
     assert calls["connect"] == [{
         "contract_url": "contract.json",
         "label": "pwmcp-inspect",
@@ -185,7 +182,7 @@ def test_inspect_can_ignore_https_errors_for_its_context(
     ]) == 0
     captured = capsys.readouterr()
     assert captured.out == "rendered page text\n"
-    assert captured.err == DEFAULT_IDENTITY_LINE
+    assert captured.err == ""
     assert calls["context_options"] == [{"ignore_https_errors": True}]
     assert calls["context_closed"] == [True]
 
@@ -362,14 +359,51 @@ def test_json_result_carries_content_user_agent_and_source(
     }
 
 
-def test_json_result_for_the_default_names_default_source(
+def test_json_result_without_an_override_keeps_the_original_bare_shape(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     _install_cli_browser(monkeypatch, reported_user_agent="Mozilla/5.0 HeadlessChrome/156.0.0.0")
     assert cli_module.main(["inspect", "https://example.test", "--json"]) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == "rendered page text"  # a bare JSON string, as before
+    assert captured.err == ""
+
+
+def test_output_file_with_json_prints_nothing_extra_without_an_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_cli_browser(monkeypatch)
+    out = tmp_path / "r.txt"
+    assert cli_module.main(["inspect", "https://example.test", "--json", "--output", str(out)]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_output_file_with_json_reports_identity_only_under_an_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_cli_browser(monkeypatch)
+    out = tmp_path / "r.txt"
+    assert cli_module.main([
+        "inspect", "https://example.test", "--json", "--output", str(out), "--user-agent", "chrome-windows",
+    ]) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["user_agent_source"] == "default"
-    assert payload["user_agent"] == "Mozilla/5.0 HeadlessChrome/156.0.0.0"  # measured, not assumed
+    assert payload["user_agent_source"] == "preset:chrome-windows" and payload["output"] == str(out)
+
+
+def test_override_identity_line_cannot_be_silenced_by_quiet(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_cli_browser(monkeypatch)
+    assert cli_module.main(["inspect", "https://example.test", "--quiet", "--user-agent", "edge-windows"]) == 0
+    assert "(source: preset:edge-windows)" in capsys.readouterr().err
+
+
+def test_default_mode_identity_line_obeys_quiet_and_is_absent(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_cli_browser(monkeypatch)
+    assert cli_module.main(["inspect", "https://example.test", "--quiet"]) == 0
+    assert capsys.readouterr().err == ""
 
 
 def test_server_level_override_published_in_the_contract_is_applied_and_reported(
@@ -393,7 +427,7 @@ def test_per_call_default_beats_the_server_level_override(
     )
     assert cli_module.main(["inspect", "https://example.test", "--user-agent", "default"]) == 0
     assert calls["context_options"] == [{"ignore_https_errors": False}]
-    assert "(source: default)" in capsys.readouterr().err
+    assert capsys.readouterr().err == ""  # back to default: no identity line
 
 
 @pytest.mark.parametrize("bad", ["bad\r\nagent", "café", "x" * 513, " padded "])

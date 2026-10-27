@@ -81,6 +81,16 @@ def resolve(value: str | None) -> ResolvedUserAgent:
         )
     if value != value.strip():
         raise UserAgentError("custom user agent must not start or end with whitespace")
+    # A mistyped preset ("edge-window", "Edge-Windows", "chrome") must not silently become
+    # a custom UA. A real UA string always contains a space, "/" or "(".
+    if value.casefold() in {name.casefold() for name in (*PRESETS, DEFAULT_NAME)} or not (
+        {" ", "/", "("} & set(value)
+    ):
+        raise UserAgentError(
+            f"{value!r} is neither a preset nor a plausible user-agent string; valid presets: "
+            f"{', '.join(PRESETS)}, or {DEFAULT_NAME!r}; a custom string must contain a space, "
+            "'/' or '('"
+        )
     return ResolvedUserAgent(value, SOURCE_CUSTOM)
 
 

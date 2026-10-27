@@ -269,7 +269,7 @@ at container start.
 | `edge-windows` | `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0` |
 | `chrome-windows` | `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36` |
 | `firefox-windows` | `Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:158.0) Gecko/20100101 Firefox/158.0` |
-| anything else | a CUSTOM raw string: printable ASCII, 1-512 characters, no CR/LF, no leading or trailing space |
+| anything else | a CUSTOM raw string: printable ASCII, 1-512 characters, no CR/LF, no leading or trailing space, and it must contain a space, `/` or `(` as a real UA does. A value that case-insensitively equals a preset name (`Edge-Windows`) or lacks all three (`chrome`, `edge-window`) is rejected as a probable typo, naming the valid presets |
 
 The table lives in exactly one file, `client/src/pwmcp_client/user_agent.py`
 (stdlib only). The client imports it and the image carries the same file as
@@ -296,17 +296,36 @@ matches it (`Sec-CH-UA`, `navigator.userAgentData.brands`, platform), because Ch
   UA string only; `pwmcp inspect` warns that client-hint metadata was not set.
 - `lighthouse-mcp` launches its own per-audit browser and is NOT overridden.
 
+**Scope of the `/contract` setting.** The server-level value published in `/contract`
+applies to `pwmcp inspect` only. A direct Playwright `connect()` client keeps the browser
+default (it creates its own context and must set its own `user_agent`), even though the
+container log reports the override as active.
+
+**Client-hint edge cases.**
+- The Firefox preset sends an empty client-hint brand list (Firefox sends none); whether
+  Chromium then omits `Sec-CH-UA` entirely is unverified.
+- A UA containing `OPR/` (Opera) gets Chrome brands (`Google Chrome`), not Opera's.
+- A custom UA whose `Chrome/` token has fewer than four version parts (for example
+  `Chrome/156`) gets no client-hint metadata, only the UA string.
+- In shared mode, pages created while Chromium is restarting may lack the hints until
+  `ua-override` reattaches (it retries every second).
+- In shared mode the `ua-override` program exists only when an override is set: the
+  entrypoint appends `supervisord.ua-override.part` to a `/tmp` copy of the shared config.
+  With no override the process list is exactly what it was before.
+
 **What is not overridden, on purpose.** No `navigator.webdriver` patching, no plugin or
 canvas spoofing, no other fingerprint surface. This is an identity string and its matching
 hints, not an anti-detection layer.
 
-**Transparency.** Every `pwmcp inspect` result carries the active user agent and its
-source (`default`, `preset:<name>`, or `custom`), so spoofed identity is never mistaken for
-the default: with `--json` the object is `{"content": ..., "user_agent": ...,
-"user_agent_source": ...}` (a screenshot or `--output` run prints
-`{"output", "format", "user_agent", "user_agent_source"}`); in text mode stdout stays exactly the page
-content and one `[INFO] user agent: ... (source: ...)` line goes to stderr (shown even
-with `--quiet`). `user_agent` is what the page itself reported (`navigator.userAgent`),
+**Transparency.** With no override (source `default`) `pwmcp inspect` behaves exactly as
+before: same stdout, same bare `--json` string, nothing on stderr. Whenever an override is
+ACTIVE (`preset:<name>` or `custom`, server-level or `--user-agent`), the result says so,
+so spoofed identity is never mistaken for the default: one
+`[INFO] user agent: ... (source: ...)` line on stderr that `--quiet` cannot silence, and
+with `--json` the output becomes the object `{"content": ..., "user_agent": ...,
+"user_agent_source": ...}` (with `--output` it prints
+`{"output", "format", "user_agent", "user_agent_source"}`); in text mode stdout stays exactly
+the page content. `user_agent` is what the page itself reported (`navigator.userAgent`),
 falling back to the configured value. In shared mode the admin API
 `GET /browser/health` additionally returns `userAgent` and `userAgentSource`
 (`null` / `default` when not overridden).

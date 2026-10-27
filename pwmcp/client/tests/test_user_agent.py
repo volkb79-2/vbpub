@@ -48,7 +48,7 @@ def test_valid_custom_string_is_used_verbatim() -> None:
     resolved = ua.resolve("MyBot/2.0 (+https://example.test/bot)")
     assert resolved.user_agent == "MyBot/2.0 (+https://example.test/bot)"
     assert resolved.source == "custom"
-    assert ua.resolve("x" * 512).source == "custom"
+    assert ua.resolve("a/" + "x" * 510).source == "custom"
 
 
 @pytest.mark.parametrize(
@@ -58,6 +58,13 @@ def test_valid_custom_string_is_used_verbatim() -> None:
 def test_invalid_custom_strings_are_rejected(bad: str) -> None:
     with pytest.raises(ua.UserAgentError):
         ua.resolve(bad)
+
+
+@pytest.mark.parametrize("typo", ["edge-window", "Edge-Windows", "chrome", "EDGE-WINDOWS", "Default", "firefox"])
+def test_a_mistyped_preset_is_rejected_not_taken_as_a_custom_ua(typo: str) -> None:
+    with pytest.raises(ua.UserAgentError) as error:
+        ua.resolve(typo)
+    assert "edge-windows" in str(error.value) and "chrome-windows" in str(error.value)
 
 
 def test_edge_client_hints_name_edge_not_headless_chrome() -> None:
@@ -115,7 +122,7 @@ def test_image_carries_this_exact_module_so_there_is_no_second_table() -> None:
     dockerfile = (PWMCP / "containers" / "pwmcp" / "Dockerfile").read_text(encoding="utf-8")
     assert "COPY client/src/pwmcp_client/user_agent.py /opt/pwmcp/pwmcp_user_agent.py" in dockerfile
     entrypoint = (PWMCP / "containers" / "pwmcp" / "entrypoint.sh").read_text(encoding="utf-8")
-    assert "PWMCP_UA_HELPER=/opt/pwmcp/pwmcp_user_agent.py" in entrypoint
+    assert "/opt/pwmcp/pwmcp_user_agent.py" in entrypoint
     # No other source file under pwmcp/ hand-copies a preset string.
     needle = "Chrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0"
     holders = [
@@ -133,14 +140,30 @@ def test_image_carries_this_exact_module_so_there_is_no_second_table() -> None:
 def test_config_surface_is_wired_end_to_end() -> None:
     compose = (PWMCP / "ciu.compose.yml.j2").read_text(encoding="utf-8")
     defaults = (PWMCP / "ciu.defaults.toml.j2").read_text(encoding="utf-8")
-    assert 'PWMCP_USER_AGENT: {{ pwmcp.unified.user_agent | default("default") | tojson }}' in compose
+    assert 'PWMCP_USER_AGENT: {{ pwmcp.unified.user_agent | default("default") | tojson | replace("$", "$$") }}' in compose
     assert re.search(r'^user_agent = "default"$', defaults, re.MULTILINE)  # OFF by default
     shared = (PWMCP / "containers" / "pwmcp" / "supervisord.shared.conf").read_text(encoding="utf-8")
     per_session = (PWMCP / "containers" / "pwmcp" / "supervisord.conf").read_text(encoding="utf-8")
     wrapper = "/usr/local/bin/pwmcp-ua-args.sh"
     assert f"command={wrapper} --user-agent= -- %(ENV_PWMCP_CHROMIUM_PATH)s --headless=new" in shared
-    assert "[program:ua-override]" in shared and "/opt/pwmcp/ua-override/index.js" in shared
+    assert "[program:ua-override]" not in shared  # added by the entrypoint only under an override
     assert f"command={wrapper} --user-agent= -- playwright-mcp" in per_session
     assert f"command={wrapper} --chrome-arg=--user-agent= -- mcp-proxy" in per_session
     readme = (PWMCP / "README.md").read_text(encoding="utf-8")
     assert "`user_agent`" in readme and "PWMCP_USER_AGENT" in readme
+
+
+def test_compose_line_renders_valid_yaml_and_escapes_dollar_for_compose() -> None:
+    jinja2 = pytest.importorskip("jinja2")
+    yaml = pytest.importorskip("yaml")
+    compose = (PWMCP / "ciu.compose.yml.j2").read_text(encoding="utf-8")
+    (line,) = [ln.strip() for ln in compose.splitlines() if ln.strip().startswith("PWMCP_USER_AGENT:")]
+    template = jinja2.Environment().from_string(line)
+    custom = 'Bot/1.0 ("quoted" $HOME ${X} back\\slash)'
+    rendered = template.render(pwmcp={"unified": {"user_agent": custom}})
+    value = yaml.safe_load(rendered)["PWMCP_USER_AGENT"]
+    # What compose hands the container after its own $$ -> $ interpolation:
+    assert value.replace("$$", "$") == custom
+    assert "$$HOME" in value and "$${X}" in value
+    unset = yaml.safe_load(template.render(pwmcp={"unified": {}}))["PWMCP_USER_AGENT"]
+    assert unset == "default"

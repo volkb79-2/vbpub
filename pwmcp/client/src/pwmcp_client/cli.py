@@ -184,22 +184,24 @@ def _inspect(args: argparse.Namespace, runtime: CliRuntime) -> None:
             hint="check that PWMCP is running and the page's wait condition is reachable",
         ) from exc
 
+    # Transparency (PWMCP-09). With no override (source "default") the output is exactly
+    # what it always was: same stdout, same JSON shape, empty stderr. Only when an override
+    # is ACTIVE is the identity reported: one stderr line that --quiet cannot silence, and
+    # in --json mode the identity fields (the bare JSON string becomes an object).
+    overridden = active.source != "default"
     fields = {
         "user_agent": observed_ua or active.user_agent,
         "user_agent_source": active.source,
     }
-    # Transparency (PWMCP-09): the active identity accompanies every result. It goes to
-    # stderr in text mode so stdout stays exactly the page content, and into the JSON
-    # object in --json mode. force=True: --quiet must not hide a spoofed identity.
-    runtime.output.emit(
-        LogLevel.INFO,
-        f"user agent: {fields['user_agent'] or 'browser default (not reported)'} "
-        f"(source: {fields['user_agent_source']})",
-        force=True,
-    )
+    if overridden:
+        runtime.output.emit(
+            LogLevel.INFO,
+            f"user agent: {fields['user_agent']} (source: {fields['user_agent_source']})",
+            force=True,
+        )
 
     if output_path is None:
-        if runtime.json_mode:
+        if runtime.json_mode and overridden:
             runtime.output.primary({"content": payload, **fields})
         else:
             runtime.output.primary(payload)
@@ -213,7 +215,7 @@ def _inspect(args: argparse.Namespace, runtime: CliRuntime) -> None:
     except OSError as exc:
         raise CliFailure(f"cannot write {args.format} output to {output_path}: {exc}") from exc
     runtime.output.info(f"wrote {args.format} output to {output_path}")
-    if runtime.json_mode:
+    if runtime.json_mode and overridden:
         runtime.output.primary({"output": str(output_path), "format": args.format, **fields})
 
 

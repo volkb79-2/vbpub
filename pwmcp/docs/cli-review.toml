@@ -817,7 +817,7 @@ invocation = ["inspect", "https://example.test", "--user-agent", "edge-windows"]
 expected_exit_status = 0
 expected_stdout_contains = "rendered page text"
 expected_stderr_contains = "(source: preset:edge-windows)"
-effects = ["Creates one isolated Playwright context with the preset user agent and matching client-hint metadata, reads rendered text, then closes the context (which restores the default) and the lease; stderr states the active user agent and its source."]
+effects = ["Creates one isolated Playwright context with the preset user agent and matching client-hint metadata, reads rendered text, then closes the context (which restores the default) and the lease; because an override is ACTIVE, stderr states the user agent and its source (not silenced by --quiet) and --json prints an object with content, user_agent and user_agent_source instead of the bare string. Without an override the output is unchanged."]
 test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---user-agent-edge-windows]"]
 
 [[cases]]

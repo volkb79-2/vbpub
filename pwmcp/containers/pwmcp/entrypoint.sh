@@ -72,7 +72,7 @@ esac
 # imports); an invalid value is fatal, never silently ignored. The resolved values
 # are exported for the programs in supervisord*.conf, pwmcp-ua-args.sh,
 # ua-override, the run-server gateway (/contract) and the admin API.
-PWMCP_UA_HELPER=/opt/pwmcp/pwmcp_user_agent.py
+PWMCP_UA_HELPER="${PWMCP_UA_HELPER:-/opt/pwmcp/pwmcp_user_agent.py}"
 case "${PWMCP_USER_AGENT:-}" in
   ''|default)
     # Off by default: python is not even invoked, behaviour is as before.
@@ -91,6 +91,14 @@ if [ -n "$PWMCP_USER_AGENT_RESOLVED" ]; then
   echo "pwmcp: user agent OVERRIDE active: source=${PWMCP_USER_AGENT_SOURCE} ua=${PWMCP_USER_AGENT_RESOLVED}" >&2
 else
   echo "pwmcp: user agent: default (no override)" >&2
+fi
+
+# Shared mode with an override: add the ua-override program (client-hint metadata over
+# CDP) by appending its fragment to a /tmp copy of the shared config. With no override the
+# shipped config is used unchanged, so the process list is exactly what it was before.
+if [ "$PWMCP_BROWSER_MODE" = "shared" ] && [ -n "$PWMCP_USER_AGENT_RESOLVED" ]; then
+  cat "$SUPERVISOR_CONF" /etc/supervisor/conf.d/pwmcp-ua-override.part > /tmp/pwmcp-shared-ua.conf
+  SUPERVISOR_CONF=/tmp/pwmcp-shared-ua.conf
 fi
 
 for name in PWMCP_RUN_SERVER_PORT PWMCP_RUN_SERVER_UPSTREAM_PORT PWMCP_RUN_SERVER_ADMIN_PORT \
