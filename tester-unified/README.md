@@ -106,6 +106,29 @@ rebuilding the image this way (about 2 minutes); the previous image is kept as `
 tester-unified/build-image.sh --wheel-dir run-gate-project/dist --tag tester-unified:local
 ```
 
+### The image that gates a release: published inputs, aged third parties
+
+A `--wheel-dir run-gate-project/dist` image carries a developer build (`24.0.2.dev...`). CMRU's release
+gate refuses it: it accepts only an image whose Run-Gate labels are the exact version and sha256 of the
+PUBLISHED stable release the host judge came from. The image that gates other tools' releases is therefore
+built with the published wheel, staged and digest-verified by `fetch-run-gate-wheel.py`:
+
+```bash
+# latest stable (the run-gate-latest pointer), or an explicit X.Y.Z; --no-cache so the aged third-party
+# layer is re-resolved rather than reused
+tester-unified/build-image.sh --run-gate-published latest --no-cache --tag tester-unified:wave-<date>
+```
+
+Three statements of the wheel digest must agree before the build (the pointer, the release's `.sha256`
+sidecar, the downloaded bytes). `--run-gate-published` and `--wheel-dir` are mutually exclusive. CMRU itself
+stays source-built (`+tester.unified`, installed for its dependency closure; the suites run against the bound
+worktree); Assay is not installed in the image (run-gate installs the selected worktree's `assay/` at lane
+runtime). Third-party packages are never pinned in the Dockerfile: every index-capable `pip install` carries
+`--uploaded-prior-to ${PIP_MIN_RELEASE_AGE}` (default `P14D`, label `org.vbpub.tester-unified.min-release-age`),
+so the build resolves the newest release that is at least 14 days old. Override with
+`--pip-min-release-age P21D` (day durations only). The Debian base digest and the node image digest keep their
+own age records (`cmru versions`).
+
 The image labels and `/etc/tester-unified-run-gate-wheel.json` record that
 wheel's version and SHA-256. The builder verifies the loaded labels, and
 Run-Gate's release lane checks the in-container identity against its

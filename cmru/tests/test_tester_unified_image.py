@@ -121,12 +121,15 @@ TESTER_REQUIREMENTS_GENERATION_RUN = (
 )
 TESTER_DEPENDENCY_BOOTSTRAP_RUN = (
     "/usr/local/bin/python3.14 -m venv --copies /opt/tester-venv && "
-    "/opt/tester-venv/bin/pip install --no-cache-dir --upgrade pip && "
-    "/opt/tester-venv/bin/pip install --no-cache-dir -r /tmp/tester-requirements.txt && "
+    '/opt/tester-venv/bin/pip install --no-cache-dir --uploaded-prior-to '
+    '"${PIP_MIN_RELEASE_AGE}" --upgrade pip && '
+    '/opt/tester-venv/bin/pip install --no-cache-dir --uploaded-prior-to '
+    '"${PIP_MIN_RELEASE_AGE}" -r /tmp/tester-requirements.txt && '
     "/opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps "
     "/tmp/cli-extended-release/*.whl && /usr/local/bin/python3.14 -m venv "
     "/tmp/internal-build-venv && /tmp/internal-build-venv/bin/pip install "
-    "--no-cache-dir -r /tmp/internal-build-requirements.txt"
+    '--no-cache-dir --uploaded-prior-to "${PIP_MIN_RELEASE_AGE}" '
+    "-r /tmp/internal-build-requirements.txt"
 )
 CMRU_SOURCE_TREE_CLEAN_RUN = (
     "rm -rf /src/cmru /src/libraries/worktree /src/run-gate-project"
@@ -1343,7 +1346,7 @@ def test_dockerfile_installs_estate_internal_packages_only_offline_from_copied_s
     assert "--no-index --no-deps /tmp/internal-wheels/*.whl" in code
     # The PyPI-bound requirements come from the refusing generator.
     assert "gen-requirements.py --root /src" in code
-    assert "pip install --no-cache-dir -r /tmp/tester-requirements.txt" in code
+    assert '-r /tmp/tester-requirements.txt' in code
     # Relative layout cmru's pyproject packages (`../libraries/worktree/src`);
     # cli-extended source is NOT copied (it is a wheel dependency).
     assert "COPY libraries/worktree/ /src/libraries/worktree/" in code
@@ -1503,6 +1506,8 @@ def test_dockerfile_no_cli_extended_reaches_pip_except_the_sha256_verified_relea
             r"|--upgrade pip$",
             command,
         ), command
+        # Aged-latest: every index-capable install carries the release-age filter.
+        assert '--uploaded-prior-to "${PIP_MIN_RELEASE_AGE}"' in command, command
     assert "/src/libraries/cli-extended" not in code
     assert "libraries/cli-extended" not in code
 
@@ -4505,3 +4510,129 @@ def test_run_gate_host_environment_names_tester_base_and_no_lane_runs_there():
         if found:
             users[str(config.relative_to(REPO_ROOT))] = found
     assert users == {}, users
+
+
+def test_dockerfile_ages_third_party_packages_by_default_fourteen_days():
+    text = DOCKERFILE.read_text("utf-8")
+    assert re.search(r"^ARG PIP_MIN_RELEASE_AGE=P14D$", text, re.MULTILINE)
+    assert 'LABEL org.vbpub.tester-unified.min-release-age="${PIP_MIN_RELEASE_AGE}"' in text
+    # No fixed third-party pins were introduced into the closure install.
+    assert "==" not in "\n".join(
+        c for c in _pip_commands(_dockerfile_run_lines()) if "-r /tmp/" in c
+    )
+
+
+def _load_run_gate_fetcher():
+    spec = importlib.util.spec_from_file_location(
+        "fetch_run_gate_wheel", GENERATOR.with_name("fetch-run-gate-wheel.py"),
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _fake_run_gate_release(version="24.1.0", *, sidecar=None, pointer_sha=None, wheel=b"rg-wheel"):
+    fetcher = _load_run_gate_fetcher()
+    digest = hashlib.sha256(wheel).hexdigest()
+    name = fetcher._asset_name(version)
+    url = fetcher._asset_url(version)
+    pointer = {
+        "project": "run-gate", "version": version, "tag": f"run-gate-v{version}",
+        "asset": name, "url": url, "sha256": pointer_sha or digest,
+    }
+    files = {
+        fetcher.POINTER_URL: json.dumps(pointer).encode(),
+        url: wheel,
+        url + ".sha256": f"{sidecar or digest}  {name}\n".encode(),
+    }
+
+    def fetch(requested):
+        if requested not in files:
+            raise OSError(f"unexpected url {requested}")
+        return files[requested]
+
+    return fetcher, fetch, digest, name
+
+
+def test_run_gate_fetcher_stages_the_published_wheel_from_the_latest_pointer(tmp_path):
+    fetcher, fetch, digest, name = _fake_run_gate_release()
+    wheel = fetcher.fetch_wheel(None, tmp_path / "stage", fetch)
+    assert wheel.name == name and wheel.read_bytes() == b"rg-wheel"
+    assert hashlib.sha256(wheel.read_bytes()).hexdigest() == digest
+
+
+def test_run_gate_fetcher_takes_a_pinned_version_without_the_pointer(tmp_path):
+    fetcher, fetch, _, name = _fake_run_gate_release("24.0.1")
+    assert fetcher.fetch_wheel("24.0.1", tmp_path / "s", fetch).name == name
+
+
+@pytest.mark.parametrize("version", ["24.0", "24.0.1.dev1", "v24.0.1", "24.0.1+local", ""])
+def test_run_gate_fetcher_refuses_non_stable_versions(tmp_path, version):
+    fetcher, fetch, _, _ = _fake_run_gate_release()
+    with pytest.raises(SystemExit, match="not a stable"):
+        fetcher.fetch_wheel(version, tmp_path / "s", fetch)
+
+
+def test_run_gate_fetcher_refuses_a_sidecar_pointer_or_bytes_that_disagree(tmp_path):
+    fetcher, fetch, _, _ = _fake_run_gate_release(sidecar="0" * 64)
+    with pytest.raises(SystemExit, match="sha256 mismatch"):
+        fetcher.fetch_wheel("24.1.0", tmp_path / "a", fetch)
+    assert not (tmp_path / "a").exists()
+    fetcher, fetch, _, _ = _fake_run_gate_release(pointer_sha="1" * 64)
+    with pytest.raises(SystemExit, match="disagree"):
+        fetcher.fetch_wheel(None, tmp_path / "b", fetch)
+    assert not (tmp_path / "b").exists()
+    fetcher, fetch, _, _ = _fake_run_gate_release(sidecar="not-a-digest")
+    with pytest.raises(SystemExit, match="no valid sha256"):
+        fetcher.fetch_wheel("24.1.0", tmp_path / "c", fetch)
+
+
+def test_run_gate_fetcher_refuses_a_pointer_for_another_project_or_asset(tmp_path):
+    fetcher, _, _, _ = _fake_run_gate_release()
+    for key, value in (("project", "cmru"), ("tag", "run-gate-v9.9.9"),
+                       ("asset", "run_gate-9.9.9-py3-none-any.whl"),
+                       ("url", "https://example.invalid/run_gate-24.1.0-py3-none-any.whl"),
+                       ("version", "24.1.0.dev1")):
+        pointer = {
+            "project": "run-gate", "version": "24.1.0", "tag": "run-gate-v24.1.0",
+            "asset": fetcher._asset_name("24.1.0"), "url": fetcher._asset_url("24.1.0"),
+            "sha256": "2" * 64,
+        }
+        pointer[key] = value
+        with pytest.raises(SystemExit):
+            fetcher.resolve(None, fetcher.POINTER_URL, lambda _u, p=pointer: json.dumps(p).encode())
+
+
+def test_run_gate_fetcher_refuses_a_second_wheel_in_the_stage_directory(tmp_path):
+    fetcher, fetch, _, _ = _fake_run_gate_release()
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    (stage / "run_gate-1.0.0-py3-none-any.whl").write_bytes(b"x")
+    with pytest.raises(SystemExit, match="already holds"):
+        fetcher.fetch_wheel(None, stage, fetch)
+
+
+def test_run_gate_fetcher_turns_download_failures_into_clean_exits(tmp_path):
+    fetcher, _, _, _ = _fake_run_gate_release()
+
+    def broken(_url):
+        raise OSError("boom")
+
+    with pytest.raises(SystemExit, match="cannot read the release pointer"):
+        fetcher.fetch_wheel(None, tmp_path / "s", broken)
+    with pytest.raises(SystemExit, match="cannot read the checksum sidecar"):
+        fetcher.fetch_wheel("24.1.0", tmp_path / "s", broken)
+
+
+def test_run_gate_fetcher_main_prints_the_staged_path(tmp_path, monkeypatch, capsys):
+    fetcher, fetch, _, name = _fake_run_gate_release("24.1.0")
+    monkeypatch.setattr(fetcher._net, "_urlopen_bytes", fetch)
+    assert fetcher.main(["--dest", str(tmp_path / "s"), "--version", "24.1.0"]) == 0
+    assert capsys.readouterr().out.strip() == str(tmp_path / "s" / name)
+
+
+def test_build_image_offers_the_published_run_gate_wheel_exclusively():
+    text = (GENERATOR.parent / "build-image.sh").read_text("utf-8")
+    assert "--run-gate-published" in text and "fetch-run-gate-wheel.py" in text
+    assert "mutually exclusive" in text
+    assert "--pip-min-release-age" in text and "PIP_MIN_RELEASE_AGE" in text

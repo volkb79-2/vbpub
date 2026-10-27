@@ -262,12 +262,21 @@ RUN /usr/local/bin/python3.14 /usr/local/lib/tester-unified/gen-requirements.py 
 # dependency installation or the offline internal wheel builds.
 RUN rm -rf /opt/tester-venv /tmp/internal-build-venv
 
+# AGED-LATEST (estate freshness rule, 14 days): the dependency floors in the projects' pyprojects are
+# `>=`, so pip resolves the newest release at build time; `--uploaded-prior-to` (pip >= 26.0, which the
+# python image's bundled pip satisfies; an older pip fails on the unknown option) restricts every
+# index-capable install to releases uploaded at least PIP_MIN_RELEASE_AGE ago, the vetting buffer against a
+# just-shipped regression or supply-chain incident. Nothing is pinned in this file. The age is relative
+# to the build moment, so an unchanged RUN text can reuse a cached layer: rebuild with --no-cache
+# (build-image.sh) whenever the image should pick up newer aged releases.
+ARG PIP_MIN_RELEASE_AGE=P14D
+LABEL org.vbpub.tester-unified.min-release-age="${PIP_MIN_RELEASE_AGE}"
 RUN /usr/local/bin/python3.14 -m venv --copies /opt/tester-venv \
- && /opt/tester-venv/bin/pip install --no-cache-dir --upgrade pip \
- && /opt/tester-venv/bin/pip install --no-cache-dir -r /tmp/tester-requirements.txt \
+ && /opt/tester-venv/bin/pip install --no-cache-dir --uploaded-prior-to "${PIP_MIN_RELEASE_AGE}" --upgrade pip \
+ && /opt/tester-venv/bin/pip install --no-cache-dir --uploaded-prior-to "${PIP_MIN_RELEASE_AGE}" -r /tmp/tester-requirements.txt \
  && /opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps /tmp/cli-extended-release/*.whl \
  && /usr/local/bin/python3.14 -m venv /tmp/internal-build-venv \
- && /tmp/internal-build-venv/bin/pip install --no-cache-dir -r /tmp/internal-build-requirements.txt
+ && /tmp/internal-build-venv/bin/pip install --no-cache-dir --uploaded-prior-to "${PIP_MIN_RELEASE_AGE}" -r /tmp/internal-build-requirements.txt
 
 # Start the source-build roots empty. A base image or earlier metadata layer
 # must not contribute files that setuptools could discover beside the copied
