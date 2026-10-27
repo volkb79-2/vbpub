@@ -52,6 +52,14 @@ tester-unified/*
 scripts/*
 !scripts/cgroup-profiler
 
+# tester-unified reads pwmcp-client's `test` extra (pwmcp/client/pyproject.toml) for the
+# closure generator; only that one file is copied (parents must be re-included first).
+!pwmcp
+pwmcp/*
+!pwmcp/client
+pwmcp/client/*
+!pwmcp/client/pyproject.toml
+
 # tester-unified installs the exact Run-Gate wheel through a named build
 # context. Keep only pyproject metadata for the dependency closure generator.
 run-gate-project/*
