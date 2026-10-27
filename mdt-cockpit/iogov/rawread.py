@@ -13,6 +13,7 @@ Safety properties (each one is tested):
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import math
 import mmap
@@ -134,15 +135,20 @@ class RawReader:
             self.fd = _open_ro(real, self.direct)
             self.direct_active = self.direct and hasattr(os, "O_DIRECT")
         except OSError as exc:
-            if self.direct and exc.errno == 22 and stat.S_ISREG(st.st_mode):
-                # EINVAL: O_DIRECT unsupported by a REGULAR file's filesystem (tests on tmpfs). A raw disk is never read
+            if self.direct and exc.errno == errno.EINVAL and stat.S_ISREG(st.st_mode):
+                # O_DIRECT unsupported by a REGULAR file's filesystem (tests on tmpfs). A raw disk is never read
                 # through the page cache: for a block device the lane is unsupported and the run skips it.
                 self.fd = _open_ro(real, False)
                 self.direct_active = False
-            elif exc.errno == 22:
+            elif exc.errno == errno.EINVAL:
                 raise RawReadError(f"{real}: O_DIRECT is not supported here; buffered raw reads are not an option (lane unsupported)")
             else:
                 raise
+        # verify through the descriptor, not the name: what was opened must still be a block device (or the test file)
+        fst = os.fstat(self.fd)
+        if not stat.S_ISBLK(fst.st_mode) and not (self.allow_regular and stat.S_ISREG(fst.st_mode)):
+            self.close()
+            raise RawReadError(f"{real}: the opened descriptor is not a block device (swapped between stat and open?)")
         self.size, self.logical_block = device_size_and_block(self.fd)
         return self
 

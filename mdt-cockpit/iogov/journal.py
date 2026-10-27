@@ -96,6 +96,10 @@ class ReadStats:
         self.torn = 0
         self.unknown_version = 0
         self.invalid = 0
+        self.unreadable: list[str] = []  # files skipped whole: a symlink, not a regular file, or unreadable (permissions)
+
+    def skipped(self) -> bool:
+        return bool(self.torn or self.unknown_version or self.invalid or self.unreadable)
 
 
 def journal_files(path: str) -> list[str]:
@@ -105,12 +109,18 @@ def journal_files(path: str) -> list[str]:
 
 
 def read_records(path: str | Iterable[str], stats: ReadStats | None = None, since: float | None = None) -> Iterator[dict]:
+    """Read-only: the journal may be read by an operator or root (`any_owner`), never through a symlink. A file that cannot be
+    read is counted in `stats.unreadable` (and named), never silently dropped: "0 records" must not look like an empty journal."""
+
     stats = stats or ReadStats()
     files = journal_files(path) if isinstance(path, str) else list(path)
     for name in files:
         try:
-            fh = os.fdopen(safeio.open_file(name, os.O_RDONLY, private=False), "r", encoding="utf-8", errors="replace")
-        except (FileNotFoundError, safeio.UnsafePath):
+            fh = os.fdopen(safeio.open_file(name, os.O_RDONLY, private=False, any_owner=True), "r", encoding="utf-8", errors="replace")
+        except FileNotFoundError:
+            continue
+        except (safeio.UnsafePath, PermissionError) as exc:
+            stats.unreadable.append(f"{os.path.basename(name)}: {exc}")
             continue
         with fh:
             for line in fh:
@@ -143,7 +153,9 @@ def read_records(path: str | Iterable[str], stats: ReadStats | None = None, sinc
 
 
 def load_state(path: str) -> dict:
-    return safeio.load_json(path)
+    """Read-only view for `status` (an operator or root may read it); the runner loads its state through `safeio.load_json`."""
+
+    return safeio.load_json(path, any_owner=True)
 
 
 def save_state(path: str, state: dict) -> None:

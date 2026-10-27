@@ -89,6 +89,9 @@ class DailyBudget:
             return
         if kind not in ("read", "write"):
             raise ValueError(kind)
+        if b["day"] != self._day:  # midnight passed mid-run: the reservation belonged to the cleared day, so today pays in full
+            self.reserved = {"read": 0, "write": 0}
+            self._day = b["day"]
         from_reserve = min(self.reserved[kind], nbytes)
         extra = nbytes - from_reserve
         if extra and b[f"{kind}_bytes"] + extra > self._cap(kind):

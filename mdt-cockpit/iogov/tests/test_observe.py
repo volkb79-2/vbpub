@@ -25,7 +25,7 @@ from iogov.runner import build, run_tick
 # --- config ---------------------------------------------------------------------------------------------------
 
 
-def test_config_rejects_unknown_keys_wrong_types_and_values_above_hard_ceilings():
+def test_config_rejects_unknown_keys_and_wrong_types_and_clamps_values_beyond_the_hard_limits():
     with pytest.raises(ConfigError, match="unknown"):
         from_mapping({"nonsense": 1})
     with pytest.raises(ConfigError, match="expected"):

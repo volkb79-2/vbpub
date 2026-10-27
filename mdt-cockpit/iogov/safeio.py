@@ -11,10 +11,12 @@ Rules (each is tested):
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import os
 import stat
+import time
 
 NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
@@ -56,11 +58,14 @@ def ensure_dir(path: str, *, strict: bool = False) -> None:
         raise UnsafePath(f"{path}: must be mode 0700 (is {oct(lst.st_mode & 0o7777)})")
 
 
-def verify_fd(fd: int, path: str | None = None, *, private: bool = True) -> os.stat_result:
+def verify_fd(fd: int, path: str | None = None, *, private: bool = True, any_owner: bool = False) -> os.stat_result:
+    """`any_owner` is for READ-ONLY consumers (`analyze`, `status`): an operator or root may read the service user's files;
+    the no-follow, regular-file and same-inode checks still apply. Writers never pass it."""
+
     st = os.fstat(fd)
     if not stat.S_ISREG(st.st_mode):
         raise UnsafePath(f"{path or fd}: not a regular file")
-    if st.st_uid != euid():
+    if not any_owner and st.st_uid != euid():
         raise UnsafePath(f"{path or fd}: not owned by the running user")
     bad = st.st_mode & (0o077 if private else 0o022)
     if bad:
@@ -75,17 +80,19 @@ def verify_fd(fd: int, path: str | None = None, *, private: bool = True) -> os.s
     return st
 
 
-def open_file(path: str, flags: int, mode: int = 0o600, *, private: bool = True) -> int:
+def open_file(path: str, flags: int, mode: int = 0o600, *, private: bool = True, any_owner: bool = False) -> int:
     """open(2) with O_NOFOLLOW|O_CLOEXEC, then verify through the descriptor. Closes the fd on any failure."""
 
+    if any_owner and (flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND)):
+        raise ValueError("any_owner is only for read-only opens")
     try:
         fd = os.open(path, flags | NOFOLLOW | os.O_CLOEXEC, mode)
     except OSError as exc:
-        if exc.errno == 40:  # ELOOP: a symlink where a file should be
+        if exc.errno == errno.ELOOP:  # a symlink where a file should be
             raise UnsafePath(f"{path}: is a symlink")
         raise
     try:
-        verify_fd(fd, path, private=private)
+        verify_fd(fd, path, private=private, any_owner=any_owner)
     except BaseException:
         os.close(fd)
         raise
@@ -116,7 +123,6 @@ class FileLock:
     def acquire(self, blocking: bool = False, timeout_s: float = 0.0, sleep=None) -> bool:
         ensure_dir(os.path.dirname(self.path))
         fd = open_file(self.path, os.O_RDWR | os.O_CREAT, 0o600)
-        import time
         deadline = time.monotonic() + timeout_s
         while True:
             try:
@@ -149,9 +155,9 @@ class FileLock:
 # --- small JSON files (state, aggregates), atomic and race-free ---------------------------------------------
 
 
-def load_json(path: str) -> dict:
+def load_json(path: str, *, any_owner: bool = False) -> dict:
     try:
-        fd = open_file(path, os.O_RDONLY)
+        fd = open_file(path, os.O_RDONLY, any_owner=any_owner)
     except FileNotFoundError:
         return {}
     try:

@@ -71,9 +71,12 @@ def test_busy_host_skips_without_any_probe_io_and_journals_once(world):
         run_tick(build(cfg, env))
         clock.t += 700  # past the (growing) backoff but inside skip_log_interval_s
     recs = records(world)
-    assert [r["type"] for r in recs] == ["skip"]  # deduplicated within skip_log_interval_s
-    assert recs[0]["reasons"][0].startswith("io_pressure_high")
-    assert not (world.state / "journal").glob("*") or all(r["type"] == "skip" for r in recs)
+    skips = [r for r in recs if r["type"] == "skip"]
+    assert len(skips) == 1 and skips[0]["reasons"][0].startswith("io_pressure_high")  # deduplicated within skip_log_interval_s
+    # the passive evidence of the busy moment is kept on every gated tick (no probe record, no run_start: no probe IO happened)
+    passive = [r for r in recs if r["type"] == "passive"]
+    assert len(passive) == 3 and all(r["gated"] and r["gate_reasons"] for r in passive)
+    assert not [r for r in recs if r["type"] in ("probe", "run_start", "run_end")]
 
 
 def test_backoff_blocks_the_next_runs_until_it_expires(world):

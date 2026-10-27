@@ -181,7 +181,7 @@ def over_4k(sc: Scratch, cfg: Config, env: Env, guard: RunGuard, budget: DailyBu
             off = env.rng.randrange(slots) * 4096
             t0 = env.mono()
             _pwrite_all(sc.fd, memoryview(buf.mm)[:4096], off)
-            os.fdatasync(sc.fd)
+            timed_flush(sc.fd, cfg, env)  # the same watchdog as the sequential phases; the lane's latency is pwrite + fdatasync
             dt = env.mono() - t0
             lat_us.append(int(dt * 1e6))
             lane["bytes"] += 4096

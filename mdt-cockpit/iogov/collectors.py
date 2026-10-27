@@ -83,6 +83,26 @@ def parse_io_stat(text: str | None) -> dict:
     return out
 
 
+VMSTAT_KEYS = ("pswpin", "pswpout", "pgmajfault", "zswpin", "zswpout", "workingset_refault_anon")
+
+
+def read_vmstat(procfs: str, keys: tuple = VMSTAT_KEYS) -> dict | None:
+    """The swap/reclaim counters of /proc/vmstat (pages or events, cumulative): the host-wide signature of a memory-driven stall."""
+
+    text = _read(os.path.join(procfs, "vmstat"))
+    if not text:
+        return None
+    out = {}
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0] in keys:
+            try:
+                out[parts[0]] = int(parts[1])
+            except ValueError:
+                pass
+    return out or None
+
+
 def read_loadavg(procfs: str) -> tuple[float, float, float] | None:
     text = _read(os.path.join(procfs, "loadavg"))
     if not text:
@@ -167,13 +187,6 @@ class ContainerResolver:
         return out
 
 
-def resolve_containers(names: list[str], containers_dir: str, cgroup_root: str) -> dict[str, str | None]:
-    """One-shot helper kept for callers without a Collector."""
-
-    from .config import Config
-    return ContainerResolver(Config(docker_containers_dir=containers_dir, cgroup_root=cgroup_root), rescan_s=0.0).resolve(names)
-
-
 class Collector:
     def __init__(self, cfg, disks, env):
         self.cfg = cfg
@@ -182,8 +195,8 @@ class Collector:
         self.resolver = ContainerResolver(cfg, env.mono)
 
     # -- single reads -------------------------------------------------------------------------------------
-    def system_pressure(self) -> dict | None:
-        return parse_pressure(_read(os.path.join(self.cfg.procfs_root, "pressure", "io")))
+    def system_pressure(self, resource: str = "io") -> dict | None:
+        return parse_pressure(_read(os.path.join(self.cfg.procfs_root, "pressure", resource)))
 
     def device_stat(self, disk) -> dict | None:
         stat = parse_block_stat(_read(os.path.join(disk.sys_path, "stat")))
@@ -240,6 +253,8 @@ class Collector:
         return {
             "t": self.env.mono(),
             "pressure": self.system_pressure(),
+            "pressure_memory": self.system_pressure("memory"),  # memory/swap reclaim is a stall driver the IO PSI alone cannot name
+            "vmstat": read_vmstat(self.cfg.procfs_root),
             "loadavg": read_loadavg(self.cfg.procfs_root),
             "devices": {d.kname: self.device_stat(d) for d in self.disks},
             "cgroups": self.cgroup_targets(),
@@ -358,6 +373,16 @@ def passive_summary(a: dict, b: dict, top_n: int = 8) -> dict:
         "root_total_w_bps": root_w,
         "devices": {k: device_delta(a["devices"].get(k), v, dt) for k, v in b["devices"].items()},
         "pressure": b["pressure"],
+        "pressure_memory": b.get("pressure_memory"),
+        "vmstat_per_s": vmstat_rates(a.get("vmstat"), b.get("vmstat"), dt),
         "loadavg": b["loadavg"],
         "cgroups": cg,
     }
+
+
+def vmstat_rates(a: dict | None, b: dict | None, dt: float) -> dict | None:
+    """Swap-in/out, major faults and anon refaults per second between two snapshots (None when the counters are unavailable)."""
+
+    if not a or not b or dt <= 0:
+        return None
+    return {k: round(max(0, b[k] - a[k]) / dt, 2) for k in b if k in a}

@@ -14,9 +14,9 @@ mdt-cockpit/iogov/
   cli.py runner.py      commands, one tick / one bench, dry-run plan
   rawread.py            read-only raw-disk reads (O_DIRECT), coprime whole-device walk, witness blocks
   scratch.py bench.py   adaptive scratch region (the only thing ever written), probe lanes
-  collectors.py         PSI, /sys/block stat+inflight, cgroup io.stat/io.pressure, settings epoch, "who else writes"
+  collectors.py         PSI (io and memory), /proc/vmstat swap counters, /sys/block stat+inflight, cgroup io.stat/io.pressure, settings epoch, "who else writes"
   covariates.py         fill, fstrim, discard, provider signal, queue/prio facts + the report-only prevention checker
-  episodes.py           `watch`: protected-side distress episodes (stopping-distance data), no probe IO
+  episodes.py           `watch`: protected-side distress episodes from io.pressure AND memory.pressure (stopping-distance data), no probe IO
   recognizer.py         robust baseline + two-sided CUSUM + hysteresis -> recommendations; demand-limited labels
   safeio.py             identity, directory checks, no-follow verified opens, locks, atomic JSON
   gating.py budget.py   kill switches, load gates, backoff, mid-run guard; token buckets, reserved daily budget, worst-case numbers
@@ -35,7 +35,7 @@ From `mdt-cockpit/` (so that `import iogov` resolves), or with `PYTHONPATH=<dir 
 python3 -m iogov plan                  # DRY RUN: devices, region, lanes, budget numbers, gates. Opens no device, writes nothing.
 python3 -m iogov tick --dry-run        # same output; `bench --dry-run` too
 python3 -m iogov devices               # the disks that would be probed (sysfs lookups only)
-python3 -m iogov tick                  # raw 4 KiB reads + passive snapshot (timer: every 5 min)
+python3 -m iogov tick                  # raw 4 KiB reads + passive snapshot (timer: every 5 min); a gated tick still journals the passive snapshot
 python3 -m iogov bench [--force]       # the ~6 h mini write bench (a no-op unless due; --force still honours gates and kill switches)
 python3 -m iogov watch                 # optional resident sampler of protected-side distress episodes
 python3 -m iogov analyze [PATH] [--json] [--lane r_cold] [--no-plots]   # offline: summary, shifts, text plots, harm, demand check
@@ -47,9 +47,13 @@ python3 -m iogov cleanup               # remove scratch files left by a killed r
 python3 -m iogov config                # effective configuration
 ```
 
-Config: `--config FILE`, `$IOGOV_CONFIG`, `/etc/iogov/iogov.toml`, else defaults. Flat TOML, unknown keys are errors, values above the
-hard ceilings in `config.py` are errors. Minimum useful config: `data_paths = [...]` (the disks behind them are detected) and
-`protected_cgroups` / `containers` for the harm observations.
+Config: `--config FILE`, `$IOGOV_CONFIG`, `/etc/iogov/iogov.toml`, else defaults. Flat TOML; an unknown key or a wrong type is an
+error; a value beyond the hard limits in `config.py` is clamped to the limit (the clamps are printed by `plan` and `config`). Minimum
+useful config: `data_paths = [...]` (the disks behind them are detected) and `protected_cgroups` / `containers` for the harm observations.
+
+`analyze` and `status` are read-only and may be run by root or an operator, not only by the service user: they open the journal, state and
+aggregate files no-follow and accept any owner. A file they cannot read (a symlink, wrong type, no permission) is listed as `UNREADABLE`,
+never silently dropped, so "0 records" always means an empty journal.
 
 Identity: **never root by default** (`allow_root = true` or `--allow-root` is required, and then every state/scratch directory must be
 root-owned 0700). State, journal and scratch directories must be real directories owned by the running user and not group/world writable;
@@ -71,14 +75,19 @@ Run the tests: `cd mdt-cockpit && python3 -m pytest iogov/tests -q`. A missing o
 
 ## Install steps (documentation only; do them by hand, nothing here does)
 
-1. Create the user and directories: `useradd --system iogov`; `install -d -o iogov -m 750 /var/lib/iogov /var/lib/iogov/scratch /etc/iogov`.
-2. Copy the package to a root-owned location and `iogov.toml.example` to `/etc/iogov/iogov.toml`; edit `data_paths` etc.
+1. Create the user and directories: `useradd --system iogov`; `install -d -o iogov -g iogov -m 700 /var/lib/iogov /var/lib/iogov/scratch`
+   (the scratch directory is refused unless it is 0700; `StateDirectory=iogov` in the units would create the state dir 0700 anyway);
+   `install -d -o root -g root -m 755 /etc/iogov` (root-owned: the service user must not be able to edit its config or remove the kill switch).
+2. Copy the package to a root-owned location and `iogov.toml.example` to `/etc/iogov/iogov.toml` (root-owned 0644); edit `data_paths` etc.
 3. Read-only access to the one disk: render `units/99-iogov-raw-read.rules.in` into `/etc/udev/rules.d/`, check with
    `udevadm test`, then `udevadm trigger`. Verify with the service user: reading works (`dd if=<node> bs=4k count=1 iflag=direct of=/dev/null`) and
    `test -w <node>` is false. Do not use the `disk` group and do not add CAP_SYS_RAWIO.
-4. Render `units/*.in` (the services use `StateDirectory=iogov`, `ProtectKernelTunables`, `ProtectControlGroups`, an empty `CapabilityBoundingSet`, `PrivateNetwork`, `SystemCallFilter=@system-service`) by replacing the tokens below, install into `/etc/systemd/system/`, `systemctl daemon-reload`, then enable the
-   timers (`iogov-tick.timer`, `iogov-bench.timer`; optionally `iogov-watch.service`). Start with `python3 -m iogov plan` as the service user.
-5. Let it observe for a week before reading anything into `analyze` (the recognizer needs `baseline_windows` = 5 valid daily windows).
+4. Render `units/*.in` (the services use `StateDirectory=iogov`, `ProtectKernelTunables`, `ProtectControlGroups`, an empty `CapabilityBoundingSet`, `PrivateNetwork`, `SystemCallFilter=@system-service`) by replacing the tokens below, install into `/etc/systemd/system/`, `systemctl daemon-reload`.
+   Start with `python3 -m iogov plan` as the service user, then `systemctl start iogov-tick.service` once and read its journal records.
+5. Enable `iogov-tick.timer` first (read probes and passive evidence only) and, optionally, `iogov-watch.service`. Run the FIRST write bench by hand,
+   in a window where the protected workload is idle, as the service user: `python3 -m iogov bench --force` (gates and kill switches still apply),
+   and compare `watch` episodes before and after it. Only then enable `iogov-bench.timer` (otherwise its first run is whenever the gate first passes).
+6. Let it observe for a week before reading anything into `analyze` (the recognizer needs `baseline_windows` = 5 valid daily windows).
 
 Template tokens: `@IOGOV_USER@` service user, `@IOGOV_PYTHON@` interpreter path, `@IOGOV_PYTHONPATH@` directory containing `iogov/`,
 `@IOGOV_CONFIG@` config file, `@IOGOV_STATE_DIR@` state dir, `@IOGOV_SCRATCH_DIR@` scratch dir, `@IOGOV_KILL_SWITCH_FILE@` flag file,

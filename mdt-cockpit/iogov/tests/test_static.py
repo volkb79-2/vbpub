@@ -22,8 +22,7 @@ DANGER_OS = {"open", "write", "pwrite", "ftruncate", "truncate", "unlink", "remo
 # is exempt wholesale: a new call site fails this test until a reviewer adds it on purpose.
 ALLOWED_CALLS = {
     ("bench.py", "_pwrite_all", "os.pwrite"),            # the scratch file only
-    ("bench.py", "over_4k", "os.fdatasync"),             # scratch file
-    ("bench.py", "timed_flush", "os.fdatasync"),         # scratch file
+    ("bench.py", "timed_flush", "os.fdatasync"),         # scratch file; the ONLY fdatasync call site (every flush is under the watchdog)
     ("journal.py", "append", "os.write"),                # the journal record
     ("journal.py", "prune", "os.unlink"),                # retention: monthly journal files
     ("journal.py", "read_records", "os.fdopen"),         # read mode (checked below)

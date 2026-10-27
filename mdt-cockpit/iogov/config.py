@@ -31,7 +31,6 @@ HARD_MIN = {
     "write_bps_max": 4096.0, "read_bps_max": 4096.0, "seq_read_bytes": 4096, "bench_max_failures": 1,
     "max_read_bytes_per_day": 0, "max_write_bytes_per_day": 0, "bench_interval_h": 1.0, "tick_interval_s": 30.0,
 }
-HARD = HARD_MAX  # kept for old imports
 
 
 class ConfigError(ValueError):
@@ -157,8 +156,6 @@ class Config:
             "r_seq": 1,
         }
     )
-    recognize_every_s: float = 3600.0
-    lookback_days: int = 120
     clamped: list = field(default_factory=list)  # filled by from_mapping: what was clamped
 
     def journal_dir(self) -> str:

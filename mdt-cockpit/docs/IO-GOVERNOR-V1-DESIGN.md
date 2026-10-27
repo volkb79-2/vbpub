@@ -17,15 +17,21 @@ evidence and emits **recommendations** such as "capability shifted down ~20x on 
   sequential raw read.
 - A mini write bench about every 6 h inside an adaptive scratch **file** (never a device): fresh sequential writes at queue depth 1
   then 4, 4 KiB overwrites each followed by `fdatasync` with a latency histogram. The file exists for one run only.
-- Passive collectors: PSI (system and per cgroup), `/sys/block/<dev>/stat` and `inflight`, cgroup `io.stat` for the governed slices,
-  the protected cgroups and named containers, and per-interval writes by every other top-level cgroup ("who else writes").
+- Passive collectors: PSI (system io AND memory, per cgroup io), the swap/reclaim counters of `/proc/vmstat` (`pswpin`, `pswpout`,
+  `pgmajfault`, `zswpin`, `zswpout`, `workingset_refault_anon`, as rates over the snapshot pair), `/sys/block/<dev>/stat` and `inflight`,
+  cgroup `io.stat` for the governed slices, the protected cgroups and named containers, and per-interval writes by every other top-level
+  cgroup ("who else writes"). A tick whose gate fails (or that is backing off) still journals this snapshot pair (`passive` with
+  `gated: true`): the probes are what a busy host must be spared, not the evidence of the busy moment.
 - Covariates stored per run (never a lookup table): filesystem fill, mount options, last fstrim time and trimmed bytes if a record
   exists, `discard_max_bytes`, lvm `issue_discards`, an optional provider signal file (used bytes, snapshot time), queue parameters
   (`nr_requests`, `max_sectors_kb`, scheduler), io.cost model/QoS, governed `io.max`/`io.weight`, io.prio availability, and free-form
   annotations (`iogov annotate`). The queue/iocost/limit values are hashed into a `settings_epoch` on every sample.
 - Protected-side distress episodes (`iogov watch`): a 1 Hz sampler (no probe IO) records a time-series window around every episode
-  (protected PSI stall share, threads in D state), and `analyze` reports how long distress persisted and recovered, also before and
-  after operator-annotated actions: the doc's missing "actuator stopping distance".
+  (protected `io.pressure` AND `memory.pressure` stall shares, threads in D state; the same thresholds trigger on either resource), labels
+  which stall share dominated (`driver`: memory / io / dstate, a hint, not a diagnosis: a swap-in wait raises both), and `analyze` reports
+  how long distress persisted and recovered, also before and after operator-annotated actions: the doc's missing "actuator stopping
+  distance". Live monitoring showed the stalls on the first host are memory/swap-driven with a healthy disk, so an episode recorder that
+  only saw `io.pressure` would have mislabelled the operator's actual problem.
 - A recognizer (robust baseline, two-sided CUSUM, hysteresis) over per-lane window medians; an offline `analyze` (summary, shifts,
   text plots, harm, demand check) and a `status` that includes the report-only **prevention checker** (fill > 60 %, days since fstrim,
   discard mount option / lvm `issue_discards` / `discard_max_bytes`, snapshot age and provider usage when a signal file exists).
@@ -72,6 +78,10 @@ evidence and emits **recommendations** such as "capability shifted down ~20x on 
 | Budget saved only at the end of the run | budget RESERVED and persisted before any IO, refunded in `finally` | Review H1: a crash before the end-of-run save lost the charge and the next-due time. |
 | Buffered-read fallback with `posix_fadvise(DONTNEED)` for a raw disk that refuses `O_DIRECT` | removed | Review L4: a raw disk is never read through the page cache; the lane is unsupported and skipped. |
 | CUSUM "alarms in 2 days on 2x" | corrected | With k=0.5 a sustained 2x needs 3 windows to reach h=1.5, and confirmation adds one (tested). |
+| Gated tick journals only a `skip` | now also journals the gate's passive snapshot pair | Second review (R5): the moments probes must not run are the moments whose passive evidence is wanted; no probe IO is added. |
+| Episodes from `io.pressure` only | `io.pressure` + `memory.pressure`, `driver` label | Second review (R6): live data showed memory/swap reclaim is the stall driver with a healthy disk. |
+| `analyze`/`status` verified file OWNER = running uid | read-only opens accept any owner (still no-follow); unreadable files are named | Second review (R1): run by root/an operator they silently reported "0 records" or crashed. Writers keep the owner check. |
+| Bare `fdatasync` in the 4 KiB lane | `timed_flush` everywhere | Second review (R3): the note promised a watchdog on every flush; `abort_latency_ms` alone bounded it. |
 
 ## 3. Layout and the 'no write' property
 
@@ -98,6 +108,9 @@ them from a fast path; non-zero blocks found become witnesses (up to 16, re-read
   a second run can neither overlap nor clobber state; `watch.lock` allows one `watch`; `state.lock` serialises each atomic state write. `annotate` only appends
   to the journal (and, for a baseline reset, to `resets.log`), so it needs none.
 - **Config file** must be root- or self-owned and not writable by group/others; `/etc/iogov` and the kill-switch file should be root-owned (README).
+- **Read-only reports.** `analyze` and `status` open the journal, `state.json` and `agg.json` no-follow but accept any owner, so root or an
+  operator can run them against the service user's files; a file that cannot be read is listed as `UNREADABLE` (never silently skipped).
+  Every writer (runner, journal, annotate) keeps the owner check.
 
 ## 4. Schedule
 
@@ -107,7 +120,8 @@ them from a fast path; non-zero blocks found become witnesses (up to 16, re-read
 | `bench` | timer every 15 min; due every 6 h +-10 % jitter | region 512 MiB default; probe 64 MiB: fresh sequential 64 KiB writes 16 MiB at qd1, 48 MiB at qd4 (fdatasync every 8 MiB), 256 x (4 KiB overwrite + fdatasync), 8 MiB sequential raw read; weekly escalation to 192 MiB |
 | `watch` | resident, 1 Hz | procfs/cgroup reads only |
 
-Adaptive region: `min(512 MiB, 1 % of the disk, 25 % of (free - reserve), hard cap 1 GiB)`, reserve = max(2 GiB, 5 % of the filesystem), filesystem
+Adaptive region: `min(512 MiB, 1 % of the disk, 25 % of (free - reserve), region_hard_cap)` with `region_hard_cap` 1 GiB by default and
+at most 2 GiB (`HARD_MAX`), reserve = max(2 GiB, 5 % of the filesystem), filesystem
 must be ext4 or xfs; below 16 MiB the write lanes are off ("region none") and the journal and `analyze` say what is lost (no durable-
 write latency, no fresh-write lane, no bandwidth probe outside passive windows). 32 GB disk: ~327 MiB region, 40 MiB probe. 128 MiB
 region: 16 MiB probe. Sizes are decided at each run from current free space; the file is created O_EXCL, filled with random non-zero
@@ -115,12 +129,12 @@ data by the bench itself (no unwritten-extent fast path), removed in `finally` (
 
 ## 5. Cost budget (from `compute_budget`, asserted by tests; defaults)
 
-| | typical | worst case | ceiling in code |
+| | typical | worst case | default cap (hard maximum a config can reach, `config.py HARD_MAX`) |
 |---|---|---|---|
-| raw reads / day | 4 032 x 4 KiB + 4 x 8 MiB = 48 MiB | 10 944 x 4 KiB + 32 MiB = 75 MiB | 128 MiB/day hard budget, 20 IOPS, queue depth 1 |
-| writes / day | 4 x (64 + 1) MiB + 128 MiB/7 d = ~280 MiB | same | 1 GiB/day hard budget, 256 MiB/s |
-| flush-bearing ops / day | ~1 100 | same | 4 KiB lane 100/s |
-| in flight at any instant | 1 request, except 4 x 64 KiB during the qd4 phase (a few seconds per bench) | 256 KiB | `qd_high <= 8` (hard), unsynced <= 8 MiB |
+| raw reads / day | 4 032 x 4 KiB + 4 x 8 MiB = 48 MiB | 10 944 x 4 KiB + 32 MiB = 75 MiB | 128 MiB/day (max 256 MiB), 20 IOPS (max 200), queue depth 1 |
+| writes / day | 4 x (64 + 1) MiB + 128 MiB/7 d = ~280 MiB | same | 1 GiB/day (max 2 GiB), 256 MiB/s (max 512 MiB/s) |
+| flush-bearing ops / day | ~1 100 | same | 4 KiB lane 100/s (max 500/s) |
+| in flight at any instant | 1 request, except 4 x 64 KiB during the qd4 phase (a few seconds per bench) | 256 KiB | `qd_high` 4 (max 8), unsynced <= 8 MiB (max) |
 
 Worst-case extra wait a neighbour sees behind our in-flight bytes (256 KiB): 0.74 ms at 340 MiB/s, 16.7 ms at 15 MiB/s, 41.7 ms at
 6 MiB/s; a flush barrier covers at most 8 MiB: 23 ms / 533 ms / 1.3 s at those rates. **Reservation semantics.** A run reserves its worst-case bytes before any IO (counted against the day and persisted), per-IO charges draw from the
@@ -128,7 +142,8 @@ reservation, and `finish()` refunds the unused part. A run killed before it can 
 consecutive failing benches stay under the daily write cap, and only the first one performs IO (the failure backs off the next attempt exponentially:
 6 h x 2^n, at most 7 days, persisted).
 
-**Flush bound.** `fdatasync` runs under a watchdog: a flush longer than `flush_limit_s` (2 s, hard max 10 s) raises the stop flag from a monitor thread and the lane
+**Flush bound.** Every `fdatasync` (the sequential phases' periodic flushes and the 4 KiB lane's per-sample flush; `timed_flush` is the only call site, asserted by
+a static test) runs under a watchdog: a flush longer than `flush_limit_s` (2 s, hard max 10 s) raises the stop flag from a monitor thread and the lane
 ends as `slow_flush`; the flush size also adapts so that one flush costs about 250 ms at the write rate just measured (never above `sync_every_bytes` <= 8 MiB).
 Every offset-probe read in the sequential-read lane is guarded, paced and charged like the others.
 
@@ -143,6 +158,8 @@ so each IO is also bounded in time: any single IO slower than 250 ms stops furth
 - **Load-aware gating, never run when IO pressure is high:** tick skips if system `io.pressure some avg10` > 10 % or load > 1.5/CPU. The bench
   needs `some` <= 1 %, `full` <= 0.1 %, protected cgroup pressure <= 1 %, governed writes <= 2 MB/s, nothing in flight on the disks.
   A gated run costs one 1 s pair of procfs reads, applies exponential backoff (5 min doubling to 1 h) and journals a deduplicated `skip`.
+  A gated or backing-off **tick** still journals that snapshot pair as a `passive` record (`gated: true`, `gate_reasons`): the busy moment's
+  pressure (io and memory), swap counters and "who else writes" are kept; no probe IO is issued. The bench journals only the skip.
 - **Mid-run abort:** stop flag (SIGTERM/SIGINT only set it), kill switch, pressure rising to 5x the bench limit, a single slow IO,
   a phase wall clock (20 s), the daily budgets. An aborted bench is journalled with partial lanes; the scratch file is always removed.
 - **Raw-read risks:** read-only by construction (an assertion, a static test that nothing else issues write syscalls on it, and a
@@ -198,9 +215,9 @@ Pure function of the journal (`recognize(records, cfg)`), folded in incrementall
 | `skip` | `kind`, `reasons[]` (+ `ctx`): kill switch, pressure, busy device, backoff class, no devices |
 | `probe` | `lane`, `device`, `quiet`, `n`, `zero`, `lat_us[]` (<= 32 samples), `hist[]` (log2 us buckets), `direct`; also `p50 p90 p99 min max attempts errors ctx epoch` |
 | `bench` | `status`, `region` (mode, sizes, fs, direct, escalated, disabled reason), `lanes{}` (per lane: bytes, qd, `t_write`, `t_sync`, `rate_write_bps`, `rate_durable_bps`, `at_cap`, `lat`, `sync_ms`, `valid`, `aborted`), `settings_epoch` |
-| `passive` | `devices{}` (iops, bps, await ms, busy %), `pressure`; also `loadavg`, `cgroups{}` rates/pressure, `others_writing{}` (top writers outside the slices), `root_total_w_bps` |
+| `passive` | `devices{}` (iops, bps, await ms, busy %), `pressure`; also `pressure_memory`, `vmstat_per_s` (swap-in/out, major faults, zswap, anon refaults per second; null when unavailable), `loadavg`, `cgroups{}` rates/pressure, `others_writing{}` (top writers outside the slices), `root_total_w_bps`; on a gated tick `gated` true and `gate_reasons[]` |
 | `recommendation` | `lane`, `kind` (baseline_established, shift_detected, shift_cleared, baseline_reset), `text`, `evidence` (`category`="capability", `key`, window, factor, direction, CUSUM state) |
-| `harm` | `kind` (`episode`, `probe_latency`), `evidence` (episode: start/end, `duration_s`, `recovery_s`, peaks, `series[[t_rel, some%, full%, dstate, sys_some_avg10]]` <= 300 points, `settings_epoch`) |
+| `harm` | `kind` (`episode`, `probe_latency`), `evidence` (episode: start/end, `duration_s`, `recovery_s`, peaks incl. `peak_mem_some_pct`/`peak_mem_full_pct`, `driver` (memory / io / dstate), `series[[t_rel, some%, full%, dstate, sys_some_avg10, mem_some%, mem_full%]]` <= 300 points, `settings_epoch`) |
 | `note` | `text`; `kind` annotation / action / baseline_reset |
 
 Other files in `state_dir`: `state.json` (schedule, budget, backoff, failure counters, walk positions), `agg.json` (recognizer aggregates), `resets.log`
@@ -246,4 +263,9 @@ shift in what the probes measure; whether the game suffers is the `harm` section
 5. **Retention.** Defaults 400 days / 512 MiB (about 240 MiB per year at one tick per 5 minutes). Shorter retention shortens what `analyze` can replay; the persisted baseline is unaffected.
 6. **Raw reads.** Accept the confidentiality cost of read access to one whole disk (section 6), or do not grant the udev ACL (the tick then reports "cannot open read-only" and only
    the scratch-file bench and passive collectors run).
-7. **First bench** with the protected workload idle, and the daily write budget (default 1 GiB, hard maximum 2 GiB).
+7. **First bench** with the protected workload idle: enable `iogov-tick.timer` first, run `iogov bench --force` by hand in an idle window and compare
+   `watch` episodes around it, and only then enable `iogov-bench.timer` (its first run is otherwise whenever the gate first passes). Also decide the daily
+   write budget (default 1 GiB, hard maximum 2 GiB).
+8. **A host that is never calm.** The bench gate (system io `some` <= 1 %, `full` <= 0.1 %, nothing in flight) may rarely pass on a host that swaps
+   continuously; the write lanes then show as STALE and only the read lanes and passive evidence accumulate. That is the designed failure mode, not a
+   bug, but it must be visible: check the skip counts in `analyze` after the first days (backlog MDT-030 for a gate pass-rate line in `status`).

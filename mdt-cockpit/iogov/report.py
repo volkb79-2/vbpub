@@ -86,7 +86,8 @@ class Acc:
         elif typ == "harm":
             if r["kind"] == "episode":
                 e = r["evidence"]
-                self.episodes.append({"t": r["t"], "ts": r["ts"], **{k: e.get(k) for k in ("duration_s", "recovery_s", "peak_some_pct", "peak_dstate")}})
+                self.episodes.append({"t": r["t"], "ts": r["ts"],
+                                      **{k: e.get(k) for k in ("duration_s", "recovery_s", "peak_some_pct", "peak_dstate", "peak_mem_some_pct", "driver")}})
             else:
                 self.probe_latency_events += 1
         elif typ == "note":
@@ -127,7 +128,8 @@ class Acc:
             "duration_s_median": durs[len(durs) // 2] if durs else None, "duration_s_max": durs[-1] if durs else None,
             "recovery_s_max": recs[-1] if recs else None,
             "peak_some_pct_max": max((e["peak_some_pct"] for e in eps), default=None),
-            "last": [{k: e[k] for k in ("ts", "duration_s", "recovery_s", "peak_some_pct", "peak_dstate")} for e in eps[-5:]],
+            "drivers": dict(collections.Counter(e.get("driver") or "unknown" for e in eps)),
+            "last": [{k: e[k] for k in ("ts", "duration_s", "recovery_s", "peak_some_pct", "peak_dstate", "peak_mem_some_pct", "driver")} for e in eps[-5:]],
             "around_annotations": around,
         }
 
@@ -175,7 +177,7 @@ def analyze(cfg, path: str, as_json: bool = False, lane_filter: str | None = Non
     if as_json:
         out = {
             "summary": summary,
-            "read": {"torn": stats.torn, "unknown_version": stats.unknown_version, "invalid": stats.invalid},
+            "read": {"torn": stats.torn, "unknown_version": stats.unknown_version, "invalid": stats.invalid, "unreadable": stats.unreadable},
             "lanes": {
                 lane: {
                     "phase": r.display_phase, "reference": r.reference, "latest": r.latest, "ratio": r.ratio(),
@@ -191,8 +193,11 @@ def analyze(cfg, path: str, as_json: bool = False, lane_filter: str | None = Non
         }
         return json.dumps(out, indent=1, sort_keys=True)
     lines = [f"iogov analyze: {summary['records']} records, {summary['first']} .. {summary['last']}"]
-    if stats.torn or stats.unknown_version or stats.invalid:
-        lines.append(f"  skipped while reading: {stats.torn} torn, {stats.unknown_version} other-schema, {stats.invalid} invalid")
+    if stats.skipped():
+        lines.append(f"  skipped while reading: {stats.torn} torn, {stats.unknown_version} other-schema, {stats.invalid} invalid, "
+                     f"{len(stats.unreadable)} unreadable file(s)")
+        for u in stats.unreadable:
+            lines.append(f"    UNREADABLE {u}")
     lines.append(f"  types: {summary['by_type']}")
     lines.append(f"  bench: {summary['bench_ok']} ok, {summary['bench_aborted']} aborted {summary['bench_abort_reasons'] or ''}; "
                  f"write region modes {summary['write_region_modes']}")
@@ -222,10 +227,11 @@ def analyze(cfg, path: str, as_json: bool = False, lane_filter: str | None = Non
         lines.append("  none recorded")
     else:
         lines.append(f"  {h['episodes']} distress episodes (duration median {h['duration_s_median']} s, max {h['duration_s_max']} s, "
-                     f"max recovery {h['recovery_s_max']} s, peak stall {h['peak_some_pct_max']}%), "
+                     f"max recovery {h['recovery_s_max']} s, peak io stall {h['peak_some_pct_max']}%; dominant stall share {h['drivers']}), "
                      f"{h['probe_latency_events']} slow-probe events")
         for e in h["last"]:
-            lines.append(f"  {e['ts']} lasted {e['duration_s']} s, recovery {e['recovery_s']} s, peak stall {e['peak_some_pct']}%, D-state {e['peak_dstate']}")
+            lines.append(f"  {e['ts']} lasted {e['duration_s']} s, recovery {e['recovery_s']} s, peak io stall {e['peak_some_pct']}%, "
+                         f"memory stall {e.get('peak_mem_some_pct')}%, D-state {e['peak_dstate']}, driver {e.get('driver') or 'unknown'}")
         for a in h["around_annotations"]:
             lines.append(f"  around annotation {a['ts']} '{a['text']}': episodes 24 h before {a['episodes_24h_before']} "
                          f"(max {a['max_duration_before_s']} s), after {a['episodes_24h_after']} (max {a['max_duration_after_s']} s)")
@@ -278,11 +284,14 @@ def status(cfg, wall) -> str:
     if os.path.isdir(cfg.scratch_dir):
         leftovers = [n for n in os.listdir(cfg.scratch_dir) if STALE_RE.fullmatch(n)]
     lines.append(f"  scratch leftovers: {leftovers or 'none'}")
-    data = safeio.load_json(os.path.join(cfg.state_dir, "agg.json"))
+    data = safeio.load_json(os.path.join(cfg.state_dir, "agg.json"), any_owner=True)  # read-only: an operator may run `status`
     acc = Acc()
     window = now - 30 * 86400
-    for rec in read_records(cfg.journal_dir(), since=window):
+    stats = ReadStats()
+    for rec in read_records(cfg.journal_dir(), stats, since=window):
         acc.add(rec)
+    for u in stats.unreadable:
+        lines.append(f"  UNREADABLE journal file: {u}")
     if data.get("v"):
         eng = Engine(cfg, data)
     else:  # no persisted aggregates yet: replay (bounded memory), closed windows only

@@ -329,9 +329,6 @@ class LaneState:
         return out
 
 
-LaneResult = LaneState  # old name
-
-
 def analyze_lane(lane: str, windows: dict, resets: list, cfg, window_s: float) -> LaneState:
     """Run a lane over already-built windows (all treated as closed). Same LaneState code as the streaming engine."""
 

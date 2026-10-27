@@ -29,6 +29,8 @@ class GateResult:
     reasons: list = field(default_factory=list)
     quiet: bool = False
     ctx: dict = field(default_factory=dict)
+    before: dict | None = None  # the two passive snapshots the verdict rests on: a gated tick still journals them as evidence
+    after: dict | None = None
 
 
 def _some_avg10(pressure: dict | None) -> float | None:
@@ -91,6 +93,7 @@ class Gate:
         load1 = b["loadavg"][0] if b["loadavg"] else None
         ctx = {
             "pressure_some_avg10": some, "pressure_full_avg10": full, "protected_some_avg10": prot,
+            "memory_some_avg10": _some_avg10(b.get("pressure_memory")), "memory_full_avg10": _full_avg10(b.get("pressure_memory")),
             "governed_w_bps": gbps, "inflight": infl, "load1": load1,
         }
         if kind == "tick":
@@ -116,7 +119,7 @@ class Gate:
             and (infl in (0, None))
             and (gbps is None or gbps < cfg.quiet_governed_write_bps)
         )
-        return GateResult(not reasons, reasons, quiet, ctx)
+        return GateResult(not reasons, reasons, quiet, ctx, a, b)
 
 
 class RunGuard:

@@ -242,17 +242,20 @@ def run_tick(rt: Runtime) -> int:
             _log_skip(rt, "tick", [f"kill_switch:{ks}"])
             rt.save()
             return 0
-        backoff = Backoff(rt.state, cfg, env.wall, "tick")
-        if backoff.blocked() > 0:
-            return 0
         if not rt.disks:
             _log_skip(rt, "tick", ["no_devices"] + rt.notes[:3])
             rt.save()
             return 0
+        backoff = Backoff(rt.state, cfg, env.wall, "tick")
         gate = Gate(cfg, rt.collector, env).check("tick")
-        if not gate.ok:
-            _log_skip(rt, "tick", gate.reasons, gate.ctx)
-            backoff.hit()
+        if not gate.ok or backoff.blocked() > 0:
+            # No probe IO, but the gate's own snapshot pair is kept: a stalled host is exactly the moment whose passive evidence
+            # (pressure, swap activity, who writes) the operator needs. The backoff and the skip dedup bound the journal, not the evidence.
+            rt.emit("passive", gated=True, gate_reasons=gate.reasons, **passive_summary(gate.before, gate.after, cfg.others_top))
+            if not gate.ok:
+                _log_skip(rt, "tick", gate.reasons, gate.ctx)
+                backoff.hit()
+            _finish_engine(rt)
             rt.save()
             return 0
         backoff.clear()
