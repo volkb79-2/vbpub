@@ -53,8 +53,10 @@ pins (operator 2026-10-27): each version is re-selected at build time as the new
 sha256 recorded at staging (first-use trust). The GitHub API shapes (`assets[].digest`, `commits?until=`) were checked live
 on 2026-10-27 (`gh api`). Staged and verified in
 `scripts/stage_tool_artifacts.py`, installed and re-verified in the `Dockerfile`, listed in the manifest and
-`tests/runtime/test_image_contract.py`. Still UNBUILT and UNVERIFIED in a real image: no download was run,
-the `ov` `.deb` has not been `dpkg -i`'d, and the runtime checks have not run. `dive` was already installed. (3) `tmux` and `broot` come from Debian packages; the `tmux.conf`, `gitconfig`,
+`tests/runtime/test_image_contract.py`. Status 2026-10-27 (later the same day): the tools were built for real in the
+`source-1bc10c5a6b68` release build (the first real build found and fixed two defects: the manifest RUN did not source
+`tool-versions.env`, and multi-line `--version` output was recorded verbatim). Item (1), the key-profile verification on a
+client, and the runtime-check results of item (3) against the published image remain OPEN. `dive` was already installed. (3) `tmux` and `broot` come from Debian packages; the `tmux.conf`, `gitconfig`,
 `inputrc` and `vimrc.local` defaults have runtime tests in `tests/runtime/test_system_defaults.py` that
 have not been run against a built image.
 

@@ -479,6 +479,18 @@ The actual file may contain other JSONC properties. The source path is a host
 path and must already exist; `--mount` is deliberate because a missing source
 must stop container creation rather than become an empty directory.
 
+The host service preserves this directory across stop/start so installer-driven
+BuildKit restarts do not strand a running container's bind mount on a deleted
+inode. After upgrading from a host setup that did not preserve it, check the
+mount from inside an existing devcontainer with
+`findmnt -T /run/mdt-buildkitd -o SOURCE`. If the source ends in `//deleted`,
+rebuild that devcontainer once; future service restarts retain the mount's
+directory identity. The same mount rule applies to `/run/docker-api`: keep the
+directory-level mount from the MDT template, since its socket entry can be
+recreated safely inside the stable directory. See the [directory bind-mount
+design](DESIGN-GUIDE.md#directory-bind-mount-identity) and the
+[BuildKit socket design](DESIGN-GUIDE.md#managed-buildkit-socket-access).
+
 After the image is rebuilt, `postCreateCommand` runs
 `finalize_container_environment.py`. It validates/reuses the named remote and
 does not create a per-container or container-driver builder. A partial or
@@ -754,9 +766,9 @@ version = "7.11.0"
 
 [[artifact]]
 name = "pwmcp-bundle"
-path = "/path/to/pwmcp-1.64.0-r3.tar.xz"
+path = "/path/to/pwmcp-1.64.0-r4.tar.xz"
 sha256 = "<64 hex digits>"
-version = "1.64.0-r3"
+version = "1.64.0-r4"
 ```
 
 ```bash

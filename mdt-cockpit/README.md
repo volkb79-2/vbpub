@@ -61,6 +61,11 @@ the runtime integration around it:
 
 The Docker tools are **clients only** — neither image runs a daemon. In the native image
 `docker version` needs an explicitly configured remote `DOCKER_HOST` or a mounted socket.
+The VSC template uses a directory-level `/run/docker-api` mount so replacing
+the socket entry does not invalidate the mount; host setup keeps that directory
+in place. A mounted directory remains attached to its old inode if its host
+path is removed and recreated, so the host must preserve that directory
+identity. See the [directory bind-mount design](docs/DESIGN-GUIDE.md#directory-bind-mount-identity).
 
 Both families create the `vscode` user when the base does not, so consumers can use
 `remoteUser: "vscode"` with either.
@@ -526,6 +531,8 @@ Host installation and the guard policy are documented in
 [the managed BuildKit architecture](docs/BUILD-ARCHITECTURE.md#managed-buildkit-backend).
 The service exposes its socket only to the host `docker` group; see the
 [socket-access design](docs/DESIGN-GUIDE.md#managed-buildkit-socket-access).
+It preserves the `/run/mdt-buildkitd` directory across service restarts so
+existing devcontainer bind mounts keep reaching the socket.
 The host wizard also writes `DEV_BUILDKITD_MAX_PARALLELISM` into the managed
 daemon configuration; it limits one BuildKit daemon's internal solver work and
 is independent of release repack concurrency.

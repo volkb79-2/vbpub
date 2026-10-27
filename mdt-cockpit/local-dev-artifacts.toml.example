@@ -32,12 +32,12 @@ version = "7.11.0"
 
 [[artifact]]
 name = "pwmcp-bundle"
-path = "/absolute/path/to/pwmcp-1.64.0-r3.tar.xz"
+path = "/absolute/path/to/pwmcp-1.64.0-r4.tar.xz"
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-version = "1.64.0-r3"
+version = "1.64.0-r4"
 
 [[artifact]]
 name = "pwmcp-installer"
 path = "/absolute/path/to/pwmcp/get.py"
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-version = "1.64.0-r3"
+version = "1.64.0-r4"

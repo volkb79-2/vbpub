@@ -626,6 +626,26 @@ non-wizard example, and applies the choice through a boot-time tmpfiles rule. Th
 runtime and gives the operator a clear way to preserve `DAMON_STAT` when it is
 needed for other workloads.
 
+## Directory bind-mount identity
+
+A directory bind mount stays attached to the mounted directory object, not
+to a pathname that is looked up again on every access. If the host removes
+that directory and creates another at the same path, the existing mount
+remains attached to the old (deleted) inode; files in the replacement are
+inaccessible through that mount until the consumer remounts it (for a
+devcontainer, recreate the container). Therefore a host path bind-mounted by
+long-lived consumers must keep its directory identity; repair ownership or
+mode in place, never unlink/recreate the directory while those consumers run.
+
+MDT applies this to its runtime mounts in three ways: `/run/docker-api` is
+created idempotently with `mkdir -p` and its owner/mode are corrected in
+place, while the socket entry inside it may be replaced; `/run/cgprofile` is
+ensured by a tmpfiles `d` entry and daemon restarts only replace socket
+entries; `/run/mdt-buildkitd` uses `RuntimeDirectoryPreserve=yes` because
+systemd otherwise removes a service's runtime directory on stop. `/run` is
+tmpfs, so a host reboot starts each dependent service with a fresh directory
+before devcontainers are launched.
+
 ## Managed BuildKit socket access
 
 The rootless BuildKit process creates its Unix socket with its container
@@ -640,6 +660,14 @@ host group `docker`, mode `0660`. Locking the parent before the privileged
 restores directory mode `01777` for socket creation. This shares the BuildKit
 API only with principals already trusted for Docker access; it does not make
 the socket world-accessible.
+
+The devcontainer bind-mounts `/run/mdt-buildkitd`, so the service sets
+`RuntimeDirectoryPreserve=yes` to retain the directory across stop/start and
+installer-triggered restarts while systemd continues enforcing its owner
+and mode. This avoids a healthy host socket becoming unreachable from a
+long-lived devcontainer after a service restart. A container already pinned
+to a deleted inode from an older installation must be rebuilt once; see the
+[consumer setup](CONSUMERS.md#consumer-devcontainer).
 
 ## Bootstrap uses the source filesystem type
 
