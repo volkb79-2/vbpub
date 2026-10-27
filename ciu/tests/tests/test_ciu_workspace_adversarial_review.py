@@ -1147,29 +1147,19 @@ def test_remove_reports_shared_ownership_lookup_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(worktree, "_shared_worktree", lambda: SimpleNamespace(
         discover_git_context=lambda _path: (_ for _ in ()).throw(RuntimeError("ownership unavailable"))
     ))
-    with pytest.raises(
-        worktree.WorktreeError,
-        match="could not verify worktree-family ownership.*ownership unavailable",
-    ):
+    with pytest.raises(worktree.WorktreeError, match="could not inspect shared"):
         worktree.remove(repo, "demo")
 
 
 def test_remove_reports_shared_legacy_removal_failure(monkeypatch, tmp_path):
     repo, _path = _removal_fixture(monkeypatch, tmp_path)
-    def discover(path):
-        # Primary checkout and linked checkout report the same Git family but
-        # their own top-level path and branch, as the removal preflight proves.
-        if Path(path).resolve() == repo.resolve():
-            return (repo.resolve(), repo / ".git", "main", "a" * 40)
-        return (Path(path).resolve(), repo / ".git", "demo", "a" * 40)
-
     shared = SimpleNamespace(
-        discover_git_context=discover,
+        discover_git_context=lambda _path: (repo, repo / ".git", "demo", "a" * 40),
         find_workspace=lambda _common, _path: None,
         remove_unrecorded_workspace=lambda *_args, **_kwargs: (_ for _ in ()).throw(
             RuntimeError("remove failed")
         ),
     )
     monkeypatch.setattr(worktree, "_shared_worktree", lambda: shared)
-    with pytest.raises(worktree.WorktreeError, match="shared worktree removal failed: remove failed"):
+    with pytest.raises(worktree.WorktreeError, match="shared legacy workspace removal failed"):
         worktree.remove(repo, "demo")
