@@ -4,6 +4,49 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [source-1bc10c5a6b68] - 2026-10-27
+<!-- cmru: generated -->
+<!-- cmru: source-end=1bc10c5a6b68e64434255137407821a8483fba2a -->
+
+### Added
+- feat(mdt-cockpit): wire ov, dry, yazi and sss as pinned, sha256-verified staged tools (15f1b1cf7)
+- feat(mdt-cockpit): terminal defaults (zsh, scrollback, persistent sessions), opt-in key/tmux VS Code snippets, tmux/git/readline/vim system defaults (8020843f4)
+- feat(mdt-cockpit): MDT_BUILD_UNSAFE_IO (cmru.toml [env] -> bake -> Dockerfile ARG) makes dpkg skip fsync during the image build only; host-setup install.sh reminds about a docker restart only when pending (b3b1a0366)
+- feat(host-setup): DEV_BUILDKITD_GC_KEEP bounds the BuildKit build cache (gckeepstorage, default 50 GB) (2bbc0d2b1)
+- feat(cmru): cmru build builds the checked-out commit by default (--from-origin-main for the old snapshot, --allow-uncommitted named in the dirty refusal); docs(mdt-cockpit): BUILDKITD-FLOWS architecture + trade-offs, governor device-only mode, MDT-026 (a47483296)
+- feat(host-setup): DEV_BUILDKITD_CACHE selects the BuildKit cache source (volume or host path); stage_tool_artifacts caches under artifacts/cache, not .git; governor design: protect list, cgroup targets, optional tracing (01ae755e0)
+- feat(estate): builder defaults are environment-overridable; pwmcp builds through a plain builder when no managed endpoint is configured (45efdcebf)
+
+### Fixed
+- fix(mdt-cockpit): oci-push test polls for the registry:2 start-up instead of probing once, and removes the registry when setUpClass fails (first real release run failed the lane once, passed on identical rerun) (1bc10c5a6)
+- fix(mdt-cockpit): manifest recorded 'ov version 0.55.0 rev:...' and 'Yazi' instead of the versions (multi-line/prefixed --version output); seen in the first real build of vbpub@093420989 (2eefd4c92)
+- fix(mdt-cockpit): manifest RUN sourced no tool-versions.env, so DRY_VER/SSS_VER were unbound and the build failed after the tool installs (found by the first real build of the aged-latest tools) (093420989)
+- fix(mdt-cockpit): review round 1 for the aged-latest resolver (normalise a v-prefixed override, verified-API wording, README and CHANGES no longer claim pins) (ee33544e4)
+- fix(mdt-cockpit): review round 1 for ov/dry/yazi/sss (dry checksum grep lost its file operand and broke the build; add the staging tests the first commit lacked; dry has no confirmed version flag) (1a3aaf24b)
+- fix(mdt-cockpit): review round 1 (broken runtime tests, zsh readline parity, Task-Manager key, balanced-profile costs, check.sh threshold path, non-fatal sysctl, stale docs, manifest list) (540d893cf)
+- fix(mdt-cockpit): install inotify sysctl, check it, exclude generated trees from the VS Code watcher (MDT-003) (d4b844f0d)
+- fix(mdt-cockpit): install inotify sysctl, check it, exclude generated trees from the VS Code watcher (MDT-003) (68a4cb487)
+- fix(host-setup): reject a multi-line cache value, soften the unmounted-mountpoint claim; artifact cache falls back when the toplevel is unusable (review fixes) (67dc38912)
+- fix(mdt-cockpit): devcontainer templates declare no features (updateUID build FROM a local tag fails on the remote builder); governor design: prod-latency objective, fill covariates, no stored-calibration bounds; MDT-024/025, cmru KI-94 (3d8e36f0a)
+
+### Changed
+- mdt-cockpit: replace hard pins for gdu/dust/ov/dry/yazi/sss with build-time newest-release-at-least-14-days-old resolution (b78805d85)
+- mdt-cockpit: update docs, script, template (5a0517dc0)
+- refactor(estate): BUILDX_BUILDER/BUILDKIT_HOST declared once in cmru.orchestration.toml; old mdt copy builds through the configured endpoint (210bb05e2)
+
+### Documentation
+- docs(mdt-cockpit): IO governor: iogov-probe spec v1 (Fable round 5) and Astra's critique (3126b6233)
+- docs(mdt-cockpit): IO governor Fable round 4: probe ladder and long-term shift recognizer (zram out) (3be8337c1)
+- docs(mdt-cockpit): IO governor third opinion (Fable 5.1 blind then disclosed), session id recorded (fe0d86d57)
+- docs(mdt-cockpit): IO governor second opinion (Codex gpt-6-astra, blind round and critique), session id recorded (0a68165ad)
+- docs(mdt-cockpit): bash/zsh common use, DEVCONTAINER-MECHANISMS.md (60be76637)
+- docs(mdt-cockpit): governor test plan - slow fsync via dm-delay in the guest (3345b9d4d)
+- docs(mdt-cockpit): governor design 2a - vrate floor is caused by our own nr_requests=16 (tracepoint measurement) (b44d85e83)
+- docs(mdt-cockpit): IO governor candidate designs and VM test plan (e152bb3ec)
+- docs(mdt-cockpit): MDT-024 cold-cache btrfs trial result (18ecaa3ae)
+- docs(mdt-cockpit): governor infers passively with bounds and no probe; MDT-024 buildkitd cache on btrfs (d7441ebdc)
+- docs(mdt-cockpit): IO governor design; MDT-023 backlog; cmru KI-93 (cmru build dirty-tree) (beb15eece)
+
 ## [source-c7938ea382b8] - 2026-10-23
 <!-- cmru: generated -->
 <!-- cmru: source-end=c7938ea382b8a1f2d11e5fc3be41c0cdb4575be1 -->
