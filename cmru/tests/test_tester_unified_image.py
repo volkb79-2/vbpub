@@ -341,7 +341,7 @@ def test_generator_emits_the_third_party_closure_and_expands_self_extras(tmp_pat
 @pytest.mark.parametrize(
     "bad",
     ["Worktree", "cmru==1", "assay", "ciu>=1",
-     "nyxloom", "topos[dev]>=1", "CGroup.Profiler", "run_gate"],
+     "nyxloom", "topos[dev]>=1", "CGroup.Profiler", "run_gate", "iobench", "vmscreen>=0"],
 )
 def test_generator_refuses_estate_internal_names_in_dependencies(tmp_path, bad):
     """BG-05: a PyPI-default pip must never be asked for an estate-internal
@@ -435,10 +435,8 @@ def test_generator_deduplicates_and_prints_one_requirement_per_line(tmp_path, ca
     assert len(lines) == len(set(lines)) and lines[-1] == "build"
 
 
-def test_real_estate_trees_have_no_internal_requirement_in_the_pypi_bound_closure(tmp_path):
-    """The generator against the REAL pyprojects, laid out as the Dockerfile
-    COPYs them: cmru now declares ``cli-extended`` (KI-51), the closure must
-    still be accepted, and no cli-extended line may be in it."""
+def _real_estate_layout(tmp_path):
+    """The REAL pyprojects laid out as the Dockerfile COPYs them."""
     for name in ("ciu", "cmru", "assay", "topos", "nyxloom"):
         (tmp_path / name).symlink_to(REPO_ROOT / name)
     (tmp_path / "cgroup-profiler").symlink_to(REPO_ROOT / "scripts" / "cgroup-profiler")
@@ -446,6 +444,14 @@ def test_real_estate_trees_have_no_internal_requirement_in_the_pypi_bound_closur
     (tmp_path / "pwmcp" / "client").symlink_to(REPO_ROOT / "pwmcp" / "client")
     (tmp_path / "libraries").mkdir()
     (tmp_path / "libraries" / "cli-extended").symlink_to(REPO_ROOT / "libraries" / "cli-extended")
+    return tmp_path
+
+
+def test_real_estate_trees_have_no_internal_requirement_in_the_pypi_bound_closure(tmp_path):
+    """The generator against the REAL pyprojects, laid out as the Dockerfile
+    COPYs them: cmru now declares ``cli-extended`` (KI-51), the closure must
+    still be accepted, and no cli-extended line may be in it."""
+    _real_estate_layout(tmp_path)
     closure = list(gen.requirements(tmp_path))
     names = {gen.requirement_name(item) for item in closure}
     assert not names & gen.ESTATE_INTERNAL
@@ -4730,6 +4736,89 @@ def test_build_image_stops_when_the_fetcher_refuses(tmp_path):
     )
     assert result.returncode == 2
     assert list(scratch.iterdir()) == []
+
+
+#: Operator decision 2026-10-27: our own tools have NO age window (always the latest published
+#: release); the 14-day aged-latest rule is for third-party dependencies only. The generator's
+#: floor is that list (plus the derived project names); these path markers are how the Dockerfiles
+#: refer to first-party inputs (``$1`` is the staged wheel a ``set -- <first-party glob>`` in the same
+#: RUN selected: the Run-Gate wheel, or the local-mode cli-extended wheel).
+_FIRST_PARTY_MARKERS = ("cli-extended", "cli_extended", "run-gate", "run_gate", "internal-wheels", "/src/", "$1")
+#: The only things an aged (index-bound) pip command may install.
+_AGED_TARGETS = {"pip", "build", "-r /tmp/tester-requirements.txt", "-r /tmp/internal-build-requirements.txt"}
+
+
+def _pip_install_commands(dockerfile) -> list[list[str]]:
+    """Tokenised ``pip install`` / ``pip wheel`` commands of a Dockerfile's RUN lines (comments
+    dropped, continuations joined, split at ``&&`` and ``;``)."""
+    text = "\n".join(
+        line for line in dockerfile.read_text("utf-8").splitlines() if not line.lstrip().startswith("#")
+    )
+    flat = re.sub(r"\\\n\s*", " ", text)
+    commands = []
+    for part in re.split(r"\s*(?:&&|;|\|\||\n)\s*", flat):
+        tokens = shlex.split(part) if re.search(r"\bpip\b", part) else []
+        if any(token.endswith("pip") for token in tokens) and ("install" in tokens or "wheel" in tokens):
+            commands.append(tokens)
+    return commands
+
+
+def _pip_targets(tokens: list[str]) -> list[str]:
+    """What a tokenised pip command installs: positionals, ``-r FILE`` and ``-w DIR`` kept as pairs,
+    other options dropped."""
+    start = tokens.index("install") + 1 if "install" in tokens else tokens.index("wheel") + 1
+    targets, index = [], start
+    while index < len(tokens):
+        token = tokens[index]
+        if token in ("-r", "-w"):
+            targets.append(f"{token} {tokens[index + 1]}")
+            index += 2
+        elif token == "--uploaded-prior-to":
+            index += 2
+        elif token.startswith("-"):
+            index += 1
+        else:
+            targets.append(token)
+            index += 1
+    return targets
+
+
+def test_the_age_window_never_applies_to_a_first_party_package(tmp_path):
+    """Operator decision 2026-10-27: first-party packages (cmru, assay, run-gate, ciu, cli-extended, topos,
+    nyxloom, pwmcp, cgroup-profiler, iobench, vmscreen, worktree) are always the latest published release and
+    never pass through ``--uploaded-prior-to``. In the two images that means: every aged pip command is
+    index-bound and installs only pip, build or a generator-produced requirements file; every command that
+    installs a first-party input is ``--no-index`` and carries no age; and the generated closures name no
+    first-party distribution. tester-base runs no pip at all."""
+    for name in ("iobench", "vmscreen", "worktree", "cli-extended", "run-gate", "cgroup-profiler", "pwmcp-client"):
+        assert name in gen.ESTATE_INTERNAL, name
+    assert not re.search(r"\bpip\b", (REPO_ROOT / "tester-base" / "Dockerfile").read_text("utf-8"))
+
+    aged, first_party = [], []
+    for dockerfile in (DOCKERFILE, WHEEL_BUILDER):
+        for tokens in _pip_install_commands(dockerfile):
+            targets = _pip_targets(tokens)
+            names_first_party = any(
+                gen.normalized(target) in gen.ESTATE_INTERNAL or any(marker in target for marker in _FIRST_PARTY_MARKERS)
+                for target in targets
+            )
+            if "--uploaded-prior-to" in tokens:
+                aged.append(targets)
+                assert "--no-index" not in tokens, tokens
+                assert set(targets) <= _AGED_TARGETS, (dockerfile.name, targets)
+                assert not names_first_party, (dockerfile.name, targets)
+            if names_first_party:
+                first_party.append(targets)
+                assert "--no-index" in tokens, (dockerfile.name, tokens)
+                assert "--uploaded-prior-to" not in tokens, (dockerfile.name, tokens)
+    assert len(aged) == 5, aged  # pip + closure + build backends (tester-unified), pip + build (wheel-builder)
+    assert len(first_party) == 4, first_party  # cli-extended, cmru source wheel, cmru install, Run-Gate
+
+    # The two requirements files an aged pip reads, generated from the real pyprojects.
+    _real_estate_layout(tmp_path)
+    closure = {gen.requirement_name(item) for item in gen.requirements(tmp_path)}
+    backends = {gen.requirement_name(item) for item in gen.build_requirements(tmp_path, ["cmru/pyproject.toml"])}
+    assert not (closure | backends) & gen.ESTATE_INTERNAL, (closure | backends) & gen.ESTATE_INTERNAL
 
 
 def test_wheel_builder_ages_its_pip_installs_and_pins_nothing():

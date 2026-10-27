@@ -73,7 +73,10 @@ an hour earlier. Fix (one line plus a test): `ENV PIP_UPLOADED_PRIOR_TO=${PIP_MI
 environment, and the base's pip (26.2.1, bundled by ensurepip as well) accepts the option. Decision needed before
 enabling: an exact backend pin younger than 14 days (setuptools 84.0.0 in assay and run-gate-project, 82.0.1 elsewhere,
 wheel 0.47.0, setuptools_scm 10.0.5) then fails a release wheel build, which is the rule applied but new on the
-release path; check those upload dates first. Owner: `wheel-builder/Dockerfile`, cmru `cmd_wheel_build`.
+release path; check those upload dates first. The env must not catch a first-party name (operator decision
+2026-10-27: no age window for our own tools): today no `[build-system].requires` names one and `cmd_wheel_build`
+installs nothing first-party from an index, and `test_the_age_window_never_applies_to_a_first_party_package`
+should be extended to the env if it is adopted. Owner: `wheel-builder/Dockerfile`, cmru `cmd_wheel_build`.
 
 ## TB-09 - nothing enforces "rebuild tester-unified after a Run-Gate release" for the non-cmru consumers (2026-10-27)
 

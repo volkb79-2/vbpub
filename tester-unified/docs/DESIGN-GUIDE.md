@@ -171,7 +171,11 @@ Dockerfile on different days differ, which is why the age is recorded as an imag
 `--no-cache`. The duration is pip's own vocabulary (`P<n>D`, whole days; `build-image.sh` only pre-checks the
 spelling), the cutoff is computed when pip runs, and pip fails closed: a link without `upload-time` metadata (an
 index that is not PyPI-compatible on that point, such as a bare mirror) is an installation error, not a silently
-ignored window. `--no-index` installs are outside it, which is what makes the first-party wheels exempt. The
+ignored window. First-party packages have no age window at all (operator decision 2026-10-27: our own tools are
+always the latest published release; the 14-day rule is for third-party dependencies only), and the image honours
+that structurally rather than by exemption: a first-party name never reaches an index-bound pip (released wheels
+`--no-index --no-deps`, cmru source-built offline, the generator refusing the names), which
+`test_the_age_window_never_applies_to_a_first_party_package` in `cmru/tests/test_tester_unified_image.py` asserts. The
 Debian/Python base digest and the node image digest are the deliberate exceptions: they are
 digest-pinned and age-checked by `cmru versions` (`tester-base/versions/`). `wheel-builder` ages the two installs
 baked into it the same way; the build backends that `python -m build` installs at run time are a separate matter

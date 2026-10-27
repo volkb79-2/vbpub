@@ -35,8 +35,9 @@ while [[ $# -gt 0 ]]; do
       echo "  --run-gate-published X.Y.Z|latest"
       echo "                             install the PUBLISHED Run-Gate wheel instead (run-gate-vX.Y.Z, or the run-gate-latest pointer),"
       echo "                             digest-verified by fetch-run-gate-wheel.py; the only kind of image the CMRU release gate accepts"
-      echo "  --pip-min-release-age PnD  third-party releases must be at least n days old (pip --uploaded-prior-to; default P14D);"
-      echo "                             pair with --no-cache so the dependency layer is re-resolved"
+      echo "  --pip-min-release-age PnD  THIRD-PARTY releases must be at least n days old (pip --uploaded-prior-to; default P14D);"
+      echo "                             pair with --no-cache so the dependency layer is re-resolved. First-party wheels"
+      echo "                             (run-gate, cli-extended, cmru) are never aged: always the published release"
       exit 0
       ;;
     *) usage ;;

@@ -220,7 +220,14 @@ non-cmru consumers; this runbook is its only record.
   first). pip applies it per index link: a release younger than the window is skipped, and an index that serves no
   `upload-time` metadata (a bare mirror) fails the install outright instead of ignoring the window. The cutoff is
   taken when pip runs, so an unchanged RUN text can reuse a layer resolved earlier (the builder warns unless
-  `--no-cache` is given). Wheels installed `--no-index` are exempt: cli-extended, the source-built cmru and the
-  Run-Gate wheel carry no age window by design.
+  `--no-cache` is given).
+- **First-party packages have no age window** (operator decision 2026-10-27): our own tools (cmru, assay, run-gate,
+  ciu, cli-extended, topos, nyxloom, pwmcp, cgroup-profiler, iobench, vmscreen, worktree) are always the latest
+  published release; the 14-day rule is for third-party dependencies only. In this stack a first-party package
+  never meets an aged pip: cli-extended and the Run-Gate wheel are fetched as published releases and installed
+  `--no-index --no-deps`, cmru is built and installed offline from the copied source, `gen-requirements.py` refuses
+  every first-party name on the index-bound path, tester-base runs no pip, and wheel-builder's two aged installs
+  are `pip` and `build`. `cmru/tests/test_tester_unified_image.py::test_the_age_window_never_applies_to_a_first_party_package`
+  fails if any of that changes.
 - An exact `==` pin in a project's pyproject (assay's `packaging`, `hypothesis` and `pytest-cov`, nyxloom's
   `questionary`) that is younger than the window fails the build. That is the policy applied, not a builder fault.

@@ -30,9 +30,12 @@ from typing import Iterator
 #: refusal set is this floor UNIONED with every project name found under the
 #: copied tree (:func:`derive_internal`), so a new ``libraries/foo`` is covered
 #: without editing this list.
+#: Operator decision 2026-10-27: these first-party names have NO age window (always the latest
+#: published release; ``--uploaded-prior-to`` is for third-party dependencies only), and the way
+#: this image honours that is that none of them ever reaches an index-bound pip at all.
 ESTATE_INTERNAL = frozenset({
     "cli-extended", "worktree", "cmru", "assay", "ciu", "nyxloom", "topos",
-    "cgroup-profiler", "run-gate", "pwmcp", "pwmcp-client", "srdm",
+    "cgroup-profiler", "run-gate", "pwmcp", "pwmcp-client", "srdm", "iobench", "vmscreen",
 })
 
 #: Estate-internal names that are SKIPPED rather than refused: since cmru
