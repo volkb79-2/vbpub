@@ -538,7 +538,8 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     # dry (Docker TUI): plain binary verified against the staged upstream checksums file. \
     require_file "${DOWNLOADS_DIR}/dry-${DRY_VER}-checksums.txt"; \
     require_file "${DOWNLOADS_DIR}/dry-${DRY_VER}-linux-amd64"; \
-    EXPECTED_DRY_SHA256="$(grep 'dry-linux-amd64$'"${DOWNLOADS_DIR}/dry-${DRY_VER}-checksums.txt" | awk '{print $1}')"; \
+    EXPECTED_DRY_SHA256="$(grep 'dry-linux-amd64$' "${DOWNLOADS_DIR}/dry-${DRY_VER}-checksums.txt" | awk '{print $1}')"; \
+    test -n "${EXPECTED_DRY_SHA256}" || { echo "[ERROR] no dry-linux-amd64 line in the staged dry checksums file" >&2; exit 1; }; \
     echo "${EXPECTED_DRY_SHA256}  ${DOWNLOADS_DIR}/dry-${DRY_VER}-linux-amd64" | sha256sum -c -; \
     install -m 755 "${DOWNLOADS_DIR}/dry-${DRY_VER}-linux-amd64" /usr/local/bin/dry; \
     # yazi (file manager, glibc zip): upstream publishes no checksum file; the staged sidecar carries the pinned sha256. \
@@ -1115,7 +1116,7 @@ RUN set -euo pipefail; \
         echo "gdu=$(gdu --version 2>&1 | awk '/^Version:/ { sub(/^v/, "", $2); print $2; exit }')"; \
         echo "dust=$(dust --version 2>&1 | awk '{ print $2; exit }')"; \
         echo "ov=$(ov --version 2>&1 | head -1)"; \
-        echo "dry=$(dry --version 2>&1 | head -1)"; \
+        echo "dry=${DRY_VER}"; \
         echo "yazi=$(yazi --version 2>&1 | head -1)"; \
         echo "sss=unreleased script pinned by commit ${SSS_VER}"; \
         echo "regctl=$(regctl version 2>&1 | awk '/^VCSTag:/ { sub(/^v/, "", $2); print $2; exit }')"; \

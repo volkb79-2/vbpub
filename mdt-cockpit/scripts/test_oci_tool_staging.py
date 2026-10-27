@@ -429,3 +429,67 @@ def test_dust_rejects_an_archive_that_differs_from_the_pinned_sha(tmp_path: Path
     with mock.patch.object(staging, "DOWNLOADS_DIR", tmp_path), mock.patch.object(staging, "_download", side_effect=fake_download):
         with _pytest.raises(staging.StageError, match="checksum mismatch"):
             staging._stage_dust(staging.DUST_PINNED_VERSION, [])
+
+
+def _fake_download_writing(content: bytes, sums_for: str | None = None):
+    """A `_download` stand-in: checksum files claim the digest of `content` for `sums_for`; everything else is `content`."""
+
+    def fake_download(url: str, destination: Path, **_: object) -> str:
+        if destination.name.endswith("checksums.txt"):
+            destination.write_text(f"{hashlib.sha256(content).hexdigest()}  {sums_for}\n", encoding="utf-8")
+        else:
+            destination.write_bytes(content)
+        return url
+
+    return fake_download
+
+
+def test_ov_dry_yazi_and_sss_are_pinned_not_latest(monkeypatch: _pytest.MonkeyPatch) -> None:
+    for variable, default in (
+        ("OV_VERSION", staging.OV_PINNED_VERSION),
+        ("DRY_VERSION", staging.DRY_PINNED_VERSION),
+        ("YAZI_VERSION", staging.YAZI_PINNED_VERSION),
+    ):
+        monkeypatch.delenv(variable, raising=False)
+        assert staging._resolve_pinned_version(None, default, variable) == default
+        with _pytest.raises(staging.StageError):
+            staging._resolve_pinned_version("latest", default, variable)
+    assert staging.OV_PINNED_VERSION in staging.OV_PINNED_SHA256
+    assert staging.DRY_PINNED_VERSION in staging.DRY_PINNED_SHA256
+    assert staging.YAZI_PINNED_VERSION in staging.YAZI_PINNED_SHA256
+    assert staging.SSS_PINNED_COMMIT in staging.SSS_PINNED_SHA256
+    assert len(staging.SSS_PINNED_COMMIT) == 40
+
+
+def test_an_unpinned_version_of_the_new_tools_fails_before_any_download() -> None:
+    with mock.patch.object(staging, "_download", side_effect=AssertionError("must not download")):
+        for stage in (staging._stage_ov, staging._stage_dry, staging._stage_yazi):
+            with _pytest.raises(staging.StageError, match="no pinned sha256"):
+                stage("9.9.9", [])
+        with _pytest.raises(staging.StageError, match="no pinned sha256"):
+            staging._stage_sss("0" * 40, [])
+
+
+@_pytest.mark.parametrize(
+    ("stage", "version", "sums_for"),
+    [
+        (staging._stage_ov, staging.OV_PINNED_VERSION, f"ov_{staging.OV_PINNED_VERSION}_amd64.deb"),
+        (staging._stage_dry, staging.DRY_PINNED_VERSION, "dry-linux-amd64"),
+    ],
+)
+def test_ov_and_dry_reject_an_asset_that_differs_from_the_pinned_sha_even_when_the_checksums_file_agrees(
+    tmp_path: Path, stage: object, version: str, sums_for: str
+) -> None:
+    fake = _fake_download_writing(b"not the pinned asset", sums_for)
+    with mock.patch.object(staging, "DOWNLOADS_DIR", tmp_path), mock.patch.object(staging, "_download", side_effect=fake):
+        with _pytest.raises(staging.StageError, match="checksum mismatch"):
+            stage(version, [])  # type: ignore[operator]
+
+
+def test_yazi_and_sss_reject_an_asset_that_differs_from_the_pinned_sha(tmp_path: Path) -> None:
+    fake = _fake_download_writing(b"#!/usr/bin/env bash\nnot the pinned asset\n")
+    with mock.patch.object(staging, "DOWNLOADS_DIR", tmp_path), mock.patch.object(staging, "_download", side_effect=fake):
+        with _pytest.raises(staging.StageError, match="checksum mismatch"):
+            staging._stage_yazi(staging.YAZI_PINNED_VERSION, [])
+        with _pytest.raises(staging.StageError, match="checksum mismatch"):
+            staging._stage_sss(staging.SSS_PINNED_COMMIT, [])

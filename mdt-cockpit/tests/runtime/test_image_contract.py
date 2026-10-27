@@ -190,11 +190,14 @@ class Contract:
         self._check_commands([("pwmcp", "pwmcp", "/srv/pwmcp-instance/bin")])
 
     def test_the_pinned_inspection_and_terminal_tools_are_installed_and_run(self) -> None:
-        for command in ("ov --version", "dry --version", "yazi --version", "ya --version"):
+        for command in ("ov --version", "yazi --version", "ya --version"):
             with self.subTest(command=command):
                 result = self.sh(f"{command} </dev/null")
                 self.assertOk(result, command)
                 self.assertTrue(result.stdout.strip() or result.stderr.strip(), f"{command} printed nothing")
+        # dry is a Go flag-package program whose version flag is unconfirmed (it may start the TUI), so only
+        # its presence is asserted until a built image shows what it accepts.
+        self.assertOk(self.sh("test -x /usr/local/bin/dry"), "dry is installed and executable")
 
     def test_sss_is_an_executable_bash_script(self) -> None:
         # sss is an unreleased script pinned by commit; it re-runs itself with sudo when not root, so it is
