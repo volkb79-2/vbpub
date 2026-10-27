@@ -21,6 +21,7 @@ from lib import metrics
 def test_groups_constant_matches_contract():
     assert metrics.GROUPS == (
         "mem", "memstat", "memev", "psi", "cpu", "io", "pids", "cgstat",
+        "swapev", "memev_h",
     )
 
 
@@ -28,9 +29,52 @@ def test_sample_cgroup_default_groups_produce_every_key(cgroup_root):
     sample = metrics.sample_cgroup(str(cgroup_root / "dev.slice" / "dev-background.slice"))
     # "psi" is one requested group but three output keys.
     assert set(sample) == {
-        "mem", "memstat", "memev", "psi_mem", "psi_cpu", "psi_io",
-        "cpu", "io", "pids", "cgstat",
+        "mem", "memstat", "memev", "memev_h", "psi_mem", "psi_cpu", "psi_io",
+        "cpu", "io", "pids", "cgstat", "swapev",
     }
+
+
+# ── swapev / memev_h (CP-29 items 1 and 2) ──────────────────────────────────
+
+
+def test_sample_cgroup_swapev_reads_memory_swap_events(cgroup_root):
+    target = cgroup_root / "wings.slice"
+    (target / "memory.swap.events").write_text("high 0\nmax 7\nfail 59434\n")
+    sample = metrics.sample_cgroup(str(target), groups={"swapev"})
+    assert sample == {"swapev": {"high": 0, "max": 7, "fail": 59434}}
+
+
+def test_sample_cgroup_swapev_absent_file_is_empty_never_zero(cgroup_root):
+    # The CP-29 oracle: a kernel without memory.swap.events (swap accounting
+    # off, cgroup v1 fallback) must read as "no counters", not as `fail: 0`
+    # -- a zero here would hide swap exhaustion as "never happened".
+    target = cgroup_root / "wings.slice"
+    assert not (target / "memory.swap.events").exists()
+    sample = metrics.sample_cgroup(str(target), groups={"swapev"})
+    assert sample == {"swapev": {}}
+    assert sample["swapev"].get("fail") is None
+
+
+def test_sample_cgroup_memev_h_is_the_hierarchical_file_and_memev_stays_local(cgroup_root):
+    target = cgroup_root / "wings.slice"
+    (target / "memory.events").write_text(
+        "low 0\nhigh 999\nmax 4\noom 0\noom_kill 1\noom_group_kill 0\n"
+    )
+    (target / "memory.events.local").write_text(
+        "low 0\nhigh 5\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n"
+    )
+    sample = metrics.sample_cgroup(str(target), groups={"memev", "memev_h"})
+    assert sample["memev"]["high"] == 5 and sample["memev"]["oom_kill"] == 0
+    assert sample["memev_h"]["high"] == 999 and sample["memev_h"]["oom_kill"] == 1
+
+
+def test_sample_cgroup_new_groups_are_not_sampled_unless_asked(cgroup_root):
+    # Additive: a caller that names its groups (`@metrics=mem+io`, the
+    # daemon's own fixed set) gets exactly those, as before.
+    target = cgroup_root / "wings.slice"
+    (target / "memory.swap.events").write_text("high 0\nmax 0\nfail 1\n")
+    sample = metrics.sample_cgroup(str(target), groups={"mem", "memev"})
+    assert set(sample) == {"mem", "memev"}
 
 
 def test_sample_cgroup_honours_requested_groups(cgroup_root):

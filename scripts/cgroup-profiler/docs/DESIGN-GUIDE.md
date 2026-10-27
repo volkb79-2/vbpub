@@ -155,9 +155,9 @@ cockpit receives only the cgprofile ctl surface; it does not need the system
 bus. P1 and P6 introduced the observer and opt-in placement capabilities in
 separate implementation tranches. RW-434 settles their combined tree as the
 first 1.0.0 release, including the system-bus manager bridge and writable host
-cgroup view required for explicit placement; there is no separate planned
-1.1.0 release for those capabilities. Any later version increment requires
-genuine post-1.0.0 changes. An operator with unrestricted
+cgroup view required for explicit placement; 1.1.0 changes none of those
+capabilities (it carries the Sol-review fixes and the daemon slice guard, see
+`CHANGES.md`). An operator with unrestricted
 Docker access already has host-administrator authority, but that does not
 make these daemon mounts irrelevant: a compromised daemon process can exercise
 the mounted cgroupfs and systemd manager authority directly, beyond normal

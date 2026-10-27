@@ -22,7 +22,12 @@ from typing import Any, Dict, Optional, Set, Tuple
 from . import proc_stat, util
 from .access import PROC_ROOT
 
-GROUPS: tuple[str, ...] = ("mem", "memstat", "memev", "psi", "cpu", "io", "pids", "cgstat")
+GROUPS: tuple[str, ...] = (
+    "mem", "memstat", "memev", "psi", "cpu", "io", "pids", "cgstat",
+    # Added in cgprofile 1.1.0 (CP-29 items 1 and 2), additive: a record
+    # carries them only when sampled, and every reader keys by group name.
+    "swapev", "memev_h",
+)
 
 
 def sample_cgroup(abs_path: str, groups: Optional[Set[str]] = None) -> Dict[str, Any]:
@@ -60,6 +65,21 @@ def sample_cgroup(abs_path: str, groups: Optional[Set[str]] = None) -> Dict[str,
         # and the child that caused it. memory.events.local is this cgroup's
         # own count only, which is what "did *this* level breach" needs.
         out["memev"] = util.read_kv(path("memory.events.local"))
+    if "memev_h" in wanted:
+        # The hierarchical counter, as a SEPARATE group so the per-level
+        # "did this cgroup breach" reading above stays undiluted: a parent's
+        # hierarchical count is the only place a breach enforced at the
+        # parent on behalf of a child shows up at all (CP-29 item 2, the
+        # same pair the contract-2 resource observer exposes).
+        out["memev_h"] = util.read_kv(path("memory.events"))
+    if "swapev" in wanted:
+        # memory.swap.events: `high`/`max` (memory.swap.high/max breaches)
+        # and `fail` (swap-in refused because the cgroup or the host had no
+        # swap left). `fail` is the one counter that makes cgroup-level swap
+        # exhaustion visible; it was non-zero on a production scope the day
+        # this was measured (CP-29 item 1). An absent file reads as `{}`,
+        # exactly like `memev`, never as zeros.
+        out["swapev"] = util.read_kv(path("memory.swap.events"))
     if "psi" in wanted:
         out["psi_mem"] = util.read_pressure(path("memory.pressure"))
         out["psi_cpu"] = util.read_pressure(path("cpu.pressure"))

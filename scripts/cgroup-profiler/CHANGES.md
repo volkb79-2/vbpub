@@ -24,6 +24,29 @@ inferred from the r3 canaries.
   recorded in CP-28 (Evidence). The separate bounded observer acceptance
   probe (`tools/observer-live-acceptance.py`) was NOT run for 1.1.0; CP-20
   stays `carved` until it is.
+- Add (CP-29 items 1 and 2, pre-release review 2026-10-27): two additive
+  sample groups, `swapev` (`memory.swap.events`: `high`, `max`, `fail`) and
+  `memev_h` (hierarchical `memory.events`; `memev` stays
+  `memory.events.local`). Both are in `metrics.GROUPS`, so the one-shot
+  collector samples them by default and the daemon records them per tick;
+  neither changes the contract-1 Summary. A new counter event kind,
+  `swap_fail` (severity `serious`), fires when `fail` increases. An absent
+  file reads as `{}`, never as zeros.
+- Fix (pre-release review): a `cgroup:` target is canonicalised
+  (`//`, `/./`, trailing `/` collapse) and a `..` component is refused —
+  previously `cgroup:/../..@follow` walked out of the mounted cgroup tree.
+  A slice name with an empty hierarchy component (`a--b`, `-a`, `a-`) or a
+  `/` is refused instead of expanding to a phantom `a-.slice` level;
+  `serve` checks `--observe-slices`/`--gates-slice` at start so a bad name
+  cannot turn every `ctl host` into a daemon fault.
+- Fix (pre-release review): `container:` lookup runs `docker inspect --type
+  container` (a same-named image or volume can no longer be mistaken for the
+  container) and requires a 64-hex `Id`; a hung Docker CLI is a
+  "cannot resolve" refusal, not a `TimeoutExpired` traceback.
+- Fix (pre-release review): a PSI field whose text parses as a non-finite
+  float (`nan`, `inf`, `1e999`) is dropped, so a corrupted file can never put
+  a bare `NaN`/`Infinity` token (not JSON) into `samples.jsonl.gz`.
+- Docs: README/DESIGN-GUIDE no longer claim "no planned 1.1.0 release".
 - Backlog: CP-24/25/26 (bounded sampler-owned stop, evidence-preserving
   recovery, durable DAMON pool provenance) are filed with their design held on
   a park ref and are NOT in this release; CP-28/CP-29 (monitor mode, cheap

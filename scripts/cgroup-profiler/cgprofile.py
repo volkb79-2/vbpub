@@ -1067,6 +1067,15 @@ def cmd_serve(args: argparse.Namespace) -> int:
     observe_slices = tuple(
         name for name in (s.strip() for s in args.observe_slices.split(",")) if name
     ) if args.observe_slices else ()
+    # A slice name that cannot expand to a cgroup path (`a--b`, `-a`, one
+    # with a `/`) is refused at start: `ctl host` expands every observed
+    # slice and the gates slice on every call, and a late TargetError there
+    # would surface as a daemon fault (ctl exit 3) on every `host`/`status`.
+    for name in (*observe_slices, args.gates_slice):
+        try:
+            targets_mod.slice_to_path(name)
+        except targets_mod.TargetError as exc:
+            _err(f"--observe-slices/--gates-slice: {exc}")
     # §8.1's socket-carrier uid allowlist. Deliberately environment-only
     # (the compose template passes it through): it is a DEPLOYMENT trust
     # decision, not a per-invocation one, and an operator who narrows access

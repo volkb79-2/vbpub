@@ -128,6 +128,23 @@ class TestCounterEvents:
         assert events[0].severity == "critical"
         assert events[0].data["delta"] == 2
 
+    def test_swap_fail_fires_on_a_memory_swap_events_fail_delta(self):
+        # CP-29: memory.swap.events `fail` (swap exhausted for this cgroup)
+        # is a counter event like the breaches above. It needs the `swapev`
+        # group, which the hand-built metrics() above does not carry, so a
+        # record without it stays silent (absent is not zero).
+        prev = rec({SUBJECT: {**metrics(), "swapev": {"high": 0, "max": 0, "fail": 100}}})
+        cur = rec({SUBJECT: {**metrics(), "swapev": {"high": 0, "max": 0, "fail": 103}}}, t=2.0, mono=2.0)
+        events = Detector(DetectorConfig(), limits={}).observe(prev, cur, dt=1.0)
+        assert [e.kind for e in events] == ["swap_fail"]
+        assert events[0].severity == "serious"
+        assert events[0].data == {"delta": 3, "total": 103}
+        assert "3 more" in events[0].message
+        # Reset (cgroup recreated) or absent group: nothing, never a negative.
+        reset = rec({SUBJECT: {**metrics(), "swapev": {"fail": 1}}}, t=3.0, mono=3.0)
+        assert Detector(DetectorConfig(), limits={}).observe(cur, reset, dt=1.0) == []
+        assert Detector(DetectorConfig(), limits={}).observe(rec({SUBJECT: metrics()}), cur, dt=1.0) == []
+
     def test_counter_reset_produces_no_negative_spike_not_an_error(self):
         prev = rec({SUBJECT: metrics(mem_high=5)})
         cur = rec({SUBJECT: metrics(mem_high=1)})  # cgroup recreated, counter went backwards

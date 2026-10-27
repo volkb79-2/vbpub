@@ -2768,6 +2768,27 @@ class TestCmdServe:
         assert captured["observe_slices"] == ("a.slice", "b.slice")
         assert captured["max_sessions"] == 3
 
+    @pytest.mark.parametrize("flag, value", [
+        ("--observe-slices", "game.slice,bad--name.slice"),
+        ("--gates-slice", "dev/gates.slice"),
+    ])
+    def test_an_unusable_slice_name_refuses_to_start(self, monkeypatch, capsys, flag, value):
+        # `ctl host` expands every observed slice and the gates slice on
+        # every call; a name slice_to_path cannot expand must fail at start
+        # (exit 2 with the reason), not as a daemon fault on every `host`.
+        monkeypatch.setattr(access, "have_host_cgroup_view", lambda root: True)
+        monkeypatch.setenv(access.PID_NAMESPACE_MODE_ENV, "host")
+        monkeypatch.setattr(access, "have_host_proc_view", lambda proc: True)
+        monkeypatch.setattr(serve_lib, "daemon_slice_bounded", lambda *_a: True)
+        monkeypatch.setattr(
+            serve_lib, "SessionServer",
+            lambda **kwargs: pytest.fail("must not construct a server"),
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            cg.cmd_serve(cg.build_parser().parse_args(["serve", flag, value]))
+        assert exc_info.value.code == 2
+        assert "not a usable slice name" in capsys.readouterr().err
+
     def test_empty_observe_slices_is_the_empty_tuple(self, monkeypatch, tmp_path):
         monkeypatch.setattr(access, "have_host_cgroup_view", lambda root: True)
         monkeypatch.setenv(access.PID_NAMESPACE_MODE_ENV, "host")

@@ -227,6 +227,47 @@ class TestSliceNaming:
         with pytest.raises(t.TargetError):
             t.slice_to_path(".slice")
 
+    @pytest.mark.parametrize("name", ["a--b.slice", "-a.slice", "a-.slice", "a/b.slice", "/a"])
+    def test_empty_hierarchy_component_or_slash_is_rejected(self, name):
+        # systemd escapes a literal "-" as \x2d, so an empty component can
+        # only be a typo; expanding it would invent a phantom "a-.slice"
+        # level (previously "a--b" -> /a.slice/a-.slice/a--b.slice) and a
+        # "/" belongs to the cgroup: scheme, not a unit name.
+        with pytest.raises(t.TargetError, match="not a usable slice name"):
+            t.slice_to_path(name)
+
+
+class TestCgroupPathCanonicalisation:
+    def test_dot_dot_cannot_escape_the_cgroup_root(self, cgroup_root: Path):
+        # Target.abs_path joins the cgroup path onto the root, so a ".."
+        # component used to resolve OUTSIDE the mounted tree (and @follow
+        # would then walk the host filesystem from there).
+        with pytest.raises(t.TargetError, match=r"must not contain '\.\.'"):
+            t.parse_target("cgroup:/../../etc", str(cgroup_root))
+        with pytest.raises(t.TargetError):
+            t.parse_target("cgroup:/dev.slice/../dev.slice", str(cgroup_root))
+
+    @pytest.mark.parametrize("spec", [
+        "cgroup:/dev.slice//dev-background.slice",
+        "cgroup:/dev.slice/./dev-background.slice",
+        "cgroup:dev.slice/dev-background.slice/",
+        "cgroup:  /dev.slice/dev-background.slice ",
+    ])
+    def test_redundant_components_collapse_to_one_canonical_path(self, spec, cgroup_root: Path):
+        target = t.parse_target(spec, str(cgroup_root))[0]
+        assert target.cgroup == "/dev.slice/dev-background.slice"
+        assert target.exists(str(cgroup_root))
+
+    def test_canonical_spellings_de_duplicate_in_resolve_all(self, cgroup_root: Path):
+        resolved = t.resolve_all(
+            ["cgroup:/dev.slice", "cgroup:/dev.slice/", "cgroup:/dev.slice/."], str(cgroup_root)
+        )
+        assert [r.cgroup for r in resolved] == ["/dev.slice"]
+
+    def test_root_spellings(self, cgroup_root: Path):
+        for spec in ("cgroup:/", "cgroup:", "cgroup:///"):
+            assert t.parse_target(spec, str(cgroup_root))[0].cgroup == "/"
+
 
 class TestSplitSpecAndOptions:
     def test_unrecognized_scheme_is_treated_as_no_scheme(self):
@@ -267,6 +308,46 @@ class TestDockerLookups:
         monkeypatch.setattr(t, "_docker_json", lambda *args: None)
         with pytest.raises(t.TargetError, match="no container matches"):
             t.resolve_container("nope")
+
+    def test_resolve_container_inspects_exactly_one_reference_as_a_container(self, monkeypatch):
+        # A bare `docker inspect NAME` answers for ANY object called NAME --
+        # an image or a volume named like the container would return its own
+        # Id. The lookup must be pinned to containers and must be a single
+        # inspect of the one reference, never a listing.
+        calls = []
+
+        def fake(*args):
+            calls.append(args)
+            return [{"Id": "a" * 64, "Name": "/gate"}]
+
+        monkeypatch.setattr(t, "_docker_json", fake)
+        assert t.resolve_container("gate") == ("a" * 64, "gate")
+        assert calls == [("inspect", "--type", "container", "gate")]
+
+    @pytest.mark.parametrize("data", [
+        [{"Id": "sha256:" + "a" * 64, "RepoTags": ["gate:latest"]}],   # an image's shape
+        [{"Name": "gate"}],                                           # no Id at all
+        [{"Id": "A" * 64}],                                           # not canonical hex
+        ["not-an-object"],
+        {"Id": "a" * 64},                                             # not a list
+    ])
+    def test_resolve_container_refuses_anything_but_a_64_hex_container_id(self, monkeypatch, data):
+        monkeypatch.setattr(t, "_docker_json", lambda *args: data)
+        with pytest.raises(t.TargetError):
+            t.resolve_container("gate")
+
+    def test_docker_json_returns_none_when_docker_hangs(self, monkeypatch):
+        import subprocess as _sp
+
+        monkeypatch.setattr(t, "docker_bin", lambda: "/usr/bin/docker")
+
+        def hang(*a, **k):
+            raise _sp.TimeoutExpired(cmd=["docker"], timeout=30)
+
+        monkeypatch.setattr(t.subprocess, "run", hang)
+        # A hung daemon is "cannot resolve" (the TargetError path), not a
+        # TimeoutExpired traceback out of parse_target's no-scheme fallback.
+        assert t._docker_json("inspect", "x") is None
 
     def test_docker_json_returns_none_when_docker_missing(self, monkeypatch):
         monkeypatch.setattr(t, "docker_bin", lambda: None)

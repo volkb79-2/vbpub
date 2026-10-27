@@ -168,6 +168,17 @@ class Detector:
             lambda d, total: f"OOM killed {int(d)} process(es) ({int(total)} total)",
         ))
 
+        # memory.swap.events `fail`: a swap-in or swap-out the kernel could not
+        # perform for this cgroup (its swap ceiling, or the host's swap, was
+        # exhausted). Same counter shape as the breaches above; absent when
+        # the `swapev` group was not sampled (CP-29).
+        pswev = prev_m.get("swapev") or {}
+        cswev = cur_m.get("swapev") or {}
+        out.extend(self._counter_event(
+            cgroup, "swap_fail", "serious", pswev.get("fail"), cswev.get("fail"), t, mono,
+            lambda d, total: f"swap allocation failed {int(d)} more time(s) ({int(total)} total)",
+        ))
+
         for group, channel in (("psi_mem", "memory"), ("psi_cpu", "cpu"), ("psi_io", "io")):
             cur_psi = (cur_m.get(group) or {}).get("some_avg10")
             if cur_psi is None:

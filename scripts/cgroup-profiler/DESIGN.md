@@ -196,7 +196,9 @@ interleave cleanly; readers must tolerate a truncated final line.
     "/dev.slice/dev-background.slice": {
       "mem":     {"current": 0, "peak": 0, "swap_current": 0, "swap_peak": 0, "zswap_current": 0},
       "memstat": {"anon": 0, "file": 0, "...": 0},
-      "memev":   {"low": 0, "high": 0, "max": 0, "oom": 0, "oom_kill": 0},
+      "memev":   {"low": 0, "high": 0, "max": 0, "oom": 0, "oom_kill": 0},   // memory.events.local
+      "memev_h": {"low": 0, "high": 0, "max": 0, "oom": 0, "oom_kill": 0},   // memory.events (hierarchical), since 1.1.0
+      "swapev":  {"high": 0, "max": 0, "fail": 0},                           // memory.swap.events, since 1.1.0
       "psi_mem": {"some_avg10": 0.0, "some_total": 0, "full_avg10": 0.0, "full_total": 0},
       "psi_cpu": {...}, "psi_io": {...},
       "cpu":     {"usage_usec": 0, "user_usec": 0, "system_usec": 0,
@@ -233,7 +235,8 @@ docstring says *"must"*, a test asserts it.
 ### 4.1 `metrics.py` (agent A)
 
 ```python
-GROUPS: tuple[str, ...] = ("mem", "memstat", "memev", "psi", "cpu", "io", "pids", "cgstat")
+GROUPS: tuple[str, ...] = ("mem", "memstat", "memev", "psi", "cpu", "io", "pids", "cgstat",
+                           "swapev", "memev_h")   # the last two since 1.1.0 (CP-29)
 
 def sample_cgroup(abs_path: str, groups: Optional[Set[str]] = None) -> Dict[str, Any]
 def sample_proc(pid: int) -> Dict[str, Any]          # {} if the pid is gone
@@ -244,6 +247,12 @@ def memstat_rates(prev: Dict, cur: Dict, dt: float) -> Dict[str, Optional[float]
 ```
 
 `psi` is one group producing three keys (`psi_mem`, `psi_cpu`, `psi_io`).
+`memev` is `memory.events.local` (this level's own breaches); `memev_h` is the
+hierarchical `memory.events` (self plus descendants), kept as a separate group
+so a parent's count never dilutes the per-level reading. `swapev` is
+`memory.swap.events` (`high`, `max`, `fail`); its `fail` counter is the only
+cgroup-level evidence of swap exhaustion. Both read `{}` when the file is
+absent, never zeros, like every other group.
 
 `memstat_rates` must expose at minimum, all per second and all `None`-safe:
 `pgfault`, `pgmajfault`, `pgscan`, `pgsteal`, `pswpin`, `pswpout`, `zswpin`,
@@ -407,7 +416,8 @@ class Detector:
 ```
 
 Kinds to detect: `memory_high_breach` (`memory.events.high` increased),
-`memory_max_breach`, `oom_kill`, `psi_spike`, `swap_burst`, `zswap_refault`,
+`memory_max_breach`, `oom_kill`, `swap_fail` (`memory.swap.events.fail`
+increased, since 1.1.0), `psi_spike`, `swap_burst`, `zswap_refault`,
 `cpu_throttled`, `limit_drift`, `cgroup_appeared`, `cgroup_disappeared`,
 `victim_pressure` (an *observer*-role target whose `rfd/s` crosses the warn
 line — the correlation event the whole tool exists for).

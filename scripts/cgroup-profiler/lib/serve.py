@@ -135,7 +135,6 @@ SOCKET_MODE = 0o660
 ALLOW_UIDS_ENV = "CGPROFILE_ALLOW_UIDS"
 
 
-
 def parse_allow_uids(raw: Optional[str]) -> Optional[List[int]]:
     """Parse `CGPROFILE_ALLOW_UIDS` ("0,1000,1003") into a uid list.
 
