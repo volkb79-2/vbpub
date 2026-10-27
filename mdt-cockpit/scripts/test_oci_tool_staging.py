@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import io
+import json
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -734,3 +736,177 @@ def test_sss_records_the_computed_sha256_and_requires_the_bash_shebang(tmp_path:
             staging._stage_sss(commit, [])
     with _pytest.raises(staging.StageError, match="40-hex"):
         staging._stage_sss("abc", [])
+
+
+# ── The manifest RUN of the Dockerfile ────────────────────────────────────────────────────────────
+# What the image records about itself is only as good as this one layer; the 20261027 build showed
+# two ways it silently degrades (an exported AIDER_* variable turned aider's version into its usage
+# banner; a hand-maintained package list drifted from apt/packages.list).
+
+
+def _manifest_run_layer() -> str:
+    import re
+
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    layers = [m.group(0) for m in re.finditer(r"(?ms)^RUN .*?(?=^\S)", dockerfile) if "manifest_sections.py unified" in m.group(0)]
+    assert len(layers) == 1, "exactly one RUN renders the manifest"
+    # Code only: the Dockerfile parser drops comment lines before the shell sees the layer.
+    return "\n".join(line for line in layers[0].splitlines() if not re.match(r"^\s*#", line))
+
+
+def _wheel_names() -> list[str]:
+    names = []
+    for raw in (ROOT / "pip" / "wheels.list").read_text(encoding="utf-8").splitlines():
+        line = raw.partition("#")[0].strip()
+        if line:
+            names.append(line)
+    return names
+
+
+def test_the_manifest_lists_every_first_party_wheel_of_wheels_list() -> None:
+    layer = _manifest_run_layer()
+    names = _wheel_names()
+    assert names, "pip/wheels.list declares the first-party wheels"
+    rendered = {name.lower() for name in manifest_sections.FIRST_PARTY_WHEEL_NAMES}
+    assert rendered == {name.lower() for name in names}, "manifest_sections.FIRST_PARTY_WHEEL_NAMES must equal pip/wheels.list"
+    for name in names:
+        key = "CIU" if name == "ciu" else name
+        assert f'echo "{key}=' in layer, f"the manifest RUN prints no {key}= line for the {name} wheel"
+        assert f"dist_version {name})" in layer, f"{name}'s version must come from its installed distribution metadata"
+
+
+def test_the_manifest_run_reads_the_staged_versions_without_exporting_them() -> None:
+    """`set -a` would export AIDER_COMMIT/AIDER_VER/AIDER_BEFORE into every probe; aider reads AIDER_* as
+    options and `aider --version` then prints its usage banner, which the 20261027 manifest recorded."""
+    layer = _manifest_run_layer()
+    assert ". /tmp/tool-artifacts-staging/tool-versions.env;" in layer
+    assert "set -a" not in layer and "export " not in layer
+    assert "dist_version aider-chat)" in layer, "aider's version comes from the aider-chat distribution, not `aider --version`"
+    assert "aider --version" not in layer
+
+
+def test_the_manifest_system_packages_are_derived_from_the_apt_list() -> None:
+    layer = _manifest_run_layer()
+    assert "/tmp/packages.list" in layer, "the inventory is apt/packages.list, not a second hand-written list"
+    assert "bash-completion ca-certificates locales" not in layer, "the retyped package list is gone"
+    for vendor_package in ("docker-ce-cli", "docker-buildx-plugin", "docker-compose-plugin", "nodejs", "postgresql-client", "redis-tools"):
+        assert vendor_package in layer, f"{vendor_package} is installed by a vendor-repository layer and belongs in the inventory"
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "COPY apt/packages.list /tmp/packages.list" in dockerfile
+    assert "rm -f /tmp/packages.list" not in dockerfile and "rm -rf /tmp/packages.list" not in dockerfile
+
+
+# ── Age policy: third-party tools are aged, first-party wheels and PWMCP are not ───────────────────
+# Operator decision 2026-10-27: our own tools (cli-extended, ciu, cmru, topos, nyxloom, pwmcp, ...)
+# always install their newest published release; the 14-day vetting buffer is for third-party
+# tools and dependencies only.
+
+
+def test_exactly_the_third_party_tools_go_through_the_aged_resolvers_and_no_first_party_name_is_staged(
+    monkeypatch: _pytest.MonkeyPatch,
+) -> None:
+    for variable in ("GDU_VERSION", "DUST_VERSION", "OV_VERSION", "DRY_VERSION", "YAZI_VERSION", "SSS_VERSION"):
+        monkeypatch.delenv(variable, raising=False)
+    aged_calls: list[str] = []
+
+    def aged(requested: str | None, repo: str, variable: str, **_: object) -> str:
+        aged_calls.append(variable.removesuffix("_VERSION") + "_VER")
+        return "aged"
+
+    def sss(requested: str | None, **_: object) -> str:
+        aged_calls.append("SSS_VER")
+        return "a" * 40
+
+    monkeypatch.setattr(staging, "_resolve_aged_version", aged)
+    monkeypatch.setattr(staging, "_resolve_sss_commit", sss)
+    monkeypatch.setattr(staging, "_resolve_version", lambda requested, repo: "latest-upstream")
+    monkeypatch.setattr(staging, "_resolve_pypi_version", lambda requested, package: "latest-upstream")
+    monkeypatch.setattr(staging, "_resolve_codex_version", lambda requested: "latest-upstream")
+    monkeypatch.setattr(staging, "_resolve_pinned_npm_version", lambda requested, package, variable: "latest-upstream")
+    monkeypatch.setattr(staging, "_vetted_ai_cli_versions", lambda: {})
+    monkeypatch.setattr(staging, "install_enabled", lambda name: False)
+
+    resolved = staging._resolve_versions()
+
+    assert sorted(aged_calls) == sorted(staging.AGED_THIRD_PARTY_TOOLS)
+    assert {key for key, value in resolved.items() if value in ("aged", "a" * 40)} == set(staging.AGED_THIRD_PARTY_TOOLS)
+    first_party_keys = {name.upper().replace("-", "_") for name in staging.FIRST_PARTY_NO_AGE_WINDOW}
+    assert not {key for key in resolved if key.removesuffix("_VER") in first_party_keys}, (
+        "stage_tool_artifacts.py must not resolve a first-party distribution: they have no age window"
+    )
+    assert set(staging.FIRST_PARTY_NO_AGE_WINDOW) == set(_wheel_names()) | {"pwmcp"}
+
+
+def test_first_party_wheels_resolve_to_the_newest_release_with_no_age_argument_or_window() -> None:
+    import inspect
+
+    cmru_src = ROOT.parent / "cmru" / "src"
+    if str(cmru_src) not in sys.path:
+        sys.path.insert(0, str(cmru_src))
+    from cmru.release import GitHubReleases  # noqa: E402
+
+    assert list(inspect.signature(GitHubReleases.resolve_latest).parameters) == ["self", "prefix"], (
+        "resolve_latest takes only the release prefix: the highest-semver <name>-v* release, no age window"
+    )
+    assert "Highest-semver" in (GitHubReleases.resolve_latest.__doc__ or "")
+    for function in (resolver.resolve_first_party_wheels, resolver.resolve_ciu_wheel_via_latest_json):
+        source = inspect.getsource(function)
+        assert "resolve_latest" in source or "latest.json" in source
+        assert re.search(r"\b(age|aged|cutoff|days|window)\b", source) is None, f"{function.__name__} must carry no age logic"
+
+
+def test_pwmcp_installs_the_release_named_by_its_contract_with_no_age_window() -> None:
+    spec = importlib.util.spec_from_file_location("mdt_build_push", ROOT / "build-push.py")
+    assert spec is not None and spec.loader is not None
+    build_push = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(build_push)
+    contract = json.loads((ROOT.parent / "pwmcp" / "pwmcp.contract.json").read_text(encoding="utf-8"))
+
+    inputs = build_push.pwmcp_build_inputs()
+
+    assert inputs["PWMCP_VERSION"] == contract["release"]
+    assert inputs["PWMCP_GETPY_URL"].endswith("/pwmcp/get.py") and "raw.githubusercontent.com" in inputs["PWMCP_GETPY_URL"]
+    import inspect
+
+    assert re.search(r"\b(age|aged|cutoff|window)\b", inspect.getsource(build_push.pwmcp_build_inputs)) is None
+
+
+def test_the_default_age_buffer_is_the_estate_window_with_a_built_in_fallback(monkeypatch: _pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MDT_TOOL_MIN_AGE_DAYS", raising=False)
+    monkeypatch.setattr(staging, "_estate_window_days", lambda: 7)
+    assert staging._min_age_days() == 7
+    estate = tomllib.loads((ROOT.parent / "cmru.orchestration.toml").read_text(encoding="utf-8"))["versions"]["age_window_days"]
+    monkeypatch.undo()
+    monkeypatch.delenv("MDT_TOOL_MIN_AGE_DAYS", raising=False)
+    assert staging._min_age_days() == estate == staging._estate_window_days()
+
+    def unreadable() -> int:
+        raise staging.StageError("no estate file")
+
+    monkeypatch.setattr(staging, "_estate_window_days", unreadable)
+    assert staging._min_age_days() == staging.DEFAULT_MIN_AGE_DAYS
+    monkeypatch.setenv("MDT_TOOL_MIN_AGE_DAYS", "3")
+    assert staging._min_age_days() == 3  # the environment still wins
+
+
+def test_a_github_api_rate_limit_failure_names_the_token_variables_and_the_quota(monkeypatch: _pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import email.message
+    import urllib.error
+
+    headers = email.message.Message()
+    headers["X-RateLimit-Remaining"] = "0"
+    headers["X-RateLimit-Reset"] = "1800000000"
+    error = urllib.error.HTTPError("https://api.github.com/repos/o/r/releases", 403, "Forbidden", headers, io.BytesIO(b""))
+    monkeypatch.setattr(staging.urllib.request, "urlopen", mock.Mock(side_effect=error))
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_PUSH_PAT", raising=False)
+    with mock.patch.object(staging, "_artifact_cache_dir", return_value=tmp_path / "cache"):
+        with _pytest.raises(staging.StageError) as caught:
+            staging._download("https://api.github.com/repos/o/r/releases", tmp_path / "out")
+    text = str(caught.value)
+    assert "HTTP 403" in text and "GITHUB_TOKEN or GITHUB_PUSH_PAT" in text
+    assert "X-RateLimit-Remaining=0" in text and "resets at 2027-01-15T08:00:00Z" in text and "no token was sent" in text
+    # A non-GitHub 403 and a GitHub 404 carry no rate-limit hint.
+    assert staging._github_rate_limit_hint("https://example.invalid/x", error) == ""
+    not_found = urllib.error.HTTPError("https://api.github.com/x", 404, "Not Found", headers, io.BytesIO(b""))
+    assert staging._github_rate_limit_hint("https://api.github.com/x", not_found) == ""

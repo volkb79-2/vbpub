@@ -49,7 +49,7 @@ deployed VS Code, are UNVERIFIED. Run the README recipe on the Windows client, t
 documented default. (2) `ov` (.deb), `dry` (binary), `yazi` (glibc zip; sha256 from the GitHub release asset `digest` because upstream
 publishes no checksum file) and `sss` (github.com/azlux/sss, an unreleased bash script) are now WIRED with NO hard
 pins (operator 2026-10-27): each version is re-selected at build time as the newest release at least
-`MDT_TOOL_MIN_AGE_DAYS` (default 14) old, and `sss` as the newest default-branch commit at least that old with its
+`MDT_TOOL_MIN_AGE_DAYS` (default: the estate `age_window_days`, 14) old, and `sss` as the newest default-branch commit at least that old with its
 sha256 recorded at staging (first-use trust). The GitHub API shapes (`assets[].digest`, `commits?until=`) were checked live
 on 2026-10-27 (`gh api`). Staged and verified in
 `scripts/stage_tool_artifacts.py`, installed and re-verified in the `Dockerfile`, listed in the manifest and

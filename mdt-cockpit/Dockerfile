@@ -859,8 +859,8 @@ RUN set -euo pipefail; \
     fi
 # ── First-party wheels (pip/wheels.list) ─────────────────────────────────────
 # Resolved and downloaded pre-build by scripts/resolve-devcontainers-release.py.
-# pip/wheels/ holds the .whl files (ciu, cmru, topos, and nyxloom from their
-# GitHub Releases).
+# pip/wheels/ holds the .whl files (cli-extended, ciu, cmru, topos and nyxloom from
+# their GitHub Releases).
 # Installed with --no-index --find-links (no build-time network): each wheel's
 # runtime deps must already be in the venv. requirements/toolkit.txt is the
 # source of those floors: Jinja2/PyYAML/tomli_w for ciu, textual for topos, and
@@ -984,8 +984,10 @@ RUN set -euo pipefail; \
     mkdir -p "${manifest_dir}"; \
     \
     # Build-time-resolved versions of the tools that report no version themselves (dry, sss): this RUN is a \
-    # separate shell from the tool-install RUN, so it reads the same staged file. \
-    set -a; . /tmp/tool-artifacts-staging/tool-versions.env; set +a; \
+    # separate shell from the tool-install RUN, so it reads the same staged file. Sourced WITHOUT `set -a`: \
+    # the probes below run the tools, and an exported AIDER_COMMIT/AIDER_VER/AIDER_BEFORE is read by aider's \
+    # own AIDER_* option prefix (the 20261027 manifest recorded its usage banner as the version). \
+    . /tmp/tool-artifacts-staging/tool-versions.env; \
     : "${DRY_VER:?Missing DRY_VER from the staged tool-versions.env}"; \
     : "${SSS_VER:?Missing SSS_VER from the staged tool-versions.env}"; \
     \
@@ -1012,8 +1014,15 @@ RUN set -euo pipefail; \
     if [ -z "${claudelink_version_output}" ]; then \
         claudelink_version_output="$(npm list -g --prefix /opt/mdt/npm claudelink --depth=0 2>/dev/null | grep 'claudelink@' | sed -n 's/.*claudelink@//p')"; \
     fi; \
-    ciu_version_output="$(/opt/mdt/venv/bin/python -c 'import importlib.metadata as m; print(m.version("ciu"))' 2>/dev/null || true)"; \
-    cmru_version_output="$(/opt/mdt/venv/bin/python -c 'import importlib.metadata as m; print(m.version("cmru"))' 2>/dev/null || true)"; \
+    # First-party wheels (pip/wheels.list) and aider: the installed distribution's metadata, not a `--version` \
+    # probe (aider's is a configargparse banner that any AIDER_* variable in the environment turns into usage). \
+    dist_version() { /opt/mdt/venv/bin/python -c 'import importlib.metadata as m, sys; print(m.version(sys.argv[1]))' "$1" 2>/dev/null || true; }; \
+    ciu_version_output="$(dist_version ciu)"; \
+    cmru_version_output="$(dist_version cmru)"; \
+    topos_version_output="$(dist_version topos)"; \
+    nyxloom_version_output="$(dist_version nyxloom)"; \
+    cli_extended_version_output="$(dist_version cli-extended)"; \
+    aider_version_output="$(dist_version aider-chat)"; \
     custom_tooling_file="$(mktemp /tmp/custom-tooling.XXXXXX)"; \
     python_packages_file="$(mktemp /tmp/python-packages.XXXXXX)"; \
     system_packages_file="$(mktemp /tmp/system-packages.XXXXXX)"; \
@@ -1030,8 +1039,11 @@ RUN set -euo pipefail; \
         else \
             echo "CIU=not-installed"; \
         fi; \
-        if command -v aider >/dev/null 2>&1; then \
-            echo "aider=$(aider --version 2>&1 | head -1)"; \
+        echo "topos=${topos_version_output:-not-installed}"; \
+        echo "nyxloom=${nyxloom_version_output:-not-installed}"; \
+        echo "cli-extended=${cli_extended_version_output:-not-installed}"; \
+        if [ -n "${aider_version_output}" ]; then \
+            echo "aider=${aider_version_output}"; \
         else \
             echo "aider=not-installed"; \
         fi; \
@@ -1162,10 +1174,14 @@ RUN set -euo pipefail; \
         fi; \
     } > "${custom_tooling_file}"; \
     /opt/mdt/venv/bin/pip list --format=freeze > "${python_packages_file}"; \
-    dpkg-query -W -f='${Package}=${Version}\n' \
-        bash-completion ca-certificates locales curl bind9-dnsutils fuse3 gdb git git-lfs gnupg gzip httpie iputils-ping jq less lsb-release lsof man-db mc nano \
-        netcat-openbsd ncdu openssl python3-venv psmisc rsync sqlite3 strace sshfs tar tree unzip vim w3m wget xz-utils skopeo tmux broot \
-        postgresql-client redis-tools > "${system_packages_file}"; \
+    # The system-package inventory is apt/packages.list (still at /tmp/packages.list), never a second \
+    # hand-maintained list that drifts from it, plus the packages the vendor-repository layers install \
+    # (Docker CLI, Node.js, PostgreSQL and Redis clients). A name that is not installed fails the build. \
+    mapfile -t apt_packages < <(sed 's/#.*//' /tmp/packages.list | tr -s '[:space:]' '\n' | sed '/^$/d'); \
+    test "${#apt_packages[@]}" -gt 0 || { echo "[ERROR] /tmp/packages.list yielded no package names" >&2; exit 1; }; \
+    dpkg-query -W -f='${Package}=${Version}\n' "${apt_packages[@]}" \
+        docker-ce-cli docker-buildx-plugin docker-compose-plugin nodejs 'postgresql-client*' redis-tools \
+        | sort -u > "${system_packages_file}"; \
     if [ "${INSTALL_PHP}" = "true" ]; then \
         dpkg-query -W -f='${Package}=${Version}\n' \
             composer "php${PHP_VERSION}-cli" "php${PHP_VERSION}-fpm" "php${PHP_VERSION}-mbstring" "php${PHP_VERSION}-xml" "php${PHP_VERSION}-curl" "php${PHP_VERSION}-zip" "php${PHP_VERSION}-gd" "php${PHP_VERSION}-intl" "php${PHP_VERSION}-xdebug" \

@@ -40,8 +40,9 @@ pwmcp inspect https://example.com --format snapshot --output page.yml
 pwmcp inspect https://example.com --format screenshot --output page.png --full-page
 ```
 
-The MDT devcontainer template exposes `/srv/pwmcp-instance/bin` on remote
-process `PATH` and sets `PWMCP_MCP_URL=http://pwmcp:8931/mcp`. Agent harnesses
+The MDT image puts `/srv/pwmcp-instance/bin` on `PATH` (the template sets no
+`PATH`; see its `containerEnv` comment) and the devcontainer template sets
+`PWMCP_MCP_URL=http://pwmcp:8931/mcp`. Agent harnesses
 still need an HTTP MCP server entry pointing at that URL; installing the
 packaged PWMCP skill does not change a harness's MCP configuration. A consumer
 using another devcontainer must expose its installed CLI on `PATH` and ensure
@@ -851,6 +852,13 @@ refused with a message pointing here. aider is the documented exception: `aider-
 exact upstream `main` commit and the version it builds, until an aider release supports Python 3.14.
 The R16 tools (claude, codex, reasonix, opencode, pi) keep following upstream latest with an exact
 recorded version and no age window.
+
+**First-party wheels and PWMCP have no age window either** (operator decision 2026-10-27: the 14-day
+buffer is for third-party tools and dependencies only). The wheels in `pip/wheels.list` (`cli-extended`,
+`ciu`, `cmru`, `topos`, `nyxloom`) always install their newest published `<name>-v*` release, and the
+PWMCP bundle is the release named by `pwmcp/pwmcp.contract.json` at the source commit (`get.py` verifies
+it). The third-party staged tools (`gdu`, `dust`, `ov`, `dry`, `yazi`, `sss`) take the newest release at
+least `MDT_TOOL_MIN_AGE_DAYS` old (default: the estate's `versions.age_window_days`).
 
 ## Release consumer
 

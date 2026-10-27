@@ -86,9 +86,10 @@ Agents in the connected devcontainer can use the MCP endpoint
 `http://pwmcp:8931/mcp`; Playwright clients use `ws://pwmcp:3000/`. The service
 uses PWMCP's existing internal policy: no authentication and no host-published
 ports. The generated installer and exact client wheels are verified and
-versioned with PWMCP. The vendored devcontainer template exposes the CLI path
-and `PWMCP_MCP_URL`; consumers using another harness must register that HTTP
-MCP endpoint in their harness configuration. See [MDT's PWMCP consumer guide](docs/CONSUMERS.md#pwmcp-browser-service).
+versioned with PWMCP. The image puts `/srv/pwmcp-instance/bin` on `PATH` (the
+template sets no `PATH`) and the vendored devcontainer template sets
+`PWMCP_MCP_URL`; consumers using another harness must register that HTTP
+MCP endpoint in their harness configuration. See [MDT's PWMCP consumer guide](docs/CONSUMERS.md#pwmcp-browser-service)
 and [PWMCP's install and design notes](../pwmcp/README.md#standalone-instance-for-mdt-and-other-devcontainers).
 
 ## Tags and variants
@@ -138,8 +139,8 @@ flavor should follow the same pattern — a new tag segment, never a new package
 | Venv | Path | Contents |
 |---|---|---|
 | Primary | `/opt/mdt/venv` | Full toolkit — see below; first on `PATH`, `python` resolves here (no `VIRTUAL_ENV`, no home symlink) |
-| Secondary 3.11 | `/opt/mdt/venvs/py311` | Lean: `pip`, `uv`, `debugpy`, `ruff` |
-| Secondary 3.9 | `/opt/mdt/venvs/py39` | Lean: `pip`, `uv`, `debugpy`, `ruff` |
+| Secondary 3.11 | `/opt/mdt/venvs/py311` | Lean: `uv`, `debugpy`, `ruff` (no `pip`: created by `uv venv`, install with `uv pip install --python /opt/mdt/venvs/py311/bin/python ...`) |
+| Secondary 3.9 | `/opt/mdt/venvs/py39` | Lean: `uv`, `debugpy`, `ruff` (same `uv pip` recipe) |
 
 Secondary venvs exist only in the multi-Python targets and are baked at build time — no
 post-create download. VS Code discovers them automatically (`Python: Select Interpreter`),
@@ -164,7 +165,7 @@ and `isort`, so neither is installed.
 > repo's AI instruction files.
 
 Debian packages come from [`apt/packages.list`](apt/packages.list); first-party wheels
-(`ciu`, `cmru`, `topos`, and `nyxloom`) are staged from their GitHub releases into
+(`cli-extended`, `ciu`, `cmru`, `topos`, and `nyxloom`) are staged from their GitHub releases into
 [`pip/`](pip/). Their runtime dependencies are deliberately installed in the primary
 toolkit before the wheel layer, because that layer uses `pip --no-index`; the
 `rich>=15.0.0` and `pygments>=2.21.0` floors in `requirements/toolkit.txt` are part of
@@ -227,8 +228,19 @@ command cannot be used, see the [update table](docs/DESIGN-GUIDE.md#how-the-ai-c
 Reasonix with `npm install -g reasonix@latest`. `PATH` is one definition ([One PATH order](docs/DESIGN-GUIDE.md#one-path-order)):
 `/opt/mdt/bin`, the primary venv, `/opt/mdt/npm/bin`, PWMCP, the base image's own entries, and
 `~/.local/bin` **last** — so a tool in `~/.local/bin` never silently shadows an image tool.
-Rebuild the image to refresh its tool versions (`gdu`, `dust`, `ov`, `dry`, `yazi`, `sss` resolve the newest
-release at least `MDT_TOOL_MIN_AGE_DAYS`, default 14, old at build time).
+Rebuild the image to refresh its tool versions. **Age policy (operator decision 2026-10-27):**
+third-party tools get a vetting buffer, first-party ones do not.
+
+- *Third-party, aged:* `gdu`, `dust`, `ov`, `dry`, `yazi`, `sss` resolve the newest release at least
+  `MDT_TOOL_MIN_AGE_DAYS` old at build time (default: the estate's `versions.age_window_days` in
+  `cmru.orchestration.toml`, 14); `copilot`, `openclaw`, `claudelink` and aider's dependencies are
+  held to the same window by the `cmru versions` record and `aider-main-pin.toml` (below); apt
+  packages (`tmux`, `broot`, ...) follow Debian's own release process.
+- *First-party, no age window:* the wheels in [`pip/wheels.list`](pip/wheels.list) (`cli-extended`,
+  `ciu`, `cmru`, `topos`, `nyxloom`) always install their newest published release (the highest-semver
+  `<name>-v*` GitHub release, resolved by `scripts/resolve-devcontainers-release.py`), and the PWMCP
+  bundle installs the release named by `pwmcp/pwmcp.contract.json` at the source commit. The split is
+  pinned by `scripts/test_oci_tool_staging.py`.
 
 Node 26 comes from NodeSource because Debian 13 ships Node 20, which is too old for the
 npm-based CLIs.

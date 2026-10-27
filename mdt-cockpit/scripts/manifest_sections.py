@@ -17,7 +17,10 @@ from typing import Mapping, Sequence
 
 PACKAGE_LIST_FILE = Path(__file__).resolve().parent.parent / "apt" / "packages.list"
 
-FIRST_PARTY_WHEEL_NAMES = ("CIU", "cmru")
+# One entry per pip/wheels.list name (the Dockerfile's manifest RUN prints `<name>=<version>` for
+# each; `CIU` keeps its historical capitalised key). scripts/test_oci_tool_staging.py pins the
+# three in sync, so a wheel added to the list cannot silently vanish from the manifest.
+FIRST_PARTY_WHEEL_NAMES = ("CIU", "cmru", "topos", "nyxloom", "cli-extended")
 AI_CLI_TOOL_NAMES = ("aider", "antigravity", "claude", "claudelink", "codex", "copilot", "openclaw", "opencode", "pi", "reasonix")
 CONTAINER_INSPECTION_TOOL_NAMES = (
     "crane",
@@ -47,7 +50,7 @@ CUSTOM_TOOL_EXCLUSIONS = (
 INSTALLATION_SOURCES: dict[str, str] = {
     "Node Runtime": "source: nodesource apt repo (https://deb.nodesource.com)",
     "Python & PHP Runtime": "source: Debian trixie apt / sury.org PHP repo (https://packages.sury.org/php)",
-    "First-Party Wheels": "source: built from source, installed via pip",
+    "First-Party Wheels": "source: this repository's GitHub releases (pip/wheels.list), installed offline via pip",
     "AI CLI Tools": "source: npm / PyPI / GitHub Releases",
     "Container Inspection Tools": "source: GitHub Releases (pre-built binaries)",
     "Security & Debug Tools": "source: GitHub Releases (pre-built binaries, sha256-verified)",
@@ -80,10 +83,11 @@ POLICY_NOTES = {
         "Some tools are compiled from source (nvim, htop); the rest are pre-built binaries."
     ),
     "System Packages": (
-        "**Version policy:** Debian repository versions (prefer backports when available). "
-        "System packages come from the Debian Trixie main repos; devcontainer-features "
-        "are installed via the features CLI.  Exception: `skopeo` is pulled from "
-        "Debian testing (pin-priority 701) for a newer version than trixie provides."
+        "**Version policy:** Debian repository versions (stable 500, stable-backports 600; "
+        "the Docker, PostgreSQL, Redis and PHP vendor repositories at 700). The list is "
+        "apt/packages.list plus the vendor-repository packages; the template declares no "
+        "devcontainer features. Exception: `skopeo` is pulled from Debian testing "
+        "(a temporary pin of 701 during its own install step) for a newer version than trixie provides."
     ),
     "Python Packages": (
         "**Version policy:** PyPI latest at image build time (resolved via pip install). "

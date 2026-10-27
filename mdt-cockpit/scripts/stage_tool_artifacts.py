@@ -239,7 +239,7 @@ def _download(
                 )
                 time.sleep(delay)
                 continue
-            raise StageError(f"Download failed for {url}: HTTP {exc.code}") from exc
+            raise StageError(f"Download failed for {url}: HTTP {exc.code}{_github_rate_limit_hint(url, exc)}") from exc
         except urllib.error.URLError as exc:
             last_exc = exc
             if attempt < DEFAULT_RETRIES:
@@ -253,6 +253,26 @@ def _download(
             raise StageError(f"Network error while downloading {url}: {exc.reason}") from exc
 
     raise StageError(f"Download failed for {url}: {last_exc}")
+
+
+def _github_rate_limit_hint(url: str, exc: urllib.error.HTTPError) -> str:
+    """The actionable part of a GitHub API 403/429: these are the rate limit (60/h anonymous, 5000/h
+    with a token) far more often than a real permission problem, and the staging run makes ~15 API
+    calls (aged-release lists, asset digests, the sss commit list). Says whether a token was sent."""
+    if urllib.parse.urlparse(url).hostname != "api.github.com" or exc.code not in (403, 429):
+        return ""
+    headers = exc.headers or {}
+    remaining = headers.get("X-RateLimit-Remaining")
+    reset = headers.get("X-RateLimit-Reset")
+    reset_text = ""
+    if reset and str(reset).isdigit():
+        reset_text = f", resets at {datetime.fromtimestamp(int(reset), timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}"
+    token_text = "a token was sent" if _token() else "no token was sent"
+    quota = f"X-RateLimit-Remaining={remaining}{reset_text}" if remaining is not None else "no rate-limit headers"
+    return (
+        f" (GitHub API rate limit or forbidden: {quota}; {token_text}: set GITHUB_TOKEN or GITHUB_PUSH_PAT "
+        "to a token with public read access for the 5000/h quota)"
+    )
 
 
 def _urlopen_with_retry(
@@ -351,9 +371,18 @@ def _resolve_version(requested: str | None, repo: str) -> str:
     return _resolve_latest_release(repo)
 
 
-# gdu, dust, ov, dry, yazi and sss (2026-10-27): NO hard pins (operator decision). The version is re-selected at every mdt-cockpit build as the
-# newest release that is at least MDT_TOOL_MIN_AGE_DAYS (default 14) old: prefer the latest, but keep a vetting
-# buffer against a just-shipped regression or supply-chain incident (estate freshness rule). No digest tables:
+# Age policy (operator decision 2026-10-27, estate freshness rule):
+#   * THIRD-PARTY tools and dependencies get a vetting buffer: gdu, dust, ov, dry, yazi and sss here (the
+#     newest release at least MDT_TOOL_MIN_AGE_DAYS old, default = the estate's `versions.age_window_days`
+#     in cmru.orchestration.toml, 14), copilot/openclaw/claudelink via the `cmru versions` record, aider's
+#     PyPI dependencies via `deps_before`; tmux/broot/apt packages via Debian's own release process.
+#   * FIRST-PARTY wheels (pip/wheels.list: cli-extended, ciu, cmru, topos, nyxloom) and the PWMCP bundle
+#     have NO age window: always the newest published release. They are resolved by
+#     scripts/resolve-devcontainers-release.py (`GitHubReleases.resolve_latest`, the highest-semver
+#     `<name>-v*` release; ciu additionally through `ciu-latest/latest.json`) and build-push.py
+#     (PWMCP: the release named by pwmcp/pwmcp.contract.json at the source commit). Nothing in THIS
+#     module touches a first-party name; `test_oci_tool_staging.py` pins the split.
+# No hard pins: the version is re-selected at every mdt-cockpit build. No digest tables:
 #   gdu   archive verified against the upstream sha256sums.txt (fail closed when its line is missing).
 #   dust  upstream publishes NO checksum file: the digest is the GitHub API release asset `digest`, like yazi.
 #   ov    .deb verified against the upstream ov_<ver>_checksums.txt (fail closed when its line is missing).
@@ -367,16 +396,27 @@ MIN_AGE_DAYS_ENV = "MDT_TOOL_MIN_AGE_DAYS"
 DEFAULT_MIN_AGE_DAYS = 14
 GITHUB_API = "https://api.github.com"
 SHA40_RE = re.compile(r"[0-9a-f]{40}")
+# The third-party tools this module resolves with the age buffer (tool-versions.env keys). Every other
+# key of `_resolve_versions` follows upstream latest or a record; no first-party name is ever here.
+AGED_THIRD_PARTY_TOOLS = ("GDU_VER", "DUST_VER", "OV_VER", "DRY_VER", "YAZI_VER", "SSS_VER")
+# The first-party distributions (pip/wheels.list) and bundle that have NO age window by decision.
+FIRST_PARTY_NO_AGE_WINDOW = ("cli-extended", "ciu", "cmru", "topos", "nyxloom", "pwmcp")
 
 
 def _min_age_days() -> int:
-    """The vetting buffer in days: MDT_TOOL_MIN_AGE_DAYS (integer >= 0), default 14. The only reader."""
+    """The vetting buffer in days: MDT_TOOL_MIN_AGE_DAYS (integer >= 0) when set; otherwise the estate's
+    `versions.age_window_days` (cmru.orchestration.toml, the same rule that governs `cmru versions`);
+    DEFAULT_MIN_AGE_DAYS only when that file is unreadable (a standalone checkout). The only reader."""
     raw = (os.getenv(MIN_AGE_DAYS_ENV) or "").strip()
-    if not raw:
+    if raw:
+        if not re.fullmatch(r"[0-9]+", raw):
+            raise StageError(f"{MIN_AGE_DAYS_ENV} must be an integer >= 0, got {raw!r}")
+        return int(raw)
+    try:
+        return _estate_window_days()
+    except StageError as exc:
+        _warn(f"{exc}; using the built-in {DEFAULT_MIN_AGE_DAYS}-day buffer")
         return DEFAULT_MIN_AGE_DAYS
-    if not re.fullmatch(r"[0-9]+", raw):
-        raise StageError(f"{MIN_AGE_DAYS_ENV} must be an integer >= 0, got {raw!r}")
-    return int(raw)
 
 
 def _warn(message: str) -> None:
