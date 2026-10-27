@@ -163,7 +163,16 @@ COPY containers/pwmcp/supervisord.conf /etc/supervisor/conf.d/pwmcp.conf
 COPY containers/pwmcp/supervisord.shared.conf /etc/supervisor/conf.d/pwmcp-shared.conf
 COPY containers/pwmcp/entrypoint.sh /usr/local/bin/pwmcp-entrypoint.sh
 COPY containers/pwmcp/wait-for-cdp.sh /usr/local/bin/wait-for-cdp.sh
-RUN chmod +x /usr/local/bin/pwmcp-entrypoint.sh /usr/local/bin/wait-for-cdp.sh
+COPY containers/pwmcp/pwmcp-ua-args.sh /usr/local/bin/pwmcp-ua-args.sh
+RUN chmod +x /usr/local/bin/pwmcp-entrypoint.sh /usr/local/bin/wait-for-cdp.sh /usr/local/bin/pwmcp-ua-args.sh
+
+# PWMCP-09 overridable user agent (opt-in, off by default). The preset table and the
+# validator are the client package's own module, copied verbatim so the image and the
+# client share ONE source of truth (client/src/pwmcp_client/user_agent.py). entrypoint.sh
+# runs it as a script; ua-override applies the matching client hints in shared mode.
+COPY client/src/pwmcp_client/user_agent.py /opt/pwmcp/pwmcp_user_agent.py
+COPY containers/pwmcp/ua-override/ /opt/pwmcp/ua-override/
+COPY containers/pwmcp/supervisord.ua-override.part /etc/supervisor/conf.d/pwmcp-ua-override.part
 
 # Native Playwright traffic passes through a stdlib-only absolute-lease and
 # concurrency gateway. The actual run-server is loopback-only on port 3001.

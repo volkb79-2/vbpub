@@ -58,6 +58,22 @@ Avoid using a generic page shell as the selector. If the wait times out, inspect
 the page snapshot and determine whether the site is still loading, requires
 authentication, or is showing an error before reporting that content is absent.
 
+## Knowing which identity read the page
+
+When an override is active, a `pwmcp inspect` result reports the user agent it
+presented and where that came from: with `--json`, the fields `user_agent` and
+`user_agent_source` (`preset:<name>` or `custom`); in text mode, one
+`[INFO] user agent: ... (source: ...)` line on stderr. With no override neither
+appears, and their absence means the browser default. The service operator can
+configure an alternative identity (README "Overridable User Agent"; presets
+`edge-windows`, `chrome-windows`, `firefox-windows`), and
+`pwmcp inspect URL --user-agent <preset>` overrides it for one call. When
+`user_agent_source` is present the result is NOT what a default headless
+browser sees. Only use a non-default identity for pages you are entitled to
+read; it does not solve CAPTCHA or proof-of-work challenges, and a page that
+answers "Access Denied" is an answer, not content. Do not retry with other
+identities to get around an explicit refusal; report it.
+
 ## Recipe (Python, `mcp` SDK)
 
 ```bash

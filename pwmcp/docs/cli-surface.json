@@ -368,6 +368,19 @@
       "signature": "sha256:9a4f9e0d5d493caccf9ed33e43fb3ce44aff2bd7ca40aa2c93360a14a481e728"
     },
     {
+      "id": "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--user-agent/--user-agent",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/inspect/--user-agent"
+      ],
+      "route_id": "route:entrypoint:pwmcp/inspect",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/inspect/--user-agent",
+        "spelling": "--user-agent"
+      },
+      "signature": "sha256:945b88b41f9101daf4e6d0b440592a1e6a2c54a2befdadf208bd953cd003c36b"
+    },
+    {
       "id": "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--wait-for/--wait-for",
       "kind": "option-spelling",
       "members": [
@@ -1673,6 +1686,42 @@
           "parser_kwargs": {
             "action": "store_true"
           },
+          "parser_path": [
+            "inspect"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--user-agent",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "present this user agent for this inspection only: a preset (edge-windows, chrome-windows, firefox-windows), 'default' for the browser's own, or a custom printable-ASCII string; overrides the server-level setting",
+          "dest": "user_agent",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--user-agent"
+          ],
+          "help_group": "IDENTITY",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/inspect/--user-agent",
+          "kind": "option",
+          "metavar": "PRESET_OR_STRING",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
           "parser_path": [
             "inspect"
           ],

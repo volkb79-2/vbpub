@@ -65,6 +65,42 @@ case "$PWMCP_BROWSER_MODE" in
     ;;
 esac
 
+# Overridable user agent (PWMCP-09, opt-in, OFF by default). PWMCP_USER_AGENT is a
+# preset name (edge-windows | chrome-windows | firefox-windows), "default"/unset
+# (no override), or a custom printable-ASCII string. The preset table and the
+# validation live in ONE place, pwmcp_user_agent.py (the same file the client
+# imports); an invalid value is fatal, never silently ignored. The resolved values
+# are exported for the programs in supervisord*.conf, pwmcp-ua-args.sh,
+# ua-override, the run-server gateway (/contract) and the admin API.
+PWMCP_UA_HELPER="${PWMCP_UA_HELPER:-/opt/pwmcp/pwmcp_user_agent.py}"
+case "${PWMCP_USER_AGENT:-}" in
+  ''|default)
+    # Off by default: python is not even invoked, behaviour is as before.
+    PWMCP_USER_AGENT_SOURCE=default
+    PWMCP_USER_AGENT_RESOLVED=
+    PWMCP_USER_AGENT_METADATA=
+    ;;
+  *)
+    PWMCP_USER_AGENT_SOURCE="$(python3 "$PWMCP_UA_HELPER" source "$PWMCP_USER_AGENT")"
+    PWMCP_USER_AGENT_RESOLVED="$(python3 "$PWMCP_UA_HELPER" ua "$PWMCP_USER_AGENT")"
+    PWMCP_USER_AGENT_METADATA="$(python3 "$PWMCP_UA_HELPER" metadata "$PWMCP_USER_AGENT")"
+    ;;
+esac
+export PWMCP_USER_AGENT_SOURCE PWMCP_USER_AGENT_RESOLVED PWMCP_USER_AGENT_METADATA
+if [ -n "$PWMCP_USER_AGENT_RESOLVED" ]; then
+  echo "pwmcp: user agent OVERRIDE active: source=${PWMCP_USER_AGENT_SOURCE} ua=${PWMCP_USER_AGENT_RESOLVED}" >&2
+else
+  echo "pwmcp: user agent: default (no override)" >&2
+fi
+
+# Shared mode with an override: add the ua-override program (client-hint metadata over
+# CDP) by appending its fragment to a /tmp copy of the shared config. With no override the
+# shipped config is used unchanged, so the process list is exactly what it was before.
+if [ "$PWMCP_BROWSER_MODE" = "shared" ] && [ -n "$PWMCP_USER_AGENT_RESOLVED" ]; then
+  cat "$SUPERVISOR_CONF" /etc/supervisor/conf.d/pwmcp-ua-override.part > /tmp/pwmcp-shared-ua.conf
+  SUPERVISOR_CONF=/tmp/pwmcp-shared-ua.conf
+fi
+
 for name in PWMCP_RUN_SERVER_PORT PWMCP_RUN_SERVER_UPSTREAM_PORT PWMCP_RUN_SERVER_ADMIN_PORT \
             PWMCP_RUN_SERVER_DEFAULT_LEASE_S PWMCP_RUN_SERVER_MAX_LEASE_S PWMCP_RUN_SERVER_MAX_CLIENTS \
             PWMCP_RUN_SERVER_IDLE_RECYCLE_S; do

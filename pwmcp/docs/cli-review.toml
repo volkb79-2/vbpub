@@ -808,6 +808,19 @@ effects = ["Creates one isolated Playwright context with ignore_https_errors ena
 test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---ignore-https-errors---wait-until-commit]"]
 
 [[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--user-agent/--user-agent"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:945b88b41f9101daf4e6d0b440592a1e6a2c54a2befdadf208bd953cd003c36b"
+rationale = "A caller can present a named browser identity for ONE inspection (PWMCP-09); it is opt-in, validated before connecting, and the result reports the active user agent and its source whenever an override is active, so a spoofed identity is never mistaken for the default."
+invocation = ["inspect", "https://example.test", "--user-agent", "edge-windows"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = "(source: preset:edge-windows)"
+effects = ["Creates one isolated Playwright context with the preset user agent and matching client-hint metadata, reads rendered text, then closes the context (which restores the default) and the lease; because an override is ACTIVE, stderr states the user agent and its source (not silenced by --quiet) and --json prints an object with content, user_agent and user_agent_source instead of the bare string. Without an override the output is unchanged."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---user-agent-edge-windows]"]
+
+[[cases]]
 id = "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--format/1e1d0f251d"
 state = "active"
 decision = "accept"

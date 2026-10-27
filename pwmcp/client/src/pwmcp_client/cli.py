@@ -14,6 +14,7 @@ from cli_extended import (
     CliIdentity,
     CliRegistry,
     CliRuntime,
+    LogLevel,
     OptionSpec,
     RegisteredCli,
     VerbGroup,
@@ -25,6 +26,7 @@ from cli_extended import (
 
 from .diagnostics import DOCTOR_CHECKS, try_load_contract
 from .session import BrowserLease, PwmcpError
+from .user_agent import ResolvedUserAgent, UserAgentError, cdp_override_params, resolve
 
 DEFAULT_CONTRACT = "http://pwmcp:3000/contract"
 _VERSION_FILE = Path(__file__).resolve().parent / "VERSION"
@@ -56,6 +58,45 @@ def _contract(args: argparse.Namespace, runtime: CliRuntime) -> None:
         runtime.output.primary(json.dumps(contract.__dict__, indent=2, sort_keys=True))
 
 
+def _server_identity(contract: object) -> ResolvedUserAgent:
+    """The server-level user-agent setting as published in the contract (None = default)."""
+
+    value = getattr(contract, "user_agent", None)
+    if not value:
+        return ResolvedUserAgent(None, "default")
+    return ResolvedUserAgent(str(value), str(getattr(contract, "user_agent_source", "custom")))
+
+
+def _apply_client_hints(context: object, page: object, ua: str, runtime: CliRuntime) -> None:
+    """Set the UA and its matching client-hint metadata over CDP on this page.
+
+    ``new_context(user_agent=...)`` already sets the UA string; this additionally sets
+    ``userAgentMetadata`` (Sec-CH-UA brands, navigator.userAgentData) so they do not
+    still say HeadlessChrome. Only done when the UA names a recognisable browser; a
+    failure is reported, never silent, and leaves the UA-string override in place.
+    """
+
+    params = cdp_override_params(ua)
+    if "userAgentMetadata" not in params:
+        runtime.output.warn("client-hint metadata not set: the user agent names no recognised browser")
+        return
+    try:
+        session = context.new_cdp_session(page)  # type: ignore[attr-defined]
+        session.send("Emulation.setUserAgentOverride", params)
+    except Exception as exc:  # noqa: BLE001 - any CDP failure degrades to UA-string-only, loudly
+        runtime.output.warn(f"client-hint metadata not applied (user agent string only): {exc}")
+
+
+def _observed_user_agent(page: object) -> str | None:
+    """What the page itself reports, so the result states the measured identity."""
+
+    try:
+        value = page.evaluate("navigator.userAgent")  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - measurement is best-effort; fall back to the configured value
+        return None
+    return value if isinstance(value, str) and value else None
+
+
 def _inspect(args: argparse.Namespace, runtime: CliRuntime) -> None:
     """Read rendered page text, an ARIA snapshot, or a remote screenshot."""
 
@@ -70,6 +111,14 @@ def _inspect(args: argparse.Namespace, runtime: CliRuntime) -> None:
         raise CliFailure("--timeout-ms must be a positive integer")
     if args.format == "screenshot" and not args.output:
         raise CliFailure("--output is required when --format=screenshot")
+
+    # PWMCP-09: an explicit per-call --user-agent is validated before connecting.
+    call_override: ResolvedUserAgent | None = None
+    if args.user_agent is not None:
+        try:
+            call_override = resolve(args.user_agent)
+        except UserAgentError as exc:
+            raise CliFailure(f"--user-agent is invalid: {exc}") from exc
 
     output_path = Path(args.output).expanduser() if args.output else None
     image_type = "png"
@@ -94,11 +143,20 @@ def _inspect(args: argparse.Namespace, runtime: CliRuntime) -> None:
             label="pwmcp-inspect",
             timeout_ms=args.timeout_ms,
         ) as lease:
-            context = lease.browser.new_context(
-                ignore_https_errors=args.ignore_https_errors
-            )
+            # Effective identity: the per-call --user-agent wins, else the server-level
+            # setting the service publishes in its contract, else the browser default.
+            active = call_override or _server_identity(getattr(lease, "contract", None))
+            context_options: dict[str, object] = {
+                "ignore_https_errors": args.ignore_https_errors
+            }
+            if active.user_agent is not None:
+                context_options["user_agent"] = active.user_agent
+            # A fresh context per call: the override dies with it, which is the restore.
+            context = lease.browser.new_context(**context_options)
             try:
                 page = context.new_page()
+                if active.user_agent is not None:
+                    _apply_client_hints(context, page, active.user_agent, runtime)
                 page.goto(args.url, wait_until=args.wait_until, timeout=args.timeout_ms)
                 if args.wait_for:
                     page.locator(args.wait_for).filter(visible=True).first.wait_for(
@@ -117,6 +175,7 @@ def _inspect(args: argparse.Namespace, runtime: CliRuntime) -> None:
                         animations="disabled",
                         timeout=args.timeout_ms,
                     )
+                observed_ua = _observed_user_agent(page)
             finally:
                 context.close()
     except (PwmcpError, PlaywrightError, OSError, ValueError) as exc:
@@ -125,8 +184,27 @@ def _inspect(args: argparse.Namespace, runtime: CliRuntime) -> None:
             hint="check that PWMCP is running and the page's wait condition is reachable",
         ) from exc
 
+    # Transparency (PWMCP-09). With no override (source "default") the output is exactly
+    # what it always was: same stdout, same JSON shape, empty stderr. Only when an override
+    # is ACTIVE is the identity reported: one stderr line that --quiet cannot silence, and
+    # in --json mode the identity fields (the bare JSON string becomes an object).
+    overridden = active.source != "default"
+    fields = {
+        "user_agent": observed_ua or active.user_agent,
+        "user_agent_source": active.source,
+    }
+    if overridden:
+        runtime.output.emit(
+            LogLevel.INFO,
+            f"user agent: {fields['user_agent']} (source: {fields['user_agent_source']})",
+            force=True,
+        )
+
     if output_path is None:
-        runtime.output.primary(payload)
+        if runtime.json_mode and overridden:
+            runtime.output.primary({"content": payload, **fields})
+        else:
+            runtime.output.primary(payload)
         return
 
     try:
@@ -137,6 +215,8 @@ def _inspect(args: argparse.Namespace, runtime: CliRuntime) -> None:
     except OSError as exc:
         raise CliFailure(f"cannot write {args.format} output to {output_path}: {exc}") from exc
     runtime.output.info(f"wrote {args.format} output to {output_path}")
+    if runtime.json_mode and overridden:
+        runtime.output.primary({"output": str(output_path), "format": args.format, **fields})
 
 
 def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
@@ -180,6 +260,7 @@ def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
             "pwmcp inspect https://example.com --format screenshot --output page.png --full-page",
             "pwmcp inspect https://example.com --wait-for '#content' --wait-until domcontentloaded",
             "pwmcp inspect https://self-signed.example --ignore-https-errors",
+            "pwmcp inspect https://example.com --user-agent edge-windows",
         ),
         include_progress=False,
         arguments=(ArgumentSpec(
@@ -229,6 +310,14 @@ def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
                 "capture the full scrollable page when taking a screenshot",
                 group="OUTPUT",
                 parser_kwargs={"action": "store_true"},
+            ),
+            OptionSpec(
+                ("--user-agent",),
+                "present this user agent for this inspection only: a preset "
+                "(edge-windows, chrome-windows, firefox-windows), 'default' for the browser's "
+                "own, or a custom printable-ASCII string; overrides the server-level setting",
+                group="IDENTITY",
+                metavar="PRESET_OR_STRING",
             ),
             OptionSpec(
                 ("--ignore-https-errors",),

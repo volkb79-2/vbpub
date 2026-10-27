@@ -54,6 +54,11 @@ services:
       # happens in the container entrypoint (entrypoint.sh), which is the
       # single source of truth for this check -- not duplicated here.
       PWMCP_BROWSER_MODE: "{{ pwmcp.unified.browser_mode }}"
+      # PWMCP-09 opt-in user agent override ("default" = none). tojson keeps a custom
+      # string with quotes/backslashes valid YAML; "$" is doubled so compose interpolation
+      # leaves a custom UA containing it intact. Validation is in the entrypoint, which
+      # calls the same pwmcp_user_agent.py module the client uses.
+      PWMCP_USER_AGENT: {{ pwmcp.unified.user_agent | default("default") | tojson | replace("$", "$$") }}
       PWMCP_RUN_SERVER_PORT: "{{ pwmcp.unified.ws_port }}"
       PWMCP_RUN_SERVER_UPSTREAM_PORT: "{{ pwmcp.run_server.upstream_port }}"
       # Validate the external Host before proxying, then use loopback Host and
