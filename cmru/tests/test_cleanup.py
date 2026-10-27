@@ -144,6 +144,123 @@ class TestDeleteUnmanagedReleaseTag:
 
 # ─── cleanup_project_releases_and_tags ───────────────────────────────────────
 
+def _timed_release(tag: str, release_id: int, *, days_ago: int | None) -> dict:
+    from datetime import datetime, timedelta, timezone
+
+    record = {"tag_name": tag, "id": release_id, "assets": []}
+    if days_ago is not None:
+        published = datetime.now(timezone.utc) - timedelta(days=days_ago)
+        record["published_at"] = published.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return record
+
+
+def test_policy_cleanup_honours_max_age_days_and_keeps_releases_of_unknown_age():
+    """[cleanup] max_age_days: a Release inside the window (or undated) and its tag
+    survive --policy; an older one and a tag without a Release do not."""
+    releases = [
+        _timed_release("ciu-v3.0.0", 30, days_ago=2),
+        _timed_release("ciu-v2.0.0", 20, days_ago=400),
+        _timed_release("ciu-v1.5.0", 15, days_ago=None),
+        _timed_release("ciu-latest", 1, days_ago=400),
+    ]
+    remote_tags = ["ciu-v3.0.0", "ciu-v2.0.0", "ciu-v1.5.0", "ciu-v1.0.0", "ciu-latest"]
+    deleted_ids: list[int] = []
+    deleted_remote: list[str] = []
+    with (
+        patch.object(cli, "list_releases", return_value=releases),
+        patch.object(
+            cli, "list_remote_tag_refs_matching",
+            side_effect=lambda _root, pattern, **_k: {
+                t: "a" * 40 for t in remote_tags if t.startswith(pattern.rstrip("*"))
+            },
+        ),
+        patch.object(cli, "delete_release", side_effect=lambda o, r, t, rid, dry_run: deleted_ids.append(rid)),
+        patch.object(cli, "delete_git_tag_remote", side_effect=lambda _r, tag, _d, **_k: deleted_remote.append(tag)),
+        patch.object(cli, "delete_git_tag_local", side_effect=lambda *_a, **_k: None),
+    ):
+        deleted = cli.cleanup_project_releases_and_tags(
+            repo_root=Path("/fake"), owner="o", repo="r", token="t",
+            prefix="ciu", keep_tags=[], dry_run=False, max_age_days=30,
+        )
+    assert deleted_ids == [20]
+    assert sorted(deleted) == ["ciu-v1.0.0", "ciu-v2.0.0"]
+    assert sorted(deleted_remote) == ["ciu-v1.0.0", "ciu-v2.0.0"]
+
+
+def test_policy_cleanup_without_max_age_days_deletes_every_versioned_release():
+    """Controlled wrong for the test above: no window means the old behaviour."""
+    releases = [
+        _timed_release("ciu-v3.0.0", 30, days_ago=2),
+        _timed_release("ciu-v2.0.0", 20, days_ago=400),
+    ]
+    deleted_ids: list[int] = []
+    with (
+        patch.object(cli, "list_releases", return_value=releases),
+        patch.object(cli, "list_remote_tag_refs_matching", return_value={}),
+        patch.object(cli, "delete_release", side_effect=lambda o, r, t, rid, dry_run: deleted_ids.append(rid)),
+        patch.object(cli, "delete_git_tag_remote", side_effect=lambda *_a, **_k: None),
+        patch.object(cli, "delete_git_tag_local", side_effect=lambda *_a, **_k: None),
+    ):
+        deleted = cli.cleanup_project_releases_and_tags(
+            repo_root=Path("/fake"), owner="o", repo="r", token="t",
+            prefix="ciu", keep_tags=[], dry_run=False,
+        )
+    assert sorted(deleted_ids) == [20, 30]
+    assert sorted(deleted) == ["ciu-v2.0.0", "ciu-v3.0.0"]
+
+
+def test_policy_window_helpers_fail_closed_on_unknown_or_malformed_dates():
+    from datetime import datetime, timedelta, timezone
+
+    assert cli._policy_cutoff(None) is None
+    cutoff = cli._policy_cutoff(7)
+    assert cutoff is not None and cutoff < datetime.now(timezone.utc) - timedelta(days=6)
+    for bad in (0, -1, True, "7"):
+        with pytest.raises(ValueError):
+            cli._policy_cutoff(bad)
+    assert cli._release_within_policy_window({}, cutoff) is True
+    assert cli._release_within_policy_window({"published_at": "not-a-date"}, cutoff) is True
+    young = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    old = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert cli._release_within_policy_window({"published_at": young}, cutoff) is True
+    assert cli._release_within_policy_window({"published_at": old}, cutoff) is False
+    # created_at is the fallback, as in the age-based --remove-assets path.
+    assert cli._release_within_policy_window({"created_at": young}, cutoff) is True
+
+
+def test_policy_cleanup_plan_recheck_keeps_a_release_that_entered_the_window():
+    """The confirmed plan re-evaluates the age policy: a Release whose record now
+    says it is young is left alone even though the preview listed it."""
+    old = _timed_release("ciu-v2.0.0", 20, days_ago=400)
+    plan = cli.CleanupPlan()
+    with (
+        patch.object(cli, "list_releases", return_value=[old]),
+        patch.object(cli, "list_remote_tag_refs_matching", return_value={}),
+        patch.object(cli, "local_git_tag_oid", return_value=None),
+    ):
+        cli.cleanup_project_releases_and_tags(
+            repo_root=Path("/fake"), owner="o", repo="r", token="t",
+            prefix="ciu", keep_tags=[], dry_run=True, plan=plan, max_age_days=30,
+        )
+    assert [label for label, _ in plan.actions] == ["GitHub Release ciu-v2.0.0 (id=20)"]
+    now_young = _timed_release("ciu-v2.0.0", 20, days_ago=1)
+    now_young["updated_at"] = old.get("updated_at")
+    deleted: list[int] = []
+    with (
+        patch.object(cli, "list_releases", return_value=[now_young]),
+        patch.object(cli, "delete_release", side_effect=lambda *a, **k: deleted.append(a[3])),
+    ):
+        plan.apply()
+    assert deleted == []
+    # Controlled wrong: the same record still old is deleted by the confirmed plan.
+    with (
+        patch.object(cli, "list_releases", return_value=[old]),
+        patch.object(cli, "delete_release", side_effect=lambda *a, **k: deleted.append(a[3])),
+    ):
+        plan.apply()
+    assert deleted == [20]
+
+
 class TestCleanupProjectReleasesAndTags:
     """Unit-test the release+tag cleanup logic with patched network + git calls."""
 

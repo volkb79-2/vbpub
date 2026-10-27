@@ -650,6 +650,117 @@ def test_abandon_branch_selection_is_exact(
     assert refusal.value.exit_code == 2
 
 
+@pytest.mark.parametrize("spelling", [
+    "cmru-gate-096e8817b3ad86d49801",
+    "/anywhere/.worktrees/cmru-gate-096e8817b3ad86d49801",
+])
+def test_abandon_points_a_gate_snapshot_name_at_its_own_verb(monkeypatch, tmp_path, spelling):
+    """A `cmru-gate-*` snapshot is not a transaction; name the verb that owns it."""
+    _install_candidate_facts(monkeypatch, tmp_path, [])
+    monkeypatch.setattr(
+        cli, "_abandon_remote_candidate",
+        lambda *_args, **_kwargs: pytest.fail("a gate snapshot must not be probed on origin"),
+    )
+    with pytest.raises(CliFailure) as failure:
+        _invoke_abandon(None, branch=spelling, dry_run=True)
+    assert failure.value.exit_code == 2
+    assert "release-gate snapshot" in str(failure.value)
+    assert "cmru gate-snapshots --remove --dry-run" in str(failure.value)
+
+
+def _install_orphan_sidecars(monkeypatch, tmp_path, branch, *, local_branch_rc=1, results=None):
+    _install_candidate_facts(monkeypatch, tmp_path, [])
+    monkeypatch.setattr(cli, "_abandon_remote_candidate", lambda *_args, **_kwargs: None)
+    scope_dir = tmp_path / "scopes"
+    scope_dir.mkdir()
+    token = branch.removeprefix("cmru-release-")
+    files = [scope_dir / f"{token}.json", scope_dir / f"{token}.untagged-publish.json"]
+    for path in files:
+        path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        transaction, "release_sidecar_paths",
+        lambda _root, name: sorted(p for p in scope_dir.glob(f"{name.removeprefix('cmru-release-')}.*")),
+    )
+    monkeypatch.setattr(
+        cli, "run_local_git",
+        lambda _root, *args, **_kwargs: SimpleNamespace(returncode=local_branch_rc, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(transaction, "read_release_scope", lambda *_: ["alpha"])
+    monkeypatch.setattr(transaction, "read_release_results", lambda *_: dict(results or {}))
+    forgotten = []
+    monkeypatch.setattr(
+        transaction, "forget_release_scope",
+        lambda _root, ws: forgotten.append(ws.branch) or [p.unlink() for p in files if p.exists()],
+    )
+    return files, forgotten
+
+
+def test_abandon_retires_orphan_sidecars_of_a_transaction_that_is_gone_everywhere(
+    monkeypatch, tmp_path, capsys,
+):
+    branch = "cmru-release-20261027_162346-cmru-ko6hmt"
+    files, forgotten = _install_orphan_sidecars(monkeypatch, tmp_path, branch, results={"cmru": "cmru-v7.0.0"})
+
+    assert _invoke_abandon(None, branch=branch, dry_run=True) == 0
+    out = capsys.readouterr().out
+    assert "Retire (orphan transaction sidecars)" in out
+    assert "20261027_162346-cmru-ko6hmt.untagged-publish.json" in out
+    assert "recorded results: cmru:cmru-v7.0.0" in out
+    assert "No branch, worktree, metadata, or remote state was changed" in out
+    assert forgotten == [] and all(p.exists() for p in files)
+
+    runtime = _Runtime(confirm=False)
+    assert _invoke_abandon(None, branch=branch, dry_run=False, runtime=runtime) == 0
+    assert forgotten == [] and runtime.confirmed
+
+    assert _invoke_abandon(None, branch=branch, dry_run=False, yes=True) == 0
+    assert forgotten == [branch]
+    assert not any(p.exists() for p in files)
+    assert "Retired orphan transaction sidecars" in capsys.readouterr().out
+    # Nothing left: the ordinary "no such transaction" refusal is back.
+    with pytest.raises(CliFailure) as failure:
+        _invoke_abandon(None, branch=branch, dry_run=True)
+    assert failure.value.exit_code == 2
+
+
+def test_abandon_withholds_orphan_sidecars_while_a_local_branch_still_exists(monkeypatch, tmp_path):
+    branch = "cmru-release-20261027_144853-cmru-ko4six"
+    files, forgotten = _install_orphan_sidecars(monkeypatch, tmp_path, branch, local_branch_rc=0)
+    with pytest.raises(CliFailure) as failure:
+        _invoke_abandon(None, branch=branch, dry_run=False, yes=True)
+    assert failure.value.exit_code == exit_codes.REFUSED
+    assert "local branch" in str(failure.value)
+    assert forgotten == [] and all(p.exists() for p in files)
+
+
+def test_abandon_reports_sidecars_an_old_forget_leaves_behind(monkeypatch, tmp_path):
+    branch = "cmru-release-20261027_144853-cmru-ko4six"
+    files, _forgotten = _install_orphan_sidecars(monkeypatch, tmp_path, branch)
+    monkeypatch.setattr(transaction, "forget_release_scope", lambda *_: None)
+    with pytest.raises(CliFailure) as failure:
+        _invoke_abandon(None, branch=branch, dry_run=False, yes=True)
+    assert failure.value.exit_code == 1
+    assert "left in place" in str(failure.value)
+    assert all(p.exists() for p in files)
+
+
+def test_release_sidecar_paths_lists_only_the_tokens_regular_files(tmp_path, monkeypatch):
+    scope_dir = tmp_path / "scopes"
+    scope_dir.mkdir()
+    monkeypatch.setattr(transaction, "_scope_dir", lambda _root: scope_dir)
+    (scope_dir / "20261027_162346-cmru-ko6hmt.json").write_text("[]")
+    (scope_dir / "20261027_162346-cmru-ko6hmt.progress").write_text("x")
+    (scope_dir / "20261027_162346-cmru-ko6hmt2.json").write_text("[]")  # another token
+    (scope_dir / "20261027_162346-cmru-ko6hmt.dir").mkdir()
+    listed = transaction.release_sidecar_paths(tmp_path, "cmru-release-20261027_162346-cmru-ko6hmt")
+    assert [p.name for p in listed] == [
+        "20261027_162346-cmru-ko6hmt.json", "20261027_162346-cmru-ko6hmt.progress",
+    ]
+    assert transaction.release_sidecar_paths(tmp_path, "cmru-release-20261027_000000-x-nothere") == []
+    with pytest.raises(ValueError):
+        transaction.release_sidecar_paths(tmp_path, "feature/not-a-transaction")
+
+
 def test_abandon_relative_path_is_refused_with_the_absolute_path_hint(monkeypatch, tmp_path):
     build = _workspace(tmp_path, "cmru-build-20260924_120000-alpha-ab12cd")
     monkeypatch.setattr(cli, "_current_git_root", lambda: tmp_path)

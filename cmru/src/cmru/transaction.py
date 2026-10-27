@@ -923,8 +923,17 @@ def write_release_source(
 def read_release_source(
     repo_root: Path, workspace: ReleaseWorkspace,
 ) -> dict[str, str] | None:
-    """Return validated feature-source provenance, or None for origin/main releases."""
+    """Return validated feature-source provenance, or None for origin/main releases.
+
+    The record's ``source_commit`` is compared with the transaction's RECORDED
+    base (the shared workspace record's ``base_commit``). ``workspace.base`` is
+    that same commit for a workspace created or resumed here, but a workspace
+    listed by :func:`list_cmru_workspaces` carries the worktree's current HEAD
+    there, which moves past the base with the first prepare commit; comparing
+    against it made every failed feature-source candidate "malformed" (KI-86).
+    """
     path = _scope_dir(repo_root) / f"{_release_token(workspace)}.source.json"
+    recorded_base = getattr(workspace.context, "base_commit", None)
     namespace = getattr(workspace.context, "namespace", None)
     labels = getattr(namespace, "labels", None)
     if labels is not None and not isinstance(labels, Mapping):
@@ -965,7 +974,7 @@ def read_release_source(
         or raw["source_ref"] in ("refs/heads/main", "refs/heads/HEAD")
         or not isinstance(raw.get("source_commit"), str)
         or not COMMIT_ID_RE.fullmatch(raw["source_commit"])
-        or raw["source_commit"] != workspace.base
+        or raw["source_commit"] != (recorded_base or workspace.base)
     ):
         raise RuntimeError(f"release source record is malformed or does not match {workspace.branch}")
     return {key: str(value) for key, value in raw.items() if key != "schema_version"}
@@ -1680,6 +1689,28 @@ def read_release_scope_for_path(path: Path) -> list[str] | None:
         raise RuntimeError(f"{path} is not a retained CMRU release branch (got {branch!r})")
     workspace = ReleaseWorkspace(repo_root=top, path=path, branch=branch, base=head)
     return read_release_scope_for_workspace(top, workspace)
+
+
+def release_sidecar_paths(repo_root: Path, branch: str) -> list[Path]:
+    """Every regular sidecar file in the shared scope directory that belongs to
+    the transaction token of ``branch`` (``<token>.*``), sorted. Used by
+    ``cmru abandon`` to find and retire sidecars whose worktree and branches are
+    already gone (a candidate removed by hand or by an older cmru that did not
+    know every sidecar name)."""
+    if not _is_transaction_branch(branch):
+        raise ValueError(f"{branch!r} is not a CMRU transaction branch")
+    token = _release_token(ReleaseWorkspace(repo_root, repo_root, branch, ""))
+    try:
+        scope_dir = _scope_dir(repo_root)
+    except RuntimeError:
+        # No Git common directory means no scope directory, hence no sidecars.
+        return []
+    if not scope_dir.is_dir():
+        return []
+    return sorted(
+        path for path in scope_dir.glob(f"{token}.*")
+        if path.is_file() and not path.is_symlink()
+    )
 
 
 def forget_release_scope(repo_root: Path, workspace: ReleaseWorkspace) -> None:

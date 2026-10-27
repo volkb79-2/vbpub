@@ -4,6 +4,19 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Fixed
+- `cmru abandon` retires a failed `--from-worktree` candidate again (KI-86): the feature-source record is compared with the transaction's recorded base commit, not with the worktree HEAD that `cmru abandon`'s listing carries and that moves with the first prepare commit.
+- A failed `cmru release --dry-run` of a new candidate discards its disposable worktree, branch and sidecars instead of retaining a candidate that `abandon` withheld (KI-91); a dry run of a resumed candidate, or any candidate with a pushed backup or a recorded result, is still retained.
+- GHCR visibility sync after a successful image push no longer fails the release when the package is still not found after the retries or the token may not read it (KI-97): it warns with the cause and the one-time UI remediation (set visibility once, link the package to the repository) and continues; `mirror_package_visibility(..., missing="fail")` keeps the hard failure, 5xx lookups still fail.
+- `cmru cleanup --policy` honours `[cleanup] max_age_days`: a Release published within that window (or without a usable publication time) and its tag are kept, re-checked when the confirmed plan is applied. The key was validated and then ignored. The `--policy` help and the per-project policy line now state that WITHOUT the key every `<prefix>-v*` Release and tag outside `keep_release_tags`/`<prefix>-latest` is deleted.
+
+### Added
+- `cmru abandon <cmru-release-...>` retires the orphan sidecar files of a transaction that has no worktree, no local branch and no origin branch (candidates removed by hand, or by an older cmru that did not know every sidecar name), after listing their recorded scope and results; nothing else is touched and unknown sidecar names are reported, not deleted.
+- `cmru abandon <cmru-gate-...>` refuses a release-gate snapshot (exit 2) and points at `cmru gate-snapshots --remove`.
+
+### Documentation
+- KI-100..KI-105 filed from the post-7.0.0 review (controller identity vs the code that ran, cleanup without the release lock, dry-run resume prepare commits, remaining post-push GHCR hard failures, gate-snapshot selection by name, the two cleanup selection grammars); `docs/RELEASE-TRANSACTIONS.md` and the packaged skill follow the abandon/dry-run/cleanup behaviour.
+
 <!-- KI-30 originally refused a tagged release while this body was non-empty. KI-78 now
      folds pending notes into the version section in the disposable release candidate.
      KI-23 still refuses a hand-authored `## [6.0.0] - UNRELEASED` heading, so this file

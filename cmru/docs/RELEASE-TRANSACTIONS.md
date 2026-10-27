@@ -480,6 +480,13 @@ can undo an external publication.
 In every case the worktree/branch is retained for inspection. `--resume` works only when
 no release tag was left behind (a pre-tag failure, or a build failure whose tag was rolled
 back); after publication began, abandon and re-release.
+
+A failed **`--dry-run`** of a NEW candidate is the one exception (KI-91): its child stops
+before the candidate push, so nothing exists outside the local worktree, and the error it
+printed is all there is to inspect. The worktree, branch and sidecars are discarded and the
+run says so ("Release dry run failed ... were discarded"). A dry run of a `--resume`d
+candidate leaves that existing candidate in place, and a candidate with a pushed backup
+branch or a recorded result is never treated as a dry run's.
 Use the separate local transaction command after reviewing its exact plan:
 
 ```sh
@@ -520,6 +527,20 @@ published or ambiguous state `abandon` refuses, the supported path is: confirm t
 (tag or image) exists, remove the worktree and local branch with `git worktree remove` and
 `git branch -D`, then retire the
 remaining origin ref with this command.
+
+**Orphan sidecars.** When the same name has no worktree, no local branch and no origin
+branch but files `<token>.*` remain under `cmru-release-scopes/` (a candidate removed by
+hand, or by an older cmru that did not know every sidecar name: the 7.0.0 release left
+`.untagged-publish.json` files this way), `cmru abandon <branch>` lists them with their
+recorded scope and results and, after confirmation, removes exactly those files. Nothing
+else is touched; a sidecar name it does not know is reported, never deleted.
+
+A `cmru-gate-*` name is a release-gate snapshot, not a transaction: `abandon` refuses it
+(exit 2) and points at `cmru gate-snapshots` / `cmru gate-snapshots --remove`.
+
+A failed feature-source (`--from-worktree`) candidate is abandonable again (KI-86): the
+source record is compared with the transaction's recorded base commit, not with the
+worktree's current HEAD, which moves with the first prepare commit.
 
 ### Worked example: releasing ciu, nyxloom, and modern-debian-tools-python-debug together
 

@@ -121,11 +121,15 @@ cmru run --step test                 # declared steps in the CALLER'S checkout
 cmru abandon                         # inspect retained release transactions
 cmru abandon --dry-run               # show exactly what would be discarded
 cmru abandon cmru/release/ciu --yes  # discard one retained worktree by branch or path
+cmru abandon cmru-release-20261027_162346-cmru-ko6hmt --dry-run  # also: an origin-only candidate, or orphan sidecars of one gone everywhere
 cmru cleanup --policy --dry-run      # preview the configured [cleanup] policy
 cmru cleanup --remove-assets 30d --dry-run
 ```
 
-`cleanup` is NOT routine: it deletes remote Releases, tags and GHCR versions
+`cleanup --policy` deletes EVERY `<prefix>-v*` Release and Git tag of each selected
+project except `<prefix>-latest`, `keep_release_tags` and, only when `[cleanup]
+max_age_days` is set, Releases published within that window; without the key there
+is no age filter at all. `cleanup` is NOT routine: it deletes remote Releases, tags and GHCR versions
 (or one retained build record). Exactly one mode is required (`--policy`,
 `--remove-assets AGE`, `--delete-unmanaged-release-tag TAG`,
 `--delete-build-output ID`); always preview with `--dry-run` first, and note it
