@@ -161,5 +161,50 @@ class WriterTests(unittest.TestCase):
             self.assertEqual(rec["t"], 199)
 
 
+class BpfAnalysisTests(unittest.TestCase):
+    H = [{"min": 64, "max": 127, "count": 90}, {"min": 128, "max": 255, "count": 9},
+         {"min": 4096, "max": 8191, "count": 1}]
+
+    def test_hist_percentiles(self):
+        d = {}
+        iomon.hist_merge(d, "k", self.H)
+        iomon.hist_merge(d, "k", self.H)
+        h = d["k"]
+        self.assertEqual(iomon.hist_total(h), 200)
+        self.assertEqual(iomon.hist_pct(h, 50), 127)
+        self.assertEqual(iomon.hist_pct(h, 99), 255)
+        self.assertEqual(iomon.hist_pct(h, 100), 8191)
+        self.assertEqual(iomon.hist_max(h), 8191)
+        self.assertIsNone(iomon.hist_pct({}, 50))
+
+    def test_dev_name(self):
+        self.assertEqual(iomon.dev_name(254 << 20), "vda")
+        self.assertEqual(iomon.dev_name((253 << 20) | 2), "dm-2")
+
+    def test_aggregate_sums_maps_maxes_gauges_and_merges_hists(self):
+        def rec(o):
+            return {"k": "bpf", "t": 1.0, "o": o}
+        recs = [
+            rec({"type": "map", "data": {"@ios": {"1,0,0": 5}}}),
+            rec({"type": "map", "data": {"@ios": {"1,0,0": 7}}}),
+            rec({"type": "map", "data": {"@rmiss_ppm": 10}}),
+            rec({"type": "map", "data": {"@rmiss_ppm": 4}}),
+            rec({"type": "hist", "data": {"@lat": {"a": self.H}}}),
+            rec({"type": "hist", "data": {"@lat": {"a": self.H}}}),
+            rec({"type": "stats", "data": {"@vrate": {"count": 2, "average": 5, "total": 10}}}),
+            rec({"ev": "slow_write", "w": 1, "comm": "x", "tid": 1, "ms": 80}),
+        ]
+        agg = iomon.aggregate_bpf(recs)
+        self.assertEqual(agg["maps"]["@ios"]["1,0,0"], 12)
+        self.assertEqual(agg["maps"]["@rmiss_ppm"][""], 10)
+        self.assertEqual(iomon.hist_total(agg["hists"]["@lat"]["a"]), 200)
+        self.assertEqual(agg["stats"]["@vrate"], [2, 10])
+        self.assertEqual(len(agg["events"]), 1)
+
+    def test_counter_delta(self):
+        d = iomon.counter_delta({"a": {"x": 1, "y": 5}, "z": 3}, {"a": {"x": 4, "y": 2}, "z": 9})
+        self.assertEqual(d, {"a": {"x": 3, "y": None}, "z": 6})
+
+
 if __name__ == "__main__":
     unittest.main()

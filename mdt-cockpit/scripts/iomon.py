@@ -17,6 +17,14 @@ O_DSYNC write plus one 4 KiB direct read every N seconds against a tiny
 preallocated file (1 MiB) in --probe-dir; its IO is ~0.8 KiB/s.
 
 Stop: create the file <out>/STOP (or send SIGTERM); the PID is in <out>/iomon.pid.
+`iomon.py stop --out DIR` also stops the optional eBPF collector when DIR/bpf points at its
+output directory.
+
+Optional eBPF collector (scripts/iomon-bpf/): run.sh starts ONE fixed-name, --rm container
+(root, dev background slice, host cgroup tree/tracefs read-only, one writable output bind)
+running iomon_bpf.py, which runs blk.bt / stall.bt (bpftrace, in-kernel aggregation) and
+samples the host cgroup files.  Its bpf-*.jsonl is merged into `analyze` automatically when
+it sits in OUT or OUT/bpf.  Build the image with scripts/iomon-bpf/Dockerfile.
 """
 from __future__ import annotations
 
@@ -478,20 +486,20 @@ class Probe(threading.Thread):
 # Output
 # --------------------------------------------------------------------------
 class Writer:
-    def __init__(self, out_dir, cap_bytes, segment_bytes=SEGMENT_BYTES):
-        self.dir, self.cap, self.seg_max = out_dir, cap_bytes, segment_bytes
+    def __init__(self, out_dir, cap_bytes, segment_bytes=SEGMENT_BYTES, prefix="samples-"):
+        self.dir, self.cap, self.seg_max, self.prefix = out_dir, cap_bytes, segment_bytes, prefix
         self.f, self.size = None, 0
 
     def _open(self):
         if self.f:
             self.f.close()
-        name = "samples-" + dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ") + ".jsonl"
+        name = self.prefix + dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ") + ".jsonl"
         self.f = open(os.path.join(self.dir, name), "a", buffering=1)
         self.size = 0
         self.enforce_cap()
 
     def enforce_cap(self):
-        files = sorted(x for x in os.listdir(self.dir) if x.startswith("samples-"))
+        files = sorted(x for x in os.listdir(self.dir) if x.startswith(self.prefix))
         sizes = {x: os.path.getsize(os.path.join(self.dir, x)) for x in files}
         total = sum(sizes.values())
         for x in files[:-1]:  # never delete the newest (current) segment
@@ -678,6 +686,10 @@ def cmd_stop(a):
     p = os.path.join(a.out, "STOP")
     open(p, "w").close()
     print("STOP marker written:", p)
+    bpf = os.path.join(a.out, "bpf")  # symlink to the eBPF collector's output dir, if present
+    if os.path.isdir(bpf):
+        open(os.path.join(bpf, "STOP-BPF"), "w").close()
+        print("STOP-BPF marker written:", bpf)
     return 0
 
 
@@ -815,7 +827,266 @@ def cmd_analyze(a):
         fmt(_mx([s["disk"][primary]["wa"] for s in samples if s.get("disk", {}).get(primary)]), 1),
         (lambda ps: "/".join(fmt(x, 2) for x in (percentile(ps, 50), percentile(ps, 99), _mx(ps))))(
             [p["w"] for s in samples for p in s.get("probe", []) if p.get("w") is not None])))
+    brecs = load_bpf_records(a.out)
+    if any(r.get("k") == "bpf" for r in brecs):
+        analyze_bpf(brecs, t0, t1, [short[c] for c in ids])
     return 0
+
+
+# --------------------------------------------------------------------------
+# eBPF collector output (bpf-*.jsonl written by iomon_bpf.py) - analysis
+# --------------------------------------------------------------------------
+KIND = {0: "R", 1: "W", 2: "F", 3: "O"}
+
+
+def hist_merge(acc, key, buckets):
+    d = acc.setdefault(key, {})
+    for b in buckets:
+        k = (b["min"], b["max"])
+        d[k] = d.get(k, 0) + b["count"]
+
+
+def hist_total(d):
+    return sum(d.values()) if d else 0
+
+
+def hist_pct(d, q):
+    """Upper bound of the log2 bucket holding quantile q (0..100); None if empty."""
+    tot = hist_total(d)
+    if not tot:
+        return None
+    need, cum = tot * q / 100.0, 0
+    for (lo, hi), c in sorted(d.items()):
+        cum += c
+        if cum >= need and c:
+            return hi
+    return max(hi for (_, hi) in d)
+
+
+def hist_max(d):
+    live = [hi for (_, hi), c in d.items() if c]
+    return max(live) if live else None
+
+
+def dev_name(code):
+    major, minor = code >> 20, code & 0xFFFFF
+    return {254: "vda", 11: "sr0"}.get(major) or (f"dm-{minor}" if major == 253 else f"{major}:{minor}")
+
+
+def aggregate_bpf(recs):
+    """bpf records -> {'maps': {name: {key: n}}, 'hists': {name: {key: {(lo,hi): n}}},
+    'stats': {name: [count, total]}, 'events': [...]}; keys stay strings ('' for unkeyed)."""
+    maps, hists, stats, events = {}, {}, {}, []
+    for r in recs:
+        o = r.get("o") or {}
+        typ, data = o.get("type"), o.get("data")
+        if typ in ("map", "hist", "stats") and isinstance(data, dict):
+            for name, val in data.items():
+                if typ == "map":
+                    if isinstance(val, dict):
+                        for k, v in val.items():
+                            m = maps.setdefault(name, {})
+                            m[k] = m.get(k, 0) + v if not name.endswith(("_ppm", "lagging", "shortages")) else max(m.get(k, 0), v)
+                    else:
+                        m = maps.setdefault(name, {})
+                        m[""] = max(m.get("", 0), val) if name.endswith(("_ppm", "lagging", "shortages")) else m.get("", 0) + val
+                elif typ == "hist":
+                    if isinstance(val, dict):
+                        for k, b in val.items():
+                            hist_merge(hists.setdefault(name, {}), k, b)
+                    else:
+                        hist_merge(hists.setdefault(name, {}), "", val)
+                else:
+                    st = stats.setdefault(name, [0, 0])
+                    st[0] += val.get("count", 0)
+                    st[1] += val.get("total", 0)
+        elif o.get("ev"):
+            events.append(dict(o, t=r["t"]))
+    return {"maps": maps, "hists": hists, "stats": stats, "events": events}
+
+
+def counter_delta(first, last):
+    """Cumulative counters (nested dict of numbers) -> last - first, same shape."""
+    if isinstance(last, dict):
+        return {k: counter_delta((first or {}).get(k), v) for k, v in last.items()}
+    if isinstance(last, (int, float)) and isinstance(first, (int, float)):
+        return last - first if last >= first else None
+    return None
+
+
+def load_bpf_records(out):
+    recs = []
+    for d in (out, os.path.join(out, "bpf")):
+        if os.path.isdir(d):
+            for name in sorted(x for x in os.listdir(d) if x.startswith("bpf-")):
+                with open(os.path.join(d, name)) as f:
+                    for line in f:
+                        try:
+                            recs.append(json.loads(line))
+                        except ValueError:
+                            pass
+    recs.sort(key=lambda r: r.get("t", 0))
+    return recs
+
+
+def _lat_line(h):
+    if not h:
+        return "-"
+    return f"n={hist_total(h)} p50<={hist_pct(h, 50)} p99<={hist_pct(h, 99)} max<={hist_max(h)}us"
+
+
+def analyze_bpf(recs, t0, t1, shorts, out=print):
+    """Print the eBPF-derived sections for the window.  shorts = names of watched containers."""
+    win = [r for r in recs if t0 <= r.get("t", 0) <= t1]
+    metas = [r for r in recs if r.get("k") == "bpf_meta" and "containers" in r]
+    ids = (metas[-1]["cgroup_ids"] if metas else [0, 0])
+    if metas:
+        shorts = metas[-1]["containers"]
+    who = {"0": "other", "1": shorts[0] if shorts else "w1", "2": shorts[1] if len(shorts) > 1 else "w2"}
+    cgm = {}
+    for r in recs:
+        if r.get("k") == "cgmap":
+            cgm.update({v: k for k, v in r["ids"].items()})
+    for name, i in zip(shorts, ids):
+        cgm[i] = f"scope:{name}"
+    cgname = lambda i: cgm.get(int(i), str(i)) if str(i).lstrip("-").isdigit() else str(i)
+    agg = aggregate_bpf([r for r in win if r.get("k") == "bpf"])
+    span = max(1.0, (win[-1]["t"] - win[0]["t"])) if win else 1.0
+    out(f"\n=== eBPF collector window {hms(win[0]['t'])}..{hms(win[-1]['t'])} UTC "
+        f"({len(win)} records, ~{span:.0f}s) watched cgroup ids {ids}")
+    H, M, S = agg["hists"], agg["maps"], agg["stats"]
+
+    out("\n(1) Block service latency (blk_mq_start->end, us, log2-bucket upper bounds), "
+        "by device / op / sync / owner cgroup")
+    rows = {}
+    for key, h in H.get("@lat", {}).items():
+        dev, kind, sy, w = key.split(",")
+        rows.setdefault((dev_name(int(dev)), KIND[int(kind)], who[w]), {}).setdefault(sy, {})
+        for b, c in h.items():
+            rows[(dev_name(int(dev)), KIND[int(kind)], who[w])][sy][b] = rows[(dev_name(int(dev)), KIND[int(kind)], who[w])][sy].get(b, 0) + c
+    for (dev, kind, wn), bysy in sorted(rows.items()):
+        allh = {}
+        for h in bysy.values():
+            for b, c in h.items():
+                allh[b] = allh.get(b, 0) + c
+        n, ns = hist_total(allh), hist_total(bysy.get("1", {}))
+        if n < 5 and wn == "other":
+            continue
+        out(f"  {dev:6} {kind} {wn:8} {n / span:8.1f} IOPS  sync={100 * ns / max(n, 1):3.0f}%  {_lat_line(allh)}")
+    slow = M.get("@slow", {})
+    if slow:
+        out("  >100 ms requests: " + ", ".join(
+            f"{dev_name(int(k.split(',')[0]))}/{KIND[int(k.split(',')[1])]}/{who[k.split(',')[2]]}={v}"
+            for k, v in sorted(slow.items())))
+    else:
+        out("  >100 ms requests: none")
+    tw = H.get("@tagwait", {})
+    out("  request-slot (tag) wait, us: " + "; ".join(f"{who[k]}: {_lat_line(h)}" for k, h in sorted(tw.items())))
+
+    out("\n(6) Who writes (bytes submitted by owner cgroup; top 8) and by submitting comm")
+    byc = {}
+    for k, v in M.get("@bytes_by_cg", {}).items():
+        cid, kind = k.split(",")
+        if kind == "1":
+            byc[cgname(cid)] = byc.get(cgname(cid), 0) + v
+    for name, v in sorted(byc.items(), key=lambda x: -x[1])[:8]:
+        out(f"  {v / 1e6:10.1f} MB  {v / span / 1e6:7.2f} MB/s  {name}")
+    bycomm = {}
+    for k, v in M.get("@wbytes_comm", {}).items():
+        comm, cid = k.rsplit(",", 1)
+        bycomm[(comm, cgname(cid))] = bycomm.get((comm, cgname(cid)), 0) + v
+    for (comm, cg), v in sorted(bycomm.items(), key=lambda x: -x[1])[:8]:
+        out(f"  {v / 1e6:10.1f} MB  comm={comm:18} owner={cg}")
+
+    out("\n(2) D-state (uninterruptible sleep) of watched tasks")
+    for k, h in sorted(H.get("@dstate_us", {}).items()):
+        out(f"  {who[k]:8} wakeups={hist_total(h)} {_lat_line(h)}")
+    longs = M.get("@dlong", {})
+    out(f"  episodes > 100 ms: {sum(M.get('@dlong_n', {}).values())}" if longs or M.get("@dlong_n") else "  episodes > 100 ms: none")
+    for k, ms in sorted(longs.items(), key=lambda x: -x[1])[:6]:
+        comm, w, stack = k.split(",", 2)
+        out(f"  {ms} ms total  comm={comm} {who.get(w, w)}\n    " + " <- ".join(x.strip() for x in stack.strip().splitlines()[:7]))
+
+    out("\n(3) fsync / write() of watched tasks (us)")
+    for name in ("@fsync_us", "@write_us"):
+        for k, h in sorted(H.get(name, {}).items()):
+            out(f"  {name[1:]:9} {who[k]:8} {_lat_line(h)}")
+    evs = [e for e in agg["events"] if e.get("ev") in ("slow_fsync", "slow_write")]
+    out(f"  slow (>50 ms) events: {len(evs)}")
+    for e in evs[:12]:
+        out(f"    {hms(e['t'])} {e['ev']} {who.get(str(e['w']))} comm={e['comm']} tid={e['tid']} {e['ms']} ms")
+
+    out("\n(4) iocost / queueing")
+    adj = M.get("@adj", {})
+    nadj = sum(adj.values())
+    vr = S.get("@vrate", [0, 0])
+    out(f"  vrate adjustments: {nadj} (up={adj.get('1', 0)} down={adj.get('2', 0)} same={adj.get('0', 0)}); "
+        f"avg new vrate (raw)={vr[1] / vr[0]:.0f}" if vr[0] else "  vrate adjustments: none")
+    bz = S.get("@busy", [0, 0])
+    if bz[0]:
+        out(f"  busy_level avg={bz[1] / bz[0]:.1f}  max read_missed_ppm={max(M.get('@rmiss_ppm', {'': 0}).values())} "
+            f"max write_missed_ppm={max(M.get('@wmiss_ppm', {'': 0}).values())} "
+            f"max lagging={max(M.get('@lagging', {'': 0}).values())} max shortages={max(M.get('@shortages', {'': 0}).values())}")
+    rq = H.get("@rqwait_pct", {}).get("")
+    if rq:
+        out(f"  rq_wait_pct per period: p50<={hist_pct(rq, 50)} p90<={hist_pct(rq, 90)} max<={hist_max(rq)}  "
+            f"(>5% in {100 * sum(c for (lo, hi), c in rq.items() if lo > 5) / max(hist_total(rq), 1):.0f}% of periods)")
+    out(f"  iocg activations={sum(M.get('@iocg_activate', {}).values())} idles={sum(M.get('@iocg_idle', {}).values())} "
+        f"inuse shortages={sum(M.get('@inuse_shortage', {}).values())} debt forgiven={sum(M.get('@forgive_debt', {}).values())}")
+    cgs = [r for r in win if r.get("k") == "cg"]
+    if len(cgs) >= 2:
+        f0, f1 = cgs[0]["cg"], cgs[-1]["cg"]
+        dtw = max(cgs[-1]["t"] - cgs[0]["t"], 1)
+        root = f1.get("root", {})
+        out(f"  qos: {root.get('cost_qos')}\n  model: {root.get('cost_model')}")
+        vrs = [r["cg"]["root"]["io"].get("254:0", {}).get("cost.vrate") for r in cgs if r["cg"].get("root")]
+        vrs = [x for x in vrs if x is not None]
+        if vrs:
+            out(f"  root cost.vrate samples: min={min(vrs)} median={statistics.median(vrs)} max={max(vrs)}")
+        for name in shorts:
+            a, b = f0.get(name[:12]) or f0.get(name), f1.get(name[:12]) or f1.get(name)
+            if not (a and b):
+                continue
+            dv = counter_delta(a, b)
+            io = dv.get("io", {}).get("254:0", {})
+            out(f"  {name}: io.max={b.get('io_max', '(none)')} weight={b.get('io_weight')}  "
+                f"rd {io.get('rios', 0) / dtw:.1f} IOPS {io.get('rbytes', 0) / dtw / 1e6:.2f} MB/s  "
+                f"wr {io.get('wios', 0) / dtw:.1f} IOPS {io.get('wbytes', 0) / dtw / 1e6:.2f} MB/s  "
+                f"cost.usage d={io.get('cost.usage')}  "
+                f"io-psi total d(some/full)={dv['io_psi'].get('some', {}).get('tot', 0) / 1e3:.0f}/"
+                f"{dv['io_psi'].get('full', {}).get('tot', 0) / 1e3:.0f} ms  "
+                f"mem.high events d={dv['mem_events'].get('high')}  mem-psi some d={dv['memory_psi'].get('some', {}).get('tot', 0) / 1e3:.0f} ms")
+        for name in ("wings.slice", "dev.slice"):
+            b = f1.get(name)
+            if b:
+                dv = counter_delta(f0.get(name), b)
+                io = dv.get("io", {}).get("254:0", {})
+                out(f"  {name}: io.max={b.get('io_max', '(none)')}  wr {io.get('wbytes', 0) / dtw / 1e6:.2f} MB/s "
+                    f"rd {io.get('rbytes', 0) / dtw / 1e6:.2f} MB/s cost.usage d={io.get('cost.usage')}")
+
+    out("\n(5) Writeback throttling (balance_dirty_pages pauses > 0) by cgroup")
+    bm = M.get("@bdp_ms", {})
+    for k, ms in sorted(bm.items(), key=lambda x: -x[1])[:6]:
+        out(f"  {cgname(k)}: {ms} ms total over {M.get('@bdp_n', {}).get(k, 0)} pauses")
+    if not bm:
+        out("  none")
+    out("\n(7) Swap: swap-in pages by faulting cgroup (top 6); swap-out by reclaiming comm (top 4)")
+    for k, v in sorted(M.get("@swapin", {}).items(), key=lambda x: -x[1])[:6]:
+        out(f"  in  {v / span:8.1f} pages/s  {cgname(k)}")
+    for k, v in sorted(M.get("@swapout", {}).items(), key=lambda x: -x[1])[:4]:
+        out(f"  out {v / span:8.1f} pages/s  comm={k}")
+    if len(cgs) >= 2:
+        for name in shorts:
+            a, b = f0.get(name[:12]), f1.get(name[:12])
+            if a and b:
+                dv = counter_delta(a["mem_stat"], b["mem_stat"])
+                out(f"  {name}: swap.current {a.get('m_swap.current', 0) / 2**20:.0f}->{b.get('m_swap.current', 0) / 2**20:.0f} MiB; "
+                    f"majfault/s={((dv.get('pgmajfault') or 0) / dtw):.1f} refault_anon/s={((dv.get('workingset_refault_anon') or 0) / dtw):.1f} "
+                    f"zswpout/s={((dv.get('zswpout') or 0) / dtw):.1f} zswpin/s={((dv.get('zswpin') or 0) / dtw):.1f}")
+    cpu = [r["bpftrace_cpu_pct"] for r in win if "bpftrace_cpu_pct" in r]
+    if cpu:
+        out(f"\ncollector overhead: bpftrace CPU avg={sum(cpu) / len(cpu):.2f}% max={max(cpu):.2f}% of one core; "
+            f"helper errors={max(r.get('helper_errors', 0) for r in win)}")
 
 
 def main(argv=None):
