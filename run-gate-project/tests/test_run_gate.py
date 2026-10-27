@@ -39,6 +39,8 @@ from pathlib import Path
 
 import pytest
 
+import _testdeps   # missing optional test dependencies FAIL by default
+
 RUN_GATE_DIR = Path(__file__).resolve().parent.parent
 _TOOL = RUN_GATE_DIR / "run_gate.py"
 
@@ -6482,7 +6484,7 @@ class TestPointerLinkageEstate:
     def test_cmru_release_step_names_a_real_lane(self):
         cmru_doc = RUN_GATE_DIR.parent / "cmru" / "cmru.toml"
         if not cmru_doc.is_file():
-            pytest.skip("cmru not present in this checkout")
+            _testdeps.missing("cmru/cmru.toml", "cmru not present in this checkout")
         proc = subprocess.run(
             [sys.executable, str(_TOOL), "validate-pointers", str(cmru_doc)],
             capture_output=True, text=True, cwd=str(RUN_GATE_DIR))
@@ -11091,7 +11093,7 @@ class TestRecordedWorktreeBase:
             assert run_gate.recorded_worktree_base(repo, repo) == \
                 (None, None, "")
 
-    @pytest.mark.skipif(os.geteuid() == 0,
+    @pytest.mark.skipif(os.geteuid() == 0,   # testdeps-exception: structural
                         reason="root reads a 0o000 file regardless")
     def test_an_unreadable_record_is_reported(self, tmp_path):
         repo = make_feature_repo(tmp_path)
@@ -12131,12 +12133,16 @@ class TestWheelPackaging:
         assert (RUN_GATE_DIR / "run_gate.py").is_file()
         assert not (RUN_GATE_DIR / "run-gate.py").exists()
 
+    # A class-scoped fixture must not be an instance method (pytest 9
+    # deprecation, removed in 10): it runs once per class while every test
+    # gets a fresh instance, so `self` would be a lie.
     @pytest.fixture(scope="class")
-    def built_wheel(self, tmp_path_factory):
+    @staticmethod
+    def built_wheel(tmp_path_factory):
         if not (_has_module("setuptools") and _has_module("build")
                 and _has_module("setuptools_scm")):
-            warnings.warn("run-gate wheel tests SKIPPED: wheel toolchain unavailable")
-            pytest.skip("wheel toolchain unavailable")
+            _testdeps.missing("the wheel toolchain (setuptools, build, "
+                              "setuptools_scm)", "wheel toolchain unavailable")
         import setuptools
         from importlib.metadata import version as _dist_version
         pyproject = tomllib.loads((RUN_GATE_DIR / "pyproject.toml").read_text())
@@ -12146,9 +12152,8 @@ class TestWheelPackaging:
                        if r.startswith(f"{dist}=="))
             want = pin.split("==")[1]
             if have != want:
-                warnings.warn(f"run-gate wheel tests SKIPPED: local {dist} "
-                              f"{have} != pinned {want}")
-                pytest.skip(f"local {dist} {have} != pinned {want}")
+                _testdeps.missing(f"the pinned {dist}=={want}",
+                                  f"local {dist} {have} != pinned {want}")
         stage = tmp_path_factory.mktemp("wheel-stage")
         for name in ("run_gate.py", "run_gate_admission.py", "pyproject.toml",
                      "README.md"):
@@ -12949,7 +12954,13 @@ class TestEstateBudgetTimeoutPairing:
     invokes a helper rather than a lane (srdm's canary-run.sh) pairs with
     nothing and is skipped by construction."""
 
-    TROVES = sorted(RUN_GATE_DIR.parent.glob("*/nyxloom-trove/nyxloom.toml"))
+    # Only projects that declare lanes can pair: a trove whose project has no
+    # run-gate.toml (ciu8, the shelved v8 subproject) is not a case at all,
+    # so it is filtered here rather than collected and skipped — a skip in
+    # the gate log must mean something is missing, never "not applicable".
+    TROVES = sorted(trove for trove
+                    in RUN_GATE_DIR.parent.glob("*/nyxloom-trove/nyxloom.toml")
+                    if (trove.parent.parent / "run-gate.toml").is_file())
 
     @staticmethod
     def _pair(trove):
@@ -12995,8 +13006,8 @@ class TestEstateBudgetTimeoutPairing:
     def test_consumer_timeouts_never_cut_lanes_short(self, trove):
         proj_dir = trove.parent.parent
         paired = self._pair(trove)
-        if paired is None:
-            pytest.skip(f"{proj_dir.name} has no run-gate.toml")
+        assert paired is not None, \
+            f"{proj_dir.name} lost its run-gate.toml after collection"
         for gate_name, lane_name, timeout, budget in paired:
             assert timeout >= _budget_seconds(budget), (
                 f"{trove}: [gates.{gate_name}] timeout_seconds="
@@ -13018,7 +13029,8 @@ class TestEstateBudgetTimeoutPairing:
             seen.extend((trove.parent.parent.name, p[0])
                         for p in (self._pair(trove) or []))
         if not self.TROVES:
-            pytest.skip("no troves scanned (estate layout absent)")
+            _testdeps.missing("the estate's nyxloom troves",
+                              "no troves scanned (estate layout absent)")
         assert len(seen) >= 3, (
             f"estate-wide pairing collapsed to {seen} — the "
             f"sweep's grammar and the estate's gate tables have drifted "
@@ -33356,10 +33368,19 @@ class TestRgNarrowRealContainer:
             self, tmp_path, monkeypatch):
         image = os.environ.get("RUN_GATE_NARROW_SMOKE_IMAGE",
                                "tester-unified:local")
-        if not (shutil.which("docker") and _docker_image_present(image)):
-            pytest.skip(f"real container smoke needs docker + {image}")
-        if not os.environ.get(CGROUP_VAR):
-            pytest.skip(f"real container smoke needs ${CGROUP_VAR}")
+        # testdeps-exception: the ONE structural skip (see tests/_testdeps.py).
+        # Inside the selftest lane's own container the Docker socket is absent
+        # by design, so this cannot be a failing default there; where Docker
+        # is reachable, RUN_GATE_REQUIRE_CONTAINER_SMOKE=1 makes it one.
+        absent = (f"real container smoke needs docker + {image}"
+                  if not (shutil.which("docker") and _docker_image_present(image))
+                  else f"real container smoke needs ${CGROUP_VAR}"
+                  if not os.environ.get(CGROUP_VAR) else None)
+        if absent is not None:
+            if _testdeps.require_container_smoke():
+                pytest.fail(f"{absent} ({_testdeps.REQUIRE_CONTAINER_SMOKE_VAR}=1)",
+                            pytrace=False)
+            pytest.skip(absent)  # testdeps-exception
         monkeypatch.delenv(run_gate.ALLOW_MAIN_CHECKOUT_ENV_VAR, raising=False)
         repo = _narrow_repo(tmp_path)
         wt = make_worktree(repo, repo / ".worktrees", "w1")
@@ -33434,12 +33455,17 @@ class TestRgNarrowRealContainer:
             "git -c user.name=a -c user.email=a@b.invalid commit --allow-empty "
             "-qm in-container; "
             "test \"$(git log -1 --format=%s)\" = in-container; "
-            "test ! -e host-hook-fired; "
+            # the host hook writes to `git rev-parse --show-toplevel`, the
+            # WORKTREE root (one above proj/); the lane's commit must not run it
+            "test ! -e {worktree}/host-hook-fired; "
             "no touch $common/hooks/post-commit; "
             "no sh -c 'printf compromised >> \"$1/info/exclude\"' sh $common; "
-            # gc sees the siblings' HEAD and index and keeps their objects
-            # (FIRST, so only the gc check can fail a lane that hides them)
-            "git gc --prune=now -q; "
+            # repack+prune see the siblings' HEAD and index and keep their
+            # objects (FIRST, so only this check can fail a lane that hides
+            # them). Not `git gc`: its reflog expiry locks every sibling's
+            # HEAD under the read-only `worktrees/` admin mount and fails on
+            # git >= 2.4x — by design (RG-112), the siblings stay untouchable.
+            "git repack -a -d -q && git prune --expire=now; "
             f"git cat-file -e {head_sha}; git cat-file -e {blob_sha}; "
             # assay's snapshot is `clone --no-local`; `git worktree add` needs a
             # NEW admin dir under the read-only `worktrees/` and must fail
@@ -33478,6 +33504,9 @@ class TestRgNarrowRealContainer:
             clean_tree = false
         """)
         proj = make_project(repo, config)
+        # The worktree was forked before the project was committed to main;
+        # bring it level (a fast-forward: no commit, so no host hook fires).
+        git(wt, "merge", "-q", "--ff-only", "main")
         (other_wt / "other.secret").write_text("FAKE-OTHER-SECRET\n")
         (wt / "proj" / ".local-overlay").write_text("ignored but mine\n")
         proc = run_tool(proj, "suite", "--worktree", str(wt))
@@ -33485,7 +33514,7 @@ class TestRgNarrowRealContainer:
         assert "NARROW-OK" in proc.stdout, proc.stdout
         for path, contents in original_pointers.items():
             assert path.read_bytes() == contents, path
-        assert not (wt / "proj" / "host-hook-fired").exists()
+        assert not (wt / "host-hook-fired").exists()   # the hook's $root is wt
         assert post_commit.read_text(encoding="utf-8").startswith("#!/bin/sh\n")
         assert exclude.read_bytes() == original_exclude
         fsmonitor_marker = tmp_path / "host-fsmonitor-fired"
@@ -33513,7 +33542,7 @@ class TestRgNarrowRealContainer:
             capture_output=True, text=True,
         )
         assert host_commit.returncode == 0, host_commit.stderr
-        assert (wt / "proj" / "host-hook-fired").read_text() == "host-hook-ran"
+        assert (wt / "host-hook-fired").read_text() == "host-hook-ran"
         assert post_commit.read_text(encoding="utf-8").startswith("#!/bin/sh\n")
         # the in-container prune and gc left every host admin dir and every
         # sibling-only object intact

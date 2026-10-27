@@ -21,6 +21,8 @@ from pathlib import Path
 
 import pytest
 
+import _testdeps   # missing optional test dependencies FAIL by default
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ALLOWED: dict[str, str] = {}
 MAX_BYTES = 5_000_000
@@ -119,6 +121,7 @@ def test_only_a_missing_monorepo_marker_file_means_skip(tmp_path):
 def test_no_tracked_file_carries_merge_conflict_markers():
     outcome = check_repository(REPO_ROOT)
     if outcome is None:
-        pytest.skip("not the full monorepo checkout (run-gate.root.toml is absent; monorepo-only by design)")
+        _testdeps.missing("the monorepo checkout",
+                          "not the full monorepo checkout (run-gate.root.toml is absent; monorepo-only by design)")
     hits, skipped = outcome
     assert hits == [], f"merge-conflict markers found ({skipped} files skipped for size/encoding): {hits}"

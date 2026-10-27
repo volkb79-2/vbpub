@@ -337,7 +337,10 @@ This project's own `run-gate.toml` declares five lanes (dogfooding — see
    before testing. Wheel/image preparation requires CMRU's protected
    `CMRU_RELEASE_GATE_COMMIT` to match the selected checkout; a manual command
    cannot stamp a stable release version onto an unrelated tree. In `tester-unified`, it runs
-   `/opt/tester-venv/bin/python -m pytest tests -q --cov=. --cov-branch`, followed by
+   `/opt/tester-venv/bin/python -m pytest tests -q -rs --cov=. --cov-branch` (`-rs`:
+   every skip is named in the gate log; a missing optional test dependency FAILS
+   rather than skips — `tests/_testdeps.py`, opt out with
+   `RUN_GATE_ALLOW_MISSING_TEST_DEPS=1` on a checkout that really lacks it), followed by
    the vendored `tools/coverage_gate.py`, scoped to `--source run_gate.py`
    alone — a diff-coverage floor at 100% on every executable line changed
    since the newest reachable stable `run-gate-vX.Y.Z` release tag. On the
