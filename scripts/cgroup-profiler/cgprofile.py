@@ -312,9 +312,22 @@ def _limits_snapshot(limits_mod, eff) -> Dict[str, object]:
 
 
 def _tag_role(specs: Sequence[str], role: str) -> List[str]:
+    """Append ``role=`` to every spec that does not carry one, re-emitting
+    the spec through the one option grammar (`targets._parse_options`) so a
+    ``@`` that is part of the cgroup NAME (``user@1000.service``) is never
+    mistaken for an existing option list to extend."""
     out = []
     for spec in specs:
-        out.append(spec if "role=" in spec else (spec + ("," if "@" in spec else "@") + f"role={role}"))
+        scheme, rest = targets_mod._split_spec(spec)
+        value, options = targets_mod._parse_options(rest)
+        if "role" in options:
+            out.append(spec)
+            continue
+        options["role"] = role
+        # A bare word and `word=1` parse identically, so the bare form is
+        # the stable spelling for the flag-style options.
+        suffix = ",".join(f"{k}={v}" if v != "1" else k for k, v in options.items())
+        out.append(f"{scheme}:{value}@{suffix}" if scheme else f"{value}@{suffix}")
     return out
 
 
@@ -693,6 +706,12 @@ def _parse_log_tail_spec(spec: str) -> Tuple[str, Optional[str]]:
     value, options = targets_mod._parse_options(spec[len("container:"):])
     if not value:
         _err(f"--log-tail needs a container name or id, got {spec!r}")
+    if "@" in value:
+        # A Docker container name/id never contains `@` (names are
+        # [a-zA-Z0-9][a-zA-Z0-9_.-]+), so under the last-`@` grammar an `@`
+        # left in the value can only be an option word this verb does not
+        # know (`@bogus=1`): say so rather than hand docker a bad name.
+        _err(f"--log-tail: unknown option(s) after '@' in {spec!r} (only as=LABEL is accepted)")
     extra = set(options) - {"as"}
     if extra:
         _err(f"--log-tail: unknown option(s) {sorted(extra)} in {spec!r}")
@@ -1572,12 +1591,17 @@ def build_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--keep-sessions", type=int, default=200)
     serve_parser.add_argument("--keep-days", type=int, default=14)
     serve_parser.add_argument("--observe-slices", default="",
-                              help="comma-separated extra *.slice names for `ctl host`")
+                              help="comma-separated extra *.slice names for `ctl host`; a name "
+                                   "that is not a usable slice unit name (empty hierarchy "
+                                   "component such as a--b, or a /) refuses to start, exit 2 "
+                                   "(since 1.1.0; under a compose restart policy that is a "
+                                   "restart loop until the flag is fixed)")
     serve_parser.add_argument("--max-sessions", type=int, default=16)
     serve_parser.add_argument("--gates-slice", default="dev-gates.slice",
                               help="mdt's admission-capacity slice C8 places leaves under "
                                    "(RG55-INTERFACE-CONTRACT.md §8.3/§8.5; default "
-                                   "dev-gates.slice)")
+                                   "dev-gates.slice); an unusable unit name refuses to start "
+                                   "(exit 2), same as --observe-slices")
     serve_parser.set_defaults(func=cmd_serve)
 
     # RG55-INTERFACE-CONTRACT.md's own examples always place `--json` AFTER

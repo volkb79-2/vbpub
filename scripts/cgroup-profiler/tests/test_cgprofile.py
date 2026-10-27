@@ -433,6 +433,20 @@ class TestTagRole:
             "cgroup:/dev.slice@role=observer"
         ]
 
+    def test_an_at_in_the_cgroup_name_is_not_treated_as_an_option_list(self):
+        # Before: "@" in spec -> appended ",role=subject" to the NAME, and the
+        # resulting spec parsed as a path ending in ",role=subject".
+        tagged = cg._tag_role(["cgroup:/user.slice/user-1000.slice/user@1000.service"], "subject")
+        assert tagged == ["cgroup:/user.slice/user-1000.slice/user@1000.service@role=subject"]
+        value, options = targets_mod._parse_options(targets_mod._split_spec(tagged[0])[1])
+        assert value == "/user.slice/user-1000.slice/user@1000.service"
+        assert options == {"role": "subject"}
+
+    def test_a_bare_spec_without_scheme_round_trips(self):
+        assert cg._tag_role(["dev.slice@metrics=mem+io"], "observer") == [
+            "dev.slice@metrics=mem+io,role=observer"
+        ]
+
 
 class TestCapsFrom:
     def _args(self, cap):
@@ -506,6 +520,12 @@ class TestParseLogTailSpec:
     def test_unknown_option_is_rejected(self):
         with pytest.raises(SystemExit):
             cg._parse_log_tail_spec("container:my-app@bogus=1")
+
+    def test_a_known_target_option_other_than_as_is_rejected_too(self):
+        # `follow` is a real --target option word, so the grammar splits it
+        # off; this verb only accepts `as`.
+        with pytest.raises(SystemExit):
+            cg._parse_log_tail_spec("container:my-app@follow")
 
 
 class TestCollectLogPatterns:
@@ -2788,6 +2808,16 @@ class TestCmdServe:
             cg.cmd_serve(cg.build_parser().parse_args(["serve", flag, value]))
         assert exc_info.value.code == 2
         assert "not a usable slice name" in capsys.readouterr().err
+
+    def test_serve_help_states_the_fail_fast_refusal_and_the_restart_loop(self, capsys):
+        # Changed behaviour in 1.1.0 (a bad name used to start the daemon and
+        # fault only on `ctl host`): the help text must say so, since under
+        # `restart: unless-stopped` the refusal is a restart loop.
+        with pytest.raises(SystemExit):
+            cg.build_parser().parse_args(["serve", "--help"])
+        text = capsys.readouterr().out
+        assert "refuses to start" in text and "restart loop" in text
+        assert "same as --observe-slices" in text
 
     def test_empty_observe_slices_is_the_empty_tuple(self, monkeypatch, tmp_path):
         monkeypatch.setattr(access, "have_host_cgroup_view", lambda root: True)

@@ -70,6 +70,15 @@ traceback; non-finite PSI fields dropped. None of it touches the contract-1 wire
 goldens in `tests/fixtures/rg55/`, or the slice guard. Backlog items filed by the review: CP-32 to CP-37; CP-27,
 CP-28 and CP-29 carry dated review notes.
 
+An independent Sonnet review of `3e50df9cc`/`7a47e42f9` (14/14 mutants killed, nothing material) asked for four
+follow-ups, landed as the next commit on this branch: `memory.swap.events` `fail` documented as swap-OUT allocation
+failures (comments, event message, DESIGN, CHANGES); the `serve` fail-fast on a bad `--observe-slices`/`--gates-slice`
+stated as changed behaviour in CHANGES and `serve --help`; a pre-existing bug in the target option grammar fixed
+(options were split at the FIRST `@`, truncating `/user.slice/user-1000.slice/user@1000.service`; now the LAST `@`
+and only when every key is a known option word, with a trailing `@` escape; `_tag_role` and `--log-tail` go through
+the same grammar); `docker inspect --type container -- <ref>`. The same scratch-venv measurement was repeated on that
+commit (counts in its message). The registered `r0-r1` and `r3` lanes still have to be re-run on the final tree.
+
 Review: round 1 (fresh Sonnet reviewer) found a real regression (`stop` joined the sampler under the daemon-wide lock, so a
 worker that was itself finishing produced a spurious `stop-incomplete`); fixed in `420ac1554` with a test that fails without the fix,
 and MINOR findings N9-N12 filed under CP-27. Round 2 (fresh Sonnet reviewer) on the fix: READY, two test nits applied. The r3 run is on `420ac1554`; the later commits change tests and docs only (`git diff 420ac1554 HEAD -- lib` is empty at the time of writing, re-run r3 on the final release tree via the cmru release gate).

@@ -74,11 +74,13 @@ def sample_cgroup(abs_path: str, groups: Optional[Set[str]] = None) -> Dict[str,
         out["memev_h"] = util.read_kv(path("memory.events"))
     if "swapev" in wanted:
         # memory.swap.events: `high`/`max` (memory.swap.high/max breaches)
-        # and `fail` (swap-in refused because the cgroup or the host had no
-        # swap left). `fail` is the one counter that makes cgroup-level swap
-        # exhaustion visible; it was non-zero on a production scope the day
-        # this was measured (CP-29 item 1). An absent file reads as `{}`,
-        # exactly like `memev`, never as zeros.
+        # and `fail` (a swap ALLOCATION failed, i.e. a page could not be
+        # swapped OUT because the cgroup's memory.swap.max or the host's swap
+        # was exhausted; never a swap-in -- cgroup-v2 memory.rst). `fail` is
+        # the one counter that makes cgroup-level swap exhaustion visible; it
+        # was non-zero on a production scope the day this was measured (CP-29
+        # item 1). An absent file reads as `{}`, exactly like `memev`, never
+        # as zeros.
         out["swapev"] = util.read_kv(path("memory.swap.events"))
     if "psi" in wanted:
         out["psi_mem"] = util.read_pressure(path("memory.pressure"))

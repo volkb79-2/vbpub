@@ -139,7 +139,11 @@ class TestCounterEvents:
         assert [e.kind for e in events] == ["swap_fail"]
         assert events[0].severity == "serious"
         assert events[0].data == {"delta": 3, "total": 103}
-        assert "3 more" in events[0].message
+        # `fail` is a swap-OUT allocation failure (memory.swap.max or host
+        # swap exhausted), never a swap-in: the message must say which.
+        assert "swap-out allocation failed 3 more" in events[0].message
+        assert "memory.swap.max or host swap exhausted" in events[0].message
+        assert "swap-in" not in events[0].message
         # Reset (cgroup recreated) or absent group: nothing, never a negative.
         reset = rec({SUBJECT: {**metrics(), "swapev": {"fail": 1}}}, t=3.0, mono=3.0)
         assert Detector(DetectorConfig(), limits={}).observe(cur, reset, dt=1.0) == []

@@ -493,8 +493,9 @@ see the consumer note for the live probe and safe host procedure.
   [RG-55 placement design](../../run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md#a3-placement-ownership-correction-delegated-scope-below-dev-gatesslice-2026-09-30).
   P1 and P6 were implemented in separate work tranches, but RW-434 settles
   their combined tree as the first 1.0.0 release; 1.1.0 carries no new
-  placement capability, only the Sol-review fixes and the slice guard listed
-  in `CHANGES.md`. These are operational
+  placement capability — its changes are the Sol-review fixes, the slice
+  guard, the additive `swapev`/`memev_h` sample groups and the `swap_fail`
+  event listed in `CHANGES.md`. These are operational
   authority paths, not kernel-enforced containment. `ciu up` remains the
   managed lifecycle, with no alternate host-namespace launcher.
 

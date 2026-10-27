@@ -144,7 +144,8 @@ def resolve_container(ref: str) -> Tuple[str, str]:
     cgroup anywhere), and the ambiguity is silent. Only an exact, single
     ``docker inspect`` of the one reference ever runs -- no listing.
     """
-    data = _docker_json("inspect", "--type", "container", ref)
+    # `--` so a reference that begins with `-` can never be read as a flag.
+    data = _docker_json("inspect", "--type", "container", "--", ref)
     if not data or not isinstance(data, list) or not isinstance(data[0], dict):
         raise TargetError(
             f"no container matches {ref!r} (docker inspect found nothing). "
@@ -526,16 +527,41 @@ def _split_spec(spec: str) -> Tuple[str, str]:
     return ("", spec)
 
 
+#: Every option word the ``@`` suffix grammar knows. The split below only
+#: treats a suffix as options when EVERY item's key is one of these; this is
+#: what lets a ``@`` inside a real cgroup name survive (see `_parse_options`).
+OPTION_KEYS = frozenset({
+    "follow", "nofollow", "metrics", "as", "role", "subpath", _HELPER_PID_OPTION,
+})
+
+
 def _parse_options(rest: str) -> Tuple[str, Dict[str, str]]:
-    """Split ``value@opt=a,opt=b`` into value and options."""
-    value, sep, opts = rest.partition("@")
+    """Split ``value@opt=a,opt=b`` into value and options.
+
+    Grammar: the options are the text after the LAST ``@``, and only when
+    every comma-separated item there has a key in :data:`OPTION_KEYS`.
+    Otherwise there are no options and the whole text is the value --
+    ``@`` is a legal character in a cgroup name, and systemd's own user
+    manager lives in ``/user.slice/user-N.slice/user@N.service``, so
+    splitting at the first ``@`` truncated that path to ``.../user`` and
+    read ``N.service`` as an option. Consequences of "last ``@``":
+
+    * ``/a@follow@follow`` is the path ``/a@follow`` with ``follow`` set;
+    * ``/a@x@follow`` is the path ``/a@x`` with ``follow`` set;
+    * ``/a@follow@`` (empty suffix) is the path ``/a@follow`` with NO
+      options -- the escape for a name whose last segment happens to be an
+      option word.
+    """
+    value, sep, opts = rest.rpartition("@")
+    if not sep:
+        return rest.strip(), {}
+    items = [item for item in opts.split(",") if item]
+    if any(item.partition("=")[0].strip() not in OPTION_KEYS for item in items):
+        return rest.strip(), {}
     options: Dict[str, str] = {}
-    if sep:
-        for item in opts.split(","):
-            if not item:
-                continue
-            key, _, val = item.partition("=")
-            options[key.strip()] = val.strip() or "1"
+    for item in items:
+        key, _, val = item.partition("=")
+        options[key.strip()] = val.strip() or "1"
     return value.strip(), options
 
 

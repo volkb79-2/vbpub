@@ -198,7 +198,7 @@ interleave cleanly; readers must tolerate a truncated final line.
       "memstat": {"anon": 0, "file": 0, "...": 0},
       "memev":   {"low": 0, "high": 0, "max": 0, "oom": 0, "oom_kill": 0},   // memory.events.local
       "memev_h": {"low": 0, "high": 0, "max": 0, "oom": 0, "oom_kill": 0},   // memory.events (hierarchical), since 1.1.0
-      "swapev":  {"high": 0, "max": 0, "fail": 0},                           // memory.swap.events, since 1.1.0
+      "swapev":  {"high": 0, "max": 0, "fail": 0},                           // memory.swap.events, since 1.1.0 (fail = swap-out allocation failures)
       "psi_mem": {"some_avg10": 0.0, "some_total": 0, "full_avg10": 0.0, "full_total": 0},
       "psi_cpu": {...}, "psi_io": {...},
       "cpu":     {"usage_usec": 0, "user_usec": 0, "system_usec": 0,
@@ -250,9 +250,19 @@ def memstat_rates(prev: Dict, cur: Dict, dt: float) -> Dict[str, Optional[float]
 `memev` is `memory.events.local` (this level's own breaches); `memev_h` is the
 hierarchical `memory.events` (self plus descendants), kept as a separate group
 so a parent's count never dilutes the per-level reading. `swapev` is
-`memory.swap.events` (`high`, `max`, `fail`); its `fail` counter is the only
-cgroup-level evidence of swap exhaustion. Both read `{}` when the file is
-absent, never zeros, like every other group.
+`memory.swap.events` (`high`, `max`, `fail`); `fail` counts swap ALLOCATION
+failures (a swap-out refused because `memory.swap.max` or the host's swap was
+exhausted; never a swap-in) and is the only cgroup-level evidence of swap
+exhaustion. Both read `{}` when the file is absent, never zeros, like every
+other group.
+
+Target option grammar (`lib/targets.py` `_parse_options`): the options of a
+`--target`/`--observe` spec are the text after the LAST `@`, and only when
+every comma-separated item's key is one of `follow`, `nofollow`, `metrics`,
+`as`, `role`, `subpath`; otherwise the whole text is the value, because `@` is
+legal in a cgroup name (`/user.slice/user-1000.slice/user@1000.service`). A
+trailing bare `@` is the escape for a name whose last `@`-segment is itself an
+option word (`cgroup:/a@follow@` is the path `/a@follow` with no options).
 
 `memstat_rates` must expose at minimum, all per second and all `None`-safe:
 `pgfault`, `pgmajfault`, `pgscan`, `pgsteal`, `pswpin`, `pswpout`, `zswpin`,
@@ -417,7 +427,8 @@ class Detector:
 
 Kinds to detect: `memory_high_breach` (`memory.events.high` increased),
 `memory_max_breach`, `oom_kill`, `swap_fail` (`memory.swap.events.fail`
-increased, since 1.1.0), `psi_spike`, `swap_burst`, `zswap_refault`,
+increased: a swap-out allocation refused by `memory.swap.max` or host swap
+exhaustion, since 1.1.0), `psi_spike`, `swap_burst`, `zswap_refault`,
 `cpu_throttled`, `limit_drift`, `cgroup_appeared`, `cgroup_disappeared`,
 `victim_pressure` (an *observer*-role target whose `rfd/s` crosses the warn
 line — the correlation event the whole tool exists for).

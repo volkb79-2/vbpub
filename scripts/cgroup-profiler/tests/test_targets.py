@@ -284,6 +284,50 @@ class TestSplitSpecAndOptions:
         assert value == "dev.slice"
         assert options == {"follow": "1", "as": "x"}
 
+    # ── the `@` grammar: options are the LAST `@`-suffix, and only when every
+    # key is a known option word; `@` is otherwise part of the cgroup name ──
+
+    def test_a_cgroup_name_containing_at_is_not_split(self):
+        # systemd's per-user manager: a real path on every desktop host.
+        value, options = t._parse_options("/user.slice/user-1000.slice/user@1000.service")
+        assert value == "/user.slice/user-1000.slice/user@1000.service"
+        assert options == {}
+
+    def test_at_name_followed_by_a_real_option_suffix(self):
+        value, options = t._parse_options("/user.slice/user-1000.slice/user@1000.service@follow")
+        assert value == "/user.slice/user-1000.slice/user@1000.service"
+        assert options == {"follow": "1"}
+
+    def test_at_followed_by_a_non_option_word_is_part_of_the_name(self):
+        value, options = t._parse_options("/a@notanoption")
+        assert (value, options) == ("/a@notanoption", {})
+        value, options = t._parse_options("/a@follow,notanoption")
+        assert (value, options) == ("/a@follow,notanoption", {})
+
+    def test_follow_at_follow_is_the_name_slash_a_at_follow_with_follow_set(self):
+        value, options = t._parse_options("/a@follow@follow")
+        assert (value, options) == ("/a@follow", {"follow": "1"})
+
+    def test_trailing_bare_at_is_the_no_options_escape(self):
+        value, options = t._parse_options("/a@follow@")
+        assert (value, options) == ("/a@follow", {})
+
+    def test_every_known_option_key_still_splits(self):
+        value, options = t._parse_options(
+            "/x@follow,nofollow,metrics=mem+io,as=L,role=observer,subpath=/w"
+        )
+        assert value == "/x"
+        assert set(options) == {"follow", "nofollow", "metrics", "as", "role", "subpath"}
+
+    def test_parse_target_keeps_an_at_name_end_to_end(self, cgroup_root: Path):
+        write_cgroup(cgroup_root, "user.slice/user-1000.slice/user@1000.service", cgroup_files())
+        target = t.parse_target(
+            "cgroup:/user.slice/user-1000.slice/user@1000.service@follow", str(cgroup_root)
+        )[0]
+        assert target.cgroup == "/user.slice/user-1000.slice/user@1000.service"
+        assert target.follow_children is True
+        assert target.exists(str(cgroup_root))
+
 
 class TestDockerLookups:
     """resolve_container / resolve_label, with docker mocked at the
@@ -322,7 +366,7 @@ class TestDockerLookups:
 
         monkeypatch.setattr(t, "_docker_json", fake)
         assert t.resolve_container("gate") == ("a" * 64, "gate")
-        assert calls == [("inspect", "--type", "container", "gate")]
+        assert calls == [("inspect", "--type", "container", "--", "gate")]
 
     @pytest.mark.parametrize("data", [
         [{"Id": "sha256:" + "a" * 64, "RepoTags": ["gate:latest"]}],   # an image's shape

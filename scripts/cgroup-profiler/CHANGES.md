@@ -30,19 +30,33 @@ inferred from the r3 canaries.
   `memory.events.local`). Both are in `metrics.GROUPS`, so the one-shot
   collector samples them by default and the daemon records them per tick;
   neither changes the contract-1 Summary. A new counter event kind,
-  `swap_fail` (severity `serious`), fires when `fail` increases. An absent
-  file reads as `{}`, never as zeros.
+  `swap_fail` (severity `serious`), fires when `fail` increases; `fail`
+  counts swap-out ALLOCATION failures (`memory.swap.max` or host swap
+  exhausted), never swap-ins. An absent file reads as `{}`, never as zeros.
 - Fix (pre-release review): a `cgroup:` target is canonicalised
   (`//`, `/./`, trailing `/` collapse) and a `..` component is refused —
   previously `cgroup:/../..@follow` walked out of the mounted cgroup tree.
   A slice name with an empty hierarchy component (`a--b`, `-a`, `a-`) or a
-  `/` is refused instead of expanding to a phantom `a-.slice` level;
-  `serve` checks `--observe-slices`/`--gates-slice` at start so a bad name
-  cannot turn every `ctl host` into a daemon fault.
+  `/` is refused instead of expanding to a phantom `a-.slice` level.
+- **Changed behaviour (pre-release review):** `serve` validates
+  `--observe-slices` and `--gates-slice` at start and refuses (exit 2) an
+  unusable unit name. Previously the daemon started and every `ctl host`/
+  `ctl status` then failed as a daemon fault (exit 3). Under the compose
+  `restart: unless-stopped` policy the refusal is a restart loop until the
+  flag is corrected, exactly like the slice guard; fail-fast is intended.
+- Fix (pre-release review, pre-existing): the target option grammar split
+  at the FIRST `@`, so a real cgroup name containing `@`
+  (`/user.slice/user-1000.slice/user@1000.service`) was truncated to
+  `.../user` and `1000.service` read as an option. Options are now the text
+  after the LAST `@`, and only when every item's key is a known option word
+  (`follow`, `nofollow`, `metrics`, `as`, `role`, `subpath`); a trailing
+  bare `@` is the escape for a name ending in an option word. `cgprofile
+  run`/`attach` role tagging goes through the same grammar.
 - Fix (pre-release review): `container:` lookup runs `docker inspect --type
-  container` (a same-named image or volume can no longer be mistaken for the
-  container) and requires a 64-hex `Id`; a hung Docker CLI is a
-  "cannot resolve" refusal, not a `TimeoutExpired` traceback.
+  container -- <ref>` (a same-named image or volume can no longer be
+  mistaken for the container, a ref starting with `-` is not a flag) and
+  requires a 64-hex `Id`; a hung Docker CLI is a "cannot resolve" refusal,
+  not a `TimeoutExpired` traceback.
 - Fix (pre-release review): a PSI field whose text parses as a non-finite
   float (`nan`, `inf`, `1e999`) is dropped, so a corrupted file can never put
   a bare `NaN`/`Infinity` token (not JSON) into `samples.jsonl.gz`.
