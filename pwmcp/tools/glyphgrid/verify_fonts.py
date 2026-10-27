@@ -29,10 +29,7 @@ def full_font_keys(bzimage, pf2, ovmf):
     jobs = []
     if bzimage:
         blob = ff.decompress_bzimage(bzimage)
-        tmp = "/tmp/_vga_tmp.bin"
-        open(tmp, "wb").write(blob)
-        jobs.append(("font:vga-8x16", ff.load_raw_table(tmp, ff.find_vga_table(blob))))
-        os.unlink(tmp)
+        jobs.append(("font:vga-8x16", ff.load_raw_table(blob, ff.find_vga_table(blob), unimap=ff.kernel_unimap(blob))))
     if pf2:
         jobs.append(("font:unifont-16", ff.load_pf2(pf2)))
     if ovmf:
@@ -66,7 +63,7 @@ def read_frame(path, atlas):
 
 def cell_stats(ex, res):
     w, h = ex.grid["cell_w"], ex.grid["cell_h"]
-    glyph = font_exact = alias = box_unmatched = other_unmatched = 0
+    glyph = font_exact = alias = box_unmatched = other_unmatched = homo = cursor = homo_refused = 0
     unmatched = collections.Counter()
     for r, row in enumerate(ex.rows):
         for c, cell in enumerate(row):
@@ -74,8 +71,13 @@ def cell_stats(ex, res):
                 continue
             glyph += 1
             st = res["conf"][r][c]
-            if st == gg.CONF_FONT:
+            if st in (gg.CONF_FONT, gg.CONF_HOMO):
                 font_exact += 1
+                if st == gg.CONF_HOMO:
+                    homo += 1
+                    if not gg._benign_latin(res["rows"][r][c], res["aliases"]["%d,%d" % (r, c)][1:]):
+                        homo_refused += 1   # refused by the default 'latin-only' policy (Cyrillic/Greek/symbol lookalike exists)
+                cursor += res["flags"][r][c] == "c"
             elif st == gg.CONF_ALIAS:
                 alias += 1
             elif gg.boxlike(cell.key, w, h):
@@ -84,8 +86,8 @@ def cell_stats(ex, res):
             else:
                 other_unmatched += 1
                 unmatched[cell.key.hex()] += 1
-    return dict(ink_cells=glyph, font_exact=font_exact, alias=alias, unmatched_boxlike=box_unmatched,
-                unmatched_text=other_unmatched), unmatched
+    return dict(ink_cells=glyph, font_exact=font_exact, homoglyph_cells=homo, homoglyph_refused_latin_only=homo_refused, cursor_flagged=cursor, alias=alias, unmatched_boxlike=box_unmatched,
+                unmatched_text=other_unmatched, font_share=res.get("font_share"), screen_status=res.get("status")), unmatched
 
 
 def audit(ex, res, gt_lines, atlas):
@@ -105,7 +107,7 @@ def audit(ex, res, gt_lines, atlas):
         punct_only = not any(ch.isalnum() for ch in text)
         for r in range(r0, len(pats)):
             for idx in la._windows(pats[r], tokens):
-                ag = sum(1 for ch, ci in zip(text, idx) if res["conf"][r][ci] == gg.CONF_FONT and res["rows"][r][ci] == ch
+                ag = sum(1 for ch, ci in zip(text, idx) if res["conf"][r][ci] in (gg.CONF_FONT, gg.CONF_HOMO) and res["rows"][r][ci] == ch
                          or res["conf"][r][ci] == gg.CONF_ALIAS and ch in res["aliases"].get("%d,%d" % (r, ci), []))
                 score = ag / len(text)
                 if first is None:
@@ -126,7 +128,7 @@ def audit(ex, res, gt_lines, atlas):
             if ch == " " or (ch == "?" and i == 0 and len(text) > 1 and tokens[0].startswith("?")):
                 continue
             st = res["conf"][r][ci]
-            if st == gg.CONF_FONT:
+            if st in (gg.CONF_FONT, gg.CONF_HOMO):
                 if res["rows"][r][ci] == ch:
                     agree += 1
                 else:
@@ -177,7 +179,7 @@ def main(argv=None):
             if got:
                 ex, res = got
                 st, unm = cell_stats(ex, res)
-                rec.update(font=res["font"], status="ok" if res["status"] == "ok" else res["status"], origin=[ex.grid["origin_x"], ex.grid["origin_y"]], **st)
+                rec.update(font=res["font"], status=res["status"], origin=[ex.grid["origin_x"], ex.grid["origin_y"]], **st)
                 explain_unmatched(res["font"], unm, ex.grid["cell_w"], ex.grid["cell_h"])
                 if gp:
                     rec["audit_original"] = audit(ex, res, la.read_gt(gp), atlas)
@@ -193,11 +195,12 @@ def main(argv=None):
             if got:
                 ex, res = got
                 st, unm = cell_stats(ex, res)
-                rec.update(font=res["font"], status=res["status"], **st)
+                rec.update(font=res["font"], **st)
                 explain_unmatched(res["font"], unm, ex.grid["cell_w"], ex.grid["cell_h"])
             out["series"][os.path.basename(fp)] = rec
             if len(out["series"]) % 20 == 0:
                 print(len(out["series"]), time.time() - t0, flush=True)
+    out["corrections"] = [list(n) for n in la.CORRECTION_NOTES]
     out["unmatched_bitmaps"] = [{"font": f, "hex": hx, "cells": n, "font_file_glyph": explain_names.get((f, hx))}
                                 for (f, hx), n in explain.most_common(40)]
     with open(a.out, "w", encoding="utf-8") as f:

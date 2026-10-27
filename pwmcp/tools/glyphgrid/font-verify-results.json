@@ -1,2886 +1,3991 @@
 {
-"corpus": {
-"01-grub-iso-menu": {
-"status": "ok",
-"font": "font:unifont-16",
-"origin": [
-2,
-10
-],
-"ink_cells": 649,
-"font_exact": 649,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0,
-"audit_original": {
-"agree": 265,
-"disagree": 0,
-"alias_consistent": 0,
-"alias_inconsistent": 0,
-"not_font_exact": 0,
-"diffs": [],
-"unplaced_lines": []
-}
-},
-"02-live-copy-squashfs": {
-"status": "ok",
-"font": "font:vga-8x16",
-"origin": [
-0,
-0
-],
-"ink_cells": 122,
-"font_exact": 122,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0,
-"audit_original": {
-"agree": 122,
-"disagree": 0,
-"alias_consistent": 0,
-"alias_inconsistent": 0,
-"not_font_exact": 0,
-"diffs": [],
-"unplaced_lines": []
-}
-},
-"03-live-login-banner": {
-"status": "ok",
-"font": "font:vga-8x16",
-"origin": [
-0,
-0
-],
-"ink_cells": 390,
-"font_exact": 390,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0,
-"audit_original": {
-"agree": 390,
-"disagree": 0,
-"alias_consistent": 0,
-"alias_inconsistent": 0,
-"not_font_exact": 0,
-"diffs": [],
-"unplaced_lines": []
-}
-},
-"04-installer-console-setup": {
-"status": "ok",
-"font": "font:vga-8x16",
-"origin": [
-0,
-0
-],
-"ink_cells": 446,
-"font_exact": 445,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0,
-"audit_original": {
-"agree": 83,
-"disagree": 0,
-"alias_consistent": 0,
-"alias_inconsistent": 0,
-"not_font_exact": 1,
-"diffs": [],
-"unplaced_lines": [
-"<Cancel>"
-]
-}
-},
-"05-choose-destination-media": {
-"status": "ok",
-"font": "font:vga-8x16",
-"origin": [
-0,
-0
-],
-"ink_cells": 570,
-"font_exact": 569,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0,
-"audit_original": {
-"agree": 237,
-"disagree": 0,
-"alias_consistent": 0,
-"alias_inconsistent": 0,
-"not_font_exact": 1,
-"diffs": [],
-"unplaced_lines": [
-"<Cancel>"
-]
-}
-},
-"06-choose-destination-selected": {
-"status": "ok",
-"font": "font:vga-8x16",
-"origin": [
-0,
-0
-],
-"ink_cells": 571,
-"font_exact": 570,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0,
-"audit_original": {
-"agree": 238,
-"disagree": 0,
-"alias_consistent": 0,
-"alias_inconsistent": 0,
-"not_font_exact": 1,
-"diffs": [],
-"unplaced_lines": [
-"<Cancel>"
-]
-}
-},
-"07-erase-warning": {
-"status": "ok",
-"font": "font:vga-8x16",
-"origin": [
-0,
-0
-],
-"ink_cells": 450,
-"font_exact": 449,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0,
-"audit_original": {
-"agree": 223,
-"disagree": 0,
-"alias_consistent": 0,
-"alias_inconsistent": 0,
-"not_font_exact": 1,
-"diffs": [],
-"unplaced_lines": [
-"< No  >"
-]
-}
-},
-"08-auth-method": {
-"status": "ok",
-"font": "font:vga-8x16",
-"origin": [
-0,
-0
-],
-"ink_cells": 450,
-"font_exact": 450,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0,
-"audit_original": {
-"agree": 83,
-"disagree": 0,
-"alias_consistent": 0,
-"alias_inconsistent": 0,
-"not_font_exact": 0,
-"diffs": [],
-"unplaced_lines": [
-"<Cancel>"
-]
-}
-},
-"09-password-empty": {
-"status": "ok",
-"font": "font:vga-8x16",
-"origin": [
-0,
-0
-],
-"ink_cells": 466,
-"font_exact": 466,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0,
-"audit_original": {
-"agree": 98,
-"disagree": 0,
-"alias_consistent": 0,
-"alias_inconsistent": 0,
-"not_font_exact": 0,
-"diffs": [],
-"unplaced_lines": [
-"<Cancel>"
-]
-}
-},
-"10-password-filled": {
-"status": "ok",
-"font": "font:vga-8x16",
-"origin": [
-0,
-0
-],
-"ink_cells": 490,
-"font_exact": 490,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0,
-"audit_original": {
-"agree": 122,
-"disagree": 0,
-"alias_consistent": 0,
-"alias_inconsistent": 0,
-"not_font_exact": 0,
-"diffs": [],
-"unplaced_lines": [
-"<Cancel>"
-]
-}
-},
-"11-progress-start-over-dialog": {
-"status": "ok",
-"font": "font:vga-8x16",
-"origin": [
-0,
-0
-],
-"ink_cells": 532,
-"font_exact": 531,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0,
-"audit_original": {
-"agree": 163,
-"disagree": 0,
-"alias_consistent": 0,
-"alias_inconsistent": 0,
-"not_font_exact": 0,
-"diffs": [],
-"unplaced_lines": [
-"<Cancel>"
-]
-}
-},
-"12-progress-extracting": {
-"status": "ok",
-"font": "font:vga-8x16",
-"origin": [
-0,
-0
-],
-"ink_cells": 849,
-"font_exact": 848,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0,
-"audit_original": {
-"agree": 848,
-"disagree": 0,
-"alias_consistent": 0,
-"alias_inconsistent": 0,
-"not_font_exact": 0,
-"diffs": [],
-"unplaced_lines": []
-}
-},
-"13-progress-complete": {
-"status": "ok",
-"font": "font:vga-8x16",
-"origin": [
-0,
-0
-],
-"ink_cells": 883,
-"font_exact": 883,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0,
-"audit_original": {
-"agree": 883,
-"disagree": 0,
-"alias_consistent": 0,
-"alias_inconsistent": 0,
-"not_font_exact": 0,
-"diffs": [],
-"unplaced_lines": []
-}
-},
-"14-installation-succeeded": {
-"status": "ok",
-"font": "font:vga-8x16",
-"origin": [
-0,
-0
-],
-"ink_cells": 268,
-"font_exact": 268,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0,
-"audit_original": {
-"agree": 104,
-"disagree": 0,
-"alias_consistent": 0,
-"alias_inconsistent": 0,
-"not_font_exact": 0,
-"diffs": [],
-"unplaced_lines": []
-}
-},
-"15-uefi-tianocore-logo": {
-"status": "resampled"
-},
-"16-grub-installed-menu": {
-"status": "ok",
-"font": "font:edk2-8x19",
-"origin": [
-0,
-10
-],
-"ink_cells": 541,
-"font_exact": 539,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 2,
-"audit_original": {
-"agree": 305,
-"disagree": 0,
-"alias_consistent": 0,
-"alias_inconsistent": 0,
-"not_font_exact": 2,
-"diffs": [],
-"unplaced_lines": []
-}
-},
-"17-grub-booting-installed": {
-"status": "ok",
-"font": "font:edk2-8x19",
-"origin": [
-0,
-10
-],
-"ink_cells": 107,
-"font_exact": 106,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0,
-"audit_original": {
-"agree": 106,
-"disagree": 0,
-"alias_consistent": 0,
-"alias_inconsistent": 0,
-"not_font_exact": 0,
-"diffs": [],
-"unplaced_lines": []
-}
-},
-"18-kernel-boot-log": {
-"status": "ok",
-"font": "font:vga-8x16",
-"origin": [
-0,
-0
-],
-"ink_cells": 1384,
-"font_exact": 1384,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0,
-"audit_original": {
-"agree": 1384,
-"disagree": 0,
-"alias_consistent": 0,
-"alias_inconsistent": 0,
-"not_font_exact": 0,
-"diffs": [],
-"unplaced_lines": []
-}
-},
-"19-console-setup-with-kernel-noise": {
-"status": "ok",
-"font": "font:unifont-16",
-"origin": [
-0,
-0
-],
-"ink_cells": 590,
-"font_exact": 588,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 2,
-"audit_original": {
-"agree": 574,
-"disagree": 13,
-"alias_consistent": 0,
-"alias_inconsistent": 0,
-"not_font_exact": 2,
-"diffs": [
-{
-"row": 2,
-"col": 0,
-"transcript": "-",
-"font": "_"
-},
-{
-"row": 2,
-"col": 1,
-"transcript": "-",
-"font": "_"
-},
-{
-"row": 2,
-"col": 2,
-"transcript": "-",
-"font": "_"
-},
-{
-"row": 2,
-"col": 3,
-"transcript": "-",
-"font": "_"
-},
-{
-"row": 2,
-"col": 4,
-"transcript": "-",
-"font": "_"
-},
-{
-"row": 2,
-"col": 5,
-"transcript": "-",
-"font": "_"
-},
-{
-"row": 2,
-"col": 6,
-"transcript": "-",
-"font": "_"
-},
-{
-"row": 2,
-"col": 7,
-"transcript": "-",
-"font": "_"
-},
-{
-"row": 2,
-"col": 8,
-"transcript": "-",
-"font": "_"
-},
-{
-"row": 2,
-"col": 9,
-"transcript": "-",
-"font": "_"
-},
-{
-"row": 2,
-"col": 10,
-"transcript": "-",
-"font": "_"
-},
-{
-"row": 2,
-"col": 11,
-"transcript": "-",
-"font": "_"
-},
-{
-"row": 2,
-"col": 12,
-"transcript": "-",
-"font": "_"
-}
-],
-"unplaced_lines": []
-},
-"audit_corrected": {
-"agree": 587,
-"disagree": 0,
-"alias_consistent": 0,
-"alias_inconsistent": 0,
-"not_font_exact": 2,
-"diffs": [],
-"unplaced_lines": []
-}
-},
-"20-console-setup-duplicated-redraw": {
-"status": "ok",
-"font": "font:unifont-16",
-"origin": [
-0,
-0
-],
-"ink_cells": 599,
-"font_exact": 599,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0,
-"audit_original": {
-"agree": 585,
-"disagree": 14,
-"alias_consistent": 0,
-"alias_inconsistent": 0,
-"not_font_exact": 0,
-"diffs": [
-{
-"row": 2,
-"col": 0,
-"transcript": "-",
-"font": "_"
-},
-{
-"row": 2,
-"col": 1,
-"transcript": "-",
-"font": "_"
-},
-{
-"row": 2,
-"col": 2,
-"transcript": "-",
-"font": "_"
-},
-{
-"row": 2,
-"col": 3,
-"transcript": "-",
-"font": "_"
-},
-{
-"row": 2,
-"col": 4,
-"transcript": "-",
-"font": "_"
-},
-{
-"row": 2,
-"col": 5,
-"transcript": "-",
-"font": "_"
-},
-{
-"row": 2,
-"col": 6,
-"transcript": "-",
-"font": "_"
-},
-{
-"row": 2,
-"col": 7,
-"transcript": "-",
-"font": "_"
-},
-{
-"row": 2,
-"col": 8,
-"transcript": "-",
-"font": "_"
-},
-{
-"row": 2,
-"col": 9,
-"transcript": "-",
-"font": "_"
-},
-{
-"row": 2,
-"col": 10,
-"transcript": "-",
-"font": "_"
-},
-{
-"row": 2,
-"col": 11,
-"transcript": "-",
-"font": "_"
-},
-{
-"row": 2,
-"col": 12,
-"transcript": "-",
-"font": "_"
-},
-{
-"row": 31,
-"col": 27,
-"transcript": "_",
-"font": "▁"
-}
-],
-"unplaced_lines": []
-},
-"audit_corrected": {
-"agree": 598,
-"disagree": 1,
-"alias_consistent": 0,
-"alias_inconsistent": 0,
-"not_font_exact": 0,
-"diffs": [
-{
-"row": 31,
-"col": 27,
-"transcript": "_",
-"font": "▁"
-}
-],
-"unplaced_lines": []
-}
-}
-},
-"series": {
-"0001_0s.png": {
-"status": "no_grid"
-},
-"0002_3s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 649,
-"font_exact": 649,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0003_18s.png": {
-"status": "no_grid"
-},
-"0004_27s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 122,
-"font_exact": 122,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0005_30s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 130,
-"font_exact": 129,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0006_33s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 129,
-"font_exact": 129,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0007_36s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 221,
-"font_exact": 221,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0008_48s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 293,
-"font_exact": 293,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0009_55s.png": {
-"status": "no_grid"
-},
-"0010_58s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 390,
-"font_exact": 390,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0011_70s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 446,
-"font_exact": 445,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0012_122s.png": {
-"status": "no_grid"
-},
-"0013_125s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 570,
-"font_exact": 569,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0014_128s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 571,
-"font_exact": 570,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0015_146s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 450,
-"font_exact": 449,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0016_167s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 450,
-"font_exact": 450,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0017_186s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 466,
-"font_exact": 466,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0018_205s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 489,
-"font_exact": 489,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0019_211s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 490,
-"font_exact": 490,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0020_226s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 512,
-"font_exact": 511,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0021_236s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 532,
-"font_exact": 531,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0022_251s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 551,
-"font_exact": 550,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0023_254s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 565,
-"font_exact": 564,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0024_257s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 578,
-"font_exact": 578,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0025_266s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 592,
-"font_exact": 592,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0026_272s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 606,
-"font_exact": 606,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0027_284s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 621,
-"font_exact": 620,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0028_300s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 635,
-"font_exact": 634,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0029_309s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 648,
-"font_exact": 648,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0030_312s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 663,
-"font_exact": 662,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0031_318s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 676,
-"font_exact": 676,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0032_324s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 691,
-"font_exact": 690,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0033_340s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 704,
-"font_exact": 704,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0034_346s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 718,
-"font_exact": 718,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0035_355s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 732,
-"font_exact": 732,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0036_364s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 747,
-"font_exact": 746,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0037_373s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 760,
-"font_exact": 760,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0038_380s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 775,
-"font_exact": 774,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0039_392s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 718,
-"font_exact": 718,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0040_398s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 672,
-"font_exact": 672,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0041_407s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 673,
-"font_exact": 673,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0042_413s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 619,
-"font_exact": 619,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0043_423s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 608,
-"font_exact": 608,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0044_426s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 591,
-"font_exact": 591,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0045_429s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 538,
-"font_exact": 538,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0046_432s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 483,
-"font_exact": 483,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0047_435s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 429,
-"font_exact": 429,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0048_441s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 460,
-"font_exact": 459,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0049_444s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 490,
-"font_exact": 489,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0050_447s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 519,
-"font_exact": 519,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0051_450s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 550,
-"font_exact": 549,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0052_454s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 565,
-"font_exact": 564,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0053_457s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 610,
-"font_exact": 609,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0054_460s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 625,
-"font_exact": 624,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0055_463s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 655,
-"font_exact": 654,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0056_466s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 669,
-"font_exact": 669,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0057_469s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 684,
-"font_exact": 684,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0058_478s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 700,
-"font_exact": 699,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0059_487s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 714,
-"font_exact": 714,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0060_496s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 730,
-"font_exact": 729,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0061_499s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 724,
-"font_exact": 723,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0062_509s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 719,
-"font_exact": 718,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0063_518s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 714,
-"font_exact": 714,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0064_521s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 716,
-"font_exact": 716,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0065_524s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 718,
-"font_exact": 718,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0066_527s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 720,
-"font_exact": 719,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0067_530s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 722,
-"font_exact": 721,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0068_533s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 724,
-"font_exact": 724,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0069_536s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 725,
-"font_exact": 725,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0070_539s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 727,
-"font_exact": 726,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0071_542s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 728,
-"font_exact": 727,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0072_545s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 729,
-"font_exact": 728,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0073_548s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 730,
-"font_exact": 729,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0074_552s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 731,
-"font_exact": 730,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0075_555s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 732,
-"font_exact": 731,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0076_558s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 733,
-"font_exact": 732,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0077_561s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 733,
-"font_exact": 733,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0078_564s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 734,
-"font_exact": 734,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0079_570s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 736,
-"font_exact": 735,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0080_573s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 735,
-"font_exact": 735,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0081_576s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 735,
-"font_exact": 735,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0082_579s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 736,
-"font_exact": 735,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0083_582s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 735,
-"font_exact": 735,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0084_585s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 736,
-"font_exact": 735,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0085_588s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 735,
-"font_exact": 735,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0086_591s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 735,
-"font_exact": 735,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0087_595s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 735,
-"font_exact": 735,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0088_601s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 735,
-"font_exact": 735,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0089_604s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 735,
-"font_exact": 735,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0090_607s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 736,
-"font_exact": 735,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0091_616s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 736,
-"font_exact": 735,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0092_619s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 735,
-"font_exact": 735,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0093_622s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 735,
-"font_exact": 735,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0094_626s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 735,
-"font_exact": 735,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0095_629s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 735,
-"font_exact": 735,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0096_632s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 736,
-"font_exact": 735,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0097_635s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 735,
-"font_exact": 735,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0098_638s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 735,
-"font_exact": 735,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0099_641s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 753,
-"font_exact": 752,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0100_644s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 758,
-"font_exact": 757,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0101_708s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 770,
-"font_exact": 770,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0102_763s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 849,
-"font_exact": 848,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0103_939s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 850,
-"font_exact": 850,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0104_942s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 856,
-"font_exact": 855,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0105_945s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 860,
-"font_exact": 859,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0106_961s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 883,
-"font_exact": 883,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0107_964s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 268,
-"font_exact": 268,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0108_1040s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 446,
-"font_exact": 445,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0109_1068s.png": {
-"status": "no_grid"
-},
-"0110_1071s.png": {
-"status": "no_grid"
-},
-"0111_1077s.png": {
-"status": "no_grid"
-},
-"0112_1080s.png": {
-"status": "resampled"
-},
-"0113_1084s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 649,
-"font_exact": 649,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0114_1090s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 649,
-"font_exact": 649,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0115_1093s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 648,
-"font_exact": 648,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0116_1099s.png": {
-"status": "no_grid"
-},
-"0117_1249s.png": {
-"status": "no_grid"
-},
-"0118_1252s.png": {
-"status": "ok",
-"font": "font:edk2-8x19",
-"ink_cells": 541,
-"font_exact": 539,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 2
-},
-"0119_1255s.png": {
-"status": "ok",
-"font": "font:edk2-8x19",
-"ink_cells": 540,
-"font_exact": 538,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 2
-},
-"0120_1261s.png": {
-"status": "ok",
-"font": "font:edk2-8x19",
-"ink_cells": 540,
-"font_exact": 538,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 2
-},
-"0121_1264s.png": {
-"status": "ok",
-"font": "font:edk2-8x19",
-"ink_cells": 540,
-"font_exact": 538,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 2
-},
-"0122_1267s.png": {
-"status": "ok",
-"font": "font:edk2-8x19",
-"ink_cells": 107,
-"font_exact": 106,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0123_1276s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 1384,
-"font_exact": 1384,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0124_1318s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 1443,
-"font_exact": 1442,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0125_1322s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 1616,
-"font_exact": 1615,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0126_1325s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 2121,
-"font_exact": 2121,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0127_1331s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 2258,
-"font_exact": 2258,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0128_1337s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 2421,
-"font_exact": 2420,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0129_1340s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 2430,
-"font_exact": 2429,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0130_1343s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 2706,
-"font_exact": 2705,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0131_1346s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 2623,
-"font_exact": 2623,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0132_1352s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 2769,
-"font_exact": 2765,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 3
-},
-"0133_1355s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 3007,
-"font_exact": 3006,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0134_1358s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 3126,
-"font_exact": 3126,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0135_1362s.png": {
-"status": "ok",
-"font": "font:vga-8x16",
-"ink_cells": 3112,
-"font_exact": 3111,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0136_1365s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1539,
-"font_exact": 1539,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0137_1368s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1538,
-"font_exact": 1538,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0138_1371s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1591,
-"font_exact": 1591,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0139_1374s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1644,
-"font_exact": 1644,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0140_1377s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1644,
-"font_exact": 1644,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0141_1380s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1698,
-"font_exact": 1698,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0142_1383s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1699,
-"font_exact": 1699,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0143_1386s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1699,
-"font_exact": 1699,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0144_1389s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1698,
-"font_exact": 1698,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0145_1392s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1698,
-"font_exact": 1698,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0146_1395s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1698,
-"font_exact": 1698,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0147_1398s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1697,
-"font_exact": 1697,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0148_1402s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1698,
-"font_exact": 1698,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0149_1405s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1698,
-"font_exact": 1698,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0150_1408s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1698,
-"font_exact": 1698,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0151_1411s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1699,
-"font_exact": 1699,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0152_1414s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1702,
-"font_exact": 1702,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0153_1417s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1701,
-"font_exact": 1701,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0154_1420s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1702,
-"font_exact": 1702,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0155_1423s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1701,
-"font_exact": 1701,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0156_1426s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1701,
-"font_exact": 1701,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0157_1429s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1702,
-"font_exact": 1702,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0158_1432s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1703,
-"font_exact": 1703,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0159_1438s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1703,
-"font_exact": 1703,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0160_1442s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1703,
-"font_exact": 1703,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0161_1445s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1702,
-"font_exact": 1702,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0162_1448s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1701,
-"font_exact": 1701,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0163_1451s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1701,
-"font_exact": 1701,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0164_1454s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1702,
-"font_exact": 1702,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0165_1457s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1702,
-"font_exact": 1702,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0166_1460s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1703,
-"font_exact": 1703,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0167_1463s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1703,
-"font_exact": 1703,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0168_1466s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1703,
-"font_exact": 1703,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0169_1469s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1701,
-"font_exact": 1701,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0170_1472s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1699,
-"font_exact": 1699,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0171_1475s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1700,
-"font_exact": 1700,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0172_1478s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1702,
-"font_exact": 1702,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0173_1481s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1703,
-"font_exact": 1703,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0174_1485s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1703,
-"font_exact": 1703,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0175_1491s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1703,
-"font_exact": 1703,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0176_1494s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1703,
-"font_exact": 1703,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0177_1497s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1701,
-"font_exact": 1701,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0178_1500s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1700,
-"font_exact": 1700,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0179_1503s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1757,
-"font_exact": 1756,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0180_1506s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1754,
-"font_exact": 1753,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0181_1509s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1755,
-"font_exact": 1755,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0182_1512s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1754,
-"font_exact": 1754,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0183_1515s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1758,
-"font_exact": 1758,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0184_1518s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1757,
-"font_exact": 1756,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0185_1521s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1757,
-"font_exact": 1757,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0186_1525s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1751,
-"font_exact": 1751,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0187_1528s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1758,
-"font_exact": 1758,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0188_1531s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1750,
-"font_exact": 1749,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0189_1534s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1756,
-"font_exact": 1756,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0190_1537s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1757,
-"font_exact": 1756,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0191_1540s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1757,
-"font_exact": 1756,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0192_1543s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1758,
-"font_exact": 1757,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0193_1546s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1759,
-"font_exact": 1758,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0194_1549s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1737,
-"font_exact": 1736,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0195_1552s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1744,
-"font_exact": 1743,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0196_1555s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1747,
-"font_exact": 1747,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0197_1558s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1747,
-"font_exact": 1747,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0198_1562s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1746,
-"font_exact": 1745,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0199_1565s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1748,
-"font_exact": 1748,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0200_1568s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1747,
-"font_exact": 1746,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0201_1571s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1746,
-"font_exact": 1745,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0202_1574s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1746,
-"font_exact": 1745,
-"alias": 0,
-"unmatched_boxlike": 1,
-"unmatched_text": 0
-},
-"0203_1577s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1747,
-"font_exact": 1747,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0204_1580s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1857,
-"font_exact": 1857,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0205_1583s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1942,
-"font_exact": 1942,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0206_1586s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 2001,
-"font_exact": 2001,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0207_1589s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 2000,
-"font_exact": 2000,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0208_1592s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 2001,
-"font_exact": 2001,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0209_1595s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 2000,
-"font_exact": 2000,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0210_1599s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1999,
-"font_exact": 1999,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0211_1602s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 1998,
-"font_exact": 1998,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0212_1605s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 2001,
-"font_exact": 2001,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0213_1608s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 2000,
-"font_exact": 2000,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0214_1611s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 2000,
-"font_exact": 2000,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0215_1614s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 2001,
-"font_exact": 2001,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0216_1617s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 2001,
-"font_exact": 2001,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0217_1620s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 2001,
-"font_exact": 2001,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0218_1623s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 2001,
-"font_exact": 2001,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0219_1626s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 2002,
-"font_exact": 2002,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0220_1629s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 2002,
-"font_exact": 2002,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0221_1632s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 2002,
-"font_exact": 2002,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0222_1635s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 2267,
-"font_exact": 2267,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0223_1639s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 2496,
-"font_exact": 2496,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0224_1642s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 2614,
-"font_exact": 2614,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0225_1645s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 2686,
-"font_exact": 2686,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0226_1648s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 2746,
-"font_exact": 2746,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0227_1651s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 2860,
-"font_exact": 2860,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0228_1654s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 3340,
-"font_exact": 3340,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0229_1657s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 3337,
-"font_exact": 3337,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0230_1660s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 3344,
-"font_exact": 3344,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0231_1663s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 3341,
-"font_exact": 3341,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0232_1666s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 2957,
-"font_exact": 2957,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0233_1669s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 2905,
-"font_exact": 2905,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0234_1673s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 2862,
-"font_exact": 2862,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0235_1676s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 2908,
-"font_exact": 2908,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0236_1679s.png": {
-"status": "no_grid"
-},
-"0237_1737s.png": {
-"status": "no_font",
-"font": "font:edk2-8x19",
-"ink_cells": 26,
-"font_exact": 0,
-"alias": 0,
-"unmatched_boxlike": 15,
-"unmatched_text": 11
-},
-"0238_1740s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 147,
-"font_exact": 147,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0239_1758s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 399,
-"font_exact": 399,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0240_1850s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 590,
-"font_exact": 588,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 2
-},
-"0241_1856s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 517,
-"font_exact": 517,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-},
-"0242_1859s.png": {
-"status": "ok",
-"font": "font:unifont-16",
-"ink_cells": 599,
-"font_exact": 599,
-"alias": 0,
-"unmatched_boxlike": 0,
-"unmatched_text": 0
-}
-},
-"unmatched_bitmaps": [
-{
-"font": "font:vga-8x16",
-"hex": "0000000000000000000000000000ffff",
-"cells": 52,
-"font_file_glyph": null
-},
-{
-"font": "font:unifont-16",
-"hex": "0000000000007649494949494949ffff",
-"cells": 14,
-"font_file_glyph": null
-},
-{
-"font": "font:edk2-8x19",
-"hex": "00000000000000007f00000000000000000000",
-"cells": 13,
-"font_file_glyph": null
-},
-{
-"font": "font:vga-8x16",
-"hex": "00007cc6c6c6c6c6c6c6c67c0000ffff",
-"cells": 7,
-"font_file_glyph": null
-},
-{
-"font": "font:edk2-8x19",
-"hex": "0000000000001038387c7cfefe000000000000",
-"cells": 5,
-"font_file_glyph": null
-},
-{
-"font": "font:edk2-8x19",
-"hex": "000000000000fefe7c7c383810000000000000",
-"cells": 5,
-"font_file_glyph": null
-},
-{
-"font": "font:unifont-16",
-"hex": "00081c082a7f2a08082a7f2a081c0800",
-"cells": 4,
-"font_file_glyph": [
-"U+2021 DOUBLE DAGGER"
-]
-},
-{
-"font": "font:vga-8x16",
-"hex": "0000666666663c181818183c0000ffff",
-"cells": 2,
-"font_file_glyph": null
-},
-{
-"font": "font:edk2-8x19",
-"hex": "00000000000000000000000000000000ffffff",
-"cells": 2,
-"font_file_glyph": null
-},
-{
-"font": "font:edk2-8x19",
-"hex": "0000003c4242424242423c0000000000000000",
-"cells": 2,
-"font_file_glyph": null
-},
-{
-"font": "font:edk2-8x19",
-"hex": "0000003c4240300c02423c0000000000000000",
-"cells": 2,
-"font_file_glyph": null
-},
-{
-"font": "font:edk2-8x19",
-"hex": "0000003c42427e4040423c0000000000000000",
-"cells": 2,
-"font_file_glyph": null
-},
-{
-"font": "font:vga-8x16",
-"hex": "0000fec6c6c0c0c0c0c0c0c000000000",
-"cells": 1,
-"font_file_glyph": [
-"U+0393 GREEK CAPITAL LETTER GAMMA"
-]
-},
-{
-"font": "font:vga-8x16",
-"hex": "00386c3800780c7ccccccc7600000000",
-"cells": 1,
-"font_file_glyph": [
-"U+00E5 LATIN SMALL LETTER A WITH RING ABOVE"
-]
-},
-{
-"font": "font:vga-8x16",
-"hex": "00003e6cccccfeccccccccce00000000",
-"cells": 1,
-"font_file_glyph": [
-"U+00C6 LATIN CAPITAL LETTER AE"
-]
-},
-{
-"font": "font:edk2-8x19",
-"hex": "003c42424040404042423c0000000000000000",
-"cells": 1,
-"font_file_glyph": null
-},
-{
-"font": "font:edk2-8x19",
-"hex": "0000005c624242424242420000000000000000",
-"cells": 1,
-"font_file_glyph": null
-},
-{
-"font": "font:edk2-8x19",
-"hex": "180808080808080808083e0000000000000000",
-"cells": 1,
-"font_file_glyph": null
-},
-{
-"font": "font:edk2-8x19",
-"hex": "001010107c10101010100c0000000000000000",
-"cells": 1,
-"font_file_glyph": null
-},
-{
-"font": "font:edk2-8x19",
-"hex": "000000424242424242463a0000000000000000",
-"cells": 1,
-"font_file_glyph": null
-},
-{
-"font": "font:edk2-8x19",
-"hex": "0000005c6242424242625c4040000000000000",
-"cells": 1,
-"font_file_glyph": null
-},
-{
-"font": "font:edk2-8x19",
-"hex": "0000000000ffff000000000000000000000000",
-"cells": 1,
-"font_file_glyph": null
-}
-]
+ "corpus": {
+  "01-grub-iso-menu": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "origin": [
+    2,
+    10
+   ],
+   "ink_cells": 649,
+   "font_exact": 649,
+   "homoglyph_cells": 231,
+   "homoglyph_refused_latin_only": 229,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok",
+   "audit_original": {
+    "agree": 265,
+    "disagree": 0,
+    "alias_consistent": 0,
+    "alias_inconsistent": 0,
+    "not_font_exact": 0,
+    "diffs": [],
+    "unplaced_lines": []
+   }
+  },
+  "02-live-copy-squashfs": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "origin": [
+    0,
+    0
+   ],
+   "ink_cells": 122,
+   "font_exact": 122,
+   "homoglyph_cells": 12,
+   "homoglyph_refused_latin_only": 3,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok",
+   "audit_original": {
+    "agree": 122,
+    "disagree": 0,
+    "alias_consistent": 0,
+    "alias_inconsistent": 0,
+    "not_font_exact": 0,
+    "diffs": [],
+    "unplaced_lines": []
+   }
+  },
+  "03-live-login-banner": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "origin": [
+    0,
+    0
+   ],
+   "ink_cells": 390,
+   "font_exact": 390,
+   "homoglyph_cells": 81,
+   "homoglyph_refused_latin_only": 19,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok",
+   "audit_original": {
+    "agree": 390,
+    "disagree": 0,
+    "alias_consistent": 0,
+    "alias_inconsistent": 0,
+    "not_font_exact": 0,
+    "diffs": [],
+    "unplaced_lines": []
+   }
+  },
+  "04-installer-console-setup": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "origin": [
+    0,
+    0
+   ],
+   "ink_cells": 446,
+   "font_exact": 445,
+   "homoglyph_cells": 20,
+   "homoglyph_refused_latin_only": 5,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok",
+   "audit_original": {
+    "agree": 83,
+    "disagree": 0,
+    "alias_consistent": 0,
+    "alias_inconsistent": 0,
+    "not_font_exact": 1,
+    "diffs": [],
+    "unplaced_lines": [
+     "<Cancel>"
+    ]
+   }
+  },
+  "05-choose-destination-media": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "origin": [
+    0,
+    0
+   ],
+   "ink_cells": 570,
+   "font_exact": 569,
+   "homoglyph_cells": 53,
+   "homoglyph_refused_latin_only": 4,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok",
+   "audit_original": {
+    "agree": 237,
+    "disagree": 0,
+    "alias_consistent": 0,
+    "alias_inconsistent": 0,
+    "not_font_exact": 1,
+    "diffs": [],
+    "unplaced_lines": [
+     "<Cancel>"
+    ]
+   }
+  },
+  "06-choose-destination-selected": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "origin": [
+    0,
+    0
+   ],
+   "ink_cells": 571,
+   "font_exact": 570,
+   "homoglyph_cells": 53,
+   "homoglyph_refused_latin_only": 4,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok",
+   "audit_original": {
+    "agree": 238,
+    "disagree": 0,
+    "alias_consistent": 0,
+    "alias_inconsistent": 0,
+    "not_font_exact": 1,
+    "diffs": [],
+    "unplaced_lines": [
+     "<Cancel>"
+    ]
+   }
+  },
+  "07-erase-warning": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "origin": [
+    0,
+    0
+   ],
+   "ink_cells": 450,
+   "font_exact": 449,
+   "homoglyph_cells": 53,
+   "homoglyph_refused_latin_only": 3,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok",
+   "audit_original": {
+    "agree": 223,
+    "disagree": 0,
+    "alias_consistent": 0,
+    "alias_inconsistent": 0,
+    "not_font_exact": 1,
+    "diffs": [],
+    "unplaced_lines": [
+     "< No  >"
+    ]
+   }
+  },
+  "08-auth-method": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "origin": [
+    0,
+    0
+   ],
+   "ink_cells": 450,
+   "font_exact": 450,
+   "homoglyph_cells": 19,
+   "homoglyph_refused_latin_only": 3,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok",
+   "audit_original": {
+    "agree": 83,
+    "disagree": 0,
+    "alias_consistent": 0,
+    "alias_inconsistent": 0,
+    "not_font_exact": 0,
+    "diffs": [],
+    "unplaced_lines": [
+     "<Cancel>"
+    ]
+   }
+  },
+  "09-password-empty": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "origin": [
+    0,
+    0
+   ],
+   "ink_cells": 466,
+   "font_exact": 466,
+   "homoglyph_cells": 27,
+   "homoglyph_refused_latin_only": 6,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok",
+   "audit_original": {
+    "agree": 98,
+    "disagree": 0,
+    "alias_consistent": 0,
+    "alias_inconsistent": 0,
+    "not_font_exact": 0,
+    "diffs": [],
+    "unplaced_lines": [
+     "<Cancel>"
+    ]
+   }
+  },
+  "10-password-filled": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "origin": [
+    0,
+    0
+   ],
+   "ink_cells": 490,
+   "font_exact": 490,
+   "homoglyph_cells": 27,
+   "homoglyph_refused_latin_only": 6,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok",
+   "audit_original": {
+    "agree": 122,
+    "disagree": 0,
+    "alias_consistent": 0,
+    "alias_inconsistent": 0,
+    "not_font_exact": 0,
+    "diffs": [],
+    "unplaced_lines": [
+     "<Cancel>"
+    ]
+   }
+  },
+  "11-progress-start-over-dialog": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "origin": [
+    0,
+    0
+   ],
+   "ink_cells": 532,
+   "font_exact": 531,
+   "homoglyph_cells": 36,
+   "homoglyph_refused_latin_only": 7,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok",
+   "audit_original": {
+    "agree": 163,
+    "disagree": 0,
+    "alias_consistent": 0,
+    "alias_inconsistent": 0,
+    "not_font_exact": 0,
+    "diffs": [],
+    "unplaced_lines": [
+     "<Cancel>"
+    ]
+   }
+  },
+  "12-progress-extracting": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "origin": [
+    0,
+    0
+   ],
+   "ink_cells": 849,
+   "font_exact": 848,
+   "homoglyph_cells": 158,
+   "homoglyph_refused_latin_only": 45,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok",
+   "audit_original": {
+    "agree": 848,
+    "disagree": 0,
+    "alias_consistent": 0,
+    "alias_inconsistent": 0,
+    "not_font_exact": 0,
+    "diffs": [],
+    "unplaced_lines": []
+   }
+  },
+  "13-progress-complete": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "origin": [
+    0,
+    0
+   ],
+   "ink_cells": 883,
+   "font_exact": 883,
+   "homoglyph_cells": 163,
+   "homoglyph_refused_latin_only": 44,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok",
+   "audit_original": {
+    "agree": 883,
+    "disagree": 0,
+    "alias_consistent": 0,
+    "alias_inconsistent": 0,
+    "not_font_exact": 0,
+    "diffs": [],
+    "unplaced_lines": []
+   }
+  },
+  "14-installation-succeeded": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "origin": [
+    0,
+    0
+   ],
+   "ink_cells": 268,
+   "font_exact": 268,
+   "homoglyph_cells": 21,
+   "homoglyph_refused_latin_only": 0,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok",
+   "audit_original": {
+    "agree": 104,
+    "disagree": 0,
+    "alias_consistent": 0,
+    "alias_inconsistent": 0,
+    "not_font_exact": 0,
+    "diffs": [],
+    "unplaced_lines": []
+   }
+  },
+  "15-uefi-tianocore-logo": {
+   "status": "resampled"
+  },
+  "16-grub-installed-menu": {
+   "status": "ok",
+   "font": "font:edk2-8x19",
+   "origin": [
+    0,
+    10
+   ],
+   "ink_cells": 541,
+   "font_exact": 539,
+   "homoglyph_cells": 0,
+   "homoglyph_refused_latin_only": 0,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 2,
+   "font_share": 0.9934,
+   "screen_status": "ok",
+   "audit_original": {
+    "agree": 305,
+    "disagree": 0,
+    "alias_consistent": 0,
+    "alias_inconsistent": 0,
+    "not_font_exact": 2,
+    "diffs": [],
+    "unplaced_lines": []
+   }
+  },
+  "17-grub-booting-installed": {
+   "status": "ok",
+   "font": "font:edk2-8x19",
+   "origin": [
+    0,
+    10
+   ],
+   "ink_cells": 107,
+   "font_exact": 106,
+   "homoglyph_cells": 0,
+   "homoglyph_refused_latin_only": 0,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok",
+   "audit_original": {
+    "agree": 106,
+    "disagree": 0,
+    "alias_consistent": 0,
+    "alias_inconsistent": 0,
+    "not_font_exact": 0,
+    "diffs": [],
+    "unplaced_lines": []
+   }
+  },
+  "18-kernel-boot-log": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "origin": [
+    0,
+    0
+   ],
+   "ink_cells": 1384,
+   "font_exact": 1384,
+   "homoglyph_cells": 220,
+   "homoglyph_refused_latin_only": 48,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok",
+   "audit_original": {
+    "agree": 1384,
+    "disagree": 0,
+    "alias_consistent": 0,
+    "alias_inconsistent": 0,
+    "not_font_exact": 0,
+    "diffs": [],
+    "unplaced_lines": []
+   }
+  },
+  "19-console-setup-with-kernel-noise": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "origin": [
+    0,
+    0
+   ],
+   "ink_cells": 590,
+   "font_exact": 588,
+   "homoglyph_cells": 350,
+   "homoglyph_refused_latin_only": 346,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 2,
+   "font_share": 0.9963,
+   "screen_status": "ok",
+   "audit_original": {
+    "agree": 587,
+    "disagree": 0,
+    "alias_consistent": 0,
+    "alias_inconsistent": 0,
+    "not_font_exact": 2,
+    "diffs": [],
+    "unplaced_lines": []
+   },
+   "audit_corrected": {
+    "agree": 587,
+    "disagree": 0,
+    "alias_consistent": 0,
+    "alias_inconsistent": 0,
+    "not_font_exact": 2,
+    "diffs": [],
+    "unplaced_lines": []
+   }
+  },
+  "20-console-setup-duplicated-redraw": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "origin": [
+    0,
+    0
+   ],
+   "ink_cells": 599,
+   "font_exact": 599,
+   "homoglyph_cells": 362,
+   "homoglyph_refused_latin_only": 360,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok",
+   "audit_original": {
+    "agree": 598,
+    "disagree": 1,
+    "alias_consistent": 0,
+    "alias_inconsistent": 0,
+    "not_font_exact": 0,
+    "diffs": [
+     {
+      "row": 31,
+      "col": 27,
+      "transcript": "_",
+      "font": "▁"
+     }
+    ],
+    "unplaced_lines": []
+   },
+   "audit_corrected": {
+    "agree": 598,
+    "disagree": 1,
+    "alias_consistent": 0,
+    "alias_inconsistent": 0,
+    "not_font_exact": 0,
+    "diffs": [
+     {
+      "row": 31,
+      "col": 27,
+      "transcript": "_",
+      "font": "▁"
+     }
+    ],
+    "unplaced_lines": []
+   }
+  }
+ },
+ "series": {
+  "0001_0s.png": {
+   "status": "no_grid"
+  },
+  "0002_3s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 649,
+   "font_exact": 649,
+   "homoglyph_cells": 231,
+   "homoglyph_refused_latin_only": 229,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0003_18s.png": {
+   "status": "no_grid"
+  },
+  "0004_27s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 122,
+   "font_exact": 122,
+   "homoglyph_cells": 12,
+   "homoglyph_refused_latin_only": 3,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0005_30s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 130,
+   "font_exact": 129,
+   "homoglyph_cells": 13,
+   "homoglyph_refused_latin_only": 4,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0006_33s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 129,
+   "font_exact": 129,
+   "homoglyph_cells": 13,
+   "homoglyph_refused_latin_only": 4,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0007_36s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 221,
+   "font_exact": 221,
+   "homoglyph_cells": 28,
+   "homoglyph_refused_latin_only": 8,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0008_48s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 293,
+   "font_exact": 293,
+   "homoglyph_cells": 37,
+   "homoglyph_refused_latin_only": 10,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0009_55s.png": {
+   "status": "no_grid"
+  },
+  "0010_58s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 390,
+   "font_exact": 390,
+   "homoglyph_cells": 81,
+   "homoglyph_refused_latin_only": 19,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0011_70s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 446,
+   "font_exact": 445,
+   "homoglyph_cells": 20,
+   "homoglyph_refused_latin_only": 5,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0012_122s.png": {
+   "status": "no_grid"
+  },
+  "0013_125s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 570,
+   "font_exact": 569,
+   "homoglyph_cells": 53,
+   "homoglyph_refused_latin_only": 4,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0014_128s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 571,
+   "font_exact": 570,
+   "homoglyph_cells": 53,
+   "homoglyph_refused_latin_only": 4,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0015_146s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 450,
+   "font_exact": 449,
+   "homoglyph_cells": 53,
+   "homoglyph_refused_latin_only": 3,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0016_167s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 450,
+   "font_exact": 450,
+   "homoglyph_cells": 19,
+   "homoglyph_refused_latin_only": 3,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0017_186s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 466,
+   "font_exact": 466,
+   "homoglyph_cells": 27,
+   "homoglyph_refused_latin_only": 6,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0018_205s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 489,
+   "font_exact": 489,
+   "homoglyph_cells": 27,
+   "homoglyph_refused_latin_only": 6,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0019_211s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 490,
+   "font_exact": 490,
+   "homoglyph_cells": 27,
+   "homoglyph_refused_latin_only": 6,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0020_226s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 512,
+   "font_exact": 511,
+   "homoglyph_cells": 30,
+   "homoglyph_refused_latin_only": 6,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0021_236s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 532,
+   "font_exact": 531,
+   "homoglyph_cells": 36,
+   "homoglyph_refused_latin_only": 7,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0022_251s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 551,
+   "font_exact": 550,
+   "homoglyph_cells": 40,
+   "homoglyph_refused_latin_only": 8,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0023_254s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 565,
+   "font_exact": 564,
+   "homoglyph_cells": 43,
+   "homoglyph_refused_latin_only": 9,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0024_257s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 578,
+   "font_exact": 578,
+   "homoglyph_cells": 46,
+   "homoglyph_refused_latin_only": 10,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0025_266s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 592,
+   "font_exact": 592,
+   "homoglyph_cells": 49,
+   "homoglyph_refused_latin_only": 11,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0026_272s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 606,
+   "font_exact": 606,
+   "homoglyph_cells": 52,
+   "homoglyph_refused_latin_only": 12,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0027_284s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 621,
+   "font_exact": 620,
+   "homoglyph_cells": 55,
+   "homoglyph_refused_latin_only": 13,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0028_300s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 635,
+   "font_exact": 634,
+   "homoglyph_cells": 58,
+   "homoglyph_refused_latin_only": 14,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0029_309s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 648,
+   "font_exact": 648,
+   "homoglyph_cells": 61,
+   "homoglyph_refused_latin_only": 15,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0030_312s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 663,
+   "font_exact": 662,
+   "homoglyph_cells": 64,
+   "homoglyph_refused_latin_only": 16,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0031_318s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 676,
+   "font_exact": 676,
+   "homoglyph_cells": 67,
+   "homoglyph_refused_latin_only": 17,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0032_324s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 691,
+   "font_exact": 690,
+   "homoglyph_cells": 70,
+   "homoglyph_refused_latin_only": 18,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0033_340s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 704,
+   "font_exact": 704,
+   "homoglyph_cells": 73,
+   "homoglyph_refused_latin_only": 19,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0034_346s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 718,
+   "font_exact": 718,
+   "homoglyph_cells": 76,
+   "homoglyph_refused_latin_only": 20,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0035_355s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 732,
+   "font_exact": 732,
+   "homoglyph_cells": 79,
+   "homoglyph_refused_latin_only": 21,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0036_364s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 747,
+   "font_exact": 746,
+   "homoglyph_cells": 82,
+   "homoglyph_refused_latin_only": 22,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0037_373s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 760,
+   "font_exact": 760,
+   "homoglyph_cells": 85,
+   "homoglyph_refused_latin_only": 23,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0038_380s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 775,
+   "font_exact": 774,
+   "homoglyph_cells": 88,
+   "homoglyph_refused_latin_only": 24,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0039_392s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 718,
+   "font_exact": 718,
+   "homoglyph_cells": 91,
+   "homoglyph_refused_latin_only": 25,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0040_398s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 672,
+   "font_exact": 672,
+   "homoglyph_cells": 78,
+   "homoglyph_refused_latin_only": 22,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0041_407s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 673,
+   "font_exact": 673,
+   "homoglyph_cells": 80,
+   "homoglyph_refused_latin_only": 23,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0042_413s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 619,
+   "font_exact": 619,
+   "homoglyph_cells": 83,
+   "homoglyph_refused_latin_only": 24,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0043_423s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 608,
+   "font_exact": 608,
+   "homoglyph_cells": 84,
+   "homoglyph_refused_latin_only": 25,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0044_426s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 591,
+   "font_exact": 591,
+   "homoglyph_cells": 83,
+   "homoglyph_refused_latin_only": 25,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0045_429s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 538,
+   "font_exact": 538,
+   "homoglyph_cells": 86,
+   "homoglyph_refused_latin_only": 26,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0046_432s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 483,
+   "font_exact": 483,
+   "homoglyph_cells": 89,
+   "homoglyph_refused_latin_only": 27,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0047_435s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 429,
+   "font_exact": 429,
+   "homoglyph_cells": 91,
+   "homoglyph_refused_latin_only": 28,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0048_441s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 460,
+   "font_exact": 459,
+   "homoglyph_cells": 97,
+   "homoglyph_refused_latin_only": 30,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0049_444s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 490,
+   "font_exact": 489,
+   "homoglyph_cells": 103,
+   "homoglyph_refused_latin_only": 32,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0050_447s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 519,
+   "font_exact": 519,
+   "homoglyph_cells": 109,
+   "homoglyph_refused_latin_only": 34,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0051_450s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 550,
+   "font_exact": 549,
+   "homoglyph_cells": 115,
+   "homoglyph_refused_latin_only": 36,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0052_454s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 565,
+   "font_exact": 564,
+   "homoglyph_cells": 118,
+   "homoglyph_refused_latin_only": 37,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0053_457s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 610,
+   "font_exact": 609,
+   "homoglyph_cells": 127,
+   "homoglyph_refused_latin_only": 40,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0054_460s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 625,
+   "font_exact": 624,
+   "homoglyph_cells": 130,
+   "homoglyph_refused_latin_only": 41,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0055_463s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 655,
+   "font_exact": 654,
+   "homoglyph_cells": 136,
+   "homoglyph_refused_latin_only": 43,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0056_466s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 669,
+   "font_exact": 669,
+   "homoglyph_cells": 139,
+   "homoglyph_refused_latin_only": 44,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0057_469s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 684,
+   "font_exact": 684,
+   "homoglyph_cells": 142,
+   "homoglyph_refused_latin_only": 45,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0058_478s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 700,
+   "font_exact": 699,
+   "homoglyph_cells": 145,
+   "homoglyph_refused_latin_only": 46,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0059_487s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 714,
+   "font_exact": 714,
+   "homoglyph_cells": 148,
+   "homoglyph_refused_latin_only": 47,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0060_496s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 730,
+   "font_exact": 729,
+   "homoglyph_cells": 151,
+   "homoglyph_refused_latin_only": 48,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0061_499s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 724,
+   "font_exact": 723,
+   "homoglyph_cells": 151,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0062_509s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 719,
+   "font_exact": 718,
+   "homoglyph_cells": 148,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0063_518s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 714,
+   "font_exact": 714,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0064_521s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 716,
+   "font_exact": 716,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0065_524s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 718,
+   "font_exact": 718,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0066_527s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 720,
+   "font_exact": 719,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0067_530s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 722,
+   "font_exact": 721,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0068_533s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 724,
+   "font_exact": 724,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0069_536s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 725,
+   "font_exact": 725,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0070_539s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 727,
+   "font_exact": 726,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0071_542s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 728,
+   "font_exact": 727,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0072_545s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 729,
+   "font_exact": 728,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0073_548s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 730,
+   "font_exact": 729,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0074_552s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 731,
+   "font_exact": 730,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0075_555s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 732,
+   "font_exact": 731,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0076_558s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 733,
+   "font_exact": 732,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0077_561s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 733,
+   "font_exact": 733,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0078_564s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 734,
+   "font_exact": 734,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0079_570s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 736,
+   "font_exact": 735,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0080_573s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 735,
+   "font_exact": 735,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0081_576s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 735,
+   "font_exact": 735,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0082_579s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 736,
+   "font_exact": 735,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0083_582s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 735,
+   "font_exact": 735,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0084_585s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 736,
+   "font_exact": 735,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0085_588s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 735,
+   "font_exact": 735,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0086_591s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 735,
+   "font_exact": 735,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0087_595s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 735,
+   "font_exact": 735,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0088_601s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 735,
+   "font_exact": 735,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0089_604s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 735,
+   "font_exact": 735,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0090_607s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 736,
+   "font_exact": 735,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0091_616s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 736,
+   "font_exact": 735,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0092_619s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 735,
+   "font_exact": 735,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0093_622s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 735,
+   "font_exact": 735,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0094_626s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 735,
+   "font_exact": 735,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0095_629s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 735,
+   "font_exact": 735,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0096_632s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 736,
+   "font_exact": 735,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0097_635s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 735,
+   "font_exact": 735,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0098_638s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 735,
+   "font_exact": 735,
+   "homoglyph_cells": 147,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0099_641s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 753,
+   "font_exact": 752,
+   "homoglyph_cells": 149,
+   "homoglyph_refused_latin_only": 48,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0100_644s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 758,
+   "font_exact": 757,
+   "homoglyph_cells": 149,
+   "homoglyph_refused_latin_only": 48,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0101_708s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 770,
+   "font_exact": 770,
+   "homoglyph_cells": 149,
+   "homoglyph_refused_latin_only": 47,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0102_763s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 849,
+   "font_exact": 848,
+   "homoglyph_cells": 158,
+   "homoglyph_refused_latin_only": 45,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0103_939s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 850,
+   "font_exact": 850,
+   "homoglyph_cells": 159,
+   "homoglyph_refused_latin_only": 45,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0104_942s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 856,
+   "font_exact": 855,
+   "homoglyph_cells": 159,
+   "homoglyph_refused_latin_only": 45,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0105_945s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 860,
+   "font_exact": 859,
+   "homoglyph_cells": 160,
+   "homoglyph_refused_latin_only": 45,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0106_961s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 883,
+   "font_exact": 883,
+   "homoglyph_cells": 163,
+   "homoglyph_refused_latin_only": 44,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0107_964s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 268,
+   "font_exact": 268,
+   "homoglyph_cells": 21,
+   "homoglyph_refused_latin_only": 0,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0108_1040s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 446,
+   "font_exact": 445,
+   "homoglyph_cells": 20,
+   "homoglyph_refused_latin_only": 5,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0109_1068s.png": {
+   "status": "no_grid"
+  },
+  "0110_1071s.png": {
+   "status": "no_grid"
+  },
+  "0111_1077s.png": {
+   "status": "no_grid"
+  },
+  "0112_1080s.png": {
+   "status": "resampled"
+  },
+  "0113_1084s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 649,
+   "font_exact": 649,
+   "homoglyph_cells": 230,
+   "homoglyph_refused_latin_only": 228,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0114_1090s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 649,
+   "font_exact": 649,
+   "homoglyph_cells": 230,
+   "homoglyph_refused_latin_only": 228,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0115_1093s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 648,
+   "font_exact": 648,
+   "homoglyph_cells": 230,
+   "homoglyph_refused_latin_only": 228,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0116_1099s.png": {
+   "status": "no_grid"
+  },
+  "0117_1249s.png": {
+   "status": "no_grid"
+  },
+  "0118_1252s.png": {
+   "status": "ok",
+   "font": "font:edk2-8x19",
+   "ink_cells": 541,
+   "font_exact": 539,
+   "homoglyph_cells": 0,
+   "homoglyph_refused_latin_only": 0,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 2,
+   "font_share": 0.9934,
+   "screen_status": "ok"
+  },
+  "0119_1255s.png": {
+   "status": "ok",
+   "font": "font:edk2-8x19",
+   "ink_cells": 540,
+   "font_exact": 538,
+   "homoglyph_cells": 0,
+   "homoglyph_refused_latin_only": 0,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 2,
+   "font_share": 0.9934,
+   "screen_status": "ok"
+  },
+  "0120_1261s.png": {
+   "status": "ok",
+   "font": "font:edk2-8x19",
+   "ink_cells": 540,
+   "font_exact": 538,
+   "homoglyph_cells": 0,
+   "homoglyph_refused_latin_only": 0,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 2,
+   "font_share": 0.9934,
+   "screen_status": "ok"
+  },
+  "0121_1264s.png": {
+   "status": "ok",
+   "font": "font:edk2-8x19",
+   "ink_cells": 540,
+   "font_exact": 538,
+   "homoglyph_cells": 0,
+   "homoglyph_refused_latin_only": 0,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 2,
+   "font_share": 0.9934,
+   "screen_status": "ok"
+  },
+  "0122_1267s.png": {
+   "status": "ok",
+   "font": "font:edk2-8x19",
+   "ink_cells": 107,
+   "font_exact": 106,
+   "homoglyph_cells": 0,
+   "homoglyph_refused_latin_only": 0,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0123_1276s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 1384,
+   "font_exact": 1384,
+   "homoglyph_cells": 220,
+   "homoglyph_refused_latin_only": 48,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0124_1318s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 1443,
+   "font_exact": 1442,
+   "homoglyph_cells": 229,
+   "homoglyph_refused_latin_only": 49,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0125_1322s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 1616,
+   "font_exact": 1615,
+   "homoglyph_cells": 251,
+   "homoglyph_refused_latin_only": 51,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0126_1325s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 2121,
+   "font_exact": 2121,
+   "homoglyph_cells": 321,
+   "homoglyph_refused_latin_only": 63,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0127_1331s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 2258,
+   "font_exact": 2258,
+   "homoglyph_cells": 335,
+   "homoglyph_refused_latin_only": 69,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0128_1337s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 2421,
+   "font_exact": 2420,
+   "homoglyph_cells": 371,
+   "homoglyph_refused_latin_only": 75,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0129_1340s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 2430,
+   "font_exact": 2429,
+   "homoglyph_cells": 400,
+   "homoglyph_refused_latin_only": 90,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0130_1343s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 2706,
+   "font_exact": 2705,
+   "homoglyph_cells": 539,
+   "homoglyph_refused_latin_only": 136,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0131_1346s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 2623,
+   "font_exact": 2623,
+   "homoglyph_cells": 556,
+   "homoglyph_refused_latin_only": 142,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0132_1352s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 2769,
+   "font_exact": 2765,
+   "homoglyph_cells": 535,
+   "homoglyph_refused_latin_only": 56,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 3,
+   "font_share": 0.9989,
+   "screen_status": "ok"
+  },
+  "0133_1355s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 3007,
+   "font_exact": 3006,
+   "homoglyph_cells": 572,
+   "homoglyph_refused_latin_only": 48,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0134_1358s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 3126,
+   "font_exact": 3126,
+   "homoglyph_cells": 602,
+   "homoglyph_refused_latin_only": 52,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0135_1362s.png": {
+   "status": "ok",
+   "font": "font:vga-8x16",
+   "ink_cells": 3112,
+   "font_exact": 3111,
+   "homoglyph_cells": 593,
+   "homoglyph_refused_latin_only": 51,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0136_1365s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1539,
+   "font_exact": 1539,
+   "homoglyph_cells": 1030,
+   "homoglyph_refused_latin_only": 959,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0137_1368s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1538,
+   "font_exact": 1538,
+   "homoglyph_cells": 1029,
+   "homoglyph_refused_latin_only": 958,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0138_1371s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1591,
+   "font_exact": 1591,
+   "homoglyph_cells": 1072,
+   "homoglyph_refused_latin_only": 999,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0139_1374s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1644,
+   "font_exact": 1644,
+   "homoglyph_cells": 1103,
+   "homoglyph_refused_latin_only": 1030,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0140_1377s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1644,
+   "font_exact": 1644,
+   "homoglyph_cells": 1102,
+   "homoglyph_refused_latin_only": 1029,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0141_1380s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1698,
+   "font_exact": 1698,
+   "homoglyph_cells": 1132,
+   "homoglyph_refused_latin_only": 1059,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0142_1383s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1699,
+   "font_exact": 1699,
+   "homoglyph_cells": 1133,
+   "homoglyph_refused_latin_only": 1060,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0143_1386s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1699,
+   "font_exact": 1699,
+   "homoglyph_cells": 1132,
+   "homoglyph_refused_latin_only": 1059,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0144_1389s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1698,
+   "font_exact": 1698,
+   "homoglyph_cells": 1132,
+   "homoglyph_refused_latin_only": 1059,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0145_1392s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1698,
+   "font_exact": 1698,
+   "homoglyph_cells": 1133,
+   "homoglyph_refused_latin_only": 1060,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0146_1395s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1698,
+   "font_exact": 1698,
+   "homoglyph_cells": 1132,
+   "homoglyph_refused_latin_only": 1059,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0147_1398s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1697,
+   "font_exact": 1697,
+   "homoglyph_cells": 1132,
+   "homoglyph_refused_latin_only": 1059,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0148_1402s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1698,
+   "font_exact": 1698,
+   "homoglyph_cells": 1131,
+   "homoglyph_refused_latin_only": 1058,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0149_1405s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1698,
+   "font_exact": 1698,
+   "homoglyph_cells": 1132,
+   "homoglyph_refused_latin_only": 1059,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0150_1408s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1698,
+   "font_exact": 1698,
+   "homoglyph_cells": 1131,
+   "homoglyph_refused_latin_only": 1058,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0151_1411s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1699,
+   "font_exact": 1699,
+   "homoglyph_cells": 1133,
+   "homoglyph_refused_latin_only": 1060,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0152_1414s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1702,
+   "font_exact": 1702,
+   "homoglyph_cells": 1135,
+   "homoglyph_refused_latin_only": 1062,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0153_1417s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1701,
+   "font_exact": 1701,
+   "homoglyph_cells": 1134,
+   "homoglyph_refused_latin_only": 1061,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0154_1420s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1702,
+   "font_exact": 1702,
+   "homoglyph_cells": 1134,
+   "homoglyph_refused_latin_only": 1061,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0155_1423s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1701,
+   "font_exact": 1701,
+   "homoglyph_cells": 1135,
+   "homoglyph_refused_latin_only": 1062,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0156_1426s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1701,
+   "font_exact": 1701,
+   "homoglyph_cells": 1134,
+   "homoglyph_refused_latin_only": 1061,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0157_1429s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1702,
+   "font_exact": 1702,
+   "homoglyph_cells": 1134,
+   "homoglyph_refused_latin_only": 1061,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0158_1432s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1703,
+   "font_exact": 1703,
+   "homoglyph_cells": 1136,
+   "homoglyph_refused_latin_only": 1063,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0159_1438s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1703,
+   "font_exact": 1703,
+   "homoglyph_cells": 1135,
+   "homoglyph_refused_latin_only": 1062,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0160_1442s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1703,
+   "font_exact": 1703,
+   "homoglyph_cells": 1135,
+   "homoglyph_refused_latin_only": 1062,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0161_1445s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1702,
+   "font_exact": 1702,
+   "homoglyph_cells": 1136,
+   "homoglyph_refused_latin_only": 1063,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0162_1448s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1701,
+   "font_exact": 1701,
+   "homoglyph_cells": 1135,
+   "homoglyph_refused_latin_only": 1062,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0163_1451s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1701,
+   "font_exact": 1701,
+   "homoglyph_cells": 1135,
+   "homoglyph_refused_latin_only": 1062,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0164_1454s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1702,
+   "font_exact": 1702,
+   "homoglyph_cells": 1136,
+   "homoglyph_refused_latin_only": 1063,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0165_1457s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1702,
+   "font_exact": 1702,
+   "homoglyph_cells": 1135,
+   "homoglyph_refused_latin_only": 1062,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0166_1460s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1703,
+   "font_exact": 1703,
+   "homoglyph_cells": 1135,
+   "homoglyph_refused_latin_only": 1062,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0167_1463s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1703,
+   "font_exact": 1703,
+   "homoglyph_cells": 1135,
+   "homoglyph_refused_latin_only": 1062,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0168_1466s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1703,
+   "font_exact": 1703,
+   "homoglyph_cells": 1134,
+   "homoglyph_refused_latin_only": 1061,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0169_1469s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1701,
+   "font_exact": 1701,
+   "homoglyph_cells": 1134,
+   "homoglyph_refused_latin_only": 1061,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0170_1472s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1699,
+   "font_exact": 1699,
+   "homoglyph_cells": 1136,
+   "homoglyph_refused_latin_only": 1063,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0171_1475s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1700,
+   "font_exact": 1700,
+   "homoglyph_cells": 1135,
+   "homoglyph_refused_latin_only": 1062,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0172_1478s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1702,
+   "font_exact": 1702,
+   "homoglyph_cells": 1135,
+   "homoglyph_refused_latin_only": 1062,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0173_1481s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1703,
+   "font_exact": 1703,
+   "homoglyph_cells": 1135,
+   "homoglyph_refused_latin_only": 1062,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0174_1485s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1703,
+   "font_exact": 1703,
+   "homoglyph_cells": 1136,
+   "homoglyph_refused_latin_only": 1063,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0175_1491s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1703,
+   "font_exact": 1703,
+   "homoglyph_cells": 1135,
+   "homoglyph_refused_latin_only": 1062,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0176_1494s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1703,
+   "font_exact": 1703,
+   "homoglyph_cells": 1136,
+   "homoglyph_refused_latin_only": 1063,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0177_1497s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1701,
+   "font_exact": 1701,
+   "homoglyph_cells": 1137,
+   "homoglyph_refused_latin_only": 1064,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0178_1500s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1700,
+   "font_exact": 1700,
+   "homoglyph_cells": 1136,
+   "homoglyph_refused_latin_only": 1063,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0179_1503s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1757,
+   "font_exact": 1756,
+   "homoglyph_cells": 1168,
+   "homoglyph_refused_latin_only": 1095,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0180_1506s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1754,
+   "font_exact": 1753,
+   "homoglyph_cells": 1169,
+   "homoglyph_refused_latin_only": 1096,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0181_1509s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1755,
+   "font_exact": 1755,
+   "homoglyph_cells": 1170,
+   "homoglyph_refused_latin_only": 1097,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0182_1512s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1754,
+   "font_exact": 1754,
+   "homoglyph_cells": 1167,
+   "homoglyph_refused_latin_only": 1094,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0183_1515s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1758,
+   "font_exact": 1758,
+   "homoglyph_cells": 1173,
+   "homoglyph_refused_latin_only": 1100,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0184_1518s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1757,
+   "font_exact": 1756,
+   "homoglyph_cells": 1168,
+   "homoglyph_refused_latin_only": 1095,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0185_1521s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1757,
+   "font_exact": 1757,
+   "homoglyph_cells": 1171,
+   "homoglyph_refused_latin_only": 1098,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0186_1525s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1751,
+   "font_exact": 1751,
+   "homoglyph_cells": 1164,
+   "homoglyph_refused_latin_only": 1091,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0187_1528s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1758,
+   "font_exact": 1758,
+   "homoglyph_cells": 1174,
+   "homoglyph_refused_latin_only": 1101,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0188_1531s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1750,
+   "font_exact": 1749,
+   "homoglyph_cells": 1167,
+   "homoglyph_refused_latin_only": 1094,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0189_1534s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1756,
+   "font_exact": 1756,
+   "homoglyph_cells": 1170,
+   "homoglyph_refused_latin_only": 1097,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0190_1537s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1757,
+   "font_exact": 1756,
+   "homoglyph_cells": 1171,
+   "homoglyph_refused_latin_only": 1098,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0191_1540s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1757,
+   "font_exact": 1756,
+   "homoglyph_cells": 1169,
+   "homoglyph_refused_latin_only": 1096,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0192_1543s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1758,
+   "font_exact": 1757,
+   "homoglyph_cells": 1169,
+   "homoglyph_refused_latin_only": 1096,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0193_1546s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1759,
+   "font_exact": 1758,
+   "homoglyph_cells": 1170,
+   "homoglyph_refused_latin_only": 1097,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0194_1549s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1737,
+   "font_exact": 1736,
+   "homoglyph_cells": 1157,
+   "homoglyph_refused_latin_only": 1084,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0195_1552s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1744,
+   "font_exact": 1743,
+   "homoglyph_cells": 1159,
+   "homoglyph_refused_latin_only": 1086,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0196_1555s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1747,
+   "font_exact": 1747,
+   "homoglyph_cells": 1163,
+   "homoglyph_refused_latin_only": 1090,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0197_1558s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1747,
+   "font_exact": 1747,
+   "homoglyph_cells": 1162,
+   "homoglyph_refused_latin_only": 1089,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0198_1562s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1746,
+   "font_exact": 1745,
+   "homoglyph_cells": 1161,
+   "homoglyph_refused_latin_only": 1088,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0199_1565s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1748,
+   "font_exact": 1748,
+   "homoglyph_cells": 1162,
+   "homoglyph_refused_latin_only": 1089,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0200_1568s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1747,
+   "font_exact": 1746,
+   "homoglyph_cells": 1161,
+   "homoglyph_refused_latin_only": 1088,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0201_1571s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1746,
+   "font_exact": 1745,
+   "homoglyph_cells": 1160,
+   "homoglyph_refused_latin_only": 1087,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0202_1574s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1746,
+   "font_exact": 1745,
+   "homoglyph_cells": 1160,
+   "homoglyph_refused_latin_only": 1087,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 1,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0203_1577s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1747,
+   "font_exact": 1747,
+   "homoglyph_cells": 1162,
+   "homoglyph_refused_latin_only": 1089,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0204_1580s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1857,
+   "font_exact": 1857,
+   "homoglyph_cells": 1242,
+   "homoglyph_refused_latin_only": 1165,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0205_1583s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1942,
+   "font_exact": 1942,
+   "homoglyph_cells": 1309,
+   "homoglyph_refused_latin_only": 1227,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0206_1586s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 2001,
+   "font_exact": 2001,
+   "homoglyph_cells": 1345,
+   "homoglyph_refused_latin_only": 1262,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0207_1589s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 2000,
+   "font_exact": 2000,
+   "homoglyph_cells": 1344,
+   "homoglyph_refused_latin_only": 1261,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0208_1592s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 2001,
+   "font_exact": 2001,
+   "homoglyph_cells": 1342,
+   "homoglyph_refused_latin_only": 1259,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0209_1595s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 2000,
+   "font_exact": 2000,
+   "homoglyph_cells": 1343,
+   "homoglyph_refused_latin_only": 1260,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0210_1599s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1999,
+   "font_exact": 1999,
+   "homoglyph_cells": 1342,
+   "homoglyph_refused_latin_only": 1259,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0211_1602s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 1998,
+   "font_exact": 1998,
+   "homoglyph_cells": 1342,
+   "homoglyph_refused_latin_only": 1259,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0212_1605s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 2001,
+   "font_exact": 2001,
+   "homoglyph_cells": 1342,
+   "homoglyph_refused_latin_only": 1259,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0213_1608s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 2000,
+   "font_exact": 2000,
+   "homoglyph_cells": 1345,
+   "homoglyph_refused_latin_only": 1262,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0214_1611s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 2000,
+   "font_exact": 2000,
+   "homoglyph_cells": 1344,
+   "homoglyph_refused_latin_only": 1261,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0215_1614s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 2001,
+   "font_exact": 2001,
+   "homoglyph_cells": 1345,
+   "homoglyph_refused_latin_only": 1262,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0216_1617s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 2001,
+   "font_exact": 2001,
+   "homoglyph_cells": 1346,
+   "homoglyph_refused_latin_only": 1263,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0217_1620s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 2001,
+   "font_exact": 2001,
+   "homoglyph_cells": 1343,
+   "homoglyph_refused_latin_only": 1260,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0218_1623s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 2001,
+   "font_exact": 2001,
+   "homoglyph_cells": 1343,
+   "homoglyph_refused_latin_only": 1260,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0219_1626s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 2002,
+   "font_exact": 2002,
+   "homoglyph_cells": 1344,
+   "homoglyph_refused_latin_only": 1261,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0220_1629s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 2002,
+   "font_exact": 2002,
+   "homoglyph_cells": 1343,
+   "homoglyph_refused_latin_only": 1260,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0221_1632s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 2002,
+   "font_exact": 2002,
+   "homoglyph_cells": 1343,
+   "homoglyph_refused_latin_only": 1260,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0222_1635s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 2267,
+   "font_exact": 2267,
+   "homoglyph_cells": 1534,
+   "homoglyph_refused_latin_only": 1438,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0223_1639s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 2496,
+   "font_exact": 2496,
+   "homoglyph_cells": 1702,
+   "homoglyph_refused_latin_only": 1597,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0224_1642s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 2614,
+   "font_exact": 2614,
+   "homoglyph_cells": 1786,
+   "homoglyph_refused_latin_only": 1677,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0225_1645s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 2686,
+   "font_exact": 2686,
+   "homoglyph_cells": 1841,
+   "homoglyph_refused_latin_only": 1728,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0226_1648s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 2746,
+   "font_exact": 2746,
+   "homoglyph_cells": 1878,
+   "homoglyph_refused_latin_only": 1764,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0227_1651s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 2860,
+   "font_exact": 2860,
+   "homoglyph_cells": 1963,
+   "homoglyph_refused_latin_only": 1850,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0228_1654s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 3340,
+   "font_exact": 3340,
+   "homoglyph_cells": 2165,
+   "homoglyph_refused_latin_only": 2097,
+   "cursor_flagged": 3,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0229_1657s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 3337,
+   "font_exact": 3337,
+   "homoglyph_cells": 2159,
+   "homoglyph_refused_latin_only": 2094,
+   "cursor_flagged": 3,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0230_1660s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 3344,
+   "font_exact": 3344,
+   "homoglyph_cells": 2166,
+   "homoglyph_refused_latin_only": 2098,
+   "cursor_flagged": 3,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0231_1663s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 3341,
+   "font_exact": 3341,
+   "homoglyph_cells": 2152,
+   "homoglyph_refused_latin_only": 2087,
+   "cursor_flagged": 3,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0232_1666s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 2957,
+   "font_exact": 2957,
+   "homoglyph_cells": 2023,
+   "homoglyph_refused_latin_only": 1931,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0233_1669s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 2905,
+   "font_exact": 2905,
+   "homoglyph_cells": 2016,
+   "homoglyph_refused_latin_only": 1929,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0234_1673s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 2862,
+   "font_exact": 2862,
+   "homoglyph_cells": 1968,
+   "homoglyph_refused_latin_only": 1883,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0235_1676s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 2908,
+   "font_exact": 2908,
+   "homoglyph_cells": 2003,
+   "homoglyph_refused_latin_only": 1918,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0236_1679s.png": {
+   "status": "no_grid"
+  },
+  "0237_1737s.png": {
+   "status": "ok",
+   "font": "font:edk2-8x19",
+   "ink_cells": 26,
+   "font_exact": 0,
+   "homoglyph_cells": 0,
+   "homoglyph_refused_latin_only": 0,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 15,
+   "unmatched_text": 11,
+   "font_share": 0.0,
+   "screen_status": "no_font"
+  },
+  "0238_1740s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 147,
+   "font_exact": 147,
+   "homoglyph_cells": 90,
+   "homoglyph_refused_latin_only": 90,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0239_1758s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 399,
+   "font_exact": 399,
+   "homoglyph_cells": 247,
+   "homoglyph_refused_latin_only": 245,
+   "cursor_flagged": 0,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0240_1850s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 590,
+   "font_exact": 588,
+   "homoglyph_cells": 350,
+   "homoglyph_refused_latin_only": 346,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 2,
+   "font_share": 0.9963,
+   "screen_status": "ok"
+  },
+  "0241_1856s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 517,
+   "font_exact": 517,
+   "homoglyph_cells": 320,
+   "homoglyph_refused_latin_only": 318,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  },
+  "0242_1859s.png": {
+   "status": "ok",
+   "font": "font:unifont-16",
+   "ink_cells": 599,
+   "font_exact": 599,
+   "homoglyph_cells": 362,
+   "homoglyph_refused_latin_only": 360,
+   "cursor_flagged": 1,
+   "alias": 0,
+   "unmatched_boxlike": 0,
+   "unmatched_text": 0,
+   "font_share": 1.0,
+   "screen_status": "ok"
+  }
+ },
+ "corrections": [
+  [
+   "19-console-setup-with-kernel-noise",
+   "-------------",
+   "already applied"
+  ],
+  [
+   "20-console-setup-duplicated-redraw",
+   "-------------",
+   "already applied"
+  ]
+ ],
+ "unmatched_bitmaps": [
+  {
+   "font": "font:vga-8x16",
+   "hex": "0000000000000000000000000000ffff",
+   "cells": 52,
+   "font_file_glyph": null
+  },
+  {
+   "font": "font:unifont-16",
+   "hex": "0000000000007649494949494949ffff",
+   "cells": 14,
+   "font_file_glyph": null
+  },
+  {
+   "font": "font:edk2-8x19",
+   "hex": "00000000000000007f00000000000000000000",
+   "cells": 13,
+   "font_file_glyph": null
+  },
+  {
+   "font": "font:vga-8x16",
+   "hex": "00007cc6c6c6c6c6c6c6c67c0000ffff",
+   "cells": 7,
+   "font_file_glyph": null
+  },
+  {
+   "font": "font:edk2-8x19",
+   "hex": "0000000000001038387c7cfefe000000000000",
+   "cells": 5,
+   "font_file_glyph": null
+  },
+  {
+   "font": "font:edk2-8x19",
+   "hex": "000000000000fefe7c7c383810000000000000",
+   "cells": 5,
+   "font_file_glyph": null
+  },
+  {
+   "font": "font:unifont-16",
+   "hex": "00081c082a7f2a08082a7f2a081c0800",
+   "cells": 4,
+   "font_file_glyph": [
+    "U+2021 DOUBLE DAGGER"
+   ]
+  },
+  {
+   "font": "font:vga-8x16",
+   "hex": "0000666666663c181818183c0000ffff",
+   "cells": 2,
+   "font_file_glyph": null
+  },
+  {
+   "font": "font:edk2-8x19",
+   "hex": "00000000000000000000000000000000ffffff",
+   "cells": 2,
+   "font_file_glyph": null
+  },
+  {
+   "font": "font:edk2-8x19",
+   "hex": "0000003c4242424242423c0000000000000000",
+   "cells": 2,
+   "font_file_glyph": null
+  },
+  {
+   "font": "font:edk2-8x19",
+   "hex": "0000003c4240300c02423c0000000000000000",
+   "cells": 2,
+   "font_file_glyph": null
+  },
+  {
+   "font": "font:edk2-8x19",
+   "hex": "0000003c42427e4040423c0000000000000000",
+   "cells": 2,
+   "font_file_glyph": null
+  },
+  {
+   "font": "font:vga-8x16",
+   "hex": "0000fec6c6c0c0c0c0c0c0c000000000",
+   "cells": 1,
+   "font_file_glyph": [
+    "U+0393 GREEK CAPITAL LETTER GAMMA"
+   ]
+  },
+  {
+   "font": "font:vga-8x16",
+   "hex": "00386c3800780c7ccccccc7600000000",
+   "cells": 1,
+   "font_file_glyph": [
+    "U+00E5 LATIN SMALL LETTER A WITH RING ABOVE"
+   ]
+  },
+  {
+   "font": "font:vga-8x16",
+   "hex": "00003e6cccccfeccccccccce00000000",
+   "cells": 1,
+   "font_file_glyph": [
+    "U+00C6 LATIN CAPITAL LETTER AE"
+   ]
+  },
+  {
+   "font": "font:edk2-8x19",
+   "hex": "003c42424040404042423c0000000000000000",
+   "cells": 1,
+   "font_file_glyph": null
+  },
+  {
+   "font": "font:edk2-8x19",
+   "hex": "0000005c624242424242420000000000000000",
+   "cells": 1,
+   "font_file_glyph": null
+  },
+  {
+   "font": "font:edk2-8x19",
+   "hex": "180808080808080808083e0000000000000000",
+   "cells": 1,
+   "font_file_glyph": null
+  },
+  {
+   "font": "font:edk2-8x19",
+   "hex": "001010107c10101010100c0000000000000000",
+   "cells": 1,
+   "font_file_glyph": null
+  },
+  {
+   "font": "font:edk2-8x19",
+   "hex": "000000424242424242463a0000000000000000",
+   "cells": 1,
+   "font_file_glyph": null
+  },
+  {
+   "font": "font:edk2-8x19",
+   "hex": "0000005c6242424242625c4040000000000000",
+   "cells": 1,
+   "font_file_glyph": null
+  },
+  {
+   "font": "font:edk2-8x19",
+   "hex": "0000000000ffff000000000000000000000000",
+   "cells": 1,
+   "font_file_glyph": null
+  }
+ ]
 }

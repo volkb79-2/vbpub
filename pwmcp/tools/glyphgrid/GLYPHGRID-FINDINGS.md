@@ -4,6 +4,49 @@
 > screen, a new ISO or a new font.** The leave-one-frame-out numbers are inflated by near-duplicate frames (12/13, 19/20,
 > 05/06, 09/10/11); the leave-screen-group-out numbers below are the honest ones.
 
+## Revision 4 (review of the font-file commit): closing the ways a wrong character could still read as font-exact
+
+1. **Cross-font collisions.** VGA and Unifont share the 8x16 cell and 10 box-drawing bitmaps mean different characters in the two fonts. `decode` now
+   returns `font_share` (share of ordinary ink cells the chosen font reads exactly), `font_runner_up_share`, `font_proven`. A font-FILE font needs
+   `font_share >= 0.9` before ANY cell may be font-exact (else status `mixed_font`, every cell UNKNOWN), and a bitmap another same-size font draws as a
+   different character is an alias set `a` unless the font is proven (share >= 0.9 AND no rival above 0.3). Regression: Unifont text pasted over the VGA
+   dialog (160/320/400 px) now reads `mixed_font`/`no_font`, no `F` cell (before: 66/45/33 wrong `F` cells).
+2. **Homoglyphs outside the repertoire.** Alias sets are now computed against the font's FULL code-point coverage (kernel default unicode map parsed from
+   the vmlinuz, every PF2 code point, PSF unicode tables) and stored per bitmap (`"x"`): 20 VGA and 60 Unifont repertoire glyphs have such homoglyphs
+   (A <- A-grave A-acute A-circumflex A-tilde, C <- copyright, K <- Kelvin, `-` <- soft hyphen ...; Unifont: Cyrillic/Greek capitals, U+2010/2011, ...).
+   Status `H` = unique repertoire character but homoglyphs exist; `res["aliases"]` carries the whole set. **A bitmap identifies a glyph, not a code
+   point: Cyrillic A and Latin A cannot be told apart by bitmap.** Policy (explicit, tested): `homoglyphs="latin-only"` (default) accepts an `H` cell only
+   if every other code point is a Latin lookalike of the expected character (accented variant, Kelvin sign, hyphen class); `"none"` refuses any;
+   `"declared-repertoire"` = the consumer declares the screen Latin text and accepts the risk. Measured on the series (296,891 ink cells): 147,721 `H` cells
+   (49.8%); under the default policy 127,829 of them are refused (Unifont 123,547 of 131,277, VGA 4,282 of 16,444). So the cells a strict consumer may rely on
+   are F-without-homoglyph + benign H = **168,894 (56.9%)**; VGA screens 94%, Unifont screens only 35%: the installed console's text is mostly
+   NOT uniquely readable by bitmap (opt in with `declared-repertoire` if you know the console shows Latin).
+3. **Cursor.** Cursor-shaped glyphs (U+2581..2584 lower blocks, U+2588) read by any font are always flagged `c` unless the caller passes `cursor=(row, col)` (then
+   only that cell is flagged); a bar-like last cell of a row is flagged as before. Flagged cells never match. Series: 59 cursor-flagged Unifont cells; the F share
+   excluding them is 99.963% (unchanged to three decimals: 296,723/296,832 = 99.963%).
+4. **Word boundary.** A boundary is the row edge or a READABLE non-alphanumeric cell (F/e/b/policy-ok H, unflagged). Unknown / alias / single / fill / flagged /
+   cursor neighbours are not boundaries (`sda` + unreadable cell no longer matches; nor `x<alias>OK`).
+5. **Licences.** `NOTICE.md`: kernel font (GPL-2.0), GNU Unifont (GPL-2.0-or-later with font-embedding exception / OFL-1.1), EDK2 (BSD-2-Clause-Patent), sources, sha256,
+   how the bitmaps are used; legal review of bitmap-table derivation is NOT done.
+
+Minor: `strict_match(res, phrase, region, cursor)` is the single decision function (reasons per candidate); ambiguous hits only via `find_phrase_ambiguous`;
+fill runs are fill throughout; `Atlas.merge` cross-checks learned entries against font-file entries of the same font (would have caught `-` vs `_`) and demotes
+them; atlas validation requires `origin.kind` + sha256 for `font_exact`; no fixed temp files (verify/build use memory/tempfile); `load_raw_table` takes bytes; PF2 code points
+>= 0x110000 (GRUB flag bits) are skipped; corrections that do not apply are reported (`already applied`/`no matching line`); the font-file phase search has a time budget
+(`max_seconds`, default 4 s per image); atlas origin records the ISO sha256 and the path inside the ISO (EDK2: the devcontainer `ovmf` package, production firmware
+unverified). The identification evidence is `font_share`; the `no_font` floor in `decode` is only the minimum for reading at all (Revision 3 conflated them).
+
+Numbers after merging main (corpus carries the corrected transcript; `ground-truth-corrections.json` is now a reported no-op: `already applied`):
+audit of the transcripts against the font reading: **6,839 agree, 1 disagree** (frame 20 cursor cell: transcript `_`, font `U+2581`), 0 alias conflicts, 8 button lines not placed.
+Series (242 frames): 231 read, 10 no grid, 1 refused; **296,782 / 296,891 ink cells font-exact (99.963%)**, 0 alias (`a`) cells, 147,721 `H` cells, 59 cursor-flagged,
+`font_share` over read frames: median 1.0, one frame below 0.98 (the near-empty EDK2 frame, 0.0). Corpus: 10,346 / 10,357 (99.894%), min `font_share` 0.9934.
+Tests: 74, including ports of the reviewer's perturbation/crop repros (shifts, crops, border, 2x+1px, 1.5x, 1.03x, random crops) with every F/H/e cell checked.
+
+Not covered, additionally: **mixed-font screens**, **homoglyph/unimap substitution beyond the declared policy**, and **firmware variance** (the EDK2 font of the production
+host may differ from the devcontainer's `ovmf` package).
+
+---
+
 ## Revision 3: font-file atlases (authoritative, no transcripts needed)
 
 Console text is drawn from KNOWN bitmap fonts, so the atlas can come from the font files and screenshots only have to VERIFY the font.
@@ -12,7 +55,8 @@ font inside a decompressed bzImage, the EDK2 `EFI_NARROW_GLYPH` table inside an 
 `verify_fonts.py` (identification, audit, coverage). Results: `font-verify-results.json`.
 
 **Where the fonts were found** (this devcontainer has none: no `/usr/share/consolefonts`, no kbd, no unifont package): inside the
-artifacts of the corpus itself, read-only, nothing mounted or run.
+artifacts of the corpus (the TrueNAS ISO: kernel and GRUB font) and, for the EDK2 firmware font, the devcontainer's own `ovmf` Debian package
+(`2025.02-8+deb13u1`); the firmware actually used by the production (Netcup) host is NOT verified. All read-only, nothing mounted or run.
 
 | screen font (our label) | source | what it is | sha256 (source file) |
 |---|---|---|---|

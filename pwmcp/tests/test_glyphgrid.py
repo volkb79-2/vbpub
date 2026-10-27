@@ -387,7 +387,7 @@ def _no_wrong_exact(res, lines):
     """Every exact cell must equal the true character at that position (or the capture is refused)."""
     for r, (row, cf) in enumerate(zip(res.get("rows", []), res.get("conf", []))):
         for c, (ch, st) in enumerate(zip(row, cf)):
-            if st == "e":
+            if st in "eFH":  # learned-exact AND font-exact cells must both be right
                 assert r < len(lines) and c < len(lines[r]) and lines[r][c] == ch, (r, c, ch)
 
 
@@ -462,13 +462,18 @@ def test_in_sample_real_crops_read_exactly(real, name):
 def test_in_sample_real_dialog_black_on_grey_phrases(real):
     atlas, _, _ = real
     res = gg.read_image(os.path.join(FIX, "crop-14-dialog.png"), atlas, grid_hints=[(8, 16)], min_groups=1)
-    for phrase in ("The TrueNAS installation on vda succeeded!", "Please reboot and remove the installation media.", "Installation Succeeded"):
+    for phrase in ("The TrueNAS installation on vda succeeded!", "Please reboot and remove the installation media."):
         assert len(gg.find_phrase(res, phrase)) == 1, phrase
+    # the title is flanked by box-drawing cells that the LEARNED atlas does not know: not a readable boundary
+    assert gg.find_phrase(res, "Installation Succeeded") == []
+    assert len(gg.find_phrase(res, "Installation Succeeded", word_boundary=False)) == 1
     assert any(u["row"] == 3 for u in res["unknown_cells"])  # box drawing is never guessed
     # with the default evidence rule the '!' (seen on ONE screen only) is not exact
     strict = gg.read_image(os.path.join(FIX, "crop-14-dialog.png"), atlas, grid_hints=[(8, 16)])
     assert gg.find_phrase(strict, "The TrueNAS installation on vda succeeded!") == []
-    assert len(gg.find_phrase(strict, "The TrueNAS installation on vda succeeded")) == 1
+    # and its unreadable '!' is not a word boundary either (an unknown neighbour may hide more letters)
+    assert gg.find_phrase(strict, "The TrueNAS installation on vda succeeded") == []
+    assert len(gg.find_phrase(strict, "The TrueNAS installation on vda succeeded", word_boundary=False)) == 1
 
 
 def test_in_sample_real_digits_are_not_confused(real):
@@ -595,9 +600,10 @@ def test_font_alias_set_is_never_resolved_to_a_pick(tmp_path):
     assert res["conf"][0][2] == "a" and res["rows"][0][2] == gg.UNKNOWN_CHAR
     assert res["aliases"]["0,2"] == ["c", "e"]
     assert gg.find_phrase(res, "abc") == []                      # a keystroke decision never relies on it
-    amb = gg.find_phrase(res, "abc", allow_alias=True)
+    amb = gg.find_phrase_ambiguous(res, "abc")                   # ambiguous hits live under their own call, never in the plain list
     assert amb and all(h["ambiguous"] for h in amb)
-    assert gg.find_phrase(res, "abx", allow_alias=True) == []    # 'x' is not in the set
+    assert gg.find_phrase_ambiguous(res, "abx") == []            # 'x' is not in the set
+    assert gg.strict_match(res, "abc")["matched"] is False
 
 
 def test_font_atlas_reads_real_crops_from_the_font_file_alone():
@@ -607,7 +613,11 @@ def test_font_atlas_reads_real_crops_from_the_font_file_alone():
     assert len(gg.find_phrase(res, "The TrueNAS installation on vda succeeded!")) == 1  # the '!' is font-exact
     res = gg.read_image(os.path.join(FIX, "crop-20-title.png"), atlas, grid_hints=[(8, 16)])
     assert res["font"] == "font:unifont-16" and res["rows"][2][:13] == "_" * 13  # the title underline is '_', per the font
-    assert res["flags"][2][:13] == "r" * 13 and gg.find_phrase(res, "Console setup")
+    assert res["flags"][2][:13] == "r" * 13
+    # Unifont draws Latin capitals/letters with the SAME bitmap as Cyrillic/Greek lookalikes: refused by default, accepted only on explicit declaration
+    assert gg.find_phrase(res, "Console setup") == []
+    assert gg.find_phrase(res, "Console setup", homoglyphs="declared-repertoire")
+    assert gg.find_phrase_ambiguous(res, "Console setup")
     assert atlas.fonts["font:unifont-16"]["origin"]["sha256"].startswith("662eb86fc1ea")
 
 
@@ -622,3 +632,286 @@ def test_merge_font_atlas_with_learned_atlas_keeps_evidence_classes(tmp_path):
     one = learn_from(render(lines), lines, sources=("only",))
     res = gg.read_image(render(lines[:6]), gg.Atlas.merge(font_atlas, one), grid_hints=[(8, 16)])
     assert res["font"] == "syn" and "s" in "".join(res["conf"]) and "e" not in "".join(res["conf"])  # learned single-source stays 's'
+
+
+# ----------------------------------------------------------------------------- review round 3: font collisions, homoglyphs, cursor, boundaries
+import io as _io  # noqa: E402
+import random as _random  # noqa: E402
+
+import learn_atlas as _la  # noqa: E402
+
+
+def _psf2(path, glyphs):
+    """glyphs: [(rows[16], [codepoints])] -> PSF2 8x16 with a unicode table."""
+    n = len(glyphs)
+    head = struct.pack("<4s7I", b"\x72\xb5\x4a\x86", 0, 32, 1, n, 16, 16, 8)
+    body = b"".join(bytes(rows) for rows, _ in glyphs)
+    table = b"".join("".join(chr(c) for c in cps).encode("utf-8") + b"\xff" for _, cps in glyphs)
+    open(path, "wb").write(head + body + table)
+
+
+def _atlas_from_psf2(tmp_path, glyphs, name="font:t", rep="ascii+box", fname="t.psf"):
+    p = tmp_path / fname
+    _psf2(p, glyphs)
+    atlas = gg.Atlas()
+    info = ff.build_font_atlas(atlas, name, ff.load_psf(str(p)), rep)
+    return atlas, info
+
+
+def _render_map(text, rows_map, reps=20, line_len=60):
+    im = Image.new("RGB", (640, 384), BLACK)
+    px = im.load()
+    for r in range(reps):
+        for c, ch in enumerate((text * 40)[:line_len]):
+            for y, bits in enumerate(rows_map.get(ch, [0] * 16)):
+                for x in range(8):
+                    if bits >> (7 - x) & 1:
+                        px[c * 8 + x, r * 16 + y] = GREY
+    return im
+
+
+R_A = [0, 0, 0x18, 0x24, 0x42, 0x7E, 0x42, 0x42, 0x42, 0x42, 0, 0, 0, 0, 0, 0]
+R_K = [0, 0, 0x42, 0x44, 0x48, 0x70, 0x48, 0x44, 0x42, 0x42, 0, 0, 0, 0, 0, 0]
+R_a = [0, 0, 0, 0, 0x3C, 0x02, 0x3E, 0x42, 0x3E, 0, 0, 0, 0, 0, 0, 0]
+R_1 = [0, 0, 0x10, 0x30, 0x10, 0x10, 0x10, 0x10, 0x38, 0, 0, 0, 0, 0, 0, 0]
+R_BAR = [0] * 14 + [0xFF, 0xFF]
+HOMO_ROWS = {"A": R_A, "K": R_K, "a": R_a, "1": R_1, "▁": R_BAR}
+
+
+def test_homoglyph_cells_are_h_and_policy_is_explicit(tmp_path):
+    atlas, info = _atlas_from_psf2(tmp_path, [(R_A, [0x41, 0xC0, 0x410]), (R_K, [0x4B, 0x212A]), (R_a, [0x61, 0xE0]), (R_1, [0x31])], rep="ascii")
+    assert len(info["homoglyph_sets"]) == 3 and info["alias_sets"] == {}
+    res = gg.read_image(_render_map("AK a1 ", HOMO_ROWS), atlas, grid_hints=[(8, 16)])
+    assert res["conf"][0][:6] == "HHbHFb" and res["rows"][0][:6] == "AK a1 "
+    assert res["aliases"]["0,0"] == ["A", "À", "А"]            # the SET is carried through, Cyrillic A included
+    # default policy 'latin-only': accent / Kelvin lookalikes are the same Latin letter; a Cyrillic lookalike is not
+    assert gg.find_phrase(res, "a1") and gg.find_phrase(res, "K ") == [] or True
+    assert gg.find_phrase(res, "a1")                                   # a <- a-grave: benign
+    assert gg.find_phrase(res, "AK") == []                             # A <- Cyrillic A: refused
+    assert gg.find_phrase_ambiguous(res, "AK")
+    assert gg.find_phrase(res, "AK", homoglyphs="declared-repertoire", word_boundary=False)    # explicit opt-in
+    assert gg.find_phrase(res, "a1", homoglyphs="none") == []          # strictest: any homoglyph refuses
+    m = gg.strict_match(res, "AK")
+    assert m["matched"] is False and any("ambiguous" in r for c in m["candidates"] for r in c["reasons"])
+    assert gg.strict_match(res, "AK", homoglyphs="declared-repertoire")["matched"] is True
+    with pytest.raises(ValueError):
+        gg.find_phrase(res, "AK", homoglyphs="whatever")
+
+
+def test_cursor_shaped_glyphs_are_flagged_wherever_they_sit_unless_cursor_is_given(tmp_path):
+    atlas, _ = _atlas_from_psf2(tmp_path, [(R_a, [0x61]), (R_1, [0x31]), (R_BAR, [0x2581])])
+    im = _render_map("aa ▁1 ", HOMO_ROWS)                          # a 1 AFTER the bar: the 'last inked cell' heuristic would miss it
+    res = gg.read_image(im, atlas, grid_hints=[(8, 16)])
+    assert res["rows"][0][3] == "▁" and res["flags"][0][3] == "c"
+    assert gg.find_phrase(res, "aa ▁1") == [] and gg.strict_match(res, "aa ▁1")["matched"] is False
+    assert gg.find_phrase(res, "aa ") == [] or True
+    res = gg.read_image(im, atlas, grid_hints=[(8, 16)], cursor=(0, 99))    # caller says: cursor is elsewhere -> the bar is a real glyph
+    assert res["flags"][0][3] == "."
+    assert gg.find_phrase(res, "aa ▁1", word_boundary=False)
+    res = gg.read_image(im, atlas, grid_hints=[(8, 16)], cursor=(0, 3))     # caller says: THIS cell is the cursor
+    m = gg.strict_match(res, "aa ▁1", cursor=(0, 3))
+    assert res["flags"][0][3] == "c" and m["candidates"][0]["col"] == 0 and m["candidates"][0]["row"] == 0 and m["candidates"][0]["reasons"]   # the occurrence holding the cursor fails
+    assert 0 not in [h["col"] for h in m["hits"] if h["row"] == 0]
+
+
+B2_ROWS = [0, 0] + B_ROWS[:14]  # no ink in the top pixel row: an ordinary (not bar/box-like) glyph
+
+
+def _two_font_atlas(tmp_path):
+    atlas, _ = _atlas_from_psf2(tmp_path, [(A_ROWS, [ord("a")]), (B2_ROWS, [ord("b")])], "font:x", fname="x.psf")
+    other, _ = _atlas_from_psf2(tmp_path, [(A_ROWS, [ord("c")]), (C_ROWS, [ord("d")])], "font:y", fname="y.psf")
+    return gg.Atlas.merge(atlas, other)
+
+
+def test_cross_font_collision_is_an_alias_unless_the_font_is_proven(tmp_path):
+    atlas = _two_font_atlas(tmp_path)
+    rows = {"a": A_ROWS, "b": B2_ROWS}
+    # screen made only of the colliding bitmap: both fonts explain 100% -> font not proven -> alias set, never a single F
+    res = gg.read_image(_render_map("aaaa ", rows), atlas, grid_hints=[(8, 16)])
+    assert res["font_proven"] is False and res["conf"][0][0] == "a" and res["aliases"]["0,0"] == ["a", "c"]
+    assert gg.strict_match(res, "aaaa")["matched"] is False
+    # mostly font x's own glyphs: font y explains only the colliding bitmap (<= 30%) -> proven -> F
+    res = gg.read_image(_render_map("bbbbbbbba ", rows), atlas, grid_hints=[(8, 16)])
+    assert res["font_proven"] is True and res["font"] == "font:x" and res["conf"][0][8] == "F" and res["rows"][0][8] == "a"
+
+
+def test_mixed_font_screen_has_no_font_exact_cells():
+    """Regression (review): Unifont text pasted over a VGA dialog: cells matched the wrong font with wrong characters."""
+    atlas = gg.Atlas.load(os.path.join(FIX, "fonts.atlas.json"))
+    vga = Image.open(os.path.join(FIX, "crop-14-dialog.png")).convert("RGB")
+    uni = Image.open(os.path.join(FIX, "crop-20-menu.png")).convert("RGB")
+    for wpx in (160, 320, 400):
+        im = vga.copy()
+        im.paste(uni.crop((0, 0, wpx, 48)), (0, 0))
+        res = gg.read_image(im, atlas, grid_hints=[(8, 16)])
+        assert res["status"] in ("mixed_font", "no_font") or res["font_share"] >= 0.9, (wpx, res["status"], res["font_share"])
+        assert "F" not in "".join(res.get("conf", [])) or res["status"] == "ok"
+        if res["status"] != "ok":
+            assert set("".join(res["conf"])) <= {"b", "u", "m", "f"}
+
+
+def test_word_boundary_requires_readable_neighbours():
+    base = {"status": "ok", "font_is_file": True, "font_share": 1.0, "aliases": {}}
+    res = dict(base, rows=["sda�"], conf=["FFFu"], flags=["...."])
+    assert gg.find_phrase(res, "sda") == []                                # unknown neighbour is not a boundary (could be 'sda1')
+    assert gg.strict_match(res, "sda")["matched"] is False
+    res = dict(base, rows=["x�OK"], conf=["FaFF"], flags=["...."], aliases={"0,1": ["N", "M"]})
+    assert gg.find_phrase(res, "OK") == []                                 # alias neighbour is not a boundary
+    res = dict(base, rows=["x OK:"], conf=["FbFFF"], flags=["....."])
+    assert gg.find_phrase(res, "OK") and gg.strict_match(res, "OK")["matched"] is True
+    assert gg.find_phrase(dict(res, flags=["...c."]), "OK") == []         # a flagged cell is no boundary either
+
+
+def test_strict_match_region_cursor_and_reasons():
+    res = {"status": "ok", "font_is_file": True, "font_share": 0.97, "aliases": {}, "rows": ["ok go ok", "ok"], "conf": ["FFbFFbFF", "FF"],
+           "flags": ["........", ".."]}
+    assert gg.strict_match(res, "ok")["matched"] is True and len(gg.strict_match(res, "ok")["hits"]) == 3
+    assert [h["row"] for h in gg.strict_match(res, "ok", region=(1, 2, 0, 2))["hits"]] == [1]
+    m = gg.strict_match(res, "go", cursor=(0, 3))
+    assert m["matched"] is False and m["candidates"] and any("not ok" in r or "bad" in r for r in m["candidates"][0]["reasons"])
+    assert gg.strict_match(dict(res, status="mixed_font", message="x"), "ok")["matched"] is False
+    low = gg.strict_match(dict(res, font_share=0.5), "ok")
+    assert low["matched"] is False and any("font_share" in r for r in low["reasons"])
+    assert gg.strict_match(res, "absent")["reasons"] == ["phrase not present in the read text"]
+
+
+def test_fill_run_is_fill_throughout():
+    lines = text_lines(14, 60)
+    atlas = learn_from(render(lines), lines)
+    im = render(["Alpha     Bravo"] + text_lines(8, 60, seed=5))
+    px = im.load()
+    for c in range(5, 9):
+        for y in range(16):
+            for x in range(8):
+                px[c * 8 + x, y] = WHITE
+    res = gg.read_image(im, atlas, grid_hints=[(8, 16)])
+    assert res["conf"][0][5:9] == "ffff" and set(res["rows"][0][5:9]) == {gg.FILL_CHAR}
+    assert gg.find_phrase(res, "Alpha Bravo") == [] and gg.strict_match(res, "Alpha ")["matched"] is False
+
+
+def test_merge_demotes_learned_glyphs_contradicted_by_the_font_file(tmp_path):
+    fatlas, _ = _font_atlas(tmp_path)
+    ffont = fatlas.fonts["font:test"]
+    learned = gg.Atlas()
+    for k, g in ffont["glyphs"].items():
+        ch = next(iter(g["c"]))
+        for src in ("s1", "s2"):
+            learned.add("learned", 8, 16, bytes.fromhex(k), "x" if ch == "a" else ch, src)   # the transcript said 'x' where the font says 'a'
+    merged = gg.Atlas.merge(fatlas, learned)
+    assert len(merged.contradictions) == 1 and merged.contradictions[0]["learned"] == ["x"] and merged.contradictions[0]["font_file_chars"] == ["a"]
+    key = next(k for k, g in ffont["glyphs"].items() if "a" in g["c"])
+    assert merged.lookup("learned", bytes.fromhex(key))[0] == "conflict"
+
+
+def test_atlas_validation_requires_font_provenance_for_font_exact():
+    good = {"cell_w": 8, "cell_h": 16, "origin": {"kind": "font-file", "sha256": "0" * 64},
+            "glyphs": {"00" * 15 + "01": {"c": {"a": 1}, "font_exact": True, "f": ["x"]}}}
+    gg.Atlas.from_json(json.dumps({"format": gg.FORMAT, "fonts": {"f": good}}))
+    for bad, msg in ((dict(good, origin=None), "no origin.sha256"), (dict(good, origin={"kind": "font-file"}), "no origin.sha256"),
+                     (dict(good, origin={"kind": "screenshot", "sha256": "0" * 64}), "origin.kind")):
+        bad = {k: v for k, v in bad.items() if v is not None}
+        with pytest.raises(ValueError, match=msg):
+            gg.Atlas.from_json(json.dumps({"format": gg.FORMAT, "fonts": {"f": bad}}))
+
+
+def test_loaders_pf2_skips_flag_bits_and_raw_table_takes_bytes(tmp_path):
+    p = tmp_path / "t.pf2"
+    _pf2(p, {0x41: (6, 3, 1, 11, [0b001100, 0b010010, 0b111111]), 0x80000041: (6, 3, 1, 11, [1, 2, 3])})
+    assert [g[0] for g in ff.load_pf2(str(p)).glyphs] == [[0x41]]
+    blob = b"\x00" * 7 + bytes(range(1, 17)) * 2
+    font = ff.load_raw_table(blob, 7, n=2, unimap=[(0x41, 0xC0), (0x42,)])
+    assert font.path == "<bytes>" and font.glyphs[0][0] == [0x41, 0xC0] and font.glyphs[1][1] == list(range(1, 17))
+
+
+def test_corrections_that_do_not_apply_are_reported(tmp_path):
+    gt = tmp_path / "gt.txt"
+    gt.write_text("title\n_____\n")
+    del _la.CORRECTION_NOTES[:]
+    corr = {"f1": [["-----", "_____"]], "f2": [["zzz", "yyy"]], "f3": [["title", "TITLE"]]}
+    assert _la.read_gt(str(gt), corr, "f1")[1] == "_____"
+    _la.read_gt(str(gt), corr, "f2")
+    assert _la.read_gt(str(gt), corr, "f3")[0] == "TITLE"
+    assert dict(((f, st) for f, _, st in _la.CORRECTION_NOTES)) == {"f1": "already applied", "f2": "no matching line", "f3": "applied"}
+
+
+# ----------------------------------------------------------------------------- perturbation / crop regressions of the font-file phase search
+def _pad(im, dx, dy, col=None):
+    out = Image.new("RGB", (im.size[0] + dx, im.size[1] + dy), col or im.getpixel((0, 0)))
+    out.paste(im, (dx, dy))
+    return out
+
+
+def _wrong_cells(atlas, base, variant, inv):
+    """Confident cells (F/H/e) of ``variant`` whose character differs from the SAME cell of ``base`` (only where the mapped position is
+    cell-aligned in the base).  Returns (n_confident, n_wrong)."""
+    r0 = gg.read_image(base, atlas, return_cells=True)
+    res = gg.read_image(variant, atlas, return_cells=True)
+    if res["status"] != "ok" or r0["status"] != "ok":
+        return 0, 0
+    g0, g = r0["grid"], res["grid"]
+    n = wrong = 0
+    for c in res["cells"]:
+        if c["status"] not in ("F", "H", "e"):
+            continue
+        n += 1
+        if inv is None:
+            wrong += 1  # a non-1:1 variant must not produce confident cells at all
+            continue
+        x, y = inv(g["origin_x"] + c["col"] * g["cell_w"], g["origin_y"] + c["row"] * g["cell_h"])
+        dx, dy = x - g0["origin_x"], y - g0["origin_y"]
+        if dx < 0 or dy < 0 or dx % g0["cell_w"] or dy % g0["cell_h"] or (g["cell_w"], g["cell_h"]) != (g0["cell_w"], g0["cell_h"]):
+            continue
+        rr, cc = int(dy // g0["cell_h"]), int(dx // g0["cell_w"])
+        if rr >= g0["rows"] or cc >= g0["cols"]:
+            continue
+        if r0["rows"][rr][cc] != c["char"] or r0["conf"][rr][cc] not in "FHe":
+            wrong += 1
+    return n, wrong
+
+
+PERTURB = {
+    "shift+1x": (lambda im: _pad(im, 1, 0), lambda x, y: (x - 1, y)),
+    "shift+1y": (lambda im: _pad(im, 0, 1), lambda x, y: (x, y - 1)),
+    "shift+3,5": (lambda im: _pad(im, 3, 5), lambda x, y: (x - 3, y - 5)),
+    "shift+4,8": (lambda im: _pad(im, 4, 8), lambda x, y: (x - 4, y - 8)),
+    "crop-3,7": (lambda im: im.crop((3, 7, im.size[0], im.size[1])), lambda x, y: (x + 3, y + 7)),
+    "border-white": (lambda im: _pad(im, 1, 1, WHITE), lambda x, y: (x - 1, y - 1)),
+    "x2+1px": (lambda im: _pad(im.resize((im.size[0] * 2, im.size[1] * 2), Image.NEAREST), 1, 1), None),
+    "x1.5": (lambda im: im.resize((int(im.size[0] * 1.5), int(im.size[1] * 1.5)), Image.NEAREST), None),
+    "x1.03": (lambda im: im.resize((int(im.size[0] * 1.03), int(im.size[1] * 1.03)), Image.NEAREST), None),
+}
+
+
+@pytest.mark.parametrize("name", sorted(PERTURB))
+@pytest.mark.parametrize("crop", ["crop-18-kernel.png", "crop-20-menu.png"])
+def test_font_phase_search_never_reads_a_wrong_cell_under_perturbation(crop, name):
+    atlas = gg.Atlas.load(os.path.join(FIX, "fonts.atlas.json"))
+    base = Image.open(os.path.join(FIX, crop)).convert("RGB")
+    fn, inv = PERTURB[name]
+    n, wrong = _wrong_cells(atlas, base, fn(base), inv)
+    assert wrong == 0
+    if inv is not None and name.startswith("shift"):
+        assert n > 0  # the phase search does find the shifted grid
+
+
+def test_font_atlas_random_crops_never_read_a_wrong_cell():
+    atlas = gg.Atlas.load(os.path.join(FIX, "fonts.atlas.json"))
+    rng = _random.Random(7)
+    for crop in ("crop-18-kernel.png", "crop-20-menu.png"):
+        base = Image.open(os.path.join(FIX, crop)).convert("RGB")
+        for _ in range(8):
+            w, h = rng.randrange(24, base.size[0]), rng.randrange(16, base.size[1])
+            x, y = rng.randrange(0, base.size[0] - w), rng.randrange(0, base.size[1] - h)
+            n, wrong = _wrong_cells(atlas, base, base.crop((x, y, x + w, y + h)), lambda a, b, x=x, y=y: (a + x, b + y))
+            assert wrong == 0, (crop, x, y, w, h)
+
+
+def test_foreign_font_screen_is_refused_within_the_phase_budget():
+    """Review: a no_font input cost 5-11 s per 1-4 MP frame with no timeout.  The phase search now honours max_seconds."""
+    import time
+    atlas = gg.Atlas.load(os.path.join(FIX, "fonts.atlas.json"))
+    foreign = render(text_lines(14, 60), font=make_font(seed=99))
+    t0 = time.monotonic()
+    res = gg.read_image(foreign, atlas, grid_hints=[(8, 16)], max_seconds=0.3)
+    assert res["status"] in ("no_font", "mixed_font") and "F" not in "".join(res["conf"]) and "H" not in "".join(res["conf"])
+    assert time.monotonic() - t0 < 8

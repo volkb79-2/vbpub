@@ -43,15 +43,29 @@ corpus). The details below describe the learned-atlas rules (class 2) and the co
 import glyphgrid as gg
 atlas = gg.Atlas.load("pwmcp/tests/fixtures/glyphgrid/truenas-27-vanilla.atlas.corrected-gt.json")
 res = gg.read_image(png_bytes, atlas)          # bytes | path | PIL.Image  ->  dict
-res["status"]        # "ok" | "no_grid" | "resampled" | "no_font"
+res["status"]        # "ok" | "no_grid" | "resampled" | "no_font" | "mixed_font"   (only "ok" screens may yield text)
+res["font_share"]    # share of ordinary ink cells the chosen font reads exactly; a font-FILE font needs >= 0.9 (and no rival > 0.3) before ANY cell is font-exact
 res["grid"]          # {cell_w, cell_h, origin_x, origin_y, cols, rows}
 res["font"]          # atlas font chosen by exact-hit count (one atlas can hold several fonts)
 res["rows"]          # one string per grid row, UNKNOWN cells as U+FFFD
 res["conf"]          # one string per row, one letter per cell:
-                     #   e exact   b blank   u unknown   x atlas conflict   m multicolour   n nearest (only if max_hamming>0)
+                     #   F font-exact (character from a font file)   e learned, >= 2 independent screens   b blank
+                     #   H font-exact, repertoire character unique, but other code points draw the same bitmap (res["aliases"] has the set)
+                     #   a alias set (several characters, or a cross-font collision with an unproven font): char is U+FFFD, the set is in res["aliases"]
+                     #   s learned single-source   f fill (solid cells, whole run)   u unknown   x atlas conflict   m multicolour
+                     #   n nearest (only if max_hamming>0)
+res["flags"]         # one string per row: "." / "r" rule-line / "c" cursor candidate (cursor-shaped glyphs are always "c" unless cursor=(row, col) is given)
+res["aliases"]       # {"row,col": [characters...]}
 res["unknown_cells"] # [{row, col, x, y, status, hex, reason, nearest, distance, ...}]
-gg.region(res, row0, row1, col0, col1)   # -> (text, n_unknown)
-gg.find_phrase(res, "Enter an option from 1-10:")   # exact/blank cells only -> [{row, col, unknown_in_row}]
+gg.strict_match(res, "Enter an option from 1-10:", region=None, cursor=None)
+                     # THE decision function: {"matched", "hits", "candidates": [{row, col, reasons}], "reasons"}.  Phrase cells AND both boundary
+                     # cells must be F/e/b (H only per policy), unflagged, no alias/single/fill/unknown, screen status ok, font_share >= 0.9.
+gg.find_phrase(res, "sda")        # plain unique hits (same rules; unreadable neighbours are not word boundaries)
+gg.find_phrase_ambiguous(res, "AK")   # readable-but-not-unique hits (alias sets / refused homoglyphs): NEVER rely on these
+gg.region(res, row0, row1, col0, col1)   # -> (text, n_bad)
+# homoglyph policy (find_phrase/strict_match `homoglyphs=`): "latin-only" (default: accept H only if every other code point is a Latin lookalike of
+# the expected character: accented variants, Kelvin sign, hyphen class), "none" (any homoglyph refuses), "declared-repertoire" (the consumer states
+# that the screen is Latin text: accepts Cyrillic/Greek lookalikes it cannot tell apart by bitmap).
 ```
 
 Lower level: `load_image`, `probe_scale`, `detect_grid`, `extract`, `decode`, `choose_extraction`.
@@ -98,23 +112,34 @@ learned from a few labelled captures, never mixed into another.
 
 ```python
 # ocr_service.py, engine "glyphgrid" (sketch, not wired)
-ATLAS = gg.Atlas.load(os.environ.get("GLYPHGRID_ATLAS", "/app/atlas.json"))
+ATLAS = gg.Atlas.load(os.environ.get("GLYPHGRID_ATLAS", "/app/fonts.atlas.json"))
 def engine_glyphgrid(png: bytes, params) -> dict:
-    res = gg.read_image(png, ATLAS, grid_hints=params.get("grid_hints"))
+    res = gg.read_image(png, ATLAS, grid_hints=params.get("grid_hints"), cursor=params.get("cursor"))
+    out = {"engine": "glyphgrid", "status": res["status"], "message": res.get("message", ""), "text": "", "words": []}
     if res["status"] != "ok":
-        return {"engine": "glyphgrid", "status": res["status"], "text": "", "words": []}
-    return {"engine": "glyphgrid", "status": "ok", "text": "\n".join(res["rows"]),
-            "unknown_cells": res["unknown_cells"], "conf": res["conf"], "grid": res["grid"]}
+        return out
+    out.update(text="\n".join(res["rows"]), conf=res["conf"], flags=res["flags"], aliases=res["aliases"], grid=res["grid"],
+               font=res["font"], font_share=res["font_share"], font_is_file=res["font_is_file"], unknown_cells=res["unknown_cells"])
+    if params.get("expect"):   # keystroke consumers ask the server to decide, with reasons
+        out["strict"] = gg.strict_match(res, params["expect"], region=params.get("region"), cursor=params.get("cursor"),
+                                        homoglyphs=params.get("homoglyphs", "latin-only"))
+    return out
 ```
 
-The sidecar contract must carry `status`, `conf` and `unknown_cells` through to the client; a client that only
-reads `text` would see U+FFFD for unknowns, which is safe (it never matches a phrase) but loses the evidence.
+The sidecar contract must carry `status`, `conf`, `flags`, `aliases`, `font`/`font_share` and `unknown_cells` through to the client: a client
+that only reads `text` sees U+FFFD for unknown/alias cells (never matches a phrase), but it would ALSO see a cursor bar or a homoglyph letter as
+ordinary text. Prefer `strict_match` (server side) for any decision that sends keystrokes.
 
 ## Known limits (details in the findings)
 
-* Only fonts present in the atlas are readable; an unseen font is 100% UNKNOWN (by design).
-* Anti-aliased / scaled / lossy-compressed captures are refused or unreadable, not approximated.
-* Uniform cells read as blank whatever their colour (a solid block cell is a space; fill colours are in
-  `return_cells`). Box-drawing glyphs are not in the transcribed ground truth, so they read UNKNOWN unless
-  an atlas entry was added by hand.
-* Atlas labels are as good as the human transcript; conflicts are reported, not hidden.
+* Only fonts present in the atlas are readable; a font that is NOT in the atlas (another distro's console font, HiDPI fonts) reads
+  `no_font`/all UNKNOWN (by design); a screen mixing fonts or foreign content is `mixed_font`.
+* Anti-aliased / scaled / lossy-compressed captures are refused or unreadable, not approximated; the probe cannot prove 1:1.
+* Uniform cells next to text on a different background (and the whole run) are `f` fill, not blank; other uniform cells are blank.
+  Box-drawing, block and arrow glyphs ARE read by the font-file atlases (repertoire ascii+box) and are UNKNOWN in learned-only atlases.
+* A bitmap identifies a glyph, not a code point: homoglyphs (Cyrillic/Greek lookalikes in Unifont; accented Latin via the kernel unimap; soft hyphen)
+  are `H`/`a` with the full set in `res["aliases"]` and are resolved only by the explicit policy above.
+* The cursor is not a glyph; cursor-shaped cells are flagged, never text, unless the caller supplies `cursor=`.
+* The EDK2 8x19 font comes from the devcontainer's `ovmf` package; the production (Netcup) firmware's font is unverified. Mixed-font screens,
+  unimap substitution and firmware variance are NOT covered.
+* Learned-atlas labels are as good as the human transcript; conflicts are reported, not hidden (and `Atlas.merge` cross-checks them against font files).

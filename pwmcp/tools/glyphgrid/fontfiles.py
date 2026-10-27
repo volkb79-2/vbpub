@@ -86,16 +86,45 @@ _SYM = "\u0000\u263a\u263b\u2665\u2666\u2663\u2660\u2022\u25d8\u25cb\u25d9\u2642
 CP437 = _SYM + bytes(range(32, 127)).decode("ascii") + "\u2302" + bytes(range(128, 256)).decode("cp437")
 
 
-def load_raw_table(path, offset, n=256, w=8, h=16, name=None, note="", charmap="cp437") -> FontFile:
+def load_raw_table(data, offset, n=256, w=8, h=16, name=None, note="", charmap="cp437", unimap=None, path=None) -> FontFile:
     """A table of n glyphs of h bytes at ``offset`` (e.g. the kernel's ``fontdata_8x16`` inside vmlinux).
-    ``charmap`` maps glyph index -> character: 'cp437' is the VGA default (indices 0-31 are the CP437 symbols)."""
-    raw = open(path, "rb").read()
+    ``data`` is bytes or a path.  Glyph index -> code points: ``unimap`` (a list of code-point tuples per glyph, e.g. the kernel's
+    default unicode map from ``kernel_unimap``: it makes glyph 0x41 also draw U+00C0-U+00C3) or, without it, 'cp437'
+    (indices 0-31 are the CP437 symbols)."""
+    if isinstance(data, (bytes, bytearray)):
+        raw, path = bytes(data), path or "<bytes>"
+    else:
+        raw, path = open(data, "rb").read(), data
     glyphs = []
     for i in range(n):
         bm = raw[offset + i * h:offset + (i + 1) * h]
-        glyphs.append(([ord(CP437[i])] if charmap == "cp437" else [i], list(bm), w, h, 0, 0))
+        cps = list(unimap[i]) if unimap is not None else ([ord(CP437[i])] if charmap == "cp437" else [i])
+        glyphs.append((cps, list(bm), w, h, 0, 0))
     return FontFile(name or "raw-%x" % offset, path, _sha(raw), w, h, glyphs,
                     note=note or "raw %d-glyph table at 0x%x of %s" % (n, offset, os.path.basename(path)))
+
+
+def kernel_unimap(blob: bytes):
+    """The Linux console's DEFAULT unicode map (``dfont_unicount`` + ``dfont_unitable`` in drivers/tty/vt/consolemap.c) parsed
+    out of a decompressed kernel: list of 256 tuples of code points.  Needed because the kernel draws several code points with the
+    same glyph (A <- A-grave A-acute A-circumflex A-tilde, C <- copyright sign, K <- Kelvin sign, '-' <- soft hyphen ...)."""
+    for m in re.finditer(rb"[\x01-\x0c]{256}", blob):
+        o = m.start()
+        counts = blob[o:o + 256]
+        if counts[0x41] < 3:
+            continue
+        total = sum(counts)
+        for t in range(max(0, o - 65536), o + 65536, 2):
+            if t + 2 * total > len(blob):
+                break
+            tab = struct.unpack_from("<%dH" % total, blob, t)
+            pos, ents = 0, []
+            for c in counts:
+                ents.append(tuple(tab[pos:pos + c]))
+                pos += c
+            if 0x41 in ents[0x41] and 0x20 in ents[0x20] and 0x61 in ents[0x61] and 0x2500 in ents[0xC4]:
+                return ents
+    raise ValueError("kernel default unicode map not found")
 
 
 # ----------------------------------------------------------------------------- GRUB PF2
@@ -132,7 +161,8 @@ def load_pf2(path) -> FontFile:
             for x in range(w):
                 r = (r << 1) | ((nbits >> (total - 1 - (y * w + x))) & 1)
             rows.append(r)
-        glyphs.append(([cp], rows, w, h, xo, yo, dw))
+        if cp < 0x110000:  # GRUB sets flag bits above the Unicode range for some entries: not code points
+            glyphs.append(([cp], rows, w, h, xo, yo, dw))
     cw = max((g[6] for g in glyphs if g[0][0] in range(0x21, 0x7f)), default=8)
     return FontFile(os.path.basename(path), path, _sha(data), cw, asc + desc,
                     [g[:6] for g in glyphs], ascent=asc, descent=desc,
@@ -215,25 +245,35 @@ REPERTOIRES = {
 }
 
 
-def build_font_atlas(atlas: "gg.Atlas", fontname: str, font: FontFile, repertoire="ascii+box", cell_w=None, cell_h=None):
-    """Add ``font`` to ``atlas`` as font-exact entries.  -> info dict (alias sets, glyph counts)."""
+def build_font_atlas(atlas: "gg.Atlas", fontname: str, font: FontFile, repertoire="ascii+box", cell_w=None, cell_h=None, provenance=None):
+    """Add ``font`` to ``atlas`` as font-exact entries.
+
+    ``"c"`` = characters of the declared repertoire drawn by this bitmap (more than one = alias set); ``"x"`` = every OTHER code point of the
+    font's FULL coverage that draws the same bitmap (homoglyphs outside the repertoire: Cyrillic/Greek capitals, accented Latin via the kernel
+    unimap, soft hyphen ...).  A bitmap identifies a GLYPH, not a code point.  -> info dict."""
     keep = REPERTOIRES[repertoire]
     cw, ch = cell_w or font.cell_w, cell_h or font.cell_h
     f = atlas.fonts.setdefault(fontname, {"cell_w": cw, "cell_h": ch, "glyphs": {}})
-    f["origin"] = {"kind": "font-file", "file": os.path.basename(font.path), "font": font.name, "sha256": font.sha256, "repertoire": repertoire, "note": font.note}
+    f["origin"] = {"kind": "font-file", "file": os.path.basename(font.path), "font": font.name, "sha256": font.sha256,
+                   "repertoire": repertoire, "note": font.note, **(provenance or {})}
     per = {}
     for g in font.glyphs:
+        key = render_cell(font, g, cw, ch)
+        ent = per.setdefault(key, [set(), set()])
         for cp in g[0]:
-            if keep(cp):
-                per.setdefault(render_cell(font, g, cw, ch), set()).add(chr(cp))
-    aliases = {}
-    for key, chars in per.items():
-        if not any(key):
+            ent[0 if keep(cp) else 1].add(cp)
+    aliases, homoglyphs = {}, {}
+    for key, (chars, extra) in per.items():
+        if not any(key) or not chars:
             continue
-        f["glyphs"][key.hex()] = {"c": {c: 1 for c in sorted(chars)}, "f": ["font-file:" + font.sha256[:12]], "font_exact": True}
+        ent = {"c": {chr(c): 1 for c in sorted(chars)}, "f": ["font-file:" + font.sha256[:12]], "font_exact": True}
+        if extra:
+            ent["x"] = sorted(extra)
+            homoglyphs[key.hex()] = sorted(extra)
+        f["glyphs"][key.hex()] = ent
         if len(chars) > 1:
-            aliases[key.hex()] = sorted(chars)
-    return {"glyphs": len(f["glyphs"]), "alias_sets": aliases}
+            aliases[key.hex()] = sorted(chr(c) for c in chars)
+    return {"glyphs": len(f["glyphs"]), "alias_sets": aliases, "homoglyph_sets": homoglyphs}
 
 
 # ----------------------------------------------------------------------------- firmware / kernel sources

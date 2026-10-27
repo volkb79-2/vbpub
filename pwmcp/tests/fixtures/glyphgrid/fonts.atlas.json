@@ -1234,6 +1234,11 @@
     "font": "edk2-narrow-glyph",
     "kind": "font-file",
     "note": "EFI_NARROW_GLYPH table, 235 entries, found at 0x175954 of LZMA volume at 0xa8 of OVMF_CODE_4M.fd",
+    "provenance": {
+     "note": "devcontainer firmware package",
+     "package": "ovmf 2025.02-8+deb13u1",
+     "path": "/usr/share/OVMF/OVMF_CODE_4M.fd"
+    },
     "repertoire": "ascii+box",
     "sha256": "624e06de18b4fa535e90db7160d00d3d07d206422b89999bf1e27d920264e4e0"
    }
@@ -1249,7 +1254,11 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      6459,
+      44013
+     ]
     },
     "0000000000000000000000000000ffff": {
      "c": {
@@ -1267,7 +1276,11 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      8218,
+      42233
+     ]
     },
     "00000000000000000000000018180000": {
      "c": {
@@ -1276,7 +1289,13 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      1628,
+      5008,
+      8228,
+      42232
+     ]
     },
     "000000000000000000000000ffffffff": {
      "c": {
@@ -1303,7 +1322,11 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      8208,
+      8209
+     ]
     },
     "00000000000000000808080808080808": {
      "c": {
@@ -1429,7 +1452,12 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      5120,
+      10869,
+      42239
+     ]
     },
     "00000000000000aa0000000000000000": {
      "c": {
@@ -1438,7 +1466,10 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      10513
+     ]
     },
     "00000000000000aaaa00000000000000": {
      "c": {
@@ -1564,7 +1595,18 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      5760,
+      5788,
+      10230,
+      10548,
+      10579,
+      10583,
+      11022,
+      11023,
+      19968
+     ]
     },
     "00000000000000ff0808080808080808": {
      "c": {
@@ -1708,7 +1750,11 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      894,
+      42236
+     ]
     },
     "00000000000018180000001818000000": {
      "c": {
@@ -1717,7 +1763,12 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      1417,
+      8758,
+      42237
+     ]
     },
     "0000000000001f101714141414141414": {
      "c": {
@@ -1735,7 +1786,10 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      1307
+     ]
     },
     "0000000000003c42023e4242463a0000": {
      "c": {
@@ -1744,7 +1798,10 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      1072
+     ]
     },
     "0000000000003c4240300c02423c0000": {
      "c": {
@@ -1753,7 +1810,12 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      1109,
+      42801,
+      43946
+     ]
     },
     "0000000000003c4240404040423c0000": {
      "c": {
@@ -1762,7 +1824,14 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      1010,
+      1089,
+      7428,
+      13253,
+      43951
+     ]
     },
     "0000000000003c4242424242423c0000": {
      "c": {
@@ -1771,7 +1840,14 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      959,
+      1086,
+      1413,
+      3792,
+      7439
+     ]
     },
     "0000000000003c42427e4040423c0000": {
      "c": {
@@ -1780,7 +1856,11 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      1077,
+      13006
+     ]
     },
     "00000000000041494949494949360000": {
      "c": {
@@ -1789,7 +1869,10 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      1309
+     ]
     },
     "00000000000042422418182442420000": {
      "c": {
@@ -1798,7 +1881,10 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      1093
+     ]
     },
     "00000000000042424224242418180000": {
      "c": {
@@ -1825,7 +1911,10 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      1405
+     ]
     },
     "0000000000005c624240404040400000": {
      "c": {
@@ -1843,7 +1932,10 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      1400
+     ]
     },
     "0000000000005c6242424242625c4040": {
      "c": {
@@ -1852,7 +1944,12 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      1088,
+      13174,
+      13232
+     ]
     },
     "00000000000076494949494949490000": {
      "c": {
@@ -1861,7 +1958,11 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      1376,
+      42867
+     ]
     },
     "0000000000007e0204081020407e0000": {
      "c": {
@@ -1870,7 +1971,11 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      7458,
+      43923
+     ]
     },
     "000000000000f808f808080808080808": {
      "c": {
@@ -1906,7 +2011,10 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      10233
+     ]
     },
     "000000000000ff00ff08080808080808": {
      "c": {
@@ -1978,7 +2086,10 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      8260
+     ]
     },
     "00000000040c142444447e0404040000": {
      "c": {
@@ -1987,7 +2098,10 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      5070
+     ]
     },
     "00000000080808080808080008080000": {
      "c": {
@@ -1996,7 +2110,10 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      451
+     ]
     },
     "000000000818280808080808083e0000": {
      "c": {
@@ -2041,7 +2158,13 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      913,
+      1040,
+      5034,
+      42222
+     ]
     },
     "00000000182442464a52624224180000": {
      "c": {
@@ -2086,7 +2209,10 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      895
+     ]
     },
     "00000000314a4a340808162929460000": {
      "c": {
@@ -2113,7 +2239,10 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      9371
+     ]
     },
     "000000003c4242021c020242423c0000": {
      "c": {
@@ -2122,7 +2251,10 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      7317
+     ]
     },
     "000000003c424240300c0242423c0000": {
      "c": {
@@ -2131,7 +2263,13 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      1029,
+      1359,
+      5082,
+      42210
+     ]
     },
     "000000003c42424040404042423c0000": {
      "c": {
@@ -2140,7 +2278,13 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      1017,
+      1057,
+      5087,
+      42202
+     ]
     },
     "000000003c424240404e4242463a0000": {
      "c": {
@@ -2149,7 +2293,10 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      42198
+     ]
     },
     "000000003c4242423c424242423c0000": {
      "c": {
@@ -2176,7 +2323,14 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      927,
+      1054,
+      1365,
+      7359,
+      42227
+     ]
     },
     "000000003c4242424242425a663c0300": {
      "c": {
@@ -2185,7 +2339,10 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      1306
+     ]
     },
     "000000003e08080808080808083e0000": {
      "c": {
@@ -2194,7 +2351,12 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      921,
+      1030,
+      1216
+     ]
     },
     "00000000404020101008080402020000": {
      "c": {
@@ -2212,7 +2374,11 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      5086,
+      42209
+     ]
     },
     "00000000414122221408080808080000": {
      "c": {
@@ -2221,7 +2387,12 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      933,
+      1198,
+      42220
+     ]
     },
     "00000000414141222222141408080000": {
      "c": {
@@ -2230,7 +2401,10 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      42214
+     ]
     },
     "00000000424224241818242442420000": {
      "c": {
@@ -2239,7 +2413,13 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      935,
+      1061,
+      5741,
+      42219
+     ]
     },
     "000000004242424242424242423c0000": {
      "c": {
@@ -2248,7 +2428,12 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      1357,
+      8899,
+      42228
+     ]
     },
     "00000000424242425a5a666642420000": {
      "c": {
@@ -2257,7 +2442,13 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      1308,
+      5043,
+      42218,
+      43005
+     ]
     },
     "00000000424242427e42424242420000": {
      "c": {
@@ -2266,7 +2457,15 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      919,
+      1053,
+      5051,
+      11406,
+      13004,
+      42215
+     ]
     },
     "00000000424266665a5a424242420000": {
      "c": {
@@ -2275,7 +2474,14 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      924,
+      1018,
+      1052,
+      5047,
+      42207
+     ]
     },
     "00000000424448506060504844420000": {
      "c": {
@@ -2284,7 +2490,13 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      922,
+      5094,
+      8490,
+      42199
+     ]
     },
     "0000000042626252524a4a4646420000": {
      "c": {
@@ -2293,7 +2505,11 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      925,
+      42208
+     ]
     },
     "00000000784442424242424244780000": {
      "c": {
@@ -2302,7 +2518,11 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      5024,
+      42195
+     ]
     },
     "000000007c4242427c40404040400000": {
      "c": {
@@ -2311,7 +2531,13 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      929,
+      1056,
+      5090,
+      42193
+     ]
     },
     "000000007c4242427c424242427c0000": {
      "c": {
@@ -2320,7 +2546,13 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      914,
+      1042,
+      5108,
+      42192
+     ]
     },
     "000000007c4242427c48444442420000": {
      "c": {
@@ -2329,7 +2561,10 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      42211
+     ]
     },
     "000000007e0202040404080808080000": {
      "c": {
@@ -2347,7 +2582,12 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      918,
+      5059,
+      42204
+     ]
     },
     "000000007e4040407c020202423c0000": {
      "c": {
@@ -2365,7 +2605,10 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      42205
+     ]
     },
     "000000007e4040407c404040407e0000": {
      "c": {
@@ -2374,7 +2617,13 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      917,
+      1045,
+      5036,
+      42224
+     ]
     },
     "000000007f0808080808080808080000": {
      "c": {
@@ -2383,7 +2632,13 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      932,
+      1058,
+      5026,
+      42196
+     ]
     },
     "00000000ffffffffffffffffffffffff": {
      "c": {
@@ -2410,7 +2665,11 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      1011,
+      1112
+     ]
     },
     "00000004080810101010101008080400": {
      "c": {
@@ -2428,7 +2687,10 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      1110
+     ]
     },
     "0000000c10100808102010080810100c": {
      "c": {
@@ -2599,7 +2861,11 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      9145,
+      20008
+     ]
     },
     "01010202040408081010202040408080": {
      "c": {
@@ -2662,7 +2928,12 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      9134,
+      9168,
+      65512
+     ]
     },
     "08080808080808080808082a1c080000": {
      "c": {
@@ -3166,7 +3437,10 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      9130
+     ]
     },
     "181818181818181f0000000000000000": {
      "c": {
@@ -3400,7 +3674,10 @@
      "f": [
       "font-file:662eb86fc1ea"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      9144
+     ]
     },
     "81814242242418181818242442428181": {
      "c": {
@@ -3570,6 +3847,11 @@
     "font": "iso-unicode.pf2",
     "kind": "font-file",
     "note": "PF2 name=b'GNU Unifont Regular 16' family=b'GNU Unifont' asc=14 desc=2",
+    "provenance": {
+     "iso": "TrueNAS-27.0.0-RC.1.iso",
+     "iso_sha256": "515a0252e72f1a6c86d603fa4d1661333029fe9a4804d0a7a28d24fe4f63498e",
+     "path_in_iso": "/boot/grub/fonts/unicode.pf2"
+    },
     "repertoire": "ascii+box",
     "sha256": "662eb86fc1ea89635e4bba8413590b79eb714ade5a2b5a5aa3dc5cf5f53a4463"
    }
@@ -3585,7 +3867,11 @@
      "f": [
       "font-file:56e410163118"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      9149,
+      63492
+     ]
     },
     "00000000000000000000181800000000": {
      "c": {
@@ -3603,7 +3889,10 @@
      "f": [
       "font-file:56e410163118"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      184
+     ]
     },
     "000000000000001f1818181818181818": {
      "c": {
@@ -3639,7 +3928,10 @@
      "f": [
       "font-file:56e410163118"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      173
+     ]
     },
     "00000000000000fe3636363636363636": {
      "c": {
@@ -3747,7 +4039,10 @@
      "f": [
       "font-file:56e410163118"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      227
+     ]
     },
     "00000000007cc660380cc67c00000000": {
      "c": {
@@ -3774,7 +4069,10 @@
      "f": [
       "font-file:56e410163118"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      245
+     ]
     },
     "00000000007cc6fec0c0c67c00000000": {
      "c": {
@@ -3801,7 +4099,10 @@
      "f": [
       "font-file:56e410163118"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      215
+     ]
     },
     "0000000000c6c6c6c6c66c3800000000": {
      "c": {
@@ -3819,7 +4120,10 @@
      "f": [
       "font-file:56e410163118"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      253
+     ]
     },
     "0000000000c6c6d6d6d6fe6c00000000": {
      "c": {
@@ -4080,7 +4384,13 @@
      "f": [
       "font-file:56e410163118"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      192,
+      193,
+      194,
+      195
+     ]
     },
     "00001818003818181818183c00000000": {
      "c": {
@@ -4098,7 +4408,10 @@
      "f": [
       "font-file:56e410163118"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      166
+     ]
     },
     "0000181818181818187e3c1800000000": {
      "c": {
@@ -4224,7 +4537,13 @@
      "f": [
       "font-file:56e410163118"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      204,
+      205,
+      206,
+      207
+     ]
     },
     "00003c30303030303030303c00000000": {
      "c": {
@@ -4242,7 +4561,10 @@
      "f": [
       "font-file:56e410163118"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      169
+     ]
     },
     "00003c66c2c0c0dec6c6663a00000000": {
      "c": {
@@ -4260,7 +4582,10 @@
      "f": [
       "font-file:56e410163118"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      221
+     ]
     },
     "0000701818180e181818187000000000": {
      "c": {
@@ -4332,7 +4657,13 @@
      "f": [
       "font-file:56e410163118"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      210,
+      211,
+      212,
+      213
+     ]
     },
     "00007cc6c6c6c6c6c6d6de7c0c0e0000": {
      "c": {
@@ -4377,7 +4708,12 @@
      "f": [
       "font-file:56e410163118"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      217,
+      218,
+      219
+     ]
     },
     "0000c6c6c6c6d6d6d6feee6c00000000": {
      "c": {
@@ -4449,7 +4785,10 @@
      "f": [
       "font-file:56e410163118"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      8490
+     ]
     },
     "0000f06060606060606266fe00000000": {
      "c": {
@@ -4467,7 +4806,10 @@
      "f": [
       "font-file:56e410163118"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      208
+     ]
     },
     "0000fc6666667c60606060f000000000": {
      "c": {
@@ -4494,7 +4836,10 @@
      "f": [
       "font-file:56e410163118"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      174
+     ]
     },
     "0000fe6662687868606060f000000000": {
      "c": {
@@ -4512,7 +4857,12 @@
      "f": [
       "font-file:56e410163118"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      200,
+      202,
+      203
+     ]
     },
     "0000fec0c0c0fc060606c67c00000000": {
      "c": {
@@ -4557,7 +4907,10 @@
      "f": [
       "font-file:56e410163118"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      180
+     ]
     },
     "00666666240000000000000000000000": {
      "c": {
@@ -4566,7 +4919,10 @@
      "f": [
       "font-file:56e410163118"
      ],
-     "font_exact": true
+     "font_exact": true,
+     "x": [
+      168
+     ]
     },
     "0076dc00000000000000000000000000": {
      "c": {
@@ -4897,7 +5253,12 @@
     "file": "vmlinuz-6.18.52-production+truenas",
     "font": "linux-font_vga_8x16",
     "kind": "font-file",
-    "note": "IBM VGA 8x16 table (256 glyphs, CP437) at 0x14ce900 of the decompressed kernel vmlinuz-6.18.52-production+truenas",
+    "note": "IBM VGA 8x16 table (256 glyphs) at 0x14ce900 of the decompressed kernel vmlinuz-6.18.52-production+truenas; code points = the kernel default unicode map (dfont_unitable)",
+    "provenance": {
+     "iso": "TrueNAS-27.0.0-RC.1.iso",
+     "iso_sha256": "515a0252e72f1a6c86d603fa4d1661333029fe9a4804d0a7a28d24fe4f63498e",
+     "path_in_iso": "/live/filesystem.squashfs:/boot/vmlinuz-6.18.52-production+truenas"
+    },
     "repertoire": "ascii+box",
     "sha256": "56e41016311834d94da724d4ac22ddf83533c9c4c48100e7ec207f94bfd3e283"
    }

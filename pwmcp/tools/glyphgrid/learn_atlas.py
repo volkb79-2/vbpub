@@ -53,11 +53,25 @@ def group_of(fid, groups):
     return groups.get(fid.split("-")[0], fid) if groups else fid
 
 
+CORRECTION_NOTES = []  # (frame, from, status) of every correction considered since import: 'applied' | 'already applied' | 'no matching line'
+
+
 def read_gt(path: str, corrections=None, frame_id=None):
+    """Transcript lines, with ``corrections`` {frame: [[from, to], ...]} applied in memory.  A correction whose ``from`` line is absent is NOT
+    silent: it is 'already applied' when the ``to`` line is present (the corpus already carries the fix), else 'no matching line'
+    (see ``CORRECTION_NOTES``)."""
     with open(path, encoding="utf-8") as f:
         lines = [ln.rstrip("\n") for ln in f.read().split("\n")]
     for old, new in (corrections or {}).get(frame_id or "", []):
-        lines = [new if ln.strip() == old.strip() else ln for ln in lines]
+        if any(ln.strip() == old.strip() for ln in lines):
+            lines = [new if ln.strip() == old.strip() else ln for ln in lines]
+            status = "applied"
+        elif any(ln.strip() == new.strip() for ln in lines):
+            status = "already applied"
+        else:
+            status = "no matching line"
+        if (frame_id, old, status) not in CORRECTION_NOTES:
+            CORRECTION_NOTES.append((frame_id, old, status))
     return lines
 
 
@@ -320,6 +334,8 @@ def main(argv=None):
     if a.report:
         with open(a.report, "w", encoding="utf-8") as f:
             json.dump(rep, f, indent=1, ensure_ascii=False)
+    for frame, line, status in CORRECTION_NOTES:
+        print("correction %-40s %-16s %r" % (frame, status, line))
     print("fonts:", {n: len(f["glyphs"]) for n, f in atlas.fonts.items()})
     print("conflicts:", len(rep["conflicts"]), "quarantined '?':", len(rep["quarantined_question_marks"]))
     for fid, r in st["reports"].items():
