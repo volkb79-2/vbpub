@@ -30,7 +30,13 @@ while [[ $# -gt 0 ]]; do
     --no-cache) no_cache=1; shift ;;
     --cgroup-parent) cgroup_parent=${2:?}; shift 2 ;;
     -h|--help)
-      echo "usage: $0 [--wheel-dir DIR | --run-gate-published VERSION|latest] [--pip-min-release-age DURATION] [--tag IMAGE] [--base-image IMAGE] [--cli-extended-resolve pinned|latest|local] [--cli-extended-wheel-sha256 HEX] [--no-cache] [--cgroup-parent SLICE]"
+      echo "usage: $0 [--wheel-dir DIR | --run-gate-published VERSION|latest] [--pip-min-release-age DURATION] [--tag IMAGE] [--base-image IMAGE] [--cli-extended-resolve pinned|latest|local] [--cli-extended-wheel-sha256 HEX (required for latest and local)] [--no-cache] [--cgroup-parent SLICE]"
+      echo "  --wheel-dir DIR            install the one run_gate-*.whl in DIR (default: run-gate-project/dist, a developer build)"
+      echo "  --run-gate-published X.Y.Z|latest"
+      echo "                             install the PUBLISHED Run-Gate wheel instead (run-gate-vX.Y.Z, or the run-gate-latest pointer),"
+      echo "                             digest-verified by fetch-run-gate-wheel.py; the only kind of image the CMRU release gate accepts"
+      echo "  --pip-min-release-age PnD  third-party releases must be at least n days old (pip --uploaded-prior-to; default P14D);"
+      echo "                             pair with --no-cache so the dependency layer is re-resolved"
       exit 0
       ;;
     *) usage ;;

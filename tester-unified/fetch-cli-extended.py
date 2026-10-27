@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import re
 import sys
@@ -72,8 +73,14 @@ def _opener(url: str) -> urllib.request.OpenerDirector:
 
 
 def _urlopen_bytes(url: str) -> bytes:
-    with _opener(url).open(url, timeout=60) as response:  # noqa: S310 (https, prefix-checked)
-        return response.read()
+    try:
+        with _opener(url).open(url, timeout=60) as response:  # noqa: S310 (https, prefix-checked)
+            return response.read()
+    except http.client.HTTPException as exc:
+        # A body shorter than its Content-Length (IncompleteRead), a bad status line, ...: these are
+        # not OSErrors, so the callers' `except OSError` would let them escape as tracebacks instead
+        # of a refusal. Same transport for fetch-run-gate-wheel.py.
+        raise OSError(f"{type(exc).__name__}: {exc}") from exc
 
 
 def _version_key(version: str) -> tuple[int, ...]:

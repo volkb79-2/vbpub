@@ -15,14 +15,27 @@ DOCS = [ROOT / "README.md", ROOT / "docs" / "DESIGN-GUIDE.md", ROOT / "docs" / "
 LINKING = DOCS + [REPO / "tester-unified" / "README.md"]
 
 
+#: The two states of a consumer's base pin: the local tag before tester-base's first release, and the
+#: published digest reference the controller switches the defaults to afterwards (docs/CONSUMERS.md
+#: "After the first release"). Recognising both keeps this lane green across that switch.
+_BASE_PIN = re.compile(
+    r"^ARG (\w+)=(?:tester-base:local|ghcr\.io/volkb79-2/tester-base@sha256:[0-9a-f]{64})$", re.MULTILINE,
+)
+
+
+def base_arg_name(dockerfile_text: str) -> str | None:
+    """The ARG that names tester-base as the default base in *dockerfile_text*, or None."""
+    match = _BASE_PIN.search(dockerfile_text)
+    return match.group(1) if match else None
+
+
 def consumer_base_args() -> dict[str, str]:
-    """{consumer Dockerfile: ARG name} for every shipped consumer whose base ARG defaults to tester-base:local."""
+    """{consumer Dockerfile: ARG name} for every shipped consumer whose base ARG defaults to tester-base."""
     found = {}
     for relative in ("tester-unified/Dockerfile", "wheel-builder/Dockerfile"):
-        text = (REPO / relative).read_text(encoding="utf-8")
-        match = re.search(r"^ARG (\w+)=tester-base:local$", text, re.MULTILINE)
-        if match:
-            found[relative] = match.group(1)
+        name = base_arg_name((REPO / relative).read_text(encoding="utf-8"))
+        if name:
+            found[relative] = name
     return found
 
 
@@ -66,6 +79,18 @@ class DocsTriad(unittest.TestCase):
             for name in declared:
                 self.assertIn(name, shipped.values(), f"{name} is not a base ARG of any shipped consumer Dockerfile")
                 self.assertIn(f"FROM ${{{name}}}", block)
+
+    def test_the_pin_site_is_recognised_before_and_after_the_release_switch(self) -> None:
+        """The runbook (tester-unified/docs/CONSUMERS.md, tester-base/docs/CONSUMERS.md) has the controller
+        replace `tester-base:local` with the published digest reference after the first release; the
+        contract lane must not go red on that commit."""
+        local = "ARG TESTER_UNIFIED_BASE_IMAGE=tester-base:local\nFROM ${TESTER_UNIFIED_BASE_IMAGE}\n"
+        published = local.replace("tester-base:local", "ghcr.io/volkb79-2/tester-base@sha256:" + "a" * 64)
+        self.assertEqual(base_arg_name(local), "TESTER_UNIFIED_BASE_IMAGE")
+        self.assertEqual(base_arg_name(published), "TESTER_UNIFIED_BASE_IMAGE")
+        self.assertIsNone(base_arg_name(local.replace("tester-base:local", "python:3.14-trixie")))
+        self.assertIsNone(base_arg_name(local.replace("tester-base:local", "ghcr.io/volkb79-2/tester-base:latest")))
+        self.assertEqual(len(consumer_base_args()), 2, consumer_base_args())
 
     def test_the_docs_name_the_real_pin_site_of_every_shipped_consumer(self) -> None:
         docs = text_of(DOCS)

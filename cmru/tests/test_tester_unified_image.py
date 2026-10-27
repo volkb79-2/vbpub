@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib.util
 import fnmatch
 import hashlib
+import http.client
 import json
 import posixpath
 import os
@@ -4622,6 +4623,43 @@ def test_run_gate_fetcher_turns_download_failures_into_clean_exits(tmp_path):
         fetcher.fetch_wheel(None, tmp_path / "s", broken)
     with pytest.raises(SystemExit, match="cannot read the checksum sidecar"):
         fetcher.fetch_wheel("24.1.0", tmp_path / "s", broken)
+
+
+def test_run_gate_fetcher_turns_a_truncated_download_into_a_clean_refusal(tmp_path, monkeypatch):
+    """A body shorter than its Content-Length surfaces as ``http.client.IncompleteRead``, which is
+    NOT an ``OSError``: unless the shared transport converts it, both fetchers die with a traceback
+    (the digest check never runs) instead of refusing with their own message."""
+    fetcher, _, _, _ = _fake_run_gate_release()
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            raise http.client.IncompleteRead(b"partial", 100)
+
+    class Opener:
+        def open(self, url, timeout=None):
+            return Response()
+
+    monkeypatch.setattr(fetcher._net, "_opener", lambda url: Opener())
+    with pytest.raises(OSError, match="IncompleteRead"):
+        fetcher._net._urlopen_bytes(fetcher.POINTER_URL)
+    with pytest.raises(SystemExit, match="cannot read the release pointer"):
+        fetcher.fetch_wheel(None, tmp_path / "s")
+    assert not (tmp_path / "s").exists()
+
+
+def test_run_gate_fetcher_refuses_a_destination_it_cannot_stage_into(tmp_path):
+    fetcher, fetch, _, _ = _fake_run_gate_release()
+    blocker = tmp_path / "blocker"
+    blocker.write_bytes(b"")
+    with pytest.raises(SystemExit, match="cannot stage"):
+        fetcher.fetch_wheel(None, blocker, fetch)
+    assert blocker.read_bytes() == b""
 
 
 def test_run_gate_fetcher_main_prints_the_staged_path(tmp_path, monkeypatch, capsys):
