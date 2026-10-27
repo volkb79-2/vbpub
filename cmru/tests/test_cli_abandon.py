@@ -1753,6 +1753,7 @@ def test_ki98_untagged_publication_record_roundtrip_and_forget(tmp_path):
     transaction.start_untagged_publication_record(tmp_path, ws)
     assert transaction.read_untagged_publication_record(tmp_path, ws) == []
     transaction.mark_untagged_publication_started(tmp_path, ws, "mdt-cockpit")
+    transaction.mark_untagged_publication_started(tmp_path, ws, "mdt-cockpit")  # idempotent
     transaction.start_untagged_publication_record(tmp_path, ws)  # a retry keeps it
     assert transaction.read_untagged_publication_record(tmp_path, ws) == ["mdt-cockpit"]
     transaction.forget_release_scope(tmp_path, ws)
@@ -1851,6 +1852,30 @@ def test_ki98_untagged_source_already_in_origin_main_is_withheld(
 
     assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.REFUSED
     assert "already in origin/main" in capsys.readouterr().out
+
+
+def test_ki98_untagged_candidate_still_at_its_base_has_no_promoted_source_and_is_abandonable(
+    monkeypatch, tmp_path, capsys,
+):
+    # The candidate branch never advanced past the release base, so nothing could have been promoted:
+    # the origin/main ancestry question is not even asked.
+    candidate = _untagged_case(monkeypatch, tmp_path, record=[])
+    asked = []
+
+    def run_local_git(_root, *args, **_kwargs):
+        asked.append(args)
+        if args[:1] == ("rev-parse",):
+            return SimpleNamespace(returncode=0, stdout=candidate.base + "\n", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+    monkeypatch.setattr(cli, "run_local_git", run_local_git)
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == 0
+    assert "Withheld" not in capsys.readouterr().out
+    assert not any(
+        a[:2] == ("merge-base", "--is-ancestor") and a[2] == f"refs/heads/{candidate.branch}"
+        for a in asked
+    )
 
 
 def test_ki98_untagged_source_promotion_that_cannot_be_ruled_out_is_withheld(
