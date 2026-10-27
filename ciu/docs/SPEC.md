@@ -5238,8 +5238,10 @@ once saved) and `base_branch_ref` is the canonical LOCAL branch name (no
 computes it exactly once, before allocation, together with the frozen base
 commit: it is the branch name only when the requested base (an optional leading
 `refs/heads/` removed) names an existing local branch whose commit equals the
-frozen commit; a tag, SHA, remote-tracking ref, `HEAD`, or a branch that moved
-in between yields null. It is persisted with `base_ref` in the durable
+frozen commit; a tag, SHA, remote-tracking ref, `HEAD`, revision syntax
+(`main~0`, `main^0`, `main@{0}`), a branch that moved in between, or a branch
+whose name carries whitespace/control characters, revision-syntax characters or
+a literal `refs/` prefix yields null (Run-Gate then asks for an explicit `--base`). It is persisted with `base_ref` in the durable
 allocation snapshot and is never recomputed by `ensure`. `adopt` always writes
 null; the branch is never inferred from the SHA. In a v6 record the key is
 REQUIRED and, when a string, MUST be non-blank without whitespace or control
