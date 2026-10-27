@@ -12,13 +12,54 @@ into artwork. Each atlas font records its source file, sha256 and where it came 
 | `font:unifont-16` | GNU Unifont Regular 16 as shipped in GRUB's `unicode.pf2`, from the same ISO (`/boot/grub/fonts/unicode.pf2`) | GNU GPL-2.0-or-later with the GNU Font Embedding Exception, or SIL OFL-1.1 (dual-licensed by the Unifont project) | `662eb86fc1ea8963...` |
 | `font:edk2-8x19` | TianoCore/EDK2 UEFI console font (`EFI_NARROW_GLYPH` table of the graphics console), read from Debian `ovmf 2025.02-8+deb13u1`, `/usr/share/OVMF/OVMF_CODE_4M.fd` | BSD-2-Clause-Patent (EDK2) | `624e06de18b4fa53...` |
 
+## Console-extra atlas (2026-10-27): installer / rescue / console-setup fonts
+
+`pwmcp/tests/fixtures/glyphgrid/fonts.console-extra.atlas.json` (and `fonts.console-ambiguous.atlas.json`) are built by
+`build_font_atlas.py --manifest fonts-console-extra.manifest.json`; the manifest lists every source file with its sha256 (the build REFUSES a mismatch),
+each atlas font records file name, sha256, package/version/path and licence under `origin.provenance`. Sources (all fetched from official locations, checksums
+of the downloads verified, **GPG signatures NOT verified**):
+
+* Debian 13.7.0 amd64 netinst ISO, sha256 `a7ef94ac2fb9a7fec454552abd629b7cc9d5155c886165a45649f5ce6167e355` (matches `SHA256SUMS` on cdimage.debian.org/debian-cd/current).
+* grml-full 2026.09 amd64 ISO, sha256 `76e8019ff1b68ddb3e49cecb1ea35ecead9e0f1c1ba22c0e819c9b13de939e72` (matches `grml-full-2026.09-amd64.iso.sha256` on download.grml.org).
+* Debian trixie package `console-setup-linux 1.242~deb13u1` (`apt-get download`, deb sha256 `c96eb9386cd8d65dceb0a58726dcef7cf7a0aedca7f514139c225ab391baca27`).
+
+| atlas font | font | licence (package copyright file) | source file, sha256 |
+|---|---|---|---|
+| `font:terminus-8x16` | Terminus 8x16, `Uni3-Terminus16.psf.gz`; **the console font of the grml image** (`/etc/default/console-setup` FONTFACE=Terminus FONTSIZE=8x16, `cached_Uni3-Terminus16.psf.gz` is byte-identical, `setfont` runs on every vt) | SIL OFL-1.1, (c) 2010 Dimitar Toshkov Zhekov, Reserved Font Name "Terminus Font" (`copyright.fonts` of console-setup) | `2bc51a16e2bbd3ae...` |
+| `font:terminus-bold-8x16`, `-8x14`, `-6x12`, `-10x18`, `-10x20`, `-11x22`, `-12x24`, `-14x28`, `-16x32`, `terminus-bold-12x24`, `terminus-bold-16x32` | the remaining Terminus sizes/weights of `Uni3-Terminus*` (`console-setup` FONTFACE=Terminus/TerminusBold) | OFL-1.1 as above | full sha256 per file in the manifest |
+| `font:fixed-8x13/14/15/16/18` | `Uni3-Fixed{13,14,15,16,18}` (console-setup's default FONTFACE=Fixed) | public domain per `copyright.fonts` (misc-fixed 8x13/7x14/9x15/9x18 sources; the 8x16 source carries the Sony Corp./BIZNET Poland/Bolkhovityanov permissive notice). The BDF-to-PSF-size mapping is inferred from names, not stated | manifest |
+| `font:csvga-8x8/8x14/8x16/16x28/16x32` | `Lat15-VGA{8,14,16,28x16,32x16}` (console-setup FONTFACE=VGA) | MIT/X11-style, (c) 2000-2001 Dmitry Bolkhovityanov (`u_vga16.bdf`); derivation of the other sizes from it is not stated per size | manifest |
+| `font:linux-ter16x32` | Linux kernel `font_ter_16x32` (Terminus **Bold** 16x32, CP437 order), read from Debian `vmlinuz` 6.12.107+deb13-amd64 of the netinst ISO (`/install.amd/vmlinuz`) | GPL-2.0 (kernel); glyphs are Terminus Bold, OFL-1.1 | `2b2358b37674d250...` (bzImage) |
+
+"Also seen" records (verified bitmap-identical to an existing font, NOT added again; see `fonts.console-extra.report.json`):
+Debian kernel `vmlinuz` (`2b2358b3...`) and grml kernel `/boot/grmlfullamd64/vmlinuz` (`5e2698f8628f2dba...`) draw exactly the bitmaps of `font:vga-8x16`;
+grml GRUB `/boot/grub/fonts/unicode.pf2` (`dc6d6a18148cef2a...`, 57086 glyphs) is bitmap-identical to `font:unifont-16` over the repertoire (a different
+file than the TrueNAS one); Debian GRUB `/boot/grub/font.pf2` (`556e49a42fc9c8b1...`, "GNU Unifont Regular 16", 159 glyphs) is a strict SUBSET of
+`font:unifont-16` (123 of its 258 repertoire bitmaps; the box-drawing characters are missing from it).
+
+Not in the atlas: `fonts.console-ambiguous.atlas.json` holds three fonts that are near-duplicates of another font and, merged with the base atlas, turn
+exact reads into alias sets (measured on the TrueNAS corpus: font-exact cells 10346 -> 7083, alias 0 -> 3263): `font:fixed-8x16` (all 110 repertoire bitmaps are
+Unifont's), `font:csvga-8x16` (105 of 110 bitmaps equal the kernel VGA font), `font:terminus-bold-16x32` (108 of 110 equal the kernel's `font_ter_16x32`).
+Use them only for a target known to show them. The `fonts.console-extra` set merged into the base atlas leaves every number unchanged.
+
+### Regenerating the atlas at image build time instead of committing bytes (proposal, not implemented)
+
+The sidecar image (`containers/ocr/Dockerfile`, `debian:trixie-slim` pinned by digest) would, in a **throw-away build stage**, `apt-get install` (or
+`apt-get download` + `dpkg-deb -x`) the pinned packages `console-setup-linux=<version>`, `grub-common`/`fonts-unifont` (`unicode.pf2`), `linux-image-<abi>-amd64`
+(kernel fonts) and `ovmf` (EDK2 font), run `python3 tools/glyphgrid/build_font_atlas.py --manifest fonts-console-extra.manifest.json --src-root /stage
+--out /opt/pwmcp-ocr/fonts.atlas.json`, and copy only the resulting JSON plus this NOTICE into the final stage. The manifest's sha256 per file turns a
+changed package build into a loud build failure (re-vet and re-pin, per the 14-day freshness rule) instead of a silently different atlas. ISO-only sources
+(TrueNAS kernel/GRUB, Debian ISO kernel) have no package: either pin the ISO URL + sha256 in the build (download in the throw-away stage) or keep those few
+atlases committed. The repository then carries manifest + builder, not bitmaps; the licence review question below shrinks to "what does the built image
+have to ship", which this NOTICE answers per font.
+
 Obligations and status:
 
 * Shipping the atlas (for example inside the pwmcp OCR sidecar image) means redistributing data derived from the three fonts: this notice (names,
   licences, sources, sha256) must travel with it, and the source files can be re-obtained from the ISO / Debian package named above.
 * The glyph data is used as a lookup key, not as a font: whether pixel-for-pixel derived bitmap tables are a derivative work of the font, and what
   each licence (GPL-2.0 for the kernel and Unifont, with or without the font-embedding exception, versus BSD-2-Clause-Patent) then requires of the
-  image that contains them, **has not been legally reviewed**. Do not treat this file as legal advice; get a licence review before shipping the
+  image that contains them, **has not been legally reviewed** (this also covers the OFL-1.1 Terminus data: the Reserved Font Name clause concerns names of fonts, and the atlas is neither a font nor named "Terminus Font", but that is our reading, not a review). Do not treat this file as legal advice; get a licence review before shipping the
   atlas in a distributed image. Regenerating the atlas at image build time from the distro packages (instead of committing it) avoids carrying the
   bytes in this repository, at the price of needing those packages at build time.
 * `GLYPHGRID-FINDINGS.md` and the tests use cropped screenshots of the TrueNAS installer and of GRUB/OVMF screens purely as test fixtures of program output.

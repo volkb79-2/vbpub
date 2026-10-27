@@ -41,6 +41,26 @@ def _read(path):
 
 
 # ----------------------------------------------------------------------------- PSF
+def _psf1_entries(table: bytes, n: int):
+    """PSF1 unicode table -> list (one per glyph) of single code points.  Records are UCS-2LE values ended by 0xFFFF; a 0xFFFE inside a
+    record starts a combining sequence, which is not a code point of the glyph, so the rest of that record is ignored.  A truncated table
+    yields empty lists for the missing glyphs."""
+    out, pos = [], 0
+    for _ in range(n):
+        cps, seq = [], False
+        while pos + 2 <= len(table):
+            v = struct.unpack_from("<H", table, pos)[0]
+            pos += 2
+            if v == 0xFFFF:
+                break
+            if v == 0xFFFE:
+                seq = True
+            elif not seq:
+                cps.append(v)
+        out.append(cps)
+    return out
+
+
 def load_psf(path) -> FontFile:
     raw = open(path, "rb").read()
     data = gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw
@@ -53,10 +73,9 @@ def load_psf(path) -> FontFile:
         table = data[off + n * h:]
         maps = []
         if hastab:
-            for entry in table.split(b"\xff\xff")[:n]:
-                cps = [int.from_bytes(entry[i:i + 2], "little") for i in range(0, len(entry) - 1, 2)
-                       if entry[i:i + 2] not in (b"\xfe\xff",)]
-                maps.append(cps)
+            # PSF1 unicode table: per glyph a list of UCS-2 values ended by 0xFFFF; 0xFFFE starts a combining SEQUENCE (base + marks)
+            # that is NOT a single code point of this glyph, so everything from the first 0xFFFE on is dropped.
+            maps = _psf1_entries(table, n)
         else:
             maps = [[i] for i in range(n)]
     elif data[:4] == b"\x72\xb5\x4a\x86":  # PSF2
@@ -96,10 +115,11 @@ def load_raw_table(data, offset, n=256, w=8, h=16, name=None, note="", charmap="
     else:
         raw, path = open(data, "rb").read(), data
     glyphs = []
+    rb = (w + 7) // 8   # bytes per row: the kernel's 16x32 Terminus table has 2 (rows are big-endian, MSB = left pixel)
     for i in range(n):
-        bm = raw[offset + i * h:offset + (i + 1) * h]
+        bm = raw[offset + i * h * rb:offset + (i + 1) * h * rb]
         cps = list(unimap[i]) if unimap is not None else ([ord(CP437[i])] if charmap == "cp437" else [i])
-        glyphs.append((cps, list(bm), w, h, 0, 0))
+        glyphs.append((cps, [int.from_bytes(bm[y * rb:(y + 1) * rb], "big") >> (rb * 8 - w) for y in range(h)], w, h, 0, 0))
     return FontFile(name or "raw-%x" % offset, path, _sha(raw), w, h, glyphs,
                     note=note or "raw %d-glyph table at 0x%x of %s" % (n, offset, os.path.basename(path)))
 
@@ -309,6 +329,25 @@ def find_vga_table(blob: bytes) -> int:
         base = i - 0x41 * 16
         if base >= 0 and blob[base + 0x30 * 16:base + 0x31 * 16] == VGA_0:
             return base
+
+
+TER_BOLD_A = bytes.fromhex("0000000000000000000000001ff03ff8783c701c701c701c701c701c701c701c7ffc7ffc701c701c701c701c701c701c701c701c000000000000000000000000")
+TER_BOLD_0 = bytes.fromhex("0000000000000000000000001ff03ff8783c701c701c703c707c70fc71dc739c771c7e1c7c1c781c701c701c701c783c3ff81ff0000000000000000000000000")
+
+
+def find_ter16x32_table(blob: bytes) -> int:
+    """Offset of the 256x64-byte Terminus 16x32 table (the kernel's ``font_ter_16x32``) in a decompressed kernel.  Measured 2026-10-27 on the
+    Debian 13 kernel 6.12.107: the table holds Terminus **Bold** (ter-u32b) glyphs, CP437 index order, 2 bytes per row."""
+    for probe_a, probe_0 in ((TER_BOLD_A, TER_BOLD_0),):
+        i = -1
+        while True:
+            i = blob.find(probe_a, i + 1)
+            if i < 0:
+                break
+            base = i - 0x41 * 64
+            if base >= 0 and blob[base + 0x30 * 64:base + 0x31 * 64] == probe_0:
+                return base
+    raise ValueError("Terminus 16x32 font table not found")
 
 
 def load_edk2_narrow(blob: bytes, source_path: str, source_sha256: str, where: str) -> FontFile:

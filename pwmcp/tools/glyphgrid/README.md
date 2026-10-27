@@ -82,6 +82,9 @@ minority colour, so light-on-dark, dark-on-grey and reverse video give the same 
 
 ```
 python3 build_font_atlas.py --kernel-bzimage vmlinuz-... --pf2 unicode.pf2 --ovmf OVMF_CODE_4M.fd --out fonts.atlas.json   # also --psf/--hex/--bdf
+# installer/rescue console fonts (Debian console-setup Terminus/Fixed/VGA, kernel TER16x32, grml, Debian netinst): sha256-pinned manifest, tiers extra|ambiguous
+python3 build_font_atlas.py --manifest fonts-console-extra.manifest.json --src-root DIR --base-atlas fonts.atlas.json --report report.json --out fonts.console-extra.atlas.json
+# merge at load time: gg.Atlas.merge(base, extra); fonts.console-ambiguous.atlas.json only for targets known to show those fonts (see NOTICE.md)
 python3 verify_fonts.py --atlas fonts.atlas.json --bzimage ... --pf2 ... --ovmf ... --corpus CORPUS --series SERIES --out font-verify.json
 atlas = gg.Atlas.merge(gg.Atlas.load("fonts.atlas.json"), learned_atlas)      # font entries first, learned ones for other consoles
 ```

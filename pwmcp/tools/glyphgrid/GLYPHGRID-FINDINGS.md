@@ -381,3 +381,23 @@ ASCII incl. `! ? # % & @ ~ | \`), (2) systemd boot messages with the Linux conso
 with real typographic quotes and arrows at 8x16 and 8x19, (4) BIOS/UEFI setup in text mode, (5) a console with box drawing and a visible cursor in both
 phases (block/underline), (6) the same screens at another VGA mode (e.g. 1024x768 where the canvas may be scaled), (7) a full printable-ASCII test page in
 each font (one frame labels all 95 glyphs: the fastest way to close the alphabet).
+
+## Installer / rescue console fonts MEASURED from the images (2026-10-27, font-FILE class F; no screenshots)
+
+Sources checksum-verified (Debian 13.7.0 netinst `a7ef94ac...`, grml-full 2026.09 `76e8019f...`; GPG signatures not verified). Details, sha256s and licences: `NOTICE.md`.
+
+* **Debian 13.7.0 text installer.** (a) *GRUB* (UEFI/BIOS-grub menu): `/boot/grub/font.pf2` = "GNU Unifont Regular 16", only 159 glyphs; all its repertoire bitmaps are
+  Unifont's (`font:unifont-16`), but the box-drawing characters are absent (123 of the 258 repertoire bitmaps). (b) *isolinux* menu (`vesamenu.c32`, BIOS): the ISO contains NO font
+  file and no IBM-VGA 8x16 table in `vesamenu.c32`/`libcom32.c32`/`ldlinux.c32`/`isolinux.bin`; the menu text comes from the BIOS VGA ROM font at run time (firmware dependent;
+  SeaBIOS' `vgabios-stdvga.bin` does NOT contain the IBM VGA table either, so on QEMU/SeaBIOS it is a different 8x16 font that is **not in the atlas**). (c) *d-i text screens*
+  (newt): the initrd carries `setfont` but **no PSF console font** (English install) and `/usr/lib/unifont.bgf` (BOGL font for the `bterm` framebuffer terminal used for
+  CJK/Indic languages; BGF format not parsed here); the console font is therefore the kernel's: `font_vga_8x16` (bitmap-identical to `font:vga-8x16`, the TrueNAS font)
+  and `font_ter_16x32` (Terminus **Bold** 16x32, a font on its own: `font:linux-ter16x32`) in kernel 6.12.107+deb13-amd64. Which of the two the kernel picks depends on the
+  framebuffer size (not measured here: no machine was booted).
+* **grml-full 2026.09.** Boot menu is GRUB only (no isolinux in the ISO), font `unicode.pf2` = Unifont 16, 57086 glyphs, bitmap-identical to `font:unifont-16` over the repertoire.
+  Console: `/etc/default/console-setup` CODESET=Uni3 FONTFACE=Terminus FONTSIZE=8x16, `setfont /usr/share/consolefonts/Uni3-Terminus16.psf.gz` on every vt: `font:terminus-8x16`
+  (the cached file is byte-identical to the Debian package file). The grml kernel's built-in VGA font is again `font:vga-8x16`.
+* **Collisions found by merging** (TrueNAS corpus, 19 frames, 10357 ink cells): merging the 20 "extra" fonts leaves font-exact cells 10346 -> 10346, alias 0 -> 0, homoglyph cells 1886 -> 1886, audit
+  disagreements unchanged. Merging also the 3 near-duplicate fonts (`fixed-8x16` = Unifont's bitmaps, `csvga-8x16` ~ kernel VGA, `terminus-bold-16x32` ~ kernel TER) gives font-exact 7083 /
+  alias 3263: the reader cannot tell those pairs apart on ASCII-mostly screens and now says so (it did not before only because the alternatives were absent from the atlas).
+  Consequence for consumers: choose the atlas per target (extra tier by default; ambiguous tier only when the screen font is known).
