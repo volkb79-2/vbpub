@@ -1,0 +1,65 @@
+// iomon blk.bt - block-layer latency and attribution, aggregated in kernel.
+// Params: $1 and $2 = cgroup ids (kernfs ids) of the two watched workloads (0 = unused).
+// Latency = blk_mq_start_request .. blk_mq_end_request (device service time incl. dispatch queue),
+// dev key = (major<<20)|minor (dev_t style); owner cgroup = the bio's blkg cgroup (who the IO is charged to), NOT the flusher thread.
+// op: 0 read, 1 write, 2 flush, 3 other; sy: 1 when REQ_SYNC. who: 1/2 watched, 0 others.
+kprobe:blk_mq_start_request
+{
+  $rq = (struct request *)arg0;
+  $id = (uint64)0;
+  if ($rq->bio) { $id = $rq->bio->bi_blkg->blkcg->css.cgroup->kn->id; }
+  $f = (uint32)$rq->cmd_flags;
+  $op = $f & 255;
+  $kind = (uint32)3;
+  if ($op == 0) { $kind = 0; }
+  if ($op == 1) { $kind = 1; }
+  if ($op == 2) { $kind = 2; }
+  $sync = ($f >> 11) & 1;
+  @t[arg0] = nsecs;
+  @own[arg0] = $id;
+  @kd[arg0] = $kind + ($sync * 16);
+  @bytes[arg0] = $rq->__data_len;
+  @dsk[arg0] = ($rq->q->disk->major << 20) | $rq->q->disk->first_minor;
+}
+// who writes: bytes submitted by process name and owner cgroup (submit context; buffered
+// writeback shows up as the flusher kworker, journal as jbd2, swap as the reclaiming task)
+kprobe:submit_bio
+{
+  $bio = (struct bio *)arg0;
+  if (($bio->bi_opf & 255) == 1) {
+    @wbytes_comm[comm, $bio->bi_blkg->blkcg->css.cgroup->kn->id] = sum($bio->bi_iter.bi_size);
+  }
+}
+kprobe:blk_mq_end_request
+/@t[arg0]/
+{
+  $us = (nsecs - @t[arg0]) / 1000;
+  $kd = @kd[arg0];
+  $kind = $kd & 15;
+  $sy = $kd >> 4;
+  $id = @own[arg0];
+  $who = $id == $1 ? 1 : ($id == $2 ? 2 : 0);
+  @lat[@dsk[arg0], $kind, $sy, $who] = hist($us);
+  @ios[@dsk[arg0], $kind, $who] = count();
+  @bytes_by_cg[$id, $kind] = sum(@bytes[arg0]);
+  if ($us > 100000) { @slow[@dsk[arg0], $kind, $who] = count(); }
+  delete(@t[arg0]); delete(@own[arg0]); delete(@kd[arg0]); delete(@bytes[arg0]); delete(@dsk[arg0]);
+}
+// tag (request slot) wait: the nr_requests / rq_wait signal
+kprobe:blk_mq_get_tag
+{
+  @gt[tid] = nsecs;
+}
+kretprobe:blk_mq_get_tag
+/@gt[tid]/
+{
+  $us = (nsecs - @gt[tid]) / 1000;
+  $who = cgroup == $1 ? 1 : (cgroup == $2 ? 2 : 0);
+  @tagwait[$who] = hist($us);
+  delete(@gt[tid]);
+}
+interval:s:30
+{
+  print(@lat); print(@ios); print(@slow); print(@bytes_by_cg); print(@wbytes_comm); print(@tagwait);
+  clear(@lat); clear(@ios); clear(@slow); clear(@bytes_by_cg); clear(@wbytes_comm); clear(@tagwait);
+}
