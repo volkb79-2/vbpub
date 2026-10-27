@@ -186,8 +186,21 @@ developer `run-gate-project/dist` wheel can never pass it.
 
 ### Where the rebuild sits in the release order, and the bootstrap
 
-The order is cmru, tester-base, assay and cgroup-profiler, run-gate, **rebuild this image**, ciu, nyxloom and
-pwmcp, mdt-cockpit. Three checks bind a tester image to a Run-Gate, and they agree at exactly one point:
+The authoritative order is `cmru.orchestration.toml` (`project_order` with `depends_on`): cli-extended,
+cgroup-profiler, run-gate-project, cmru, ciu, assay, topos, nyxloom, pwmcp, tls-edge,
+modern-debian-tools-python-debug, mdt-cockpit, tester-base. `cmru` declares `depends_on = ["cli-extended",
+"run-gate-project"]` for exactly the reason below: its gate needs a published Run-Gate that the host judge and the
+selected image both carry. **Rebuild this image between run-gate-project and cmru** in that order; no node exists
+for the step (TB-09). tester-base is last and nothing depends on it, which is harmless while the consumers default
+to the local tag and wrong after the pin switch (TB-02).
+
+Releasing cmru BEFORE run-gate (the 2026-10-27 wave: cmru 7.0.0 first) is a deviation this runbook documents, not
+the declared order. It works only because any published Run-Gate satisfies cmru's gate: the host judge stays on the
+previous release and `RUN_GATE_TESTER_UNIFIED_IMAGE` selects an image built on it (`tester-unified:prev-20261027`,
+24.0.1). The consequences: cmru is gated by the previous Run-Gate, not the one released later in the same wave, and
+the image still has to be rebuilt after the Run-Gate release for everything that follows.
+
+Three checks bind a tester image to a Run-Gate, and they agree at exactly one point:
 
 - **cmru's release gate** (`cmru/tools/run_release_gate.py`) requires the host judge to be a published stable
   release and the selected image's labels to be that release's exact wheel. It is the only gate that reads the
@@ -206,10 +219,8 @@ pwmcp, mdt-cockpit. Three checks bind a tester image to a Run-Gate, and they agr
   next Run-Gate release.
 
 So after a Run-Gate release: install the published wheel as the host judge, rebuild this image with
-`--run-gate-published latest`, promote, then release the consumers. A cmru release that precedes the Run-Gate
-release is gated by the image built on the previous published Run-Gate (on 2026-10-27 `tester-unified:prev-<date>`
-on 24.0.1 was selected because `:local` carried a developer wheel). No tool runs or checks the rebuild step for the
-non-cmru consumers; this runbook is its only record.
+`--run-gate-published latest`, promote, then release cmru and the consumers. No tool runs or checks the rebuild
+step for the non-cmru consumers; this runbook is its only record.
 
 ### What fails, and how
 

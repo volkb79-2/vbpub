@@ -20,8 +20,10 @@ import argparse
 import hashlib
 import http.client
 import json
+import os
 import re
 import sys
+import tempfile
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -81,6 +83,27 @@ def _urlopen_bytes(url: str) -> bytes:
         # not OSErrors, so the callers' `except OSError` would let them escape as tracebacks instead
         # of a refusal. Same transport for fetch-run-gate-wheel.py.
         raise OSError(f"{type(exc).__name__}: {exc}") from exc
+
+
+def _stage(dest: Path, name: str, payload: bytes, refusal: type[SystemExit]) -> Path:
+    """Write ``payload`` as ``dest/name``: atomically (a temporary name in the same directory,
+    removed on any failure, so a retry is never refused over a truncated file) and exclusively
+    (``link(2)`` fails on anything already at the target path, a planted symlink included, instead
+    of following or replacing it). Every OSError is a ``refusal`` (the caller's FetchError). Shared
+    by fetch-run-gate-wheel.py."""
+    target = dest / name
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+        handle, partial = tempfile.mkstemp(dir=dest, prefix=f".{name}.", suffix=".part")
+        try:
+            with os.fdopen(handle, "wb") as stream:
+                stream.write(payload)
+            os.link(partial, target)
+        finally:
+            os.unlink(partial)
+    except OSError as exc:
+        raise refusal(f"cannot stage {name} into {dest}: {exc}") from exc
+    return target
 
 
 def _version_key(version: str) -> tuple[int, ...]:
@@ -167,10 +190,7 @@ def fetch_wheel(
     actual = hashlib.sha256(payload).hexdigest()
     if actual != expected:
         raise FetchError(f"sha256 mismatch for {name}: expected {expected}, got {actual}")
-    dest.mkdir(parents=True, exist_ok=True)
-    target = dest / name
-    target.write_bytes(payload)
-    return target
+    return _stage(dest, name, payload, FetchError)
 
 
 def main(argv: list[str] | None = None) -> int:

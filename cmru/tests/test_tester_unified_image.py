@@ -1866,6 +1866,50 @@ def test_fetcher_turns_a_failed_wheel_download_into_a_clean_exit(tmp_path):
     assert not (tmp_path / "x").exists()
 
 
+def test_fetcher_refuses_a_destination_it_cannot_stage_into(tmp_path):
+    """Review round 2 (Sonnet): the cli-extended fetcher must refuse the same way the run-gate
+    fetcher does instead of a raw FileExistsError."""
+    fetcher = _load_fetcher()
+    fetch, _ = _fake_release()
+    blocker = tmp_path / "blocker"
+    blocker.write_bytes(b"")
+    with pytest.raises(SystemExit, match="cannot stage"):
+        fetcher.fetch_wheel(fetcher.POINTER_URL, None, None, blocker, "0.2.0", fetch)
+    assert blocker.read_bytes() == b""
+
+
+def test_fetcher_does_not_write_through_a_symlink_planted_at_the_wheel_name(tmp_path):
+    fetcher = _load_fetcher()
+    fetch, _ = _fake_release()
+    victim = tmp_path / "victim"
+    victim.write_bytes(b"original")
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    (dest / _WHEEL_NAME).symlink_to(victim)
+    with pytest.raises(SystemExit, match="cannot stage"):
+        fetcher.fetch_wheel(fetcher.POINTER_URL, None, None, dest, "0.2.0", fetch)
+    assert victim.read_bytes() == b"original"
+    assert sorted(p.name for p in dest.iterdir()) == [_WHEEL_NAME]  # the symlink, and no partial file
+
+
+def test_fetcher_leaves_no_partial_file_when_staging_fails(tmp_path, monkeypatch):
+    """The wheel is written to a temporary name and linked into place; a failure between the two
+    removes the temporary file so a retry into the same directory is not refused."""
+    fetcher = _load_fetcher()
+    fetch, _ = _fake_release()
+    dest = tmp_path / "dest"
+
+    def boom(src, dst, **kwargs):
+        raise OSError("no link for you")
+
+    monkeypatch.setattr(os, "link", boom)
+    with pytest.raises(SystemExit, match="cannot stage .*no link for you"):
+        fetcher.fetch_wheel(fetcher.POINTER_URL, None, None, dest, "0.2.0", fetch)
+    assert list(dest.iterdir()) == []
+    monkeypatch.undo()
+    assert fetcher.fetch_wheel(fetcher.POINTER_URL, None, None, dest, "0.2.0", fetch).read_bytes() == b"wheel-bytes"
+
+
 # --- B2: HTTPS only across redirects, to allowlisted hosts only ---------------
 
 @pytest.mark.parametrize("target, message", [
@@ -4668,6 +4712,22 @@ def test_run_gate_fetcher_refuses_a_destination_it_cannot_stage_into(tmp_path):
     assert blocker.read_bytes() == b""
 
 
+def test_run_gate_fetcher_leaves_no_partial_wheel_when_staging_fails(tmp_path, monkeypatch):
+    """A truncated run_gate-*.whl left behind would make the retry refuse ("already holds")."""
+    fetcher, fetch, _, name = _fake_run_gate_release()
+    dest = tmp_path / "stage"
+
+    def boom(src, dst, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "link", boom)
+    with pytest.raises(SystemExit, match="cannot stage .*disk full"):
+        fetcher.fetch_wheel(None, dest, fetch)
+    assert list(dest.iterdir()) == []
+    monkeypatch.undo()
+    assert fetcher.fetch_wheel(None, dest, fetch).name == name
+
+
 def test_run_gate_fetcher_main_prints_the_staged_path(tmp_path, monkeypatch, capsys):
     fetcher, fetch, _, name = _fake_run_gate_release("24.1.0")
     monkeypatch.setattr(fetcher._net, "_urlopen_bytes", fetch)
@@ -4792,7 +4852,20 @@ def test_the_age_window_never_applies_to_a_first_party_package(tmp_path):
     first-party distribution. tester-base runs no pip at all."""
     for name in ("iobench", "vmscreen", "worktree", "cli-extended", "run-gate", "cgroup-profiler", "pwmcp-client"):
         assert name in gen.ESTATE_INTERNAL, name
-    assert not re.search(r"\bpip\b", (REPO_ROOT / "tester-base" / "Dockerfile").read_text("utf-8"))
+    tester_base = REPO_ROOT / "tester-base" / "Dockerfile"
+    assert not re.search(r"\bpip\b", tester_base.read_text("utf-8"))
+    # A global age setting (pip reads PIP_UPLOADED_PRIOR_TO, or a pip.conf key, for EVERY invocation,
+    # including the ones inside `python -m build`'s isolated environment and any later first-party
+    # install into the venv) would apply the window to first-party packages invisibly to the
+    # per-command checks below. None of the three images may set one. TB-08 proposes exactly such an
+    # ENV for wheel-builder's run-time backend installs: adopting it means revisiting this guard
+    # (e.g. asserting the env is unset for any first-party install), not deleting it.
+    for dockerfile in (DOCKERFILE, WHEEL_BUILDER, tester_base):
+        code = "\n".join(
+            line for line in dockerfile.read_text("utf-8").splitlines() if not line.lstrip().startswith("#")
+        )
+        assert "PIP_UPLOADED_PRIOR_TO" not in code, dockerfile.name
+        assert not re.search(r"pip\.conf|PIP_CONFIG_FILE|uploaded[-_]prior[-_]to\s*=", code), dockerfile.name
 
     aged, first_party = [], []
     for dockerfile in (DOCKERFILE, WHEEL_BUILDER):

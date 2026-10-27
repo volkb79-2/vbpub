@@ -109,18 +109,15 @@ def fetch_wheel(
     actual = hashlib.sha256(payload).hexdigest()
     if actual != sidecar_sha:
         raise FetchError(f"sha256 mismatch for {name}: expected {sidecar_sha}, got {actual}")
-    target = dest / name
     try:
         dest.mkdir(parents=True, exist_ok=True)
-        if any(dest.glob("run_gate-*.whl")):
-            raise FetchError(f"{dest} already holds a run_gate wheel; stage into an empty directory")
-        # Exclusive create: a name planted between the glob and the write (a symlink, say) fails here
-        # instead of being followed.
-        with open(target, "xb") as stream:
-            stream.write(payload)
     except OSError as exc:
         raise FetchError(f"cannot stage {name} into {dest}: {exc}") from exc
-    return target
+    if any(dest.glob("run_gate-*.whl")):
+        raise FetchError(f"{dest} already holds a run_gate wheel; stage into an empty directory")
+    # Atomic and exclusive (temporary name, link(2) into place): a name planted between the glob and
+    # the link is refused rather than followed, and a failed write leaves no partial wheel behind.
+    return _net._stage(dest, name, payload, FetchError)
 
 
 def main(argv: list[str] | None = None) -> int:
