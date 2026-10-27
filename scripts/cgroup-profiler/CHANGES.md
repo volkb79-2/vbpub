@@ -8,6 +8,51 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [1.1.0] - 2026-10-27
+<!-- cmru: generated -->
+<!-- cmru: source-end=2562ebfbaf982205030d72fe6452aa0b21c639b6 -->
+
+### Fixed
+- fix(cgprofile): review follow-ups to 3e50df9cc: last-@ target option grammar (user@1000.service), swap.events fail = swap-out allocation failures, serve fail-fast documented, docker inspect -- (753d2fa6b)
+- fix(cgprofile): pre-release review of 1.1.0: swapev/memev_h collector groups, swap_fail event, canonical cgroup: paths, slice-name validation, exact-type docker inspect, finite PSI (3e50df9cc)
+- fix(cgprofile): join the sampler outside the daemon-wide lock in stop; cover the two uncovered CGP-110 branches; file review NITs N9-N12 (wave review r1) (420ac1554)
+- fix(cgprofile): bounded finalize lock; guard liveness kill and DAMON paths after close (review CGP-110 r3) (6ea5ef2fb)
+- fix(cgprofile): close the use-after-release window; document stop_forced in PROTOCOL (review CGP-110 r2) (5d80e02ce)
+- fix(cgprofile): CGP-110 review fixes: own-cgroup slice proof, wedged-worker escalation, shutdown force (ac7e17e7b)
+- fix(cgprofile): serve refuses to run under an unbounded cgprofile.slice (Sol B4) (353d90c95)
+- fix(cgprofile): stop must not claim completion while the sampler is running (Sol B2) (a3a314837)
+- fix(cgprofile): report an unconfirmed DAMON teardown to the consumer (Sol B3) (c201d69b6)
+- fix(cgprofile): refuse placement of a selected pid absent from its recorded origin (Sol B1) (98d25e37d)
+
+### Changed
+- Merge cgp-110-20261021 (6ea5ef2fb): CGP-110 / Sol blockers B1-B6 for cgprofile 1.1.0 (keep CIU-150 and CIU-151) (68762c9ca)
+- Merge origin/main into int-02-20261021 (gate the integrated tree) (62497cb0a)
+- BL-01: review fixes - label facts vs hypotheses, drop out-of-repo citations (e79dd01aa)
+- BL-01: renumber filed entries to free IDs (RG-108->RG-109, CIU-150->CIU-151, CP-24->CP-27) (4d384174c)
+- BL-01: file backlog entries RG-108, CIU-150 (+ CIU-134 third reproduction), CP-24 (d5761487d)
+- docs/test: INT-02 review fixes I-01..I-07 (f4267688a)
+- Merge cmru-candidate-integrated-20261017 (03c2f5bab) (INT-01 step 2) (66bd6c9f9)
+
+### Documentation
+- docs(cgprofile): final-tree gate results for 1.1.0 (r0-r1, r3 on 753d2fa6b), CP-38, CP-31 socket-unlink reproduction (fe8c2a6da)
+- docs(cgprofile): pre-release review backlog (CP-32..CP-37), review notes on CP-27/28/29, evidence addendum for 3e50df9cc (7a47e42f9)
+- docs(cgprofile): final gate table for 1.1.0 evidence (677a56d0c)
+- docs(cgprofile): record the 1.1.0 gate results (r0-r1 PASS, r3 PASS, R2 waived) (ab19854ea)
+- docs(cgprofile): 1.1.0 release evidence, R2 waiver (CP-30), socket-absence diagnosis (CP-31), CP-24/25/26 backlog entries with the park-ref pointer (d354b5e78)
+- docs(cgroup-profiler): file CP-28 monitor mode (standing named-scope sampler) and CP-29 cheap collector gaps; reference iomon vbpub@d1a19a159, iogov vbpub@2db1712aa (05bc30373)
+- docs(cgprofile): release-qualification state and stale records (Sol B6) (0ee87b042)
+
+### Testing
+- test(cgprofile): round-2 review nits (release in finally, assert already_stopped) (a8e3e9a90)
+- test(cgprofile): the serve CLI tests declare a bounded daemon slice (Sol B4 follow-up) (c4c1277ae)
+- test(cgprofile): add the bounded live contract-2 observer acceptance probe (Sol B5) (a8bb82b9f)
+- test(cgprofile): declare sequential pytest options (6d5852307)
+- test(cgprofile): enable selective R2 diagnostics (5e5c6916f)
+- test(cgprofile): refuse retirement when cgroup is unknown (8109072e9)
+
+<!-- cmru: pending release notes begin -->
 Release scope (CGP-110): the six blockers of the cgprofile-v1.0.0 Sol review.
 **No R2 (mutation) pass for 1.1.0**: R2 is deferred by operator policy; the
 registered `r0-r1` and `r3` lanes are the qualification. No R2 verdict may be
@@ -136,8 +181,7 @@ inferred from the r3 canaries.
   (`place-refused:identity-unavailable`) and no scope is created or attached,
   instead of being moved out of an unrelated unit and later restored to a stale
   origin.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [1.0.0] - 2026-10-17
 <!-- cmru: generated -->
