@@ -821,9 +821,12 @@ def test_user_facing_docs_match_persistence_targets(path: Path) -> None:
 
 def test_the_shell_snippets_in_home_persistence_paste_cleanly() -> None:
     """`NEW=~/mdt-cockpit-<checkout>-home` once shipped in the migration snippet: pasted, bash parses
-    `<checkout>` as a redirection. Every fenced bash block must parse (and pass shellcheck when present)."""
+    `<checkout>` as a redirection. Every fenced bash block must parse and pass shellcheck."""
     import shutil
 
+    # shellcheck ships in tester-base (hence tester-unified, where the smoke lane runs); a missing
+    # optional tool must fail, not silently skip the lint.
+    assert shutil.which("shellcheck"), "shellcheck is required (tester-base provides it)"
     text = (ROOT / "docs" / "HOME-PERSISTENCE.md").read_text(encoding="utf-8")
     blocks = re.findall(r"```bash\n(.*?)```", text, re.S)
     assert len(blocks) >= 2, "the manual-copy and the shared-home snippets"
@@ -832,9 +835,8 @@ def test_the_shell_snippets_in_home_persistence_paste_cleanly() -> None:
         assert "<checkout>" not in code and "<basename>" not in code, "a placeholder in code would be a redirection when pasted"
         syntax = subprocess.run(["bash", "-n"], input=block, capture_output=True, text=True)
         assert syntax.returncode == 0, syntax.stderr
-        if shutil.which("shellcheck"):
-            lint = subprocess.run(["shellcheck", "-s", "bash", "-S", "warning", "-"], input=block, capture_output=True, text=True)
-            assert lint.returncode == 0, lint.stdout
+        lint = subprocess.run(["shellcheck", "-s", "bash", "-S", "warning", "-"], input=block, capture_output=True, text=True)
+        assert lint.returncode == 0, lint.stdout
 
 
 def test_manual_copy_replaces_the_retired_migration_in_every_user_doc() -> None:
