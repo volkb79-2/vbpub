@@ -1058,3 +1058,23 @@ def test_v5_symlink_chain_group_writable_sticky_hops_and_loops(world, monkeypatc
     from iogov.config import _resolve_config_link
     with pytest.raises(ConfigError, match="more than 8 symlink hops"):
         _resolve_config_link(str(a))
+
+
+# ===== residual review notes: clock rollback, DAY_RE strictness =====================================================
+
+
+def test_clock_rollback_keeps_the_spent_budget_instead_of_rolling_to_zero():
+    cfg = from_mapping({})
+    t = [1_790_000_000.0 - 1_790_000_000.0 % 86400 + 100.0]
+    st = {"budget": {"day": "2099-01-01", "read_bytes": 1, "write_bytes": 1, "read_ops": 0, "write_ops": 0, "sync_ops": 0}}
+    b = DailyBudget(st, cfg, lambda: t[0])
+    assert b.remaining("write") == 0 and b.remaining("read") == 0
+    assert st["budget"]["write_bytes"] == cfg.max_write_bytes_per_day
+
+
+@pytest.mark.parametrize("day", ["2026-10-27\n", "٢٠٢٦-10-27", "2026-10-2٧"])
+def test_day_must_be_strict_ascii_yyyy_mm_dd(day):
+    from iogov.state import valid_budget
+    b = {"day": day, "read_bytes": 0, "write_bytes": 0, "read_ops": 0, "write_ops": 0, "sync_ops": 0}
+    assert not valid_budget(b)
+    assert valid_budget({**b, "day": "2026-10-27"})

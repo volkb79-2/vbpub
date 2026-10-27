@@ -14,7 +14,7 @@ import re
 MAX_EPOCH = 1e11  # epoch seconds: well past any plausible wall clock, well below float trouble
 MAX_COUNT = 1e15  # bytes / ops / counters
 FUTURE_SLACK_S = 8 * 86400.0  # no persisted timestamp may lie further ahead of the clock than the longest schedule (7 d backoff + jitter)
-DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+DAY_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")  # used with fullmatch: `$` accepts a trailing newline, `\d` accepts non-ASCII digits
 
 
 def finite(v, lo: float = 0.0, hi: float = MAX_EPOCH) -> bool:
@@ -36,7 +36,7 @@ BUDGET_COUNTERS = ("read_bytes", "write_bytes", "read_ops", "write_ops", "sync_o
 
 
 def valid_budget(b) -> bool:
-    return (isinstance(b, dict) and isinstance(b.get("day"), str) and bool(DAY_RE.match(b["day"]))
+    return (isinstance(b, dict) and isinstance(b.get("day"), str) and bool(DAY_RE.fullmatch(b["day"]))
             and all(count(b.get(k)) for k in BUDGET_COUNTERS))
 
 
