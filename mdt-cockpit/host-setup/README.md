@@ -750,8 +750,11 @@ the service and restarting it interrupts active builds; the installer says so
 and waits for the new socket before verifying/reusing the builder. Existing
 `mdt-managed` drift is refused rather than deleted. Schedule the restart, run
 host setup, then rebuild devcontainers so their mandatory socket mount and
-explicit environment are present. A running devcontainer is not required to
-register the builder.
+explicit environment are present. The preserved runtime directory means this
+restart does not invalidate an already-running container's bind mount. If a
+container was created before this preservation was installed and its mount
+source shows `//deleted`, rebuild that container once to bind the current host
+directory. A running devcontainer is not required to register the builder.
 
 Reboot-survival works in three layers; each exists because the previous one
 cannot express the next:
