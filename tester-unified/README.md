@@ -97,6 +97,10 @@ settings. For a direct shell invocation, export the required
 `CMRU_TESTER_MEMORY`, `CMRU_TESTER_MEMORY_SWAP`, `CMRU_TESTER_CPUS`,
 `CMRU_TESTER_PIDS_LIMIT`, and `CMRU_TESTER_CGROUP_PROBE_IMAGE` values from
 `cmru.orchestration.toml`; the probe image must already be present locally.
+A direct run additionally needs `CMRU_TESTER_UNIFIED_IMAGE`, `CMRU_TESTER_CGROUP_PARENT` and
+`CMRU_TESTER_CGROUP_FORWARD_GATES_VAR` (same file), and, from the MDT cockpit, `BUILDX_BUILDER=default`: the
+cockpit's `mdt-managed` builder is remote and cannot see a local `tester-base:local`. Verified 2026-10-27 by
+rebuilding the image this way (about 2 minutes); the previous image is kept as `tester-unified:prev-<date>` for rollback.
 
 ```bash
 tester-unified/build-image.sh --wheel-dir run-gate-project/dist --tag tester-unified:local
@@ -140,8 +144,8 @@ Image contents worth knowing (KI-52 / BG-05, 2026-10):
   `cli-extended>=0.3.0`): the generator SKIPS that line, so no cli-extended
   requirement ever reaches pip, and the image installs the RELEASED wheel by
   default: `fetch-cli-extended.py` downloads the asset PINNED in the Dockerfile
-  (`CLI_EXTENDED_WHEEL_URL` + `CLI_EXTENDED_WHEEL_SHA256` defaults, currently the
-  released 0.3.0 wheel; to bump, copy `url`/`sha256` from
+  (`CLI_EXTENDED_WHEEL_URL` + `CLI_EXTENDED_WHEEL_SHA256` defaults, see the
+  `ARG` defaults in the Dockerfile for the current released version; to bump, copy `url`/`sha256` from
   `cli-extended-latest/latest.json` into those defaults and rebuild).
   `--cli-extended-resolve latest` is the explicit opt-in that reads the
   pointer instead (also pass `--no-cache`); it additionally REQUIRES
