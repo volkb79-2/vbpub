@@ -11085,20 +11085,28 @@ def assay_closeout_group(lane: dict, run_text: str, command: str,
         f'{command} "${{__rg_co_a[@]}}" --format')
     # The closeout runs inside the lane's budgeted scope (the exec wrapper's
     # `timeout` and the post-exit budget check). It must therefore never eat
-    # the budget the lane itself earned: it gets at most half of what is LEFT
-    # (bash `$SECONDS` counts from the script start), capped at the fixed
-    # analysis timeout, and is skipped outright when under 20 s remain, so a
-    # lane that finished inside its budget is never turned into
-    # BUDGET_EXCEEDED by the analysis.
+    # the budget the lane itself earned: the analysis runs TWICE (json, then
+    # text), so EACH call gets at most a quarter of what is LEFT (bash
+    # `$SECONDS` counts from the script start) — the pair together never
+    # more than half — capped at the fixed analysis timeout per call, and the
+    # closeout is skipped outright when under 40 s remain (review round 3:
+    # the earlier half-per-call cap let the pair spend nearly the whole
+    # remainder). A json call that hits its cap (exit 124) skips the text
+    # call, which would only time out the same way. Each skip or timeout is
+    # written to the `.err` file so the host's "unavailable" closeout names
+    # the cause. So a lane that finished inside its budget is never turned
+    # into BUDGET_EXCEEDED by the analysis.
     budget = lane.get("budget")
     budget_s = budget_seconds(budget) if isinstance(budget, str) else 0
     if budget_s:
         left = (f"__rg_co_left=$(({budget_s} - SECONDS)); "
-                f"__rg_co_cap=$((__rg_co_left / 2 - 5)); "
+                f"__rg_co_cap=$((__rg_co_left / 4 - 5)); "
                 f"if [ \"$__rg_co_cap\" -gt {ASSAY_CLOSEOUT_TIMEOUT_SECONDS} ]; "
                 f"then __rg_co_cap={ASSAY_CLOSEOUT_TIMEOUT_SECONDS}; fi; ")
         gate_open = 'if [ "$__rg_co_cap" -ge 5 ]; then '
-        gate_close = "fi; "
+        gate_close = ("else printf 'closeout skipped: %s s of the lane "
+                      "budget remain, under the 40 s floor\\n' "
+                      f"\"$__rg_co_left\" >{rel['err']}; fi; ")
         cap = '$__rg_co_cap'
     else:
         left, gate_open, gate_close = "", "", ""
@@ -11112,7 +11120,10 @@ def assay_closeout_group(lane: dict, run_text: str, command: str,
         "__rg_co_t=(); if command -v timeout >/dev/null 2>&1; then "
         f"__rg_co_t=(timeout {cap}); fi; "
         f"{run_one} json >{rel['json']} 2>{rel['err']}; __rg_co_j=$?; "
-        f"{run_one} text >{rel['txt']} 2>>{rel['err']}; __rg_co_x=$?; "
+        f"if [ \"$__rg_co_j\" -eq 124 ]; then __rg_co_x=124; "
+        f"printf 'closeout analysis timed out after %s s; text rendering "
+        f"skipped\\n' {cap} >>{rel['err']}; else "
+        f"{run_one} text >{rel['txt']} 2>>{rel['err']}; __rg_co_x=$?; fi; "
         f"printf '%s %s\\n' \"$__rg_co_j\" \"$__rg_co_x\" >{rel['exit']}; "
         + gate_close +
         'exit "$rc"; }')

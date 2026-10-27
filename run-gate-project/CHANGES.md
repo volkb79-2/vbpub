@@ -21,9 +21,14 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   Assay, with valid unique rigors/statuses and reason codes, none R2; malformed
   or unverified claims are analyzed instead). A `kind = "command"` lane is
   never analyzed and has no opt-in (B108 phase 2, SPEC R-38, Assay A-497). The analysis only uses budget
-  the lane did not need: it gets at most half of what remains of the lane's
-  `budget` (capped at 900 s per call) and is skipped when under 20 s remain, so
-  it can never turn a lane that finished in budget into BUDGET_EXCEEDED.
+  the lane did not need: the analysis runs twice (json, then text) and each
+  call gets at most a quarter of what remains of the lane's `budget` (the pair
+  never more than half; capped at 900 s per call); the closeout is skipped
+  when under 40 s remain, a json call that times out skips the text call, and
+  a skip or timeout is named in the closeout's "unavailable" reason. So it can
+  never turn a lane that finished in budget into BUDGET_EXCEEDED. (Review
+  round 3: the round-2 cap was half PER CALL, so the pair could spend nearly
+  the whole remainder.)
 - Note (RG-110): a tester-unified image for ANOTHER tool's release gate is built
   from the PUBLISHED Run-Gate wheel with `tester-unified/build-image.sh
   --run-gate-published latest|X.Y.Z` (staged, digest-verified, by

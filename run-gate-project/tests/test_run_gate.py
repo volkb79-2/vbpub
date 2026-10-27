@@ -3862,20 +3862,27 @@ exit 64
         assert "campaign-unit.json" in with_commit
         assert 'exit "$rc"; }' in with_commit
 
-    def _run_inner(self, tmp_path, budget):
-        """Execute the real inner script with a recording fake judge."""
+    def _run_inner(self, tmp_path, budget, *, analyze_sleep=0, edit=None):
+        """Execute the real inner script with a recording fake judge whose
+        `analyze` can be made slow; `edit` rewrites the script before it
+        runs (to shrink a cap without a minutes-long sleep)."""
         project = tmp_path / "proj"
         project.mkdir(exist_ok=True)
         (tmp_path / ".run-gate").mkdir(exist_ok=True)
         fake = tmp_path / "fake-assay"
         log = tmp_path / "calls.log"
-        fake.write_text(f'#!/bin/sh\necho "$1" >> {log}\nexit 0\n')
+        fake.write_text(f'#!/bin/sh\necho "$1" >> {log}\n'
+                        f'[ "$1" = analyze ] && sleep {analyze_sleep}\nexit 0\n')
         fake.chmod(0o755)
         lane = {"assay_lane": "unit", "assay_command": [str(fake)], "pins": {}}
         if budget is not None:
             lane["budget"] = budget
         inner = run_gate.build_assay_inner(
             lane, project, tmp_path, closeout_commit=self._COMMIT)
+        if edit is not None:
+            edited = edit(inner)
+            assert edited != inner
+            inner = edited
         done = subprocess.run(["bash", "-c", inner], cwd=project,
                               capture_output=True, text=True, timeout=60)
         calls = log.read_text().split() if log.exists() else []
@@ -3885,11 +3892,51 @@ exit 64
         done, calls = self._run_inner(tmp_path, "1h")
         assert done.returncode == 0, done.stderr
         assert calls == ["run", "analyze", "analyze"]
+        exits = (tmp_path / "proj" / ".assay" / "campaign-unit.exit").read_text()
+        assert exits == "0 0\n"
 
     def test_the_closeout_is_skipped_when_the_lane_budget_is_nearly_spent(self, tmp_path):
         done, calls = self._run_inner(tmp_path, "10s")
         assert done.returncode == 0, done.stderr
         assert calls == ["run"]  # no analysis eats the lane's remaining budget
+        assay = tmp_path / "proj" / ".assay"
+        # The skip names itself where the host's "unavailable" reason reads
+        # its hint, and leaves no json/text/exit file to mistake for a run.
+        err = (assay / "campaign-unit.err").read_text()
+        assert err.startswith("closeout skipped: ") and "40 s floor" in err
+        assert sorted(p.name for p in assay.glob("campaign-unit.*")) == \
+            ["campaign-unit.err"]
+
+    def test_each_analysis_call_gets_a_quarter_of_the_remaining_budget(self, tmp_path):
+        """Two calls, each at most a quarter of what is left: together they
+        can never take more than half, whatever the judge does."""
+        lane = {"assay_lane": "unit", "assay_command": ["assay"], "pins": {},
+                "budget": "100s"}
+        inner = run_gate.build_assay_inner(
+            lane, Path("/p"), Path("/r"), closeout_commit=self._COMMIT)
+        assert "__rg_co_left=$((100 - SECONDS))" in inner
+        assert "__rg_co_cap=$((__rg_co_left / 4 - 5))" in inner
+        assert f"-gt {run_gate.ASSAY_CLOSEOUT_TIMEOUT_SECONDS}" in inner
+        assert 'if [ "$__rg_co_cap" -ge 5 ]' in inner   # i.e. >= 40 s left
+        # Two calls of (left/4 - 5) each, so at most left/2 - 10 in total.
+        assert inner.count("timeout $__rg_co_cap") == 1
+        assert inner.count('"${__rg_co_a[@]}" --format') == 2
+
+    def test_a_json_call_that_times_out_skips_the_text_call(self, tmp_path):
+        """The text call would only time out the same way and spend a second
+        cap; the exit file records 124 for both and the .err says why."""
+        done, calls = self._run_inner(
+            tmp_path, "1h", analyze_sleep=5,
+            edit=lambda s: s.replace("__rg_co_cap=$((__rg_co_left / 4 - 5))",
+                                     "__rg_co_cap=1").replace(
+                'if [ "$__rg_co_cap" -ge 5 ]', 'if [ "$__rg_co_cap" -ge 1 ]'))
+        assert done.returncode == 0, done.stderr
+        assert calls == ["run", "analyze"]
+        assay = tmp_path / "proj" / ".assay"
+        assert (assay / "campaign-unit.exit").read_text() == "124 124\n"
+        assert "timed out after 1 s; text rendering skipped" in \
+            (assay / "campaign-unit.err").read_text()
+        assert not (assay / "campaign-unit.txt").exists()
 
     def test_the_closeout_without_a_declared_budget_still_runs(self, tmp_path):
         done, calls = self._run_inner(tmp_path, None)
