@@ -582,13 +582,21 @@ class WorktreeInstanceRecord:
 
 
 def _valid_base_branch_ref(value: object) -> bool:
-    """True for ``None`` or a non-blank, space/control-free str."""
+    """True for ``None`` or a plausible canonical short branch name: non-blank,
+    no whitespace/control characters, no revision syntax (``~ ^ : ? * [ \\``,
+    ``..``, ``@{``), no leading ``-`` and no ``refs/`` prefix."""
     if value is None:
         return True
     return (
         isinstance(value, str)
         and bool(value)
-        and not any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in value)
+        and not value.startswith(("-", "refs/"))
+        and ".." not in value
+        and "@{" not in value
+        and not any(
+            ch.isspace() or ord(ch) < 32 or ord(ch) == 127 or ch in "~^:?*[\\"
+            for ch in value
+        )
     )
 
 
@@ -5489,6 +5497,14 @@ def _local_base_branch(repo_root: Path, base: str, base_commit: str) -> str | No
     *base_commit*; ``None`` for every other spelling (tag, SHA, remote-tracking
     ref, ``HEAD``) or a branch that moved since the commit was frozen."""
     name = base[len("refs/heads/"):] if base.startswith("refs/heads/") else base
+    if not _valid_base_branch_ref(name):
+        return None
+    # `rev-parse refs/heads/<name>^{commit}` also accepts revision syntax
+    # (`main~0`, `main^0`, `main@{0}`); `show-ref --verify` names exactly one
+    # existing ref, so only a real local branch gets through.
+    exact = _git(["show-ref", "--verify", "--quiet", f"refs/heads/{name}"], repo_root)
+    if exact.returncode != 0:
+        return None
     resolved = _git(
         ["rev-parse", "--verify", "--quiet", "--end-of-options",
          f"refs/heads/{name}^{{commit}}"],

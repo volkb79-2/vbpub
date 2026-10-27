@@ -2098,6 +2098,11 @@ class TestBaseBranchRef:
             ("by-head", "HEAD"),
             ("by-remote", "origin/main"),
             ("by-full-remote", "refs/remotes/origin/main"),
+            # Revision syntax resolves to the same commit but is not a branch name.
+            ("by-tilde", "main~0"),
+            ("by-caret", "main^0"),
+            ("by-peel", "main^{commit}"),
+            ("by-reflog", "main@{0}"),
         ):
             record = worktree.create(tmp_repo, logical, base=base)
             assert record.base_branch_ref is None, base
@@ -2432,6 +2437,13 @@ class TestManagedRecordValidation:
             (lambda raw: {**raw, "base_branch_ref": "ma\x7fin"}, "malformed base_branch_ref"),
             (lambda raw: {**raw, "base_branch_ref": 7}, "malformed base_branch_ref"),
             (lambda raw: {**raw, "base_branch_ref": ["main"]}, "malformed base_branch_ref"),
+            (lambda raw: {**raw, "base_branch_ref": "main~0"}, "malformed base_branch_ref"),
+            (lambda raw: {**raw, "base_branch_ref": "main^0"}, "malformed base_branch_ref"),
+            (lambda raw: {**raw, "base_branch_ref": "main@{0}"}, "malformed base_branch_ref"),
+            (lambda raw: {**raw, "base_branch_ref": "a..b"}, "malformed base_branch_ref"),
+            (lambda raw: {**raw, "base_branch_ref": "-main"}, "malformed base_branch_ref"),
+            (lambda raw: {**raw, "base_branch_ref": "refs/heads/main"}, "malformed base_branch_ref"),
+            (lambda raw: {**raw, "base_branch_ref": "ma:in"}, "malformed base_branch_ref"),
         ],
     )
     def test_schema_six_rejects_malformed_base_branch_ref(
