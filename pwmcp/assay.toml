@@ -28,6 +28,7 @@ targets = [
   "client/src/pwmcp_client/cli.py",
   "client/src/pwmcp_client/contract.py",
   "client/src/pwmcp_client/diagnostics.py",
+  "client/src/pwmcp_client/ocr.py",
   "client/src/pwmcp_client/session.py",
   "scripts/resolve-playwright-version.py",
 ]
@@ -67,6 +68,7 @@ targets = [
   "client/src/pwmcp_client/cli.py",
   "client/src/pwmcp_client/contract.py",
   "client/src/pwmcp_client/diagnostics.py",
+  "client/src/pwmcp_client/ocr.py",
   "client/src/pwmcp_client/session.py",
   "scripts/resolve-playwright-version.py",
 ]

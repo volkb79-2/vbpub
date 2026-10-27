@@ -23,12 +23,17 @@ class PwmcpContract:
     # None / "default" = the browser's own identity (no override).
     user_agent: str | None = None
     user_agent_source: str = "default"
+    # PWMCP-11: the OCR sidecar the service advertises at /contract (ocr.url, ocr.engines).
+    # Empty = OCR is not enabled (or the server predates the feature).
+    ocr_url: str = ""
+    ocr_engines: tuple[str, ...] = ()
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "PwmcpContract":
         endpoints = value["endpoints"]
         limits = value["run_server"]["limits"]
         ua = value.get("user_agent") or {}
+        ocr = value.get("ocr") or {}
         return cls(
             schema_version=int(value["schema_version"]),
             release=str(value["release"]),
@@ -42,6 +47,8 @@ class PwmcpContract:
             idle_recycle_seconds=int(limits["idle_recycle_seconds"]),
             user_agent=ua.get("value") or None,
             user_agent_source=str(ua.get("source") or "default"),
+            ocr_url=str(ocr.get("url") or ""),
+            ocr_engines=tuple(str(name) for name in (ocr.get("engines") or ())),
         )
 
 

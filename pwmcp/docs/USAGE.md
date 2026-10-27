@@ -94,6 +94,32 @@ line on stderr otherwise. With no override nothing is added: no field, no line.
 string); the server-level default is the `user_agent` config key. See
 [README: Overridable User Agent](../README.md#overridable-user-agent-pwmcp-09-opt-in-off-by-default).
 
+## Recognise text in an image or a canvas (`pwmcp ocr`, opt-in sidecar)
+
+Some consoles are a single `<canvas>`, so a snapshot has no text. When the stack runs the
+OCR sidecar (`pwmcp.ocr.enabled = true`; off by default, see
+[README: OCR sidecar](../README.md#ocr-sidecar-pwmcp-11-phase-1-opt-in-off-by-default)),
+`pwmcp ocr` turns an image into text with a confidence per word:
+
+```bash
+pwmcp ocr --image console.png                        # text only
+pwmcp ocr --image console.png --format tsv --min-conf 60
+cat console.png | pwmcp ocr --image - --json         # text, lines, words, confidences, boxes
+pwmcp ocr "$URL" --selector canvas --scale 2 --output screen.txt
+pwmcp ocr "$URL" --selector canvas --region 0,0,640,200 --wait-ms 1000
+```
+
+The usual agent path is: save a screenshot with the MCP `browser_take_screenshot` tool, then
+`pwmcp ocr --image FILE`. `--psm 6` (uniform block) is the default and suits consoles;
+`--scale N` upscales small text first; `--whitelist CHARS` restricts the alphabet;
+`--min-conf N` drops doubtful words; `--engine`/`--lang` select another engine or language.
+`--format text|json|tsv` (and the global `--json`) choose the output; `--output PATH` writes it
+to a file. The sidecar URL is `--sidecar-url`, else `$PWMCP_OCR_URL`, else the `ocr_url` in the
+contract; with none of them the command exits 2 and names `ocr.enabled`.
+
+It reports text and confidence only. It does not watch a screen for changes and does not send
+keys; treat low-confidence or empty results as "unknown", not as evidence.
+
 ## Unified Image: Three Services, One Hostname
 
 The unified image exposes three endpoints from the single service alias `pwmcp`:

@@ -341,6 +341,102 @@ reading a page that its owner has explicitly closed to automation acceptable. Wh
 given Anubis deployment lifts its block under these presets is not verified (see
 `KNOWN_ISSUES_TODO_BACKLOG.md` PWMCP-09).
 
+## OCR sidecar (PWMCP-11 phase 1, opt-in, off by default)
+
+**What it is.** A second, STATELESS container in the same ciu stack that turns an image
+into text: you POST a PNG/JPEG, it runs native Tesseract 5 and returns the recognised
+text plus a confidence (0-100) and a box for every line and word. It exists because some
+consoles are one `<canvas>` (for example a VNC web console), so Playwright snapshots carry
+no text and an agent could only read screenshots visually. It returns **TEXT AND
+CONFIDENCE, not decisions**: deciding what a screen means (and what to do about it)
+stays with the caller.
+
+**Non-goal of this phase.** No watching, no waiting for text, no sending keys. Those are
+phases 2 and 3 of PWMCP-11 and do not exist yet.
+
+**Enable it.** Nothing changes unless you do (default `enabled = false`, and a default render
+of the compose file is byte-identical to before). In `ciu.toml.j2`:
+
+```toml
+[pwmcp.ocr]
+enabled = true            # renders the second service
+# name = "pwmcp-ocr"      # service alias on the stack network (the only way to reach it)
+# port = 8941             # 8939 admin API, 8940 run-server admin, 8941 OCR
+# engines = "tesseract"   # advertised in /contract
+# max_bytes = 8388608     # request body limit (8 MiB)
+# max_dim = 4096          # max image width/height in pixels
+# timeout_s = 20          # per-request recognition timeout
+# mem_limit = "512m"      # narrowing caps; ciu governance owns cgroup_parent
+# cpus = "1.0"
+```
+
+The sidecar is reachable only on the stack network (no published port, no Traefik route, in
+either deployment mode), runs as uid 1000 with all capabilities dropped, a read-only root
+filesystem and a small tmpfs, needs no outbound network, and runs under `nice`. The
+pwmcp container learns its URL as `PWMCP_OCR_URL` (only rendered when enabled), and the
+gateway `/contract` advertises it as `ocr.url` / `ocr.engines`; servers without the feature
+simply lack the block and old clients ignore it.
+
+**HTTP API** (`http://<alias>:<port>`):
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /health` | `200 {"status":"ok"}` when Tesseract is usable, else `503` |
+| `GET /v1/engines` | engine names, availability, versions, installed languages |
+| `POST /v1/ocr` | body = the PNG/JPEG bytes (`Content-Length` required); query below |
+
+Query parameters of `POST /v1/ocr` (unknown or repeated ones are a 400): `engine`
+(`tesseract` default; `glyphgrid` is registered but answers `501
+{"error":"engine not implemented","code":"engine_unavailable"}` until phase 2), `lang`
+(default `eng`; must be installed), `psm` (3, 4, **6** default = uniform block, suited to
+consoles, 7, 11, 13), `scale` (integer 1-8, default 1; upscales before recognition because
+Tesseract wants glyphs of roughly 30 px or more; boxes are reported in ORIGINAL pixels),
+`whitelist` (printable ASCII, at most 128 characters, passed as one argv element, never
+through a shell) and `min_conf` (0-100, default 0; drops words below it). The response:
+
+```json
+{"engine":"tesseract","engine_version":"5.x","lang":"eng","psm":6,"width":1280,"height":800,
+ "elapsed_ms":210,"text":"...",
+ "lines":[{"text":"...","conf":93.1,"box":[x,y,w,h]}],
+ "words":[{"text":"...","conf":95.0,"box":[x,y,w,h],"line":0}]}
+```
+
+Errors are `{"error":"...","code":"..."}` with a 4xx/5xx status and never echo image bytes:
+400 bad parameters, 411 no `Content-Length`, 413 body or image too large, 415 not a decodable
+PNG/JPEG, 429 `busy` (ONE recognition runs at a time; retry), 501 engine not implemented or
+Tesseract missing, 504 timeout, 500 engine failure. A frame with no recognisable text is a
+valid `200` with empty `text`.
+
+**Limits** (all configurable): 8 MiB body, 4096x4096 pixels (checked on the image header
+before any pixel is decoded), 8192 px after `scale`, 20 s per request, one concurrent
+recognition, 512 MiB of memory.
+
+**Agent workflow.** Take the screenshot with the MCP `browser_take_screenshot` tool, save it
+to a file, then recognise it:
+
+```bash
+pwmcp ocr --image console.png                       # recognised text only
+pwmcp ocr --image console.png --format tsv --min-conf 60 --scale 2
+cat console.png | pwmcp ocr --image - --json        # full result with confidences and boxes
+pwmcp ocr "$CONSOLE_URL" --selector canvas --scale 2 --wait-ms 1000   # capture + recognise
+```
+
+The URL form opens the page in a fresh context exactly like `inspect` (server-level user
+agent included), waits for the element to be visible, captures it, recognises it and closes
+the context. The element is captured with Playwright's compositor screenshot (works for 2D
+and WebGL canvases, never trips over a tainted canvas) so the image is the element as
+DISPLAYED, not the canvas's intrinsic bitmap; use `--scale` for small text. `--region
+x,y,w,h` limits the capture to a rectangle of the element. The sidecar URL defaults to
+`$PWMCP_OCR_URL`, else the `ocr_url` the contract advertises; `--sidecar-url` overrides both.
+If none is known, `pwmcp ocr` exits 2 with a message naming `ocr.enabled`. From Python:
+`pwmcp_client.ocr.recognize(image_bytes, sidecar_url=..., psm=6, scale=2)` returns an
+`OcrResult`.
+
+**What was and was not verified.** See `KNOWN_ISSUES_TODO_BACKLOG.md` PWMCP-11: the service,
+client, CLI and compose rendering are tested offline against a fake `tesseract`; real
+Tesseract accuracy on console frames, the TSV column layout of the packaged Tesseract, the
+image build and the wiring under a real `ciu up` are not verified until an image is built.
+
 ## KSM Opt-In (default on)
 
 Every process in the container opts into Kernel Samepage Merging (KSM) by

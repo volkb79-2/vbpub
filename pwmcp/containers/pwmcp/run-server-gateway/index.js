@@ -107,6 +107,12 @@ function requestHandler(req, res) {
         value: process.env.PWMCP_USER_AGENT_RESOLVED || null,
         source: process.env.PWMCP_USER_AGENT_SOURCE || "default",
       };
+      // OCR sidecar (PWMCP-11 phase 1): url is empty and engines empty unless the stack
+      // enables pwmcp.ocr (compose then exports both). Old clients ignore the key.
+      contract.ocr = {
+        url: process.env.PWMCP_OCR_URL || "",
+        engines: (process.env.PWMCP_OCR_ENGINES || "").split(",").map((e) => e.trim()).filter(Boolean),
+      };
       const body = Buffer.from(JSON.stringify(contract));
       res.writeHead(200, { "content-type": "application/json", "content-length": body.length });
       return res.end(body);

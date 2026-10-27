@@ -3,7 +3,7 @@
 This file records consumer-facing product gaps for later triage. Normative
 behavior remains in the product specification and consumer documentation.
 
-Last updated: 2026-10-17 (PWMCP-04 delayed page hydration and multi-match selector wait).
+Last updated: 2026-10-27 (PWMCP-11 OCR sidecar and console watching program, phase 1 on branch).
 
 ## PWMCP-01 — Provide a rendered-page inspection command
 
@@ -284,3 +284,72 @@ same browser`. Sequential use works. `containers/pwmcp/supervisord.shared.conf:2
 broke the shared-browser mode on 2026-07-13, so the fix is not "add the flag". **Acceptance.** Either concurrent
 sessions are served (per-session contexts on the one browser) or the `pwmcp-fetch` skill and the error text say
 plainly that fetches must be serialised; today the error names a flag the service cannot take.
+
+## PWMCP-11 — OCR sidecar and console watching (program)
+
+**Status: phase 1 FIXED-ON-BRANCH (2026-10-27); phases 2 and 3 OPEN.**
+
+**Need.** Automating a host console through a web console. The Netcup SCP "Screen" is ONE 1280x800 `<canvas>`
+fed by a VNC WebSocket, so Playwright snapshots carry no text and an agent was interpreting screenshots
+visually. Wanted: MECHANICAL recognition of what a text console (Debian installer, TrueNAS installer, shells)
+shows. Origin: a Codex session driving a TrueNAS relaxed unattended install on a Netcup host (rollout
+`01a14d1b-bec6-7671-80b8-a5c53ff976ee`, 2026-10-18; read it with
+`nyxloom-harness extract --format codex --preset watch <rollout.jsonl>`).
+
+**Operator decisions (2026-10-27).**
+- OCR runs in a STATELESS SIDECAR container: pwmcp posts a PNG and gets text + word boxes + confidence (or a
+  glyph-grid text screen); pwmcp keeps the browser and the watch loop. The sidecar lives under
+  `containers/` in the same ciu/compose stack with its own service alias and is released WITH pwmcp (one
+  contract, one set of gates).
+- Engines: Tesseract (native, pluggable interface) first, then exact glyph-grid matching for fixed-font text
+  consoles (Debian installer, TrueNAS installer).
+- Watching: in-browser canvas change detection (hash on animation frames, debounce), then OCR on change,
+  exposed as `wait_for_text(pattern|regex, timeout, stable)`. The WebSocket frame event is only an optional
+  wake-up hint (66 frames in 15 s with unchanged text), never the decision. Unrecognised screens are
+  INDETERMINATE.
+- A guarded expect-and-send primitive in pwmcp is OFF unless a config flag enables it ("flag only": no
+  allowlist, no rules file). Consumers may still own policy (for example the Netcup protected-server check).
+- Test corpus: the local QEMU VM harness (`testing/vm/vmctl`) captures first; live Netcup captures verify
+  afterwards. Finish/reboot screens of the TrueNAS install were never observed; only the ready signature
+  ("Console setup" plus management URLs) is known.
+
+**Phases.**
+1. (FIXED-ON-BRANCH) The sidecar (`containers/ocr/`: Dockerfile, `ocr_service.py`; Tesseract via the CLI,
+   pluggable engine registry with `glyphgrid` registered-but-501), compose/ciu wiring (`pwmcp.ocr.*`, default
+   off, alias `pwmcp-ocr`, port 8941 because 8940 is the run-server admin port), the `/contract` `ocr` block,
+   `pwmcp_client.ocr.recognize`, `pwmcp ocr`, docs and offline tests. Returns text and confidence only.
+2. (OPEN) `wait_for_text` watcher (in-browser canvas change detection on the shared browser's already-open
+   page; the shared-browser mode from P03 is the natural home) and the glyph-grid engine fed by VM-harness
+   captures. Needs the PWMCP-10 concurrency answer first, since a watcher holds the one shared browser.
+3. (OPEN) Guarded expect-and-send, OFF unless a config flag enables it.
+
+**Release wiring NOT done (needs a decision, not a mechanical addition).** The main image is built and
+published by `build-push.py` (cmru-prepared coordinate in `cmru.vars`, a remote BuildKit builder, a tag set
+from `docker-bake.hcl`, GHCR visibility sync) and shipped inside the bundle whose `ciu.defaults.toml.j2` tag
+is rewritten at release. A second image needs: its own bake target and tag scheme (follow the pwmcp
+coordinate `1.64.0-r3` or version independently), a push and visibility-sync step, a base-image digest pin
+(currently tag only) and cmru artifact accounting. `pwmcp.ocr.image.tag` therefore holds the current pwmcp
+coordinate as a placeholder and the image is not published anywhere.
+
+**UNVERIFIED until an image is built and run.**
+- Real Tesseract behaviour: the TSV column layout assumption (12 columns, level 5 = word, `conf` -1 for
+  layout rows) matches the documented format and the fake used by the tests, but was not checked against the
+  packaged binary; `tesseract stdin stdout ... tsv` reading from stdin and `--list-langs` / `--version`
+  output shapes are likewise assumed.
+- Recognition accuracy on real console frames (fonts, colours, `--psm 6` vs `11`, `--scale`), and whether
+  the Debian `tesseract-ocr-eng` data (fast or best) is good enough. The ONE real-engine test
+  (`tests/test_ocr_service.py::test_real_tesseract_recognises_rendered_console_lines`) skips unless
+  `tesseract`, Pillow and DejaVu Sans Mono are present; it did NOT run in the implementing worktree.
+- The image build (`containers/ocr/Dockerfile`: package names on the pinned Debian release, uid 1000,
+  read-only rootfs with only `/tmp` writable, `nice` entrypoint) and the healthcheck.
+- The compose wiring under a real `ciu up` (that the narrowing `mem_limit`/`memswap_limit`/`cpus` coexist
+  with the governance overlay, that `read_only` plus tmpfs is accepted, the `$INSTANCE_ID` container name,
+  alias resolution from the pwmcp container). The offline tests render the template with plain Jinja
+  (`StrictUndefined`, as ciu does), not through ciu.
+- Element capture of a real canvas through Playwright's compositor screenshot (chosen over `toDataURL`
+  because it does not fail on tainted or WebGL canvases): the image is the DISPLAYED size, not the canvas's
+  intrinsic 1280x800 bitmap unless the page is shown at that size. The fake browser in the tests cannot
+  show this.
+- Gate coverage: `client/src/pwmcp_client/ocr.py` was added to the `assay.toml` judged targets (100% line
+  and branch measured locally); the sidecar `containers/ocr/ocr_service.py` is tested but deliberately NOT a
+  judged target yet, and the registered gate was not run.
