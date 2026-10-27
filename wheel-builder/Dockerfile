@@ -10,10 +10,12 @@
 # Stateless tool image: no project source is baked in. The project directory is
 # supplied via bind mount at run time (cmd_wheel_build mounts the repo root and runs
 # the build against the bind-mounted source), so this image only needs the build
-# frontend itself. Reproducibility of the actual wheel bytes comes from each
-# project's own pinned `[build-system].requires` (setuptools/wheel/setuptools_scm),
-# which `python -m build`'s isolation installs fresh per invocation — this image does
-# not need to pin those itself.
+# frontend itself. The wheel bytes depend on each project's `[build-system].requires`,
+# which `python -m build`'s isolation installs fresh per invocation AT RUN TIME, from the
+# index and outside the age window below (it covers only the two installs baked here):
+# exact pins (cmru, ciu, run-gate-project, assay, cli-extended, topos, nyxloom) make that
+# resolution reproducible; floors (pwmcp-client `setuptools>=77`, cgroup-profiler
+# `setuptools>=68`) do not. Aging the run-time installs too is tester-base backlog TB-08.
 #
 # Both ciu and cmru declare artifacts = ["wheel"] and fall through the same built-in
 # handler — this one image covers both, same as tester-unified covers every

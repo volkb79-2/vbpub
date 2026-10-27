@@ -170,9 +170,57 @@ developer `run-gate-project/dist` wheel can never pass it.
 4. Verify before promoting: the labels equal the published release
    (`docker image inspect --format '{{index .Config.Labels "org.vbpub.run-gate.version"}}' tester-unified:wave-<date>`,
    and the sha256 label against the release's `.sha256` file), then run a project's registered gate against the
-   exact candidate with `RUN_GATE_TESTER_UNIFIED_IMAGE=tester-unified:wave-<date> run-gate <lane>` (the cmru
-   `coverage` lane exercises the image-contract tests and the whole suite).
-5. Promote: keep the rollback (`docker tag tester-unified:local tester-unified:prev-<date>`), then
-   `docker tag tester-unified:wave-<date> tester-unified:local`. Remove nothing by pattern; use exact tag names.
+   exact candidate, selected by its immutable id as the README does (a tag can be moved under a running gate):
+   `RUN_GATE_TESTER_UNIFIED_IMAGE="$(docker image inspect --format '{{.Id}}' tester-unified:wave-<date>)" run-gate <lane>`
+   (the cmru `coverage` lane exercises the image-contract tests and the whole suite).
+5. Promote both images. Keep the rollbacks first: `docker tag tester-unified:local tester-unified:prev-<date>` and
+   `docker tag wheel-builder:local wheel-builder:prev-<date>` (a second promotion on the same day would overwrite
+   them: check that `docker image inspect tester-unified:prev-<date>` fails before tagging, or suffix the name).
+   Then `docker tag tester-unified:wave-<date> tester-unified:local` and
+   `docker tag wheel-builder:wave-<date> wheel-builder:local` (`CMRU_WHEEL_BUILDER_IMAGE` in
+   `cmru.orchestration.toml` names the latter, and cmru checks only its kind label, so nothing else notices a
+   stale builder). Roll back the same way: `docker tag tester-unified:prev-<date> tester-unified:local`. Remove
+   nothing by pattern; use exact tag names.
 6. Re-run step 3 to 5 whenever the host's Run-Gate judge changes version, and when a build must pick up newer
    aged third-party releases (`--no-cache` is what re-resolves them).
+
+### Where the rebuild sits in the release order, and the bootstrap
+
+The order is cmru, tester-base, assay and cgroup-profiler, run-gate, **rebuild this image**, ciu, nyxloom and
+pwmcp, mdt-cockpit. Three checks bind a tester image to a Run-Gate, and they agree at exactly one point:
+
+- **cmru's release gate** (`cmru/tools/run_release_gate.py`) requires the host judge to be a published stable
+  release and the selected image's labels to be that release's exact wheel. It is the only gate that reads the
+  labels; no other project refuses a stale image on its own (backlog TB-09).
+- **run-gate's own release** (`run-gate-project/tools/release_candidate.py prepare`) builds its candidate image with
+  `--wheel-dir` from the candidate wheel it just built (`tester-unified:run-gate-candidate-<commit>`) and runs the
+  selftest in it. That build goes through `cmru tester-gate`'s preflight, which probes in `CMRU_TESTER_UNIFIED_IMAGE`:
+  any existing tester-unified, built on the PREVIOUS Run-Gate, satisfies it, and when none exists `--base-image`
+  makes the preflight probe in the base instead (the zero-release path in `docs/BOOTSTRAP-FROM-ZERO.md`). That is
+  the whole bootstrap: the previous image builds the next one, and the candidate image never has to pass cmru's
+  label check.
+- **ciu's release gate** (`ciu/scripts/check_run_gate_wheel.py`, run by ciu's `run-tests` step) requires the image's
+  installed `run_gate.py` and `run_gate_admission.py` bytes to equal the selected checkout's `run-gate-project/`. A
+  published-wheel image therefore gates ciu only while the checkout's `run-gate-project/` is byte-identical to the
+  released modules: release ciu before the next edit to `run-gate-project/` lands on main, or ciu waits for the
+  next Run-Gate release.
+
+So after a Run-Gate release: install the published wheel as the host judge, rebuild this image with
+`--run-gate-published latest`, promote, then release the consumers. A cmru release that precedes the Run-Gate
+release is gated by the image built on the previous published Run-Gate (on 2026-10-27 `tester-unified:prev-<date>`
+on 24.0.1 was selected because `:local` carried a developer wheel). No tool runs or checks the rebuild step for the
+non-cmru consumers; this runbook is its only record.
+
+### What fails, and how
+
+- Offline, a 404 (no such release), a 429, an HTML body in place of JSON, a truncated body, or a redirect that is
+  not https on a GitHub host: `fetch-run-gate-wheel.py` refuses with one line and `build-image.sh` exits 2 before
+  BuildKit starts; the staging directory is removed. There is no retry; rerun.
+- `--pip-min-release-age` is parsed by pip itself (`P<n>D`, whole days only; the builder rejects any other spelling
+  first). pip applies it per index link: a release younger than the window is skipped, and an index that serves no
+  `upload-time` metadata (a bare mirror) fails the install outright instead of ignoring the window. The cutoff is
+  taken when pip runs, so an unchanged RUN text can reuse a layer resolved earlier (the builder warns unless
+  `--no-cache` is given). Wheels installed `--no-index` are exempt: cli-extended, the source-built cmru and the
+  Run-Gate wheel carry no age window by design.
+- An exact `==` pin in a project's pyproject (assay's `packaging`, `hypothesis` and `pytest-cov`, nyxloom's
+  `questionary`) that is younger than the window fails the build. That is the policy applied, not a builder fault.

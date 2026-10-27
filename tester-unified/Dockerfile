@@ -268,7 +268,9 @@ RUN rm -rf /opt/tester-venv /tmp/internal-build-venv
 # index-capable install to releases uploaded at least PIP_MIN_RELEASE_AGE ago, the vetting buffer against a
 # just-shipped regression or supply-chain incident. Nothing is pinned in this file. The age is relative
 # to the build moment, so an unchanged RUN text can reuse a cached layer: rebuild with --no-cache
-# (build-image.sh) whenever the image should pick up newer aged releases.
+# (build-image.sh) whenever the image should pick up newer aged releases. pip parses the duration itself
+# (P<n>D, whole days) and fails closed: an index link without upload-time metadata (a bare mirror) is an
+# installation error, not an ignored window. The --no-index installs below are outside it by design.
 ARG PIP_MIN_RELEASE_AGE=P14D
 LABEL org.vbpub.tester-unified.min-release-age="${PIP_MIN_RELEASE_AGE}"
 RUN /usr/local/bin/python3.14 -m venv --copies /opt/tester-venv \
