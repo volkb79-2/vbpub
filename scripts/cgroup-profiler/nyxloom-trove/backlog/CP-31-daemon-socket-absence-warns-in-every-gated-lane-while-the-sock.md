@@ -23,6 +23,15 @@ lane started a profile session "via socket" with no warning. So the absence is n
 when the lane's environment does not have the socket mounted (a nested or isolated gate container, a sandboxed tester) or while the
 daemon is down.
 
+## Re-measured later on 2026-10-27 (reproduced)
+
+At about 17:18 UTC `/run/cgprofile/ctl.sock` was unlinked on the host while the daemon container stayed `Up` (the directory
+mtime moved, `damon.lock` and the `observer` directory remained). From then on every registered lane warned "ctl version could not
+reach the daemon ... No such file or directory ... basic in-lane sampling only" and fell back to basic sampling; lanes still passed.
+A running daemon whose listening socket path has been removed neither notices nor rebinds, and its container health is unchanged.
+Who removed the file is not known. Required addition: the daemon verifies its socket path (inode) periodically and either rebinds
+or exits non-zero so the restart policy recreates it.
+
 ## Risk specific to 1.1.0
 
 `cgprofile serve` now refuses to start unless it runs under a bounded `cgprofile.slice` (Sol B4). On a host without the loaded slice unit

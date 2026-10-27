@@ -82,3 +82,24 @@ commit (counts in its message). The registered `r0-r1` and `r3` lanes still have
 Review: round 1 (fresh Sonnet reviewer) found a real regression (`stop` joined the sampler under the daemon-wide lock, so a
 worker that was itself finishing produced a spurious `stop-incomplete`); fixed in `420ac1554` with a test that fails without the fix,
 and MINOR findings N9-N12 filed under CP-27. Round 2 (fresh Sonnet reviewer) on the fix: READY, two test nits applied. The r3 run is on `420ac1554`; the later commits change tests and docs only (`git diff 420ac1554 HEAD -- lib` is empty at the time of writing, re-run r3 on the final release tree via the cmru release gate).
+
+## Registered gates re-run on the final tree (wave, 2026-10-27)
+
+The measurements above on `3e50df9cc`/`753d2fa6b` were scratch-venv numbers (three environment failures in `tests/test_docs.py`).
+The registered lanes were therefore re-run through `run-gate --worktree <wave worktree> <lane>` (run-gate 24.0.1) on the final tree
+`753d2fa6b` (wave branch fast-forwarded to `fable-cgprofile-20261027`; the CP-31/CP-38 backlog and this table are docs-only on top).
+
+| Lane | Tree | Result |
+|---|---|---|
+| r0-r1 | `753d2fa6b` | PASS exit 0: 2670 passed, 0 failed (the three scratch-venv `test_docs` failures do not occur in the tester image), 8708 statements / 3254 branches, 100% line and branch |
+| r3 | `753d2fa6b` | PASS exit 0: 7 canaries rejected, 0 survived |
+| r2 | - | WAIVED (operator, 2026-10-27), CP-30 |
+
+Logs: `/home/vscode/vbpub-release-program-20261027/cgprofile/final-r0-r1.log`, `final-r3.log`.
+Both runs warned that the host daemon socket was unreachable and fell back to basic in-lane sampling (the socket file had been
+unlinked under the running daemon at about 17:18 UTC; reproduction recorded in CP-31). The warning does not affect the verdicts.
+
+Review of the `@` option grammar (`753d2fa6b`, fresh Sonnet reviewer): READY. All seven option keys any caller reads are in
+`OPTION_KEYS`; the daemon's `ctl start --target containerid:<id>` (run-gate) never uses `@` and the control contract
+(`PROTOCOL.md`, RG55 interface contract) is unchanged. One low finding: a misspelt option on a `cgroup:`/`slice:` target is now read
+as part of the name and fails late; filed as CP-38, not a release blocker.
