@@ -6,7 +6,7 @@ state of main plus the unmerged glyphgrid (fonts + speed), imagegen and canvas-c
 ## 1. The console corpus as a release asset (implemented in this wave)
 
 The 242-frame TrueNAS install capture (5.4 MB of 1280x800 PNG) is too big for git. The repository carries
-its INDEX (`tests/corpus/console/truenas-27-vanilla/series-manifest.jsonl`: file, sha256, size per frame,
+its INDEX (`tests/corpus/console/truenas-27-vanilla/series-manifest.jsonl`: file, sha256, width, height per frame,
 already committed) and its PIN (`tests/corpus/console/CORPUS-ASSETS.json`: release tag, asset name, URL,
 tar sha256, size, frame count). The frames themselves are a GitHub release asset.
 
@@ -14,7 +14,7 @@ Mechanism (`tools/corpus/console_corpus.py`, stdlib only, tests in `tests/test_c
 
 | Item | Decision |
 |---|---|
-| Release | a dedicated data release `pwmcp-console-corpus-truenas-27-vanilla-v1` (immutable, never edited). It must NOT start with `pwmcp-v` (cmru's tag prefix scan) and a pwmcp release cannot carry it: the gate runs BEFORE the pwmcp tag exists, so an asset "next to the pwmcp release" could never be fetched by that release's own gate. The pwmcp release notes link it. |
+| Release | a dedicated data release `pwmcp-console-corpus-truenas-27-vanilla-v1` (never edited; GitHub assets are mutable unless immutable releases are enabled, so the sha256 pin is what protects). It must NOT start with `pwmcp-v` (cmru's tag prefix scan) and a pwmcp release cannot carry it: the gate runs BEFORE the pwmcp tag exists, so an asset "next to the pwmcp release" could never be fetched by that release's own gate. The pwmcp release notes link it. |
 | Asset | `pwmcp-console-corpus-truenas-27-vanilla-v1.tar`, deterministic ustar of `frames/<NNNN_Ns.png>` (sorted, uid/gid 0, mtime 0, no compression: PNG does not compress). Reproduced byte-identically from the same frames (checked twice). sha256 `38b287087c42b45e47d25083363490e7853fd043d2a5f8be26dffec4bd480eb2`, 5365760 bytes. A copy sits in the wave evidence directory. |
 | Integrity | three layers: tar sha256 + size (pin) BEFORE extraction; extraction accepts only exactly the indexed names as regular files (no traversal, no extras, no duplicates); every extracted frame is verified against the index sha256 and PNG dimensions. `fetch` is idempotent and does no network access when `<dest>/frames` already verifies. Redirects only to https on the GitHub asset hosts. |
 | Where gates find it | gate lanes run network-disabled, so a lane never fetches. The corpus is a declared dependency of the TESTER IMAGE (same doctrine as `fetch-cli-extended.py`): the image build runs `fetch --dest /opt/pwmcp-console-corpus`. Developers run `python3 pwmcp/tools/corpus/console_corpus.py fetch` once (cache `~/.cache/pwmcp-console-corpus`); `PWMCP_CONSOLE_CORPUS_DIR` overrides and, if set but not verifying, is an error (never a silent fall-through). |
@@ -91,7 +91,7 @@ the 5x faster `read_image` with `reference_mode()` as its bit-identical oracle, 
 - Routing lives in the CLIENT (`pwmcp_client.ocr.recognize(engine="auto")`, `pwmcp ocr --engine auto`), because
   the sidecar is a pure function: `canvas` + verified geometry -> glyphgrid first; if `indeterminate` or
   `font_share < 0.9` -> Tesseract, and the result carries `engine_used`, `fallback_reason` and `exact: false`;
-  `screenshot` -> Tesseract only. Auto routing may widen what is READ, never what is TRUSTED: the future
+  `screenshot` -> Tesseract only. The sidecar should expose glyphgrid's own decision (`expect=<phrase>` -> `strict` block in the response, with `font_is_file`, `font_share` and an optional `cursor=row,col` request parameter) so the client does not rebuild `strict_match` from a partial schema; the glyphgrid README prefers it server-side. Cells read `H` carry their character in `rows` but are not `exact` unless the homoglyph policy accepts them. `read_image` must be called with `auto_unscale=False` for `source=canvas` with `expect_size`, otherwise a 2x nearest-neighbour capture sized to match passes while the grid is read from the downscaled image. For `no_grid`/`resampled` the `grid`/`font`/`font_share`/`flags` fields are null. Auto routing may widen what is READ, never what is TRUSTED: the future
   `wait_for_text` / expect-and-send primitive accepts only an `exact` glyphgrid match (`strict_match`, boundary
   cells exact, zero bad cells in the region) and treats a Tesseract hit as advisory, never as a keystroke trigger.
 
@@ -102,8 +102,8 @@ the 5x faster `read_image` with `reference_mode()` as its bit-identical oracle, 
   accepted. The policy is echoed in `policy{}`; the sidecar never infers it. The client exposes it as
   `--homoglyphs`/`--repertoire` and never sets it implicitly; a keystroke primitive that uses it must log it.
 - Tests: imagegen "A"-flagged ambiguous cells (complement twins, `IMAGEGEN-FINDINGS.md`) must read as aliases
-  under `latin-only`, as the unique Latin character under `declared-repertoire` only when every other member is
-  inside the declared repertoire, and as refused under `none`.
+  under `latin-only`, as the unique Latin character under `declared-repertoire` when the consumer has declared the screen Latin
+  (the Cyrillic/Greek lookalikes the bitmap cannot tell apart are then accepted, as in the glyphgrid README), and as refused under `none`.
 
 ## 3. OCR phase 3: canvas bitmap input and the watcher
 
