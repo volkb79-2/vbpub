@@ -135,6 +135,7 @@ SOCKET_MODE = 0o660
 ALLOW_UIDS_ENV = "CGPROFILE_ALLOW_UIDS"
 
 
+
 def parse_allow_uids(raw: Optional[str]) -> Optional[List[int]]:
     """Parse `CGPROFILE_ALLOW_UIDS` ("0,1000,1003") into a uid list.
 
@@ -193,6 +194,74 @@ def _expected_duration_seconds(meta: Dict[str, Any]) -> Optional[float]:
     return float(value) if value > 0 else None
 
 
+#: How long ``stop`` waits for a session's sampling worker to exit before it
+#: reports the stop as incomplete (Sol B2). Module level so tests can shorten it.
+STOP_JOIN_SECONDS = 10.0
+
+#: A worker that is still alive after this many consecutive ``stop`` attempts
+#: is treated as wedged: the next attempt finalizes the session anyway
+#: (bounded escalation, ``stop_forced``), because a permanently wedged worker
+#: must not hold placement and DAMON resources forever.
+STOP_FORCE_AFTER_ATTEMPTS = 3
+STOP_FORCED_REASON = "sampler-still-running"
+
+
+def daemon_slice_problem(cgroup_root: str, proc_root: str) -> Optional[str]:
+    """Why the daemon is not provably contained, or None when it is (Sol B4).
+
+    The daemon's OWN cgroup is derived from the host proc view (never looked
+    up by slice name): its ancestry must start at ``cgprofile.slice`` and that
+    ancestor must carry a finite, positive ``memory.max``. A bounded
+    ``cgprofile.slice`` that exists while the container was created under some
+    other parent therefore does not pass. ``util.read_int`` maps ``max``, an
+    empty file, a garbage value and an unreadable file all to None, so the
+    message names every cause. ``LoadState`` cannot be read from inside the
+    container; that Docker-host proof is CIU-150."""
+    pid = placement_mod._host_pid_of_self(proc_root)
+    if pid is None:
+        return "cannot determine this daemon's host PID from the host proc view"
+    own = targets_mod.cgroup_of_pid(pid, cgroup_root, proc_root)
+    if own is None:
+        return f"cannot derive this daemon's own cgroup (host PID {pid})"
+    parts = [part for part in own.split("/") if part]
+    if not parts or parts[0] != DAEMON_SLICE_NAME:
+        return (
+            f"this daemon runs in cgroup {own}, which is not under "
+            f"{DAEMON_SLICE_NAME}: its container was created with another "
+            f"cgroup parent"
+        )
+    slice_cgroup = "/" + parts[0]
+    value = util.read_int(
+        os.path.join(cgroup_root, slice_cgroup.lstrip("/"), "memory.max")
+    )
+    if value is None or value <= 0:
+        return (
+            f"memory.max of {slice_cgroup} is not a finite positive integer "
+            f"(it is unlimited, zero, empty, unreadable or not a number); zero "
+            f"is refused because a slice that can hold no memory is a "
+            f"misconfiguration, not containment"
+        )
+    return None
+
+
+def daemon_slice_bounded(cgroup_root: str, proc_root: str) -> bool:
+    return daemon_slice_problem(cgroup_root, proc_root) is None
+
+
+class _HeldLock:
+    """Context manager that releases an ALREADY-acquired lock on exit, so the
+    finalize section can acquire with a timeout and still read as a ``with``."""
+
+    def __init__(self, lock: Any) -> None:
+        self._lock = lock
+
+    def __enter__(self) -> "_HeldLock":
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        self._lock.release()
+
+
 class RequestError(Exception):
     """A verb refused the request — becomes ``{"ok": false, "error": {...}}``
     (contract exit code 2), never an uncaught traceback back to the socket."""
@@ -238,7 +307,15 @@ class _Session:
     damon_unavailable_reason: Optional[str]
     lock: threading.Lock = field(default_factory=threading.Lock)
     stop_event: threading.Event = field(default_factory=threading.Event)
+    stop_attempts: int = 0
+    stop_forced: bool = False
+    # Set under ``lock`` BEFORE placement is released and DAMON is closed
+    # (Sol S6). Every sample-side action that touches those resources or the
+    # session's records re-checks it under the same lock, so a wedged worker
+    # cannot migrate, recommit or append after release has begun.
+    closed: bool = False
     thread: Optional[threading.Thread] = None
+    damon_cleanup: Optional[Dict[str, Any]] = None
     live_samples: int = 0
     live_memory_current_bytes: Optional[int] = None
     live_memory_peak_bytes: Optional[int] = None
@@ -700,6 +777,7 @@ class SessionServer:
             "damon_kdamond": sess.damon_session.kdamond_idx if sess.damon_session else None,
             "damon_thresholds": sess.damon_session.thresholds if sess.damon_session else None,
             "damon_unavailable_reason": sess.damon_unavailable_reason,
+            "damon_cleanup": sess.damon_cleanup,
             "placement": _placement_block(sess),
             "meta": sess.meta,
             "aborted_reason": None,
@@ -1440,6 +1518,8 @@ class SessionServer:
             with self._lock:
                 if not sess.finished:
                     sess.error = str(exc)
+                    # Runs on the session's own thread: the join is skipped,
+                    # so this cannot return False (Sol B2).
                     self._finalize_session_locked(sess, aborted_reason=f"session-error:{exc}")
 
     def _on_topology_noop(self, appeared: List[str], disappeared: List[str]) -> None:
@@ -1454,6 +1534,11 @@ class SessionServer:
     def _on_session_sample(
         self, sess: _Session, record: Dict[str, Any], abs_target: str, abs_slice: Optional[str],
     ) -> None:
+        with sess.lock:
+            if sess.closed or sess.finished:
+                # A wedged worker that outlived (or raced) finalization must
+                # not touch the session's resources or records.
+                return
         mono = record.get("mono", 0.0)
         target_metrics = (record.get("cg") or {}).get(sess.cgroup, {})
         host_metrics = record.get("host") or {}
@@ -1473,7 +1558,8 @@ class SessionServer:
                     and set(pids) != previous_pids
                 ):
                     try:
-                        sess.damon_session.recommit_targets(pids)
+                        self._run_if_open(
+                            sess, lambda: sess.damon_session.recommit_targets(pids))
                     except Exception as exc:  # noqa: BLE001 - profiling is best-effort
                         self._disable_damon_for_session(sess, exc)
             else:
@@ -1499,7 +1585,8 @@ class SessionServer:
                 sess.last_discovery_mono = mono
                 if sess.damon_session is not None and set(new_pids) != set(sess.no_token_pids):
                     try:
-                        sess.damon_session.recommit_targets(new_pids)
+                        self._run_if_open(
+                            sess, lambda: sess.damon_session.recommit_targets(new_pids))
                     except Exception as exc:  # noqa: BLE001 - profiling is best-effort
                         self._disable_damon_for_session(sess, exc)
                 sess.no_token_pids = new_pids
@@ -1512,7 +1599,7 @@ class SessionServer:
         # cadence as the resolution above (`migrate` skips what it already
         # moved, so this is a set difference, not a re-write per tick).
         if due and sess.placement is not None and sess.placement.placed:
-            sess.placement.migrate(pids)
+            self._run_if_open(sess, lambda: sess.placement.migrate(pids))
 
         # CP-5: limit_drift is the one Detector event kind observe() cannot
         # produce on its own (it needs an old/new lib.limits.Effective pair,
@@ -1527,19 +1614,26 @@ class SessionServer:
                 for event in sess.detector.limits_changed(
                     sess.cgroup, sess.last_effective_limits, new_effective_limits, drift_t, mono,
                 ):
-                    sess.rundir.append("events", event.to_dict())
+                    self._run_if_open(
+                        sess, lambda event=event: sess.rundir.append("events", event.to_dict()))
             sess.last_effective_limits = new_effective_limits
 
         damon_bytes: Optional[Dict[str, int]] = None
         if sess.damon_session is not None:
             damon_session = sess.damon_session
             try:
-                damon_session.collect()
-                damon_bytes = damon_session.last_class_bytes
+                def collect_damon() -> None:
+                    nonlocal damon_bytes
+                    damon_session.collect()
+                    damon_bytes = damon_session.last_class_bytes
+
+                self._run_if_open(sess, collect_damon)
             except Exception as exc:  # noqa: BLE001 - profiling is best-effort
                 self._disable_damon_for_session(sess, exc)
 
         with sess.lock:
+            if sess.closed:
+                return
             sess.summary_acc.add_sample(
                 cgroup=target_metrics, host=host_metrics, slice_cgroup=slice_metrics,
                 damon=damon_bytes, pids=pids, mono=mono,
@@ -1595,7 +1689,8 @@ class SessionServer:
             )
 
         for event in detected_events:
-            sess.rundir.append("events", event.to_dict())
+            self._run_if_open(
+                sess, lambda event=event: sess.rundir.append("events", event.to_dict()))
 
         # RW-14: persisted keyed by cgroup path, one row per `mono` tick —
         # the same on-disk shape `cgprofile run`'s own collector writes
@@ -1608,24 +1703,44 @@ class SessionServer:
         # and no "mono" at all — silently unreadable by `to_frame`, caught
         # by RW-14 before it shipped. `_finalize_orphan`'s replay path reads
         # this same shape back (see its own RW-14 comment).
-        sess.rundir.append("samples", {
-            "seq": record.get("seq"), "t": record.get("t"), "mono": mono,
-            "cg": {sess.cgroup: target_metrics},
-        })
-        sess.rundir.append("host", {"host": host_metrics, "slice": slice_metrics})
-        if damon_bytes is not None:
-            if isinstance(record.get("seq"), int):
-                sess.rundir.append("damon", {"_seq": record.get("seq"), **damon_bytes})
-            else:
-                # Direct unit callers may provide a sample record without a
-                # sampler sequence; retain the historical flat shape for
-                # those synthetic records.
-                sess.rundir.append("damon", damon_bytes)
+        def append_records() -> None:
+            sess.rundir.append("samples", {
+                "seq": record.get("seq"), "t": record.get("t"), "mono": mono,
+                "cg": {sess.cgroup: target_metrics},
+            })
+            sess.rundir.append("host", {"host": host_metrics, "slice": slice_metrics})
+            if damon_bytes is not None:
+                if isinstance(record.get("seq"), int):
+                    sess.rundir.append("damon", {"_seq": record.get("seq"), **damon_bytes})
+                else:
+                    # Direct unit callers may provide a sample record without
+                    # a sampler sequence; retain the historical flat shape for
+                    # those synthetic records.
+                    sess.rundir.append("damon", damon_bytes)
+
+        self._run_if_open(sess, append_records)
+
+    @staticmethod
+    def _run_if_open(sess: _Session, action: Callable[[], Any]) -> bool:
+        """Run ``action`` under ``sess.lock`` only while the session is not
+        closed (Sol S6). Finalization sets ``closed`` under the same lock
+        before releasing placement and closing DAMON, so an action either
+        completes before the release begins or is not run at all."""
+        with sess.lock:
+            if sess.closed:
+                return False
+            action()
+            return True
 
     def _close_damon_session(
         self, damon_session: Any, *, session_id: str, context: str,
-    ) -> None:
-        """Close one DAMON owner without letting optional cleanup alter a verdict."""
+    ) -> Dict[str, Any]:
+        """Close one DAMON owner without letting optional cleanup alter a verdict.
+
+        Returns the cleanup disposition (Sol B3): ``confirmed`` is True only
+        when the owner affirmatively reports a verified teardown. An exception
+        from ``__exit__`` or a missing confirmation is "unconfirmed", which a
+        consumer must be able to tell apart from "off"."""
         try:
             damon_session.__exit__(None, None, None)
         except Exception as cleanup_exc:  # noqa: BLE001 - cleanup cannot affect verdict
@@ -1633,11 +1748,16 @@ class SessionServer:
                 f"session {session_id}: DAMON cleanup raised during {context}: "
                 f"{type(cleanup_exc).__name__}: {cleanup_exc}"
             )
-        if not getattr(damon_session, "cleanup_confirmed", False):
+        confirmed = bool(getattr(damon_session, "cleanup_confirmed", False))
+        slot_idx = getattr(damon_session, "kdamond_idx", None)
+        disposition_doc: Dict[str, Any] = {
+            "confirmed": confirmed, "slot": slot_idx, "quarantined": False,
+        }
+        if not confirmed:
             pool = self.damon_pool
             quarantined = set(getattr(pool, "quarantined_indices", ()))
-            slot_idx = getattr(damon_session, "kdamond_idx", None)
             if slot_idx is not None and slot_idx in quarantined:
+                disposition_doc["quarantined"] = True
                 disposition = (
                     f"owned slot {slot_idx} is quarantined and will not be reused"
                 )
@@ -1651,6 +1771,7 @@ class SessionServer:
                 f"session {session_id}: DAMON stop is unconfirmed during {context}; "
                 f"{disposition}"
             )
+        return disposition_doc
 
     def _disable_damon_for_session(self, sess: _Session, exc: Exception) -> None:
         """Stop only DAMON after a runtime profiling failure.
@@ -1665,14 +1786,16 @@ class SessionServer:
         reason = f"{type(exc).__name__}: {exc}"
         with sess.lock:
             damon_session = sess.damon_session
-            if damon_session is None:
+            if damon_session is None or sess.closed:
+                # Closed: finalization owns (and is closing) the DAMON
+                # session; a second close would overwrite its disposition.
                 return
             sess.damon_session = None
             sess.damon_status = f"unavailable:{reason}"
             sess.damon_unavailable_reason = reason
             sess.summary_acc.mark_damon_unavailable(reason)
 
-        self._close_damon_session(
+        sess.damon_cleanup = self._close_damon_session(
             damon_session, session_id=sess.session_id,
             context=f"runtime failure ({reason})",
         )
@@ -1689,6 +1812,11 @@ class SessionServer:
         tracker = sess.watch
         if tracker is None:  # pragma: no cover - every session gets one
             return
+        with sess.lock:
+            if sess.closed:
+                # Finalization has begun: a stall kill must not reach a
+                # leaf that release is restoring or has removed (Sol S7).
+                return
         # The daemon's OWN wall clock, not the sampler's `record["t"]`:
         # every other timestamp a consumer reads (`status.at`, `started_at`,
         # `ended_at`) comes from `self.clock()`, and `last_activity_at` is
@@ -1747,7 +1875,10 @@ class SessionServer:
             tracker.observe(sample)
             kill_now = tracker.kill_requested
         if kill_now:
-            self._enforce_stall_kill(sess, pids)
+            with sess.lock:
+                still_open = not sess.closed
+            if still_open:
+                self._enforce_stall_kill(sess, pids)
 
     def _gates_slice_psi_full_avg10(self) -> Optional[float]:
         """The gates slice's own memory `full avg10` — half of §8.4's pause
@@ -1846,6 +1977,8 @@ class SessionServer:
         self-join; only the server-wide lock needs acquiring here."""
         with self._lock:
             if not sess.finished:
+                # Called from the session's own sampler thread: the join is
+                # skipped, so this cannot return False (Sol B2).
                 self._finalize_session_locked(sess, aborted_reason=None)
         self._run_retention()
 
@@ -2074,7 +2207,20 @@ class SessionServer:
                 return self._stop_response(session_id, on_disk, already_stopped=True)
             if sess.finished:
                 return self._stop_response(session_id, sess.summary_doc, already_stopped=True)
-            self._finalize_session_locked(sess, aborted_reason=None)
+            if not self._finalize_session_locked(sess, aborted_reason=None):
+                # Sol B2: the sampling worker did not exit in time. The
+                # session stays live and owns its placement and DAMON
+                # resources; no finished manifest was written. The caller can
+                # retry `stop` once the worker has exited.
+                raise RequestError(
+                    "stop-incomplete",
+                    f"session {session_id} is still sampling: its worker did "
+                    f"not exit within {STOP_JOIN_SECONDS:g}s, so it was NOT "
+                    f"finalized and its resources are still held; retry stop "
+                    f"(attempt {sess.stop_attempts} of "
+                    f"{STOP_FORCE_AFTER_ATTEMPTS}: the last one finalizes "
+                    f"anyway with stop_forced)",
+                )
             summary_doc = sess.summary_doc
         response = self._stop_response(session_id, summary_doc, already_stopped=False)
         self._run_retention()
@@ -2088,15 +2234,68 @@ class SessionServer:
         except (OSError, json.JSONDecodeError):
             return None
 
-    def _finalize_session_locked(self, sess: _Session, *, aborted_reason: Optional[str]) -> None:
+    def _finalize_session_locked(
+        self, sess: _Session, *, aborted_reason: Optional[str], force: bool = False,
+    ) -> bool:
         """Stop ``sess``'s thread and write its final summary/manifest.
         Called with :attr:`_lock` held — every caller (``stop``, shutdown,
-        the session-loop's own error path) already holds it."""
+        the session-loop's own error path) already holds it.
+
+        Returns False, having changed NOTHING but the stop request, when the
+        sampling worker is still alive after the bounded join (Sol B2):
+        releasing placement, closing DAMON and writing ``finished`` under a
+        live sampler would let it append records to a finalized session. The
+        session then stays live and a later call retries.
+
+        Bounded escalation: the ``STOP_FORCE_AFTER_ATTEMPTS``-th consecutive
+        incomplete attempt, or ``force=True`` (daemon shutdown, where the
+        process is about to exit anyway), finalizes with the worker still
+        alive: placement and DAMON are released, the manifest is ``aborted``
+        with reason ``sampler-still-running`` and the Summary carries
+        ``stop_forced``. A late sample from the wedged worker is then
+        discarded (``_on_session_sample`` ignores a finished session). If the
+        worker holds the session lock the forced path still returns False
+        rather than deadlock the daemon."""
         sess.stop_event.set()
+        worker_alive = False
         if sess.thread is not None and sess.thread is not threading.current_thread():
-            sess.thread.join(timeout=10.0)
+            sess.thread.join(timeout=STOP_JOIN_SECONDS)
+            if sess.thread.is_alive():
+                sess.stop_attempts += 1
+                if not force and sess.stop_attempts < STOP_FORCE_AFTER_ATTEMPTS:
+                    self._log(
+                        f"session {sess.session_id}: sampling worker still "
+                        f"running after {STOP_JOIN_SECONDS:g}s; stop is "
+                        f"incomplete and the session keeps its placement and "
+                        f"DAMON resources (attempt {sess.stop_attempts} of "
+                        f"{STOP_FORCE_AFTER_ATTEMPTS})"
+                    )
+                    return False
+                worker_alive = True
+        # Take the session lock ONCE, bounded, and keep it for the whole
+        # section (Sol S9): an unbounded wait here would hold the daemon-wide
+        # lock while a worker wedged inside a locked action never lets go.
+        # On timeout nothing has changed; the caller falls back to the
+        # documented orphan recovery.
+        if not sess.lock.acquire(timeout=STOP_JOIN_SECONDS):
+            self._log(
+                f"session {sess.session_id}: the session lock is held "
+                f"(a worker is wedged inside a locked action) for "
+                f"{STOP_JOIN_SECONDS:g}s; cannot finalize, the session keeps "
+                f"its resources and a restart recovers it as an orphan"
+            )
+            return False
+        if worker_alive:
+            sess.stop_forced = True
+            aborted_reason = STOP_FORCED_REASON
+            self._log(
+                f"session {sess.session_id}: finalizing with the sampling "
+                f"worker still running ({STOP_FORCED_REASON}); resources "
+                f"are released and the manifest is aborted"
+            )
         ended_at = self._iso(self.clock())
-        with sess.lock:
+        with _HeldLock(sess.lock):
+            sess.closed = True      # before release/close; see _Session.closed
             if sess.summary_acc.sample_count == 0:
                 # Stopped before a single tick landed — contract §1.5 still
                 # promises a summary, so take one sample right now rather
@@ -2135,11 +2334,19 @@ class SessionServer:
                 sess.placement.release()
                 summary_doc["placement"] = sess.placement.block()
         if sess.damon_session is not None:
-            self._close_damon_session(
+            # Sol B3: an unverified (possibly still active) kdamond must not
+            # look like "DAMON off" to the consumer. The disposition travels
+            # in the Summary (additive `damon_cleanup`) and the manifest; it
+            # never changes the workload verdict.
+            sess.damon_cleanup = self._close_damon_session(
                 sess.damon_session,
                 session_id=sess.session_id,
                 context="session finalization",
             )
+        if sess.damon_cleanup is not None:
+            summary_doc["damon_cleanup"] = dict(sess.damon_cleanup)
+        if worker_alive:
+            summary_doc["stop_forced"] = STOP_FORCED_REASON
         sess.ended_at = ended_at
         sess.summary_doc = summary_doc
         sess.finished = True
@@ -2147,6 +2354,7 @@ class SessionServer:
         manifest = self._manifest_for(sess, status="aborted" if aborted_reason else "finished")
         manifest["aborted_reason"] = aborted_reason
         sess.rundir.write_manifest(manifest)
+        return True
 
     def _stop_response(
         self, session_id: str, summary_doc: Optional[Dict[str, Any]], *, already_stopped: bool,
@@ -2944,7 +3152,16 @@ class SessionServer:
         with self._lock:
             live = [s for s in self._sessions.values() if not s.finished]
             for sess in live:
-                self._finalize_session_locked(sess, aborted_reason=aborted_reason)
+                # The process is exiting: a still-running sampler must not
+                # strand placement and DAMON, so shutdown forces (Sol S1).
+                if not self._finalize_session_locked(
+                    sess, aborted_reason=aborted_reason, force=True,
+                ):
+                    self._log(
+                        f"session {sess.session_id}: could not be finalized at "
+                        f"shutdown; the manifest stays running and the next "
+                        f"start recovers it as an orphan"
+                    )
 
     def _install_signals(self) -> None:
         signal.signal(signal.SIGTERM, lambda signum, frame: self.request_shutdown())

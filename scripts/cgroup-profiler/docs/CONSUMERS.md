@@ -236,8 +236,9 @@ Placement can also be refused before moving any PID when moving the selected
 set would empty its original systemd unit. The session may still start for
 ordinary observation with `placement.leaf: null` and
 `placement.error: "place-refused:origin-scope-would-empty"`; a one-process
-container scope is the common example. Unknown source membership is refused
-as `place-refused:identity-unavailable`. Do not rely on an unrelated process
+container scope is the common example. Unknown source membership, or a selected
+live process that is no longer in its recorded source unit, is refused as
+`place-refused:identity-unavailable`. Do not rely on an unrelated process
 as a permanent source-unit lease: it can exit between the daemon's check and
 the systemd move. If exact restoration cannot be proved, retain the session
 directory and recovery journal; the daemon will not fall back to a parent
@@ -367,6 +368,39 @@ invalidate the candidate. See the
 [`observer protocol`](PROTOCOL.md#8-native-r2-resource-observer-rg-89) and
 [`design rationale`](DESIGN-GUIDE.md#native-r2-resource-observation-is-data-only-not-a-broker).
 
+### Live observer acceptance
+
+Unit tests prove the contract with fake trees; a release additionally needs one
+bounded run against the real daemon from a gated peer. `tools/observer-live-acceptance.py`
+(stdlib only, read-only, creates no cgroup) is the probe. Run it inside an
+opted-in gated container that has `/run/cgprofile/observer` mounted:
+
+```sh
+# 1. contract 1 is refused with bad-argument naming the contract
+python tools/observer-live-acceptance.py contract1
+# 2. baseline reading (well-formed contract 2, local maps present)
+python tools/observer-live-acceptance.py read --out /tmp/before.json
+# 3. cause a SIBLING-only event: a second gated container under the same
+#    gates slice hits ITS OWN pids.max or memory.max (bounded, e.g. a 16-fork
+#    burst under --pids-limit 8); the peer above stays untouched
+python tools/observer-live-acceptance.py read --out /tmp/after-sibling.json
+python tools/observer-live-acceptance.py compare --before /tmp/before.json \
+    --after /tmp/after-sibling.json --expect sibling-only
+# 4. cause an event ENFORCED AT THE SHARED ANCESTOR (the gates slice's own
+#    limit is reached by the peers together), then
+python tools/observer-live-acceptance.py read --out /tmp/after-enforced.json
+python tools/observer-live-acceptance.py compare --before /tmp/after-sibling.json \
+    --after /tmp/after-enforced.json --expect enforced
+```
+
+`sibling-only` passes only when a shared ancestor's hierarchical counter grew
+while its local counter did not; `enforced` only when the ancestor's local
+counter grew. Record the daemon image revision label (it must equal the
+peeled release tag) next to the four outputs. The probe never substitutes for
+Assay's own fail-closed attribution; it is evidence that the live daemon
+reports the distinction at all. Until this has been run against the released
+daemon, CP-20 stays `carved`.
+
 ## Resolve a target from a cockpit
 
 In helper mode, `self` means the invoking container. The caller resolves its
@@ -438,6 +472,24 @@ privileged DAMON configurator concurrently. Ordinary profiling continues with
 DAMON marked unavailable when reservation is refused. Treat `damon: "on"` plus a persisted
 `damon.jsonl` series as the evidence that DAMON actually ran, not `ctl version`
 alone.
+
+`stop` answers `stop-incomplete` while a session's sampling worker is still
+running and the session keeps its resources; retry. After the third
+consecutive incomplete attempt the daemon finalizes anyway and the Summary
+carries `stop_forced: "sampler-still-running"` (manifest `aborted`), which is
+the operator recovery for a wedged worker; a daemon restart recovers a session
+left `running` as an orphan.
+
+`serve` refuses to run anywhere but inside a container whose cgroup is under a
+bounded top-level `cgprofile.slice` (see `infra/README.md`); a non-container or
+development `serve` run is refused too. Pre-creation proof is CIU-150.
+
+A stopped session whose DAMON owner was closed carries
+`summary.damon_cleanup: {"confirmed": <bool>, "slot": <int|null>,
+"quarantined": <bool>}` (also in `manifest.json`). `confirmed: false` means the
+kdamond teardown could not be verified and it may still be running; do not read
+that as "DAMON off". `quarantined: true` means the daemon will not reuse the
+slot. The workload verdict is unaffected, and `stop` still answers `ok: true`.
 
 ### Host DAMON_STAT exclusivity
 

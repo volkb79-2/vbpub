@@ -1021,6 +1021,7 @@ def test_cli_serve_gates_slice_flag_reaches_session_server(monkeypatch):
             return None
 
     monkeypatch.setattr(serve, "SessionServer", _FakeServer)
+    monkeypatch.setattr(serve, "daemon_slice_bounded", lambda *_a: True)  # Sol B4
     monkeypatch.setattr("lib.access.have_host_cgroup_view", lambda root: True)
     monkeypatch.setenv(cg.access.PID_NAMESPACE_MODE_ENV, "host")
     monkeypatch.setattr("lib.access.have_host_proc_view", lambda root: True)
@@ -1040,6 +1041,7 @@ def test_cli_serve_gates_slice_defaults_to_dev_gates(monkeypatch):
             return None
 
     monkeypatch.setattr(serve, "SessionServer", _FakeServer)
+    monkeypatch.setattr(serve, "daemon_slice_bounded", lambda *_a: True)  # Sol B4
     monkeypatch.setattr("lib.access.have_host_cgroup_view", lambda root: True)
     monkeypatch.setenv(cg.access.PID_NAMESPACE_MODE_ENV, "host")
     monkeypatch.setattr("lib.access.have_host_proc_view", lambda root: True)
@@ -1611,7 +1613,11 @@ def _strip_v1_1_summary_keys(summary_doc: Dict[str, Any]) -> Dict[str, Any]:
     v1 goldens stay BYTE-identical (contract §8's own "the existing goldens
     stay byte-identical") — the same treatment C5 gave `host`'s two new
     keys and C6 gave `version.transports`."""
-    return {k: v for k, v in summary_doc.items() if k not in ("liveness", "watch")}
+    # `damon_cleanup` (Sol B3) is the same kind of additive v1.1 key: present
+    # whenever a DAMON owner was closed, so the v1 goldens are compared
+    # without it and its own tests pin it.
+    return {k: v for k, v in summary_doc.items()
+            if k not in ("liveness", "watch", "damon_cleanup")}
 
 
 class TestFullLifecycleGoldenReproduction:
@@ -2352,6 +2358,437 @@ def test_finalize_session_swallows_optional_damon_cleanup_failure(
     err = capsys.readouterr().err
     assert "DAMON cleanup raised during session finalization" in err
     assert "DAMON stop is unconfirmed" in err
+    # Sol B3: the consumer-visible stop result and the persisted records say
+    # the teardown was NOT confirmed (and the slot is not known quarantined),
+    # so it cannot be mistaken for "DAMON off". The workload verdict is
+    # untouched.
+    stored = json.loads(
+        (Path(simple_server.sessions_dir) / sess.session_id / "summary.json").read_text()
+    )
+    assert stored["damon_cleanup"] == {
+        "confirmed": False, "slot": 7, "quarantined": False,
+    }
+    manifest = json.loads(
+        (Path(simple_server.sessions_dir) / sess.session_id / "manifest.json").read_text()
+    )
+    assert manifest["damon_cleanup"]["confirmed"] is False
+    stop = simple_server._stop_response(
+        sess.session_id, sess.summary_doc, already_stopped=True,
+    )
+    assert stop["summary"]["damon_cleanup"]["confirmed"] is False
+
+
+def test_stop_with_a_blocked_sampler_is_incomplete_and_finalizes_nothing(
+    simple_server, monkeypatch,
+):
+    """Sol B2: a sampling worker that does not exit within the join bound must
+    not be finalized under: no finished manifest, no summary, no released
+    placement, no closed DAMON, and no successful stop. A retry after the
+    worker exits finalizes normally."""
+    monkeypatch.setattr(serve, "STOP_JOIN_SECONDS", 0.05)
+    started = simple_server._dispatch(_start_req())
+    sess = simple_server._sessions[started["session"]]
+    # Replace the real sampler thread with one that ignores stop_event.
+    sess.stop_event.set()
+    sess.thread.join(timeout=5.0)
+    sess.stop_event.clear()
+    release = threading.Event()
+    blocked = threading.Thread(target=release.wait, daemon=True)
+    blocked.start()
+    sess.thread = blocked
+
+    closed = []
+    released = []
+
+    class _Damon:
+        cleanup_confirmed = True
+        kdamond_idx = 1
+        thresholds = {"hot_rate_pct": 50, "warm_rate_pct": 5,
+                      "cold_age_s": 30, "idle_age_s": 120}
+
+        def __exit__(self, *_args):
+            closed.append(True)
+
+    class _Placement:
+        def release(self):
+            released.append(True)
+
+        def block(self):
+            return {"leaf": None}
+
+    sess.damon_session = _Damon()
+    sess.placement = _Placement()
+    summary_path = Path(simple_server.sessions_dir) / sess.session_id / "summary.json"
+    manifest_path = Path(simple_server.sessions_dir) / sess.session_id / "manifest.json"
+    status_before = json.loads(manifest_path.read_text())["status"]
+
+    response = simple_server._dispatch(_wire("stop", session=sess.session_id))
+
+    assert response["ok"] is False
+    assert response["error"]["code"] == "stop-incomplete"
+    assert sess.finished is False
+    assert closed == [] and released == []
+    assert not summary_path.exists()
+    assert json.loads(manifest_path.read_text())["status"] == status_before
+    assert sess.session_id in simple_server._sessions
+
+    # The worker exits; the same session now stops normally.
+    release.set()
+    blocked.join(timeout=5.0)
+    again = simple_server._dispatch(_wire("stop", session=sess.session_id))
+    assert again["ok"] is True and again["already_stopped"] is False
+    assert sess.finished and closed == [True] and released == [True]
+    assert summary_path.is_file()
+
+
+def _wedge(simple_server, monkeypatch):
+    """A started session whose sampling worker ignores stop_event, with
+    spies on placement release and DAMON close."""
+    monkeypatch.setattr(serve, "STOP_JOIN_SECONDS", 0.05)
+    started = simple_server._dispatch(_start_req())
+    sess = simple_server._sessions[started["session"]]
+    sess.stop_event.set()
+    sess.thread.join(timeout=5.0)
+    sess.stop_event.clear()
+    release = threading.Event()
+    blocked = threading.Thread(target=release.wait, daemon=True)
+    blocked.start()
+    sess.thread = blocked
+    closed: List[bool] = []
+    released: List[bool] = []
+
+    class _Damon:
+        cleanup_confirmed = True
+        kdamond_idx = 1
+        thresholds = {"hot_rate_pct": 50, "warm_rate_pct": 5,
+                      "cold_age_s": 30, "idle_age_s": 120}
+
+        def __exit__(self, *_args):
+            closed.append(True)
+
+    class _Placement:
+        def release(self):
+            released.append(True)
+
+        def block(self):
+            return {"leaf": None}
+
+    sess.damon_session = _Damon()
+    sess.placement = _Placement()
+    return sess, release, closed, released
+
+
+def test_a_permanently_wedged_worker_is_finalized_by_the_bounded_escalation(
+    simple_server, monkeypatch,
+):
+    """Sol S1: stop-incomplete cannot hold resources forever. The
+    STOP_FORCE_AFTER_ATTEMPTS-th attempt finalizes with stop_forced and an
+    aborted manifest, releases placement and DAMON, and a late sample from the
+    still-running worker is discarded."""
+    sess, release, closed, released = _wedge(simple_server, monkeypatch)
+    for attempt in range(1, serve.STOP_FORCE_AFTER_ATTEMPTS):
+        response = simple_server._dispatch(_wire("stop", session=sess.session_id))
+        assert response["error"]["code"] == "stop-incomplete"
+        assert f"attempt {attempt} of" in response["error"]["message"]
+        assert closed == [] and released == []
+    forced = simple_server._dispatch(_wire("stop", session=sess.session_id))
+    assert forced["ok"] is True
+    assert forced["summary"]["stop_forced"] == serve.STOP_FORCED_REASON
+    assert closed == [True] and released == [True]
+    manifest = json.loads(
+        (Path(simple_server.sessions_dir) / sess.session_id / "manifest.json").read_text()
+    )
+    assert manifest["status"] == "aborted"
+    assert manifest["aborted_reason"] == serve.STOP_FORCED_REASON
+    samples_before = sess.live_samples
+    simple_server._on_session_sample(
+        sess, {"seq": 99, "mono": 99.0, "t": EPOCH_START, "cg": {}, "host": {}},
+        "/nonexistent", None,
+    )
+    assert sess.live_samples == samples_before
+    release.set()
+
+
+def test_closed_flag_is_set_before_placement_release_and_damon_close(
+    simple_server, monkeypatch,
+):
+    """Sol S6: the closed flag must already be true when release/close run."""
+    sess, release, closed, released = _wedge(simple_server, monkeypatch)
+    seen = {}
+    real_release = sess.placement.release
+
+    def spy_release():
+        seen["placement"] = sess.closed
+        real_release()
+
+    sess.placement.release = spy_release
+    real_exit = sess.damon_session.__class__.__exit__
+
+    def spy_exit(self, *args):
+        seen["damon"] = sess.closed
+        return real_exit(self, *args)
+
+    sess.damon_session.__class__.__exit__ = spy_exit
+    with simple_server._lock:
+        assert simple_server._finalize_session_locked(
+            sess, aborted_reason=None, force=True)
+    assert seen == {"placement": True, "damon": True}
+    release.set()
+
+
+def test_sample_arriving_after_the_closed_flag_touches_nothing(
+    simple_server, monkeypatch,
+):
+    """Sol S6: between the flag and the release a wedged worker's sample is
+    discarded: no migrate, no DAMON recommit, no record, no counters."""
+    sess, release, closed, released = _wedge(simple_server, monkeypatch)
+    calls: List[str] = []
+    sess.placement.placed = True
+    sess.placement.migrate = lambda pids: calls.append("migrate")
+    sess.placement.leaf_readings = lambda: {
+        "psi_full_avg10": None, "memory_high_applied": False}
+    sess.damon_session.recommit_targets = lambda pids: calls.append("recommit")
+    sess.damon_session.collect = lambda: []
+    sess.damon_session.last_class_bytes = {"hot": 1, "warm": 1, "cold": 1, "idle": 1}
+    sess.last_discovery_mono = None            # makes the sample "due"
+    samples_before = len(list(sess.rundir.read("samples")))
+    live_before = sess.live_samples
+    with sess.lock:
+        sess.closed = True                      # the state before release()
+    simple_server._on_session_sample(
+        sess, {"seq": 7, "mono": 50.0, "t": EPOCH_START + 50,
+               "cg": {sess.cgroup: {}}, "host": {}},
+        os.path.join(simple_server.cgroup_root, sess.cgroup.lstrip("/")), None,
+    )
+    assert calls == []
+    assert len(list(sess.rundir.read("samples"))) == samples_before
+    assert sess.live_samples == live_before
+    # The open path still works (control): without the flag the sample lands.
+    sess.closed = False
+    simple_server._on_session_sample(
+        sess, {"seq": 8, "mono": 60.0, "t": EPOCH_START + 60,
+               "cg": {sess.cgroup: {}}, "host": {}},
+        os.path.join(simple_server.cgroup_root, sess.cgroup.lstrip("/")), None,
+    )
+    assert "migrate" in calls
+    assert len(list(sess.rundir.read("samples"))) == samples_before + 1
+    release.set()
+
+
+def _stub_open_session_io(sess):
+    """Stubs a wedged-session fixture needs so a sample can run end to end."""
+    sess.placement.placed = True
+    sess.placement.leaf_readings = lambda: {
+        "psi_full_avg10": None, "memory_high_applied": False}
+    sess.damon_session.recommit_targets = lambda pids: None
+    sess.damon_session.last_class_bytes = {"hot": 1, "warm": 1, "cold": 1, "idle": 1}
+
+
+def _sample_record(seq):
+    return {"seq": seq, "mono": 50.0 + seq, "t": EPOCH_START + 50 + seq,
+            "host": {}}
+
+
+def test_forced_finalize_with_a_worker_holding_the_session_lock_forever_returns(
+    simple_server, monkeypatch,
+):
+    """Sol S9: a worker wedged INSIDE a locked action must not hang the daemon:
+    the bounded acquire fails, finalize returns False quickly, and verbs that
+    take the server lock still answer."""
+    sess, release, closed, released = _wedge(simple_server, monkeypatch)
+    holding = threading.Event()
+
+    def hold_forever():
+        with sess.lock:
+            holding.set()
+            release.wait()
+
+    threading.Thread(target=hold_forever, daemon=True).start()
+    assert holding.wait(timeout=5.0)
+    started = time.monotonic()
+    with simple_server._lock:
+        assert simple_server._finalize_session_locked(
+            sess, aborted_reason=None, force=True) is False
+    assert time.monotonic() - started < 2.0
+    assert not sess.finished and closed == [] and released == []
+    # The daemon-wide lock was released: a verb that takes it answers.
+    assert simple_server._dispatch(_wire("version"))["ok"] is True
+    release.set()
+
+
+def test_observe_liveness_after_close_never_reaches_the_kill(
+    simple_server, monkeypatch,
+):
+    """Sol S7: a stall kill must not fire once finalization has begun."""
+    sess, release, closed, released = _wedge(simple_server, monkeypatch)
+    _stub_open_session_io(sess)
+    kills: List[str] = []
+    monkeypatch.setattr(
+        simple_server, "_enforce_stall_kill", lambda *a: kills.append("kill"))
+
+    class _Tracker:
+        class policy:
+            progress_stream = None
+
+        stream = None
+        kill_requested = True
+
+        def observe(self, _sample):
+            # Finalization begins between the top-of-function check and the
+            # kill decision.
+            sess.closed = True
+
+    sess.watch = _Tracker()
+    abs_target = os.path.join(simple_server.cgroup_root, sess.cgroup.lstrip("/"))
+    simple_server._observe_liveness(
+        sess, mono=1.0, record=_sample_record(1), abs_target=abs_target,
+        target_metrics={}, host_metrics={}, pids=[],
+    )
+    assert kills == []
+    # And entering already closed returns before touching the tracker at all.
+    sess.watch = None
+    sess.closed = True
+    simple_server._observe_liveness(
+        sess, mono=2.0, record=_sample_record(2), abs_target=abs_target,
+        target_metrics={}, host_metrics={}, pids=[],
+    )
+    release.set()
+
+
+def test_closed_session_neither_collects_nor_double_closes_damon(
+    simple_server, monkeypatch,
+):
+    """Sol S8: after the closed flag, a late tick must not read the DAMON
+    session, and a disable must not close it a second time or overwrite the
+    cleanup disposition."""
+    sess, release, closed, released = _wedge(simple_server, monkeypatch)
+    _stub_open_session_io(sess)
+    collected: List[str] = []
+    sess.damon_session.collect = lambda: collected.append("collect")
+    sess.closed = True
+    simple_server._on_session_sample(
+        sess, _sample_record(3),
+        os.path.join(simple_server.cgroup_root, sess.cgroup.lstrip("/")), None,
+    )
+    assert collected == []
+    sess.damon_cleanup = {"confirmed": True, "slot": 1, "quarantined": False}
+    simple_server._disable_damon_for_session(sess, RuntimeError("late"))
+    assert closed == []                       # no second close
+    assert sess.damon_cleanup == {"confirmed": True, "slot": 1, "quarantined": False}
+    assert sess.damon_session is not None
+    release.set()
+
+
+def test_flipping_closed_mid_sample_stops_every_later_action(
+    simple_server, monkeypatch,
+):
+    """The interleaving the closed flag exists for: it flips AFTER the entry
+    check, from inside migrate. Nothing after the flip may act."""
+    sess, release, closed, released = _wedge(simple_server, monkeypatch)
+    _stub_open_session_io(sess)
+    acted: List[str] = []
+
+    def migrate(pids):
+        acted.append("migrate")
+        sess.closed = True                    # finalization begins here
+
+    sess.placement.migrate = migrate
+    sess.damon_session.collect = lambda: acted.append("collect")
+    sess.last_discovery_mono = None           # due: migrate runs
+    samples_before = len(list(sess.rundir.read("samples")))
+    live_before = sess.live_samples
+    simple_server._on_session_sample(
+        sess, _sample_record(4),
+        os.path.join(simple_server.cgroup_root, sess.cgroup.lstrip("/")), None,
+    )
+    assert acted == ["migrate"]               # no collect, nothing after
+    assert len(list(sess.rundir.read("samples"))) == samples_before
+    assert sess.live_samples == live_before
+    release.set()
+
+
+def test_sigterm_shutdown_finalizes_a_session_whose_sampler_is_blocked(
+    simple_server, monkeypatch,
+):
+    """Sol S1: shutdown must not strand placement/DAMON behind a wedged
+    sampler; it forces, marking the manifest aborted."""
+    sess, release, closed, released = _wedge(simple_server, monkeypatch)
+    simple_server.request_shutdown()       # what the SIGTERM handler does
+    simple_server._stop_all_sessions(aborted_reason="daemon-stopped")
+    assert sess.finished and closed == [True] and released == [True]
+    manifest = json.loads(
+        (Path(simple_server.sessions_dir) / sess.session_id / "manifest.json").read_text()
+    )
+    assert manifest["status"] == "aborted"
+    assert manifest["aborted_reason"] == serve.STOP_FORCED_REASON
+    assert sess.summary_doc["stop_forced"] == serve.STOP_FORCED_REASON
+    release.set()
+
+
+def test_forced_stop_that_cannot_take_the_session_lock_does_not_deadlock(
+    simple_server, monkeypatch, capsys,
+):
+    sess, release, closed, released = _wedge(simple_server, monkeypatch)
+    sess.stop_attempts = serve.STOP_FORCE_AFTER_ATTEMPTS
+    sess.lock.acquire()                      # the wedged worker holds it
+    try:
+        with simple_server._lock:
+            assert simple_server._finalize_session_locked(
+                sess, aborted_reason=None, force=True) is False
+    finally:
+        sess.lock.release()
+    assert not sess.finished and closed == [] and released == []
+    assert "session lock is held" in capsys.readouterr().err
+    release.set()
+
+
+def test_confirmed_damon_cleanup_is_reported_as_confirmed(simple_server):
+    started = simple_server._dispatch(_start_req())
+    sess = simple_server._sessions[started["session"]]
+
+    class _ConfirmedDamon:
+        cleanup_confirmed = True
+        kdamond_idx = 3
+        thresholds = {"hot_rate_pct": 50, "warm_rate_pct": 5,
+                      "cold_age_s": 30, "idle_age_s": 120}
+
+        def __exit__(self, *_args):
+            return None
+
+    sess.damon_session = _ConfirmedDamon()
+    with simple_server._lock:
+        simple_server._finalize_session_locked(sess, aborted_reason=None)
+    assert sess.summary_doc["damon_cleanup"] == {
+        "confirmed": True, "slot": 3, "quarantined": False,
+    }
+
+
+def test_session_without_damon_has_no_cleanup_fact(simple_server):
+    started = simple_server._dispatch(_start_req())
+    sess = simple_server._sessions[started["session"]]
+    with simple_server._lock:
+        simple_server._finalize_session_locked(sess, aborted_reason=None)
+    assert "damon_cleanup" not in sess.summary_doc
+
+
+def test_unconfirmed_cleanup_of_a_quarantined_slot_is_reported_quarantined(
+    simple_server,
+):
+    class _Pool:
+        quarantined_indices = {7}
+
+    class _Unconfirmed:
+        cleanup_confirmed = False
+        kdamond_idx = 7
+
+        def __exit__(self, *_args):
+            return None
+
+    simple_server.damon_pool = _Pool()
+    doc = simple_server._close_damon_session(
+        _Unconfirmed(), session_id="s-q", context="test",
+    )
+    assert doc == {"confirmed": False, "slot": 7, "quarantined": True}
 
 
 def test_missing_cleanup_confirmation_property_is_reported_as_unconfirmed(
