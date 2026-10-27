@@ -312,9 +312,22 @@ def _limits_snapshot(limits_mod, eff) -> Dict[str, object]:
 
 
 def _tag_role(specs: Sequence[str], role: str) -> List[str]:
+    """Append ``role=`` to every spec that does not carry one, re-emitting
+    the spec through the one option grammar (`targets._parse_options`) so a
+    ``@`` that is part of the cgroup NAME (``user@1000.service``) is never
+    mistaken for an existing option list to extend."""
     out = []
     for spec in specs:
-        out.append(spec if "role=" in spec else (spec + ("," if "@" in spec else "@") + f"role={role}"))
+        scheme, rest = targets_mod._split_spec(spec)
+        value, options = targets_mod._parse_options(rest)
+        if "role" in options:
+            out.append(spec)
+            continue
+        options["role"] = role
+        # A bare word and `word=1` parse identically, so the bare form is
+        # the stable spelling for the flag-style options.
+        suffix = ",".join(f"{k}={v}" if v != "1" else k for k, v in options.items())
+        out.append(f"{scheme}:{value}@{suffix}" if scheme else f"{value}@{suffix}")
     return out
 
 
@@ -693,6 +706,12 @@ def _parse_log_tail_spec(spec: str) -> Tuple[str, Optional[str]]:
     value, options = targets_mod._parse_options(spec[len("container:"):])
     if not value:
         _err(f"--log-tail needs a container name or id, got {spec!r}")
+    if "@" in value:
+        # A Docker container name/id never contains `@` (names are
+        # [a-zA-Z0-9][a-zA-Z0-9_.-]+), so under the last-`@` grammar an `@`
+        # left in the value can only be an option word this verb does not
+        # know (`@bogus=1`): say so rather than hand docker a bad name.
+        _err(f"--log-tail: unknown option(s) after '@' in {spec!r} (only as=LABEL is accepted)")
     extra = set(options) - {"as"}
     if extra:
         _err(f"--log-tail: unknown option(s) {sorted(extra)} in {spec!r}")
@@ -1045,9 +1064,37 @@ def cmd_serve(args: argparse.Namespace) -> int:
         )
     from lib import serve as serve_mod
 
+    # Sol B4: Docker/systemd auto-create an uninstalled `cgprofile.slice`
+    # with no limits, and the daemon would appear governed while running
+    # unbounded. Refuse to serve unless the slice is provably bounded.
+    if not serve_mod.daemon_slice_bounded(access.CGROUP_ROOT, access.PROC_ROOT):
+        problem = serve_mod.daemon_slice_problem(access.CGROUP_ROOT, access.PROC_ROOT)
+        _err(
+            f"serve refuses to run: {serve_mod.DAEMON_SLICE_NAME} does not "
+            f"provably contain this daemon: {problem}. A missing unit makes "
+            "systemd auto-create an implicit slice with no limits (zero, "
+            "'max', unreadable and non-numeric memory.max are all refused; "
+            "zero is refused because a slice that can hold no memory is a "
+            "misconfiguration, not containment). Install infra/cgprofile.slice "
+            "on the Docker host (sudo cp infra/cgprofile.slice "
+            "/etc/systemd/system/ && sudo systemctl daemon-reload), verify "
+            "`systemctl show cgprofile.slice --property=LoadState,MemoryMax`, "
+            "then recreate the daemon container (its cgroup parent is chosen "
+            "at creation). LoadState itself cannot be read from inside the "
+            "container (CIU-150)"
+        )
     observe_slices = tuple(
         name for name in (s.strip() for s in args.observe_slices.split(",")) if name
     ) if args.observe_slices else ()
+    # A slice name that cannot expand to a cgroup path (`a--b`, `-a`, one
+    # with a `/`) is refused at start: `ctl host` expands every observed
+    # slice and the gates slice on every call, and a late TargetError there
+    # would surface as a daemon fault (ctl exit 3) on every `host`/`status`.
+    for name in (*observe_slices, args.gates_slice):
+        try:
+            targets_mod.slice_to_path(name)
+        except targets_mod.TargetError as exc:
+            _err(f"--observe-slices/--gates-slice: {exc}")
     # §8.1's socket-carrier uid allowlist. Deliberately environment-only
     # (the compose template passes it through): it is a DEPLOYMENT trust
     # decision, not a per-invocation one, and an operator who narrows access
@@ -1544,12 +1591,17 @@ def build_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--keep-sessions", type=int, default=200)
     serve_parser.add_argument("--keep-days", type=int, default=14)
     serve_parser.add_argument("--observe-slices", default="",
-                              help="comma-separated extra *.slice names for `ctl host`")
+                              help="comma-separated extra *.slice names for `ctl host`; a name "
+                                   "that is not a usable slice unit name (empty hierarchy "
+                                   "component such as a--b, or a /) refuses to start, exit 2 "
+                                   "(since 1.1.0; under a compose restart policy that is a "
+                                   "restart loop until the flag is fixed)")
     serve_parser.add_argument("--max-sessions", type=int, default=16)
     serve_parser.add_argument("--gates-slice", default="dev-gates.slice",
                               help="mdt's admission-capacity slice C8 places leaves under "
                                    "(RG55-INTERFACE-CONTRACT.md §8.3/§8.5; default "
-                                   "dev-gates.slice)")
+                                   "dev-gates.slice); an unusable unit name refuses to start "
+                                   "(exit 2), same as --observe-slices")
     serve_parser.set_defaults(func=cmd_serve)
 
     # RG55-INTERFACE-CONTRACT.md's own examples always place `--json` AFTER

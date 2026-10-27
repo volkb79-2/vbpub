@@ -79,7 +79,11 @@ SCHEMA = 1
 
 _ISO_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
-_TARGET_GROUPS = {"mem", "memstat", "memev", "psi", "cpu", "pids"}
+# `swapev`/`memev_h` (cgprofile 1.1.0, CP-29) ride along into the daemon's
+# per-tick `samples.jsonl.gz` record and `events.jsonl` (`swap_fail`); the
+# Summary projection below (`_SUMMARY_FIELD_PATHS`) does not read them, so the
+# contract-1 Summary document is unchanged.
+_TARGET_GROUPS = {"mem", "memstat", "memev", "memev_h", "swapev", "psi", "cpu", "pids"}
 _SLICE_GROUPS = {"mem", "psi"}
 
 
