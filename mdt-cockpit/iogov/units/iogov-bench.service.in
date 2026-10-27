@@ -1,0 +1,29 @@
+# TEMPLATE, NOT INSTALLED. The mini write bench. The timer fires every 15 minutes; `iogov bench` is a no-op unless the ~6 h
+# (jittered) schedule says it is due and the host is calm (see the gates in the design note).
+[Unit]
+Description=iogov bench (bounded scratch-file write bench, recommend-only)
+ConditionPathExists=!@IOGOV_KILL_SWITCH_FILE@
+
+[Service]
+Type=oneshot
+User=@IOGOV_USER@
+Slice=iogov-probe.slice
+Environment=PYTHONPATH=@IOGOV_PYTHONPATH@ IOGOV_CONFIG=@IOGOV_CONFIG@
+ExecStart=@IOGOV_PYTHON@ -m iogov bench
+ExecStopPost=-@IOGOV_PYTHON@ -m iogov cleanup
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+# SIGTERM only sets a flag: the run stops submitting, removes its scratch file and journals the abort.
+KillSignal=SIGTERM
+TimeoutStopSec=60
+DevicePolicy=closed
+DeviceAllow=@IOGOV_DISK_NODE@ r
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=@IOGOV_STATE_DIR@ @IOGOV_SCRATCH_DIR@
+LimitCORE=0
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX

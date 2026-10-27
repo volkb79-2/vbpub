@@ -1,0 +1,28 @@
+# TEMPLATE, NOT INSTALLED. Optional resident sampler of protected-side distress episodes. Performs NO probe IO: it reads
+# /proc and cgroup files once a second. Needs no device access at all.
+[Unit]
+Description=iogov watch (protected-side distress episodes, recommend-only)
+ConditionPathExists=!@IOGOV_KILL_SWITCH_FILE@
+
+[Service]
+Type=simple
+User=@IOGOV_USER@
+Slice=iogov-probe.slice
+Environment=PYTHONPATH=@IOGOV_PYTHONPATH@ IOGOV_CONFIG=@IOGOV_CONFIG@
+ExecStart=@IOGOV_PYTHON@ -m iogov watch
+Restart=on-failure
+RestartSec=30
+Nice=10
+KillSignal=SIGTERM
+DevicePolicy=closed
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=@IOGOV_STATE_DIR@
+LimitCORE=0
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

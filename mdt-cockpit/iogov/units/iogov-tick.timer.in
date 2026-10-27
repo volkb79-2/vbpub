@@ -1,0 +1,13 @@
+# TEMPLATE, NOT INSTALLED.
+[Unit]
+Description=iogov tick timer
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=@IOGOV_TICK_INTERVAL@
+RandomizedDelaySec=30
+AccuracySec=10s
+Unit=iogov-tick.service
+
+[Install]
+WantedBy=timers.target

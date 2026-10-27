@@ -1,0 +1,13 @@
+# TEMPLATE, NOT INSTALLED.
+[Unit]
+Description=iogov bench timer
+
+[Timer]
+OnBootSec=20min
+OnUnitActiveSec=15min
+RandomizedDelaySec=60
+AccuracySec=30s
+Unit=iogov-bench.service
+
+[Install]
+WantedBy=timers.target
