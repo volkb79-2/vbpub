@@ -98,7 +98,7 @@ case "$lane" in
 esac
 
 case "$worktree" in
-  /workspaces/vbpub|/workspaces/vbpub/.worktrees/*) ;;
+  /workspaces/vbpub|/workspaces/vbpub/.worktrees/*|/workspaces/vbpub/.claude/worktrees/*) ;;
   *) die "worktree $worktree is outside /workspaces/vbpub" ;;
 esac
 worktree="$(cd -- "$worktree" && pwd -P)" \

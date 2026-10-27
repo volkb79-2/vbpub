@@ -55,7 +55,7 @@ assay_git() {
 
 validate_worktree() {
   case "$1" in
-    /workspaces/vbpub|/workspaces/vbpub/.worktrees/*) ;;
+    /workspaces/vbpub|/workspaces/vbpub/.worktrees/*|/workspaces/vbpub/.claude/worktrees/*) ;;
     *) die "worktree $1 is outside /workspaces/vbpub" ;;
   esac
 }
