@@ -129,7 +129,9 @@ cmru cleanup --remove-assets 30d --dry-run
 `cleanup --policy` deletes EVERY `<prefix>-v*` Release and Git tag of each selected
 project except `<prefix>-latest`, `keep_release_tags` and, only when `[cleanup]
 max_age_days` is set, Releases published within that window; without the key there
-is no age filter at all. `cleanup` is NOT routine: it deletes remote Releases, tags and GHCR versions
+is no age filter at all. PRECONDITION: no `cmru release` may be in flight anywhere
+on the estate (`cleanup` takes no release lock, cmru KI-101): a tag a release just
+pushed has no Release yet and would be selected as a stale tag. `cleanup` is NOT routine: it deletes remote Releases, tags and GHCR versions
 (or one retained build record). Exactly one mode is required (`--policy`,
 `--remove-assets AGE`, `--delete-unmanaged-release-tag TAG`,
 `--delete-build-output ID`); always preview with `--dry-run` first, and note it

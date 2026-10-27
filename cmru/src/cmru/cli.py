@@ -7723,24 +7723,67 @@ def _abandon_orphan_sidecars(args, runtime, repo_root: Path) -> int | None:
             exit_code=2,
         )
     workspace = transaction.ReleaseWorkspace(repo_root, repo_root, args.branch, "")
-    try:
-        scope = transaction.read_release_scope(repo_root, workspace)
-    except _DOMAIN_ERRORS:
-        scope = None
-    try:
-        results = transaction.read_release_results(repo_root, workspace)
-    except _DOMAIN_ERRORS:
-        results = {}
+    # The sidecars are the ONLY remaining record of what this transaction
+    # published. Like every other abandon path, publication evidence withholds:
+    # a recorded result, an untagged publication that started, or a release-tag
+    # push attempt without a confirmed-absent record, and any record that
+    # cannot be read (its content is then unknown, not absent).
+    withhold: list[str] = []
+
+    def _read(label: str, reader):
+        try:
+            return reader(repo_root, workspace)
+        except _DOMAIN_ERRORS as exc:
+            withhold.append(f"the {label} record cannot be read ({exc})")
+            return None
+
+    scope = _read("scope", transaction.read_release_scope)
+    results = _read("results", transaction.read_release_results) or {}
+    started = _read("untagged-publication", transaction.read_untagged_publication_record) or []
+    attempts = _read("tag-attempt", transaction.read_release_tag_attempts) or {}
+    absent = _read("tag-absence", transaction.read_confirmed_absent_release_tag_attempts) or {}
+    unconfirmed = sorted(
+        _tag_ref_name(ref) for ref, oid in attempts.items() if absent.get(ref) != oid
+    )
+    if results:
+        withhold.append(
+            "recorded published result(s): "
+            + ", ".join(f"{name}:{tag}" for name, tag in sorted(results.items()))
+        )
+    if started:
+        withhold.append("untagged publication started for: " + ", ".join(sorted(started)))
+    if unconfirmed:
+        withhold.append(
+            "release tag push attempt(s) with no confirmed-absent record: " + ", ".join(unconfirmed)
+        )
     print(
-        f"Retire (orphan transaction sidecars): {args.branch}\n"
+        f"{'Withheld' if withhold else 'Retire'} (orphan transaction sidecars): {args.branch}\n"
         "  worktree: none registered; local branch: none; origin branch: none\n"
         f"  sidecars: {', '.join(path.name for path in sidecars)}\n"
         f"  recorded scope: {', '.join(scope) if scope else 'unavailable'}\n"
         "  recorded results: "
         + (", ".join(f"{name}:{tag}" for name, tag in sorted(results.items())) if results else "none")
-        + "\n  after retirement: only the sidecar files above are removed; no branch, "
-        "worktree, tag, Release or asset is touched"
+        + "\n  untagged publications started: "
+        + (", ".join(sorted(started)) if started else "none")
+        + "\n  release tag push attempts: "
+        + (", ".join(sorted(_tag_ref_name(ref) for ref in attempts)) if attempts else "none")
+        + (
+            "\n  reason: " + "; ".join(withhold)
+            + "\n  the sidecars are the only record of that publication state; inspect the "
+            "published tags/Releases, then remove the files by hand if they are unneeded"
+            if withhold else
+            "\n  after retirement: only the sidecar files above are removed; no branch, "
+            "worktree, tag, Release or asset is touched"
+        )
     )
+    if withhold:
+        if args.dry_run:
+            log_info("[DRY RUN] No branch, worktree, metadata, or remote state was changed.")
+            return exit_codes.REFUSED
+        raise CliFailure(
+            f"{args.branch} has publication evidence in its sidecars; nothing was retired",
+            exit_code=exit_codes.REFUSED,
+        )
     if args.dry_run:
         log_info("[DRY RUN] No branch, worktree, metadata, or remote state was changed.")
         return 0

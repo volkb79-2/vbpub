@@ -2550,7 +2550,8 @@ tokens (now retirable with `cmru abandon <branch>`, this branch) so they stop ac
 its tag BEFORE the publish step creates the GitHub Release, so a `--policy` run in that window selects the brand-new tag. `--yes` or a
 pre-captured plan then deletes it (the tag deletion is pinned to the previewed oid, which is the new tag's oid).
 **Fix direction.** Take the release lock for the whole cleanup verb (preview through apply), and treat a versioned tag with no Release as
-"unknown age, keep" when `max_age_days` is set.
+"unknown age, keep" when `max_age_days` is set. Until then the precondition "no `cmru release` in flight on the estate" is stated in
+README.md ("cleanup"), docs/RELEASE-TRANSACTIONS.md ("Failure and retained candidate") and the packaged skill (2026-10-27).
 
 ### KI-102 - a `--dry-run --resume` commits prepared external-version inputs into the retained candidate it then calls "retained unchanged"
 

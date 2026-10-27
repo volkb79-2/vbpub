@@ -502,7 +502,10 @@ uncertain metadata and never removes a public Release, tag, or GHCR version.
 It removes the candidate worktree and its in-worktree logs/artifacts as well as
 the private candidate ref and sidecars. Run `cmru cleanup --dry-run` separately
 to inspect configured remote asset pruning; `cleanup` does not remove retained
-release worktrees.
+release worktrees. Precondition for any mutating `cleanup --policy`: no `cmru release`
+in flight on the estate. `cleanup` takes no release lock (KI-101), and a release pushes
+its tag before the publish step creates the Release, so `--policy` would select that
+brand-new tag as a tag without a Release.
 
 ### Retiring an origin-only candidate (KI-35)
 

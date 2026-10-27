@@ -188,10 +188,15 @@ def sync_ghcr_package_visibility(package_names: list[str]) -> None:
         f"[INFO] Syncing GHCR package visibility to {repo_visibility}: {', '.join(names)}\n"
     )
     for package_name in names:
-        ghcr.mirror_package_visibility(package_name, expected_visibility=repo_visibility)
-        sys.stderr.write(
-            f"[INFO] Synced {package_name} visibility to {repo_visibility}\n"
-        )
+        synced = ghcr.mirror_package_visibility(package_name, expected_visibility=repo_visibility)
+        if synced is None:
+            # cmru KI-97: the package could not be inspected (warned above); not a release failure.
+            sys.stderr.write(
+                f"[INFO] NOT synced: {package_name} visibility could not be verified "
+                "(see the warning above)\n"
+            )
+        else:
+            sys.stderr.write(f"[INFO] Synced {package_name} visibility to {synced}\n")
 
 
 def run_resolver() -> dict[str, str]:
