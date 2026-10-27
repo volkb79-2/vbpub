@@ -59,8 +59,17 @@ def check_notice(notice: str) -> list:
         if h not in notice:
             bad.append("file hash %s not in NOTICE.md" % h[:12])
     allowed = {h for _, _, h in SNIPPETS.values()} | {FILE_SHA256, TEXT_SHA256} | set(KNOWN_OTHER_SHA256)
-    for h in sorted(set(re.findall(r"(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])", notice)) - allowed):
-        bad.append("NOTICE.md contains a 64-hex sha256 that is not a recorded one: %s" % h)
+    quoted = set()
+    for run in re.findall(r"(?<![0-9a-fA-F])[0-9a-fA-F]{64,}(?![0-9a-fA-F])", notice):      # any case, any length >= 64 (sha512 is 128)
+        if len(run) != 64:
+            bad.append("NOTICE.md contains a %d-hex run (not a recorded sha256): %s..." % (len(run), run[:16]))
+        elif run.lower() not in allowed:
+            bad.append("NOTICE.md contains a 64-hex sha256 that is not a recorded one: %s" % run)
+        else:
+            quoted.add(run.lower())
+    for h in KNOWN_OTHER_SHA256:
+        if h not in quoted:
+            bad.append("KNOWN_OTHER_SHA256 entry %s is no longer quoted in NOTICE.md (stale whitelist)" % h[:12])
     return bad
 
 

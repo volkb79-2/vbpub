@@ -1380,9 +1380,10 @@ class GlyphReader:
         res = read_image(im, self.atlas, self.font, self.max_hamming, self.auto_unscale, grid_hints=self.grid_hints, _capture=cap,
                          **self.decode_kw)
         self._st = None
-        # no ``integer_upscale == 1`` test: for k > 1 the stored image is the UNSCALED one, so the next raw frame never has the same size and the incremental
-        # path is unreachable (removing the test changes no observable result; pinned by test_glyph_reader_stores_no_session_for_an_undone_upscale...)
-        if cap and res.get("status") == "ok" and not _REFERENCE:
+        # a session only for a capture that was NOT an undone upscale: for k > 1 the stored image is the UNSCALED one, whose size can equal the next RAW frame
+        # (a 3x zoom, then the native crop): the incremental path would return the stale capped result as 'identical' instead of a fresh read
+        # (pinned by test_glyph_reader_zoomed_frame_then_native_frame_is_a_fresh_full_read)
+        if cap and cap["probe"]["integer_upscale"] == 1 and res.get("status") == "ok" and not _REFERENCE:
             ex, state = cap["ex"], cap["state"]
             g = ex.grid
             if g["cell_h"] >= 5 and cap["im"].mode == "RGB":
@@ -1606,8 +1607,13 @@ def trust_scale(res: dict) -> dict:
     choice (``res["trust_scale"] = True``, ``res["scale_unverified"]`` stays).  Use it only if the capture path is known to be a browser/display zoom of a
     native 1:1 screen (the cap exists because the loaded atlas cannot exclude a larger native font)."""
     out = dict(res)
-    pre = res.get("scale_precap", {})
-    out["conf"] = ["".join(pre.get("%d,%d" % (r, ci), CONF_FONT) if ch == CONF_SCALED else ch for ci, ch in enumerate(row)) for r, row in enumerate(res.get("conf", []))]
+    pre = res.get("scale_precap")
+    for r, row in enumerate(res.get("conf", [])):
+        for ci, ch in enumerate(row):
+            if ch == CONF_SCALED and not (isinstance(pre, dict) and pre.get("%d,%d" % (r, ci)) in (CONF_FONT, CONF_HOMO)):
+                # fail CLOSED: without the recorded pre-cap class a z cell is never promoted (a guessed F would bypass the homoglyph policy and the flags)
+                raise ValueError("trust_scale: cell %d,%d is class z but res['scale_precap'] has no F/H entry for it; this result was not produced by decode()" % (r, ci))
+    out["conf"] = ["".join(pre["%d,%d" % (r, ci)] if ch == CONF_SCALED else ch for ci, ch in enumerate(row)) for r, row in enumerate(res.get("conf", []))]
     out["trust_scale"] = True
     return out
 

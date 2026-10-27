@@ -761,13 +761,74 @@ def test_check_notice_rejects_any_unrecorded_sha256():
     assert nh.check_notice(notice + "\nprefix `" + "ab" * 8 + "...`\n") == []          # a truncated prefix is not a full hash claim
 
 
-def test_glyph_reader_stores_no_session_for_an_undone_upscale_so_an_identical_frame_is_a_full_pass():
-    """Pins the ``integer_upscale == 1`` session condition: with a session an identical k>1 frame would be returned as 'identical' without the guard path."""
+    assert any("not a recorded one" in p for p in nh.check_notice(notice + "\nUPPER `" + ("AB" * 32) + "`\n"))                   # uppercase hex is still a hash
+    assert any("128-hex" in p for p in nh.check_notice(notice + "\nsha512 `" + ("ab" * 64) + "`\n"))                          # sha512-length runs
+    # a recorded hash in uppercase counts as quoted; a whitelist entry that NOTICE.md no longer quotes is stale
+    gone = notice.replace(nh.KNOWN_OTHER_SHA256[0], "0" * 12 + "...")
+    assert any("stale whitelist" in p for p in nh.check_notice(gone))
+
+
+def test_glyph_reader_zoomed_frame_then_native_frame_is_a_fresh_full_read():
+    """Crossing: a 3x zoom stores NO session, so the following native crop (whose size equals the UNSCALED size of the first frame) is a full pass equal to a
+    fresh read_image; with a session it came back as 'identical' with the stale capped result (scale_capped True, scale_unverified 3)."""
+    base, extra = _load("fonts.atlas.json", "fonts.console-extra.atlas.json")
+    crop = Image.open(os.path.join(FIX, "crop-14-dialog.png")).convert("RGB")
+    assert crop.size == (480, 96)
+    zoomed = _zoom(crop, 3)
+    for atlas in (base, gg.Atlas.merge(base, extra)):
+        reader = gg.GlyphReader(atlas, grid_hints=[(8, 16)])
+        z = reader.read(zoomed)
+        assert z["scale_unverified"] == 3 and z["session"]["path"] == "full"
+        native = reader.read(crop)
+        fresh = gg.read_image(crop, atlas, grid_hints=[(8, 16)])
+        assert native["session"]["path"] == "full" and "scale_unverified" not in native and native.get("scale_capped") is None
+        assert _same_result(native, fresh)
+        again = reader.read(crop)                                       # and the native frame now keeps its normal session
+        assert again["session"]["path"] == "identical" and _same_result(again, fresh)
+
+
+def test_psf1_table_with_a_stray_trailing_byte_after_all_records_fails(tmp_path):
+    table = b"".join(_u16(i, 0xFFFF) for i in range(256)) + b"\x01"
+    p = tmp_path / "t.psf"
+    p.write_bytes(_psf1_bytes({0: [0xFF] * 8}, mode=2, table=table))
+    with pytest.raises(ValueError, match="stray byte"):
+        ff.load_psf(str(p))
+    p.write_bytes(_psf1_bytes({0: [0xFF] * 8}, mode=2, table=table[:-1]))      # without the stray byte: fine
+    assert len(ff.load_psf(str(p)).glyphs) == 256
+
+
+def test_trust_scale_fails_closed_without_the_recorded_precap_class():
     base, extra = _load("fonts.atlas.json", "fonts.console-extra.atlas.json")
     atlas = gg.Atlas.merge(base, extra)
-    im = _zoom(_render_font(extra.fonts["font:csvga-16x32"], [l[:40] for l in DENSE]), 2)
-    reader = gg.GlyphReader(atlas)
-    assert [reader.read(im)["session"]["path"] for _ in range(3)] == ["full", "full", "full"]
-    plain = gg.GlyphReader(base, grid_hints=[(8, 16)])
-    crop = Image.open(os.path.join(FIX, "crop-14-dialog.png")).convert("RGB")
-    assert [plain.read(crop)["session"]["path"] for _ in range(2)] == ["full", "identical"]               # k == 1 keeps its session
+    capped = gg.read_image(_zoom(_render_font(extra.fonts["font:csvga-16x32"], [l[:40] for l in DENSE]), 2), atlas)
+    assert "z" in "".join(capped["conf"])
+    gone = {k: v for k, v in capped.items() if k != "scale_precap"}
+    with pytest.raises(ValueError, match="scale_precap"):
+        gg.trust_scale(gone)
+    with pytest.raises(ValueError, match="scale_precap"):
+        gg.strict_match(gone, "Hello World", trust_scale=True)
+    foreign = dict(capped, scale_precap={k: "x" for k in capped["scale_precap"]})                 # a foreign value is not F/H
+    with pytest.raises(ValueError):
+        gg.trust_scale(foreign)
+    partial = dict(capped, scale_precap=dict(list(capped["scale_precap"].items())[:-1]))
+    with pytest.raises(ValueError):
+        gg.trust_scale(partial)
+    assert gg.trust_scale(capped)["trust_scale"] is True and "z" in "".join(capped["conf"])
+
+
+@pytest.mark.parametrize("policy,expected", [("latin-only", False), ("none", False), ("declared-repertoire", True)])
+def test_capped_h_cell_with_a_multi_codepoint_alias_set_obeys_the_policy_after_trust_scale(tmp_path, policy, expected):
+    """'A' also drawn as Cyrillic U+0410 and Greek U+0391 (non-Latin lookalikes): refused by latin-only and none, accepted only on declaration.  Without the stored
+    alias set the restored H cell would look benign and latin-only would accept it."""
+    rows_b = [0, 0, 0x7C, 0x42, 0x7C, 0x42, 0x42, 0x7C, 0, 0, 0, 0, 0, 0, 0, 0]
+    (tmp_path / "h.psf").write_bytes(_psf2_bytes(8, 16, [(R_SMALL, "AАΑ"), (rows_b, "B")]))
+    atlas = gg.Atlas()
+    ff.build_font_atlas(atlas, "font:h", ff.load_psf(str(tmp_path / "h.psf")), "ascii")
+    lines = ["AB BA AB BA AB BA"] * 8
+    src = _render_font(atlas.fonts["font:h"], lines, cols=20, rows=8)
+    ref = gg.read_image(src, atlas, grid_hints=[(8, 16)])
+    capped = gg.read_image(_zoom(src, 3), atlas, grid_hints=[(8, 16)])
+    assert ref["conf"][0][0] == "H" and capped["conf"][0][0] == "z" and capped["scale_precap"]["0,0"] == "H"
+    assert capped["aliases"]["0,0"] == ref["aliases"]["0,0"] and len(ref["aliases"]["0,0"]) == 3
+    assert gg.strict_match(ref, "AB", homoglyphs=policy)["matched"] is expected
+    assert gg.strict_match(capped, "AB", homoglyphs=policy, trust_scale=True)["matched"] is expected
