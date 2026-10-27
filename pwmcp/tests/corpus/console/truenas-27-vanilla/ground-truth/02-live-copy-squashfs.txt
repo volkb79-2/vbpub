@@ -1,0 +1,4 @@
+ * Copying /run/live/medium/live/filesystem.squashfs to RAM
+sending incremental file list
+filesystem.squashfs
+         32,768   0%    0.00kB/s    0:00:00

@@ -1,0 +1,23 @@
+Console setup
+-------------
+
+The web user interface is at:
+http://10.0.2.15
+http://[fec0::5054:ff:fe12:3456]
+https://10.0.2.15
+https://[fec0::5054:ff:fe12:3456]
+
+1) Configure network interfaces
+2) Configure network settings
+3) Configure static routes
+4) Change local administrator password
+5) Create one-time password for "root"
+6) Reset configuration to defaults
+7) Open TrueNAS CLI Shell
+8) Open Linux Shell
+9) Reboot
+10) Shutdown
+
+Enter an option from 1-10: [  577.026371] rcu: INFO: rcu_preempt detected stalls on CPUs/tasks:
+[  578.190882] rcu: ?Tasks blocked on level-0 rcu_node (CPUs 0-1): P41/1:b..l
+[  578.195440] rcu: ?(detected by 0, t=5551 jiffies, g=77593, q=255 ncpus=2)
