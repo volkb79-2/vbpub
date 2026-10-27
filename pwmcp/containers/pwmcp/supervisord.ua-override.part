@@ -1,0 +1,21 @@
+; pwmcp ua-override supervisord fragment (PWMCP-09). NOT a standalone config: when
+; PWMCP_USER_AGENT resolves to an override in shared browser mode, entrypoint.sh writes
+; /tmp/pwmcp-shared-ua.conf = supervisord.shared.conf + this fragment and uses that file.
+; With no override this program does not exist (same process list as before).
+
+[program:ua-override]
+; PWMCP-09: when an override is configured, applies the UA string AND its matching
+; client-hint metadata (Sec-CH-UA brands, navigator.userAgentData) to every page of the
+; shared browser over CDP, because Chromium's --user-agent flag alone leaves the
+; HeadlessChrome brand in the hints.
+command=/usr/local/bin/wait-for-cdp.sh 127.0.0.1 %(ENV_PWMCP_CDP_PORT)s 30 -- node /opt/pwmcp/ua-override/index.js
+autorestart=true
+startretries=50
+stdout_logfile=/dev/fd/1
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/fd/2
+stderr_logfile_maxbytes=0
+stdout_events_enabled=true
+stderr_events_enabled=true
+environment=HOME="/home/ubuntu"
+priority=6

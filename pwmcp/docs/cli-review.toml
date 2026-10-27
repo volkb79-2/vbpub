@@ -808,6 +808,19 @@ effects = ["Creates one isolated Playwright context with ignore_https_errors ena
 test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---ignore-https-errors---wait-until-commit]"]
 
 [[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--user-agent/--user-agent"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:945b88b41f9101daf4e6d0b440592a1e6a2c54a2befdadf208bd953cd003c36b"
+rationale = "A caller can present a named browser identity for ONE inspection (PWMCP-09); it is opt-in, validated before connecting, and the result reports the active user agent and its source whenever an override is active, so a spoofed identity is never mistaken for the default."
+invocation = ["inspect", "https://example.test", "--user-agent", "edge-windows"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = "(source: preset:edge-windows)"
+effects = ["Creates one isolated Playwright context with the preset user agent and matching client-hint metadata, reads rendered text, then closes the context (which restores the default) and the lease; because an override is ACTIVE, stderr states the user agent and its source (not silenced by --quiet) and --json prints an object with content, user_agent and user_agent_source instead of the bare string. Without an override the output is unchanged."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---user-agent-edge-windows]"]
+
+[[cases]]
 id = "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--format/1e1d0f251d"
 state = "active"
 decision = "accept"
@@ -1014,3 +1027,380 @@ expected_stdout_contains = "rendered page text"
 expected_stderr_contains = ""
 effects = ["Waits for DOM content to load before reading body text."]
 test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---wait-until=domcontentloaded]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/argument-shape/argument:route:entrypoint:pwmcp/ocr/url"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0b098a9cf91ec8651a55ae1d78200b51aac637cc60d2542f968a138cdbf1c3f9"
+rationale = "A page URL plus --selector captures that element in a fresh context and recognises it; the URL is optional because --image is the primary input."
+invocation = ["ocr", "https://example.test", "--selector", "canvas"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Opens a fresh isolated browser context, captures the matching element as a PNG, closes the context and the lease, then makes one HTTP POST of the PNG to the OCR sidecar and prints the recognised text; sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr-https://example.test---selector-canvas]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:17b7626867c08b42fa8345dc6cbc43d809f2179e5d92df1d7c8c8cc61e19c1af"
+rationale = "The only required input is an image; the sidecar URL comes from the environment or the contract."
+invocation = ["ocr", "--image", "screen.png"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-choice/option:route:entrypoint:pwmcp/ocr/--format/1e1d0f251d"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:cc1d3fdc9330ab633a09c6ae48e861cea65c6bafbcb9ed417bd1ddf4d166a651"
+rationale = "--format text is a supported output shape."
+invocation = ["ocr", "--image", "screen.png", "--format", "text"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---format-text]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-choice/option:route:entrypoint:pwmcp/ocr/--format/4e23b39204"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9d6ac119416d8804f035880a5556392d0aa154720cc937368ae3a78c6bb5d08d"
+rationale = "--format json is a supported output shape."
+invocation = ["ocr", "--image", "screen.png", "--format", "json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"engine\": \"tesseract\""
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---format-json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-choice/option:route:entrypoint:pwmcp/ocr/--format/84206304c2"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:22c553a9b1edf1ea4ea4cbd68e9c8a217a1fe8e58ae0afe305ec1c9ee1f9309a"
+rationale = "--format tsv is a supported output shape."
+invocation = ["ocr", "--image", "screen.png", "--format", "tsv"]
+expected_exit_status = 0
+expected_stdout_contains = "line\tx\ty\tw\th\tconf\tlow_conf\ttext"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---format-tsv]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-choice/option:route:entrypoint:pwmcp/ocr/--psm/4e07408562"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c63fff73457a88f23b21dbade7d2bda7b3edb3b9901a2f311146ae16050ccb5b"
+rationale = "Page segmentation mode 3 is forwarded to the sidecar unchanged."
+invocation = ["ocr", "--image", "screen.png", "--psm", "3"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---psm-3]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-choice/option:route:entrypoint:pwmcp/ocr/--psm/4b227777d4"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:4210502f5b8de5baa620844038465b21fe4f0013ab86aec3a3cb5db346d03c62"
+rationale = "Page segmentation mode 4 is forwarded to the sidecar unchanged."
+invocation = ["ocr", "--image", "screen.png", "--psm", "4"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---psm-4]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-choice/option:route:entrypoint:pwmcp/ocr/--psm/e7f6c01177"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e1019c8d6a4d06d0e85114960333b480b896b7144eb3645fd3dbf11f363cdc4a"
+rationale = "Page segmentation mode 6 is forwarded to the sidecar unchanged."
+invocation = ["ocr", "--image", "screen.png", "--psm", "6"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---psm-6]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-choice/option:route:entrypoint:pwmcp/ocr/--psm/7902699be4"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:8c41b75febfa84632a54ebfd0ea6aebe3ac5dda0c60cdd5a4babcdc382f01f8a"
+rationale = "Page segmentation mode 7 is forwarded to the sidecar unchanged."
+invocation = ["ocr", "--image", "screen.png", "--psm", "7"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---psm-7]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-choice/option:route:entrypoint:pwmcp/ocr/--psm/4fc82b26ae"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:af79102b782948581290fdc8ff8d9904f93d9555b14a6bc954ad99a694b424b5"
+rationale = "Page segmentation mode 11 is forwarded to the sidecar unchanged."
+invocation = ["ocr", "--image", "screen.png", "--psm", "11"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---psm-11]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-choice/option:route:entrypoint:pwmcp/ocr/--psm/3fdba35f04"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:beb5c0b416200f45dbbbd0cc533049f91804eb6f232fbf4b6c80c20ef3bd1d3e"
+rationale = "Page segmentation mode 13 is forwarded to the sidecar unchanged."
+invocation = ["ocr", "--image", "screen.png", "--psm", "13"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---psm-13]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--contract/--contract"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:dc24395f5f0e758088c7199bf3d97644a734b88d075f19d3500222b034640cc5"
+rationale = "--contract is invocation-wide, so it is also accepted before the verb."
+invocation = ["--contract", "contract.json", "ocr", "--image", "screen.png"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[--contract-contract.json-ocr---image-screen.png]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:75f4ed53e702fa31b6a8a8167a9f1a27b8fdc19b44a9f162714b2d1d38d31e1a"
+rationale = "The shared control is accepted; it only lifts redaction and warns."
+invocation = ["ocr", "--image", "screen.png", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--engine/--engine"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c9b45eab27215c4566b339ae310a97f63ef36142d49da1acbca7cfa7ddb702ff"
+rationale = "A named engine is forwarded to the sidecar."
+invocation = ["ocr", "--image", "screen.png", "--engine", "tesseract"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---engine-tesseract]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--format/--format"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c2a6bbf5f897c06c67a08760ddf147f165137bb6e932ea66285775456d91a0e0"
+rationale = "The equals form of --format is accepted."
+invocation = ["ocr", "--image", "screen.png", "--format=json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"engine\": \"tesseract\""
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---format=json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--ignore-https-errors/--ignore-https-errors"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ae33d9ad4f1226213ffbec2921012f7affb06305fad35300b928e1517d2dea41"
+rationale = "A self-signed console page can be opened; the bypass applies only to this invocation's context."
+invocation = ["ocr", "https://example.test", "--selector", "canvas", "--ignore-https-errors"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Opens a fresh isolated browser context, captures the matching element as a PNG, closes the context and the lease, then makes one HTTP POST of the PNG to the OCR sidecar and prints the recognised text; sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr-https://example.test---selector-canvas---ignore-https-errors]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--image/--image"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a6466a847490ffd7c5d3422406b36c9b7e0bd467b42a615128b86ce4585f2de6"
+rationale = "The equals form of --image is accepted."
+invocation = ["ocr", "--image=screen.png"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image=screen.png]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e02b7b738f6397be5578bfea6b8ac7a50d0eb143ba650e5a16c3f5f37ca987fe"
+rationale = "--json prints the full result object on one line."
+invocation = ["ocr", "--image", "screen.png", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"text\": \"Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--lang/--lang"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a25b3f6d8fe256f176cc995f393eeb19bc62fe9e374a0491e597c820f9abc59c"
+rationale = "One or more language codes are forwarded to the sidecar."
+invocation = ["ocr", "--image", "screen.png", "--lang", "eng+deu"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---lang-eng+deu]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--min-conf/--min-conf"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:22f5e02ccca328b70d675fcbcad011d76027ac94563b7effd8c46ff5acffe323"
+rationale = "Words below the threshold are FLAGGED low_conf (and counted), never removed: the text stays complete. Without --min-conf nothing is assessed and the flags are null. Confidence is not calibrated, so a flag is a hint, not a safety check."
+invocation = ["ocr", "--image", "screen.png", "--min-conf", "60"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---min-conf-60]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--output/--output"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:30b92532d20a1ebc5601a827a4d87d0366d5f13326092b4ca43a1779fb61d186"
+rationale = "The result goes to a named file instead of stdout."
+invocation = ["ocr", "--image", "screen.png", "--output", "ocr.txt"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = "wrote text output to"
+effects = ["As --image, but writes the recognised text to the named local file instead of stdout."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---output-ocr.txt]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--psm/--psm"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:cbbfbd66cce4fd48a7fa41760a3a283576e22cd3ec176acb41aad3a48d980b13"
+rationale = "The equals form of --psm is accepted."
+invocation = ["ocr", "--image", "screen.png", "--psm=7"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---psm=7]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--region/--region"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:28704f316ef347952020818bf6df93d72fd56956b271b73c6b472784cb72dae4"
+rationale = "Only a sub-rectangle of the element is captured, relative to the element."
+invocation = ["ocr", "https://example.test", "--selector", "canvas", "--region", "0,0,100,50"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Opens a fresh isolated browser context, captures the matching element as a PNG, closes the context and the lease, then makes one HTTP POST of the PNG to the OCR sidecar and prints the recognised text; sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr-https://example.test---selector-canvas---region-0,0,100,50]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--scale/--scale"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b0cc53e1da14623b0e7e2b43160e6f8dccdff717c78981e43a518a450906b9ac"
+rationale = "Integer upscaling happens in the sidecar; boxes stay in original pixels."
+invocation = ["ocr", "--image", "screen.png", "--scale", "2"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---scale-2]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--selector/--selector"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5146407ab056c45e018b8647d3313d105310ef5afee85da7a78a21c3eb7332f6"
+rationale = "The equals form of --selector is accepted."
+invocation = ["ocr", "https://example.test", "--selector=canvas"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Opens a fresh isolated browser context, captures the matching element as a PNG, closes the context and the lease, then makes one HTTP POST of the PNG to the OCR sidecar and prints the recognised text; sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr-https://example.test---selector=canvas]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--sidecar-url/--sidecar-url"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:42686cf2bae8f66162d88c412995fb92ab8208a10df9e2873e9376859a2b2329"
+rationale = "An explicit sidecar URL wins over the environment and the contract."
+invocation = ["ocr", "--image", "screen.png", "--sidecar-url", "http://pwmcp-ocr.test:8941"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---sidecar-url-http://pwmcp-ocr.test:8941]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--timeout-ms/--timeout-ms"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:458833e379db9e55e5059138b957ca82b42878960ac171d97ff1568185586fef"
+rationale = "One timeout bounds the capture and the sidecar call."
+invocation = ["ocr", "--image", "screen.png", "--timeout-ms", "5000"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---timeout-ms-5000]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--wait-ms/--wait-ms"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f0054a58b3c84172de78229d008cfebcfab9cd48d5b94783f908b2eba662a7c0"
+rationale = "A settle delay before the element is captured."
+invocation = ["ocr", "https://example.test", "--selector", "canvas", "--wait-ms", "250"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Opens a fresh isolated browser context, captures the matching element as a PNG, closes the context and the lease, then makes one HTTP POST of the PNG to the OCR sidecar and prints the recognised text; sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr-https://example.test---selector-canvas---wait-ms-250]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--whitelist/--whitelist"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0cb7fa07b282e3b6a90297799fc914fce2dc83e097a082a9fe64dc3df4dc6e0a"
+rationale = "A character whitelist is forwarded to the sidecar."
+invocation = ["ocr", "--image", "screen.png", "--whitelist", "0123456789"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---whitelist-0123456789]"]

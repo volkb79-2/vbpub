@@ -1,0 +1,49 @@
+[30%] Extracting
+[30%] Extracting
+[31%] Extracting
+[31%] Extracting
+[32%] Extracting
+[32%] Extracting
+[33%] Extracting
+[33%] Extracting
+[34%] Extracting
+[34%] Extracting
+[35%] Extracting
+[35%] Extracting
+[36%] Extracting
+[36%] Extracting
+[37%] Extracting
+[37%] Extracting
+[38%] Extracting
+[38%] Extracting
+[39%] Extracting
+[39%] Extracting
+[40%] Extracting
+[40%] Extracting
+[41%] Extracting
+[41%] Extracting
+[42%] Extracting
+[42%] Extracting
+[43%] Extracting
+[43%] Extracting
+[44%] Extracting
+[44%] Extracting
+[45%] Extracting
+[45%] Extracting
+[46%] Extracting
+[46%] Extracting
+[47%] Extracting
+[47%] Extracting
+[48%] Extracting
+[48%] Extracting
+[49%] Extracting
+[49%] Extracting
+[50%] Extracting
+[50%] Performing post-install tasks
+[55%] Running autotune
+[56%] Setting up authentication
+[56%] Persisting miscellaneous configuration
+[57%] Configuring serial port
+[70%] Preparing NVDIMM configuration
+[71%] Preparing GRUB configuration
+[80%] Updating initramfs

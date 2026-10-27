@@ -25,6 +25,20 @@ dependencies = [
 
 [project.optional-dependencies]
 pytest = ["pytest>=8"]
+# The registered gate (tester-unified) derives its closure from this extra
+# (tester-unified/gen-requirements.py, TEST_EXTRAS_ONLY: the runtime `playwright` pin is NOT installed
+# there). Every module the pwmcp tests import and would otherwise silently skip on is declared here, so
+# the gate cannot lose coverage by an accident of another project's dependencies.
+# Floors: pillow>=10 (Image.Resampling, Image.open(formats=...)) for the OCR sidecar's image tests;
+# websockets>=12 for the fake CDP server in the user-agent override test; jinja2>=3.1 and pyyaml>=6 for
+# the ciu/compose template render tests.
+test = [
+    "pytest>=8",
+    "pillow>=10",
+    "websockets>=12",
+    "jinja2>=3.1",
+    "pyyaml>=6",
+]
 
 [project.scripts]
 pwmcp = "pwmcp_client.cli:main"

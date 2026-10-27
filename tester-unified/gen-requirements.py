@@ -32,7 +32,7 @@ from typing import Iterator
 #: without editing this list.
 ESTATE_INTERNAL = frozenset({
     "cli-extended", "worktree", "cmru", "assay", "ciu", "nyxloom", "topos",
-    "cgroup-profiler", "run-gate", "pwmcp", "srdm",
+    "cgroup-profiler", "run-gate", "pwmcp", "pwmcp-client", "srdm",
 })
 
 #: Estate-internal names that are SKIPPED rather than refused: since cmru
@@ -50,7 +50,14 @@ PROJECTS = (
     ("topos/pyproject.toml", ("dev",)),
     ("nyxloom/pyproject.toml", ("test",)),
     ("cgroup-profiler/pyproject.toml", ("test",)),
+    ("pwmcp/client/pyproject.toml", ("test",)),
 )
+
+#: Projects whose ``[project].dependencies`` are NOT part of the tester closure: the gate needs only
+#: their declared test extra. pwmcp-client's runtime dependency ``playwright==1.64.0`` (exact pin,
+#: ~150 MB with its bundled driver) is for driving a real browser; its tests stub the browser, so the
+#: image must not carry it. ``cli-extended`` is installed by the Dockerfile in every case.
+TEST_EXTRAS_ONLY = frozenset({"pwmcp-client"})
 
 #: Source-backed Assay lanes install the selected assay tree into the tester
 #: venv; the Run-Gate wheel is built offline from the copied source tree. Their
@@ -153,7 +160,8 @@ def requirements(root: Path) -> Iterator[str]:
             document = tomllib.load(handle)
         project = document["project"]
         source = f"{relative} [project]"
-        for requirement in project.get("dependencies", ()):
+        runtime = () if normalized(project["name"]) in TEST_EXTRAS_ONLY else project.get("dependencies", ())
+        for requirement in runtime:
             admitted = admit(requirement, source, internal)
             if admitted is not None:
                 yield admitted

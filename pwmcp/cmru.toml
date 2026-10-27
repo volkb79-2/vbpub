@@ -19,7 +19,7 @@ bump = "conventional"
 [project.release]
 git_tag = true
 build_step = "build"
-commit_generated = ["ciu.defaults.toml.j2", "ciu.toml.j2", "docker-bake.hcl", "containers/pwmcp/Dockerfile", "pwmcp.contract.json", "client/requirements-runtime.txt", "client/pyproject.toml", "get.py"]
+commit_generated = ["ciu.defaults.toml.j2", "ciu.toml.j2", "docker-bake.hcl", "containers/pwmcp/Dockerfile", "containers/ocr/Dockerfile", "pwmcp.contract.json", "client/requirements-runtime.txt", "client/pyproject.toml", "get.py"]
 artifact_dirs = ["dist"]
 # Assay judges coverage inside its isolated lane snapshot and leaves the
 # resumable verdict/progress evidence in .assay; it does not retain the

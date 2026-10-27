@@ -1,0 +1,1058 @@
+# IO governor: second opinion (Codex GPT-6-Astra, high effort), 2026-10-27
+
+Companion to [IO-GOVERNOR-DESIGN.md](IO-GOVERNOR-DESIGN.md) and [IO-GOVERNOR-CANDIDATES.md](IO-GOVERNOR-CANDIDATES.md).
+An outside model was given the problem and facts only (round 1, blind: no candidate designs, no file access), then our own
+design for critique (round 2). The raw answers are below, unedited; the problem statement and our design summary that were
+sent are in the two prompt sections. Treat the answers as opinion to test, not as measurements.
+
+**Session (reusable):** `01a17c21-bbad-7993-8638-0da66084ee8f`. Resume with
+`CODEX_SQLITE_HOME="$HOME/.codex/sqlite-shared" CODEX_HOME="$HOME/.codex2" codex exec resume 01a17c21-bbad-7993-8638-0da66084ee8f -m gpt-6-astra -c model_reasoning_effort='"high"' --skip-git-repo-check -`
+(prompt on stdin). The model slug is `gpt-6-astra`; the display name `GPT-6-Astra` is rejected.
+
+## Round 1 prompt (problem and facts only)
+You are being asked for a second opinion on an engineering problem. Do NOT read files or run commands; answer from reasoning only. Do not ask me questions; work with what is here and state assumptions explicitly.
+
+## Context
+A Linux host (Debian, kernel 7.x, cgroup v2) is a VM on a commercial hypervisor/provider with a virtual disk (virtio, /dev/vda, ext4/LVM, ~1 TB). The same VM runs (a) a production latency-sensitive game server (the "protected" workload; it also uses swap, and swap IO is charged to its cgroup) and (b) a "governed" dev tier: container builds, test gates, dev containers, CPU/IO hungry, bursty. We control the guest only; we cannot see or control the provider's storage layer.
+
+We use cgroup v2 `io.cost` (iocost) for weight-based IO control: a cost model (rbps/rseqiops/.../wbps etc.) plus QoS (`rpct/rlat/wpct/wlat/min/max`, i.e. vrate clamp), and `io.max` caps on the governed tier's slice. The model is calibrated once per disk identity by a benchmark; the baseline is treated as valid until the disk's identity changes.
+
+## The problem
+The disk's identity does not change, but its real sustained write ceiling moves by more than 20x in both directions over days, driven by provider-side allocation state that the guest cannot observe:
+- 2026-07-08: sustained write 516 MB/s (58.7k IOPS), read 2149 MB/s; burst figures of 4.3 GB/s were hypervisor cache and misleading.
+- 2026-10-20: 14-18 MB/s sustained write (builds saw a ~6 MB/s floor). The provider UI then showed 1.1 TB used of 1 TB with a snapshot active, which fits a fixed allocation plus an active snapshot forcing inefficient writes.
+- 2026-10-23: after the operator freed space, ran fstrim and ran the provider's storage optimisation (guest at ~50% fill): 330-350 MB/s sustained (fio direct+fsync, 120 s), 4k random write 46.5k IOPS at 0.34 ms.
+The guest can see: its own filesystem/VG fill, discard (fstrim) history, and the throughput/latency that results. It cannot see a snapshot or the provider's allocation. Annotations by a human are possible.
+
+Effects of a stale figure, both seen within one week:
+- Too tight: a static cap pinned at the old 10 MB/s floor made a container image build take 4694 s versus ~1100-1200 s uncapped (IO pressure 30-48% vs 1-9%).
+- With an io.cost model 23x too low, the kernel's `vrate` climbed to 2000-2800 to compensate; it only works while the clamp `max` allows it.
+- Too loose: a cap above the real device rate protects nothing.
+
+Measured behaviour of the workloads: demand is bursty and far below even the low ceilings most of the time (average ~35 MB/s write, peak ~143 MB/s, latency 1-3 ms, device busy up to 65-89%, io pressure `some` avg ~1%, max ~9-24%).
+Measured kernel behaviour: with a correct model, `vrate` sat at the QoS floor (50) in almost every period. A tracepoint (`iocost:iocost_ioc_vrate_adj`, 636 events over 815 s) showed the kernel lowering vrate because request-slot waits exceeded 5% (our own deliberate setting `nr_requests=16`, `max_sectors_kb=64`, mq-deadline, which cut the game server's worst D-state stall from 26.9 s to 0.14 s); latency targets (rlat 5 ms, wlat 25 ms) were almost never missed and cgroups were rarely short of budget. So "vrate at a clamp" is not by itself a staleness signal on this host.
+
+Constraints we currently believe in (challenge them if you think they are wrong): protecting the game server's latency beats governed-tier throughput; running our own benchmark/probe IO on the production disk is disruptive and should be rare or never; the host has 8 cores and ~15 GB RAM and the tooling should be small and low-risk (a systemd service reading procfs/sysfs/cgroup files is fine); settings can be changed at runtime (io.max, io.cost.model, io.cost.qos, io.weight, nr_requests, per-cgroup limits).
+
+## What I want from you (round 1: blind ideas)
+1. First restate in your own words what you think the real problem is (2-4 sentences), and name the one or two facts above you consider most decisive or most suspicious.
+2. Then give at least 12 distinct IDEAS for how a system could cope with a backing store whose capability changes unobservably: from conventional to unusual, including ones that avoid estimating the ceiling at all, ones that change what is being controlled, ones that use information outside the guest, and ones that reduce the need for the control. For each: a one-line mechanism, the signals it needs, and the main way it would fail on this host.
+3. Finally list what you would want to measure or learn FIRST before building anything.
+Be concrete and opinionated. Do not converge on one answer yet.
+
+## Round 1 answer (blind ideas)
+
+The real problem is protecting a latency-sensitive workload on storage whose service capacity can change without any reliable advance signal. Disk identity is therefore a poor boundary for calibration validity, and a once-measured ceiling cannot support a durable cap. You also have an identification problem: low throughput can mean low demand, your own throttling, constrained request concurrency, or a slow backing store.
+
+The two most decisive facts are the **greater-than-20× capacity change without an identity change**, and the trace showing **vrate reductions driven by request-slot waits rather than missed latency targets**. The latter makes vrate a particularly ambiguous diagnostic here. The snapshot/allocation explanation is plausible, but the recovery followed several interventions, so it does not establish which one caused the improvement.
+
+I assume the measurements describe different operating periods, the governed tier can be delayed or stopped, and the primary objective is a measurable game-server latency target. I treat the kernel behavior you reported as evidence; the mechanisms below are design ideas, not claims about unverified kernel details.
+
+Here are 18 distinct approaches worth considering.
+
+1. **Control directly against game-server latency.**  
+   **Mechanism:** Reduce governed IO allowance when tick overruns, response latency, or protected IO stalls worsen; relax it cautiously during healthy periods. This avoids estimating storage capacity.  
+   **Signals:** Game latency distribution, protected cgroup pressure, governed IO activity.  
+   **Main failure:** CPU, networking, or game logic can trigger false throttling. Storage latency may also deteriorate faster than the controller can react.
+
+2. **Use a fast emergency brake alongside a slow controller.**  
+   **Mechanism:** On severe protected stalls, immediately stop admitting builds and sharply restrict governed IO; require a sustained healthy interval before recovery.  
+   **Signals:** Protected stall duration, tick overruns, recent governed submissions, recovery history.  
+   **Main failure:** Already-issued requests and accumulated dirty data keep draining after the brake. It can limit damage without preventing the first stall.
+
+3. **Search for safe operating headroom using ordinary work.**  
+   **Mechanism:** Apply additive increases and multiplicative decreases to governed caps while real work is pending; judge success by protected latency and incremental useful throughput.  
+   **Signals:** Governed backlog, achieved throughput, cap-binding status, protected latency.  
+   **Main failure:** Every increase is an experiment on production, even though it generates no synthetic IO. Bursty demand makes comparisons noisy.
+
+4. **Control outstanding work rather than bytes per second.**  
+   **Mechanism:** Restrict concurrent IO-producing jobs, application queue depth, or outstanding write batches so the governed tier cannot build a long queue.  
+   **Signals:** Job concurrency, outstanding requests where observable, queueing and completion latency.  
+   **Main failure:** A single build or filesystem operation can generate substantial fan-out, and guest queue depth does not reveal provider-side queues. There may be no convenient universal per-cgroup knob.
+
+5. **Budget storage time rather than throughput.**  
+   **Mechanism:** Give governed work a budget expressed in estimated IO service time or measured occupancy, allowing the byte rate to vary with observed cost.  
+   **Signals:** Completion latency, request size/type, outstanding IO, device activity.  
+   **Main failure:** Concurrent request durations overlap, and device busy time is not a reliable measure of backend utilization. Accounting needs care to avoid treating all latency as consumed capacity.
+
+6. **Use weighted sharing with only a broad absolute guardrail.**  
+   **Mechanism:** Let iocost weights allocate contention preferentially to the protected workload, using `io.max` only to contain extreme governed bursts.  
+   **Signals:** Protected latency, cgroup demand and consumption, iocost budget/adjustment diagnostics.  
+   **Main failure:** Weighted sharing does not guarantee tail latency, and model errors or clamp limits can impair adaptation. Your small request queue can become the binding constraint before budget competition appears.
+
+7. **Make caps expire instead of treating them as permanent facts.**  
+   **Mechanism:** Store each cap with its provenance, confidence, and validation conditions; invalidate or reconsider it after contradictory observations or a maximum age.  
+   **Signals:** Cap-binding periods, protected health, observed performance changes, configuration and operator events.  
+   **Main failure:** Expiration tells you the old value is untrusted; it does not identify a safe replacement. A conservative fallback can recreate the 10 MB/s trap.
+
+8. **Estimate capacity only from qualifying production intervals.**  
+   **Mechanism:** Learn from windows with sustained queued demand, known controller limitations, comparable IO mix, and enough duration to expose cache effects; otherwise report “unknown.”  
+   **Signals:** Backlog, throttle state, request mix, throughput, latency, sustained-window duration.  
+   **Main failure:** This host may rarely produce qualifying windows. Observed throughput is usually evidence of delivered service, not proof of a ceiling.
+
+9. **Keep several performance regimes instead of one calibration.**  
+   **Mechanism:** Maintain candidate models for slow, intermediate, and fast behavior, with change detection and hysteresis between them.  
+   **Signals:** Comparable workload windows, throughput/latency relationships, controller settings, optional operator annotations.  
+   **Main failure:** Workload changes can resemble storage changes. Classification may arrive only after the protected workload has suffered, and real capacity may vary continuously.
+
+10. **Treat read, write, and durability costs separately.**  
+    **Mechanism:** Adapt write restrictions independently and distinguish bulk writes from small synchronous or metadata-heavy activity wherever practical.  
+    **Signals:** Read/write bytes and operations, request sizes, sync/flush behavior, workload phase.  
+    **Main failure:** These activities still contend for shared resources, and attribution may be incomplete. A byte cap that looks safe for bulk writes can be unsuitable for synchronous writes.
+
+11. **Shape bursts explicitly.**  
+    **Mechanism:** Combine a modest sustained allowance with a small, bounded burst allowance, implemented through available IO controls or job admission.  
+    **Signals:** Short-window governed IO, protected latency, backlog and burst history.  
+    **Main failure:** A burst acceptable at 350 MB/s can be disastrous at 15 MB/s. An adaptive average rate does not make a large burst budget safe.
+
+12. **Schedule governed work around protected activity.**  
+    **Mechanism:** Admit heavy builds during low-player or low-load periods, with bounded run intervals and drain periods before anticipated game activity.  
+    **Signals:** Player count, tick load, work queue, dirty/writeback state, observed drain time.  
+    **Main failure:** Storage effects can outlast the scheduled interval, and player arrivals are unpredictable. Pausing a process does not instantly clear its IO consequences.
+
+13. **Control admission by workload class.**  
+    **Mechanism:** Serialize image exports, large link steps, database tests, or other destructive phases while allowing lighter development work to proceed.  
+    **Signals:** Job identity, build phases, historical resource profiles, current protected health.  
+    **Main failure:** Profiles drift and opaque tools can change behavior. Still, this can be easier to reason about than deriving one correct disk ceiling.
+
+14. **Bring provider and operator information into the policy.**  
+    **Mechanism:** Use available provider APIs, monitoring exports, or human annotations to flag snapshots, allocation pressure, optimization, migrations, and performance incidents.  
+    **Signals:** External events and metrics, plus timestamped annotations.  
+    **Main failure:** Information may be unavailable, delayed, or weakly related to performance. Use it to change confidence or operating mode, not as a guaranteed capacity measurement.
+
+15. **Allow rare calibration during an explicit maintenance window.**  
+    **Mechanism:** Run a bounded representative benchmark when the protected workload is absent or deliberately quiesced, particularly after suspected backend changes.  
+    **Signals:** Maintenance state, representative IO profiles, time-series performance and latency.  
+    **Main failure:** The result can become stale immediately afterward, and the benchmark may change backend cache or allocation state. It is evidence about that window, not a new permanent truth.
+
+16. **Move governed IO elsewhere.**  
+    **Mechanism:** Send builds and gates to remote workers, or use storage with verified independent performance resources.  
+    **Signals:** Build turnaround, transfer volume, remote availability, evidence of storage isolation.  
+    **Main failure:** A second virtual disk may share the same bottleneck; remote execution adds cost and operational dependencies. Moving whole build jobs may be more effective than moving only their scratch directory.
+
+17. **Reduce IO generated per unit of useful work.**  
+    **Mechanism:** Reuse build artifacts, avoid redundant image unpacking/export, coalesce duplicate gates, cancel superseded builds, and bound cache churn.  
+    **Signals:** Bytes and operations per successful build, cache hit rates, repeated work, invalidation causes.  
+    **Main failure:** Caches consume space and can create eviction storms. Cold builds still need a policy, but reducing demand helps in every storage regime.
+
+18. **Protect memory headroom to reduce urgent disk dependence.**  
+    **Mechanism:** Limit governed memory growth and concurrency, preserve protected working-set headroom, and use memory-backed scratch only within a measured safe budget.  
+    **Signals:** Protected swap-in and major-fault rates, memory pressure, working-set size, dirty pages, governed memory usage.  
+    **Main failure:** With roughly 15 GB RAM, aggressive caching or tmpfs can worsen reclaim and swap. Memory protection cannot eliminate necessary persistence IO, and poorly chosen limits can cause failures.
+
+I would challenge two assumptions before implementation. **Rare production benchmarking is a sensible preference, but passive adaptation still needs excitation:** either ordinary demand exposes changed capability, or you deliberately permit more work and observe the result. You cannot safely infer unused capacity from an idle disk. Also, **no guest controller can guarantee protected latency through an arbitrary backend slowdown** if the protected workload itself requires urgent storage service; that limitation matters when deciding how much isolation or memory headroom is necessary.
+
+Before building anything, I would measure or establish these, in this order:
+
+1. **The actual protection target and its causal path.** Define acceptable tick/response latency and stall duration. Align game overruns with protected swap-ins, IO pressure, CPU contention, and governed IO. Device latency alone is an insufficient objective.
+
+2. **The actuator’s stopping distance.** During naturally occurring incidents or an approved quiet period, measure how long protected latency takes to recover after sharply reducing governed work. Record outstanding IO, dirty data, and writeback. This determines whether a reactive controller can act quickly enough.
+
+3. **Whether governance currently reaches all relevant IO.** Confirm the effective block-device layer through LVM, cgroup hierarchy, swap charging, and attribution of buffered writes, container storage operations, and shared filesystem activity. Distinguish configured limits from limits demonstrably affecting traffic.
+
+4. **What is limiting each observed interval.** Put workload backlog, achieved IO, cap/throttle state, iocost adjustment reasons, request-slot waits, and protected latency on one timeline. In particular, separate “disk became slow” from “we constrained submission” and “nothing wanted to run.”
+
+5. **The protected workload’s own storage requirements.** Measure its burst sizes, read/write mix, synchronous operations, swap dependence, and performance during governed-idle periods. This establishes how much of the problem remains even after perfect suppression of development work.
+
+6. **Comparability of the existing performance evidence.** Reconcile request sizes, queue depths, direct versus buffered IO, sync semantics, working-set sizes, test duration, and competing workloads across dates. The scale of change is compelling; its precise magnitude for the production workload remains uncertain.
+
+7. **The value and cost of the current queue settings.** Preserve the evidence behind the 26.9 s to 0.14 s improvement. Establish which settings changed together and whether request-slot waits predict actual harm. I would not relax them merely to make vrate look healthier.
+
+8. **Which governed work produces the worst interference per useful result.** Identify phases responsible for large dirty backlogs, synchronous write storms, reclaim, or repeated artifact churn. This could justify a much smaller admission or workload-change solution than a continuously recalibrated storage model.
+
+The first implementation decision should depend especially on stopping distance and causal attribution: they determine whether feedback can protect the game in time, or whether prevention through admission, memory headroom, and isolation must carry most of the burden.
+
+## Round 2 prompt (our design, for critique)
+
+Thanks. Round 2: our own ideas, for you to critique and discuss. Still no files or commands; reason from what is here. Be direct about what you think is wrong or missing, and rank things.
+
+## What we have already written down (a design, not yet built; "nothing implemented")
+A small systemd service (Python, reads procfs/sysfs/cgroup only, writes through the one existing apply path; modes off | observe | enforce-down | enforce, default observe; fail-open to last good values; every change journalled with before/after/rule/evidence). Objective: protect a declared "protect list" of cgroups (the game server), governed side (builds/gates/dev containers) gives way first. Per-target signals: the protected cgroup's `io.pressure` (some/full deltas), its `io.stat` rates, count of its threads in D state sampled each tick, device `/sys/block/<dev>/stat`, swap latency; optional bpftrace per-cgroup block latency, off by default and time-boxed. Covariates: filesystem fill (a table fill-bucket -> best proven bound from history, seeded with the two known points), discard history (read only), change-point events (`ceiling_shift`), human annotations via `note`.
+Decision every 5 min and on events, asymmetric trust: lowering is cheap so one pair of windows (plateau below the model by >25% in two consecutive windows) suffices; raising needs a proven saturated window (device busy >= 85% or vrate at max, latency under target) and never exceeds the configured ceiling. Steps at most 25%, 30 min cooldown per direction, model never below 0.7x the worst recorded plateau or above the best proven plateau; dev caps stay a fixed percentage of the model. Harm to a protected target (io.pressure stall above threshold >1 min or persistent blocked threads) freezes all increases and steps governed caps down regardless of any capacity estimate. No probe IO, ever; increases wait for the workload to prove capacity; the operator can run the benchmark by hand.
+Candidate estimators (we want to pick by measurement in a VM whose disk we control: a throttleable virtual disk where we inject ceiling changes):
+- A. `vrate` edge: lower the model when vrate sits at the floor for N periods, raise at the ceiling. Simplest; but vrate sits at the floor on this host with healthy latency (request-slot waits, our own nr_requests), so bare A spirals to the rail. A+ = act only if the floor coincides with missed latency targets / rising queue depth, raise only when demand was held back.
+- B. Quiet-window service time: keep only windows with ~1 request in flight, track per-request service time by direction and size band, compare last 30 min against last 7 days, act on a sustained 3x change. Needs no saturation, unaffected by our own throttling; but a provider bandwidth/IOPS cap may not change single-request time (it may miss exactly our failure); needs days of history.
+- C. Saturated-window ceiling: keep only windows where the disk was the limit (latency rising with queue depth, delivered rate not near our own cap, demand present); delivered rate there is a lower bound on capability; track a high percentile with decay and fit the model to it. Needs load to learn; stale on a quiet host (must say so and hold).
+- D. Hybrid: B as early warning, C as the number; model changes only when C confirms (or B overwhelming and persistent).
+- Controls: E static baseline (today), F "price the worst plateau" with a wide QoS max so vrate climbs by itself, G oracle (test only).
+Phases: P0 observe-only for two weeks and replay the 2026-10-20 -> 10-23 shift; P1 surface "recalibrate recommended" in the doctor/wizard; P2 enforce-down; P3 enforce with increases only on saturated windows.
+Current stop-gap: dev tier capped at ~70% of the measured sustained ceiling (700M read/250M write B/s, 50k/30k IOPS) and a hand-set io.cost model and QoS; re-measure after any storage change.
+
+## Where your own answers touch this (facts we have, for your use)
+- Stopping distance: NOT measured. We have never timed recovery of protected latency after sharply cutting governed IO.
+- Causal attribution: partly. The 2026-10-20 incident was reconstructed with bpftrace (D-state stacks of the game process; writeback delay of write()); the game thread's worst D-state stall was 26.9 s before we limited nr_requests/max_sectors_kb/scheduler and 0.14 s after (settings changed together, not separately).
+- The protected workload's own game-tick latency is not an input today; we only see its cgroup pressure and D-state threads.
+- Swap IO is charged to the page owner's cgroup; buffered-write attribution to cgroups depends on writeback cgroup support on this filesystem/stack (unverified for LVM+ext4 here).
+
+## What I want from you now
+1. Pick your TOP 3 of your 18 ideas for this host and explain why, then say which of A-D (and A+) you would build, in which order, and what you would drop. Do you agree with 'asymmetric trust' and the 25%/30-min/0.7x rules, or are they cargo cult? 
+2. Attack the design: the 5 weakest assumptions, with the failure scenario for each. Is 'estimate the ceiling and fit io.cost to it' the right framing at all, given your round-1 point about identification (low throughput = low demand vs our throttling vs request-slot limits vs slow backend)?
+3. What would you add or change in the VM test plan so that it can discriminate between the estimators, including how to inject provider-like behaviour (snapshot-style write amplification, flat bandwidth caps vs IOPS caps vs latency inflation, cache bursts that look like capacity)?
+4. If you could only keep ONE safety mechanism, which, and what is the smallest first deliverable (one week of work) that gives real protection?
+Be concrete; disagree where you disagree.
+
+## Round 2 answer
+
+I would build a **protected-workload safety controller first and a capacity estimator second**. Your service architecture is sensible; the proposed inference and control rules are where I disagree. In particular, automatically lowering the model and keeping caps proportional to it can create a self-reinforcing throughput collapse.
+
+I assume governed work can tolerate temporary severe throttling, the existing apply path can update caps reliably, and the game server has some measurable definition of acceptable latency—even though you do not yet collect it.
+
+**1. My ranking and estimator choices**
+
+My top three from round 1, ranked by implementation priority:
+
+1. **#2: A fast emergency brake.** You have evidence of serious protected stalls and no measurement of how quickly throttling relieves them. A capacity estimate is unnecessary for the basic action: when protection fails, reduce governed interference. Measure stopping distance before choosing its timing.
+2. **#1: Control against actual game latency.** Cgroup pressure and D-state samples are useful supporting evidence, but neither establishes whether players are experiencing unacceptable latency. This is the objective the controller should eventually use.
+3. **#13: Admission by workload class.** Preventing several IO-heavy build phases from overlapping can limit queued work before a reactive cap takes effect. It also remains useful when the backing store changes and when capacity is unknown.
+
+For A–D, I would build them in this order:
+
+| Candidate | Decision | Reason |
+|---|---|---|
+| **C** | First, observe-only | Most defensible source of numerical performance evidence, provided it can abstain and recognizes controller-limited intervals. |
+| **B** | Second, diagnostic only | Useful for detecting some latency changes and distinguishing regimes; insufficient for estimating bandwidth or IOPS ceilings. |
+| **D** | Later, with a narrower role | Let B invalidate confidence or request review; let qualified C observations inform numerical changes. Remove “B overwhelming and persistent” as permission to resize the model. |
+| **A+** | Retain as diagnostic evidence | Floor plus latency/queue trouble indicates distress, not its cause or the correct model adjustment. |
+| **A** | Drop as an estimator | Your own trace already provides a counterexample to its central inference. |
+
+C’s output should initially be something like: “This workload mix delivered this rate for this duration under these settings,” with confidence and exclusions. Calling that a device ceiling grants it more generality than the evidence supports.
+
+Keep **E** as the baseline, **G** as a reference with privileged knowledge, and **F** as a deliberately challenged comparator. F tests whether the existing kernel controller can absorb much of the variability. But a wide vrate range does not solve fixed caps, and a single vrate multiplier cannot correct changes that affect writes, reads, bandwidth, and IOPS differently.
+
+On the numerical rules:
+
+- **Asymmetric trust:** Agree for protective actions; disagree for capacity inference. Protected harm can justify reducing governed activity without proving a capacity drop. Low throughput alone cannot justify declaring the disk slower. Lowering is reversible, but it is not cheap—you already demonstrated a roughly fourfold build-time penalty.
+- **25% maximum steps:** Potentially reasonable for exploratory increases, after measurement. Inappropriate as an emergency reduction limit.
+- **30-minute cooldown:** Reasonable to test for recovery or model changes; inappropriate as a lockout on further protective action. If applied to every reduction, accommodating a 20× collapse takes roughly five hours.
+- **0.7× worst recorded plateau:** Drop. An anomalous or demand-limited window can poison it, and a historical minimum cannot bound tomorrow’s slowdown.
+- **Best proven plateau as an upper bound:** Keep only as a confidence-labelled historical reference. If it is an absolute learning limit, the system cannot discover improved capacity. A separately configured operator maximum is a legitimate policy limit.
+
+Those constants are currently hypotheses, not established engineering margins.
+
+**2. The five weakest assumptions**
+
+1. **“A low plateau is evidence that the model is too high.”**
+
+   Failure scenario: the host has capacity, but a build enters a CPU-heavy phase, hits your cap, or cannot maintain concurrency through the small request queue. Two windows show low delivered throughput. You lower the model, then lower proportional caps, producing an even lower plateau.
+
+   **Change:** Require independent evidence of pending IO demand and identify binding controls. Treat ambiguous windows as unknown. Separate protective cap reductions from model updates.
+
+2. **“Busy ≥85% or vrate at max proves saturation and permits increases.”**
+
+   Failure scenario: the device spends most of its time with a request outstanding but still has substantial parallel capacity; alternatively, vrate reaches max because of model normalization. Neither proves a sustainable ceiling. Conversely, a bandwidth limiter can constrain throughput without satisfying your expected queue/latency pattern.
+
+   There is also a learning deadlock: after a cap drops, production cannot demonstrate capacity above that cap. Requiring proof before every increase can strand you indefinitely.
+
+   **Change:** Use a conjunction of demand, controller state, request mix, and sustained performance—not this OR rule. Explicitly choose between bounded increases using ordinary work and operator-only recovery. The first involves experimentation; the second sacrifices autonomous recovery.
+
+3. **“Fill history predicts the hidden provider state.”**
+
+   Failure scenario: two observations at the same guest fill have different snapshot state, allocation state, backend contention, or cache credit. The fill-bucket table confidently recommends the wrong bound. Your two historical points also differ in several interventions.
+
+   **Change:** Store fill, discard, and annotations as covariates. Do not seed a causal capacity lookup table from them. A `ceiling_shift` produced by your own estimator is an inference, not independent corroboration.
+
+4. **“One ceiling can anchor the cost model and fixed-percentage caps.”**
+
+   Failure scenario: sequential write bandwidth recovers while synchronous-write latency remains poor, or random-write IOPS collapse while large-request bandwidth stays healthy. Rescaling the model and all caps from one number misprices the actual workload.
+
+   Even a correctly measured 70% cap leaves no guaranteed latency reserve: the protected workload is bursty, and bytes, operations, queue occupancy, and durability costs are different constraints.
+
+   **Change:** Decouple policy caps from model calibration. Keep workload-specific performance evidence. Refit model components only when observations actually identify those components.
+
+5. **“The detection and actuation loop is fast enough to protect the game.”**
+
+   Failure scenario: a build queues substantial writeback, the game stalls, the condition persists for a minute, and the controller finally lowers caps. Previously issued work continues draining. A five-minute decision interval or cooldown makes this worse.
+
+   Sparse D-state samples can miss short important stalls or overemphasize blocked noncritical workers. Unverified writeback attribution adds uncertainty about what the cap will actually control.
+
+   **Change:** Measure stopping distance and attribution first. Give protective action its own faster loop and escalation policy. Define exactly how “swap latency” will be obtained; charged swap bytes alone do not provide that latency measurement.
+
+So, **“estimate the ceiling and fit iocost to it” is too narrow as the primary framing**. There are three separate tasks:
+
+- Detect whether protection is failing.
+- Change governed activity effectively and promptly.
+- Maintain a useful accounting model.
+
+The third can improve efficiency. It should not be a prerequisite for the first two.
+
+Also, “fail-open to last good values” needs a more precise name and contract. Retaining settings is **hold-last**, and “last successfully applied” does not mean “currently safe.” Define behavior for stale telemetry, daemon failure during emergency throttling, partial application, and restart.
+
+**3. Changes to the VM test plan**
+
+A throttleable virtual disk is a good start, but a single throughput knob will favor estimators that assume exactly that failure mode. Test independent dimensions and their combinations:
+
+| Injected behavior | What the test must distinguish |
+|---|---|
+| Flat bandwidth cap, fixed IOPS cap, and both together | Whether an estimator mistakes workload mix for capacity changes. Sweep request size and direction. |
+| Added completion latency with ample bandwidth | Whether B incorrectly translates latency inflation into a bandwidth/model reduction. |
+| Token-bucket bandwidth/IOPS limits | Whether quiet-window spacing lets credits refill and hides the sustained limit from B. |
+| Finite fast cache followed by slow draining | Whether C promotes a burst rate into a sustained capability claim. Include bursts longer than its qualification window. |
+| Write amplification over a constrained backend | Whether write-specific degradation causes inappropriate read/model changes. |
+| Intermittent backend contention and long latency tails | Whether a percentile-based estimate ignores periods that determine game performance. |
+| Guest request-slot restrictions with healthy backend capacity | Whether A+ and C confuse your deliberate queue policy with backend degradation. |
+
+For snapshot-like behavior, use two levels of fidelity:
+
+- A controlled synthetic backend where one guest write consumes multiple backend operations, with optional metadata and flush costs.
+- A real copy-on-write snapshot arrangement over a constrained test backend, with varying overwrite locality and allocation pressure.
+
+Neither reproduces your provider exactly. They exercise plausible mechanisms. A throughput limiter alone reproduces the resulting rate but misses amplification, metadata costs, and tail behavior.
+
+The workload and experiment design matter just as much:
+
+- **Include a protected workload with deadlines.** Prefer a representative game workload; otherwise use a periodic task combining critical reads/writes, memory pressure, and observable deadline misses. Device latency alone is not the score.
+- **Run capacity changes during idle, unsaturated demand, sustained demand, and self-throttling.** Include a recovery while governed caps remain low. This exposes the autonomous-recovery deadlock.
+- **Hold backend capacity constant while changing workload mix and guest queue settings.** A valid estimator must avoid declaring capacity shifts in these negative controls.
+- **Exercise abrupt and gradual changes in both directions, including ≥20× steps.** Add rapid oscillation to test hysteresis and ratcheting.
+- **Explicitly measure stopping distance.** Reduce governed activity at several dirty-backlog and queue-depth levels; measure time until protected service recovers.
+- **Test controller failures.** Missing samples, cgroup recreation, counter resets, daemon restart, and partial apply failures belong in the experiment.
+
+Rank results first by protected deadline misses and worst stall, then recovery time, governed useful work, false interventions, and time spent unnecessarily restricted. Estimation error is secondary. Also measure how often each estimator correctly says **unknown**.
+
+For G, provide the true injected parameters, but do not assume that a fixed fraction of known capacity is an optimal policy. Include a protected-only run: if it fails under an injected regime, no governed-tier controller can fully solve that case.
+
+Finally, you cannot faithfully replay October 20–23 from a few benchmark summaries. You can simulate a scenario inspired by those measurements. A historical replay requires sufficiently detailed time-aligned demand, controls, and observations; even then it cannot reveal the counterfactual response to different controls.
+
+**4. One safety mechanism and the first week**
+
+If I could keep one, it would be **a protected-harm-triggered emergency brake on governed IO, with measured stopping distance and slow recovery**.
+
+It should make a substantial reduction when severe harm persists, escalate if recovery does not occur, and allow further reductions without waiting for a model cooldown. It cannot prevent the first stall after an abrupt backend collapse; prevention depends on how much work was already allowed into the system.
+
+The smallest first deliverable would be:
+
+- Verify that the existing apply path actually controls the governed IO involved in the incident.
+- Collect protected pressure deltas and blocked-thread observations on a short interval; add a game-tick or existing application heartbeat metric if readily available.
+- Implement **normal / restricted / recovering** states with a preconfigured, finite emergency cap profile. Freeze model changes.
+- Make entry depend on sustained protected distress, with a separate severe-event path. Select timing from controlled stopping-distance tests, not from the proposed one-minute rule.
+- Recover gradually only after sustained health; immediately retreat on renewed harm.
+- Journal detection, action, recovery time, and whether the action helped. Test restart and stale-telemetry behavior.
+
+Run it against controlled degradation before enabling enforcement on the host. If reducing caps does not restore protected service promptly, the first-week finding should redirect work toward admission control and reducing queued writeback.
+
+Two weeks of observation can improve understanding, but **observation alone adds no protection**. I would spend the first week establishing and deploying one verified protective action, while C runs beside it as an explicitly uncertain observer.
+
+---
+
+# Third opinion: Fable 5.1 (high effort), blind first, then disclosure — 2026-10-27
+
+**Session (reusable):** `873cc1ff-e3cf-4143-952b-93193510fb7f`. It was run headless with no tools from an empty directory (blind to the repo), model `claude-fable-5-1`, effort high.
+Resume (use the same flags; the prompt on stdin):
+`claude -p --resume 873cc1ff-e3cf-4143-952b-93193510fb7f --model claude-fable-5-1 --effort high --tools "" --output-format json < prompt.md`
+Order of events: (1) the same problem statement as the Codex round-1 prompt, blind; (2) disclosure of Codex's two rounds plus the shared facts. **Known slip:** the written text of OUR design (Part 1) was accidentally omitted from that disclosure, so Fable saw it only through Codex's recap; (3) a correction round that sent the missing text and asked what changes. Answers below are verbatim; read round 3 as the final position.
+
+## Round 1 answer (blind)
+
+## 1. What I think the real problem is
+
+You built an absolute-capacity controller (iocost model + a static `io.max`) on top of a volume whose capacity is not a property of the volume but of the provider's thin-provisioning/CoW state, and that state swings ~20-30x without any guest-visible identity change. Worse, the error is asymmetric: a model/cap that is too **low** costs you a 4x longer build (visible, annoying), while a model that is too **high** gives you *no protection at all* (iocost thinks there is slack, admits everything, the 16-slot queue fills with governed-tier writes, `vrate` can only fall to the `min` clamp — a 2x correction against a 23x error). So the current design degrades silently in exactly the direction you care about.
+
+Most decisive facts, in my reading:
+
+- **Reads stayed at ~2.1 GB/s while writes collapsed to ~15 MB/s.** That is a *shape* change (snapshot CoW penalises first-writes, not reads), and a scalar `vrate` can only scale the whole model. No amount of clamp tuning makes a scalar track a vector. The write side of the model is the only part that is actually unstable.
+- **The recovery was caused by guest-side hygiene** (free space, fstrim, provider "optimise") plus the UI showing 1.1 TB used of 1 TB at ~50% guest fill. That means ~half a terabyte of never-discarded blocks plus a snapshot. The degradation is at least partly *preventable*, which changes the problem from "estimate the ceiling" to "keep the ceiling up and notice quickly when it falls".
+- Most suspicious: **`vrate` pinned at the floor (50) with latency targets met and no cgroup short of budget, driven by `rq_wait > 5%`.** That is your own `nr_requests=16` poisoning iocost's saturation detector. iocost is throttling the governed tier by half *for no reason the protected workload can feel*, and you correctly concluded "vrate at a clamp is not a staleness signal" — but the stronger conclusion is that iocost's primary feedback loop is disabled on this host. You are running iocost open-loop.
+- Second suspicion: **"device busy 65-89%" at 35 MB/s average** is meaningless with virtio + a trickle of sync writes (io_ticks counts any in-flight request). Don't let it into any estimator.
+
+Assumptions I'm making: the game server's IO is mostly small synchronous writes (saves/logs) plus swap-in; builds are mostly buffered writes via overlayfs plus occasional fsync storms (apt/dpkg, pip); the virtio-blk device has a driver queue depth well above 16; kernel 7.x mq-deadline has the per-cgroup priority classes (`io.prio.class`, present since 5.13).
+
+## 2. Ideas (not converging — ranked loosely by "how much I'd bet on it", but read them all)
+
+**A. Stop estimating the ceiling; control the thing you actually care about**
+
+1. **Latency canary in the protected cgroup.** One preallocated, rotating 4 KiB `fdatasync` write per second (≈350 MB/day), issued from the game server's cgroup, timed. Not a bandwidth probe — it measures *what the game server experiences*, including queueing behind governed IO. Drive everything else (cap, model state) from its p99.
+   Signals: own timing only; optionally compare against `io.stat` of the governed cgroup. Failure: hypervisor write cache makes it look fine until the cache is full — but that is also what the game server sees, so it's the "right" lie; also rewriting the same blocks never pays the CoW penalty, hence the rotation requirement.
+
+2. **AIMD on the governed cap, driven by protected-side latency/pressure, no device model at all.** Raise `io.max` (or `io.cost.qos max`) by ~10%/min while canary p99 and protected `io.pressure` are under target; halve it on a miss; floor it at something that keeps builds finishing. Classic TCP-style, re-implements `io.latency` in userspace but with memory and hysteresis.
+   Signals: #1 or protected cgroup `io.pressure some/full`, per-cgroup latency via eBPF. Failure: the protected signal is sparse (game server IO is a trickle), so the loop reacts in seconds while stalls are sub-second; a burst from a new build will land a stall before the controller halves. Needs a conservative starting point after every quiet period.
+
+3. **`io.prio.class` + mq-deadline priority classes — model-free priority.** Set the protected cgroup to `promote-to-rt`, the governed tier to `idle` (or `restrict-to-be`). mq-deadline dispatches RT before BE before IDLE with an aging timer (`prio_aging_expire`), independent of what the device can do. No rate figure anywhere.
+   Signals: none needed. Failure: it orders dispatch *within* the scheduler's 16 slots; if all 16 are already governed writes the RT request still waits for a slot (so raise `nr_requests` modestly or keep iocost weight for admission); flusher-thread writeback is attributed to the originating cgroup under cgroup-v2 writeback, but verify that the prio class actually reaches it; aging can let a starving build dump 10 s of pent-up IO at once.
+
+4. **Make the model pessimistic on writes and let `vrate` climb.** Set `wbps/wseqiops/wrandiops` to the *degraded* floor, keep the read side at the healthy figure, set `qos max` to its upper bound (vrate can go up to 10000%). iocost's upward adjustment is exponential (percent-steps per 50 ms period), so a 20x climb takes a couple of seconds, not minutes — your 2000-2800 observation shows it works. Errors are now only in the safe direction.
+   Signals: `iocost_ioc_vrate_adj` tracepoint for monitoring only. Failure: in healthy state reads become 20x "too cheap" and effectively uncontrolled (probably acceptable, reads were never the bottleneck); `vrate` also drifts up while idle and over-admits for the first period of a burst; and it still needs the rq_wait signal to be honest (see #6) or it will sit at the floor again.
+
+5. **Two (or three) named profiles with hysteresis instead of a continuous estimate.** "healthy" / "degraded" model+qos+io.max sets; switch on a change detector on per-request write service time (CUSUM on `write_ticks/writes` deltas from `/sys/block/vda/stat`, which with `max_sectors_kb=64` is nearly a direct capability measurement because every request is ≤64 KiB), plus human annotation to force a state.
+   Signals: `/sys/block/vda/stat`, annotation file. Failure: the CoW penalty is bimodal (only first-writes to a block since the snapshot pay it), so service time is a mixture, not a shift; more than two states exist; rewriting `io.cost.model` at runtime resets accounting transiently.
+
+6. **Fix the feedback you already have: stop `nr_requests=16` from lying to iocost.** Either raise `nr_requests` to the smallest value at which `rq_wait_pct` stays under 5% during normal load, or move the stall protection into iocost itself (lower weight + `io.cost.qos` targets) and let the queue be deeper. Then `vrate` becomes a usable staleness signal again.
+   Signals: tracepoint reasons, `io.stat` `cost.wait_us` per cgroup. Failure: you traded 26.9 s stalls for 0.14 s with the small queue; a deeper queue reopens that in degraded state unless iocost admission really holds (and iocost's admission is exactly what's stale). The two protections fight.
+
+**B. Change what is being controlled**
+
+7. **Throttle dirty memory, not block IO, for the governed tier.** Tight `memory.high` on the governed slice (cgroup-v2 writeback-aware dirty throttling) so builds can never have hundreds of MB of dirty pages queued for a device that may only do 15 MB/s; bursts become back-pressure in `write(2)` rather than a writeback storm the protected cgroup must queue behind.
+   Signals: `memory.stat` dirty/writeback per cgroup. Failure: does nothing for reads or direct IO; with 15 GB total RAM a tight `memory.high` on builds can push them into reclaim thrash; fsync storms still hit the device at full depth.
+
+8. **Remove the protected workload's dependence on the disk.** Swap for the game server to zram (`memory.swap.max=0` on the disk swap for that cgroup, or zram-only swap system-wide), `memory.min` guarantee, assets preloaded/mlocked, saves batched. If the 26.9 s stall was swap-in behind a writeback storm — which I'd bet on — this removes the whole class.
+   Signals: game server's swap in/out rate, major faults, fsync count. Failure: if its working set genuinely exceeds RAM you cannot; zram compresses game state poorly; synchronous saves remain disk-bound.
+
+9. **Put the governed tier on a different volume that is never snapshotted.** A second provider disk (or at minimum a separate thin pool / LV with its own discard cadence) for build scratch, overlay layers, and test-gate data. Snapshots are per-volume: the volume that gets CoW'd is the one you don't do bulk writes to.
+   Signals: none. Failure: the provider may back both volumes with the same pool, so throughput interference persists (but CoW penalty wouldn't); cost; container runtime root relocation is fiddly; tmpfs is out at 15 GB.
+
+10. **Control concurrency, not rate: BFQ with weights.** BFQ is proportional-share with no device model — it divides *time*, so a 20x slower device just means 20x less data per slice, protection unchanged. Low-latency heuristics favour the sync trickle of the game server automatically.
+    Signals: none. Failure: BFQ's idling costs throughput on the healthy 500 MB/s state (it tops out in the few-hundred-MB/s range on single-queue dispatch); less deterministic than mq-deadline for worst-case stalls; must drop iocost (two rq_qos policies fighting) and you lose `io.max`-style hard caps.
+
+**C. Use information from outside the guest**
+
+11. **Poll the provider API for the state you "can't see".** The UI showed "1.1 TB of 1 TB used" and "snapshot active"; if the UI can see it, an API almost certainly can. A systemd timer polls used-bytes and snapshot presence and flips the profile from #5, or just alerts a human.
+    Signals: provider API (credentials inside the VM — scope them read-only). Failure: not every provider exposes this; the "optimise" state may not be exposed; rate limits; provider-initiated backup snapshots may not appear as "your" snapshots.
+
+12. **Human annotation as a first-class input.** An `/etc/iogov/state` file or a one-line CLI: "snapshot taken", "snapshot deleted", "optimise ran", "bulk delete". The daemon treats it as a prior and resets its estimate. Cheap, honest about what is actually unobservable.
+    Signals: a human. Failure: humans forget, and provider-initiated events have no human on this side.
+
+13. **Prevent the degradation instead of detecting it.** Daily `fstrim` (plus `discard` on LVM so thin-pool unmap propagates), keep fill under ~60%, treat any snapshot as a budgeted, time-boxed object (create → copy off → delete within hours), run the provider's optimise after every bulk delete. Make the "healthy" state the maintained invariant.
+    Signals: fill, `fstrim -v` output, snapshot age. Failure: provider backup policy may keep snapshots you don't own; fstrim on a CoW'd volume is itself slow and bursty; the 1.1 TB figure suggests discards were not propagating at all, which may be a provider property you cannot fix.
+
+**D. Reduce the need for control**
+
+14. **Shrink the governed tier's demand per unit of work.** `eatmydata`/`--no-sync` for apt, dpkg `force-unsafe-io`, pip/npm cache on a separate slice, buildkit cache mounts, avoid overlay copy-up of big trees, don't `fsync` in test gates that get thrown away. The question of the ceiling matters less if the build writes 1/3 as much and never fsyncs.
+    Signals: fsync counts (eBPF or strace on a sample build), bytes written per build. Failure: some gates need durability semantics; reduces average, not necessarily peak depth.
+
+15. **Time-share rather than rate-share.** Run builds only when the game server is idle (player count, tick-time, or a calendar), and `cgroup.freeze` the governed slice when the canary (#1) misses. Coarse, no model.
+    Signals: game server's own metrics; canary. Failure: freezing does not stop already-dirty pages from being written back; builds queue up and become wall-clock bound; "idle" may never arrive on a 24/7 game server.
+
+16. **Trailing-maximum cap with slow decay.** If you insist on a cap: cap = k × the highest sustained throughput observed from *real* traffic in the last N hours, decaying slowly, never below a floor. Uses the builds as the benchmark.
+    Signals: `/sys/block/vda/stat` throughput and latency windows. Failure: ratchets up only when something saturates, which is rare (demand is far below ceiling); the hypervisor write cache makes short peaks look like capability (your 4.3 GB/s lesson); after a downward step the cap stays high until latency shows it — which is the unsafe direction.
+
+Two constraints I'd push back on: "never probe" is too strong — a 4 KB/s latency canary is not a benchmark and a 3-second saturation probe issued *inside the governed cgroup under its normal weight* is indistinguishable from a small build; what you must avoid is cache-defeating sustained probes. And "iocost is the tool" deserves a hard look: its design premise is a device with a stable cost structure, and this volume violates that in the one component (write) that matters. The combination #3 + #8 + #13 might give you most of the protection with no model to go stale.
+
+## 3. What I'd want to measure or learn first
+
+1. **What the game server's IO actually is.** IOPS, sync fraction, swap in/out rate, and — crucially — what the 26.9 s stall was waiting on (swap-in? `fsync` behind a writeback storm? overlayfs?). If it was swap, idea #8 solves the problem class and the rest is tuning.
+2. **Whether the game server was harmed at all during the uncapped build on the healthy disk** (pressure 1-9%, 1100 s). If tick-time/p99 was fine, the cap is pure cost in the healthy state and the real job is only the degraded state — where the device throttles everyone and the only thing worth controlling is queue-slot share.
+3. **Retrospective per-request write service time vs read service time across the three dated states**, from whatever metrics you already keep. Does `w_await` separate 15 MB/s from 350 MB/s cleanly while `r_await` stays flat? That decides between the scalar-vrate family (#4) and the shape-aware family (#5).
+4. **The hypervisor write-cache absorption curve**: how many MB of burst get absorbed before latency rises, and how fast it drains. This sizes any canary/probe and tells you whether your 143 MB/s peaks ever touch the real device.
+5. **Whether `rq_wait > 5%` is purely `nr_requests=16`**: raise to 32 for ten minutes under normal load and watch the tracepoint's reasons and `io.stat` `cost.wait_us` for the governed cgroup. This tells you whether iocost has a working loop at all.
+6. **How often `io.max` actually engages** (governed `io.pressure`, throttle stats) versus iocost admission. If the cap only binds during the pathological stale case, delete it.
+7. **What the provider API exposes**: used bytes, snapshot list/ages, optimise status, and whether discards propagate (`fstrim -v` bytes vs the provider's "used" afterwards). One afternoon with the docs.
+8. **Whether mq-deadline prio classes are live on this kernel** (`/sys/block/vda/queue/iosched/prio_aging_expire` exists; `io.prio.class` accepted on the cgroups) and whether cgroup writeback carries the class — a five-minute check that gates idea #3.
+9. **Who else writes**: journald, the container runtime's own layer extraction, log rotation — anything not in either slice that lands in the root cgroup and is invisible to both iocost weights and your caps.
+## Round 2 answer (after disclosure of Codex rounds; our design text was missing)
+
+## 1. Synergy
+
+### Where all three agree (treat as settled)
+- Disk identity is the wrong validity boundary for a calibration; one scalar ceiling cannot carry both the iocost model and the caps, because the collapse is write-specific (reads stayed at 2 GB/s).
+- `vrate` at a clamp is not a staleness signal here, because `nr_requests=16` keeps `rq_wait > 5%` whenever the governed tier runs. Your estimator **A** is dead; Codex and I both killed it independently.
+- Protective action and capacity estimation are different tasks; the first must not depend on the second. Codex's "safety controller first, estimator second" is right.
+- Stopping distance is unmeasured and gates every reactive design.
+- Buffered-write attribution to cgroups is unverified; until it is, you do not know what `io.max` actually controls.
+- Provider state, fill, discard history, annotations: covariates and priors, never a lookup table. Drop `0.7× worst plateau`; drop "best plateau as learning ceiling"; drop the 30-min cooldown for protective moves.
+
+### The thing all three of us walked past
+Do the arithmetic on your own 26.9 s → 0.14 s result. Worst-case slot wait for the game's request ≈ **bytes in flight below the scheduler ÷ device write rate**. Before: Debian/virtio defaults are roughly `nr_requests=256`, `max_sectors_kb≈512-1280` → 128-320 MB in flight; at the ~6 MB/s build floor that is 21-53 s. After: 16 × 64 KB = 1 MB → ~0.17 s at 6 MB/s. Both numbers land on your measurements. (Assumption: the bpftrace stacks were in tag allocation — `blk_mq_get_tag`/`__get_request` — not in `balance_dirty_pages` or a journal commit. Check that; it is the single most informative thing you already have on disk.)
+
+If that holds, the consequence is large: **you already have a model-free, self-scaling stall bound.** It needs no ceiling; it gets *tighter* as the device gets slower in time terms (constant in bytes). The queue settings are the primary protection, iocost is secondary, and the whole "estimate the ceiling" program is about efficiency in the governed tier, not safety of the game. Nobody — your design, Codex, or my blind round — stated this.
+
+A second consequence I have to own: with `nr_requests=16` below the virtio hardware queue depth (typically 128-256), the scheduler never actually queues anything; every request is dispatched immediately and the wait is for a tag held by an in-flight request. So **my blind idea #3 (mq-deadline `io.prio.class`) is dead on this host** — priority ordering within an always-empty scheduler queue does nothing. Retracted. Same structural reason kills **my #4 (pessimistic write model + wide vrate range)**: vrate can only rise while `rq_wait < 5%`, and the governed tier will fill 16 slots whenever it is busy, so vrate pins at `min` and the pessimistic model becomes the 4694 s build. The only way to make #4 work is to relax the queue bound, which trades away the one mechanism that is proven. Codex was right to say "don't relax the queue to make vrate look healthy"; I'd now say it more strongly: iocost's feedback loop is structurally unusable here, so run it **open-loop by design** (`min=max`), as a weighted share of a *policy* budget, and stop treating its model as a device model.
+
+### Genuine conflicts
+| Issue | Us | Codex | Me | Who's right |
+|---|---|---|---|---|
+| Primary signal for the brake | cgroup pressure + D-state | game tick latency | storage canary (4 KB `fdatasync`/s from the protected cgroup) | Me for the *trigger*, Codex for the *scorecard*. Tick latency conflates CPU/net/GC with storage and will cause false throttling; the canary isolates storage and gives dense samples where the game's own IO is a trickle. Collect tick latency anyway to grade outcomes. |
+| Where the brake lives | userspace daemon (us, Codex) | — | kernel `io.latency` on the protected cgroup, fed by the canary | Try mine first: it's one line, 100 ms windows, acts in `rq_qos` before tag allocation (exactly where the slot-wait happens), reduces *peer queue depth*, no model. Unknown: coexistence with iocost. If it misbehaves in the VM, Codex's userspace state machine is the fallback, not the first choice. |
+| Fate of estimator C | numerical input via D | observe-only, can abstain | logger only; nothing consumes it | Codex and I agree; I go further: if the dynamic cap goes away, there is no stale number left to estimate, so C has no customer for now. |
+| Standing dynamic cap | yes, proportional to model | broad guardrail only | drop it or freeze it high | A cap below the real rate is the only way the degraded state *stays* expensive after recovery (the learning deadlock Codex named). No cap → no deadlock. |
+| Swap | accounted, charged to game | memory headroom | zram or `memory.min` for the game | Mine is the cheapest change on the table: game swap-ins are sync reads competing for the same 16 tags. Remove the dependency instead of controlling it. |
+
+### What each missed that another caught
+- **You missed:** the stall-bound arithmetic; that the small queue disables iocost's loop; `io.latency`; zram; admission by workload class (Codex #13 — cheap and robust).
+- **Codex missed:** the arithmetic; `io.latency`; dirty-backlog bounding as the stopping-distance reducer (it had memory headroom, not the writeback angle); that attribution failure means the flusher's IO lands in root and *no* cgroup actuator touches it.
+- **I missed (blind):** the identification problem ("low throughput = demand? throttle? slow disk?") stated as cleanly as Codex did; cap provenance/expiry (#7); the learning deadlock; the whole VM test matrix, which is excellent and I'd adopt wholesale, especially the negative controls (constant backend, changed workload mix) and "protected-only run".
+
+### Ranking of mechanisms
+1. **Queue bound as the recognised primary stall limit** (deployed; formalise it, consider 8×32 KB in a degraded profile).
+2. **Game disk-independence**: zram swap + `memory.min` on the game cgroup.
+3. **Canary + `io.latency`** (≈ Codex's emergency brake, in-kernel). Codex's userspace brake is the same rank as fallback.
+4. **Dirty-backlog bound**: `memory.high` on the governed slice + modest `vm.dirty_bytes`.
+5. Admission by workload class (Codex #13).
+6. Your C as a logger; B as a 1-bit regime classifier on `w_await`.
+7. Pessimistic model / prio classes: retracted. A, A+, D: drop.
+
+## 2. The simple solution
+
+Give up tracking the ceiling. Bound bytes, not rate.
+
+**Components (five):**
+1. **Queue bound** — `nr_requests=16`, `max_sectors_kb=64`, mq-deadline (as now). Optional two-profile switch: if `w_await` from `/sys/block/vda/stat` exceeds ~5 ms over 60 s, go to `nr_requests=8`, `max_sectors_kb=32` (256 KB in flight → ~40 ms at 6 MB/s); return after 10 min under 2 ms. This is the only "estimation" and it's one bit with hysteresis.
+2. **Game disk-independence** — zram swap sized ~4 GB with `memory.swap.max=0` on the game's cgroup for disk swap (or simpler: `memory.min` = game RSS × 1.2 and no swap for it at all). `fstrim.timer` weekly, `issue_discards=1` in lvm.conf, fill alarm at 60%.
+3. **Canary** — a 20-line systemd service in the protected cgroup: one 4 KiB `pwrite`+`fdatasync` per second into a rotating 512 MB preallocated file (rotation so it keeps paying any CoW penalty), logging latency. Signals: canary latency, protected `io.pressure full avg10`, `/sys/block/vda/stat`.
+4. **Brake** — `io.latency target=20000` (20 ms) on the protected cgroup, siblings being the governed slice (and a third slice for journald/container runtime/anything else that writes — root-cgroup writers are invisible to every actuator). Fallback if `io.latency` and iocost don't coexist: userspace loop at 100 ms, trip when canary p95 over 3 s > 25 ms or `full avg10 > 5%`, set governed `io.max` to `rbps=8M wbps=2M wiops=200` (near-stop, not freeze — tests with timeouts stay alive), hold until 30 s clean, release by doubling every 30 s, re-trip resets. States normal/restricted/recovering, journaled, daemon death ⇒ cap stays (hold-last, named as such).
+5. **Backlog bound** — `memory.high` ≈ 6 GB on the governed slice; `vm.dirty_bytes=256M`, `vm.dirty_background_bytes=64M`. Keeps the post-brake drain short and bounds `balance_dirty_pages` stalls if attribution turns out imperfect.
+
+**iocost**: keep weights (1000/100) for healthy-state fairness, model = the healthy calibration, `qos min=max=100` so vrate never moves and never misleads. No dynamic cap; a static `io.max` at ~50% of healthy write (e.g. 200 MB/s) only to leave hypervisor-cache headroom; it protects nothing in the degraded state and that is fine, because 1 and 4 do.
+
+**Not covered:** backend events where a single 4 KB write takes seconds (nothing in the guest helps); the game's own `fsync` storms (saves) if those are the stall; CPU/network latency; a provider snapshot you never learn about — you'll just see the canary rise and the brake trip more often, which is the correct behaviour; false trips when the game itself causes its latency (costs builds ~30-60 s, acceptable); any writer outside the three slices.
+
+**Cost to the governed tier:** healthy — essentially zero (no binding cap; 1 MB in flight supports ~47k IOPS at 0.34 ms, which is what you measured). Degraded — it gets the disk minus brake periods, i.e. 10-15 MB/s builds taking as long as physics says. No controller fixes that; the estimator program never would have either.
+
+**Build and prove:** 1-4 are config plus ~300 lines; one week including the VM rig. Proof: VM with the governed slice running a real image build and the protected slice running a synthetic game (periodic 4 KB fdatasync + 200 MB/s of its own reads + deadline tracker), backend switched from ~400 MB/s to ~10 MB/s mid-build via QEMU `throttling.bps-write` *and* a dm-delay/qcow2-snapshot variant for the CoW shape; Codex's negative controls included. Pass: protected worst stall < 250 ms and p99 < 30 ms in the degraded regime, brake stopping distance < 1 s, build time within 1.3× uncapped in healthy. Abandon if: stalls remain seconds-long despite the queue bound (⇒ the stall isn't a slot wait and the whole model of the problem is wrong), or the brake doesn't move the device write rate within ~1 s (⇒ attribution broken; fix that before anything else), or trips oscillate so builds in the degraded state collapse below the disk's own rate.
+
+**Is it good enough?** For the protected objective, yes, and I'd bet on it. The estimator program buys only one thing: a smooth, binding governed rate in the degraded state instead of a bang-bang brake. Upgrade only if the VM run shows the brake tripping more than a few times a minute during a degraded build (then build AIMD on the *governed cap* driven by the canary — still no device ceiling), or if the canary shows the game's slot wait in the degraded state is itself above target even without trips (then and only then does iocost admission accuracy matter, and C becomes a customer-bearing estimator).
+
+## 3. Next week, in order
+
+1. **Re-read the 2026-10-20 bpftrace stacks and classify the stall site** (tag wait vs `balance_dirty_pages` vs journal/`fsync` vs swap-in), then **measure stopping distance on the VM rig**: backend throttled to 10 MB/s, build running, apply the emergency `io.max`, time until canary latency and in-flight count recover, with D-state stacks captured. This one experiment simultaneously tests the stall-bound hypothesis, buffered-write attribution (if the device write rate doesn't drop within a second, `io.max` doesn't reach the flusher), and whether a reactive brake can work at all. It most reduces uncertainty because every other decision branches on it.
+2. **Ship the zero-risk set to production**: zram/`memory.min` for the game; a third slice for journald and the container runtime; freeze the dynamic cap (static, high); `io.cost.qos min=max=100`; `fstrim.timer`, `issue_discards`, fill alarm; the canary as observe-only logger; an annotations file and, if the provider API exposes it, a timer that logs snapshot/used-bytes. None of this needs the week-1 result.
+3. **Try `io.latency` on the protected cgroup in the VM**, alongside iocost, under the same degraded-build scenario. If it works: ship with the canary. If it fights iocost: implement the userspace brake exactly as Codex's state machine with my canary trigger, timing taken from step 1, and ship that. Either way, leave C running as a logger with abstention, and don't write a single line of D.
+## Round 3 prompt: the omitted design text and the follow-up questions
+
+Correction: my previous message was meant to contain PART 1 (our own written design) but it was accidentally omitted, so you only saw it second-hand through Codex's recap. Here it is verbatim.
+
+# PART 1 - Our existing design and candidate estimators (not yet built)
+## What we have already written down (a design, not yet built; "nothing implemented")
+A small systemd service (Python, reads procfs/sysfs/cgroup only, writes through the one existing apply path; modes off | observe | enforce-down | enforce, default observe; fail-open to last good values; every change journalled with before/after/rule/evidence). Objective: protect a declared "protect list" of cgroups (the game server), governed side (builds/gates/dev containers) gives way first. Per-target signals: the protected cgroup's `io.pressure` (some/full deltas), its `io.stat` rates, count of its threads in D state sampled each tick, device `/sys/block/<dev>/stat`, swap latency; optional bpftrace per-cgroup block latency, off by default and time-boxed. Covariates: filesystem fill (a table fill-bucket -> best proven bound from history, seeded with the two known points), discard history (read only), change-point events (`ceiling_shift`), human annotations via `note`.
+Decision every 5 min and on events, asymmetric trust: lowering is cheap so one pair of windows (plateau below the model by >25% in two consecutive windows) suffices; raising needs a proven saturated window (device busy >= 85% or vrate at max, latency under target) and never exceeds the configured ceiling. Steps at most 25%, 30 min cooldown per direction, model never below 0.7x the worst recorded plateau or above the best proven plateau; dev caps stay a fixed percentage of the model. Harm to a protected target (io.pressure stall above threshold >1 min or persistent blocked threads) freezes all increases and steps governed caps down regardless of any capacity estimate. No probe IO, ever; increases wait for the workload to prove capacity; the operator can run the benchmark by hand.
+Candidate estimators (we want to pick by measurement in a VM whose disk we control: a throttleable virtual disk where we inject ceiling changes):
+- A. `vrate` edge: lower the model when vrate sits at the floor for N periods, raise at the ceiling. Simplest; but vrate sits at the floor on this host with healthy latency (request-slot waits, our own nr_requests), so bare A spirals to the rail. A+ = act only if the floor coincides with missed latency targets / rising queue depth, raise only when demand was held back.
+- B. Quiet-window service time: keep only windows with ~1 request in flight, track per-request service time by direction and size band, compare last 30 min against last 7 days, act on a sustained 3x change. Needs no saturation, unaffected by our own throttling; but a provider bandwidth/IOPS cap may not change single-request time (it may miss exactly our failure); needs days of history.
+- C. Saturated-window ceiling: keep only windows where the disk was the limit (latency rising with queue depth, delivered rate not near our own cap, demand present); delivered rate there is a lower bound on capability; track a high percentile with decay and fit the model to it. Needs load to learn; stale on a quiet host (must say so and hold).
+- D. Hybrid: B as early warning, C as the number; model changes only when C confirms (or B overwhelming and persistent).
+- Controls: E static baseline (today), F "price the worst plateau" with a wide QoS max so vrate climbs by itself, G oracle (test only).
+Phases: P0 observe-only for two weeks and replay the 2026-10-20 -> 10-23 shift; P1 surface "recalibrate recommended" in the doctor/wizard; P2 enforce-down; P3 enforce with increases only on saturated windows.
+Current stop-gap: dev tier capped at ~70% of the measured sustained ceiling (700M read/250M write B/s, 50k/30k IOPS) and a hand-set io.cost model and QoS; re-measure after any storage change.
+
+
+Please (a) say whether anything in your previous answer changes now that you have the actual text, being explicit about corrections to what you attributed to us or to Codex; (b) re-check specifically the parts of our design you may not have seen: the protect-list/target-by-cgroup signal table, the covariates (fill table, discard history, change points), the 'device-only mode', the 5-minute decide loop and the 25%/30-min/0.7x rules, the phases P0-P3, and the stop-gap static caps (700M read / 250M write, 50k/30k IOPS, io.cost model '1000000000 70000 70000 340000000 40000 40000', QOS '95 5000 90 25000 50 400'): do the stop-gap numbers interact badly with your simple design (e.g. with qos min=max=100 and the static io.max at ~50% of healthy write)? (c) Give a final one-paragraph recommendation: what to build first, what to defer, what to kill.
+
+## Round 3 answer (final position)
+
+## (a) What changes now that I've seen the real text
+
+Codex's recap was faithful; nothing I attributed to *Codex* needs correcting. Three things I attributed to *you* do:
+
+1. **You already have a brake.** "Harm to a protected target … freezes all increases and steps governed caps down regardless of any capacity estimate." I wrote as if you had none. Correction: you have the seed of one, but as written it cannot do the job — detection needs `>1 min` of stall, the loop runs every 5 min "and on events" (unspecified), and unless the harm path is explicitly exempt from the 25%/30-min rules, a 20× collapse takes ~5 h to accommodate. My round-2 recommendation stands with sharper wording: don't add a brake, *promote* the harm path into one with its own 100 ms sampler, a near-stop emergency profile, and no step/cooldown limits on the way down.
+
+2. **"Pessimistic write model + wide vrate range" was not my idea — it's your control F.** I claimed novelty; wrong. And my retraction applies to F in full: on this host vrate cannot climb while the governed tier is active because `rq_wait > 5%` is produced by `nr_requests=16`, and iocost raises vrate only when cgroups are short *and* the device looks unbusy. F will lose in the VM test for a structural reason that is stronger than Codex's "one multiplier can't fix shape" — and only if the VM reproduces the small-queue effect (Codex's "guest request-slot restrictions with healthy backend" row is therefore mandatory, not optional).
+
+3. **"No probe IO, ever"** is stricter than I assumed. As written it forbids the canary. I'd amend it to "no *capacity* probing; a protected-side latency sentinel at ≤4 KB/s is permitted". Without it, your signal table has no dense storage-only latency signal: `io.pressure some` fires on any worker thread, `full` almost never fires on a multithreaded server, D-state counts per tick miss sub-tick stalls, and "swap latency" has no procfs source at all (Codex's point; confirmed by the text — it can only come from the time-boxed bpftrace or the canary).
+
+Everything else from round 2 holds: the stall-bound arithmetic, the retraction of prio classes, `io.latency` as the first thing to try, zram/`memory.min`, dirty-backlog bounding, admission by class. Your text confirms you had none of those; it also confirms Codex's praise of the service architecture (modes, journal, single apply path) — keep all of that; it's the inference and the constants that go.
+
+## (b) Part-by-part re-check
+
+**Protect-list / per-target signals.** Good shape, wrong resolution. Keep `io.pressure some` deltas and protected `io.stat` (they tell you "did it want IO"), but the harm trigger should be (i) the canary's latency and (ii) the D-state of *the named tick thread*, not a count across all threads — a blocked log-writer is not harm, and a 5-second tick stall is one sample at a 1 s tick. Sample those two at 100 ms; everything else can stay at 5 min.
+
+**Covariates.** Fill-bucket → best-proven-bound table: kill as a lookup (two confounded points, different snapshot states, three interventions on 10-23). Keep fill as a logged covariate with a 60% alarm driving hygiene. Discard history: feeds the `fstrim` timer, not the estimator. `ceiling_shift`: a journal entry produced by your own estimator; it cannot corroborate that estimator. `note`: keep, first-class.
+
+**Device-only mode.** It isn't named in the text you pasted; I take it to mean "no protect list declared, regulate from `/sys/block` stats alone". In my framing it has no objective to serve, so it should be observe/doctor-only. The single device-only action with a safe sign is the two-profile queue switch (`w_await` > 5 ms sustained → `nr_requests=8`, `max_sectors_kb=32`; hysteresis back), because its failure mode is a slightly slower governed tier, never a less-protected game.
+
+**5-min loop, 25% steps, 30-min cooldown, 0.7× floor, best-plateau ceiling.** Agree with Codex on all five, with two additions. The 0.7× floor is inert anyway: your worst recorded plateau is the ~6 MB/s build floor, so the model floor is 4.2 MB/s. And the "configured ceiling" on raises is the one constant worth keeping — rename it *policy ceiling* so nobody later treats it as a capacity fact.
+
+**Phases.** P0: fine, but run the canary logger inside it, and call the 10-20→10-23 thing a *scenario*, not a replay (Codex is right: you have summaries, not time-aligned demand/controls/observations). P1 "recalibrate recommended" is the most valuable thing an estimator can ever output on this host — a human-facing hint — keep it. P2 enforce-down *is* the brake, but with the fast loop. P3 (raises on saturated windows) should be deferred indefinitely: with no dynamic cap there is nothing to raise, and the learning deadlock disappears with it.
+
+**Stop-gap numbers vs the simple design.** Decoded: model `rbps=1 GB/s, rseqiops=rrandiops=70k, wbps=340 MB/s, wseqiops=wrandiops=40k`; QoS `rpct=95 rlat=5ms wpct=90 wlat=25ms min=50 max=400`; `io.max` on the dev slice `700M/250M B/s, 50k/30k IOPS`.
+
+- *Today, iocost — not `io.max` — is the binding control in the healthy state.* vrate is pinned at `min=50`, so the governed tier's effective budget is ~170 MB/s write / 500 MB/s read, under the 250M/700M caps. The caps are dead weight. Nobody had noticed this because nothing exceeds 143 MB/s anyway.
+- *Switching to `min=max=100`* makes the budget 340/1000 and the `io.max` caps become binding at 250/700. Net effect: the governed tier gains ~1.5× headroom it almost never uses; the game loses nothing, because the 2× "margin" from vrate=50 was never protection in the degraded state (20× error minus 2× is still 10× over-admission; the queue bound and the brake carry that). Keep your 250M/700M rather than my ~200M; the exact number is unimportant and yours has provenance. If you want to be conservative, `min=max=50` is also fine — the point is only that vrate must stop *moving*, so it stops being read as a signal.
+- *IOPS terms are nearly inert.* With `max_sectors_kb=64` every request is ≤64 KB, so 250 MB/s sequential is ~3.9k IOPS and the 30k/40k numbers bind only for small-random phases. Don't spend estimator effort on them; `rbps/wbps` are the only components that ever need touching.
+- *QoS latency targets* (5/25 ms) are device-wide, not per cgroup; with a 1 MB in-flight bound at 15 MB/s, write latency is ~70 ms, so `wlat` is missed in the degraded state and vrate goes to `min` — the same pinning by a different route. With `min=max` they become no-ops; leave them for documentation.
+- *`io.latency` on the protected cgroup* is the one real unknown: it co-registers in `rq_qos` with iocost and acts on sibling depth, while iocost acts on vtime; I expect coexistence but have not seen it proven. VM test before production.
+- *Fail-open to last good values* in `enforce-down`: if the daemon dies after stepping down, caps stay low indefinitely. Hold-last is the correct default; add a watchdog that alerts after N minutes in a restricted state with the daemon absent.
+
+## (c) Final recommendation
+
+**Build first:** the queue bound as the formal invariant (plus the one-bit `w_await` profile switch), zram/`memory.min` for the game, a third slice for root-cgroup writers, `memory.high` and `vm.dirty_bytes` on the governed side, the 4 KB/s canary in the protected cgroup, and the brake — `io.latency` on the protected cgroup if the VM shows it coexists with iocost, otherwise your harm path rewritten as a 100 ms loop with a near-stop `io.max` profile, no step limit downward, slow doubling back; freeze iocost at `min=max` with the current model and keep your 250M/700M caps as a policy ceiling. Prove it on the VM rig with Codex's matrix, scored by protected worst stall and stopping distance, and record the 10-20 D-state stack site before anything else. **Defer:** estimator C as an abstaining logger feeding only P1's "recalibrate recommended"; B as a regime classifier; P3 and any automatic model raise until a measured case shows the brake oscillating or the game's slot wait exceeding target without trips. **Kill:** A, A+, F, D, the fill-bucket table, `ceiling_shift` as evidence, the 25%/30-min/0.7×/best-plateau constants, the dynamic cap proportional to the model, "no probe IO ever" in its current wording, and the idea that the service's job is to know the ceiling — its job is to bound bytes in flight, notice protected harm in under a second, and stop the governed tier when it sees it.
+## Round 4 (operator constraints: zram out, goal = recognize long-term shifts, limited probe IO allowed) — prompt
+
+Operator feedback on your "simple solution" (five components), to which I want you to respond and redesign:
+
+1. zram for the game's swap is OUT: the host has only ~15 GB RAM shared with the game and the governed tier; there is no spare RAM to give to compressed swap. Drop that component entirely and say what, if anything, replaces it (or confirm nothing needs to).
+2. The operator restated the actual need: "we just need a solution to recognize LONG-TERM SHIFTING storage capabilities." The protective brake is secondary to that; the thing to build is a reliable recognizer of slow regime changes in what the virtual disk can do (days to weeks: 516 MB/s -> 15 MB/s -> 340 MB/s), so that models/caps can be re-fit or an operator warned.
+3. The operator is explicitly fine with "running some very limited IO regularly": a periodic small probe is acceptable. They asked: "how would a 4k probe work?"
+
+Please answer concretely, as an engineer who will implement it:
+A. Elaborate each of your five components in a few lines each, marking which survive, which change given points 1-3, and which you now consider unnecessary for the long-term-shift goal.
+B. Design the PROBE ladder for recognizing long-term shifts. For each probe level give: exact I/O (size, direction, O_DIRECT/O_DSYNC/fdatasync semantics, queue depth, offsets and how you defeat the guest page cache AND the hypervisor/provider write cache, how you make sure each probe hits blocks that would pay a first-write-after-snapshot / thin-allocation penalty, file or region layout and how it wraps, what to do about fstrim/discard interaction), frequency and total IO per day, which cgroup/slice it runs in and at what priority so it never harms the protected game, what it measures (latency percentiles, IOPS at qd=1, throughput), and which failure modes of the 2026-10-20 incident it WOULD and WOULD NOT detect (be explicit about a pure bandwidth cap that leaves single-request latency unchanged, which is the weakness of quiet-window service-time estimators). Include a bounded throughput micro-probe if you think one is needed, with its cost and when it may run (gating on protected-workload calm), and how a provider write cache of unknown size distorts it.
+C. Design the RECOGNIZER: what statistics are stored, over what windows, which change-point or drift test (and why), how to separate "storage changed" from "our own settings or workload changed" (nr_requests, our io.max, workload mix, time-of-day), what the alarm states are, what evidence is journalled, and what a human sees. Give thresholds as starting values with the reasoning, and say how you would validate false-positive and false-negative rates in the QEMU VM rig (what injections, what pass criteria).
+D. The ACTION side for a long-term regime: given a recognized regime (e.g. healthy / degraded / unknown), what exactly changes (io.cost model components, qos, io.max caps, nr_requests profile), how fast, with what safeguards, and what happens when the probe disagrees with passive `/sys/block/<dev>/stat` observations. Keep it as simple as possible and say what you would NOT automate.
+E. A revised "next week" plan of three steps under these constraints.
+Be explicit about your confidence and about which claims are unverified assumptions about the provider's storage stack.
+
+## Round 4 answer (probe ladder, recognizer, actions)
+
+## Preface: what the three constraints change
+
+Dropping zram is cheap: it was the "remove the dependency" shortcut, and `memory.min` buys most of it. Making long-term recognition the primary goal is a bigger change than it looks, because it lets me drop the thing I was least sure of (in-kernel `io.latency` coexisting with iocost) and build the thing I'm most sure of: deliberate, tiny, well-placed excitation. Codex's "passive adaptation needs excitation" was right, and the operator has now granted it.
+
+Confidence legend: **[H]** I'd bet on it; **[M]** likely, verify in the rig; **[A]** assumption about the provider stack, unverifiable from the guest.
+
+## A. The five components, revisited
+
+| # | Component | Status | Notes |
+|---|---|---|---|
+| 1 | **Queue bound** (`nr_requests=16`, `max_sectors_kb=64`, mq-deadline) | **Survives, unchanged** | Still the only model-free stall bound (≤1 MiB in flight → ≤~0.17 s at 6 MB/s) [M — depends on the 10-20 stacks being tag waits]. The two-profile switch (16/64 ↔ 8/32) becomes an *output of the recognizer* instead of a one-bit `w_await` rule. Interacts with the probe: probe queue depth must stay ≤ half the slots in whichever profile is active. |
+| 2 | **Game disk-independence** | **Changes: zram out** | Replace with `memory.min` on the game cgroup = its steady RSS (observe a week, round up), `memory.low` = RSS × 1.3, `memory.high` on the governed slice (≈ 15 GB − game − 2 GB OS), `vm.swappiness=10`. This makes the *governed* tier the one that reclaims and swaps, which is what you want: its swap IO is charged to it and weighted down. Game swap-ins still exist; that's exactly what the read lane of the probe prices (a swap-in is a 4 KiB random read of recently written data), so the recognizer can at least tell the operator what a game page fault costs today. Nothing else replaces zram; accept that a game working set > RAM is unprotectable in the guest. |
+| 3 | **Canary** | **Survives, promoted** | Becomes level 0 of the ladder (the sentinel). Same IO, now also tagged with in-flight count and governed rate so its samples feed both the harm path and the capability series. |
+| 4 | **Brake** | **Demoted to minimal** | Operator's call. Keep your design's harm path (freeze increases, step governed `io.max` down) but trigger it from the sentinel at 1 s resolution with your 1-min persistence, no step/cooldown limit downward, and a 30-s-clean/doubling recovery. Defer the `io.latency` experiment. It is not required for the long-term goal and I won't elaborate it further here. |
+| 5 | **Backlog bound** (`memory.high`, `vm.dirty_bytes=256M`, `dirty_background_bytes=64M`) | **Survives, unchanged** | Cheap, and it also makes the passive signal cleaner: with ≤256 MB dirty, a build's delivered write rate at the device tracks its demand within seconds instead of being smeared by a GB of writeback. It also folds into #2 (same `memory.high`). |
+
+Not needed for the long-term goal: `io.latency`, the userspace AIMD cap, prio classes (already dead), the 1-bit `w_await` switch (subsumed).
+
+## B. The probe ladder
+
+### How a 4 KiB probe works, in one paragraph
+A probe is a single `pwrite(fd, buf, 4096, offset)` with `O_DIRECT|O_DSYNC` on a raw LV, timed with `CLOCK_MONOTONIC`, at queue depth 1. `O_DIRECT` bypasses the guest page cache (no fs, no page cache on a raw LV; alignment 4 KiB). `O_DSYNC` adds a device FLUSH after the write, which on virtio-blk with a write-back host cache forces the hypervisor to `fdatasync` its own buffer — that is the only lever the guest has against the provider write cache for a *single* small write, and it is the same cost the game's `fsync` pays, so it's the right thing to measure [A: `cache=writeback`; with `cache=none/directsync` the flush is near-free and the write itself is already synchronous — either way the number is "what a durable 4 KiB write costs now"]. The buffer is random bytes, never zeros (some backends short-circuit zero blocks) [A]. The number you get is latency; `1/latency` is qd=1 IOPS. What it does **not** give you is bandwidth: a bandwidth-capped backend serves one small write just as fast until its bucket is empty. That gap is covered by level 2.
+
+### Layout: a dedicated probe LV
+Create `lv_iogov_probe`, 8 GiB, linear, on the same VG/PV as the root LV (so it shares the virtual disk and its provider state) [A: VG has 8 GiB free; if not, a 8 GiB `fallocate`d, fully pre-written file on the root fs with FIEMAP to confirm contiguous extents is the fallback — worse, because punch-hole/fstrim semantics and ext4 extent-conversion metadata confound the fresh lane]. Raw LV gives: stable LBAs, `BLKDISCARD` with offset/length under our control, no filesystem metadata, no interaction with `fstrim` (which only touches mounted filesystems), zero risk to production data.
+
+Regions inside the LV:
+
+```
+[0, 4 GiB)   FRESH ring   — 1024 slots × 4 MiB stride; bulk-discarded once per wrap
+[4, 6 GiB)   OVER ring    — written continuously, never discarded
+[6, 8 GiB)   BULK area    — micro-probe scratch, discarded before each run
+```
+
+Why a 4 MiB stride: provider CoW/allocation granularity is unknown — qcow2 clusters 64 KiB, LVM-thin chunks 64 KiB–1 MiB, ZFS records 128 KiB, Ceph RBD objects 4 MiB. A 4 MiB stride guarantees each fresh-lane write lands in a different chunk under every plausible backend [A], so no write is "cheap because the previous probe already paid for this chunk".
+
+### Level 0 — Sentinel (harm + continuous latency)
+- IO: 4 KiB `O_DIRECT|O_DSYNC` write, qd=1, 1/s, into the OVER ring, sequential 4 KiB steps (wraps every ~6 days; overwrite semantics — this lane intentionally does *not* pay first-write costs).
+- Runs in the **protected cgroup's sibling slice** `iogov-probe.slice` with `io.weight=1000` (same as the game), no `io.max`, `nice 10`. Rationale: it must experience the same iocost treatment and the same 16-slot queue as the game, and must never be throttled behind the governed tier (which would make its latency measure our own policy rather than the device).
+- Before each IO it reads `/sys/block/vda/inflight` and the governed slice's `io.stat` write bytes over the last 10 s; samples are tagged `quiet` (inflight = 0, governed < 1 MB/s) or `contended`.
+- Measures: latency series; `quiet` subset = device write+flush latency; `contended` subset = what the game experiences.
+- Cost: 337 MiB/day, 1 flush/s.
+
+### Level 1 — Lanes (regime shape, every minute)
+Three IOs per minute, qd=1, same slice and tagging as the sentinel:
+- **W-fresh**: 4 KiB `O_DIRECT|O_DSYNC` write at the next FRESH slot (stride 4 MiB). Slots were bulk-discarded at the previous wrap (1024 slots / 1440 per day → wraps every ~17 h; the discard is `blkdiscard` of the whole ring in 256 MiB pieces, run at a calm moment ≥1 h before the first write, so discard latency is never adjacent to a measured write). Measures: thin-allocation cost + first-write-after-snapshot cost [A: discards propagate to the provider; if they don't, this lane measures only CoW, which the 1.1 TB-of-1 TB figure suggests is possible — the lane's own history will tell you: if W-fresh ≈ W-over always, discards aren't reaching the backend, which is itself a finding worth a provider ticket].
+- **W-over**: 4 KiB `O_DIRECT|O_DSYNC` write at the sentinel's slot from 30 s ago (same chunk, already allocated and copied). Measures: plain durable write path. The ratio **W-fresh / W-over** is the CoW/allocation signature and is the one number that can say "snapshot or allocation pressure" rather than "disk slower".
+- **R**: 4 KiB `O_DIRECT` read at a random offset in the OVER ring (never the FRESH ring: reads of unallocated blocks return zeros from a fast path and would measure nothing). Measures: swap-in cost as the game would see it. Does not defeat the provider read cache; after one wrap the ring is likely cache-resident [A]. I accept that: swapped-out pages are recently written and likely cached too. Not a capability signal; a cost-to-the-game signal.
+- Cost: 17 MiB/day plus one 4 GiB discard per ~17 h.
+
+### Level 2 — Throughput micro-probe (the bandwidth-cap detector)
+This is the level that catches what qd=1 cannot: a provider bps/IOPS limiter, allocation-exhausted drain, or any regime where single requests are fine and sustained rate is not.
+- IO: into the BULK area, discarded first (so it is also "fresh" writes, like a build into trimmed space). Two phases, sequential 64 KiB `O_DIRECT` writes (no per-request sync; one `fdatasync` at the end, timed separately): **phase 1: 16 MiB at qd=1; phase 2: 48 MiB at qd=4.** Implemented with fio (`--ioengine=io_uring|libaio --direct=1 --bs=64k --rw=write --iodepth=N --size=… --runtime=20 --write_bw_log`) under `systemd-run --slice=iogov-probe.slice`, or a 4-thread Python loop if you'd rather not ship fio — fio is lower risk; it's proven.
+- Hard limits: wall-clock 20 s per phase (at 3 MB/s phase 2 can't finish → record "< 2.4 MB/s, aborted"); abort instantly if the sentinel's last sample exceeded 50 ms or protected `io.pressure some` rose during the run.
+- Queue budget: qd=4 of 64 KiB = 4 of 16 slots in the normal profile; worst added wait for a game request ≈ 4 × 64 KiB ÷ device rate = 17 ms at 15 MB/s, 1 ms at 340 MB/s [H, by the stall-bound arithmetic]. In the tight profile (8 × 32 KiB) a 64 KiB request splits into 2, so cap qd=2 there.
+- Gating: runs every 6 h, but only when calm: governed write rate < 2 MB/s for the last 60 s, protected `io.pressure some avg10 < 1%`, device inflight = 0 at start, and not within 15 min of a bulk discard; otherwise retry every 15 min up to 4 times, then skip and record "skipped: not calm".
+- What it measures: rate over the whole run, rate of the first 8 MiB vs the last 16 MiB (knee detection), per-request latency percentiles, final `fdatasync` time, and the **qd scaling ratio** `rate_qd4 / rate_qd1`.
+- Interpreting the scaling ratio (this is what separates latency injection from bandwidth capping): bandwidth-bound backends give a ratio near 1 and per-request latency ≈ qd × 64 KiB ÷ rate; latency-bound backends give a ratio near 4 and flat latency. Only the bandwidth-bound case licenses the claim "ceiling ≈ measured rate". The latency-bound case yields "≥ measured, ceiling unknown at higher depth" — honest abstention rather than a false DEGRADED [H].
+- Provider write cache of unknown size: this distorts the probe **optimistically in the healthy state** (64 MiB may vanish into cache at >1 GB/s; the July 4.3 GB/s figure says the cache is large and fast) and **not at all in the degraded state** (a write-back cache draining at 15 MB/s is full essentially all the time, so the probe sees drain rate) [A, but consistent with your three data points]. Consequence: the probe reliably answers "is it degraded?" and only answers "≥ X" when healthy. That is exactly the question the operator asked. To get a true healthy ceiling you need a one-off, operator-run 1–2 GiB probe in a declared calm window to find the cache knee; do it once, record the knee size, and size the weekly probe (below) just above it if you want a real number.
+- Weekly escalation: once a week, in the calmest window the gating finds, run 512 MiB instead of 64 MiB. Catches burst-credit limiters with up to a few hundred MB of credit [A: credit size]. Anything larger is a known blind spot covered only by passive build-window observation (see D).
+- Cost: 256 MiB/day + 512 MiB/week; plus a 2 GiB discard before each run.
+
+### What the ladder would and would not have detected on 2026-10-20
+| Mechanism (hypothesised) | L0/L1 lanes | L2 micro-probe | Passive stat |
+|---|---|---|---|
+| Snapshot CoW on first overwrite | **Yes**: W-fresh ↑ 3-50×, W-over flat → `COW_SUSPECTED` | Yes (bulk area is fresh) | Only during builds |
+| Allocation exhaustion (1.1/1.0 TB) | Likely: W-fresh ↑↑; W-over may also ↑ if the backend relocates on every write [A] | **Yes**: drain-rate measurement | Yes during builds |
+| Provider bps/IOPS limiter, latency unchanged | **No** — the stated weakness; W-over stays 0.3 ms | **Yes** at 6-h resolution, if the cap bites within 64 MiB | Yes during builds (inflight ≥ 12, rate ≪ model) |
+| Burst-credit limiter (≥ 1 GiB credit, slow refill) | No | **No** below 512 MiB/week | **Yes** — a build burns the credit in seconds |
+| Noisy neighbour / host contention | Partially: p99 ↑ with median flat → `TAILS`, not a regime | Partially (rate noise) | Partially |
+| Size-specific pathology (e.g. only ≥1 MiB writes slow) | No | No (64 KiB only; and `max_sectors_kb=64` means your workload never issues larger either, so this is moot on this host) | — |
+| Read-side collapse at depth | No (qd=1 reads only) | No (write only; add a 64 MiB read phase 1×/day if you care — reads were never the problem) | — |
+
+Total probe IO ≈ 0.6 GiB/day, ~1 in-flight request at any instant except 20 s four times a day. On a disk doing 35 MB/s average that is 0.02 % of the workload's own traffic.
+
+## C. The recognizer
+
+### Stored data
+Append-only JSONL (or SQLite) at `/var/lib/iogov/`, one row per probe IO: `ts, lane, offset, latency_us, inflight_before, governed_w_rate_10s, protected_some_avg10, settings_epoch (hash of nr_requests, max_sectors_kb, scheduler, io.max of governed, io.cost.model, io.cost.qos, weights), fill_pct, hours_since_slot_discard, annotation_epoch`. One row per micro-probe: `ts, phase, bytes, duration, rate_first_8MiB, rate_last_16MiB, rate_total, qd_scaling, lat_p50/p99, fdatasync_ms, aborted/skipped reason, settings_epoch`. Retention: raw 90 days; daily aggregates forever (they're tiny).
+
+### Windows and statistics
+- Per lane, per **day**, quiet samples only: n, median, p90, p99. Require n ≥ 100 quiet samples or mark the day `insufficient` (with ~1440 samples/day and a quiet fraction of 10-35 % you'll have 150-500; if the host is never quiet you learn that too).
+- **Reference** per lane: median of the daily medians over the last 14 days *within the current settings epoch and regime*, frozen when an alarm fires (so a slow drift can't drag its own reference along); re-baselined only on operator ack or after 7 consecutive stable days in the new regime.
+- Micro-probe: last 4 results (24 h), classified individually.
+
+### Tests
+1. **Lane drift: two-sided CUSUM on log₂(daily_median / reference)**, per lane. `S⁺ = max(0, S⁺ + x − k)`, `S⁻ = max(0, S⁻ − x − k)`, with `k = 0.5` (ignore anything under ~1.4×, which is day-to-day noise on a shared cloud disk), alarm at `h = 2`. Why CUSUM on log-median: storage shifts are multiplicative and heavy-tailed; the median is immune to the p99 tails that neighbours cause; CUSUM accumulates so a sustained 2× drift alarms in ~2 days while a 20× step (x ≈ 4.3) alarms the same day; it's ten lines of code and it says *why* it alarmed (the sequence of x). Why not KS or a t-test: more code, and they test distributions you don't care about. Why not hour-level: too few quiet samples per hour, and time-of-day workload effects are handled by comparing day-to-day.
+2. **CoW signature**: ratio `W-fresh / W-over` daily medians. Flag `COW_SUSPECTED` when ratio > 3 for 2 consecutive days *and* the ratio's own CUSUM alarmed (the ratio in the healthy state is itself a number you'll learn in week 1; if thin allocation already costs 3× in the healthy state, the threshold moves to 3× the healthy ratio).
+3. **Micro-probe classes** (starting values, bandwidth-bound cases only): `HEALTHY ≥ 150 MB/s`, `DEGRADED ≤ 40 MB/s`, else `INTERMEDIATE`; latency-bound results (qd scaling > 2.5) contribute "≥ rate" and never vote DEGRADED. Reasoning: your three data points are 516/340 vs 15; the thresholds sit a factor ~3 away from each, and the governed tier's own peak demand (143 MB/s) sits in INTERMEDIATE, which is the band where a cap would actually matter and where you should want a human to look.
+4. **Passive cross-check**: during windows where device inflight ≥ 12 for ≥ 30 s and the governed slice is the dominant writer and its own `io.max` is not binding (delivered < 0.8 × cap), record delivered write rate as a *lower bound* on capability, with the same class thresholds. This is your estimator C reduced to one bounded role.
+
+### Separating "storage changed" from "we changed"
+- Every sample carries `settings_epoch`; a new epoch starts a new reference *only for series whose physics the setting touches*: quiet-window qd=1 latency is by construction independent of `nr_requests`, `io.max` (the probe slice has none) and iocost admission (same weight as protected, never short) [H]; the micro-probe at qd ≤ 4 is independent of `io.max` and of `nr_requests ≥ 8`. So settings changes should *not* move any probe series; the rig's negative controls verify that. Passive stats do depend on settings and are only compared within an epoch.
+- Workload: `quiet` tagging plus the governed-rate tag exclude samples where the provider cache state was just disturbed.
+- Time of day: day-level aggregation; optionally a same-hour-of-week reference later.
+- Neighbours: p99/median > 10 with median flat → `TAILS` flag, explicitly not a regime change.
+- Annotations (`note snapshot-taken`, `note fstrim`, `note provider-optimise`) are stored as epochs and shown next to alarms; they never gate the test.
+
+### Alarm states and what a human sees
+Regime: `HEALTHY | INTERMEDIATE | DEGRADED | UNKNOWN` (UNKNOWN = < 2 valid micro-probes in 24 h, or lanes `insufficient`, or settings epoch < 1 day old). Flags: `COW_SUSPECTED`, `TAILS`, `IMPROVED` (downward CUSUM), `PROBE_OPTIMISTIC` (passive < 0.5 × probe), `PROBE_PESSIMISTIC` (passive > 2 × probe), `DISCARD_INEFFECTIVE` (W-fresh ≈ W-over for 14 days). Regime change requires: 2 consecutive micro-probes in the new class **or** a lane CUSUM alarm **and** no contradicting micro-probe; minimum dwell 24 h.
+
+Journal entry on any state change: the daily medians and reference per lane, the CUSUM sequence, the last four micro-probe rows, passive lower bounds in the window, settings epoch, fill, last discard, annotations, and a one-line recommendation. `iogov status` prints: regime, since when, confidence (n quiet samples, probes used), three numbers (W-over median, W-fresh/W-over ratio, last micro-probe rate with "bandwidth-bound/latency-bound"), and one of: "no action", "recalibrate recommended (model write components ×0.04)", "check provider for snapshot / allocation (fresh-write penalty 18×)", "run fstrim + provider optimise".
+
+### Validation in the QEMU rig
+Run the whole stack at an accelerated schedule (lanes every 5 s, micro-probe every 10 min, "day" = 1 h) so a simulated 20 days takes 20 h.
+
+| Injection | Expected | Pass |
+|---|---|---|
+| `throttling.bps-write` 400 → 15 MB/s step | Lanes flat (correct), micro-probe → DEGRADED | Regime DEGRADED within 2 probes; **no** lane alarm |
+| dm-delay +5 ms writes, bandwidth ample | W-over, W-fresh ↑ together; micro-probe latency-bound (scaling ≈ 4) | Lane CUSUM alarms ≤ 2 "days"; micro-probe reports "≥ 51 MB/s, latency-bound"; regime INTERMEDIATE or UNKNOWN, **not** DEGRADED |
+| Token bucket, 1 GiB burst, 15 MB/s refill | Probes miss; passive catches during a 2 GiB build | `PROBE_OPTIMISTIC` within one build; weekly 512 MiB probe documented as missing it |
+| qcow2 snapshot on the test image (real CoW) | W-fresh ↑, W-over flat | `COW_SUSPECTED` within 2 "days", regime unchanged unless micro-probe drops |
+| Thin backend at 95 % pool fill (dm-thin) | Both W lanes ↑, micro-probe ↓ | DEGRADED + COW_SUSPECTED |
+| **Negative controls**: constant backend; cycle `nr_requests` 16→8→32; change `io.max`; run builds continuously; vary workload mix hourly | Nothing | **0 regime changes in 20 simulated days** per lane; this is the false-positive budget |
+| Ramp 400 → 15 over 10 "days" | Gradual | DEGRADED by the day the rate crosses 40; lane alarm ≤ 3 days after crossing 2× |
+| Oscillate 15 ↔ 400 hourly | Unstable | ≤ 1 regime change per "day", `UNSTABLE` flag |
+| Recovery 15 → 400 while governed caps are low | Must be detected (no learning deadlock) | HEALTHY within 2 probes |
+| Harm: micro-probe at 15 MB/s with a synthetic game doing 4 KiB `fdatasync`/s | Bounded disturbance | Game p99 < 30 ms during the probe; abort path exercised |
+
+False negatives are the explicit blind spots above; the pass criterion is that each is *reported* as a blind spot by the right flag, not silently absorbed.
+
+## D. Actions per regime
+
+Keep two profiles and one measured scale; nothing continuous.
+
+| Knob | HEALTHY | DEGRADED | INTERMEDIATE / UNKNOWN |
+|---|---|---|---|
+| `io.cost.model` write components (`wbps`, `wseqiops`, `wrandiops`) | calibrated (340 MB/s, 40k, 40k) | scaled by `measured / 340`, floor 0.02, using `min(micro-probe, passive)` | hold last; recommend |
+| `io.cost.model` read components | calibrated | **untouched** (reads didn't move; the read lane would have to alarm separately) | hold |
+| `io.cost.qos` | `min=max=100` | same | same |
+| Governed `io.max` | policy 250M/700M, 30k/50k | **unchanged** — a cap below the device protects nothing and a cap above it is harmless; the 4694 s lesson was a cap, not a model | unchanged |
+| Queue profile | 16 / 64 KiB | 8 / 32 KiB (stall bound 256 KiB ≈ 17 ms at 15 MB/s); probe qd → 2 | hold |
+| `io.weight` | 1000 / 100 | same | same |
+
+Speed and safeguards: changes only on a confirmed regime change (2 probes or lane alarm + no contradiction), at most one model change per 24 h, both directions automated **only between these named profiles** (the deliberate excitation removes the learning deadlock, so upward moves no longer need a human); every change journalled with the evidence; model never set below the last measured bandwidth-bound rate; a restart re-reads the journal and holds the last applied profile (hold-last, named as such), with a watchdog alert after 48 h in DEGRADED without a fresh probe.
+
+When probe and passive disagree: `PROBE_OPTIMISTIC` (builds get much less than the probe says) → trust passive for lowering, flag, schedule the 512 MiB probe early. `PROBE_PESSIMISTIC` (builds get much more) → trust passive for raising only after two independent build windows agree. Rule of thumb: lowering takes the minimum of the two, raising takes agreement.
+
+Not automated, ever: anything on the protected cgroup; QoS latency targets; `io.max` increases above policy; read-side model; queue profiles outside the two named ones; `fstrim`/provider optimise (the recognizer *recommends* them with the fresh-write ratio as evidence); any change while UNKNOWN; the one-off large cache-knee probe.
+
+## E. Next week
+
+1. **Deploy the probe in observe mode and run the one-off cache-knee probe.** Create the LV, start the sentinel and the three lanes, collect 5-7 days of tagged samples (you learn the quiet fraction, healthy-state W-over and W-fresh/W-over ratio, O_DSYNC flush cost, and whether discards reach the backend). In one operator-declared calm window run the micro-probe at 64 MiB, 512 MiB and 2 GiB back-to-back and plot rate vs bytes. That plot is **the measurement that most reduces uncertainty**: it tells you the provider cache size (hence whether a 64 MiB probe means anything when healthy), the healthy bandwidth-bound reference, and — by running the sentinel concurrently — how much a qd=4 probe actually disturbs a protected 4 KiB `fdatasync` at today's device rate. Also ship the zero-risk set: `memory.min/low` on the game, `memory.high` + `dirty_bytes` on the governed slice, `fstrim.timer`, fill alarm, `qos min=max=100`.
+2. **Build the rig and run the injection matrix** from §C at accelerated schedule, including the real qcow2-snapshot and dm-thin cases and all negative controls. The output is a false-positive count per lane and a table of which blind spots were correctly flagged. If the negative controls produce regime changes, the recognizer does not ship until they don't.
+3. **Implement the recognizer, journal and `iogov status`** with the action side in **recommend-only** (your P1). Enable automated profile switching (P2/P3 collapsed into "named profiles both ways") only after step 2 passes and the production baseline from step 1 has 7 stable days. Freeze every other estimator: A/A+/F/D stay dead, C lives on only as the passive cross-check.
+
+Where I could be wrong, ranked: that the degraded state is bandwidth-bound rather than burst-credit-bound (if credits, the 6-h micro-probe is nearly blind and the passive build-window signal carries everything — the rig's token-bucket case and the `PROBE_OPTIMISTIC` flag are there precisely for this); that discards propagate (the `DISCARD_INEFFECTIVE` flag will tell you within two weeks); that there's 8 GiB free in the VG; and that `O_DSYNC` reaches the backend as a real flush rather than being absorbed by a hypervisor configured with `cache=unsafe` — in which case the sentinel's latency is meaningless and you'd see suspiciously flat sub-100 µs numbers in week 1, which is itself the diagnosis.
+---
+
+# Round 5 (Fable): corrected consolidated specification — raw whole-disk reads, adaptive write region (prompt, then spec)
+
+Operator feedback on your probe ladder; please send back a CORRECTED, consolidated proposal.
+
+1. READ probes need no dedicated space. The operator points out we can read 4 KiB from ANY offset anywhere on the disk (the raw block device, O_DIRECT, read-only: safe, no data is touched). That is a much better defence against read caches than your 8 GiB probe LV: random offsets over the whole device (e.g. uniformly over the full capacity, optionally excluding nothing) are mostly cold in the guest page cache (O_DIRECT bypasses it anyway) and in any hypervisor/provider read cache, and they exercise the whole allocation map. Redesign the read lane accordingly (offset selection, avoiding re-reading the same blocks, handling unallocated/thin regions that may answer from a zero fast path and therefore look fast: say how to recognise/avoid them, e.g. by only counting blocks that return non-zero data or by keeping a small set of known-written 'witness' blocks; what to do about holes on a sparse/thin volume). State what a raw-device read as a non-root monitoring service needs (group disk? CAP_SYS_RAWIO? a udev rule?) and the risks of raw access (it must be read-only; the service must never open the device for write).
+2. SMALL HOSTS. Some hosts have only a 32 GB disk, so an 8 GiB probe LV is far too expensive. The WRITE lanes still need space we own (writing to arbitrary offsets would destroy data), so make that region ADAPTIVE: default 512 MiB (configurable, and degradable to zero for hosts that cannot spare it, in which case the fresh-write/CoW-signature lane is disabled and the recognizer must say what it loses). Redo the layout: how many 4 KiB probe slots and what stride fit in 512 MiB (and in 128 MiB), how the stride/granularity assumption (provider chunk sizes up to 4 MiB) then changes the number of fresh slots and the wrap period, how discards are used to re-arm fresh slots on a small region, and whether a preallocated file on the existing filesystem (instead of a dedicated LV, since a small host may have no free VG space) is acceptable and what confounds it (extent conversion, journal, fstrim, ext4 vs xfs; use fallocate vs written data; O_DIRECT alignment; the file must be pre-written with non-zero data so no unwritten-extent fast path). Give a decision rule for LV vs file vs 'no write lane', keyed on free VG space and filesystem.
+3. Keep the throughput micro-probe, but resize its BULK scratch for the small region (it can write into the same 512 MiB region or a file of its own); give the new maximum probe sizes and say what changes about the cache-knee measurement.
+4. Output requirement: write the corrected proposal as ONE self-contained specification that a reviewer who has not seen this conversation can evaluate: Goal and non-goals; assumptions (flagged [A]); the probe ladder (levels, exact I/O, regions, frequencies, cgroup/slice and priority, daily IO budget); the recognizer (stored data, windows, statistics, alarm states, flags); the actions (profiles, safeguards, what is never automated); validation plan in the QEMU rig; the first-week plan; known blind spots; open questions. Keep what you already specified where it is unchanged, but write it out in full; do not refer to earlier messages. Aim for density, not length.
+
+## Round 5 answer: iogov-probe specification v1
+
+# iogov-probe: recognizing long-term shifts in virtual-disk capability
+
+**Spec v1 — for review by someone who has not seen the preceding discussion.**
+
+## 1. Goal and non-goals
+
+**Goal.** On a Linux guest (Debian, kernel 7.x, cgroup v2, virtio-blk, ext4 on LVM) whose single virtual disk is backed by provider storage of unobservable state, recognize **slow regime changes (days–weeks) in what the disk can actually deliver** — observed range on one host: sustained write 516 MB/s → 15 MB/s → 340 MB/s with no change of disk identity, reads unaffected — reliably enough to (a) re-fit the cgroup-v2 `io.cost` model and queue profile between named regimes and (b) warn an operator with evidence. The host also runs a latency-sensitive protected workload (game server) and a governed tier (builds, test gates, dev containers); the probe must never measurably harm the protected workload. Hosts range from ~1 TB disks down to 32 GB.
+
+**Non-goals.** Sub-second protection of the game (a minimal harm path is included, but the design does not depend on it); estimating a precise ceiling in the healthy state (the probe answers "degraded or not, and by roughly how much"); controlling anything on the protected cgroup; replacing the operator's one-off benchmark.
+
+## 2. Assumptions ([A] = about the provider stack, unverifiable from the guest)
+
+- [A1] Degraded states are **bandwidth/drain-bound** (thin allocation, snapshot copy-on-write, pool fullness), not burst-credit-bound with credits ≥ 200 MiB. The design flags, but is partly blind to, large-credit limiters (§9).
+- [A2] Provider allocation/CoW granularity ≤ 4 MiB (qcow2 64 KiB, LVM-thin 64 KiB–1 MiB, ZFS 128 KiB, Ceph RBD 4 MiB).
+- [A3] `BLKDISCARD` from the guest reaches the backend and un-maps (re-arms) the chunk. Self-checked (`DISCARD_INEFFECTIVE`, §5.4).
+- [A4] A virtio FLUSH (from `O_DSYNC`) is honoured by the hypervisor as a durable flush of its write cache (`cache=writeback` or `none`; not `unsafe`). Self-checked: flat sub-100 µs durable writes in week 1 mean it is not.
+- [A5] Reads of unallocated backend blocks return zeros via a fast path. The read lane discards zero samples.
+- Guest-side facts relied on [H = high confidence]: `O_DIRECT` bypasses the guest page cache; with `nr_requests=16, max_sectors_kb=64` at most ~1 MiB is in flight below the scheduler, so the worst extra wait a probe adds for a protected request is `probe_qd × 64 KiB ÷ device rate`; `io.cost` vrate cannot rise on this host while the governed tier runs (`rq_wait>5%` from the small queue), so vrate is pinned at `min` and is not a capability signal.
+
+## 3. Components outside the probe (kept, short)
+
+- **Queue bound** (model-free stall limit): `nr_requests=16`, `max_sectors_kb=64`, mq-deadline; DEGRADED profile `8 / 32 KiB` (§6).
+- **Memory**: `memory.min` on the game cgroup = steady RSS (rounded up), `memory.low` = 1.3×; governed slice `memory.high` ≈ RAM − game − 2 GiB; `vm.dirty_bytes=256M`, `vm.dirty_background_bytes=64M`; `vm.swappiness=10`. No zram (no spare RAM).
+- **iocost**: current calibrated model, `io.cost.qos min=max=100` (freeze vrate so it stops being misread), weights 1000 protected / 100 governed; governed `io.max` is a *policy* ceiling (250M write / 700M read, 30k/50k IOPS), not a capability estimate.
+- **Harm path** (minimal): sentinel latency > 50 ms or protected-tick-thread D-state for > 60 s cumulative in 2 min → governed `io.max` to `wbps=2M rbps=8M wiops=200`, no step limit downward; recover by doubling every 30 clean s. Runs in the existing privileged apply path.
+
+## 4. Probe ladder
+
+### 4.1 Process, privileges, placement
+- One unprivileged service `iogov-probe` (user `iogov`), Python, no fio needed except for the micro-probe (fio preferred: `--ioengine=io_uring --direct=1`). It **only writes recommendations and samples**; all cgroup/sysfs changes go through the existing privileged apply path.
+- Slice `iogov-probe.slice`, sibling of the protected slice, `io.weight=1000` (same as the game — so the probe experiences the game's queue treatment and is never throttled behind the governed tier, which would measure our policy rather than the device), `nice 10`, `CPUWeight=50`, `MemoryMax=256M`.
+- **Raw-disk read access**: udev ACL, read-only, kernel-enforced:
+  `ACTION=="add|change", SUBSYSTEM=="block", ENV{ID_PATH}=="<virtio pci path>", RUN+="/usr/bin/setfacl -m u:iogov:r /dev/%k"`
+  Unit: `DevicePolicy=closed`, `DeviceAllow=/dev/disk/by-path/<id> r`. No `disk` group (grants write on all disks); no `CAP_SYS_RAWIO` (not needed for `read(2)`; it is for SG_IO/iopl); no `CAP_DAC_READ_SEARCH`. Device is referenced by `by-path`/`by-id`, never `vda`.
+- **Write-region access**: if an LV, a second udev rule `ENV{DM_LV_NAME}=="lv_iogov_probe" … setfacl -m u:iogov:rw` and `DeviceAllow … rw`; if a file, the file is owned by `iogov`. `BLKDISCARD` needs a write-open and is therefore impossible on the whole disk by construction.
+- Startup self-test: attempt `open(disk, O_WRONLY)` and **assert EACCES**; refuse to run otherwise. Hardening: `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, `LimitCORE=0`, `MemoryDenyWriteExecute`; read buffers are zeroed after the non-zero test; content is never logged.
+- Risks of raw read: none to data (read-only); a bug could read foreign data into process memory (mitigated above); device EIO is recorded as a sample error (`READ_ERRORS` flag at > 0.1 %/day — a genuine health signal).
+
+### 4.2 Write region: adaptive layout
+Sizes configurable; **default 512 MiB**. Decision rule (evaluated at install, re-checked weekly):
+
+| Condition | Mode |
+|---|---|
+| VG free ≥ region + 64 MiB and `discard_max_bytes > 0` on the LV | **LV mode** (preferred): linear LV `lv_iogov_probe`, raw, stable LBAs, own `BLKDISCARD`, untouched by `fstrim` |
+| else root fs is ext4/xfs with free ≥ 4 × region | **File mode**: `fallocate` then **fully pre-written with random non-zero data** (`conv=fsync`), FIEMAP-verified: no `UNWRITTEN` extents, ≤ 16 extents. All I/O 4 KiB-aligned. |
+| else | **Region 0**: write lanes and micro-probe disabled; read lanes + read sentinel + passive only (§4.7) |
+
+Layouts:
+
+| Region | OVER ring (sentinel) | FRESH ring | BULK (micro-probe) | Fresh slots @ 4 MiB stride | Fresh lane period | Slot reuse |
+|---|---|---|---|---|---|---|
+| 512 MiB | 64 MiB | 256 MiB | 192 MiB | 64 | 10 min (144/day) | 10.7 h |
+| 128 MiB | 16 MiB | 64 MiB | 48 MiB | 16 | 30 min (48/day) | 8 h |
+| 16–127 MiB | 8 MiB | — | rest (micro-probe disabled < 64 MiB BULK) | 0 | — | — |
+
+Fresh-slot walk order `slot = (i × 37) mod 64` (37 coprime with 64; for 16 slots use 7) so consecutive writes are far apart — mitigates a backend chunk larger than 4 MiB [A2], which would dilute (not invert) the fresh/over ratio.
+
+**Re-arming fresh slots.** LV mode: `BLKDISCARD` the slot's full 4 MiB immediately *after* its measured write; discard latency is logged as its own series, never mixed with write latency; next write to that slot is ≥ 8 h later. File mode: `FALLOC_FL_PUNCH_HOLE` the 4 MiB after the write, then `fallocate(KEEP_SIZE)` nothing — the next write allocates a new fs block (unwritten→written conversion + journal transaction). This is a **confound**: file-mode fresh writes include fs allocation cost, which in `-o discard` mode also makes the fs issue the discard synchronously at journal commit, and without it the block is only unmapped at the next `fstrim`. Consequence: file-mode fresh lane measures "write into recently-freed fs space" — which is what a build does — with a constant offset absorbed by the healthy baseline; it is flagged `FRESH_LANE_FILE_MODE`, and ext4/xfs baselines are not comparable across hosts. `O_DIRECT` to allocated written extents bypasses the ext4 journal (data=ordered) [H], so the OVER ring is clean in both modes. If `discard_max_bytes == 0` on the LV, the fresh lane is disabled after its first wrap (`FRESH_LANE_NO_DISCARD`).
+
+### 4.3 Level 0 — Sentinel (durable-write latency; harm signal)
+4 KiB `pwrite`, `O_DIRECT|O_DSYNC`, qd=1, random non-zero payload, **1/s**, sequential 4 KiB steps through the OVER ring (wraps every 4.5 h at 512 MiB; after the first wrap every block is allocated — plain overwrite path; with a snapshot active, one in 1024 writes pays a chunk CoW, invisible to the median). Each sample tagged with `inflight` (`/sys/block/<dev>/inflight`), governed-slice write rate over 10 s, protected `io.pressure some avg10`; `quiet` = inflight 0 and governed < 1 MB/s. Measures: durable 4 KiB write latency (quiet subset = device; contended subset = what the game sees). 337 MiB/day. This series **is** the "W-over" reference.
+
+### 4.4 Level 1 — Lanes
+- **W-fresh** (write region ≥ 128 MiB): 4 KiB `O_DIRECT|O_DSYNC` write at the next fresh slot, then re-arm. Measures allocation + first-write-after-snapshot cost. Ratio `W-fresh / sentinel(quiet)` is the CoW/allocation signature. 0.6 MiB/day + 576 MiB/day discards (512 config).
+- **R-cold**: 4 KiB `O_DIRECT` read, **whole raw disk**, every 20 s (4320/day, 17 MiB/day). Offset from a full-period walk `block = (i × S) mod N`, `N` = device 4 KiB blocks, `S` coprime with `N` and ≈ 0.618·N, counter persisted — every block visited once before any repeat (1 TB: 170 years; 32 GB: ~5 years); no seen-set needed. Only samples whose 4 KiB contains a non-zero byte count (zero fast path [A5]; genuinely-written zero blocks are lost, harmlessly). `zero_fraction` per day is stored as a covariate (≈ unallocated share of the device; a step change = allocation event). Holes on a sparse/thin volume are exactly the zero samples and are excluded. Covers free PEs, old LVs, partition tables — all read-only, harmless. Measures: cold random read latency and backend fragmentation/allocation-map cost.
+- **R-witness**: 4 KiB `O_DIRECT` read every 60 s from a known-written block: the OVER ring (write region > 0) or a persisted set of 64 addresses discovered non-zero by R-cold (region 0). Becomes cache-resident; measures warm read latency. `R-cold − R-witness` ≈ provider read-cache benefit; witness is also the swap-in cost estimate for recently written pages.
+
+### 4.5 Level 2 — Throughput micro-probe (bandwidth-cap detector)
+Into BULK, `BLKDISCARD`ed (LV) or punch-holed (file) before each run; fio, `--bs=64k --rw=write --direct=1`, 4 KiB-aligned, two phases, one timed `fdatasync` at the end:
+
+| Region | Phase 1 (qd=1) | Phase 2 (qd=4) | Weekly escalation |
+|---|---|---|---|
+| 512 MiB | 16 MiB | 48 MiB | 192 MiB (qd=4) |
+| 128 MiB | 12 MiB | 36 MiB | 48 MiB |
+
+- **Durable rate** = `bytes ÷ (t_write + t_flush)`. The final flush forces the hypervisor to drain its write cache [A4], so the durable rate is cache-size-independent when the backend is drain-bound, and the write-only rate vs durable rate gap is a direct cache-absorption measurement. This replaces the need for a large in-service cache-knee probe: in the healthy state the probe reports **"≥ durable rate"** (cache may still mask the true ceiling); in the degraded state the cache is permanently full and the probe reads the drain rate [A1].
+- **qd scaling** = `rate_qd4 ÷ rate_qd1`. ≈ 1 with latency ∝ qd ⇒ bandwidth-bound ⇒ rate is a ceiling estimate. ≈ 4 with flat latency ⇒ latency-bound ⇒ report "≥ rate, ceiling unknown", **never votes DEGRADED**. Also: rate of first 8 MiB vs last 16 MiB (knee), p50/p99 latency.
+- Schedule: every 6 h; **gated on calm**: governed write < 2 MB/s for 60 s, protected `io.pressure some avg10 < 1 %`, inflight 0, > 15 min since any discard; retry every 15 min up to 4×, else `skipped: not calm`. Hard limits: 20 s wall-clock per phase (record "< X, aborted"); abort immediately if sentinel last sample > 50 ms or protected pressure rises. Queue budget: qd=4 × 64 KiB = 4 of 16 slots → added protected wait ≤ 17 ms at 15 MB/s, 1 ms at 340 MB/s [H]; in the 8/32 KiB profile, qd=2.
+- One-off operator **cache-knee run** (calm window, root, temporary 2 GiB file on root fs, deleted after): 64 MiB → 512 MiB → 2 GiB, rate vs bytes + flush time. Determines whether in-service probes can ever report a healthy ceiling (knee ≤ 192 MiB) or only "≥".
+
+### 4.6 Daily I/O budget (512 MiB config)
+Writes ≈ 600 MiB (sentinel 337, micro-probe 256, lanes 6); reads ≈ 23 MiB; discards ≈ 1.3 GiB (fresh re-arm 576, BULK 768) — logged; if discard latency median > 1 s for a day, fresh period doubles (`DISCARD_SLOW`). ~1 request in flight at any instant except 4 × 40 s/day. 128 MiB config: ≈ 480 MiB writes, 0.4 GiB discards.
+
+### 4.7 Region-0 hosts
+Read lanes + passive only. **Read sentinel** replaces the write sentinel for the harm path (a cold 4 KiB read at 1/s waits in the same 16 slots, so it still measures queueing behind governed IO). The recognizer loses: durable-write latency regime, CoW signature, bandwidth-cap detection outside build windows → regime is `UNKNOWN` unless passive windows (§5.3) classify it; actions are recommend-only; status says so.
+
+## 5. Recognizer
+
+### 5.1 Stored data
+Append-only JSONL under `/var/lib/iogov/` (raw 90 days; daily aggregates forever). Per probe I/O: `ts, lane, offset, latency_us, nonzero, inflight_before, governed_w_rate_10s, protected_some_avg10, settings_epoch, fill_pct, zero_fraction_day, hours_since_slot_rearm, annotation_epoch, error`. Per micro-probe: `ts, phase, bytes, t_write, t_flush, rate_write, rate_durable, rate_first8, rate_last16, qd_scaling, p50, p99, aborted/skipped, settings_epoch`. Discard latency per re-arm. `settings_epoch` = hash of `nr_requests, max_sectors_kb, scheduler, governed io.max, io.cost.model, io.cost.qos, io.weight`.
+
+### 5.2 Windows and statistics
+Per lane per **day**, quiet samples only: `n, median, p90, p99`; day `insufficient` if `n < 100` (sentinel) / `< 60` (R-cold non-zero) / `< 10` (W-fresh). **Reference** per lane = median of daily medians over the last 14 valid days in the current settings epoch and regime, **frozen** when an alarm fires; re-baselined on operator ack or after 7 consecutive stable days in the new regime. Micro-probe: last 4 results.
+
+### 5.3 Tests
+1. **Drift**, per lane (sentinel, W-fresh, R-cold, R-witness): two-sided CUSUM on `x = log2(daily_median / reference)`, `k = 0.5` (ignore < 1.4× day-to-day noise), `h = 2`. Multiplicative shifts, median immune to neighbour tails, ~2 days to alarm on a sustained 2×, same-day on 20×, and the CUSUM sequence is self-explaining evidence. Day-level aggregation absorbs time-of-day workload effects.
+2. **CoW signature**: `W-fresh / sentinel` daily ratio; `COW_SUSPECTED` when ratio > 3 × healthy-baseline ratio for 2 days and the ratio's CUSUM alarms.
+3. **Micro-probe class** (bandwidth-bound results only, on durable rate): `HEALTHY ≥ 150 MB/s`, `DEGRADED ≤ 40 MB/s`, else `INTERMEDIATE` — a factor ~3 from the observed 516/340 vs 15, with the governed tier's own peak (143 MB/s) deliberately inside INTERMEDIATE, where a human should look. Latency-bound results contribute "≥ rate".
+4. **Passive cross-check** (`/sys/block/<dev>/stat` + governed `io.stat`): windows ≥ 30 s with inflight ≥ 12, governed slice dominant writer, delivered < 0.8 × its `io.max` → delivered write rate is a **lower bound** on capability, same classes.
+5. **Settings/workload separation**: probe series at qd ≤ 4 in a slice with no `io.max` and full weight are by construction independent of `nr_requests ≥ 8`, governed `io.max`, iocost admission and workload mix (quiet tagging) [H] — a settings change must **not** move them (rig negative control); passive stats are compared only within an epoch. `TAILS` = p99/median > 10 with flat median (neighbours, not regime). Annotations (`note snapshot-taken|fstrim|provider-optimise|freed-space`) create epochs and are displayed, never gate tests.
+
+### 5.4 Regimes and flags
+Regime ∈ `HEALTHY | INTERMEDIATE | DEGRADED | UNKNOWN` (UNKNOWN: < 2 valid micro-probes in 24 h, or settings epoch < 1 day old, or region 0 without passive evidence). Change requires 2 consecutive micro-probes in the new class, or a sentinel/W-fresh CUSUM alarm with no contradicting micro-probe; minimum dwell 24 h; both directions (deliberate excitation removes the "cap hides recovery" deadlock).
+Flags: `COW_SUSPECTED`, `TAILS`, `IMPROVED`, `READ_DEGRADED` (R-cold alarm alone), `PROBE_OPTIMISTIC` (passive < 0.5 × probe), `PROBE_PESSIMISTIC` (passive > 2 × probe), `DISCARD_INEFFECTIVE` (W-fresh ≈ sentinel for 14 days → either no penalty exists or discards don't propagate [A3]), `DISCARD_SLOW`, `FLUSH_SUSPECT` (sentinel quiet median < 100 µs for 7 days [A4]), `FRESH_LANE_FILE_MODE`, `FRESH_LANE_NO_DISCARD`, `READ_ERRORS`, `UNSTABLE` (> 1 regime change in 3 days), `ALLOC_EVENT` (zero_fraction step > 5 %/day).
+
+### 5.5 What a human sees
+`iogov status`: regime, since, confidence (quiet n, probes used), five numbers (sentinel median, W-fresh/sentinel ratio, R-cold median, last durable rate with bound/unbound, passive lower bound), flags, and one recommendation: `no action` / `recalibrate: write model × 0.04` / `check provider: snapshot or allocation pressure (fresh-write penalty 18×)` / `run fstrim + provider optimise` / `read path degraded: check swap exposure`. Every state change journals: daily medians + reference per lane, CUSUM sequences, last 4 micro-probe rows, passive windows, epoch, fill, zero fraction, discards, annotations, recommendation.
+
+## 6. Actions
+
+| Knob | HEALTHY | DEGRADED | INTERMEDIATE / UNKNOWN |
+|---|---|---|---|
+| `io.cost.model` write terms (`wbps, wseqiops, wrandiops`) | calibrated (e.g. 340 MB/s, 40k, 40k) | × `min(durable, passive) ÷ calibrated`, floor 0.02 | hold; recommend |
+| `io.cost.model` read terms | calibrated | untouched unless `READ_DEGRADED` → recommend only | hold |
+| `io.cost.qos` | `min=max=100` | same | same |
+| governed `io.max` | policy | **unchanged** (a cap below the device protects nothing; above it is harmless) | unchanged |
+| queue profile | 16 / 64 KiB | 8 / 32 KiB (stall bound 256 KiB ≈ 17 ms at 15 MB/s); probe qd 2 | hold |
+
+With 64 KiB max requests the `bps` terms bind and the `iops` terms are nearly inert; they are scaled by the same factor and never estimated separately.
+Safeguards: changes only on confirmed regime change, ≤ 1 model change / 24 h, only between named profiles, every change journalled with evidence; model never below the last bandwidth-bound measurement; restart = hold-last (named as such) with an alert after 48 h in DEGRADED without a fresh probe; disagreement rule — **lowering takes the minimum of probe and passive, raising requires agreement** (two independent build windows if passive is the higher one).
+**Never automated:** anything on the protected cgroup; QoS latency targets; `io.max` above policy; read-model changes; queue profiles beyond the two named ones; `fstrim`/provider optimise (recommended with evidence); any change while UNKNOWN or `UNSTABLE`; the cache-knee run; file-mode region creation on a filesystem above 70 % fill.
+
+## 7. Validation in the QEMU rig
+Accelerated schedule (sentinel 1/s, lanes every 5 s, micro-probe every 10 min, "day" = 1 h; 20 simulated days ≈ 20 h), a synthetic protected workload (4 KiB `fdatasync`/s with deadline tracking + 200 MB/s own reads), a real container build in the governed slice; run each case in LV mode, file mode (ext4 and xfs), and the 128 MiB config.
+
+| Injection | Pass criterion |
+|---|---|
+| `throttling.bps-write` 400 → 15 MB/s step | DEGRADED within 2 probes; **no** lane alarm (latency unchanged) |
+| dm-delay +5 ms writes, bandwidth ample | sentinel CUSUM ≤ 2 "days"; micro-probe latency-bound "≥"; regime not DEGRADED |
+| dm-delay +5 ms reads only | `READ_DEGRADED`, write regime unchanged |
+| token bucket 1 GiB / 15 MB/s refill | probes miss; `PROBE_OPTIMISTIC` within one build; blind spot reported |
+| qcow2 snapshot on the image | `COW_SUSPECTED` ≤ 2 "days"; regime unchanged unless micro-probe drops |
+| dm-thin at 95 % pool fill | DEGRADED + COW_SUSPECTED |
+| host `drop_caches` | R-cold flat, R-witness jumps then recovers — lanes separate correctly |
+| discards blocked (`discard_max_bytes=0` on the backing) | `DISCARD_INEFFECTIVE` ≤ 14 "days" |
+| ramp 400 → 15 over 10 "days" | DEGRADED by the "day" the rate crosses 40; lane alarm ≤ 3 "days" after 2× |
+| oscillate 15 ↔ 400 hourly | ≤ 1 change/"day", `UNSTABLE` |
+| recovery 15 → 400 with governed caps low | HEALTHY within 2 probes |
+| **negative controls**: constant backend; cycle `nr_requests` 16/8/32; change `io.max`; continuous builds; hourly workload-mix changes; file-mode `fstrim` every "day" | **0 regime changes, 0 lane alarms in 20 "days"** |
+| harm: micro-probe at 15 MB/s against the synthetic game | game p99 < 30 ms during probe; abort path fires when sentinel > 50 ms |
+
+Ship criteria: all negative controls at zero; every blind spot above surfaces as the named flag rather than silence; 128 MiB config passes with detection times ≤ 2× the 512 MiB config.
+
+## 8. First week
+1. **Deploy in observe mode** (LV or file per §4.2 decision rule; read lanes on the raw disk with the udev ACL and the O_WRONLY self-test), plus the zero-risk settings of §3. Collect 5–7 days: quiet fraction, sentinel baseline, W-fresh ratio, R-cold vs R-witness gap, zero fraction, discard latency, flush plausibility. In one operator-declared calm window run the **cache-knee run** with the sentinel running concurrently — the single measurement that most reduces uncertainty: provider cache size, healthy durable rate, write-vs-durable gap, and the actual disturbance a qd=4 probe causes the protected workload at today's device rate.
+2. **Build the rig and run §7**, including file-mode and 128 MiB variants; publish the false-positive count per lane and the blind-spot table.
+3. **Ship recognizer + journal + `iogov status` recommend-only**; enable automated profile switching only after §7 passes and production has 7 stable baseline days.
+
+## 9. Known blind spots
+- Burst-credit limiters with credit > 48 MiB (6-h probe) / > 192 MiB (weekly) — only passive build windows see them (`PROBE_OPTIMISTIC`).
+- Healthy-state ceiling if the provider cache knee > 192 MiB: probes report "≥" only.
+- Read capability at depth (qd=1 reads only); read bandwidth caps.
+- Pathologies specific to request sizes > 64 KiB (moot on this host: `max_sectors_kb=64`).
+- Region-0 hosts: no write regime, no CoW signature, no bandwidth detection outside builds.
+- File mode: fresh lane carries fs allocation/journal cost; not comparable across filesystems or to LV mode.
+- Backend chunk > 4 MiB dilutes the CoW signature [A2].
+- A provider that silently ignores FLUSH makes sentinel and durable rates optimistic (`FLUSH_SUSPECT` only catches the extreme case) [A4].
+
+## 10. Open questions
+Provider chunk size and whether UNMAP is honoured, rate-limited or billed (576 MiB/day of discards is the probe's most "unusual" traffic); hypervisor cache mode and flush semantics; VG free space on each host class; whether the 2026-10-20 D-state stacks were tag waits (validates the stall-bound profile) — read them before enabling the DEGRADED queue profile; the game's steady RSS for `memory.min`; whether the provider exposes snapshot/used-bytes via API (would become an annotation epoch source, not a test input).
+---
+
+# Codex (Astra) round 3: critique of the v1 specification
+
+The prompt sent to the session was the operator constraints plus the full spec above. Session `01a17c21-bbad-7993-8638-0da66084ee8f`.
+
+The approach is sound **as a recognizer of changes in several observed storage behaviors**. It is not yet sound as an automatic estimator of sustained capacity or as justification for changing the cost model and queue settings. Several statements labelled “high confidence” are incorrect, and the proposed probes sometimes alter the allocation state they are supposed to observe.
+
+The revised objective changes my priorities: I would now put repeatable measurements, explicit uncertainty, and operator evidence ahead of the emergency brake. I would retain the brake as a separate feature.
+
+I assume the historical measurements are valid for their respective workloads. I do **not** assume the provider’s cache, discard, allocation, or durability behavior has been established.
+
+**The simplest subset I would ship first**
+
+A recommend-only recorder with:
+
+- One owned, prewritten file, sized according to available space.
+- A low-frequency 4 KiB overwrite latency probe, initially every 10–60 seconds rather than every second.
+- A bounded sequential-write micro-probe every six hours when eligible, recording write time and final synchronization time separately.
+- Passive throughput observations, actual protected-workload latency if available, sample eligibility, and probe age.
+- Explicit operator-established reference measurements; alerts on sustained changes with the underlying observations attached.
+- No automatic model changes, queue changes, discard, hole punching, raw-disk access, or CUSUM initially.
+
+This detects persistent changes in overwrite latency and delivered performance for the small write workload. It misses allocation-specific penalties, read degradation, and slow sustained performance hidden behind larger caches or credits. It must describe those limitations rather than infer a ceiling.
+
+The owned region, bounded excitation, journalling, and separation from the privileged apply path earn their complexity. I would defer the fresh-write experiment, raw-read lanes, automatic classification-to-actuation, and elaborate regime machinery until the basic measurements demonstrate predictive value.
+
+The following are my top eight defects, ranked by severity.
+
+1. **The queue-derived stall bound is not a valid safety guarantee.**
+
+   `nr_requests × max_sectors_kb` is not a generally valid bound on all outstanding work below the scheduler. Hardware queues, tags, request classes, splitting, and already-issued work complicate that relationship. More fundamentally, dividing bytes by an average device rate cannot bound delay through a provider that can pause service, serialize metadata operations, or stall a flush.
+
+   **Failure:** A single probe write or flush takes seconds despite a small queue. Alternatively, a blocked synchronous sentinel stops producing fresh observations, so “abort when the sentinel exceeds 50 ms” arrives after the damaging operation completes. Killing fio cannot recall submitted IO.
+
+   Giving the probe the game’s weight also makes it a competitor for that share. It does not make its treatment identical to the game’s or make it harmless.
+
+   **Fix:** Call these settings **empirically useful limits on guest concurrency**, not model-free stall bounds. Specify an acceptable measured disturbance budget; “never measurably harm” is not an enforceable promise for active IO. Monitor outstanding probe age independently of completion, stop further submissions on harm, and measure residual drain time. Validate probe weight and placement experimentally.
+
+2. **The durability and cache claims are stronger than the physics supports.**
+
+   `O_DSYNC` requests synchronization semantics; it does not establish that every operation emits a particular virtio FLUSH. The path may use flushes, FUA, or other supported mechanisms. A successful synchronization can legitimately reach durable provider storage that is faster than its eventual destination.
+
+   Consequently, final synchronization does **not** make a small benchmark independent of cache size or reveal sustained backend drain capacity. A slow backing tier can accept small, widely spaced durable writes rapidly.
+
+   **Failure:** A durable provider journal absorbs every 64 MiB probe, while sustained builds drain at 15 MB/s. The probe repeatedly declares healthy. Conversely, genuinely fast durable storage triggers `FLUSH_SUSPECT` because its latency is below 100 µs.
+
+   **Fix:** Report “write-plus-sync performance for this workload and byte count.” Neither fast nor slow timing verifies crash durability; that requires provider guarantees or controlled failure testing elsewhere.
+
+   Also, one final `fdatasync` after both phases cannot provide a defensible separate durable rate for each phase. Give each independently measured phase its own synchronization boundary and account for phase order and prior writes. Even then, QD scaling describes that experiment, not a universal ceiling.
+
+3. **The fresh/discard design can change the phenomenon, and its scheduling currently conflicts with itself.**
+
+   At 512 MiB, fresh-slot discard runs every ten minutes. The micro-probe requires more than fifteen minutes since **any** discard. In ordinary operation it can therefore remain permanently ineligible.
+
+   More seriously, discard is not a guaranteed reset to “first write after snapshot.” Snapshots can retain old mappings; allocation and discard can operate at different granularities; reclamation can be deferred. Removing a mapping can also avoid a read-modify-copy path that an overwrite of live snapshot-shared data would encounter.
+
+   **Failure:** The probe’s discarded region writes quickly while real snapshot-shared data writes slowly. Or repeated discard generates backend metadata work and changes allocation pressure. File-mode hole punching introduces variable allocation, fragmentation, journalling, and trim behavior—not a constant offset.
+
+   **Fix:** Defer regular re-arming. Treat overwrite, previously unallocated allocation, and snapshot-shared overwrite as different experiments. If retained, coordinate their schedule explicitly and record all maintenance traffic. Rename `DISCARD_INEFFECTIVE`: equal fresh and overwrite latency cannot distinguish successful cheap allocation from ineffective discard.
+
+   The advertised provider granularities do not establish A2. Several allocation, object, CoW, and reclamation granularities can coexist.
+
+4. **The action table promotes lower bounds into capacity estimates and contains contradictory safeguards.**
+
+   A passive delivered rate of 20 MB/s establishes that the observed workload received 20 MB/s. It does not establish that the device can deliver only 20 MB/s. High queue occupancy and governed-writer dominance do not eliminate policy, synchronization, request-mix, or concurrency bottlenecks.
+
+   **Failure:** The probe delivers 200 MB/s while a metadata-heavy build delivers 20 MB/s. “Lowering takes the minimum” scales the model down tenfold. It then conflicts with “model never below the last bandwidth-bound measurement.”
+
+   Scaling `wbps`, sequential IOPS, and random IOPS equally is also unsupported. A maximum request size of 64 KiB does not make IOPS costs inert for 4 KiB requests and metadata.
+
+   **Fix:** Separate observations, diagnoses, and actions. A sufficiently sustained high rate can contradict a low capability claim for a comparable workload. A low rate needs identified limiting conditions before it supports a low-capacity claim. Disagreement should usually reduce confidence and stop automatic calibration.
+
+   The sentence “a cap below the device protects nothing; above it is harmless” is backwards in its first clause and too strong in its second. A below-capacity cap can reduce interference; an above-capacity cap provides little bandwidth protection. Keeping a static policy cap is reasonable, but its protection changes with the backend.
+
+5. **Raw-device reads introduce substantial confidentiality exposure for uncertain diagnostic value.**
+
+   Read-only access protects against ordinary writes through that descriptor. It grants access to filesystem data, deleted data, swap contents, and credentials across workloads.
+
+   **Failure:** A service compromise exposes the entire disk’s contents. Buffer wiping and suppressed logging do not prevent deliberate exfiltration. Python copies and exception paths also make comprehensive wiping difficult to guarantee.
+
+   The udev match needs tighter identity scoping, especially the LV-name rule: a name alone is not a unique volume identity. Device replacement and rule reapplication need testing. An `O_WRONLY` denial may be reported differently by different permission layers; requiring exactly `EACCES` tests an incidental detail. It also does not establish correct scoping to the intended device.
+
+   **Fix:** Cut raw reads from the first release. If their demonstrated value later justifies them, use a narrowly confined reader that returns only measurements, verify exact device identity and size, constrain communication, and test access to both intended and unintended devices. Treat confidentiality as a real security cost.
+
+   Separately, verify that fio actually resides and is accounted in the intended cgroup. “No `io.max`, high weight” does not imply freedom from iocost admission, ancestor controls, or CPU scheduling effects.
+
+6. **The read lanes do not identify the properties their names and flags claim.**
+
+   A full-period coprime walk is mathematically sound for visiting each block once, assuming fixed geometry and correct arithmetic. It is a deterministic permutation, not a guarantee of representative short-window sampling or cold backend access.
+
+   **Failure:** A fill or trim change alters which samples survive zero exclusion. The conditional median shifts because the sampled population changed, not because storage got slower. Non-zero free extents can still contain stale data; allocated blocks can contain zeros. A never-before-probed block can already be hot because another workload accessed its backend cache unit.
+
+   **Fix:** Call it a **whole-device read sample conditioned on non-zero content**, not cold-read latency. Zero fraction is the fraction of sampled contents that are zero, not a backend allocation measurement. Report it without assigning an allocation cause.
+
+   Use randomized starting points or a keyed permutation and spatial strata if you retain this experiment. Record geometry changes. A coprime stride prevents repeats but does not solve spatial bias.
+
+   `R-cold − R-witness` is not a clean cache-benefit measurement: the addresses differ in placement, history, and allocation. A witness is not a swap-in latency estimate. Avoid known hot regions if the goal is an approximate cold sample; retain them if the goal is whole-device coverage. Either choice changes the estimand. Journal and swap regions are not inherently unsafe to read, but they complicate interpretation, and swap increases confidentiality exposure.
+
+7. **The statistical design has incorrect timing claims and strong selection bias.**
+
+   For the usual one-sided CUSUM recurrence, a sustained 2× shift gives `x=1`; subtracting `k=0.5` adds 0.5 per valid day. Reaching `h=2` takes four days from zero, or five with a strict crossing rule—not two.
+
+   `k` is not a general guarantee of ignoring noise below 1.4×. False-alarm behavior depends on the distribution, dependence, reference estimation, and missing observations.
+
+   **Failure:** The host is quiet mainly at night. Daily “quiet” medians track that selected condition while daytime performance deteriorates. A gradual shift moves the rolling reference before an alarm freezes it. Changing settings resets the epoch and interrupts detection. With ten fresh samples, p99 is essentially an extreme observation, not a stable tail estimate.
+
+   **Fix:** Establish false-alarm and detection-delay targets before choosing CUSUM parameters. Keep a versioned known-reference distribution separate from a rolling description of current behavior. Do not automatically redefine a degraded state as the healthy reference after seven stable days.
+
+   Report coverage and elapsed time since qualifying evidence. Stratify or model relevant conditions rather than assuming daily medians remove time-of-day effects. Use simple sustained-change alerts first; add CUSUM only if it improves measured performance.
+
+8. **The regime logic is internally inconsistent and conflates health with evidence availability.**
+
+   A latency alarm with no contradicting micro-probe can change regime, but the rig expects latency-only degradation never to produce `DEGRADED`. A completed latency-bound probe may neither establish healthy bandwidth nor contradict a latency alarm.
+
+   **Failure:** A provider adds 5 ms write latency. The sentinel alarms; micro-probes remain latency-bound. Depending on implementation interpretation, the same evidence either changes regime or must not change it.
+
+   Likewise, the minimum dwell and one-change-per-day limits can suppress the transitions needed to trigger `UNSTABLE`. Settings changes can force `UNKNOWN` just after the controller acts.
+
+   **Fix:** Separate:
+   
+   - Last supported performance classification.
+   - Evidence freshness and confidence.
+   - Detected changes in latency or delivered throughput.
+   - Applied profile.
+
+   Count contradictory observations or candidate transitions for instability, including transitions suppressed by hysteresis. Define a complete transition table with missing, stale, aborted, and conflicting evidence. A latency alarm should say “latency changed”; it should not silently become a bandwidth classification.
+
+A few additional points on the layouts deserve explicit treatment.
+
+**LV versus file versus none:** A dedicated linear LV provides stable guest addresses and avoids filesystem allocation effects, but those addresses say nothing about stable provider allocation. Provisioning an LV and granting destructive access to it deserve explicit operational checks. A file is the simpler first deployment; none is a valid mode, with reduced write observability. Direct IO to an existing file does not categorically remove filesystem metadata, locking, or synchronization effects.
+
+The adaptation rule also needs to specify how it chooses 512 versus 128 MiB. “VG free exceeds region plus 64 MiB” is not a satisfactory general reserve policy. Mode or size changes should be explicit migrations, not automatic weekly reprovisioning.
+
+**The 4 MiB stride:** It separates guest addresses, but cannot establish independent backend allocation units. A coprime slot order distributes visits; it does not turn discard into snapshot re-arming. The claim that larger chunks can only dilute, never invert, the ratio is unsupported once discard and differing overwrite paths are involved.
+
+**The 128 MiB layout:** Sixteen fresh slots provide little spatial diversity, and shortening reuse to eight hours changes the experiment. The 48 MiB weekly escalation is identical in size to the normal 48 MiB run, so it adds no larger-volume evidence. Require this configuration to report lower confidence and a larger blind spot; do not promise detection within 2× without experimental support.
+
+There are also budget inconsistencies. At one 4 KiB write per second, the sentinel issues about 84 MiB/day of payload? No: it issues **337.5 MiB/day**, as stated, but also **86,400 synchronization-bearing operations per day**. That operation count matters more than the bytes for some backends. Four two-phase micro-probes permit up to eight 20-second phases, not simply four 40-second intervals as evidence of typical occupancy. Payload, operation, discard, synchronization, and logging budgets should all be tracked separately.
+
+For validation, I would make the rig try to **disprove the interpretation**, not merely produce the expected flags.
+
+- **Test the central claim with indistinguishable probe histories.** Give two backends identical results for every permitted small probe but different sustained build performance. The recognizer must report unresolved sustained capacity, not confidently classify both as healthy.
+- **Include a durable fast tier ahead of a slow tier.** This directly tests the incorrect assumption that final synchronization removes cache-size dependence.
+- **Separate allocation scenarios.** Test overwrite of snapshot-shared data, first allocation, overwrite after discard, and file allocation. Include discard that is accepted but deferred, ignored, expensive, or ineffective at releasing snapshot-retained space.
+- **Test always-busy hosts and informative skipping.** Degradation itself may prevent calm windows. Missing probes must become an explicit loss of evidence, not a retained fresh-looking healthy result.
+- **Test geometry and lifecycle changes.** Resize the disk, recreate the file or LV, restart during a probe, change settings, and lose reference data.
+- **Test negative controls across multiple seeds and schedules.** Zero alarms in twenty accelerated days is weak evidence for a multi-lane production false-alarm rate.
+- **Run some tests in real time.** Accelerating “days” does not proportionally accelerate credit refill, garbage collection, cache eviction, discard processing, or snapshot aging.
+
+Several current pass criteria encode unsupported physics. A bandwidth limiter need not leave lane latency unchanged. A snapshot need not create a persistent fresh-write penalty. A thin pool at 95% need not degrade. Host cache dropping need not affect the witness as predicted. These should be measured outcomes under documented configurations, not universal requirements.
+
+The single production experiment I would run first is a **bounded baseline/probe crossover using the proposed small write workload on an owned prewritten file**. Keep existing settings unchanged, omit discard and raw reads, and alternate quiet baseline intervals with a few bounded QD1/QD4 runs, recording actual game latency, protected pressure, probe completion latency, write time, final sync time, and recovery afterward. Use a predeclared cumulative byte budget and stop submitting further work if disturbance appears.
+
+That tests whether the intended regular measurement is tolerable and repeatable. I would not start with the 2 GiB cache-knee run: it is more disruptive, may still fail to reach the relevant knee, and cannot by itself identify provider cache size. A successful small-probe experiment establishes behavior only at today’s backend state, not safety during the historical 15 MB/s state.
+
+Finally, my positions on the earlier conclusions are:
+
+- **Queue bound as a model-free stall bound:** Disagree. Keep empirically beneficial queue limits; remove the guarantee.
+- **`qos min=max=100`:** Disagree as a default justified by easier interpretation. It disables vrate adaptation rather than merely preventing misinterpretation. Test it as a separate intervention, without bundling it into “zero-risk settings.”
+- **No dynamic cap:** Reasonable for this project’s long-term recognition scope. It is a scope decision, not proof that the static cap protects the game.
+- **Two named profiles automated both ways:** Eventually reasonable if both profiles have demonstrated benefits and the classifier is validated. Do not simultaneously change model and queue settings initially; that obscures which action helped.
+- **“Lowering takes the minimum, raising needs agreement”:** Reject for capacity inference. Conservative protective action and conservative factual inference are different things. Conflicting measurements usually justify uncertainty, not selecting the smallest number.
+
+I would approve a small recommend-only measurement service now. I would not approve the current automatic action table or the safety claims.
