@@ -360,7 +360,12 @@ def fake_generate_env(monkeypatch, write_instance_facts):
     CIU reads back. A fake that wrote only the first would let every test here
     pass against a product that no longer works.
     """
-    def fake(path: Path, *, identity_only: bool = False) -> int:
+    def fake(
+        path: Path,
+        *,
+        identity_only: bool = False,
+        allocation_lock_held: bool = False,
+    ) -> int:
         instance_id = _instance_id_for(path)
         (path / "ciu.env").write_text(
             f'export INSTANCE_ID="{instance_id}"\n'

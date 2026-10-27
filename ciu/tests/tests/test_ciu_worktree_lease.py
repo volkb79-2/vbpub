@@ -65,7 +65,12 @@ def tmp_repo(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def fake_generate_env(monkeypatch, write_instance_facts):
-    def fake(path: Path, *, identity_only: bool = False) -> int:
+    def fake(
+        path: Path,
+        *,
+        identity_only: bool = False,
+        allocation_lock_held: bool = False,
+    ) -> int:
         instance_id = hashlib.sha256(
             str(path.resolve()).encode("utf-8")
         ).hexdigest()[:6]

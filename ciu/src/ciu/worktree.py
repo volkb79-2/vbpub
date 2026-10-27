@@ -1623,7 +1623,7 @@ def _assert_overlay_root_in_commit(
     expected_root = (git_root / offset).resolve()
     from .workspace import discover_committed_roots
 
-    roots = discover_committed_roots(git_root, commit)
+    roots = discover_committed_roots(git_root, base=commit)
     if expected_root not in roots:
         raise WorktreeError(
             f"[S16] initial overlay options target {expected_root}, which is not "
