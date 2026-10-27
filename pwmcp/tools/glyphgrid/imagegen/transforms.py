@@ -135,7 +135,7 @@ def t_subpixel(im, p, rng, geo):
     else:
         big = Image.merge("RGB", (sh(r, s), sh(g, s), sh(b, s)))
     c = geo["clip"]
-    geo["clip"] = [c[0] + s / 3.0, c[1], c[2] + s / 3.0, c[3]]
+    geo["clip"] = [max(0.0, c[0] + s / 3.0), c[1], min(float(w), c[2] + s / 3.0), c[3]]
     geo.update(ox=geo["ox"] + s / 3.0, exact=not fringe and geo["exact"])
     return big.resize((w, h), Image.BOX)
 

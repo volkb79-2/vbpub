@@ -13,10 +13,16 @@ from .screens import build
 from .transforms import apply_chain
 
 
-def env():
-    """Versions the PNG/JPEG bytes depend on (Pillow and its zlib/libjpeg): same bytes are guaranteed only within one environment."""
+def env(font=None):
+    """Versions the PNG/JPEG bytes depend on (Pillow and its zlib/libjpeg): same bytes are guaranteed only within one environment.
+    ``font``: the RESOLVED font id and, for a vector font, the file/bundle it was drawn from."""
     from PIL import __version__, features
-    return {"pillow": __version__, "zlib": features.version("zlib"), "libjpeg": features.version("jpg")}
+    e = {"pillow": __version__, "zlib": features.version("zlib"), "libjpeg": features.version("jpg")}
+    if font is not None:
+        e["font_id"] = font.id
+        if font.kind == "vector":
+            e["vector_font"] = font.source
+    return e
 
 
 def hexcol(c):
@@ -58,7 +64,7 @@ def truth_for(font, screen, specs, seed, geo, log, base_size, size, png):
     for r, row in enumerate(screen.cells):
         cells.append([[c.ch, hexcol(c.fg), hexcol(c.bg), c.flags + ("C" if screen.cursor == (r, i) else "")] for i, c in enumerate(row)])
     return {
-        "format": FORMAT, "env": env(), "seed": seed, "label": label(specs), "font": font.describe(),
+        "format": FORMAT, "env": env(font), "seed": seed, "label": label(specs), "font": font.describe(),
         "screen": {"name": screen.name, "cols": screen.cols, "rows": screen.rows,
                    "cursor": list(screen.cursor) if screen.cursor else None, "text": screen.text_rows(), "cells": cells},
         "transforms": log, "geometry": geo,

@@ -91,18 +91,20 @@ class CellFont:
 
 
 class VectorFont(CellFont):
-    """TrueType/OTF font drawn by Pillow with anti-aliasing into a fixed cell (advance rounded to whole pixels)."""
+    """TrueType/OTF font drawn by Pillow with anti-aliasing; each glyph is CENTRED in a cell as wide as the widest advance, so a
+    proportional font works too (the vector screens test refusal / no misread, not font fidelity)."""
 
     kind = "vector"
 
-    def __init__(self, fid, path, px):
-        self._font = ImageFont.truetype(path, px)
-        asc, desc = self._font.getmetrics()
-        self.path = path
-        super().__init__(fid, int(round(self._font.getlength("M"))), asc + desc, _sha_file(path),
-                         "%s @%dpx" % (os.path.basename(path), px), {})
+    def __init__(self, fid, font, source, sha256, px):
+        import math
+        self._font = font
+        asc, desc = font.getmetrics()
+        cps = list(range(0x21, 0x7F)) + list(range(0x2500, 0x25A0))
+        cw = max(1, max(int(math.ceil(font.getlength(chr(cp)))) for cp in cps if cp < 0x7F))
+        super().__init__(fid, cw, asc + desc, sha256, "%s @%dpx" % (source, px), {})
         keys = {}
-        for cp in list(range(0x21, 0x7F)) + list(range(0x2500, 0x25A0)):
+        for cp in cps:
             m = self._render(chr(cp))
             if m.getbbox() is not None:
                 keys[chr(cp)] = m.tobytes()
@@ -110,11 +112,43 @@ class VectorFont(CellFont):
 
     def _render(self, ch):
         m = Image.new("L", (self.cell_w, self.cell_h), 0)
-        ImageDraw.Draw(m).text((0, 0), ch, font=self._font, fill=255, anchor="la")
+        ImageDraw.Draw(m).text((self.cell_w / 2.0, 0), ch, font=self._font, fill=255, anchor="ma")
         return m
 
     def _make_mask(self, ch):
         return self._render(ch)
+
+
+def _dejavu(px, fid=None):
+    p = find_ttf()
+    if p is None:
+        raise FontUnavailable("DejaVu Sans Mono not found (looked in %s)" % ", ".join(TTF_CANDIDATES))
+    return VectorFont(fid or "dejavu-mono-%d" % px, ImageFont.truetype(p, px), os.path.basename(p), _sha_file(p), px)
+
+
+def _pillow_default(px, fid=None):
+    """Pillow's bundled TrueType font (Pillow >= 10.1, FreeType compiled in): no system package needed."""
+    from PIL import __version__
+    try:
+        f = ImageFont.load_default(size=px)
+    except Exception as e:  # noqa: BLE001  (old Pillow: TypeError; no FreeType: OSError/ImportError)
+        raise FontUnavailable("Pillow's bundled TrueType font is unavailable (needs Pillow >= 10.1 built with FreeType): %s" % e)
+    if not isinstance(f, ImageFont.FreeTypeFont):
+        raise FontUnavailable("ImageFont.load_default(size=...) did not return a TrueType font (Pillow built without FreeType?)")
+    ident = "pillow-bundled:%s:%s:%s" % (__version__, f.getname()[0], f.getname()[1])
+    return VectorFont(fid or "pillow-default-%d" % px, f, "Pillow %s bundled %s" % (__version__, " ".join(f.getname())),
+                      hashlib.sha256(ident.encode()).hexdigest(), px)
+
+
+def load_vector(px=16):
+    """DejaVu Sans Mono when present, else Pillow's bundled font; raises FontUnavailable (a FAIL, not a skip, in the tests) if neither."""
+    try:
+        return _dejavu(px)
+    except FontUnavailable as e1:
+        try:
+            return _pillow_default(px)
+        except FontUnavailable as e2:
+            raise FontUnavailable("no vector font available: %s; %s" % (e1, e2))
 
 
 def from_atlas(fid, atlas_path=None):
@@ -156,28 +190,29 @@ def find_ttf():
 
 
 def load_font(fid, atlas_path=None):
-    """``vga-8x16`` | ``unifont-16`` | ``edk2-8x19`` | ``dejavu-mono-<px>`` | ``ttf:<path>:<px>``."""
+    """``vga-8x16`` | ``unifont-16`` | ``edk2-8x19`` | ``vector-<px>`` (DejaVu Mono if present else Pillow's bundled font; the truth
+    records which) | ``dejavu-mono-<px>`` | ``pillow-default-<px>`` | ``ttf:<path>:<px>``."""
     if fid in BITMAP_IDS:
         return from_atlas(fid, atlas_path)
+    if fid.startswith("vector-"):
+        return load_vector(int(fid.rsplit("-", 1)[1]))
     if fid.startswith("dejavu-mono-"):
-        p = find_ttf()
-        if p is None:
-            raise FontUnavailable("DejaVu Sans Mono not found (looked in %s)" % ", ".join(TTF_CANDIDATES))
-        return VectorFont(fid, p, int(fid.rsplit("-", 1)[1]))
+        return _dejavu(int(fid.rsplit("-", 1)[1]))
+    if fid.startswith("pillow-default-"):
+        return _pillow_default(int(fid.rsplit("-", 1)[1]))
     if fid.startswith("ttf:"):
         p, _, px = fid[4:].rpartition(":")
         if not os.path.isfile(p):
             raise FontUnavailable("font file %s not found" % p)
-        return VectorFont(fid, p, int(px))
+        return VectorFont(fid, ImageFont.truetype(p, int(px)), os.path.basename(p), _sha_file(p), int(px))
     raise FontUnavailable("unknown font id %r" % fid)
 
 
 def available_ids(atlas_path=None):
     out = []
-    for fid in BITMAP_IDS + ("dejavu-mono-16",):
+    for fid in BITMAP_IDS + ("vector-16",):
         try:
-            load_font(fid, atlas_path)
-            out.append(fid)
+            out.append(load_font(fid, atlas_path).id)
         except FontUnavailable:
             pass
     return out

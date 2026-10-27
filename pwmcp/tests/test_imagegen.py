@@ -1,7 +1,7 @@
 """Tests for pwmcp/tools/glyphgrid/imagegen (deterministic OCR test-image generator with exact ground truth).
 
-Pure Pillow, no docker, no network.  DejaVu Sans Mono (Debian fonts-dejavu-core) is an optional dependency and a missing
-one FAILS by default (tests/_testdeps.py).  The real-Tesseract test follows the conftest ``real_tesseract`` rule.
+Pure Pillow, no docker, no network.  The vector font is DejaVu Sans Mono when the system has it, else Pillow's own bundled
+TrueType font (no system package needed); if neither is usable the vector tests FAIL by default (tests/_testdeps.py).  The real-Tesseract test follows the conftest ``real_tesseract`` rule.
 """
 import hashlib
 import io
@@ -37,9 +37,14 @@ FIXTURE_ALPHABET_MISREADS = {
 }
 
 
-def need_dejavu():
-    if fonts.find_ttf() is None:
-        missing("DejaVu Sans Mono", "install fonts-dejavu-core (the vector-font cases render with it)")
+VECTOR = "vector-16"  # DejaVu Sans Mono if present, else Pillow's bundled font; the truth records which
+
+
+def need_vector():
+    try:
+        return fonts.load_font(VECTOR)
+    except fonts.FontUnavailable as e:
+        missing("a vector font", "neither DejaVu Sans Mono nor Pillow's bundled TrueType font works: %s" % e)
 
 
 def non_ambiguous_wrong(truth, reading):
@@ -68,10 +73,12 @@ def test_seed_changes_random_screen_and_noise():
 
 
 def test_vector_font_deterministic():
-    need_dejavu()
-    a, t = render.generate("dejavu-mono-16", "installer", ["blur:0.5"], seed=3)
-    assert a == render.generate("dejavu-mono-16", "installer", ["blur:0.5"], seed=3)[0]
+    need_vector()
+    a, t = render.generate(VECTOR, "installer", ["blur:0.5"], seed=3)
+    assert a == render.generate(VECTOR, "installer", ["blur:0.5"], seed=3)[0]
     assert t["font"]["kind"] == "vector" and len(t["font"]["sha256"]) == 64
+    assert t["font"]["id"] in ("dejavu-mono-16", "pillow-default-16") and t["env"]["font_id"] == t["font"]["id"]
+    assert t["env"]["vector_font"] == t["font"]["source"]  # WHICH font file/bundle drew the bytes is recorded
 
 
 # ----------------------------------------------------------------------------- truth
@@ -92,7 +99,7 @@ def test_truth_schema_and_geometry():
     assert im["png_sha256"] == hashlib.sha256(png).hexdigest()
     assert im["base_size"] == [640, 400] and im["size"] == [1284, 800]
     assert t["geometry"] == {"sx": 2.0, "sy": 2.0, "ox": 7.0, "oy": 1.0, "exact": True, "clip": [7.0, 1.0, 1284.0, 800.0]}
-    assert set(t["env"]) == {"pillow", "zlib", "libjpeg"} and t["env"]["pillow"]
+    assert set(t["env"]) == {"pillow", "zlib", "libjpeg", "font_id"} and t["env"]["pillow"]
     assert [x["name"] for x in t["transforms"]] == ["nn-upscale", "offset", "letterbox"]
     r, c = sc["cursor"]
     assert "C" in sc["cells"][r][c][3]
@@ -191,8 +198,9 @@ def test_complement_twins_and_solid_cells_are_ambiguous():
 
 
 def test_vector_font_has_no_complement_logic():
-    need_dejavu()
-    assert fonts.load_font("dejavu-mono-16").ambiguous_with("A") == []
+    for fid in (VECTOR, "pillow-default-16"):
+        f = fonts.load_font(fid) if fid != VECTOR else need_vector()
+        assert f.ambiguous_with("A") == [] and f.kind == "vector"
 
 
 # ----------------------------------------------------------------------------- transforms
@@ -358,9 +366,11 @@ def test_real_engine_refuses_what_it_cannot_ground(gen_atlas):
     assert rd.status == "ok" and n["exact"] >= 350 and wrong == []
 
 
-def test_vector_font_is_refused_not_misread(gen_atlas):
-    need_dejavu()
-    png, t = render.generate("dejavu-mono-16", "installer", [], seed=1)
+@pytest.mark.parametrize("fid", [VECTOR, "pillow-default-16"])
+def test_vector_font_is_refused_not_misread(gen_atlas, fid):
+    """Holds for either vector font: anti-aliased cells are refused or declined, never read, never wrong-confident."""
+    need_vector()
+    png, t = render.generate(fid, "installer", [], seed=1)
     rd = engines.GlyphGridEngine(gen_atlas).read(png)
     n, wrong, _ = score(t, rd)
     assert rd.status != "ok" and n["exact"] == 0 and wrong == [] and n["answered"] == 0
@@ -429,6 +439,8 @@ def test_scoring_declined_then_confident_is_not_a_conflict_but_two_confident_dis
     assert (n["exact"], n["wrong"], n["unknown"]) == (2, 0, 0)
     n, wrong, _ = score(t, engines.Reading("ok", [_em(2, 0, "A"), _em(2, 0, "Z"), _em(2, 1, "B")]))
     assert (n["exact"], n["wrong"], n["unknown"]) == (1, 1, 0) and wrong[0]["truth"] == "A"
+    n, wrong, _ = score(t, engines.Reading("ok", [_em(2, 0, "Z"), _em(2, 0, "A"), _em(2, 1, "B")]))  # order must not matter
+    assert (n["exact"], n["wrong"]) == (1, 1) and wrong[0]["truth"] == "A"
     n, _, _ = score(t, engines.Reading("ok", [_em(2, 0, None)]))
     assert (n["unknown"], n["answered"], n["answered_images"]) == (2, 0, 0)
 
@@ -539,16 +551,78 @@ def test_cli_eval_tesseract_missing_policy(monkeypatch, tmp_path, capsys):
 
 
 # ----------------------------------------------------------------------------- environment-dependent bytes
-# PNG bytes depend on Pillow's encoder and its zlib build; JPEG on libjpeg.  A golden hash is only claimed for an environment
-# listed here (record a new one when the tester image's Pillow changes); anywhere else the test still asserts same-environment
-# determinism and that the truth records the versions that produced the bytes.
-GOLDEN_PNG_SHA256 = {"12.1.1": "f2d778b6526c72d52c713a371b7d9f5038201f088c083a19628d7cc9d23dae47"}  # zlib 1.3.1
+# PNG bytes depend on Pillow's encoder and its zlib build, JPEG on libjpeg, a vector font's pixels on the font drawn.  A golden
+# hash is claimed only for an environment listed here, keyed (Pillow version, zlib version, RESOLVED font id) read from
+# truth["env"]; anywhere else the test still asserts same-environment determinism and that the truth records those versions.
+GOLDEN_PNG_SHA256 = {
+    ("12.1.1", "1.3.1", "vga-8x16"): "f2d778b6526c72d52c713a371b7d9f5038201f088c083a19628d7cc9d23dae47",  # alphabet, seed 0
+    ("12.1.1", "1.3.1", "dejavu-mono-16"): "2edaa1e3af619965314b9450f750dd293398a58826ef09a6c2d82be0d348195a",  # installer, seed 0
+    ("12.1.1", "1.3.1", "pillow-default-16"): "d8da3dbc55f8709c98fc77c63b6c8336562d8514466bce2de144267b119bc986",  # installer, seed 0
+}
 
 
-def test_golden_png_hash_for_recorded_environments_and_environment_recorded_in_truth():
+@pytest.mark.parametrize("fid,screen", [("vga-8x16", "alphabet"), (VECTOR, "installer"), ("pillow-default-16", "installer")])
+def test_golden_png_hash_for_recorded_environments_and_environment_recorded_in_truth(fid, screen):
     from PIL import __version__
-    png, t = render.generate("vga-8x16", "alphabet", [], seed=0)
-    assert t["env"]["pillow"] == __version__ and t["image"]["png_sha256"] == hashlib.sha256(png).hexdigest()
-    assert hashlib.sha256(render.generate("vga-8x16", "alphabet", [], seed=0)[0]).hexdigest() == t["image"]["png_sha256"]
-    if __version__ in GOLDEN_PNG_SHA256:
-        assert t["image"]["png_sha256"] == GOLDEN_PNG_SHA256[__version__]
+    need_vector()
+    png, t = render.generate(fid, screen, [], seed=0)
+    env = t["env"]
+    assert env["pillow"] == __version__ and env["zlib"] and env["font_id"] == t["font"]["id"]
+    assert t["image"]["png_sha256"] == hashlib.sha256(png).hexdigest()
+    assert hashlib.sha256(render.generate(fid, screen, [], seed=0)[0]).hexdigest() == t["image"]["png_sha256"]
+    key = (env["pillow"], env["zlib"], env["font_id"])
+    if key in GOLDEN_PNG_SHA256:
+        assert t["image"]["png_sha256"] == GOLDEN_PNG_SHA256[key]
+
+
+def test_subpixel_clip_is_clamped_to_the_canvas_and_scoring_treats_partial_cells_as_cropped():
+    _, geo, _ = transforms.apply_chain(_base(), ["subpixel:0.33"])
+    assert geo["clip"] == [pytest.approx(1 / 3), 0.0, 16.0, 16.0]  # far edge clamped, not 16.33
+    _, geo, _ = transforms.apply_chain(_base(), ["subpixel:-0.33"])
+    assert geo["clip"][0] == 0.0 and geo["clip"][2] == pytest.approx(16 - 1 / 3)
+    # scoring: the last column of an 80-col screen, shifted right by 1/3 px, is partly outside the canvas -> cropped, not a miss
+    png, t = render.generate("vga-8x16", "installer", ["subpixel:0.33"], seed=1)
+    n, _, _ = score(t, engines.Reading("ok", []))
+    assert n["cropped"] == 25 and n["ink"] == n["unknown"]
+    n2, _, _ = score(t, engines.Reading("ok", [_em_at(t, 2, 79, "x")]))
+    assert n2["cropped"] == 25 and n2["wrong"] == 0  # a cropped cell is not scored even if the engine said something
+
+
+def _em_at(t, r, c, ch):
+    geo, fo = t["geometry"], t["font"]
+    x0, y0 = geo["ox"] + c * fo["cell_w"] * geo["sx"], geo["oy"] + r * fo["cell_h"] * geo["sy"]
+    return (x0 + 1, y0 + 1, x0 + 7, y0 + 15, ch)
+
+
+def test_markdown_pins_wrong_per_answered_denominator_with_spurious_cells():
+    from imagegen.evaluate import markdown
+    t = _truth("AB")
+    n, _, _ = score(t, engines.Reading("ok", [_em(2, 0, "A"), _em(2, 1, "Z"), _em(7, 7, "x")]))
+    # ink 2, answered 2, exact 1, wrong 2 (one misread + one spurious), spurious 1 -> wrong / (answered + spurious) = 2 / 3
+    assert (n["ink"], n["answered"], n["exact"], n["wrong"], n["spurious"]) == (2, 2, 1, 2, 1)
+    md = markdown({"x": n}, "g")
+    assert "| `x` | 1 (1 / 0) | 2 | 2 | 50.0% | 0.0% | 2 (spurious 1, on ambiguous cells 0) | 66.7% |" in md
+
+
+def test_one_column_shift_in_canned_hocr_is_detected_as_wrong_cells_not_absorbed():
+    hocr = "".join("<span class='ocrx_cinfo' title='x_bboxes %d 0 %d 48; x_conf 90'>%s</span>" % (24 * (i + 1), 24 * (i + 2), ch)
+                   for i, ch in enumerate("HIJ"))  # drawn one column (8 px at 3x) to the right of where H I J are
+    em = engines.parse_hocr(hocr, scale=3)
+    t = _truth("")
+    for i, ch in enumerate("HIJ"):
+        t["screen"]["cells"][0][i][0] = ch
+    n, wrong, confs = score(t, engines.Reading("ok", em))
+    assert n["exact"] == 0 and n["wrong"] == 3
+    assert sorted((w["truth"], w["got"]) for w in wrong) == [("I", "H"), ("J", "I")] and n["unknown"] == 1
+    assert n["spurious"] == 1 and confs["wrong"] == [90.0, 90.0, 90.0]  # J landed on a blank cell: spurious
+
+
+def test_vector_font_falls_back_to_pillows_bundled_font_and_fails_clearly_without_any(monkeypatch):
+    monkeypatch.setattr(fonts, "TTF_CANDIDATES", ())
+    png, t = render.generate(VECTOR, "installer", [], seed=1)
+    assert t["font"]["id"] == "pillow-default-16" and "bundled" in t["env"]["vector_font"]
+    with pytest.raises(fonts.FontUnavailable, match="DejaVu Sans Mono not found"):
+        fonts.load_font("dejavu-mono-16")
+    monkeypatch.setattr(fonts.ImageFont, "load_default", lambda size=None: (_ for _ in ()).throw(OSError("no freetype")))
+    with pytest.raises(fonts.FontUnavailable, match="no vector font available"):
+        fonts.load_font(VECTOR)

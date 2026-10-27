@@ -6,7 +6,7 @@ import sys
 
 from .engines import EngineMissing, EngineSkipped, make
 from .evaluate import conf_summary, evaluate, markdown
-from .fonts import DEFAULT_ATLAS, available_ids
+from .fonts import BITMAP_IDS, DEFAULT_ATLAS
 from .render import write
 from .suite import SCREENS, build_suite
 
@@ -29,7 +29,7 @@ def cmd_suite(a):
 
 def cmd_atlas(a):
     from .atlasbuild import build_atlas
-    atlas = build_atlas(a.font or [f for f in available_ids() if "dejavu" not in f])
+    atlas = build_atlas(a.font or list(BITMAP_IDS))
     atlas.save(a.out)
     print("wrote", a.out)
     return 0
@@ -73,7 +73,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="imagegen", description=__doc__)
     sp = ap.add_subparsers(dest="cmd", required=True)
     g = sp.add_parser("generate", help="one image + truth")
-    g.add_argument("--font", required=True, help="vga-8x16 | unifont-16 | edk2-8x19 | dejavu-mono-16 | ttf:<path>:<px>")
+    g.add_argument("--font", required=True, help="vga-8x16 | unifont-16 | edk2-8x19 | vector-16 (DejaVu Mono else Pillow bundled) | dejavu-mono-16 | pillow-default-16 | ttf:<path>:<px>")
     g.add_argument("--screen", required=True, help="alphabet | installer | random")
     g.add_argument("--transform", action="append", default=[], help="name:args, repeatable, applied in order")
     g.add_argument("--seed", type=int, default=0)

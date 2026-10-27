@@ -23,8 +23,11 @@ python3 -m imagegen read IMAGE.png [--engine glyph-grid|glyph-grid-oracle --trut
 
 * Fonts: `vga-8x16`, `unifont-16`, `edk2-8x19` (bitmaps from the committed font-exact fixture
   `pwmcp/tests/fixtures/glyphgrid/fonts.atlas.json`, no font files exist on this host; `fonts.from_fontfile()` takes any
-  `fontfiles.FontFile`), `dejavu-mono-<px>` / `ttf:<path>:<px>` (Pillow, anti-aliased; DejaVu Sans Mono 16 px here, cell 10x19;
-  the gate image declares `fonts-dejavu-core` in `tester-unified/Dockerfile`).
+  `fontfiles.FontFile`), `vector-<px>` (Pillow, anti-aliased: DejaVu Sans Mono when the system has it, otherwise Pillow's own
+  bundled TrueType font (Aileron, Pillow >= 10.1 with FreeType), so no system package is required; the RESOLVED id
+  `dejavu-mono-16` or `pillow-default-16` and the font file/bundle are recorded in the truth `env`; each glyph is centred in a cell as
+  wide as the widest advance, so a proportional font works; if neither font is usable the vector tests FAIL, they do not skip),
+  also `dejavu-mono-<px>`, `pillow-default-<px>`, `ttf:<path>:<px>`.
 * Screens: `alphabet` (code chart, hex row/column labels, every repertoire character once), `installer`, `random` (seeded random
   words in 10 colour pairs, 10 % reverse spans, cursor).
 * Transforms (`name:args`): `nn-upscale:k`, `scale:f,bilinear|bicubic|lanczos`, `blur:sigma`, `boxblur:r`, `jpeg:q`, `quant:n`,
@@ -53,7 +56,7 @@ misreads only the solid block (as blank); the font-exact fixture atlas also misr
 is satisfied by separately named pages of ONE generator, not independent evidence in the glyph-grid doctrine; this atlas is a
 measurement fixture only, never keystroke-grade.
 
-## Results (suite seed 1, 240 images: vga-8x16, unifont-16, edk2-8x19, dejavu-mono-16 x alphabet/installer/random)
+## Results (suite seed 1, 240 images: vga-8x16, unifont-16, edk2-8x19, vector-16 (here DejaVu Sans Mono) x alphabet/installer/random)
 
 Per transform, 12 images per chain. 3 of the 12 are the vector font, which glyph-grid must refuse, so no engine can exceed 75 % of
 ink cells here. "images (answered / refused)": answered = at least one confident ink-cell answer; refused = status other than `ok`.
@@ -172,11 +175,24 @@ real-engine test uses the conftest sidecar-image rule (`real_tesseract`). **It h
 hOCR parser is tested on canned output only and the exact hOCR attribute spelling of the installed version is unverified. Run
 `suite` + `eval --engine tesseract` inside the OCR image and append the table here.
 
+### Live-check list for the first real Tesseract run (inside the OCR container)
+
+1. `tesseract --version`, then confirm `-c hocr_char_boxes=1 ... hocr` is accepted and the output contains `ocrx_cinfo` spans with
+   `x_bboxes` and `x_conf` (the parser expects exactly those attribute spellings; spans with another shape are silently skipped, which
+   would show up as an implausibly high `unknown` rate, not as errors).
+2. LSTM per-character boxes can be loose or overlap: cells are assigned by the box CENTRE point, so a box may land in a neighbouring
+   cell. That is scored as it lands (wrong on the neighbour, unknown on the real cell); a canned one-column shift is unit-tested to
+   be detected as wrong cells, never absorbed (`test_one_column_shift_in_canned_hocr_...`).
+3. Characters Tesseract does not list are unknown (ink cells) and cost nothing on blank cells; hallucinated text on blank cells and
+   outside the grid is `spurious` wrong.
+4. Check the pre-scale (default 3x Lanczos) against 1x and 2x before comparing engines, and record the Tesseract version and
+   `--psm` next to the table.
+
 ## Limitations
 
 * Bitmap fonts come from the committed fixture atlas (ascii + box repertoire, no accented or wide characters); no PSF/PF2/OVMF
   font file exists on this host. Unifont 16 here is the 8x16 half-width cell.
-* Vector font: DejaVu Sans Mono 16 only; sub-pixel LCD rendering is emulated by the `subpixel` transform (1/3 px), not rasterised.
+* Vector font: DejaVu Sans Mono 16 here (Pillow's bundled font otherwise); sub-pixel LCD rendering is emulated by the `subpixel` transform (1/3 px), not rasterised.
 * JPEG bytes depend on the local libjpeg, PNG bytes on Pillow/zlib (versions recorded in each truth file).
 * The oracle reads only integer-scale, integer-offset geometry; elsewhere it gives no answers.
 * The matrix is deliberately hostile (3/12 images unreadable by design): compare engines on the same suite, not against an absolute.
