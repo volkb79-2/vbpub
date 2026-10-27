@@ -71,7 +71,7 @@ def png(im):
     return b.getvalue()
 
 
-def learn_from(im, lines):
+def learn_from(im, lines, sources=("t1", "t2")):
     g = gg.detect_grid(im)
     assert g["status"] == "ok"
     ex = gg.extract(im, gg.grid_with_origin(g, im.size, 0, 0))
@@ -80,7 +80,8 @@ def learn_from(im, lines):
     atlas = gg.Atlas()
     for p in pairs:
         if p["kind"] == "glyph":
-            atlas.add("syn", 8, 16, p["key"], p["char"], "t")
+            for src in sources:  # two independent screens by default: reads 'exact'
+                atlas.add("syn", 8, 16, p["key"], p["char"], src)
     return atlas
 
 
@@ -204,10 +205,9 @@ def test_unseen_font_reads_all_unknown():
     atlas = learn_from(render(lines), lines)
     other = render(lines[:3], font=make_font(seed=99))
     res = gg.read_image(other, atlas, grid_hints=[(8, 16)])
-    assert res["status"] == "ok"
     shown = "".join(res["rows"][:3]).replace(" ", "").replace(gg.UNKNOWN_CHAR, "")
     assert shown == ""  # nothing guessed
-    assert res["unknown_cells"]
+    assert res["status"] == "no_font" and res["unknown_cells"]
 
 
 def test_atlas_json_roundtrip(tmp_path):
@@ -268,11 +268,11 @@ def test_non_integer_nearest_upscale_is_never_read_as_text():
     atlas = learn_from(base, lines)
     odd = base.resize((int(base.size[0] * 1.5), int(base.size[1] * 1.5)), Image.NEAREST)
     res = gg.read_image(odd, atlas)
-    if res["status"] == "ok":  # crisp pixels pass the blur probe; the odd tiling is not in the atlas
+    if res["status"] == "ok":  # crisp pixels pass the blur probe; nothing may be read exactly
         assert "e" not in "".join(res["conf"])
         assert "".join(res["rows"]).replace(" ", "").replace(gg.UNKNOWN_CHAR, "") == ""
     else:
-        assert res["status"] in ("no_grid", "resampled")
+        assert res["status"] in ("no_grid", "resampled", "no_font")
 
 
 # ----------------------------------------------------------------------------- alignment rules
@@ -282,43 +282,215 @@ def test_alignment_allows_any_gap_width_and_skips_box_rows():
     assert la._windows("BBBBBBBB", ["a"]) == []  # a ruler row never carries text
 
 
+# ----------------------------------------------------------------------------- evidence floor / single source
+def test_single_source_glyphs_are_not_exact():
+    lines = text_lines(14, 60)
+    one_screen = learn_from(render(lines), lines, sources=("t1",))
+    res = gg.read_image(render(lines[:6]), one_screen, grid_hints=[(8, 16)], min_hits=1, min_share=0.0)
+    assert "e" not in "".join(res["conf"]) and "s" in "".join(res["conf"])
+    assert all(u["status"] == "s" and "would_read" in u for u in res["unknown_cells"])
+    assert gg.find_phrase(res, lines[0].split()[0]) == []
+    # near-duplicate frames share a group: still ONE independent screen
+    dup = learn_from(render(lines), lines, sources=("a", "b"))
+    dup.groups = {"a": "g", "b": "g"}
+    assert "e" not in "".join(gg.read_image(render(lines[:6]), dup, grid_hints=[(8, 16)], min_hits=1, min_share=0.0)["conf"])
+    # min_groups=1 restores plain exact matching
+    assert gg.read_image(render(lines[:6]), one_screen, grid_hints=[(8, 16)], min_groups=1)["rows"][0].rstrip() == lines[0].rstrip()
+
+
+def test_evidence_floor_refuses_bar_only_font_match():
+    """Regression: a scaled/offset screen read as hundreds of exact '_' cells (bars) with status ok."""
+    lines = text_lines(14, 60)
+    atlas = learn_from(render(lines), lines)
+    key = bytes([0] * 12 + [0xFF] + [0] * 3)  # 8x16 underscore row
+    assert gg.boxlike(key, 8, 16)
+    atlas.add("syn", 8, 16, key, "_", "t1")
+    atlas.add("syn", 8, 16, key, "_", "t2")
+    im = Image.new("RGB", (640, 384), BLACK)
+    px = im.load()
+    for r in range(20):
+        for c in range(0, 76):
+            for x in range(8):
+                px[c * 8 + x, r * 16 + 12] = GREY
+    res = gg.read_image(im, atlas, grid_hints=[(8, 16)])
+    assert res["status"] in ("no_font", "no_grid")
+    assert "e" not in "".join(res.get("conf", []))
+
+
+def test_rule_line_run_is_flagged_and_excluded_from_phrases():
+    lines = text_lines(14, 60)
+    atlas = learn_from(render(lines), lines)
+    key = bytes([0] * 12 + [0xFF] + [0] * 3)
+    for src in ("t1", "t2"):
+        atlas.add("syn", 8, 16, key, "_", src)
+    im = render(["Alpha Bravo"] + text_lines(8, 60, seed=5))
+    px = im.load()
+    for c in range(0, 13):  # a 13-cell underline in row 10 (no text beside it)
+        for x in range(8):
+            px[c * 8 + x, 10 * 16 + 12] = GREY
+    res = gg.read_image(im, atlas, grid_hints=[(8, 16)])
+    assert res["flags"][10][:13] == "r" * 13 and res["conf"][10][:13] == "e" * 13
+    assert gg.find_phrase(res, "_" * 13) == []
+    assert len(gg.find_phrase(res, "_" * 13, exclude_flagged=False)) == 1
+
+
+def test_find_phrase_word_boundary():
+    lines = text_lines(14, 60)
+    atlas = learn_from(render(lines), lines)
+    res = gg.read_image(render(["xAlpha Alpha"] + text_lines(8, 60, seed=5)), atlas, grid_hints=[(8, 16)])
+    assert [h["col"] for h in gg.find_phrase(res, "Alpha") if h["row"] == 0] == [7]
+    assert len([h for h in gg.find_phrase(res, "Alpha", word_boundary=False) if h["row"] == 0]) == 2
+
+
+def test_fill_cells_are_not_blank():
+    lines = text_lines(14, 60)
+    atlas = learn_from(render(lines), lines)
+    im = render(["Alpha  Bravo"] + text_lines(8, 60, seed=5))
+    px = im.load()
+    for y in range(16):
+        for x in range(8):
+            px[5 * 8 + x, y] = WHITE  # solid block right after "Alpha"
+    res = gg.read_image(im, atlas, grid_hints=[(8, 16)])
+    assert res["conf"][0][5] == "f" and res["rows"][0][5] == gg.FILL_CHAR
+    assert [h for h in gg.find_phrase(res, "Alpha ") if h["row"] == 0] == []
+
+
+def test_tolerant_match_needs_a_margin_and_reports_atlas_distance():
+    lines = text_lines(14, 60)
+    atlas = learn_from(render(lines), lines)
+    res = gg.read_image(render(lines[:6]), atlas, grid_hints=[(8, 16)], max_hamming=1)
+    assert res["atlas_min_distance"] > 2 and "warning" not in res
+    res = gg.read_image(render(lines[:6]), atlas, grid_hints=[(8, 16)], max_hamming=res["atlas_min_distance"])
+    assert "warning" in res
+
+
+def test_load_image_pixel_cap_and_atlas_validation():
+    with pytest.raises(ValueError, match="too large"):
+        gg.load_image(Image.new("L", (4000, 3000)))
+    good = '{"format": "glyphgrid-atlas/1", "fonts": {"a": {"cell_w": 8, "cell_h": 16, "glyphs": %s}}}'
+    for bad, msg in (('[]', "not a glyphgrid atlas"), ('{"format": "glyphgrid-atlas/1", "fonts": {}}', "non-empty"),
+                     (good % '{"zz": {"c": {"a": 1}}}', "not hex"), (good % '{"00": {"c": {"a": 1}}}', "needs 32"),
+                     ('{"format": "glyphgrid-atlas/2", "fonts": {}}', "expected format")):
+        with pytest.raises(ValueError, match=msg):
+            gg.Atlas.from_json(bad)
+
+
+# ----------------------------------------------------------------------------- scale probe limits
+def _two_x_with_offset(base, dx, dy, pad=(0, 0, 0)):
+    big = base.resize((base.size[0] * 2, base.size[1] * 2), Image.NEAREST)
+    out = Image.new("RGB", (big.size[0] + dx, big.size[1] + dy), pad)
+    out.paste(big, (dx, dy))
+    return out
+
+
+def _no_wrong_exact(res, lines):
+    """Every exact cell must equal the true character at that position (or the capture is refused)."""
+    for r, (row, cf) in enumerate(zip(res.get("rows", []), res.get("conf", []))):
+        for c, (ch, st) in enumerate(zip(row, cf)):
+            if st == "e":
+                assert r < len(lines) and c < len(lines[r]) and lines[r][c] == ch, (r, c, ch)
+
+
+@pytest.mark.parametrize("dx,dy", [(1, 0), (0, 1), (3, 5)])
+def test_2x_nearest_with_odd_offset_passes_probe_but_is_not_misread(dx, dy):
+    lines = text_lines(14, 60)
+    base = render(lines)
+    atlas = learn_from(base, lines)
+    im = _two_x_with_offset(base, dx, dy)
+    assert not gg.probe_scale(im)["resampled"]  # the probe CANNOT see this: documented limit
+    res = gg.read_image(im, atlas)
+    _no_wrong_exact(res, [ln.ljust(80) for ln in lines])
+    assert res["status"] != "ok" or "e" not in "".join(res["conf"])
+
+
+def test_2x_nearest_with_letterbox_is_not_misread():
+    lines = text_lines(14, 60)
+    base = render(lines)
+    atlas = learn_from(base, lines)
+    im = _two_x_with_offset(base, 0, 37)
+    assert gg.probe_scale(im)["integer_upscale"] == 1  # the letterbox breaks the integer test
+    _no_wrong_exact(gg.read_image(im, atlas), [ln.ljust(80) for ln in lines])
+
+
+def test_near_unity_nearest_scale_never_yields_a_wrong_exact_cell():
+    lines = text_lines(14, 60)
+    base = render(lines)
+    atlas = learn_from(base, lines)
+    odd = base.resize((int(base.size[0] * 1.03), int(base.size[1] * 1.03)), Image.NEAREST)
+    _no_wrong_exact(gg.read_image(odd, atlas), [ln.ljust(80) for ln in lines])
+
+
+def test_colour_rich_1to1_console_is_not_refused():
+    """Many foreground colours (one per line, 20 lines) on a crisp 1:1 bitmap: the colour-count heuristic of the first
+    prototype refused this; the ramp test does not.  (Per-CELL random colours still defeat grid detection: limit.)"""
+    lines = text_lines(20, 60)
+    atlas = learn_from(render(lines), lines)
+    rng = random.Random(4)
+    rich = Image.new("RGB", (640, 384), BLACK)
+    for r, line in enumerate(lines):
+        col = (rng.randrange(90, 256), rng.randrange(90, 256), rng.randrange(90, 256))
+        rich.paste(render([line], fg=col, rows=1).crop((0, 0, 640, 16)), (0, r * 16))
+    probe = gg.probe_scale(rich)
+    assert probe["n_colors"] >= 20 and not probe["resampled"]
+    res = gg.read_image(rich, atlas, grid_hints=[(8, 16)])
+    assert res["status"] == "ok" and res["rows"][:20] == [ln.ljust(80) for ln in lines]
+
+
 # ----------------------------------------------------------------------------- real cropped frames
+# NOTE: every crop below comes from a frame the atlas was learned FROM.  These are in-sample regression pins of the
+# cell pipeline (colour schemes, phases, fonts), not evidence of generalisation: see GLYPHGRID-FINDINGS.md for the
+# leave-one-frame-out and leave-screen-group-out numbers.
 @pytest.fixture(scope="module")
 def real():
     with open(os.path.join(FIX, "expected.json"), encoding="utf-8") as f:
         exp = json.load(f)
-    return gg.Atlas.load(os.path.join(FIX, "truenas-27-vanilla.atlas.json")), exp
+    return (gg.Atlas.load(os.path.join(FIX, "truenas-27-vanilla.atlas.corrected-gt.json")),
+            gg.Atlas.load(os.path.join(FIX, "truenas-27-vanilla.atlas.original-gt.json")), exp)
 
 
 @pytest.mark.parametrize("name", ["crop-14-dialog.png", "crop-18-kernel.png", "crop-20-menu.png"])
-def test_real_crops_read_exactly_with_zero_unknown_text_cells(real, name):
-    atlas, exp = real
-    res = gg.read_image(os.path.join(FIX, name), atlas, grid_hints=[(8, 16)])
-    assert res["status"] == "ok"
-    e = exp[name]
-    assert res["font"] == e["font"]
+def test_in_sample_real_crops_read_exactly(real, name):
+    atlas, _, exp = real
+    res = gg.read_image(os.path.join(FIX, name), atlas, grid_hints=[(8, 16)], min_groups=1)
+    assert res["status"] == "ok" and res["font"] == exp[name]["font"]
     rows = [r.rstrip() for r in res["rows"]]
-    for r, want in e["rows"].items():
+    for r, want in exp[name]["rows"].items():
         assert rows[int(r)] == want
-    # every non-blank cell of the text rows is an exact match
-    for r in e["rows"]:
         assert set(res["conf"][int(r)]) <= {"e", "b"}
 
 
-def test_real_dialog_black_on_grey_key_phrase(real):
-    atlas, exp = real
-    res = gg.read_image(os.path.join(FIX, "crop-14-dialog.png"), atlas, grid_hints=[(8, 16)])
-    for phrase in ("The TrueNAS installation on vda succeeded!", "Please reboot and remove the installation media.",
-                   "Installation Succeeded"):
-        hits = gg.find_phrase(res, phrase)
-        assert len(hits) == 1, phrase
-    # box-drawing cells are not in the transcribed ground truth: they stay UNKNOWN, never guessed
-    assert any(u["row"] == 3 for u in res["unknown_cells"])
-    assert all(c in "eub" for c in "".join(res["conf"]))
+def test_in_sample_real_dialog_black_on_grey_phrases(real):
+    atlas, _, _ = real
+    res = gg.read_image(os.path.join(FIX, "crop-14-dialog.png"), atlas, grid_hints=[(8, 16)], min_groups=1)
+    for phrase in ("The TrueNAS installation on vda succeeded!", "Please reboot and remove the installation media.", "Installation Succeeded"):
+        assert len(gg.find_phrase(res, phrase)) == 1, phrase
+    assert any(u["row"] == 3 for u in res["unknown_cells"])  # box drawing is never guessed
+    # with the default evidence rule the '!' (seen on ONE screen only) is not exact
+    strict = gg.read_image(os.path.join(FIX, "crop-14-dialog.png"), atlas, grid_hints=[(8, 16)])
+    assert gg.find_phrase(strict, "The TrueNAS installation on vda succeeded!") == []
+    assert len(gg.find_phrase(strict, "The TrueNAS installation on vda succeeded")) == 1
 
 
-def test_real_digits_are_not_confused(real):
-    atlas, exp = real
-    res = gg.read_image(os.path.join(FIX, "crop-20-menu.png"), atlas, grid_hints=[(8, 16)])
+def test_in_sample_real_digits_are_not_confused(real):
+    atlas, _, _ = real
+    res = gg.read_image(os.path.join(FIX, "crop-20-menu.png"), atlas, grid_hints=[(8, 16)], min_groups=1)
     assert gg.find_phrase(res, "https://10.0.2.15")
     assert not gg.find_phrase(res, "16.0.2.15")
+
+
+def test_real_title_underline_ground_truth_conflict(real):
+    """The transcript wrote '-' for the title underline of the installed console; the bitmap equals the real '_'.
+    With the ORIGINAL transcript the atlas holds a conflict and the cells read UNKNOWN (never a wrong '-');
+    with the corrected transcript the run of underscores is flagged as a rule line, and (both frames are one
+    screen group) is not exact evidence under the default rule."""
+    corrected, original, _ = real
+    assert [c["c"] for _, _, c in original.conflicts()] == [{"-": 26, "_": 2}]
+    assert corrected.conflicts() == []
+    path = os.path.join(FIX, "crop-20-title.png")
+    res = gg.read_image(path, original, grid_hints=[(8, 16)], min_groups=1)
+    assert res["conf"][2][:13] == "x" * 13 and "-" not in res["rows"][2]
+    res = gg.read_image(path, corrected, grid_hints=[(8, 16)], min_groups=1)
+    assert res["rows"][2][:13] == "_" * 13 and res["flags"][2][:13] == "r" * 13
+    assert gg.find_phrase(res, "_" * 13) == []
+    res = gg.read_image(path, corrected, grid_hints=[(8, 16)])
+    assert res["conf"][2][:13] == "s" * 13

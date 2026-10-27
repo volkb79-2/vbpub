@@ -88,18 +88,23 @@ def decoded_text(res, ext, drop_box=True):
     return collapse(" ".join(lines))
 
 
-def score_frame(res, ext, gt_lines, atlas):
+def score_frame(res, ext, gt_lines, atlas, fast=False):
     pairs, rep = la.align(ext, gt_lines, atlas, res["font"])
-    cnt = dict(cells=0, exact_correct=0, unknown=0, wrong_conf=0, excluded_question=0)
+    cnt = dict(cells=0, exact_correct=0, unknown=0, wrong_conf=0, excluded_question=0, single_source=0,
+               single_would_be_correct=0, single_would_be_wrong=0)
     rows = {}
     wrong = []
     unk_chars = {}
+    would = {(u["row"], u["col"]): u.get("would_read") for u in res["unknown_cells"] if u["status"] == gg.CONF_SINGLE}
+    scored = set()
     for p in pairs:
         if p["char"] == " ":
             continue
         if p["char"] == "?" and p.get("marker"):
             cnt["excluded_question"] += 1
             continue
+        pos = (p["row"], p["col"])
+        scored.add(pos)
         st = res["conf"][p["row"]][p["col"]]
         ch = res["rows"][p["row"]][p["col"]]
         cnt["cells"] += 1
@@ -111,6 +116,10 @@ def score_frame(res, ext, gt_lines, atlas):
                 cnt["wrong_conf"] += 1
                 kind = "wrong"
                 wrong.append({"row": p["row"], "col": p["col"], "gt": p["char"], "read": ch})
+        elif st == gg.CONF_SINGLE:
+            cnt["single_source"] += 1
+            cnt["single_would_be_correct" if would.get(pos) == p["char"] else "single_would_be_wrong"] += 1
+            kind = "unknown"
         else:
             cnt["unknown"] += 1
             kind = "unknown"
@@ -121,57 +130,73 @@ def score_frame(res, ext, gt_lines, atlas):
     row_stats = dict(rows=len(rows), exact=sum(1 for v in rows.values() if v == {"ok"}),
                      with_unknown=sum(1 for v in rows.values() if "unknown" in v and "wrong" not in v),
                      with_wrong=sum(1 for v in rows.values() if "wrong" in v))
-    # alignment-free line recall (same idea as the Tesseract 'line' metric): the whole GT line appears
-    # in a decoded row built only from exact/blank cells
-    flat = [collapse(s) for s in res["rows"]]
-    found = 0
-    n_lines = 0
+    # whole-grid view: every non-blank cell of the decoded grid, scored or not
+    nonblank = exact_all = exact_unscored = flagged = fill = 0
+    for r, cf in enumerate(res["conf"]):
+        for c, x in enumerate(cf):
+            if x == gg.CONF_BLANK:
+                continue
+            nonblank += 1
+            fill += x == gg.CONF_FILL
+            if x == gg.CONF_EXACT:
+                exact_all += 1
+                if (r, c) not in scored:
+                    exact_unscored += 1
+                if res["flags"][r][c] != ".":
+                    flagged += 1
+    grid = dict(nonblank=nonblank, exact=exact_all, exact_unscored=exact_unscored, exact_flagged_rule_or_cursor=flagged, fill=fill)
+    flat = [collapse(s2) for s2 in res["rows"]]
+    found = n_lines = 0
     for ln in gt_lines:
         t = collapse(ln)
         if not t:
             continue
         n_lines += 1
-        if any(t in f for f in flat):
-            found += 1
-    gt_text = collapse(" ".join(ln for ln in gt_lines))
-    out_text = decoded_text(res, ext)
-    out_raw = collapse(" ".join(res["rows"]))
-    char_nobox = 1 - lev(gt_text, out_text) / max(len(gt_text), len(out_text), 1)
-    char_raw = 1 - lev(gt_text, out_raw) / max(len(gt_text), len(out_raw), 1)
-    return {"cells": cnt, "rows": row_stats, "gt_lines": n_lines, "gt_lines_found": found,
-            "gt_lines_aligned": rep["aligned"], "gt_lines_unaligned": rep["unaligned"],
-            "wrong": wrong, "unknown_chars": unk_chars, "char_acc_text": round(char_nobox, 4), "char_acc_raw": round(char_raw, 4),
-            "font": res["font"], "origin": [ext.grid["origin_x"], ext.grid["origin_y"]]}, flat
+        found += any(t in f for f in flat)
+    out = {"cells": cnt, "rows": row_stats, "grid": grid, "gt_lines": n_lines, "gt_lines_found": found,
+           "gt_lines_aligned": rep["aligned"], "gt_lines_unaligned": rep["unaligned"], "wrong": wrong,
+           "unknown_chars": unk_chars, "font": res["font"], "status": res["status"],
+           "origin": [ext.grid["origin_x"], ext.grid["origin_y"]]}
+    if not fast:
+        gt_text = collapse(" ".join(gt_lines))
+        out_text = decoded_text(res, ext)
+        out_raw = collapse(" ".join(res["rows"]))
+        out["char_acc_text"] = round(1 - lev(gt_text, out_text) / max(len(gt_text), len(out_text), 1), 4)
+        out["char_acc_raw"] = round(1 - lev(gt_text, out_raw) / max(len(gt_text), len(out_raw), 1), 4)
+    else:
+        out["char_acc_text"] = out["char_acc_raw"] = None
+    return out, flat
 
 
-def run_loo(state, atlas_full, corpus):
+def run_loo(state, corpus, holdout="frame", score_corr=None, learn_groups=None, fast=False, verbose=True):
+    """holdout 'frame': learn from the other 19 frames.  'group': leave the frame's WHOLE screen group out."""
     frames = state["frames"]
     aligned, fontmap = state["aligned"], state["fontmap"]
-    out = {}
-    flats = {}
+    out, flats = {}, {}
     for f in frames:
         t0 = time.time()
-        others = [g for g in frames if g["id"] != f["id"]]
-        atlas_k, _ = la.build_atlas(others, aligned, fontmap)
+        gid = la.group_of(f["id"], learn_groups)
+        others = [g for g in frames if (la.group_of(g["id"], learn_groups) != gid if holdout == "group" else g["id"] != f["id"])]
+        atlas_k, _ = la.build_atlas(others, aligned, fontmap, groups=learn_groups)
         ex, _ = gg.choose_extraction(f["im"], f["grid"], atlas_k)
         res = gg.decode(ex, atlas_k)
-        gt = la.read_gt(os.path.join(corpus, "ground-truth", f["id"] + ".txt"))
-        sc, flat = score_frame(res, ex, gt, atlas_k)
+        gt = la.read_gt(os.path.join(corpus, "ground-truth", f["id"] + ".txt"), score_corr, f["id"])
+        sc, flat = score_frame(res, ex, gt, atlas_k, fast)
         sc["category"] = CATEGORY.get(fnum(f["id"]), "?")
-        sc["seconds"] = round(time.time() - t0, 1)
         out[f["id"]] = sc
         flats[f["id"]] = flat
-        c = sc["cells"]
-        print("%-36s %-24s cells %4d exact-correct %4d unknown %4d wrong %d  rows %d/%d  lines found %d/%d  charAcc %.3f" % (
-            f["id"], sc["category"], c["cells"], c["exact_correct"], c["unknown"], c["wrong_conf"],
-            sc["rows"]["exact"], sc["rows"]["rows"], sc["gt_lines_found"], sc["gt_lines"], sc["char_acc_text"]), flush=True)
-    # skipped frames (no grid)
+        if verbose:
+            c = sc["cells"]
+            print("%-36s %-24s cells %4d exact-correct %4d single %3d unknown %4d wrong %d (%.0fs)" % (
+                f["id"], sc["category"], c["cells"], c["exact_correct"], c["single_source"], c["unknown"], c["wrong_conf"], time.time() - t0), flush=True)
     for fid, rep in state["reports"].items():
         if fid not in out and "skipped" in rep:
             gt = la.read_gt(os.path.join(corpus, "ground-truth", fid + ".txt"))
-            out[fid] = {"skipped": rep["skipped"], "category": CATEGORY.get(fnum(fid), "?"),
-                        "gt_lines": sum(1 for x in gt if x.strip())}
+            out[fid] = {"skipped": rep["skipped"], "category": CATEGORY.get(fnum(fid), "?"), "gt_lines": sum(1 for x in gt if x.strip())}
     return out, flats
+
+
+KEYS = ("cells", "exact_correct", "single_source", "single_would_be_correct", "single_would_be_wrong", "unknown", "wrong_conf", "unknown_novel_char")
 
 
 def aggregate(loo):
@@ -180,17 +205,19 @@ def aggregate(loo):
         rows = [v for v in loo.values() if v.get("category") == cat and "cells" in v]
         if not rows:
             continue
-        tot = {k: sum(v["cells"][k] for v in rows) for k in ("cells", "exact_correct", "unknown", "wrong_conf", "unknown_novel_char")}
-        tot["frames"] = len(rows)
-        tot["row_exact"] = sum(v["rows"]["exact"] for v in rows)
-        tot["rows"] = sum(v["rows"]["rows"] for v in rows)
-        tot["lines_found"] = sum(v["gt_lines_found"] for v in rows)
-        tot["lines"] = sum(v["gt_lines"] for v in rows)
+        tot = {k: sum(v["cells"][k] for v in rows) for k in KEYS}
+        tot.update(frames=len(rows), row_exact=sum(v["rows"]["exact"] for v in rows), rows=sum(v["rows"]["rows"] for v in rows),
+                   lines_found=sum(v["gt_lines_found"] for v in rows), lines=sum(v["gt_lines"] for v in rows))
         agg[cat] = tot
     allv = [v for v in loo.values() if "cells" in v]
-    agg["ALL"] = {k: sum(v["cells"][k] for v in allv) for k in ("cells", "exact_correct", "unknown", "wrong_conf", "unknown_novel_char")}
+    agg["ALL"] = {k: sum(v["cells"][k] for v in allv) for k in KEYS}
     agg["ALL"].update(frames=len(allv), row_exact=sum(v["rows"]["exact"] for v in allv), rows=sum(v["rows"]["rows"] for v in allv),
-                      lines_found=sum(v["gt_lines_found"] for v in allv), lines=sum(v["gt_lines"] for v in allv))
+                      lines_found=sum(v["gt_lines_found"] for v in allv), lines=sum(v["gt_lines"] for v in allv),
+                      grid_nonblank=sum(v["grid"]["nonblank"] for v in allv), grid_exact=sum(v["grid"]["exact"] for v in allv),
+                      grid_exact_unscored=sum(v["grid"]["exact_unscored"] for v in allv),
+                      grid_exact_flagged=sum(v["grid"]["exact_flagged_rule_or_cursor"] for v in allv),
+                      grid_fill=sum(v["grid"]["fill"] for v in allv),
+                      no_font_frames=sum(1 for v in allv if v["status"] == "no_font"))
     return agg
 
 
@@ -422,53 +449,99 @@ def _pad(im, dx, dy):
     return out
 
 
+def run_probe_calibration(corpus):
+    """Choose the ramp threshold on half the frames, test on the other half (crisp frames must pass, resampled
+    variants of every frame must be refused)."""
+    from PIL import Image
+    files = sorted(glob.glob(os.path.join(corpus, "frames", "*.png")))
+    crisp, resampled = {}, {}
+    for fp in files:
+        n = fnum(os.path.basename(fp))
+        im = gg.load_image(fp)
+        W, H = im.size
+        crisp[n] = gg.ramp_ratio(im)
+        vs = {"0.9 bilinear back": im.resize((int(W * .9), int(H * .9)), Image.BILINEAR).resize((W, H), Image.BILINEAR),
+              "0.95 lanczos back": im.resize((int(W * .95), int(H * .95)), Image.LANCZOS).resize((W, H), Image.LANCZOS),
+              "1.25 bilinear": im.resize((int(W * 1.25), int(H * 1.25)), Image.BILINEAR),
+              "0.75 bicubic back": im.resize((int(W * .75), int(H * .75)), Image.BICUBIC).resize((W, H), Image.BICUBIC)}
+        resampled[n] = {k: gg.ramp_ratio(v) for k, v in vs.items()}
+    A = [n for n in crisp if n % 2 == 0]
+    B = [n for n in crisp if n % 2 == 1]
+    hi_crisp = max(crisp[n] for n in A)
+    lo_res = min(v for n in A for v in resampled[n].values())
+    thr = (hi_crisp * lo_res) ** 0.5 if hi_crisp > 0 else lo_res / 10
+    test = {"crisp_false_refusals": [n for n in B if crisp[n] > thr],
+            "resampled_missed": [(n, k) for n in B for k, v in resampled[n].items() if v <= thr]}
+    return {"calibration_frames": A, "test_frames": B, "max_crisp_ramp_on_calibration": hi_crisp, "min_resampled_ramp_on_calibration": lo_res,
+            "chosen_threshold": thr, "default_threshold": gg.RAMP_THRESHOLD,
+            "test": test, "max_crisp_all": max(crisp.values()), "min_resampled_all": min(v for r in resampled.values() for v in r.values()),
+            "crisp_ramp_by_frame": crisp}
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--corpus", default=DEFAULT_CORPUS)
     ap.add_argument("--series", default=DEFAULT_SERIES)
     ap.add_argument("--out", default="glyphgrid-results.json")
+    ap.add_argument("--corrections", default=None, help="ground-truth-corrections.json: report original AND corrected")
+    ap.add_argument("--groups", default=None, help="screen-groups.json (independent-evidence groups)")
     ap.add_argument("--loo", action="store_true")
+    ap.add_argument("--probe", action="store_true")
     ap.add_argument("--curve", action="store_true")
     ap.add_argument("--colour", action="store_true")
     ap.add_argument("--scale", action="store_true")
     ap.add_argument("--run-series", action="store_true")
     ap.add_argument("--series-cache", default="series-coverage.json")
-    ap.add_argument("--atlas-out", default=None)
+    ap.add_argument("--atlas-out", default=None, help="atlas learned from the (corrected if given) ground truth")
+    ap.add_argument("--atlas-out-original", default=None)
     ap.add_argument("--limit", type=int, default=None)
     a = ap.parse_args(argv)
+    groups = la.load_groups(a.groups)
+    corr = la.load_corrections(a.corrections)
     res = {}
-    atlas, state = la.learn(a.corpus)
+    atlas_o, st_o = la.learn(a.corpus, groups=groups)
+    if corr:
+        atlas, state = la.learn(a.corpus, corrections=corr, groups=groups)
+    else:
+        atlas, state = atlas_o, st_o
     if a.atlas_out:
         atlas.save(a.atlas_out)
+    if a.atlas_out_original:
+        atlas_o.save(a.atlas_out_original)
     res["atlas"] = {"fonts": {n: {"cell": [f["cell_w"], f["cell_h"]], "glyphs": len(f["glyphs"])} for n, f in atlas.fonts.items()},
-                    "conflicts": la.conflict_report(atlas, state), "quarantined_question_marks": state["quarantined_question_marks"],
+                    "conflicts_original_gt": la.conflict_report(atlas_o, st_o), "conflicts_corrected_gt": la.conflict_report(atlas, state),
+                    "quarantined_question_marks": state["quarantined_question_marks"],
                     "alignment": {k: {kk: vv for kk, vv in v.items() if kk in ("lines", "aligned", "unaligned", "ambiguous", "origin", "font", "skipped")}
                                   for k, v in state["reports"].items()}}
     if a.loo:
-        loo, flats = run_loo(state, atlas, a.corpus)
-        res["loo"] = loo
-        res["loo_aggregate"] = aggregate(loo)
-        res["key_phrases"] = key_phrase_table(flats)
-        print(json.dumps(res["loo_aggregate"], indent=1))
-        print("key phrases found:", sum(k["found"] for k in res["key_phrases"]), "/", len(res["key_phrases"]))
+        passes = [("frame_out/original_gt", st_o, "frame", None), ("screen_group_out/original_gt", st_o, "group", None)]
+        if corr:
+            passes += [("frame_out/original_atlas_scored_vs_corrected_gt", st_o, "frame", corr),
+                       ("frame_out/corrected_gt", state, "frame", corr), ("screen_group_out/corrected_gt", state, "group", corr)]
+        res["loo"] = {}
+        for name, st, hold, score_corr in passes:
+            print("==", name, flush=True)
+            loo, flats = run_loo(st, a.corpus, hold, score_corr, groups, fast=(name != "frame_out/original_gt" and name != "frame_out/corrected_gt"))
+            agg = aggregate(loo)
+            res["loo"][name] = {"aggregate": agg, "frames": loo, "key_phrases": key_phrase_table(flats)}
+            print(json.dumps(agg["ALL"]), "phrases", sum(k["found"] for k in res["loo"][name]["key_phrases"]), flush=True)
+    if a.probe:
+        res["probe_calibration"] = run_probe_calibration(a.corpus)
+        pc = res["probe_calibration"]
+        print({k: v for k, v in pc.items() if k != "crisp_ramp_by_frame"})
     if a.curve:
         res["learning_curve"] = run_curve(state)
         res["learning_curve_font"] = max(set(state["fontmap"].values()), key=list(state["fontmap"].values()).count)
-        for pts in res["learning_curve"][:1]:
-            print([(p["frames"], p["glyphs"], p["exact_share"]) for p in pts])
     if a.colour:
         res["colour"] = colour_report(state, atlas)
-        print(json.dumps(res["colour"], indent=1)[:1500])
     if a.scale:
         res["scale_probe"], res["scale_tolerance"] = run_scale(atlas, a.corpus)
-        print(json.dumps(res["scale_probe"], indent=1))
-        print(json.dumps(res["scale_tolerance"], indent=1))
     if a.run_series:
         rows = run_series(atlas, a.series, a.series_cache, a.limit)
         res["series"] = series_summary(rows, atlas)
-        print(json.dumps(res["series"], indent=1))
+        print(json.dumps({k: v for k, v in res["series"].items() if k != "top_unknown_bitmaps_by_frames"}, indent=1))
     with open(a.out, "w", encoding="utf-8") as f:
-        json.dump(res, f, indent=1, ensure_ascii=False)
+        json.dump(res, f, indent=1, ensure_ascii=False, default=str)
     return 0
 
 

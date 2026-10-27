@@ -10,23 +10,33 @@ Every cell is then either a known glyph (exact match) or an explicit UNKNOWN (`ï
 
 ## Safety contract
 
-* **UNKNOWN is never a guess.** The nearest atlas glyph and its Hamming distance are reported as *evidence*
-  in `unknown_cells`, not as output. Tolerant matching (`max_hamming > 0`) is OFF by default.
-* A consumer that sends keystrokes must match **on exact cells only**, in a region with **zero unknown
-  cells** (`region()` returns the count; `find_phrase()` never matches across an unknown cell), and treat
-  everything else as **indeterminate**.
-* If the capture is resampled/blurred the engine **refuses** (`status: "resampled"`); if there is no fixed
-  grid it says so (`status: "no_grid"`). Exact matching is only defined on the intrinsic 1:1 bitmap.
-* An atlas bitmap labelled with two different characters is a **conflict** (ground-truth error or two
-  different glyphs that look equal in one font): it is never resolved by majority, the cell reads UNKNOWN.
+* **UNKNOWN is never a guess.** The nearest atlas glyph and its Hamming distance are evidence in `unknown_cells`, not output. Tolerant
+  matching (`max_hamming > 0`) is OFF by default, needs a margin over the second-best different character and reports the atlas minimum
+  pairwise distance (warning when `max_hamming` is at least half of it).
+* **Exact needs independent evidence.** A bitmap reads `e` only if >= 2 independent screen groups confirmed its label (`Atlas.groups`;
+  near-duplicate frames are one group). One screen (or two copies of it) gives `s` single-source: not exact, `would_read` in the evidence.
+* **Evidence floor.** The chosen atlas font must read >= 8 ordinary (not bar/box-like) cells exactly and >= 25% of them, else
+  `status: "no_font"` and every cell is UNKNOWN. A screen that is merely a run of underscores/rules never counts as a font match.
+* **Consumers that send keystrokes** match on exact cells only, in a region with zero bad cells (`region()` counts unknown/single/fill/
+  flagged cells; `find_phrase()` never matches across them), and treat anything else as indeterminate.
+  Cell flags (`res["flags"]`): `r` rule-line (>= 4 identical bar-like cells with no text beside them, e.g. a title underline), `c` cursor
+  candidate; both are excluded from `find_phrase`/`region` by default. Status `f` (fill) is a uniform cell next to text on a different
+  background: it is not a space.
+* **The scale probe CANNOT prove the capture is 1:1.** It refuses blended/resampled edges (`status: "resampled"`) and undoes crisp integer
+  nearest-neighbour upscales. Crisp non-integer scaling, integer scaling with an odd offset/letterbox, or a canvas of another size than the guest
+  framebuffer pass it; only the evidence floor (no atlas font matches) contains those, which is a property of the atlas, not a guarantee.
+  The capture path must deliver the intrinsic bitmap and the consumer must verify canvas width/height against the guest framebuffer size independently.
+* An atlas bitmap labelled with two different characters is a **conflict** (ground-truth error or two glyphs that look equal): never resolved
+  by majority, the cell reads UNKNOWN.
+* **Numbers are same-ISO, same-screens**: see GLYPHGRID-FINDINGS.md (leave-one-frame-out is optimistic; leave-screen-group-out is the honest figure).
 
 ## API (`glyphgrid.py`)
 
 ```python
 import glyphgrid as gg
-atlas = gg.Atlas.load("pwmcp/tests/fixtures/glyphgrid/truenas-27-vanilla.atlas.json")
+atlas = gg.Atlas.load("pwmcp/tests/fixtures/glyphgrid/truenas-27-vanilla.atlas.corrected-gt.json")
 res = gg.read_image(png_bytes, atlas)          # bytes | path | PIL.Image  ->  dict
-res["status"]        # "ok" | "no_grid" | "resampled"
+res["status"]        # "ok" | "no_grid" | "resampled" | "no_font"
 res["grid"]          # {cell_w, cell_h, origin_x, origin_y, cols, rows}
 res["font"]          # atlas font chosen by exact-hit count (one atlas can hold several fonts)
 res["rows"]          # one string per grid row, UNKNOWN cells as U+FFFD
@@ -50,8 +60,9 @@ minority colour, so light-on-dark, dark-on-grey and reverse video give the same 
 ## Learning and evaluation
 
 ```
-python3 learn_atlas.py CORPUS_DIR --out atlas.json --report report.json
-python3 eval_glyphgrid.py --loo --curve --colour --scale --run-series --out results.json
+python3 learn_atlas.py CORPUS_DIR --out atlas.json --report report.json --groups screen-groups.json [--corrections ground-truth-corrections.json]
+python3 eval_glyphgrid.py --loo --probe --curve --colour --scale --run-series --groups screen-groups.json \
+    --corrections ground-truth-corrections.json --out results.json   # LOO + leave-screen-group-out, original AND corrected transcript
 ```
 
 `CORPUS_DIR` holds `frames/NN-name.png` and `ground-truth/NN-name.txt` (plain text, no box drawing, no

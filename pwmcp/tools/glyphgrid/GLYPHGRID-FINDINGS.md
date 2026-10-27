@@ -1,5 +1,82 @@
 # glyphgrid findings (2026-10-27)
 
+> **Scope statement for every number in this file: same ISO, same screens, 19 of 20 frames seen; it does not predict a new
+> screen, a new ISO or a new font.** The leave-one-frame-out numbers are inflated by near-duplicate frames (12/13, 19/20,
+> 05/06, 09/10/11); the leave-screen-group-out numbers below are the honest ones.
+
+## Revision 2 (review round 1): what changed and the corrected numbers
+
+The first version (commit 04f40ef23) over-claimed. Review found, and this revision fixes:
+
+1. **Misattributed headline.** The 2 "wrong" cells were frame 19 `_` cells (the cursor `_` and the `_` in `rcu_node`) read `-`. The title underline
+   (13 cells in each of frames 19 and 20) was scored "exact-correct" because the transcript says `-`, but its bitmap is the
+   `_` bitmap (atlas conflict `{'-': 26, '_': 2}`; a real hyphen in this font is mid-height). Scored against the corrected transcript
+   (`ground-truth-corrections.json`, applied in memory, corpus untouched) the old rule gave **15 confidently wrong cells, not 2**
+   (13 title cells in frame 19 + the 2 `_`). Cause: 26 labels came from two near-duplicate frames.
+   Fix: a glyph label counts as **exact only when >= 2 independent screen groups confirm it** (`screen-groups.json`; near-duplicate
+   frames share a group); otherwise the cell has status `s` (single-source), reported like unknown with `would_read` as evidence. The same
+   leave-one-out run under the new rule yields **0 exact-wrong cells** and the 15 cells above are `s`.
+2. **Evidence floor in `decode`.** The chosen font must read >= 8 ordinary (not bar/box-like) glyph cells exactly and >= 25% of them, else
+   `status: "no_font"` and every cell UNKNOWN. Bar-like bitmaps (full-width rows, `_`, `-`, `=` rules, vertical bars) do not count as evidence.
+   A run of >= 4 identical bar-like cells with no ordinary glyph beside it gets flag `r` (rule-line, e.g. a title underline); the last
+   inked bar-like cell of a row gets `c` (cursor candidate), or the caller passes `cursor=(row, col)`. `find_phrase`/`region` exclude flagged
+   cells by default (`exclude_flagged=False` to include). The previously reproduced case (2x nearest + 1 px offset reading 513 cells as exact `_`)
+   now ends `no_font`/no exact cell (tests below).
+3. **Scale probe.** It never proved 1:1 and now says so (`verdict: "crisp (1:1 NOT proven)"`). The colour-count heuristic (top-8 colours)
+   was replaced by `ramp_ratio` (share of edge pixels that are a blended three-level step), which does not refuse colour-rich crisp consoles.
+   Threshold calibration, held out: chosen on the even-numbered frames (+ 4 resampled variants of each), tested on the odd ones: max crisp ramp
+   on the calibration half 0.000, min resampled ramp 0.390, chosen threshold 0.039 (default now 0.04); on the held-out half every resampled
+   variant is refused (0 missed) and the only "false refusal" is frame 15, the anti-aliased UEFI logo (ramp 0.396), which is correctly refused;
+   all 18 text frames of the test half and the calibration half have ramp 0.000. The gap is two orders of magnitude, but it is measured on ONE
+   rendering stack (indexed-colour QEMU console): treat the threshold as unproven for JPEG/video-compressed capture paths.
+   **The probe CANNOT prove 1:1.** Crisp non-integer nearest scaling, integer upscales with an odd offset or a letterbox, and a canvas that is
+   simply a different size than the guest framebuffer all pass it. They are contained only by the font-consistency floor (no atlas font
+   matches -> `no_font`), which is a consequence of the atlas, not a guarantee. The capture path must deliver the intrinsic bitmap and the
+   consumer must verify canvas width/height against the guest framebuffer size independently.
+4. **Held-out by screen group** added (`--loo` runs both).
+5. Minor: whole-grid metric; `f` (fill) status for uniform cells next to text with a different background (excluded from phrases, not
+   blank); cursor/rule flags; tolerant matching now needs a margin (second-best different character at least `margin`=2 farther) and reports
+   the atlas minimum pairwise distance (+ a warning when `max_hamming` >= half of it); `find_phrase` word boundaries (on for alphanumeric
+   phrases); `load_image` rejects > 8 MP; `Atlas.from_json` validates format/cell sizes/keys/counts with specific errors; in-sample test names say so.
+
+### Numbers, 19 frames with a grid, 6795 non-space ground-truth cells (frame 15 refused)
+
+Atlas learned from the ORIGINAL transcript unless noted. "exact" = exact AND correct; wrong = exact but different from the transcript.
+
+| run | exact | single-source `s` | unknown | wrong | lines found | key phrases |
+|---|---|---|---|---|---|---|
+| old rule (min_groups=1), leave-one-frame-out, original GT (commit 04f40ef23) | 6687 (98.4%) | - | 106 | 2 | 222/265 | 22/26 |
+| same, scored vs CORRECTED GT (derived: title cells now count wrong) | 6672 | - | 106 | **15** | - | - |
+| **new rule, leave-one-frame-out, original GT** | 5891 (86.7%) | 798 (796 would read right, 2 wrong) | 106 | **0** | 172/265 | 12/26 |
+| new rule, leave-one-frame-out, original atlas scored vs corrected GT | 5891 | 798 (783 right, **15 wrong**) | 106 | **0** | 172/265 | 12/26 |
+| **new rule, leave-one-frame-out, corrected GT** | 5891 (86.7%) | 811 (all would read right) | 93 | **0** | 172/265 | 12/26 |
+| **new rule, leave-SCREEN-GROUP-out, original = corrected GT** | 4940 (72.7%) | 1530 (22.5%) | 325 | **0** | 154/265 | 10/26 |
+
+* The single-source rule demotes 798-811 cells (11.7-11.9%) from exact in leave-one-out and 1530 (22.5%) in group-out; all but 2 (original GT) of them
+  would have been read correctly, i.e. the rule trades coverage for safety exactly where the evidence is one screen. By category (leave-one-out,
+  corrected GT): console 4495/4813 exact, 268 single, 50 unknown; dialogs 1396/1398 exact (the dialogs share their glyphs with many screens);
+  GRUB 0/584 exact (543 single, 41 unknown: every GRUB font is learned from at most 1-2 screens, so none of it is exact evidence).
+* Group-out is what a new screen costs: 72.7% exact, 22.5% single-source, 4.8% unknown, still no confident wrong read in this corpus.
+* The key-phrase count fell from 22/26 to 12/26 because most rare punctuation (`: / [ ] = @ ! ?`) and every GRUB glyph is single-source; with
+  the full atlas the phrases read exact only where each glyph has two independent screens.
+* Whole grid (leave-one-out, every non-blank cell of the 19 decoded grids, not only transcript cells): 10,646 non-blank, 5,904 exact (55.5%; box
+  drawing, cursor, coloured cells and single-source cells are the rest), **13 exact cells outside the scored transcript cells** (listed per
+  frame as `grid.exact_unscored` in the results JSON; not individually inspected), 48 exact cells carrying a rule/cursor flag, 31 fill cells. Transcript cells
+  being a subset of the grid, the cell-accuracy headline above is "of cells the transcript names"; the whole-grid exact share is the lower number.
+* The not-yet-rerun parts (learning curve, series coverage, colour-scheme table, nearest-glyph tolerance table below, in
+  `glyphgrid-results.json`) are from the previous commit's rule (min_groups=1, no evidence floor, old probe); `glyphgrid-results-v2.json` has
+  the new LOO/group-out/probe/scale results. They were not rerun because of the "nothing heavy" instruction; their qualitative conclusions
+  stand but the exact-cell shares in them are upper bounds relative to the new rule.
+* Scale variants of frame 18 under the new probe: original 1347 exact; 0.9x bilinear, 0.9x Lanczos and 1.25x bilinear refused (ramp 0.60, 0.46, 0.55);
+  2x nearest undone (1347 exact); letterbox +37 px found (1347 exact); 1.5x nearest now ends `no_font` (before: status ok with 3317 unknown).
+* Ground truth: the controller corrects frames 19/20 on main (title `-` -> `_`); this tool never edits the corpus, the correction is the
+  in-memory `ground-truth-corrections.json` (`eval_glyphgrid.py --corrections`).
+
+---
+
+The sections below are the first version's text; where they conflict with Revision 2 (headline numbers, "2 wrong cells", the underline
+attribution in "Ground-truth problems" item 1, "the probe catches resampling"), Revision 2 wins.
+
 Prototype `pwmcp/tools/glyphgrid/`: deterministic glyph-grid matching for fixed-font console screenshots.
 Measured on ONE ISO (TrueNAS 27.0.0-RC.1 vanilla, QEMU+OVMF) and its three fonts; nothing here generalises
 beyond that without more captures. Raw numbers: `glyphgrid-results.json` (produced by

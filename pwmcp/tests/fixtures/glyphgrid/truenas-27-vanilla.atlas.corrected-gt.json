@@ -1190,8 +1190,7 @@
    "glyphs": {
     "0000000000000000000000007f000000": {
      "c": {
-      "-": 26,
-      "_": 2
+      "_": 28
      },
      "f": [
       "20-console-setup-duplicated-redraw",
@@ -2300,5 +2299,26 @@
    ]
   }
  },
- "format": "glyphgrid-atlas/1"
+ "format": "glyphgrid-atlas/1",
+ "groups": {
+  "01-grub-iso-menu": "01-grub-iso-menu",
+  "02-live-copy-squashfs": "02-live-copy-squashfs",
+  "03-live-login-banner": "03-live-login-banner",
+  "04-installer-console-setup": "04-installer-console-setup",
+  "05-choose-destination-media": "choose-destination",
+  "06-choose-destination-selected": "choose-destination",
+  "07-erase-warning": "07-erase-warning",
+  "08-auth-method": "08-auth-method",
+  "09-password-empty": "password-dialog",
+  "10-password-filled": "password-dialog",
+  "11-progress-start-over-dialog": "password-dialog",
+  "12-progress-extracting": "progress-scroll",
+  "13-progress-complete": "progress-scroll",
+  "14-installation-succeeded": "14-installation-succeeded",
+  "16-grub-installed-menu": "16-grub-installed-menu",
+  "17-grub-booting-installed": "17-grub-booting-installed",
+  "18-kernel-boot-log": "18-kernel-boot-log",
+  "19-console-setup-with-kernel-noise": "installed-console-menu",
+  "20-console-setup-duplicated-redraw": "installed-console-menu"
+ }
 }

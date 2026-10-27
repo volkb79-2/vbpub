@@ -31,21 +31,37 @@ def prepare_frame(path: str, grid_hint=None) -> dict:
             "size": im.size}
 
 
-def read_gt(path: str):
+def load_corrections(path):
+    """ground-truth-corrections.json: {frame_id: [[from_line, to_line], ...]} (exact whole-line replacement of
+    the transcript line, applied in memory; the corpus files are never modified)."""
+    if not path:
+        return {}
     with open(path, encoding="utf-8") as f:
-        return [ln.rstrip("\n") for ln in f.read().split("\n")]
+        return json.load(f)
 
 
-LINEY = set("_|=-+[]/\\<>")  # ASCII glyphs that may legitimately touch the cell boundary
+def load_groups(path):
+    """screen-groups.json: {"groups": {group_name: [frame_number_or_id_prefix, ...]}} -> {frame_id_prefix: group}"""
+    if not path:
+        return {}
+    with open(path, encoding="utf-8") as f:
+        d = json.load(f)["groups"]
+    return {str(m): g for g, members in d.items() for m in members}
 
 
-def boxlike(key: bytes, w: int, h: int) -> bool:
-    """Ink in the top/bottom pixel row or a row spanning the full width: box-drawing rules/corners connect
-    to their neighbours, text glyphs keep a margin."""
-    rb = (w + 7) // 8
-    rows = [int.from_bytes(key[y * rb:(y + 1) * rb], "big") >> (rb * 8 - w) for y in range(h)]
-    left, right = 1 << (w - 1), 1
-    return bool(rows[0] or rows[-1] or any((r & left) and (r & right) for r in rows))
+def group_of(fid, groups):
+    return groups.get(fid.split("-")[0], fid) if groups else fid
+
+
+def read_gt(path: str, corrections=None, frame_id=None):
+    with open(path, encoding="utf-8") as f:
+        lines = [ln.rstrip("\n") for ln in f.read().split("\n")]
+    for old, new in (corrections or {}).get(frame_id or "", []):
+        lines = [new if ln.strip() == old.strip() else ln for ln in lines]
+    return lines
+
+
+boxlike = gg.boxlike  # shared with the decoder
 
 
 def _row_patterns(ext):
@@ -183,10 +199,10 @@ def _prefer_known(row, text, wins, atlas, font):
     return keep if best and best[0] else wins
 
 
-def build_atlas(frames, aligned, fontmap, trust_question_marks: bool = False):
+def build_atlas(frames, aligned, fontmap, trust_question_marks: bool = False, groups=None):
     """-> (Atlas, info).  A '?' that opens a longer token is the transcriber's unreadable-glyph marker
     (README caveat, frame 19): quarantined, never learned, listed in info."""
-    atlas = gg.Atlas()
+    atlas = gg.Atlas(groups={f["id"]: group_of(f["id"], groups) for f in frames} if groups else None)
     quarantined = []
     for f in frames:
         pairs = aligned.get(f["id"])
@@ -235,7 +251,7 @@ def pick_font(atlas, ex, min_share: float = 0.08, min_hits: int = 12):
     return best[1] if n and best[0] >= max(min_hits, min_share * n) else None
 
 
-def learn(corpus: str, items=None, skip=()):
+def learn(corpus: str, items=None, skip=(), corrections=None, groups=None):
     """Learn from every (frame, ground-truth) pair of the corpus, except ids in ``skip``."""
     items = items or load_corpus(corpus)
     frames = []
@@ -265,7 +281,7 @@ def learn(corpus: str, items=None, skip=()):
             g = f["grid"]
             font = "f%dx%d-%d" % (g["cell_w"], g["cell_h"], len(atlas.fonts) + 1)
         fontmap[f["id"]] = font
-        pairs, rep = align(ex, read_gt(f["gt"]), atlas, font)
+        pairs, rep = align(ex, read_gt(f["gt"], corrections, f["id"]), atlas, font)
         rep["origin"] = [ex.grid["origin_x"], ex.grid["origin_y"]]
         rep["font"] = font
         aligned[f["id"]] = pairs
@@ -274,7 +290,7 @@ def learn(corpus: str, items=None, skip=()):
             if p["kind"] == "glyph" and p["char"] not in (" ", "?"):
                 atlas.add(font, ex.grid["cell_w"], ex.grid["cell_h"], p["key"], p["char"], f["id"])
     frames = [f for f in frames if f["ext"] is not None]
-    final, info = build_atlas(frames, aligned, fontmap)
+    final, info = build_atlas(frames, aligned, fontmap, groups=groups)
     return final, {"frames": frames, "fontmap": fontmap, "aligned": aligned, "reports": reports, **info}
 
 
@@ -292,8 +308,10 @@ def main(argv=None):
     ap.add_argument("corpus")
     ap.add_argument("--out", required=True)
     ap.add_argument("--report")
+    ap.add_argument("--corrections", help="ground-truth-corrections.json")
+    ap.add_argument("--groups", help="screen-groups.json")
     a = ap.parse_args(argv)
-    atlas, st = learn(a.corpus)
+    atlas, st = learn(a.corpus, corrections=load_corrections(a.corrections), groups=load_groups(a.groups))
     atlas.save(a.out)
     rep = {"fonts": {n: {"cell": [f["cell_w"], f["cell_h"]], "glyphs": len(f["glyphs"])} for n, f in atlas.fonts.items()},
            "frames": st["reports"],
