@@ -130,7 +130,7 @@ def _install_abandon_inspection(
     monkeypatch.setattr(
         cli, "run_local_git",
         lambda _root, *args, **_kwargs: SimpleNamespace(
-            returncode=outcomes.get(args[2], 1), stdout="", stderr="",
+            returncode=outcomes.get(args[2] if len(args) > 2 else args[-1], 1), stdout="", stderr="",
         ),
     )
 
@@ -1780,3 +1780,166 @@ def test_ki98_origin_only_candidate_branch_is_retired(monkeypatch, tmp_path, cap
     assert _invoke_abandon(None, branch=branch, dry_run=False, yes=True) == 0
     assert retired == [branch]
     assert "Retire (origin-only candidate)" in capsys.readouterr().out
+
+
+# --- KI-98 review follow-up --------------------------------------------------
+
+_REAL_READ_UNTAGGED = transaction.read_untagged_publication_record
+
+
+def _real_record_case(monkeypatch, tmp_path, **kwargs):
+    """An untagged-scope candidate whose publication record is read from disk."""
+    _real_git(tmp_path, "init", "-q")
+    candidate = _workspace(tmp_path, _UNTAGGED_BRANCH)
+    _install_abandon_inspection(
+        monkeypatch, tmp_path, candidate, scope=["mdt-cockpit"],
+        configs={"mdt-cockpit": SimpleNamespace(git_tag=False)}, snapshot={}, **kwargs,
+    )
+    monkeypatch.setattr(transaction, "read_untagged_publication_record", _REAL_READ_UNTAGGED)
+    return candidate
+
+
+def test_ki98_resumed_legacy_transaction_never_gets_a_record_and_stays_withheld(
+    monkeypatch, tmp_path, capsys,
+):
+    # An old cmru published untagged X, crashed before write_release_result; the
+    # NEW cmru resumes (its progress seed already exists) and fails at a gate
+    # before X is marked. Abandon must still withhold.
+    candidate = _real_record_case(monkeypatch, tmp_path)
+    transaction.write_release_progress(tmp_path, candidate, "a" * 40)  # the old run's seed
+    transaction.start_untagged_publication_record(tmp_path, candidate)
+    assert _REAL_READ_UNTAGGED(tmp_path, candidate) is None
+    transaction.mark_untagged_publication_started(tmp_path, candidate, "mdt-cockpit")
+    assert _REAL_READ_UNTAGGED(tmp_path, candidate) is None  # marking never upgrades
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.REFUSED
+    assert "can publish without a Git tag" in capsys.readouterr().out
+
+
+def test_ki98_brand_new_transaction_gets_a_record_and_is_abandonable(
+    monkeypatch, tmp_path, capsys,
+):
+    candidate = _real_record_case(monkeypatch, tmp_path)
+    transaction.start_untagged_publication_record(tmp_path, candidate)
+    transaction.write_release_progress(tmp_path, candidate, "a" * 40)
+    assert _REAL_READ_UNTAGGED(tmp_path, candidate) == []
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == 0
+    assert "Withheld" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("content", ["{not json", '{"started": "mdt-cockpit"}', "[]", '{"started": [1]}'])
+def test_ki98_corrupt_real_record_reaching_abandon_is_withheld(
+    monkeypatch, tmp_path, capsys, content,
+):
+    candidate = _real_record_case(monkeypatch, tmp_path)
+    transaction._ensure_scope_dir(tmp_path)
+    transaction._untagged_publication_path(tmp_path, candidate).write_text(content)
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.REFUSED
+    assert "untagged publication record" in capsys.readouterr().out
+
+
+def test_ki98_untagged_source_already_in_origin_main_is_withheld(
+    monkeypatch, tmp_path, capsys,
+):
+    # --no-build promotes the source with no mark; crash before the progress write.
+    candidate = _untagged_case(
+        monkeypatch, tmp_path, record=[],
+        merge_codes={f"refs/heads/{_UNTAGGED_BRANCH}": 0},
+    )
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.REFUSED
+    assert "already in origin/main" in capsys.readouterr().out
+
+
+def test_ki98_untagged_source_promotion_that_cannot_be_ruled_out_is_withheld(
+    monkeypatch, tmp_path, capsys,
+):
+    candidate = _untagged_case(
+        monkeypatch, tmp_path, record=[],
+        merge_codes={f"refs/heads/{_UNTAGGED_BRANCH}": 128},
+    )
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.REFUSED
+    assert "already in origin/main" in capsys.readouterr().out
+
+
+def test_ki98_publication_record_changed_after_confirmation_aborts(monkeypatch, tmp_path):
+    candidate = _untagged_case(monkeypatch, tmp_path, record=[])
+    monkeypatch.setattr(
+        transaction, "abandon_workspace",
+        lambda *_a, **_k: pytest.fail("abandoned despite a changed record"),
+    )
+    runtime = _Runtime()
+    confirm = runtime.confirm
+
+    def confirm_then_publish(prompt):
+        monkeypatch.setattr(
+            transaction, "read_untagged_publication_record", lambda *_: ["mdt-cockpit"],
+        )
+        return confirm(prompt)
+
+    runtime.confirm = confirm_then_publish
+    with pytest.raises(CliFailure, match="nothing was abandoned"):
+        _invoke_abandon(candidate, branch=candidate.branch, dry_run=False, runtime=runtime)
+
+
+def test_ki98_mixed_scope_with_tag_on_origin_and_unmarked_untagged_project_is_withheld(
+    monkeypatch, tmp_path, capsys,
+):
+    candidate = _untagged_case(
+        monkeypatch, tmp_path, record=[], scope=["alpha", "mdt-cockpit"],
+        configs={
+            "alpha": SimpleNamespace(git_tag=True, prefix="alpha-v"),
+            "mdt-cockpit": SimpleNamespace(git_tag=False),
+        },
+        remote_tags={"refs/tags/alpha-v1": "d" * 40, "refs/tags/alpha-v1^{}": "d" * 40},
+    )
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.REFUSED
+    assert "selected-scope release tag refs that changed" in capsys.readouterr().out
+
+
+def test_ki98_mixed_scope_with_tagged_project_in_results_and_unmarked_untagged_is_withheld(
+    monkeypatch, tmp_path, capsys,
+):
+    configs = {
+        "alpha": SimpleNamespace(git_tag=True, prefix="alpha-v"),
+        "beta": SimpleNamespace(git_tag=False),
+    }
+    candidate, *_ = _install_feature_abandon_case(
+        monkeypatch, tmp_path, scope=["alpha", "beta"], configs=configs,
+        results={"alpha": "alpha-v1.0.0"},
+    )
+    monkeypatch.setattr(transaction, "read_untagged_publication_record", lambda *_: [])
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.REFUSED
+    assert "partial publication results" in capsys.readouterr().out
+
+
+def test_ki98_publication_record_writes_are_atomic_and_durable(monkeypatch, tmp_path):
+    _real_git(tmp_path, "init", "-q")
+    ws = _workspace(tmp_path, _UNTAGGED_BRANCH)
+    synced, replaced = [], []
+    real_fsync, real_replace = transaction.os.fsync, transaction.os.replace
+    monkeypatch.setattr(transaction.os, "fsync", lambda fd: (synced.append(fd), real_fsync(fd)))
+    monkeypatch.setattr(
+        transaction.os, "replace", lambda a, b: (replaced.append((str(a), str(b))), real_replace(a, b)),
+    )
+    transaction.start_untagged_publication_record(tmp_path, ws)
+    assert len(synced) == 2  # the temp file, then the directory
+    assert len(replaced) == 1
+    src, dst = replaced[0]
+    assert Path(src).parent == Path(dst).parent and src != dst
+
+    # A failed replace leaves the previous record intact and no temp file behind.
+    def boom(_a, _b):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(transaction.os, "replace", boom)
+    with pytest.raises(OSError):
+        transaction.mark_untagged_publication_started(tmp_path, ws, "mdt-cockpit")
+    monkeypatch.setattr(transaction.os, "replace", real_replace)
+    assert _REAL_READ_UNTAGGED(tmp_path, ws) == []
+    assert [p.name for p in Path(dst).parent.iterdir() if p.name.endswith(".tmp")] == []

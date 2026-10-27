@@ -34,7 +34,7 @@ def test_untagged_publication_is_recorded_durably_before_it_can_publish(monkeypa
     project = cli.ProjectConfig("demo", {}, {}, prefix="demo-v", git_tag=False, build_step="build")
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "child", "cmru/release/x", "a" * 40)
     monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
-    monkeypatch.setattr(transaction, "write_release_progress", lambda *args: None)
+    monkeypatch.setattr(transaction, "write_release_progress", lambda *args: order.append("progress"))
     monkeypatch.setattr(
         transaction, "start_untagged_publication_record", lambda *a: order.append("start"),
     )
@@ -56,4 +56,35 @@ def test_untagged_publication_is_recorded_durably_before_it_can_publish(monkeypa
         github_config=cli.GitHubConfig("o", "r", "t", "user"),
         env_config=cli.ReleaseEnvConfig({}, None),
     )
-    assert order == ["start", "mark:demo", "publish", "result"]
+    # The record is created before the progress seed (the seed's file is how a
+    # resumed older transaction is told apart), and marked before it can publish.
+    assert order == ["start", "progress", "mark:demo", "publish", "result", "progress"]
+
+
+def test_untagged_no_build_marks_nothing_and_starts_the_record_once(monkeypatch, tmp_path):
+    order = []
+    project = cli.ProjectConfig("demo", {}, {}, prefix="demo-v", git_tag=False, build_step="build")
+    workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "child", "cmru/release/x", "a" * 40)
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
+    monkeypatch.setattr(transaction, "write_release_progress", lambda *args: None)
+    monkeypatch.setattr(
+        transaction, "start_untagged_publication_record", lambda *a: order.append("start"),
+    )
+    monkeypatch.setattr(
+        transaction, "mark_untagged_publication_started", lambda *a: order.append("mark"),
+    )
+    monkeypatch.setattr(cli, "apply_project_release_env", lambda *args: None)
+    monkeypatch.setattr(cli, "_prepare_release_projects", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli, "_run_release_gates_on_exact_head", lambda *a, **k: "a" * 40)
+    monkeypatch.setattr(transaction, "promote_workspace", lambda *args, **kwargs: None)
+    monkeypatch.setattr(transaction, "push_backup_branch", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli, "_git", lambda *args, **kwargs: "a" * 40)
+    monkeypatch.setattr(
+        cli, "_run_untagged_project", lambda *a, **k: pytest.fail("--no-build published"),
+    )
+    cli._release_projects_sequentially(
+        tmp_path, {"demo": project}, workspace, ["demo"], no_build=True,
+        github_config=cli.GitHubConfig("o", "r", "t", "user"),
+        env_config=cli.ReleaseEnvConfig({}, None),
+    )
+    assert order == ["start"]

@@ -3100,30 +3100,66 @@ def _untagged_publication_path(repo_root: Path, workspace: ReleaseWorkspace) -> 
     return _scope_dir(repo_root) / f"{_release_token(workspace)}.untagged-publish.json"
 
 
+def _atomic_write_durable(path: Path, text: str) -> None:
+    """Write *text* so a crash leaves the old content or the new, never a torn file:
+    temp file in the same directory, fsync it, ``os.replace``, fsync the directory."""
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def start_untagged_publication_record(repo_root: Path, workspace: ReleaseWorkspace) -> None:
     """Create the (empty) record of untagged publications this transaction began.
 
-    Its mere presence proves the transaction was written by code that marks a
-    publication BEFORE it starts, so `abandon` can trust an absent entry (KI-98).
-    An existing record is kept (a retry reuses the branch token).
+    Its presence proves the transaction was run by code that marks a publication
+    BEFORE it starts, so `abandon` can trust an absent entry (KI-98). It is
+    created ONLY for a brand-new transaction: if the branch token already has a
+    progress, result, or tag-attempt/absence record, an older cmru may already
+    have published an untagged project without leaving a trace, so no record is
+    created and `abandon` keeps withholding (legacy). An existing record is kept.
+    Call it BEFORE the run seeds its own progress record.
     """
     path = _untagged_publication_path(repo_root, workspace)
     if path.exists():
         return
-    _ensure_scope_dir(repo_root)
-    path.write_text(json.dumps({"started": []}) + "\n", encoding="utf-8")
+    scope_dir = _ensure_scope_dir(repo_root)
+    token = _release_token(workspace)
+    if any(
+        (scope_dir / f"{token}{suffix}").exists()
+        for suffix in (".progress", ".results.json", ".tag-attempts.json", ".tag-absent.json")
+    ):
+        return
+    _atomic_write_durable(path, json.dumps({"started": []}) + "\n")
 
 
 def mark_untagged_publication_started(
     repo_root: Path, workspace: ReleaseWorkspace, project: str,
 ) -> None:
-    """Durably note that *project*'s untagged build/publish is about to run."""
-    current = read_untagged_publication_record(repo_root, workspace) or []
+    """Durably note that *project*'s untagged build/publish is about to run.
+
+    A legacy transaction (no record) stays record-less: marking must never
+    upgrade it to "trusted".
+    """
+    current = read_untagged_publication_record(repo_root, workspace)
+    if current is None:
+        return
     if project not in current:
         current.append(project)
-    _ensure_scope_dir(repo_root)
-    _untagged_publication_path(repo_root, workspace).write_text(
-        json.dumps({"started": sorted(current)}) + "\n", encoding="utf-8",
+    _atomic_write_durable(
+        _untagged_publication_path(repo_root, workspace),
+        json.dumps({"started": sorted(current)}) + "\n",
     )
 
 

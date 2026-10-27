@@ -3635,8 +3635,10 @@ def _release_projects_sequentially(
     # stale checkpoint and misreport the last completed source candidate.
     # Returning "the run's base" is exactly equivalent to "nothing has fully
     # succeeded yet in this run".
-    transaction.write_release_progress(repo_root, workspace, workspace.base)
+    # KI-98: BEFORE the seed below, because the seed's own file is how a resumed
+    # (older) transaction is told apart from a brand-new one.
     transaction.start_untagged_publication_record(repo_root, workspace)
+    transaction.write_release_progress(repo_root, workspace, workspace.base)
 
     released: List[str] = []
     for name in release_names:
@@ -7668,6 +7670,7 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
         dict[str, str],
         bool,
     ]] = []
+    untagged_records: dict[str, list[str] | None] = {}
     for workspace in selected:
         scope: list[str] = []
         remote_assets: list[str] = []
@@ -7977,11 +7980,35 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
                 # starts) exists and neither names the project nor holds a
                 # result for it. No record (older transaction) stays withheld.
                 started = transaction.read_untagged_publication_record(repo_root, workspace)
+                untagged_records[workspace.branch] = started
                 if started is not None:
-                    untagged = [
+                    unproven = [
                         name for name in untagged
                         if name not in scoped_configs or name in started or name in results
                     ]
+                    if len(unproven) < len(untagged):
+                        # A --no-build untagged project is promoted without any
+                        # mark; a crash after promotion leaves no trace but the
+                        # source already being in origin/main.
+                        tip = run_local_git(
+                            repo_root, "rev-parse", "refs/heads/" + workspace.branch,
+                            capture_output=True, text=True, check=False,
+                        )
+                        tip_oid = (tip.stdout or "").strip() if tip.returncode == 0 else ""
+                        if tip_oid != str(base_commit):
+                            promoted_src = run_local_git(
+                                repo_root, "merge-base", "--is-ancestor",
+                                "refs/heads/" + workspace.branch, remote_main,
+                                capture_output=True, text=True, check=False,
+                            )
+                            if promoted_src.returncode != 1:
+                                remote_assets.append("origin/refs/heads/main")
+                                raise RuntimeError(
+                                    "the candidate source is already in origin/main (or that "
+                                    "could not be ruled out), so an untagged project may have "
+                                    "been promoted: inspect before abandoning"
+                                )
+                    untagged = unproven
             if untagged:
                 remote_assets.extend(f"external publication state unknown for {name}" for name in untagged)
                 raise RuntimeError(
@@ -8117,6 +8144,11 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
                 transaction.list_local_tag_refs(repo_root), tag_prefixes,
             ) != expected_local_tags:
                 raise RuntimeError("local release tags changed after confirmation")
+            if workspace.branch in untagged_records and (
+                transaction.read_untagged_publication_record(repo_root, workspace)
+                != untagged_records[workspace.branch]
+            ):
+                raise RuntimeError("untagged publication record changed after confirmation")
         except _DOMAIN_ERRORS as exc:
             raise CliFailure(
                 "origin state changed or could not be rechecked after confirmation; "

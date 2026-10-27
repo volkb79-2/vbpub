@@ -2474,8 +2474,15 @@ tagged project must have no tag attempts) and is kept and pinned by a test.
 **Fix.** The prefix refusal fires only when the scope contains a `git_tag=true` project that lacks a prefix. `abandon_workspace(release_tag_prefixes=...)`
 now distinguishes `None` (all tags, legacy callers) from an empty sequence (none). Each transaction writes `<token>.untagged-publish.json` at start
 (`start_untagged_publication_record`) and marks a project in it BEFORE `_run_untagged_project` (`mark_untagged_publication_started`); `abandon` treats an
-untagged project as provably unpublished only when that record exists and names neither it nor a result for it. A transaction from before this change has no
-record and stays withheld, exactly as before. The record is removed with the other sidecars (`forget_release_scope`).
+untagged project as provably unpublished only when that record exists and names neither it nor a result for it. The record is written atomically and durably
+(temp file, fsync, `os.replace`, directory fsync), is re-read after the confirmation and the abandon is refused if it changed, and is removed with the other
+sidecars (`forget_release_scope`).
+**Legacy transactions stay withheld.** `start_untagged_publication_record` runs BEFORE the progress seed and creates the record only for a brand-new branch
+token: when a progress, result or tag-attempt/absence record already exists (an older cmru run, possibly resumed by this one, may have published an untagged
+project without a trace) no record is created and `mark_untagged_publication_started` never creates one either. Pinned by the resume scenario test. A
+`--no-build` untagged project promotes the source without any mark, so abandon also withholds when the candidate tip (when it differs from the base) is an
+ancestor of origin/main or that cannot be ruled out; this makes the printed "origin/main is unchanged" true for every candidate an untagged scope can reach.
+`or name in results` in the plan is kept as defence in depth: a result implies a mark in new code but not in a hand-edited or mixed-version record.
 **Origin-only candidates.** `cmru-release-20261027_110937-mdt-cockpit-zn0uvi` needed no code change: the KI-35 path (`_abandon_remote_candidate`) never touches tag
 prefixes and retires an origin-only branch whose commits are all in origin/main. "no exact managed CMRU build or release branch or worktree path named ..." is
 what it prints when `git ls-remote` finds the branch absent from origin (already deleted or never pushed); pinned by `test_ki98_origin_only_candidate_branch_is_retired`.
