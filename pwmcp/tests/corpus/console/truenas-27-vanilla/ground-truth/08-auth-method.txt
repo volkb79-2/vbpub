@@ -1,0 +1,5 @@
+Web UI Authentication Method
+1 Administrative user (truenas_admin)
+2 Configure using Web UI
+< OK >
+<Cancel>

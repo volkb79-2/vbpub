@@ -1,0 +1,4 @@
+Installation Succeeded
+The TrueNAS installation on vda succeeded!
+Please reboot and remove the installation media.
+< OK >
