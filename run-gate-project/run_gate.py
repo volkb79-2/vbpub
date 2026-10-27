@@ -968,9 +968,10 @@ def _validate_environment(name: str, table: dict, where: str) -> None:
         fail(f"{where} [environments.{name}]: 'image' must be a non-empty string")
     user = table.get("user")
     if user is not None:
-        if mode == "host":
-            fail(f"{where} [environments.{name}]: 'user' names a container "
-                 "identity and cannot be declared for mode = \"host\"")
+        if mode != "ephemeral":
+            fail(f"{where} [environments.{name}]: 'user' requires mode = "
+                 "'ephemeral' (a host subprocess has no container identity and "
+                 "`docker exec` into a shared runner would ignore it)")
         if not isinstance(user, str) or not (
                 user == ENV_USER_INVOKER or re.fullmatch(r"[0-9]+(:[0-9]+)?", user)):
             fail(f"{where} [environments.{name}]: 'user' must be \"invoker\" "

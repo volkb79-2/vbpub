@@ -835,7 +835,14 @@ Every live `kind = "assay"` lane is followed by Assay's `analyze campaign`
 without any configuration. Nothing to paste into `run-gate.toml`; the lane you
 already have is enough:
 
+<!-- run-gate-config -->
 ```toml
+schema_version = 1
+
+[environments.tester-unified]
+mode = "ephemeral"
+image = "tester-unified:local"
+
 [lanes.r2]
 kind = "assay"
 environment = "tester-unified"

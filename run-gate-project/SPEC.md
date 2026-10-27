@@ -134,7 +134,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   (required for container modes), `image_env` (optional valid environment
   variable name selecting an invocation-specific image in `ephemeral` mode),
   `cgroup_slice` or `cgroup_slice_env` (at most one, optional), `user`
-  (optional, container modes only: `"invoker"` = the invoking process's
+  (optional, `ephemeral` mode only: `"invoker"` = the invoking process's
   `uid:gid`, or a numeric `uid[:gid]`; passed as `--user` to every container
   the environment starts, RG-106), `mode`
   (required, exactly one of

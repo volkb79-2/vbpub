@@ -29,18 +29,18 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   requires of the image it selects; the default stays the source-tree wheel for
   Run-Gate's own candidate gate.
 - Add (RG-106): an environment may declare `user = "invoker"` (the invoking
-  process's `uid:gid`, derived at resolve time) or a numeric `uid[:gid]` for a
-  container mode; it is passed as `--user` to the lane and probe containers, so
+  process's `uid:gid`, derived at resolve time) or a numeric `uid[:gid]` for an
+  `ephemeral` environment; it is passed as `--user` to the lane and probe containers, so
   files written into the bind-mounted worktree are owned by the worktree's
   owner even on an image that runs as root. A malformed value, or `user` on a
-  `mode = "host"` environment, is refused at load. A declared `user` wins over
+  non-`ephemeral` environment, is refused at load. A declared `user` wins over
   the `RUN_GATE_HOST_IMAGE` default. The check that the image has a passwd
   entry for the resolved uid is not implemented (RG-106 oracle 5 stays open).
 - Fix: a ciu worktree record whose schema is newer than the reader (v7+) is
   refused with the explicit-`--base` remedy instead of being read as v1-v5
   (v6 already changed the meaning of `base_ref`). Supersedes the pre-v6
   "unknown schema still reads" test.
-- Fix: read ciu worktree record schema v6. `base_ref` is now a pinned fork SHA
+- Fix: read ciu worktree record schema v6 (reader only: no ciu on this tree emits v6 yet; until it does, every record is v1-v5 and reads as before). `base_ref` is now a pinned fork SHA
   there, so Run-Gate takes the moving base from the new `base_branch_ref` (a
   canonical local branch name) for its absorption/freshness checks and returns
   the validated `fork_point_sha`; a null, missing, malformed or unsafe branch,

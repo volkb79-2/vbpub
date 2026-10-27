@@ -15672,6 +15672,7 @@ class TestResumeAndProgressAlways:
 
     def test_state_root_preflight_refuses_before_assay_and_uses_exact_runner(
             self, monkeypatch, tmp_path):
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
         calls = []
 
         def run(argv, **_kwargs):
@@ -19737,6 +19738,7 @@ class TestInflightRecordStore:
 
     def test_fresh_launch_failure_cannot_reuse_stale_pass_but_attach_keeps_it(
             self, tmp_path, monkeypatch):
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
         repo = make_repo(tmp_path)
         lane = {"kind": "assay", "assay_lane": "unit",
                 "environment": "runner"}
@@ -24765,6 +24767,7 @@ class TestBareHostProfilingWiring:
 
     def test_bare_host_profiling_disabled_assay_lane_keeps_progress_liveness(
             self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
         class Watch:
             def poll(self):
                 return "assay progress stopped"
@@ -29561,7 +29564,7 @@ class TestRG78AndRG76DirectOracles:
         monkeypatch.delenv(run_gate.HOST_IMAGE_ENV_VAR, raising=False)
         central = {"environments": {
             "derived": {"mode": "ephemeral", "image": "base:local", "user": "invoker"},
-            "literal": {"mode": "exec", "image": "base:local", "user": "1000:1000"},
+            "literal": {"mode": "ephemeral", "image": "base:local", "user": "1000:1000"},
             "plain": {"mode": "ephemeral", "image": "base:local"},
         }}
         def resolve(name):
@@ -29580,9 +29583,10 @@ class TestRG78AndRG76DirectOracles:
                 run_gate._validate_environment(
                     "e", {"mode": "ephemeral", "image": "base:local", "user": value},
                     "run-gate.toml")
-        with pytest.raises(run_gate.GateError, match="cannot be declared for mode"):
-            run_gate._validate_environment(
-                "e", {"mode": "host", "user": "invoker"}, "run-gate.toml")
+        for env in ({"mode": "host", "user": "invoker"},
+                    {"mode": "exec", "image": "r:1", "user": "invoker"}):
+            with pytest.raises(run_gate.GateError, match="'user' requires mode"):
+                run_gate._validate_environment("e", env, "run-gate.toml")
         for value in ("invoker", "1000", "1000:100"):
             run_gate._validate_environment(
                 "e", {"mode": "ephemeral", "image": "base:local", "user": value},
