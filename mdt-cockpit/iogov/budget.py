@@ -6,6 +6,7 @@ import datetime as dt
 import threading
 
 from .config import MiB, Config
+from .state import valid_budget
 
 
 class BudgetExceeded(Exception):
@@ -62,7 +63,9 @@ class DailyBudget:
 
     def _today(self) -> dict:
         day = dt.datetime.fromtimestamp(self.wall(), dt.timezone.utc).strftime("%Y-%m-%d")
-        b = self.state.setdefault("budget", {})
+        b = self.state.get("budget")
+        if not valid_budget(b):  # a damaged slot (NaN, string, missing counter) can never widen a cap: it is rebuilt from zero
+            b = self.state["budget"] = {}
         if b.get("day") != day:
             b.clear()
             b.update({"day": day, "read_bytes": 0, "write_bytes": 0, "read_ops": 0, "write_ops": 0, "sync_ops": 0})

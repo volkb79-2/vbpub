@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import math
 import os
 from dataclasses import dataclass, field
 
 from .collectors import Collector, governed_write_bps
 from .env import Env, StopRequested
+from .state import count, finite
 
 
 def kill_switch_reason(cfg, environ=None) -> str | None:
@@ -155,17 +155,26 @@ class Backoff:
     def __init__(self, state: dict, cfg, wall, key: str):
         self.state, self.cfg, self.wall, self.key = state, cfg, wall, key
 
+    def _slot(self) -> dict:
+        """The persisted slot, or a fresh one when it is missing or damaged (a NaN/str/bool there must never block or unblock a run)."""
+
+        bo = self.state.get("backoff")
+        if not isinstance(bo, dict):
+            bo = self.state["backoff"] = {}
+        slot = bo.get(self.key)
+        if not (isinstance(slot, dict) and count(slot.get("n"), 1e6) and finite(slot.get("until", 0.0))):
+            slot = bo[self.key] = {"n": 0, "until": 0.0}
+        return slot
+
     def until(self) -> float:
-        slot = self.state.get("backoff", {}).get(self.key, {})
-        v = slot.get("until", 0.0) if isinstance(slot, dict) else 0.0
-        return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else 0.0
+        return float(self._slot().get("until", 0.0))
 
     def blocked(self) -> float:
         now = self.wall()
         return max(0.0, min(self.until(), now + self.cfg.backoff_max_s) - now)  # a backwards clock jump cannot extend a backoff past its cap
 
     def hit(self) -> float:
-        slot = self.state.setdefault("backoff", {}).setdefault(self.key, {"n": 0, "until": 0.0})
+        slot = self._slot()
         slot["n"] += 1
         delay = min(self.cfg.backoff_max_s, self.cfg.backoff_base_s * 2 ** (slot["n"] - 1))
         slot["until"] = self.wall() + delay

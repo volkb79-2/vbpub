@@ -91,7 +91,8 @@ evidence and emits **recommendations** such as "capability shifted down ~20x on 
 | `RuntimeMaxSec=` as the hung-syscall backstop | `TimeoutStartSec=` (tick 10 min, bench 30 min); rendered units pass `systemd-analyze verify` in a test | Fourth review (T1): `RuntimeMaxSec=` is ignored on `Type=oneshot` units; the claimed backstop did nothing. |
 | Refused state load still saved `{}` | `exclusive` persists only after a successful load; a refused state file is left untouched | Fourth review (T2): a wrong-mode/owner, symlinked or FIFO `state.json` was replaced by an empty one, resetting budget and backoffs exactly when the state was suspect. |
 | `resets.log` decoded strictly | `errors="replace"`, bad lines skipped | Fourth review (T3): one stray byte made every run exit 3. |
-| Config path must be a regular file | a ROOT-owned symlink is accepted when its target passes every check | Fourth review: managed-config layouts symlink `/etc/<tool>/<file>`. |
+| Config path must be a regular file | a ROOT-owned symlink is accepted when every hop and every directory above every hop and the target are root-owned and not group/other-writable, and the target passes every file check | Fourth review: managed-config layouts symlink `/etc/<tool>/<file>`; fifth review: a root-owned link into a service-writable directory is not a trusted config. |
+| `_finite` guarded three persisted fields | one schema for `state.json` (`state.py`), validated once after load; invalid fields dropped to defaults and journalled (`note`, `kind: state_repair`); budget, backoff and schedule code re-check their own slots | Fifth review: a NaN in `budget.read_bytes` bypassed the daily cap (`min(n, cap - NaN)` = n), a NaN in `last_full.t`/`last_escalation` froze the hourly record / the escalation, a string in `last_prune` made every run exit 3 and re-save the bad state forever. |
 | Journal limits counted characters | bytes, from the binary layer | Fourth review. NaN/inf in persisted numbers (`skip_passive_t`, `next_bench`, `backoff.until`) are treated as absent; an internal error also leaves a journal `note` (`kind: error`). |
 
 ## 3. Layout and the 'no write' property
@@ -131,6 +132,11 @@ them from a fast path; non-zero blocks found become witnesses (up to 16, re-read
   `MAX_TEXT_BYTES` 4 MiB; config at most 1 MiB; a journal line beyond `MAX_LINE_READ` 1 MiB is `oversized` and discarded in bounded chunks,
   a monthly file is read up to `MAX_FILE_BYTES` 256 MiB (`TRUNCATED`), a read stops at `MAX_RECORDS` 2 000 000 records (`LIMIT`, said in the
   report). Every top-level journal field has a schema type; a record with a wrong type is `invalid`; nested values are read defensively.
+- **The persisted state has one schema** (`state.py`: every epoch field a finite number in [0, 1e11], every counter a non-negative int,
+  `budget`/`backoff`/`bench_fail`/`last_full`/`skip_logged`/`devices` shaped exactly). The runner validates the whole file once after loading
+  it, drops every invalid or unknown field to its default and journals what it dropped (`note`, `kind: state_repair`; the cleaned state is
+  saved at the end of the run); `status` validates the same way and prints the dropped names; the budget, the backoff and the schedules
+  re-check the slot they own, so a NaN/inf/string/bool/negative/absurd value can never widen a cap, freeze a schedule or crash a run.
 
 ## 4. Schedule
 
@@ -248,7 +254,7 @@ Pure function of the journal (`recognize(records, cfg)`), folded in incrementall
 | `passive` | `devices{}` (iops, bps, await ms, busy %), `pressure`; also `pressure_memory`, `vmstat_per_s` (swap-in/out, major faults, zswap, anon refaults per second; null when unavailable), `loadavg`, `cgroups{}` rates/pressure, `others_writing{}` (top writers outside the slices), `root_total_w_bps`; on a gated tick `gated` true and `gate_reasons[]` |
 | `recommendation` | `lane`, `kind` (baseline_established, shift_detected, shift_cleared, baseline_reset), `text`, `evidence` (`category`="capability", `key`, window, factor, direction, CUSUM state) |
 | `harm` | `kind` (`episode`, `probe_latency`), `evidence` (episode: start/end, `duration_s`, `recovery_s`, peaks incl. `peak_mem_some_pct`/`peak_mem_full_pct`, `driver` (memory / io / dstate), `series[[t_rel, some%, full%, dstate, sys_some_avg10, mem_some%, mem_full%]]` <= 300 points, `settings_epoch`) |
-| `note` | `text`; `kind` annotation / action / baseline_reset |
+| `note` | `text`; `kind` annotation / action / baseline_reset / retention / state_repair / error. The tool's own notes (retention, state repairs, internal errors) name files and directories of the state directory and may quote an exception message: the journal is 0640 inside a 0700 directory, readable by root and the service user only, and nothing in it is a secret, but it is not host-agnostic. |
 
 Other files in `state_dir`: `state.json` (schedule, budget, backoff, failure counters, walk positions), `agg.json` (recognizer aggregates), `resets.log`
 (baseline-reset times), `run.lock`, `watch.lock`, `state.lock`, `scratch/` (one file during a bench, `iogov-scratch.lock`).

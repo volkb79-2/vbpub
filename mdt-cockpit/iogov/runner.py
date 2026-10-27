@@ -9,7 +9,6 @@ survive a crash (budget reservation, next bench time, failure counters) is persi
 from __future__ import annotations
 
 import contextlib
-import math
 import os
 import sys
 from dataclasses import dataclass, field
@@ -28,6 +27,7 @@ from .journal import Journal, prune as prune_journal, read_records
 from .rawread import RawReader, RawReadError, write_denied
 from .recognizer import Engine
 from .scratch import ScratchBusy, plan_region, remove_stale
+from .state import finite, validate_state
 
 DAY = 86400.0
 
@@ -101,7 +101,9 @@ def exclusive(rt: Runtime):
         return
     loaded = False
     try:
-        rt.state = safeio.load_json(rt.path("state.json"))
+        rt.state, problems = validate_state(safeio.load_json(rt.path("state.json")))
+        if problems:  # dropped to defaults; said once in the journal (the cleaned state is saved at the end of this run)
+            rt.journal.append("note", kind="state_repair", text="state.json: fields dropped to their defaults: " + "; ".join(problems)[:2000])
         rt.engine = _load_engine(rt)
         loaded = True
         yield True
@@ -198,8 +200,9 @@ def _begin(rt: Runtime, kind: str) -> str:
     settings = rt.collector.settings()
     epoch = settings_epoch(settings)
     now = rt.env.wall()
-    last = rt.state.get("last_full", {})
-    full = last.get("epoch") != epoch or now - last.get("t", 0) >= 3600 or last.get("t", 0) > now
+    last = rt.state.get("last_full") or {}
+    last_t = last.get("t", 0.0)
+    full = last.get("epoch") != epoch or not _finite(last_t) or now - last_t >= 3600 or last_t > now
     fields: dict = {"full": full}
     if full:  # settings and covariates are recorded when they change and at least hourly, not on every 5-minute tick
         fields.update(settings=settings, devices=[d.kname for d in rt.disks], notes=list(rt.notes),
@@ -211,7 +214,8 @@ def _begin(rt: Runtime, kind: str) -> str:
 
 def _daily_prune(rt: Runtime) -> None:
     now = rt.env.wall()
-    if now - rt.state.get("last_prune", 0) < DAY and rt.state.get("last_prune", 0) <= now:
+    last = rt.state.get("last_prune", 0.0)
+    if _finite(last) and now - last < DAY and last <= now:
         return
     rt.state["last_prune"] = now
     removed = prune_journal(rt.cfg.journal_dir(), now, rt.cfg.journal_max_age_days, rt.cfg.journal_max_bytes)
@@ -341,9 +345,9 @@ def run_tick(rt: Runtime) -> int:
 
 
 def _finite(v) -> bool:
-    """A real, finite number from the persisted state (a NaN/inf/non-number there must never freeze a schedule or a rate limit)."""
+    """A real, finite, plausible number from the persisted state (anything else must never freeze a schedule or a rate limit)."""
 
-    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+    return finite(v)
 
 
 def bench_due(rt: Runtime) -> bool:
@@ -406,10 +410,11 @@ def run_bench_cmd(rt: Runtime, force: bool = False) -> int:
         sizes = [b for b in (disk_bytes(cfg, d) for d in rt.disks) if b]
         plan = plan_region(cfg, min(sizes) if sizes else None)
         now = env.wall()
+        last_esc = rt.state.get("last_escalation", 0.0)
         escalate = (
             plan.mode == "file"
             and rt.state.get("last_bench") is not None
-            and now - rt.state.get("last_escalation", 0.0) >= cfg.escalation_every_h * 3600.0
+            and (not _finite(last_esc) or now - last_esc >= cfg.escalation_every_h * 3600.0)
         )
         interval = cfg.bench_interval_h * 3600.0
         jitter = (env.rng.random() * 2 - 1) * cfg.bench_jitter * interval

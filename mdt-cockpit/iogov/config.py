@@ -252,14 +252,14 @@ def load(path: str | None = None) -> Config:
         import tomllib
     except ImportError as exc:  # pragma: no cover - python < 3.11
         raise ConfigError("python >= 3.11 (tomllib) is required to read the config file") from exc
-    # The config path may be a symlink (a managed-config layout), but only a ROOT-owned one; its target must then pass every check a
-    # plain file must pass. Anything else that is not a regular file (FIFO, device node, directory) is refused before any open.
-    target = path
-    lst = os.lstat(path)
-    if stat.S_ISLNK(lst.st_mode):
-        if lst.st_uid != 0:
-            raise ConfigError(f"{path}: a symlinked config path must itself be root-owned (is uid {lst.st_uid})")
-        target = os.path.realpath(path)
+    # The config path may be a symlink (a managed-config layout), but only a ROOT-owned one whose whole chain (every hop, every directory
+    # on the way, the final file's directory) is root-owned and not group/other-writable; the target must then pass every check a plain
+    # file must pass. Anything else that is not a regular file (FIFO, device node, directory) is refused before any open.
+    try:
+        lst = os.lstat(path)
+    except OSError as exc:
+        raise ConfigError(f"{path}: {exc.strerror or exc}") from None
+    target = _resolve_config_link(path) if stat.S_ISLNK(lst.st_mode) else path
     try:
         safeio.refuse_non_regular(target)
     except safeio.UnsafePath as exc:
@@ -276,6 +276,55 @@ def load(path: str | None = None) -> Config:
         return from_mapping(tomllib.loads(text))
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"{path}: {exc}") from None
+
+
+def _trusted_dir(d: str) -> str | None:
+    """None when `d` is a directory owned by root and not group/other-writable, else the reason."""
+
+    try:
+        st = os.stat(d)
+    except OSError as exc:
+        return exc.strerror or str(exc)
+    if not stat.S_ISDIR(st.st_mode):
+        return "not a directory"
+    if st.st_uid != 0:
+        return f"owned by uid {st.st_uid}, not root"
+    if st.st_mode & 0o022:
+        return f"group/other writable (mode {oct(st.st_mode & 0o7777)})"
+    return None
+
+
+def _ancestors(p: str) -> list[str]:
+    out = []
+    d = os.path.dirname(os.path.abspath(p)) or "/"
+    while True:
+        out.append(d)
+        parent = os.path.dirname(d)
+        if parent == d:
+            return out
+        d = parent
+
+
+def _resolve_config_link(path: str, max_hops: int = 8) -> str:
+    """Follow a chain of root-owned symlinks by hand. Every hop must be root-owned, and every directory above every hop and above the final
+    file must be root-owned and not group/other-writable: a root-owned link into a service-writable directory is NOT a trusted config."""
+
+    cur = os.path.abspath(path)
+    for _ in range(max_hops):
+        try:
+            lst = os.lstat(cur)
+        except OSError as exc:
+            raise ConfigError(f"{path}: {cur}: {exc.strerror or exc}") from None
+        if stat.S_ISLNK(lst.st_mode) and lst.st_uid != 0:
+            raise ConfigError(f"{path}: symlink {cur} must be root-owned (is uid {lst.st_uid})")
+        for d in _ancestors(cur):
+            why = _trusted_dir(d)
+            if why:
+                raise ConfigError(f"{path}: directory {d} on the symlink chain is not trusted ({why})")
+        if not stat.S_ISLNK(lst.st_mode):
+            return cur
+        cur = os.path.normpath(os.path.join(os.path.dirname(cur), os.readlink(cur)))
+    raise ConfigError(f"{path}: more than {max_hops} symlink hops")
 
 
 def effective(cfg: Config) -> dict:

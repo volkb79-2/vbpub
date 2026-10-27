@@ -21,6 +21,7 @@ from . import journal as journal_mod
 from .journal import ReadStats, load_state, read_records
 from .recognizer import Engine, lane_kind, pattern_hint
 from .scratch import STALE_RE
+from .state import validate_state
 
 MAX_EPISODES = 2000
 MAX_NOTES = 500
@@ -33,35 +34,10 @@ def _num(v):
 
 
 def clean_state(state: dict) -> tuple[dict, list[str]]:
-    """Type-check the fields `status` prints from state.json (an untrusted, service-owned file when root runs `status`).
-    Returns (usable fields, problems); a field with the wrong type is dropped and named, never indexed."""
+    """The one state validator (`state.validate_state`), for `status`: (usable fields, names of the fields dropped)."""
 
-    out: dict = {}
-    problems: list[str] = []
-    for key in ("last_tick", "last_bench", "next_bench"):
-        v = state.get(key)
-        if v is None:
-            continue
-        if _num(v) is None:
-            problems.append(key)
-        else:
-            out[key] = v
-    fail = state.get("bench_fail")
-    if isinstance(fail, dict) and _num(fail.get("n")) is not None and (fail.get("disabled_at") is None or _num(fail.get("disabled_at")) is not None):
-        out["bench_fail"] = fail
-    elif fail is not None:
-        problems.append("bench_fail")
-    b = state.get("budget")
-    if isinstance(b, dict) and isinstance(b.get("day"), str) and all(_num(b.get(k)) is not None for k in ("read_bytes", "write_bytes", "sync_ops")):
-        out["budget"] = b
-    elif b is not None:
-        problems.append("budget")
-    bo = state.get("backoff")
-    if isinstance(bo, dict) and all(isinstance(v, dict) and _num(v.get("n")) is not None for v in bo.values()):
-        out["backoff"] = bo
-    elif bo is not None:
-        problems.append("backoff")
-    return out, problems
+    out, problems = validate_state(state)
+    return out, [p.split(":", 1)[0] for p in problems]
 
 
 def _day(idx: int, cfg) -> str:
@@ -312,7 +288,7 @@ def status(cfg, wall) -> str:
         state, problems = {}, []
         lines.append(f"  corrupt state: {exc}")
     if problems:
-        lines.append(f"  corrupt state: {cfg.state_file()}: fields with the wrong type ignored: {', '.join(problems)}")
+        lines.append(f"  corrupt state: {cfg.state_file()}: fields with the wrong type or out of range ignored: {', '.join(problems)}")
     ks = kill_switch_reason(cfg)
     lines.append(f"  kill switch: {'ACTIVE ' + ks if ks else 'not set'}")
 

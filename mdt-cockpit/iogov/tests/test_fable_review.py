@@ -17,6 +17,7 @@ import json
 import os
 import re
 import stat
+import sys
 import time
 from pathlib import Path
 
@@ -383,7 +384,7 @@ def test_s2_deeply_nested_or_oversized_state_files_are_reported_not_crashes(worl
     assert "corrupt state" in out and "RecursionError" in out
     (world.state / "state.json").write_text('{"next_bench": "soon", "budget": {"day": 1}, "last_tick": 5.0, "backoff": []}')
     out = status(cfg, env.wall)
-    assert "fields with the wrong type ignored: next_bench, budget, backoff" in out and "last tick:" in out
+    assert "fields with the wrong type or out of range ignored: next_bench, budget, backoff" in out and "last tick:" in out
     (world.state / "agg.json").write_text("null")
     assert "corrupt state" in status(cfg, env.wall)
     (world.state / "agg.json").write_text('{"v": 1, "horizon": "x", "records": 0, "resets": [], "passive_peak": {}, "lanes": 5, "open": {}}')
@@ -539,7 +540,8 @@ def test_s6_units_have_a_hard_backstop_and_a_killed_bench_is_cleaned_up_by_the_n
 
 
 TOKENS = {
-    "IOGOV_USER": "iogov", "IOGOV_PYTHON": "/usr/bin/python3", "IOGOV_PYTHONPATH": "/opt/iogov", "IOGOV_CONFIG": "/etc/iogov/iogov.toml",
+    # IOGOV_PYTHON must exist and be executable where the test runs (systemd-analyze verify checks ExecStart=): the test's own interpreter
+    "IOGOV_USER": "iogov", "IOGOV_PYTHON": sys.executable, "IOGOV_PYTHONPATH": "/opt/iogov", "IOGOV_CONFIG": "/etc/iogov/iogov.toml",
     "IOGOV_STATE_DIR": "/var/lib/iogov", "IOGOV_SCRATCH_DIR": "/var/lib/iogov/scratch", "IOGOV_KILL_SWITCH_FILE": "/etc/iogov/disabled",
     "IOGOV_DISK_NODE": "/dev/null", "IOGOV_DISK_ID_PATH": "pci-0000:00:04.0", "IOGOV_IO_WEIGHT": "50", "IOGOV_TICK_INTERVAL": "5min",
 }
@@ -687,7 +689,8 @@ def test_t7_nan_in_persisted_numbers_never_freezes_a_schedule_or_the_rate_limit(
     from iogov.report import clean_state
     cleaned, problems = clean_state({"next_bench": float("nan"), "last_tick": float("inf"), "last_bench": 5.0})
     assert problems == ["last_tick", "next_bench"] and cleaned == {"last_bench": 5.0}
-    assert "wrong type ignored: next_bench" in status(cfg, env.wall)  # the NaN next_bench written above; last_tick there is valid
+    sj.write_text(json.dumps(st))  # the tick above repaired and re-saved the file; damage it again for the read-only report
+    assert "out of range ignored: next_bench, skip_passive_t" in status(cfg, env.wall)  # the NaNs; last_tick there is valid
 
 
 def test_t8_a_symlinked_config_path_is_accepted_only_when_the_link_is_root_owned(world, monkeypatch):
@@ -699,10 +702,39 @@ def test_t8_a_symlinked_config_path_is_accepted_only_when_the_link_is_root_owned
         load(str(link))  # a symlink owned by the running user is not trusted
     real_lstat = os.lstat
     monkeypatch.setattr(os, "lstat", lambda p, *a, **k: os.stat_result((stat.S_IFLNK | 0o777, 0, 0, 1, 0, 0) + tuple(real_lstat(p)[6:])) if str(p) == str(link) else real_lstat(p, *a, **k))
-    assert load(str(link)).read_iops_max == 7.0  # a root-owned link whose target passes every check
+    with pytest.raises(ConfigError, match="directory .* is not trusted"):
+        load(str(link))  # a root-owned link is NOT enough: its directories are owned by the running user (a service-writable layout)
+    real_stat = os.stat
+
+    def dirs_as_root(p, *a, **k):  # every directory on the chain reported root-owned 0755 (the layout a real /etc has)
+        st = real_stat(p, *a, **k)
+        if stat.S_ISDIR(st.st_mode):
+            return os.stat_result((stat.S_IFDIR | 0o755, st.st_ino, st.st_dev, st.st_nlink, 0, 0) + tuple(st)[6:])
+        return st
+
+    monkeypatch.setattr(os, "stat", dirs_as_root)
+    assert load(str(link)).read_iops_max == 7.0  # a root-owned link, trusted directories, and a target that passes every check
     os.chmod(real, 0o666)
     with pytest.raises(ConfigError, match="writable"):
         load(str(link))  # the target is checked like a plain file
+    with pytest.raises(ConfigError, match="No such file"):
+        load(str(world.root / "missing-after-exists.toml")) if False else _load_vanishing(world, monkeypatch)
+
+
+def _load_vanishing(world, monkeypatch):
+    """The file exists for Path.exists() and is gone for the lstat right after: a ConfigError, never a traceback."""
+
+    p = world.root / "vanishing.toml"
+    p.write_text("")
+    real_lstat = os.lstat
+
+    def gone(path, *a, **k):
+        if str(path) == str(p):
+            os.unlink(p)
+        return real_lstat(path, *a, **k)
+
+    monkeypatch.setattr(os, "lstat", gone)
+    load(str(p))
 
 
 def test_t9_journal_file_limit_counts_bytes_not_characters(world, monkeypatch):
@@ -717,3 +749,115 @@ def test_t9_journal_file_limit_counts_bytes_not_characters(world, monkeypatch):
     stats = ReadStats()
     got = list(read_records(cfg.journal_dir(), stats))
     assert len(got) == 1 and stats.truncated == [f.name]  # 452 + 452 bytes > 700, although 504 characters < 700
+
+
+# ===== U1-U5: the Sonnet review of c3e018efb (one schema for the persisted state) ======================================
+
+NAN, INF = float("nan"), float("inf")
+BAD_NUMBERS = [NAN, INF, -INF, "x", True, False, -1, 10 ** 12, [], {}]  # for epoch fields (bound 1e11)
+BAD_COUNTS = [NAN, INF, -INF, "x", True, False, -1, 10 ** 16, 1.5, [], {}]  # for byte/op counters (non-negative ints, bound 1e15)
+
+
+def _budget(day="2026-09-21", **over):
+    b = {"day": day, "read_bytes": 0, "write_bytes": 0, "read_ops": 0, "write_ops": 0, "sync_ops": 0}
+    b.update(over)
+    return b
+
+
+def test_u1_every_state_field_class_is_validated_and_dropped_with_its_name():
+    from iogov.state import validate_state
+    for key in ("last_tick", "last_bench", "next_bench", "last_escalation", "last_prune", "skip_passive_t"):
+        for bad in BAD_NUMBERS:
+            out, problems = validate_state({key: bad, "last_bench": 5.0} if key != "last_bench" else {key: bad})
+            assert key not in out and problems and problems[0].startswith(key + ":"), (key, bad)
+        assert validate_state({key: 5.0})[0] == {key: 5.0}
+    for bad in BAD_COUNTS:
+        for field in ("read_bytes", "sync_ops"):
+            out, problems = validate_state({"budget": _budget(**{field: bad})})
+            assert "budget" not in out and problems[0].startswith("budget:"), (field, bad)
+    assert "budget" not in validate_state({"budget": _budget(day=20260921)})[0]
+    assert "budget" not in validate_state({"budget": _budget(day="2026-9-21")})[0]
+    assert validate_state({"budget": _budget()})[0] == {"budget": _budget()}
+    for bad in BAD_NUMBERS:
+        assert "backoff" not in validate_state({"backoff": {"tick": {"n": 1, "until": bad}}})[0], bad
+        assert "backoff" not in validate_state({"backoff": {"tick": {"n": bad, "until": 0.0}}})[0] or bad in (0,), bad
+        assert "bench_fail" not in validate_state({"bench_fail": {"n": 0, "disabled_at": bad}})[0], bad
+        assert "last_full" not in validate_state({"last_full": {"epoch": "e", "t": bad}})[0], bad
+        assert "skip_logged" not in validate_state({"skip_logged": {"tick": {"sig": "s", "t": bad}}})[0], bad
+    assert validate_state({"bench_fail": {"n": 0, "disabled_at": None}})[0] == {"bench_fail": {"n": 0, "disabled_at": None}}
+    dev = {"n_blocks": 100, "stride": 61, "start": 3, "counter": 7, "witness": [1, 2]}
+    assert validate_state({"devices": {"vda": dev}})[0] == {"devices": {"vda": dev}}
+    for bad_dev in (dict(dev, stride=0), dict(dev, counter=-1), dict(dev, witness=[NAN]), dict(dev, witness="x"), dict(dev, n_blocks=1.0)):
+        assert "devices" not in validate_state({"devices": {"vda": bad_dev}})[0], bad_dev
+    out, problems = validate_state({"mystery": 1, "last_tick": 1.0})
+    assert out == {"last_tick": 1.0} and problems == ["mystery: unknown key"]
+    assert validate_state([]) == ({}, ["state: not an object"])
+
+
+def test_u2_a_nan_or_string_in_the_budget_slot_cannot_widen_the_daily_cap(world):
+    cfg = world.config()
+    today = "2026-09-21"
+    for bad in (NAN, "x", -5, 1.5):
+        st = {"budget": _budget(day=today, read_bytes=bad)}
+        b = DailyBudget(st, cfg, lambda: 1_790_000_000.0)
+        assert b.reserve("read", 10 ** 12) <= cfg.max_read_bytes_per_day and st["budget"]["read_bytes"] <= cfg.max_read_bytes_per_day
+        assert b.remaining("read") >= 0
+
+
+def test_u3_a_damaged_state_file_is_repaired_once_journalled_and_every_schedule_keeps_running(world):
+    env, clock = make_env()
+    cfg = world.config()
+    run_tick(build(cfg, env))
+    sj = world.state / "state.json"
+    st = json.loads(sj.read_text())
+    st.update({"last_prune": "x", "last_escalation": NAN, "last_full": {"epoch": st["last_full"]["epoch"], "t": NAN},
+               "backoff": {"tick": {"n": 1, "until": NAN}}, "budget": dict(st["budget"], read_bytes="x"), "mystery": 1})
+    sj.write_text(json.dumps(st))
+    clock.t += 60
+    assert run_tick(build(cfg, env)) == 0  # not exit 3
+    recs = records(world)
+    notes = [r for r in recs if r["type"] == "note" and r.get("kind") == "state_repair"]
+    assert len(notes) == 1
+    for name in ("last_prune", "last_escalation", "last_full", "backoff", "budget", "mystery"):
+        assert name + ":" in notes[0]["text"], name
+    starts = [r for r in recs if r["type"] == "run_start"]
+    assert starts[-1]["full"]  # a NaN last_full.t does not suppress the hourly full record
+    from iogov.state import validate_state
+    saved = json.loads(sj.read_text())
+    assert validate_state(saved)[1] == [] and "mystery" not in saved  # repaired once: the next run finds a clean file
+    clock.t += 60
+    run_tick(build(cfg, env))
+    assert len([r for r in records(world) if r["type"] == "note" and r.get("kind") == "state_repair"]) == 1
+    # a NaN last_escalation does not stop the weekly escalation
+    st = json.loads(sj.read_text())
+    st["last_escalation"] = NAN
+    st["last_bench"] = env.wall()
+    sj.write_text(json.dumps(st))
+    run_bench_cmd(build(cfg, env), force=True)
+    bench = [r for r in records(world) if r["type"] == "bench"][-1]
+    assert bench["region"]["escalated"] is True
+
+
+def test_u4_backoff_slot_damage_never_blocks_or_unblocks_a_run():
+    from iogov.gating import Backoff
+    cfg = from_mapping({})
+    for bad in BAD_NUMBERS:
+        st = {"backoff": {"tick": {"n": 1, "until": bad}}}
+        bo = Backoff(st, cfg, lambda: 1_790_000_000.0, "tick")
+        assert bo.until() == 0.0 and bo.blocked() == 0.0, bad
+        assert bo.hit() == cfg.backoff_base_s and st["backoff"]["tick"]["n"] == 1  # the damaged slot was replaced, not continued
+    st = {"backoff": "x"}
+    assert Backoff(st, cfg, lambda: 1.0, "tick").blocked() == 0.0 and isinstance(st["backoff"], dict)
+    st = {"backoff": {"tick": {"n": 2, "until": 1_790_000_100.0}}}
+    assert Backoff(st, cfg, lambda: 1_790_000_000.0, "tick").blocked() == 100.0  # a valid slot still blocks
+
+
+def test_u5_bench_due_treats_an_implausible_next_bench_as_due(world):
+    from iogov.runner import bench_due
+    env, _ = make_env()
+    rt = build(world.config(), env)
+    for bad in BAD_NUMBERS:
+        rt.state = {"next_bench": bad}
+        assert bench_due(rt), bad
+    rt.state = {"next_bench": env.wall() + 100}
+    assert not bench_due(rt)
