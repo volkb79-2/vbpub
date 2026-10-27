@@ -15,6 +15,8 @@ def test_sequential_untagged_no_build_skips_publish_and_records_progress(monkeyp
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "child", "cmru/release/x", "a" * 40)
     calls = []
     monkeypatch.setattr(transaction, "write_release_progress", lambda *args: calls.append(("progress", args[-1])))
+    monkeypatch.setattr(transaction, "start_untagged_publication_record", lambda *a: None)
+    monkeypatch.setattr(transaction, "mark_untagged_publication_started", lambda *a: None)
     monkeypatch.setattr(cli, "apply_project_release_env", lambda *args: None)
     monkeypatch.setattr(cli, "_prepare_release_projects", lambda *args, **kwargs: calls.append("prepare"))
     monkeypatch.setattr(cli, "_run_release_gates", lambda *args, **_kw: calls.append("gate"))
@@ -39,6 +41,8 @@ def test_sequential_tagged_no_build_persists_tag_without_project_publish(monkeyp
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "child", "cmru/release/x", "a" * 40)
     calls = []
     monkeypatch.setattr(transaction, "write_release_progress", lambda *args: calls.append(("progress", args[-1])))
+    monkeypatch.setattr(transaction, "start_untagged_publication_record", lambda *a: None)
+    monkeypatch.setattr(transaction, "mark_untagged_publication_started", lambda *a: None)
     monkeypatch.setattr(transaction, "write_release_result", lambda *args: calls.append(("result", args[-1])))
     monkeypatch.setattr(cli, "apply_project_release_env", lambda *args: None)
     monkeypatch.setattr(cli, "_prepare_release_projects", lambda *args, **kwargs: calls.append("prepare"))
@@ -86,6 +90,8 @@ def test_feature_source_sequential_no_build_retains_candidate_without_main_promo
         transaction, "write_release_progress",
         lambda *_args: calls.append("progress"),
     )
+    monkeypatch.setattr(transaction, "start_untagged_publication_record", lambda *a: None)
+    monkeypatch.setattr(transaction, "mark_untagged_publication_started", lambda *a: None)
     monkeypatch.setattr(transaction, "write_release_result", lambda *_args: calls.append("result"))
     monkeypatch.setattr(cli, "apply_project_release_env", lambda *_args: None)
     monkeypatch.setattr(cli, "_prepare_release_projects", lambda *_args, **_kw: calls.append("prepare"))
@@ -130,6 +136,8 @@ def test_sequential_publishes_before_promoting_exact_candidate(monkeypatch, tmp_
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "child", "cmru/release/x", "a" * 40)
     calls = []
     monkeypatch.setattr(transaction, "write_release_progress", lambda *args: calls.append(("progress", args[-1])))
+    monkeypatch.setattr(transaction, "start_untagged_publication_record", lambda *a: None)
+    monkeypatch.setattr(transaction, "mark_untagged_publication_started", lambda *a: None)
     monkeypatch.setattr(transaction, "write_release_result", lambda *args: calls.append(("result", args[-1])))
     monkeypatch.setattr(cli, "apply_project_release_env", lambda *args: None)
     monkeypatch.setattr(cli, "_prepare_release_projects", lambda *args, **kwargs: calls.append("prepare"))

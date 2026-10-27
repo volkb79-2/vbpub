@@ -42,6 +42,8 @@ def test_release_sequentially_no_tag_no_build_records_nothing_but_checkpoints(mo
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path, "cmru/release/x", "a" * 40)
     progress, calls = [], []
     monkeypatch.setattr(cli.transaction, "write_release_progress", lambda *args: progress.append(args[-1]))
+    monkeypatch.setattr(cli.transaction, "start_untagged_publication_record", lambda *a: None)
+    monkeypatch.setattr(cli.transaction, "mark_untagged_publication_started", lambda *a: None)
     monkeypatch.setattr(cli, "apply_project_release_env", lambda *args: None)
     monkeypatch.setattr(cli, "_prepare_release_projects", lambda *args, **kwargs: calls.append("prepare"))
     monkeypatch.setattr(cli, "_run_release_gates", lambda *args, **_kw: calls.append("gate"))
@@ -64,6 +66,8 @@ def test_release_sequentially_tagged_no_build_records_tag_and_skips_artifact_ste
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path, "cmru/release/x", "a" * 40)
     results, pushed = [], []
     monkeypatch.setattr(cli.transaction, "write_release_progress", lambda *args: None)
+    monkeypatch.setattr(cli.transaction, "start_untagged_publication_record", lambda *a: None)
+    monkeypatch.setattr(cli.transaction, "mark_untagged_publication_started", lambda *a: None)
     monkeypatch.setattr(cli, "apply_project_release_env", lambda *args: None)
     monkeypatch.setattr(cli, "_prepare_release_projects", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli, "_run_release_gates", lambda *args, **_kw: None)

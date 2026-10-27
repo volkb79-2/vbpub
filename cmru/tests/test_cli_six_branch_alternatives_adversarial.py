@@ -41,6 +41,8 @@ def test_sequential_no_tag_no_build_skips_build_and_checkpoints(monkeypatch, tmp
     project = cli.ProjectConfig("demo", {}, {}, prefix="demo-v", git_tag=True)
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "child", "cmru/release/x", "a" * 40)
     monkeypatch.setattr(transaction, "write_release_progress", lambda *args: None)
+    monkeypatch.setattr(transaction, "start_untagged_publication_record", lambda *a: None)
+    monkeypatch.setattr(transaction, "mark_untagged_publication_started", lambda *a: None)
     monkeypatch.setattr(cli, "apply_project_release_env", lambda *args: None)
     monkeypatch.setattr(cli, "_prepare_release_projects", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli, "_run_release_gates", lambda *args, **_kw: None)

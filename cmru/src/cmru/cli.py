@@ -3636,6 +3636,7 @@ def _release_projects_sequentially(
     # Returning "the run's base" is exactly equivalent to "nothing has fully
     # succeeded yet in this run".
     transaction.write_release_progress(repo_root, workspace, workspace.base)
+    transaction.start_untagged_publication_record(repo_root, workspace)
 
     released: List[str] = []
     for name in release_names:
@@ -3666,6 +3667,9 @@ def _release_projects_sequentially(
                 _assert_release_candidate_unchanged(
                     repo_root, name, candidate_sha, phase="before untagged release",
                 )
+                # KI-98: durable BEFORE anything can publish, so `cmru abandon`
+                # can tell "failed before publishing" from "unknown".
+                transaction.mark_untagged_publication_started(repo_root, workspace, name)
                 _run_untagged_project(
                     repo_root, configs, name,
                     github_config=github_config, env_config=env_config,
@@ -7810,7 +7814,13 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
                 repo_root, git_auth=git_auth, context="inspect origin release tags",
             )
             tag_prefixes = _release_tag_prefixes_for_scope(scope, scoped_configs)
-            if not tag_prefixes:
+            # KI-98: a scope with NO git_tag project owns no tag namespace; an
+            # empty prefix set then simply means there are no tag refs to check.
+            # Only a tagged project without a usable prefix is unclassifiable.
+            if not tag_prefixes and any(
+                name in scoped_configs and getattr(scoped_configs[name], "git_tag", False)
+                for name in scope
+            ):
                 raise RuntimeError("release scope has no usable Git tag prefix")
             scoped_remote_tags = _release_tag_ref_records(tag_ref_records, tag_prefixes)
             initial_tag_refs = transaction.read_release_tag_snapshot(repo_root, workspace)
@@ -7961,6 +7971,17 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
                     "remove it with `git tag -d TAG` before abandoning this candidate."
                 )
             untagged = [name for name in scope if name not in scoped_configs or not scoped_configs[name].git_tag]
+            if untagged:
+                # KI-98: an untagged project is provably unpublished when this
+                # transaction's own record (written before any publication
+                # starts) exists and neither names the project nor holds a
+                # result for it. No record (older transaction) stays withheld.
+                started = transaction.read_untagged_publication_record(repo_root, workspace)
+                if started is not None:
+                    untagged = [
+                        name for name in untagged
+                        if name not in scoped_configs or name in started or name in results
+                    ]
             if untagged:
                 remote_assets.extend(f"external publication state unknown for {name}" for name in untagged)
                 raise RuntimeError(
