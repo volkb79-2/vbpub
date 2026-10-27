@@ -11,6 +11,14 @@ from cmru.errors import RefusedBeforeChange
 from cmru.release_notes import PENDING_NOTES_BEGIN, PENDING_NOTES_END, ReleaseNotesError
 from tests.test_release_notes import _git, _project, _release_repo
 
+
+@pytest.fixture(autouse=True)
+def _no_untagged_publication_record(monkeypatch):
+    """KI-98: these tests drive the release transaction with a fake (non-git) workspace; the
+    untagged-publication record is covered by tests/test_cli_abandon.py, not here."""
+    monkeypatch.setattr(cli.transaction, "start_untagged_publication_record", lambda *a, **k: None)
+    monkeypatch.setattr(cli.transaction, "mark_untagged_publication_started", lambda *a, **k: None)
+
 PENDING = (
     "### Added\n- a hand-written entry\n\n"
     "### Migration\n1. run `tool migrate` before upgrading\n\n"

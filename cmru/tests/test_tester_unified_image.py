@@ -314,6 +314,8 @@ def _all_projects(root: Path, **overrides: str) -> Path:
                    '[project.optional-dependencies]\ntest = ["coverage>=7"]\n',
         "cgroup-profiler": '[project]\nname = "cgroup-profiler"\ndependencies = []\n'
                            '[project.optional-dependencies]\ntest = ["numpy>=2"]\n',
+        "pwmcp__client": '[project]\nname = "pwmcp-client"\ndependencies = ["playwright==1"]\n'
+                         '[project.optional-dependencies]\ntest = ["pillow>=10"]\n',
         "libraries__cli-extended": '[project]\nname = "cli-extended"\ndependencies = []\n'
                                    '[build-system]\nrequires = ["setuptools==1", "wheel==3"]\n',
     }
@@ -436,6 +438,8 @@ def test_real_estate_trees_have_no_internal_requirement_in_the_pypi_bound_closur
     for name in ("ciu", "cmru", "assay", "topos", "nyxloom"):
         (tmp_path / name).symlink_to(REPO_ROOT / name)
     (tmp_path / "cgroup-profiler").symlink_to(REPO_ROOT / "scripts" / "cgroup-profiler")
+    (tmp_path / "pwmcp").mkdir()
+    (tmp_path / "pwmcp" / "client").symlink_to(REPO_ROOT / "pwmcp" / "client")
     (tmp_path / "libraries").mkdir()
     (tmp_path / "libraries" / "cli-extended").symlink_to(REPO_ROOT / "libraries" / "cli-extended")
     closure = list(gen.requirements(tmp_path))
@@ -3841,8 +3845,10 @@ def test_dockerfile_copies_every_generator_project_to_its_expected_src_path():
         else:
             source = project_file
             relative = project_file
+        # Nested sources (pwmcp/client/pyproject.toml) keep their full relative path under /src.
+        destination = f"/src/{project_file}" if project != "cgroup-profiler" else "/src/cgroup-profiler/pyproject.toml"
         _assert_copy_spec_covers_path_at_destination(
-            specs, relative, source, f"/src/{project}/pyproject.toml",
+            specs, relative, source, destination,
         )
 
 

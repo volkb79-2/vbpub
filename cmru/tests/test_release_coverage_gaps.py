@@ -20,6 +20,14 @@ from cmru.cli_support import select_target_names
 
 
 @pytest.fixture(autouse=True)
+def _no_untagged_publication_record(monkeypatch):
+    """KI-98: these tests drive the release transaction with a fake (non-git) workspace; the
+    untagged-publication record is covered by tests/test_cli_abandon.py, not here."""
+    monkeypatch.setattr(cli.transaction, "start_untagged_publication_record", lambda *a, **k: None)
+    monkeypatch.setattr(cli.transaction, "mark_untagged_publication_started", lambda *a, **k: None)
+
+
+@pytest.fixture(autouse=True)
 def default_source_for_synthetic_release_workspaces(monkeypatch):
     monkeypatch.setattr(cli.transaction, "read_release_source", lambda *_args: None)
     monkeypatch.setattr(cli.transaction, "source_git_root_for_projects", lambda root, _projects: root)
