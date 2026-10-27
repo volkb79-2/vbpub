@@ -324,10 +324,14 @@ def test_an_override_edited_without_re_resolving_fails() -> None:
 def test_a_consistent_override_is_carried_with_its_reason_and_a_cutoff_that_admits_it() -> None:
     records = fake_version_records(VETTED)
     records["npm.copilot"].update({"version": "1.0.92-4", "reason": "keep until the MCP handshake bug is fixed"})
-    records["npm.copilot"]["resolved"]["sources"]["npm"]["released_at"] = "2026-10-10T00:00:00Z"  # younger than the window
+    # Younger than the window RELATIVE TO THE RECORD'S OWN CUTOFF (the fixture resolves at "now"): a fixed
+    # date silently aged past the window after 14 days and the waiver branch stopped being exercised.
+    young = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    records["npm.copilot"]["resolved"]["sources"]["npm"]["released_at"] = young
     vetted = stage._vetted_ai_cli_versions(lambda: records)
     assert vetted["COPILOT_REASON"] == "keep until the MCP handshake bug is fixed"
-    assert vetted["COPILOT_BEFORE"] == "2026-10-10T00:00:00Z"  # --before must still admit the pinned release itself
+    assert vetted["COPILOT_BEFORE"] == young  # --before must still admit the pinned release itself
+    assert vetted["COPILOT_WAIVED"] == "true"
     assert "OPENCLAW_REASON" not in vetted
     records["npm.copilot"]["reason"] = "  "
     with pytest.raises(stage.StageError, match="needs a reason"):

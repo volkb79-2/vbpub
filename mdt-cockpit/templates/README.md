@@ -42,11 +42,14 @@ are copy-in files: see [`vscode/README.md`](vscode/README.md).
 
 | Host source | Container target | Policy |
 |---|---|---|
-| `${localEnv:HOME}/mdt-cockpit-home/` | `/home/vscode` | Complete home, mode `0700` on a new source; all contents persist. |
-| `${localEnv:HOME}/mdt-cockpit-tmp/` | `/tmp` | Separate scratch/worktree source, mode `1777`. |
+| `${localEnv:HOME}/mdt-cockpit-${localWorkspaceFolderBasename}-home/` | `/home/vscode` | Complete home, one per checkout, mode `0700` on a new source; all contents persist. |
+| `${localEnv:HOME}/mdt-cockpit-${localWorkspaceFolderBasename}-tmp/` | `/tmp` | Separate scratch/worktree source per checkout, mode `1777`. |
 | `${localEnv:HOME}/.ssh/` | `/run/mdt/host-ssh` | Read-only native host SSH keys, outside the persistent home. |
 
-Any further mount source you add is named `${localEnv:HOME}/mdt-cockpit-<purpose>`.
+Any further mount source you add is named `${localEnv:HOME}/mdt-cockpit-<purpose>`. The
+initializer expands `${localWorkspaceFolderBasename}` to the checkout's folder name, exactly as the
+Dev Containers CLI does; a source's role (home or `/tmp`) comes from its target, so you may rename
+the sources (for example one shared `mdt-cockpit-home/`) without losing the modes.
 
 The home mount includes credentials and private keys stored under `~/.ssh`,
 `~/.gnupg`, and `~/.minisign`; protect the host source accordingly. Caches such

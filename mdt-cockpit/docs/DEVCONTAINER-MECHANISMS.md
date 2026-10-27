@@ -343,7 +343,7 @@ is a less standard language; scripts should stay bash or POSIX sh.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| A directory named like `mdt-cockpit-${localWorkspaceFolderBasename}-home` appears in `$HOME` | The initializer creates sources before the Dev Containers CLI substitutes variables and expanded only `${localEnv:HOME}` | Use an initializer that also expands `${localWorkspaceFolderBasename}` (current template); remove the stray empty directories. Do not use other `${...}` variables in `$HOME` bind sources. |
+| A directory literally named `mdt-cockpit-${localWorkspaceFolderBasename}-home` (the variable unexpanded) appears in `$HOME` | An old vendored initializer created sources before the Dev Containers CLI substituted variables and expanded only `${localEnv:HOME}` | Re-vendor the current `initialize_container_environment.py` (it expands `${localWorkspaceFolderBasename}` like the CLI does); remove the stray empty directories. Do not use other `${...}` variables in `$HOME` bind sources. |
 | Terminal opens bash, expected zsh | The profile setting was removed or overridden in a settings layer; passwd shell is bash | [Shell selection](#shell-selection) |
 | `PATH` entry missing in a login shell | Entry set in a file only bash reads | `containerEnv.PATH`, or `shell.env` |
 | Alias or function missing in zsh | Defined in `~/.bashrc` or a bash-guarded `/etc/profile.d` script | Move to `~/.config/mdt-cockpit/aliases.sh` |

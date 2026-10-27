@@ -1250,6 +1250,11 @@ RUN set -euo pipefail; \
         exit 1; \
     fi
 
+# The image must not keep the build-only dpkg setting (see MDT_BUILD_UNSAFE_IO above). It is
+# removed BEFORE the read-only final assertions below: nothing after the /etc/profile check may
+# mention dpkg or apt at all (scripts/test_path_hook.py pins that), and this is the last write.
+RUN rm -f /etc/dpkg/dpkg.cfg.d/99-mdt-build-unsafe-io
+
 # Final-stage assertion of the `mdt` group contract (D3): beneath /opt/mdt and /srv
 # nothing but symlinks may be outside group mdt, every directory is setgid with
 # group rwx, every regular file is group-writable. This only READS (no layer
@@ -1274,9 +1279,6 @@ RUN grep -qxF '  PATH="${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 # compose their preloads as "theirs:ours" or unset ours for that run.
 COPY --from=ksm-build /tmp/ksm-optin.so /usr/local/lib/ksm-optin.so
 ENV LD_PRELOAD=${KSM_OPTIN_LD_PRELOAD}
-
-# The image must not keep the build-only dpkg setting (see MDT_BUILD_UNSAFE_IO above).
-RUN rm -f /etc/dpkg/dpkg.cfg.d/99-mdt-build-unsafe-io
 
 USER vscode
 

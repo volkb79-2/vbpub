@@ -53,10 +53,14 @@ def test_the_fresh_home_layout_matches_the_initializer() -> None:
     """Sources: the initializer's constants, its prefix rule and the README's stated modes; the
     container-side home comes from the image (MDT_PATH_SUFFIX). Literals: none for names or modes."""
     mounts = _mounts()
-    assert mounts[_image_home()]["source"] == "${localEnv:HOME}/" + bootstrap.HOME_SOURCE_NAME + "/"
-    assert mounts["/tmp"]["source"] == "${localEnv:HOME}/" + bootstrap.TMP_SOURCE_NAME + "/"
-    assert bootstrap.HOME_SOURCE_NAME == bootstrap.SOURCE_PREFIX + "home"
-    assert bootstrap.TMP_SOURCE_NAME == bootstrap.SOURCE_PREFIX + "tmp"
+    assert mounts[_image_home()]["source"] == "${localEnv:HOME}/" + bootstrap.HOME_SOURCE_SPELLING + "/"
+    assert mounts["/tmp"]["source"] == "${localEnv:HOME}/" + bootstrap.TMP_SOURCE_SPELLING + "/"
+    # One home per checkout: the spelling carries the workspace folder basename, and the
+    # initializer's fallback names are that spelling expanded for the current checkout.
+    assert bootstrap.HOME_SOURCE_SPELLING == bootstrap.SOURCE_PREFIX + "${localWorkspaceFolderBasename}-home"
+    assert bootstrap.TMP_SOURCE_SPELLING == bootstrap.SOURCE_PREFIX + "${localWorkspaceFolderBasename}-tmp"
+    assert bootstrap.HOME_SOURCE_NAME == bootstrap.SOURCE_PREFIX + Path.cwd().name + "-home"
+    assert bootstrap.TMP_SOURCE_NAME == bootstrap.SOURCE_PREFIX + Path.cwd().name + "-tmp"
     readme = (ROOT / "templates" / "README.md").read_text(encoding="utf-8")
     assert f"mode `{bootstrap.HOME_MODE:04o}`" in readme
     assert f"mode `{bootstrap.TMP_MODE & 0o7777:04o}`" in readme

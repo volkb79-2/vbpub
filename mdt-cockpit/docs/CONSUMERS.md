@@ -614,8 +614,9 @@ a second hand-written tester command in `cmru.toml`.
 
 ### Persistent AI CLI state
 
-The vendored template mounts one host directory, `${localEnv:HOME}/mdt-cockpit-home/`, over
-`/home/vscode`. This keeps every agent state root and all other home data across rebuilds.
+The vendored template mounts one host directory per checkout,
+`${localEnv:HOME}/mdt-cockpit-${localWorkspaceFolderBasename}-home/`, over `/home/vscode`. This
+keeps every agent state root and all other home data across rebuilds.
 
 | Tool | Persistent home path | Durable state |
 |---|---|---|
@@ -731,10 +732,12 @@ lives in a folder outside every repo and the container opens a directory of repo
 ([templates/host-folder](../templates/host-folder/README.md)). An optional per-user btrfs copy-on-write area
 is described in [BTRFS-COW.md](BTRFS-COW.md).
 
-The template binds the complete home from `${localEnv:HOME}/mdt-cockpit-home/`; the host
-initializer prepares that directory (mode `0700`) and `${localEnv:HOME}/mdt-cockpit-tmp/` (mode
-`1777`, the separate `/tmp` mount). The new home starts **empty**. Nothing is migrated: there is
-no stopped-container step, no marker file, and no startup refusal.
+The template binds the complete home from
+`${localEnv:HOME}/mdt-cockpit-${localWorkspaceFolderBasename}-home/`; the host initializer
+expands the variable to the checkout's folder name and prepares that directory (mode `0700`) and
+`${localEnv:HOME}/mdt-cockpit-${localWorkspaceFolderBasename}-tmp/` (mode `1777`, the separate
+`/tmp` mount). The new home starts **empty**. Nothing is migrated: there is no stopped-container
+step, no marker file, and no startup refusal.
 
 If you used the previous split-mount template, the initializer prints one informational line
 while `~/mdt--mounted-folders/` still holds files and the new home is empty. Copy what you want by

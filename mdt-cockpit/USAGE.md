@@ -331,8 +331,9 @@ between this human inventory and registry OCI manifests/digests, see
 
 ## Persisting Agent State
 
-The vendored template mounts one host directory, `${localEnv:HOME}/mdt-cockpit-home/`, over
-`/home/vscode` - the complete home. It preserves all agent and tool state, including Claude Code and ClaudeLink
+The vendored template mounts one host directory per checkout,
+`${localEnv:HOME}/mdt-cockpit-${localWorkspaceFolderBasename}-home/`, over `/home/vscode` - the
+complete home. It preserves all agent and tool state, including Claude Code and ClaudeLink
 databases, Codex profiles and shared SQLite data, Pi sessions, OpenCode auth and sessions,
 `.config`, `.local`, SSH/GPG/minisign keys, shell startup files, caches, and user-created content.
 
@@ -345,7 +346,7 @@ belongs to. Defaults for bash, zsh, nano, htop, mc, Neovim and `less` are wired 
 file the finalizer writes is a comment-only `~/.zshrc` stub, and only when you have no zsh startup
 file. The home mount's host source is mode `0700` when created. Host SSH keys remain a separate
 readonly mount at `/run/mdt/host-ssh`; `/tmp` remains a separate host-backed source at
-`~/mdt-cockpit-tmp` (mode `1777`).
+`~/mdt-cockpit-<checkout>-tmp` (mode `1777`).
 
 To adopt the template copy `devcontainer.json` and `initialize_container_environment.py` from
 `templates/` into the consumer's `.devcontainer` and rebuild. **There is no migration.** If you used

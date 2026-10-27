@@ -1,7 +1,8 @@
 # The persistent `vscode` home (fresh-home design)
 
-The supported template mounts one host directory at `/home/vscode`:
-`${localEnv:HOME}/mdt-cockpit-home/` (mode `0700`). The home is **user state**: it
+The supported template mounts one host directory per checkout at `/home/vscode`:
+`${localEnv:HOME}/mdt-cockpit-${localWorkspaceFolderBasename}-home/` (mode `0700`; the host
+initializer expands the variable to the checkout's folder name). The home is **user state**: it
 survives container rebuilds, the image never puts anything into it, and a new home
 **starts empty**. Image-owned tools live outside the mount (`/opt/mdt`, `/srv`) and every
 image default is wired where its tool reads system-wide configuration (`/etc`,
@@ -30,8 +31,8 @@ want by hand ([below](#moving-from-modern-debian-tools-python-debug)).
 5. `PATH` is defined once, by the image ([One PATH order](DESIGN-GUIDE.md#one-path-order)).
    `~/.local/bin` is **last**: it holds the user's own additions and never shadows an
    image tool. The template does not set `PATH` or `NPM_CONFIG_PREFIX`.
-6. The host bootstrap creates the two sources (`mdt-cockpit-home` `0700`, `mdt-cockpit-tmp`
-   `1777`), names any further source `mdt-cockpit-<purpose>`, and — when the previous
+6. The host bootstrap creates the two sources (`mdt-cockpit-<checkout>-home` `0700`,
+   `mdt-cockpit-<checkout>-tmp` `1777`), names any further source `mdt-cockpit-<purpose>`, and — when the previous
    `~/mdt--mounted-folders/` still holds files while the new home is empty — prints one
    informational line pointing here. That line never changes the exit status.
 
@@ -42,7 +43,7 @@ Contents below a listed directory inherit that directory's owner and persistence
 
 | Path or path class | Owner / role | Policy |
 |---|---|---|
-| `/home/vscode` | `vscode` home and mount point | Empty in the image; the whole directory is bind-mounted from `mdt-cockpit-home/`. |
+| `/home/vscode` | `vscode` home and mount point | Empty in the image; the whole directory is bind-mounted from `mdt-cockpit-<checkout>-home/`. |
 | `.zshrc` | comment-only stub | The only file the finalizer ever writes (only when none of `.zshenv`, `.zprofile`, `.zshrc`, `.zlogin` exists). Yours from then on. |
 | `.bashrc`, `.bash_logout`, `.profile`, `.zprofile` | optional user shell startup | **Not created.** bash and zsh load the image defaults from `/etc/bash.bashrc` and `/etc/zsh/zshrc`; create your own file to add to or override them. |
 | `.config/mdt-cockpit/` | **your** MDT overrides: `ai.env`, optional `shell.env`, `aliases.sh` | Not created by the image. Sourced after the image's own files. Examples: `/usr/local/share/mdt-cockpit/*.example`. |
@@ -88,7 +89,7 @@ Stop the container first (so SQLite WAL/SHM files are quiescent), then, on the h
 
 ```bash
 OLD=~/mdt--mounted-folders
-NEW=~/mdt-cockpit-home
+NEW=~/mdt-cockpit-<checkout>-home   # the checkout's folder name, e.g. ~/mdt-cockpit-myrepo-home
 mkdir -p "$NEW" "$NEW/.config/mdt-cockpit" "$NEW/.local/share"
 
 for item in .claude .claude.json .ssh .gnupg .minisign .claudelink .pi .reasonix .openclaw \

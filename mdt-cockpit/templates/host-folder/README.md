@@ -12,7 +12,7 @@ the cockpit's config to live inside (and be tied to) any one of them. The per-re
 | Config lives in | each repo's `.devcontainer/` | one folder on the host, outside every repo |
 | Container name / hostname | `<repo>-devcontainer-<user>` | `mdt-cockpit-<user>` (fixed) |
 | Opens in | `/workspaces/<repo>` | `/workspaces` (a directory of repos) |
-| State (home, `/tmp`) | `mdt-cockpit-home/`, `mdt-cockpit-tmp/` (rename per project if you want separate state) | same sources, one cockpit |
+| State (home, `/tmp`) | `mdt-cockpit-<repo>-home/`, `mdt-cockpit-<repo>-tmp/` (one pair per checkout) | `mdt-cockpit-<config-folder>-home/`, `-tmp/`: one pair for the cockpit (the basename is the config folder) |
 | Consumer hooks (`finalize.{pre,post}.d`) | the repo's `.devcontainer/` | the config folder, mounted read-only at `/run/mdt/devcontainer` |
 | Versioned with | the repo | its own small git repo, or nothing |
 | Best for | one project per container, teams that vendor the config | one person, many repos, a standing cockpit |

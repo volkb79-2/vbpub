@@ -362,12 +362,16 @@ containers built from the same layers.
 
 ### Complete persistent home
 
-The vendored template mounts one host directory, `${localEnv:HOME}/mdt-cockpit-home/` (mode
-`0700`), over `/home/vscode`. Agent logins, keys, histories, shell preferences, caches,
-worktrees, and arbitrary user-created home data therefore survive image rebuilds without
-maintaining a list of individual mount points. `/tmp` is a second host-backed source,
-`${localEnv:HOME}/mdt-cockpit-tmp/` (mode `1777`); any further source is named
-`${localEnv:HOME}/mdt-cockpit-<purpose>`.
+The vendored template mounts one host directory per checkout,
+`${localEnv:HOME}/mdt-cockpit-${localWorkspaceFolderBasename}-home/` (mode `0700`; for a
+checkout named `myrepo` that is `~/mdt-cockpit-myrepo-home/`), over `/home/vscode`. Agent
+logins, keys, histories, shell preferences, caches, worktrees, and arbitrary user-created home
+data therefore survive image rebuilds without maintaining a list of individual mount points, and
+two checkouts on one host never share a home. `/tmp` is a second host-backed source,
+`${localEnv:HOME}/mdt-cockpit-${localWorkspaceFolderBasename}-tmp/` (mode `1777`); any further
+source is named `${localEnv:HOME}/mdt-cockpit-<purpose>`. The role of a source (home or `/tmp`)
+comes from its mount target, so a consumer may spell the sources differently (for example one
+shared `~/mdt-cockpit-home/`).
 
 **A new home starts empty and stays that way.** The image leaves `/home/vscode` empty and ships
 no copy of any default into it: image-owned runtimes and CLIs live under `/opt/mdt` and `/srv`,
