@@ -50,8 +50,8 @@ documented default. (2) `ov` (.deb), `dry` (binary), `yazi` (glibc zip; sha256 f
 publishes no checksum file) and `sss` (github.com/azlux/sss, an unreleased bash script) are now WIRED with NO hard
 pins (operator 2026-10-27): each version is re-selected at build time as the newest release at least
 `MDT_TOOL_MIN_AGE_DAYS` (default 14) old, and `sss` as the newest default-branch commit at least that old with its
-sha256 recorded at staging (first-use trust). The GitHub API shapes (`assets[].digest`, `commits?until=`) are from memory
-and UNVERIFIED live. Staged and verified in
+sha256 recorded at staging (first-use trust). The GitHub API shapes (`assets[].digest`, `commits?until=`) were checked live
+on 2026-10-27 (`gh api`). Staged and verified in
 `scripts/stage_tool_artifacts.py`, installed and re-verified in the `Dockerfile`, listed in the manifest and
 `tests/runtime/test_image_contract.py`. Still UNBUILT and UNVERIFIED in a real image: no download was run,
 the `ov` `.deb` has not been `dpkg -i`'d, and the runtime checks have not run. `dive` was already installed. (3) `tmux` and `broot` come from Debian packages; the `tmux.conf`, `gitconfig`,

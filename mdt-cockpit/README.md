@@ -302,7 +302,7 @@ installed as both `fd` and Debian-compatible `fdfind`.
 
 Which modern replacements are worth shipping is guided by the community list
 [modern-unix](https://github.com/ibraheemdev/modern-unix) (a reference for candidates, not a
-specification: each tool is added deliberately, pinned and checksum-verified like the rest). System-wide
+specification: each tool is added deliberately and checksum-verified like the rest; none carries a fixed pin, see the resolution policy above). System-wide
 git (`delta` as pager), readline, vim and tmux defaults are listed in
 [`customization/README.md`](customization/README.md).
 

@@ -441,15 +441,14 @@ def _resolve_aged_version(
         published = _github_time(release.get("published_at"), f"{repo} release {value}")
     except StageError as exc:
         _warn(f"{variable}={value}: could not determine the release age ({exc}); accepted as given")
-        return value
+        return value.removeprefix('v')
     if published > cutoff:
         age = (now or datetime.now(timezone.utc)) - published
         _warn(
             f"{variable}={value} is only {age.total_seconds() / 86400:.1f} days old, younger than the "
             f"{_age_days(min_age_days)}-day buffer; accepted because it was set explicitly"
         )
-    return value
-
+    return value.removeprefix('v')
 
 def _resolve_sss_commit(requested: str | None, *, min_age_days: int | None = None, now: datetime | None = None) -> str:
     """Full commit of azlux/sss: explicit 40-hex, or the newest default-branch commit at least min_age_days old."""
