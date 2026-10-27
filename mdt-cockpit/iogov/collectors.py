@@ -13,6 +13,8 @@ import os
 import re
 import time
 
+from . import safeio
+
 STAT_FIELDS = (
     "r_ios", "r_merges", "r_sectors", "r_ticks", "w_ios", "w_merges", "w_sectors", "w_ticks",
     "in_flight", "io_ticks", "time_in_queue", "d_ios", "d_merges", "d_sectors", "d_ticks", "f_ios", "f_ticks",
@@ -20,11 +22,9 @@ STAT_FIELDS = (
 
 
 def _read(path: str) -> str | None:
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
-            return fh.read()
-    except OSError:
-        return None
+    """Bounded, non-blocking, regular files only (a FIFO or device node planted at a readable path can neither hang nor flood a run)."""
+
+    return safeio.read_text(path)
 
 
 def parse_pressure(text: str | None) -> dict | None:
@@ -143,11 +143,11 @@ class ContainerResolver:
                 continue
             name = None
             try:
-                with open(f, "r", encoding="utf-8") as fh:
-                    data = json.load(fh)
+                text = safeio.read_text(f)
+                data = json.loads(text) if text else None
                 if isinstance(data, dict) and isinstance(data.get("Name"), str):
                     name = data["Name"].lstrip("/")
-            except (OSError, ValueError):
+            except (ValueError, RecursionError):
                 pass
             self._parsed[f] = (mt, name, os.path.basename(os.path.dirname(f)))
 

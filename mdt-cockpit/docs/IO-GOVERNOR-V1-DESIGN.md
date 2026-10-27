@@ -82,6 +82,12 @@ evidence and emits **recommendations** such as "capability shifted down ~20x on 
 | Episodes from `io.pressure` only | `io.pressure` + `memory.pressure`, `driver` label | Second review (R6): live data showed memory/swap reclaim is the stall driver with a healthy disk. |
 | `analyze`/`status` verified file OWNER = running uid | read-only opens accept any owner (still no-follow); unreadable files are named | Second review (R1): run by root/an operator they silently reported "0 records" or crashed. Writers keep the owner check. |
 | Bare `fdatasync` in the 4 KiB lane | `timed_flush` everywhere | Second review (R3): the note promised a watchdog on every flush; `abort_latency_ms` alone bounded it. |
+| Readers opened by name, type checked after | lstat before every open, `O_NONBLOCK` on the open, type verified through the fd before the first read; every read bounded | Third review (S1/S2): a FIFO or device node planted as `journal-*.jsonl`/`state.json` hung a root `analyze`/`status`; a deeply nested or multi-GB file crashed or exhausted it. |
+| Reports indexed state/journal fields untyped | schema types for every top-level field, `clean_state` for `status`, nested values read defensively | Third review (S2): `TypeError` tracebacks on a damaged file instead of "corrupt state: <file>". |
+| Kill switch between the runner's check and the gate's | the gate's early return carries no snapshot; the runner journals the skip; `_guarded` turns any unexpected exception into a one-line error (exit 3) after `exclusive` persisted state and released the lock | Third review (S3). |
+| Backed-off tick ran the gate every 5 min | at most one passive-on-skip record (and gate read) per `skip_passive_interval_s` (15 min; 1-60 min), reason `backoff:until=<t>` | Third review (S4): the evidence of a busy host at bounded cost. |
+| "Any user may run analyze/status" | root or the service user | Third review (S5): the state directory is 0700; the docs now say what the install makes true. |
+| Removed config keys were errors | deprecation warning for one release (`DEPRECATED_KEYS`), ignored and listed by `plan`/`config` | Third review (S7): an upgraded host must not stop ticking over an old key. |
 
 ## 3. Layout and the 'no write' property
 
@@ -108,9 +114,18 @@ them from a fast path; non-zero blocks found become witnesses (up to 16, re-read
   a second run can neither overlap nor clobber state; `watch.lock` allows one `watch`; `state.lock` serialises each atomic state write. `annotate` only appends
   to the journal (and, for a baseline reset, to `resets.log`), so it needs none.
 - **Config file** must be root- or self-owned and not writable by group/others; `/etc/iogov` and the kill-switch file should be root-owned (README).
-- **Read-only reports.** `analyze` and `status` open the journal, `state.json` and `agg.json` no-follow but accept any owner, so root or an
-  operator can run them against the service user's files; a file that cannot be read is listed as `UNREADABLE` (never silently skipped).
-  Every writer (runner, journal, annotate) keeps the owner check.
+- **Read-only reports.** `analyze` and `status` are run by root or the service user (the state directory is 0700). They open the journal,
+  `state.json` and `agg.json` no-follow and accept any owner (root reading the service user's files); a file that cannot be read is listed as
+  `UNREADABLE`, a damaged state file as `corrupt state: <file>` (never silently skipped, never a traceback). Every writer keeps the owner check.
+- **Every open is type-checked before it can block or read.** `lstat` before the open refuses anything but a regular file (naming the path
+  and its type: fifo, socket, device, directory, symlink), the open carries `O_NONBLOCK` so a FIFO swapped in after the lstat cannot block it,
+  and the type is verified again through the descriptor before the first read; the collectors' procfs/sysfs/cgroup/operator-file reads go
+  through the same `read_text`. The config file is checked the same way.
+- **Read bounds** (constants, documented here and asserted by tests): `state.json`/`agg.json`/`resets.log` at most `MAX_JSON_BYTES` 16 MiB
+  (parse errors and `RecursionError` are "corrupt state" for the reports and a fresh start for the runner); collector text files at most
+  `MAX_TEXT_BYTES` 4 MiB; config at most 1 MiB; a journal line beyond `MAX_LINE_READ` 1 MiB is `oversized` and discarded in bounded chunks,
+  a monthly file is read up to `MAX_FILE_BYTES` 256 MiB (`TRUNCATED`), a read stops at `MAX_RECORDS` 2 000 000 records (`LIMIT`, said in the
+  report). Every top-level journal field has a schema type; a record with a wrong type is `invalid`; nested values are read defensively.
 
 ## 4. Schedule
 
@@ -151,6 +166,13 @@ These are bounds on our own submissions
 under the assumption that the device drains in order; they are NOT a guarantee (provider pauses and flush stalls are unbounded),
 so each IO is also bounded in time: any single IO slower than 250 ms stops further submissions (an already submitted IO cannot be recalled).
 
+**What the watchdog cannot do, and the backstop.** The flush watchdog only sets the stop flag: a `fdatasync` (or a raw read) blocked in the
+kernel is not interrupted, and until it returns the process cannot refund its budget or remove the scratch file. The hard backstop is the
+unit: `RuntimeMaxSec` (tick 10 min, bench 30 min) makes systemd send SIGTERM, `TimeoutStopSec` (30 s / 60 s) later SIGKILL. A killed run is
+handled by design, not by luck (tested): the reservation stays charged (it was persisted before the IO; nothing refunds it), `next_bench`
+and the failure counter were persisted before the IO (so a hung bench backs off, and disables itself after `bench_max_failures`), and the
+leftover scratch file is removed by `ExecStopPost=cleanup` or by the next run under the scratch lock.
+
 ## 6. Failure modes, kill switches, safety
 
 - **Kill switches** (checked before a run, and every 32 IOs): `/etc/iogov/disabled`, `<state_dir>/DISABLED`, `IOGOV_DISABLE=1`,
@@ -158,8 +180,10 @@ so each IO is also bounded in time: any single IO slower than 250 ms stops furth
 - **Load-aware gating, never run when IO pressure is high:** tick skips if system `io.pressure some avg10` > 10 % or load > 1.5/CPU. The bench
   needs `some` <= 1 %, `full` <= 0.1 %, protected cgroup pressure <= 1 %, governed writes <= 2 MB/s, nothing in flight on the disks.
   A gated run costs one 1 s pair of procfs reads, applies exponential backoff (5 min doubling to 1 h) and journals a deduplicated `skip`.
-  A gated or backing-off **tick** still journals that snapshot pair as a `passive` record (`gated: true`, `gate_reasons`): the busy moment's
-  pressure (io and memory), swap counters and "who else writes" are kept; no probe IO is issued. The bench journals only the skip.
+  A gated or backing-off **tick** still journals that snapshot pair as a `passive` record (`gated: true`, `gate_reasons`, incl.
+  `backoff:until=<t>` while backing off): the busy moment's pressure (io and memory), swap counters and "who else writes" are kept; no probe IO
+  is issued. Cost bound: at most one such record, and one gate read (1 s pair of procfs reads), per `skip_passive_interval_s` (default 15 min,
+  clamped to 1-60 min); a backed-off tick that is not due returns at once. The bench journals only the skip.
 - **Mid-run abort:** stop flag (SIGTERM/SIGINT only set it), kill switch, pressure rising to 5x the bench limit, a single slow IO,
   a phase wall clock (20 s), the daily budgets. An aborted bench is journalled with partial lanes; the scratch file is always removed.
 - **Raw-read risks:** read-only by construction (an assertion, a static test that nothing else issues write syscalls on it, and a
@@ -256,7 +280,8 @@ shift in what the probes measure; whether the game suffers is the `harm` section
 
 1. **Run identity.** A dedicated unprivileged user (`iogov`); root only with `allow_root` and root-owned 0700 directories. Decide the user and who may read its journal.
 2. **`/etc/iogov` ownership.** Root-owned 0755, the config file root-owned 0644 (refused if writable by others), the kill-switch file root-owned. Anyone who can create the
-   kill-switch file can disable the tool; anyone who can edit the config can only move values inside the hard clamps.
+   kill-switch file can disable the tool; anyone who can edit the config can only move values inside the hard clamps. Keys removed by a later
+   release (`config.DEPRECATED_KEYS`) are ignored with a warning for one release; an unknown new key is an error.
 3. **Container access.** Explicit `container_cgroups` paths (recommended) versus giving the service read access to the daemon's `config.v2.json` files (secrets exposure).
 4. **Probe slice weight** (`@IOGOV_IO_WEIGHT@`, default 50 against the game's 1000): low weight protects the game but makes probes `contended` more often (those samples are
    excluded from the recognizer); measure with `watch` episodes before and after the first benches.

@@ -7,8 +7,18 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import safeio
+
 MiB = 1024 * 1024
 GiB = 1024 * MiB
+MAX_CONFIG_BYTES = 1 * MiB
+
+# Keys that existed in an earlier release and were removed. They are IGNORED with a warning (listed in `plan` and `config`) for one release,
+# so an upgraded host with an old config file keeps running; an unknown NEW key is still an error.
+DEPRECATED_KEYS = {
+    "lookback_days": "removed 2026-10-27: the recognizer keeps persisted per-lane aggregates, there is no sliding lookback",
+    "recognize_every_s": "removed 2026-10-27: windows are closed by every run; there is no separate recognizer schedule",
+}
 
 # Hard limits. Every safety-relevant value is CLAMPED into [HARD_MIN, HARD_MAX] when the config is loaded (the clamp is recorded in
 # `Config.clamped` and printed by `plan`/`config`): a typo or a hostile config file can never exceed the budgets in the design note.
@@ -22,7 +32,7 @@ HARD_MAX = {
     "abort_latency_ms": 1000.0, "pressure_recheck_every_ops": 256, "flush_limit_s": 10.0,
     "tick_pressure_some_max": 25.0, "bench_pressure_some_max": 5.0, "bench_pressure_full_max": 1.0,
     "protected_pressure_some_max": 5.0, "loadavg_per_cpu_max": 4.0, "bench_governed_write_bps_max": float(16 * MiB),
-    "quiet_governed_write_bps": float(16 * MiB), "bench_max_failures": 20, "backoff_max_s": 86400.0,
+    "quiet_governed_write_bps": float(16 * MiB), "bench_max_failures": 20, "backoff_max_s": 86400.0, "skip_passive_interval_s": 3600.0,
 }
 HARD_MIN = {
     "qd_low": 1, "qd_high": 1, "block_bytes": 4096, "seq_read_block": 4096, "sync_every_bytes": 4096,
@@ -30,6 +40,7 @@ HARD_MIN = {
     "abort_latency_ms": 1.0, "phase_wall_s": 1.0, "flush_limit_s": 0.05, "read_iops_max": 0.1, "sync4k_iops_max": 0.1,
     "write_bps_max": 4096.0, "read_bps_max": 4096.0, "seq_read_bytes": 4096, "bench_max_failures": 1,
     "max_read_bytes_per_day": 0, "max_write_bytes_per_day": 0, "bench_interval_h": 1.0, "tick_interval_s": 30.0,
+    "skip_passive_interval_s": 60.0,
 }
 
 
@@ -156,7 +167,9 @@ class Config:
             "r_seq": 1,
         }
     )
+    skip_passive_interval_s: float = 900.0  # while a tick is gated or backing off, at most one passive-on-skip record (and gate read) per this interval
     clamped: list = field(default_factory=list)  # filled by from_mapping: what was clamped
+    deprecated: list = field(default_factory=list)  # filled by from_mapping: removed keys that were present and ignored
 
     def journal_dir(self) -> str:
         return os.path.join(self.state_dir, "journal")
@@ -202,11 +215,13 @@ def _check(cfg: Config) -> Config:
 
 def from_mapping(data: dict) -> Config:
     known = {f.name for f in dataclasses.fields(Config)}
+    deprecated = [f"{k}: ignored ({DEPRECATED_KEYS[k]})" for k in sorted(data) if k in DEPRECATED_KEYS]
+    data = {k: v for k, v in data.items() if k not in DEPRECATED_KEYS}
     unknown = sorted(set(data) - known)
     if unknown:
         raise ConfigError(f"unknown config keys: {', '.join(unknown)}")
     base = Config()
-    values = {}
+    values = {"deprecated": deprecated}
     for key, value in data.items():
         default = getattr(base, key)
         if isinstance(default, bool) != isinstance(value, bool):
@@ -236,11 +251,22 @@ def load(path: str | None = None) -> Config:
         import tomllib
     except ImportError as exc:  # pragma: no cover - python < 3.11
         raise ConfigError("python >= 3.11 (tomllib) is required to read the config file") from exc
+    try:
+        safeio.refuse_non_regular(path)  # a FIFO, device node or symlink at the config path is refused before any open
+    except safeio.UnsafePath as exc:
+        raise ConfigError(str(exc)) from None
     st = os.stat(p)
     if st.st_mode & 0o022 or st.st_uid not in (0, os.geteuid()):
         raise ConfigError(f"{path}: refusing a config file that is writable by group/others or owned by another user")
-    with p.open("rb") as fh:
-        return from_mapping(tomllib.load(fh))
+    if st.st_size > MAX_CONFIG_BYTES:
+        raise ConfigError(f"{path}: {st.st_size} bytes exceeds the {MAX_CONFIG_BYTES} byte limit")
+    text = safeio.read_text(path, MAX_CONFIG_BYTES, follow=False)
+    if text is None:
+        raise ConfigError(f"{path}: cannot be read")
+    try:
+        return from_mapping(tomllib.loads(text))
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"{path}: {exc}") from None
 
 
 def effective(cfg: Config) -> dict:

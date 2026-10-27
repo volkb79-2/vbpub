@@ -82,8 +82,16 @@ def window_index(t: float, cfg) -> int:
 
 
 def points_of(rec: dict):
-    """One journal record -> [(lane, values, n, epoch, capped)]. Only trustworthy evidence yields points."""
+    """One journal record -> [(lane, values, n, epoch, capped)]. Only trustworthy evidence yields points; a record whose nested
+    values have the wrong shape yields none (the top-level schema is checked by the journal reader, the nesting is not)."""
 
+    try:
+        return _points_of(rec)
+    except (TypeError, KeyError, AttributeError, ValueError):
+        return []
+
+
+def _points_of(rec: dict):
     typ = rec["type"]
     out = []
     if typ == "probe":
@@ -126,8 +134,8 @@ def extract(records, cfg) -> tuple[dict, dict]:
 def _passive_peak(rec: dict) -> float:
     peak = 0.0
     for d in rec["devices"].values():
-        if d and d.get("w_bps"):
-            peak = max(peak, d["w_bps"])
+        if isinstance(d, dict) and isinstance(d.get("w_bps"), (int, float)) and not isinstance(d.get("w_bps"), bool):
+            peak = max(peak, float(d["w_bps"]))
     return peak
 
 

@@ -17,20 +17,27 @@ from typing import Callable, Iterable, Iterator
 from . import SCHEMA_VERSION
 from . import safeio
 
-MAX_LINE_BYTES = 48 * 1024
+MAX_LINE_BYTES = 48 * 1024  # a record is refused at write time beyond this
+# Read-side bounds (the journal is the service user's; a reader run by root must survive a damaged or hostile file):
+MAX_LINE_READ = 1024 * 1024  # a line longer than this is damage: counted as `oversized`, its remainder discarded in bounded chunks
+MAX_FILE_BYTES = 256 * 1024 * 1024  # per monthly file (about 20 MiB is normal); the rest of a larger file is not read (named in `truncated`)
+MAX_RECORDS = 2_000_000  # per read (about 20 years of ticks); the reader stops there and says so (`limit_hit`)
 
-# type -> required fields (besides v, ts, t, type, run). The schema is documented in docs/IO-GOVERNOR-V1-DESIGN.md.
-REQUIRED: dict[str, tuple[str, ...]] = {
-    "run_start": ("kind", "version", "mode", "settings_epoch"),
-    "run_end": ("kind", "status", "duration_s", "io"),
-    "skip": ("kind", "reasons"),
-    "probe": ("lane", "device", "quiet", "n", "zero", "lat_us", "hist", "direct"),
-    "bench": ("status", "region", "lanes", "settings_epoch"),
-    "passive": ("devices", "pressure"),
-    "recommendation": ("lane", "kind", "text", "evidence"),
-    "note": ("text",),
-    "harm": ("kind", "evidence"),
+NUM = (int, float)
+# type -> required fields and their types (besides v, ts, t, type, run). The schema is documented in docs/IO-GOVERNOR-V1-DESIGN.md.
+# A record with a wrong type is `invalid` for every reader: the reports never index an untyped value.
+REQUIRED: dict[str, dict[str, type | tuple]] = {
+    "run_start": {"kind": str, "version": str, "mode": str, "settings_epoch": str},
+    "run_end": {"kind": str, "status": str, "duration_s": NUM, "io": dict},
+    "skip": {"kind": str, "reasons": list},
+    "probe": {"lane": str, "device": str, "quiet": bool, "n": int, "zero": int, "lat_us": list, "hist": list, "direct": bool},
+    "bench": {"status": str, "region": dict, "lanes": dict, "settings_epoch": str},
+    "passive": {"devices": dict, "pressure": (dict, type(None))},
+    "recommendation": {"lane": str, "kind": str, "text": str, "evidence": dict},
+    "note": {"text": str},
+    "harm": {"kind": str, "evidence": dict},
 }
+COMMON: dict[str, type | tuple] = {"ts": str, "t": NUM, "type": str}
 
 
 def utc_iso(t: float) -> str:
@@ -43,17 +50,29 @@ def validate_record(rec: dict) -> list[str]:
         return ["record is not an object"]
     if rec.get("v") != SCHEMA_VERSION:
         problems.append(f"v must be {SCHEMA_VERSION}")
-    for key in ("ts", "t", "type"):
+    for key, typ_ in COMMON.items():
         if key not in rec:
             problems.append(f"missing {key}")
+        elif not _is(rec[key], typ_):
+            problems.append(f"{key}: wrong type")
     typ = rec.get("type")
-    if typ not in REQUIRED:
+    if not isinstance(typ, str) or typ not in REQUIRED:
         problems.append(f"unknown type {typ!r}")
     else:
-        for key in REQUIRED[typ]:
+        for key, want in REQUIRED[typ].items():
             if key not in rec:
                 problems.append(f"{typ}: missing {key}")
+            elif not _is(rec[key], want):
+                problems.append(f"{typ}: {key} has the wrong type")
     return problems
+
+
+def _is(value, want) -> bool:
+    """isinstance that does not let a bool pass as a number (bool is an int subclass in Python)."""
+
+    if want is not bool and isinstance(value, bool):
+        return False
+    return isinstance(value, want)
 
 
 class Journal:
@@ -97,9 +116,19 @@ class ReadStats:
         self.unknown_version = 0
         self.invalid = 0
         self.unreadable: list[str] = []  # files skipped whole: a symlink, not a regular file, or unreadable (permissions)
+        self.oversized = 0  # lines longer than MAX_LINE_READ (discarded)
+        self.truncated: list[str] = []  # files whose remainder beyond MAX_FILE_BYTES was not read
+        self.limit_hit = False  # MAX_RECORDS reached: later records were not read
 
     def skipped(self) -> bool:
-        return bool(self.torn or self.unknown_version or self.invalid or self.unreadable)
+        return bool(self.torn or self.unknown_version or self.invalid or self.unreadable or self.oversized or self.truncated or self.limit_hit)
+
+    def describe(self) -> str:
+        parts = [f"{self.torn} torn", f"{self.unknown_version} other-schema", f"{self.invalid} invalid", f"{self.oversized} oversized line(s)",
+                 f"{len(self.unreadable)} unreadable file(s)", f"{len(self.truncated)} truncated file(s)"]
+        if self.limit_hit:
+            parts.append(f"record limit {MAX_RECORDS} reached, later records NOT read")
+        return ", ".join(parts)
 
 
 def journal_files(path: str) -> list[str]:
@@ -123,16 +152,32 @@ def read_records(path: str | Iterable[str], stats: ReadStats | None = None, sinc
             stats.unreadable.append(f"{os.path.basename(name)}: {exc}")
             continue
         with fh:
-            for line in fh:
+            consumed = 0
+            while True:
+                line = fh.readline(MAX_LINE_READ)
+                if not line:
+                    break
+                consumed += len(line)
+                if len(line) >= MAX_LINE_READ and not line.endswith("\n"):
+                    stats.oversized += 1
+                    while consumed <= MAX_FILE_BYTES:  # discard the remainder of the oversized line in bounded chunks
+                        rest = fh.readline(MAX_LINE_READ)
+                        consumed += len(rest)
+                        if not rest or rest.endswith("\n"):
+                            break
+                    line = ""
+                if consumed > MAX_FILE_BYTES:
+                    stats.truncated.append(os.path.basename(name))
+                    break
                 line = line.strip()
                 if not line:
                     continue
                 try:
                     rec = json.loads(line)
-                except json.JSONDecodeError:
+                except (ValueError, RecursionError):  # torn, not JSON, or nested beyond what the parser accepts
                     stats.torn += 1
                     continue
-                if not isinstance(rec, dict) or not isinstance(rec.get("v"), int):
+                if not isinstance(rec, dict) or not isinstance(rec.get("v"), int) or isinstance(rec.get("v"), bool):
                     stats.invalid += 1
                     continue
                 if rec["v"] != SCHEMA_VERSION:
@@ -145,6 +190,9 @@ def read_records(path: str | Iterable[str], stats: ReadStats | None = None, sinc
                     continue
                 stats.records += 1
                 yield rec
+                if stats.records >= MAX_RECORDS:
+                    stats.limit_hit = True
+                    return
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -153,9 +201,10 @@ def read_records(path: str | Iterable[str], stats: ReadStats | None = None, sinc
 
 
 def load_state(path: str) -> dict:
-    """Read-only view for `status` (an operator or root may read it); the runner loads its state through `safeio.load_json`."""
+    """Read-only view for `status` (root or the service user); the runner loads its state through `safeio.load_json`.
+    Raises safeio.CorruptFile / safeio.UnsafePath instead of guessing."""
 
-    return safeio.load_json(path, any_owner=True)
+    return safeio.load_json(path, any_owner=True, strict=True)
 
 
 def save_state(path: str, state: dict) -> None:

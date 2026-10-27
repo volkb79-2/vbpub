@@ -17,6 +17,10 @@ IOSchedulingPriority=7
 # SIGTERM only sets a flag: the run stops submitting, removes its scratch file and journals the abort.
 KillSignal=SIGTERM
 TimeoutStopSec=60
+# Hard backstop: an fdatasync blocked in the kernel cannot see the flag (the watchdog only stops FURTHER submissions). After RuntimeMaxSec
+# systemd sends SIGTERM, after TimeoutStopSec more SIGKILL. A killed bench keeps its whole reservation charged and its scratch file is
+# removed by ExecStopPost (`cleanup`) or by the next run, under the scratch lock. Three phases x phase_wall_s plus flushes fit in minutes.
+RuntimeMaxSec=30min
 DevicePolicy=closed
 DeviceAllow=@IOGOV_DISK_NODE@ r
 NoNewPrivileges=yes

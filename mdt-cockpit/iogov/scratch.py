@@ -48,21 +48,17 @@ def fstype_of(path: str, mountinfo: str = "/proc/self/mountinfo") -> str:
 
     best, best_len = "?", -1
     real = os.path.realpath(path)
-    try:
-        with open(mountinfo, "r", encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                left, sep, right = line.partition(" - ")
-                if not sep:
-                    continue
-                fields = left.split()
-                if len(fields) < 5:
-                    continue
-                mp = fields[4].replace("\\040", " ")
-                if real == mp or real.startswith(mp.rstrip("/") + "/") or mp == "/":
-                    if len(mp) > best_len:
-                        best, best_len = right.split()[0], len(mp)
-    except OSError:
-        pass
+    for line in (safeio.read_text(mountinfo) or "").splitlines():
+        left, sep, right = line.partition(" - ")
+        if not sep:
+            continue
+        fields = left.split()
+        if len(fields) < 5:
+            continue
+        mp = fields[4].replace("\\040", " ")
+        if real == mp or real.startswith(mp.rstrip("/") + "/") or mp == "/":
+            if len(mp) > best_len:
+                best, best_len = right.split()[0], len(mp)
     return best
 
 

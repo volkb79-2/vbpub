@@ -29,14 +29,17 @@ import iogov.recognizer as recognizer
 from iogov import safeio
 from iogov.bench import over_4k
 from iogov.budget import DailyBudget
-from iogov.config import MiB, from_mapping, ConfigError
+from iogov.config import MiB, from_mapping, load, ConfigError
 from iogov.episodes import EpisodeDetector, watch
 from iogov.gating import RunGuard
 from iogov.journal import ReadStats, read_records
 from iogov.rawread import AlignedBuffer, RawReader, RawReadError
 from iogov.report import analyze, status
-from iogov.runner import build, run_tick
-from iogov.scratch import Scratch
+from iogov.runner import build, cleanup, plan_text, run_bench_cmd, run_tick
+from iogov.scratch import PREFIX, Scratch
+import iogov.journal as journal_mod
+import iogov.runner as runner_mod
+import iogov.scratch as scratch_mod
 
 PKG = Path(__file__).resolve().parents[1]
 
@@ -174,7 +177,7 @@ def _same(fd: int, path) -> bool:
 
 def test_r5_gated_and_backed_off_ticks_keep_passive_evidence_without_probe_io(world, monkeypatch):
     env, clock = make_env()
-    cfg = world.config()
+    cfg = world.config(backoff_base_s=3600.0)  # one gate failure backs the probes off for an hour: longer than skip_passive_interval_s
     write_file(world.proc / "pressure/memory", "some avg10=37.10 avg60=21.00 avg300=24.00 total=10\nfull avg10=17.60 avg60=8.00 avg300=6.00 total=5\n")
     counters = {"pswpin": 1000, "pswpout": 2000, "pgmajfault": 50, "zswpin": 7, "zswpout": 9, "workingset_refault_anon": 3}
     n_snap = {"n": 0}
@@ -192,17 +195,26 @@ def test_r5_gated_and_backed_off_ticks_keep_passive_evidence_without_probe_io(wo
     run_tick(build(cfg, env))  # gated
     clock.t += 10
     world.set_pressure(0.0, 0.0)
-    run_tick(build(cfg, env))  # calm again but still inside the backoff window
+    slept = len(clock.slept)
+    run_tick(build(cfg, env))  # calm again but inside the backoff window AND inside skip_passive_interval_s: nothing at all
+    assert len(clock.slept) == slept  # no gate sleep: the gate was not even read
+    clock.t += cfg.skip_passive_interval_s
+    run_tick(build(cfg, env))  # still backing off (the backoff grew), passive snapshot due again
     recs = records(world)
     passive = [r for r in recs if r["type"] == "passive"]
     assert len(passive) == 2 and all(r["gated"] for r in passive)
-    assert passive[0]["gate_reasons"][0].startswith("io_pressure_high") and passive[1]["gate_reasons"] == []
+    assert passive[0]["gate_reasons"][0].startswith("io_pressure_high")
+    assert passive[1]["gate_reasons"] == [f"backoff:until={int(state(world)['backoff']['tick']['until'])}"]
     assert passive[0]["pressure_memory"]["some"]["avg10"] == 37.1 and passive[0]["pressure_memory"]["full"]["avg10"] == 17.6
     rates = passive[0]["vmstat_per_s"]
     assert set(rates) == set(counters) and rates["pswpin"] > 0
     assert not reads and not [r for r in recs if r["type"] in ("probe", "run_start", "run_end")]
     skips = [r for r in recs if r["type"] == "skip"]
     assert len(skips) == 1 and skips[0]["ctx"]["memory_some_avg10"] == 37.1
+
+
+def state(world) -> dict:
+    return json.load(open(world.state / "state.json"))
 
 
 # ===== R6: memory pressure in episodes =============================================================================
@@ -253,10 +265,15 @@ def test_r6_watch_reads_memory_pressure_of_the_protected_cgroups(world):
 # ===== R7: dead code ===============================================================================================
 
 
-def test_r7_dead_config_keys_and_aliases_are_gone():
-    for key in ("lookback_days", "recognize_every_s"):
-        with pytest.raises(ConfigError, match="unknown"):
-            from_mapping({key: 1})
+def test_r7_dead_config_keys_are_deprecation_warnings_and_aliases_are_gone(world):
+    cfg = from_mapping({"lookback_days": 120, "recognize_every_s": 3600.0, "read_iops_max": 5.0})  # an upgraded host's old config file
+    assert cfg.read_iops_max == 5.0 and len(cfg.deprecated) == 2 and all("ignored" in d for d in cfg.deprecated)
+    assert not hasattr(cfg, "lookback_days")
+    with pytest.raises(ConfigError, match="unknown"):
+        from_mapping({"brand_new_typo": 1})  # an unknown NEW key is still an error
+    env, _ = make_env()
+    text = plan_text(build(world.config(lookback_days=1), env))
+    assert "DEPRECATED key lookback_days" in text
     assert not hasattr(config_mod, "HARD") and not hasattr(recognizer, "LaneResult") and not hasattr(collectors, "resolve_containers")
 
 
@@ -277,3 +294,240 @@ def test_r8_readme_and_design_note_agree_with_the_code():
         assert needle in design, needle
     example = (PKG / "iogov.toml.example").read_text()
     assert "memory.pressure" in example
+
+
+# ===== S1-S7: the Sonnet review of 9708c6f8a =========================================================================
+# S1 FIFO/device nodes hang readers; S2 unbounded/untyped state and journal reads; S3 kill switch between the runner's check and the
+# gate's; S4 backed-off ticks: reason and cost; S5 read contract; S6 hung-flush backstop; S7 removed keys as deprecation warnings.
+
+
+def _finishes(fn, timeout: float = 5.0):
+    """Run fn in a daemon thread; True if it returned within the timeout (a blocking open never returns)."""
+
+    import threading
+    box: dict = {}
+
+    def run():
+        try:
+            box["r"] = fn()
+        except BaseException as exc:  # noqa: BLE001 - the test inspects it
+            box["exc"] = exc
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(timeout)
+    return (not t.is_alive()), box
+
+
+def test_s1_a_fifo_as_journal_file_cannot_hang_analyze_and_is_named(world):
+    env, _ = make_env()
+    cfg = world.config()
+    run_tick(build(cfg, env))
+    os.mkfifo(world.state / "journal" / "journal-2021-01.jsonl")
+    stats = ReadStats()
+    done, box = _finishes(lambda: len(list(read_records(cfg.journal_dir(), stats))))
+    assert done and box["r"] > 0 and len(stats.unreadable) == 1 and "fifo" in stats.unreadable[0]
+    done, box = _finishes(lambda: analyze(cfg, cfg.journal_dir()))
+    assert done and "UNREADABLE journal-2021-01.jsonl" in box["r"]
+    done, box = _finishes(lambda: status(cfg, env.wall))
+    assert done and "UNREADABLE" in box["r"]
+
+
+def test_s1_a_fifo_or_device_node_as_state_file_is_refused_before_open(world, monkeypatch):
+    env, _ = make_env()
+    cfg = world.config()
+    run_tick(build(cfg, env))
+    os.unlink(world.state / "state.json")
+    os.mkfifo(world.state / "state.json")
+    done, box = _finishes(lambda: status(cfg, env.wall))
+    assert done and "corrupt state" in box["r"] and "fifo" in box["r"]
+    # a device node (cannot be created without root: lstat is made to report one)
+    real_lstat = os.lstat
+    agg = str(world.state / "agg.json")
+    monkeypatch.setattr(os, "lstat", lambda p, *a, **k: os.stat_result((stat.S_IFCHR | 0o600,) + tuple(real_lstat(p)[1:])) if str(p) == agg else real_lstat(p, *a, **k))
+    opened = []
+    real_open = os.open
+    monkeypatch.setattr(os, "open", lambda p, *a, **k: (opened.append(str(p)), real_open(p, *a, **k))[1])
+    with pytest.raises(safeio.UnsafePath, match="character device"):
+        safeio.load_json(agg, any_owner=True, strict=True)
+    assert agg not in opened  # refused BEFORE any open
+
+
+def test_s1_collector_and_config_reads_never_block_on_a_fifo(world):
+    env, _ = make_env()
+    cfg = world.config()
+    pio = world.proc / "pressure/io"
+    os.unlink(pio)
+    os.mkfifo(pio)
+    done, box = _finishes(lambda: build(cfg, env).collector.system_pressure())
+    assert done and box["r"] is None
+    fifo_cfg = world.root / "cfg.toml"
+    os.mkfifo(fifo_cfg)
+    done, box = _finishes(lambda: load(str(fifo_cfg)))
+    assert done and isinstance(box.get("exc"), ConfigError) and "fifo" in str(box["exc"])
+    # the runner's own open paths too: resets.log as a FIFO is refused, not opened
+    os.unlink(pio)  # (a write-open of the FIFO by the fixture would block: put the regular file back first)
+    world.set_pressure(0.0, 0.0)
+    run_tick(build(cfg, env))
+    os.mkfifo(world.state / "resets.log")
+    done, box = _finishes(lambda: run_tick(build(cfg, env)))
+    assert done and box["r"] == 2  # refused cleanly (UnsafePath -> exit 2), no hang, no traceback
+
+
+def test_s2_deeply_nested_or_oversized_state_files_are_reported_not_crashes(world, monkeypatch):
+    env, _ = make_env()
+    cfg = world.config()
+    run_tick(build(cfg, env))
+    (world.state / "state.json").write_text('{"a":' * 100000)
+    out = status(cfg, env.wall)
+    assert "corrupt state" in out and "RecursionError" in out
+    (world.state / "state.json").write_text('{"next_bench": "soon", "budget": {"day": 1}, "last_tick": 5.0, "backoff": []}')
+    out = status(cfg, env.wall)
+    assert "fields with the wrong type ignored: next_bench, budget, backoff" in out and "last tick:" in out
+    (world.state / "agg.json").write_text("null")
+    assert "corrupt state" in status(cfg, env.wall)
+    (world.state / "agg.json").write_text('{"v": 1, "horizon": "x", "records": 0, "resets": [], "passive_peak": {}, "lanes": 5, "open": {}}')
+    out = status(cfg, env.wall)
+    assert "corrupt state" in out and "agg.json" in out and "replayed from the journal" in out
+    monkeypatch.setattr(safeio, "MAX_JSON_BYTES", 64)
+    (world.state / "agg.json").write_text('{"v": 1, "padding": "' + "x" * 200 + '"}')
+    assert "exceeds the 64 byte limit" in status(cfg, env.wall)
+    assert safeio.load_json(str(world.state / "agg.json")) == {}  # the runner's non-strict view: start fresh, never crash
+
+
+def test_s2_journal_reads_are_bounded_per_line_per_file_and_per_run(world, monkeypatch):
+    env, _ = make_env()
+    cfg = world.config()
+    run_tick(build(cfg, env))
+    f = next((world.state / "journal").glob("journal-*.jsonl"))
+    n = len(records(world))
+    monkeypatch.setattr(journal_mod, "MAX_LINE_READ", 8192)
+    with open(f, "a") as fh:
+        fh.write('{"v": 1, "ts": "x", "t": 1.0, "type": "note", "text": "' + "x" * 20000 + '"}\n')  # one oversized line
+        fh.write('{"v": 1, "ts": "x", "t": 2.0, "type": "note", "text": "after"}\n')
+        fh.write('{"a":' * 1500 + "\n")  # 7.5 KB, within the line limit, nested beyond what the parser accepts: torn, not a crash
+    stats = ReadStats()
+    got = list(read_records(cfg.journal_dir(), stats))
+    assert len(got) == n + 1 and got[-1]["text"] == "after" and stats.oversized == 1 and stats.torn == 1
+    monkeypatch.setattr(journal_mod, "MAX_RECORDS", 2)
+    stats = ReadStats()
+    assert len(list(read_records(cfg.journal_dir(), stats))) == 2 and stats.limit_hit
+    assert "LIMIT: 2 records read" in analyze(cfg, cfg.journal_dir())
+    monkeypatch.setattr(journal_mod, "MAX_RECORDS", 2_000_000)
+    monkeypatch.setattr(journal_mod, "MAX_FILE_BYTES", 300)
+    stats = ReadStats()
+    assert len(list(read_records(cfg.journal_dir(), stats))) < n and stats.truncated == [f.name]
+    assert f"TRUNCATED {f.name}" in analyze(cfg, cfg.journal_dir())
+
+
+def test_s2_records_with_wrong_field_types_are_invalid_not_tracebacks(world):
+    env, _ = make_env()
+    cfg = world.config()
+    run_tick(build(cfg, env))
+    f = next((world.state / "journal").glob("journal-*.jsonl"))
+    bad = [
+        '{"v": 1, "ts": "x", "t": 1.0, "type": "skip", "kind": "tick", "reasons": 5}',
+        '{"v": 1, "ts": "x", "t": "1", "type": "note", "text": "t is a string"}',
+        '{"v": 1, "ts": "x", "t": 1.0, "type": "bench", "status": "ok", "region": [], "lanes": {}, "settings_epoch": "e"}',
+        '{"v": 1, "ts": "x", "t": 1.0, "type": "probe", "lane": "r_cold", "device": "vda", "quiet": 1, "n": 1, "zero": 0, "lat_us": [1], "hist": [], "direct": true}',
+        '{"v": true, "ts": "x", "t": 1.0, "type": "note", "text": "v is a bool"}',
+    ]
+    nested = [  # top level valid, nested garbage: read, but it must not crash the recognizer or the harm summary
+        '{"v": 1, "ts": "x", "t": 1.0, "type": "harm", "kind": "episode", "evidence": {"duration_s": "long", "driver": 7}}',
+        '{"v": 1, "ts": "x", "t": 1.0, "type": "bench", "status": "ok", "region": {}, "lanes": {"w_fresh_qd4": {"valid": true}}, "settings_epoch": "e"}',
+        '{"v": 1, "ts": "x", "t": 1.0, "type": "passive", "devices": {"vda": 3}, "pressure": null}',
+        '{"v": 1, "ts": "x", "t": 1.0, "type": "run_end", "kind": "tick", "status": "ok", "duration_s": 1, "io": {}, "abort": {"x": 1}}',
+    ]
+    with open(f, "a") as fh:
+        fh.write("\n".join(bad + nested) + "\n")
+    stats = ReadStats()
+    got = list(read_records(cfg.journal_dir(), stats))
+    assert stats.invalid == len(bad) and len([r for r in got if r["t"] == 1.0]) == len(nested)
+    text = analyze(cfg, cfg.journal_dir())
+    assert "1 distress episodes" in text and "driver 7" in text
+    assert "last run" in status(cfg, env.wall)
+
+
+def test_s3_kill_switch_between_the_runners_check_and_the_gates_is_a_clean_skip(world, monkeypatch):
+    import iogov.gating as gating
+    env, _ = make_env()
+    cfg = world.config()
+    monkeypatch.setattr(gating, "kill_switch_reason", lambda c, environ=None: "flag-file:appeared-late")  # the gate sees it, the runner did not
+    assert run_tick(build(cfg, env)) == 0
+    recs = records(world)
+    assert [r["type"] for r in recs] == ["skip"] and recs[0]["reasons"] == ["kill_switch:flag-file:appeared-late"]
+    assert state(world)["skip_logged"]["tick"]["sig"] == "kill_switch"
+
+
+def test_s3_an_unexpected_exception_is_a_one_line_error_with_state_saved_and_the_lock_released(world, monkeypatch, capsys):
+    env, _ = make_env()
+    cfg = world.config()
+
+    class Boom:
+        def __init__(self, *a):
+            pass
+
+        def check(self, kind):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(runner_mod, "Gate", Boom)
+    assert run_tick(build(cfg, env)) == 3
+    err = capsys.readouterr().err
+    assert "internal error" in err and "RuntimeError: boom" in err and "Traceback" not in err
+    assert (world.state / "state.json").exists()
+    monkeypatch.undo()
+    assert run_tick(build(cfg, env)) == 0 and [r for r in records(world) if r["type"] == "probe"]  # the lock was released
+
+
+def test_s4_a_backed_off_tick_is_rate_limited_and_says_backoff(world, monkeypatch):
+    from iogov.collectors import Collector
+    env, clock = make_env()
+    cfg = world.config(backoff_base_s=3600.0)
+    world.set_pressure(40.0, 0.0)
+    run_tick(build(cfg, env))  # gated -> backoff (one hour)
+    world.set_pressure(0.0, 0.0)
+    calls = {"n": 0}
+    real = Collector.snapshot
+    monkeypatch.setattr(Collector, "snapshot", lambda self: (calls.__setitem__("n", calls["n"] + 1), real(self))[1])
+    for _ in range(3):
+        clock.t += 60
+        run_tick(build(cfg, env))
+    assert calls["n"] == 0 and len(clock.slept) == 1  # no gate read, no 1 s sleep while backed off and not due
+    clock.t += cfg.skip_passive_interval_s
+    run_tick(build(cfg, env))
+    passive = [r for r in records(world) if r["type"] == "passive"]
+    assert len(passive) == 2 and passive[1]["gate_reasons"] == [f"backoff:until={int(state(world)['backoff']['tick']['until'])}"]
+    assert calls["n"] == 2
+    assert from_mapping({"skip_passive_interval_s": 1.0}).skip_passive_interval_s == 60.0  # clamped to the hard minimum
+
+
+def test_s6_units_have_a_hard_backstop_and_a_killed_bench_is_cleaned_up_by_the_next_run(world, monkeypatch):
+    units = PKG / "units"
+    for name, limit in (("iogov-tick.service.in", "10min"), ("iogov-bench.service.in", "30min")):
+        text = (units / name).read_text()
+        assert f"RuntimeMaxSec={limit}" in text and re.search(r"^TimeoutStopSec=\d+$", text, re.M) and "ExecStopPost=" in text
+    env, clock = make_env()
+    cfg = world.config()
+    # SIGKILL runs no `finally`: neither the scratch cleanup nor the budget refund happen; only what was persisted BEFORE the IO survives.
+    # (The kernel drops a dead process's flock and descriptors: the stub releases exactly those and leaves the file behind.)
+    monkeypatch.setattr(scratch_mod.Scratch, "_cleanup", lambda self: (self.lock.release(), os.close(self.fd)) if self.lock else None)
+    monkeypatch.setattr(DailyBudget, "finish", lambda self: None)
+
+    def killed(fd):
+        raise SystemExit(137)
+
+    monkeypatch.setattr(os, "fdatasync", killed)
+    with pytest.raises(SystemExit):
+        run_bench_cmd(build(cfg, env), force=True)
+    st = state(world)
+    leftover = [n for n in os.listdir(world.scratch) if n.startswith(PREFIX)]
+    reserved = scratch_mod.plan_region(cfg, 16 * MiB).probe_bytes + cfg.sync4k_samples * 4096  # the worst case, persisted before any IO
+    assert leftover and st["budget"]["write_bytes"] == reserved and st["next_bench"] > env.wall()  # the whole reservation stays charged
+    assert "scratch leftovers: ['" in status(cfg, env.wall)
+    monkeypatch.undo()
+    assert cleanup(cfg) == leftover  # ExecStopPost path
+    assert not [n for n in os.listdir(world.scratch) if n.startswith(PREFIX)]
+    clock.t += 8 * 86400
+    run_bench_cmd(build(cfg, env), force=True)  # the next run also starts from a clean scratch dir and records what it removed
+    bench = [r for r in records(world) if r["type"] == "bench"][-1]
+    assert bench["status"] == "ok" and bench["region"]["stale_removed"] == [] and state(world)["bench_fail"]["n"] == 0

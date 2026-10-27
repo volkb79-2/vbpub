@@ -16,12 +16,51 @@ import time
 from . import covariates as cov
 from . import safeio
 from .gating import kill_switch_reason
+from . import journal as journal_mod
 from .journal import ReadStats, load_state, read_records
 from .recognizer import Engine, lane_kind, pattern_hint
 from .scratch import STALE_RE
 
 MAX_EPISODES = 2000
 MAX_NOTES = 500
+
+
+def _num(v):
+    """A number from an untrusted nested value, else None (bool is not a number here)."""
+
+    return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+def clean_state(state: dict) -> tuple[dict, list[str]]:
+    """Type-check the fields `status` prints from state.json (an untrusted, service-owned file when root runs `status`).
+    Returns (usable fields, problems); a field with the wrong type is dropped and named, never indexed."""
+
+    out: dict = {}
+    problems: list[str] = []
+    for key in ("last_tick", "last_bench", "next_bench"):
+        v = state.get(key)
+        if v is None:
+            continue
+        if _num(v) is None:
+            problems.append(key)
+        else:
+            out[key] = v
+    fail = state.get("bench_fail")
+    if isinstance(fail, dict) and _num(fail.get("n")) is not None and (fail.get("disabled_at") is None or _num(fail.get("disabled_at")) is not None):
+        out["bench_fail"] = fail
+    elif fail is not None:
+        problems.append("bench_fail")
+    b = state.get("budget")
+    if isinstance(b, dict) and isinstance(b.get("day"), str) and all(_num(b.get(k)) is not None for k in ("read_bytes", "write_bytes", "sync_ops")):
+        out["budget"] = b
+    elif b is not None:
+        problems.append("budget")
+    bo = state.get("backoff")
+    if isinstance(bo, dict) and all(isinstance(v, dict) and _num(v.get("n")) is not None for v in bo.values()):
+        out["backoff"] = bo
+    elif bo is not None:
+        problems.append("backoff")
+    return out, problems
 
 
 def _day(idx: int, cfg) -> str:
@@ -73,29 +112,31 @@ class Acc:
         self.by_type[typ] += 1
         self.first = self.first or r["ts"]
         self.last = r["ts"]
+        # top-level field types are guaranteed by validate_record; nested values are untrusted and read defensively
         if typ == "skip":
             for reason in r["reasons"]:
-                self.skips[(r["kind"], reason.split(":")[0])] += 1
+                self.skips[(r["kind"], str(reason).split(":")[0])] += 1
         elif typ == "bench":
             if r["status"] == "ok":
                 self.bench_ok += 1
             else:
                 self.bench_aborted += 1
-                self.abort_reasons[(r.get("abort") or "")[:60]] += 1
-            self.region_modes[r["region"].get("mode")] += 1
+                self.abort_reasons[str(r.get("abort") or "")[:60]] += 1
+            self.region_modes[str(r["region"].get("mode"))] += 1
         elif typ == "harm":
             if r["kind"] == "episode":
                 e = r["evidence"]
-                self.episodes.append({"t": r["t"], "ts": r["ts"],
-                                      **{k: e.get(k) for k in ("duration_s", "recovery_s", "peak_some_pct", "peak_dstate", "peak_mem_some_pct", "driver")}})
+                self.episodes.append({"t": r["t"], "ts": r["ts"], "driver": str(e.get("driver") or "unknown")[:16],
+                                      **{k: _num(e.get(k)) for k in ("duration_s", "recovery_s", "peak_some_pct", "peak_dstate", "peak_mem_some_pct")}})
             else:
                 self.probe_latency_events += 1
         elif typ == "note":
-            self.notes.append({"t": r["t"], "ts": r["ts"], "text": r["text"], "kind": r.get("kind")})
-        elif typ == "run_start" and r.get("covariates"):
+            self.notes.append({"t": r["t"], "ts": r["ts"], "text": r["text"], "kind": r.get("kind") if isinstance(r.get("kind"), str) else None})
+        elif typ == "run_start" and isinstance(r.get("covariates"), dict):
             self.last_covariates = r["covariates"]
         elif typ == "run_end":
-            self.last_runs.append(r)
+            self.last_runs.append({"ts": r["ts"], "kind": r["kind"], "status": r["status"], "abort": str(r.get("abort") or "")[:200],
+                                   "duration_s": r["duration_s"]})
         elif typ == "recommendation" and r["kind"] != "baseline_established":
             self.last_recs.append(r)
 
@@ -111,8 +152,8 @@ class Acc:
 
     def harm(self) -> dict:
         eps = list(self.episodes)
-        durs = sorted(e["duration_s"] for e in eps)
-        recs = sorted(e["recovery_s"] for e in eps)
+        durs = sorted(e["duration_s"] for e in eps if e["duration_s"] is not None)
+        recs = sorted(e["recovery_s"] for e in eps if e["recovery_s"] is not None)
         around = []
         for n in self.notes:
             if n.get("kind") not in ("action", "annotation"):
@@ -121,13 +162,13 @@ class Acc:
             after = [e for e in eps if n["t"] <= e["t"] < n["t"] + 86400]
             if before or after:
                 around.append({"ts": n["ts"], "text": n["text"], "episodes_24h_before": len(before), "episodes_24h_after": len(after),
-                               "max_duration_before_s": max((e["duration_s"] for e in before), default=None),
-                               "max_duration_after_s": max((e["duration_s"] for e in after), default=None)})
+                               "max_duration_before_s": max((e["duration_s"] for e in before if e["duration_s"] is not None), default=None),
+                               "max_duration_after_s": max((e["duration_s"] for e in after if e["duration_s"] is not None), default=None)})
         return {
             "episodes": len(eps), "probe_latency_events": self.probe_latency_events,
             "duration_s_median": durs[len(durs) // 2] if durs else None, "duration_s_max": durs[-1] if durs else None,
             "recovery_s_max": recs[-1] if recs else None,
-            "peak_some_pct_max": max((e["peak_some_pct"] for e in eps), default=None),
+            "peak_some_pct_max": max((e["peak_some_pct"] for e in eps if e["peak_some_pct"] is not None), default=None),
             "drivers": dict(collections.Counter(e.get("driver") or "unknown" for e in eps)),
             "last": [{k: e[k] for k in ("ts", "duration_s", "recovery_s", "peak_some_pct", "peak_dstate", "peak_mem_some_pct", "driver")} for e in eps[-5:]],
             "around_annotations": around,
@@ -177,7 +218,8 @@ def analyze(cfg, path: str, as_json: bool = False, lane_filter: str | None = Non
     if as_json:
         out = {
             "summary": summary,
-            "read": {"torn": stats.torn, "unknown_version": stats.unknown_version, "invalid": stats.invalid, "unreadable": stats.unreadable},
+            "read": {"torn": stats.torn, "unknown_version": stats.unknown_version, "invalid": stats.invalid, "unreadable": stats.unreadable,
+                     "oversized_lines": stats.oversized, "truncated": stats.truncated, "limit_hit": stats.limit_hit},
             "lanes": {
                 lane: {
                     "phase": r.display_phase, "reference": r.reference, "latest": r.latest, "ratio": r.ratio(),
@@ -194,10 +236,13 @@ def analyze(cfg, path: str, as_json: bool = False, lane_filter: str | None = Non
         return json.dumps(out, indent=1, sort_keys=True)
     lines = [f"iogov analyze: {summary['records']} records, {summary['first']} .. {summary['last']}"]
     if stats.skipped():
-        lines.append(f"  skipped while reading: {stats.torn} torn, {stats.unknown_version} other-schema, {stats.invalid} invalid, "
-                     f"{len(stats.unreadable)} unreadable file(s)")
+        lines.append(f"  skipped while reading: {stats.describe()}")
         for u in stats.unreadable:
             lines.append(f"    UNREADABLE {u}")
+        for t in stats.truncated:
+            lines.append(f"    TRUNCATED {t}: only the first {journal_mod.MAX_FILE_BYTES} bytes were read")
+        if stats.limit_hit:
+            lines.append(f"    LIMIT: {journal_mod.MAX_RECORDS} records read, the rest of the journal was NOT analysed")
     lines.append(f"  types: {summary['by_type']}")
     lines.append(f"  bench: {summary['bench_ok']} ok, {summary['bench_aborted']} aborted {summary['bench_abort_reasons'] or ''}; "
                  f"write region modes {summary['write_region_modes']}")
@@ -258,9 +303,15 @@ def analyze(cfg, path: str, as_json: bool = False, lane_filter: str | None = Non
 
 
 def status(cfg, wall) -> str:
-    state = load_state(cfg.state_file())
     now = wall()
     lines = ["iogov status"]
+    try:
+        state, problems = clean_state(load_state(cfg.state_file()))
+    except (safeio.CorruptFile, safeio.UnsafePath) as exc:
+        state, problems = {}, []
+        lines.append(f"  corrupt state: {exc}")
+    if problems:
+        lines.append(f"  corrupt state: {cfg.state_file()}: fields with the wrong type ignored: {', '.join(problems)}")
     ks = kill_switch_reason(cfg)
     lines.append(f"  kill switch: {'ACTIVE ' + ks if ks else 'not set'}")
 
@@ -284,7 +335,12 @@ def status(cfg, wall) -> str:
     if os.path.isdir(cfg.scratch_dir):
         leftovers = [n for n in os.listdir(cfg.scratch_dir) if STALE_RE.fullmatch(n)]
     lines.append(f"  scratch leftovers: {leftovers or 'none'}")
-    data = safeio.load_json(os.path.join(cfg.state_dir, "agg.json"), any_owner=True)  # read-only: an operator may run `status`
+    agg_path = os.path.join(cfg.state_dir, "agg.json")
+    try:
+        data = safeio.load_json(agg_path, any_owner=True, strict=True)  # read-only: root or the service user runs `status`
+    except (safeio.CorruptFile, safeio.UnsafePath) as exc:
+        data = {}
+        lines.append(f"  corrupt state: {exc}; recognizer state replayed from the journal instead")
     acc = Acc()
     window = now - 30 * 86400
     stats = ReadStats()
@@ -292,9 +348,15 @@ def status(cfg, wall) -> str:
         acc.add(rec)
     for u in stats.unreadable:
         lines.append(f"  UNREADABLE journal file: {u}")
+    if stats.truncated or stats.limit_hit or stats.oversized:
+        lines.append(f"  journal read limits hit: {stats.describe()}")
+    eng = None
     if data.get("v"):
-        eng = Engine(cfg, data)
-    else:  # no persisted aggregates yet: replay (bounded memory), closed windows only
+        try:
+            eng = Engine(cfg, data)
+        except (TypeError, KeyError, ValueError, AttributeError) as exc:  # a damaged aggregate file: say so, fall back to the journal
+            lines.append(f"  corrupt state: {agg_path}: {type(exc).__name__}: {str(exc)[:80]}; recognizer state replayed from the journal instead")
+    if eng is None:  # no persisted aggregates (or unusable ones): replay (bounded memory), closed windows only
         eng, _ = replay(cfg, cfg.journal_dir(), now)
     eng.close_up_to(now)
     results = eng.results()
@@ -321,6 +383,6 @@ def status(cfg, wall) -> str:
             if ev["kind"] != "baseline_established":
                 lines.append(f"  recommendation [{ev['kind']}] {ev['text']}")
     for r in acc.last_runs:
-        lines.append(f"  last run {r['ts']} {r['kind']}: {r['status']} {r.get('abort') or ''} in {r['duration_s']} s")
+        lines.append(f"  last run {r['ts']} {r['kind']}: {r['status']} {r['abort']} in {r['duration_s']} s")
     lines.append("  This tool recommends only; it has changed no cap, model, queue setting or cgroup file.")
     return "\n".join(lines)

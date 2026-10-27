@@ -19,10 +19,41 @@ import stat
 import time
 
 NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+MAX_JSON_BYTES = 16 * 1024 * 1024  # state.json / agg.json are tens of KB; a larger file is damage or hostile, never parsed
+MAX_TEXT_BYTES = 4 * 1024 * 1024  # procfs / sysfs / cgroup / operator text files read by the collectors: read at most this much
 
 
 class UnsafePath(Exception):
     pass
+
+
+class CorruptFile(Exception):
+    """A state or aggregate file that exists but cannot be used (too large, not JSON, too deeply nested, wrong top-level type)."""
+
+
+def _kind(mode: int) -> str:
+    for test, name in ((stat.S_ISLNK, "symlink"), (stat.S_ISDIR, "directory"), (stat.S_ISFIFO, "fifo"), (stat.S_ISSOCK, "socket"),
+                       (stat.S_ISCHR, "character device"), (stat.S_ISBLK, "block device")):
+        if test(mode):
+            return name
+    return "unknown file type"
+
+
+def refuse_non_regular(path: str) -> bool:
+    """lstat BEFORE any open: a FIFO or a device node would block or misbehave on open/read, and a symlink is never followed.
+    Returns False when the path does not exist, raises UnsafePath (naming the path and its type) for anything but a regular file."""
+
+    try:
+        lst = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISREG(lst.st_mode):
+        raise UnsafePath(f"{path}: not a regular file ({_kind(lst.st_mode)})")
+    return True
+
+
+def _clear_nonblock(fd: int) -> None:
+    fcntl.fcntl(fd, fcntl.F_SETFL, fcntl.fcntl(fd, fcntl.F_GETFL) & ~os.O_NONBLOCK)
 
 
 def euid() -> int:
@@ -85,18 +116,51 @@ def open_file(path: str, flags: int, mode: int = 0o600, *, private: bool = True,
 
     if any_owner and (flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND)):
         raise ValueError("any_owner is only for read-only opens")
+    if not refuse_non_regular(path) and not (flags & os.O_CREAT):
+        raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), path)
     try:
-        fd = os.open(path, flags | NOFOLLOW | os.O_CLOEXEC, mode)
+        # O_NONBLOCK: the open itself can never block (a FIFO swapped in after the lstat); verify_fd then checks the TYPE through the
+        # descriptor before anything is read or written, and the flag is cleared again for the regular file we keep.
+        fd = os.open(path, flags | NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, mode)
     except OSError as exc:
         if exc.errno == errno.ELOOP:  # a symlink where a file should be
             raise UnsafePath(f"{path}: is a symlink")
         raise
     try:
         verify_fd(fd, path, private=private, any_owner=any_owner)
+        _clear_nonblock(fd)
     except BaseException:
         os.close(fd)
         raise
     return fd
+
+
+def read_text(path: str, limit: int = MAX_TEXT_BYTES, follow: bool = True) -> str | None:
+    """Bounded, non-blocking read of a text file (procfs, sysfs, cgroup, operator files). None when missing, unreadable or not a regular
+    file (checked through the descriptor before the first read); never more than `limit` bytes. `follow` is for kernel paths whose
+    directories are symlinks (sysfs); the final object must still be a regular file."""
+
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK | (0 if follow else NOFOLLOW))
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        _clear_nonblock(fd)
+        chunks: list[bytes] = []
+        total = 0
+        while total <= limit:
+            b = os.read(fd, min(65536, limit + 1 - total))
+            if not b:
+                break
+            chunks.append(b)
+            total += len(b)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    return b"".join(chunks)[:limit].decode("utf-8", errors="replace")
 
 
 def unlink_if_same(path: str, fd: int) -> bool:
@@ -155,17 +219,31 @@ class FileLock:
 # --- small JSON files (state, aggregates), atomic and race-free ---------------------------------------------
 
 
-def load_json(path: str, *, any_owner: bool = False) -> dict:
+def load_json(path: str, *, any_owner: bool = False, strict: bool = False) -> dict:
+    """Bounded (MAX_JSON_BYTES) and crash-free. A missing file is {}. A damaged file is {} for the runner (it starts fresh and the
+    conservative reservation semantics hold) and raises CorruptFile when `strict` (the read-only reports say "corrupt state" instead)."""
+
     try:
         fd = open_file(path, os.O_RDONLY, any_owner=any_owner)
     except FileNotFoundError:
         return {}
     try:
         with os.fdopen(fd, "r", encoding="utf-8") as fh:
-            data = json.load(fh)
-    except ValueError:
+            size = os.fstat(fd).st_size
+            if size > MAX_JSON_BYTES:
+                raise CorruptFile(f"{path}: {size} bytes exceeds the {MAX_JSON_BYTES} byte limit")
+            data = json.loads(fh.read(MAX_JSON_BYTES + 1))
+        if not isinstance(data, dict):
+            raise CorruptFile(f"{path}: top level is not a JSON object")
+    except (ValueError, RecursionError) as exc:  # not JSON, or nested so deeply that the parser gives up
+        if strict:
+            raise CorruptFile(f"{path}: {type(exc).__name__}: {str(exc)[:80]}") from None
         return {}
-    return data if isinstance(data, dict) else {}
+    except CorruptFile:
+        if strict:
+            raise
+        return {}
+    return data
 
 
 def save_json(path: str, data: dict, token_hex) -> None:

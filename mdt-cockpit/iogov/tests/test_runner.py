@@ -65,7 +65,7 @@ def test_zero_blocks_are_counted_and_excluded(world):
 
 def test_busy_host_skips_without_any_probe_io_and_journals_once(world):
     env, clock = make_env()
-    cfg = world.config()
+    cfg = world.config(skip_passive_interval_s=60.0)  # ticks below are 700 s apart: every one is due for a passive snapshot
     world.set_pressure(40.0, 5.0)
     for _ in range(3):
         run_tick(build(cfg, env))

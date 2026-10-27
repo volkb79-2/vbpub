@@ -86,10 +86,12 @@ def lvm_issue_discards(cfg) -> bool | None:
 
 def provider_signal(cfg, wall) -> dict | None:
     try:
-        with open(cfg.provider_signal_file, "r", encoding="utf-8") as fh:
-            data = json.load(fh)
+        text = _read(cfg.provider_signal_file)
+        if text is None:
+            return None
+        data = json.loads(text)
         mt = os.stat(cfg.provider_signal_file).st_mtime
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return None
     if not isinstance(data, dict):
         return None

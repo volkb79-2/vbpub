@@ -73,9 +73,8 @@ def build(cfg: Config, env: Env | None = None, load: bool = True, allow_root: bo
 
 def disk_bytes(cfg: Config, disk: Disk) -> int | None:
     try:
-        with open(os.path.join(disk.sys_path, "size"), "r") as fh:
-            return int(fh.read().strip()) * 512
-    except (OSError, ValueError):
+        return int((safeio.read_text(os.path.join(disk.sys_path, "size")) or "").strip()) * 512
+    except ValueError:
         return None
 
 
@@ -103,6 +102,12 @@ def exclusive(rt: Runtime):
         rt.state = safeio.load_json(rt.path("state.json"))
         rt.engine = _load_engine(rt)
         yield True
+    except BaseException:
+        try:  # an unexpected failure still persists what the run had decided (reservation, backoff, skip dedup) while the lock is held
+            rt.save()
+        except Exception:
+            pass
+        raise
     finally:
         lock.release()
 
@@ -114,7 +119,7 @@ def _read_resets(rt: Runtime) -> list[float]:
     except FileNotFoundError:
         return out
     with os.fdopen(fd, "r") as fh:
-        for line in fh:
+        for line in fh.read(safeio.MAX_JSON_BYTES).splitlines():  # bounded: one float per line, a few lines per year
             try:
                 out.append(float(line.strip()))
             except ValueError:
@@ -207,19 +212,22 @@ def _daily_prune(rt: Runtime) -> None:
         rt.journal.append("note", text=f"journal retention removed {len(removed)} monthly file(s): {', '.join(removed)}", kind="retention")
 
 
-def _refuse(msg: str) -> int:
+def _refuse(msg: str, code: int = 2) -> int:
     print(msg, file=sys.stderr)
-    return 2
+    return code
 
 
 def _guarded(fn):
-    """A path-safety violation anywhere in a run (symlinked state file, wrong owner, swapped name) is a refusal, not a crash."""
+    """A path-safety violation anywhere in a run (symlinked state file, wrong owner, swapped name) is a refusal (exit 2), and any other
+    unexpected exception is a clean one-line error (exit 3): locks are released and state persisted by `exclusive`, never a traceback."""
 
     def wrapper(rt, *a, **k):
         try:
             return fn(rt, *a, **k)
         except safeio.UnsafePath as exc:
             return _refuse(f"iogov: refusing to continue: {exc}")
+        except Exception as exc:
+            return _refuse(f"iogov: internal error, run abandoned: {type(exc).__name__}: {exc}"[:300], 3)
 
     wrapper.__name__ = fn.__name__
     wrapper.__doc__ = fn.__doc__
@@ -247,11 +255,25 @@ def run_tick(rt: Runtime) -> int:
             rt.save()
             return 0
         backoff = Backoff(rt.state, cfg, env.wall, "tick")
+        blocked = backoff.blocked() > 0
+        now = env.wall()
+        last_passive = rt.state.get("skip_passive_t", 0.0)
+        passive_due = not isinstance(last_passive, (int, float)) or now - last_passive >= cfg.skip_passive_interval_s or last_passive > now
+        if blocked and not passive_due:
+            return 0  # backing off and the rate-limited passive snapshot is not due: no gate read, no sleep, nothing
         gate = Gate(cfg, rt.collector, env).check("tick")
-        if not gate.ok or backoff.blocked() > 0:
-            # No probe IO, but the gate's own snapshot pair is kept: a stalled host is exactly the moment whose passive evidence
-            # (pressure, swap activity, who writes) the operator needs. The backoff and the skip dedup bound the journal, not the evidence.
-            rt.emit("passive", gated=True, gate_reasons=gate.reasons, **passive_summary(gate.before, gate.after, cfg.others_top))
+        if gate.before is None:  # the kill switch appeared between our check and the gate's: no snapshot was taken
+            _cleanup_stale(rt)
+            _log_skip(rt, "tick", gate.reasons)
+            rt.save()
+            return 0
+        if not gate.ok or blocked:
+            # No probe IO, but the gate's own snapshot pair is kept (at most one per skip_passive_interval_s): a stalled host is exactly
+            # the moment whose passive evidence (pressure, swap activity, who writes) the operator needs.
+            reasons = list(gate.reasons) + ([f"backoff:until={int(backoff.until())}"] if blocked else [])
+            if passive_due:
+                rt.emit("passive", gated=True, gate_reasons=reasons, **passive_summary(gate.before, gate.after, cfg.others_top))
+                rt.state["skip_passive_t"] = now
             if not gate.ok:
                 _log_skip(rt, "tick", gate.reasons, gate.ctx)
                 backoff.hit()
@@ -463,6 +485,8 @@ def plan_text(rt: Runtime) -> str:
     lines.append(f"identity: uid {os.geteuid()}" + ("  (ROOT: needs allow_root and a root-owned 0700 scratch dir)" if os.geteuid() == 0 else ""))
     for c in cfg.clamped:
         lines.append(f"config clamped: {c}")
+    for d in cfg.deprecated:
+        lines.append(f"config DEPRECATED key {d}")
     lines.append("devices:")
     for d in rt.disks:
         size = dict(sizes).get(d.kname)
@@ -489,6 +513,7 @@ def plan_text(rt: Runtime) -> str:
         f"bench needs some avg10 <= {cfg.bench_pressure_some_max}, full <= {cfg.bench_pressure_full_max}, "
         f"governed writes <= {int(cfg.bench_governed_write_bps_max)} B/s, nothing in flight",
         f"any single IO > {cfg.abort_latency_ms:g} ms or flush > {cfg.flush_limit_s:g} s stops further submissions",
+        f"a gated or backing-off tick journals its passive snapshot at most every {cfg.skip_passive_interval_s:g} s",
     ]))
     lines.append("This tool changes no cap, model, queue setting or cgroup file.")
     return "\n".join(lines)

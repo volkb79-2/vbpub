@@ -36,6 +36,8 @@ ALLOWED_CALLS = {
     ("safeio.py", "ensure_dir", "os.mkdir"),
     ("safeio.py", "load_json", "os.fdopen"),             # read mode
     ("safeio.py", "open_file", "os.open"),               # O_NOFOLLOW + verified
+    ("safeio.py", "_clear_nonblock", "fcntl.fcntl"),     # F_GETFL/F_SETFL only: drops O_NONBLOCK after the type check
+    ("safeio.py", "read_text", "os.open"),               # O_RDONLY|O_NONBLOCK, regular files only, bounded read
     ("safeio.py", "save_json", "os.fsync"),
     ("safeio.py", "save_json", "os.replace"),            # state/aggregate atomic replace
     ("safeio.py", "save_json", "os.write"),
@@ -44,8 +46,7 @@ ALLOWED_CALLS = {
     ("scratch.py", "_cleanup", "os.unlink"),             # our own scratch file
     ("scratch.py", "_remove_stale_files", "os.unlink"),  # strict-regex regular files in the scratch dir
 }
-ALLOWED_PLAIN_OPEN = {("collectors.py", "_read"), ("collectors.py", "_scan"), ("covariates.py", "provider_signal"),
-                      ("runner.py", "disk_bytes"), ("scratch.py", "fstype_of")}  # builtin open(), read mode only
+ALLOWED_PLAIN_OPEN: set = set()  # no builtin open() anywhere: every read goes through safeio.read_text / open_file (bounded, non-blocking)
 
 
 def call_sites():
@@ -115,6 +116,8 @@ def test_fdopen_is_read_only_and_ioctl_is_only_the_two_size_queries():
             assert isinstance(mode, ast.Constant) and mode.value == "r", (module, func)
         if name == "fcntl.ioctl":
             assert module == "rawread.py" and isinstance(node.args[1], ast.Name) and node.args[1].id in ("BLKGETSIZE64", "BLKSSZGET")
+        if name == "fcntl.fcntl":
+            assert isinstance(node.args[1], ast.Attribute) and node.args[1].attr in ("F_GETFL", "F_SETFL"), (module, func)
     consts = {n.targets[0].id: n.value.value for n in ast.parse((PKG / "rawread.py").read_text()).body
               if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name) and isinstance(n.value, ast.Constant)}
     assert consts["BLKGETSIZE64"] == 0x80081272 and consts["BLKSSZGET"] == 0x1268  # not BLKDISCARD (0x1277) or any other request

@@ -35,7 +35,7 @@ From `mdt-cockpit/` (so that `import iogov` resolves), or with `PYTHONPATH=<dir 
 python3 -m iogov plan                  # DRY RUN: devices, region, lanes, budget numbers, gates. Opens no device, writes nothing.
 python3 -m iogov tick --dry-run        # same output; `bench --dry-run` too
 python3 -m iogov devices               # the disks that would be probed (sysfs lookups only)
-python3 -m iogov tick                  # raw 4 KiB reads + passive snapshot (timer: every 5 min); a gated tick still journals the passive snapshot
+python3 -m iogov tick                  # raw 4 KiB reads + passive snapshot (timer: every 5 min); a gated tick still journals the passive snapshot (<= 1 per 15 min)
 python3 -m iogov bench [--force]       # the ~6 h mini write bench (a no-op unless due; --force still honours gates and kill switches)
 python3 -m iogov watch                 # optional resident sampler of protected-side distress episodes
 python3 -m iogov analyze [PATH] [--json] [--lane r_cold] [--no-plots]   # offline: summary, shifts, text plots, harm, demand check
@@ -51,9 +51,14 @@ Config: `--config FILE`, `$IOGOV_CONFIG`, `/etc/iogov/iogov.toml`, else defaults
 error; a value beyond the hard limits in `config.py` is clamped to the limit (the clamps are printed by `plan` and `config`). Minimum
 useful config: `data_paths = [...]` (the disks behind them are detected) and `protected_cgroups` / `containers` for the harm observations.
 
-`analyze` and `status` are read-only and may be run by root or an operator, not only by the service user: they open the journal, state and
-aggregate files no-follow and accept any owner. A file they cannot read (a symlink, wrong type, no permission) is listed as `UNREADABLE`,
-never silently dropped, so "0 records" always means an empty journal.
+`analyze` and `status` are read-only and are run by **root or the service user** (`sudo -u iogov python3 -m iogov status`): the state directory
+is 0700 and service-owned, so no third identity can reach it; the readers accept any file owner (root reading the service user's files), open
+every file no-follow with the type checked before the first read (a FIFO or device node planted in the directory cannot hang them), and bound
+what they read (`safeio.MAX_JSON_BYTES`, `journal.MAX_LINE_READ` / `MAX_FILE_BYTES` / `MAX_RECORDS`). A file they cannot read or use is listed
+as `UNREADABLE` / `corrupt state` / `TRUNCATED` / `LIMIT`, never silently dropped, so "0 records" always means an empty journal.
+
+Upgrades: a config key that a later release removed is ignored with a warning (listed by `plan` and `config`) for one release; an unknown new
+key is still an error.
 
 Identity: **never root by default** (`allow_root = true` or `--allow-root` is required, and then every state/scratch directory must be
 root-owned 0700). State, journal and scratch directories must be real directories owned by the running user and not group/world writable;
