@@ -16437,6 +16437,97 @@ def logstream_container(state: Path) -> str | None:
     return names[0] if names else None
 
 
+class TestRg109InterruptedClient:
+    """RG-109: what a SIGTERM to run-gate leaves behind, pinned.
+
+    A client STOPPED gracefully during the wait removes its container and
+    clears its record (adoption is for a client that DIED); a second SIGTERM
+    during that cleanup is deferred, never raised mid-cleanup; and an
+    interruption after `docker run -d` but before the wait keeps the
+    container (adoptable) and says so."""
+
+    def test_deferred_sigterm_records_the_signal_and_re_raises_after_the_body(self):
+        previous = signal.getsignal(signal.SIGTERM)
+        reached = []
+        with pytest.raises(SystemExit) as caught:
+            with run_gate.deferred_sigterm():
+                os.kill(os.getpid(), signal.SIGTERM)
+                reached.append("body ran to its end despite the signal")
+                reached.append(signal.getsignal(signal.SIGTERM) is not previous)
+        assert caught.value.code == 128 + signal.SIGTERM
+        assert reached == ["body ran to its end despite the signal", True]
+        assert signal.getsignal(signal.SIGTERM) is previous   # restored
+
+    def test_deferred_sigterm_without_a_signal_is_transparent(self):
+        previous = signal.getsignal(signal.SIGTERM)
+        with run_gate.deferred_sigterm():
+            pass
+        assert signal.getsignal(signal.SIGTERM) is previous
+
+    def test_deferred_sigterm_outside_the_main_thread_runs_the_body_unprotected(self):
+        seen = []
+
+        def body():
+            with run_gate.deferred_sigterm():   # signal() raises ValueError here
+                seen.append(threading.current_thread() is not threading.main_thread())
+
+        worker = threading.Thread(target=body)
+        worker.start()
+        worker.join(timeout=10)
+        assert seen == [True]
+
+    def test_a_sigterm_during_the_wait_removes_the_container_and_clears_the_record(
+            self, tmp_path, monkeypatch):
+        repo, proj = make_history_repo(tmp_path, SIMPLE_LANE)
+        log, state = fake_docker_stateful(tmp_path, monkeypatch)
+        (state / ".hang").write_text("")      # `docker logs -f` blocks
+        client = subprocess.Popen([sys.executable, str(_TOOL_INVOKE), "suite"],
+                                  cwd=proj, stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, text=True)
+        record = proj / ".run-gate" / "inflight" / "suite.json"
+        deadline = time.monotonic() + 30
+        while not (state_containers(state) and record.exists()) \
+                and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert state_containers(state) and record.exists()
+        name = state_containers(state)[0]
+        client.send_signal(signal.SIGTERM)
+        out, _ = client.communicate(timeout=60)
+        assert client.returncode == 2, out   # ERROR: interrupted
+        assert ("interrupted before a closed result (exit status 143); "
+                "verdict ERROR, exit 2") in out
+        assert state_containers(state) == [], out   # `docker rm -f` ran
+        assert not record.exists(), out               # and the record is gone
+        assert f"rm\x1f-f\x1f{name}" in log.read_text()
+
+    def test_an_interruption_before_the_wait_keeps_the_container_and_says_so(
+            self, tmp_path, monkeypatch, capsys):
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+        repo, proj = make_history_repo(tmp_path)
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ["run-gate"])
+        # the stateful shim: `docker run -d` creates a container `inspect`
+        # can answer for, so the lane reaches the profiling start (the window)
+        log, state = fake_docker_stateful(tmp_path, monkeypatch)
+        called = []
+
+        def interrupted(*args, **kwargs):
+            called.append(args[6])            # the container name
+            raise SystemExit(128 + signal.SIGTERM)
+
+        monkeypatch.setattr(run_gate, "start_lane_profiling", interrupted)
+        assert run_gate.main(["suite"]) == 2
+        assert len(called) == 1, "the profiling start (the window) never ran"
+        name = called[0]
+        err = capsys.readouterr().err
+        assert (f"interrupted before lane 'suite' was awaited: container {name} "
+                f"keeps running and its in-flight record is kept") in err
+        assert f"`docker rm -f {name}` to discard it" in err
+        assert "budget is not enforced while no client is attached" in err
+        assert f"rm\x1f-f\x1f{name}" not in log.read_text()   # kept, by design
+        assert (proj / ".run-gate" / "inflight" / "suite.json").exists()
+
+
 class TestReattachAcrossADeadClient:
     """RG-35 (R-39). The controlled WRONG implementation is the one that
     shipped through rev 33: `docker run -d` … `docker rm -f` in a `finally`

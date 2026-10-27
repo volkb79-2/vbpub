@@ -12595,6 +12595,10 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
             if path is not None:
                 run_record["log_path"] = str(path)
     finally:
+      # RG-109: this cleanup runs on a SIGTERM-turned-SystemExit too; a second
+      # SIGTERM while it runs is deferred until the container is removed and
+      # the record cleared (`deferred_sigterm`), never raised mid-cleanup.
+      with deferred_sigterm():
         if daemon_watch is not None:
             daemon_watch.close()
         # RG-55/contract Sec 4 obligation 2: `stop` (or the basic sampler's
@@ -13381,6 +13385,11 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                 lane, lane_name, project_dir, worktree, docker, profile_plan,
                 name, container_id, cgroup, "container",
                 preflight=profile_preflight)
+        except (SystemExit, KeyboardInterrupt):
+            # RG-109: the container is up and recorded, nothing awaits it
+            # yet, and `main()` is about to end this process — say so.
+            disclose_interrupted_before_await(name, lane_name)
+            raise
         except Exception as exc:
             # B1d (round-1 review): the whole point of `start_lane_profiling`
             # is to never raise -- this call-site wrap is defense in depth
@@ -15998,6 +16007,51 @@ def _sigterm_as_exit(signum, _frame) -> None:
     raise SystemExit(128 + signum)
 
 
+@contextlib.contextmanager
+def deferred_sigterm():
+    """RG-109: a SIGTERM that lands while a lane's cleanup is already running
+    must not abandon that cleanup. `main()` turns SIGTERM into `SystemExit`
+    so the `finally` that removes the lane container and clears its
+    in-flight record runs; but a SECOND SIGTERM arriving inside that
+    `finally` (daemon `stop` can take up to 30 s) raised a new `SystemExit`
+    from the middle of it and skipped `docker rm -f` — the orphan RG-109 was
+    filed for. Inside this context the signal is only recorded; on exit the
+    previous handler is restored and a recorded signal is re-raised as the
+    same `SystemExit(128 + SIGTERM)` the handler would have raised. Outside
+    the main thread signals cannot be rebound; the body then runs
+    unprotected, exactly as before."""
+    pending: list[int] = []
+
+    def record(signum, _frame) -> None:
+        pending.append(signum)
+
+    try:
+        previous = signal.signal(signal.SIGTERM, record)
+    except ValueError:
+        yield
+        return
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+        if pending:
+            raise SystemExit(128 + signal.SIGTERM)
+
+
+def disclose_interrupted_before_await(name: str, lane_name: str) -> None:
+    """RG-109: an interruption AFTER `docker run -d` succeeded but BEFORE the
+    wait (the profiling `ctl start`, up to 10 s) leaves the container running
+    with its in-flight record in place — adoptable by the next invocation, by
+    design — but nobody would have said so. One line names the container,
+    both remedies, and the one thing an unattended container lacks."""
+    print(f"{PROG}: interrupted before lane {lane_name!r} was awaited: "
+          f"container {name} keeps running and its in-flight record is kept "
+          f"— re-run `run-gate {lane_name}` to adopt or collect it, or "
+          f"`docker rm -f {name}` to discard it (the lane budget is not "
+          f"enforced while no client is attached)",
+          file=sys.stderr, flush=True)
+
+
 def is_pid1_without_init() -> bool:
     """PID 1 in a container has no init reaper in front of run-gate."""
     return os.getpid() == 1
@@ -16039,11 +16093,20 @@ def main(argv: list[str] | None = None) -> int:
                         sys.stderr.write(output)
                 elif output:
                     sys.stdout.write(output)
-        except (SystemExit, KeyboardInterrupt):
+        except (SystemExit, KeyboardInterrupt) as exc:
             # Dependencies and signal handlers do not get to leak Python's
             # arbitrary process statuses around the closed result table. Keep
             # finish outside this handler so a partial telemetry flush cannot
-            # trigger a second finalization attempt.
+            # trigger a second finalization attempt. RG-109: this result has
+            # no lane name and no record, so `finish` prints nothing for it —
+            # say here that the run was interrupted, or the process ends
+            # silently with exit 2 after its cleanup already ran.
+            status = exc.code if isinstance(exc, SystemExit) else "SIGINT"
+            print(f"{PROG}: interrupted before a closed result (exit status "
+                  f"{status}); verdict ERROR, exit 2 — a lane container "
+                  f"started by this client was removed on the way out unless "
+                  f"a line above says it was kept",
+                  file=sys.stderr, flush=True)
             result = LaneResult(
                 "ERROR", reason="interrupted-before-a-closed-result")
         return finish(result)

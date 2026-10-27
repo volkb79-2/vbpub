@@ -6422,7 +6422,7 @@ unavailable", discarding both.
 
 ## RG-109 — a SIGTERM to `run-gate` leaves the detached lane container running
 
-**Status:** OPEN, NEEDS AN OPERATOR DECISION (2026-10-27 triage: the in-flight record + `docker logs -f` follow design (SPEC R-15/R-17, RW-14: a second invocation FOLLOWS a live run) deliberately lets a detached lane outlive its client, so `stop and remove on SIGTERM` contradicts the adoption contract; choose between (a) stop+remove on SIGTERM/SIGINT, (b) keep adoption and print the exact `docker rm -f <name>` line on interruption. Not implemented in 24.0.2). Filed (found 2026-10-21 ~03:50 UTC, filed by BL-01; severity: medium). No existing entry covers it (checked this
+**Status:** FIXED IN CANDIDATE 2026-10-27 (fable-run-gate-20261027; decision taken by reading the code, no contradiction with adoption). The code ALREADY did (a) for the common case: `main()` turns SIGTERM into `SystemExit`, and `await_container`'s `finally` removes the container and clears the record on that exit too — adoption (RW-14 follow / R-39 collect) is for a client that DIED, not one asked to stop. Two real holes explain the observed orphan and are closed: (1) a SECOND SIGTERM arriving while that `finally` runs (daemon `stop`, up to 30 s) raised a new `SystemExit` mid-cleanup and skipped `docker rm -f` — now `deferred_sigterm()` records the signal during the cleanup and re-raises it after; (2) an interruption between a successful `docker run -d` and the wait (the profiling `ctl start`) kept the container and record silently — now disclosed with the exact `docker rm -f <name>`, the re-run-to-adopt remedy and the note that no budget is enforced unattended. Also: an interrupted run printed NOTHING (`finish` has no lane name for it) and exited 2 — now one `interrupted before a closed result` line. Oracles: `TestRg109InterruptedClient` (real SIGTERM to a client subprocess: container gone, record gone, exit 2; deferral unit tests; the window disclosure via `main()`). README "Interrupting a run". Open remainder: RG-114 (no history entry for an interrupted run; exec-lane `finally` has no deferral). Earlier text: (2026-10-27 triage: the in-flight record + `docker logs -f` follow design (SPEC R-15/R-17, RW-14: a second invocation FOLLOWS a live run) deliberately lets a detached lane outlive its client, so `stop and remove on SIGTERM` contradicts the adoption contract; choose between (a) stop+remove on SIGTERM/SIGINT, (b) keep adoption and print the exact `docker rm -f <name>` line on interruption. Not implemented in 24.0.2). Filed (found 2026-10-21 ~03:50 UTC, filed by BL-01; severity: medium). No existing entry covers it (checked this
 file and `CHANGES.md` for SIGTERM, signal, orphan and stale-container wording: the nearest are RG-44 `GONE_SIGNALS`, an unrelated
 docker-stderr match, and the ticket release on SIGTERM at the transient-ticket section, which is about the runner lock, not
 the container).
@@ -6469,3 +6469,64 @@ command names it).
 ## RG-111 — the 24.0.2 release gate runs with the R2 mutation campaign waived (operator, 2026-10-27)
 
 **Status:** OPEN (the waiver is the item). The wave policy waives R2 for every release (cmru 7.0.0 style `gate-provisional`, KI-79 window); all other lanes and the regular tests stay mandatory. Closing it means one full R2 campaign over the run-gate sources changed since `run-gate-v24.0.1` (the RG-55 baseline-liveness bound, B108 phase 2 closeout, v6 worktree-record reader, RG-106 `user`), run after the waiver window closes.
+
+## RG-112 — `git gc` inside a narrow lane container fails: reflog expiry locks every sibling worktree's HEAD under the read-only `worktrees/` admin mount
+
+**Status:** BY DESIGN, DOCUMENTED 2026-10-27 (fable-run-gate-20261027). Severity Low. Found while making `TestRgNarrowRealContainer` run end to end for the first time (it had never run: no Docker socket in the selftest lane container, and locally its fixture forked the worktree before the project was committed).
+
+**Observed.** On git >= 2.4x `git gc` runs `reflog expire --all`, which locks `worktrees/<sibling>/HEAD` for every linked worktree; RG-NARROW mounts the siblings' admin dirs read-only, so `gc` fails with `cannot lock ref 'worktrees/<x>/HEAD' ... Read-only file system` / `fatal: failed to run reflog`. `git repack -a -d` and `git prune --expire=now` (same reachability, no locks) work and keep the siblings' objects.
+
+**Decision.** The siblings stay untouchable; a lane that needs object maintenance uses repack/prune. The smoke test does exactly that. No code change; a consumer that runs `git gc` in a lane gets git's own error line.
+
+## RG-113 — the B108 closeout cap was half of the remaining budget PER CALL, and there are two calls
+
+**Status:** FIXED IN CANDIDATE 2026-10-27 (`81a7d3ee5`, review round 3 of 076c381f5). Severity Medium.
+
+**Observed.** `assay_closeout_group` ran `analyze campaign --format json` and `--format text` each under `timeout $((left/2 - 5))`, so the pair could spend `left - 10` s: nearly the whole remainder, contradicting the CHANGES claim and leaving BUDGET_EXCEEDED reachable for a lane that finished in budget. Fix: a quarter per call (pair <= half), skip under 40 s, a json call that times out skips the text call, and the skip or timeout is written to the `.err` file so the host's `unavailable` closeout names the cause (before: "the lane may have been stopped before it ran"). Oracles: the real inner script in bash with a slow fake judge (`test_a_json_call_that_times_out_skips_the_text_call`, `test_the_closeout_is_skipped_when_the_lane_budget_is_nearly_spent`).
+
+## RG-114 — an interrupted run leaves no history entry, and the exec-lane cleanup has no SIGTERM deferral
+
+**Status:** OPEN 2026-10-27 (remainder of RG-109). Severity Low.
+
+**Observed.** `main()` converts a SIGTERM into `LaneResult("ERROR", reason="interrupted-before-a-closed-result")` with no record, so `finish` flushes nothing: the lane's history has no entry for the interrupted run (a DEAD client's run is recorded as aborted by `record_lost_run` on adoption; a gracefully stopped one is not recorded at all). `run_exec_lane`'s `finally` (profiling stop, up to 30 s) runs without `deferred_sigterm()`; a second SIGTERM there skips the profiling stop (no container of run-gate's own to orphan, so lower stakes than the ephemeral path).
+
+**Fix direction.** Keep the run record reachable from `main()` (a module-level "current record" set by `_dispatch` once `start_run_record` ran) and flush it as `aborted`/`interrupted`; wrap the exec `finally` in `deferred_sigterm()`. Oracle: the RG-109 subprocess test plus `lane_slot(proj)["history"]` carrying one interrupted entry.
+
+## RG-115 — a follower (disowned record) still collects the Assay closeout and can print an "unavailable" WARNING or retain duplicate evidence
+
+**Status:** OPEN 2026-10-27 (round-2 review minor, not fixed in the wave). Severity Low.
+
+**Observed.** `_dispatch` runs `finish_assay_closeout` for every non-dry-run assay lane. A follower's record is disowned (`disown_run_record` sets `_flushed`) and writes no history, yet the closeout reads the OWNER's `.assay/campaign-*` files, retains a second copy under its own random run id and, when the owner has not finished writing them, warns `assay closeout unavailable`.
+
+**Fix direction.** Skip collection when `record is None or record.get("_flushed")`, printing one `closeout: the owning client records it` line instead. Oracle: an assay lane followed by a second client (`TestTwoClientsOneLane` shape) whose follower output carries no closeout WARNING and whose evidence dir has one retained pair.
+
+## RG-116 — diff-coverage gate (`tools/coverage_gate.py`) candidates from the 2026-10-27 read-only audit
+
+**Status:** OPEN 2026-10-27, audit findings (Sonnet, read-only; items marked PROBE were reproduced by the auditor with a `python3 -c` probe, not re-verified by the wave). Severity High for the honesty of the selftest gate; none changes a lane verdict.
+
+1. (PROBE) `tools/coverage_gate.py:99-102`: a `\ No newline at end of file` marker line is counted as a context line, mis-numbering the added lines after it (`{11,12}` for true `{10,11}`); a changed last line escapes the denominator. Fix: `elif line.startswith("\\"): continue`, or drive line numbers from the hunk header counts.
+2. `run-gate.toml` selftest lane passes `--allow-first-release` permanently; with 19 stable `run-gate-v*` tags that mode is no longer legitimate, and a tagless checkout (`--no-tags` clone) makes the diff check SKIPPED with exit 0. Fix: drop it from the lane; only `release_candidate` passes it after its origin check.
+3. (PROBE) `--source run_gate.py` alone: `run_gate_admission.py` (shipped in the wheel) is never diff-judged by selftest (`evaluate(...).skipped` is True for it). Fix: `--source` as `action="append"`, pass both (docs/DESIGN-RG82-RUN-GATE-24.md:364 already specifies it).
+4. (PROBE) `:81`: an added content line beginning `++ ` is read as a `+++ ` file header and mis-attributes following lines. Fix: headers only outside a hunk; count from the header.
+5. (PROBE) `:416-420`: `git diff` not hardened against `color.diff=always`, `diff.external`, textconv — no hunk matches, SKIPPED, exit 0. Fix: `--no-color --no-ext-diff --no-textconv -c core.quotepath=false -c diff.noprefix=false`.
+6. `evaluate`: changed continuation lines of multi-line statements are never judged (coverage.json lists statement first lines only). Fix: map changed lines to statement spans (ast `end_lineno`) and judge the span's first line.
+
+## RG-117 — admission / runtime candidates from the 2026-10-27 read-only audit
+
+**Status:** OPEN 2026-10-27, audit findings (same audit as RG-116; PROBE = auditor-reproduced, not re-verified by the wave).
+
+- (PROBE, Medium) `run_gate_admission.py:288-291` `_containers`: `docker ps -aq` then `inspect <ids>` with `check=True`; a concurrent gate removing a tombstone in between makes `inspect` exit 1 ("No such object") and the healthy lane ends ERROR. Fix: `check=False`, keep stdout objects when stderr says only "No such object/container".
+- (Medium) `run_gate.py` `docker run`/`docker exec` argv carry forwarded secret VALUES (`-e KEY=value`), readable in `/proc/<pid>/cmdline` for the life of `docker exec`; only the printed copy is redacted. Fix: `-e KEY` and pass the value through the subprocess `env`.
+- (Medium) `save_container_logs`: `write_text` then `chmod 0o600` (world-readable window; follows a pre-planted symlink in predictable `/tmp/run-gate/<name>.log`). Fix: `os.open` with `O_CREAT|O_EXCL|O_NOFOLLOW`, 0600, like `allocate_lane_log`; create the dir 0700 and verify owner/mode.
+- (PROBE, Medium) `slice_cgroupfs_dir`: wrong nesting for 3+ dash components (`dev-test-gates.slice` → `dev.slice/test.slice/...` instead of `dev.slice/dev-test.slice/...`; `tests/test_run_gate.py` pins the wrong value); `memory.max` then reads absent and admission falls back to admit-with-warning. Fix: the parent of `a-b-c.slice` is `a-b.slice`.
+- (Medium) `main()` catches only SystemExit/KeyboardInterrupt; any other uncaught exception exits 1 (= FAIL) with a traceback instead of ERROR 2. Fix: `except Exception` → `finish(LaneResult("ERROR", reason="unexpected-exception: ..."))`.
+- (hypothesis, Medium) `DockerAdmission.resume` binds a ticket by name only; after a prune that resets the allocator a stale inflight record could adopt another gate's live ticket and release it. Fix: persist the owner JSON in the admission result and require the label to equal it.
+- (Low) a malformed EXITED ticket counts as live forever in `acquire` (`status_snapshot` disagrees); any stderr containing "conflict" is treated as a name collision; bare `int()` on cgroup file contents (`memory.max` empty → ValueError); `image_selection.effective_image` recorded before the `RUN_GATE_HOST_IMAGE` override; the pressure-based stall pause is unbounded (a budgetless lane under sustained pressure never stalls out); `isdecimal()` accepts non-ASCII digits and leading zeros in label grammar.
+- Unverified hypothesis: a relative `RUN_GATE_EXTRA_MOUNTS` source (`data=/d`) makes docker create a named volume silently.
+- Not substantiated by the audit: tester-image identity (sha256 compared in `_require_same_wheel` and the Dockerfile; installed modules byte-compared); no non-zero lane exit maps to PASS.
+
+## RG-118 — RG-106 oracle 5: refuse an image with no passwd entry for the resolved `user` uid (design)
+
+**Status:** OPEN 2026-10-27 (RG-106 remainder). Severity Low.
+
+**Design.** No extra container start: only when `env["user"]` is set, prefix the inner script with `getent passwd "$(id -u)" >/dev/null || { echo "run-gate: uid $(id -u) has no passwd entry in the image; git and pip fail obscurely without one" >&2; exit 2; }`. The lane then fails with a named line instead of `fatal: unable to look up current user in the passwd file`. Oracle: a fake image whose `getent` stub fails for the uid; the lane log carries the line and the verdict is FAIL with exit 2.

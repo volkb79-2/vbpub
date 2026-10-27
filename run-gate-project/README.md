@@ -121,6 +121,21 @@ environment-down, environment-mismatch, env-missing, external-missing,
 external-down, dirty-tree, no-headroom, lock-busy, no-base, judge-floor,
 judge-digest, provenance-mismatch, and state-mount.
 
+**Interrupting a run (SIGTERM / Ctrl-C; RG-109).** A client stopped
+gracefully while it waits on its lane removes the container it started and
+clears the in-flight record on the way out (the same `finally` every other
+exit takes; a second SIGTERM during that cleanup is deferred until the
+container is gone, never raised mid-cleanup), prints one
+`interrupted before a closed result` line and exits ERROR 2. Adoption by a
+later invocation (follow / collect / `--fresh`) is for a client that DIED
+(SIGKILL, crash, reboot), not for one that was asked to stop. The one window
+in which a stopped client keeps its container is between a successful
+`docker run -d` and the wait (the profiling `ctl start`, up to 10 s): the
+container and its in-flight record are kept, adoptable, and the client says
+so with the exact `docker rm -f <name>` to discard it and that the lane budget
+is not enforced while no client is attached. An exec-mode lane's in-container
+process is bounded by its own `timeout` wrapper regardless.
+
 Container lanes receive Git's `safe.directory=*` through per-process
 `GIT_CONFIG_COUNT` variables, appended after any entries the runner already
 set. Run-Gate writes no global config or lock file, so its setup does not

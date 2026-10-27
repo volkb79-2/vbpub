@@ -47,6 +47,19 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   teardown unverified, which is not "DAMON off") is recorded verbatim in
   `resources` and disclosed as the lane's one profiling WARNING line, suffixed
   "profile recorded with this caveat"; the verdict is untouched (R-36h).
+- Fix (RG-109): interrupting run-gate (SIGTERM / Ctrl-C) during the wait on
+  an ephemeral lane always removes the container and clears the in-flight
+  record: a second SIGTERM arriving while that cleanup runs (daemon `stop`,
+  up to 30 s) is now deferred until the cleanup is done instead of raised in
+  the middle of it, which is what left the orphan RG-109 was filed for. An
+  interruption between a successful `docker run -d` and the wait keeps the
+  container and record (adoptable by the next invocation, as before) and
+  now says so, with the exact `docker rm -f <name>` and the note that the
+  budget is not enforced unattended. Every interrupted run prints one
+  `interrupted before a closed result` line (it printed nothing and exited 2).
+  README "Interrupting a run"; remainder RG-114. Backlog: RG-112..RG-118
+  filed (RG-116/117 are the 2026-10-27 audit's unverified candidates),
+  ciu CIU-152 (the schema-v6 producer contract the v6 reader expects).
 - Fix (tests): missing optional test dependencies FAIL by default
   (`tests/_testdeps.py`, opt out with `RUN_GATE_ALLOW_MISSING_TEST_DEPS=1`);
   the selftest lane runs pytest with `-rs`. The 24.0.2 candidate gate's two
