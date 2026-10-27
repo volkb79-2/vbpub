@@ -4355,6 +4355,40 @@ exit 64
         small.write_bytes(b"{}")
         assert read(small, 10) == (b"{}", None)
 
+    def test_read_closeout_artifact_survives_a_file_that_grows_or_fails_to_read(
+            self, tmp_path, monkeypatch):
+        read = run_gate._read_closeout_artifact
+        grown = tmp_path / "grown.json"
+        grown.write_bytes(b"x" * 50)
+        real_fstat = os.fstat
+
+        class _Small:
+            def __init__(self, info):
+                self.st_mode, self.st_size = info.st_mode, 0
+
+        # fstat said "small", the read finds more: refuse (or cut) after the fact.
+        monkeypatch.setattr(run_gate.os, "fstat", lambda fd: _Small(real_fstat(fd)))
+        data, why = read(grown, 10)
+        assert data is None and "is over 10 bytes" in why
+        assert read(grown, 10, truncate=True) == (b"x" * 10, None)
+        monkeypatch.undo()
+
+        def broken(*_a, **_k):
+            raise OSError("boom")
+        monkeypatch.setattr(run_gate.os, "fdopen", broken)
+        data, why = read(grown, 100)
+        assert data is None and "cannot read grown.json: boom" in why
+
+    def test_expected_exit_of_a_complete_closeout_without_a_verdict_is_unknown(self):
+        expected = run_gate._closeout_expected_exit
+        assert expected({"status": "complete"}) is None
+        assert expected({"status": "complete", "verdict": {"outcome": 3}}) is None
+        assert expected({"status": "complete", "verdict": {"outcome": "PASS"}}) == 0
+        assert expected({"status": "complete", "verdict": {"outcome": "FAIL"}}) == 1
+        assert expected({"status": "incomplete"}) == 3
+        assert expected({"status": "evidence_error"}) == 2
+        assert expected({"status": "other"}) is None
+
     def test_the_stderr_hint_is_empty_for_blank_output(self):
         assert run_gate._closeout_stderr_hint(None) == ""
         assert run_gate._closeout_stderr_hint(b"  \n\n") == ""
