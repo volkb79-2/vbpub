@@ -4631,17 +4631,64 @@ def test_run_gate_fetcher_main_prints_the_staged_path(tmp_path, monkeypatch, cap
     assert capsys.readouterr().out.strip() == str(tmp_path / "s" / name)
 
 
-def test_build_image_offers_the_published_run_gate_wheel_exclusively():
-    text = (GENERATOR.parent / "build-image.sh").read_text("utf-8")
-    assert "--run-gate-published" in text and "fetch-run-gate-wheel.py" in text
-    assert "mutually exclusive" in text
-    assert "--pip-min-release-age" in text and "PIP_MIN_RELEASE_AGE" in text
+def _run_build_image(tmp_path, *args, stub_fetcher=None, env=None):
+    """Run a COPY of build-image.sh whose repo root is a scratch tree (exit 2 happens before docker)."""
+    root = tmp_path / "repo"
+    (root / "tester-unified").mkdir(parents=True)
+    source = GENERATOR.parent
+    (root / "tester-unified" / "build-image.sh").write_text((source / "build-image.sh").read_text("utf-8"))
+    (root / "tester-unified" / "Dockerfile").write_text((source / "Dockerfile").read_text("utf-8"))
+    fetcher = root / "tester-unified" / "fetch-run-gate-wheel.py"
+    fetcher.write_text(stub_fetcher or "raise SystemExit('stub fetcher must not run')\n")
+    scratch = tmp_path / "tmp"
+    scratch.mkdir()
+    return subprocess.run(
+        ["bash", str(root / "tester-unified" / "build-image.sh"), *args],
+        capture_output=True, text=True, check=False,
+        env={"PATH": os.environ["PATH"], "TMPDIR": str(scratch), **(env or {})},
+    ), scratch
 
 
-def test_wheel_builder_ages_its_pip_installs_and_pins_nothing():
-    text = (GENERATOR.parents[1] / "wheel-builder" / "Dockerfile").read_text("utf-8")
-    assert re.search(r"^ARG PIP_MIN_RELEASE_AGE=P14D$", text, re.MULTILINE)
-    installs = [line for line in text.splitlines() if "/opt/wheel-builder-venv/bin/pip install" in line]
-    assert len(installs) == 2
-    for line in installs:
-        assert '--uploaded-prior-to "${PIP_MIN_RELEASE_AGE}"' in line and "==" not in line
+def test_build_image_refuses_published_and_wheel_dir_together_before_any_fetch(tmp_path):
+    result, scratch = _run_build_image(tmp_path, "--run-gate-published", "latest", "--wheel-dir", "x")
+    assert result.returncode == 2 and "mutually exclusive" in result.stderr
+    assert list(scratch.iterdir()) == []
+
+
+@pytest.mark.parametrize("age", ["14", "P14", "14D", "P1W", "P14D;x"])
+def test_build_image_rejects_malformed_pip_age_durations(tmp_path, age):
+    result, _ = _run_build_image(tmp_path, "--pip-min-release-age", age)
+    assert result.returncode == 2 and "ISO-8601 day duration" in result.stderr
+
+
+def test_build_image_checks_the_cgroup_parent_before_downloading(tmp_path):
+    result, scratch = _run_build_image(tmp_path, "--run-gate-published", "latest")
+    assert result.returncode == 2 and "CGROUP_PARENT_DEV_GATES" in result.stderr
+    assert "stub fetcher must not run" not in result.stderr
+    assert list(scratch.iterdir()) == []
+
+
+def test_build_image_removes_the_published_staging_directory_when_it_stops_early(tmp_path):
+    stub = (
+        "import sys\nfrom pathlib import Path\n"
+        "dest = Path(sys.argv[sys.argv.index('--dest') + 1])\n"
+        "(dest / 'run_gate-1.0.0-py3-none-any.whl').write_bytes(b'x')\n"
+        "print('staged', file=sys.stderr)\n"
+    )
+    # The cgroup parent is given, so the fetch runs; the missing `cmru` binary then stops the script.
+    result, scratch = _run_build_image(
+        tmp_path, "--run-gate-published", "1.0.0", "--cgroup-parent", "dev-gates.slice",
+        stub_fetcher=stub,
+        env={"PATH": "/usr/bin:/bin"},
+    )
+    assert "staged" in result.stderr and result.returncode != 0
+    assert list(scratch.iterdir()) == []
+
+
+def test_build_image_stops_when_the_fetcher_refuses(tmp_path):
+    result, scratch = _run_build_image(
+        tmp_path, "--run-gate-published", "latest", "--cgroup-parent", "dev-gates.slice",
+        stub_fetcher="raise SystemExit(1)\n",
+    )
+    assert result.returncode == 2
+    assert list(scratch.iterdir()) == []

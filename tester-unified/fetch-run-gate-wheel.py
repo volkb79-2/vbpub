@@ -70,7 +70,7 @@ def resolve(version: str | None, pointer_url: str, fetch: Callable[[str], bytes]
             raise FetchError(f"--version {version!r} is not a stable X.Y.Z version")
         return version, None
     try:
-        pointer = json.loads(fetch(pointer_url).decode("utf-8"))
+        pointer = json.loads(fetch(_net._check_url(pointer_url)).decode("utf-8"))
     except (ValueError, OSError) as exc:
         raise FetchError(f"cannot read the release pointer {pointer_url}: {exc}") from exc
     if not isinstance(pointer, dict):

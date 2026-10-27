@@ -37,6 +37,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+published_stage=""
+wheel_stage=""
+trap 'rm -rf ${published_stage:+"$published_stage"} ${wheel_stage:+"$wheel_stage"}' EXIT
 build_args=()
 if [[ -n "$pip_min_release_age" ]]; then
   [[ "$pip_min_release_age" =~ ^P[0-9]+D$ ]] || {
@@ -46,21 +49,10 @@ if [[ -n "$pip_min_release_age" ]]; then
   build_args+=(--build-arg "PIP_MIN_RELEASE_AGE=$pip_min_release_age")
 fi
 if [[ -n "$run_gate_published" ]]; then
-  # The CMRU release gate accepts only an image carrying the PUBLISHED Run-Gate wheel (exact version and
-  # sha256 of the stable release the host judge came from). Stage that wheel, digest-verified, instead of
-  # a developer build from run-gate-project/dist.
   (( ! wheel_dir_given )) || {
     echo "--run-gate-published and --wheel-dir are mutually exclusive" >&2
     exit 2
   }
-  published_stage="$(mktemp -d "${TMPDIR:-/tmp}/tester-unified-run-gate-published.XXXXXX")"
-  fetch_args=(--dest "$published_stage")
-  [[ "$run_gate_published" == latest ]] || fetch_args+=(--version "$run_gate_published")
-  python3 "$repo_root/tester-unified/fetch-run-gate-wheel.py" "${fetch_args[@]}" >&2 || {
-    rm -rf "$published_stage"
-    exit 2
-  }
-  wheel_dir="$published_stage"
 fi
 if [[ -n "$base_image" ]]; then
   build_args+=(--build-arg "TESTER_UNIFIED_BASE_IMAGE=$base_image")
@@ -75,6 +67,8 @@ fi
 }
 if (( no_cache )); then
   build_args+=(--no-cache)
+elif [[ -n "$pip_min_release_age" ]]; then
+  echo "warning: --pip-min-release-age without --no-cache can reuse a cached dependency layer resolved earlier" >&2
 fi
 # The digest the installed cli-extended wheel must have, whatever the mode. The
 # image labels it (org.vbpub.cli-extended.wheel-sha256) and the build verifies the
@@ -117,6 +111,18 @@ if [[ -z "$cgroup_parent" ]]; then
   exit 2
 fi
 
+if [[ -n "$run_gate_published" ]]; then
+  # The CMRU release gate accepts only an image carrying the PUBLISHED Run-Gate wheel (exact version and
+  # sha256 of the stable release the host judge came from). Stage that wheel, digest-verified, instead of
+  # a developer build from run-gate-project/dist. Done after every cheap argument and environment check so a
+  # refusal costs no download; the EXIT trap above removes the staging directory on every path.
+  published_stage="$(mktemp -d "${TMPDIR:-/tmp}/tester-unified-run-gate-published.XXXXXX")"
+  fetch_args=(--dest "$published_stage")
+  [[ "$run_gate_published" == latest ]] || fetch_args+=(--version "$run_gate_published")
+  python3 "$repo_root/tester-unified/fetch-run-gate-wheel.py" "${fetch_args[@]}" >&2 || exit 2
+  wheel_dir="$published_stage"
+fi
+
 # Reuse CMRU's supported host-systemd probe before BuildKit starts. A malformed
 # slice name can be auto-created by systemd as an unlimited transient unit, so
 # passing it through to Buildx without this host-side check is not sufficient.
@@ -145,7 +151,6 @@ run_gate_sha256=${identity[1]}
 run_gate_filename=${identity[2]}
 
 wheel_stage="$(mktemp -d "${TMPDIR:-/tmp}/tester-unified-run-gate-wheel.XXXXXX")"
-trap 'rm -rf "$wheel_stage" ${published_stage:+"$published_stage"}' EXIT
 cp -- "$wheel_dir/$run_gate_filename" "$wheel_stage/$run_gate_filename"
 printf '%s  %s\n' "$run_gate_sha256" "$wheel_stage/$run_gate_filename" \
   | sha256sum --check --status || {
