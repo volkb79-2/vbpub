@@ -132,3 +132,11 @@ def test_dataset_ui_submission_reports_middleware_validation_dialog() -> None:
     assert 'page.get_by_role("dialog", name="Slide-in form")' in helper
     assert 'name=re.compile(r"Validation Error", re.IGNORECASE)' in helper
     assert "TrueNAS UI rejected dataset creation" in helper
+
+
+def test_preprovisioned_fresh_check_ignores_the_platform_system_dataset() -> None:
+    source = LIVE_UI.read_text()
+    # boot-disk-data becomes the system dataset pool, so <pool>/.system/* exists
+    # before any UI mutation and is not a test descendant.
+    assert 'name.startswith(f"{pool}/.system/")' in source
+    assert "require(user_names == [pool]," in source

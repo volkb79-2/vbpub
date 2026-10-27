@@ -36,3 +36,26 @@ The host is the only mutable target (allowlist: server id 804027 /
 - live-inspect (stock) PASS; live-v27-patch PASS (patch record present afterwards).
 - Guest uptime was ~166 s shortly after the patch lane: unexplained reboot, to investigate.
 - Session stopped by the coordinator here; see `LIVE-V1001-HANDOFF.md`.
+
+## Phase 2 - Path A UI, Path B, UI blockers (2026-10-27, resumed)
+
+- Post-patch "reboot" explained: the guest booted once at snapshot time (clean shutdown in the
+  previous boot journal, PDT clock), the patch did not reboot it. Only failed unit afterwards:
+  `serial-getty@ttyS0` (no serial console on this VM type; harmless).
+- live-ui Path A on stock+patch (log `live-ui-v1001-patched-20261027.log`): the UI created the
+  `boot-pool/user-data` root, a child filesystem, zvols, a container and a VM wizard entry;
+  the earlier `NameError: mountpoint` did NOT recur. FAIL (exit 1) at the shares step:
+  /ui/sharing renders "No Shares / Create Pool". Cause (browser RPC trace): the Shares page
+  gates on `pool.query`, which excludes boot-pool, so it returns [] even with an NFS share
+  present (created via API to prove it). Path A therefore cannot add SMB/NFS shares in the UI.
+  Earlier local-guest passes of this step are unexplained (those guests may have had another pool).
+- Path B (`path-b` profile, fresh revert + patch): `live-path-b-partition` PASS reserved
+  `/dev/vda4` (495.5 GiB tail); `disk.query` lists only `vda`, `disk.get_unused` is empty, so
+  the UI pool wizard cannot offer the partition (pool.create works on whole disks only).
+  `live-path-b-provision` PASS (boot-disk-data ONLINE on vda4).
+- First `live-ui` (preprovisioned) failed a precondition: the middleware moves the system
+  dataset to boot-disk-data (`boot-disk-data/.system/*`); fixed the lane to ignore that tree
+  (+ source test). Rerun `live-ui-v1001-pathb-3-20261027.log`: PASS exit 0 including the
+  Shares page (a real pool exists, so the gate passes).
+- Remaining: live-ui-workloads (not allowed in external mode by the wrapper), Path A shares
+  decision, v28 (ISO not fetched). Host left in patched Path B state; snapshot unchanged.

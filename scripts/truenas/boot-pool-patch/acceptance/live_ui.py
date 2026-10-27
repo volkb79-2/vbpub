@@ -593,7 +593,14 @@ def inventory_before_ui_mutation(
             direct_names = target.run([
                 "zfs", "list", "-H", "-t", "filesystem,volume", "-o", "name", "-r", pool,
             ], timeout=90).splitlines()
-            require(direct_names == [pool],
+            # Once boot-disk-data is a regular pool, middleware moves the system
+            # dataset there (<pool>/.system/*). That is platform state, not a
+            # test descendant, so it must not fail the fresh-target check.
+            user_names = [
+                name for name in direct_names
+                if name != f"{pool}/.system" and not name.startswith(f"{pool}/.system/")
+            ]
+            require(user_names == [pool],
                     f"preprovisioned Path B must have no test descendants before UI mutation: {direct_names!r}")
             root_mountpoint = zfs_property(target, pool, "mountpoint")
             require(root_mountpoint == f"/mnt/{pool}",
