@@ -6370,6 +6370,19 @@ def remove(
                 and current_shared.branch == shared_record.branch
                 and current_shared.source_git_root == shared_record.source_git_root
             ) if shared_record is not None else current_shared is not None
+            # Git removes every deletable file before it fails on a protected
+            # descendant, and the CIU record is one of those files. Its absence
+            # is therefore the expected post-failure state; it is accepted only
+            # when the independent shared ledger row (outside the checkout)
+            # still proves the same exact target. A record that is present but
+            # different is always a changed identity.
+            if (
+                managed is not None
+                and current_managed is None
+                and shared_record is not None
+                and shared_matches
+            ):
+                managed_matches = True
             if managed is not None and not managed_matches:
                 raise WorktreeError("the CIU identity record is missing or changed")
             if shared_record is not None and not shared_matches:

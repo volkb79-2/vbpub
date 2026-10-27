@@ -710,8 +710,17 @@ class TestCreateRemoveList:
             engine, "privileged_rmtree", lambda path: helper_calls.append(Path(path))
         )
 
+        # Git deletes every deletable file before failing on the protected
+        # descendant, so the in-checkout CIU record is already gone when the
+        # prompt appears. The independent shared ledger row is what proves the
+        # exact target; removing it during the prompt is the identity change.
+        shared_ledger_row = worktree._shared_worktree().find_workspace(
+            tmp_repo / ".git", target
+        )
+        assert shared_ledger_row is not None
+
         def remove_identity_record_then_authorize():
-            Path(record.record_path).unlink()
+            Path(shared_ledger_row.record_path).unlink()
             return "yes"
 
         monkeypatch.setattr(builtins, "input", remove_identity_record_then_authorize)
@@ -730,7 +739,7 @@ class TestCreateRemoveList:
         assert report["status"] == "partial"
         assert report["remaining_artifacts"]["checkout"] == "present"
         assert report["remaining_artifacts"]["ciu_record"]["state"] == "absent"
-        assert report["remaining_artifacts"]["shared_record"]["state"] == "present"
+        assert report["remaining_artifacts"]["shared_record"]["state"] == "absent"
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="permission-bit probe requires an unprivileged gate uid")
     def test_privileged_helper_failure_reports_partial_state(
@@ -774,7 +783,9 @@ class TestCreateRemoveList:
         assert report["failed_phase"] == "checkout_deletion"
         assert report["remaining_artifacts"]["checkout"] == "present"
         assert report["remaining_artifacts"]["branch"] == "present"
-        assert report["remaining_artifacts"]["ciu_record"]["state"] == "present"
+        # Git removed the in-checkout CIU record (a deletable file) before it
+        # failed on the protected descendant; the shared ledger row remains.
+        assert report["remaining_artifacts"]["ciu_record"]["state"] == "absent"
         assert report["remaining_artifacts"]["shared_record"]["state"] == "present"
 
     def test_non_permission_git_failure_never_invokes_helper(
