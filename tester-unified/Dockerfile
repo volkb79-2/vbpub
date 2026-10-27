@@ -153,6 +153,7 @@ COPY assay/pyproject.toml /src/assay/pyproject.toml
 COPY topos/pyproject.toml /src/topos/pyproject.toml
 COPY nyxloom/pyproject.toml /src/nyxloom/pyproject.toml
 COPY scripts/cgroup-profiler/pyproject.toml /src/cgroup-profiler/pyproject.toml
+COPY pwmcp/client/pyproject.toml /src/pwmcp/client/pyproject.toml
 COPY run-gate-project/pyproject.toml /src/run-gate-project/pyproject.toml
 # ZERO-RELEASE INPUT: empty (a .gitkeep) unless the operator dropped a locally
 # built cli_extended-*.whl here for CLI_EXTENDED_RESOLVE=local (see below).

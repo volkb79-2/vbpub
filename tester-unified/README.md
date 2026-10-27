@@ -125,6 +125,11 @@ Image contents worth knowing (KI-52 / BG-05, 2026-10):
   `GIT_CONFIG_NOSYSTEM=1` (assay's hermetic git environment) bypasses
   `/etc/gitconfig` and must set the same keys in its own git config (assay
   backlog B147).
+- **pwmcp's test needs are declared, not accidental.** `pwmcp/client/pyproject.toml` has a `test` extra
+  (pillow, websockets, jinja2, pyyaml, pytest) that `gen-requirements.py` adds to the closure. Only the extra:
+  pwmcp-client's runtime `playwright==1.64.0` pin is deliberately not installed (`TEST_EXTRAS_ONLY`; its tests stub
+  the browser). Before 2026-10-27 Pillow was present only as a transitive dependency of another project, and
+  `websockets` was absent, so the sidecar's image tests and the user-agent override test could skip silently.
 - **Estate-internal packages never come from an index.**
   `tester-unified/gen-requirements.py` derives the third-party closure from the
   copied `pyproject.toml` files and REFUSES any estate-internal name
