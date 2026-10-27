@@ -10,7 +10,11 @@ from .errors import QmpError
 
 class QmpClient:
     def __init__(self, path: str, timeout: float = 10.0) -> None:
-        self.path = path.removeprefix("unix:").split(",", 1)[0]
+        # "unix:PATH,server=on,..." is QEMU option syntax; a plain path is taken verbatim (it may contain commas)
+        # (",," is QEMU's escape for a literal comma in that syntax)
+        if path.startswith("unix:"):
+            path = path.removeprefix("unix:").replace(",,", "\0").split(",", 1)[0].replace("\0", ",")
+        self.path = path
         self.timeout = timeout
         self._sock: socket.socket | None = None
         self._file: Any = None
@@ -35,10 +39,14 @@ class QmpClient:
             raise QmpError(f"cannot connect to QMP socket {self.path}: {exc}") from exc
         self._sock = sock
         self._file = sock.makefile("rw", encoding="utf-8")
-        self.greeting = self._read_message()
-        if "QMP" not in self.greeting:
-            raise QmpError(f"{self.path} did not send a QMP greeting: {self.greeting!r}")
-        self.execute("qmp_capabilities")
+        try:
+            self.greeting = self._read_message()
+            if "QMP" not in self.greeting:
+                raise QmpError(f"{self.path} did not send a QMP greeting: {self.greeting!r}")
+            self.execute("qmp_capabilities")
+        except BaseException:
+            self.close()  # never leave a half-open connection holding QMP's single client slot
+            raise
 
     def close(self) -> None:
         for obj in (self._file, self._sock):
@@ -79,6 +87,11 @@ class QmpClient:
                 err = reply["error"]
                 raise QmpError(f"QMP {command}: {err.get('class', 'Error')}: {err.get('desc', '')}")
             # anything else is an event: ignore
+
+    def fresh(self) -> "QmpClient":
+        """A new, unconnected client for the same socket (a timed-out connection is poisoned: replies may arrive late)."""
+        c = QmpClient(self.path, self.timeout)
+        return c
 
     def hmp(self, command_line: str) -> str:
         return self.execute("human-monitor-command", **{"command-line": command_line})

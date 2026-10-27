@@ -32,3 +32,11 @@ class NoExactText(VmscreenError):
     def __init__(self, message: str, tried: list[dict]) -> None:
         super().__init__(message)
         self.tried = tried
+
+
+class ResumeFailed(QmpError):
+    """The guest was stopped for a capture and could not be confirmed running again."""
+
+
+class OutputExists(VmscreenError):
+    """Refusing to overwrite an existing output (use --force)."""

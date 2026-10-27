@@ -1,6 +1,63 @@
 {
   "candidates": [
     {
+      "id": "case:route:entrypoint:vmscreen/mark/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:vmscreen/mark/--serial-log"
+      ],
+      "route_id": "route:entrypoint:vmscreen/mark",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": [
+          "option:route:entrypoint:vmscreen/mark/--serial-log"
+        ]
+      },
+      "signature": "sha256:1eb76ee2e820ca509e2c0610e95ee0c181c732bfa05dfaa87995f40802f4105c"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/mark/option-spelling/option:route:entrypoint:vmscreen/mark/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/mark/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:vmscreen/mark",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/mark/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:a1d3c74d65f5d9c726ebac99f8990488e9afe22bedd2fee10545b0c04b72c409"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/mark/option-spelling/option:route:entrypoint:vmscreen/mark/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/mark/--json"
+      ],
+      "route_id": "route:entrypoint:vmscreen/mark",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/mark/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:24ad7b08d96530d098ea60af170ad3c1aa712c64eb76b0d8c52cef1bb897fe57"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/mark/option-spelling/option:route:entrypoint:vmscreen/mark/--serial-log/--serial-log",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/mark/--serial-log"
+      ],
+      "route_id": "route:entrypoint:vmscreen/mark",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/mark/--serial-log",
+        "spelling": "--serial-log"
+      },
+      "signature": "sha256:da25f65a62a63bf3e43badb05c541c6ff26b80388b364c31aa7a6ec06b3538f2"
+    },
+    {
       "id": "case:route:entrypoint:vmscreen/ocr-pair/minimum",
       "kind": "minimum",
       "members": [
@@ -8,7 +65,8 @@
         "option:route:entrypoint:vmscreen/ocr-pair/--out",
         "option:route:entrypoint:vmscreen/ocr-pair/--no-blink-mode",
         "option:route:entrypoint:vmscreen/ocr-pair/--no-pause",
-        "option:route:entrypoint:vmscreen/ocr-pair/--allow-inexact"
+        "option:route:entrypoint:vmscreen/ocr-pair/--allow-inexact",
+        "option:route:entrypoint:vmscreen/ocr-pair/--force"
       ],
       "route_id": "route:entrypoint:vmscreen/ocr-pair",
       "shape": {
@@ -16,7 +74,8 @@
           "option:route:entrypoint:vmscreen/ocr-pair/--qmp-timeout",
           "option:route:entrypoint:vmscreen/ocr-pair/--no-blink-mode",
           "option:route:entrypoint:vmscreen/ocr-pair/--no-pause",
-          "option:route:entrypoint:vmscreen/ocr-pair/--allow-inexact"
+          "option:route:entrypoint:vmscreen/ocr-pair/--allow-inexact",
+          "option:route:entrypoint:vmscreen/ocr-pair/--force"
         ],
         "required_argument_values": {},
         "required_arguments": [],
@@ -25,7 +84,7 @@
           "option:route:entrypoint:vmscreen/ocr-pair/--out"
         ]
       },
-      "signature": "sha256:b34f2e2f26b414e3876f2ba36a0290cc006409c1bb39ed00fe3c94088f85e76f"
+      "signature": "sha256:fb75de115d22bd70eb8af45ecb26ccdafe456fb972646da73619eba3521c75bb"
     },
     {
       "id": "case:route:entrypoint:vmscreen/ocr-pair/option-spelling/option:route:entrypoint:vmscreen/ocr-pair/--allow-inexact/--allow-inexact",
@@ -65,6 +124,19 @@
         "spelling": "--dump-dir"
       },
       "signature": "sha256:8abfd8d6c235e4888096f54bc96e91f616bf8d7ac33e8e9920fe091a85203ab6"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/ocr-pair/option-spelling/option:route:entrypoint:vmscreen/ocr-pair/--force/--force",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/ocr-pair/--force"
+      ],
+      "route_id": "route:entrypoint:vmscreen/ocr-pair",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/ocr-pair/--force",
+        "spelling": "--force"
+      },
+      "signature": "sha256:9ffe98c783b7346b86c16b33859755a66c7e27ec095090705a5e4079ff2e4515"
     },
     {
       "id": "case:route:entrypoint:vmscreen/ocr-pair/option-spelling/option:route:entrypoint:vmscreen/ocr-pair/--json/--json",
@@ -150,21 +222,23 @@
       "members": [
         "option:route:entrypoint:vmscreen/probe/--qmp-timeout",
         "option:route:entrypoint:vmscreen/probe/--source",
-        "option:route:entrypoint:vmscreen/probe/--no-blink-mode"
+        "option:route:entrypoint:vmscreen/probe/--no-blink-mode",
+        "option:route:entrypoint:vmscreen/probe/--from-offset"
       ],
       "route_id": "route:entrypoint:vmscreen/probe",
       "shape": {
         "defaulted_options": [
           "option:route:entrypoint:vmscreen/probe/--qmp-timeout",
           "option:route:entrypoint:vmscreen/probe/--source",
-          "option:route:entrypoint:vmscreen/probe/--no-blink-mode"
+          "option:route:entrypoint:vmscreen/probe/--no-blink-mode",
+          "option:route:entrypoint:vmscreen/probe/--from-offset"
         ],
         "required_argument_values": {},
         "required_arguments": [],
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:bbf5850ef95f7dd67ae37bc2fc3214e01708feb7291d512569743c76e6de6770"
+      "signature": "sha256:4fdd99ef93c112acdc4dc8a35a4d5b96bff87a1ddad11a9c5fe33900ff29de6f"
     },
     {
       "id": "case:route:entrypoint:vmscreen/probe/option-choice/option:route:entrypoint:vmscreen/probe/--source/529ad75351",
@@ -230,6 +304,19 @@
         "spelling": "--dump-dir"
       },
       "signature": "sha256:8573969d529a2d12957d3380366df947ec5b1ef858b79630e90a5fbbef66cc1e"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/probe/option-spelling/option:route:entrypoint:vmscreen/probe/--from-offset/--from-offset",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/probe/--from-offset"
+      ],
+      "route_id": "route:entrypoint:vmscreen/probe",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/probe/--from-offset",
+        "spelling": "--from-offset"
+      },
+      "signature": "sha256:e9251f39e13dab529767b7389f667d240f93373428c137ff1f69fd6fdc03e06f"
     },
     {
       "id": "case:route:entrypoint:vmscreen/probe/option-spelling/option:route:entrypoint:vmscreen/probe/--json/--json",
@@ -413,20 +500,35 @@
       "kind": "minimum",
       "members": [
         "option:route:entrypoint:vmscreen/send/--qmp-timeout",
-        "option:route:entrypoint:vmscreen/send/--delay"
+        "option:route:entrypoint:vmscreen/send/--delay",
+        "option:route:entrypoint:vmscreen/send/--allow-unknown-keys"
       ],
       "route_id": "route:entrypoint:vmscreen/send",
       "shape": {
         "defaulted_options": [
           "option:route:entrypoint:vmscreen/send/--qmp-timeout",
-          "option:route:entrypoint:vmscreen/send/--delay"
+          "option:route:entrypoint:vmscreen/send/--delay",
+          "option:route:entrypoint:vmscreen/send/--allow-unknown-keys"
         ],
         "required_argument_values": {},
         "required_arguments": [],
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:a316884e2e6a7c837498064ba51c503baf3261c83353c2c251881ff1ac01da8c"
+      "signature": "sha256:1271094dc27fc94ce6211295c6dd00ac6c38ac2d5a148842832ba61832575676"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/send/option-spelling/option:route:entrypoint:vmscreen/send/--allow-unknown-keys/--allow-unknown-keys",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/send/--allow-unknown-keys"
+      ],
+      "route_id": "route:entrypoint:vmscreen/send",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/send/--allow-unknown-keys",
+        "spelling": "--allow-unknown-keys"
+      },
+      "signature": "sha256:269c741308585871b7bdfee28dddf3569e3abc4bce0c4ee132a5d88fb769df9a"
     },
     {
       "id": "case:route:entrypoint:vmscreen/send/option-spelling/option:route:entrypoint:vmscreen/send/--debug-raw/--debug-raw",
@@ -1199,6 +1301,7 @@
         "option:route:entrypoint:vmscreen/text/--qmp-timeout",
         "option:route:entrypoint:vmscreen/text/--source",
         "option:route:entrypoint:vmscreen/text/--no-blink-mode",
+        "option:route:entrypoint:vmscreen/text/--from-offset",
         "option:route:entrypoint:vmscreen/text/--cells"
       ],
       "route_id": "route:entrypoint:vmscreen/text",
@@ -1207,6 +1310,7 @@
           "option:route:entrypoint:vmscreen/text/--qmp-timeout",
           "option:route:entrypoint:vmscreen/text/--source",
           "option:route:entrypoint:vmscreen/text/--no-blink-mode",
+          "option:route:entrypoint:vmscreen/text/--from-offset",
           "option:route:entrypoint:vmscreen/text/--cells"
         ],
         "required_argument_values": {},
@@ -1214,7 +1318,7 @@
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:5089c8aaa3896e6971cc731330173a859c2f3017e06c4ec803289572894ba392"
+      "signature": "sha256:6551df2db16563c32003ab094ab7b688701cea596593b1f9d49e7e2211fc8974"
     },
     {
       "id": "case:route:entrypoint:vmscreen/text/option-choice/option:route:entrypoint:vmscreen/text/--source/529ad75351",
@@ -1293,6 +1397,19 @@
         "spelling": "--dump-dir"
       },
       "signature": "sha256:c6a987e19a083d9d6de716a3bf45ce529d73774b7f6f71afe0b051a06af5bfe7"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/text/option-spelling/option:route:entrypoint:vmscreen/text/--from-offset/--from-offset",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/text/--from-offset"
+      ],
+      "route_id": "route:entrypoint:vmscreen/text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/text/--from-offset",
+        "spelling": "--from-offset"
+      },
+      "signature": "sha256:49943677df9247e53b13af988d19e0025f78cdfbb9346366ebb5263ee450d111"
     },
     {
       "id": "case:route:entrypoint:vmscreen/text/option-spelling/option:route:entrypoint:vmscreen/text/--json/--json",
@@ -1405,9 +1522,12 @@
         "option:route:entrypoint:vmscreen/wait-text/--qmp-timeout",
         "option:route:entrypoint:vmscreen/wait-text/--source",
         "option:route:entrypoint:vmscreen/wait-text/--no-blink-mode",
+        "option:route:entrypoint:vmscreen/wait-text/--from-offset",
         "option:route:entrypoint:vmscreen/wait-text/--timeout",
         "option:route:entrypoint:vmscreen/wait-text/--interval",
-        "option:route:entrypoint:vmscreen/wait-text/--literal"
+        "option:route:entrypoint:vmscreen/wait-text/--literal",
+        "option:route:entrypoint:vmscreen/wait-text/--since-mark",
+        "option:route:entrypoint:vmscreen/wait-text/--accept-unverified"
       ],
       "route_id": "route:entrypoint:vmscreen/wait-text",
       "shape": {
@@ -1415,9 +1535,12 @@
           "option:route:entrypoint:vmscreen/wait-text/--qmp-timeout",
           "option:route:entrypoint:vmscreen/wait-text/--source",
           "option:route:entrypoint:vmscreen/wait-text/--no-blink-mode",
+          "option:route:entrypoint:vmscreen/wait-text/--from-offset",
           "option:route:entrypoint:vmscreen/wait-text/--timeout",
           "option:route:entrypoint:vmscreen/wait-text/--interval",
-          "option:route:entrypoint:vmscreen/wait-text/--literal"
+          "option:route:entrypoint:vmscreen/wait-text/--literal",
+          "option:route:entrypoint:vmscreen/wait-text/--since-mark",
+          "option:route:entrypoint:vmscreen/wait-text/--accept-unverified"
         ],
         "required_argument_values": {
           "argument:route:entrypoint:vmscreen/wait-text/pattern": 1
@@ -1428,7 +1551,7 @@
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:49120b7ede048f80948cf18781949e88937f853b719d96918634230d194ea2c2"
+      "signature": "sha256:8f2a5afea0fcef3476d94d13c81e18cdf83b4138a1bdb55d0235e07cec7e0351"
     },
     {
       "id": "case:route:entrypoint:vmscreen/wait-text/option-choice/option:route:entrypoint:vmscreen/wait-text/--source/529ad75351",
@@ -1470,6 +1593,19 @@
       "signature": "sha256:293639c93de9935afeaafb076275c49c2066e7da0b61d9f1ee328b77c2e5a7f3"
     },
     {
+      "id": "case:route:entrypoint:vmscreen/wait-text/option-spelling/option:route:entrypoint:vmscreen/wait-text/--accept-unverified/--accept-unverified",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/wait-text/--accept-unverified"
+      ],
+      "route_id": "route:entrypoint:vmscreen/wait-text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/wait-text/--accept-unverified",
+        "spelling": "--accept-unverified"
+      },
+      "signature": "sha256:2a6aba3bd4e397c48423b33b1eee1ff9b41d846bb114f1b7ce653daebbeb2e17"
+    },
+    {
       "id": "case:route:entrypoint:vmscreen/wait-text/option-spelling/option:route:entrypoint:vmscreen/wait-text/--debug-raw/--debug-raw",
       "kind": "option-spelling",
       "members": [
@@ -1494,6 +1630,19 @@
         "spelling": "--dump-dir"
       },
       "signature": "sha256:dc1cab833b5366c9fe7a7276c713042eea0c620da7c1a50a2c2be0dbb06edbf7"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/wait-text/option-spelling/option:route:entrypoint:vmscreen/wait-text/--from-offset/--from-offset",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/wait-text/--from-offset"
+      ],
+      "route_id": "route:entrypoint:vmscreen/wait-text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/wait-text/--from-offset",
+        "spelling": "--from-offset"
+      },
+      "signature": "sha256:b40d4dff46e9941a50a7e000b3b7fe8e08215e28e5c797dda5cceb985f787495"
     },
     {
       "id": "case:route:entrypoint:vmscreen/wait-text/option-spelling/option:route:entrypoint:vmscreen/wait-text/--interval/--interval",
@@ -1587,6 +1736,19 @@
       "signature": "sha256:299a733f2f76d00e2c77633bda9c2d6485adbc0f2e4e0aec013e71bbf304df34"
     },
     {
+      "id": "case:route:entrypoint:vmscreen/wait-text/option-spelling/option:route:entrypoint:vmscreen/wait-text/--since-mark/--since-mark",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/wait-text/--since-mark"
+      ],
+      "route_id": "route:entrypoint:vmscreen/wait-text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/wait-text/--since-mark",
+        "spelling": "--since-mark"
+      },
+      "signature": "sha256:66fbaabd80cf83a8e56295022dc62418a546b51262816eab9589ee82d6af8b3b"
+    },
+    {
       "id": "case:route:entrypoint:vmscreen/wait-text/option-spelling/option:route:entrypoint:vmscreen/wait-text/--source/--source",
       "kind": "option-spelling",
       "members": [
@@ -1639,6 +1801,113 @@
     "version": 1
   },
   "routes": [
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--serial-log",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "The serial log file.",
+          "dest": "serial_log",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--serial-log"
+          ],
+          "help_group": "SOURCES",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/mark/--serial-log",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "required": true
+          },
+          "parser_path": [
+            "mark"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Print the byte size of a serial log: the --from-offset that skips everything written so far.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:vmscreen/mark",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "mark"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "mark"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Print the byte size of a serial log: the --from-offset that skips everything written so far.",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
     {
       "actions": [
         {
@@ -1807,7 +2076,7 @@
           "const": true,
           "default": false,
           "default_present": true,
-          "description": "Decode attribute bit 7 as a bright background instead of blink.",
+          "description": "Decode attribute bit 7 as a bright background instead of blink. QMP cannot read the attribute-controller mode bit, so this is a declared assumption (recorded in the output), not a detection.",
           "dest": "no_blink_mode",
           "effective_default": false,
           "exclusive_group": null,
@@ -1883,7 +2152,7 @@
           "const": true,
           "default": false,
           "default_present": true,
-          "description": "On a graphical screen write PNG + sidecar with exact=false instead of exit 4.",
+          "description": "On a graphical or UNVERIFIED screen write PNG + sidecar with the exact flag/reason instead of exit 4.",
           "dest": "allow_inexact",
           "effective_default": false,
           "exclusive_group": null,
@@ -1894,6 +2163,44 @@
           "help_group": "OUTPUT",
           "hidden": false,
           "id": "option:route:entrypoint:vmscreen/ocr-pair/--allow-inexact",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "ocr-pair"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--force",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Overwrite an existing PREFIX.png / PREFIX.json.",
+          "dest": "force",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--force"
+          ],
+          "help_group": "OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/ocr-pair/--force",
           "kind": "option",
           "metavar": null,
           "minimum_values": 0,
@@ -2195,7 +2502,7 @@
           "const": true,
           "default": false,
           "default_present": true,
-          "description": "Decode attribute bit 7 as a bright background instead of blink.",
+          "description": "Decode attribute bit 7 as a bright background instead of blink. QMP cannot read the attribute-controller mode bit, so this is a declared assumption (recorded in the output), not a detection.",
           "dest": "no_blink_mode",
           "effective_default": false,
           "exclusive_group": null,
@@ -2224,6 +2531,49 @@
           "required": false,
           "scope": "verb-local",
           "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--from-offset",
+          "choices": null,
+          "const": null,
+          "default": 0,
+          "default_present": true,
+          "description": "Serial source: ignore the first N bytes of the log (see `vmscreen mark`).",
+          "dest": "from_offset",
+          "effective_default": 0,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--from-offset"
+          ],
+          "help_group": "SOURCES",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/probe/--from-offset",
+          "kind": "option",
+          "metavar": "BYTES",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 0,
+            "type": {
+              "callable": "builtins.int"
+            }
+          },
+          "parser_path": [
+            "probe"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.int"
+          }
         }
       ],
       "aliases": [],
@@ -2837,6 +3187,44 @@
           "type": {
             "callable": "builtins.int"
           }
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--allow-unknown-keys",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Do not validate --keys names against the known QEMU qcodes.",
+          "dest": "allow_unknown_keys",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--allow-unknown-keys"
+          ],
+          "help_group": "KEYS",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/send/--allow-unknown-keys",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "send"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
         }
       ],
       "aliases": [],
@@ -3978,7 +4366,7 @@
           "const": true,
           "default": false,
           "default_present": true,
-          "description": "Decode attribute bit 7 as a bright background instead of blink.",
+          "description": "Decode attribute bit 7 as a bright background instead of blink. QMP cannot read the attribute-controller mode bit, so this is a declared assumption (recorded in the output), not a detection.",
           "dest": "no_blink_mode",
           "effective_default": false,
           "exclusive_group": null,
@@ -4007,6 +4395,49 @@
           "required": false,
           "scope": "verb-local",
           "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--from-offset",
+          "choices": null,
+          "const": null,
+          "default": 0,
+          "default_present": true,
+          "description": "Serial source: ignore the first N bytes of the log (see `vmscreen mark`).",
+          "dest": "from_offset",
+          "effective_default": 0,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--from-offset"
+          ],
+          "help_group": "SOURCES",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/text/--from-offset",
+          "kind": "option",
+          "metavar": "BYTES",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 0,
+            "type": {
+              "callable": "builtins.int"
+            }
+          },
+          "parser_path": [
+            "text"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.int"
+          }
         },
         {
           "action": "argparse._StoreAction",
@@ -4392,7 +4823,7 @@
           "const": true,
           "default": false,
           "default_present": true,
-          "description": "Decode attribute bit 7 as a bright background instead of blink.",
+          "description": "Decode attribute bit 7 as a bright background instead of blink. QMP cannot read the attribute-controller mode bit, so this is a declared assumption (recorded in the output), not a detection.",
           "dest": "no_blink_mode",
           "effective_default": false,
           "exclusive_group": null,
@@ -4421,6 +4852,49 @@
           "required": false,
           "scope": "verb-local",
           "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--from-offset",
+          "choices": null,
+          "const": null,
+          "default": 0,
+          "default_present": true,
+          "description": "Serial source: ignore the first N bytes of the log (see `vmscreen mark`).",
+          "dest": "from_offset",
+          "effective_default": 0,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--from-offset"
+          ],
+          "help_group": "SOURCES",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/wait-text/--from-offset",
+          "kind": "option",
+          "metavar": "BYTES",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 0,
+            "type": {
+              "callable": "builtins.int"
+            }
+          },
+          "parser_path": [
+            "wait-text"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.int"
+          }
         },
         {
           "action": "argparse._StoreAction",
@@ -4527,6 +5001,82 @@
           "help_group": "WAIT",
           "hidden": false,
           "id": "option:route:entrypoint:vmscreen/wait-text/--literal",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "wait-text"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--since-mark",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Serial source: only output written after this command started can match (a previous boot's 'login:' cannot satisfy the wait).",
+          "dest": "since_mark",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--since-mark"
+          ],
+          "help_group": "WAIT",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/wait-text/--since-mark",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "wait-text"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--accept-unverified",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Also match VGA text whose cross-check against the screendump failed.",
+          "dest": "accept_unverified",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--accept-unverified"
+          ],
+          "help_group": "WAIT",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/wait-text/--accept-unverified",
           "kind": "option",
           "metavar": null,
           "minimum_values": 0,

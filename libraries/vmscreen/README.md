@@ -15,17 +15,19 @@ All take `--qmp SOCK` (or `$VMSCREEN_QMP`), `--qmp-timeout`, `--dump-dir` and `-
 | --- | --- |
 | `probe` | which exact-text source applies right now, and why the others do not (always exit 0 if QMP answers) |
 | `screen --out F.png` | PNG of the display (QMP `screendump`) |
-| `text [--serial-log F] [--source auto\|vga\|serial] [--tail N] [--cells]` | the console as exact text; the output names the source |
-| `wait-text PATTERN [--timeout S] [--interval S] [--literal]` | poll until the regex matches; **exit 3 on timeout** |
-| `send --keys ret,down,ctrl+alt+f2 \| --type TEXT \| --type-file F [--delay S] [--hold-ms MS]` | QMP `send-key`; `--type` is validated (US ASCII) before anything is sent |
-| `ocr-pair --out PREFIX [--allow-inexact] [--no-pause]` | writes `PREFIX.png` and `PREFIX.json` taken at the same instant |
+| `text [--serial-log F] [--source auto\|vga\|serial] [--from-offset N] [--tail N] [--cells] [--no-blink-mode]` | the console as text; the output names the source and says how far it can be trusted (`exact`) |
+| `wait-text PATTERN [--timeout S] [--interval S] [--literal] [--since-mark] [--from-offset N] [--accept-unverified]` | poll until the regex matches; **exit 3 on timeout**, exit 2 on an invalid regex (before connecting) |
+| `mark --serial-log F` | print the log's current byte size: the `--from-offset` that skips everything written so far |
+| `send --keys ret,down,ctrl+alt+f2 \| --type TEXT \| --type-file F [--delay S] [--hold-ms MS] [--allow-unknown-keys]` | QMP `send-key`; everything (US-ASCII text, key names against the QEMU qcode list, numbers, files) is validated before connecting, so nothing is half-sent |
+| `ocr-pair --out PREFIX [--allow-inexact] [--no-pause] [--force]` | writes `PREFIX.png` and `PREFIX.json` taken at the same instant; refuses to overwrite without `--force` |
 | `skills install\|check\|list` | the packaged agent skill (`vmscreen`) |
 
-Exit codes: 0 ok, 1 other failure, 2 usage, 3 timeout, 4 no exact-text source applies, 5 QMP problem. With `--json` a failure
+Exit codes: 0 ok, 1 other failure (including an unwritable output), 2 usage or invalid input, 3 timeout, 4 no exact-text source applies, 5 QMP problem. With `--json` a failure
 also prints `{"ok": false, "error", "exit_code", "tried"|"last_text"}` to stdout.
 
-`--dump-dir` matters: QEMU itself writes the `screendump`/`pmemsave` files, so the directory must be one **both QEMU and
-vmscreen see** at the same path. The default (the system temp dir) is right only when both run in one container. If the
+`--dump-dir` matters: QEMU itself writes the `screendump`/`pmemsave` files (vmscreen picks a fresh file name and does not
+pre-create the file, so QEMU may run as another user), so the directory must be one **both QEMU and vmscreen see** at the same
+path and be writable by QEMU's user; errors name the permissions. The default (the system temp dir) is right only when both run in one container. If the
 `pmemsave` file is unusable vmscreen falls back to HMP `xp` over the socket (slower, needs no shared path); the screendump
 still needs the shared path.
 
@@ -34,15 +36,32 @@ still needs the shared path.
 Tried in order; the result always says which one answered and `tried` lists why the others did not.
 
 1. **`vga-text`** (scope: the screen). QEMU's VGA text buffer at physical `0xb8000` (`0xb0000` in mono mode 7, plus the BIOS
-   page offset), 2 bytes per cell, read with `pmemsave` (HMP `xp` fallback). Characters are decoded with the VGA CP437 glyph
-   table (control codes 1-31 are the graphic glyphs, 0 and 0xFF are blank); the attribute byte gives fg (4 bits), bg (3 bits)
-   and blink (bit 7; `--no-blink-mode` reads bit 7 as a bright background). Validity is decided by the **BIOS data area**
-   (mode `0x449`, columns `0x44a`, rows-1 `0x484`, character height `0x485`, page offset `0x44e`, cursor `0x450`) **and** a
-   cross-check that the `screendump` is exactly `cols*(8|9) x rows*char_height` pixels (80x25 -> 720x400). The BDA goes stale
-   when a guest driver programs the VGA registers itself, so the size check is what rejects fbcon/KMS/GOP screens.
-2. **`serial`** (scope: stream). A `-serial file:PATH` log, rendered (escape sequences stripped, CR/BS/TAB applied). This is what
-   the guest *printed* to ttyS0, not what is on the screen, and it is not a terminal emulator: a curses UI on a serial line is
-   not reconstructed. `ocr-pair` never uses it (it would not be the pixels' ground truth).
+   page offset), 2 bytes per cell, read with `pmemsave` (HMP `xp` fallback). Characters are decoded with the default VGA CP437
+   glyph table (control codes 1-31 are the graphic glyphs, 0 and 0xFF are blank); the attribute byte gives fg (4 bits), bg (3 bits)
+   and blink (bit 7). Only **80+ column** text modes are read (40-column modes are rejected). Whether the buffer is *the displayed
+   one* is decided in three steps, and `exact` says which held:
+   * the **BIOS data area** (mode `0x449`, columns `0x44a`, rows-1 `0x484`, character height `0x485`, page offset `0x44e`, cursor
+     `0x450`) says text mode, and the `screendump` is `cols*(8|9) x rows*char_height` pixels (80x25 -> 720x400). The BDA goes stale
+     when a guest driver programs the VGA registers itself, and it does not know the CRTC start address, so this alone cannot prove
+     the page is the one being shown;
+   * the **ink-map cross-check** (`pixels.py`, stdlib PNG decoder): per cell, the buffer predicts blank (code 0/0x20/0xFF, or
+     fg == bg) or visible; the screendump cell must be uniform or not accordingly. Cursor cell, blink-attribute cells and the full
+     block 0xDB are skipped. This catches a shifted page and a graphical mode of the same pixel size (80x25 at 720x400, 80x50);
+     it does **not** prove which glyph is drawn;
+   * **one instant**: PNG, BIOS data area and buffer are read as a set and the screendump is taken again afterwards; a set that
+     changed is retried 3 times (`ocr-pair` pauses the guest instead).
+
+   `exact` is `true` only when all of that holds; otherwise `"unverified"` with `exact_reason` (and the per-cell `verification`
+   record). `wait-text` never matches unverified text unless `--accept-unverified`; `ocr-pair` refuses it unless
+   `--allow-inexact`. The `assumptions` field of every VGA result states what rests on assumption, not detection: the **default
+   256-glyph cp437 font** (a 512-glyph or custom-font console may map codes differently) and **blink mode for attribute bit 7**
+   (`--no-blink-mode` declares bit 7 a bright background instead; the attribute-controller register is not readable through QMP).
+2. **`serial`** (scope: stream, `exact: "stream"`). A `-serial file:PATH` log, rendered: escape sequences stripped, CR/BS/TAB
+   applied, erase-in-line (`ESC[K`), erase-in-display (`ESC[J`, `ESC c`) and the column part of cursor movement honoured. This is
+   what the guest *printed* to ttyS0, not what is on the screen, and not a terminal emulator: a curses UI on a serial line is not
+   reconstructed. A log accumulates across boots, so `wait-text 'login:'` can be satisfied by the previous boot: use
+   `--since-mark` (only output written after the command started counts) or `--from-offset N` (from `vmscreen mark`). A log
+   shorter than the offset (rotated) is an error. `ocr-pair` never uses the serial source.
 3. **`vcs`** (`/dev/vcsa*` from a guest shell channel, or the guest agent). **Not implemented**: it needs a channel into the
    guest (guest-agent `guest-exec`, ssh, or a serial login) and is only valid for the guest's Linux text console, which under
    QEMU is the fbcon on a graphical framebuffer anyway. `cat /dev/vcsa1` in the guest gives chars+attributes; reported as
@@ -83,17 +102,27 @@ kill $(cat $D/qemu.pid)
 
 ## Feeding pwmcp's OCR corpus
 
-`ocr-pair` pauses the guest (`stop`), takes the `screendump` and the text buffer, resumes (`cont`, only if it was running),
-and writes:
+`ocr-pair` pauses the guest (`stop`, only if it was running), takes the `screendump` and the text buffer, resumes (`cont`), and
+writes:
 
 * `PREFIX.png` - the screen exactly as QEMU renders it;
-* `PREFIX.json` (`schema: vmscreen.ocr-pair/1`) - `sha256`, `width`/`height`, `captured_at`, `source`, `exact`, `text`, `lines`,
+* `PREFIX.json` (`schema: vmscreen.ocr-pair/2`) - `sha256`, `width`/`height`, `captured_at`, `source`, `exact`, `exact_reason`, `verification`,
+  `assumptions`, `vm_status_before`, `guest_was_paused_before`, `guest_paused_for_capture`, `text`, `lines`,
   `geometry` (cols, rows, **cell_w x cell_h pixels**, base address, cursor), `char_rows_hex` / `attr_rows_hex` (the lossless
   buffer), and `cells` (fg, bg, blink per cell). Cell geometry plus text makes it ground truth for glyph-grid matching, not only
   for line OCR: cell (r, c) is the pixel box `(c*cell_w, r*cell_h)`.
 
 On a graphical screen the pair is refused (exit 4) unless `--allow-inexact`, which writes the PNG with `exact: false` and
-`text: null` (useful to collect *test* images whose truth you type in by hand).
+`text: null` (useful to collect *test* images whose truth you type in by hand); unverified text is refused the same way and, with
+`--allow-inexact`, written with `exact: "unverified"`, its reason and its text.
+
+**The guest is never knowingly left paused.** After any failure inside the paused window (QMP timeout, protocol error, a lost
+`stop` reply, SIGINT/SIGTERM) the guest is resumed over a *fresh* connection (a timed-out socket is poisoned; QMP serves one
+client, so the old one is closed first), 3 attempts, confirmed with `query-status`. The original error is what you see; a resume
+failure is attached to it as a note, and only if nothing else failed does `ResumeFailed` (exit 5, "may still be PAUSED") occur.
+A guest that was already paused is left paused. The names are `PREFIX.png` / `PREFIX.json` appended to the prefix (so
+`vm-1.5` and `vm-1.6` never collide); both are written to temp files and renamed, the JSON last, so a PNG without its JSON is
+not left behind.
 
 Relationship to `pwmcp/tools/console-capture`: that daemon polls `screendump` on a timer, keeps changed frames, and drives
 keys, for **graphical** screens where no text exists. vmscreen is the sibling for **text** screens: instant exact truth.

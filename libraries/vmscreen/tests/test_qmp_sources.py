@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -108,6 +109,10 @@ def test_empty_screendump_file_is_reported(tmp_path):
     h = g.handlers()
     h["screendump"] = lambda a: {}  # QEMU "succeeds" but wrote nothing we can see
     with FakeQmp(sock(tmp_path), h), QmpClient(str(sock(tmp_path)), 2) as c:
+        with pytest.raises(QmpError, match="not readable"):
+            sources.screendump_png(c, str(tmp_path))
+    h["screendump"] = lambda a: Path(a["filename"]).write_bytes(b"junk") and {}
+    with FakeQmp(tmp_path / "e2.sock", h), QmpClient(str(tmp_path / "e2.sock"), 2) as c:
         with pytest.raises(QmpError, match="not a PNG"):
             sources.screendump_png(c, str(tmp_path))
 
@@ -145,7 +150,7 @@ def test_forced_sources_and_unreadable_serial(tmp_path):
             sources.read_text(c, source="bogus")
     log = tmp_path / "s.log"
     log.write_bytes(b"1\n2\n3\n4\n")
-    assert sources.read_serial(str(log), tail=2).text == "3\n4"
+    assert sources.read_serial(str(log), from_offset=4).text == "3\n4"
 
 
 def test_ocr_pair_pauses_resumes_and_writes_sidecar(tmp_path):
@@ -157,7 +162,7 @@ def test_ocr_pair_pauses_resumes_and_writes_sidecar(tmp_path):
         names = srv.names()
         assert names.index("stop") < names.index("screendump") < names.index("cont")
     side = json.loads((tmp_path / "corpus" / "shot1.json").read_text())
-    assert out["exact"] and side["schema"] == "vmscreen.ocr-pair/1" and side["paused_guest"] is True
+    assert out["exact"] and side["schema"] == "vmscreen.ocr-pair/2" and side["guest_paused_for_capture"] is True and side["guest_was_paused_before"] is False
     assert (side["width"], side["height"]) == (720, 400) and side["source"] == "vga-text"
     assert side["lines"][0] == "Press F1" and side["char_rows_hex"][0].startswith("5072657373204631")
     assert side["attr_rows_hex"][0].startswith("4e4e4e") and side["cells"][0][0] == ["yellow", "red", False]
@@ -184,4 +189,4 @@ def test_ocr_pair_no_pause_and_already_paused_guest(tmp_path):
         g.status = "paused"
         capture.ocr_pair(c, tmp_path / "p", dump_dir=str(tmp_path))
         assert "stop" not in srv.names() and "cont" not in srv.names() and g.status == "paused"
-    assert json.loads((tmp_path / "p.json").read_text())["paused_guest"] is False
+    assert (lambda d: d["guest_was_paused_before"] is True and d["guest_paused_for_capture"] is False)(json.loads((tmp_path / "p.json").read_text()))

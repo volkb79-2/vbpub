@@ -113,8 +113,8 @@ def detect(bda: bytes, screen_size: tuple[int, int] | None) -> Detection:
     rows = bda[0x84] + 1
     cell_h = struct.unpack_from("<H", bda, 0x85)[0]
     page_off = struct.unpack_from("<H", bda, 0x4E)[0]
-    if not (20 <= cols <= 255 and 1 <= rows <= 100 and cell_h in (8, 14, 16)):
-        return Detection(False, f"implausible BIOS text geometry {cols}x{rows}, char height {cell_h}")
+    if not (80 <= cols <= 255 and 1 <= rows <= 100 and cell_h in (8, 14, 16)):
+        return Detection(False, f"unsupported or implausible BIOS text geometry (only 80+ column modes are read; 40-column modes are rejected) {cols}x{rows}, char height {cell_h}")
     window_end = 0xB8000 if mode == 7 else 0xC0000
     base = (0xB0000 if mode == 7 else 0xB8000) + page_off
     size = cols * rows * 2

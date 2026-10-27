@@ -31,6 +31,26 @@ def text_to_keys(text: str) -> list[list[str]]:
     return out
 
 
+# QEMU QKeyCode names (qapi/ui.json).  Client-side validation so a typo in a long sequence cannot be half-sent.
+QCODES = frozenset(
+    "shift shift_r alt alt_r ctrl ctrl_r menu esc minus equal backspace tab bracket_left bracket_right ret semicolon apostrophe "
+    "grave_accent backslash comma dot slash asterisk spc caps_lock num_lock scroll_lock kp_divide kp_multiply kp_subtract kp_add "
+    "kp_enter kp_decimal sysrq less home pgup pgdn end left up down right insert delete stop again props undo front copy open paste "
+    "find cut lf help meta_l meta_r compose pause ro hiragana henkan yen power sleep wake audionext audioprev audiostop audioplay "
+    "audiomute volumeup volumedown mediaselect mail calculator computer ac_home ac_back ac_forward ac_refresh ac_bookmarks "
+    "f1 f2 f3 f4 f5 f6 f7 f8 f9 f10 f11 f12 f13 f14 f15 f16 f17 f18 f19 f20 f21 f22 f23 f24 "
+    "kp_0 kp_1 kp_2 kp_3 kp_4 kp_5 kp_6 kp_7 kp_8 kp_9 0 1 2 3 4 5 6 7 8 9 "
+    "a b c d e f g h i j k l m n o p q r s t u v w x y z".split())
+
+
+def validate_keys(chords: list[list[str]]) -> None:
+    for chord in chords:
+        for k in chord:
+            if k not in QCODES:
+                raise ValueError(f"unknown QEMU key name {k!r} (qcodes such as ret, spc, f12, ctrl, alt, shift, left; "
+                                 "--allow-unknown-keys skips this check)")
+
+
 def parse_keys(spec: str) -> list[list[str]]:
     """``ret,down,ctrl+alt+f2`` -> [[ret],[down],[ctrl,alt,f2]]: comma = successive sends, plus = chord."""
     seqs = []

@@ -10,21 +10,47 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-def make_png(w: int, h: int) -> bytes:
+def make_png(w: int, h: int, ink: set[tuple[int, int]] | None = None, filter_type: int = 0) -> bytes:
+    """A black RGB PNG with white pixels at ``ink`` (x, y); ``filter_type`` 0-4 applies that PNG row filter to every row."""
     def chunk(tag: bytes, body: bytes) -> bytes:
         return struct.pack(">I", len(body)) + tag + body + struct.pack(">I", zlib.crc32(tag + body))
-    raw = b"".join(b"\x00" + b"\x00\x00\x00" * w for _ in range(h))
+    ink = ink or set()
+    rows = [bytearray(3 * w) for _ in range(h)]
+    for x, y in ink:
+        rows[y][3 * x:3 * x + 3] = b"\xff\xff\xff"
+    out, prev = bytearray(), bytearray(3 * w)
+    for row in rows:
+        out.append(filter_type)
+        if filter_type == 0:
+            out += row
+            continue
+        for i in range(3 * w):
+            a = row[i - 3] if i >= 3 else 0
+            b = prev[i]
+            c = prev[i - 3] if i >= 3 else 0
+            pred = (0, a, b, (a + b) >> 1, _paeth(a, b, c))[filter_type]
+            out.append((row[i] - pred) & 255)
+        prev = row
+    raw = bytes(out)
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+
+
+def _paeth(a: int, b: int, c: int) -> int:
+    p = a + b - c
+    pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+    return a if pa <= pb and pa <= pc else b if pb <= pc else c
 
 
 class FakeQmp:
     """Serves one connection at a time; ``handlers[name](args) -> return value`` or raises ValueError(desc) for an error reply."""
 
     def __init__(self, path: Path, handlers: dict[str, Callable[[dict], Any]] | None = None, *, greeting: bool = True,
-                 events: bool = False, silent: set[str] | None = None, junk_on: str | None = None) -> None:
+                 events: bool = False, silent: set[str] | None = None, junk_on: str | None = None,
+                 drop_reply: set[str] | None = None) -> None:
         self.path = str(path)
         self.handlers = handlers or {}
         self.greeting, self.events, self.silent, self.junk_on = greeting, events, silent or set(), junk_on
+        self.drop_reply = drop_reply or set()  # run the handler, then never answer (a lost reply)
         self.log: list[tuple[str, dict]] = []
         self._srv = socket.socket(socket.AF_UNIX)
         self._srv.bind(self.path)
@@ -56,8 +82,11 @@ class FakeQmp:
             if self._stop:
                 conn.close()
                 return
-            with conn, conn.makefile("rw", encoding="utf-8") as f:
-                self._conn(f)
+            try:
+                with conn, conn.makefile("rw", encoding="utf-8") as f:
+                    self._conn(f)
+            except OSError:
+                pass  # the client went away (closed, timed out, killed): serve the next connection
 
     def _conn(self, f) -> None:
         def send(obj: Any) -> None:
@@ -86,7 +115,10 @@ class FakeQmp:
                 send({"return": {}})
             elif name in self.handlers:
                 try:
-                    send({"return": self.handlers[name](args)})
+                    value = self.handlers[name](args)
+                    if name in self.drop_reply:
+                        continue
+                    send({"return": value})
                 except ValueError as exc:
                     send({"error": {"class": "GenericError", "desc": str(exc)}})
             else:
@@ -115,9 +147,26 @@ class FakeGuest:
             off = 0xB8000 + (row * self.cols + col + i) * 2
             self.mem[off], self.mem[off + 1] = ord(ch), attr
 
+    display_offset = 0       # the page the "CRTC" actually displays, in bytes from 0xb8000 (the BDA still says 0)
+    graphic_noise = False    # paint ink everywhere: a graphical mode that happens to have a text-sized screendump
+
+    def render(self) -> bytes:
+        w, h = self.png_size or (640, 480)
+        ink: set[tuple[int, int]] = set()
+        if self.graphic_noise:
+            ink = {(x, y) for y in range(0, h, 3) for x in range(0, w, 5)}
+        elif (w, h) == (self.cols * 9, self.rows * 16):
+            for r in range(self.rows):
+                for c in range(self.cols):
+                    off = 0xB8000 + self.display_offset + (r * self.cols + c) * 2
+                    code, attr = self.mem[off], self.mem[off + 1]
+                    if code not in (0, 0x20, 0xFF) and (attr & 0x0F) != (attr >> 4) & 7:
+                        ink |= {(c * 9 + dx, r * 16 + dy) for dx in (1, 2) for dy in (4, 5)}
+        return make_png(w, h, ink, filter_type=getattr(self, "filter_type", 0))
+
     def handlers(self) -> dict[str, Callable[[dict], Any]]:
         def screendump(a: dict) -> dict:
-            Path(a["filename"]).write_bytes(make_png(*(self.png_size or (640, 480))))
+            Path(a["filename"]).write_bytes(self.render())
             return {}
 
         def pmemsave(a: dict) -> dict:

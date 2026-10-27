@@ -13,3 +13,11 @@
 * **VMS-BL-05 vcs source.** `/dev/vcsa*` over a guest-agent or serial-login channel (README source 3).
 * **VMS-BL-06 virtio-gpu / QXL text.** Text mode exists only on legacy VGA devices; `-vga virtio` / `virtio-vga` guests in text
   mode are untested (virtio-vga keeps a VGA core, so it may work).
+* **VMS-BL-07 qcode list.** `keys.QCODES` is a static copy of QEMU's QKeyCode names; `--allow-unknown-keys` is the escape hatch.
+  Newer QEMUs may add names. The QMP schema obfuscates type names, so it cannot be queried simply.
+* **VMS-BL-08 ink check performance.** `pixels.decode_png` is pure Python (about a second for 720x400 with filtered rows) and runs
+  on every VGA poll; add an optional Pillow fast path if `wait-text` polling becomes a load issue.
+* **VMS-BL-09 CRTC start address.** The displayed page is verified by the ink map, not read. A direct read of the CRTC start
+  registers (not reachable through QMP/HMP) would turn `unverified` into a definite answer for page-flipped screens.
+* **VMS-BL-10 glyph identity.** The ink map proves blank/visible only. A cp437 8x16/8x14/8x8 bitmap render compared with the PNG
+  would also prove the font assumption; it needs the font bitmaps shipped (licence check) and is the right place to detect 512-glyph consoles.

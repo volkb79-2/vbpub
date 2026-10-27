@@ -8,7 +8,7 @@ from typing import Any, Callable
 from .errors import NoExactText, WaitTimeout
 
 
-def wait_for(read: Callable[[], Any], pattern: str, timeout: float, interval: float = 0.5, *, literal: bool = False,
+def wait_for(read: Callable[[], Any], pattern: str, timeout: float, interval: float = 0.5, *, literal: bool = False, accept_unverified: bool = False,
              clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
     """Poll ``read()`` (returns an object with ``.text`` and ``.source``) until ``pattern`` matches.
 
@@ -24,11 +24,16 @@ def wait_for(read: Callable[[], Any], pattern: str, timeout: float, interval: fl
         try:
             result = read()
             last_text = result.text
-            m = rx.search(result.text)
+            exact = getattr(result, "exact", True)
+            if exact == "unverified" and not accept_unverified:
+                last_note = f"{result.source} text unverified: {getattr(result, 'exact_reason', '')}"  # never match on text we cannot vouch for
+                m = None
+            else:
+                m = rx.search(result.text)
+                last_note = f"last source {result.source}"
             if m:
-                return {"matched": m.group(0), "span": list(m.span()), "source": result.source, "polls": polls,
+                return {"matched": m.group(0), "span": list(m.span()), "source": result.source, "exact": exact, "polls": polls,
                         "elapsed_s": round(clock() - start, 3)}
-            last_note = f"last source {result.source}"
         except NoExactText as exc:
             last_note = f"no exact text: {exc}"
         remaining = timeout - (clock() - start)
