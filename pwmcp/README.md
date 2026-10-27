@@ -450,14 +450,23 @@ If none is known, `pwmcp ocr` exits 2 with a message naming `ocr.enabled`. From 
 `pwmcp_client.ocr.recognize(image_bytes, sidecar_url=..., psm=6, scale=2)` returns an
 `OcrResult`.
 
-**Gate dependency.** The registered pwmcp gate lanes set `PWMCP_REQUIRE_TEST_DEPS=1` and judge
-`containers/ocr/ocr_service.py` at 100% line and branch coverage. The lanes therefore DEPEND ON THE TESTER
-IMAGE CARRYING THE `pwmcp-client` `test` extra (pytest, pillow, websockets, jinja2, pyyaml; declared in
+**Gate dependency.** The registered pwmcp gate lanes judge `containers/ocr/ocr_service.py` at 100% line and
+branch coverage and run every test that needs an optional dependency. The lanes therefore DEPEND ON THE
+TESTER IMAGE CARRYING THE `pwmcp-client` `test` extra (pytest, pillow, websockets, jinja2, pyyaml, declared in
 `client/pyproject.toml` by the tester-unified change that lands separately on main, which also rebuilds the
-image). With `PWMCP_REQUIRE_TEST_DEPS=1` a missing optional dependency (Pillow, websockets, jinja2, PyYAML)
-FAILS its tests instead of skipping them (`tests/_testdeps.py`, `client/tests/conftest.py`; a test forbids a
-bare `pytest.importorskip`), so a silent skip cannot go green; with the variable unset a developer machine
-without them still skips cleanly. Until the image is rebuilt the lanes are RED by design.
+image) plus `node` and `sh`. Operator policy (2026-10-27): a test that needs an optional module or binary
+FAILS when it is missing, with a message naming it and the `test` extra; skipping is the opt-in. One helper
+(`tests/_testdeps.py`, used by every site in `tests/` and `client/tests/`) implements it, and a test forbids
+bare `pytest.importorskip` / `skipif(... is None)`. On a developer machine without a dependency, set
+`PWMCP_ALLOW_MISSING_TEST_DEPS=1` to skip those tests cleanly; the gate lanes set nothing, so they cannot
+skip. The one deliberate exception is the real-Tesseract test: `tesseract` legitimately exists only in the
+sidecar image, so it skips with an explicit reason, and fails instead when `PWMCP_REQUIRE_TESSERACT=1` (set it
+only in a lane that runs inside the OCR image; none exists today, the gate runs in the tester image).
+Until the tester image is rebuilt the lanes are RED by design. The judged Python targets are the client
+package (`__init__`, `cli`, `contract`, `diagnostics`, `ocr`, `session`, `user_agent`), `build-push.py`,
+`scripts/resolve-playwright-version.py` and `containers/ocr/ocr_service.py`. The Node code
+(`containers/pwmcp/ua-override/index.js`, the run-server and MCP gateways, the admin server) is outside the
+Python judge entirely and is exercised only by the subprocess tests.
 
 **The sidecar image exists from the NEXT pwmcp release.** `pwmcp.ocr.image.tag` defaults to the
 resolver-managed pwmcp coordinate, and the current published release (`1.64.0-r3`) shipped WITHOUT the

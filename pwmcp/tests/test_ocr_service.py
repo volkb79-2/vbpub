@@ -23,7 +23,6 @@ import time
 from pathlib import Path
 
 import pytest
-from _testdeps import REQUIRED
 
 PWMCP_ROOT = Path(__file__).resolve().parents[1]
 SERVICE_PATH = PWMCP_ROOT / "containers" / "ocr" / "ocr_service.py"
@@ -34,16 +33,13 @@ svc = importlib.util.module_from_spec(_spec)
 sys.modules["pwmcp_ocr_service"] = svc
 _spec.loader.exec_module(svc)
 
-PIL_REASON = "Pillow is not installed (the sidecar image installs python3-pil); image-decoding tests skipped"
 try:
     from PIL import Image  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover - environment dependent
     Image = None
-# The registered gate sets PWMCP_REQUIRE_TEST_DEPS=1 (assay.toml lane env): there a missing Pillow FAILS
-# these tests (conftest.py fixture) instead of letting ~40 of them skip and the gate go green.
-needs_pil = (
-    pytest.mark.usefixtures("require_pillow") if REQUIRED else pytest.mark.skipif(Image is None, reason=PIL_REASON)
-)
+# Missing Pillow FAILS these tests by default (conftest.py require_pillow); PWMCP_ALLOW_MISSING_TEST_DEPS=1
+# makes them skip on a developer machine.
+needs_pil = pytest.mark.usefixtures("require_pillow")
 
 # Real Tesseract TSV (levels 1-4 are layout rows with conf -1 and no text; level 5 are words).
 TSV = "\n".join([
@@ -713,14 +709,9 @@ def test_dockerfile_runs_non_root_and_keeps_the_declared_defaults() -> None:
 # ------------------------------------------------------------------ the one REAL-engine test
 
 FONT = Path("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf")
-REAL_SKIP = (
-    "real-Tesseract test skipped: needs the `tesseract` binary on PATH "
-    f"(found: {shutil.which('tesseract')}), Pillow (installed: {Image is not None}) and "
-    f"DejaVu Sans Mono at {FONT} (present: {FONT.is_file()})"
-)
 
 
-@pytest.mark.skipif(shutil.which("tesseract") is None or Image is None or not FONT.is_file(), reason=REAL_SKIP)
+@pytest.mark.usefixtures("real_tesseract")
 def test_real_tesseract_recognises_rendered_console_lines() -> None:  # pragma: no cover - needs tesseract
     from PIL import ImageDraw, ImageFont
 
@@ -744,8 +735,3 @@ def test_real_tesseract_recognises_rendered_console_lines() -> None:  # pragma: 
         assert expected in recognised, (expected, body["text"])
     assert all(0 <= word["conf"] <= 100 for word in body["words"])
     assert sum(w["conf"] for w in body["words"]) / len(body["words"]) > 50
-
-
-def test_real_engine_skip_reason_is_explicit_when_tesseract_is_absent() -> None:
-    if shutil.which("tesseract") is None:
-        assert "needs the `tesseract` binary" in REAL_SKIP and "found: None" in REAL_SKIP

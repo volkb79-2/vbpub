@@ -132,7 +132,7 @@ def _headers(raw_request: bytes) -> dict[str, str]:
     return result
 
 
-@pytest.mark.skipif(NODE is None, reason="Node.js is needed to exercise the runtime gateway")
+@pytest.mark.usefixtures("require_node")
 def test_run_server_gateway_rejects_unknown_hosts_before_upstream() -> None:
     upstream = _Upstream(expected_connections=0)
     process, public_port = _start_gateway("pwmcp:3000", upstream.port)
@@ -147,7 +147,7 @@ def test_run_server_gateway_rejects_unknown_hosts_before_upstream() -> None:
         upstream.close()
 
 
-@pytest.mark.skipif(NODE is None, reason="Node.js is needed to exercise the runtime gateway")
+@pytest.mark.usefixtures("require_node")
 def test_run_server_gateway_allows_known_hosts_and_rewrites_upstream_headers() -> None:
     allowed_hosts = "pwmcp-mcp:3000,browser.example.test"
     upstream = _Upstream(expected_connections=2)

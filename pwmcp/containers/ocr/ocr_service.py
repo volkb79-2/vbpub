@@ -59,6 +59,8 @@ class Config:
     max_scaled_pixels: int = 24_000_000  # width*height AFTER --scale, checked before resizing
     header_deadline_s: float = 10.0  # TOTAL time allowed to receive the request line + headers
     max_connections: int = 16  # concurrent handler threads; further connections get a JSON 503
+    drain_bytes: int = 1024 * 1024  # how much of a rejected upload is read (and discarded) after the reply
+    drain_s: float = 1.0  # ... and for how long at most
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "Config":
@@ -559,8 +561,8 @@ def make_handler(service: Service) -> type[BaseHTTPRequestHandler]:
 
             with contextlib.suppress(OSError):  # the peer may already be gone
                 self.connection.shutdown(socket.SHUT_WR)
-                deadline = time.monotonic() + 1.0
-                budget = 1024 * 1024
+                deadline = time.monotonic() + service.config.drain_s
+                budget = service.config.drain_bytes
                 while True:
                     remaining = deadline - time.monotonic()
                     if budget <= 0 or remaining <= 0:

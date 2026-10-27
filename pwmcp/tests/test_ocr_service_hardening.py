@@ -497,105 +497,27 @@ def test_config_header_deadline_and_connection_cap_from_env() -> None:
     assert (svc.Config().header_deadline_s, svc.Config().max_connections) == (10.0, 16)
 
 
-# ------------------------------------------------------------------ PWMCP_REQUIRE_TEST_DEPS (fail, never skip, in the gate)
-
-
-def _pytest_without_pillow(tmp_path: Path, require: bool) -> subprocess.CompletedProcess:
-    hidden = tmp_path / "hide" / "PIL"
-    hidden.mkdir(parents=True, exist_ok=True)
-    (hidden / "__init__.py").write_text("raise ImportError('Pillow hidden for this test')\n", encoding="utf-8")
-    pwmcp = Path(__file__).resolve().parents[1]
-    env = {k: v for k, v in os.environ.items() if k != "PWMCP_REQUIRE_TEST_DEPS"}
-    env["PYTHONPATH"] = os.pathsep.join([str(tmp_path / "hide"), str(pwmcp / "client" / "src")])
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-    if require:
-        env["PWMCP_REQUIRE_TEST_DEPS"] = "1"
-    return subprocess.run(
-        [sys.executable, "-m", "pytest", "tests/test_ocr_service.py", "-q", "-p", "no:cacheprovider",
-         "--cli-case-partial", "-k", "test_rgba_or_palette or flattened"],
-        cwd=pwmcp, env=env, capture_output=True, text=True, check=False, timeout=120,
-    )
-
-
-def test_a_missing_pillow_skips_normally_but_fails_when_the_gate_requires_it(tmp_path: Path) -> None:
-    relaxed = _pytest_without_pillow(tmp_path, require=False)
-    assert relaxed.returncode == 0 and "skipped" in relaxed.stdout, relaxed.stdout
-    required = _pytest_without_pillow(tmp_path, require=True)
-    assert required.returncode != 0, required.stdout
-    assert "PWMCP_REQUIRE_TEST_DEPS=1 but PIL (Pillow) is not importable" in required.stdout
-
-
-def test_the_gate_lanes_set_the_switch_and_judge_the_sidecar() -> None:
-    import tomllib
-
-    lanes = tomllib.loads((Path(__file__).resolve().parents[1] / "assay.toml").read_text(encoding="utf-8"))["lanes"]
-    for name in ("r1", "r2"):
-        assert lanes[name]["env"]["PWMCP_REQUIRE_TEST_DEPS"] == "1"
-        assert "containers/ocr/ocr_service.py" in lanes[name]["judge"]["targets"]
-        assert "client/src/pwmcp_client/ocr.py" in lanes[name]["judge"]["targets"]
-
-
 def test_the_drain_gives_up_after_its_byte_budget(fake) -> None:
-    small = start(fake, max_bytes=1000)
+    small = start(fake, max_bytes=1000, drain_bytes=1000)
     try:
-        raw = b""
-        payload = b"x" * 1_500_000  # more than the 1 MiB drain budget
         with socket.create_connection(("127.0.0.1", small.port), timeout=10) as sock:
-            sock.sendall(b"POST /v1/ocr HTTP/1.0\r\nContent-Length: %d\r\n\r\n" % len(payload))
-            try:
-                sock.sendall(payload)
-            except OSError:
-                pass  # the service stopped reading after its budget: expected
-            try:
-                while chunk := sock.recv(65536):
-                    raw += chunk
-            except OSError:
-                pass
+            sock.sendall(b"POST /v1/ocr HTTP/1.0\r\nContent-Length: 5000\r\n\r\n" + b"x" * 5000)
+            raw = b""
+            while chunk := sock.recv(65536):  # the client stays connected until the SERVER hangs up
+                raw += chunk
         assert raw.startswith(b"HTTP/1.0 413")
     finally:
         small.close()
 
 
-def test_no_test_uses_a_bare_importorskip_so_no_skip_can_turn_the_gate_green() -> None:
-    root = Path(__file__).resolve().parents[1]
-    offenders = [
-        str(path.relative_to(root))
-        for tree in ("tests", "client/tests")
-        for path in sorted((root / tree).glob("*.py"))
-        if path.name not in {"test_ocr_service_hardening.py", "_testdeps.py", "conftest.py"}
-        and "pytest.importorskip(" in path.read_text(encoding="utf-8")
-    ]
-    assert offenders == [], f"use optional_module (skips locally, FAILS under PWMCP_REQUIRE_TEST_DEPS=1): {offenders}"
-
-
-def _pytest_with_hidden(tmp_path: Path, hidden: str, node: str, require: bool) -> subprocess.CompletedProcess:
-    stub = tmp_path / "hide" / hidden
-    stub.mkdir(parents=True, exist_ok=True)
-    (stub / "__init__.py").write_text(f"raise ImportError('{hidden} hidden for this test')\n", encoding="utf-8")
-    pwmcp = Path(__file__).resolve().parents[1]
-    env = {k: v for k, v in os.environ.items() if k != "PWMCP_REQUIRE_TEST_DEPS"}
-    env["PYTHONPATH"] = os.pathsep.join([str(tmp_path / "hide"), str(pwmcp / "client" / "src")])
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-    if require:
-        env["PWMCP_REQUIRE_TEST_DEPS"] = "1"
-    return subprocess.run(
-        [sys.executable, "-m", "pytest", node, "-q", "-p", "no:cacheprovider", "--cli-case-partial"],
-        cwd=pwmcp, env=env, capture_output=True, text=True, check=False, timeout=180,
-    )
-
-
-@pytest.mark.parametrize(
-    ("hidden", "node"),
-    [
-        ("jinja2", "tests/test_ocr_stack.py"),  # module-level optional_module
-        ("yaml", "client/tests/test_user_agent.py::test_compose_line_renders_valid_yaml_and_escapes_dollar_for_compose"),
-        ("websockets", "tests/test_user_agent_server.py::test_ua_override_sends_metadata_for_existing_and_newly_attached_targets"),
-    ],
-)
-def test_every_optional_dependency_skips_locally_and_fails_in_the_gate(tmp_path: Path, hidden: str, node: str) -> None:
-    relaxed = _pytest_with_hidden(tmp_path, hidden, node, require=False)
-    # (a module-level skip collects no tests: pytest exits 5, which is still "skipped, not failed")
-    assert relaxed.returncode in (0, 5) and "skipped" in relaxed.stdout, relaxed.stdout[-600:]
-    required = _pytest_with_hidden(tmp_path, hidden, node, require=True)
-    assert required.returncode != 0, required.stdout[-600:]
-    assert f"PWMCP_REQUIRE_TEST_DEPS=1 but {hidden} is not importable" in required.stdout, required.stdout[-600:]
+def test_the_drain_gives_up_after_its_time_budget(fake) -> None:
+    small = start(fake, max_bytes=1000, drain_s=0.3)
+    try:
+        with socket.create_connection(("127.0.0.1", small.port), timeout=10) as sock:
+            sock.sendall(b"POST /v1/ocr HTTP/1.0\r\nContent-Length: 5000\r\n\r\nxx")  # the rest never comes
+            raw = b""
+            while chunk := sock.recv(65536):
+                raw += chunk
+        assert raw.startswith(b"HTTP/1.0 413")
+    finally:
+        small.close()

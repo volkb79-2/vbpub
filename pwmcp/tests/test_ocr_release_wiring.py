@@ -154,7 +154,7 @@ def test_the_docs_state_the_decisions_and_the_first_release_checklist() -> None:
     for text in (readme, backlog):
         assert "write:packages" in text and "KI-97" in text and "--set-version" in text
         assert "imagetools inspect debian:trixie-slim" in text
-        assert "NEXT" in text and "PWMCP_REQUIRE_TEST_DEPS" in text.replace("PWMCP_REQUIRE_TEST_DEPS=1", "PWMCP_REQUIRE_TEST_DEPS")
+        assert "NEXT" in text and "PWMCP_ALLOW_MISSING_TEST_DEPS" in text and "PWMCP_REQUIRE_TESSERACT" in text
     assert "DECIDED BY DESIGN, 2026-10-27" in backlog and "open operator decision" not in (readme + backlog).lower()
     assert "400 `invalid_scale`" in readme and "`drop_low_conf`" in readme
     cmru = (PWMCP.parent / "cmru" / "KNOWN_ISSUES_TODO_BACKLOG.md").read_text(encoding="utf-8")

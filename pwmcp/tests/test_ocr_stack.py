@@ -25,8 +25,8 @@ PWMCP_ROOT = Path(__file__).resolve().parents[1]
 GATEWAY = PWMCP_ROOT / "containers" / "pwmcp" / "run-server-gateway" / "index.js"
 NODE = shutil.which("node")
 
-jinja2 = optional_module("jinja2", "jinja2 is needed to render the compose template")
-yaml = optional_module("yaml", "PyYAML is needed to parse the rendered compose file")
+jinja2 = optional_module("jinja2", "jinja2 renders the compose template", module_level=True)
+yaml = optional_module("yaml", "PyYAML parses the rendered compose file", module_level=True)
 
 
 def _defaults() -> dict:
@@ -215,12 +215,12 @@ def _gateway_contract(extra_env: dict[str, str]) -> dict:
         process.wait(timeout=3)
 
 
-@pytest.mark.skipif(NODE is None, reason="Node.js is needed to run the gateway")
+@pytest.mark.usefixtures("require_node")
 def test_gateway_contract_advertises_no_ocr_by_default() -> None:
     assert _gateway_contract({})["ocr"] == {"url": "", "engines": []}
 
 
-@pytest.mark.skipif(NODE is None, reason="Node.js is needed to run the gateway")
+@pytest.mark.usefixtures("require_node")
 def test_gateway_contract_advertises_the_sidecar_when_configured() -> None:
     contract = _gateway_contract({"PWMCP_OCR_URL": "http://pwmcp-ocr:8941", "PWMCP_OCR_ENGINES": "tesseract, glyphgrid,"})
     assert contract["ocr"] == {"url": "http://pwmcp-ocr:8941", "engines": ["tesseract", "glyphgrid"]}
