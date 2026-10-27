@@ -122,8 +122,12 @@ class TestGhcrBoundaryPaths:
         monkeypatch.setattr(g, "repo_visibility", lambda: "public")
         monkeypatch.setattr(g, "package_visibility", lambda p: None)
         monkeypatch.setattr("cmru.ghcr.time.sleep", lambda _: None)
+        # KI-97: an exhausted lookup after a successful push warns by default and
+        # fails only when the caller demands a pre-existing package.
+        monkeypatch.setattr("cmru.ghcr.sys.stderr", io.StringIO())
+        assert g.mirror_package_visibility("p", retries=2, delay=0) is None
         with pytest.raises(SystemExit):
-            g.mirror_package_visibility("p", retries=2, delay=0)
+            g.mirror_package_visibility("p", retries=2, delay=0, missing="fail")
         monkeypatch.setattr(g, "package_visibility", lambda p: "private")
         monkeypatch.setattr(g, "set_package_visibility", lambda p, v: {"visibility": "private"})
         with pytest.raises(SystemExit):
