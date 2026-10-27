@@ -530,6 +530,29 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     require_file "${DOWNLOADS_DIR}/dust-${DUST_VER}.tar.gz"; \
     (cd "${DOWNLOADS_DIR}" && sha256sum -c "dust-${DUST_VER}.sha256"); \
     install_from_tar "${DOWNLOADS_DIR}/dust-${DUST_VER}.tar.gz" dust /tmp/dust-extract; \
+    # ov (pager): .deb verified against the staged upstream checksums file (staging also checks the pinned digest). \
+    require_file "${DOWNLOADS_DIR}/ov-${OV_VER}-checksums.txt"; \
+    require_file "${DOWNLOADS_DIR}/ov_${OV_VER}_amd64.deb"; \
+    (cd "${DOWNLOADS_DIR}" && grep "ov_${OV_VER}_amd64.deb" "ov-${OV_VER}-checksums.txt" | sha256sum -c -); \
+    dpkg -i "${DOWNLOADS_DIR}/ov_${OV_VER}_amd64.deb"; \
+    # dry (Docker TUI): plain binary verified against the staged upstream checksums file. \
+    require_file "${DOWNLOADS_DIR}/dry-${DRY_VER}-checksums.txt"; \
+    require_file "${DOWNLOADS_DIR}/dry-${DRY_VER}-linux-amd64"; \
+    EXPECTED_DRY_SHA256="$(grep 'dry-linux-amd64$'"${DOWNLOADS_DIR}/dry-${DRY_VER}-checksums.txt" | awk '{print $1}')"; \
+    echo "${EXPECTED_DRY_SHA256}  ${DOWNLOADS_DIR}/dry-${DRY_VER}-linux-amd64" | sha256sum -c -; \
+    install -m 755 "${DOWNLOADS_DIR}/dry-${DRY_VER}-linux-amd64" /usr/local/bin/dry; \
+    # yazi (file manager, glibc zip): upstream publishes no checksum file; the staged sidecar carries the pinned sha256. \
+    require_file "${DOWNLOADS_DIR}/yazi-${YAZI_VER}.sha256"; \
+    require_file "${DOWNLOADS_DIR}/yazi-${YAZI_VER}.zip"; \
+    (cd "${DOWNLOADS_DIR}" && sha256sum -c "yazi-${YAZI_VER}.sha256"); \
+    unzip -q -o "${DOWNLOADS_DIR}/yazi-${YAZI_VER}.zip" -d /tmp/yazi-extract; \
+    install -m 755 "$(find /tmp/yazi-extract -type f -name yazi -print -quit)" /usr/local/bin/yazi; \
+    install -m 755 "$(find /tmp/yazi-extract -type f -name ya -print -quit)" /usr/local/bin/ya; \
+    # sss (unreleased bash script pinned by commit; SSS_VER is the full commit): sidecar carries the pinned sha256. \
+    require_file "${DOWNLOADS_DIR}/sss-${SSS_VER}.sha256"; \
+    require_file "${DOWNLOADS_DIR}/sss-${SSS_VER}"; \
+    (cd "${DOWNLOADS_DIR}" && sha256sum -c "sss-${SSS_VER}.sha256"); \
+    install -m 755 "${DOWNLOADS_DIR}/sss-${SSS_VER}" /usr/local/bin/sss; \
     require_file "${DOWNLOADS_DIR}/bat-${BAT_VER}.tar.gz"; \
     require_file "${DOWNLOADS_DIR}/delta-${DELTA_VER}.tar.gz"; \
     require_file "${DOWNLOADS_DIR}/fd-${FD_VER}.tar.gz"; \
@@ -674,6 +697,7 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
         /tmp/crane-extract \
         /tmp/gdu-extract \
         /tmp/dust-extract \
+        /tmp/yazi-extract \
         /tmp/grpcurl-extract \
         /tmp/delta-extract \
         /tmp/fd-extract \
@@ -1090,6 +1114,10 @@ RUN set -euo pipefail; \
         echo "crane=$(crane version 2>&1 | head -1)"; \
         echo "gdu=$(gdu --version 2>&1 | awk '/^Version:/ { sub(/^v/, "", $2); print $2; exit }')"; \
         echo "dust=$(dust --version 2>&1 | awk '{ print $2; exit }')"; \
+        echo "ov=$(ov --version 2>&1 | head -1)"; \
+        echo "dry=$(dry --version 2>&1 | head -1)"; \
+        echo "yazi=$(yazi --version 2>&1 | head -1)"; \
+        echo "sss=unreleased script pinned by commit ${SSS_VER}"; \
         echo "regctl=$(regctl version 2>&1 | awk '/^VCSTag:/ { sub(/^v/, "", $2); print $2; exit }')"; \
         if command -v claude >/dev/null 2>&1; then \
             echo "claude=$(claude --version 2>&1 | head -1)"; \

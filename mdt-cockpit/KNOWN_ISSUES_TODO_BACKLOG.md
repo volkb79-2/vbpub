@@ -46,10 +46,12 @@ Opened 2026-10-27. (1) `templates/vscode/` ships two opt-in key profiles and a c
 `keybindings.json` snippet; whether `workbench.action.terminal.sendSequence` keybindings still fire with
 `sendKeybindingsToShell` enabled, and whether `terminal.integrated.enableKittyKeyboardProtocol` exists in the
 deployed VS Code, are UNVERIFIED. Run the README recipe on the Windows client, then name one profile the
-documented default. (2) Requested for the image, not yet installed (need the pinned/checksummed staging
-path in `scripts/stage_tool_artifacts.py`): `ov` (pager), `dry` (Docker TUI), `yazi` (file manager), and
-`sss` (<https://git.azlux.fr/Azlux/sss>, not yet identified: the host blocks automated fetches). `dive`
-is already installed. (3) `tmux` and `broot` come from Debian packages; the `tmux.conf`, `gitconfig`,
+documented default. (2) `ov` 0.55.0 (.deb), `dry` 0.13.0 (binary), `yazi` 26.9.1 (glibc zip, pinned sha256 because upstream
+publishes no checksum file) and `sss` (github.com/azlux/sss, an unreleased bash script pinned by commit
+`f182bf63c2df74f002a54e3d21e3aa92974d0bdd` + sha256) are now WIRED: staged and verified in
+`scripts/stage_tool_artifacts.py`, installed and re-verified in the `Dockerfile`, listed in the manifest and
+`tests/runtime/test_image_contract.py`. Still UNBUILT and UNVERIFIED in a real image: no download was run,
+the `ov` `.deb` has not been `dpkg -i`'d, and the runtime checks have not run. `dive` was already installed. (3) `tmux` and `broot` come from Debian packages; the `tmux.conf`, `gitconfig`,
 `inputrc` and `vimrc.local` defaults have runtime tests in `tests/runtime/test_system_defaults.py` that
 have not been run against a built image.
 

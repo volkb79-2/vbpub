@@ -199,18 +199,19 @@ LEAVES: list[Leaf] = [
     Leaf("mt_consul", "consul", ("mdt layers", '"Modern tools" mega-layer'), ("Service / infrastructure CLIs",), ("/usr/local/bin/consul",)),
     Leaf("mt_gh", "gh (GitHub CLI, incl. man pages)", ("mdt layers", '"Modern tools" mega-layer'), ("Service / infrastructure CLIs",), ("/usr/local/bin/gh", "/usr/local/share/man/man1/gh*")),
     Leaf(
-        "mt_inspection", "container/security inspection tools (dtop/lazydocker/dive/syft/hadolint/grype/cdebug)",
+        "mt_inspection", "container/security inspection tools (dtop/lazydocker/dive/dry/syft/hadolint/grype/cdebug)",
         ("mdt layers", '"Modern tools" mega-layer'), ("Container & security inspection tools",),
-        ("/usr/local/bin/dtop", "/usr/local/bin/lazydocker", "/usr/local/bin/syft",
+        ("/usr/local/bin/dtop", "/usr/local/bin/lazydocker", "/usr/local/bin/dry", "/usr/local/bin/syft",
          "/usr/local/bin/hadolint", "/usr/local/bin/grype", "/usr/local/bin/cdebug"),
     ),
     Leaf(
-        "mt_modern_cli", "modern CLI replacements (bat/delta/fd/ripgrep/rga/fzf/yq/shellcheck/crane/b2/regctl/htop)",
+        "mt_modern_cli", "modern CLI replacements (bat/delta/fd/ripgrep/rga/fzf/yq/shellcheck/crane/b2/regctl/htop/yazi/sss; ov and dive are .debs and are not path-attributed)",
         ("mdt layers", '"Modern tools" mega-layer'), ("Modern CLI replacements",),
         ("/usr/local/bin/bat", "/usr/local/bin/delta", "/usr/local/bin/fd", "/usr/local/bin/fdfind",
          "/usr/local/bin/rg", "/usr/local/bin/rga*", "/usr/local/bin/fzf", "/usr/local/bin/yq",
          "/usr/local/bin/shellcheck", "/usr/local/bin/crane", "/usr/local/bin/b2",
-         "/usr/local/bin/regctl", "/usr/local/bin/htop"),
+         "/usr/local/bin/regctl", "/usr/local/bin/htop",
+         "/usr/local/bin/yazi", "/usr/local/bin/ya", "/usr/local/bin/sss"),
     ),
     Leaf(
         "mt_glances", "glances + pip dependency closure (system python)",

@@ -363,6 +363,29 @@ DUST_PINNED_SHA256 = {
     "1.2.6": "cbf2cb5c9d6227e46fc4b29c03dc43b8632020dfc5cf269d263d6e29c399e044",
 }
 
+# ov, dry, yazi and sss (added 2026-10-27, all pinned; every release is older than 14 days).
+#   ov    0.55.0 (2026-09-29)  .deb + upstream checksums file; the .deb digest is ALSO pinned below.
+#   dry   0.13.0 (2026-03-29)  plain binary + upstream checksums file; the binary digest is ALSO pinned below.
+#   yazi  26.9.1 (2026-09-01)  glibc zip; upstream publishes NO checksum file, so the pinned digest is the only source.
+#   sss   unreleased           a single bash script with no releases or tags: pinned by full commit + sha256 of the raw file.
+# The pinned digests are the operator-supplied source of truth; a checksums file that disagrees fails staging.
+OV_PINNED_VERSION = "0.55.0"
+OV_PINNED_SHA256 = {
+    "0.55.0": "1630090bf9c056e11d694870a20d63f1e95ff2d1c04f656cc297f7abdda8fb4f",  # ov_0.55.0_amd64.deb
+}
+DRY_PINNED_VERSION = "0.13.0"
+DRY_PINNED_SHA256 = {
+    "0.13.0": "c160dea554c74544f68f1de5d406a9d211462caa75cab46c2ae8a46df28e0e36",  # dry-linux-amd64
+}
+YAZI_PINNED_VERSION = "26.9.1"
+YAZI_PINNED_SHA256 = {
+    "26.9.1": "a02fe91d3304294048c681f010f1100856872a4e98ecf6927328e888d40a6ad2",  # yazi-x86_64-unknown-linux-gnu.zip
+}
+SSS_PINNED_COMMIT = "f182bf63c2df74f002a54e3d21e3aa92974d0bdd"
+SSS_PINNED_SHA256 = {
+    "f182bf63c2df74f002a54e3d21e3aa92974d0bdd": "c146d43cbc22f4128155f2e26e93fc32424d47a810f36cc6ff433b7786727cad",
+}
+
 
 def _resolve_pinned_version(requested: str | None, default: str, label: str) -> str:
     value = (requested or "").strip()
@@ -984,6 +1007,156 @@ def _stage_dust(version: str, records: list[StagedArtifact]) -> None:
     )
 
 
+def _pinned_sha256(tool: str, version: str, table: dict[str, str]) -> str:
+    expected = table.get(version)
+    if expected is None:
+        raise StageError(
+            f"{tool} {version} has no pinned sha256; add the verified digest to "
+            f"{tool.upper()}_PINNED_SHA256 in stage_tool_artifacts.py"
+        )
+    return expected
+
+
+def _stage_ov(version: str, records: list[StagedArtifact]) -> None:
+    # noborus/ov pager: <name>_<ver>_amd64.deb + ov_<ver>_checksums.txt, plus the pinned digest.
+    expected_pinned = _pinned_sha256("ov", version, OV_PINNED_SHA256)
+    deb_name = f"ov_{version}_amd64.deb"
+    base_url = f"https://github.com/noborus/ov/releases/download/v{version}"
+    deb_url = f"{base_url}/{deb_name}"
+    sums_url = f"{base_url}/ov_{version}_checksums.txt"
+    deb_path = DOWNLOADS_DIR / deb_name
+    sums_path = DOWNLOADS_DIR / f"ov-{version}-checksums.txt"
+
+    sums_final_url = _download(sums_url, sums_path)
+    deb_final_url = _download(deb_url, deb_path)
+    expected_sha256 = _parse_hashicorp_sha256(sums_path, deb_name)
+    actual_sha256 = _sha256(deb_path)
+    if expected_sha256 != actual_sha256 or expected_pinned != actual_sha256:
+        raise StageError(
+            f"ov checksum mismatch: checksums file {expected_sha256}, pinned {expected_pinned}, got {actual_sha256}"
+        )
+    _record_artifact(
+        records,
+        tool="ov",
+        version=version,
+        source_url=deb_url,
+        final_url=deb_final_url,
+        path=deb_path,
+        kind="deb",
+        verification="sha256 from ov_<ver>_checksums.txt and pinned in stage_tool_artifacts.py + dpkg deb",
+    )
+    _record_artifact(
+        records,
+        tool="ov-checksums",
+        version=version,
+        source_url=sums_url,
+        final_url=sums_final_url,
+        path=sums_path,
+        kind="checksum-file",
+        verification="downloaded",
+    )
+
+
+def _stage_dry(version: str, records: list[StagedArtifact]) -> None:
+    # moncho/dry Docker TUI: plain linux/amd64 binary + dry_checksums.txt, plus the pinned digest.
+    expected_pinned = _pinned_sha256("dry", version, DRY_PINNED_SHA256)
+    asset_name = "dry-linux-amd64"
+    base_url = f"https://github.com/moncho/dry/releases/download/v{version}"
+    binary_url = f"{base_url}/{asset_name}"
+    sums_url = f"{base_url}/dry_checksums.txt"
+    binary_path = DOWNLOADS_DIR / f"dry-{version}-linux-amd64"
+    sums_path = DOWNLOADS_DIR / f"dry-{version}-checksums.txt"
+
+    sums_final_url = _download(sums_url, sums_path)
+    binary_final_url = _download(binary_url, binary_path)
+    expected_sha256 = _parse_hashicorp_sha256(sums_path, asset_name)
+    actual_sha256 = _sha256(binary_path)
+    if expected_sha256 != actual_sha256 or expected_pinned != actual_sha256:
+        raise StageError(
+            f"dry checksum mismatch: checksums file {expected_sha256}, pinned {expected_pinned}, got {actual_sha256}"
+        )
+    _record_artifact(
+        records,
+        tool="dry",
+        version=version,
+        source_url=binary_url,
+        final_url=binary_final_url,
+        path=binary_path,
+        kind="binary",
+        verification="sha256 from dry_checksums.txt and pinned in stage_tool_artifacts.py",
+    )
+    _record_artifact(
+        records,
+        tool="dry-checksums",
+        version=version,
+        source_url=sums_url,
+        final_url=sums_final_url,
+        path=sums_path,
+        kind="checksum-file",
+        verification="downloaded",
+    )
+
+
+def _stage_yazi(version: str, records: list[StagedArtifact]) -> None:
+    # sxyazi/yazi file manager, glibc (gnu) build. Upstream publishes no checksum file, so the sha256 is pinned
+    # in YAZI_PINNED_SHA256 and written to an offline sidecar for the Dockerfile to repeat the check.
+    expected_sha256 = _pinned_sha256("yazi", version, YAZI_PINNED_SHA256)
+    asset_name = "yazi-x86_64-unknown-linux-gnu.zip"
+    archive_url = f"https://github.com/sxyazi/yazi/releases/download/v{version}/{asset_name}"
+    archive_path = DOWNLOADS_DIR / f"yazi-{version}.zip"
+    sidecar_path = DOWNLOADS_DIR / f"yazi-{version}.sha256"
+
+    archive_final_url = _download(archive_url, archive_path)
+    actual_sha256 = _sha256(archive_path)
+    if expected_sha256 != actual_sha256:
+        raise StageError(f"yazi checksum mismatch: expected {expected_sha256}, got {actual_sha256}")
+    for binary in ("yazi", "ya"):
+        if not _zip_contains_binary(archive_path, binary):
+            raise StageError(f"Downloaded yazi archive does not contain {binary}")
+    sidecar_path.write_text(f"{expected_sha256}  {archive_path.name}\n", encoding="utf-8")
+
+    _record_artifact(
+        records,
+        tool="yazi",
+        version=version,
+        source_url=archive_url,
+        final_url=archive_final_url,
+        path=archive_path,
+        kind="zip",
+        verification="sha256 pinned in stage_tool_artifacts.py (upstream publishes no checksum) + archive contains yazi and ya",
+    )
+
+
+def _stage_sss(commit: str, records: list[StagedArtifact]) -> None:
+    # azlux/sss: one bash script, no releases or tags. Pinned by full commit; the sha256 of the raw file at that
+    # commit is pinned in SSS_PINNED_SHA256 and written to an offline sidecar for the Dockerfile to repeat.
+    expected_sha256 = _pinned_sha256("sss", commit, SSS_PINNED_SHA256)
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise StageError(f"sss must be pinned by a full 40-hex commit, got {commit!r}")
+    script_url = f"https://raw.githubusercontent.com/azlux/sss/{commit}/sss"
+    script_path = DOWNLOADS_DIR / f"sss-{commit}"
+    sidecar_path = DOWNLOADS_DIR / f"sss-{commit}.sha256"
+
+    script_final_url = _download(script_url, script_path)
+    actual_sha256 = _sha256(script_path)
+    if expected_sha256 != actual_sha256:
+        raise StageError(f"sss checksum mismatch: expected {expected_sha256}, got {actual_sha256}")
+    if not script_path.read_bytes().startswith(b"#!/usr/bin/env bash\n"):
+        raise StageError("Downloaded sss script does not start with '#!/usr/bin/env bash'")
+    sidecar_path.write_text(f"{expected_sha256}  {script_path.name}\n", encoding="utf-8")
+
+    _record_artifact(
+        records,
+        tool="sss",
+        version=commit,
+        source_url=script_url,
+        final_url=script_final_url,
+        path=script_path,
+        kind="script",
+        verification="unreleased script pinned by commit; sha256 pinned in stage_tool_artifacts.py + bash shebang",
+    )
+
+
 def _stage_tools(resolved: dict[str, str]) -> list[StagedArtifact]:
     records: list[StagedArtifact] = []
 
@@ -994,6 +1167,10 @@ def _stage_tools(resolved: dict[str, str]) -> list[StagedArtifact]:
     _stage_regctl(resolved["REGCTL_VER"], records)
     _stage_gdu(resolved["GDU_VER"], records)
     _stage_dust(resolved["DUST_VER"], records)
+    _stage_ov(resolved["OV_VER"], records)
+    _stage_dry(resolved["DRY_VER"], records)
+    _stage_yazi(resolved["YAZI_VER"], records)
+    _stage_sss(resolved["SSS_VER"], records)
 
     _stage_tarball_tool(
         tool="bat",
@@ -1841,6 +2018,10 @@ def _resolve_versions() -> dict[str, str]:
         "B2_VER": _resolve_version(os.getenv("B2_VERSION"), "Backblaze/B2_Command_Line_Tool"),
         "GDU_VER": _resolve_pinned_version(os.getenv("GDU_VERSION"), GDU_PINNED_VERSION, "GDU_VERSION"),
         "DUST_VER": _resolve_pinned_version(os.getenv("DUST_VERSION"), DUST_PINNED_VERSION, "DUST_VERSION"),
+        "OV_VER": _resolve_pinned_version(os.getenv("OV_VERSION"), OV_PINNED_VERSION, "OV_VERSION"),
+        "DRY_VER": _resolve_pinned_version(os.getenv("DRY_VERSION"), DRY_PINNED_VERSION, "DRY_VERSION"),
+        "YAZI_VER": _resolve_pinned_version(os.getenv("YAZI_VERSION"), YAZI_PINNED_VERSION, "YAZI_VERSION"),
+        "SSS_VER": _resolve_pinned_version(os.getenv("SSS_VERSION"), SSS_PINNED_COMMIT, "SSS_VERSION"),
         "BAT_VER": _resolve_version(os.getenv("BAT_VERSION"), "sharkdp/bat"),
         "FD_VER": _resolve_version(os.getenv("FD_VERSION"), "sharkdp/fd"),
         "RIPGREP_VER": _resolve_version(os.getenv("RIPGREP_VERSION"), "BurntSushi/ripgrep"),

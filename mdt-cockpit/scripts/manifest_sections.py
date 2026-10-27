@@ -22,6 +22,7 @@ AI_CLI_TOOL_NAMES = ("aider", "antigravity", "claude", "claudelink", "codex", "c
 CONTAINER_INSPECTION_TOOL_NAMES = (
     "crane",
     "dive",
+    "dry",
     "dtop",
     "glances",
     "lazydocker",
@@ -111,6 +112,7 @@ PROJECT_HOMES = {
     "cdebug": "https://github.com/iximiuz/cdebug",
     "delta": "https://github.com/dandavison/delta",
     "dive": "https://github.com/wagoodman/dive",
+    "dry": "https://github.com/moncho/dry",
     "dtop": "https://github.com/amir20/dtop",
     "dust": "https://github.com/bootandy/dust",
     "fd": "https://github.com/sharkdp/fd",
@@ -126,6 +128,9 @@ PROJECT_HOMES = {
     "lnav": "https://github.com/tstack/lnav",
     "nvchad": "https://github.com/NvChad/NvChad",
     "nvim": "https://github.com/neovim/neovim",
+    "ov": "https://github.com/noborus/ov",
+    "sss": "https://github.com/azlux/sss",
+    "yazi": "https://github.com/sxyazi/yazi",
     "rga": "https://github.com/phiresky/ripgrep-all",
     "regctl": "https://github.com/regclient/regclient",
     "ripgrep": "https://github.com/BurntSushi/ripgrep",
@@ -137,7 +142,12 @@ PROJECT_HOMES = {
 }
 
 # Policy labels per tool (appended to version cell).
-TOOL_POLICIES: dict[str, str] = {}  # tool → policy label; falls back to "latest" or "apt"
+TOOL_POLICIES: dict[str, str] = {  # tool → policy label; falls back to "latest" or "apt"
+    "ov": "pinned",
+    "dry": "pinned",
+    "yazi": "pinned (sha256 in stage_tool_artifacts.py)",
+    "sss": "unreleased script, pinned by commit",
+}
 
 
 def netcat_package_for_debian(debian_version: str) -> str:

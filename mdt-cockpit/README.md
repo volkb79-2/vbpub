@@ -268,6 +268,10 @@ Container and system inspection, in-image:
 | `lazydocker` | Docker/Compose TUI — lifecycle, logs, exec, stats |
 | `glances` | broader host resource view with Docker awareness |
 | `dive` | image-layer inspection |
+| `dry` | Docker terminal UI for containers, images, networks and volumes (static binary, pinned 0.13.0) |
+| `ov` | terminal pager, a feature-rich alternative to `less` (pinned 0.55.0, from the upstream `.deb`) |
+| `yazi` | terminal file manager, with its `ya` helper (glibc build, pinned 26.9.1; optional helpers such as fzf/zoxide/ImageMagick are not required) |
+| `sss` | colourised `ss` that adds PID, user and Docker container names — unreleased script pinned by commit `f182bf6` (it re-runs itself with `sudo` when not root) |
 | `gdu` | interactive disk-usage analyzer (static build, pinned 5.38.0) |
 | `dust` | `du` with a tree view and bars (static musl build, pinned 1.2.6) |
 | `syft` | SBOM generation, image/package inventory |
