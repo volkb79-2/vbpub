@@ -146,11 +146,12 @@ class Matrixer(Runner):
         out_path = posixpath.join(self.cfg.work_dir, f".iobench-probe-{self.run_id}-{tag}")
         self.safety.register_file(out_path)
         self.safety.register_file(posixpath.join(self.cfg.work_dir, ".iobench-probe"))
-        unit = devio.probe_unit_argv(f"iobench-probe-{self.run_id}-{tag}", PROBE_SLICE, seconds + PROBE_SLACK_S, sweep.PROBE_SOURCE,
+        unit_name = f"iobench-probe-{self.run_id}-{tag}"
+        unit = devio.probe_unit_argv(unit_name, PROBE_SLICE, seconds + PROBE_SLACK_S, sweep.PROBE_SOURCE,
                                      [self.cfg.work_dir, out_path, str(seconds), str(sweep.PROBE_INTERVAL_S)])
         t0 = self.host.now()
         handles = self.spawn_all([lambda: self.spawn(writer), lambda: self.spawn(fsyncj), lambda: self.host.spawn(unit)])
-        self.supervise(handles)
+        self.supervise(handles, units=[unit_name])
         self.finish(writer, handles[0], t0)
         out = self.finish(fsyncj, handles[1], t0)
         unit_result = handles[2].wait()

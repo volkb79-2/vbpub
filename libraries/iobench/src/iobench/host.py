@@ -86,17 +86,33 @@ def check_argv(argv: Sequence[str]) -> None:
         raise HostError(f"argv outside the allowlist: {' '.join(argv[:3])} ...")
 
 
-_FIO_FORBIDDEN = ("--exec_prerun", "--exec_postrun", "--daemonize", "--server", "--client", "--write_iolog", "--read_iolog", "--ioscheduler")
+_FIO_FORBIDDEN = ("--exec_prerun", "--exec_postrun", "--daemonize", "--server", "--client", "--write_iolog", "--read_iolog", "--ioscheduler",
+                  "--output", "--append-terse", "--status-interval", "--lockfile")
+_FIO_ENGINES = ("--ioengine=libaio",)  # the only engine iobench builds; `exec` (and any other) runs or reaches outside the planned job (review A N-r3-4)
+
+
+def _fio_allowed(a: list[str]) -> bool:
+    keys = [t.split("=")[0] for t in a[1:]]
+    if not all(t.startswith("--") for t in a[1:]) or len(a) < 2:
+        return False
+    if len(a) == 2 and keys[0] in ("--version", "--cmdhelp"):
+        return True
+    if keys.count("--filename") != 1:  # exactly one target: a repeated --filename= would add files the extent checks never saw
+        return False
+    if any(f.startswith(k) for k in keys for f in _FIO_FORBIDDEN):  # getopt accepts unambiguous abbreviations: `--out=` must not slip past `--output`
+        return False
+    return all(t in _FIO_ENGINES for t in a[1:] if t.split("=")[0] == "--ioengine")
+
+
 _ALLOWED = {
-    "fio": lambda a: all(t.startswith("--") for t in a[1:]) and len(a) >= 2 and ((len(a) == 2 and a[1].split("=")[0] in ("--version", "--cmdhelp")) or any(t.startswith("--filename=") for t in a[1:]))
-    and not any(t.split("=")[0] in _FIO_FORBIDDEN for t in a[1:]),
+    "fio": _fio_allowed,
     "blkdiscard": lambda a: a[1] == "-o" and a[3] == "-l" and len(a) == 6,
     "blkid": lambda a: a[1:4] == ["-p", "-o", "export"],
     "wipefs": lambda a: a[1] in ("-n", "--no-act"),
     "swapon": lambda a: a[1].startswith("--show"),
     "fallocate": lambda a: a[1] in ("-l", "-p"),
     "docker": lambda a: a[1] == "ps",
-    "systemctl": lambda a: a[1] == "is-active" or a[1:3] == ["show", "-p"],
+    "systemctl": lambda a: a[1] == "is-active" or a[1:3] == ["show", "-p"] or (a[1] == "stop" and len(a) == 3 and a[2].startswith("iobench-probe-")),
     "systemd-run": lambda a: any(t.startswith("RuntimeMaxSec=") for t in a),
 }
 
@@ -152,6 +168,17 @@ def _die_with_parent(parent: int) -> None:
     ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGKILL)  # PR_SET_PDEATHSIG
     if os.getppid() != parent:  # iobench died between fork and the prctl: the signal will never come
         os._exit(1)
+
+
+REAP_TIMEOUT_S = 5.0
+
+
+def _reap(proc: "subprocess.Popen[str]") -> None:
+    """Collect a killed command's output, bounded: a stalled device (D state) or a pipe-holding survivor must not hang the run (review A N-r3-2)."""
+    try:
+        proc.communicate(timeout=REAP_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        pass  # leave it to the kernel; the caller raises its own error
 
 
 class _ProcHandle:
@@ -221,11 +248,11 @@ class RealHost:
                 waited += 0.5
             if self._escalated:
                 os.killpg(proc.pid, signal.SIGKILL)
-                proc.communicate()
+                _reap(proc)
                 raise Aborted("second signal during a blocking command")
             if timeout is not None and waited >= timeout:
                 os.killpg(proc.pid, signal.SIGKILL)
-                proc.communicate()
+                _reap(proc)
                 raise subprocess.TimeoutExpired(list(argv), timeout)
 
     def spawn(self, argv: Sequence[str]) -> Handle:

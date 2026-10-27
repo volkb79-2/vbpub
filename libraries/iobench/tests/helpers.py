@@ -15,7 +15,8 @@ def target_ref(host: FakeHost, path: str = "/dev/vda7") -> TargetRef:
 def job(rw="randread", *, off=0, size=GIB, bs=4096, qd=32, rt=30, io=None, metric="iops", hist=False,
         name="j", path="/dev/vda7", rate=None, avg=2000):
     return devio.FioJob(name, path, rw, bs, qd, rt, off, size, io, log_avg_ms=avg, metric=metric, hist=hist,
-                        rate_iops=rate, prefix=f"/run/iobench/{name}")
+                        rate_iops=rate, prefix=f"/run/iobench/{name}",
+                        exclusive=rw in ("write", "randwrite") and path.startswith("/dev/"))  # a device writer is always exclusive (IOB-BL-06 N-r3-3)
 
 
 def run_job(host: FakeHost, j: devio.FioJob, path: str = "/dev/vda7") -> devio.FioResult:

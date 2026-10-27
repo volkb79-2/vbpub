@@ -128,8 +128,11 @@ class Runner:
             raise Aborted(f"signal {sig}")
         self.watch.check()
 
-    def supervise(self, handles: Sequence[Any], on_tick: Any = None) -> None:
-        """Poll until every handle exits, checking signals and the abort rules each second; kill on any exception."""
+    def supervise(self, handles: Sequence[Any], on_tick: Any = None, units: Sequence[str] = ()) -> None:
+        """Poll until every handle exits, checking signals and the abort rules each second; kill on any exception.
+
+        ``units`` are transient systemd units the handles are clients of: killing a ``systemd-run`` client does not stop its unit, so an abort
+        stops each unit and waits for it (otherwise it lingers and recreates its output file after cleanup, review A N-r3-1)."""
         try:
             while any(h.poll() is None for h in handles):
                 self.host.sleep(TICK_S)
@@ -139,9 +142,15 @@ class Runner:
         except BaseException:
             for h in handles:
                 h.kill()
+            self.stop_units(units)
             if not restore.wait_inflight_zero(self.host, self.disk_name):
                 self.safety.report.warnings.append("inflight_not_drained: the device still had requests in flight 30 s after fio was killed")
             raise
+
+    def stop_units(self, units: Sequence[str]) -> None:
+        for unit in units:
+            if not restore.stop_unit(self.host, unit):
+                self.safety.report.warnings.append(f"unit_not_stopped: {unit} was still active {restore.UNIT_STOP_WAIT_S:.0f} s after the abort")
 
     def _check_job(self, job: FioJob) -> None:
         if job.filename != self.target.path:

@@ -182,6 +182,10 @@ def probe(host: Host, name: str, argv: Sequence[str], ok: Sequence[int] = (0,)) 
     return res
 
 
+def unit_stop_argv(unit: str) -> list[str]:
+    return ["systemctl", "stop", unit]
+
+
 def probe_unit_argv(unit: str, slice_name: str, runtime_max_s: int, script: str, args: Sequence[str]) -> list[str]:
     """Transient unit for the sync-latency probe: no IO limits, bounded lifetime.
 
@@ -281,6 +285,8 @@ def assert_writer_bound(argv: Sequence[str], target: TargetRef, offset: int, len
     job = parse_job(argv)
     if job.filename != target.path or job.offset != offset or job.size != length:
         raise HostError("writer extent differs from the extent it was authorised for")
+    if target.kind == "device" and not job.exclusive:  # the kernel's O_EXCL refusal (mounted / swap / claimed) must be armed for every device writer
+        raise HostError(f"writer on device {target.path} without --exclusive_open=1")
     if length <= 0 or offset < 0 or job.end > target.size_bytes - TAIL_BYTES:
         raise HostError(f"writer extent [{offset}, {offset + length}) overlaps the reserved tail or the end of {target.path}")
     return job

@@ -529,6 +529,9 @@ class FakeHost:
         self.signals_installed = False
         self.probe_failures: dict[str, RunResult] = {}  # command basename -> a failing result to return instead of the normal one
         self.known_units: set[str] = set()
+        self.stopped_units: list[str] = []
+        self.cancelled_outputs: set[str] = set()
+        self.unit_stop_sticks = True  # False models a unit that stays active after `systemctl stop` (a stuck unit)
         self.probe_start_delay_s = 2.0  # the transient unit starts a little after the fio jobs it observes
         self.fio_options: set[str] = {"exclusive_open"}  # the options the installed (fake) fio documents
         init_pid, init_mnt = "pid:[4026531836]", "mnt:[4026531841]"
@@ -809,6 +812,12 @@ class FakeHost:
         if name == "systemctl" and argv[1] == "show":
             known = argv[-1] in self.active_units or argv[-1] in self.known_units
             return RunResult(0, "loaded\n" if known else "not-found\n", "")
+        if name == "systemctl" and argv[1] == "stop":
+            self.stopped_units.append(argv[2])
+            if self.unit_stop_sticks:
+                self.active_units.discard(argv[2])  # like systemd: a stopped unit never writes its output file afterwards
+            self.cancelled_outputs.add(argv[2])
+            return RunResult(0, "", "")
         if name == "systemctl":
             active = argv[2] in self.active_units
             return RunResult(0 if active else 3, "active\n" if active else "inactive\n", "")
@@ -950,7 +959,14 @@ class FakeHost:
         done = self.clock + duration + self.probe_start_delay_s
         # like the real unit: the output file exists only once the unit has run to its end, and systemd-run returns at that moment
         # only with --wait (without it, it returns as soon as the unit is queued)
-        self.at(done, lambda: self.put(outpath, text))
+        unit = next((t.split("=", 1)[1] for t in argv if t.startswith("--unit=")), "")
+        self.active_units.add(unit)
+
+        def finish_unit() -> None:
+            if unit not in self.cancelled_outputs:
+                self.put(outpath, text)
+                self.active_units.discard(unit)
+        self.at(done, finish_unit)
         waits = "--wait" in argv
         return FakeHandle(self, done if waits else self.clock, RunResult(0, "", ""))
 

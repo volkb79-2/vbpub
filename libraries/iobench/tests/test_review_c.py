@@ -69,7 +69,7 @@ def target_ref(host):
 def test_rev_c_s1_argv_must_match_the_authorised_extent():
     host = standard_host()
     ref = target_ref(host)
-    j = devio.FioJob("j", DEV, "randwrite", 4096, 8, 5, 0, GIB, 4096 * 100, prefix="/run/iobench/j")
+    j = devio.FioJob("j", DEV, "randwrite", 4096, 8, 5, 0, GIB, 4096 * 100, prefix="/run/iobench/j", exclusive=True)
     host.write_range(j.argv(), ref, 0, GIB)
     for bad in (j.with_(filename="/dev/vda3"), j.with_(offset=4096), j.with_(size=2 * GIB)):
         with pytest.raises(HostError, match="authorised"):

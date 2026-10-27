@@ -110,6 +110,25 @@ def wait_inflight_zero(host: Host, disk: str, timeout_s: float = INFLIGHT_WAIT_S
     return True
 
 
+UNIT_STOP_WAIT_S = 30.0
+
+
+def stop_unit(host: Host, unit: str, timeout_s: float = UNIT_STOP_WAIT_S) -> bool:
+    """Stop a transient probe unit and wait until it is gone. Killing the ``systemd-run`` client leaves the unit running (it lingers until its
+    RuntimeMaxSec and recreates its output file after cleanup), so an abort stops the unit itself. False when it is still active after ``timeout_s``."""
+    try:
+        host.run(devio.unit_stop_argv(unit), timeout=timeout_s)
+    except Exception:  # noqa: BLE001 -- a stop that timed out or failed to start is judged by the is-active wait below, never raised from an abort path
+        pass
+    waited = 0.0
+    while devio.probe(host, f"systemctl is-active {unit}", devio.unit_active_argv(unit), ok=(0, 3, 4)).returncode == 0:
+        if waited >= timeout_s:
+            return False
+        host.sleep(1.0)
+        waited += 1.0
+    return True
+
+
 # -- live-host preflight (SAF-05 / SAF-06) -----------------------------------------------------
 LIMITATION = "Units not named with --production-unit are not detected."
 
