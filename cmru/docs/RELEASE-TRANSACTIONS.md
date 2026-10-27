@@ -535,8 +535,17 @@ remaining origin ref with this command.
 branch but files `<token>.*` remain under `cmru-release-scopes/` (a candidate removed by
 hand, or by an older cmru that did not know every sidecar name: the 7.0.0 release left
 `.untagged-publish.json` files this way), `cmru abandon <branch>` lists them with their
-recorded scope and results and, after confirmation, removes exactly those files. Nothing
-else is touched; a sidecar name it does not know is reported, never deleted.
+recorded scope, results, started untagged publications and tag push attempts. They are the
+only remaining record of what that transaction published, so publication evidence withholds
+(exit 4; `--dry-run` prints `Withheld (orphan transaction sidecars)` with the reason) exactly
+as on every other abandon path: a recorded result, an untagged publication marked started, a
+tag push attempt without a confirmed-absent record, a record that cannot be read, or, for a
+scope naming an untagged or unknown project (or no readable scope), a MISSING
+untagged-publication record (a transaction older than KI-98). The manual exit for a withheld
+set is to confirm the published tags/Releases exist (or are unneeded), then remove the files
+by hand. Without evidence, confirmation removes exactly those files; nothing else is touched,
+and a sidecar name it does not know is reported, never deleted. The 7.0.0 leftovers
+(`{"started": []}` records with no scope) are retirable.
 
 A `cmru-gate-*` name is a release-gate snapshot, not a transaction: `abandon` refuses it
 (exit 2) and points at `cmru gate-snapshots` / `cmru gate-snapshots --remove`.

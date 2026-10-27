@@ -7739,12 +7739,40 @@ def _abandon_orphan_sidecars(args, runtime, repo_root: Path) -> int | None:
 
     scope = _read("scope", transaction.read_release_scope)
     results = _read("results", transaction.read_release_results) or {}
-    started = _read("untagged-publication", transaction.read_untagged_publication_record) or []
+    started_record = _read("untagged-publication", transaction.read_untagged_publication_record)
+    started = started_record or []
     attempts = _read("tag-attempt", transaction.read_release_tag_attempts) or {}
     absent = _read("tag-absence", transaction.read_confirmed_absent_release_tag_attempts) or {}
     unconfirmed = sorted(
         _tag_ref_name(ref) for ref, oid in attempts.items() if absent.get(ref) != oid
     )
+    if started_record is None:
+        # KI-98: without the record (a transaction older than it) an untagged
+        # project's publication state cannot be proven, exactly as on the
+        # normal abandon path. Which scope projects are untagged is a config
+        # fact; an unknown project or an unreadable scope is treated as such.
+        try:
+            scoped_configs = load_config(_resolve_config(getattr(args, "config", None)))[1]
+        except _DOMAIN_ERRORS as exc:
+            raise CliFailure(
+                f"cannot load project release policy to classify {args.branch}: {exc}",
+                exit_code=2,
+            ) from exc
+        if scope is None:
+            withhold.append(
+                "no untagged-publication record and no readable scope: whether an untagged "
+                "project published cannot be proven"
+            )
+        else:
+            unprovable = [
+                name for name in scope
+                if name not in scoped_configs or not getattr(scoped_configs[name], "git_tag", False)
+            ]
+            if unprovable:
+                withhold.append(
+                    "no untagged-publication record (transaction predates it), so publication "
+                    "cannot be proven for untagged project(s): " + ", ".join(unprovable)
+                )
     if results:
         withhold.append(
             "recorded published result(s): "
@@ -7764,7 +7792,10 @@ def _abandon_orphan_sidecars(args, runtime, repo_root: Path) -> int | None:
         "  recorded results: "
         + (", ".join(f"{name}:{tag}" for name, tag in sorted(results.items())) if results else "none")
         + "\n  untagged publications started: "
-        + (", ".join(sorted(started)) if started else "none")
+        + (
+            "no record (transaction predates KI-98)" if started_record is None
+            else ", ".join(sorted(started)) if started else "none"
+        )
         + "\n  release tag push attempts: "
         + (", ".join(sorted(_tag_ref_name(ref) for ref in attempts)) if attempts else "none")
         + (

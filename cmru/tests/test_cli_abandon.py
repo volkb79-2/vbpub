@@ -670,9 +670,15 @@ def test_abandon_points_a_gate_snapshot_name_at_its_own_verb(monkeypatch, tmp_pa
 
 def _install_orphan_sidecars(
     monkeypatch, tmp_path, branch, *, local_branch_rc=1, results=None, started=(),
-    attempts=None, absent=None, unreadable=(),
+    attempts=None, absent=None, unreadable=(), scope=("alpha",), configs=None,
 ):
+    """``started=None`` models a transaction older than the KI-98 record;
+    ``scope=None`` a missing scope sidecar; ``configs`` the loaded projects
+    (default: none, so every scope name is an unknown, hence untagged, project)."""
     _install_candidate_facts(monkeypatch, tmp_path, [])
+    monkeypatch.setattr(
+        cli, "load_config", lambda _path: _loaded_config(tmp_path, dict(configs or {})),
+    )
 
     def reader(label, value):
         def read(*_args):
@@ -682,7 +688,8 @@ def _install_orphan_sidecars(
         return read
 
     monkeypatch.setattr(
-        transaction, "read_untagged_publication_record", reader("untagged", list(started)),
+        transaction, "read_untagged_publication_record",
+        reader("untagged", None if started is None else list(started)),
     )
     monkeypatch.setattr(transaction, "read_release_tag_attempts", reader("attempts", attempts))
     monkeypatch.setattr(
@@ -703,7 +710,9 @@ def _install_orphan_sidecars(
         cli, "run_local_git",
         lambda _root, *args, **_kwargs: SimpleNamespace(returncode=local_branch_rc, stdout="", stderr=""),
     )
-    monkeypatch.setattr(transaction, "read_release_scope", reader("scope", ["alpha"]))
+    monkeypatch.setattr(
+        transaction, "read_release_scope", reader("scope", None if scope is None else list(scope)),
+    )
     monkeypatch.setattr(transaction, "read_release_results", reader("results", dict(results or {})))
     forgotten = []
     monkeypatch.setattr(
@@ -781,6 +790,88 @@ def test_abandon_withholds_orphan_sidecars_that_carry_publication_evidence(
         _invoke_abandon(None, branch=branch, dry_run=False, yes=True)
     assert failure.value.exit_code == exit_codes.REFUSED
     assert "publication evidence" in str(failure.value)
+    assert forgotten == [] and all(p.exists() for p in files)
+
+
+@pytest.mark.parametrize("facts, needle", [
+    # scope names a project the config does not know: untagged by assumption
+    ({"started": None, "scope": ["alpha"]}, "cannot be proven for untagged project(s): alpha"),
+    # scope names a known untagged project
+    (
+        {"started": None, "scope": ["mdt-cockpit"],
+         "configs": {"mdt-cockpit": SimpleNamespace(git_tag=False)}},
+        "cannot be proven for untagged project(s): mdt-cockpit",
+    ),
+    # mixed scope: only the untagged member is named
+    (
+        {"started": None, "scope": ["alpha", "mdt-cockpit"],
+         "configs": {"alpha": SimpleNamespace(git_tag=True), "mdt-cockpit": SimpleNamespace(git_tag=False)}},
+        "cannot be proven for untagged project(s): mdt-cockpit",
+    ),
+    # no scope sidecar either: nothing says an untagged project was NOT involved
+    ({"started": None, "scope": None}, "no untagged-publication record and no readable scope"),
+], ids=["unknown-project", "untagged-project", "mixed-scope", "no-scope"])
+def test_abandon_withholds_orphan_sidecars_without_a_publication_record_for_an_untagged_scope(
+    monkeypatch, tmp_path, capsys, facts, needle,
+):
+    """A transaction older than the KI-98 record cannot prove an untagged
+    project's publication state; the orphan path withholds like normal abandon."""
+    branch = "cmru-release-20260804_002300-all-ed51a0"
+    files, forgotten = _install_orphan_sidecars(monkeypatch, tmp_path, branch, **facts)
+    assert _invoke_abandon(None, branch=branch, dry_run=True) == exit_codes.REFUSED
+    out = capsys.readouterr().out
+    assert "Withheld (orphan transaction sidecars)" in out
+    assert "untagged publications started: no record (transaction predates KI-98)" in out
+    assert needle in out
+    with pytest.raises(CliFailure) as failure:
+        _invoke_abandon(None, branch=branch, dry_run=False, yes=True)
+    assert failure.value.exit_code == exit_codes.REFUSED
+    assert forgotten == [] and all(p.exists() for p in files)
+
+
+def test_abandon_retires_orphan_sidecars_without_a_record_when_every_scope_project_is_tagged(
+    monkeypatch, tmp_path, capsys,
+):
+    """Legacy sidecars of an all-tagged scope: tag attempts (none) are the whole story."""
+    branch = "cmru-release-20260804_002300-all-ed51a0"
+    files, forgotten = _install_orphan_sidecars(
+        monkeypatch, tmp_path, branch, started=None, scope=["alpha", "beta"],
+        configs={"alpha": SimpleNamespace(git_tag=True), "beta": SimpleNamespace(git_tag=True)},
+    )
+    assert _invoke_abandon(None, branch=branch, dry_run=True) == 0
+    assert "Retire (orphan transaction sidecars)" in capsys.readouterr().out
+    assert _invoke_abandon(None, branch=branch, dry_run=False, yes=True) == 0
+    assert forgotten == [branch] and not any(p.exists() for p in files)
+
+
+def test_abandon_retires_the_7_0_0_leftover_shape_record_present_scope_absent(
+    monkeypatch, tmp_path, capsys,
+):
+    """The real r5 leftover: only `.untagged-publish.json` = {"started": []}, no scope file."""
+    branch = "cmru-release-20261027_162346-cmru-ko6hmt"
+    files, forgotten = _install_orphan_sidecars(
+        monkeypatch, tmp_path, branch, started=(), scope=None,
+    )
+    monkeypatch.setattr(cli, "load_config", lambda _path: pytest.fail("no config needed with a record"))
+    assert _invoke_abandon(None, branch=branch, dry_run=True) == 0
+    out = capsys.readouterr().out
+    assert "Retire (orphan transaction sidecars)" in out
+    assert "recorded scope: unavailable" in out
+    assert "untagged publications started: none" in out
+    assert _invoke_abandon(None, branch=branch, dry_run=False, yes=True) == 0
+    assert forgotten == [branch] and not any(p.exists() for p in files)
+
+
+def test_abandon_orphan_sidecars_without_a_record_need_the_project_config(monkeypatch, tmp_path):
+    branch = "cmru-release-20260804_002300-all-ed51a0"
+    files, forgotten = _install_orphan_sidecars(monkeypatch, tmp_path, branch, started=None)
+    monkeypatch.setattr(
+        cli, "load_config", lambda _path: (_ for _ in ()).throw(RuntimeError("config broken")),
+    )
+    with pytest.raises(CliFailure) as failure:
+        _invoke_abandon(None, branch=branch, dry_run=True)
+    assert failure.value.exit_code == 2
+    assert "cannot load project release policy" in str(failure.value)
     assert forgotten == [] and all(p.exists() for p in files)
 
 
