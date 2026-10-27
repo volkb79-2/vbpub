@@ -152,7 +152,10 @@ class Runner:
         for unit in units:
             try:
                 stopped = restore.stop_unit(self.host, unit)
-            except Exception as exc:  # noqa: BLE001 -- includes a refused probe and the operator's second signal
+            except Aborted as exc:  # the operator's second signal: stop waiting on the remaining units too
+                self.safety.report.warnings.append(f"unit_not_stopped: {unit} could not be confirmed stopped ({exc})")
+                break
+            except Exception as exc:  # noqa: BLE001 -- a refused probe or an unusable systemctl
                 self.safety.report.warnings.append(f"unit_not_stopped: {unit} could not be confirmed stopped ({exc})")
                 continue
             if not stopped:

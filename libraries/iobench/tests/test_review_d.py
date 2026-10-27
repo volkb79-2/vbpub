@@ -146,7 +146,7 @@ def test_bl06_n_r3_4_the_key_allowlist_is_exactly_what_the_builder_emits():
         argv = devio.FioJob("n", DEV, rw, 4096, 1, 5, 0, 4096, prefix="/run/iobench/n", **kwargs).argv()
         assert is_allowed_argv(argv)
         emitted |= {t.split("=")[0] for t in argv[1:]}
-    assert emitted <= host_mod._FIO_KEYS and host_mod._FIO_KEYS - emitted <= {"--write_clat_hist_log"}
+    assert emitted == host_mod._FIO_KEYS
 
 
 # -- review round 1: the abort path never raises; a unit still stopping is not gone -----------------------------------------------
@@ -205,3 +205,57 @@ def test_bl06_stop_is_allowlisted_only_for_plain_probe_unit_names():
     for bad in ("iobench-probe-*", "iobench-probe-x.mount", "iobench-probe-x y", "iobench-probe-"):
         assert not is_allowed_argv(["systemctl", "stop", bad])
     assert is_allowed_argv(["systemctl", "stop", "iobench-probe-r1a2-s4.service"])
+
+
+def test_bl06_unrecognised_unit_state_is_not_read_as_stopped():
+    from iobench.testing import standard_host
+    host = standard_host()
+    real = type(host).run
+    host.run = lambda argv, timeout=None: host_mod.RunResult(0, "weird\n", "") if argv[1] == "show" else real(host, argv, timeout)
+    assert restore.stop_unit(host, "iobench-probe-x", timeout_s=2.0) is False
+
+
+def test_bl06_sweep_repeat_cells_get_valid_unit_names_and_a_second_signal_stops_the_unit_loop():
+    from types import SimpleNamespace
+    from iobench import matrix as matrix_mod
+    from iobench.errors import Aborted
+    from iobench.stages import Runner
+    from iobench.testing import standard_host
+    real_choose = matrix_mod.sweep.choose
+
+    def choose(measured, repeats):
+        out = real_choose(measured, repeats)
+        if not repeats:
+            out = {**out, "needs_repeat": ["dirty_bytes/2", "nr_requests*2"]}  # the real cell names carry `/`, `*`, `+`
+        return out
+
+    matrix_mod.sweep.choose = choose
+    try:
+        host = calibrated()
+        out = matrix(host)
+    finally:
+        matrix_mod.sweep.choose = real_choose
+    assert out.status == "complete" and set(out.result["evidence"]["sweep"]["repeats"]) == {"dirty_bytes/2", "nr_requests*2"}
+    units = [t.split("=", 1)[1] for a in host.argv_log if a[0] == "systemd-run" for t in a if t.startswith("--unit=")]
+    assert any("-s4-rep-0" in u for u in units) and any("-s4-rep-1" in u for u in units)
+    # a second signal while stopping the first unit abandons the remaining units
+    h2 = standard_host()
+    real = type(h2).run
+
+    def run(argv, timeout=None):
+        if argv[1] == "stop":
+            raise Aborted("second signal during a blocking command")
+        return real(h2, argv, timeout)
+
+    h2.run = run
+    ns = SimpleNamespace(host=h2, safety=SimpleNamespace(report=SimpleNamespace(warnings=[])))
+    Runner.stop_units(ns, ["iobench-probe-a", "iobench-probe-b"])
+    assert len(ns.safety.report.warnings) == 1
+
+
+def test_bl06_fakehost_refuses_unit_names_systemd_would_refuse():
+    from iobench.testing import standard_host
+    host = standard_host()
+    argv = devio.probe_unit_argv("iobench-probe-run-s4-rep-dirty_bytes/2", "s.slice", 90, "pass", ["/w/x", "10", "0.5"])
+    with pytest.raises(HostError, match="unit name"):
+        host.spawn(argv)

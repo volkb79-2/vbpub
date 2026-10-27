@@ -111,7 +111,7 @@ def wait_inflight_zero(host: Host, disk: str, timeout_s: float = INFLIGHT_WAIT_S
 
 
 UNIT_STOP_WAIT_S = 30.0
-UNIT_LIVE_STATES = ("active", "activating", "deactivating", "reloading", "refreshing")
+UNIT_GONE_STATES = ("inactive", "failed")  # anything else (including output we do not recognise) is not "gone"
 
 
 def stop_unit(host: Host, unit: str, timeout_s: float = UNIT_STOP_WAIT_S) -> bool:
@@ -125,7 +125,7 @@ def stop_unit(host: Host, unit: str, timeout_s: float = UNIT_STOP_WAIT_S) -> boo
         pass
     waited = 0.0
     # `is-active` answers 3 for activating/deactivating too; ActiveState names the stages, so a unit still stopping is not read as gone
-    while devio.probe(host, f"systemctl show {unit}", devio.unit_state_argv(unit)).stdout.strip() in UNIT_LIVE_STATES:
+    while devio.probe(host, f"systemctl show {unit}", devio.unit_state_argv(unit)).stdout.strip() not in UNIT_GONE_STATES:
         if waited >= timeout_s:
             return False
         host.sleep(1.0)

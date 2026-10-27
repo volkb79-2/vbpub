@@ -174,10 +174,10 @@ class Matrixer(Runner):
         if len(measured) < 3 or measured[0]["name"] != "REF" or measured[-1]["name"] != "REF2":
             raise S.SeriesError("the sweep lost a REF cell")
         decision = sweep.choose(measured, {})
-        for name in decision["needs_repeat"][:2]:
+        for k, name in enumerate(decision["needs_repeat"][:2]):
             if self.fits(sweep.SWEEP_CELL_S + 60):
                 cell = next(c for c in plan_cells if c.name == name)
-                self.repeats[name] = self.run_cell(cell, f"s4-rep-{name}")
+                self.repeats[name] = self.run_cell(cell, f"s4-rep-{k}")  # the tag becomes a unit name and a file name: never the cell name (`dirty_bytes/2`)
         self.decision = sweep.choose(measured, self.repeats)
         self.evidence["sweep"] = {"noise_floor_ratio": self.decision["noise_floor_ratio"], "cells": records, "repeats": self.repeats,
                                   "winners": {k: v["name"] for k, v in self.decision["winners"].items()}, "base": self.base}

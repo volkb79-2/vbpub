@@ -952,6 +952,9 @@ class FakeHost:
         return FakeHandle(self, start + job.runtime_s, RunResult(0, out, ""), sim)
 
     def _spawn_probe(self, argv: Sequence[str]) -> FakeHandle:
+        unit_name = next((t.split("=", 1)[1] for t in argv if t.startswith("--unit=")), "")
+        if not re.fullmatch(r"[A-Za-z0-9:_.\\-]+", unit_name):  # systemd rejects `/`, `*`, `+` in a unit name
+            raise HostError(f"systemd-run would refuse the unit name {unit_name!r}")
         outpath, duration = argv[-3], float(argv[-2])
         outcome = self.sweep_model(self.knobs())
         n = int(duration / float(argv[-1]))
