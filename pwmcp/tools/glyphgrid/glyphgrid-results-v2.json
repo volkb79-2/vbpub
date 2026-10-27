@@ -1,0 +1,5890 @@
+{
+ "atlas": {
+  "fonts": {
+   "f8x16-1": {
+    "cell": [
+     8,
+     16
+    ],
+    "glyphs": 82
+   },
+   "f8x16-2": {
+    "cell": [
+     8,
+     16
+    ],
+    "glyphs": 66
+   },
+   "f8x19-3": {
+    "cell": [
+     8,
+     19
+    ],
+    "glyphs": 54
+   }
+  },
+  "conflicts_original_gt": [
+   {
+    "font": "f8x16-2",
+    "hex": "0000000000000000000000007f000000",
+    "chars": {
+     "-": 26,
+     "_": 2
+    },
+    "frames": [
+     "20-console-setup-duplicated-redraw",
+     "19-console-setup-with-kernel-noise"
+    ],
+    "art": "........\n........\n........\n........\n........\n........\n........\n........\n........\n........\n........\n........\n.#######\n........\n........\n........"
+   }
+  ],
+  "conflicts_corrected_gt": [],
+  "quarantined_question_marks": [
+   {
+    "font": "f8x16-2",
+    "hex": "1c082a7f2a08082a7f2a081c08000008",
+    "frame": "19-console-setup-with-kernel-noise",
+    "row": 22,
+    "col": 20
+   },
+   {
+    "font": "f8x16-2",
+    "hex": "1c082a7f2a08082a7f2a081c08000000",
+    "frame": "19-console-setup-with-kernel-noise",
+    "row": 23,
+    "col": 20
+   }
+  ],
+  "alignment": {
+   "18-kernel-boot-log": {
+    "lines": 29,
+    "aligned": 29,
+    "ambiguous": [],
+    "unaligned": [],
+    "origin": [
+     0,
+     0
+    ],
+    "font": "f8x16-1"
+   },
+   "12-progress-extracting": {
+    "lines": 49,
+    "aligned": 49,
+    "ambiguous": [],
+    "unaligned": [],
+    "origin": [
+     0,
+     0
+    ],
+    "font": "f8x16-1"
+   },
+   "13-progress-complete": {
+    "lines": 49,
+    "aligned": 49,
+    "ambiguous": [],
+    "unaligned": [],
+    "origin": [
+     0,
+     0
+    ],
+    "font": "f8x16-1"
+   },
+   "11-progress-start-over-dialog": {
+    "lines": 8,
+    "aligned": 8,
+    "ambiguous": [],
+    "unaligned": [],
+    "origin": [
+     0,
+     0
+    ],
+    "font": "f8x16-1"
+   },
+   "01-grub-iso-menu": {
+    "lines": 6,
+    "aligned": 5,
+    "ambiguous": [],
+    "unaligned": [
+     "Use the ↑ and ↓ keys to select which entry is highlighted."
+    ],
+    "origin": [
+     2,
+     12
+    ],
+    "font": "f8x16-2"
+   },
+   "09-password-empty": {
+    "lines": 6,
+    "aligned": 6,
+    "ambiguous": [],
+    "unaligned": [],
+    "origin": [
+     0,
+     0
+    ],
+    "font": "f8x16-1"
+   },
+   "10-password-filled": {
+    "lines": 6,
+    "aligned": 6,
+    "ambiguous": [],
+    "unaligned": [],
+    "origin": [
+     0,
+     0
+    ],
+    "font": "f8x16-1"
+   },
+   "20-console-setup-duplicated-redraw": {
+    "lines": 26,
+    "aligned": 26,
+    "ambiguous": [],
+    "unaligned": [],
+    "origin": [
+     0,
+     2
+    ],
+    "font": "f8x16-2"
+   },
+   "19-console-setup-with-kernel-noise": {
+    "lines": 20,
+    "aligned": 20,
+    "ambiguous": [],
+    "unaligned": [],
+    "origin": [
+     0,
+     2
+    ],
+    "font": "f8x16-2"
+   },
+   "06-choose-destination-selected": {
+    "lines": 9,
+    "aligned": 8,
+    "ambiguous": [],
+    "unaligned": [
+     "< OK >"
+    ],
+    "origin": [
+     0,
+     0
+    ],
+    "font": "f8x16-1"
+   },
+   "05-choose-destination-media": {
+    "lines": 9,
+    "aligned": 8,
+    "ambiguous": [],
+    "unaligned": [
+     "< OK >"
+    ],
+    "origin": [
+     0,
+     0
+    ],
+    "font": "f8x16-1"
+   },
+   "04-installer-console-setup": {
+    "lines": 7,
+    "aligned": 6,
+    "ambiguous": [],
+    "unaligned": [
+     "< OK >"
+    ],
+    "origin": [
+     0,
+     0
+    ],
+    "font": "f8x16-1"
+   },
+   "16-grub-installed-menu": {
+    "lines": 8,
+    "aligned": 7,
+    "ambiguous": [],
+    "unaligned": [
+     "Use the ▲ and ▼ keys to select which entry is highlighted."
+    ],
+    "origin": [
+     0,
+     12
+    ],
+    "font": "f8x19-3"
+   },
+   "08-auth-method": {
+    "lines": 5,
+    "aligned": 5,
+    "ambiguous": [],
+    "unaligned": [],
+    "origin": [
+     0,
+     0
+    ],
+    "font": "f8x16-1"
+   },
+   "07-erase-warning": {
+    "lines": 10,
+    "aligned": 9,
+    "ambiguous": [],
+    "unaligned": [
+     "< Yes >"
+    ],
+    "origin": [
+     0,
+     0
+    ],
+    "font": "f8x16-1"
+   },
+   "03-live-login-banner": {
+    "lines": 7,
+    "aligned": 7,
+    "ambiguous": [],
+    "unaligned": [],
+    "origin": [
+     0,
+     0
+    ],
+    "font": "f8x16-1"
+   },
+   "14-installation-succeeded": {
+    "lines": 4,
+    "aligned": 4,
+    "ambiguous": [],
+    "unaligned": [],
+    "origin": [
+     0,
+     0
+    ],
+    "font": "f8x16-1"
+   },
+   "02-live-copy-squashfs": {
+    "lines": 4,
+    "aligned": 4,
+    "ambiguous": [],
+    "unaligned": [],
+    "origin": [
+     0,
+     0
+    ],
+    "font": "f8x16-1"
+   },
+   "17-grub-booting-installed": {
+    "lines": 3,
+    "aligned": 3,
+    "ambiguous": [],
+    "unaligned": [],
+    "origin": [
+     0,
+     12
+    ],
+    "font": "f8x19-3"
+   },
+   "15-uefi-tianocore-logo": {
+    "skipped": "no grid (no fixed grid found (37% of non-blank cells have 3+ colours: antialiased or graphical))"
+   }
+  }
+ },
+ "loo": {
+  "frame_out/original_gt": {
+   "aggregate": {
+    "console (light on black)": {
+     "cells": 4813,
+     "exact_correct": 4495,
+     "single_source": 255,
+     "single_would_be_correct": 253,
+     "single_would_be_wrong": 2,
+     "unknown": 63,
+     "wrong_conf": 0,
+     "unknown_novel_char": 16,
+     "frames": 7,
+     "row_exact": 118,
+     "rows": 184,
+     "lines_found": 118,
+     "lines": 184
+    },
+    "dialog (black on grey)": {
+     "cells": 1398,
+     "exact_correct": 1396,
+     "single_source": 0,
+     "single_would_be_correct": 0,
+     "single_would_be_wrong": 0,
+     "unknown": 2,
+     "wrong_conf": 0,
+     "unknown_novel_char": 2,
+     "frames": 9,
+     "row_exact": 54,
+     "rows": 56,
+     "lines_found": 54,
+     "lines": 64
+    },
+    "grub": {
+     "cells": 584,
+     "exact_correct": 0,
+     "single_source": 543,
+     "single_would_be_correct": 543,
+     "single_would_be_wrong": 0,
+     "unknown": 41,
+     "wrong_conf": 0,
+     "unknown_novel_char": 0,
+     "frames": 3,
+     "row_exact": 0,
+     "rows": 15,
+     "lines_found": 0,
+     "lines": 17
+    },
+    "ALL": {
+     "cells": 6795,
+     "exact_correct": 5891,
+     "single_source": 798,
+     "single_would_be_correct": 796,
+     "single_would_be_wrong": 2,
+     "unknown": 106,
+     "wrong_conf": 0,
+     "unknown_novel_char": 18,
+     "frames": 19,
+     "row_exact": 172,
+     "rows": 255,
+     "lines_found": 172,
+     "lines": 265,
+     "grid_nonblank": 10646,
+     "grid_exact": 5904,
+     "grid_exact_unscored": 13,
+     "grid_exact_flagged": 48,
+     "grid_fill": 31,
+     "no_font_frames": 0
+    }
+   },
+   "frames": {
+    "18-kernel-boot-log": {
+     "cells": {
+      "cells": 1384,
+      "exact_correct": 1326,
+      "unknown": 37,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 21,
+      "single_would_be_correct": 21,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 11
+     },
+     "rows": {
+      "rows": 29,
+      "exact": 10,
+      "with_unknown": 19,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 1384,
+      "exact": 1326,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 29,
+     "gt_lines_found": 10,
+     "gt_lines_aligned": 29,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {
+      "=": 17,
+      "@": 1,
+      "z": 6,
+      "Z": 1,
+      "'": 8,
+      "j": 1,
+      "X": 3
+     },
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": 0.9625,
+     "char_acc_raw": 0.9632,
+     "category": "console (light on black)"
+    },
+    "12-progress-extracting": {
+     "cells": {
+      "cells": 848,
+      "exact_correct": 848,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 49,
+      "exact": 49,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 849,
+      "exact": 848,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 49,
+     "gt_lines_found": 49,
+     "gt_lines_aligned": 49,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": 1.0,
+     "char_acc_raw": 0.9979,
+     "category": "console (light on black)"
+    },
+    "13-progress-complete": {
+     "cells": {
+      "cells": 883,
+      "exact_correct": 883,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 49,
+      "exact": 49,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 883,
+      "exact": 883,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 49,
+     "gt_lines_found": 49,
+     "gt_lines_aligned": 49,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": 1.0,
+     "char_acc_raw": 1.0,
+     "category": "console (light on black)"
+    },
+    "11-progress-start-over-dialog": {
+     "cells": {
+      "cells": 171,
+      "exact_correct": 171,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 7,
+      "exact": 7,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 533,
+      "exact": 171,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 24,
+      "fill": 1
+     },
+     "gt_lines": 8,
+     "gt_lines_found": 8,
+     "gt_lines_aligned": 8,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": 0.995,
+     "char_acc_raw": 0.339,
+     "category": "dialog (black on grey)"
+    },
+    "01-grub-iso-menu": {
+     "cells": {
+      "cells": 218,
+      "exact_correct": 0,
+      "unknown": 8,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 210,
+      "single_would_be_correct": 210,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 5,
+      "exact": 0,
+      "with_unknown": 5,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 806,
+      "exact": 0,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 6,
+     "gt_lines_found": 0,
+     "gt_lines_aligned": 5,
+     "gt_lines_unaligned": [
+      "Use the ↑ and ↓ keys to select which entry is highlighted."
+     ],
+     "wrong": [],
+     "unknown_chars": {
+      "G": 2,
+      "B": 1,
+      "*": 1,
+      "`": 2,
+      "'": 2
+     },
+     "font": "f8x16-2",
+     "status": "ok",
+     "origin": [
+      2,
+      12
+     ],
+     "char_acc_text": 0.1551,
+     "char_acc_raw": 0.0545,
+     "category": "grub"
+    },
+    "09-password-empty": {
+     "cells": {
+      "cells": 106,
+      "exact_correct": 106,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 5,
+      "exact": 5,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 466,
+      "exact": 106,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 6,
+     "gt_lines_found": 6,
+     "gt_lines_aligned": 6,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": 1.0,
+     "char_acc_raw": 0.2431,
+     "category": "dialog (black on grey)"
+    },
+    "10-password-filled": {
+     "cells": {
+      "cells": 130,
+      "exact_correct": 130,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 5,
+      "exact": 5,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 490,
+      "exact": 130,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 24,
+      "fill": 0
+     },
+     "gt_lines": 6,
+     "gt_lines_found": 6,
+     "gt_lines_aligned": 6,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": 1.0,
+     "char_acc_raw": 0.2801,
+     "category": "dialog (black on grey)"
+    },
+    "20-console-setup-duplicated-redraw": {
+     "cells": {
+      "cells": 599,
+      "exact_correct": 481,
+      "unknown": 14,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 104,
+      "single_would_be_correct": 104,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 26,
+      "exact": 2,
+      "with_unknown": 24,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 599,
+      "exact": 481,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 26,
+     "gt_lines_found": 2,
+     "gt_lines_aligned": 26,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {
+      "-": 13,
+      "_": 1
+     },
+     "font": "f8x16-2",
+     "status": "ok",
+     "origin": [
+      0,
+      2
+     ],
+     "char_acc_text": 0.8235,
+     "char_acc_raw": 0.8265,
+     "category": "console (light on black)"
+    },
+    "19-console-setup-with-kernel-noise": {
+     "cells": {
+      "cells": 587,
+      "exact_correct": 453,
+      "unknown": 7,
+      "wrong_conf": 0,
+      "excluded_question": 2,
+      "single_source": 127,
+      "single_would_be_correct": 125,
+      "single_would_be_wrong": 2,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 20,
+      "exact": 2,
+      "with_unknown": 18,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 591,
+      "exact": 453,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 20,
+     "gt_lines_found": 2,
+     "gt_lines_aligned": 20,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {
+      "F": 1,
+      "=": 4,
+      "j": 1,
+      "q": 1
+     },
+     "font": "f8x16-2",
+     "status": "ok",
+     "origin": [
+      0,
+      2
+     ],
+     "char_acc_text": 0.7965,
+     "char_acc_raw": 0.7956,
+     "category": "console (light on black)"
+    },
+    "06-choose-destination-selected": {
+     "cells": {
+      "cells": 243,
+      "exact_correct": 243,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 8,
+      "exact": 8,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 578,
+      "exact": 246,
+      "exact_unscored": 3,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 7
+     },
+     "gt_lines": 9,
+     "gt_lines_found": 7,
+     "gt_lines_aligned": 8,
+     "gt_lines_unaligned": [
+      "< OK >"
+     ],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": 0.9732,
+     "char_acc_raw": 0.4261,
+     "category": "dialog (black on grey)"
+    },
+    "05-choose-destination-media": {
+     "cells": {
+      "cells": 242,
+      "exact_correct": 242,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 8,
+      "exact": 8,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 577,
+      "exact": 245,
+      "exact_unscored": 3,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 7
+     },
+     "gt_lines": 9,
+     "gt_lines_found": 7,
+     "gt_lines_aligned": 8,
+     "gt_lines_unaligned": [
+      "< OK >"
+     ],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": 0.9732,
+     "char_acc_raw": 0.4261,
+     "category": "dialog (black on grey)"
+    },
+    "04-installer-console-setup": {
+     "cells": {
+      "cells": 88,
+      "exact_correct": 88,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 6,
+      "exact": 6,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 452,
+      "exact": 91,
+      "exact_unscored": 3,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 6
+     },
+     "gt_lines": 7,
+     "gt_lines_found": 5,
+     "gt_lines_aligned": 6,
+     "gt_lines_unaligned": [
+      "< OK >"
+     ],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": 0.9381,
+     "char_acc_raw": 0.2131,
+     "category": "dialog (black on grey)"
+    },
+    "16-grub-installed-menu": {
+     "cells": {
+      "cells": 260,
+      "exact_correct": 0,
+      "unknown": 28,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 232,
+      "single_would_be_correct": 232,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 7,
+      "exact": 0,
+      "with_unknown": 7,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 640,
+      "exact": 0,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 8,
+     "gt_lines_found": 0,
+     "gt_lines_aligned": 7,
+     "gt_lines_unaligned": [
+      "Use the ▲ and ▼ keys to select which entry is highlighted."
+     ],
+     "wrong": [],
+     "unknown_chars": {
+      "v": 2,
+      "9": 1,
+      "*": 1,
+      "f": 3,
+      "E": 1,
+      "F": 2,
+      "I": 1,
+      "w": 2,
+      "P": 1,
+      "b": 4,
+      "h": 6,
+      "O": 1,
+      ",": 1,
+      "y": 2
+     },
+     "font": "f8x19-3",
+     "status": "ok",
+     "origin": [
+      0,
+      12
+     ],
+     "char_acc_text": 0.1566,
+     "char_acc_raw": 0.0772,
+     "category": "grub"
+    },
+    "08-auth-method": {
+     "cells": {
+      "cells": 91,
+      "exact_correct": 91,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 4,
+      "exact": 4,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 456,
+      "exact": 91,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 6
+     },
+     "gt_lines": 5,
+     "gt_lines_found": 4,
+     "gt_lines_aligned": 5,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": 0.9464,
+     "char_acc_raw": 0.2099,
+     "category": "dialog (black on grey)"
+    },
+    "07-erase-warning": {
+     "cells": {
+      "cells": 223,
+      "exact_correct": 222,
+      "unknown": 1,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 1
+     },
+     "rows": {
+      "rows": 9,
+      "exact": 8,
+      "with_unknown": 1,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 452,
+      "exact": 226,
+      "exact_unscored": 4,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 2
+     },
+     "gt_lines": 10,
+     "gt_lines_found": 8,
+     "gt_lines_aligned": 9,
+     "gt_lines_unaligned": [
+      "< Yes >"
+     ],
+     "wrong": [],
+     "unknown_chars": {
+      "?": 1
+     },
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": 0.9856,
+     "char_acc_raw": 0.5249,
+     "category": "dialog (black on grey)"
+    },
+    "03-live-login-banner": {
+     "cells": {
+      "cells": 390,
+      "exact_correct": 384,
+      "unknown": 5,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 1,
+      "single_would_be_correct": 1,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 5
+     },
+     "rows": {
+      "rows": 7,
+      "exact": 4,
+      "with_unknown": 3,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 390,
+      "exact": 384,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 7,
+     "gt_lines_found": 4,
+     "gt_lines_aligned": 7,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {
+      "#": 1,
+      "Y": 3,
+      ";": 1
+     },
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": 0.9866,
+     "char_acc_raw": 0.9866,
+     "category": "console (light on black)"
+    },
+    "14-installation-succeeded": {
+     "cells": {
+      "cells": 104,
+      "exact_correct": 103,
+      "unknown": 1,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 1
+     },
+     "rows": {
+      "rows": 4,
+      "exact": 3,
+      "with_unknown": 1,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 270,
+      "exact": 103,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 2
+     },
+     "gt_lines": 4,
+     "gt_lines_found": 3,
+     "gt_lines_aligned": 4,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {
+      "!": 1
+     },
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": 0.9756,
+     "char_acc_raw": 0.4068,
+     "category": "dialog (black on grey)"
+    },
+    "02-live-copy-squashfs": {
+     "cells": {
+      "cells": 122,
+      "exact_correct": 120,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 2,
+      "single_would_be_correct": 2,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 4,
+      "exact": 2,
+      "with_unknown": 2,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 122,
+      "exact": 120,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 4,
+     "gt_lines_found": 2,
+     "gt_lines_aligned": 4,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": 0.9852,
+     "char_acc_raw": 0.9852,
+     "category": "console (light on black)"
+    },
+    "17-grub-booting-installed": {
+     "cells": {
+      "cells": 106,
+      "exact_correct": 0,
+      "unknown": 5,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 101,
+      "single_would_be_correct": 101,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 3,
+      "exact": 0,
+      "with_unknown": 3,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 108,
+      "exact": 0,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 3,
+     "gt_lines_found": 0,
+     "gt_lines_aligned": 3,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {
+      "6": 1,
+      "8": 1,
+      "5": 1,
+      "+": 1,
+      "k": 1
+     },
+     "font": "f8x19-3",
+     "status": "ok",
+     "origin": [
+      0,
+      12
+     ],
+     "char_acc_text": 0.1017,
+     "char_acc_raw": 0.0984,
+     "category": "grub"
+    },
+    "15-uefi-tianocore-logo": {
+     "skipped": "no grid (no fixed grid found (37% of non-blank cells have 3+ colours: antialiased or graphical))",
+     "category": "uefi logo",
+     "gt_lines": 2
+    }
+   },
+   "key_phrases": [
+    {
+     "frame": 4,
+     "phrase": "TrueNAS 27.0.0-RC.1 Console Setup",
+     "found": true
+    },
+    {
+     "frame": 4,
+     "phrase": "1 Install/Upgrade",
+     "found": false
+    },
+    {
+     "frame": 4,
+     "phrase": "3 Reboot System",
+     "found": true
+    },
+    {
+     "frame": 5,
+     "phrase": "Choose Destination Media",
+     "found": true
+    },
+    {
+     "frame": 5,
+     "phrase": "vda",
+     "found": true
+    },
+    {
+     "frame": 6,
+     "phrase": "[*]",
+     "found": true
+    },
+    {
+     "frame": 7,
+     "phrase": "Proceed with the installation?",
+     "found": false
+    },
+    {
+     "frame": 8,
+     "phrase": "Administrative user (truenas_admin)",
+     "found": true
+    },
+    {
+     "frame": 9,
+     "phrase": "Confirm Password:",
+     "found": true
+    },
+    {
+     "frame": 13,
+     "phrase": "[100%] Installation completed successfully",
+     "found": true
+    },
+    {
+     "frame": 14,
+     "phrase": "Installation Succeeded",
+     "found": true
+    },
+    {
+     "frame": 14,
+     "phrase": "The TrueNAS installation on vda succeeded!",
+     "found": false
+    },
+    {
+     "frame": 14,
+     "phrase": "Please reboot and remove the installation media.",
+     "found": true
+    },
+    {
+     "frame": 16,
+     "phrase": "TrueNAS Scale GNU/Linux 27.0.0-RC.1",
+     "found": false
+    },
+    {
+     "frame": 17,
+     "phrase": "Loading initial ramdisk ...",
+     "found": false
+    },
+    {
+     "frame": 19,
+     "phrase": "Console setup",
+     "found": false
+    },
+    {
+     "frame": 19,
+     "phrase": "http://10.0.2.15",
+     "found": false
+    },
+    {
+     "frame": 19,
+     "phrase": "https://10.0.2.15",
+     "found": false
+    },
+    {
+     "frame": 19,
+     "phrase": "http://[fec0::5054:ff:fe12:3456]",
+     "found": false
+    },
+    {
+     "frame": 19,
+     "phrase": "4) Change local administrator password",
+     "found": false
+    },
+    {
+     "frame": 19,
+     "phrase": "10) Shutdown",
+     "found": true
+    },
+    {
+     "frame": 19,
+     "phrase": "Enter an option from 1-10:",
+     "found": false
+    },
+    {
+     "frame": 20,
+     "phrase": "Console setup",
+     "found": false
+    },
+    {
+     "frame": 20,
+     "phrase": "https://10.0.2.15",
+     "found": false
+    },
+    {
+     "frame": 20,
+     "phrase": "9) Reboot",
+     "found": true
+    },
+    {
+     "frame": 20,
+     "phrase": "Enter an option from 1-10:",
+     "found": false
+    }
+   ]
+  },
+  "screen_group_out/original_gt": {
+   "aggregate": {
+    "console (light on black)": {
+     "cells": 4813,
+     "exact_correct": 3550,
+     "single_source": 981,
+     "single_would_be_correct": 981,
+     "single_would_be_wrong": 0,
+     "unknown": 282,
+     "wrong_conf": 0,
+     "unknown_novel_char": 16,
+     "frames": 7,
+     "row_exact": 103,
+     "rows": 184,
+     "lines_found": 103,
+     "lines": 184
+    },
+    "dialog (black on grey)": {
+     "cells": 1398,
+     "exact_correct": 1390,
+     "single_source": 6,
+     "single_would_be_correct": 6,
+     "single_would_be_wrong": 0,
+     "unknown": 2,
+     "wrong_conf": 0,
+     "unknown_novel_char": 2,
+     "frames": 9,
+     "row_exact": 51,
+     "rows": 56,
+     "lines_found": 51,
+     "lines": 64
+    },
+    "grub": {
+     "cells": 584,
+     "exact_correct": 0,
+     "single_source": 543,
+     "single_would_be_correct": 543,
+     "single_would_be_wrong": 0,
+     "unknown": 41,
+     "wrong_conf": 0,
+     "unknown_novel_char": 0,
+     "frames": 3,
+     "row_exact": 0,
+     "rows": 15,
+     "lines_found": 0,
+     "lines": 17
+    },
+    "ALL": {
+     "cells": 6795,
+     "exact_correct": 4940,
+     "single_source": 1530,
+     "single_would_be_correct": 1530,
+     "single_would_be_wrong": 0,
+     "unknown": 325,
+     "wrong_conf": 0,
+     "unknown_novel_char": 18,
+     "frames": 19,
+     "row_exact": 154,
+     "rows": 255,
+     "lines_found": 154,
+     "lines": 265,
+     "grid_nonblank": 10646,
+     "grid_exact": 4953,
+     "grid_exact_unscored": 13,
+     "grid_exact_flagged": 48,
+     "grid_fill": 31,
+     "no_font_frames": 0
+    }
+   },
+   "frames": {
+    "18-kernel-boot-log": {
+     "cells": {
+      "cells": 1384,
+      "exact_correct": 1326,
+      "unknown": 37,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 21,
+      "single_would_be_correct": 21,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 11
+     },
+     "rows": {
+      "rows": 29,
+      "exact": 10,
+      "with_unknown": 19,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 1384,
+      "exact": 1326,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 29,
+     "gt_lines_found": 10,
+     "gt_lines_aligned": 29,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {
+      "=": 17,
+      "@": 1,
+      "z": 6,
+      "Z": 1,
+      "'": 8,
+      "j": 1,
+      "X": 3
+     },
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "console (light on black)"
+    },
+    "12-progress-extracting": {
+     "cells": {
+      "cells": 848,
+      "exact_correct": 844,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 4,
+      "single_would_be_correct": 4,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 49,
+      "exact": 45,
+      "with_unknown": 4,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 849,
+      "exact": 844,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 49,
+     "gt_lines_found": 45,
+     "gt_lines_aligned": 49,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "console (light on black)"
+    },
+    "13-progress-complete": {
+     "cells": {
+      "cells": 883,
+      "exact_correct": 876,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 7,
+      "single_would_be_correct": 7,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 49,
+      "exact": 42,
+      "with_unknown": 7,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 883,
+      "exact": 876,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 49,
+     "gt_lines_found": 42,
+     "gt_lines_aligned": 49,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "console (light on black)"
+    },
+    "11-progress-start-over-dialog": {
+     "cells": {
+      "cells": 171,
+      "exact_correct": 169,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 2,
+      "single_would_be_correct": 2,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 7,
+      "exact": 6,
+      "with_unknown": 1,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 533,
+      "exact": 169,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 24,
+      "fill": 1
+     },
+     "gt_lines": 8,
+     "gt_lines_found": 7,
+     "gt_lines_aligned": 8,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "dialog (black on grey)"
+    },
+    "01-grub-iso-menu": {
+     "cells": {
+      "cells": 218,
+      "exact_correct": 0,
+      "unknown": 8,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 210,
+      "single_would_be_correct": 210,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 5,
+      "exact": 0,
+      "with_unknown": 5,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 806,
+      "exact": 0,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 6,
+     "gt_lines_found": 0,
+     "gt_lines_aligned": 5,
+     "gt_lines_unaligned": [
+      "Use the ↑ and ↓ keys to select which entry is highlighted."
+     ],
+     "wrong": [],
+     "unknown_chars": {
+      "G": 2,
+      "B": 1,
+      "*": 1,
+      "`": 2,
+      "'": 2
+     },
+     "font": "f8x16-2",
+     "status": "ok",
+     "origin": [
+      2,
+      12
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "grub"
+    },
+    "09-password-empty": {
+     "cells": {
+      "cells": 106,
+      "exact_correct": 104,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 2,
+      "single_would_be_correct": 2,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 5,
+      "exact": 4,
+      "with_unknown": 1,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 466,
+      "exact": 104,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 6,
+     "gt_lines_found": 5,
+     "gt_lines_aligned": 6,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "dialog (black on grey)"
+    },
+    "10-password-filled": {
+     "cells": {
+      "cells": 130,
+      "exact_correct": 128,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 2,
+      "single_would_be_correct": 2,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 5,
+      "exact": 4,
+      "with_unknown": 1,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 490,
+      "exact": 128,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 24,
+      "fill": 0
+     },
+     "gt_lines": 6,
+     "gt_lines_found": 5,
+     "gt_lines_aligned": 6,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "dialog (black on grey)"
+    },
+    "20-console-setup-duplicated-redraw": {
+     "cells": {
+      "cells": 599,
+      "exact_correct": 0,
+      "unknown": 118,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 481,
+      "single_would_be_correct": 481,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 26,
+      "exact": 0,
+      "with_unknown": 26,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 599,
+      "exact": 0,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 26,
+     "gt_lines_found": 0,
+     "gt_lines_aligned": 26,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {
+      "C": 10,
+      "p": 14,
+      "-": 13,
+      ":": 31,
+      "/": 16,
+      "[": 4,
+      "4": 9,
+      "6": 5,
+      "]": 4,
+      "k": 4,
+      "\"": 2,
+      "7": 1,
+      "L": 2,
+      "8": 1,
+      "E": 1,
+      "_": 1
+     },
+     "font": "f8x16-2",
+     "status": "ok",
+     "origin": [
+      0,
+      2
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "console (light on black)"
+    },
+    "19-console-setup-with-kernel-noise": {
+     "cells": {
+      "cells": 587,
+      "exact_correct": 0,
+      "unknown": 122,
+      "wrong_conf": 0,
+      "excluded_question": 2,
+      "single_source": 465,
+      "single_would_be_correct": 465,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 20,
+      "exact": 0,
+      "with_unknown": 20,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 591,
+      "exact": 0,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 20,
+     "gt_lines_found": 0,
+     "gt_lines_aligned": 20,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {
+      "C": 9,
+      "p": 13,
+      "-": 13,
+      ":": 23,
+      "/": 10,
+      "[": 5,
+      "4": 8,
+      "6": 4,
+      "]": 5,
+      "k": 5,
+      "\"": 2,
+      "7": 8,
+      "L": 2,
+      "8": 5,
+      "E": 1,
+      "F": 1,
+      "_": 2,
+      "=": 4,
+      "j": 1,
+      "q": 1
+     },
+     "font": "f8x16-2",
+     "status": "ok",
+     "origin": [
+      0,
+      2
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "console (light on black)"
+    },
+    "06-choose-destination-selected": {
+     "cells": {
+      "cells": 243,
+      "exact_correct": 243,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 8,
+      "exact": 8,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 578,
+      "exact": 246,
+      "exact_unscored": 3,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 7
+     },
+     "gt_lines": 9,
+     "gt_lines_found": 7,
+     "gt_lines_aligned": 8,
+     "gt_lines_unaligned": [
+      "< OK >"
+     ],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "dialog (black on grey)"
+    },
+    "05-choose-destination-media": {
+     "cells": {
+      "cells": 242,
+      "exact_correct": 242,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 8,
+      "exact": 8,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 577,
+      "exact": 245,
+      "exact_unscored": 3,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 7
+     },
+     "gt_lines": 9,
+     "gt_lines_found": 7,
+     "gt_lines_aligned": 8,
+     "gt_lines_unaligned": [
+      "< OK >"
+     ],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "dialog (black on grey)"
+    },
+    "04-installer-console-setup": {
+     "cells": {
+      "cells": 88,
+      "exact_correct": 88,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 6,
+      "exact": 6,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 452,
+      "exact": 91,
+      "exact_unscored": 3,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 6
+     },
+     "gt_lines": 7,
+     "gt_lines_found": 5,
+     "gt_lines_aligned": 6,
+     "gt_lines_unaligned": [
+      "< OK >"
+     ],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "dialog (black on grey)"
+    },
+    "16-grub-installed-menu": {
+     "cells": {
+      "cells": 260,
+      "exact_correct": 0,
+      "unknown": 28,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 232,
+      "single_would_be_correct": 232,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 7,
+      "exact": 0,
+      "with_unknown": 7,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 640,
+      "exact": 0,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 8,
+     "gt_lines_found": 0,
+     "gt_lines_aligned": 7,
+     "gt_lines_unaligned": [
+      "Use the ▲ and ▼ keys to select which entry is highlighted."
+     ],
+     "wrong": [],
+     "unknown_chars": {
+      "v": 2,
+      "9": 1,
+      "*": 1,
+      "f": 3,
+      "E": 1,
+      "F": 2,
+      "I": 1,
+      "w": 2,
+      "P": 1,
+      "b": 4,
+      "h": 6,
+      "O": 1,
+      ",": 1,
+      "y": 2
+     },
+     "font": "f8x19-3",
+     "status": "ok",
+     "origin": [
+      0,
+      12
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "grub"
+    },
+    "08-auth-method": {
+     "cells": {
+      "cells": 91,
+      "exact_correct": 91,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 4,
+      "exact": 4,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 456,
+      "exact": 91,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 6
+     },
+     "gt_lines": 5,
+     "gt_lines_found": 4,
+     "gt_lines_aligned": 5,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "dialog (black on grey)"
+    },
+    "07-erase-warning": {
+     "cells": {
+      "cells": 223,
+      "exact_correct": 222,
+      "unknown": 1,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 1
+     },
+     "rows": {
+      "rows": 9,
+      "exact": 8,
+      "with_unknown": 1,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 452,
+      "exact": 226,
+      "exact_unscored": 4,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 2
+     },
+     "gt_lines": 10,
+     "gt_lines_found": 8,
+     "gt_lines_aligned": 9,
+     "gt_lines_unaligned": [
+      "< Yes >"
+     ],
+     "wrong": [],
+     "unknown_chars": {
+      "?": 1
+     },
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "dialog (black on grey)"
+    },
+    "03-live-login-banner": {
+     "cells": {
+      "cells": 390,
+      "exact_correct": 384,
+      "unknown": 5,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 1,
+      "single_would_be_correct": 1,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 5
+     },
+     "rows": {
+      "rows": 7,
+      "exact": 4,
+      "with_unknown": 3,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 390,
+      "exact": 384,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 7,
+     "gt_lines_found": 4,
+     "gt_lines_aligned": 7,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {
+      "#": 1,
+      "Y": 3,
+      ";": 1
+     },
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "console (light on black)"
+    },
+    "14-installation-succeeded": {
+     "cells": {
+      "cells": 104,
+      "exact_correct": 103,
+      "unknown": 1,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 1
+     },
+     "rows": {
+      "rows": 4,
+      "exact": 3,
+      "with_unknown": 1,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 270,
+      "exact": 103,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 2
+     },
+     "gt_lines": 4,
+     "gt_lines_found": 3,
+     "gt_lines_aligned": 4,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {
+      "!": 1
+     },
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "dialog (black on grey)"
+    },
+    "02-live-copy-squashfs": {
+     "cells": {
+      "cells": 122,
+      "exact_correct": 120,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 2,
+      "single_would_be_correct": 2,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 4,
+      "exact": 2,
+      "with_unknown": 2,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 122,
+      "exact": 120,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 4,
+     "gt_lines_found": 2,
+     "gt_lines_aligned": 4,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "console (light on black)"
+    },
+    "17-grub-booting-installed": {
+     "cells": {
+      "cells": 106,
+      "exact_correct": 0,
+      "unknown": 5,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 101,
+      "single_would_be_correct": 101,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 3,
+      "exact": 0,
+      "with_unknown": 3,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 108,
+      "exact": 0,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 3,
+     "gt_lines_found": 0,
+     "gt_lines_aligned": 3,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {
+      "6": 1,
+      "8": 1,
+      "5": 1,
+      "+": 1,
+      "k": 1
+     },
+     "font": "f8x19-3",
+     "status": "ok",
+     "origin": [
+      0,
+      12
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "grub"
+    },
+    "15-uefi-tianocore-logo": {
+     "skipped": "no grid (no fixed grid found (37% of non-blank cells have 3+ colours: antialiased or graphical))",
+     "category": "uefi logo",
+     "gt_lines": 2
+    }
+   },
+   "key_phrases": [
+    {
+     "frame": 4,
+     "phrase": "TrueNAS 27.0.0-RC.1 Console Setup",
+     "found": true
+    },
+    {
+     "frame": 4,
+     "phrase": "1 Install/Upgrade",
+     "found": false
+    },
+    {
+     "frame": 4,
+     "phrase": "3 Reboot System",
+     "found": true
+    },
+    {
+     "frame": 5,
+     "phrase": "Choose Destination Media",
+     "found": true
+    },
+    {
+     "frame": 5,
+     "phrase": "vda",
+     "found": true
+    },
+    {
+     "frame": 6,
+     "phrase": "[*]",
+     "found": true
+    },
+    {
+     "frame": 7,
+     "phrase": "Proceed with the installation?",
+     "found": false
+    },
+    {
+     "frame": 8,
+     "phrase": "Administrative user (truenas_admin)",
+     "found": true
+    },
+    {
+     "frame": 9,
+     "phrase": "Confirm Password:",
+     "found": true
+    },
+    {
+     "frame": 13,
+     "phrase": "[100%] Installation completed successfully",
+     "found": true
+    },
+    {
+     "frame": 14,
+     "phrase": "Installation Succeeded",
+     "found": true
+    },
+    {
+     "frame": 14,
+     "phrase": "The TrueNAS installation on vda succeeded!",
+     "found": false
+    },
+    {
+     "frame": 14,
+     "phrase": "Please reboot and remove the installation media.",
+     "found": true
+    },
+    {
+     "frame": 16,
+     "phrase": "TrueNAS Scale GNU/Linux 27.0.0-RC.1",
+     "found": false
+    },
+    {
+     "frame": 17,
+     "phrase": "Loading initial ramdisk ...",
+     "found": false
+    },
+    {
+     "frame": 19,
+     "phrase": "Console setup",
+     "found": false
+    },
+    {
+     "frame": 19,
+     "phrase": "http://10.0.2.15",
+     "found": false
+    },
+    {
+     "frame": 19,
+     "phrase": "https://10.0.2.15",
+     "found": false
+    },
+    {
+     "frame": 19,
+     "phrase": "http://[fec0::5054:ff:fe12:3456]",
+     "found": false
+    },
+    {
+     "frame": 19,
+     "phrase": "4) Change local administrator password",
+     "found": false
+    },
+    {
+     "frame": 19,
+     "phrase": "10) Shutdown",
+     "found": false
+    },
+    {
+     "frame": 19,
+     "phrase": "Enter an option from 1-10:",
+     "found": false
+    },
+    {
+     "frame": 20,
+     "phrase": "Console setup",
+     "found": false
+    },
+    {
+     "frame": 20,
+     "phrase": "https://10.0.2.15",
+     "found": false
+    },
+    {
+     "frame": 20,
+     "phrase": "9) Reboot",
+     "found": false
+    },
+    {
+     "frame": 20,
+     "phrase": "Enter an option from 1-10:",
+     "found": false
+    }
+   ]
+  },
+  "frame_out/original_atlas_scored_vs_corrected_gt": {
+   "aggregate": {
+    "console (light on black)": {
+     "cells": 4813,
+     "exact_correct": 4495,
+     "single_source": 255,
+     "single_would_be_correct": 240,
+     "single_would_be_wrong": 15,
+     "unknown": 63,
+     "wrong_conf": 0,
+     "unknown_novel_char": 16,
+     "frames": 7,
+     "row_exact": 118,
+     "rows": 184,
+     "lines_found": 118,
+     "lines": 184
+    },
+    "dialog (black on grey)": {
+     "cells": 1398,
+     "exact_correct": 1396,
+     "single_source": 0,
+     "single_would_be_correct": 0,
+     "single_would_be_wrong": 0,
+     "unknown": 2,
+     "wrong_conf": 0,
+     "unknown_novel_char": 2,
+     "frames": 9,
+     "row_exact": 54,
+     "rows": 56,
+     "lines_found": 54,
+     "lines": 64
+    },
+    "grub": {
+     "cells": 584,
+     "exact_correct": 0,
+     "single_source": 543,
+     "single_would_be_correct": 543,
+     "single_would_be_wrong": 0,
+     "unknown": 41,
+     "wrong_conf": 0,
+     "unknown_novel_char": 0,
+     "frames": 3,
+     "row_exact": 0,
+     "rows": 15,
+     "lines_found": 0,
+     "lines": 17
+    },
+    "ALL": {
+     "cells": 6795,
+     "exact_correct": 5891,
+     "single_source": 798,
+     "single_would_be_correct": 783,
+     "single_would_be_wrong": 15,
+     "unknown": 106,
+     "wrong_conf": 0,
+     "unknown_novel_char": 18,
+     "frames": 19,
+     "row_exact": 172,
+     "rows": 255,
+     "lines_found": 172,
+     "lines": 265,
+     "grid_nonblank": 10646,
+     "grid_exact": 5904,
+     "grid_exact_unscored": 13,
+     "grid_exact_flagged": 48,
+     "grid_fill": 31,
+     "no_font_frames": 0
+    }
+   },
+   "frames": {
+    "18-kernel-boot-log": {
+     "cells": {
+      "cells": 1384,
+      "exact_correct": 1326,
+      "unknown": 37,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 21,
+      "single_would_be_correct": 21,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 11
+     },
+     "rows": {
+      "rows": 29,
+      "exact": 10,
+      "with_unknown": 19,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 1384,
+      "exact": 1326,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 29,
+     "gt_lines_found": 10,
+     "gt_lines_aligned": 29,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {
+      "=": 17,
+      "@": 1,
+      "z": 6,
+      "Z": 1,
+      "'": 8,
+      "j": 1,
+      "X": 3
+     },
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "console (light on black)"
+    },
+    "12-progress-extracting": {
+     "cells": {
+      "cells": 848,
+      "exact_correct": 848,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 49,
+      "exact": 49,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 849,
+      "exact": 848,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 49,
+     "gt_lines_found": 49,
+     "gt_lines_aligned": 49,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "console (light on black)"
+    },
+    "13-progress-complete": {
+     "cells": {
+      "cells": 883,
+      "exact_correct": 883,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 49,
+      "exact": 49,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 883,
+      "exact": 883,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 49,
+     "gt_lines_found": 49,
+     "gt_lines_aligned": 49,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "console (light on black)"
+    },
+    "11-progress-start-over-dialog": {
+     "cells": {
+      "cells": 171,
+      "exact_correct": 171,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 7,
+      "exact": 7,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 533,
+      "exact": 171,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 24,
+      "fill": 1
+     },
+     "gt_lines": 8,
+     "gt_lines_found": 8,
+     "gt_lines_aligned": 8,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "dialog (black on grey)"
+    },
+    "01-grub-iso-menu": {
+     "cells": {
+      "cells": 218,
+      "exact_correct": 0,
+      "unknown": 8,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 210,
+      "single_would_be_correct": 210,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 5,
+      "exact": 0,
+      "with_unknown": 5,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 806,
+      "exact": 0,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 6,
+     "gt_lines_found": 0,
+     "gt_lines_aligned": 5,
+     "gt_lines_unaligned": [
+      "Use the ↑ and ↓ keys to select which entry is highlighted."
+     ],
+     "wrong": [],
+     "unknown_chars": {
+      "G": 2,
+      "B": 1,
+      "*": 1,
+      "`": 2,
+      "'": 2
+     },
+     "font": "f8x16-2",
+     "status": "ok",
+     "origin": [
+      2,
+      12
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "grub"
+    },
+    "09-password-empty": {
+     "cells": {
+      "cells": 106,
+      "exact_correct": 106,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 5,
+      "exact": 5,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 466,
+      "exact": 106,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 6,
+     "gt_lines_found": 6,
+     "gt_lines_aligned": 6,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "dialog (black on grey)"
+    },
+    "10-password-filled": {
+     "cells": {
+      "cells": 130,
+      "exact_correct": 130,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 5,
+      "exact": 5,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 490,
+      "exact": 130,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 24,
+      "fill": 0
+     },
+     "gt_lines": 6,
+     "gt_lines_found": 6,
+     "gt_lines_aligned": 6,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "dialog (black on grey)"
+    },
+    "20-console-setup-duplicated-redraw": {
+     "cells": {
+      "cells": 599,
+      "exact_correct": 481,
+      "unknown": 14,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 104,
+      "single_would_be_correct": 104,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 26,
+      "exact": 2,
+      "with_unknown": 24,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 599,
+      "exact": 481,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 26,
+     "gt_lines_found": 2,
+     "gt_lines_aligned": 26,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {
+      "_": 14
+     },
+     "font": "f8x16-2",
+     "status": "ok",
+     "origin": [
+      0,
+      2
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "console (light on black)"
+    },
+    "19-console-setup-with-kernel-noise": {
+     "cells": {
+      "cells": 587,
+      "exact_correct": 453,
+      "unknown": 7,
+      "wrong_conf": 0,
+      "excluded_question": 2,
+      "single_source": 127,
+      "single_would_be_correct": 112,
+      "single_would_be_wrong": 15,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 20,
+      "exact": 2,
+      "with_unknown": 18,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 591,
+      "exact": 453,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 20,
+     "gt_lines_found": 2,
+     "gt_lines_aligned": 20,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {
+      "F": 1,
+      "=": 4,
+      "j": 1,
+      "q": 1
+     },
+     "font": "f8x16-2",
+     "status": "ok",
+     "origin": [
+      0,
+      2
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "console (light on black)"
+    },
+    "06-choose-destination-selected": {
+     "cells": {
+      "cells": 243,
+      "exact_correct": 243,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 8,
+      "exact": 8,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 578,
+      "exact": 246,
+      "exact_unscored": 3,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 7
+     },
+     "gt_lines": 9,
+     "gt_lines_found": 7,
+     "gt_lines_aligned": 8,
+     "gt_lines_unaligned": [
+      "< OK >"
+     ],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "dialog (black on grey)"
+    },
+    "05-choose-destination-media": {
+     "cells": {
+      "cells": 242,
+      "exact_correct": 242,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 8,
+      "exact": 8,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 577,
+      "exact": 245,
+      "exact_unscored": 3,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 7
+     },
+     "gt_lines": 9,
+     "gt_lines_found": 7,
+     "gt_lines_aligned": 8,
+     "gt_lines_unaligned": [
+      "< OK >"
+     ],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "dialog (black on grey)"
+    },
+    "04-installer-console-setup": {
+     "cells": {
+      "cells": 88,
+      "exact_correct": 88,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 6,
+      "exact": 6,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 452,
+      "exact": 91,
+      "exact_unscored": 3,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 6
+     },
+     "gt_lines": 7,
+     "gt_lines_found": 5,
+     "gt_lines_aligned": 6,
+     "gt_lines_unaligned": [
+      "< OK >"
+     ],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "dialog (black on grey)"
+    },
+    "16-grub-installed-menu": {
+     "cells": {
+      "cells": 260,
+      "exact_correct": 0,
+      "unknown": 28,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 232,
+      "single_would_be_correct": 232,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 7,
+      "exact": 0,
+      "with_unknown": 7,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 640,
+      "exact": 0,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 8,
+     "gt_lines_found": 0,
+     "gt_lines_aligned": 7,
+     "gt_lines_unaligned": [
+      "Use the ▲ and ▼ keys to select which entry is highlighted."
+     ],
+     "wrong": [],
+     "unknown_chars": {
+      "v": 2,
+      "9": 1,
+      "*": 1,
+      "f": 3,
+      "E": 1,
+      "F": 2,
+      "I": 1,
+      "w": 2,
+      "P": 1,
+      "b": 4,
+      "h": 6,
+      "O": 1,
+      ",": 1,
+      "y": 2
+     },
+     "font": "f8x19-3",
+     "status": "ok",
+     "origin": [
+      0,
+      12
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "grub"
+    },
+    "08-auth-method": {
+     "cells": {
+      "cells": 91,
+      "exact_correct": 91,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 4,
+      "exact": 4,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 456,
+      "exact": 91,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 6
+     },
+     "gt_lines": 5,
+     "gt_lines_found": 4,
+     "gt_lines_aligned": 5,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "dialog (black on grey)"
+    },
+    "07-erase-warning": {
+     "cells": {
+      "cells": 223,
+      "exact_correct": 222,
+      "unknown": 1,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 1
+     },
+     "rows": {
+      "rows": 9,
+      "exact": 8,
+      "with_unknown": 1,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 452,
+      "exact": 226,
+      "exact_unscored": 4,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 2
+     },
+     "gt_lines": 10,
+     "gt_lines_found": 8,
+     "gt_lines_aligned": 9,
+     "gt_lines_unaligned": [
+      "< Yes >"
+     ],
+     "wrong": [],
+     "unknown_chars": {
+      "?": 1
+     },
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "dialog (black on grey)"
+    },
+    "03-live-login-banner": {
+     "cells": {
+      "cells": 390,
+      "exact_correct": 384,
+      "unknown": 5,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 1,
+      "single_would_be_correct": 1,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 5
+     },
+     "rows": {
+      "rows": 7,
+      "exact": 4,
+      "with_unknown": 3,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 390,
+      "exact": 384,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 7,
+     "gt_lines_found": 4,
+     "gt_lines_aligned": 7,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {
+      "#": 1,
+      "Y": 3,
+      ";": 1
+     },
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "console (light on black)"
+    },
+    "14-installation-succeeded": {
+     "cells": {
+      "cells": 104,
+      "exact_correct": 103,
+      "unknown": 1,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 1
+     },
+     "rows": {
+      "rows": 4,
+      "exact": 3,
+      "with_unknown": 1,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 270,
+      "exact": 103,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 2
+     },
+     "gt_lines": 4,
+     "gt_lines_found": 3,
+     "gt_lines_aligned": 4,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {
+      "!": 1
+     },
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "dialog (black on grey)"
+    },
+    "02-live-copy-squashfs": {
+     "cells": {
+      "cells": 122,
+      "exact_correct": 120,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 2,
+      "single_would_be_correct": 2,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 4,
+      "exact": 2,
+      "with_unknown": 2,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 122,
+      "exact": 120,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 4,
+     "gt_lines_found": 2,
+     "gt_lines_aligned": 4,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "console (light on black)"
+    },
+    "17-grub-booting-installed": {
+     "cells": {
+      "cells": 106,
+      "exact_correct": 0,
+      "unknown": 5,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 101,
+      "single_would_be_correct": 101,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 3,
+      "exact": 0,
+      "with_unknown": 3,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 108,
+      "exact": 0,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 3,
+     "gt_lines_found": 0,
+     "gt_lines_aligned": 3,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {
+      "6": 1,
+      "8": 1,
+      "5": 1,
+      "+": 1,
+      "k": 1
+     },
+     "font": "f8x19-3",
+     "status": "ok",
+     "origin": [
+      0,
+      12
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "grub"
+    },
+    "15-uefi-tianocore-logo": {
+     "skipped": "no grid (no fixed grid found (37% of non-blank cells have 3+ colours: antialiased or graphical))",
+     "category": "uefi logo",
+     "gt_lines": 2
+    }
+   },
+   "key_phrases": [
+    {
+     "frame": 4,
+     "phrase": "TrueNAS 27.0.0-RC.1 Console Setup",
+     "found": true
+    },
+    {
+     "frame": 4,
+     "phrase": "1 Install/Upgrade",
+     "found": false
+    },
+    {
+     "frame": 4,
+     "phrase": "3 Reboot System",
+     "found": true
+    },
+    {
+     "frame": 5,
+     "phrase": "Choose Destination Media",
+     "found": true
+    },
+    {
+     "frame": 5,
+     "phrase": "vda",
+     "found": true
+    },
+    {
+     "frame": 6,
+     "phrase": "[*]",
+     "found": true
+    },
+    {
+     "frame": 7,
+     "phrase": "Proceed with the installation?",
+     "found": false
+    },
+    {
+     "frame": 8,
+     "phrase": "Administrative user (truenas_admin)",
+     "found": true
+    },
+    {
+     "frame": 9,
+     "phrase": "Confirm Password:",
+     "found": true
+    },
+    {
+     "frame": 13,
+     "phrase": "[100%] Installation completed successfully",
+     "found": true
+    },
+    {
+     "frame": 14,
+     "phrase": "Installation Succeeded",
+     "found": true
+    },
+    {
+     "frame": 14,
+     "phrase": "The TrueNAS installation on vda succeeded!",
+     "found": false
+    },
+    {
+     "frame": 14,
+     "phrase": "Please reboot and remove the installation media.",
+     "found": true
+    },
+    {
+     "frame": 16,
+     "phrase": "TrueNAS Scale GNU/Linux 27.0.0-RC.1",
+     "found": false
+    },
+    {
+     "frame": 17,
+     "phrase": "Loading initial ramdisk ...",
+     "found": false
+    },
+    {
+     "frame": 19,
+     "phrase": "Console setup",
+     "found": false
+    },
+    {
+     "frame": 19,
+     "phrase": "http://10.0.2.15",
+     "found": false
+    },
+    {
+     "frame": 19,
+     "phrase": "https://10.0.2.15",
+     "found": false
+    },
+    {
+     "frame": 19,
+     "phrase": "http://[fec0::5054:ff:fe12:3456]",
+     "found": false
+    },
+    {
+     "frame": 19,
+     "phrase": "4) Change local administrator password",
+     "found": false
+    },
+    {
+     "frame": 19,
+     "phrase": "10) Shutdown",
+     "found": true
+    },
+    {
+     "frame": 19,
+     "phrase": "Enter an option from 1-10:",
+     "found": false
+    },
+    {
+     "frame": 20,
+     "phrase": "Console setup",
+     "found": false
+    },
+    {
+     "frame": 20,
+     "phrase": "https://10.0.2.15",
+     "found": false
+    },
+    {
+     "frame": 20,
+     "phrase": "9) Reboot",
+     "found": true
+    },
+    {
+     "frame": 20,
+     "phrase": "Enter an option from 1-10:",
+     "found": false
+    }
+   ]
+  },
+  "frame_out/corrected_gt": {
+   "aggregate": {
+    "console (light on black)": {
+     "cells": 4813,
+     "exact_correct": 4495,
+     "single_source": 268,
+     "single_would_be_correct": 268,
+     "single_would_be_wrong": 0,
+     "unknown": 50,
+     "wrong_conf": 0,
+     "unknown_novel_char": 16,
+     "frames": 7,
+     "row_exact": 118,
+     "rows": 184,
+     "lines_found": 118,
+     "lines": 184
+    },
+    "dialog (black on grey)": {
+     "cells": 1398,
+     "exact_correct": 1396,
+     "single_source": 0,
+     "single_would_be_correct": 0,
+     "single_would_be_wrong": 0,
+     "unknown": 2,
+     "wrong_conf": 0,
+     "unknown_novel_char": 2,
+     "frames": 9,
+     "row_exact": 54,
+     "rows": 56,
+     "lines_found": 54,
+     "lines": 64
+    },
+    "grub": {
+     "cells": 584,
+     "exact_correct": 0,
+     "single_source": 543,
+     "single_would_be_correct": 543,
+     "single_would_be_wrong": 0,
+     "unknown": 41,
+     "wrong_conf": 0,
+     "unknown_novel_char": 0,
+     "frames": 3,
+     "row_exact": 0,
+     "rows": 15,
+     "lines_found": 0,
+     "lines": 17
+    },
+    "ALL": {
+     "cells": 6795,
+     "exact_correct": 5891,
+     "single_source": 811,
+     "single_would_be_correct": 811,
+     "single_would_be_wrong": 0,
+     "unknown": 93,
+     "wrong_conf": 0,
+     "unknown_novel_char": 18,
+     "frames": 19,
+     "row_exact": 172,
+     "rows": 255,
+     "lines_found": 172,
+     "lines": 265,
+     "grid_nonblank": 10646,
+     "grid_exact": 5904,
+     "grid_exact_unscored": 13,
+     "grid_exact_flagged": 48,
+     "grid_fill": 31,
+     "no_font_frames": 0
+    }
+   },
+   "frames": {
+    "18-kernel-boot-log": {
+     "cells": {
+      "cells": 1384,
+      "exact_correct": 1326,
+      "unknown": 37,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 21,
+      "single_would_be_correct": 21,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 11
+     },
+     "rows": {
+      "rows": 29,
+      "exact": 10,
+      "with_unknown": 19,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 1384,
+      "exact": 1326,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 29,
+     "gt_lines_found": 10,
+     "gt_lines_aligned": 29,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {
+      "=": 17,
+      "@": 1,
+      "z": 6,
+      "Z": 1,
+      "'": 8,
+      "j": 1,
+      "X": 3
+     },
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": 0.9625,
+     "char_acc_raw": 0.9632,
+     "category": "console (light on black)"
+    },
+    "12-progress-extracting": {
+     "cells": {
+      "cells": 848,
+      "exact_correct": 848,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 49,
+      "exact": 49,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 849,
+      "exact": 848,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 49,
+     "gt_lines_found": 49,
+     "gt_lines_aligned": 49,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": 1.0,
+     "char_acc_raw": 0.9979,
+     "category": "console (light on black)"
+    },
+    "13-progress-complete": {
+     "cells": {
+      "cells": 883,
+      "exact_correct": 883,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 49,
+      "exact": 49,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 883,
+      "exact": 883,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 49,
+     "gt_lines_found": 49,
+     "gt_lines_aligned": 49,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": 1.0,
+     "char_acc_raw": 1.0,
+     "category": "console (light on black)"
+    },
+    "11-progress-start-over-dialog": {
+     "cells": {
+      "cells": 171,
+      "exact_correct": 171,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 7,
+      "exact": 7,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 533,
+      "exact": 171,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 24,
+      "fill": 1
+     },
+     "gt_lines": 8,
+     "gt_lines_found": 8,
+     "gt_lines_aligned": 8,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": 0.995,
+     "char_acc_raw": 0.339,
+     "category": "dialog (black on grey)"
+    },
+    "01-grub-iso-menu": {
+     "cells": {
+      "cells": 218,
+      "exact_correct": 0,
+      "unknown": 8,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 210,
+      "single_would_be_correct": 210,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 5,
+      "exact": 0,
+      "with_unknown": 5,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 806,
+      "exact": 0,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 6,
+     "gt_lines_found": 0,
+     "gt_lines_aligned": 5,
+     "gt_lines_unaligned": [
+      "Use the ↑ and ↓ keys to select which entry is highlighted."
+     ],
+     "wrong": [],
+     "unknown_chars": {
+      "G": 2,
+      "B": 1,
+      "*": 1,
+      "`": 2,
+      "'": 2
+     },
+     "font": "f8x16-2",
+     "status": "ok",
+     "origin": [
+      2,
+      12
+     ],
+     "char_acc_text": 0.1551,
+     "char_acc_raw": 0.0545,
+     "category": "grub"
+    },
+    "09-password-empty": {
+     "cells": {
+      "cells": 106,
+      "exact_correct": 106,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 5,
+      "exact": 5,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 466,
+      "exact": 106,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 6,
+     "gt_lines_found": 6,
+     "gt_lines_aligned": 6,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": 1.0,
+     "char_acc_raw": 0.2431,
+     "category": "dialog (black on grey)"
+    },
+    "10-password-filled": {
+     "cells": {
+      "cells": 130,
+      "exact_correct": 130,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 5,
+      "exact": 5,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 490,
+      "exact": 130,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 24,
+      "fill": 0
+     },
+     "gt_lines": 6,
+     "gt_lines_found": 6,
+     "gt_lines_aligned": 6,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": 1.0,
+     "char_acc_raw": 0.2801,
+     "category": "dialog (black on grey)"
+    },
+    "20-console-setup-duplicated-redraw": {
+     "cells": {
+      "cells": 599,
+      "exact_correct": 481,
+      "unknown": 1,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 117,
+      "single_would_be_correct": 117,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 26,
+      "exact": 2,
+      "with_unknown": 24,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 599,
+      "exact": 481,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 26,
+     "gt_lines_found": 2,
+     "gt_lines_aligned": 26,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {
+      "_": 1
+     },
+     "font": "f8x16-2",
+     "status": "ok",
+     "origin": [
+      0,
+      2
+     ],
+     "char_acc_text": 0.825,
+     "char_acc_raw": 0.8265,
+     "category": "console (light on black)"
+    },
+    "19-console-setup-with-kernel-noise": {
+     "cells": {
+      "cells": 587,
+      "exact_correct": 453,
+      "unknown": 7,
+      "wrong_conf": 0,
+      "excluded_question": 2,
+      "single_source": 127,
+      "single_would_be_correct": 127,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 20,
+      "exact": 2,
+      "with_unknown": 18,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 591,
+      "exact": 453,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 20,
+     "gt_lines_found": 2,
+     "gt_lines_aligned": 20,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {
+      "F": 1,
+      "=": 4,
+      "j": 1,
+      "q": 1
+     },
+     "font": "f8x16-2",
+     "status": "ok",
+     "origin": [
+      0,
+      2
+     ],
+     "char_acc_text": 0.7965,
+     "char_acc_raw": 0.7956,
+     "category": "console (light on black)"
+    },
+    "06-choose-destination-selected": {
+     "cells": {
+      "cells": 243,
+      "exact_correct": 243,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 8,
+      "exact": 8,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 578,
+      "exact": 246,
+      "exact_unscored": 3,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 7
+     },
+     "gt_lines": 9,
+     "gt_lines_found": 7,
+     "gt_lines_aligned": 8,
+     "gt_lines_unaligned": [
+      "< OK >"
+     ],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": 0.9732,
+     "char_acc_raw": 0.4261,
+     "category": "dialog (black on grey)"
+    },
+    "05-choose-destination-media": {
+     "cells": {
+      "cells": 242,
+      "exact_correct": 242,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 8,
+      "exact": 8,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 577,
+      "exact": 245,
+      "exact_unscored": 3,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 7
+     },
+     "gt_lines": 9,
+     "gt_lines_found": 7,
+     "gt_lines_aligned": 8,
+     "gt_lines_unaligned": [
+      "< OK >"
+     ],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": 0.9732,
+     "char_acc_raw": 0.4261,
+     "category": "dialog (black on grey)"
+    },
+    "04-installer-console-setup": {
+     "cells": {
+      "cells": 88,
+      "exact_correct": 88,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 6,
+      "exact": 6,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 452,
+      "exact": 91,
+      "exact_unscored": 3,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 6
+     },
+     "gt_lines": 7,
+     "gt_lines_found": 5,
+     "gt_lines_aligned": 6,
+     "gt_lines_unaligned": [
+      "< OK >"
+     ],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": 0.9381,
+     "char_acc_raw": 0.2131,
+     "category": "dialog (black on grey)"
+    },
+    "16-grub-installed-menu": {
+     "cells": {
+      "cells": 260,
+      "exact_correct": 0,
+      "unknown": 28,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 232,
+      "single_would_be_correct": 232,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 7,
+      "exact": 0,
+      "with_unknown": 7,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 640,
+      "exact": 0,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 8,
+     "gt_lines_found": 0,
+     "gt_lines_aligned": 7,
+     "gt_lines_unaligned": [
+      "Use the ▲ and ▼ keys to select which entry is highlighted."
+     ],
+     "wrong": [],
+     "unknown_chars": {
+      "v": 2,
+      "9": 1,
+      "*": 1,
+      "f": 3,
+      "E": 1,
+      "F": 2,
+      "I": 1,
+      "w": 2,
+      "P": 1,
+      "b": 4,
+      "h": 6,
+      "O": 1,
+      ",": 1,
+      "y": 2
+     },
+     "font": "f8x19-3",
+     "status": "ok",
+     "origin": [
+      0,
+      12
+     ],
+     "char_acc_text": 0.1566,
+     "char_acc_raw": 0.0772,
+     "category": "grub"
+    },
+    "08-auth-method": {
+     "cells": {
+      "cells": 91,
+      "exact_correct": 91,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 4,
+      "exact": 4,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 456,
+      "exact": 91,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 6
+     },
+     "gt_lines": 5,
+     "gt_lines_found": 4,
+     "gt_lines_aligned": 5,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": 0.9464,
+     "char_acc_raw": 0.2099,
+     "category": "dialog (black on grey)"
+    },
+    "07-erase-warning": {
+     "cells": {
+      "cells": 223,
+      "exact_correct": 222,
+      "unknown": 1,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 1
+     },
+     "rows": {
+      "rows": 9,
+      "exact": 8,
+      "with_unknown": 1,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 452,
+      "exact": 226,
+      "exact_unscored": 4,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 2
+     },
+     "gt_lines": 10,
+     "gt_lines_found": 8,
+     "gt_lines_aligned": 9,
+     "gt_lines_unaligned": [
+      "< Yes >"
+     ],
+     "wrong": [],
+     "unknown_chars": {
+      "?": 1
+     },
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": 0.9856,
+     "char_acc_raw": 0.5249,
+     "category": "dialog (black on grey)"
+    },
+    "03-live-login-banner": {
+     "cells": {
+      "cells": 390,
+      "exact_correct": 384,
+      "unknown": 5,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 1,
+      "single_would_be_correct": 1,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 5
+     },
+     "rows": {
+      "rows": 7,
+      "exact": 4,
+      "with_unknown": 3,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 390,
+      "exact": 384,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 7,
+     "gt_lines_found": 4,
+     "gt_lines_aligned": 7,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {
+      "#": 1,
+      "Y": 3,
+      ";": 1
+     },
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": 0.9866,
+     "char_acc_raw": 0.9866,
+     "category": "console (light on black)"
+    },
+    "14-installation-succeeded": {
+     "cells": {
+      "cells": 104,
+      "exact_correct": 103,
+      "unknown": 1,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 1
+     },
+     "rows": {
+      "rows": 4,
+      "exact": 3,
+      "with_unknown": 1,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 270,
+      "exact": 103,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 2
+     },
+     "gt_lines": 4,
+     "gt_lines_found": 3,
+     "gt_lines_aligned": 4,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {
+      "!": 1
+     },
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": 0.9756,
+     "char_acc_raw": 0.4068,
+     "category": "dialog (black on grey)"
+    },
+    "02-live-copy-squashfs": {
+     "cells": {
+      "cells": 122,
+      "exact_correct": 120,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 2,
+      "single_would_be_correct": 2,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 4,
+      "exact": 2,
+      "with_unknown": 2,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 122,
+      "exact": 120,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 4,
+     "gt_lines_found": 2,
+     "gt_lines_aligned": 4,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": 0.9852,
+     "char_acc_raw": 0.9852,
+     "category": "console (light on black)"
+    },
+    "17-grub-booting-installed": {
+     "cells": {
+      "cells": 106,
+      "exact_correct": 0,
+      "unknown": 5,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 101,
+      "single_would_be_correct": 101,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 3,
+      "exact": 0,
+      "with_unknown": 3,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 108,
+      "exact": 0,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 3,
+     "gt_lines_found": 0,
+     "gt_lines_aligned": 3,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {
+      "6": 1,
+      "8": 1,
+      "5": 1,
+      "+": 1,
+      "k": 1
+     },
+     "font": "f8x19-3",
+     "status": "ok",
+     "origin": [
+      0,
+      12
+     ],
+     "char_acc_text": 0.1017,
+     "char_acc_raw": 0.0984,
+     "category": "grub"
+    },
+    "15-uefi-tianocore-logo": {
+     "skipped": "no grid (no fixed grid found (37% of non-blank cells have 3+ colours: antialiased or graphical))",
+     "category": "uefi logo",
+     "gt_lines": 2
+    }
+   },
+   "key_phrases": [
+    {
+     "frame": 4,
+     "phrase": "TrueNAS 27.0.0-RC.1 Console Setup",
+     "found": true
+    },
+    {
+     "frame": 4,
+     "phrase": "1 Install/Upgrade",
+     "found": false
+    },
+    {
+     "frame": 4,
+     "phrase": "3 Reboot System",
+     "found": true
+    },
+    {
+     "frame": 5,
+     "phrase": "Choose Destination Media",
+     "found": true
+    },
+    {
+     "frame": 5,
+     "phrase": "vda",
+     "found": true
+    },
+    {
+     "frame": 6,
+     "phrase": "[*]",
+     "found": true
+    },
+    {
+     "frame": 7,
+     "phrase": "Proceed with the installation?",
+     "found": false
+    },
+    {
+     "frame": 8,
+     "phrase": "Administrative user (truenas_admin)",
+     "found": true
+    },
+    {
+     "frame": 9,
+     "phrase": "Confirm Password:",
+     "found": true
+    },
+    {
+     "frame": 13,
+     "phrase": "[100%] Installation completed successfully",
+     "found": true
+    },
+    {
+     "frame": 14,
+     "phrase": "Installation Succeeded",
+     "found": true
+    },
+    {
+     "frame": 14,
+     "phrase": "The TrueNAS installation on vda succeeded!",
+     "found": false
+    },
+    {
+     "frame": 14,
+     "phrase": "Please reboot and remove the installation media.",
+     "found": true
+    },
+    {
+     "frame": 16,
+     "phrase": "TrueNAS Scale GNU/Linux 27.0.0-RC.1",
+     "found": false
+    },
+    {
+     "frame": 17,
+     "phrase": "Loading initial ramdisk ...",
+     "found": false
+    },
+    {
+     "frame": 19,
+     "phrase": "Console setup",
+     "found": false
+    },
+    {
+     "frame": 19,
+     "phrase": "http://10.0.2.15",
+     "found": false
+    },
+    {
+     "frame": 19,
+     "phrase": "https://10.0.2.15",
+     "found": false
+    },
+    {
+     "frame": 19,
+     "phrase": "http://[fec0::5054:ff:fe12:3456]",
+     "found": false
+    },
+    {
+     "frame": 19,
+     "phrase": "4) Change local administrator password",
+     "found": false
+    },
+    {
+     "frame": 19,
+     "phrase": "10) Shutdown",
+     "found": true
+    },
+    {
+     "frame": 19,
+     "phrase": "Enter an option from 1-10:",
+     "found": false
+    },
+    {
+     "frame": 20,
+     "phrase": "Console setup",
+     "found": false
+    },
+    {
+     "frame": 20,
+     "phrase": "https://10.0.2.15",
+     "found": false
+    },
+    {
+     "frame": 20,
+     "phrase": "9) Reboot",
+     "found": true
+    },
+    {
+     "frame": 20,
+     "phrase": "Enter an option from 1-10:",
+     "found": false
+    }
+   ]
+  },
+  "screen_group_out/corrected_gt": {
+   "aggregate": {
+    "console (light on black)": {
+     "cells": 4813,
+     "exact_correct": 3550,
+     "single_source": 981,
+     "single_would_be_correct": 981,
+     "single_would_be_wrong": 0,
+     "unknown": 282,
+     "wrong_conf": 0,
+     "unknown_novel_char": 16,
+     "frames": 7,
+     "row_exact": 103,
+     "rows": 184,
+     "lines_found": 103,
+     "lines": 184
+    },
+    "dialog (black on grey)": {
+     "cells": 1398,
+     "exact_correct": 1390,
+     "single_source": 6,
+     "single_would_be_correct": 6,
+     "single_would_be_wrong": 0,
+     "unknown": 2,
+     "wrong_conf": 0,
+     "unknown_novel_char": 2,
+     "frames": 9,
+     "row_exact": 51,
+     "rows": 56,
+     "lines_found": 51,
+     "lines": 64
+    },
+    "grub": {
+     "cells": 584,
+     "exact_correct": 0,
+     "single_source": 543,
+     "single_would_be_correct": 543,
+     "single_would_be_wrong": 0,
+     "unknown": 41,
+     "wrong_conf": 0,
+     "unknown_novel_char": 0,
+     "frames": 3,
+     "row_exact": 0,
+     "rows": 15,
+     "lines_found": 0,
+     "lines": 17
+    },
+    "ALL": {
+     "cells": 6795,
+     "exact_correct": 4940,
+     "single_source": 1530,
+     "single_would_be_correct": 1530,
+     "single_would_be_wrong": 0,
+     "unknown": 325,
+     "wrong_conf": 0,
+     "unknown_novel_char": 18,
+     "frames": 19,
+     "row_exact": 154,
+     "rows": 255,
+     "lines_found": 154,
+     "lines": 265,
+     "grid_nonblank": 10646,
+     "grid_exact": 4953,
+     "grid_exact_unscored": 13,
+     "grid_exact_flagged": 48,
+     "grid_fill": 31,
+     "no_font_frames": 0
+    }
+   },
+   "frames": {
+    "18-kernel-boot-log": {
+     "cells": {
+      "cells": 1384,
+      "exact_correct": 1326,
+      "unknown": 37,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 21,
+      "single_would_be_correct": 21,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 11
+     },
+     "rows": {
+      "rows": 29,
+      "exact": 10,
+      "with_unknown": 19,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 1384,
+      "exact": 1326,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 29,
+     "gt_lines_found": 10,
+     "gt_lines_aligned": 29,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {
+      "=": 17,
+      "@": 1,
+      "z": 6,
+      "Z": 1,
+      "'": 8,
+      "j": 1,
+      "X": 3
+     },
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "console (light on black)"
+    },
+    "12-progress-extracting": {
+     "cells": {
+      "cells": 848,
+      "exact_correct": 844,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 4,
+      "single_would_be_correct": 4,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 49,
+      "exact": 45,
+      "with_unknown": 4,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 849,
+      "exact": 844,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 49,
+     "gt_lines_found": 45,
+     "gt_lines_aligned": 49,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "console (light on black)"
+    },
+    "13-progress-complete": {
+     "cells": {
+      "cells": 883,
+      "exact_correct": 876,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 7,
+      "single_would_be_correct": 7,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 49,
+      "exact": 42,
+      "with_unknown": 7,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 883,
+      "exact": 876,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 49,
+     "gt_lines_found": 42,
+     "gt_lines_aligned": 49,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "console (light on black)"
+    },
+    "11-progress-start-over-dialog": {
+     "cells": {
+      "cells": 171,
+      "exact_correct": 169,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 2,
+      "single_would_be_correct": 2,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 7,
+      "exact": 6,
+      "with_unknown": 1,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 533,
+      "exact": 169,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 24,
+      "fill": 1
+     },
+     "gt_lines": 8,
+     "gt_lines_found": 7,
+     "gt_lines_aligned": 8,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "dialog (black on grey)"
+    },
+    "01-grub-iso-menu": {
+     "cells": {
+      "cells": 218,
+      "exact_correct": 0,
+      "unknown": 8,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 210,
+      "single_would_be_correct": 210,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 5,
+      "exact": 0,
+      "with_unknown": 5,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 806,
+      "exact": 0,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 6,
+     "gt_lines_found": 0,
+     "gt_lines_aligned": 5,
+     "gt_lines_unaligned": [
+      "Use the ↑ and ↓ keys to select which entry is highlighted."
+     ],
+     "wrong": [],
+     "unknown_chars": {
+      "G": 2,
+      "B": 1,
+      "*": 1,
+      "`": 2,
+      "'": 2
+     },
+     "font": "f8x16-2",
+     "status": "ok",
+     "origin": [
+      2,
+      12
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "grub"
+    },
+    "09-password-empty": {
+     "cells": {
+      "cells": 106,
+      "exact_correct": 104,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 2,
+      "single_would_be_correct": 2,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 5,
+      "exact": 4,
+      "with_unknown": 1,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 466,
+      "exact": 104,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 6,
+     "gt_lines_found": 5,
+     "gt_lines_aligned": 6,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "dialog (black on grey)"
+    },
+    "10-password-filled": {
+     "cells": {
+      "cells": 130,
+      "exact_correct": 128,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 2,
+      "single_would_be_correct": 2,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 5,
+      "exact": 4,
+      "with_unknown": 1,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 490,
+      "exact": 128,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 24,
+      "fill": 0
+     },
+     "gt_lines": 6,
+     "gt_lines_found": 5,
+     "gt_lines_aligned": 6,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "dialog (black on grey)"
+    },
+    "20-console-setup-duplicated-redraw": {
+     "cells": {
+      "cells": 599,
+      "exact_correct": 0,
+      "unknown": 118,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 481,
+      "single_would_be_correct": 481,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 26,
+      "exact": 0,
+      "with_unknown": 26,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 599,
+      "exact": 0,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 26,
+     "gt_lines_found": 0,
+     "gt_lines_aligned": 26,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {
+      "C": 10,
+      "p": 14,
+      "_": 14,
+      ":": 31,
+      "/": 16,
+      "[": 4,
+      "4": 9,
+      "6": 5,
+      "]": 4,
+      "k": 4,
+      "\"": 2,
+      "7": 1,
+      "L": 2,
+      "8": 1,
+      "E": 1
+     },
+     "font": "f8x16-2",
+     "status": "ok",
+     "origin": [
+      0,
+      2
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "console (light on black)"
+    },
+    "19-console-setup-with-kernel-noise": {
+     "cells": {
+      "cells": 587,
+      "exact_correct": 0,
+      "unknown": 122,
+      "wrong_conf": 0,
+      "excluded_question": 2,
+      "single_source": 465,
+      "single_would_be_correct": 465,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 20,
+      "exact": 0,
+      "with_unknown": 20,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 591,
+      "exact": 0,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 20,
+     "gt_lines_found": 0,
+     "gt_lines_aligned": 20,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {
+      "C": 9,
+      "p": 13,
+      "_": 15,
+      ":": 23,
+      "/": 10,
+      "[": 5,
+      "4": 8,
+      "6": 4,
+      "]": 5,
+      "k": 5,
+      "\"": 2,
+      "7": 8,
+      "L": 2,
+      "8": 5,
+      "E": 1,
+      "F": 1,
+      "=": 4,
+      "j": 1,
+      "q": 1
+     },
+     "font": "f8x16-2",
+     "status": "ok",
+     "origin": [
+      0,
+      2
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "console (light on black)"
+    },
+    "06-choose-destination-selected": {
+     "cells": {
+      "cells": 243,
+      "exact_correct": 243,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 8,
+      "exact": 8,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 578,
+      "exact": 246,
+      "exact_unscored": 3,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 7
+     },
+     "gt_lines": 9,
+     "gt_lines_found": 7,
+     "gt_lines_aligned": 8,
+     "gt_lines_unaligned": [
+      "< OK >"
+     ],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "dialog (black on grey)"
+    },
+    "05-choose-destination-media": {
+     "cells": {
+      "cells": 242,
+      "exact_correct": 242,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 8,
+      "exact": 8,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 577,
+      "exact": 245,
+      "exact_unscored": 3,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 7
+     },
+     "gt_lines": 9,
+     "gt_lines_found": 7,
+     "gt_lines_aligned": 8,
+     "gt_lines_unaligned": [
+      "< OK >"
+     ],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "dialog (black on grey)"
+    },
+    "04-installer-console-setup": {
+     "cells": {
+      "cells": 88,
+      "exact_correct": 88,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 6,
+      "exact": 6,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 452,
+      "exact": 91,
+      "exact_unscored": 3,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 6
+     },
+     "gt_lines": 7,
+     "gt_lines_found": 5,
+     "gt_lines_aligned": 6,
+     "gt_lines_unaligned": [
+      "< OK >"
+     ],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "dialog (black on grey)"
+    },
+    "16-grub-installed-menu": {
+     "cells": {
+      "cells": 260,
+      "exact_correct": 0,
+      "unknown": 28,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 232,
+      "single_would_be_correct": 232,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 7,
+      "exact": 0,
+      "with_unknown": 7,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 640,
+      "exact": 0,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 8,
+     "gt_lines_found": 0,
+     "gt_lines_aligned": 7,
+     "gt_lines_unaligned": [
+      "Use the ▲ and ▼ keys to select which entry is highlighted."
+     ],
+     "wrong": [],
+     "unknown_chars": {
+      "v": 2,
+      "9": 1,
+      "*": 1,
+      "f": 3,
+      "E": 1,
+      "F": 2,
+      "I": 1,
+      "w": 2,
+      "P": 1,
+      "b": 4,
+      "h": 6,
+      "O": 1,
+      ",": 1,
+      "y": 2
+     },
+     "font": "f8x19-3",
+     "status": "ok",
+     "origin": [
+      0,
+      12
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "grub"
+    },
+    "08-auth-method": {
+     "cells": {
+      "cells": 91,
+      "exact_correct": 91,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 4,
+      "exact": 4,
+      "with_unknown": 0,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 456,
+      "exact": 91,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 6
+     },
+     "gt_lines": 5,
+     "gt_lines_found": 4,
+     "gt_lines_aligned": 5,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "dialog (black on grey)"
+    },
+    "07-erase-warning": {
+     "cells": {
+      "cells": 223,
+      "exact_correct": 222,
+      "unknown": 1,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 1
+     },
+     "rows": {
+      "rows": 9,
+      "exact": 8,
+      "with_unknown": 1,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 452,
+      "exact": 226,
+      "exact_unscored": 4,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 2
+     },
+     "gt_lines": 10,
+     "gt_lines_found": 8,
+     "gt_lines_aligned": 9,
+     "gt_lines_unaligned": [
+      "< Yes >"
+     ],
+     "wrong": [],
+     "unknown_chars": {
+      "?": 1
+     },
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "dialog (black on grey)"
+    },
+    "03-live-login-banner": {
+     "cells": {
+      "cells": 390,
+      "exact_correct": 384,
+      "unknown": 5,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 1,
+      "single_would_be_correct": 1,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 5
+     },
+     "rows": {
+      "rows": 7,
+      "exact": 4,
+      "with_unknown": 3,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 390,
+      "exact": 384,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 7,
+     "gt_lines_found": 4,
+     "gt_lines_aligned": 7,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {
+      "#": 1,
+      "Y": 3,
+      ";": 1
+     },
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "console (light on black)"
+    },
+    "14-installation-succeeded": {
+     "cells": {
+      "cells": 104,
+      "exact_correct": 103,
+      "unknown": 1,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 0,
+      "single_would_be_correct": 0,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 1
+     },
+     "rows": {
+      "rows": 4,
+      "exact": 3,
+      "with_unknown": 1,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 270,
+      "exact": 103,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 2
+     },
+     "gt_lines": 4,
+     "gt_lines_found": 3,
+     "gt_lines_aligned": 4,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {
+      "!": 1
+     },
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "dialog (black on grey)"
+    },
+    "02-live-copy-squashfs": {
+     "cells": {
+      "cells": 122,
+      "exact_correct": 120,
+      "unknown": 0,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 2,
+      "single_would_be_correct": 2,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 4,
+      "exact": 2,
+      "with_unknown": 2,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 122,
+      "exact": 120,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 4,
+     "gt_lines_found": 2,
+     "gt_lines_aligned": 4,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {},
+     "font": "f8x16-1",
+     "status": "ok",
+     "origin": [
+      0,
+      0
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "console (light on black)"
+    },
+    "17-grub-booting-installed": {
+     "cells": {
+      "cells": 106,
+      "exact_correct": 0,
+      "unknown": 5,
+      "wrong_conf": 0,
+      "excluded_question": 0,
+      "single_source": 101,
+      "single_would_be_correct": 101,
+      "single_would_be_wrong": 0,
+      "unknown_novel_char": 0
+     },
+     "rows": {
+      "rows": 3,
+      "exact": 0,
+      "with_unknown": 3,
+      "with_wrong": 0
+     },
+     "grid": {
+      "nonblank": 108,
+      "exact": 0,
+      "exact_unscored": 0,
+      "exact_flagged_rule_or_cursor": 0,
+      "fill": 0
+     },
+     "gt_lines": 3,
+     "gt_lines_found": 0,
+     "gt_lines_aligned": 3,
+     "gt_lines_unaligned": [],
+     "wrong": [],
+     "unknown_chars": {
+      "6": 1,
+      "8": 1,
+      "5": 1,
+      "+": 1,
+      "k": 1
+     },
+     "font": "f8x19-3",
+     "status": "ok",
+     "origin": [
+      0,
+      12
+     ],
+     "char_acc_text": null,
+     "char_acc_raw": null,
+     "category": "grub"
+    },
+    "15-uefi-tianocore-logo": {
+     "skipped": "no grid (no fixed grid found (37% of non-blank cells have 3+ colours: antialiased or graphical))",
+     "category": "uefi logo",
+     "gt_lines": 2
+    }
+   },
+   "key_phrases": [
+    {
+     "frame": 4,
+     "phrase": "TrueNAS 27.0.0-RC.1 Console Setup",
+     "found": true
+    },
+    {
+     "frame": 4,
+     "phrase": "1 Install/Upgrade",
+     "found": false
+    },
+    {
+     "frame": 4,
+     "phrase": "3 Reboot System",
+     "found": true
+    },
+    {
+     "frame": 5,
+     "phrase": "Choose Destination Media",
+     "found": true
+    },
+    {
+     "frame": 5,
+     "phrase": "vda",
+     "found": true
+    },
+    {
+     "frame": 6,
+     "phrase": "[*]",
+     "found": true
+    },
+    {
+     "frame": 7,
+     "phrase": "Proceed with the installation?",
+     "found": false
+    },
+    {
+     "frame": 8,
+     "phrase": "Administrative user (truenas_admin)",
+     "found": true
+    },
+    {
+     "frame": 9,
+     "phrase": "Confirm Password:",
+     "found": true
+    },
+    {
+     "frame": 13,
+     "phrase": "[100%] Installation completed successfully",
+     "found": true
+    },
+    {
+     "frame": 14,
+     "phrase": "Installation Succeeded",
+     "found": true
+    },
+    {
+     "frame": 14,
+     "phrase": "The TrueNAS installation on vda succeeded!",
+     "found": false
+    },
+    {
+     "frame": 14,
+     "phrase": "Please reboot and remove the installation media.",
+     "found": true
+    },
+    {
+     "frame": 16,
+     "phrase": "TrueNAS Scale GNU/Linux 27.0.0-RC.1",
+     "found": false
+    },
+    {
+     "frame": 17,
+     "phrase": "Loading initial ramdisk ...",
+     "found": false
+    },
+    {
+     "frame": 19,
+     "phrase": "Console setup",
+     "found": false
+    },
+    {
+     "frame": 19,
+     "phrase": "http://10.0.2.15",
+     "found": false
+    },
+    {
+     "frame": 19,
+     "phrase": "https://10.0.2.15",
+     "found": false
+    },
+    {
+     "frame": 19,
+     "phrase": "http://[fec0::5054:ff:fe12:3456]",
+     "found": false
+    },
+    {
+     "frame": 19,
+     "phrase": "4) Change local administrator password",
+     "found": false
+    },
+    {
+     "frame": 19,
+     "phrase": "10) Shutdown",
+     "found": false
+    },
+    {
+     "frame": 19,
+     "phrase": "Enter an option from 1-10:",
+     "found": false
+    },
+    {
+     "frame": 20,
+     "phrase": "Console setup",
+     "found": false
+    },
+    {
+     "frame": 20,
+     "phrase": "https://10.0.2.15",
+     "found": false
+    },
+    {
+     "frame": 20,
+     "phrase": "9) Reboot",
+     "found": false
+    },
+    {
+     "frame": 20,
+     "phrase": "Enter an option from 1-10:",
+     "found": false
+    }
+   ]
+  }
+ },
+ "probe_calibration": {
+  "calibration_frames": [
+   2,
+   4,
+   6,
+   8,
+   10,
+   12,
+   14,
+   16,
+   18,
+   20
+  ],
+  "test_frames": [
+   1,
+   3,
+   5,
+   7,
+   9,
+   11,
+   13,
+   15,
+   17,
+   19
+  ],
+  "max_crisp_ramp_on_calibration": 0.0,
+  "min_resampled_ramp_on_calibration": 0.3899818476181131,
+  "chosen_threshold": 0.038998184761811314,
+  "default_threshold": 0.02,
+  "test": {
+   "crisp_false_refusals": [
+    15
+   ],
+   "resampled_missed": []
+  },
+  "max_crisp_all": 0.39620991253644317,
+  "min_resampled_all": 0.3899818476181131,
+  "crisp_ramp_by_frame": {
+   "1": 0.0,
+   "2": 0.0,
+   "3": 0.0,
+   "4": 0.0,
+   "5": 0.0,
+   "6": 0.0,
+   "7": 0.0,
+   "8": 0.0,
+   "9": 0.0,
+   "10": 0.0,
+   "11": 0.0,
+   "12": 0.0,
+   "13": 0.0,
+   "14": 0.0,
+   "15": 0.39620991253644317,
+   "16": 0.0,
+   "17": 0.0,
+   "18": 0.0,
+   "19": 0.0,
+   "20": 0.0
+  }
+ },
+ "scale_probe": {
+  "original": {
+   "size": [
+    1280,
+    800
+   ],
+   "status": "ok",
+   "probe": {
+    "n_colors": 2,
+    "soft_ratio": 0.0,
+    "ramp_ratio": 0.0,
+    "integer_upscale": 1,
+    "resampled": false,
+    "verdict": "crisp (1:1 NOT proven)"
+   },
+   "exact": 1347,
+   "unknown": 0,
+   "grid": {
+    "cell_w": 8,
+    "cell_h": 16,
+    "origin_x": 0,
+    "origin_y": 0,
+    "cols": 160,
+    "rows": 50
+   },
+   "font": "f8x16-1"
+  },
+  "0.9x bilinear then back (1280x800)": {
+   "size": [
+    1280,
+    800
+   ],
+   "status": "resampled",
+   "probe": {
+    "n_colors": 171,
+    "soft_ratio": 0.78924,
+    "ramp_ratio": 0.59958,
+    "integer_upscale": 1,
+    "resampled": true,
+    "verdict": "resampled: exact matching unavailable"
+   },
+   "message": "resampled: exact matching unavailable"
+  },
+  "0.9x lanczos then back": {
+   "size": [
+    1280,
+    800
+   ],
+   "status": "resampled",
+   "probe": {
+    "n_colors": 222,
+    "soft_ratio": 0.69855,
+    "ramp_ratio": 0.4595,
+    "integer_upscale": 1,
+    "resampled": true,
+    "verdict": "resampled: exact matching unavailable"
+   },
+   "message": "resampled: exact matching unavailable"
+  },
+  "1.25x bilinear (1600x1000)": {
+   "size": [
+    1600,
+    1000
+   ],
+   "status": "resampled",
+   "probe": {
+    "n_colors": 42,
+    "soft_ratio": 0.34648,
+    "ramp_ratio": 0.54642,
+    "integer_upscale": 1,
+    "resampled": true,
+    "verdict": "resampled: exact matching unavailable"
+   },
+   "message": "resampled: exact matching unavailable"
+  },
+  "1.5x nearest (1920x1200, non-integer)": {
+   "size": [
+    1920,
+    1200
+   ],
+   "status": "no_font",
+   "probe": {
+    "n_colors": 2,
+    "soft_ratio": 0.0,
+    "ramp_ratio": 0.0,
+    "integer_upscale": 1,
+    "resampled": false,
+    "verdict": "crisp (1:1 NOT proven)"
+   },
+   "message": "no atlas font reads this screen (need >= 8 ordinary cells and >= 25% of them): every cell UNKNOWN"
+  },
+  "2x nearest (2560x1600, integer)": {
+   "size": [
+    2560,
+    1600
+   ],
+   "status": "ok",
+   "probe": {
+    "n_colors": 2,
+    "soft_ratio": 0.0,
+    "ramp_ratio": 0.0,
+    "integer_upscale": 2,
+    "resampled": false,
+    "verdict": "crisp (1:1 NOT proven)"
+   },
+   "exact": 1347,
+   "unknown": 0,
+   "grid": {
+    "cell_w": 8,
+    "cell_h": 16,
+    "origin_x": 0,
+    "origin_y": 0,
+    "cols": 160,
+    "rows": 50
+   },
+   "font": "f8x16-1"
+  },
+  "letterboxed copy (+37 px top, 1:1)": {
+   "size": [
+    1280,
+    837
+   ],
+   "status": "ok",
+   "probe": {
+    "n_colors": 2,
+    "soft_ratio": 0.0,
+    "ramp_ratio": 0.0,
+    "integer_upscale": 1,
+    "resampled": false,
+    "verdict": "crisp (1:1 NOT proven)"
+   },
+   "exact": 1347,
+   "unknown": 0,
+   "grid": {
+    "cell_w": 8,
+    "cell_h": 16,
+    "origin_x": 0,
+    "origin_y": 5,
+    "cols": 160,
+    "rows": 52
+   },
+   "font": "f8x16-1"
+  }
+ },
+ "scale_tolerance": {
+  "0.9x bilinear then back (1280x800)": {
+   "cells": 1384,
+   "hamming_to_true_bitmap_p50": 2,
+   "p90": 5,
+   "max": 16,
+   "by_max_hamming": {
+    "0": {
+     "correct": 327,
+     "wrong": 0,
+     "unknown": 1057
+    },
+    "2": {
+     "correct": 894,
+     "wrong": 7,
+     "unknown": 483
+    },
+    "4": {
+     "correct": 1228,
+     "wrong": 7,
+     "unknown": 149
+    },
+    "6": {
+     "correct": 1329,
+     "wrong": 7,
+     "unknown": 48
+    },
+    "8": {
+     "correct": 1357,
+     "wrong": 7,
+     "unknown": 20
+    },
+    "12": {
+     "correct": 1371,
+     "wrong": 7,
+     "unknown": 6
+    },
+    "16": {
+     "correct": 1373,
+     "wrong": 7,
+     "unknown": 4
+    }
+   }
+  },
+  "0.9x lanczos then back": {
+   "cells": 1384,
+   "hamming_to_true_bitmap_p50": 0,
+   "p90": 1,
+   "max": 6,
+   "by_max_hamming": {
+    "0": {
+     "correct": 1194,
+     "wrong": 0,
+     "unknown": 190
+    },
+    "2": {
+     "correct": 1346,
+     "wrong": 0,
+     "unknown": 38
+    },
+    "4": {
+     "correct": 1365,
+     "wrong": 13,
+     "unknown": 6
+    },
+    "6": {
+     "correct": 1365,
+     "wrong": 19,
+     "unknown": 0
+    },
+    "8": {
+     "correct": 1365,
+     "wrong": 19,
+     "unknown": 0
+    },
+    "12": {
+     "correct": 1365,
+     "wrong": 19,
+     "unknown": 0
+    },
+    "16": {
+     "correct": 1365,
+     "wrong": 19,
+     "unknown": 0
+    }
+   }
+  }
+ }
+}
