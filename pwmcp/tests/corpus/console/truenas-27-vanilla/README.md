@@ -104,3 +104,7 @@ use those for durations. File names are unchanged.
   first, discarded std-VGA attempt (garbage framebuffer, see `MANIFEST.json`).
 * OCR numbers in `OCR-EVAL.md` came from the OCR sidecar as it stood in the sidecar branch worktree at
   about 07:55 UTC on 2026-10-27; see that file for the exact commit statement.
+
+## Ground-truth corrections
+
+- 2026-10-27: the title underline on line 2 of frames 19 and 20 was transcribed as 13 hyphens; the cell bitmap is a single bar on the last-but-one pixel row (the position of `_` in this font; a real hyphen sits mid-height) and is identical to the `_` in `rcu_node`. Corrected to 13 underscores. Found by the glyph-grid atlas conflict {-: 26, _: 2} and confirmed by pixel inspection. The stored OCR scores in `ocr-results.json` were re-scored against the corrected text and did not change.
