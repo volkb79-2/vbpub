@@ -1088,7 +1088,7 @@ RUN set -euo pipefail; \
             echo "dtop=not-installed"; \
         fi; \
         if command -v lazydocker >/dev/null 2>&1; then \
-            echo "lazydocker=$(lazydocker --version 2>&1 | head -1)"; \
+            echo "lazydocker=$(lazydocker --version 2>&1 | awk '/^Version:/ { print $2; exit }')"; \
         else \
             echo "lazydocker=not-installed"; \
         fi; \
@@ -1118,7 +1118,7 @@ RUN set -euo pipefail; \
             echo "hadolint=not-installed"; \
         fi; \
         if command -v grype >/dev/null 2>&1; then \
-            echo "grype=$(grype version 2>&1 | head -1)"; \
+            echo "grype=$(grype version 2>&1 | awk '/^Version:/ { print $2; exit }')"; \
         else \
             echo "grype=not-installed"; \
         fi; \

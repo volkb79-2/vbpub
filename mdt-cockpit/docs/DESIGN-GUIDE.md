@@ -69,7 +69,9 @@ format.
 ## The home is user state; image assets live outside it
 
 The devcontainer persists one host directory at `/home/vscode`
-(`~/mdt-cockpit-home/`, mode `0700`). A list of individual home mounts made
+(`${localEnv:HOME}/mdt-cockpit-${localWorkspaceFolderBasename}-home/`, one per checkout,
+mode `0700`; the initializer expands the variable exactly as the Dev Containers CLI does). A
+list of individual home mounts made
 state discoverability depend on knowing which tools wrote which dot
 directories, and image-built files in unmounted parts of the home disappeared
 on rebuild. A single home source makes persistence complete and visible in one

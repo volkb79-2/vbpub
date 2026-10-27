@@ -803,6 +803,7 @@ def test_bootstrap_checks_slices_before_preparing_host_sources(
         ROOT / "templates" / "README.md",
         ROOT / "DEVCONTAINER-LIFECYCLE.md",
         ROOT / "docs" / "CONSUMERS.md",
+        ROOT / "docs" / "DESIGN-GUIDE.md",
         ROOT / "USAGE.md",
         ROOT / "README.md",
     ],
@@ -816,6 +817,24 @@ def test_user_facing_docs_match_persistence_targets(path: Path) -> None:
     # The old parent may be NAMED (to explain what to copy from), but no doc may
     # still show it as a mount source.
     assert "localEnv:HOME}/mdt--mounted-folders" not in text, path
+
+
+def test_the_shell_snippets_in_home_persistence_paste_cleanly() -> None:
+    """`NEW=~/mdt-cockpit-<checkout>-home` once shipped in the migration snippet: pasted, bash parses
+    `<checkout>` as a redirection. Every fenced bash block must parse (and pass shellcheck when present)."""
+    import shutil
+
+    text = (ROOT / "docs" / "HOME-PERSISTENCE.md").read_text(encoding="utf-8")
+    blocks = re.findall(r"```bash\n(.*?)```", text, re.S)
+    assert len(blocks) >= 2, "the manual-copy and the shared-home snippets"
+    for block in blocks:
+        code = "\n".join(line for line in block.splitlines() if not line.lstrip().startswith("#"))
+        assert "<checkout>" not in code and "<basename>" not in code, "a placeholder in code would be a redirection when pasted"
+        syntax = subprocess.run(["bash", "-n"], input=block, capture_output=True, text=True)
+        assert syntax.returncode == 0, syntax.stderr
+        if shutil.which("shellcheck"):
+            lint = subprocess.run(["shellcheck", "-s", "bash", "-S", "warning", "-"], input=block, capture_output=True, text=True)
+            assert lint.returncode == 0, lint.stdout
 
 
 def test_manual_copy_replaces_the_retired_migration_in_every_user_doc() -> None:

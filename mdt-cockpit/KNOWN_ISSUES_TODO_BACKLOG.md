@@ -498,10 +498,13 @@ Only ov, gdu, dust, yazi, regctl, nvim, lnav and shellcheck are normalised. `cla
 `glances` `Glances version:<TAB>4.5.8`, `b2` `b2 command line tool, version 5.0.2 (b2sdk ...)`, `consul`/`vault`/`gh`/
 `delta`/`fd`/`rga`/`ripgrep`/`htop`/`node` likewise; the 20261021 and 20261022 manifests recorded `copilot` as
 `Package extraction took 18189ms` (a first-run log line). The aider row regressed to its usage banner on 20261027
-(fixed: the manifest RUN no longer exports the staged `AIDER_*` variables and reads the distribution version). Fix:
-one normaliser in `manifest_sections.py` (first semver-looking token per line, with per-tool exceptions) applied
-when the custom-tooling file is read, with a test over the recorded banners; the staged version
-(`tool-versions.env`) is the better source for every staged tool and already present in that RUN.
+(fixed: the manifest RUN no longer exports the staged `AIDER_*` variables and reads the distribution version).
+**Status 2026-10-27 (follow-up): FIXED in the review branch** — `manifest_sections.normalise_version` (first
+version-looking token, `v` stripped, `sss`/`ksm-optin`/node/npm passed through) is applied when the custom-tooling
+file is read; grype and lazydocker take their `Version:` line in the Dockerfile; `scripts/test_oci_tool_staging.py`
+runs the real 20261027 banners through the Dockerfile's own extraction commands and the normaliser. Still open:
+the staged version (`tool-versions.env`) would be the better source for every staged tool and is already present in
+that RUN; a manifest built from it would not depend on banner parsing at all.
 
 ## MDT-035 - `INSTALL_COPILOT`, `INSTALL_CLAUDELINK`, `INSTALL_PI` and `PI_VERSION` are not wired through bake (2026-10-27)
 

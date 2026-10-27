@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 from mdt_cli import MdtArgumentParser
 import json
+import re
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -180,6 +181,35 @@ def read_key_value_file(path: Path) -> dict[str, str]:
     if not path.exists():
         return {}
     return parse_key_value_lines(path.read_text(encoding="utf-8").splitlines())
+
+
+# ── Version normalisation ────────────────────────────────────────────────────
+# The Dockerfile's manifest RUN records what each tool prints for `--version`: a bare version
+# for some, a banner (`gh version 2.103.3 (2026-10-26)`, `GitHub Copilot CLI 1.0.92-4.`,
+# `Glances version:<TAB>4.5.8`) for most. The manifest shows the VERSION, so every recorded
+# value goes through `normalise_version` when the custom-tooling file is read (MDT-034). A value
+# without a version-looking token (`not-installed`, `true`, an unexpected label line) is kept
+# as recorded, so garbage stays visible instead of being hidden; the fixtures in
+# scripts/test_oci_tool_staging.py are the real banners of the 20261027 build.
+VERSION_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9_.])v?(\d+(?:\.\d+)+(?:[.\-+][0-9A-Za-z.\-+]*[0-9A-Za-z])?)"
+)
+# Values that are not versions by design: sss (an unreleased script, commit recorded in prose),
+# ksm-optin (a build switch) and the Node runtime (rendered as node/npm print it).
+VERSION_PASSTHROUGH = frozenset({"sss", "ksm-optin", "node", "npm"})
+
+
+def normalise_version(name: str, raw: str) -> str:
+    """The bare version in a `--version` banner, or the banner unchanged when it has none."""
+    value = (raw or "").strip()
+    if name in VERSION_PASSTHROUGH or value in ("", "not-installed"):
+        return value
+    match = VERSION_TOKEN.search(value)
+    return match.group(1) if match else value
+
+
+def normalise_versions(tools: Mapping[str, str]) -> dict[str, str]:
+    return {name: normalise_version(name, version) for name, version in tools.items()}
 
 
 def read_list_file(path: Path) -> list[str]:
@@ -1019,7 +1049,7 @@ def _parse_args() -> argparse.Namespace:
 
 def _run_installed(args: argparse.Namespace) -> int:
     output_path = Path(args.output)
-    custom_tooling = read_key_value_file(Path(args.custom_tooling_file))
+    custom_tooling = normalise_versions(read_key_value_file(Path(args.custom_tooling_file)))
     python_packages = read_list_file(Path(args.python_packages_file))
     system_packages = read_list_file(Path(args.system_packages_file))
     artifact_map = _load_artifact_map(args.artifact_metadata)
@@ -1049,7 +1079,7 @@ def _run_unified(args: argparse.Namespace) -> int:
     if source_path and source_path.exists():
         source_content = source_path.read_text(encoding="utf-8")
 
-    custom_tooling = read_key_value_file(Path(args.custom_tooling_file))
+    custom_tooling = normalise_versions(read_key_value_file(Path(args.custom_tooling_file)))
     python_packages = read_list_file(Path(args.python_packages_file))
     system_packages = read_list_file(Path(args.system_packages_file))
     artifact_map = _load_artifact_map(args.artifact_metadata)

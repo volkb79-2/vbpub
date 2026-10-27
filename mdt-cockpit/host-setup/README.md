@@ -282,6 +282,20 @@ zswap choices. See [`../docs/BUILD-ARCHITECTURE.md`](../docs/BUILD-ARCHITECTURE.
 for the design decisions and [`../docs/CONSUMERS.md`](../docs/CONSUMERS.md) for
 pasteable consumer configuration.
 
+### Recovering a damaged `/etc/environment` block
+
+install.sh keeps `BUILDX_BUILDER`/`BUILDKIT_HOST` for PAM sessions in a marked block of
+`/etc/environment` (`# BEGIN mdt-buildkit ...` to `# END mdt-buildkit`, from
+`etc/environment.mdt-buildkit`), replaced in place on every run. Before anything is installed (the
+pre-flight, ahead of the commit point) it checks that the file has either no marker or exactly one
+BEGIN followed by one END; an orphan BEGIN, an END before its BEGIN or duplicate markers refuse the
+whole run with `ERROR: /etc/environment: <defect> in the '# BEGIN mdt-buildkit' block`, because the
+replace would otherwise drop every line after the orphan marker (`PATH` included). Recovery: open
+`/etc/environment` as root, delete every line from the first `# BEGIN mdt-buildkit` to the last
+`# END mdt-buildkit` (and any stray marker), keep the rest, then re-run install.sh, which appends a
+fresh block. A trailing-whitespace END line is accepted as is. `mdt-host-check.sh` does not inspect
+this file; the oracle is `host-setup/tests/test_install_runtime_blocks.py`.
+
 ## dev-gates: why
 
 `dev-gates.slice` is a SIBLING of `dev-interactive.slice`/`dev-background.slice`

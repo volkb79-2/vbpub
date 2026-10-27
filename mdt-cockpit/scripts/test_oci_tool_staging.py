@@ -907,6 +907,171 @@ def test_a_github_api_rate_limit_failure_names_the_token_variables_and_the_quota
     assert "HTTP 403" in text and "GITHUB_TOKEN or GITHUB_PUSH_PAT" in text
     assert "X-RateLimit-Remaining=0" in text and "resets at 2027-01-15T08:00:00Z" in text and "no token was sent" in text
     # A non-GitHub 403 and a GitHub 404 carry no rate-limit hint.
-    assert staging._github_rate_limit_hint("https://example.invalid/x", error) == ""
+    assert staging._github_rate_limit_hint("https://example.invalid/x", error, token_sent=False) == ""
     not_found = urllib.error.HTTPError("https://api.github.com/x", 404, "Not Found", headers, io.BytesIO(b""))
-    assert staging._github_rate_limit_hint("https://api.github.com/x", not_found) == ""
+    assert staging._github_rate_limit_hint("https://api.github.com/x", not_found, token_sent=True) == ""
+
+
+def test_the_rate_limit_hint_reports_the_request_actually_sent_and_never_leaks_the_token(
+    monkeypatch: _pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import email.message
+    import urllib.error
+
+    secret = "ghp_s3cr3tTOKENvalue1234567890"
+    monkeypatch.setenv("GITHUB_TOKEN", secret)
+    headers = email.message.Message()
+    headers["X-RateLimit-Remaining"] = "0"
+    error = urllib.error.HTTPError("https://api.github.com/repos/o/r/releases", 403, "Forbidden", headers, io.BytesIO(b""))
+    monkeypatch.setattr(staging.urllib.request, "urlopen", mock.Mock(side_effect=error))
+    with mock.patch.object(staging, "_artifact_cache_dir", return_value=tmp_path / "cache"):
+        # The request that failed carried the token (API headers): say so, without the token.
+        with _pytest.raises(staging.StageError) as with_token:
+            staging._download("https://api.github.com/repos/o/r/releases", tmp_path / "a", headers=staging._github_api_headers())
+        # A plain download request carried none, whatever the environment holds.
+        with _pytest.raises(staging.StageError) as without_token:
+            staging._download("https://api.github.com/repos/o/r/releases", tmp_path / "b")
+    assert "a token was sent" in str(with_token.value) and secret not in str(with_token.value)
+    assert "no token was sent" in str(without_token.value) and secret not in str(without_token.value)
+    assert secret not in repr(with_token.value.__cause__)
+
+
+def test_a_github_429_is_retried_and_then_fails_with_the_rate_limit_hint(monkeypatch: _pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import email.message
+    import urllib.error
+
+    headers = email.message.Message()
+    headers["X-RateLimit-Remaining"] = "0"
+    error = urllib.error.HTTPError("https://api.github.com/repos/o/r/releases", 429, "Too Many Requests", headers, io.BytesIO(b""))
+    opener = mock.Mock(side_effect=error)
+    monkeypatch.setattr(staging.urllib.request, "urlopen", opener)
+    slept: list[float] = []
+    monkeypatch.setattr(staging.time, "sleep", slept.append)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_PUSH_PAT", raising=False)
+    with mock.patch.object(staging, "_artifact_cache_dir", return_value=tmp_path / "cache"):
+        with _pytest.raises(staging.StageError) as caught:
+            staging._download("https://api.github.com/repos/o/r/releases", tmp_path / "out")
+    assert opener.call_count == staging.DEFAULT_RETRIES and len(slept) == staging.DEFAULT_RETRIES - 1
+    assert "HTTP 429" in str(caught.value) and "GITHUB_TOKEN or GITHUB_PUSH_PAT" in str(caught.value)
+
+
+def test_the_estate_window_validator_refuses_a_non_table_and_values_below_one(monkeypatch: _pytest.MonkeyPatch, tmp_path: Path) -> None:
+    estate = tmp_path / "cmru.orchestration.toml"
+    monkeypatch.setattr(staging, "PROJECT_ROOT", tmp_path / "mdt-cockpit")
+    for content, pattern in (
+        ("versions = 5\n", "cannot read versions.age_window_days"),
+        ("[versions]\nage_window_days = 0\n", "positive integer"),
+        ("[versions]\nage_window_days = true\n", "positive integer"),
+        ("[versions]\nage_window_days = 'x'\n", "positive integer"),
+        ("[other]\n", "cannot read versions.age_window_days"),
+    ):
+        estate.write_text(content, encoding="utf-8")
+        with _pytest.raises(staging.StageError, match=pattern):
+            staging._estate_window_days()
+    estate.write_text("[versions]\nage_window_days = 21\n", encoding="utf-8")
+    assert staging._estate_window_days() == 21
+
+
+def test_the_fallback_warning_is_printed_once_per_run(monkeypatch: _pytest.MonkeyPatch, capsys: _pytest.CaptureFixture[str]) -> None:
+    monkeypatch.delenv("MDT_TOOL_MIN_AGE_DAYS", raising=False)
+    monkeypatch.setattr(staging, "_MIN_AGE_FALLBACK_WARNED", False)
+
+    def unreadable() -> int:
+        raise staging.StageError("no estate file")
+
+    monkeypatch.setattr(staging, "_estate_window_days", unreadable)
+    assert [staging._min_age_days() for _ in range(3)] == [staging.DEFAULT_MIN_AGE_DAYS] * 3
+    assert capsys.readouterr().err.count("[WARNING]") == 1
+
+
+# ── The manifest's Version column: real banners through the Dockerfile's own extraction ─────────
+# Each banner is what the tool printed in the 20261027 build (package-manifests-versioned) or its
+# documented multi-line output; the expected value is the bare version the manifest must show.
+VERSION_BANNERS: dict[str, tuple[str, str]] = {
+    "aider": ("0.86.3.dev53+g5dc9490bb", "0.86.3.dev53+g5dc9490bb"),
+    "antigravity": ("1.4.8", "1.4.8"),
+    "claude": ("2.1.311 (Claude Code)", "2.1.311"),
+    "codex": ("codex-cli 0.164.0", "0.164.0"),
+    "copilot": ("GitHub Copilot CLI 1.0.92-4.", "1.0.92-4"),
+    "openclaw": ("OpenClaw 2026.9.8 (fc23bc8)", "2026.9.8"),
+    "opencode": ("1.19.4", "1.19.4"),
+    "pi": ("1.4.0", "1.4.0"),
+    "reasonix": ("reasonix v2.53.1", "2.53.1"),
+    "dive": ("dive 0.13.1", "0.13.1"),
+    "dtop": ("dtop 0.10.4", "0.10.4"),
+    "glances": ("Glances version:\t4.5.8", "4.5.8"),
+    "lazydocker": ("Version: 0.25.2\nDate: 2026-09-01T10:00:00Z\nBuildSource: binaryRelease\nCommit: 1234abcd\nOS: linux\nArch: amd64", "0.25.2"),
+    "syft": ("syft 1.55.0", "1.55.0"),
+    "cdebug": ("cdebug version 0.0.19 (built: 2026-01-18T19:11:40Z commit: 6c205f0b663df4dec235f42e905e94b40709159a)", "0.0.19"),
+    "grype": ("Application:         grype\nVersion:             0.121.0\nBuildDate:           2026-10-01T00:00:00Z\nGitCommit:           deadbeef\nPlatform:            linux/amd64", "0.121.0"),
+    "hadolint": ("Haskell Dockerfile Linter 2.15.1", "2.15.1"),
+    "awscli": ("aws-cli/2.36.9 Python/3.14.6 Linux/7.2.9+deb13-amd64 exe/x86_64.debian.13", "2.36.9"),
+    "b2": ("b2 command line tool, version 5.0.2 (b2sdk version 2.13.2)", "5.0.2"),
+    "bat": ("bat 0.26.1 (979ba22)", "0.26.1"),
+    "composer": ("Composer version 2.8.8 2025-04-04 16:56:46", "2.8.8"),
+    "consul": ("Consul v2.1.0\nRevision 1234abcd\nBuild Date 2026-10-01T00:00:00Z", "2.1.0"),
+    "delta": ("delta 0.20.1", "0.20.1"),
+    "fd": ("fd 10.5.0", "10.5.0"),
+    "fzf": ("0.74.5 (c0a193e0)", "0.74.5"),
+    "gh": ("gh version 2.103.3 (2026-10-26)\nhttps://github.com/cli/cli/releases/tag/v2.103.3", "2.103.3"),
+    "grpcurl": ("grpcurl v1.9.4", "1.9.4"),
+    "htop": ("htop 3.5.3", "3.5.3"),
+    "php": ("PHP 8.5.12 (cli) (built: Oct 21 2026 08:09:42) (NTS)\nCopyright (c) The PHP Group", "8.5.12"),
+    "psql": ("psql (PostgreSQL) 18.1 (Debian 18.1-1.pgdg13+1)", "18.1"),
+    "redis-cli": ("redis-cli 8.10.3 (git:1a2b3c4d)", "8.10.3"),
+    "rga": ("ripgrep-all 0.10.10", "0.10.10"),
+    "ripgrep": ("ripgrep 15.2.0 (rev e89fff89ac)", "15.2.0"),
+    "vault": ("Vault v2.2.1 (0e7c41b936218bd2401ab0f891c93bec10e2e8e4), built 2026-10-22T16:27:49Z", "2.2.1"),
+    "yq": ("yq (https://github.com/mikefarah/yq/) version v4.54.1", "4.54.1"),
+    "dust": ("Dust 1.2.6", "1.2.6"),
+    "ov": ("ov version 0.55.0 rev:abc123", "0.55.0"),
+}
+# Tool name -> the binary its manifest line runs (when they differ).
+BANNER_BINARIES = {"antigravity": "agy", "ripgrep": "rg", "awscli": "aws"}
+
+
+def _manifest_commands() -> dict[str, str]:
+    """`tool` -> the `$( ... )` command the manifest RUN records it with (parenthesis-free commands only)."""
+    layer = _manifest_run_layer()
+    return {m.group(1): m.group(2) for m in re.finditer(r'echo "([A-Za-z0-9-]+)=\$\(([^()]*)\)"', layer)}
+
+
+def test_every_recorded_banner_normalises_to_its_bare_version() -> None:
+    for tool, (banner, expected) in VERSION_BANNERS.items():
+        # The line the Dockerfile records (which line that is, is the extraction test's business).
+        recorded = next(line for line in banner.splitlines() if expected in line)
+        assert manifest_sections.normalise_version(tool, recorded) == expected, tool
+    assert manifest_sections.normalise_version("sss", "unreleased script, default-branch commit abc") == "unreleased script, default-branch commit abc"
+    assert manifest_sections.normalise_version("ksm-optin", "true") == "true"
+    assert manifest_sections.normalise_version("node", "v26.12.1") == "v26.12.1"
+    assert manifest_sections.normalise_version("anything", "not-installed") == "not-installed"
+    assert manifest_sections.normalise_version("grype", "Application:         grype") == "Application:         grype", "garbage stays visible"
+
+
+def test_the_dockerfile_extraction_commands_record_one_bare_version_per_tool(tmp_path: Path) -> None:
+    """Runs each tool's real manifest command against a shim printing the tool's banner: multi-line
+    banners (grype, lazydocker, gh, consul, php) must come out as one line, and the normaliser must
+    turn that line into the bare version."""
+    commands = _manifest_commands()
+    assert {"grype", "lazydocker", "glances", "copilot", "claude", "codex", "gh"} <= set(commands)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    checked = []
+    for tool, command in commands.items():
+        if tool not in VERSION_BANNERS:
+            continue
+        banner, expected = VERSION_BANNERS[tool]
+        binary = BANNER_BINARIES.get(tool, command.split()[0])
+        assert command.split()[0] == binary, (tool, command)
+        shim = bindir / binary
+        shim.write_text("#!/bin/sh\ncat <<'MDT_BANNER'\n" + banner + "\nMDT_BANNER\n", encoding="utf-8")
+        shim.chmod(0o755)
+        env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}")
+        result = subprocess.run(["bash", "-o", "pipefail", "-c", command], capture_output=True, text=True, env=env)
+        assert result.returncode == 0, (tool, command, result.stderr)
+        recorded = result.stdout.strip()
+        assert "\n" not in recorded, f"{tool}: the manifest line would carry a multi-line banner: {recorded!r}"
+        assert manifest_sections.normalise_version(tool, recorded) == expected, (tool, recorded)
+        checked.append(tool)
+    assert len(checked) >= 25, checked

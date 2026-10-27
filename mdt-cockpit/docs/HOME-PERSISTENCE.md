@@ -89,7 +89,10 @@ Stop the container first (so SQLite WAL/SHM files are quiescent), then, on the h
 
 ```bash
 OLD=~/mdt--mounted-folders
-NEW=~/mdt-cockpit-<checkout>-home   # the checkout's folder name, e.g. ~/mdt-cockpit-myrepo-home
+# Run from the checkout's folder: its basename is ${localWorkspaceFolderBasename}, so the new
+# home is ~/mdt-cockpit-<basename>-home (for a checkout in ~/src/myrepo: ~/mdt-cockpit-myrepo-home).
+CHECKOUT=$(basename "$PWD")
+NEW=~/mdt-cockpit-${CHECKOUT}-home
 mkdir -p "$NEW" "$NEW/.config/mdt-cockpit" "$NEW/.local/share"
 
 for item in .claude .claude.json .ssh .gnupg .minisign .claudelink .pi .reasonix .openclaw \
@@ -111,6 +114,38 @@ done
 Run it as the host user who owns the cockpit — Dev Containers maps `vscode` to that user's uid,
 so `cp -a` keeps every file readable inside the container. Verify logins and keys, then delete
 the old directory yourself when you are satisfied.
+
+### Moving from the shared `~/mdt-cockpit-home/`
+
+Templates vendored before the per-checkout naming mounted one shared `~/mdt-cockpit-home/` and
+`~/mdt-cockpit-tmp/` for every checkout. Re-vendoring the template changes the mount source, so the
+next rebuild starts with a **new, empty** home: logins, keys and histories are still in the old
+directory, not lost. Either move the old home into place for the checkout that should inherit it,
+or keep sharing on purpose:
+
+```bash
+# Option A: this checkout inherits the shared home (run from the checkout's folder, container stopped).
+CHECKOUT=$(basename "$PWD")
+[ -e ~/mdt-cockpit-"${CHECKOUT}"-home ] || mv ~/mdt-cockpit-home ~/mdt-cockpit-"${CHECKOUT}"-home
+[ -e ~/mdt-cockpit-"${CHECKOUT}"-tmp ] || mv ~/mdt-cockpit-tmp ~/mdt-cockpit-"${CHECKOUT}"-tmp
+# Option B: keep ONE shared home for every checkout: edit the two mount sources in
+# .devcontainer/devcontainer.json back to ${localEnv:HOME}/mdt-cockpit-home/ and
+# ${localEnv:HOME}/mdt-cockpit-tmp/ (the role comes from the target, so the modes stay).
+```
+
+A second checkout that should share state with the first can symlink its sources to the first
+checkout's directories (`ln -s ~/mdt-cockpit-myrepo-home ~/mdt-cockpit-myrepo-2-home`); the
+initializer accepts an existing directory or symlink as the source.
+
+**`${localWorkspaceFolderBasename}` is the folder name, nothing more.** A git worktree opened
+from `.claude/worktrees/agent-1234/` or `.worktrees/feature-x/` gets `~/mdt-cockpit-agent-1234-home/`,
+a fresh empty home with no logins or keys; so does a second clone under a different folder name,
+while two unrelated repositories that happen to share a folder name share a home. Symlink or rename
+as above when that is not what you want.
+
+**Mount-spec pitfall.** The sources are Docker `--mount` specs, which split on commas. A checkout
+folder whose name contains a comma (or `=`) breaks the mount string; rename the folder, or spell the
+two sources by hand in `devcontainer.json` without the variable.
 
 **Do not copy** the old image's runtime payloads — they are replaced by the new image and
 would shadow it or point at paths that no longer exist:

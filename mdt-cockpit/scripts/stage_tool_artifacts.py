@@ -239,7 +239,10 @@ def _download(
                 )
                 time.sleep(delay)
                 continue
-            raise StageError(f"Download failed for {url}: HTTP {exc.code}{_github_rate_limit_hint(url, exc)}") from exc
+            raise StageError(
+                f"Download failed for {url}: HTTP {exc.code}"
+                f"{_github_rate_limit_hint(url, exc, token_sent='Authorization' in request_headers)}"
+            ) from exc
         except urllib.error.URLError as exc:
             last_exc = exc
             if attempt < DEFAULT_RETRIES:
@@ -255,10 +258,11 @@ def _download(
     raise StageError(f"Download failed for {url}: {last_exc}")
 
 
-def _github_rate_limit_hint(url: str, exc: urllib.error.HTTPError) -> str:
+def _github_rate_limit_hint(url: str, exc: urllib.error.HTTPError, *, token_sent: bool) -> str:
     """The actionable part of a GitHub API 403/429: these are the rate limit (60/h anonymous, 5000/h
     with a token) far more often than a real permission problem, and the staging run makes ~15 API
-    calls (aged-release lists, asset digests, the sss commit list). Says whether a token was sent."""
+    calls (aged-release lists, asset digests, the sss commit list). Says whether THIS request carried
+    an Authorization header (never the token itself)."""
     if urllib.parse.urlparse(url).hostname != "api.github.com" or exc.code not in (403, 429):
         return ""
     headers = exc.headers or {}
@@ -267,7 +271,7 @@ def _github_rate_limit_hint(url: str, exc: urllib.error.HTTPError) -> str:
     reset_text = ""
     if reset and str(reset).isdigit():
         reset_text = f", resets at {datetime.fromtimestamp(int(reset), timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}"
-    token_text = "a token was sent" if _token() else "no token was sent"
+    token_text = "a token was sent" if token_sent else "no token was sent"
     quota = f"X-RateLimit-Remaining={remaining}{reset_text}" if remaining is not None else "no rate-limit headers"
     return (
         f" (GitHub API rate limit or forbidden: {quota}; {token_text}: set GITHUB_TOKEN or GITHUB_PUSH_PAT "
@@ -412,11 +416,17 @@ def _min_age_days() -> int:
         if not re.fullmatch(r"[0-9]+", raw):
             raise StageError(f"{MIN_AGE_DAYS_ENV} must be an integer >= 0, got {raw!r}")
         return int(raw)
+    global _MIN_AGE_FALLBACK_WARNED
     try:
         return _estate_window_days()
     except StageError as exc:
-        _warn(f"{exc}; using the built-in {DEFAULT_MIN_AGE_DAYS}-day buffer")
+        if not _MIN_AGE_FALLBACK_WARNED:  # once per run, not once per resolved tool
+            _warn(f"{exc}; using the built-in {DEFAULT_MIN_AGE_DAYS}-day buffer")
+            _MIN_AGE_FALLBACK_WARNED = True
         return DEFAULT_MIN_AGE_DAYS
+
+
+_MIN_AGE_FALLBACK_WARNED = False
 
 
 def _warn(message: str) -> None:
@@ -1982,7 +1992,7 @@ def _estate_window_days() -> int:
     path = PROJECT_ROOT.parent / "cmru.orchestration.toml"
     try:
         days = tomllib.loads(path.read_text(encoding="utf-8"))["versions"]["age_window_days"]
-    except (OSError, ValueError, KeyError) as exc:
+    except (OSError, ValueError, KeyError, TypeError) as exc:  # TypeError: `versions` is not a table
         raise StageError(f"cannot read versions.age_window_days from {path}: {exc}") from exc
     if not isinstance(days, int) or isinstance(days, bool) or days < 1:
         raise StageError(f"{path}: versions.age_window_days must be a positive integer, got {days!r}")

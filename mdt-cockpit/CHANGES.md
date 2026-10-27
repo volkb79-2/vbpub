@@ -2,6 +2,27 @@
 
 All notable changes to this project are recorded here. Entries marked `cmru: generated` are produced from the project-scoped release range before the release gate runs.
 
+## [Unreleased]
+
+### Changed
+- The devcontainer templates mount one home and one `/tmp` **per checkout**:
+  `${localEnv:HOME}/mdt-cockpit-${localWorkspaceFolderBasename}-home/` and `-tmp/` (the vendored
+  initializer expands the variable to the checkout's folder name). The shared `~/mdt-cockpit-home/`
+  is no longer the template default; an existing shared home is not moved automatically, see
+  `docs/HOME-PERSISTENCE.md` "Moving from the shared `~/mdt-cockpit-home/`" (a git worktree checkout
+  gets a fresh, empty home).
+- Age policy (operator decision 2026-10-27): first-party wheels (`cli-extended`, `ciu`, `cmru`, `topos`,
+  `nyxloom`) and the PWMCP bundle have no age window; the 14-day buffer applies to third-party tools only.
+  `MDT_TOOL_MIN_AGE_DAYS` defaults to the estate's `versions.age_window_days`.
+
+### Fixed
+- The image manifest records bare versions (grype, lazydocker, glances, copilot, claude, codex and every
+  other banner are normalised; aider no longer records its usage banner), lists every first-party wheel
+  and derives the system-package inventory from `apt/packages.list`.
+- host-setup: `install.sh` validates the `/etc/environment` block before the commit point, never aborts
+  silently when dockerd is not running, and `mdt-host-check.sh` checks the inotify setting against the
+  policy minimum instead of the installed file's own value.
+
 <!-- cmru: release history -->
 
 ## [source-1bc10c5a6b68] - 2026-10-27

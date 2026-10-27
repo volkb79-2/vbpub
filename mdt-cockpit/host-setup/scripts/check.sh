@@ -847,18 +847,20 @@ case "${WATCHER_MEMORY_POLICY:-}" in
 esac
 
 echo "== inotify watch budget (VS Code workspace watcher, MDT-003) =="
-# The threshold is the value the installer applied (the installed file first; the shipped file only
-# when run from a checkout on a host that was never installed); 524288 when neither is readable.
+# BEGIN inotify-budget (tests extract this block; the MDT_INOTIFY_* overrides exist for them)
+# The threshold is the POLICY minimum: the shipped etc/sysctl.d/99-inotify.conf when run from a
+# checkout, 524288 when installed. Deliberately NOT the installed file: a file lowered by hand
+# would otherwise certify itself (both checks below would compare against its own value).
+_inotify_installed="${MDT_INOTIFY_SYSCTL_FILE:-/etc/sysctl.d/99-mdt-inotify.conf}"
+_inotify_shipped="${MDT_INOTIFY_SHIPPED_FILE:-$(dirname "$0")/../etc/sysctl.d/99-inotify.conf}"
+_inotify_proc="${MDT_INOTIFY_PROC:-/proc/sys/fs/inotify/max_user_watches}"
+_inotify_value() { awk -F= '/^[[:space:]]*fs\.inotify\.max_user_watches[[:space:]]*=/ {gsub(/[[:space:]]/,"",$2); print $2}' "$1" 2>/dev/null | tail -1; }
 want_watches=""
-for _wf in /etc/sysctl.d/99-mdt-inotify.conf "$(dirname "$0")/../etc/sysctl.d/99-inotify.conf"; do
-  [ -r "$_wf" ] || continue
-  want_watches=$(awk -F= '/^[[:space:]]*fs\.inotify\.max_user_watches[[:space:]]*=/ {gsub(/[[:space:]]/,"",$2); print $2}' "$_wf" | tail -1)
-  [ -n "$want_watches" ] && break
-done
-have_watches=$(cat /proc/sys/fs/inotify/max_user_watches 2>/dev/null || echo "")
+[ -r "$_inotify_shipped" ] && want_watches=$(_inotify_value "$_inotify_shipped")
 case "$want_watches" in
-  ''|*[!0-9]*) [ -n "$want_watches" ] && warn "fs.inotify.max_user_watches threshold '$want_watches' is not a number; using 524288"; want_watches=524288 ;;
+  ''|*[!0-9]*) [ -n "$want_watches" ] && warn "shipped fs.inotify.max_user_watches threshold '$want_watches' is not a number; using 524288"; want_watches=524288 ;;
 esac
+have_watches=$(cat "$_inotify_proc" 2>/dev/null || echo "")
 if [ -z "$have_watches" ]; then
   warn "fs.inotify.max_user_watches unreadable"
 elif [ "$have_watches" -ge "$want_watches" ]; then
@@ -866,16 +868,22 @@ elif [ "$have_watches" -ge "$want_watches" ]; then
 else
   fail "fs.inotify.max_user_watches=$have_watches < $want_watches — VS Code reports 'unable to watch for file changes' on large workspaces; re-run install.sh"
 fi
-if [ -f /etc/sysctl.d/99-mdt-inotify.conf ]; then
-  # Present AND carrying the key: an edited or truncated file would otherwise pass as "persists".
-  if grep -Eq "^[[:space:]]*fs\.inotify\.max_user_watches[[:space:]]*=[[:space:]]*${want_watches}[[:space:]]*$" /etc/sysctl.d/99-mdt-inotify.conf; then
-    ok "/etc/sysctl.d/99-mdt-inotify.conf sets fs.inotify.max_user_watches=$want_watches (persists across reboots)"
-  else
-    warn "/etc/sysctl.d/99-mdt-inotify.conf present but does not set fs.inotify.max_user_watches=$want_watches; re-run install.sh"
-  fi
+if [ -f "$_inotify_installed" ]; then
+  # Present AND carrying the key at or above the policy minimum: an edited, lowered or truncated
+  # file must not pass as "persists".
+  persisted_watches=$(_inotify_value "$_inotify_installed")
+  case "$persisted_watches" in
+    ''|*[!0-9]*) warn "$_inotify_installed present but sets no numeric fs.inotify.max_user_watches; re-run install.sh" ;;
+    *) if [ "$persisted_watches" -ge "$want_watches" ]; then
+         ok "$_inotify_installed sets fs.inotify.max_user_watches=$persisted_watches (>= $want_watches, persists across reboots)"
+       else
+         fail "$_inotify_installed sets fs.inotify.max_user_watches=$persisted_watches < $want_watches (lowered by hand?) — the next boot drops below the policy; re-run install.sh"
+       fi ;;
+  esac
 else
-  warn "/etc/sysctl.d/99-mdt-inotify.conf missing — the value will not survive a reboot; re-run install.sh"
+  warn "$_inotify_installed missing — the value will not survive a reboot; re-run install.sh"
 fi
+# END inotify-budget
 
 echo "== container placement (informational) =="
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
