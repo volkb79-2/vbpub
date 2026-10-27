@@ -5844,11 +5844,6 @@ def ensure(
                                 record, "runtime-verification-failed"
                             )
                             raise
-                        if claim_unlabeled_network and verified.network_id is None:
-                            raise WorktreeError(
-                                f"[S16] no existing runtime network {record.network!r} "
-                                "is available to adopt"
-                            )
                         if verified != record:
                             _write_shared_ciu_record_snapshot(
                                 workspace_context, verified
