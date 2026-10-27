@@ -568,6 +568,42 @@ def _write(tmp_path, name, data):
     return p
 
 
+def _same_result(a, b):
+    drop = ("session", "grid_report")
+    return {k: v for k, v in a.items() if k not in drop} == {k: v for k, v in b.items() if k not in drop}
+
+
+def test_glyph_reader_goes_through_the_guard_for_a_zoomed_csvga_screen_full_and_incremental():
+    """k=4 dense csvga-16x32 screen: every GlyphReader read is a FULL pipeline pass (sessions exist only for integer_upscale == 1), so the guard
+    always applies; 0 wrong F/H/e cells and the same result as read_image.  A 1:1 incremental read of a font-file screen stays equal to read_image."""
+    base, extra = _load("fonts.atlas.json", "fonts.console-extra.atlas.json")
+    atlas = gg.Atlas.merge(base, extra)
+    lines = [l[:40] for l in DENSE]
+    im = _zoom(_render_font(extra.fonts["font:csvga-16x32"], lines), 2)
+    assert gg.probe_scale(im)["integer_upscale"] == 4
+    reader = gg.GlyphReader(atlas)
+    changed = im.copy()
+    changed.paste((0, 0, 0), (0, 0, 8 * 2 * 4, 16 * 2 * 4))           # blank the first 2 cells of row 0 (a different, still 4-fold frame)
+    for frame in (im, im, changed, im):
+        res = reader.read(frame)
+        ref = gg.read_image(frame, atlas)
+        assert res["session"]["path"] in ("full", "identical")           # never "incremental" for k > 1
+        assert res["scale_unverified"] == 4 and res["scale_capped"] is True
+        truth = lines if frame is not changed else ["  " + lines[0][2:]] + lines[1:]
+        assert _wrong_font_exact(res, truth) == [] and "F" not in "".join(res["conf"]) and "H" not in "".join(res["conf"])
+        assert res["conf"][0][2:6] == "aaaa"                             # heavy box cells: alias sets via the divisor-2 font
+        assert _same_result(res, ref)
+    # 1:1 incremental path on a real crop: identical to read_image, nothing about k
+    crop = Image.open(os.path.join(FIX, "crop-14-dialog.png")).convert("RGB")
+    r2 = gg.GlyphReader(base, grid_hints=[(8, 16)])
+    first = r2.read(crop)
+    edited = crop.copy()
+    edited.paste((0, 0, 0), (0, 0, 8, 16))
+    second = r2.read(edited)
+    assert second["session"]["path"] == "incremental" and "scale_unverified" not in second
+    assert _same_result(second, gg.read_image(edited, base, grid_hints=[(8, 16)])) and first["status"] == "ok"
+
+
 def test_alias_cells_also_get_the_twin_characters(tmp_path):
     """Skipping the 'alias' branch of the twin lookup would leave the alias set without the larger font's character."""
     two = _psf2_bytes(8, 16, [(R_SMALL, "AÀ"), ([0, 0, 0x7C, 0x42, 0x7C, 0x42, 0x42, 0x7C, 0, 0, 0, 0, 0, 0, 0, 0], "B")])
