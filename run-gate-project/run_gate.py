@@ -695,6 +695,16 @@ PROFILE_DAEMON_DEFAULT = "cgprofile-host-daemon"
 PROFILE_SAMPLE_SECONDS = 5
 PROFILE_CTL_TIMEOUTS = {"version": 5, "host": 5, "start": 10,
                         "status": 5, "stop": 30}   # contract Sec 1.5, verbatim
+# cgprofile 1.1.0: `stop` answers the error code `stop-incomplete` while the
+# session's sampling worker is still running and keeps the session's
+# resources; the contract says retry. After the third consecutive incomplete
+# attempt the daemon finalizes anyway and the Summary carries
+# `stop_forced: "sampler-still-running"`. Four attempts therefore always end
+# in a summary (forced at worst) unless the daemon is gone, which is a
+# different refusal and is not retried.
+PROFILE_STOP_INCOMPLETE_CODE = "stop-incomplete"
+PROFILE_STOP_RETRY_ATTEMPTS = 4
+PROFILE_STOP_RETRY_SECONDS = 2.0
 PROFILE_TRANSPORT_ENV_VAR = "RUN_GATE_PROFILE_TRANSPORT"
 PROFILE_TRANSPORTS = ("auto", "exec", "socket")
 PROFILE_TRANSPORT_DEFAULT = "auto"
@@ -2465,6 +2475,10 @@ class ProfilerClient:
         self.socket_path = socket_path
         self._carrier: str | None = None
         self.transport_reason: str | None = None
+        # The `error.code` of the last refused response (None after any
+        # other outcome): `stop` reads it to tell a retryable
+        # `stop-incomplete` from every other refusal.
+        self.last_refusal_code: str | None = None
 
     _REQUIRED_KEY = {"start": "session", "stop": "summary"}
 
@@ -2475,6 +2489,7 @@ class ProfilerClient:
 
     def _parse_response(self, verb: str, raw: str, returncode: int = 0,
                         stderr: str = "") -> tuple[dict | None, str | None]:
+        self.last_refusal_code = None
         stderr_tail = (stderr.strip().splitlines() or ["(no stderr)"])[-1]
         try:
             doc = json.loads(raw)
@@ -2512,6 +2527,8 @@ class ProfilerClient:
                 return None, (f"`cgprofile ctl {verb}` response has a "
                               "non-object 'error' value")
             err = err or {}
+            code = err.get("code")
+            self.last_refusal_code = code if isinstance(code, str) else None
             return None, (f"`cgprofile ctl {verb}` refused "
                           f"({err.get('code', 'unknown')}): "
                           f"{err.get('message', stderr_tail)}")
@@ -2698,8 +2715,24 @@ class ProfilerClient:
                 args += [f"--{key}", str(value)]
         return self._ctl("start", *args)
 
-    def stop(self, session: str) -> tuple[dict | None, str | None]:
-        return self._ctl("stop", session)
+    def stop(self, session: str, sleep: Callable[[float], None] = time.sleep
+             ) -> tuple[dict | None, str | None]:
+        """`ctl stop`, retried while the daemon answers `stop-incomplete`
+        (cgprofile 1.1.0: the sampler is still running; the session keeps
+        its resources). Any other refusal, or a summary, returns at once;
+        the last of `PROFILE_STOP_RETRY_ATTEMPTS` refusals is returned with
+        the attempt count so the record says the retries happened."""
+        for attempt in range(1, PROFILE_STOP_RETRY_ATTEMPTS + 1):
+            doc, reason = self._ctl("stop", session)
+            if doc is not None \
+                    or self.last_refusal_code != PROFILE_STOP_INCOMPLETE_CODE:
+                return doc, reason
+            if attempt == PROFILE_STOP_RETRY_ATTEMPTS:
+                return None, (f"{reason} (still incomplete after {attempt} "
+                              f"attempts {PROFILE_STOP_RETRY_SECONDS:g} s "
+                              f"apart; the daemon did not force the stop)")
+            sleep(PROFILE_STOP_RETRY_SECONDS)
+        raise AssertionError("unreachable")  # pragma: no cover
 
     def watch(self, session: str, watch_interval: int = 30) -> "ProfilerWatch":
         return ProfilerWatch(self, session, watch_interval)
@@ -3591,6 +3624,30 @@ def tick_lane_profiling(state: dict) -> None:
         state["sampler"].sample_once()
 
 
+def profile_summary_caveat(summary: object) -> str | None:
+    """cgprofile 1.1.0's additive Summary keys that qualify the summary
+    itself: `stop_forced` (the daemon finalized the session while its
+    sampler was still running; the manifest is `aborted`) and
+    `damon_cleanup.confirmed == false` (the kdamond teardown could not be
+    verified — NOT "DAMON off"). Either is worth one warning line; neither
+    touches the verdict. Anything malformed is not a caveat (the summary is
+    recorded verbatim anyway)."""
+    if not isinstance(summary, dict):
+        return None
+    forced = summary.get("stop_forced")
+    if forced:
+        return (f"cgprofile finalized the session while its sampler was "
+                f"still running (stop_forced={forced!r}); the recorded "
+                f"resources may be incomplete")
+    cleanup = summary.get("damon_cleanup")
+    if isinstance(cleanup, dict) and cleanup.get("confirmed") is False:
+        return (f"cgprofile could not confirm the DAMON teardown for this "
+                f"session (slot {cleanup.get('slot')!r}, quarantined="
+                f"{cleanup.get('quarantined')!r}); DAMON may still be "
+                f"active, which is not the same as DAMON off")
+    return None
+
+
 def finish_lane_profiling(state: dict) -> dict:
     """Contract Sec 4 obligation 2: called in the SAME `finally` that removes
     the container/runner exec, BEFORE it. Returns the three record-level
@@ -3606,7 +3663,17 @@ def finish_lane_profiling(state: dict) -> dict:
         # B1c: `.get()` -- see the matching comment on `start_doc["session"]`
         # above; `_ctl` already validates `summary` is present, this is
         # defense in depth, not a load-bearing check.
-        return {"resources": stop_doc.get("summary"), "profile_error": None,
+        summary = stop_doc.get("summary")
+        # cgprofile 1.1.0: a summary can carry a caveat about ITSELF (forced
+        # stop, unconfirmed DAMON teardown). It is recorded verbatim in
+        # `resources` and disclosed as the lane's profiling warning; the
+        # verdict is untouched (R-36h) and `profile_error` stays None,
+        # because a profile WAS recorded.
+        caveat = profile_summary_caveat(summary)
+        if caveat:
+            state["warning"] = state["warning"] or caveat
+            state["profile_recorded"] = True
+        return {"resources": summary, "profile_error": None,
                 "profile_ref": {"daemon": state["daemon"],
                                 "session": state["session"],
                                 "session_dir": stop_doc.get("session_dir")}}
@@ -3932,6 +3999,8 @@ def print_profile_warning(state: dict) -> None:
         state["_warned"] = True
         suffix = ("basic in-lane sampling only" if state["mode"] == "basic"
                  else "coarse rusage sampling only" if state["mode"] == "rusage"
+                 else "profile recorded with this caveat"
+                 if state.get("profile_recorded")
                  else "no profile recorded")
         print(f"run-gate: WARNING profiling: {state['warning']} — {suffix}",
               file=sys.stderr, flush=True)

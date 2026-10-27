@@ -23084,6 +23084,128 @@ class TestProfilingOrchestration:
         assert result["profile_error"] is not None
         assert state["warning"] == result["profile_error"]
 
+    # -- cgprofile 1.1.0: `stop-incomplete`, `stop_forced`, `damon_cleanup` --
+
+    @staticmethod
+    def _client_with_stop_answers(tmp_path, monkeypatch, answers):
+        """A ProfilerClient whose `_ctl` answers `stop` from a scripted list
+        of `(doc, reason, refusal_code)`; records the calls."""
+        fake_docker(tmp_path, monkeypatch)
+        client = run_gate.ProfilerClient(shutil.which("docker"),
+                                         run_gate.PROFILE_DAEMON_DEFAULT)
+        script = iter(answers)
+        calls = []
+
+        def fake_ctl(verb, *args):
+            calls.append((verb, args))
+            doc, reason, code = next(script)
+            client.last_refusal_code = code
+            return doc, reason
+
+        monkeypatch.setattr(client, "_ctl", fake_ctl)
+        return client, calls
+
+    def test_stop_retries_while_the_daemon_answers_stop_incomplete(
+            self, tmp_path, monkeypatch):
+        stop = json.loads((RG55_FIXTURES / "stop-v1.json").read_text())
+        incomplete = (None, "`cgprofile ctl stop` refused (stop-incomplete): "
+                      "sampling worker still running", "stop-incomplete")
+        client, calls = self._client_with_stop_answers(
+            tmp_path, monkeypatch, [incomplete, incomplete, (stop, None, None)])
+        slept = []
+        doc, reason = client.stop("s-1", sleep=slept.append)
+        assert doc is stop and reason is None
+        assert calls == [("stop", ("s-1",))] * 3
+        assert slept == [run_gate.PROFILE_STOP_RETRY_SECONDS] * 2
+
+    def test_stop_gives_up_after_the_bounded_attempts_and_says_so(
+            self, tmp_path, monkeypatch):
+        incomplete = (None, "`cgprofile ctl stop` refused (stop-incomplete): "
+                      "sampling worker still running", "stop-incomplete")
+        client, calls = self._client_with_stop_answers(
+            tmp_path, monkeypatch, [incomplete] * 10)
+        slept = []
+        doc, reason = client.stop("s-1", sleep=slept.append)
+        assert doc is None
+        assert len(calls) == run_gate.PROFILE_STOP_RETRY_ATTEMPTS == 4
+        assert len(slept) == 3
+        assert reason.startswith("`cgprofile ctl stop` refused (stop-incomplete)")
+        assert reason.endswith("(still incomplete after 4 attempts 2 s apart; "
+                               "the daemon did not force the stop)")
+
+    def test_stop_does_not_retry_any_other_refusal(self, tmp_path, monkeypatch):
+        client, calls = self._client_with_stop_answers(
+            tmp_path, monkeypatch,
+            [(None, "`cgprofile ctl stop` refused (no-such-session): gone",
+              "no-such-session")] * 3)
+        slept = []
+        doc, reason = client.stop("s-1", sleep=slept.append)
+        assert doc is None and "no-such-session" in reason
+        assert len(calls) == 1 and slept == []
+
+    def test_parse_response_records_the_refusal_code(self, tmp_path, monkeypatch):
+        fake_docker(tmp_path, monkeypatch)
+        client = run_gate.ProfilerClient(shutil.which("docker"),
+                                         run_gate.PROFILE_DAEMON_DEFAULT)
+        refused = {"contract": run_gate.PROFILE_CONTRACT, "ok": False,
+                   "error": {"code": "stop-incomplete", "message": "busy"}}
+        doc, reason = client._parse_response("stop", json.dumps(refused))
+        assert doc is None and "(stop-incomplete): busy" in reason
+        assert client.last_refusal_code == "stop-incomplete"
+        refused["error"] = {"code": 7}
+        client._parse_response("stop", json.dumps(refused))
+        assert client.last_refusal_code is None   # a non-string code is none
+        accepted = {"contract": run_gate.PROFILE_CONTRACT, "ok": True,
+                    "summary": {}}
+        doc, reason = client._parse_response("stop", json.dumps(accepted))
+        assert doc == accepted and client.last_refusal_code is None
+        client._parse_response("stop", "not json", returncode=1, stderr="x")
+        assert client.last_refusal_code is None
+
+    def test_finish_daemon_forced_stop_keeps_the_summary_and_warns(
+            self, tmp_path, monkeypatch, capsys):
+        stop = json.loads((RG55_FIXTURES / "stop-v1.json").read_text())
+        stop["summary"]["stop_forced"] = "sampler-still-running"
+        set_cgprofile_plan(tmp_path, monkeypatch, stop=(json.dumps(stop), None, None))
+        fake_docker(tmp_path, monkeypatch)
+        client = run_gate.ProfilerClient(shutil.which("docker"),
+                                         run_gate.PROFILE_DAEMON_DEFAULT)
+        state = {"mode": "daemon", "client": client,
+                 "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                 "session": "s-x", "warning": None}
+        result = run_gate.finish_lane_profiling(state)
+        assert result["resources"] == stop["summary"]   # recorded verbatim
+        assert result["profile_error"] is None
+        assert "stop_forced='sampler-still-running'" in state["warning"]
+        assert "may be incomplete" in state["warning"]
+        run_gate.print_profile_warning(state)
+        err = capsys.readouterr().err
+        assert "WARNING profiling: cgprofile finalized the session" in err
+        assert err.rstrip().endswith("— profile recorded with this caveat")
+
+    def test_finish_daemon_unconfirmed_damon_teardown_warns_confirmed_does_not(
+            self, tmp_path, monkeypatch):
+        stop = json.loads((RG55_FIXTURES / "stop-v1.json").read_text())
+        stop["summary"]["damon_cleanup"] = {"confirmed": False, "slot": 2,
+                                            "quarantined": True}
+        set_cgprofile_plan(tmp_path, monkeypatch, stop=(json.dumps(stop), None, None))
+        fake_docker(tmp_path, monkeypatch)
+        client = run_gate.ProfilerClient(shutil.which("docker"),
+                                         run_gate.PROFILE_DAEMON_DEFAULT)
+        state = {"mode": "daemon", "client": client,
+                 "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                 "session": "s-x", "warning": "earlier"}
+        result = run_gate.finish_lane_profiling(state)
+        assert result["resources"]["damon_cleanup"]["slot"] == 2
+        assert state["warning"] == "earlier"   # the first warning wins
+        caveat = run_gate.profile_summary_caveat(stop["summary"])
+        assert "slot 2, quarantined=True" in caveat and "not the same as DAMON off" in caveat
+        stop["summary"]["damon_cleanup"]["confirmed"] = True
+        assert run_gate.profile_summary_caveat(stop["summary"]) is None
+        assert run_gate.profile_summary_caveat(None) is None
+        assert run_gate.profile_summary_caveat({"stop_forced": None}) is None
+        assert run_gate.profile_summary_caveat({"damon_cleanup": "odd"}) is None
+
     def test_finish_basic(self, tmp_path, monkeypatch):
         fake_docker(tmp_path, monkeypatch)
         docker = shutil.which("docker")

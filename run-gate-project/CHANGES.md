@@ -37,6 +37,26 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   tester-image stream; this wave's duplicate (`--run-gate-release`,
   `fetch-run-gate-release.py`) was dropped at merge. The default stays the
   source-tree wheel for Run-Gate's own candidate gate.
+- Change (cgprofile 1.1.0): `ctl stop` is retried while the daemon answers
+  the error code `stop-incomplete` (the sampling worker is still running and
+  the session keeps its resources) — four attempts 2 s apart; the daemon
+  finalizes anyway after the third consecutive incomplete attempt. 24.0.1 gave
+  up on the first refusal and lost the whole summary (`resources: null`). A
+  summary that carries `stop_forced` (finalized while the sampler ran;
+  resources may be incomplete) or `damon_cleanup.confirmed == false` (DAMON
+  teardown unverified, which is not "DAMON off") is recorded verbatim in
+  `resources` and disclosed as the lane's one profiling WARNING line, suffixed
+  "profile recorded with this caveat"; the verdict is untouched (R-36h).
+- Fix (tests): missing optional test dependencies FAIL by default
+  (`tests/_testdeps.py`, opt out with `RUN_GATE_ALLOW_MISSING_TEST_DEPS=1`);
+  the selftest lane runs pytest with `-rs`. The 24.0.2 candidate gate's two
+  unexplained skips were a not-applicable parametrization (ciu8 has no
+  run-gate.toml; now filtered at collection) and the real-container smoke
+  test, the one documented structural exception (no Docker socket inside the
+  lane container; `RUN_GATE_REQUIRE_CONTAINER_SMOKE=1` makes it fail). That
+  smoke test had never run end to end and is fixed (RG-112: `git gc` cannot
+  lock a sibling worktree's read-only admin dir on git >= 2.4x; the lane keeps
+  `repack`/`prune`).
 - Add (RG-106): an environment may declare `user = "invoker"` (the invoking
   process's `uid:gid`, derived at resolve time) or a numeric `uid[:gid]` for an
   `ephemeral` environment; it is passed as `--user` to the lane and probe containers, so
