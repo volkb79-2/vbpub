@@ -2188,3 +2188,8 @@ class TestL7ForbidAbsentPathNL26:
         path = self._handoff(tmp_path, forbid=f'"{bad}"')
         errors = self._l7_errors(path, sample_project)
         assert any("non-resolving" in f.message and bad in f.message for f in errors)
+
+    def test_archived_forbid_still_errors(self, sample_project, tmp_path):
+        path = self._handoff(tmp_path, forbid='"docs/archive/foo.md"')
+        errors = self._l7_errors(path, sample_project)
+        assert any("archived document" in f.message for f in errors)

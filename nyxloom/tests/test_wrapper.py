@@ -242,11 +242,22 @@ class TestStreamJsonSessionCapture:
         # A fake "claude" CLI: first line is a stream-json system event
         # carrying session_id, exactly as the real CLI's --output-format
         # stream-json does.
-        argv = self._claude_stream_script(
-            tmp_path,
-            '{"type":"system","subtype":"init","session_id":"live-sess-99"}',
-            self.CHILD_HOLD_SECONDS,
+        # Deterministic ordering, not a timing window: the child holds until
+        # the test releases it (after the real capture ran), and the capture
+        # waits for the child's first flushed line. Neither depends on how
+        # slow interpreter startup is under host or container contention.
+        release = tmp_path / "release"
+        script = tmp_path / "claude_stream_gated.py"
+        script.write_text(
+            "import sys, time, pathlib\n"
+            "print('{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"live-sess-99\"}')\n"
+            "sys.stdout.flush()\n"
+            f"r = pathlib.Path({str(release)!r})\n"
+            "end = time.monotonic() + 120\n"
+            "while not r.exists() and time.monotonic() < end:\n"
+            "    time.sleep(0.05)\n"
         )
+        argv = [sys.executable, "-u", str(script)]
 
         attempt_dir = tmp_path / "attempt"
         attempt_dir.mkdir(parents=True)
@@ -276,8 +287,25 @@ class TestStreamJsonSessionCapture:
         # classify_log_tail also run for real but are irrelevant to this
         # oracle (route.usage_source is unset -> Usage(UNKNOWN); no
         # BLOCKED/limit phrase in the log -> classify_log_tail None).
-        with patch("nyxloom.wrapper.SESSION_CAPTURE_DELAY", self.CAPTURE_DELAY):
-            exit_code = wrapper_main(str(spec_path))
+        real_capture = wrapper.adapters.capture_session
+
+        def gated_capture(*args, **kwargs):
+            deadline = time.monotonic() + 120
+            while time.monotonic() < deadline:
+                if log_path.exists() and log_path.stat().st_size > 0:
+                    break
+                time.sleep(0.05)
+            try:
+                return real_capture(*args, **kwargs)
+            finally:
+                release.write_text("go")
+
+        try:
+            with patch("nyxloom.wrapper.SESSION_CAPTURE_DELAY", 0.0), \
+                    patch("nyxloom.wrapper.adapters.capture_session", gated_capture):
+                exit_code = wrapper_main(str(spec_path))
+        finally:
+            release.write_text("go")  # never leave the child holding on failure
 
         assert exit_code == 0
         state = storage.load_state(project, task_id)
