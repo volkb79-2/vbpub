@@ -6512,7 +6512,7 @@ command names it).
 
 ## RG-116 — diff-coverage gate (`tools/coverage_gate.py`) candidates from the 2026-10-27 read-only audit
 
-**Status:** items 1 and 5 FIXED IN CANDIDATE 2026-10-28 (fable-run-gate-20261027: the `\` marker is skipped, verified by reading the parser; the diff is requested with `-c color.diff=false --no-color --no-ext-diff --no-textconv`; tests in `tests/test_coverage_gate.py`). Items 2, 3, 4 and 6 OPEN, audit findings (Sonnet, read-only; items marked PROBE were reproduced by the auditor with a `python3 -c` probe, not re-verified by the wave). Severity High for the honesty of the selftest gate; none changes a lane verdict.
+**Status:** items 1, 2 and 5 FIXED IN CANDIDATE 2026-10-28 (fable-run-gate-20261027: the `\` marker is skipped, verified by reading the parser; the diff is requested with `-c color.diff=false --no-color --no-ext-diff --no-textconv`; `--allow-first-release` dropped from the selftest lane, pinned by `test_testdeps_policy.py`; tests in `tests/test_coverage_gate.py`). Items 3, 4 and 6 OPEN for 24.1.1, audit findings (Sonnet, read-only; items marked PROBE were reproduced by the auditor with a `python3 -c` probe, not re-verified by the wave). Severity High for the honesty of the selftest gate; none changes a lane verdict.
 
 1. (PROBE) `tools/coverage_gate.py:99-102`: a `\ No newline at end of file` marker line is counted as a context line, mis-numbering the added lines after it (`{11,12}` for true `{10,11}`); a changed last line escapes the denominator. Fix: `elif line.startswith("\\"): continue`, or drive line numbers from the hunk header counts.
 2. `run-gate.toml` selftest lane passes `--allow-first-release` permanently; with 19 stable `run-gate-v*` tags that mode is no longer legitimate, and a tagless checkout (`--no-tags` clone) makes the diff check SKIPPED with exit 0. Fix: drop it from the lane; only `release_candidate` passes it after its origin check.
@@ -6523,9 +6523,9 @@ command names it).
 
 ## RG-117 — admission / runtime candidates from the 2026-10-27 read-only audit
 
-**Status:** OPEN 2026-10-27, audit findings (same audit as RG-116; PROBE = auditor-reproduced, not re-verified by the wave).
+**Status:** the `_containers` inspect race FIXED IN CANDIDATE 2026-10-28 (`check=False`; survivors kept when stderr says only `No such object`/`No such container`; tests in `tests/test_run_gate_admission.py`). The rest OPEN for 24.1.1, audit findings (same audit as RG-116; PROBE = auditor-reproduced, not re-verified by the wave).
 
-- (PROBE, Medium) `run_gate_admission.py:288-291` `_containers`: `docker ps -aq` then `inspect <ids>` with `check=True`; a concurrent gate removing a tombstone in between makes `inspect` exit 1 ("No such object") and the healthy lane ends ERROR. Fix: `check=False`, keep stdout objects when stderr says only "No such object/container".
+- (PROBE, Medium, FIXED) `run_gate_admission.py` `_containers`: `docker ps -aq` then `inspect <ids>` with `check=True`; a concurrent gate removing a tombstone in between made `inspect` exit 1 ("No such object") and the healthy lane ended ERROR.
 - (Medium) `run_gate.py` `docker run`/`docker exec` argv carry forwarded secret VALUES (`-e KEY=value`), readable in `/proc/<pid>/cmdline` for the life of `docker exec`; only the printed copy is redacted. Fix: `-e KEY` and pass the value through the subprocess `env`.
 - (Medium) `save_container_logs`: `write_text` then `chmod 0o600` (world-readable window; follows a pre-planted symlink in predictable `/tmp/run-gate/<name>.log`). Fix: `os.open` with `O_CREAT|O_EXCL|O_NOFOLLOW`, 0600, like `allocate_lane_log`; create the dir 0700 and verify owner/mode.
 - (PROBE, Medium) `slice_cgroupfs_dir`: wrong nesting for 3+ dash components (`dev-test-gates.slice` → `dev.slice/test.slice/...` instead of `dev.slice/dev-test.slice/...`; `tests/test_run_gate.py` pins the wrong value); `memory.max` then reads absent and admission falls back to admit-with-warning. Fix: the parent of `a-b-c.slice` is `a-b.slice`.

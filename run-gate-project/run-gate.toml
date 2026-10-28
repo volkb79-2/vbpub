@@ -25,10 +25,13 @@
 # Coverage discipline: the release lane enforces DIFF coverage at 100%
 # (topos/nyxloom estate pattern, vendored thin gate in tools/coverage_gate.py):
 # every executable line added or changed since the newest reachable stable
-# run-gate-vX.Y.Z tag must be covered, same-commit. If this is the first stable
-# release and no such tag exists, the diff check reports an explicit SKIPPED;
-# Run-Gate's source qualification is supplied by its separately run R0/R1
-# campaign before merge. A present but unreachable stable tag remains an error.
+# run-gate-vX.Y.Z tag must be covered, same-commit. Stable tags exist (19 as
+# of 24.1.0), so the lane does NOT pass --allow-first-release: a checkout
+# without them (a --no-tags clone, a tester mount missing the tags) must
+# ERROR, not report SKIPPED with exit 0 — an absent tag is indistinguishable
+# from a first release (RG-116 item 2). Only tools/release_candidate.py's
+# prepare step may accept a first release, after it checked origin's tags.
+# A present but unreachable stable tag remains an error.
 # This release baseline stays
 # fixed after merge, unlike merge-base(main, HEAD), which becomes HEAD once the
 # candidate is merged and can hide the very changes the release is meant to
@@ -54,7 +57,7 @@ schema_version = 1
 [lanes.selftest]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/run-gate-project && mkdir -p .run-gate/ && if [[ -n \"${RUN_GATE_RELEASE_WHEEL_RECEIPT:-}\" ]]; then /opt/tester-venv/bin/python tools/release_candidate.py verify-running --receipt \"$RUN_GATE_RELEASE_WHEEL_RECEIPT\"; fi && RUN_GATE_TMP=$(mktemp -d .run-gate/selftest.XXXXXX) && trap 'status=$?; if [ -n \"$RUN_GATE_TMP\" ]; then rm -rf \"$RUN_GATE_TMP\"; fi; exit \"$status\"' EXIT && RUN_GATE_ABS=\"$(realpath \"$RUN_GATE_TMP\")\" && GIT_CEILING_DIRECTORIES=\"$RUN_GATE_ABS\" /opt/tester-venv/bin/python -m pytest tests -q -rs --basetemp \"$RUN_GATE_ABS\" --cov=. --cov-branch --cov-report=json:coverage.json && /opt/tester-venv/bin/python tools/coverage_gate.py --repo . --base latest-release-tag --allow-first-release --coverage-json coverage.json --source run_gate.py"]
+argv = ["bash", "-c", "cd {worktree}/run-gate-project && mkdir -p .run-gate/ && if [[ -n \"${RUN_GATE_RELEASE_WHEEL_RECEIPT:-}\" ]]; then /opt/tester-venv/bin/python tools/release_candidate.py verify-running --receipt \"$RUN_GATE_RELEASE_WHEEL_RECEIPT\"; fi && RUN_GATE_TMP=$(mktemp -d .run-gate/selftest.XXXXXX) && trap 'status=$?; if [ -n \"$RUN_GATE_TMP\" ]; then rm -rf \"$RUN_GATE_TMP\"; fi; exit \"$status\"' EXIT && RUN_GATE_ABS=\"$(realpath \"$RUN_GATE_TMP\")\" && GIT_CEILING_DIRECTORIES=\"$RUN_GATE_ABS\" /opt/tester-venv/bin/python -m pytest tests -q -rs --basetemp \"$RUN_GATE_ABS\" --cov=. --cov-branch --cov-report=json:coverage.json && /opt/tester-venv/bin/python tools/coverage_gate.py --repo . --base latest-release-tag --coverage-json coverage.json --source run_gate.py"]
 budget = "20m"
 artifacts = ["coverage.json"]       # disclosed after every run (RG-10)
 

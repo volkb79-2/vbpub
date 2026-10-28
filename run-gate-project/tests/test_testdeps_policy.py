@@ -61,7 +61,15 @@ def test_no_test_bypasses_the_policy():
     `pytest.skip(` outside `_testdeps.py` must sit on or right after a
     `testdeps-exception` marker line, and exactly the documented exceptions
     may carry one."""
-    forbidden = re.compile(r"importorskip\(|skipif\([^)]*\bis None\b")
+    # Every spelling of "do not run this test" that pytest or unittest offer:
+    # bare importorskip / skipif-None, unconditional skip marks, module-level
+    # `pytestmark = pytest.mark.skip...`, unittest's SkipTest, an aliased
+    # `from pytest import skip`, and xfail (a failing test that reports green).
+    forbidden = re.compile(
+        r"importorskip\(|skipif\([^)]*\bis None\b|pytest\.mark\.skip\(|"
+        r"pytest\.mark\.skip\b(?!if)|pytestmark\s*=.*skip|unittest\.SkipTest|"
+        r"\bSkipTest\b|from pytest import .*\bskip\b|pytest\.mark\.xfail|"
+        r"\bxfail\(")
     offenders: list[str] = []
     marked: list[str] = []
     for path in _suite_files():
@@ -90,6 +98,10 @@ def test_no_test_bypasses_the_policy():
 def test_the_selftest_lane_names_every_skip_in_the_gate_log():
     text = (TESTS.parent / "run-gate.toml").read_text(encoding="utf-8")
     assert "-m pytest tests -q -rs " in text
+    # RG-116 item 2: stable tags exist, so a checkout that cannot see one must
+    # ERROR, never report the diff check SKIPPED with exit 0 (a false green).
+    argv_lines = [line for line in text.splitlines() if line.startswith("argv = ")]
+    assert argv_lines and all("--allow-first-release" not in line for line in argv_lines)
     readme = (TESTS.parent / "README.md").read_text(encoding="utf-8")
     assert "pytest tests -q -rs" in readme and _testdeps.ALLOW_VAR in readme
 

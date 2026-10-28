@@ -16458,11 +16458,30 @@ class TestRg109InterruptedClient:
         assert reached == ["body ran to its end despite the signal", True]
         assert signal.getsignal(signal.SIGTERM) is previous   # restored
 
+    def test_deferred_sigint_is_re_raised_as_keyboard_interrupt_after_the_body(self):
+        """Ctrl-C during the cleanup (README: SIGTERM / Ctrl-C) is deferred
+        the same way and comes back as the KeyboardInterrupt Python's own
+        handler would have raised; a SIGTERM seen as well wins (exit 143)."""
+        previous = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGINT)}
+        reached = []
+        with pytest.raises(KeyboardInterrupt):
+            with run_gate.deferred_sigterm():
+                os.kill(os.getpid(), signal.SIGINT)
+                reached.append("body ran to its end despite Ctrl-C")
+        assert reached == ["body ran to its end despite Ctrl-C"]
+        assert all(signal.getsignal(s) is h for s, h in previous.items())
+        with pytest.raises(SystemExit) as caught:
+            with run_gate.deferred_sigterm():
+                os.kill(os.getpid(), signal.SIGINT)
+                os.kill(os.getpid(), signal.SIGTERM)
+        assert caught.value.code == 128 + signal.SIGTERM
+        assert all(signal.getsignal(s) is h for s, h in previous.items())
+
     def test_deferred_sigterm_without_a_signal_is_transparent(self):
-        previous = signal.getsignal(signal.SIGTERM)
+        previous = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGINT)}
         with run_gate.deferred_sigterm():
             pass
-        assert signal.getsignal(signal.SIGTERM) is previous
+        assert all(signal.getsignal(s) is h for s, h in previous.items())
 
     def test_deferred_sigterm_outside_the_main_thread_runs_the_body_unprotected(self):
         seen = []
@@ -23223,6 +23242,40 @@ class TestProfilingOrchestration:
         assert reason.startswith("`cgprofile ctl stop` refused (stop-incomplete)")
         assert reason.endswith("(still incomplete after 4 attempts 2 s apart; "
                                "the daemon did not force the stop)")
+
+    def test_stop_stops_retrying_when_a_later_call_times_out(self, tmp_path, monkeypatch):
+        """Review finding: a timeout answers without `_parse_response`, so the
+        refusal code of the PREVIOUS call must not survive into this one —
+        otherwise `stop-incomplete` followed by a dead daemon meant four
+        30 s timeouts. The scripted fake sets `None` as `_ctl` now does."""
+        incomplete = (None, "`cgprofile ctl stop` refused (stop-incomplete): "
+                      "sampling worker still running", "stop-incomplete")
+        timed_out = (None, "`cgprofile ctl stop` timed out after 30s", None)
+        client, calls = self._client_with_stop_answers(
+            tmp_path, monkeypatch, [incomplete, timed_out, incomplete, incomplete])
+        slept = []
+        doc, reason = client.stop("s-1", sleep=slept.append)
+        assert doc is None and reason.endswith("timed out after 30s")
+        assert len(calls) == 2 and len(slept) == 1
+
+    def test_ctl_clears_the_refusal_code_before_every_call(self, tmp_path, monkeypatch):
+        """The real `_ctl`: a carrier timeout or an unknown transport returns
+        before `_parse_response` could reset the code."""
+        fake_docker(tmp_path, monkeypatch)
+        client = run_gate.ProfilerClient(shutil.which("docker"),
+                                         run_gate.PROFILE_DAEMON_DEFAULT,
+                                         transport="exec")
+        client.last_refusal_code = "stop-incomplete"
+        monkeypatch.setattr(client, "_exec_ctl", lambda verb, *args: (
+            None, f"`cgprofile ctl {verb}` timed out after 30s"))
+        assert client._ctl("stop", "s-1") == (
+            None, "`cgprofile ctl stop` timed out after 30s")
+        assert client.last_refusal_code is None
+        client.last_refusal_code = "stop-incomplete"
+        client.transport = "carrier-pigeon"
+        doc, reason = client._ctl("stop", "s-1")
+        assert doc is None and "unknown profiler transport" in reason
+        assert client.last_refusal_code is None
 
     def test_stop_does_not_retry_any_other_refusal(self, tmp_path, monkeypatch):
         client, calls = self._client_with_stop_answers(

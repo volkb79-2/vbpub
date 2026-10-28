@@ -60,6 +60,23 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   README "Interrupting a run"; remainder RG-114. Backlog: RG-112..RG-118
   filed (RG-116/117 are the 2026-10-27 audit's unverified candidates),
   ciu CIU-152 (the schema-v6 producer contract the v6 reader expects).
+- Fix (RG-116 item 2): the selftest lane no longer passes
+  `--allow-first-release` to the diff-coverage gate: stable tags exist, so a
+  checkout that cannot see one (a `--no-tags` clone) is an ERROR instead of a
+  `SKIPPED` exit 0 that read as green. Only `tools/release_candidate.py`'s
+  prepare step may accept a first release, after checking origin's tags.
+- Fix (RG-117, admission): a container removed between `docker ps` and
+  `docker inspect` (another gate's tombstone reap or ticket release) made
+  `inspect` exit 1 and the whole admission ERROR; the surviving objects are
+  kept when stderr says only `No such object`; any other failure still refuses.
+- Fix (review of the cgprofile retry): `ProfilerClient._ctl` clears the
+  refusal code before every call, so a `stop-incomplete` followed by a carrier
+  timeout or an unreachable daemon is not retried four times (~2 minutes).
+- Fix (review of RG-109): `deferred_sigterm` defers SIGINT as well as SIGTERM
+  (README said "SIGTERM / Ctrl-C"); a deferred Ctrl-C comes back as the
+  KeyboardInterrupt Python would have raised, a SIGTERM wins. README names the
+  two limits: the handlers are installed a few statements into the cleanup,
+  and a supervisor's SIGKILL timer cannot be outlasted.
 - Fix (RG-116 items 1 and 5, `tools/coverage_gate.py`): a `\ No newline at
   end of file` marker was counted as a context line, so every `+` line after
   an old side without a trailing newline was attributed one line too far and

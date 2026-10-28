@@ -124,9 +124,15 @@ judge-digest, provenance-mismatch, and state-mount.
 **Interrupting a run (SIGTERM / Ctrl-C; RG-109).** A client stopped
 gracefully while it waits on its lane removes the container it started and
 clears the in-flight record on the way out (the same `finally` every other
-exit takes; a second SIGTERM during that cleanup is deferred until the
-container is gone, never raised mid-cleanup), prints one
-`interrupted before a closed result` line and exits ERROR 2. Adoption by a
+exit takes; a second SIGTERM or SIGINT during that cleanup is deferred until
+the container is gone and the record cleared, then re-raised — never raised
+mid-cleanup), prints one `interrupted before a closed result` line and exits
+ERROR 2. Two limits: the deferral is installed a few statements after the
+cleanup begins, so a signal in that gap is handled the old way; and it cannot
+outlast a supervisor's kill timer (`docker stop` sends SIGKILL after ~10 s,
+systemd after `TimeoutStopSec`) — if the profiling `stop` or `docker rm -f`
+is still running when SIGKILL lands, removal is not guaranteed and the next
+invocation adopts or collects the container like any dead client's. Adoption by a
 later invocation (follow / collect / `--fresh`) is for a client that DIED
 (SIGKILL, crash, reboot), not for one that was asked to stop. The one window
 in which a stopped client keeps its container is between a successful
@@ -361,9 +367,10 @@ This project's own `run-gate.toml` declares five lanes (dogfooding — see
    `RUN_GATE_REQUIRE_CONTAINER_SMOKE=1` is set), followed by
    the vendored `tools/coverage_gate.py`, scoped to `--source run_gate.py`
    alone — a diff-coverage floor at 100% on every executable line changed
-   since the newest reachable stable `run-gate-vX.Y.Z` release tag. On the
-   first stable release, when no stable Run-Gate tag exists, it reports the
-   diff check as `SKIPPED` because there is no released source baseline. The
+   since the newest reachable stable `run-gate-vX.Y.Z` release tag. The lane
+   does not pass `--allow-first-release`: stable tags exist, so a checkout
+   that cannot see one (a `--no-tags` clone) is an ERROR, never a `SKIPPED`
+   exit 0 that would read as green (RG-116). The
    release transaction's preparation accepts a first release only when origin
    shows no stable tag, and refuses a checkout missing origin's release tags
    ([why](docs/DESIGN-GUIDE.md#the-release-gate-tests-the-published-wheel)); the

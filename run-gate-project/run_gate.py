@@ -2654,6 +2654,11 @@ class ProfilerClient:
                                     proc.stderr)
 
     def _ctl(self, verb: str, *args: str) -> tuple[dict | None, str | None]:
+        # Every call starts with no refusal code: a timeout, a carrier error
+        # or an unknown transport answers without reaching `_parse_response`,
+        # and a stale `stop-incomplete` from the previous call would make
+        # `stop` retry a dead daemon four times (review finding).
+        self.last_refusal_code = None
         if self.transport not in PROFILE_TRANSPORTS:
             return None, (f"unknown profiler transport {self.transport!r}")
         if self.transport == "auto" and self._carrier is None:
@@ -16009,33 +16014,45 @@ def _sigterm_as_exit(signum, _frame) -> None:
 
 @contextlib.contextmanager
 def deferred_sigterm():
-    """RG-109: a SIGTERM that lands while a lane's cleanup is already running
-    must not abandon that cleanup. `main()` turns SIGTERM into `SystemExit`
-    so the `finally` that removes the lane container and clears its
-    in-flight record runs; but a SECOND SIGTERM arriving inside that
-    `finally` (daemon `stop` can take up to 30 s) raised a new `SystemExit`
-    from the middle of it and skipped `docker rm -f` — the orphan RG-109 was
-    filed for. Inside this context the signal is only recorded; on exit the
-    previous handler is restored and a recorded signal is re-raised as the
-    same `SystemExit(128 + SIGTERM)` the handler would have raised. Outside
-    the main thread signals cannot be rebound; the body then runs
-    unprotected, exactly as before."""
+    """RG-109: a SIGTERM or SIGINT that lands while a lane's cleanup is
+    already running must not abandon that cleanup. `main()` turns SIGTERM
+    into `SystemExit` (and Python turns Ctrl-C into `KeyboardInterrupt`) so
+    the `finally` that removes the lane container and clears its in-flight
+    record runs; but a SECOND signal arriving inside that `finally` (daemon
+    `stop` can take up to 30 s) raised a new exception from the middle of it
+    and skipped `docker rm -f` — the orphan RG-109 was filed for. Inside this
+    context both signals are only recorded; on exit the previous handlers
+    are restored and a recorded signal is re-raised as what its handler
+    would have raised: `SystemExit(128 + SIGTERM)` when a SIGTERM was seen,
+    else `KeyboardInterrupt`. Outside the main thread signals cannot be
+    rebound; the body then runs unprotected, exactly as before. Two limits,
+    disclosed in the README: the handlers are installed a few statements
+    after the cleanup begins (a signal in that gap is handled the old way),
+    and a supervisor's kill timer (`docker stop` ~10 s, systemd `TimeoutStopSec`)
+    follows its SIGTERM with SIGKILL, which no deferral can outlast."""
     pending: list[int] = []
 
     def record(signum, _frame) -> None:
         pending.append(signum)
 
+    previous: dict[int, object] = {}
     try:
-        previous = signal.signal(signal.SIGTERM, record)
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            previous[signum] = signal.signal(signum, record)
     except ValueError:
+        # Not the main thread: the FIRST rebinding already failed, so nothing
+        # was installed and there is nothing to restore.
         yield
         return
     try:
         yield
     finally:
-        signal.signal(signal.SIGTERM, previous)
-        if pending:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+        if signal.SIGTERM in pending:
             raise SystemExit(128 + signal.SIGTERM)
+        if pending:
+            raise KeyboardInterrupt()
 
 
 def disclose_interrupted_before_await(name: str, lane_name: str) -> None:

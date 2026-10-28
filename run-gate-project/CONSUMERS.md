@@ -2058,12 +2058,15 @@ The lane invokes its coverage helper this way:
 
 ```console
 python tools/coverage_gate.py --repo . --base latest-release-tag \
-  --allow-first-release --coverage-json coverage.json --source run_gate.py
+  --coverage-json coverage.json --source run_gate.py
 ```
 
-On the first stable release, when no stable Run-Gate tag exists, the explicit
-`--allow-first-release` option reports this diff check as `SKIPPED`: there is
-no released source baseline to compare. The test suite still runs, and the
+Only on a project's FIRST stable release, when no stable tag exists anywhere,
+may the explicit `--allow-first-release` option report this diff check as
+`SKIPPED` (no released source baseline to compare); Run-Gate's own lane no
+longer passes it, because its stable tags exist and a checkout that cannot
+see them (a `--no-tags` clone) must ERROR rather than read as green
+(RG-116). The test suite still runs, and the
 separate `assay-r1` lane must supply whole-source line-and-branch
 qualification before merge. If stable tags exist but none are reachable from
 the candidate, the helper still errors rather than treating that as a first

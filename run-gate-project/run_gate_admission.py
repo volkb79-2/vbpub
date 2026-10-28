@@ -288,7 +288,27 @@ class DockerAdmission:
         listed = self._call(*command).stdout.split()
         if not listed:
             return []
-        raw = self._call("inspect", *listed).stdout
+        proc = self._call("inspect", *listed, check=False)
+        raw = proc.stdout
+        if proc.returncode:
+            # A container removed between `ps` and `inspect` (another gate's
+            # tombstone reap or ticket release) makes `inspect` exit 1 with
+            # `No such object` on stderr while still printing the surviving
+            # objects on stdout. That is a race, not a failure (RG-117):
+            # keep what it returned. Any OTHER stderr line is a real error.
+            lines = [line for line in (proc.stderr or "").splitlines()
+                     if line.strip()]
+            if not lines or not all("no such object" in line.lower()
+                                    or "no such container" in line.lower()
+                                    for line in lines):
+                message = lines[-1] if lines else "no detail"
+                if self._looks_unavailable(message):
+                    raise AdmissionDockerUnavailable(
+                        f"docker inspect failed ({proc.returncode}): {message}")
+                raise AdmissionError(
+                    f"docker inspect failed ({proc.returncode}): {message}")
+            if not raw.strip():
+                return []
         try:
             objects = json.loads(raw)
         except json.JSONDecodeError as exc:
