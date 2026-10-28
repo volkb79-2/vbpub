@@ -105,6 +105,15 @@ an installed wheel or zipapp needs nothing extra:
   its full `matching_total` and a `next_offset`; continue it with
   `--outcome <bucket> --offset <next_offset>` until `next_offset` is `null`.
 
+If an R0 baseline fails before native R2 runs, the verified verdict has no
+`judgment.r2` and does not establish mutation inventory. Campaign analysis stays
+`incomplete` with `inventory_not_exhausted`, reports `qualifying: false`, and
+marks the native plan `not_supported` because native R2 was not judged. A
+matching progress terminal and `--command-exit` confirm that the command ended;
+they do not establish the missing inventory. Inventory without a native plan
+requires an explicit `producer = "ingested"` verdict on a lane configured with
+`judge.mutation.format`.
+
 <!-- assay-analysis-example -->
 ```bash
 assay analyze verdict .assay/verdict-r2.json --expected-commit "$REVIEW_HEAD" --format text

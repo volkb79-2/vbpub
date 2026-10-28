@@ -255,6 +255,49 @@ def test_complete_campaign_json_and_text_bind_plan_progress_and_verdict(tmp_path
     assert "planned=2 completed=2 pending=0" in out
 
 
+def test_failed_baseline_verdict_does_not_establish_native_r2_inventory(tmp_path):
+    declared_native = _fixture_document("r2_pass")
+    root, head, verdict_path = _repository(tmp_path, declared_native)
+    verdict = _fixture_document("r2_error_exec_failed_baseline_crashed")
+    verdict["commit"] = head
+    verdict_path.write_text(json.dumps(verdict), encoding="utf-8")
+
+    started = datetime(2026, 9, 27, 12, 0, tzinfo=UTC)
+    progress = tmp_path / "failed-baseline-progress.jsonl"
+    records = [
+        {
+            "event": "run",
+            "commit": head,
+            "lane": "package",
+            "rigor": ["R0", "R2"],
+            "started": started.isoformat(),
+        },
+        {
+            "event": "verdict_written",
+            "outcome": verdict["outcome"],
+            "exit_code": verdict["exit_code"],
+            "reason_code": verdict["reason_code"],
+            "emitted_at": (started + timedelta(seconds=1)).isoformat(),
+            "elapsed_s": 1.0,
+        },
+    ]
+    progress.write_text("".join(json.dumps(record) + "\n" for record in records))
+
+    code, output, error = _invoke(
+        root, head, verdict_path, progress, command_exit=verdict["exit_code"]
+    )
+
+    result = json.loads(output)
+    _validate(result)
+    assert (code, error) == (3, "")
+    assert result["status"] == "incomplete"
+    assert result["qualifying"] is False
+    assert result["complete_blockers"] == ["inventory_not_exhausted"]
+    assert result["plan"]["status"] == "not_supported"
+    assert result["campaign"]["planned_total"] is None
+    assert result["campaign"]["completed_total"] is None
+
+
 def test_terminal_lane_timeout_leaves_never_started_candidates_unresolved(
     tmp_path, monkeypatch
 ):

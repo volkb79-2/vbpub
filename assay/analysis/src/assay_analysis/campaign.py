@@ -1544,13 +1544,17 @@ def _fixed_components(latest: dict) -> dict[str, float | None]:
     return {"coverage_baseline": coverage, "r2_baseline": r2, "other": other}
 
 
-def _native_r2(lane, r2_policy: dict | None) -> bool:
-    declared_native = bool(
+def _declares_native_r2(lane) -> bool:
+    return bool(
         "R2" in lane.rigor
         and lane.judge is not None
         and lane.judge.mutation is not None
         and lane.judge.mutation.format is None
     )
+
+
+def _native_r2(lane, r2_policy: dict | None) -> bool:
+    declared_native = _declares_native_r2(lane)
     if not declared_native:
         return False
     # ``None`` means no verdict was supplied, so planning may use the lane's
@@ -1597,6 +1601,17 @@ def _check_verdict_against_lane(verdict: dict, *, lane_name: str, lane) -> dict:
     return r2_policy
 
 
+def _ingested_r2(lane, r2_policy: dict) -> bool:
+    """Only an explicit ingested verdict on a declared ingested lane establishes inventory."""
+    return bool(
+        "R2" in lane.rigor
+        and lane.judge is not None
+        and lane.judge.mutation is not None
+        and lane.judge.mutation.format is not None
+        and r2_policy.get("producer") == "ingested"
+    )
+
+
 def _reconstruct_plan(
     lane_file: LaneFile, lane, lane_name: str, *,
     native_r2: bool, verdict: dict | None, request_base: str | None,
@@ -1617,6 +1632,8 @@ def _reconstruct_plan(
         if verdict is not None and plan.get("_resolved_base") != resolved_base:
             raise ValueError("reconstructed plan base differs from the verified verdict")
         return plan
+    if _declares_native_r2(lane):
+        return {"status": "not_supported", "reason": "native R2 was not judged"}
     if "R2" in lane.rigor:
         return {"status": "not_supported", "reason": "ingested or non-native mutation lane"}
     return {"status": "not_applicable", "reason": "lane declares no R2 mutation judgment"}
@@ -1956,9 +1973,7 @@ def campaign(
         and latest["sweep_end_reason"] == "no_candidates"
         and not latest["candidate_milestone"]
     )
-    ingested_lane = not native_r2 and (
-        mutation_claim is None or r2_policy.get("producer") == "ingested"
-    )
+    ingested_lane = _ingested_r2(lane, r2_policy)
     inventory_established = verdict is not None and (
         complete_inventory or complete_empty_plan or ingested_lane
     )
@@ -2027,7 +2042,10 @@ def campaign(
         # run remains incomplete even when this shard happens to contain every
         # candidate in a small or empty plan; only merged shard evidence can
         # establish whole-plan completion.
-        "qualifying": not pilot_requested and not multi_shard,
+        "qualifying": (
+            not pilot_requested and not multi_shard
+            and (plan_total is not None or ingested_lane)
+        ),
         "complete_blockers": sorted(blockers),
         "expected_commit": expected_commit,
         "tree": tree,

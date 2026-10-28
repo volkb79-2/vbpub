@@ -4841,7 +4841,13 @@ name (CD18), judges nothing, and every estimate it prints is diagnostic.
   declared plan rather than a selected pilot. It does not mean the campaign is
   complete, passed, or acceptable. Read `status`, `verdict`, and
   `complete_blockers` for those conclusions. A report can be
-  `qualifying: true` with `status: incomplete` or a non-PASS verdict.
+  `qualifying: true` with `status: incomplete` or a non-PASS verdict. A native
+  lane whose verified verdict lacks `judgment.r2` has no established native
+  inventory: it remains `incomplete` with `inventory_not_exhausted`, and is not
+  `qualifying`. A matching terminal event and observed command exit prove the
+  command ended, not that the R2 inventory ran. Inventory without a native plan
+  requires an explicit ingested producer on a lane configured with a mutation
+  report format.
 - **A single shard is the whole plan.** The `0/1` selection contains every
   candidate in the deterministic inventory, so a complete and reconciled
   `0/1` campaign can qualify just like an unsharded campaign. A shard from a

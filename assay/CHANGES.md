@@ -64,6 +64,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   observations from cgprofile.
 
 ### Fixed
+- `assay analyze campaign` no longer treats a missing `judgment.r2` on a native
+  lane as evidence of an ingested inventory. Early verdicts such as failed R0
+  baselines remain incomplete with `inventory_not_exhausted` and
+  `qualifying: false`; inventory without a native plan now requires an explicit
+  ingested producer on a lane configured with a mutation report format.
 - Treat `memory.events:max` as resource telemetry rather than candidate
   failure evidence; only failed-fork or OOM-related counters invalidate an R2
   result. Successful reclaim at `memory.max` no longer marks a mutant crashed.

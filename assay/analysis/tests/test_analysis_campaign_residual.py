@@ -11,6 +11,7 @@ import subprocess
 from datetime import timedelta
 
 import pytest
+from assay.config import load_lane_file
 
 from analysis.tests import campaign_support as support
 from analysis.tests.test_analysis_campaign import (
@@ -52,6 +53,9 @@ def _ingested_lane(root):
 def test_a_non_native_mutation_lane_is_reported_not_supported(tmp_path, monkeypatch):
     root, head, _verdict, progress = _complete_fixture(tmp_path, monkeypatch, "r2_pass")
     head = _commit_lane(root, _ingested_lane(root))
+    lane = load_lane_file(root / "assay.toml").lane("package")
+    assert campaign_api._ingested_r2(lane, {"producer": "ingested"})
+    assert not campaign_api._ingested_r2(lane, {})
     support.write_records(progress, [{
         "event": "run", "commit": head, "lane": "package", "rigor": ["R0", "R2"],
         "started": support.RUN_START.isoformat(),
@@ -64,6 +68,7 @@ def test_a_non_native_mutation_lane_is_reported_not_supported(tmp_path, monkeypa
     assert document["plan"]["planned_total"] is None
     assert document["plan"]["inventory_sha256"] is None
     assert document["status"] == "incomplete"
+    assert document["qualifying"] is False
 
 
 def test_request_base_reaches_the_planner_for_a_lane_that_delegates_its_base(tmp_path, monkeypatch):

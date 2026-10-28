@@ -85,9 +85,19 @@ def _set_child_subreaper(enabled: bool) -> bool:
 
 
 def _direct_child_pids() -> list[int]:
-    """Read this test process's direct children from Linux procfs."""
-    children = Path("/proc/self/task") / str(threading.get_native_id()) / "children"
-    return [int(pid) for pid in children.read_text(encoding="ascii").split()]
+    """Read direct children of every thread in this test process from procfs."""
+    task_root = Path("/proc/self/task")
+    children = []
+    for task in task_root.iterdir():
+        try:
+            children.extend(
+                int(pid)
+                for pid in (task / "children").read_text(encoding="ascii").split()
+            )
+        except FileNotFoundError:
+            # A short-lived thread can exit between listing tasks and reading it.
+            continue
+    return sorted(set(children))
 
 
 def _kill_and_reap_direct_children() -> None:
@@ -28970,8 +28980,8 @@ class TestExecLaneInflightRecord:
             assert recovered["container"] == "the-runner"
             assert recovered["lane"] == "suite"
             assert _direct_child_pids() == [], (
-                "the killed client left its fake docker exec process in the "
-                f"test process tree: {_direct_child_pids()}"
+                "the killed client left child processes in the test process "
+                f"tree: {_direct_child_pids()}"
             )
         finally:
             if client is not None:
