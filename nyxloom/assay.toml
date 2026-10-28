@@ -160,7 +160,7 @@ argv = ["/opt/tester-venv/bin/python", "-m", "pytest",
   "tests/test_cli_help.py",
   "tests/test_cli.py::test_tick",
   "tests/test_cli.py::test_tick_project_id_passes_the_selector_to_daemon",
-  "-n", "4", "--maxfail=1", "-q", "--cov=src/nyxloom", "--cov-branch", "--cov-report=json:coverage-session-extract.json"]
+  "-n", "0", "-q", "--cov=src/nyxloom", "--cov-branch", "--cov-report=json:coverage-session-extract.json"]
 env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }  # cli_extended: the tester-unified image's released wheel (CX-D1), never a source root
 env_passthrough = ["HOME", "PATH", "TERM", "LANG"]
 # Native candidates now run serially so cgroup event deltas remain attributable.
@@ -189,7 +189,7 @@ base = "126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1"
 # R2: native Python mutation, changed-lines-only -- resolve_mutation_targets
 # reuses R1's SAME current-main diff, so this mutates exactly the changed lines
 # under the session-extract source root, not the whole package. Candidate runs
-# are serial; pytest -n 4 remains the per-candidate test-runner setting. The
+# are serial; pytest runs in one process inside each candidate. The
 # finite candidate cap prevents an unbounded campaign.
 # budget_per_candidate remains 120s.
 [lanes.session-extract.judge.mutation]

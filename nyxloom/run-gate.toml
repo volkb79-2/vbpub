@@ -40,7 +40,7 @@ resource_observer = "cgprofile"
 assay_lane = "session-extract"       # -> assay.toml [lanes.session-extract]
 environment = "tester-unified"       # central [environments.tester-unified]
 # session-extract runs one native candidate at a time for cgroup-event
-# attribution, with four pytest workers inside that candidate. This is the
+# attribution, with one pytest worker inside that candidate. This is the
 # outer/advisory mirror of assay.toml's resumable six-hour invocation bound.
 budget = "6h"
 
