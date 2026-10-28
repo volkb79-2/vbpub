@@ -4,24 +4,6 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
-### Changed
-- The KI-79 R2 (mutation) postponement window also covers the 7.1 patch line (`>= 7.1.0`, `< 7.2.0`), by the operator decision of 2026-10-27 waiving R2 for every release of the current release wave. The window stays a bounded, version-keyed allowlist: 7.2.0 and later refuse, only `mutation` is deferred, and the R2 debt stays open (KI-79, KI-99; now due before 7.2.0).
-
-### Fixed
-- The KI-79 postponement guard fails closed on a prepared dated release heading that is not strict `X.Y.Z` (for example `7.2.0rc1`) instead of reading an older, authorized heading below it.
-- `cmru abandon` retires a failed `--from-worktree` candidate again (KI-86): the feature-source record is compared with the transaction's recorded base commit, not with the worktree HEAD that `cmru abandon`'s listing carries and that moves with the first prepare commit.
-- A failed `cmru release --dry-run` of a new candidate discards its disposable worktree, branch and sidecars instead of retaining a candidate that `abandon` withheld (KI-91); a dry run of a resumed candidate, or any candidate with a pushed backup or a recorded result, is still retained.
-- GHCR visibility sync after a successful image push no longer fails the release when the package is still not found after the retries or the token may not read it (KI-97): it warns with the cause and the one-time UI remediation (set visibility once, link the package to the repository) and continues; `mirror_package_visibility(..., missing="fail")` keeps the hard failure, 5xx lookups still fail.
-- `cmru cleanup --policy` honours `[cleanup] max_age_days`: a Release published within that window (or without a usable publication time) and its tag are kept, re-checked when the confirmed plan is applied. The key was validated and then ignored. The `--policy` help and the per-project policy line now state that WITHOUT the key every `<prefix>-v*` Release and tag outside `keep_release_tags`/`<prefix>-latest` is deleted.
-
-### Added
-- `cmru abandon <cmru-release-...>` retires the orphan sidecar files of a transaction that has no worktree, no local branch and no origin branch (candidates removed by hand, or by an older cmru that did not know every sidecar name), after listing their recorded scope, results, started untagged publications and tag push attempts. Publication evidence withholds (exit 4) exactly as on every other abandon path: a recorded result, an untagged publication that started, a tag push attempt without a confirmed-absent record, a record that cannot be read, or a MISSING untagged-publication record for a scope that names an untagged or unknown project or has no readable scope (a transaction older than KI-98). Nothing else is touched and unknown sidecar names are reported, not deleted.
-- Estate `build-push.py` callers (pwmcp, nyxloom, mdt-cockpit, modern-debian-tools-python-debug) log `NOT synced` instead of `Synced` when the visibility sync returns `None`.
-- `cmru abandon <cmru-gate-...>` refuses a release-gate snapshot (exit 2) and points at `cmru gate-snapshots --remove`.
-
-### Documentation
-- KI-100..KI-105 filed from the post-7.0.0 review (controller identity vs the code that ran, cleanup without the release lock, dry-run resume prepare commits, remaining post-push GHCR hard failures, gate-snapshot selection by name, the two cleanup selection grammars); `docs/RELEASE-TRANSACTIONS.md` and the packaged skill follow the abandon/dry-run/cleanup behaviour.
-
 <!-- KI-30 originally refused a tagged release while this body was non-empty. KI-78 now
      folds pending notes into the version section in the disposable release candidate.
      KI-23 still refuses a hand-authored `## [6.0.0] - UNRELEASED` heading, so this file
@@ -50,6 +32,57 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      the `fix(cmru): ...` commit subject. -->
 
 <!-- cmru: release history -->
+
+## [7.1.0] - 2026-10-28
+<!-- cmru: generated -->
+<!-- cmru: source-end=89504a321761656c12eea5e23f4aff34144cf34d -->
+
+### Added
+- feat(cmru): KI-79 R2 postponement also authorized for the 7.1 line (operator decision 2026-10-27) (c1454cf05)
+- feat(tester-unified): first-party packages have no age window (operator decision 2026-10-27) - test that fails if a first-party name could meet --uploaded-prior-to; iobench and vmscreen join the generator's refusal floor; rule documented (ed8641de3)
+- feat(wheel-builder,tester-unified): age wheel-builder's pip installs 14 days; runbook and design notes for rebuilding the gate image against published tools (77e865ede)
+- feat(tester-unified): build the gate image from the published Run-Gate wheel (fetch-run-gate-wheel.py, build-image.sh --run-gate-published) and age third-party packages 14 days (pip --uploaded-prior-to) (1f97a8b74)
+
+### Fixed
+- fix(cmru): KI-79 7.1 window docs sync; postponement guard fails closed on a non-strict prepared heading (c75e7edfe)
+- fix(cmru): orphan-sidecar abandon withholds a missing untagged-publication record for an untagged scope; docs state the withhold and manual exit (review round 2) (3a9f9cf52)
+- fix(cmru): orphan-sidecar abandon withholds on publication evidence; build-push callers report an unsynced package; cleanup --policy precondition documented (review round 1) (336938cab)
+- fix(cmru): post-7.0.0 review: KI-86 (abandon feature-source base), KI-91 (failed dry-run discards), KI-97 (post-push GHCR visibility warns); abandon retires orphan sidecars and refuses gate snapshots; cleanup --policy honours max_age_days; KI-100..105 filed (fb9579036)
+- fix(tester-unified): review round 3 - both fetchers stage atomically and exclusively (temp name + link(2), partial removed on failure, OSError is a refusal); runbook states the orchestration file's release order and names the cmru-first wave as the deviation; first-party test also refuses a global PIP_UPLOADED_PRIOR_TO (b624fd876)
+- fix(tester-unified): review round 2 - a truncated download or an unwritable staging dir is a refusal, not a traceback; exclusive create for the staged wheel; --help explains the published/age options; tester-base docs-sync lane survives the pin switch (22b963b7f)
+- fix(tester-unified): review round 1 - one EXIT trap covers the published staging dir on every path, fetch only after cheap checks, script-level tests, pointer URL allowlist, warn on age without --no-cache (6dd233519)
+
+### Changed
+- Merge iogov v1, iomon, cmru post-7.0.0 fixes onto main (recovering merges made on a detached HEAD) (877499fa0)
+- Merge tester image stack: published run-gate wheel fetcher, age-window first-party guard, runbook, hardened fetchers — vbpub@b624fd876 (40a15d69b)
+
+### Documentation
+- docs(cmru): comma in the KI-79 window list (89504a321)
+
+### Testing
+- test(cmru): cover the two changed lines the release gate reported uncovered (naive policy timestamp; uninspectable sidecar directory) (869473a03)
+- test(cmru): realign the two remaining KI-97 pins (warn by default, fail on demand); keep retained release output and .run-gate out of the image contract tests (835c94ae1)
+- test(wheel-builder): restore the aged-install assertion dropped in round 1 (8bc199778)
+
+<!-- cmru: pending release notes begin -->
+### Changed
+- The KI-79 R2 (mutation) postponement window also covers the 7.1 patch line (`>= 7.1.0`, `< 7.2.0`), by the operator decision of 2026-10-27 waiving R2 for every release of the current release wave. The window stays a bounded, version-keyed allowlist: 7.2.0 and later refuse, only `mutation` is deferred, and the R2 debt stays open (KI-79, KI-99; now due before 7.2.0).
+
+### Fixed
+- The KI-79 postponement guard fails closed on a prepared dated release heading that is not strict `X.Y.Z` (for example `7.2.0rc1`) instead of reading an older, authorized heading below it.
+- `cmru abandon` retires a failed `--from-worktree` candidate again (KI-86): the feature-source record is compared with the transaction's recorded base commit, not with the worktree HEAD that `cmru abandon`'s listing carries and that moves with the first prepare commit.
+- A failed `cmru release --dry-run` of a new candidate discards its disposable worktree, branch and sidecars instead of retaining a candidate that `abandon` withheld (KI-91); a dry run of a resumed candidate, or any candidate with a pushed backup or a recorded result, is still retained.
+- GHCR visibility sync after a successful image push no longer fails the release when the package is still not found after the retries or the token may not read it (KI-97): it warns with the cause and the one-time UI remediation (set visibility once, link the package to the repository) and continues; `mirror_package_visibility(..., missing="fail")` keeps the hard failure, 5xx lookups still fail.
+- `cmru cleanup --policy` honours `[cleanup] max_age_days`: a Release published within that window (or without a usable publication time) and its tag are kept, re-checked when the confirmed plan is applied. The key was validated and then ignored. The `--policy` help and the per-project policy line now state that WITHOUT the key every `<prefix>-v*` Release and tag outside `keep_release_tags`/`<prefix>-latest` is deleted.
+
+### Added
+- `cmru abandon <cmru-release-...>` retires the orphan sidecar files of a transaction that has no worktree, no local branch and no origin branch (candidates removed by hand, or by an older cmru that did not know every sidecar name), after listing their recorded scope, results, started untagged publications and tag push attempts. Publication evidence withholds (exit 4) exactly as on every other abandon path: a recorded result, an untagged publication that started, a tag push attempt without a confirmed-absent record, a record that cannot be read, or a MISSING untagged-publication record for a scope that names an untagged or unknown project or has no readable scope (a transaction older than KI-98). Nothing else is touched and unknown sidecar names are reported, not deleted.
+- Estate `build-push.py` callers (pwmcp, nyxloom, mdt-cockpit, modern-debian-tools-python-debug) log `NOT synced` instead of `Synced` when the visibility sync returns `None`.
+- `cmru abandon <cmru-gate-...>` refuses a release-gate snapshot (exit 2) and points at `cmru gate-snapshots --remove`.
+
+### Documentation
+- KI-100..KI-105 filed from the post-7.0.0 review (controller identity vs the code that ran, cleanup without the release lock, dry-run resume prepare commits, remaining post-push GHCR hard failures, gate-snapshot selection by name, the two cleanup selection grammars); `docs/RELEASE-TRANSACTIONS.md` and the packaged skill follow the abandon/dry-run/cleanup behaviour.
+<!-- cmru: pending release notes end -->
 
 ## [7.0.0] - 2026-10-27
 <!-- cmru: generated -->
