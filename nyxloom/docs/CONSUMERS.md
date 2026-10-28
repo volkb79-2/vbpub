@@ -57,13 +57,20 @@ deduplicated API request tokens to each session and nested subagent. D-022
 chooses this additive command spelling; the command uses the pure
 `session_extract.usage` service without project registration or daemon state.
 Reports are read-only unless `--out FILE` is supplied, which writes the
-selected rendering to that file with private file permissions. Operator UI
+selected rendering to that file with mode `0600`; missing parent directories
+are created and invalid parents produce a clear error. Operator UI
 anchors are the narrow local-state exception: they are written only by the
 explicit `usage anchor add` command. JSON uses the frozen
 `usage-report-v1` schema and contains an exact call ledger, nodes with self and
 subtree totals, typed events, lineage edges, conflicts, provenance and coverage
 warnings. It excludes message, thinking and tool content and does not serialize
 filesystem paths.
+
+`--no-labels` removes session titles and agent topics. `agent_type` remains,
+and `project_id` is a stable hash of the recorded cwd, so the same project can
+be correlated across reports without exposing its path. Cross-file conflicts
+keep one deterministic call marked `conflicted`; its conflict record identifies
+the representative.
 
 ```sh
 # Last 24 hours: raw tokens, experimental weighted units, local share and USD estimate.
@@ -94,11 +101,8 @@ nyxloom usage prices --fit --format json
 nyxloom usage windows --since 7d --format json
 
 # Record a reading from the account UI; use the exact displayed values.
-read -r -p 'Observed at (ISO-8601 with timezone): ' OBSERVED_AT
-read -r -p 'Displayed percentage (0..100): ' PERCENT
-read -r -p 'Next reset at (ISO-8601 with timezone): ' RESET_AT
-nyxloom usage anchor add --kind five_hour --at "$OBSERVED_AT" --percent "$PERCENT" \
-  --reset-at "$RESET_AT" --source settings-usage \
+nyxloom usage anchor add --kind five_hour --at 2026-10-28T18:15:00Z --percent 96 \
+  --reset-at 2026-10-28T20:00:00Z --source settings-usage \
   --coverage-assumption local-only-lower-bound
 nyxloom usage anchor list
 nyxloom usage calibrate --format json
@@ -156,15 +160,25 @@ leaves estimated limit percentage unknown. An all-account fit is conditional
 on the operator's explicit `all-account-usage-observed` assumption. API prices
 and weighted local shares do not establish subscription usage.
 
+`usage report` and `usage charts` read the default XDG anchor store and accept
+`--anchor-file FILE` to select another one. An invalid or unreadable store
+produces a warning; the read-only report continues without anchor data.
+
+The table's `ACTIVE SPAN SUM` adds node-local burst spans separated by gaps
+over one hour. Subtree rows sum across nodes; with concurrent subagents,
+active span can exceed wall duration.
+
 ### Export usage chart data
 
 `nyxloom usage charts` writes a private `usage-charts-v1` JSON document. The
 same object appears at `extensions.chart_data` in
-`nyxloom usage report --format json`; the report's `calls` and `nodes` remain
-the exact shared ledger and tree. `--out` is required and creates a mode-0600
-file. Use `--no-labels` when chart labels should omit session titles and
-subagent topics; the transformation happens before serialization. Labeled
-reports can contain sensitive sidecar descriptions and should stay local.
+`nyxloom usage report --format json`; its chart totals, ownership, and call
+lookup come from the full windowed tree before `--depth` or `--min-share` folds
+the displayed nodes. The report's `calls` array remains the exact ledger.
+`--out` is required and creates a mode-0600 file. Use `--no-labels` when chart
+labels should omit session titles and subagent topics; the transformation
+happens before serialization. Labeled reports can contain sensitive sidecar
+descriptions and should stay local.
 
 The chart section includes four datasets: context swim lanes, joined context
 lines for the three highest weighted sessions, weighted cost buckets, and
@@ -187,7 +201,10 @@ assumption.
 
 ```sh
 nyxloom usage report --since 24h --format json --out usage-report.json
-nyxloom usage charts --since 24h --top 12 --group-by agent --out usage-charts.json
+nyxloom usage report --since 24h --format json --anchor-file ./usage-anchors.json \
+  --out anchored-report.json
+nyxloom usage charts --since 24h --top 12 --group-by agent \
+  --anchor-file ./usage-anchors.json --out usage-charts.json
 nyxloom usage charts --since 24h --no-labels --out anonymous-charts.json
 ```
 
@@ -217,7 +234,8 @@ The anonymize control changes visible labels for the current page but leaves
 the originals in the file. `--no-labels` removes free-text topics before
 serialization when the file must not contain them. Labeled HTML files may
 contain sensitive sidecar descriptions; keep them local and protect the
-mode-0600 output. Print CSS includes collapsed table rows and works with A4 or
+mode-0600 output. `project_id` remains a stable cwd hash and `agent_type`
+remains available after `--no-labels`. Print CSS includes collapsed table rows and works with A4 or
 Letter landscape; long tables continue across pages.
 
 ### PDF export

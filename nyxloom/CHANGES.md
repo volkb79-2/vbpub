@@ -15,10 +15,18 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Reconcile usage reporting with the plan review: file-local stream deduplication and exact copied-prefix identity, explicit conflict handling, structural compaction events, shared lineage resolution, deterministic IDs/order, and timestamp-based clipping.
 - Keep successful deduplication counts visible without mislabeling a complete merged ledger as partial coverage.
 - Keep raw tokens, local weighted shares, API-equivalent USD and subscription-limit percentages distinct; unknown prices and unidentified account coverage remain unknown.
+- Build chart extensions from the complete windowed tree before display folding; `--depth` and `--min-share` now affect only the rendered hierarchy.
+- Let report and chart commands select the private anchor store with `--anchor-file`; invalid optional anchor state warns and leaves report generation available without anchors.
+- Preserve a deterministic cross-file conflict representative with a `conflicted` flag and conflict-record link; clarify that `project_id` is stable across reports and active span is a sum across nodes.
 - Raise the `cli-extended` runtime floor to 0.4.0 for Nyxloom's generated semantic CLI review workflow.
 
 ### Fixed
 - Resolve child rows to the shared tree nodes before sorting the HTML hierarchy, so reports with multiple sibling agents render and print completely.
+- Deduplicate mixed stream rows through both request and message identities, retain cross-file conflict representatives, and sort node events after inferred drop events are appended.
+- Create missing usage-output parent directories and translate preparation/write failures into clean CLI errors.
+
+### Testing
+- Verify the full Nyxloom suite (5,756 passed; two documented opt-in skips), 100% usage-package line and branch coverage, and a live BrowserLease acceptance with zero network requests. The registered tester-unified gate remains controller-owned.
 
 <!-- cmru: release history -->
 

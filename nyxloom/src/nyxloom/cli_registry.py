@@ -657,6 +657,7 @@ def _usage_report_group() -> VerbSpec:
                 _opt("--sort", "Sibling sort key; cost means raw token units in this iteration", choices=("cost", "start", "dur", "calls", "peak", "out"), default="cost"),
                 _opt("--no-labels", "Omit session titles and subagent topic labels", action="store_true"),
                 _opt("--weights", "TOML prices and experimental weights override", metavar="FILE", default=None),
+                _opt("--anchor-file", "Private usage anchor file; defaults to the XDG state file", metavar="FILE", default=None),
                 _opt("--top", "Number of chart groups and agents before the residual other group", type=_usage_top, default=None),
                 _opt("--group-by", "Cost bucket grouping in chart data", choices=("agent", "topic", "model", "effort", "session"), default=None),
             ),
@@ -684,6 +685,7 @@ def _usage_report_group() -> VerbSpec:
                 _opt("--group-by", "Cost bucket grouping", choices=("agent", "topic", "model", "effort", "session"), default="agent"),
                 _opt("--no-labels", "Omit session titles and subagent topic labels", action="store_true"),
                 _opt("--weights", "TOML prices and experimental weights override", metavar="FILE", default=None),
+                _opt("--anchor-file", "Private usage anchor file; defaults to the XDG state file", metavar="FILE", default=None),
                 _opt("--out", "Write private usage-charts-v1 JSON to this file", metavar="FILE", required=True),
             ),
             examples=(

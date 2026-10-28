@@ -372,8 +372,6 @@ def decimate_context_points(
     )
     if len(ordered) <= max_points:
         return ordered
-    if not ordered:
-        return []
     selected: dict[str, dict[str, Any]] = {}
 
     def keep(point: dict[str, Any]) -> None:

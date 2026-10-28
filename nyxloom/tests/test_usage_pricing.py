@@ -935,6 +935,41 @@ def test_private_usage_report_writer_creates_private_atomic_output_and_refuses_s
     assert target.read_bytes() == original
 
 
+def test_private_usage_writer_creates_missing_parent_and_rejects_non_directory_parent(
+    tmp_path, monkeypatch,
+):
+    from pathlib import Path
+
+    from nyxloom import cli
+
+    nested = tmp_path / "nested" / "reports" / "usage.json"
+    cli._write_private_usage_output(nested, "private")
+    assert nested.read_text(encoding="utf-8") == "private"
+    assert stat.S_IMODE(nested.stat().st_mode) == 0o600
+
+    parent_file = tmp_path / "not-a-directory"
+    parent_file.write_text("occupied", encoding="utf-8")
+    with pytest.raises(ValueError, match="cannot prepare usage report output directory"):
+        cli._write_private_usage_output(parent_file / "usage.json", "private")
+
+    valid_parent = tmp_path / "false-directory-check"
+    valid_parent.mkdir()
+    original_mkdir = Path.mkdir
+    original_is_dir = Path.is_dir
+    monkeypatch.setattr(
+        Path, "mkdir",
+        lambda self, *args, **kwargs: (
+            None if self == valid_parent else original_mkdir(self, *args, **kwargs)
+        ),
+    )
+    monkeypatch.setattr(
+        Path, "is_dir",
+        lambda self: False if self == valid_parent else original_is_dir(self),
+    )
+    with pytest.raises(ValueError, match="parent must be a directory"):
+        cli._write_private_usage_output(valid_parent / "usage.json", "private")
+
+
 def _weight_mapping() -> dict:
     source = Path(pricing.__file__).with_name("usage-weights.toml")
     return deepcopy(tomllib.loads(source.read_text(encoding="utf-8")))
@@ -1640,9 +1675,11 @@ def test_usage_report_cli_prints_contract_json_and_privately_writes_requested_re
 
     corpus = _corpus([_call(input_tokens=10)])
     monkeypatch.setattr(usage, "load_corpus", lambda **_kwargs: corpus)
-    monkeypatch.setattr(anchors, "list_anchors", list)
+    anchor_paths = []
+    monkeypatch.setattr(anchors, "list_anchors", lambda path=None: anchor_paths.append(path) or [])
 
     assert cli.cmd_usage_report(_usage_cli_args()) == 0
+    assert anchor_paths == [None]
     stdout = capsys.readouterr().out
     report = json.loads(stdout)
     assert report["schema_version"] == "usage-report-v1"
@@ -1651,11 +1688,34 @@ def test_usage_report_cli_prints_contract_json_and_privately_writes_requested_re
     assert MESSAGE_SENTINEL not in stdout and TOOL_SENTINEL not in stdout
 
     target = tmp_path / "usage.json"
-    assert cli.cmd_usage_report(_usage_cli_args(out=str(target))) == 0
+    assert cli.cmd_usage_report(_usage_cli_args(
+        out=str(target), anchor_file="selected-anchors.json",
+    )) == 0
+    assert anchor_paths[-1] == "selected-anchors.json"
     captured = capsys.readouterr()
     assert captured.out == ""
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
     assert json.loads(target.read_text(encoding="utf-8"))["schema_version"] == "usage-report-v1"
+
+
+def test_usage_report_continues_without_corrupt_optional_anchor_state(tmp_path, monkeypatch, capsys):
+    from nyxloom.session_extract import usage
+
+    from nyxloom import cli
+
+    monkeypatch.setattr(usage, "load_corpus", lambda **_kwargs: _corpus([]))
+    anchor_file = tmp_path / "corrupt-anchors.json"
+    anchor_file.write_text("{not-json", encoding="utf-8")
+    anchor_file.chmod(0o600)
+
+    report = cli._build_usage_report_data(_usage_cli_args(anchor_file=str(anchor_file)))
+    captured = capsys.readouterr()
+
+    assert report["extensions"]["limit_anchors"]["anchor_count"] == 0
+    assert report["extensions"]["chart_data"]["datasets"]["weighted_cost_buckets"][
+        "cumulative_percentage_line"
+    ]["status"] == "unknown"
+    assert "continuing without anchors" in captured.err
 
 
 def test_usage_prices_cli_json_and_unfit_text_keep_cost_state_diagnostic_only(
@@ -1848,12 +1908,12 @@ def test_private_usage_output_writer_cleans_failed_atomic_replacement(tmp_path, 
         raise OSError("replace failed")
 
     monkeypatch.setattr(cli.os, "replace", fail_replace)
-    with pytest.raises(OSError, match="replace failed"):
+    with pytest.raises(ValueError, match="cannot write private usage report: replace failed"):
         cli._write_private_usage_output(target, "{}\n")
     assert list(tmp_path.iterdir()) == []
 
     monkeypatch.setattr(cli.os, "unlink", lambda *_args: (_ for _ in ()).throw(OSError("unlink failed")))
-    with pytest.raises(OSError, match="replace failed"):
+    with pytest.raises(ValueError, match="cannot write private usage report: replace failed"):
         cli._write_private_usage_output(target, "{}\n")
     monkeypatch.undo()
     leftovers = list(tmp_path.glob(".report.json.*"))

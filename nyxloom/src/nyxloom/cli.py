@@ -1429,7 +1429,7 @@ def _build_usage_report_data(args, *, now=None):
         load_corpus,
         resolve_window,
     )
-    from .session_extract.usage.anchors import list_anchors
+    from .session_extract.usage.anchors import AnchorError, list_anchors
     from .session_extract.usage.calibration import calibrate_anchors
     from .session_extract.usage.pricing import (
         apply_valuation,
@@ -1442,7 +1442,14 @@ def _build_usage_report_data(args, *, now=None):
     weights = load_weights(getattr(args, "weights", None))
     corpus = load_corpus(since=window.since, until=window.until)
     valuation = apply_valuation(corpus, weights)
-    anchors = list_anchors()
+    try:
+        anchors = list_anchors(getattr(args, "anchor_file", None))
+    except AnchorError as exc:
+        print(
+            f"warning: usage anchors could not be loaded; continuing without anchors ({exc})",
+            file=sys.stderr,
+        )
+        anchors = []
     calibration = calibrate_anchors(corpus, anchors, [], weights) if anchors else None
     report = build_report(
         corpus,
@@ -1515,9 +1522,17 @@ def _write_private_usage_output(path: Path, content: str | bytes) -> None:
     """Atomically write a potentially sensitive report with mode 0600."""
     if path.is_symlink():
         raise ValueError("usage report output must not be a symlink")
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", dir=path.parent,
-    )
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.parent.is_dir():
+            raise ValueError("usage report output parent must be a directory")
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.", dir=path.parent,
+        )
+    except OSError as exc:
+        raise ValueError(
+            f"cannot prepare usage report output directory {path.parent}: {exc.strerror or exc}"
+        ) from exc
     try:
         os.fchmod(descriptor, 0o600)
         if isinstance(content, bytes):
@@ -1529,7 +1544,7 @@ def _write_private_usage_output(path: Path, content: str | bytes) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary_name, path)
-    except OSError:
+    except OSError as exc:
         try:
             os.close(descriptor)
         except OSError:
@@ -1538,7 +1553,7 @@ def _write_private_usage_output(path: Path, content: str | bytes) -> None:
             os.unlink(temporary_name)
         except OSError:
             pass
-        raise
+        raise ValueError(f"cannot write private usage report: {exc.strerror or exc}") from exc
 
 
 def _usage_json(value) -> str:

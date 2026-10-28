@@ -578,6 +578,8 @@ def list_agents(path: Path) -> list["SessionNode"]:
     subagents_dir = session_dir / "subagents"
     meta_files = sorted(subagents_dir.glob("agent-*.meta.json")) if subagents_dir.is_dir() else []
     transcript_files = sorted(subagents_dir.glob("agent-*.jsonl")) if subagents_dir.is_dir() else []
+    if not root_file.exists() and not meta_files:
+        return nodes
     if not meta_files and not transcript_files:
         return nodes
 

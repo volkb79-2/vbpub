@@ -241,14 +241,28 @@ expose price diagnostics, observed reset intervals, and explicitly qualified
 UI readings. See the [usage report guide](docs/CONSUMERS.md#report-claude-code-usage)
 and [design rationale](docs/DESIGN-GUIDE.md#local-usage-report).
 
+`--no-labels` removes session titles and agent topics before serialization.
+`agent_type` remains, and `project_id` is a stable hash of the recorded cwd, so
+the same project can be correlated across reports without including its path.
+Cross-file conflicts keep a deterministic representative call marked
+`conflicted`, with a conflict record that identifies it. Output files use
+mode `0600`; missing parent directories are created.
+Reports and chart exports accept `--anchor-file FILE`; absent that option they
+read the default XDG anchor store. An invalid anchor store produces a warning
+and the report continues without anchor data. The table labels the measure
+`ACTIVE SPAN SUM` as a sum of node-local bursts; it can exceed wall duration
+when nodes overlap.
+
 `nyxloom usage charts --since 24h --out usage-charts.json` writes the same
 metadata-only chart section included in `nyxloom usage report --format json`.
 Its `usage-charts-v1` datasets contain packed agent context lanes, joined
 per-session context lines, weighted self-cost buckets, and top-agent cost
 composition. Cost stacks partition deduplicated call self-cost; subtree totals
 are never stacked with their children. Context lines are decimated for display
-while retaining exact call data in the report ledger. Weighted units are an
-experimental local score, not subscription usage. Reports with labels are
+while retaining exact call data in the report ledger. `--depth` and
+`--min-share` fold only the displayed tree; chart ownership and totals use the
+complete windowed tree. Weighted units are an experimental local score, not
+subscription usage. Reports with labels are
 sensitive local artifacts; use `--no-labels` to remove titles and topics before
 writing them. See the [chart guide](docs/CONSUMERS.md#export-usage-chart-data)
 and [design rationale](docs/DESIGN-GUIDE.md#usage-chart-data).

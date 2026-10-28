@@ -56,3 +56,15 @@ def test_every_usage_report_format_is_documented():
     human_docs = "\n".join(path.read_text(encoding="utf-8") for path in DOCS)
     for value in ("table", "json", "csv", "html", "pdf"):
         assert f"`{value}`" in human_docs
+
+
+def test_usage_privacy_anchor_and_active_span_semantics_are_in_all_human_docs():
+    for path in DOCS:
+        text = path.read_text(encoding="utf-8")
+        assert "stable hash" in text and "project_id" in text
+        assert "agent_type" in text
+        assert "--anchor-file" in text
+        assert "ACTIVE SPAN SUM" in text
+        assert "can exceed wall duration" in text
+        assert "conflicted" in text
+        assert "missing parent directories" in text

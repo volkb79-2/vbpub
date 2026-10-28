@@ -417,6 +417,7 @@ def _call_dict(call: Call) -> dict[str, Any]:
         "provenance": [asdict(ref) for ref in call.provenance],
         "stream_block_count": call.stream_block_count,
         "copied_source_count": call.copied_source_count,
+        "conflicted": call.conflicted,
         "has_fork_source": call.has_fork_source,
         "weighted_units": call.weighted_cost,
         "api_equivalent_usd": call.usd_cost,
@@ -589,6 +590,21 @@ def build_report(
         key=lambda event: (event.timestamp, event.session_id, event.source_id, event.source_line, event.event_id),
     )
     lineage_edges = _lineage_edges(full_roots)
+    coverage = _coverage(corpus)
+    chart_data = None
+    if chart_options is not None:
+        chart_data = build_chart_data(
+            full_roots,
+            window,
+            weights=chart_options.weights,
+            top_n=chart_options.top_n,
+            group_by=chart_options.group_by,
+            anchors=chart_options.anchors,
+            calibration=chart_options.calibration,
+            coverage_complete=not coverage["partial"],
+            scope_is_full=project is None and session is None,
+            context_point_limit=chart_options.context_point_limit,
+        )
 
     displayed_roots = full_roots
     for node in displayed_roots:
@@ -684,30 +700,17 @@ def build_report(
         "events": [_event_dict(event) for event in all_events],
         "lineage_edges": lineage_edges,
         "conflicts": list(corpus.conflicts),
-        "coverage": _coverage(corpus),
+        "coverage": coverage,
         "privacy": {
             "message_content": "excluded",
             "thinking_content": "excluded; token count is an output subset",
             "tool_content": "excluded",
-            "filesystem_paths": "excluded; project and source identifiers are opaque",
+            "filesystem_paths": "excluded; project_id is a stable hash of recorded cwd and source identifiers are opaque",
         },
-        "extensions": {"prices": None, "limit_anchors": None, "chart_data": None},
+        "extensions": {"prices": None, "limit_anchors": None, "chart_data": chart_data},
         "nodes": [
             _node_dict(node, total_raw=total.raw_token_units, depth=0)
             for node in displayed_roots
         ],
     }
-    if chart_options is not None:
-        report["extensions"]["chart_data"] = build_chart_data(
-            full_roots,
-            window,
-            weights=chart_options.weights,
-            top_n=chart_options.top_n,
-            group_by=chart_options.group_by,
-            anchors=chart_options.anchors,
-            calibration=chart_options.calibration,
-            coverage_complete=not report["coverage"]["partial"],
-            scope_is_full=project is None and session is None,
-            context_point_limit=chart_options.context_point_limit,
-        )
     return report

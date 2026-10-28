@@ -166,8 +166,10 @@ Lineage statuses distinguish `resolved_parent_agent_id`,
 `unresolved_parent_conflict`, `unresolved_unknown_parent`, and
 `unresolved_cycle`; roots use `root` and the grouping node uses
 `unresolved_group`. Conflict kinds are `duplicate_conflict` and
-`cross_file_conflict`. Conflicts exclude all candidate calls and include
-opaque source/line provenance.
+`cross_file_conflict`. Stream-level conflicts exclude their ambiguous
+candidates. A cross-file copied-prefix conflict keeps a deterministic
+representative call, marks it `conflicted`, and records its call ID with opaque
+source/line provenance.
 
 The loader parses each transcript once, only through its initial byte-size
 snapshot, and keeps usage metadata rather than transcript records. It never
@@ -176,7 +178,10 @@ Source and project paths are represented by opaque identifiers. Path-bearing
 free-text labels and path-valued identity metadata are omitted. Message,
 thinking, tool input and tool results are not fields in the report. Optional
 title/topic labels come from title and agent metadata; `--no-labels` removes
-them before serialization.
+them before serialization. `agent_type` remains, and `project_id` is a stable hash
+of the recorded cwd that stays stable across reports. This
+permits project-level correlation while keeping the filesystem path out of the
+artifact.
 
 The report keeps three measures separate. Raw token units sum input,
 cache-read, cache-write 5-minute, cache-write 1-hour, unclassified cache-write,
@@ -219,6 +224,11 @@ other devices or shared account surfaces may contribute. Without enough
 consistent readings and an identifiable coverage assumption, the limit
 percentage remains unknown. D-023 records this minimal persistence exception;
 the call ledger and report remain transient query products.
+
+Report and chart commands may select that store with `--anchor-file FILE` and
+otherwise read the default XDG path. Invalid anchor state produces a warning
+and the command continues without anchors, so a damaged optional store cannot
+block a read-only usage report.
 
 ## Usage chart data
 
@@ -332,14 +342,20 @@ normalized path or an unambiguous basename) and includes the matching session
 tree. The report discloses scanned files, malformed or truncated lines,
 missing fields, conflicts, lineage gaps, and concurrent changes.
 
-Wall duration is the first-to-last call span. Active span adds only the spans
+Wall duration is the first-to-last call span. `ACTIVE SPAN SUM` adds the spans
 within activity bursts; a gap strictly greater than 3,600 seconds starts a
-new burst. Both values and every tie use deterministic timestamp, session,
-opaque source, line and call-ID ordering. IDs use truncated SHA-256 over
+new burst. A subtree sums node-local active spans. Active span can exceed wall duration
+when subagents overlap. Both values and every tie use deterministic
+timestamp, session, opaque source, line and call-ID ordering. IDs use truncated SHA-256 over
 canonical source and record identity; JSON keys are sorted and share fractions
 are rounded to eight decimal places. Tests inject the clock and compare the
 complete versioned output. The invocation samples `now` once and reuses it for
 window resolution and `generated_at`.
+
+The writer creates missing parent directories, refuses a symlink output file,
+and atomically replaces the destination with mode `0600`. Usage artifacts can
+contain sensitive labels, so the file stays private even when the caller
+chooses a new output directory.
 
 The hierarchy is shown directly in the table: session rows contain their own
 calls, child-agent rows, and subtree totals. `--depth` limits visible levels;

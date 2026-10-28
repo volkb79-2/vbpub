@@ -152,7 +152,7 @@ def _table_values(
 
 _HEADERS = (
     "NODE / TOPIC", "MODEL(S)", "EFFORT", "START UTC", "END UTC", "WALL DUR",
-    "ACTIVE SPAN", "CALLS", "PEAK CTX", "IN", "CACHE READ", "OUT", "WRITE 5M",
+    "ACTIVE SPAN SUM", "CALLS", "PEAK CTX", "IN", "CACHE READ", "OUT", "WRITE 5M",
     "WRITE 1H", "WRITE ?", "RAW TOKENS", "RAW SHARE", "WEIGHTED UNITS",
     "OBS LOCAL SHARE", "API-EQUIVALENT USD (ESTIMATE)",
 )
@@ -165,7 +165,7 @@ def render_table(report: dict[str, Any]) -> str:
         f"Schema: {report['schema_version']}",
         f"Window: [{report['window']['since']}, {report['window']['until']}) UTC",
         "Basis: raw tokens, experimental weighted units and API-equivalent USD estimates. OBS LOCAL SHARE is within this local report, not account usage.",
-        "Wall duration spans first-to-last call; active span sums within-node bursts separated by gaps over one hour.",
+        "Wall duration spans first-to-last call; active span sum adds node-local bursts separated by gaps over one hour and can exceed wall duration when nodes overlap.",
         "",
     ]
     price_basis = report["extensions"].get("prices")

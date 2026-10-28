@@ -39,17 +39,31 @@ def _use_pwmcp_interpreter() -> None:
     os.execve(command[0], [command[0], str(Path(__file__).resolve()), *sys.argv[1:]], environment)
 
 
-_use_pwmcp_interpreter()
-
-from pwmcp_client.session import BrowserLease  # noqa: E402
-
 from test_usage_html import HOSTILE_TOPIC, _report  # noqa: E402
 
 from nyxloom.session_extract.usage.html import render_html  # noqa: E402
 
 
-def main() -> int:
-    html = render_html(_report(), weights_file="usage-weights.toml")
+def _assert_active_totals_match_ledger(report: dict, page) -> None:
+    calls = report["calls"]
+    totals = report["totals"]
+    assert totals["calls"] == len(calls)
+    assert totals["raw_token_units"] == sum(call["raw_token_units"] for call in calls)
+    assert totals["weighted_units"] == sum(call["weighted_units"] for call in calls)
+    assert totals["api_equivalent_usd"] == sum(call["api_equivalent_usd"] for call in calls)
+    expected = (
+        f"Raw {totals['raw_token_units']:,} · weighted {totals['weighted_units']:.2f} · "
+        f"API-equivalent ${totals['api_equivalent_usd']:.8f}"
+    )
+    assert page.locator("#active-call-count").text_content() == f"Showing {len(calls)} of {len(calls)} calls"
+    assert page.locator("#active-totals").text_content() == expected
+
+
+def run_browser_check() -> None:
+    from pwmcp_client.session import BrowserLease
+
+    full_report = _report()
+    html = render_html(full_report, weights_file="usage-weights.toml")
     requests: list[str] = []
     with BrowserLease.connect(label="nyxloom-usage-html-acceptance") as lease:
         context = lease.browser.new_context()
@@ -60,6 +74,10 @@ def main() -> int:
             page.wait_for_function(
                 "document.getElementById('usage-report-ready')?.dataset.ready === '1'",
                 timeout=30_000,
+            )
+            _assert_active_totals_match_ledger(full_report, page)
+            assert "Raw 270 · weighted 20.00 · API-equivalent $0.06000000" in (
+                page.locator("#active-totals").text_content() or ""
             )
             assert page.locator("img").count() == 0
             provenance = page.locator("#footer-provenance").text_content() or ""
@@ -139,10 +157,40 @@ def main() -> int:
                 "element => { element.value = '400'; element.dispatchEvent(new Event('input', {bubbles:true})); }"
             )
             assert "Showing 1 of 3 calls" in (page.locator("#active-call-count").text_content() or "")
+
+            folded_report = _report()
+            folded_report["presentation"]["depth"] = 0
+            folded_report["nodes"][0]["omitted_descendants"] = 2
+            folded_report["nodes"][0]["children"] = []
+            folded_page = context.new_page()
+            folded_page.on("request", lambda request: requests.append(request.url))
+            folded_page.set_content(
+                render_html(folded_report, weights_file="usage-weights.toml"),
+                wait_until="load",
+                timeout=30_000,
+            )
+            folded_page.wait_for_function(
+                "document.getElementById('usage-report-ready')?.dataset.ready === '1'",
+                timeout=30_000,
+            )
+            _assert_active_totals_match_ledger(folded_report, folded_page)
+            assert folded_page.locator("#usage-rows tr.usage-node-row").count() == 1
+            assert "Showing 3 of 3 calls" in (
+                folded_page.locator("#active-call-count").text_content() or ""
+            )
+            assert "Raw 270 · weighted 20.00 · API-equivalent $0.06000000" in (
+                folded_page.locator("#active-totals").text_content() or ""
+            )
+            folded_page.close()
             assert not requests
         finally:
             context.close()
-    print("usage HTML BrowserLease acceptance: PASS (3 synthetic calls, 0 network requests)")
+    print("usage HTML BrowserLease acceptance: PASS (full and folded tables reconcile 3 calls; 0 network requests)")
+
+
+def main() -> int:
+    _use_pwmcp_interpreter()
+    run_browser_check()
     return 0
 
 

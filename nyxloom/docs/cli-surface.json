@@ -1845,6 +1845,19 @@
       "signature": "sha256:c3ec4034cd5cd225d90f4d7f43c82e477bf07899f780179b76e6043d350063e9"
     },
     {
+      "id": "case:route:entrypoint:nyxloom/usage/charts/option-spelling/option:route:entrypoint:nyxloom/usage/charts/--anchor-file/--anchor-file",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/charts/--anchor-file"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/charts",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/charts/--anchor-file",
+        "spelling": "--anchor-file"
+      },
+      "signature": "sha256:9220d8b8f1ff3ee9fcfead1ce3574d910549ed940fd7f644a2ffd8553f54b352"
+    },
+    {
       "id": "case:route:entrypoint:nyxloom/usage/charts/option-spelling/option:route:entrypoint:nyxloom/usage/charts/--debug-raw/--debug-raw",
       "kind": "option-spelling",
       "members": [
@@ -2334,6 +2347,19 @@
         "option_id": "option:route:entrypoint:nyxloom/usage/report/--sort"
       },
       "signature": "sha256:5117a794ae03df33a1ff98322181d4c4121de3194288489f6b5cc68ede24d710"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/report/option-spelling/option:route:entrypoint:nyxloom/usage/report/--anchor-file/--anchor-file",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/report/--anchor-file"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/report",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/report/--anchor-file",
+        "spelling": "--anchor-file"
+      },
+      "signature": "sha256:2fec5f24edfbbca8edc2837852bcd8cce4089151e0e1f0808fb824b8fab1562d"
     },
     {
       "id": "case:route:entrypoint:nyxloom/usage/report/option-spelling/option:route:entrypoint:nyxloom/usage/report/--debug-raw/--debug-raw",
@@ -7063,6 +7089,46 @@
         {
           "action": "argparse._StoreAction",
           "before_nested_subcommand": false,
+          "canonical": "--anchor-file",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Private usage anchor file; defaults to the XDG state file",
+          "dest": "anchor_file",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--anchor-file"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/charts/--anchor-file",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "metavar": "FILE"
+          },
+          "parser_path": [
+            "usage",
+            "charts"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
           "canonical": "--out",
           "choices": null,
           "const": null,
@@ -7985,6 +8051,46 @@
           "help_group": "OPTIONS",
           "hidden": false,
           "id": "option:route:entrypoint:nyxloom/usage/report/--weights",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "metavar": "FILE"
+          },
+          "parser_path": [
+            "usage",
+            "report"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--anchor-file",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Private usage anchor file; defaults to the XDG state file",
+          "dest": "anchor_file",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--anchor-file"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/report/--anchor-file",
           "kind": "option",
           "metavar": "FILE",
           "minimum_values": 1,

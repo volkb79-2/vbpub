@@ -54,6 +54,7 @@ class Call:
     agent_type: str | None = None
     weighted_cost: float | None = None
     usd_cost: float | None = None
+    conflicted: bool = False
 
     @property
     def raw_token_units(self) -> int:

@@ -59,7 +59,7 @@ def render_pdf(report: dict[str, Any], *, weights_file: str = "usage-weights.tom
             "PDF export needs the Playwright dependency from the matching PWMCP client "
             "bundle; see the PDF export setup in docs/CONSUMERS.md."
         ) from exc
-    except Exception:  # noqa: BLE001 - normalize browser errors without exposing endpoints.
+    except Exception:  # noqa: BLE001 - normalize browser errors without exposing endpoints. # census: cleanup/containment
         raise UsagePDFError(
             "PWMCP PDF rendering failed. Check that the managed PWMCP service is running "
             "and that its client version matches the published browser contract; no PDF "

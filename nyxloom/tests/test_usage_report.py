@@ -457,6 +457,27 @@ def test_usage_report_v1_has_exact_call_ledger_and_versioned_csv(tmp_path):
     assert "Schema: usage-report-v1" in render_table(report)
 
 
+@pytest.mark.parametrize("missing_request_first", [False, True])
+def test_mixed_request_id_presence_deduplicates_by_message_id(tmp_path, missing_request_first):
+    rows = [
+        _assistant("shared-request", "2026-10-28T11:00:00Z", message_id="shared-message"),
+        _assistant("shared-request", "2026-10-28T11:00:00Z", message_id="shared-message"),
+    ]
+    rows[1].pop("requestId")
+    if missing_request_first:
+        rows.reverse()
+    _write_jsonl(tmp_path / "project-key" / f"{SESSION}.jsonl", rows)
+
+    corpus = load_corpus(tmp_path)
+    report = _build(corpus)
+
+    assert len(report["calls"]) == report["totals"]["calls"] == 1
+    assert report["calls"][0]["request_id"] == "shared-request"
+    assert report["calls"][0]["request_ids"] == ["shared-request"]
+    assert report["calls"][0]["stream_block_count"] == 2
+    assert corpus.warnings.duplicate_requests == 1
+
+
 def test_utc_half_open_window_clipping_and_disjoint_active_bursts(tmp_path):
     root_file = tmp_path / "project-key" / f"{SESSION}.jsonl"
     _write_jsonl(root_file, [
@@ -479,6 +500,9 @@ def test_utc_half_open_window_clipping_and_disjoint_active_bursts(tmp_path):
     assert root["clipped_after"] is True
     assert root["self"]["wall_duration_seconds"] == 7200
     assert root["self"]["active_span_seconds"] == 1800
+    table = render_table(report)
+    assert "ACTIVE SPAN SUM" in table
+    assert "can exceed wall duration" in table
     assert root["active_bursts"] == [
         {"start": "2026-10-28T10:00:00Z", "end": "2026-10-28T10:30:00Z", "calls": 2},
         {"start": "2026-10-28T12:00:00Z", "end": "2026-10-28T12:00:00Z", "calls": 1},
@@ -536,7 +560,7 @@ def test_structural_compaction_summary_and_unexplained_drops_are_distinct(tmp_pa
     assert TOOL_SENTINEL not in render_json(report)
 
 
-def test_cross_file_copied_prefix_conflict_is_excluded(tmp_path):
+def test_cross_file_copied_prefix_conflict_preserves_and_flags_representative(tmp_path):
     project_dir = tmp_path / "project-key"
     session_dir = project_dir / SESSION
     first = _assistant("copy-a", "2026-10-28T11:00:00Z", message_id="same-message")
@@ -551,11 +575,14 @@ def test_cross_file_copied_prefix_conflict_is_excluded(tmp_path):
     corpus = load_corpus(tmp_path)
     report = _build(corpus)
 
-    assert report["calls"] == []
+    assert len(report["calls"]) == report["totals"]["calls"] == 1
+    assert report["calls"][0]["tokens"]["output"] == 7
+    assert report["calls"][0]["conflicted"] is True
     assert report["conflicts"][0]["kind"] == "cross_file_conflict"
     assert report["conflicts"][0]["candidate_count"] == 2
+    assert report["conflicts"][0]["representative_call_id"] == report["calls"][0]["call_id"]
     assert corpus.warnings.cross_file_conflicts == 1
-    assert corpus.warnings.conflicted_calls_excluded == 2
+    assert corpus.warnings.conflicted_calls_excluded == 1
 
 
 def test_record_timestamps_control_window_not_mtime_and_truncated_tail_is_visible(tmp_path):
@@ -816,6 +843,28 @@ def test_compaction_boundary_is_a_structural_event_without_summary_content(tmp_p
     assert MESSAGE_SENTINEL not in render_json(report)
 
 
+def test_node_events_are_sorted_after_unexplained_drop_events_are_added(tmp_path):
+    root_file = tmp_path / "project-key" / f"{SESSION}.jsonl"
+    _write_jsonl(root_file, [
+        _assistant("before-drop", "2026-10-28T11:00:00Z", usage=_usage(input_tokens=900)),
+        _assistant("after-drop", "2026-10-28T11:10:00Z", usage=_usage(input_tokens=100)),
+        {
+            "type": "system",
+            "subtype": "compact_boundary",
+            "timestamp": "2026-10-28T11:20:00Z",
+            "compactMetadata": {"preTokens": 1200, "postTokens": 500, "trigger": "auto"},
+        },
+    ])
+
+    report = _build(load_corpus(tmp_path))
+    root = report["nodes"][0]
+
+    assert [event["kind"] for event in report["events"]] == [
+        "unexplained_drop", "compaction",
+    ]
+    assert root["event_ids"] == [event["event_id"] for event in report["events"]]
+
+
 def test_min_share_folds_small_root_sessions_and_depth_counts_omitted_agents(tmp_path):
     project_dir = tmp_path / "project-key"
     _write_jsonl(
@@ -946,12 +995,18 @@ def test_table_json_and_csv_never_serialize_message_or_tool_content(tmp_path):
     assert all(TOOL_SENTINEL not in output for output in outputs)
     assert "outer topic" in render_json(report)
     assert "outer topic" not in render_json(no_labels)
+    assert "project_id is a stable hash of recorded cwd" in no_labels["privacy"]["filesystem_paths"]
     assert report["extensions"]["chart_data"]["schema_version"] == "usage-charts-v1"
     assert "PRIVATE_MESSAGE_SENTINEL" not in render_json(report)
     assert "PRIVATE_TOOL_SENTINEL" not in render_json(report)
     assert "outer topic" not in render_json(no_labels["extensions"]["chart_data"])
     child_id = no_labels["nodes"][0]["children"][0]["agent_id"]
-    assert next(call for call in no_labels["calls"] if call["agent_id"] == child_id)["topic"] is None
+    child_call = next(call for call in no_labels["calls"] if call["agent_id"] == child_id)
+    assert child_call["topic"] is None
+    assert child_call["agent_type"] == "general-purpose"
+    assert child_call["project_id"] == next(
+        call for call in report["calls"] if call["agent_id"] == child_id
+    )["project_id"]
     assert root_file.exists()
 
 
@@ -989,6 +1044,7 @@ def test_primary_cli_registers_usage_report_options(monkeypatch, capsys):
         argv=[
             "usage", "report", "--since", "24h", "--format", "html",
             "--out", "usage.html", "--sort", "calls", "--min-share", "1%", "--no-labels",
+            "--anchor-file", "anchors.json",
         ],
     )
 
@@ -999,6 +1055,7 @@ def test_primary_cli_registers_usage_report_options(monkeypatch, capsys):
     assert captured["sort"] == "calls"
     assert captured["min_share"] == pytest.approx(0.01)
     assert captured["no_labels"] is True
+    assert captured["anchor_file"] == "anchors.json"
     assert capsys.readouterr().out == ""
 
 

@@ -225,6 +225,36 @@ def test_pdf_renderer_gives_optional_dependency_remedy_when_client_is_missing(mo
         render_pdf(_report())
 
 
+def test_pdf_renderer_rejects_a_non_report_schema_before_browser_import():
+    with pytest.raises(ValueError, match="requires usage-report-v1"):
+        render_pdf({"schema_version": "other"})
+
+
+def test_pdf_renderer_names_a_missing_playwright_dependency(monkeypatch):
+    class ImportErrorLease:
+        @classmethod
+        def connect(cls, **_kwargs: object) -> ImportErrorLease:
+            raise ImportError("playwright is unavailable")
+
+    package = types.ModuleType("pwmcp_client")
+    package.__path__ = []  # type: ignore[attr-defined]
+    session = types.ModuleType("pwmcp_client.session")
+    session.BrowserLease = ImportErrorLease  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "pwmcp_client", package)
+    monkeypatch.setitem(sys.modules, "pwmcp_client.session", session)
+
+    with pytest.raises(UsagePDFError, match="Playwright dependency"):
+        render_pdf(_report())
+
+
+def test_pdf_renderer_rejects_non_pdf_bytes(monkeypatch):
+    _install_fake_pwmcp(monkeypatch)
+    monkeypatch.setattr(_FAKE_PAGE, "payload", b"not a PDF")
+
+    with pytest.raises(UsagePDFError, match="invalid PDF data"):
+        render_pdf(_report())
+
+
 def test_pdf_renderer_hides_service_endpoint_details_and_explains_remedy(monkeypatch):
     class UnavailableLease:
         @classmethod

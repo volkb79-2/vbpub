@@ -15,6 +15,7 @@
       "call_id": "call-fixture-1",
       "context_size": 29,
       "copied_source_count": 1,
+      "conflicted": false,
       "effort": "medium",
       "has_fork_source": false,
       "inference_geo": null,
@@ -248,7 +249,7 @@
     "sort": "cost"
   },
   "privacy": {
-    "filesystem_paths": "excluded; project and source identifiers are opaque",
+    "filesystem_paths": "excluded; project_id is a stable hash of recorded cwd and source identifiers are opaque",
     "message_content": "excluded",
     "thinking_content": "excluded; token count is an output subset",
     "tool_content": "excluded"

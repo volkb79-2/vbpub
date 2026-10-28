@@ -1823,6 +1823,19 @@ effects = ["Parser only: accepts this public grammar case and returns its parsed
 test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[5bcdf3923a91]"]
 
 [[cases]]
+id = "case:route:entrypoint:nyxloom/usage/charts/option-spelling/option:route:entrypoint:nyxloom/usage/charts/--anchor-file/--anchor-file"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9220d8b8f1ff3ee9fcfead1ce3574d910549ed940fd7f644a2ffd8553f54b352"
+rationale = "`--anchor-file` selects the optional anchor store read by `nyxloom usage charts`; an invalid store is reported as a warning and does not block the chart."
+invocation = ["usage", "charts", "--since", "24h", "--anchor-file", "usage-anchors.json", "--out", "charts.json"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[97d3b1f6fb9d]"]
+
+[[cases]]
 id = "case:route:entrypoint:nyxloom/usage/charts/option-spelling/option:route:entrypoint:nyxloom/usage/charts/--project/--project"
 state = "active"
 decision = "accept"
@@ -2211,6 +2224,19 @@ expected_stdout_contains = ""
 expected_stderr_contains = ""
 effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
 test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[bf2051bd061a]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/usage/report/option-spelling/option:route:entrypoint:nyxloom/usage/report/--anchor-file/--anchor-file"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2fec5f24edfbbca8edc2837852bcd8cce4089151e0e1f0808fb824b8fab1562d"
+rationale = "`--anchor-file` selects the optional anchor store read by `nyxloom usage report`; an invalid store is reported as a warning and does not block the report."
+invocation = ["usage", "report", "--since", "24h", "--anchor-file", "usage-anchors.json"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[81f6a854b328]"]
 
 [[cases]]
 id = "case:route:entrypoint:nyxloom/usage/report/option-spelling/option:route:entrypoint:nyxloom/usage/report/--debug-raw/--debug-raw"

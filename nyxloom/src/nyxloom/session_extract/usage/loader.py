@@ -381,8 +381,14 @@ def _in_window(timestamp: datetime, since: datetime | None, until: datetime | No
     return (since is None or timestamp >= since) and (until is None or timestamp < until)
 
 
-def _call_local_key(call: Call) -> str | None:
-    return call.request_id or call.message_id
+def _call_local_keys(call: Call) -> tuple[tuple[str, str], ...]:
+    """Return namespaced file-local identities that can link stream rows."""
+    keys = []
+    if call.request_id is not None:
+        keys.append(("request", call.request_id))
+    if call.message_id is not None:
+        keys.append(("message", call.message_id))
+    return tuple(keys)
 
 
 def _collapse_file_calls(
@@ -392,14 +398,40 @@ def _collapse_file_calls(
     until: datetime | None,
     corpus: Corpus,
 ) -> list[Call]:
-    groups: dict[str, list[Call]] = defaultdict(list)
-    unkeyed: list[Call] = []
-    for call in calls:
-        key = _call_local_key(call)
-        (groups[key] if key is not None else unkeyed).append(call)
+    parents = list(range(len(calls)))
+
+    def find(index: int) -> int:
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root != right_root:
+            parents[max(left_root, right_root)] = min(left_root, right_root)
+
+    first_by_key: dict[tuple[str, str], int] = {}
+    for index, call in enumerate(calls):
+        for key in _call_local_keys(call):
+            previous = first_by_key.setdefault(key, index)
+            union(index, previous)
+
+    groups_by_root: dict[int, list[Call]] = defaultdict(list)
+    for index, call in enumerate(calls):
+        groups_by_root[find(index)].append(call)
+    groups = sorted(
+        groups_by_root.values(),
+        key=lambda group: min((call.source_line, call.call_id) for call in group),
+    )
     result: list[Call] = []
-    for key in sorted(groups):
-        group = sorted(groups[key], key=lambda call: call.source_line)
+    for group in groups:
+        group = sorted(group, key=lambda call: (call.source_line, call.call_id))
+        key = min(
+            (identity for call in group for identity in _call_local_keys(call)),
+            default=("line", group[0].call_id),
+        )
         if len(group) > 1:
             corpus.warnings.duplicate_requests += len(group) - 1
         in_window = [call for call in group if _in_window(call.timestamp, since, until)]
@@ -410,7 +442,7 @@ def _collapse_file_calls(
             corpus.warnings.conflicted_calls_excluded += 1
             corpus.conflicts.append({
                 "kind": "duplicate_conflict",
-                "identity_id": _opaque_id("conflict", group[0].source_id, key),
+                "identity_id": _opaque_id("conflict", group[0].source_id, *key),
                 "session_id": group[0].session_id,
                 "candidate_count": len(group),
                 "source_ids": sorted({call.source_id for call in group}),
@@ -429,11 +461,12 @@ def _collapse_file_calls(
         chosen.request_ids = sorted({
             request_id for call in group for request_id in call.request_ids
         })
+        if chosen.request_id is None and chosen.request_ids:
+            chosen.request_id = chosen.request_ids[0]
         chosen.source_ids = sorted({call.source_id for call in group})
         chosen.stream_block_count = len(group)
         chosen.copied_source_count = 1
         result.append(chosen)
-    result.extend(call for call in unkeyed if _in_window(call.timestamp, since, until))
     return result
 
 
@@ -457,6 +490,7 @@ def _collapse_copied_prefixes(calls: list[Call], corpus: Corpus) -> list[Call]:
 
     excluded: set[int] = set()
     exact_groups: dict[tuple[object, ...], list[Call]] = defaultdict(list)
+    exact_calls: list[Call] = []
     for identity, group in sorted(by_message.items()):
         source_ids = {call.source_id for call in group}
         if len(source_ids) < 2:
@@ -464,12 +498,15 @@ def _collapse_copied_prefixes(calls: list[Call], corpus: Corpus) -> list[Call]:
         fingerprints = {_copied_prefix_key(call) for call in group}
         if len(fingerprints) != 1:
             corpus.warnings.cross_file_conflicts += 1
-            corpus.warnings.conflicted_calls_excluded += len(group)
+            representative = min(group, key=_representative_key)
+            representative.conflicted = True
+            corpus.warnings.conflicted_calls_excluded += len(group) - 1
             corpus.conflicts.append({
                 "kind": "cross_file_conflict",
                 "identity_id": _opaque_id("conflict", *identity),
                 "session_id": identity[0],
                 "candidate_count": len(group),
+                "representative_call_id": representative.call_id,
                 "source_ids": sorted(source_ids),
                 "source_lines": sorted(call.source_line for call in group),
                 "provenance": sorted(
@@ -477,17 +514,15 @@ def _collapse_copied_prefixes(calls: list[Call], corpus: Corpus) -> list[Call]:
                     key=lambda ref: (ref["source_id"], ref["line"]),
                 ),
             })
-            excluded.update(id(call) for call in group)
+            excluded.update(id(call) for call in group if call is not representative)
             continue
         key = next(iter(fingerprints))
-        if key is not None:
-            exact_groups[key].extend(group)
+        # The per-message group is non-empty and every member has that
+        # message_id, so its copied-prefix fingerprint cannot be None.
+        exact_groups[key].extend(group)
 
-    exact_calls: list[Call] = []
     for identity, group in sorted(exact_groups.items(), key=lambda item: repr(item[0])):
         unique_sources = {call.source_id for call in group}
-        if len(unique_sources) < 2:
-            continue
         representative = min(group, key=_representative_key)
         representative.call_id = _opaque_id("call", "copy", *identity)
         representative.provenance = sorted(
@@ -714,6 +749,7 @@ def _discover(root: Path, corpus: Corpus) -> list[_SessionBuild]:
                 meta_paths = sorted((session_dir / "subagents").glob("agent-*.meta.json"))
             except OSError:
                 meta_paths = []
+                corpus.warnings.unreadable_files += 1
             for meta_path in meta_paths:
                 agent_id = meta_path.name.removeprefix("agent-").removesuffix(".meta.json")
                 if agent_id in build.metas:
@@ -1125,9 +1161,8 @@ def _assemble(
             build.root.children.append(group_node)
 
         for call in session_calls:
-            owner = build.root if call.agent_id is None else nodes.get(call.agent_id)
-            if owner is None:
-                owner = build.root
+            # session_calls contributes every non-root ID to agent_ids above.
+            owner = build.root if call.agent_id is None else nodes[call.agent_id]
             owner.calls.append(call)
         for event in session_events:
             owner = build.root if event.agent_id is None else nodes.get(event.agent_id)
@@ -1156,6 +1191,8 @@ def _assemble(
         for event in drop_events:
             owner = build.root if event.agent_id is None else nodes.get(event.agent_id, build.root)
             owner.events.append(event)
+        for node in all_nodes:
+            node.events.sort(key=_event_sort_key)
         if any(node.calls or node.events for node in [build.root, *nodes.values()]):
             sessions.append(Session(build.session_id, build.root))
     return sessions
