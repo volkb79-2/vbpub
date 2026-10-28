@@ -3021,7 +3021,7 @@ def _search_path_temporary_creation_events(
                 local_role_active = False
                 known_schemas = {b"pg_catalog"}
                 schema_owners.clear()
-        elif kind == "transaction":
+        else:  # kind == "transaction": the last of the event kinds
             if value == "begin":
                 if transaction_baseline is None:
                     transaction_baseline = set(known_schemas)
@@ -5304,11 +5304,9 @@ def _scan_widen_check_in(
                     continue
                 upper = max(values)
                 new_int = upper + 1 if upper < bounds[1] else bounds[0]
-                if new_int in values:
-                    # The fallback is the lower bound. Existing members are
-                    # unsigned, so this is outside the member set and within
-                    # the declared integer type.
-                    continue
+                # The fallback is the (negative) lower bound and existing members
+                # are unsigned, so `new_int` is outside the member set and within
+                # the declared integer type.
                 replacement = f", {new_int})".encode("ascii")
                 description = f"IN (...) widened with {new_int}"
             else:

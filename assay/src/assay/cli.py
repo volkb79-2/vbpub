@@ -783,10 +783,7 @@ def _read_pilot_state_document(
     except FileNotFoundError:
         raw = None
     except OSError as exc:
-        if isinstance(exc, FileNotFoundError):
-            raw = None
-        else:
-            raise PilotStateError(f"PILOT-STATE cannot be read safely: {exc}") from exc
+        raise PilotStateError(f"PILOT-STATE cannot be read safely: {exc}") from exc
     else:
         try:
             info = os.fstat(descriptor)
@@ -1070,7 +1067,6 @@ def _preflight_state_directory(
         return
     root = Path(state_dir)
     owned_lock: tuple[int, tuple[int, ...], Path] | None = None
-    owns_root_fd = False
     try:
         if lock_held:
             root_fd = (
@@ -1081,7 +1077,6 @@ def _preflight_state_directory(
                     os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
                 )
             )
-            owns_root_fd = True
         else:
             owned_lock = _acquire_state_directory_lock(root)
             root_fd, _lock_fds, root = owned_lock
@@ -1112,7 +1107,7 @@ def _preflight_state_directory(
     finally:
         if owned_lock is not None:
             _release_state_directory_lock(owned_lock[0], owned_lock[1])
-        elif owns_root_fd:
+        else:
             os.close(root_fd)
 
 
@@ -1127,7 +1122,6 @@ def _ensure_pilot_state(
     """Validate or atomically create the pilot-only sentinel in a state root."""
     root = Path(state_dir)
     owned_lock: tuple[int, tuple[int, ...], Path] | None = None
-    owns_root_fd = False
     try:
         if lock_held:
             if locked_root_fd is None:
@@ -1138,7 +1132,6 @@ def _ensure_pilot_state(
                 )
             else:
                 root_fd = os.dup(locked_root_fd)
-            owns_root_fd = True
         else:
             owned_lock = _acquire_state_directory_lock(root)
             root_fd, _lock_fds, root = owned_lock
@@ -1211,7 +1204,7 @@ def _ensure_pilot_state(
                 pass
         if owned_lock is not None:
             _release_state_directory_lock(owned_lock[0], owned_lock[1])
-        elif owns_root_fd:
+        else:
             os.close(root_fd)
 
 

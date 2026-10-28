@@ -5014,7 +5014,13 @@ def _run_prepared_lane(
                             progress_phase="r2-baseline",
                         )
                         if r2_unit.post_reason is not None:
-                            raise r2_unit.post_reason
+                            raise AssayError(
+                                "the R2 baseline left Git-visible state behind "
+                                "after the command ran; its result no longer "
+                                "represents its own commit",
+                                outcome=Outcome.NO_MEASUREMENT,
+                                reason_code=r2_unit.post_reason,
+                            )
                         r2_result = r2_unit.result
                         if (
                             r2_result.outcome is Outcome.BUDGET_EXCEEDED

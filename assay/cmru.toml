@@ -27,6 +27,10 @@ artifact_dirs = ["dist"]
 quiet = true
 commands = [
   { label = "assay: registered self-hosted gate", argv = ["bash", "tools/tester-unified-gate.sh", ".."], cwd = "." },
+  # B169/B170 (operator decision 2026-10-27): R0, R1 over all of src/assay and the
+  # R3 canary, with R2 explicitly postponed (records .assay/mutation-postponed-assay.json;
+  # valid only below assay 10.1.0, the full `self-qualification` lane is unchanged).
+  { label = "assay: provisional full-source qualification (R0, R1, R3; R2 postponed)", argv = ["run-gate", "self-qualification-provisional"], cwd = "." },
 ]
 
 [steps.build]

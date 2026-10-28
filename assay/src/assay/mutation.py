@@ -1171,8 +1171,13 @@ def progress_writer(
             reason_code=ReasonCode.OUTPUT_WRITE_FAILED,
         ) from exc
     finally:
-        if parent_fd is not None:
-            os.close(parent_fd)
+        _close_if_open(parent_fd)
+
+
+def _close_if_open(descriptor: int | None) -> None:
+    """Close *descriptor* when one was opened (a failed open leaves ``None``)."""
+    if descriptor is not None:
+        os.close(descriptor)
 
 
 #: (B064) The CLOSED progress vocabulary. Every record the stream carries

@@ -35,10 +35,14 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   No R2 pass is claimed. Every other gate (R0, R1 line and branch coverage, the
   analysis lane, the independent self-hosting witness and the distribution build)
   ran.
-- The full-source R0/R1 qualification (`self-qualification-preflight`, which
-  currently reports 886 uncovered lines in `src/assay`, a pre-existing gap) and
-  the R3 canary lane (which only exists in `self-qualification`, together with
-  R2) were not run in this release gate; tracked as backlog item B170.
+- Added the `self-qualification-provisional` Run-Gate lane (and the assay release
+  step, `cmru.toml` `run-tests`): the full qualification minus R2. It runs R0,
+  R1 over all of `src/assay` (whole-target 100% line and branch) and the R3
+  canary, and records `.assay/mutation-postponed-assay.json` (tracking id B169,
+  operator decision 2026-10-27, valid only below assay 10.1.0, result
+  `provisional`, never an R2 pass). The full `self-qualification` lane is
+  unchanged and clears the marker. The lane's R1 gap on `src/assay` (886
+  uncovered lines before this release's closure tests) is tracked as B170.
 
 ### Added
 - Native R2 records process-tree evidence for executed candidates and
@@ -53,6 +57,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Redact passed-through secrets from subprocess output before clipping verdict
   tails, including secrets that cross the tail boundary.
 - Emit schema-valid non-qualifying campaign summaries for sharded analyses.
+- A dirty tree or moved HEAD detected after the cold-witness R2 baseline is now a
+  typed `NO_MEASUREMENT` refusal carrying that reason (it raised a bare
+  `TypeError` by raising a `ReasonCode`).
+- Removed unreachable defensive branches in the cold-witness pytest-option
+  scan, the SQL `IN` widening and event scan, and pilot-state handling, so the
+  whole-source R1 floor can be met without exclusions.
 - Treat a complete `0/1` shard as whole-plan qualification because it contains
   the full deterministic candidate inventory.
 - Prove that a truncated `analyze campaign` list can be continued to its last
