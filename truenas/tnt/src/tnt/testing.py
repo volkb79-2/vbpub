@@ -15,6 +15,7 @@ import json
 import os
 import threading
 from typing import Any, Callable
+from urllib.parse import urlencode
 
 from websockets.sync.server import ServerConnection, serve
 
@@ -59,6 +60,25 @@ class FakeServer:
         self.details_as_flat_list = details_as_flat_list
         self.requests: list[dict[str, Any]] = []
         self.logins = 0
+        self.datasets: dict[str, dict[str, Any]] = {"tank": self._make_dataset("tank", type_="FILESYSTEM")}
+        self.snapshots: dict[str, dict[str, Any]] = {}
+        self.containers: dict[int, dict[str, Any]] = {}
+        self.vms: dict[int, dict[str, Any]] = {}
+        self.vm_devices: dict[int, dict[str, Any]] = {}
+        self.users: dict[int, dict[str, Any]] = {
+            0: {"id": 0, "uid": 0, "username": "root", "full_name": "root", "builtin": True, "local": True,
+                "shell": "/usr/bin/zsh", "home": "/root", "groups": [], "sshpubkey": None, "password_disabled": False},
+            1000: {"id": 1000, "uid": 1000, "username": username, "full_name": username, "builtin": False, "local": True,
+                   "shell": "/usr/bin/zsh", "home": f"/home/{username}", "groups": [], "sshpubkey": None, "password_disabled": False},
+        }
+        self.user_passwords: dict[str, str] = {username: password}
+        self.groups: dict[int, dict[str, Any]] = {1: {"id": 1, "gid": 1, "name": "wheel", "builtin": True}}
+        self._next_container_id = 1
+        self._next_vm_id = 1
+        self._next_device_id = 1
+        self._next_user_id = 1001
+        self._next_job_id = 1
+        self._subscription_id = 1
         self._scram: dict[str, dict[str, Any]] = {}
         self._server: Any = None
         self._thread: threading.Thread | None = None
@@ -114,11 +134,18 @@ class FakeServer:
                 if method == "auth.login_ex":
                     result, authed = self._login(params, authed)
                 elif method in ("core.set_options", "auth.mechanism_choices"):
-                    result = ["SCRAM", "API_KEY_PLAIN", "PASSWORD_PLAIN"] if method == "auth.mechanism_choices" else None
+                    result = ["SCRAM", "API_KEY_PLAIN", "PASSWORD_PLAIN"] if method == "auth.mechanism_choices" else {"legacy_jobs": False}
+                elif method == "core.subscribe" and params and params[0] == "core.get_jobs":
+                    result = {"legacy_jobs": False}
+                elif method == "core.unsubscribe" and not authed:
+                    result = True
                 elif not authed:
                     raise _RpcError(CALL_ERROR, "Not authenticated")
                 else:
                     result = self._dispatch(method, params)
+                    if method in {"container.create", "container.stop", "container.delete", "vm.stop", "vm.restart"}:
+                        self._send_job(ws, msg["id"], result)
+                        continue
                 reply: dict[str, Any] = {"jsonrpc": "2.0", "id": msg["id"], "result": result}
             except _RpcError as exc:
                 error: dict[str, Any] = {"code": exc.code, "message": exc.message}
@@ -126,6 +153,20 @@ class FakeServer:
                     error["data"] = {"reason": exc.message, "error": 22, "trace": None, "extra": None}
                 reply = {"jsonrpc": "2.0", "id": msg["id"], "error": error}
             ws.send(json.dumps(reply))
+            if authed and method not in self.fail and method == "core.subscribe" and params and params[0] == "container.metrics":
+                self._send_container_metrics(ws)
+
+    def _send_job(self, ws: ServerConnection, request_id: Any, result: Any) -> None:
+        job_id = str(self._next_job_id)
+        self._next_job_id += 1
+        ws.send(json.dumps({"jsonrpc": "2.0", "method": "collection_update", "params": {
+            "collection": "core.get_jobs", "msg": "added", "id": job_id,
+            "fields": {"id": job_id, "state": "RUNNING", "message_ids": [request_id]},
+        }}))
+        ws.send(json.dumps({"jsonrpc": "2.0", "method": "collection_update", "params": {
+            "collection": "core.get_jobs", "msg": "changed", "id": job_id,
+            "fields": {"id": job_id, "state": "SUCCESS", "result": result, "message_ids": []},
+        }}))
 
     def _login(self, params: list[Any], authed: bool) -> tuple[Any, bool]:
         p = params[0] if params else {}
@@ -197,14 +238,331 @@ class FakeServer:
             "system.version": lambda p: self.version,
             "system.info": lambda p: {"version": self.version, "hostname": "fake"},
             "core.get_methods": lambda p: {m: {} for m in self.methods},
+            "core.subscribe": lambda p: self._subscribe(p),
+            "core.unsubscribe": lambda p: True,
+            "auth.me": lambda p: {"pw_name": self.username, "pw_uid": 1000, "pw_gid": 1},
             "disk.query": lambda p: self.disks,
             "disk.details": self._details,
             "pool.query": lambda p: self.pools,
             "boot.get_state": lambda p: self.boot_state,
+            "pool.dataset.query": self._dataset_query,
+            "pool.dataset.details": lambda p: self._dataset_tree(),
+            "pool.dataset.get_instance": lambda p: self._get(self.datasets, p[0], "dataset"),
+            "pool.dataset.create": self._dataset_create,
+            "pool.dataset.update": self._dataset_update,
+            "pool.dataset.delete": self._dataset_delete,
+            "pool.snapshot.query": self._snapshot_query,
+            "pool.snapshot.get_instance": lambda p: self._get(self.snapshots, p[0], "snapshot"),
+            "pool.snapshot.create": self._snapshot_create,
+            "pool.snapshot.clone": self._snapshot_clone,
+            "pool.snapshot.hold": lambda p: self._snapshot_hold(p, True),
+            "pool.snapshot.release": lambda p: self._snapshot_hold(p, False),
+            "pool.snapshot.rollback": lambda p: self._get(self.snapshots, p[0], "snapshot"),
+            "pool.snapshot.delete": self._snapshot_delete,
+            "container.query": lambda p: self._query(self.containers, p),
+            "container.get_instance": lambda p: self._get(self.containers, p[0], "container"),
+            "container.create": self._container_create,
+            "container.update": self._container_update,
+            "container.start": lambda p: self._container_state(p, "RUNNING"),
+            "container.stop": lambda p: self._container_state(p, "STOPPED"),
+            "container.delete": self._container_delete,
+            "vm.query": lambda p: self._query(self.vms, p),
+            "vm.get_instance": lambda p: self._get(self.vms, p[0], "VM"),
+            "vm.status": lambda p: self._get(self.vms, p[0], "VM").get("status"),
+            "vm.create": self._vm_create,
+            "vm.update": self._vm_update,
+            "vm.start": lambda p: self._vm_state(p, "RUNNING"),
+            "vm.stop": lambda p: self._vm_state(p, "STOPPED"),
+            "vm.poweroff": lambda p: self._vm_state(p, "STOPPED"),
+            "vm.restart": lambda p: self._vm_state(p, "RUNNING"),
+            "vm.suspend": lambda p: self._vm_state(p, "SUSPENDED"),
+            "vm.resume": lambda p: self._vm_state(p, "RUNNING"),
+            "vm.delete": self._vm_delete,
+            "vm.device.query": lambda p: self._query(self.vm_devices, p),
+            "vm.device.create": self._vm_device_create,
+            "vm.device.update": self._vm_device_update,
+            "vm.device.delete": self._vm_device_delete,
+            "vm.get_console": self._vm_get_console,
+            "vm.get_display_devices": self._vm_get_display_devices,
+            "vm.get_display_web_uri": self._vm_get_display_web_uri,
+            "user.query": lambda p: self._query(self.users, p, username_key="username"),
+            "user.get_instance": lambda p: self._get(self.users, p[0], "user"),
+            "user.create": self._user_create,
+            "user.update": self._user_update,
+            "user.delete": self._user_delete,
+            "user.set_password": self._user_set_password,
+            "group.query": lambda p: self._query(self.groups, p),
+            "user.shell_choices": lambda p: {"/usr/bin/zsh": "/usr/bin/zsh", "/usr/sbin/nologin": "/usr/sbin/nologin"},
         }
         if method not in handlers:
             raise _RpcError(-32601, f"Method not found: {method}")
         return handlers[method](params)
+
+    def _subscribe(self, params: list[Any]) -> str:
+        result = f"fake-subscription-{self._subscription_id}"
+        self._subscription_id += 1
+        return result
+
+    def _send_container_metrics(self, ws: ServerConnection) -> None:
+        fields = {
+            str(ident): {
+                "cpu": {"cpu_user_percentage": 1.25, "cpu_system_percentage": 0.75},
+                "mem_usage_limit": {"mem_usage_limit_used_mib": 28.4, "mem_usage_limit_available_mib": 1024.0},
+            }
+            for ident, row in self.containers.items()
+            if row.get("status", {}).get("state") == "RUNNING"
+        }
+        if fields:
+            ws.send(json.dumps({"jsonrpc": "2.0", "method": "collection_update", "params": {
+                "collection": "container.metrics", "msg": "added", "fields": fields,
+            }}))
+
+    @staticmethod
+    def _get(rows: dict[Any, dict[str, Any]], key: Any, label: str) -> dict[str, Any]:
+        try:
+            return rows[int(key)] if isinstance(key, str) and key.isdigit() else rows[key]
+        except (KeyError, ValueError):
+            raise _RpcError(CALL_ERROR, f"{label} {key!r} not found") from None
+
+    @staticmethod
+    def _matches(row: dict[str, Any], filters: Any, *, username_key: str | None = None) -> bool:
+        if not isinstance(filters, list):
+            return True
+        for item in filters:
+            if not isinstance(item, (list, tuple)) or len(item) < 3:
+                continue
+            key, operator, expected = item[:3]
+            if key == "id":
+                actual = row.get("id")
+            else:
+                actual = row.get(username_key or key)
+            if operator == "=" and actual != expected:
+                return False
+            if operator == "!=" and actual == expected:
+                return False
+        return True
+
+    def _query(self, rows: dict[Any, dict[str, Any]], params: list[Any], *, username_key: str | None = None) -> list[dict[str, Any]]:
+        filters = params[0] if params else []
+        return [row for row in rows.values() if self._matches(row, filters, username_key=username_key)]
+
+    @staticmethod
+    def _make_dataset(name: str, *, type_: str = "FILESYSTEM", **values: Any) -> dict[str, Any]:
+        pool, _, tail = name.partition("/")
+        return {"id": name, "name": tail or pool, "pool": pool, "type": type_, "children": [],
+                "mountpoint": f"/mnt/{name}" if type_ == "FILESYSTEM" else None, "mounted": False,
+                "used": {"value": "0 B"}, "available": {"value": "100 GiB"},
+                "quota": {"value": "INHERIT"}, "refquota": {"value": "INHERIT"},
+                "compression": {"value": "LZ4"}, "readonly": {"value": "OFF"}, "comments": {"value": ""},
+                "vms": [], "containers": [], **values}
+
+    def _dataset_query(self, params: list[Any]) -> list[dict[str, Any]]:
+        filters = params[0] if params else []
+        return [row for row in self.datasets.values() if self._matches(row, filters)]
+
+    def _dataset_tree(self) -> list[dict[str, Any]]:
+        roots = []
+        for name, row in sorted(self.datasets.items()):
+            row["children"] = []
+        for name, row in sorted(self.datasets.items()):
+            parent = name.rpartition("/")[0]
+            if parent in self.datasets:
+                self.datasets[parent].setdefault("children", []).append(row)
+            else:
+                roots.append(row)
+        return roots
+
+    def _dataset_create(self, params: list[Any]) -> dict[str, Any]:
+        data = dict(params[0])
+        name = data.get("name")
+        if not isinstance(name, str) or name in self.datasets:
+            raise _RpcError(CALL_ERROR, "dataset name is missing or already exists")
+        row = self._make_dataset(name, type_=data.get("type", "FILESYSTEM"))
+        row.update({key: {"value": value} for key, value in data.items() if key not in {"name", "type", "children"}})
+        self.datasets[name] = row
+        return row
+
+    def _dataset_update(self, params: list[Any]) -> dict[str, Any]:
+        row = self._get(self.datasets, params[0], "dataset")
+        for key, value in dict(params[1]).items():
+            row[key] = {"value": value}
+        return row
+
+    def _dataset_delete(self, params: list[Any]) -> bool:
+        name = params[0]
+        options = params[1] if len(params) > 1 else {}
+        descendants = [candidate for candidate in self.datasets if candidate.startswith(f"{name}/")]
+        if descendants and not options.get("recursive"):
+            raise _RpcError(CALL_ERROR, "dataset has children")
+        for candidate in [*descendants, name]:
+            self.datasets.pop(candidate, None)
+        return True
+
+    def _snapshot_query(self, params: list[Any]) -> list[dict[str, Any]]:
+        filters = params[0] if params else []
+        return [row for row in self.snapshots.values() if self._matches(row, filters)]
+
+    def _snapshot_create(self, params: list[Any]) -> dict[str, Any]:
+        data = dict(params[0])
+        name = f"{data['dataset']}@{data['name']}"
+        if name in self.snapshots:
+            raise _RpcError(CALL_ERROR, "snapshot already exists")
+        row = {"id": name, "name": data["name"], "dataset": data["dataset"], "held": False,
+               "recursive": data.get("recursive", False)}
+        self.snapshots[name] = row
+        return row
+
+    def _snapshot_clone(self, params: list[Any]) -> dict[str, Any]:
+        data = dict(params[0])
+        source = self._get(self.snapshots, data["snapshot"], "snapshot")
+        row = self._make_dataset(data["dataset_dst"], clone_of=source["id"])
+        self.datasets[row["id"]] = row
+        return row
+
+    def _snapshot_hold(self, params: list[Any], held: bool) -> bool:
+        row = self._get(self.snapshots, params[0], "snapshot")
+        row["held"] = held
+        return True
+
+    def _snapshot_delete(self, params: list[Any]) -> bool:
+        self.snapshots.pop(params[0], None)
+        return True
+
+    def _container_create(self, params: list[Any]) -> dict[str, Any]:
+        data = dict(params[0])
+        row = {"id": self._next_container_id, "name": data["name"], "status": {"state": "STOPPED"},
+               "autostart": data.get("autostart", True), "cpuset": data.get("cpuset"),
+               "pool": data.get("pool", "tank"), "dataset": f"tank/containers/{data['name']}", "devices": [],
+               "memory": {"usage": 0}}
+        self.containers[row["id"]] = row
+        self._next_container_id += 1
+        return row
+
+    def _container_update(self, params: list[Any]) -> dict[str, Any]:
+        row = self._get(self.containers, params[0], "container")
+        row.update(dict(params[1]))
+        return row
+
+    def _container_state(self, params: list[Any], state: str) -> dict[str, Any]:
+        row = self._get(self.containers, params[0], "container")
+        row["status"] = {"state": state}
+        return row
+
+    def _container_delete(self, params: list[Any]) -> bool:
+        self.containers.pop(int(params[0]), None)
+        return True
+
+    def _vm_create(self, params: list[Any]) -> dict[str, Any]:
+        data = dict(params[0])
+        row = {"id": self._next_vm_id, "name": data["name"], "status": {"state": "STOPPED", "pid": None},
+               "devices": [], "display_available": False, "memory": data["memory"], "vcpus": data.get("vcpus", 1),
+               "autostart": data.get("autostart", True), **data}
+        self.vms[row["id"]] = row
+        self._next_vm_id += 1
+        return row
+
+    def _vm_update(self, params: list[Any]) -> dict[str, Any]:
+        row = self._get(self.vms, params[0], "VM")
+        row.update(dict(params[1]))
+        return row
+
+    def _vm_state(self, params: list[Any], state: str) -> dict[str, Any]:
+        row = self._get(self.vms, params[0], "VM")
+        row["status"] = {"state": state, "pid": None}
+        return row
+
+    def _vm_delete(self, params: list[Any]) -> bool:
+        self.vms.pop(int(params[0]), None)
+        for device_id in [key for key, value in self.vm_devices.items() if value["vm"] == int(params[0])]:
+            self.vm_devices.pop(device_id, None)
+        return True
+
+    def _vm_device_create(self, params: list[Any]) -> dict[str, Any]:
+        data = dict(params[0])
+        row = {"id": self._next_device_id, "vm": data["vm"], "order": data.get("order", self._next_device_id),
+               "attributes": dict(data["attributes"])}
+        self.vm_devices[row["id"]] = row
+        self._next_device_id += 1
+        vm = self._get(self.vms, row["vm"], "VM")
+        vm["devices"] = [*vm.get("devices", []), row]
+        vm["display_available"] = any(device["attributes"].get("dtype") == "DISPLAY" for device in vm["devices"])
+        return row
+
+    def _vm_device_update(self, params: list[Any]) -> dict[str, Any]:
+        row = self._get(self.vm_devices, params[0], "VM device")
+        row.update(dict(params[1]))
+        return row
+
+    def _vm_device_delete(self, params: list[Any]) -> bool:
+        self.vm_devices.pop(int(params[0]), None)
+        return True
+
+    def _vm_get_console(self, params: list[Any]) -> str:
+        vm_id = int(params[0])
+        vm = self._get(self.vms, vm_id, "VM")
+        return f"{vm_id}_{vm['name']}"
+
+    def _vm_get_display_devices(self, params: list[Any]) -> list[dict[str, Any]]:
+        vm_id = int(params[0])
+        return [
+            {**device, "attributes": {**device["attributes"],
+                                      "password_configured": bool(device["attributes"].get("password"))}}
+            for device in self.vm_devices.values()
+            if device["vm"] == vm_id and device["attributes"].get("dtype") == "DISPLAY"
+        ]
+
+    def _vm_get_display_web_uri(self, params: list[Any]) -> dict[str, Any]:
+        vm_id, host = int(params[0]), params[1] if len(params) > 1 else ""
+        devices = self._vm_get_display_devices([vm_id])
+        for device in devices:
+            attributes = device["attributes"]
+            if attributes.get("web"):
+                web_host = host or "127.0.0.1"
+                protocol = params[2].get("protocol", "HTTP").lower() if len(params) > 2 else "http"
+                path = f"vm/display/{device['id']}/"
+                query = urlencode({"path": path, "autoconnect": 1})
+                return {"error": None, "uri": f"{protocol}://{web_host}/{path}spice_auto.html?{query}"}
+        error = "Web display is not configured" if devices else "Display device is not configured for this VM"
+        return {"error": error, "uri": None}
+
+    def _user_create(self, params: list[Any]) -> dict[str, Any]:
+        data = dict(params[0])
+        username = data["username"]
+        if any(row["username"] == username for row in self.users.values()):
+            raise _RpcError(CALL_ERROR, "user already exists")
+        if data.get("group_create"):
+            group = {"id": max(self.groups, default=0) + 1, "gid": max(self.groups, default=0) + 1,
+                     "name": username, "builtin": False}
+            self.groups[group["id"]] = group
+        else:
+            group = self._get(self.groups, data["group"], "group")
+        row = {"id": self._next_user_id, "uid": self._next_user_id, "username": username,
+               "full_name": data["full_name"], "builtin": False, "local": True,
+               "groups": data.get("groups", []), "group": group, "shell": data.get("shell", "/usr/bin/zsh"),
+               "home": data.get("home", f"/home/{username}"), "sshpubkey": data.get("sshpubkey"),
+               "password_disabled": data.get("password_disabled", False)}
+        self.users[row["id"]] = row
+        if data.get("password"):
+            self.user_passwords[username] = data["password"]
+        self._next_user_id += 1
+        return {**row, "password": data.get("password")}
+
+    def _user_update(self, params: list[Any]) -> dict[str, Any]:
+        row = self._get(self.users, params[0], "user")
+        row.update(dict(params[1]))
+        return row
+
+    def _user_delete(self, params: list[Any]) -> bool:
+        row = self._get(self.users, params[0], "user")
+        if row["builtin"] or row["username"] == self.username:
+            raise _RpcError(CALL_ERROR, "cannot delete built-in or current login user")
+        del self.users[row["id"]]
+        return True
+
+    def _user_set_password(self, params: list[Any]) -> None:
+        data = dict(params[0])
+        self.user_passwords[data["username"]] = data["new_password"]
+        return None
 
     def _details(self, params: list[Any]) -> Any:
         rows = [dict(d, partitions=self.parts[d["name"]]) for d in self.disks if d["name"] in self.parts]
