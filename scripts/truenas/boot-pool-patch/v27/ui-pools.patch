@@ -1,0 +1,56 @@
+--- a/middlewared/plugins/pool_/pool.py
++++ b/middlewared/plugins/pool_/pool.py
+@@ -1,3 +1,4 @@
++import asyncio
+ import errno
+ import os
+ from datetime import datetime, timezone
+@@ -16,9 +17,10 @@
+ )
+ from middlewared.plugins.pool_.utils import UpdateImplArgs
+ from middlewared.plugins.zfs_.validation_utils import validate_pool_name
+-from middlewared.service import CallError, CRUDService, job, private, ValidationErrors
++from middlewared.service import CallError, CRUDService, filterable_api_method, job, private, ValidationErrors
+ from middlewared.utils import BOOT_POOL_NAME_VALID
+ from middlewared.utils.service.entitlement import validate_sed_license
++from middlewared.utils.filter_list import filter_list
+ from middlewared.utils.size import format_size
+ 
+ from .utils import ZPOOL_CACHE_FILE, RE_DRAID_DATA_DISKS, RE_DRAID_SPARE_DISKS, validate_dedup_license
+@@ -261,6 +263,36 @@
+         )
+         return pool
+ 
++    # Boot-pool relaxation (Path A): the web UI gates the Shares, Storage and
++    # Data Protection pages on a non-empty `pool.query`. Boot-pool is never a
++    # `storage.volume` row, so externally originated queries (websocket/REST,
++    # i.e. the UI) additionally see ONE read-only synthetic boot-pool row while
++    # the user-data root is mounted. Internal callers (app is None) never see it.
++    # Its id is 0, which is not a datastore id, so every pool.* mutation that
++    # resolves the pool by id refuses it with "does not exist".
++    BOOT_USER_DATA_MOUNT = '/mnt/boot-pool/user-data'
++
++    @filterable_api_method(item=PoolEntry, roles=['POOL_READ'], pass_app=True)
++    async def query(self, app, filters, options):
++        options = dict(options or {})
++        rows = await super().query([], {'extra': options.get('extra') or {}})
++        if app is not None and await self.middleware.run_in_thread(os.path.ismount, self.BOOT_USER_DATA_MOUNT):
++            if not any(row['name'] == 'boot-pool' for row in rows):
++                try:
++                    info = await self.middleware.call('pool.pool_normalize_info', 'boot-pool')
++                    proc = await asyncio.create_subprocess_exec(
++                        'zpool', 'get', '-H', '-o', 'value', 'guid', 'boot-pool',
++                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
++                    )
++                    guid = (await proc.communicate())[0].decode().strip()
++                    if not guid.isdigit():
++                        raise CallError('boot-pool guid is unavailable')
++                except Exception:
++                    self.logger.warning('Could not build the synthetic boot-pool row', exc_info=True)
++                else:
++                    rows = rows + [{'id': 0, 'guid': str(guid), 'all_sed': False} | info]
++        return await self.middleware.run_in_thread(filter_list, rows, filters or [], options)
++
+     async def __convert_topology_to_vdevs(self, topology):
+         # Gather all disks transversing the topology so we can
+         # format all disks in one pass, allowing it to be performed

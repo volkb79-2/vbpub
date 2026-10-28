@@ -69,6 +69,7 @@ def make_bundle(profile: str) -> tuple[Path, str]:
         (PATCH_ROOT / "v27" / "libvirt.patch", "v27/libvirt.patch"),
         (PATCH_ROOT / "v27" / "boot-mount.patch", "v27/boot-mount.patch"),
         (PATCH_ROOT / "v27" / "zvol-blocksize.patch", "v27/zvol-blocksize.patch"),
+        (PATCH_ROOT / "v27" / "ui-pools.patch", "v27/ui-pools.patch"),
         (PATCH_ROOT / "v27" / "targets.sha256", "v27/targets.sha256"),
         (PATCH_ROOT / "shared" / "virtualization_support.py", "shared/virtualization_support.py"),
         (PATCH_ROOT / "shared" / "boot_pool_user_data.py", "shared/boot_pool_user_data.py"),

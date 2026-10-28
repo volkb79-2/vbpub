@@ -68,6 +68,7 @@ patch --dry-run --batch -p1 < "$patch_dir/storage.patch"
 patch --dry-run --batch -p1 < "$patch_dir/libvirt.patch"
 patch --dry-run --batch -p1 < "$patch_dir/boot-mount.patch"
 patch --dry-run --batch --fuzz=0 -p1 < "$patch_dir/zvol-blocksize.patch"
+patch --dry-run --batch --fuzz=0 -p1 < "$patch_dir/ui-pools.patch"
 
 zfs set readonly=off "$usr_dataset"
 usr_writable=1
@@ -80,6 +81,7 @@ patch --batch -p1 < "$patch_dir/storage.patch"
 patch --batch -p1 < "$patch_dir/libvirt.patch"
 patch --batch -p1 < "$patch_dir/boot-mount.patch"
 patch --batch --fuzz=0 -p1 < "$patch_dir/zvol-blocksize.patch"
+patch --batch --fuzz=0 -p1 < "$patch_dir/ui-pools.patch"
 install -m 0644 "$bundle_root/shared/virtualization_support.py" middlewared/plugins/vm/
 install -m 0644 "$bundle_root/shared/boot_pool_user_data.py" middlewared/plugins/
 
@@ -97,6 +99,7 @@ python3 -m py_compile \
     middlewared/plugins/container/image.py \
     middlewared/plugins/container/lifecycle.py \
     middlewared/plugins/pool_/import_pool.py \
+    middlewared/plugins/pool_/pool.py \
     middlewared/plugins/zfs/utils.py \
     middlewared/plugins/vm/vm_devices.py \
     middlewared/utils/libvirt/storage_devices.py \
