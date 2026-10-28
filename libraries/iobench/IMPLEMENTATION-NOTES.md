@@ -176,4 +176,15 @@ Second round (independent Sonnet review of the first commit, same day; `tests/te
 | mutation survivors (anchor, `-p` slot, `bound=True`, `check_argv` in `discard_range`) | medium | tests: anchored name in both consumers; `--uid=0`/`--setenv=` in the `-p` slot; RealHost `write_range`/`discard_range` on a fake `subprocess.Popen` asserting `check_argv(bound=True, host=self)` ran and refusals raise before any process; AST rule for every `subprocess` call site | `test_rev_e_realhost_*`, `test_rev_e_every_subprocess_call_site_*` |
 | host names in code and tests | low | `restore.py` hints and the test estate use `game-server.*`; `cli.py` examples and `tests/cli_cases.py` keep theirs because `docs/cli-surface.json`/`cli-review.toml` are generated from them (IOB-BL-15) | |
 
+Third round (independent review of `d06f10122`, NOT READY; same file):
+
+| Finding | Severity | Fix | Test |
+|---|---|---|---|
+| `fallocate` allowlist checked `argv[1] in ("-l","-p")` only: `fallocate -l 1 -p /dev/sda` (and `-d`, `-z`, `--punch-hole`) passed an unbound `run` | high | `_fallocate_allowed`: exactly the two builder shapes; unbound `run`/`spawn` refuse every fallocate; `Host.preallocate` is the bound `-l` entry point (RealHost refuses a symlink; `guard.init_file` uses it) | `test_rev_e_non_fio_shapes_*`, `test_rev_e_fallocate_is_refused_unbound_*`, `test_rev_e_realhost_preallocate_*` |
+| `fallocate -l N <any path>` unconstrained through `run` | high | same (no unbound fallocate exists) | same |
+| `RuntimeMaxSec=0` / huge accepted | medium | `[1-9][0-9]*`, `<= RUNTIME_MAX_CAP_S` (600) | `test_rev_e_runtime_max_sec_*` |
+| argv length of blkid / docker ps / systemctl / wipefs / swapon / blkdiscard not pinned; `-.slice` accepted; fio magnitudes unbounded | low | every shape pinned to its builder, unit names typed, `_SLICE` never `-…`, `_FIO_MAX` caps | `test_rev_e_non_fio_shapes_*`, `test_rev_e_fio_magnitudes_*` |
+| `/run/iobench/<run_id>/` never removed (IOB-BL-09) | low | `Runner.clear_scratch` after the restore (files iobench named, directory only when empty); `Host.rmdir` | `test_rev_e_the_run_directory_is_removed_after_the_run` |
+| release notes lacked the caveats | low | `IOBENCH_RELEASE_NOTES` in `cmru.toml` | docs |
+
 Judged and left (BACKLOG IOB-BL-09..16): scratch directory cleanup, hosts without docker, file targets on disk-less filesystems, the reclaim-driven stall class the io.pressure guard does not see, the dry-run name mismatch, `_ProcHandle` descriptors, the host-agnostic docs pass, the diskstats row. The iogov division of labour and the IOB-REL-01 prerequisites are in BACKLOG.md.

@@ -353,7 +353,7 @@ def test_tgt_06_file_kind_refusals():
     # allocation failure of fallocate itself
     f = standard_host(workdir_free=7 * GIB)
     f.fs_space["/bench"][1] = 6 * GIB + 2 * GIB
-    f.run = lambda argv, timeout=None: (devio.RunResult(1, "", "boom") if argv[0] == "fallocate" else standard_host().run(argv))
+    f.preallocate = lambda path, size: devio.RunResult(1, "", "boom")
     frefused(f, "fallocate_failed")
 
 

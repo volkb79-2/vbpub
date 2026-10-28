@@ -329,10 +329,10 @@ def test_arc_05_fakehost_device_commands():
     h.put("/proc/swaps", "Filename Type Size Used Priority\n/dev/vda4 partition 1 0 -2\n")
     assert h.swap_lines() == ["/dev/vda4"] and "/dev/vda4" in h.run(devio.swapon_show_argv()).stdout
     # preallocate a file target
-    r = h.run(devio.fallocate_argv("/bench/t.img", 4 * GIB))
+    r = h.preallocate("/bench/t.img", 4 * GIB)
     assert r.returncode == 0 and h.statfs("/bench")[1] == 16 * GIB
     assert h.devices["/bench/t.img"].kind == "file" and h.stat("/bench/t.img").size == 4 * GIB
-    assert h.run(devio.fallocate_argv("/bench/big.img", 100 * GIB)).returncode == 1
+    assert h.preallocate("/bench/big.img", 100 * GIB).returncode == 1
     # marker and discard
     h.write_marker(ref, "{}")
     assert h.read_marker(ref) == "{}"

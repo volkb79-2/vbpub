@@ -198,7 +198,9 @@ def test_rev_e_discard_argv_is_refused_unless_bound():
         with pytest.raises(HostError, match="discard_range"):
             check_argv(argv)
         check_argv(argv, bound=True)
-    check_argv(devio.fallocate_argv("/bench/t.img", 4096))  # preallocation stays a plain run (target init)
+    with pytest.raises(HostError, match="preallocate"):
+        check_argv(devio.fallocate_argv("/bench/t.img", 4096))  # preallocation has its own bound entry point (Host.preallocate)
+    check_argv(devio.fallocate_argv("/bench/t.img", 4096), bound=True)
     host = standard_host()
     with pytest.raises(HostError, match="discard_range"):
         host.run(devio.blkdiscard_argv(DEV, 0, 4096))
@@ -380,7 +382,106 @@ def test_rev_e_every_subprocess_call_site_sits_behind_a_checked_entry_point():
             if isinstance(f, ast.Name) and f.id == "check_argv":
                 checked.add(node.name)
     assert sub_callers == {"_run_polled", "__init__", "_verify_live"}  # _ProcHandle.__init__; _verify_live runs the literal blkid probe
-    assert proc_callers == {"spawn", "write_range"} and polled_callers == {"run", "discard_range"}
-    assert {"run", "spawn", "write_range", "discard_range"} <= checked
+    assert proc_callers == {"spawn", "write_range"} and polled_callers == {"run", "discard_range", "preallocate"}
+    assert {"run", "spawn", "write_range", "discard_range", "preallocate"} <= checked
     for name in ("os.system", "os.popen", "os.exec", "os.spawn", "os.posix_spawn"):
         assert name not in inspect.getsource(host_mod)
+
+
+# -- round 3: every non-fio shape pinned to its builder; fallocate only through preallocate/discard_range; caps; scratch dir ---------
+@pytest.mark.parametrize("argv", [
+    ["fallocate", "-l", "1", "-p", "/dev/sda"], ["fallocate", "-l", "1", "-d", "/dev/sda"], ["fallocate", "-l", "1", "--punch-hole", "/x"],
+    ["fallocate", "-l", "1", "-z", "/x"], ["fallocate", "-l", "1", "--dig-holes", "/x"], ["fallocate", "-d", "/x"], ["fallocate", "-z", "-l", "1", "/x"],
+    ["fallocate", "-l", "1", "/x", "-p"], ["fallocate", "-l", "-1", "/x"], ["fallocate", "-l", "1", "x"], ["fallocate", "-p", "-o", "0", "-l", "1", "/x", "-d"],
+    ["fallocate", "-p", "-o", "0", "-l", "1"], ["fallocate", "-n", "-l", "1", "/x"],
+    ["blkid", "-p", "-o", "export", "/dev/x", "--probe-extra"], ["blkid", "-p", "-o", "export"], ["blkid", "-p", "-o", "export", "dev/x"],
+    ["docker", "ps", "-a"], ["docker", "ps"], ["docker", "ps", "--format", "{{.ID}}"],
+    ["systemctl", "is-active", "a", "b"], ["systemctl", "is-active"], ["systemctl", "is-active", "--all"], ["systemctl", "is-active", "-"],
+    ["systemctl", "show", "-p", "ExecStart", "--value", "x"], ["systemctl", "show", "-p", "LoadState", "--value", "x", "y"],
+    ["systemctl", "show", "-p", "LoadState", "x"], ["systemctl", "show", "--property=LoadState", "--value", "x"],
+    ["wipefs", "-n", "/dev/x", "-a"], ["wipefs", "-n", "-p"], ["wipefs", "-n", "-f", "/dev/x"], ["swapon", "--show", "-a"], ["swapon", "--show=NAME"],
+    ["blkdiscard", "-o", "0", "-l", "1", "/dev/x", "-f"], ["blkdiscard", "-o", "x", "-l", "1", "/dev/x"],
+])
+def test_rev_e_non_fio_shapes_are_pinned_to_their_builders(argv):
+    assert not is_allowed_argv(argv), argv
+    with pytest.raises(HostError):
+        check_argv(argv, bound=True)
+
+
+def test_rev_e_the_builders_themselves_still_pass():
+    for argv in (devio.fallocate_argv("/x", 1), devio.punch_hole_argv("/x", 0, 1), devio.blkid_argv("/dev/x"), devio.wipefs_check_argv("/dev/x"),
+                 devio.swapon_show_argv(), devio.docker_ps_argv(), devio.unit_active_argv("game-server.service"), devio.unit_loadstate_argv("a@b.service"),
+                 devio.unit_state_argv("iobench-probe-x"), devio.unit_stop_argv("iobench-probe-x"), devio.blkdiscard_argv("/dev/x", 0, 1)):
+        assert is_allowed_argv(argv), argv
+
+
+def test_rev_e_fallocate_is_refused_unbound_and_preallocate_is_the_bound_way():
+    host = scratch_host()
+    for argv in (devio.fallocate_argv("/bench/w/iobench-x", 1), devio.fallocate_argv("/etc/x", 1), devio.punch_hole_argv("/bench/w/iobench-x", 0, 1)):
+        assert is_allowed_argv(argv)
+        with pytest.raises(HostError, match="preallocate"):
+            host.run(argv)
+    assert not any(a[0] == "fallocate" for a in host.argv_log)
+    out = host.preallocate("/bench/t.img", 4096)
+    assert out.returncode == 0 and host.argv_log[-1] == devio.fallocate_argv("/bench/t.img", 4096) and "/bench/t.img" in host.devices
+
+
+def test_rev_e_realhost_preallocate_binds_and_refuses_a_symlink(tmp_path, monkeypatch):
+    from iobench import host as host_mod
+    from iobench.host import RealHost
+    monkeypatch.setattr(host_mod.subprocess, "Popen", _FakePopen)
+    _FakePopen.calls = []
+    host = RealHost()
+    path = tmp_path / "target.img"
+    assert host.preallocate(str(path), 4096).returncode == 0 and _FakePopen.calls == [devio.fallocate_argv(str(path), 4096)]
+    link = tmp_path / "link.img"
+    link.symlink_to("/etc/passwd")
+    with pytest.raises(HostError, match="symlink"):
+        host.preallocate(str(link), 4096)
+    with pytest.raises(HostError):
+        host.preallocate(str(tmp_path / "a:b"), 4096)  # the shape check still runs on the bound path
+    with pytest.raises(HostError):
+        host.run(devio.fallocate_argv(str(path), 4096))
+    assert len(_FakePopen.calls) == 1
+
+
+@pytest.mark.parametrize("seconds", [0, 601, 10 ** 9])
+def test_rev_e_runtime_max_sec_is_positive_and_capped(seconds):
+    argv = unit_argv(seconds=seconds)
+    assert not is_allowed_argv(argv)
+    argv = unit_argv(seconds=1)
+    assert is_allowed_argv(argv) and is_allowed_argv(unit_argv(seconds=600))
+    assert not is_allowed_argv(unit_argv(seconds=1, slice_name="-.slice")) and not is_allowed_argv(unit_argv(seconds=1, slice_name="--uid=0.slice"))
+    assert not is_allowed_argv(["systemd-run", "--wait", "--unit=iobench-probe-x", "--slice=iobench-probe.slice", "--collect", "-p", "RuntimeMaxSec=090",
+                                "python3", "-c", sweep.PROBE_SOURCE, *PROBE_ARGS])
+
+
+@pytest.mark.parametrize("token", ["--runtime=7201", "--iodepth=257", "--bs=16777217", "--numjobs=9", "--log_avg_msec=60001", "--log_hist_msec=60001",
+                                   "--log_hist_coarseness=7", "--rate_iops=10000001", "--fsync=1000001", "--offset=1125899906842625", "--size=1125899906842625",
+                                   "--io_size=1125899906842625"])
+def test_rev_e_fio_magnitudes_are_capped(token):
+    base = ["fio", "--name=x", "--filename=/bench/w/x", "--rw=read"]
+    assert not is_allowed_argv([*base, token])
+    key, _, value = token.partition("=")
+    assert is_allowed_argv([*base, f"{key}={int(value) - 1}"])
+
+
+def test_rev_e_the_run_directory_is_removed_after_the_run():
+    from helpers import INVERSION, calibrate, make_host
+    host = make_host(cache=INVERSION)
+    out = calibrate(host)
+    assert out.status == "complete"
+    assert not any(d.startswith("/run/iobench/run-") for d in host.dirs) and not any(f.startswith("/run/iobench/run-") for f in host.files)
+    aborted = calibrated()
+    _abort = aborted.at(aborted.now() + 200, lambda: aborted.put(restore.ABORT_FILE, ""))
+    out = matrix(aborted)
+    assert out.exit_code == 8
+    assert not any(d.startswith("/run/iobench/run-") for d in aborted.dirs)  # the killed job's logs went with the directory
+    host2 = scratch_host()
+    host2.makedirs("/run/iobench/run-x")
+    host2.put("/run/iobench/run-x/sub/keep", "x")  # a nested entry iobench did not create: the directory stays
+    from iobench.stages import Runner
+    from types import SimpleNamespace
+    Runner.clear_scratch(SimpleNamespace(host=host2, scratch="/run/iobench/run-x"))
+    assert "/run/iobench/run-x" in host2.dirs and "/run/iobench/run-x/sub/keep" in host2.files
+    Runner.clear_scratch(SimpleNamespace(host=host2, scratch="/run/iobench/run-missing"))

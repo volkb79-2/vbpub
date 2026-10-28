@@ -135,8 +135,8 @@ def check_argv(argv: Sequence[str], *, bound: bool = False, host: Any = None) ->
         raise HostError("probe unit: the directory and the output file must lie inside an authorised scratch directory")
     if bound:
         return
-    if base == "blkdiscard" or (base == "fallocate" and argv[1] == "-p"):
-        raise HostError(f"{base} runs only through Host.discard_range, bound to the authorised extent: {' '.join(argv)}")
+    if base in ("blkdiscard", "fallocate"):  # every fallocate mode (-l, -p; -d/-z never fit the shape) has a bound entry point
+        raise HostError(f"{base} runs only through Host.discard_range (bound to the authorised extent) or Host.preallocate: {' '.join(argv)}")
     if base == "fio" and _fio_opt(argv, "--rw") in _FIO_WRITE_RW:
         filename = _fio_opt(argv, "--filename") or ""
         if not (is_scratch_name(filename) and _contained(host, filename)):
@@ -156,10 +156,20 @@ _FIO_RW = ("read", "write", "randread", "randwrite")  # `trim`/`trimwrite`/`rand
 _FIO_INT_KEYS = ("--bs", "--iodepth", "--direct", "--runtime", "--offset", "--size", "--numjobs", "--log_avg_msec", "--exclusive_open",
                  "--io_size", "--log_hist_msec", "--log_hist_coarseness", "--rate_iops", "--fsync")  # non-negative integers only (`--offset=-5` is refused here)
 _FIO_FIXED = {"--ioengine": "libaio", "--output-format": "json", "--direct": None, "--exclusive_open": None}
+# Magnitude caps, each well above what any planner emits (bs 1 MiB, QD 64, 900 s observation, 1 job, 1 s logs): a value beyond
+# them is not a planned job, whatever the caller.
+_FIO_MAX = {"--bs": 16 << 20, "--iodepth": 256, "--runtime": 7200, "--numjobs": 8, "--log_avg_msec": 60_000, "--log_hist_msec": 60_000,
+            "--log_hist_coarseness": 6, "--rate_iops": 10_000_000, "--fsync": 1_000_000, "--offset": 1 << 50, "--size": 1 << 50, "--io_size": 1 << 50}
 _PROBE_UNIT = re.compile(r"iobench-probe-[A-Za-z0-9_-]+")
-_SLICE = re.compile(r"[A-Za-z0-9_.-]+\.slice")
+_SLICE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*\.slice")  # never `-…`: systemd-run would read it as an option
+_UNIT = re.compile(r"[A-Za-z0-9_][A-Za-z0-9:_.@\\-]*(\.[a-z]+)?")
 _NUMBER = re.compile(r"[0-9]+(\.[0-9]+)?")
 _INT = re.compile(r"[0-9]+")
+RUNTIME_MAX_CAP_S = 600  # the probe unit lives cell + slack (<= 90 s); a lifetime beyond ten minutes is not a probe unit
+
+
+def _int_arg(value: str, cap: int = 1 << 50) -> bool:
+    return _INT.fullmatch(value) is not None and int(value) <= cap
 
 
 def _fio_allowed(a: list[str]) -> bool:
@@ -174,7 +184,7 @@ def _fio_allowed(a: list[str]) -> bool:
         return False
     for key in _FIO_INT_KEYS:
         value = _fio_opt(a, key)
-        if value is not None and _INT.fullmatch(value) is None:
+        if value is not None and not _int_arg(value, _FIO_MAX.get(key, 1)):
             return False
     for key, want in _FIO_FIXED.items():
         value = _fio_opt(a, key)
@@ -194,19 +204,35 @@ def _systemd_run_allowed(a: list[str]) -> bool:
     unit, slice_name = a[2].partition("=")[2], a[3].partition("=")[2]
     return (a[2].startswith("--unit=") and _PROBE_UNIT.fullmatch(unit) is not None
             and a[3].startswith("--slice=") and _SLICE.fullmatch(slice_name) is not None
-            and re.fullmatch(r"RuntimeMaxSec=[0-9]+", a[6]) is not None
+            and re.fullmatch(r"RuntimeMaxSec=[1-9][0-9]*", a[6]) is not None and int(a[6].partition("=")[2]) <= RUNTIME_MAX_CAP_S
             and _clean_path(a[10]) and _clean_path(a[11]) and all(_NUMBER.fullmatch(t) for t in a[12:14]))
 
 
-_ALLOWED = {
+def _fallocate_allowed(a: list[str]) -> bool:
+    """Exactly the two typed builders: `-l SIZE PATH` (preallocate) and `-p -o OFF -l LEN PATH` (punch hole); no other token, so
+    `-d`/`--dig-holes`, `-z`/`--zero-range`, `--punch-hole` after a `-l` or any trailing option never fits."""
+    if len(a) == 4:
+        return a[1] == "-l" and _int_arg(a[2]) and _clean_path(a[3])
+    return len(a) == 7 and a[1:3] == ["-p", "-o"] and _int_arg(a[3]) and a[4] == "-l" and _int_arg(a[5]) and _clean_path(a[6])
+
+
+def _systemctl_allowed(a: list[str]) -> bool:
+    if a[1] == "is-active":
+        return len(a) == 3 and _UNIT.fullmatch(a[2]) is not None
+    if a[1] == "show":
+        return len(a) == 6 and a[2] == "-p" and a[3] in ("LoadState", "ActiveState") and a[4] == "--value" and _UNIT.fullmatch(a[5]) is not None
+    return a[1] == "stop" and len(a) == 3 and re.fullmatch(r"iobench-probe-[A-Za-z0-9_-]+(\.service)?", a[2]) is not None
+
+
+_ALLOWED = {  # every shape is pinned to its typed builder: an extra token is a different command
     "fio": _fio_allowed,
-    "blkdiscard": lambda a: a[1] == "-o" and a[3] == "-l" and len(a) == 6,
-    "blkid": lambda a: a[1:4] == ["-p", "-o", "export"],
-    "wipefs": lambda a: a[1] in ("-n", "--no-act"),
-    "swapon": lambda a: a[1].startswith("--show"),
-    "fallocate": lambda a: a[1] in ("-l", "-p"),
-    "docker": lambda a: a[1] == "ps",
-    "systemctl": lambda a: a[1] == "is-active" or a[1:3] == ["show", "-p"] or (a[1] == "stop" and len(a) == 3 and re.fullmatch(r"iobench-probe-[A-Za-z0-9_-]+(\.service)?", a[2]) is not None),
+    "blkdiscard": lambda a: len(a) == 6 and a[1] == "-o" and _int_arg(a[2]) and a[3] == "-l" and _int_arg(a[4]) and _clean_path(a[5]),
+    "blkid": lambda a: len(a) == 5 and a[1:4] == ["-p", "-o", "export"] and _clean_path(a[4]),
+    "wipefs": lambda a: a[1] in ("-n", "--no-act") and ((len(a) == 3 and _clean_path(a[2])) or (len(a) == 4 and a[2] == "-p" and _clean_path(a[3]))),
+    "swapon": lambda a: a == ["swapon", "--show=NAME,TYPE,SIZE", "--noheadings", "--raw"],
+    "fallocate": _fallocate_allowed,
+    "docker": lambda a: a == ["docker", "ps", "--format", "{{.Names}}"],
+    "systemctl": _systemctl_allowed,
     "systemd-run": _systemd_run_allowed,
 }
 
@@ -241,7 +267,9 @@ class Host(Protocol):
     def readlink(self, path: str) -> str: ...
     def devno(self, path: str) -> str | None: ...
     def makedirs(self, path: str) -> None: ...
+    def rmdir(self, path: str) -> None: ...
     def probe_odirect(self, directory: str) -> bool: ...
+    def preallocate(self, path: str, size: int) -> RunResult: ...
     def write_atomic(self, path: str, text: str, mode: int = 0o644) -> None: ...
     def append_line(self, path: str, line: str) -> None: ...
     def remove(self, path: str) -> None: ...
@@ -410,6 +438,24 @@ class RealHost:
 
     def makedirs(self, path: str) -> None:
         os.makedirs(path, exist_ok=True)
+
+    def rmdir(self, path: str) -> None:
+        try:
+            os.rmdir(path)  # only an empty directory goes; anything left inside is evidence and stays
+        except OSError:
+            pass
+
+    def preallocate(self, path: str, size: int) -> RunResult:
+        """`fallocate -l SIZE PATH` for a verified file-target path (guard.init_file): the one unbound-free way to run fallocate."""
+        from . import devio
+        try:
+            if os.lstat(path).st_mode & 0o170000 == 0o120000:  # S_IFLNK: the guard saw a plain path a moment ago
+                raise HostError(f"{path} became a symlink")
+        except FileNotFoundError:
+            pass
+        argv = devio.fallocate_argv(path, size)
+        check_argv(argv, bound=True, host=self)
+        return self._run_polled(argv, None)
 
     def probe_odirect(self, directory: str) -> bool:
         probe = os.path.join(directory, f".iobench-odirect-probe-{os.getpid()}")

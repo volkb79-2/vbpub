@@ -313,8 +313,19 @@ class Runner:
         except VerificationFailure as exc:
             return "failed", str(exc), exc.exit_code
         finally:
+            self.clear_scratch()
             self.safety.release()
         return status, message, exit_code
+
+    def clear_scratch(self) -> None:
+        """Remove the run's own log directory (`/run/iobench/<run_id>/`): the fio logs of an ended job go in `finish`, those of a
+        killed job and the directory itself went nowhere before (IOB-BL-09).  Only files iobench named are removed; the directory
+        goes only when empty."""
+        if not self.host.exists(self.scratch):
+            return
+        for name in self.host.listdir(self.scratch):
+            self.host.remove(f"{self.scratch}/{name}")
+        self.host.rmdir(self.scratch)
 
 
 @dataclass

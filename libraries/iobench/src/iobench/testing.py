@@ -667,6 +667,10 @@ class FakeHost:
     def remove(self, path: str) -> None:
         self.files.pop(path, None)
 
+    def rmdir(self, path: str) -> None:
+        if path in self.dirs and not any(p.startswith(path + "/") for p in (*self.files, *self.dirs, *self.devices)):
+            self.dirs.discard(path)
+
     COUPLED = (("/proc/sys/vm/dirty_bytes", "/proc/sys/vm/dirty_ratio"),
                ("/proc/sys/vm/dirty_background_bytes", "/proc/sys/vm/dirty_background_ratio"))
 
@@ -812,8 +816,6 @@ class FakeHost:
         if name == "swapon":
             out = "".join(f"{p} partition 1G\n" for p in self.swap_lines())
             return RunResult(0, out, "")
-        if name == "fallocate" and argv[1] == "-l":
-            return self._fallocate(argv[3], int(argv[2]))
         if name == "docker":
             return RunResult(0, "".join(c + "\n" for c in self.containers), "")
         if name == "systemctl" and argv[1] == "show" and argv[3] == "ActiveState":
@@ -844,6 +846,10 @@ class FakeHost:
             out.append(f"UUID={dev.fs_uuid}")
         out += [f"TYPE={sig}" for sig in dev.signatures]
         return RunResult(0 if out else 2, "".join(line + "\n" for line in out), "")
+
+    def preallocate(self, path: str, size: int) -> RunResult:
+        self._log(devio.fallocate_argv(path, size), bound=True)  # the bound entry point, like RealHost (an unbound fallocate is refused)
+        return self._fallocate(path, size)
 
     def _fallocate(self, path: str, size: int) -> RunResult:
         mp = self._mount_for(path)
