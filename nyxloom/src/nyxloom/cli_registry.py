@@ -291,6 +291,7 @@ def _usage_top(value: str) -> int:
 
 
 def _usage_report_guard(args: Any) -> None:
+    report_format = getattr(args, "usage_format", "table")
     if getattr(args, "flat", False) and getattr(args, "depth", None) is not None:
         raise CliFailure(
             "--flat and --depth are mutually exclusive",
@@ -300,9 +301,15 @@ def _usage_report_guard(args: Any) -> None:
     depth = getattr(args, "depth", None)
     if depth is not None and depth < 0:
         raise CliFailure("--depth must be zero or greater", exit_code=2, show_help=True)
-    if (getattr(args, "top", None) is not None or getattr(args, "group_by", None) is not None) and getattr(args, "usage_format", "table") != "json":
+    if report_format == "html" and not getattr(args, "out", None):
         raise CliFailure(
-            "--top and --group-by configure JSON chart data; use --format json or `nyxloom usage charts`",
+            "--format html requires --out FILE",
+            exit_code=2,
+            show_help=True,
+        )
+    if (getattr(args, "top", None) is not None or getattr(args, "group_by", None) is not None) and report_format not in {"json", "html"}:
+        raise CliFailure(
+            "--top and --group-by configure chart data; use --format json|html or `nyxloom usage charts`",
             exit_code=2,
             show_help=True,
         )
@@ -642,21 +649,22 @@ def _usage_report_group() -> VerbSpec:
                 _opt("--until", "Exclusive ISO-8601 end timestamp; omitted means the invocation time", default=None),
                 _opt("--project", "Select sessions with this recorded cwd or unique cwd basename", default=None),
                 _opt("--session", "Select one exact Claude Code session id", default=None),
-                _opt("--format", "Report encoding", dest="usage_format", choices=("table", "json", "csv"), default="table"),
-                _opt("--out", "Write the report to this file instead of stdout", metavar="FILE", default=None),
+                _opt("--format", "Report encoding", dest="usage_format", choices=("table", "json", "csv", "html"), default="table"),
+                _opt("--out", "Write a private report file; required for HTML", metavar="FILE", default=None),
                 _opt("--depth", "Maximum visible tree depth (root is depth 0)", type=int, default=None),
                 _opt("--min-share", "Fold smaller subtrees below this raw-token percentage", type=_usage_share, default=0.0),
                 _opt("--flat", "Rank visible nodes as a flat list (cannot combine with --depth)", action="store_true"),
                 _opt("--sort", "Sibling sort key; cost means raw token units in this iteration", choices=("cost", "start", "dur", "calls", "peak", "out"), default="cost"),
                 _opt("--no-labels", "Omit session titles and subagent topic labels", action="store_true"),
                 _opt("--weights", "TOML prices and experimental weights override", metavar="FILE", default=None),
-                _opt("--top", "Number of chart groups and agents before the residual other group (JSON only)", type=_usage_top, default=None),
-                _opt("--group-by", "Cost bucket grouping in chart JSON", choices=("agent", "topic", "model", "effort", "session"), default=None),
+                _opt("--top", "Number of chart groups and agents before the residual other group", type=_usage_top, default=None),
+                _opt("--group-by", "Cost bucket grouping in chart data", choices=("agent", "topic", "model", "effort", "session"), default=None),
             ),
             validate=_usage_report_guard,
             examples=(
                 "nyxloom usage report --since 24h",
                 "nyxloom usage report --since 2026-10-27T00:00:00Z --format json --out usage.json",
+                "nyxloom usage report --since 24h --format html --out usage.html",
                 "nyxloom usage report --since 24h --format json --top 12 --group-by agent",
                 "nyxloom usage report --since 24h --project /path/to/project --flat --sort calls",
             ),

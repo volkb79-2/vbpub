@@ -194,6 +194,33 @@ nyxloom usage charts --since 24h --no-labels --out anonymous-charts.json
 See the [chart-data design](DESIGN-GUIDE.md#usage-chart-data) for ranking,
 partition, decimation, and window semantics.
 
+### Interactive HTML report
+
+Write one private, self-contained file to explore the same ledger and chart
+data in a browser. The report works offline; its CSS, JavaScript, SVG charts,
+and versioned data are embedded, and the page blocks network requests.
+
+```sh
+nyxloom usage report --since 24h --format html --out usage.html
+nyxloom usage report --since 7d --format html --no-labels --out anonymous.html
+```
+
+Use the model, effort, topic, and time controls to filter the report. The
+hierarchical table recomputes exact call totals and subtree subtotals while the
+charts update from those calls. Drag across a timeline to zoom, shift-drag to
+pan, or use the keyboard-accessible time controls. Hover context points to see
+session, agent, topic, model, effort, token counts, and timestamp. Selecting a
+table row or chart series highlights that node in both views. Raw token units,
+experimental weighted units, and API-equivalent USD remain separate measures.
+
+The anonymize control changes visible labels for the current page but leaves
+the originals in the file. `--no-labels` removes free-text topics before
+serialization when the file must not contain them. Labeled HTML files may
+contain sensitive sidecar descriptions; keep them local and protect the
+mode-0600 output. Print CSS includes collapsed table rows and works with A4 or
+Letter landscape; long tables continue across pages. PDF export is tracked
+separately in [NL-51](../nyxloom-trove/backlog/NL-51-complete-usage-report-renderers-joined-charts-offline-html-pdf.md).
+
 The shipped price table is retrieved 2026-10-28 from
 [Anthropic's official pricing documentation](https://platform.claude.com/docs/en/about-claude/pricing).
 Rates below are USD per million tokens. The Haiku tier applies to all request
@@ -268,7 +295,7 @@ catalog for the installed version.
 | `nyxloom onboard --maturity` | `empty`, `partial`, `mature` |
 | `nyxloom onboard --docs` | `present`, `absent` |
 | `nyxloom onboard --mode` | `derive-from-code`, `code-good-docs-absent`, `greenfield-define-it` |
-| `nyxloom usage report --format` | `table`, `json`, `csv` |
+| `nyxloom usage report --format` | `table`, `json`, `csv`, `html` |
 | `nyxloom usage charts --group-by` | `agent`, `topic`, `model`, `effort`, `session` |
 | `nyxloom usage report --sort` | `cost`, `start`, `dur`, `calls`, `peak`, `out` |
 | `nyxloom usage report --since` relative duration suffixes | `s`, `m`, `h`, `d`, `w` |

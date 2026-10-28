@@ -8,6 +8,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Add `nyxloom usage report` for metadata-only Claude Code usage across sessions and nested subagents. Freeze `usage-report-v1` with a deduplicated call ledger, provenance, lineage edges, typed lifecycle/rejection events, self/subtree totals, coverage warnings, UTC half-open windows, and table/JSON/call-ledger CSV renderers.
 - Add dated exact-model Anthropic API-equivalent USD estimates, configurable experimental weights, guarded `cost-state` fit diagnostics, observed-reset windows, and private versioned operator usage anchors with bounded calibration.
 - Add the `usage-charts-v1` chart-data extension and `nyxloom usage charts`: self-cost-partitioned time buckets, top-N plus exact `other`, joined context data, packed swim lanes, deterministic IDs/colors, and peak/event-preserving context decimation.
+- Add `nyxloom usage report --format html --out FILE` as a private offline single-file report with a hierarchical table, joined SVG diagrams, exact live filtering, synchronized isolation, keyboard controls, safe embedded JSON, and A4 landscape print CSS.
 
 ### Changed
 - Reconcile usage reporting with the plan review: file-local stream deduplication and exact copied-prefix identity, explicit conflict handling, structural compaction events, shared lineage resolution, deterministic IDs/order, and timestamp-based clipping.

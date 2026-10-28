@@ -258,6 +258,37 @@ cost remains the named experimental profile; API-equivalent USD and raw token
 classes remain separate fields. Chart totals use self calls only, while table
 subtree totals remain display rollups. See [how to export chart data](CONSUMERS.md#export-usage-chart-data).
 
+## Offline HTML usage report
+
+`nyxloom usage report --format html --out FILE` is a renderer of the frozen
+`usage-report-v1` contract and its `usage-charts-v1` extension. It does not
+scan transcripts independently or change either JSON schema. The page embeds
+the report data, inline CSS, and vanilla JavaScript in one file so it opens
+without internet access or a local web server. A restrictive content policy
+blocks network connections. Report JSON escapes HTML-sensitive characters
+and Unicode line separators; labels and tooltips are created as text nodes.
+
+The table and filters use the exact call ledger. Model, effort, topic, cost
+measure, and selected time range recompute self and subtree values from calls;
+decimated chart series never supply arithmetic. A call point retains its call
+and node identity for tooltips, while selecting a node in the table or a chart
+isolates it in both views. Chart cost groups still partition call self-cost,
+so a parent's subtree is never stacked with a child's calls.
+
+The window brush and zoom controls select half-open UTC ranges inside the
+report's original interval. Model hues come from the chart contract and effort
+uses its fixed dash styles. Structural compactions and model/effort switches
+remain event markers. The page includes an accessible hierarchy, keyboard
+controls, responsive light/dark colors, and a print layout for A4 or Letter
+landscape that includes collapsed tree rows and lets long reports span pages.
+
+Labeled reports are sensitive local files and are written privately. The
+in-page anonymize control changes visible labels only; `--no-labels` removes
+topic text before serialization. The footer keeps API-equivalent USD,
+experimental weighted units, and local activity shares separate from billed
+cost and account-limit usage. PDF export and the optional TUI remain separate
+renderer work in [NL-51](../nyxloom-trove/backlog/NL-51-complete-usage-report-renderers-joined-charts-offline-html-pdf.md).
+
 The public `nyxloom` grammar is registered once in `cli_registry.py`. Its
 generated surface inventory and semantic decisions are maintained through
 `cli-extended` in `docs/cli-surface.json`, the marked section of `docs/SPEC.md`,

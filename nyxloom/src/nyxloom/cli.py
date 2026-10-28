@@ -1486,7 +1486,8 @@ def cmd_usage_report(args) -> int:
     from .session_extract.usage import render_report
 
     report = _build_usage_report_data(args)
-    rendered = render_report(report, args.usage_format)
+    weights_file = Path(args.weights).name if getattr(args, "weights", None) else "usage-weights.toml"
+    rendered = render_report(report, args.usage_format, weights_file=weights_file)
     if args.out:
         _write_private_usage_output(Path(args.out), rendered)
     else:

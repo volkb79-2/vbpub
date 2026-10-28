@@ -21,6 +21,7 @@ from nyxloom.session_extract.usage import (
     build_report,
     load_corpus,
     render_csv,
+    render_html,
     render_json,
     render_table,
     resolve_window,
@@ -939,7 +940,7 @@ def test_table_json_and_csv_never_serialize_message_or_tool_content(tmp_path):
     )
     outputs = (
         render_table(report), render_json(report), render_csv(report),
-        render_json(no_labels),
+        render_html(report), render_json(no_labels), render_html(no_labels),
     )
     assert all(MESSAGE_SENTINEL not in output for output in outputs)
     assert all(TOOL_SENTINEL not in output for output in outputs)
@@ -986,14 +987,15 @@ def test_primary_cli_registers_usage_report_options(monkeypatch, capsys):
     monkeypatch.setattr(cli, "cmd_usage_report", capture)
     status = primary_cli().run(
         argv=[
-            "usage", "report", "--since", "24h", "--format", "json",
-            "--sort", "calls", "--min-share", "1%", "--no-labels",
+            "usage", "report", "--since", "24h", "--format", "html",
+            "--out", "usage.html", "--sort", "calls", "--min-share", "1%", "--no-labels",
         ],
     )
 
     assert status == 0
     assert captured["since"] == "24h"
-    assert captured["usage_format"] == "json"
+    assert captured["usage_format"] == "html"
+    assert captured["out"] == "usage.html"
     assert captured["sort"] == "calls"
     assert captured["min_share"] == pytest.approx(0.01)
     assert captured["no_labels"] is True
@@ -1007,10 +1009,30 @@ def test_primary_cli_usage_spelling_has_help_and_required_since_error(capsys):
     help_output = capsys.readouterr().out
     assert "nyxloom usage report" in help_output
     assert "Exclusive ISO-8601 end timestamp" in help_output
-    assert "--format {table,json,csv}" in help_output
+    assert "--format {table,json,csv,html}" in help_output
 
     assert cli.run(argv=["usage", "report"]) == 2
     assert "required: --since" in capsys.readouterr().err
+
+
+def test_usage_html_rejects_missing_output_before_calling_handler(monkeypatch, capsys):
+    from nyxloom import cli
+
+    called = False
+
+    def forbidden(_args):
+        nonlocal called
+        called = True
+        return 0
+
+    monkeypatch.setattr(cli, "cmd_usage_report", forbidden)
+    status = primary_cli().run(
+        argv=["usage", "report", "--since", "24h", "--format", "html"],
+    )
+
+    assert status == 2
+    assert not called
+    assert "--format html requires --out FILE" in capsys.readouterr().err
 
 
 def test_cost_state_non_finite_integer_metadata_is_counted_as_malformed(tmp_path):

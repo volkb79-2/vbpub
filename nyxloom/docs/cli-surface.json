@@ -2125,7 +2125,7 @@
           "option:route:entrypoint:nyxloom/usage/report/--since"
         ]
       },
-      "signature": "sha256:49c65fbd6e408376dbe4720f586f64c49179ee811f99ad6a2bfc4659e60c8936"
+      "signature": "sha256:580802bec5d0c58f6ffc805588352fd215a108122799937dc9535ecefd41ac5d"
     },
     {
       "id": "case:route:entrypoint:nyxloom/usage/report/option-choice/option:route:entrypoint:nyxloom/usage/report/--format/3eb9810d90",
@@ -2138,7 +2138,7 @@
         "choice": "table",
         "option_id": "option:route:entrypoint:nyxloom/usage/report/--format"
       },
-      "signature": "sha256:97c51636c73875d2238a5a960bba7150c44271a6708c037c1eb2cd9a4542914c"
+      "signature": "sha256:6fabbd928b3066e97970130c670bda109d2ab7ad3d463ff14157f373f7a840e1"
     },
     {
       "id": "case:route:entrypoint:nyxloom/usage/report/option-choice/option:route:entrypoint:nyxloom/usage/report/--format/4e23b39204",
@@ -2151,7 +2151,20 @@
         "choice": "json",
         "option_id": "option:route:entrypoint:nyxloom/usage/report/--format"
       },
-      "signature": "sha256:cfc8947be748f15ae69290da055bd8f8ef3326e0907c2885f05c25b8a419c651"
+      "signature": "sha256:3df2be7e395c3d01eb6ec2f412370aef4c5152362450f1d320a2b258d1738183"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/report/option-choice/option:route:entrypoint:nyxloom/usage/report/--format/4e3c1a697b",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/report/--format"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/report",
+      "shape": {
+        "choice": "html",
+        "option_id": "option:route:entrypoint:nyxloom/usage/report/--format"
+      },
+      "signature": "sha256:e494c2de7cb122fb80af15938926ee74ba05c1ac1a68382a50d37f908d83e185"
     },
     {
       "id": "case:route:entrypoint:nyxloom/usage/report/option-choice/option:route:entrypoint:nyxloom/usage/report/--format/82cacb7d32",
@@ -2164,7 +2177,7 @@
         "choice": "csv",
         "option_id": "option:route:entrypoint:nyxloom/usage/report/--format"
       },
-      "signature": "sha256:9cf1527f25cda4f85ffd0d644c6afaeb0df66ba4a625666bb88a1793882be02b"
+      "signature": "sha256:a4ef7d68ef0d87d7e5f4bcbcc19b7583b59d53a6f5fe416df10b2f9356c24cbe"
     },
     {
       "id": "case:route:entrypoint:nyxloom/usage/report/option-choice/option:route:entrypoint:nyxloom/usage/report/--group-by/18fb9fa0b9",
@@ -2359,7 +2372,7 @@
         "option_id": "option:route:entrypoint:nyxloom/usage/report/--format",
         "spelling": "--format"
       },
-      "signature": "sha256:351d49b229d77ea1ba5174edeb07f7ba948dbd1cab469be75e52ff2b07a89b05"
+      "signature": "sha256:7dcf3b064ac2892a0736bcab67c53adef05da4ac4c4f5c2bc2c08246dd3746dd"
     },
     {
       "id": "case:route:entrypoint:nyxloom/usage/report/option-spelling/option:route:entrypoint:nyxloom/usage/report/--group-by/--group-by",
@@ -7632,7 +7645,8 @@
           "choices": [
             "table",
             "json",
-            "csv"
+            "csv",
+            "html"
           ],
           "const": null,
           "default": "table",
@@ -7656,7 +7670,8 @@
             "choices": [
               "table",
               "json",
-              "csv"
+              "csv",
+              "html"
             ],
             "default": "table",
             "dest": "usage_format"
@@ -7682,7 +7697,7 @@
           "const": null,
           "default": null,
           "default_present": true,
-          "description": "Write the report to this file instead of stdout",
+          "description": "Write a private report file; required for HTML",
           "dest": "out",
           "effective_default": null,
           "exclusive_group": null,
@@ -7984,7 +7999,7 @@
           "const": null,
           "default": null,
           "default_present": true,
-          "description": "Number of chart groups and agents before the residual other group (JSON only)",
+          "description": "Number of chart groups and agents before the residual other group",
           "dest": "top",
           "effective_default": null,
           "exclusive_group": null,
@@ -8034,7 +8049,7 @@
           "const": null,
           "default": null,
           "default_present": true,
-          "description": "Cost bucket grouping in chart JSON",
+          "description": "Cost bucket grouping in chart data",
           "dest": "group_by",
           "effective_default": null,
           "exclusive_group": null,

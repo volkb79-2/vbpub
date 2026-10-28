@@ -201,6 +201,7 @@ nyxloom backlog new "describe the issue" --type bugfix
 nyxloom backlog new --interactive
 nyxloom backlog edit CIU-1
 nyxloom usage report --since 24h
+nyxloom usage report --since 24h --format html --out usage.html
 nyxloom usage charts --since 24h --out usage-charts.json
 nyxloom usage prices --fit
 nyxloom usage windows --since 7d

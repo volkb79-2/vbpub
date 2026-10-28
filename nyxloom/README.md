@@ -128,7 +128,7 @@ how these choices stay in sync with their owning schemas and registries.
 | --- | --- | --- |
 | `nyxloom lint` | Frontmatter schema + carve-quality rules (SPEC §6); gates the carve commit. Also validates the managed per-entry backlog: entry frontmatter (BLG2) and the generated `backlog/INDEX.md` freshness (BLG3), when a project adopts `[backlog_entries]` | No |
 | `nyxloom backlog` | Managed per-entry issue tracker (`nyxloom-trove/backlog/`, one file per entry): `new`/`promote`/`note`/`set-status`/`list`/`show`/`index`; merge auto-ticks linked entries to `merged`. Design authority: [docs/backlog-entries-spec.md](docs/backlog-entries-spec.md); adoption: [docs/CONSUMERS.md](docs/CONSUMERS.md) | No |
-| `nyxloom usage` | Metadata-only Claude Code usage tree and chart-data JSON, dated API-equivalent USD estimates, experimental weighted units, observed reset windows, and private operator anchors/calibration across sessions and nested subagents. Report JSON extends the frozen `usage-report-v1` contract with `usage-charts-v1`. Adoption: [docs/CONSUMERS.md#report-claude-code-usage](docs/CONSUMERS.md#report-claude-code-usage); rationale: [design guide](docs/DESIGN-GUIDE.md#usage-chart-data). | No |
+| `nyxloom usage` | Metadata-only Claude Code usage tree, chart data, and interactive offline single-file HTML, plus dated API-equivalent USD estimates, experimental weighted units, observed reset windows, and private operator anchors/calibration. Report JSON preserves `usage-report-v1` with its `usage-charts-v1` extension. Adoption: [docs/CONSUMERS.md#report-claude-code-usage](docs/CONSUMERS.md#report-claude-code-usage); HTML use: [interactive report](docs/CONSUMERS.md#interactive-html-report); rationale: [design guide](docs/DESIGN-GUIDE.md#offline-html-usage-report). | No |
 | `nyxloom-harness` session tools | Search session words and return ranked session IDs; mechanically extract from Claude Code, Codex, OpenCode, and Reasonix logs; discover/report sessions; resolve bare IDs; render or highlight Markdown; and follow live streams with optional attention delivery. User guide: [`session_extract/README.md`](src/nyxloom/session_extract/README.md); search rationale: [design guide](docs/DESIGN-GUIDE.md#local-session-search). | No |
 | `nyxloomctl tick` | One operator reconcile pass: scan → dispatch/detect/collect → events → render → notify → exit | No |
 | Attempt wrapper | Runs one CLI leg detached; tees log; writes typed receipt with exit code; holds/releases flock leases | Only the launched agent |
@@ -252,6 +252,16 @@ experimental local score, not subscription usage. Reports with labels are
 sensitive local artifacts; use `--no-labels` to remove titles and topics before
 writing them. See the [chart guide](docs/CONSUMERS.md#export-usage-chart-data)
 and [design rationale](docs/DESIGN-GUIDE.md#usage-chart-data).
+
+`nyxloom usage report --since 24h --format html --out usage.html` writes one
+offline interactive report with the full hierarchy, four joined diagrams,
+filters, exact live subtotals, hover identity, isolation, and time brushing.
+The file contains inline data, CSS, and JavaScript, makes no network requests,
+and is written with mode `0600`. Its anonymize control changes display only;
+use `--no-labels` to remove topics before serialization. Print CSS includes
+all tree rows and diagrams for A4 or Letter landscape. See the
+[interactive HTML guide](docs/CONSUMERS.md#interactive-html-report) and
+[design rationale](docs/DESIGN-GUIDE.md#offline-html-usage-report).
 
 For file-backed sessions, `--follow` reads the appended payload plus only
 bounded prefix/tail fingerprints as needed for rewrite detection; it never

@@ -893,8 +893,11 @@ assumption in a private versioned local file. Calibration reports only a
 capacity lower bound when web, other devices or other shared account surfaces
 may contribute; an estimated limit percentage remains unknown unless the
 coverage fit is identifiable. `usage-report-v1` remains the shared report
-contract. The C1 chart-data extension is available; interactive HTML, PDF and
-the TUI remain later work.
+contract. The C1 chart-data extension and offline interactive HTML renderer
+are available. The HTML report uses exact ledger calls for table totals and
+filters, while visual context decimation remains display-only. Its in-page
+anonymize control is presentation-only; `--no-labels` removes topics before
+serialization. PDF export and the optional TUI remain later work.
 The consumer-facing examples live in
 [CONSUMERS.md](../../../docs/CONSUMERS.md#report-claude-code-usage), and design
 choices in [DESIGN-GUIDE.md](../../../docs/DESIGN-GUIDE.md#local-usage-report).
