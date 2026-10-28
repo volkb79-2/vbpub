@@ -226,6 +226,11 @@ def test_policy_window_helpers_fail_closed_on_unknown_or_malformed_dates():
     assert cli._release_within_policy_window({"published_at": old}, cutoff) is False
     # created_at is the fallback, as in the age-based --remove-assets path.
     assert cli._release_within_policy_window({"created_at": young}, cutoff) is True
+    # A timestamp without a zone is read as UTC, never compared naive-vs-aware.
+    naive_young = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S")
+    naive_old = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S")
+    assert cli._release_within_policy_window({"published_at": naive_young}, cutoff) is True
+    assert cli._release_within_policy_window({"published_at": naive_old}, cutoff) is False
 
 
 def test_policy_cleanup_plan_recheck_keeps_a_release_that_entered_the_window():

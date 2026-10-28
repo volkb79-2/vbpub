@@ -875,6 +875,21 @@ def test_abandon_orphan_sidecars_without_a_record_need_the_project_config(monkey
     assert forgotten == [] and all(p.exists() for p in files)
 
 
+def test_abandon_orphan_sidecars_report_an_uninspectable_scope_directory(monkeypatch, tmp_path):
+    branch = "cmru-release-20261027_144853-cmru-ko4six"
+    _install_candidate_facts(monkeypatch, tmp_path, [])
+    monkeypatch.setattr(cli, "_abandon_remote_candidate", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        transaction, "release_sidecar_paths",
+        lambda _root, _name: (_ for _ in ()).throw(OSError("permission denied")),
+    )
+    with pytest.raises(CliFailure) as failure:
+        _invoke_abandon(None, branch=branch, dry_run=True)
+    assert failure.value.exit_code == 2
+    assert "cannot inspect transaction sidecars" in str(failure.value)
+    assert "permission denied" in str(failure.value)
+
+
 def test_abandon_orphan_sidecars_refuse_when_the_local_branch_cannot_be_checked(
     monkeypatch, tmp_path,
 ):
