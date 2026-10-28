@@ -24703,8 +24703,8 @@ class TestBareHostProfilingWiring:
         assert resources["started_at"] == resources["ended_at"]
         assert resources["duration_seconds"] == 0.375
 
-    def test_daemon_path_never_computes_a_floor(self, tmp_path, monkeypatch,
-                                               capsys):
+    def test_daemon_path_never_computes_a_floor(
+            self, tmp_path, monkeypatch, capsys, child_process_scope):
         """RW-46b is a rusage-path-only concept (the daemon path measures
         via a real cgroup) -- a daemon-path run must leave floor_bytes/
         peak_at_floor out of the picture entirely (both null, contract
