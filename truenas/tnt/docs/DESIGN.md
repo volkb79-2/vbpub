@@ -59,6 +59,9 @@ from `system.version` and selects `V27`; every other major raises `UnsupportedVe
 manifest lists its API methods and their read/write/destructive classification. A schema name is not admitted just
 because it follows a familiar suffix.
 - `adapters.missing_methods(backend, core.get_methods result)` diffs supported manifest entries against what a host lists.
+- Every manifest entry has an explicit classification. Entries with `supported = false` keep known dangerous names
+  classified without admitting them to plans. The v27 method signatures and source evidence are recorded in
+  [`docs/API-METHODS-V27.md`](API-METHODS-V27.md).
 - Planned: a drift test that diffs manifests against the fetched reference index (TNT-23, opt-in, outside the gate).
 
 ### 2.3 Domain and the partition-data question
@@ -81,10 +84,12 @@ method (section 8.1).
 ACTION-MATRIX row id (A-xx/B-xx) or a TNT id. Structural rules (`validate_action`, at plan and again at apply): an
 action has calls; every probe call is a read method (also in a write session); a READ action's calls are all read
 methods; a DESTRUCTIVE action has a non-empty probe (else the drift check would be vacuous) and a non-blank
-confirmation target; an action containing a data-destroying method (the manifest-level `destructive` set: `disk.wipe`,
-`pool.export|delete|detach|remove`, `pool.dataset.delete`, `pool.snapshot.delete`, `zfs.pool.delete`,
-`zfs.resource.destroy`, plus any method ending `.delete`, `.destroy`, `.wipe`, `.rollback`, `.replace`, `.attach`,
-`.offline`, `.promote`, `.rename`, `.stop`, `.reset`, `.clear`, `.format`, `.recursive_destroy` or `.import_pool`)
+confirmation target; an action containing a data-destroying method (the explicit manifest classifications, including
+`disk.wipe`, pool and dataset deletion, snapshot rollback/deletion, container stop/deletion, VM stop/poweroff/deletion,
+VM device deletion, user deletion and password reset; plus the conservative suffix fallback for names ending
+`.delete`, `.destroy`, `.wipe`, `.rollback`, `.replace`, `.attach`, `.offline`, `.promote`, `.rename`, `.stop`,
+`.reset`, `.clear`, `.format`, `.recursive_destroy`, `.import_pool`, `.uninstall`, `.destroy_snapshots`, `.rmdir`,
+`.unlink` or `.remove`)
 must be DESTRUCTIVE. Every non-read call must appear in the v27 adapter manifest or the explicit write allow-list;
 `validate_action` refuses unlisted writes. `make_plan` runs the probe
 and fingerprints the action id, kind, confirm target, exact calls, probe results, session id and nonce, so swapping the
@@ -200,18 +205,18 @@ Default-deny, enforced in the client object itself, not only in the action layer
     `boot.get_disks`, `boot.environment.query`, ...); `boot.format`, `install_loader`, `scrub`, `set_scrub_interval`,
     `attach|detach|replace` (B-07) and `environment.*` writes are refused until a later decision adds them to
     `BOOT_WRITE_ALLOWED` (TNT-13);
-  - for the `pool.`, `zfs.`, `filesystem.`, `boot.` and `disk.` families, any string parameter (nested, dict keys
-    included) that names boot-pool is refused. A name counts by whole path component after collapsing `//` and `.`,
+  - for every non-read method, any string parameter (nested, dict keys included) that names boot-pool is refused.
+    This includes dataset and path strings in `sharing.`, `vm.`, `container.`, `app.`, and `user.` payloads. A name
+    counts by whole path component after collapsing `//` and `.`,
     then stripping `/mnt/`, relative `mnt/` or `/dev/zvol/`, with `@snapshot` and `#bookmark` suffixes:
     `boot-pool`, `boot-pool/ROOT`, `/mnt/boot-pool/x`, `mnt/boot-pool/x`, `boot-pool@s` are refused;
     `boot-pool-data` and `/mnt/boot-pool-data/x` are legal names. A path with a `..` component is ambiguous and refused;
-  - the pool-id position: only methods whose first parameter is a pool (`pool.export|update|delete|expand|scrub|attach|
-    detach|replace|remove|offline|online|upgrade`) are resolved. The parameter must be exactly an int (resolved to a name
-    through live `pool.query`; unknown id refused; boot-pool refused) or the exact name of a listed pool; floats, bools,
-    digit strings, lists and mappings with `id`/`name`/`pool` are refused. Other `pool.*` methods (for example
-    `pool.scrub.delete`, whose parameter is a task id) have no general pool-id position and are not resolved as one.
-    Boot-pool protection also resolves integer values under `pool`, `pool_id` or `pool_name` mapping keys in every
-    method family, and checks the first integer argument of any `pool.*` method against the boot-pool id;
+  - pool references in mappings are recognized recursively for `pool`, `pools`, `pool_id`, `pool_name`, `pool_ids`,
+    and `pool_names`, including camel-case spellings such as `poolId`. Integer IDs resolve through live `pool.query`;
+    names must exactly match a listed pool. Unknown, null, digit-string, list and mapping forms are ambiguous and
+    refused. For positional methods, only known pool-id methods are resolved as IDs; `pool.scrub.delete(id_)` deletes
+    a scrub-task ID, while `pool.scrub.run(name, ...)` and `pool.scrub.scrub(name, ...)` take pool-name strings.
+    Positional references use method-specific semantics so an unrelated integer ID is not mistaken for a pool;
   - `disk.wipe` is refused for any disk in a pool (boot included) or reported with `exported_zpool`, any disk with a
     mounted partition, any disk the host does not list, any disk without a usable positive integer size, and whenever
     any pool member could not be mapped to a disk or a pool has no usable topology. There is no override by probe
@@ -264,7 +269,7 @@ B-01 is a backlog item (TNT-03) and the refusal list covers nothing SSH-related 
 | milestone | scope | size |
 |---|---|---|
 | M0 | scaffold: transport, profile, v27 adapter, plan/apply model, `doctor`/`profile`/`disks`/`tui`, Storage > Disks, fake server | done |
-| M1 | config and credential flows; v27 default-deny manifest; datasets, snapshots, users, containers and VMs in CLI/TUI; fake-server workflows; written opt-in live lane | this brief |
+| M1 | config and credential flows; v27 default-deny manifest; datasets, snapshots, users, containers and VMs in CLI/TUI; fake-server workflows; written opt-in live lane | in progress |
 | Later | storage partitioning, pool creation, boot-pool management, shares, Apps, networking, and other TrueNAS screens | deferred |
 
 ## 11. Supported host

@@ -6,8 +6,9 @@ top level menu entries. Shares, Apps, networking, pool creation, and boot-pool c
 
 The CLI and TUI share one query and action layer. Every write is planned first, displays the exact API calls, and is
 applied through the default deny guard. Destructive actions require typing the target name. See the
-[design guide](docs/DESIGN.md) for the safety rules and v27 schema choices. The original storage action matrix remains
-available in [`docs/ACTION-MATRIX.snapshot.md`](docs/ACTION-MATRIX.snapshot.md).
+[design guide](docs/DESIGN.md) for the safety rules and v27 schema choices, and [API method evidence](docs/API-METHODS-V27.md)
+for the verified method signatures. The original storage action matrix remains available in
+[`docs/ACTION-MATRIX.snapshot.md`](docs/ACTION-MATRIX.snapshot.md).
 Scope and safety choices are explained in the [design guide](docs/DESIGN.md#1-goals-and-non-goals); copyable setup and
 workflow examples are in the [consumer guide](docs/CONSUMERS.md#configure-a-profile).
 
@@ -83,8 +84,10 @@ render the plan without applying it. Password entry uses a no-echo prompt or `--
 password argument. API payloads not covered by a minimal create wizard can be supplied as a JSON `--file`.
 
 Container resource settings follow the v27 `container.create`/`container.update` schema: CPU affinity is exposed as
-`cpuset`; v27 has no container memory limit field. VM console information is displayed as returned by v27; tnt does
-not embed a VNC client.
+`cpuset`; the verified container CRUD schema has no memory limit or current image field. VM console information is
+displayed as returned by v27; tnt does not embed a VNC client. tnt scans every non-read API payload for boot-pool
+names and paths, including nested container, VM, sharing, app, and user fields, and resolves pool references against
+the connected host before allowing a plan to apply.
 
 TUI keys: arrows/enter navigate the TrueNAS menu, `ctrl+p` opens the command palette, `r` refreshes, `?` shows keys,
 and `q` quits. Destructive action dialogs display the plan and ask for the exact confirmation target.

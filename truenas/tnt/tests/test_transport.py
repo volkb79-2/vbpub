@@ -223,5 +223,5 @@ def test_manifest_diff_against_live_method_list(server):
 def test_manifest_declares_v27_and_has_no_virt_namespace():
     from tnt.adapters.v27 import V27
     assert V27.verified == "reference"
-    methods = {m for ms in V27.manifest.values() for m in ms}
+    methods = set(V27.supported_methods())
     assert not any(m.startswith("virt.") for m in methods) and "container.query" in methods

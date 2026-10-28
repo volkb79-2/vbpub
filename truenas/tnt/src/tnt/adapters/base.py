@@ -6,6 +6,7 @@ obtained, so a stub never poses as measured: "reference" = read from https://api
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, ClassVar, Mapping
 
 from ..domain import Disk, Partition
@@ -27,14 +28,44 @@ def parse_partition(raw: Mapping[str, Any]) -> Partition:
                      kind=raw.get("partition_type_name") or raw.get("type"))
 
 
+@dataclass(frozen=True)
+class MethodSpec:
+    """An explicit v27 method classification; unsupported entries exist only to keep unsafe names guarded."""
+
+    classification: str
+    supported: bool = True
+
+    def __post_init__(self) -> None:
+        if self.classification not in {"read", "write", "destructive"}:
+            raise ValueError(f"invalid method classification {self.classification!r}")
+
+
 class Backend:
     generation: ClassVar[str]
     verified: ClassVar[str]
-    manifest: ClassVar[Mapping[str, tuple[str, ...]]]
+    manifest: ClassVar[Mapping[str, Mapping[str, MethodSpec]]]
     destructive: ClassVar[frozenset[str]]
 
     def __init__(self, version: str):
         self.version = version
+
+    @classmethod
+    def method_spec(cls, method: str) -> MethodSpec | None:
+        return next((specs[method] for specs in cls.manifest.values() if method in specs), None)
+
+    @classmethod
+    def method_classification(cls, method: str) -> str | None:
+        spec = cls.method_spec(method)
+        return None if spec is None else spec.classification
+
+    @classmethod
+    def method_supported(cls, method: str) -> bool:
+        spec = cls.method_spec(method)
+        return spec is not None and spec.supported
+
+    @classmethod
+    def supported_methods(cls) -> tuple[str, ...]:
+        return tuple(method for specs in cls.manifest.values() for method, spec in specs.items() if spec.supported)
 
     # -- disks --------------------------------------------------------------------------------------------
     def disk_calls(self) -> tuple[tuple[str, tuple[Any, ...]], ...]:

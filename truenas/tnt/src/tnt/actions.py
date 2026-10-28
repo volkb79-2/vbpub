@@ -92,8 +92,8 @@ def validate_action(action: Action) -> None:
         normalise_method(method)
         for backend_type in GENERATIONS.values()
         for methods in backend_type.manifest.values()
-        for method in methods
-        if not is_read_method(method)
+        for method, spec in methods.items()
+        if spec.supported and spec.classification != "read"
     }
     known_writes = manifested_writes | EXPLICIT_WRITE_ALLOWLIST
     for call in action.calls:

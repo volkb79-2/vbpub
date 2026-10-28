@@ -2,6 +2,7 @@
 
 This guide shows a pasteable profile and commands for a vanilla TrueNAS v27 host. For the feature scope and its safety
 choices, see the [design guide](DESIGN.md#1-goals-and-non-goals). The quick overview is in the [README](../README.md).
+The v27 request shapes and the source revision they were checked against are in [API method evidence](API-METHODS-V27.md).
 
 ## Configure a profile
 
@@ -51,4 +52,11 @@ tnt tui --profile lab
 Use `--file spec.json` for fields beyond a workflow's minimal create options. Passwords are entered through a no-echo
 prompt or `--password-file`, never a command-line argument. User SSH keys are loaded from a public-key file or
 validated public-key text; private keys are not accepted or printed.
+
+Each non-read plan is checked recursively for boot-pool names and paths, wherever they occur in its payload. Pool
+references in mapping fields such as `pool`, `poolId`, `pool_ids`, and `pools` must resolve to a listed pool; unknown,
+null, numeric-string, list, and nested mapping references are refused. VM/container stop, dataset and snapshot removal,
+snapshot rollback, user deletion, and password changes are destructive operations and show their typed confirmation
+target before apply. The v27 container CRUD schema exposes CPU affinity as `cpuset`; it does not expose the current
+container image or a memory limit.
 

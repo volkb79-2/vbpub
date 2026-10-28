@@ -35,5 +35,6 @@ def detect(rpc: Any) -> Backend:
 def missing_methods(backend: Backend, available: Mapping[str, Any] | set[str] | list[str]) -> dict[str, list[str]]:
     """Feature -> methods the manifest requires but the host does not list. Empty means the manifest holds."""
     have = set(available)
-    out = {feature: sorted(m for m in methods if m not in have) for feature, methods in backend.manifest.items()}
+    out = {feature: sorted(m for m, spec in methods.items() if spec.supported and m not in have)
+           for feature, methods in backend.manifest.items()}
     return {feature: miss for feature, miss in out.items() if miss}

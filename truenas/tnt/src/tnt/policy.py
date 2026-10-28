@@ -10,6 +10,7 @@ import json
 import posixpath
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any, Iterable, Mapping, Protocol
 
 from .errors import Refused
@@ -32,17 +33,22 @@ ALWAYS_REFUSED = {
 # The boot family is default-deny: only read methods (is_read_method) run, plus whatever an explicit later decision adds here
 # (TNT-13 will add boot.environment clone/activate/keep). boot.format, boot.install_loader, boot.scrub, ... stay refused.
 BOOT_WRITE_ALLOWED: frozenset[str] = frozenset()
-GUARDED_FAMILIES = ("pool.", "zfs.", "filesystem.", "boot.", "disk.")
 # Methods whose FIRST parameter is a pool id (or name). Anything else under pool.* (pool.scrub.delete takes a task id,
 # pool.dataset.* a dataset name, pool.create a dict) has no pool-id position and is not resolved as one.
 POOL_ID_METHODS = frozenset({"pool.export", "pool.update", "pool.delete", "pool.expand", "pool.scrub", "pool.attach", "pool.detach",
                              "pool.replace", "pool.remove", "pool.offline", "pool.online", "pool.upgrade"})
+POOL_NAME_METHODS = frozenset({"pool.scrub.run", "pool.scrub.scrub"})
 # Methods that destroy data. An action containing one must be DESTRUCTIVE (probe + typed confirmation); the v27 manifest
 # exposes this set as ``Backend.destructive``.
 DESTRUCTIVE_METHODS = frozenset({"disk.wipe", "pool.export", "pool.delete", "pool.detach", "pool.remove", "pool.dataset.delete",
-                                 "pool.snapshot.delete", "zfs.pool.delete", "zfs.resource.destroy", "zfs.resource.snapshot.destroy"})
+                                 "pool.snapshot.delete", "pool.snapshot.rollback", "container.delete", "container.stop",
+                                 "vm.delete", "vm.stop", "vm.poweroff", "vm.device.delete", "user.delete", "user.set_password",
+                                 "app.uninstall", "pool.dataset.destroy_snapshots", "filesystem.rmdir", "filesystem.unlink",
+                                 "filesystem.remove", "container.restart", "zfs.pool.delete", "zfs.resource.destroy",
+                                 "zfs.resource.snapshot.destroy"})
 DESTRUCTIVE_SUFFIXES = (".delete", ".destroy", ".wipe", ".rollback", ".replace", ".attach", ".offline", ".promote",
-                        ".rename", ".stop", ".reset", ".clear", ".format", ".recursive_destroy", ".import_pool")
+                        ".rename", ".stop", ".reset", ".clear", ".format", ".recursive_destroy", ".import_pool",
+                        ".uninstall", ".destroy_snapshots", ".rmdir", ".unlink", ".remove")
 # Methods already used by the action/refusal model but not currently exposed in the adapter's feature manifest.
 # New write methods must be added to a version manifest or deliberately reviewed into this small allow-list.
 EXPLICIT_WRITE_ALLOWLIST = frozenset({
@@ -55,6 +61,9 @@ EXPLICIT_WRITE_ALLOWLIST = frozenset({
 
 def is_destructive_method(method: Any) -> bool:
     name = normalise_method(method)
+    spec = _manifest_spec(name)
+    if spec is not None:
+        return spec.classification == "destructive"
     return name in DESTRUCTIVE_METHODS or name.endswith(DESTRUCTIVE_SUFFIXES)
 
 
@@ -79,7 +88,24 @@ def is_read_method(method: Any) -> bool:
         name = normalise_method(method)
     except Refused:
         return False
+    spec = _manifest_spec(name)
+    if spec is not None:
+        return spec.classification == "read"
     return name in READ_EXACT or name.endswith(READ_SUFFIXES)
+
+
+@lru_cache(maxsize=None)
+def _manifest_spec(name: str) -> Any:
+    """Read explicit classifications from the selected adapter without coupling imports at module load time."""
+    try:
+        from .adapters import GENERATIONS
+    except ImportError:
+        return None
+    for backend in GENERATIONS.values():
+        spec = backend.method_spec(name)
+        if spec is not None:
+            return spec
+    return None
 
 
 def canonical_params(params: Iterable[Any]) -> str:
@@ -116,22 +142,70 @@ def _names_boot_pool(text: str) -> bool:
     return re.split(r"[/@#]", t)[0] == BOOT_POOL
 
 
-def _boot_pool_id_in_mapping(value: Any, state: SafetyState | None) -> bool:
-    """Resolve explicitly named pool references nested in method arguments against live pool ids."""
-    if state is None:
-        return False
-    pool_keys = {"pool", "pool_id", "pool_name"}
+POOL_REFERENCE_KEYS = frozenset({"pool", "pools", "pool_id", "pool_name", "pool_ids", "pool_names"})
+
+
+def _pool_reference_key(key: Any) -> str:
+    if not isinstance(key, str):
+        return ""
+    separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key)
+    return separated.casefold().replace("-", "_")
+
+
+def _pool_value_refusal(value: Any, state: SafetyState | None) -> str | None:
+    if value is None:
+        return "a pool reference is null and cannot be resolved: refused"
+    if isinstance(value, bool):
+        return "a pool reference is a boolean and is ambiguous"
+    if isinstance(value, int):
+        if state is None:
+            return f"pool id {value} cannot be resolved to a name: refused"
+        pool = state.pools.get(value)
+        if pool is None:
+            return f"pool id {value} cannot be resolved to a name: refused"
+        if _names_boot_pool(pool):
+            return "a pool reference resolves to boot-pool, which is never changed from here (ACTION-MATRIX A-08)"
+        return None
+    if isinstance(value, str):
+        if _names_boot_pool(value):
+            return "a pool reference resolves to boot-pool, which is never changed from here (ACTION-MATRIX A-08)"
+        if value.strip().isdigit():
+            if state is not None and _names_boot_pool(state.pools.get(int(value.strip()), "")):
+                return "a pool reference resolves to boot-pool, which is never changed from here (ACTION-MATRIX A-08)"
+            return f"pool reference {value!r} is an ambiguous string of digits: refused"
+        if state is None:
+            return f"pool reference {value!r} cannot be resolved without live pool state: refused"
+        if value.strip().casefold() not in {pool.casefold() for pool in state.pools.values()}:
+            return f"pool reference {value!r} is not a pool the host lists: refused"
+        return None
+    if isinstance(value, (list, tuple, set, frozenset)):
+        for child in value:
+            reason = _pool_value_refusal(child, state)
+            if reason and "boot-pool" in reason:
+                return reason
+        return "a pool reference list is ambiguous: refused"
+    if isinstance(value, Mapping):
+        return "a pool reference mapping is ambiguous: refused"
+    return f"a pool reference of type {type(value).__name__} is ambiguous: refused"
+
+
+def _pool_mapping_refusal(value: Any, state: SafetyState | None) -> str | None:
+    """Resolve known pool-key spellings recursively; malformed or unresolved pool references fail closed."""
     if isinstance(value, Mapping):
         for key, child in value.items():
-            key_name = key.strip().casefold().replace("-", "_") if isinstance(key, str) else ""
-            if (key_name in pool_keys and isinstance(child, int) and not isinstance(child, bool)
-                    and _names_boot_pool(state.pools.get(child, ""))):
-                return True
-            if _boot_pool_id_in_mapping(child, state):
-                return True
+            if _pool_reference_key(key) in POOL_REFERENCE_KEYS:
+                reason = _pool_value_refusal(child, state)
+                if reason:
+                    return reason
+            reason = _pool_mapping_refusal(child, state)
+            if reason:
+                return reason
     elif isinstance(value, (list, tuple, set, frozenset)):
-        return any(_boot_pool_id_in_mapping(child, state) for child in value)
-    return False
+        for child in value:
+            reason = _pool_mapping_refusal(child, state)
+            if reason:
+                return reason
+    return None
 
 
 @dataclass(frozen=True)
@@ -157,7 +231,7 @@ def _pool_id_refusal(name: str, args: tuple[Any, ...], state: SafetyState | None
     if isinstance(first, bool) or isinstance(first, float) or isinstance(first, (list, tuple, set)):
         return f"{name}: the pool must be given as an integer id or a known pool name, not {first!r}"
     if isinstance(first, Mapping):
-        return f"{name}: a pool given as a mapping is ambiguous: refused" if "id" in first or "name" in first or "pool" in first else None
+        return f"{name}: a pool given as a mapping is ambiguous: refused"
     if isinstance(first, int):
         pool = None if state is None else state.pools.get(first)
         if pool is None:
@@ -170,6 +244,19 @@ def _pool_id_refusal(name: str, args: tuple[Any, ...], state: SafetyState | None
             return f"{name}: {first!r} is not a pool the host lists: refused"
         return None
     return f"{name}: unusable pool parameter {first!r}: refused"
+
+
+def _pool_name_refusal(name: str, args: tuple[Any, ...], state: SafetyState | None) -> str | None:
+    if not args or not isinstance(args[0], str):
+        return f"{name}: the pool must be given as its name string: refused"
+    if state is None:
+        return f"{name}: cannot verify the pool name without live pool state: refused"
+    pool = args[0].strip()
+    if _names_boot_pool(pool):
+        return "boot-pool is never modified from here (ACTION-MATRIX A-08)"
+    if pool.casefold() not in {known.casefold() for known in state.pools.values()}:
+        return f"{name}: {pool!r} is not a pool the host lists: refused"
+    return None
 
 
 def refusal_for(method: Any, params: Iterable[Any] = (), state: SafetyState | None = None) -> str | None:
@@ -186,13 +273,13 @@ def refusal_for(method: Any, params: Iterable[Any] = (), state: SafetyState | No
         return None
     if name.startswith("boot.") and name not in BOOT_WRITE_ALLOWED:
         return "the boot family is read-only from tnt (default-deny; boot.format, install_loader, scrub, ... are never executed)"
-    if _boot_pool_id_in_mapping(args, state):
-        return "a pool reference resolves to boot-pool, which is never changed from here (ACTION-MATRIX A-08)"
-    # Every pool method's first integer argument is treated as a pool reference for boot-pool protection. Other
-    # parameter validation remains limited to POOL_ID_METHODS because methods such as pool.scrub.delete take task ids.
-    if name.startswith("pool.") and args and isinstance(args[0], int) and not isinstance(args[0], bool):
-        if state is not None and _names_boot_pool(state.pools.get(args[0], "")):
-            return "a pool reference resolves to boot-pool, which is never changed from here (ACTION-MATRIX A-08)"
+    texts = list(_strings(args))
+    if any(_ambiguous_path(text) for text in texts):
+        return "a path with '..' is ambiguous and refused"
+    if any(_names_boot_pool(text) for text in texts):
+        return "boot-pool and its datasets are never changed from here (ACTION-MATRIX A-08)"
+    if reason := _pool_mapping_refusal(args, state):
+        return reason
     if name == "disk.wipe":
         if state is None:
             return "disk membership is unknown (no safety state): wipe is refused"
@@ -209,14 +296,10 @@ def refusal_for(method: Any, params: Iterable[Any] = (), state: SafetyState | No
         if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
             return f"disk {disk} reports no usable size: wipe is refused"
         return None
-    if name.startswith(GUARDED_FAMILIES):
-        texts = list(_strings(args))
-        if any(_ambiguous_path(t) for t in texts):
-            return "a path with '..' is ambiguous and refused"
-        if any(_names_boot_pool(t) for t in texts):
-            return "boot-pool and its datasets are never changed from here (ACTION-MATRIX A-08)"
-        if name in POOL_ID_METHODS:
-            return _pool_id_refusal(name, args, state)
+    if name in POOL_ID_METHODS:
+        return _pool_id_refusal(name, args, state)
+    if name in POOL_NAME_METHODS:
+        return _pool_name_refusal(name, args, state)
     return None
 
 

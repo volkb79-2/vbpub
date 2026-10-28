@@ -7,6 +7,10 @@
 - Added v27 password login through the pinned client's `PASSWORD_PLAIN` mechanism; API keys continue to use SCRAM.
 - Removed the postponed generation adapter. Only v27 is accepted; the adapter boundary remains extensible.
 - Added the committed `tnt.toml.example` and ignored local `tnt.toml` configuration.
+- Added explicit v27 read/write/destructive method classifications and source-linked request signatures in
+  `docs/API-METHODS-V27.md`; known non-RPC or unavailable destructive names remain classified but unsupported.
+- Extended boot-pool and ambiguous-pool-reference refusals to nested string values and pool mapping spellings across
+  every non-read method family. Pool/task ID checks now follow each method's v27 parameter meaning.
 - M0 scaffold remains: `tnt --version`, `tnt doctor`, `tnt profile list|show`, `tnt disks`, `tnt tui` (Storage > Disks).
 - Transport over `truenas_api_client` (pinned by sha of tag TS-27.0.0-RC.1): wss only and TLS verification on by
   default. Authentication failures are fatal and not retried.

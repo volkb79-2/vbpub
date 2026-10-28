@@ -52,7 +52,7 @@ class FakeServer:
         self.version, self.username, self.api_key, self.password = version, username, api_key, password
         self.disks = std_disks if disks is None else disks
         self.parts = std_parts if parts is None else parts
-        self.methods = sorted(m for ms in V27.manifest.values() for m in ms) if methods is None else methods
+        self.methods = sorted(V27.supported_methods()) if methods is None else methods
         self.fail = dict(fail or {})
         self.pools: Any = [{"id": 1, "name": "tank", "topology": {"data": [{"type": "DISK", "disk": "sdb", "path": "/dev/sdb1"}]}}]
         self.boot_state: Any = {"name": "boot-pool", "topology": {"data": [{"type": "DISK", "disk": "sda3", "path": "/dev/sda3"}]}}

@@ -15,7 +15,7 @@ test keeps every such row id mentioned here) and from the M0 scaffold's known ga
 | TNT-05 | B-02, B-03 | Create a pool on a partition or on free space. Stock `pool.create` takes disk names only (measured: EINVAL). Path: partition + `zpool create` + TNT-04 adoption. Decided 2026-10-28: (a), `zpool create` on the partition then TNT-04 adoption (matches the TrueNAS agent's shim); depends on TNT-03 and TNT-04 | L | M2 | Matrix verdict is "pending decision" |
 | TNT-06 | B-01, B-06 | Boot pool data management (`boot-pool-data` / `boot-disk-data` layout): create, inspect, export-safe, reboot persistence | L | M2 | Depends on TNT-03/04/05 and the live reboot test |
 | TNT-07 | A-09 | Cache/log/special vdev management through `pool.update` for ordinary pools; boot-pool zvol targets stay refused by design | L | M3 | Refusal rows B-07, A-08 are already on the refusal list in `tnt.actions` |
-| TNT-08 | B-07, A-08 | Keep the refusal list in step with the matrix (a test already checks B-07's methods); extend when new `n/a` rows appear | S | all | |
+| TNT-08 | B-07, A-08 | Keep the refusal list in step with the matrix (a test already checks B-07's methods); extend when new `n/a` rows appear | S | all | Extended for M1; the manifest and cross-family boot-pool/pool-reference guards are explicit and tested (step 2 complete) |
 
 ## Screens mirroring the web UI menu (read views first, writes behind plan/apply)
 
@@ -37,7 +37,7 @@ test keeps every such row id mentioned here) and from the M0 scaffold's known ga
 | id | what | size | milestone |
 |---|---|---|---|
 | TNT-20 | Live lane: read-only contract tests replaying the fake's scenarios against the throwaway host (a throwaway test VM only, never a production host), opt-in marker, key from file | M | M1 |
-| TNT-21 | SCRAM fake-server handshake for the pinned client and password login support (completed in config/credential step) | M | M1 |
+| TNT-21 | SCRAM fake-server handshake and v27 password login (complete in step 1; both auth flows are exercised through the real client) | M | M1 |
 | TNT-23 | Manifest drift test: compare each adapter manifest with the fetched `https://api.truenas.com/v27.0` method index (opt-in network test, not in the gate) | S | M1 |
 | TNT-24 | Audit log (no secrets) of every executed action under the XDG state dir | S | M2 |
 | TNT-25 | Live updates: subscribe to `core.get_jobs` / collection updates so tables refresh without `r` | M | M2 |
@@ -51,3 +51,4 @@ test keeps every such row id mentioned here) and from the M0 scaffold's known ga
 | TNT-33 | Gate environment: the r0-r1 lane needs `tnt` installed in the tester venv (the CLI resolves its version from installed metadata, like iobench) plus `textual` and `websockets` from the test extra | S | M0 close |
 | TNT-35 | Detect per host which conditional menu entries (Containers, Virtual Machines, Apps, KMIP, Enclosure) the web UI would show, and hide the others | S | M1 |
 | TNT-36 | Revisit container memory controls if a future v27 schema exposes a supported memory resource field; current `ContainerCreate`/`ContainerUpdate` schema exposes `cpuset` but no memory limit (deferred by verified v27 schema) | S | M1 |
+| TNT-37 | Expose a current container image identity if a future v27 API supplies it; `ContainerEntry` has no image field and create consumes image metadata without retaining it in the returned record (deferred by the verified schema; see `docs/API-METHODS-V27.md`) | S | M1 |
