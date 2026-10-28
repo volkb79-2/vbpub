@@ -7,7 +7,8 @@ from typing import Any, Callable, Mapping
 from . import adapters, transport
 from .adapters.base import Backend
 from .domain import Disk
-from .profile import Profile, Secret, read_credential
+from .profile import Profile, Secret
+from .errors import ProfileError
 
 
 @dataclass
@@ -17,6 +18,7 @@ class Session:
     backend: Backend
     insecure_tls: bool = False
     missing_methods: dict[str, list[str]] = field(default_factory=dict)
+    credential: Secret | None = field(default=None, repr=False)
 
     @property
     def workflows(self):
@@ -44,10 +46,12 @@ class Session:
 SessionOpener = Callable[..., Session]
 
 
-def open_session(profile: Profile, *, insecure_ack: bool = False, allow_write: bool = False, env: Mapping[str, str] | None = None,
+def open_session(profile: Profile, *, insecure_ack: bool = False, allow_write: bool = False,
                  secret: Secret | None = None, **connect_kwargs: Any) -> Session:
     """Connect, authenticate (once, no retry), detect the API generation, pick the adapter."""
-    credential = secret or read_credential(profile, env)
+    credential = secret
+    if not isinstance(credential, Secret):
+        raise ProfileError("credentials must be loaded from the paired tnt.secrets.toml before opening a session")
     client = transport.connect(profile, credential, insecure_ack=insecure_ack, **connect_kwargs)
     rpc = transport.GuardedRpc(client, read_only=not allow_write, secret=credential)
     try:
@@ -60,4 +64,5 @@ def open_session(profile: Profile, *, insecure_ack: bool = False, allow_write: b
     except Exception:
         rpc.close()
         raise
-    return Session(profile, rpc, backend, insecure_tls=profile.insecure and insecure_ack, missing_methods=missing)
+    return Session(profile, rpc, backend, insecure_tls=profile.insecure and insecure_ack, missing_methods=missing,
+                   credential=credential)

@@ -17,7 +17,8 @@ from pathlib import Path
 import pytest
 
 from tnt.actions import apply_plan, make_plan
-from tnt.profile import Secret, default_config_path, load_profiles
+from tnt.profile import Secret, read_credential, resolve_paths
+from tnt.host_store import load_host_store
 from tnt.session import open_session
 from tnt.workflows import validate_ssh_public_keys
 
@@ -86,11 +87,12 @@ def test_v27_core_workflows_against_explicit_profile():
     assert memory_mib >= 20, "TNT_LIVE_VM_MEMORY_MIB must be at least 20"
     assert disk_size > 0, "TNT_LIVE_VM_DISK_BYTES must be positive"
 
-    config_path = default_config_path()
-    profiles, _ = load_profiles(config_path)
-    assert profile_name in profiles, f"profile {profile_name!r} is absent from {config_path}"
+    paths = resolve_paths()
+    profiles, _, entries = load_host_store(paths, require_secrets=True)
+    assert profile_name in profiles, f"profile {profile_name!r} is absent from {paths.config}"
     profile = profiles[profile_name]
-    session = open_session(profile, allow_write=True, insecure_ack=os.environ.get("TNT_LIVE_INSECURE") == "1")
+    session = open_session(profile, secret=read_credential(profile, entries), allow_write=True,
+                           insecure_ack=os.environ.get("TNT_LIVE_INSECURE") == "1")
     workflows = session.workflows
     suffix = uuid.uuid4().hex[:12]
     prefix = f"tnt-live-{suffix}"

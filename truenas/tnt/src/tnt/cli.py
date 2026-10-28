@@ -16,6 +16,7 @@ from cli_extended import (ArgumentSpec, CheckResult, CliFailure, CliIdentity, Cl
 
 from . import profile as prof
 from .errors import TntError
+from .host_store import HostStore, load_host_store
 from .query import disk_table
 from .session import SessionOpener, open_session
 from .actions import apply_plan, make_plan
@@ -36,10 +37,11 @@ def _value(flags: tuple[str, ...], text: str, metavar: str, group: str = "TARGET
     return OptionSpec(flags, text, group=group, metavar=metavar, parser_kwargs={"default": None, **kw})
 
 
-CONFIG = _value(("--config",), "Profile file (default: $TNT_CONFIG, else ./tnt.toml, then $XDG_CONFIG_HOME/tnt/tnt.toml).", "FILE")
-PROFILE = _value(("--profile",), "Profile name (default: the file's `default`, or its only profile).", "NAME")
-INSECURE = _flag(("--insecure",), "Confirm TLS verification is OFF for a profile with tls = \"insecure\" (throwaway test hosts only).")
-HOST_OPTIONS = (PROFILE, CONFIG, INSECURE)
+CONFIG = _value(("--config",), "Non-secret host file (default: $TNT_CONFIG, ./tnt.toml, then XDG config).", "FILE")
+SECRETS = _value(("--secrets",), "Paired credentials file (default: $TNT_SECRETS, ./tnt.secrets.toml, then XDG config).", "FILE")
+HOST = _value(("--host", "--profile"), "Host name (default: default_host, or the only configured host).", "NAME")
+INSECURE = _flag(("--insecure",), "Confirm TLS verification is OFF for a host with tls = \"insecure\" (throwaway test hosts only).")
+HOST_OPTIONS = (HOST, CONFIG, SECRETS, INSECURE)
 ALLOW_WRITE = _flag(("--allow-write",), "Allow applying the reviewed plan; every write still uses plan/apply.", "SAFETY")
 DRY_RUN = _flag(("--dry-run",), "Print the plan without applying it.", "SAFETY")
 CONFIRM = _value(("--confirm",), "Exact target name to confirm a destructive plan.", "TARGET", "SAFETY")
@@ -47,13 +49,36 @@ SPEC_FILE = _value(("--file",), "JSON object with additional API fields.", "FILE
 ACTION_OPTIONS = (ALLOW_WRITE, DRY_RUN, CONFIRM)
 
 
+def _paths(args: Any) -> prof.ConfigPaths:
+    return prof.resolve_paths(getattr(args, "config", None), getattr(args, "secrets", None))
+
+
 def _config_path(args: Any) -> Path:
-    return Path(args.config) if args.config else prof.default_config_path()
+    return _paths(args).config
 
 
 def _profile(args: Any) -> prof.Profile:
-    profiles, default = prof.load_profiles(_config_path(args))
-    return prof.pick(profiles, default, args.profile)
+    profiles, default, _ = load_host_store(_paths(args))
+    return prof.pick(profiles, default, args.host)
+
+
+def _open_host(host: prof.Profile, credential: prof.Secret, opener: SessionOpener, *, insecure_ack: bool,
+               allow_write: bool = False):
+    if host.insecure and not insecure_ack:
+        raise prof.ProfileError(f"host {host.name!r} disables TLS verification; pass --insecure to connect")
+    try:
+        return opener(host, secret=credential, insecure_ack=insecure_ack, allow_write=allow_write)
+    except Exception as exc:
+        message = credential.scrub(str(exc))
+        raise prof.ProfileError(f"cannot connect to host {host.name!r}: {message}") from None
+
+
+def _open(args: Any, opener: SessionOpener, *, allow_write: bool = False):
+    paths = _paths(args)
+    profiles, default, entries = load_host_store(paths, require_secrets=True)
+    host = prof.pick(profiles, default, args.host)
+    credential = prof.read_credential(host, entries)
+    return _open_host(host, credential, opener, insecure_ack=args.insecure, allow_write=allow_write)
 
 
 def _emit(runtime: CliRuntime, obj: Any, text: str) -> None:
@@ -80,21 +105,21 @@ def _check_deps(runtime: CliRuntime, args: Any) -> CheckResult:
 
 
 def _check_profiles(runtime: CliRuntime, args: Any) -> CheckResult:
-    path = _config_path(args)
     try:
-        profiles, _ = prof.load_profiles(path)
+        profiles, _, _ = load_host_store(_paths(args))
     except TntError as exc:
-        return CheckResult("warn", str(exc), remedy="create the profile file (see README)")
-    return CheckResult("ok", f"{len(profiles)} profile(s) in {path}", details={"profiles": sorted(profiles)})
+        return CheckResult("warn", str(exc), remedy="create the host files (see README)")
+    return CheckResult("ok", f"{len(profiles)} host(s) in {_config_path(args)}", details={"hosts": sorted(profiles)})
 
 
 def _check_credentials(runtime: CliRuntime, args: Any) -> CheckResult:
     try:
-        p = _profile(args)
-        prof.read_credential(p)
+        profiles, default, entries = load_host_store(_paths(args), require_secrets=True)
+        p = prof.pick(profiles, default, args.host)
+        prof.read_credential(p, entries)
     except TntError as exc:
-        return CheckResult("skip" if "profile" in str(exc).lower() and "no profile file" in str(exc) else "fail", str(exc),
-                           remedy="chmod 600 tnt.toml and any referenced key file; configure the selected credential on its profile")
+        return CheckResult("skip" if "no config file" in str(exc).lower() else "fail", str(exc),
+                           remedy="configure the selected host in the paired tnt.toml and tnt.secrets.toml files")
     return CheckResult("ok", f"credentials for {p.name} are configured and private")
 
 
@@ -102,7 +127,7 @@ def _check_connect(runtime: CliRuntime, args: Any, opener: SessionOpener) -> Che
     if not args.online:
         return CheckResult("skip", "not contacting the host (pass --online)")
     try:
-        session = opener(_profile(args), insecure_ack=args.insecure)
+        session = _open(args, opener)
     except TntError as exc:
         return CheckResult("fail", str(exc), remedy="check url, configured credential and TLS; an auth failure is never retried (rate limit)")
     try:
@@ -118,24 +143,135 @@ def _check_connect(runtime: CliRuntime, args: Any, opener: SessionOpener) -> Che
 
 # -- handlers -------------------------------------------------------------------------------------------------
 def _profile_list(args: Any, runtime: CliRuntime) -> int:
-    profiles, default = prof.load_profiles(_config_path(args))
-    rows = [dict(p.describe(), default=(n == default)) for n, p in sorted(profiles.items())]
+    profiles, default, entries = load_host_store(_paths(args))
+    rows = [dict(p.describe(), default=(n == default), credentials_configured=(n in entries))
+            for n, p in sorted(profiles.items())]
     text = "\n".join(f"{'*' if r['default'] else ' '} {r['name']}  {r['url']}  tls={r['tls']}  auth={r['auth']}" for r in rows)
     _emit(runtime, rows, text)
     return 0
 
 
 def _profile_show(args: Any, runtime: CliRuntime) -> int:
-    profiles, default = prof.load_profiles(_config_path(args))
+    profiles, default, entries = load_host_store(_paths(args))
     p = prof.pick(profiles, default, args.name)
-    problem = prof.key_file_problem(p.api_key_file) if p.api_key_file else None
-    out = dict(p.describe(), key_file_problem=problem)
+    out = dict(p.describe(), default=(p.name == default), credentials_configured=(p.name in entries))
     _emit(runtime, out, "\n".join(f"{k}: {v}" for k, v in out.items()))
     return 0
 
 
+def _host_list(args: Any, runtime: CliRuntime) -> int:
+    return _profile_list(args, runtime)
+
+
+def _host_show(args: Any, runtime: CliRuntime) -> int:
+    return _profile_show(args, runtime)
+
+
+def _host_draft(args: Any, name: str, current: prof.Profile | None = None) -> prof.Profile:
+    auth = args.auth or (current.auth if current else "api_key")
+    tls = args.tls or (current.tls if current else "verify")
+    url = args.url or (current.url if current else None)
+    username = args.username or (current.username if current else None)
+    if not url or not username:
+        raise CliFailure("hosts add requires --url and --username; hosts edit keeps omitted values")
+    if tls == "insecure" and (current is None or current.tls != "insecure"):
+        print("WARNING: TLS certificate verification will be disabled for this host.", file=sys.stderr)
+        print("Use this only for an isolated throwaway TrueNAS host.", file=sys.stderr)
+        if input("Type INSECURE to save this TLS mode: ").strip() != "INSECURE":
+            raise CliFailure("insecure TLS configuration was not confirmed")
+    ssh_user = args.ssh_user if args.ssh_user is not None else (current.ssh_user if current else None)
+    ssh_keys = current.ssh_key_files if current else ()
+    if getattr(args, "ssh_key_file", None) is not None:
+        ssh_keys = tuple(args.ssh_key_file)
+    if getattr(args, "clear_ssh_keys", False):
+        ssh_keys = ()
+    ssh_known_hosts = args.ssh_known_hosts if args.ssh_known_hosts is not None else (current.ssh_known_hosts if current else None)
+    description = args.description if args.description is not None else (current.description if current else "")
+    tags = tuple(args.tag) if args.tag is not None else (current.tags if current else ())
+    return prof.Profile(name=name, url=url, username=username, tls=tls, auth=auth, ssh_user=ssh_user,
+                        ssh_key_files=ssh_keys, ssh_known_hosts=ssh_known_hosts,
+                        description=description, tags=tags)
+
+
+def _host_credential(auth: str, args: Any, current: prof.SecretEntry | None = None,
+                     *, creating: bool = False, auth_changed: bool = False) -> prof.SecretEntry | None:
+    if args.api_key_file:
+        if auth != "api_key":
+            raise CliFailure("--api-key-file can be used only with auth=api_key")
+        return prof.SecretEntry(api_key_file=args.api_key_file)
+    if not creating and not args.set_secret and not auth_changed:
+        return current
+    label = "API key" if auth == "api_key" else "Password"
+    value = getpass.getpass(f"{label} (input hidden): ")
+    if not value:
+        raise CliFailure(f"{label.lower()} must not be empty")
+    return prof.SecretEntry(api_key=prof.Secret(value)) if auth == "api_key" else prof.SecretEntry(password=prof.Secret(value))
+
+
+def _host_add(args: Any, runtime: CliRuntime) -> int:
+    paths = _paths(args)
+    host = _host_draft(args, args.name)
+    credential = _host_credential(host.auth, args, creating=True)
+    HostStore(paths).add(host, credential, make_default=args.make_default)
+    _emit(runtime, host.describe(), f"Added host {host.name} in {paths.config}; its credential is in the paired secrets file.")
+    return 0
+
+
+def _host_edit(args: Any, runtime: CliRuntime) -> int:
+    paths = _paths(args)
+    hosts, default, entries = load_host_store(paths)
+    current = hosts.get(args.name)
+    if current is None:
+        raise CliFailure(f"unknown host {args.name!r}")
+    host = _host_draft(args, args.name, current)
+    auth_changed = host.auth != current.auth
+    credential = _host_credential(host.auth, args, entries.get(args.name), auth_changed=auth_changed)
+    store = HostStore(paths)
+    if args.rename:
+        store.rename(args.name, args.rename, profile=host, credential=credential)
+        shown = args.rename
+    else:
+        store.edit(args.name, host, credential=credential)
+        shown = args.name
+    _emit(runtime, {"name": shown, "updated": True}, f"Updated host {shown}.")
+    return 0
+
+
+def _host_remove(args: Any, runtime: CliRuntime) -> int:
+    if args.confirm != args.name:
+        raise CliFailure(f"removing host {args.name!r} also removes its stored credential; pass --confirm {args.name}")
+    paths = _paths(args)
+    HostStore(paths).remove(args.name)
+    _emit(runtime, {"name": args.name, "removed": True}, f"Removed host {args.name} and its stored credential.")
+    return 0
+
+
+def _host_set_default(args: Any, runtime: CliRuntime) -> int:
+    paths = _paths(args)
+    HostStore(paths).set_default(args.name)
+    _emit(runtime, {"default_host": args.name}, f"Default host is now {args.name}.")
+    return 0
+
+
+def _host_test(args: Any, runtime: CliRuntime, opener: SessionOpener) -> int:
+    paths = _paths(args)
+    hosts, _, entries = load_host_store(paths, require_secrets=True)
+    host = hosts.get(args.name)
+    if host is None:
+        raise CliFailure(f"unknown host {args.name!r}")
+    secret = prof.read_credential(host, entries)
+    session = _open_host(host, secret, opener, insecure_ack=args.insecure, allow_write=False)
+    try:
+        result = {"name": host.name, "url": host.url, "generation": session.backend.generation,
+                  "version": session.backend.version, "capability_gaps": session.missing_methods}
+        _emit(runtime, result, session.banner())
+        return 0
+    finally:
+        session.close()
+
+
 def _disks(args: Any, runtime: CliRuntime, opener: SessionOpener) -> int:
-    session = opener(_profile(args), insecure_ack=args.insecure)
+    session = _open(args, opener)
     try:
         disks = session.disks()
     finally:
@@ -149,11 +285,21 @@ def _tui(args: Any, runtime: CliRuntime, opener: SessionOpener) -> int:
         from .tui.app import TntApp
     except ImportError:
         raise CliFailure("textual is not installed; run: pip install 'tnt[tui]'", exit_code=2) from None
-    session = opener(_profile(args), insecure_ack=args.insecure, allow_write=args.allow_write)
+    paths = _paths(args)
+    hosts, default, entries = load_host_store(paths)
+    selected = args.host or default or (next(iter(hosts)) if len(hosts) == 1 else None)
+    session = None
+    if selected is not None:
+        host = prof.pick(hosts, default, selected)
+        credential = prof.read_credential(host, entries)
+        session = _open_host(host, credential, opener, insecure_ack=args.insecure, allow_write=args.allow_write)
+    app = TntApp(session, hosts=hosts, default_host=default, secret_entries=entries,
+                 host_paths=paths, session_opener=opener, insecure_ack=args.insecure,
+                 initial_write=args.allow_write)
     try:
-        TntApp(session, session_opener=opener, insecure_ack=args.insecure).run()
+        app.run()
     finally:
-        session.close()
+        app.session_controller.close()
     return 0
 
 
@@ -170,7 +316,7 @@ def _read_json_object(path: str | None) -> dict[str, Any]:
 
 
 def _workflow_read(args: Any, runtime: CliRuntime, opener: SessionOpener, call: Any) -> int:
-    session = opener(_profile(args), insecure_ack=args.insecure)
+    session = _open(args, opener)
     try:
         result = call(session)
     finally:
@@ -182,7 +328,7 @@ def _workflow_read(args: Any, runtime: CliRuntime, opener: SessionOpener, call: 
 
 
 def _workflow_action(args: Any, runtime: CliRuntime, opener: SessionOpener, action_factory: Any) -> int:
-    session = opener(_profile(args), insecure_ack=args.insecure, allow_write=args.allow_write)
+    session = _open(args, opener, allow_write=args.allow_write)
     try:
         action = action_factory(session)
         plan = make_plan(action, session.rpc)
@@ -202,7 +348,7 @@ def _workflow_action(args: Any, runtime: CliRuntime, opener: SessionOpener, acti
 
 
 def _system_action(args: Any, runtime: CliRuntime, opener: SessionOpener, action_factory: Any) -> int:
-    session = opener(_profile(args), insecure_ack=args.insecure, allow_write=args.allow_write)
+    session = _open(args, opener, allow_write=args.allow_write)
     try:
         action = action_factory(session)
         plan = make_plan(action, session.rpc)
@@ -238,7 +384,7 @@ def _system_action(args: Any, runtime: CliRuntime, opener: SessionOpener, action
 def _system_config_export(args: Any, runtime: CliRuntime, opener: SessionOpener) -> int:
     from .config_export import download_config_export
 
-    session = opener(_profile(args), insecure_ack=args.insecure, allow_write=args.allow_write)
+    session = _open(args, opener, allow_write=args.allow_write)
     result = None
     download_url = None
     try:
@@ -271,7 +417,7 @@ def _api_key_create(args: Any, runtime: CliRuntime, opener: SessionOpener) -> in
 
     if runtime.json_mode:
         raise CliFailure("API key creation uses a one-time warning display; omit --json")
-    session = opener(_profile(args), insecure_ack=args.insecure, allow_write=args.allow_write)
+    session = _open(args, opener, allow_write=args.allow_write)
     plan = None
     result = None
     entry = None
@@ -299,15 +445,15 @@ def _api_key_create(args: Any, runtime: CliRuntime, opener: SessionOpener) -> in
                 save_problem = str(exc)
         warning = "WARNING: This API key is shown only once. Copy or save it now."
         if saved_to:
-            configure = (f"Saved mode 0600 to {saved_to}. Add api_key_file = {json.dumps(saved_to)} under "
-                         f"[profiles.{session.profile.name}] in tnt.toml (open it with $EDITOR tnt.toml).")
+            configure = (f"Saved mode 0600 to {saved_to}. Run `tnt hosts edit {session.profile.name} "
+                         f"--api-key-file {saved_to}` to store its path in the paired secrets file.")
         else:
-            configure = ("To use this key with tnt, save it to a private file, then add api_key_file = \"/absolute/path\" "
-                         f"under [profiles.{session.profile.name}] in tnt.toml (open it with $EDITOR tnt.toml).")
+            configure = ("To use this key with tnt, save it in a new mode-0600 file, then run `tnt hosts edit "
+                         f"{session.profile.name} --api-key-file /absolute/path` to store its path privately.")
         text = f"{plan.render()}\n\033[1;31m{warning}\033[0m\nAPI key (one-time): {key}\n{configure}"
         if save_problem:
             text += f"\nPrivate file was not written: {save_problem}"
-        text += "\nThe key was not added to tnt.secrets.toml."
+        text += "\nThe key value was not added to tnt.secrets.toml; only an optional private-file path can be stored there."
         _emit(runtime, {"plan": plan.render(), "warning": warning, "key": key, "saved_to": saved_to,
                         "save_problem": save_problem, "configuration": configure}, text)
         return 0
@@ -933,7 +1079,7 @@ def _vm_verbs(ident: CliIdentity, opener: SessionOpener) -> list[VerbSpec]:
         if args.nic_attach is not None:
             device_attributes.append({"dtype": "NIC", "nic_attach": args.nic_attach})
 
-        session = opener(_profile(args), insecure_ack=args.insecure, allow_write=args.allow_write)
+        session = _open(args, opener, allow_write=args.allow_write)
         try:
             for attrs in device_attributes:
                 session.workflows.validate_vm_device_attributes(attrs)
@@ -1061,7 +1207,7 @@ def build_cli(cli_identity: CliIdentity | None = None, opener: SessionOpener = o
     ident = cli_identity or identity()
     expected = (TntError,)
     registry = CliRegistry(ident, prog="tnt", description="TrueNAS terminal UI and CLI over the JSON-RPC API; the CLI mirrors the TUI.",
-                           getting_started=("tnt profile list", "tnt doctor --online --profile NAME", "tnt disks --profile NAME --json", "tnt tui --profile NAME"),
+                           getting_started=("tnt hosts list", "tnt doctor --online --host NAME", "tnt disks --host NAME --json", "tnt tui --host NAME"),
                            logging_logger="tnt", unexpected_exceptions="report", expected_exceptions=expected)
 
     register_doctor(registry, [
@@ -1076,13 +1222,66 @@ def build_cli(cli_identity: CliIdentity | None = None, opener: SessionOpener = o
                                    unexpected_exceptions="report", expected_exceptions=expected)
     profile_registry.register(VerbSpec("list", None, "List the profiles in the profile file (never shows key material).",
                                        group=VerbGroup.EXPLORATION.value, examples=("tnt profile list --json",),
-                                       options=(CONFIG,), handler=_profile_list))
+                                       options=(CONFIG, SECRETS), handler=_profile_list))
     profile_registry.register(VerbSpec("show", None, "Show one profile and whether its key file is private (never the key).",
                                        group=VerbGroup.EXPLORATION.value,
                                        arguments=(ArgumentSpec("name", "Profile name (default: the default profile).", metavar="NAME", parser_kwargs={"nargs": "?"}),),
-                                       options=(CONFIG,), handler=_profile_show))
+                                       options=(CONFIG, SECRETS), handler=_profile_show))
     registry.register(VerbSpec("profile", None, "Inspect connection profiles (list, show).", group=VerbGroup.EXPLORATION.value,
                                delegate=profile_registry.build()))
+
+    host_files = (CONFIG, SECRETS)
+    host_name = ArgumentSpec("name", "Configured TrueNAS host name.", metavar="NAME")
+    host_show_name = ArgumentSpec("name", "Host name (defaults to default_host or the only configured host).",
+                                  metavar="NAME", parser_kwargs={"nargs": "?"})
+    host_url = _value(("--url",), "TrueNAS v27 WebSocket endpoint; wss:// is required.", "WSS_URL", "HOST")
+    host_username = _value(("--username",), "TrueNAS account name used by the pinned client.", "USERNAME", "HOST")
+    host_auth = _value(("--auth",), "Credential type stored in the paired secrets file.", "MODE", "HOST",
+                       choices=prof.AUTH_MODES)
+    host_tls = _value(("--tls",), "TLS mode; insecure requires typed warning acknowledgement and --insecure per connection.",
+                      "MODE", "HOST", choices=prof.TLS_MODES)
+    host_ssh_user = _value(("--ssh-user",), "SSH account recorded for the later It3 hand-off.", "USER", "HOST")
+    host_ssh_key = _value(("--ssh-key-file",), "SSH private-key path; repeat to record more than one key (paths are never shown).",
+                          "FILE", "HOST", action="append", default=None)
+    host_ssh_known = _value(("--ssh-known-hosts",), "SSH known-hosts path for the later It3 hand-off.", "FILE", "HOST")
+    host_description = _value(("--description",), "Optional picker description.", "TEXT", "HOST")
+    host_tag = _value(("--tag",), "Optional host tag; repeat for multiple tags.", "TAG", "HOST", action="append", default=None)
+    host_api_key_file = _value(("--api-key-file",), "Existing absolute mode-0600 API-key file; its path is stored privately.",
+                               "FILE", "CREDENTIAL")
+    host_set_secret = _flag(("--set-secret",), "Prompt without echo to replace the host credential.", "CREDENTIAL")
+    host_clear_ssh = _flag(("--clear-ssh-keys",), "Remove all recorded SSH key paths.", "HOST")
+    host_make_default = _flag(("--make-default",), "Set this host as default in the same file transaction.", "HOST")
+    host_rename = _value(("--rename",), "New host name; config and secret tables move in one transaction.", "NAME", "HOST")
+    hosts_registry = CliRegistry(ident, prog="tnt hosts", description="Manage configured hosts and their paired private credentials.",
+                                 unexpected_exceptions="report", expected_exceptions=expected)
+    hosts_registry.register(VerbSpec("list", None, "List configured hosts without displaying credential or SSH key paths.",
+                                     group=VerbGroup.EXPLORATION.value, options=host_files, handler=_host_list))
+    hosts_registry.register(VerbSpec("show", None, "Show one host with credential status masked.",
+                                     group=VerbGroup.EXPLORATION.value, arguments=(host_show_name,), options=host_files,
+                                     handler=_host_show))
+    hosts_registry.register(VerbSpec("add", None, "Add a host and prompt for its credential without echo.",
+                                     group=VerbGroup.MODIFICATION.value, arguments=(host_name,),
+                                     options=host_files + (host_url, host_username, host_auth, host_tls, host_ssh_user,
+                                                           host_ssh_key, host_ssh_known, host_description, host_tag,
+                                                           host_api_key_file, host_make_default), handler=_host_add))
+    hosts_registry.register(VerbSpec("edit", None, "Edit host facts or rotate its credential through the paired file store.",
+                                     group=VerbGroup.MODIFICATION.value, arguments=(host_name,),
+                                     options=host_files + (host_rename, host_url, host_username, host_auth, host_tls,
+                                                           host_ssh_user, host_ssh_key, host_ssh_known, host_description,
+                                                           host_tag, host_api_key_file, host_set_secret, host_clear_ssh),
+                                     handler=_host_edit))
+    hosts_registry.register(VerbSpec("remove", None, "Remove a host and its credential; repeat its name with --confirm.",
+                                     group=VerbGroup.MODIFICATION.value, arguments=(host_name,),
+                                     options=host_files + (CONFIRM,), handler=_host_remove))
+    hosts_registry.register(VerbSpec("test", None, "Test authentication and v27 capability discovery without enabling writes.",
+                                     group=VerbGroup.EXPLORATION.value, arguments=(host_name,),
+                                     options=host_files + (INSECURE,),
+                                     handler=lambda args, runtime: _host_test(args, runtime, opener)))
+    hosts_registry.register(VerbSpec("set-default", None, "Set the default host used by commands without --host.",
+                                     group=VerbGroup.MODIFICATION.value, arguments=(host_name,), options=host_files,
+                                     handler=_host_set_default))
+    registry.register(VerbSpec("hosts", None, "List, inspect, add, edit, test, remove, and select default hosts.",
+                               group=VerbGroup.EXPLORATION.value, delegate=hosts_registry.build()))
 
     registry.register(VerbSpec("disks", None, "List disks with their partitions and free space (Storage > Disks).",
                                group=VerbGroup.EXPLORATION.value, examples=("tnt disks --profile lab --json",),

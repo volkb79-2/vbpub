@@ -1,1 +1,5 @@
 tnt.toml
+tnt.secrets.toml
+.tnt.toml.lock
+.tnt.secrets.toml.lock
+.*.tmp

@@ -15,34 +15,46 @@ def opener(server):
     from tnt.session import open_session
 
     def _open(profile, **kw):
-        return open_session(server.profile(profile.name), secret=server.secret(), allow_loopback_ws=True, **kw)
+        credential = kw.pop("secret", server.secret())
+        return open_session(server.profile(profile.name, auth=profile.auth), secret=credential,
+                            allow_loopback_ws=True, **kw)
     return _open
 
 
 PROFILE_TOML = """schema_version = 1
-default = "lab"
+default_host = "lab"
 
-[profiles.lab]
+[hosts.lab]
 url = "wss://lab.example.invalid/api/current"
 username = "tnt"
 auth = "api_key"
-api_key_file = "{key}"
 tls = "verify"
 
-[profiles.throwaway]
+[hosts.throwaway]
 url = "wss://vm.example.invalid/api/current"
 username = "tnt"
 tls = "insecure"
 auth = "api_key"
 """
 
+SECRETS_TOML = """schema_version = 1
+
+[hosts.lab]
+api_key = "1-fakefakefakefakefakefakefakefake"
+
+[hosts.throwaway]
+api_key = "1-throwaway-placeholder"
+"""
+
 
 @pytest.fixture
-def config(tmp_path):
-    key = tmp_path / "lab.key"
-    key.write_text("1-notarealkey\n")
-    key.chmod(0o600)
+def config(tmp_path, monkeypatch):
     path = tmp_path / "tnt.toml"
-    path.write_text(PROFILE_TOML.format(key=key))
+    path.write_text(PROFILE_TOML)
     path.chmod(0o600)
+    secrets = tmp_path / "tnt.secrets.toml"
+    secrets.write_text(SECRETS_TOML)
+    secrets.chmod(0o600)
+    # Isolate CLI tests from any operator secrets in the process environment or XDG home.
+    monkeypatch.setenv("TNT_SECRETS", str(secrets))
     return path

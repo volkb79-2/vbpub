@@ -199,13 +199,13 @@ class FakeServer:
 
     def profile(self, name: str = "fake", **kw: Any) -> Profile:
         auth = kw.pop("auth", "api_key")
-        api_key = kw.pop("api_key", Secret(self.api_key) if auth == "api_key" else None)
-        password = kw.pop("password", Secret(self.password) if auth == "password" else None)
-        return Profile(name=name, url=self.url, username=self.username, tls="verify", auth=auth,
-                       api_key=api_key, password=password, **kw)
+        return Profile(name=name, url=self.url, username=self.username, tls="verify", auth=auth, **kw)
 
     def secret(self) -> Secret:
         return Secret(self.api_key)
+
+    def password_secret(self) -> Secret:
+        return Secret(self.password)
 
     def called(self) -> list[str]:
         return [r["method"] for r in self.requests]

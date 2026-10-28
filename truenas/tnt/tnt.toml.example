@@ -1,19 +1,20 @@
 schema_version = 1
-default = "lab"
+default_host = "lab"
 
-[profiles.lab]
+[hosts.lab]
 url = "wss://nas.example.invalid/api/current"
-username = "admin"
+tls = "verify"
 auth = "api_key"
-api_key = "REPLACE_WITH_API_KEY"
-tls = "verify"
+username = "admin"
 ssh_user = "admin"
-ssh_key_files = ["~/.ssh/id_ed25519"]
-ssh_known_hosts = "~/.ssh/known_hosts"
+ssh_key_files = ["/home/me/.ssh/id_ed25519"]
+ssh_known_hosts = "/home/me/.ssh/known_hosts"
+description = "Primary TrueNAS host"
+tags = ["primary", "storage"]
 
-[profiles.password-auth]
+[hosts.password-auth]
 url = "wss://nas2.example.invalid/api/current"
-username = "operator"
-auth = "password"
-password = "REPLACE_WITH_PASSWORD"
 tls = "verify"
+auth = "password"
+username = "operator"
+description = "Password-authenticated host"

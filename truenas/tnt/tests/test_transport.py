@@ -1,7 +1,7 @@
 import pytest
 
 from tnt import adapters, transport
-from tnt.errors import Refused, TransportError, UnsupportedVersion
+from tnt.errors import ProfileError, Refused, TransportError, UnsupportedVersion
 from tnt.profile import Profile, Secret
 from tnt.session import open_session
 from tnt.testing import FakeServer
@@ -24,6 +24,17 @@ def test_ws_is_refused_without_the_loopback_test_hook(server):
     with pytest.raises(TransportError, match="ws:// is refused") as err:
         open_session(server.profile(), secret=server.secret())
     assert err.value.kind == "refused" and server.logins == 0
+
+
+def test_session_opening_requires_a_secret_loaded_from_the_paired_file(monkeypatch):
+    called = []
+    monkeypatch.setattr(transport, "connect", lambda *args, **kwargs: called.append((args, kwargs)))
+    profile = Profile("lab", "wss://lab.example.invalid/api/current", "operator")
+    with pytest.raises(ProfileError, match="paired tnt.secrets.toml"):
+        open_session(profile)
+    with pytest.raises(ProfileError, match="paired tnt.secrets.toml"):
+        open_session(profile, secret="plain-text-is-not-a-Secret")
+    assert called == []
 
 
 def test_ws_to_a_non_loopback_host_is_refused_even_with_the_hook():
@@ -79,7 +90,7 @@ def test_scram_login_uses_channel_binding_over_wss():
 
 
 def test_password_login_uses_pinned_client_mechanism_and_fake_server_once(server):
-    session = open_session(server.profile(auth="password"), allow_loopback_ws=True)
+    session = open_session(server.profile(auth="password"), secret=server.password_secret(), allow_loopback_ws=True)
     login = next(request for request in server.requests if request["method"] == "auth.login_ex")
     assert login["params"][0] == {
         "mechanism": "PASSWORD_PLAIN",
@@ -91,9 +102,9 @@ def test_password_login_uses_pinned_client_mechanism_and_fake_server_once(server
 
 
 def test_password_login_failure_is_fatal_scrubbed_and_not_retried(server):
-    profile = server.profile(auth="password", password=Secret("wrong-password-material"))
+    profile = server.profile(auth="password")
     with pytest.raises(TransportError, match="login to 127.0.0.1") as err:
-        open_session(profile, allow_loopback_ws=True)
+        open_session(profile, secret=Secret("wrong-password-material"), allow_loopback_ws=True)
     assert err.value.kind == "auth"
     assert "wrong-password-material" not in str(err.value)
     assert server.logins == 1
