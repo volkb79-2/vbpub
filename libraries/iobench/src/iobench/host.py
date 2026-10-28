@@ -293,6 +293,7 @@ class Host(Protocol):
     def signal_pending(self) -> str | None: ...
     def install_signals(self) -> None: ...
     def allow_scratch(self, path: str) -> None: ...
+    def revoke_scratch(self, path: str) -> None: ...
 
 
 try:  # resolved in the parent: an import inside the forked child is not fork-safe (preexec_fn)
@@ -365,6 +366,9 @@ class RealHost:
     def allow_scratch(self, path: str) -> None:
         if path not in self.scratch_roots:
             self.scratch_roots.append(path)
+
+    def revoke_scratch(self, path: str) -> None:
+        self.scratch_roots = [r for r in self.scratch_roots if r != path]
 
     def now(self) -> float:
         return time.time()

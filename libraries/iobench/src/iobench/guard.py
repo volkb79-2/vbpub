@@ -20,7 +20,7 @@ from .host import TAIL_BYTES, Host, HostError, TargetRef
 MARKER_MAGIC = "IOBENCH-TARGET-1"
 GIB = 1 << 30
 SIGNATURE_KEYS = ("TYPE=", "PTTYPE=", "USAGE=")
-BAD_FS_TYPES = ("tmpfs", "ramfs")
+BAD_FS_TYPES = ("tmpfs", "ramfs", "devtmpfs", "devpts", "proc", "sysfs")  # volatile or pseudo filesystems: never a target or a work dir
 ROOT_MOUNTS = ("/", "/boot")
 SIDECAR_SUFFIX = ".iobench-target"
 ROOT_TARGET_FREE_SHARE = 0.10
@@ -389,11 +389,11 @@ def init_file(host: Host, path: str, *, size: int | None, own: bool, expect_fs_u
     st = host.stat(path)
     _need(st is None or not st.is_symlink, "symlink", f"{path} is a symlink", "name a regular file path")
     fs = fs_info(host, posixpath.dirname(path))
+    _need(fs.fstype not in BAD_FS_TYPES + ("overlay",), "fs_type", f"{path} is on a {fs.fstype} filesystem",
+          "use a persistent disk filesystem (ext4, xfs)")  # before the UUID: a pseudo filesystem has none, and the answer is "never here"
     _need(expect_fs_uuid is not None and fs.uuid == expect_fs_uuid, "fs_uuid_mismatch",
           f"--expect-fs-uuid {expect_fs_uuid} does not equal the filesystem UUID {fs.uuid} under {path}",
           f"pass --expect-fs-uuid {fs.uuid} if this is the intended filesystem")
-    _need(fs.fstype not in BAD_FS_TYPES + ("overlay",), "fs_type", f"{path} is on a {fs.fstype} filesystem",
-          "use a persistent disk filesystem (ext4, xfs)")
     _need(st is None or sidecar_matches(host, path, st, fs), "exists_without_sidecar",
           f"{path} exists and has no iobench sidecar matching its inode, size and filesystem", "remove it yourself, or pick another path")
     _need(st is None or st.nlink <= 1, "hard_link", f"{path} has a link count above 1", "use a file with a single link")
@@ -410,11 +410,15 @@ def init_file(host: Host, path: str, *, size: int | None, own: bool, expect_fs_u
           f"the filesystem under {path} refuses O_DIRECT", "use another filesystem")
     if dry_run:
         return Target("file", path, size, None, None, None, fs.uuid, 0)
-    host.allow_scratch(posixpath.dirname(path))  # the verified directory: the only place the bound fallocate may create the file
+    directory = posixpath.dirname(path)
+    host.allow_scratch(directory)  # the verified directory: the only place the bound fallocate may create the file
     try:
         run = host.preallocate(path, size)  # the bound fallocate: a plain `run` refuses every fallocate
     except HostError as exc:  # a path that is not a plain, cleanly named file place (a device node, a symlinked parent, odd characters)
+        host.revoke_scratch(directory)  # a refused init authorises nothing for the rest of the process
         raise Refusal("path_unclean", str(exc), "name a new or regular file on the intended filesystem, with a plain path") from exc
+    if run.returncode != 0:
+        host.revoke_scratch(directory)
     _need(run.returncode == 0, "fallocate_failed", f"fallocate failed: {run.stderr.strip()}", "free some space or pass a smaller --size")
     inode = host.stat(path).inode
     target = Target("file", path, size, None, None, None, fs.uuid, inode)

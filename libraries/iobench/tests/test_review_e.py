@@ -483,12 +483,15 @@ def test_rev_e_the_run_directory_is_removed_after_the_run():
     host2.put("/run/iobench/run-x/sub/keep", "x")  # a nested entry iobench did not create: the directory stays
     host2.put("/run/iobench/run-x/notes.txt", "x")  # not a fio log iobench named: left alone
     host2.put("/run/iobench/run-x/s1_bw.1.log", "x")  # a fio log of a killed job: removed
+    host2.put("/run/iobench/run-x/s3-w_iops.2.log", "x")  # fio numbers the log per job (`.N.log`): the second job's log goes too
+    host2.put("/run/iobench/run-x/s1_bw.log", "x")  # not fio's naming: left
     from iobench.stages import Runner
     from types import SimpleNamespace
     ns = SimpleNamespace(host=host2, scratch="/run/iobench/run-x", safety=SimpleNamespace(report=SimpleNamespace(warnings=[])))
     Runner.clear_scratch(ns)
     assert "/run/iobench/run-x" in host2.dirs and "/run/iobench/run-x/sub/keep" in host2.files and "/run/iobench/run-x/notes.txt" in host2.files
-    assert "/run/iobench/run-x/s1_bw.1.log" not in host2.files and ns.safety.report.warnings == []
+    assert "/run/iobench/run-x/s1_bw.1.log" not in host2.files and "/run/iobench/run-x/s3-w_iops.2.log" not in host2.files
+    assert "/run/iobench/run-x/s1_bw.log" in host2.files and ns.safety.report.warnings == []
     ns.scratch = "/run/iobench/run-missing"
     Runner.clear_scratch(ns)
     assert ns.safety.report.warnings == []
@@ -532,9 +535,28 @@ def test_rev_e_preallocate_is_contained_and_never_a_device_node():
     with pytest.raises(Refusal) as err:
         guard.init_file(fresh, "/bench/t img", size=1 << 30, own=True, expect_fs_uuid="22222222-2222-2222-2222-222222222222",
                         confirm_quiet_window=False, allow_large_root_target=False, created="2026-10-28T00:00:00Z")
-    assert err.value.condition == "path_unclean" and "/bench" in fresh.scratch_roots
+    assert err.value.condition == "path_unclean" and "/bench" not in fresh.scratch_roots  # a refused init authorises nothing
+    fresh.preallocate = lambda path, size: devio.RunResult(1, "", "boom")
+    with pytest.raises(Refusal) as err:
+        guard.init_file(fresh, "/bench/t.img", size=1 << 30, own=True, expect_fs_uuid="22222222-2222-2222-2222-222222222222",
+                        confirm_quiet_window=False, allow_large_root_target=False, created="2026-10-28T00:00:00Z")
+    assert err.value.condition == "fallocate_failed" and "/bench" not in fresh.scratch_roots
+    del fresh.preallocate
     assert guard.init_file(fresh, "/bench/t.img", size=1 << 30, own=True, expect_fs_uuid="22222222-2222-2222-2222-222222222222",
                            confirm_quiet_window=False, allow_large_root_target=False, created="2026-10-28T00:00:00Z").kind == "file"
+    assert "/bench" in fresh.scratch_roots  # authorised only once the file passed every check
+    # a pseudo or volatile filesystem is never a target (or a work dir), before any path check
+    for fstype in ("devtmpfs", "devpts", "proc", "sysfs", "tmpfs", "ramfs"):
+        pseudo = standard_host()
+        pseudo.add_mount("0:60", "/pseudo", fstype, fstype)
+        pseudo.set_fs("/pseudo", 100 * GIB, 100 * GIB)
+        with pytest.raises(Refusal) as err:
+            guard.init_file(pseudo, "/pseudo/t.img", size=1 << 20, own=True, expect_fs_uuid=None, confirm_quiet_window=False,
+                            allow_large_root_target=False, created="2026-10-28T00:00:00Z")
+        assert err.value.condition == "fs_type" and not pseudo.scratch_roots[2:] and not any(a[0] == "fallocate" for a in pseudo.argv_log)
+        with pytest.raises(Refusal) as err:
+            guard.check_workdir(pseudo, "/pseudo/w", planned_volume=GIB, installer=True, confirm_quiet_window=True, target_disk=None)
+        assert err.value.condition == "workdir_fs"
 
 
 def test_rev_e_realhost_preallocate_refuses_a_device_node_and_an_unauthorised_place(tmp_path, monkeypatch):

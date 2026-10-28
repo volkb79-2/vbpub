@@ -797,6 +797,9 @@ class FakeHost:
         if path not in self.scratch_roots:
             self.scratch_roots.append(path)
 
+    def revoke_scratch(self, path: str) -> None:
+        self.scratch_roots = [r for r in self.scratch_roots if r != path]
+
     def run(self, argv: Sequence[str], timeout: float | None = None) -> RunResult:
         self._log(argv)
         name = posixpath.basename(argv[0])

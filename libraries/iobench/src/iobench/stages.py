@@ -17,7 +17,7 @@ from .restore import Safety
 
 FIO_FLOOR = (3, 30)
 SCRATCH = "/run/iobench"
-FIO_LOG = re.compile(r"[A-Za-z0-9_.-]+_(bw|iops|clat_hist)\.1\.log")  # the files fio creates from the prefixes iobench passes
+FIO_LOG = re.compile(r"[A-Za-z0-9_.-]+_(bw|iops|clat_hist)\.[0-9]+\.log")  # the files fio creates from the prefixes iobench passes (`.N.log` per job, N >= 1)
 TICK_S = 1.0
 GIB = 1 << 30
 MIB = 1 << 20
