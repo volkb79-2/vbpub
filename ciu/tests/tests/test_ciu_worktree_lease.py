@@ -65,7 +65,12 @@ def tmp_repo(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def fake_generate_env(monkeypatch, write_instance_facts):
-    def fake(path: Path, *, identity_only: bool = False) -> int:
+    def fake(
+        path: Path,
+        *,
+        identity_only: bool = False,
+        allocation_lock_held: bool = False,
+    ) -> int:
         instance_id = hashlib.sha256(
             str(path.resolve()).encode("utf-8")
         ).hexdigest()[:6]
@@ -124,7 +129,9 @@ class TestSchemaVersionConstants:
         assert worktree.WORKTREE_INSTANCE_OVERLAY_SCHEMA_VERSION == 3
         assert worktree.WORKTREE_INSTANCE_OVERLAY_PENDING_SCHEMA_VERSION == 4
         assert worktree.WORKTREE_INSTANCE_BASE_SCHEMA_VERSION == 1
-        assert worktree.WORKTREE_INSTANCE_SCHEMA_VERSIONS == {1, 2, 3, 4}
+        assert worktree.WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION == 5
+        assert worktree.WORKTREE_INSTANCE_SCHEMA_VERSIONS == {1, 2, 3, 4, 5, 6}
+        assert worktree.WORKTREE_INSTANCE_BASE_BRANCH_SCHEMA_VERSION == 6
 
     def test_lease_vocabularies_are_closed(self):
         assert worktree.WORKTREE_LEASE_MODES == {"held", "perpetual"}
@@ -308,8 +315,10 @@ class TestReadingV1AndV2Records:
         assert record.to_dict() == raw
 
     def test_v4_record_with_overlay_pending_marker_reads_and_round_trips(self, tmp_path):
+        # A pending recovery marker is only coherent on a record that is not
+        # yet `ready` (a ready record with a pending marker is refused).
         raw = {
-            **_raw_v1(tmp_path),
+            **_raw_v1(tmp_path, state="allocating"),
             "schema_version": 4,
             "lease": None,
             "initial_overlay": None,
@@ -550,6 +559,17 @@ class TestLeaseTransitions:
 
 
 class TestOwnRecordOperations:
+    @pytest.fixture(autouse=True)
+    def _git_family(self, tmp_path):
+        # The allocation lock lives in the Git common dir, so even an
+        # "unmanaged" checkout (no instance record) must be a real Git family.
+        # It needs a resolvable HEAD too: the shared lease mirror discovers the
+        # Git context before concluding the checkout has no neutral record.
+        assert _git(["init", "-b", "main"], tmp_path).returncode == 0
+        assert _git(["config", "user.email", "t@example.com"], tmp_path).returncode == 0
+        assert _git(["config", "user.name", "Test"], tmp_path).returncode == 0
+        assert _git(["commit", "--allow-empty", "-m", "init"], tmp_path).returncode == 0
+
     def _write(self, root: Path, raw: dict) -> Path:
         path = worktree.instance_record_path(root)
         path.write_text(json.dumps(raw, indent=2, sort_keys=True) + "\n", "utf-8")
@@ -767,7 +787,7 @@ class TestApplyLease:
         assert record.lease.mode == "held"
         assert record.lease.expires_at_utc is not None
         stored = json.loads(record.record_path.read_text(encoding="utf-8"))
-        assert stored["schema_version"] == 5
+        assert stored["schema_version"] == 6
         assert stored["lease"]["holder"].startswith("ciu@dev-box:")
 
     def test_perpetual_sets_an_unbounded_lease(self, tmp_repo, fake_generate_env):
@@ -797,7 +817,7 @@ class TestApplyLease:
     ):
         worktree.create(tmp_repo, "one", base="main")
         record = worktree.apply_lease(tmp_repo, "one", release=True)
-        assert record.schema_version == 5
+        assert record.schema_version == 6
         assert record.lease is None
 
     def test_extend_renews_rather_than_restarting_the_claim(
@@ -894,7 +914,7 @@ class TestLeaseCli:
         assert code == 0
         doc = json.loads(out)
         assert doc["operation"] == "lease"
-        assert doc["instance"]["schema_version"] == 5
+        assert doc["instance"]["schema_version"] == 6
         assert doc["instance"]["lease"]["mode"] == "held"
 
     def test_unknown_instance_exits_two(self, tmp_repo, capsys):
@@ -931,7 +951,7 @@ class TestTeardownClearsTheLease:
 
         shared = worktree._shared_worktree()
 
-        def fail_remove(_shared_record):
+        def fail_remove(_shared_record, **_kwargs):
             # Snapshot the CIU adapter record at the exact moment the neutral
             # checkout removal would run, then refuse it. The product lease
             # was cleared only after `ciu clean` succeeded.
@@ -943,7 +963,7 @@ class TestTeardownClearsTheLease:
         with pytest.raises(worktree.WorktreeError, match="locked"):
             worktree.remove(tmp_repo, "one")
         assert seen[0]["lease"] is None
-        assert seen[0]["schema_version"] == 5
+        assert seen[0]["schema_version"] == 6
 
     def test_a_failed_clean_leaves_the_lease_exactly_as_it_was(
         self, tmp_repo, fake_generate_env, monkeypatch
@@ -968,7 +988,7 @@ class TestTeardownClearsTheLease:
 
         shared = worktree._shared_worktree()
 
-        def fail_remove(_shared_record):
+        def fail_remove(_shared_record, **_kwargs):
             seen.append(record.record_path.read_text(encoding="utf-8"))
             raise worktree.WorktreeError("locked")
 

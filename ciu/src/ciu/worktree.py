@@ -76,8 +76,9 @@ WORKTREE_INSTANCE_SCHEMA_VERSION = 2
 WORKTREE_INSTANCE_OVERLAY_SCHEMA_VERSION = 3
 WORKTREE_INSTANCE_OVERLAY_PENDING_SCHEMA_VERSION = 4
 WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION = 5
+WORKTREE_INSTANCE_BASE_BRANCH_SCHEMA_VERSION = 6
 WORKTREE_INSTANCE_BASE_SCHEMA_VERSION = 1
-WORKTREE_INSTANCE_SCHEMA_VERSIONS = frozenset({1, 2, 3, 4, 5})
+WORKTREE_INSTANCE_SCHEMA_VERSIONS = frozenset({1, 2, 3, 4, 5, 6})
 _NETWORK_OWNER_LABEL = NETWORK_OWNER_LABEL
 _NETWORK_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 _CIU_WORKTREE_RECORD_METADATA = "ciu_worktree_record"
@@ -392,8 +393,10 @@ class WorktreeInstanceRecord:
     for records that checkpoint the initial overlay intent, 4 for records
     that track pending first-allocation recovery and whether the target was
     adopted, and 5 for records that track reset uncertainty and a verified
-    runtime-network object id. A legacy record read from disk is never
-    upgraded by inspection.
+    runtime-network object id, and 6 for records that also carry
+    ``base_branch_ref`` (the moving local branch the frozen ``base_ref`` was
+    taken from, or null). A legacy record read from disk is never upgraded by
+    inspection.
     """
 
     logical_name: str
@@ -452,6 +455,12 @@ class WorktreeInstanceRecord:
     #: Docker's immutable network object id, recorded after ownership is
     #: verified. A missing id is allowed for gate runs where Docker is absent.
     network_id: str | None = None
+    #: Schema v6 — the canonical LOCAL branch name (no ``refs/heads/``) that
+    #: ``base_ref`` was frozen from, or ``None`` (adopted checkout, tag, raw
+    #: commit, remote-tracking ref, ``HEAD``, or a branch that did not point at
+    #: the frozen commit). Computed once at allocation, never inferred from
+    #: the SHA and never recomputed. Only serialized from schema 6.
+    base_branch_ref: str | None = None
 
     @property
     def ciu_root(self) -> Path:
@@ -521,6 +530,13 @@ class WorktreeInstanceRecord:
                     "a pending checkout reset requires a created allocation with "
                     "no ready state or saved fork point"
                 )
+        if self.schema_version < WORKTREE_INSTANCE_BASE_BRANCH_SCHEMA_VERSION:
+            if self.base_branch_ref is not None:
+                raise ValueError(
+                    "base_branch_ref requires worktree record schema version 6"
+                )
+        elif not _valid_base_branch_ref(self.base_branch_ref):
+            raise ValueError("base_branch_ref must be a clean branch name or null")
         doc: dict[str, Any] = {
             "schema_version": self.schema_version,
             "logical_name": self.logical_name,
@@ -560,7 +576,28 @@ class WorktreeInstanceRecord:
         if self.schema_version >= WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION:
             doc["checkout_reset_pending"] = self.checkout_reset_pending
             doc["network_id"] = self.network_id
+        if self.schema_version >= WORKTREE_INSTANCE_BASE_BRANCH_SCHEMA_VERSION:
+            doc["base_branch_ref"] = self.base_branch_ref
         return doc
+
+
+def _valid_base_branch_ref(value: object) -> bool:
+    """True for ``None`` or a plausible canonical short branch name: non-blank,
+    no whitespace/control characters, no revision syntax (``~ ^ : ? * [ \\``,
+    ``..``, ``@{``), no leading ``-`` and no ``refs/`` prefix."""
+    if value is None:
+        return True
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and not value.startswith(("-", "refs/"))
+        and ".." not in value
+        and "@{" not in value
+        and not any(
+            ch.isspace() or ord(ch) < 32 or ord(ch) == 127 or ch in "~^:?*[\\"
+            for ch in value
+        )
+    )
 
 
 def _validate_name(value: str, *, label: str) -> str:
@@ -704,21 +741,28 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
     # unhashable JSON values reach the normal schema refusal below instead of
     # leaking TypeError.
     declared_version = raw.get("schema_version")
-    if declared_version in (2, 3, 4, 5):
+    if declared_version in (2, 3, 4, 5, 6):
         required = required | {"lease"}
     if declared_version in (
         WORKTREE_INSTANCE_OVERLAY_SCHEMA_VERSION,
         WORKTREE_INSTANCE_OVERLAY_PENDING_SCHEMA_VERSION,
         WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION,
+        WORKTREE_INSTANCE_BASE_BRANCH_SCHEMA_VERSION,
     ):
         required = required | {"initial_overlay", "overlay_intent_known"}
     if declared_version in (
         WORKTREE_INSTANCE_OVERLAY_PENDING_SCHEMA_VERSION,
         WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION,
+        WORKTREE_INSTANCE_BASE_BRANCH_SCHEMA_VERSION,
     ):
         required = required | {"initial_overlay_pending", "adopted"}
-    if declared_version == WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION:
+    if declared_version in (
+        WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION,
+        WORKTREE_INSTANCE_BASE_BRANCH_SCHEMA_VERSION,
+    ):
         required = required | {"checkout_reset_pending", "network_id"}
+    if declared_version == WORKTREE_INSTANCE_BASE_BRANCH_SCHEMA_VERSION:
+        required = required | {"base_branch_ref"}
     # CIU-106: `fork_point_sha` is OPTIONAL in every schema version — present
     # on records `create()` wrote since CIU-106, absent on `adopt()`'s and on
     # every record written before it. Both shapes are valid, which is why
@@ -747,6 +791,7 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
             WORKTREE_INSTANCE_OVERLAY_SCHEMA_VERSION,
             WORKTREE_INSTANCE_OVERLAY_PENDING_SCHEMA_VERSION,
             WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION,
+            WORKTREE_INSTANCE_BASE_BRANCH_SCHEMA_VERSION,
         )
         and raw["lease"] is not None
     ):
@@ -807,10 +852,12 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
     adopted = None
     checkout_reset_pending = None
     network_id = None
+    base_branch_ref = None
     if declared_version in (
         WORKTREE_INSTANCE_OVERLAY_SCHEMA_VERSION,
         WORKTREE_INSTANCE_OVERLAY_PENDING_SCHEMA_VERSION,
         WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION,
+        WORKTREE_INSTANCE_BASE_BRANCH_SCHEMA_VERSION,
     ):
         if not isinstance(raw["overlay_intent_known"], bool):
             raise WorktreeError(
@@ -831,6 +878,7 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
         if declared_version in (
             WORKTREE_INSTANCE_OVERLAY_PENDING_SCHEMA_VERSION,
             WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION,
+            WORKTREE_INSTANCE_BASE_BRANCH_SCHEMA_VERSION,
         ):
             if not isinstance(raw["initial_overlay_pending"], bool):
                 raise WorktreeError(
@@ -859,7 +907,10 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
                     f"[S16] malformed initial overlay intent in {path}: a ready "
                     "record cannot have pending recovery"
                 )
-        if declared_version == WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION:
+        if declared_version in (
+            WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION,
+            WORKTREE_INSTANCE_BASE_BRANCH_SCHEMA_VERSION,
+        ):
             if not isinstance(raw["checkout_reset_pending"], bool):
                 raise WorktreeError(
                     f"[S16] malformed checkout phase in {path}: "
@@ -888,6 +939,13 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
                     "requires a created allocation with no ready state or saved "
                     "fork point"
                 )
+        if declared_version == WORKTREE_INSTANCE_BASE_BRANCH_SCHEMA_VERSION:
+            base_branch_ref = raw["base_branch_ref"]
+            if not _valid_base_branch_ref(base_branch_ref):
+                raise WorktreeError(
+                    f"[S16] malformed base_branch_ref in {path}: expected a "
+                    "branch name without whitespace or control characters, or null"
+                )
     return WorktreeInstanceRecord(
         logical_name=raw["logical_name"], display_name=raw["display_name"],
         branch=raw["branch"], git_worktree_path=git_path,
@@ -903,6 +961,7 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
         adopted=adopted,
         checkout_reset_pending=checkout_reset_pending,
         network_id=network_id,
+        base_branch_ref=base_branch_ref,
     )
 
 
@@ -1475,7 +1534,7 @@ def _assert_overlay_root_in_commit(
     expected_root = (git_root / offset).resolve()
     from .workspace import discover_committed_roots
 
-    roots = discover_committed_roots(git_root, commit)
+    roots = discover_committed_roots(git_root, base=commit)
     if expected_root not in roots:
         raise WorktreeError(
             f"[S16] initial overlay options target {expected_root}, which is not "
@@ -5433,6 +5492,29 @@ def _finish_allocation(
     )
 
 
+def _local_base_branch(repo_root: Path, base: str, base_commit: str) -> str | None:
+    """The short LOCAL branch name *base* denotes iff it still points at
+    *base_commit*; ``None`` for every other spelling (tag, SHA, remote-tracking
+    ref, ``HEAD``) or a branch that moved since the commit was frozen."""
+    name = base[len("refs/heads/"):] if base.startswith("refs/heads/") else base
+    if not _valid_base_branch_ref(name):
+        return None
+    # `rev-parse refs/heads/<name>^{commit}` also accepts revision syntax
+    # (`main~0`, `main^0`, `main@{0}`); `show-ref --verify` names exactly one
+    # existing ref, so only a real local branch gets through.
+    exact = _git(["show-ref", "--verify", "--quiet", f"refs/heads/{name}"], repo_root)
+    if exact.returncode != 0:
+        return None
+    resolved = _git(
+        ["rev-parse", "--verify", "--quiet", "--end-of-options",
+         f"refs/heads/{name}^{{commit}}"],
+        repo_root,
+    )
+    if resolved.returncode != 0 or resolved.stdout.strip() != base_commit:
+        return None
+    return name
+
+
 def create(
     repo_root: Path,
     logical_name: str,
@@ -5551,6 +5633,7 @@ def create(
             raise WorktreeError(
                 f"[S16] cannot verify selected base {base!r} as a commit"
             )
+        base_branch_ref = _local_base_branch(repo_root, base, base_commit)
         if initial_overlay is not None:
             # The overlay's selected root, the new Git workspace, and its first
             # reset all use this same immutable commit. A symbolic branch may
@@ -5628,7 +5711,8 @@ def create(
             initial_overlay_pending=True,
             adopted=False,
             checkout_reset_pending=True,
-            schema_version=WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION,
+            schema_version=WORKTREE_INSTANCE_BASE_BRANCH_SCHEMA_VERSION,
+            base_branch_ref=base_branch_ref,
         )
 
         try:
@@ -5776,11 +5860,6 @@ def ensure(
                                 record, "runtime-verification-failed"
                             )
                             raise
-                        if claim_unlabeled_network and verified.network_id is None:
-                            raise WorktreeError(
-                                f"[S16] no existing runtime network {record.network!r} "
-                                "is available to adopt"
-                            )
                         if verified != record:
                             _write_shared_ciu_record_snapshot(
                                 workspace_context, verified
@@ -5970,7 +6049,8 @@ def adopt(
             initial_overlay_pending=True,
             adopted=True,
             checkout_reset_pending=False,
-            schema_version=WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION,
+            schema_version=WORKTREE_INSTANCE_BASE_BRANCH_SCHEMA_VERSION,
+            base_branch_ref=None,
         )
         _write_instance_record(record)
         workspace_context = _ensure_shared_record(repo_root, record)

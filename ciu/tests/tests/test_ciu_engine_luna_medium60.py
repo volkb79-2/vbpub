@@ -25,6 +25,11 @@ def _write_identity_facts(root):
 
 
 
+# The test config carries no environment_tag, so reset derives the compose
+# project from the generated identity facts: <repo_name>-<instance_id>-<stack>.
+IDENTITY_PROJECT = "dstdns-abc123-stack"
+
+
 def _config() -> dict:
     return {"deploy": {"project_name": "test-project", "labels": {"prefix": "dstdns"}}}
 
@@ -47,7 +52,7 @@ def test_compose_down_failure_continues_only_after_empty_project_inspection(
             token.startswith("label=dstdns.component=") for token in command
         ):
             assert "--no-trunc" in command
-            assert "label=com.docker.compose.project=test-project" in command
+            assert f"label=com.docker.compose.project={IDENTITY_PROJECT}" in command
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -57,7 +62,7 @@ def test_compose_down_failure_continues_only_after_empty_project_inspection(
 
     output = capsys.readouterr().out
     assert "docker compose down failed" in output
-    assert "No containers remain for compose project 'test-project'" in output
+    assert f"No containers remain for compose project '{IDENTITY_PROJECT}'" in output
     assert not volume.exists()
     assert not generated.exists()
     assert "Reset complete for service: stack" in output
@@ -87,7 +92,7 @@ def test_compose_down_failure_preserves_host_data_when_inspection_is_not_empty_o
         if command[:2] == ["docker", "ps"] and not any(
             token.startswith("label=dstdns.component=") for token in command
         ):
-            assert "label=com.docker.compose.project=test-project" in command
+            assert f"label=com.docker.compose.project={IDENTITY_PROJECT}" in command
             return inspection_result
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -102,6 +107,7 @@ def test_compose_down_failure_preserves_host_data_when_inspection_is_not_empty_o
 
 
 def test_reset_refuses_symlinked_volume_without_deleting_its_target(tmp_path, monkeypatch):
+    _write_identity_facts(tmp_path)
     stack_dir = tmp_path / "stack"
     stack_dir.mkdir()
     target = tmp_path / "operator-data"

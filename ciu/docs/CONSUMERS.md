@@ -127,14 +127,14 @@ edits and deletions remain in place. Ready records from schemas 1 through 4
 remain readable; an incomplete schema-v3 record is refused because it predates the overlay
 recovery marker and cannot prove whether it represents initial allocation or an
 interrupted repair.
-New schema-v5 allocations record whether the worktree was created or adopted;
+New schema-v5 and later allocations record whether the worktree was created or adopted;
 the origin of a migrated older ready record remains unknown. Allocation origin
 or failure status alone never proves network ownership: CIU needs a saved Docker
 object id, a matching `io.ciu.instance-id` owner label, or an explicit claim for
 a known unlabelled legacy network.
 
 CIU labels each network it creates with its instance id and records the
-verified Docker network object id in schema v5. `ensure` checks a present
+verified Docker network object id in schema v5. Schema v6 adds `base_branch_ref` (the local branch the frozen `base_ref` SHA was taken from, or null; always null for `adopt`); v5 records keep a SHA `base_ref` without it and consumers that need the moving branch must be given an explicit base for them. `ensure` checks a present
 network against that saved id or the CIU owner label, including on its ready
 fast path. A same-name replacement with no matching owner proof changes the
 record to `recovery-required`; a network outage does not erase the last saved

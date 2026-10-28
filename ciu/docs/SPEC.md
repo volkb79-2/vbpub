@@ -4672,7 +4672,7 @@ persisted instance record is nested under `instance`
 (`WorktreeInstanceRecord.to_dict()` — legacy v1; v2 adds `lease`; v3 adds
 initial-overlay intent; v4 adds the one-time overlay-pending marker and
 created/adopted origin; v5 adds checkout-reset uncertainty and the last
-verified Docker network object id). Current Git facts are nested under `git`.
+verified Docker network object id; v6 adds `base_branch_ref`). Current Git facts are nested under `git`.
 
 Git facts are freshly read from Git, never inferred from a name or a stale
 record: `git.registered` (the record's checkout is a current registered
@@ -5179,14 +5179,14 @@ reaping is only ever as safe as the ownership signal it consults).
 Managed `create` and `adopt` validate and render their complete requested
 initial `ciu.global.instance.toml.j2` payload before mutating Git worktree
 state, the shared workspace record, the CIU instance record, or Git excludes.
-The CIU instance record is written as schema v5 and records the exact rendered
+The CIU instance record is written as schema v6 (v5 plus `base_branch_ref`, below) and records the exact rendered
 payload (`initial_overlay`, or `null` when no overlay was requested),
 `overlay_intent_known: true`, `initial_overlay_pending: true`, and whether the
 checkout was adopted before the overlay is published. New records carry a
 boolean origin; a migrated ready record may carry `null` when its old schema
 did not preserve origin. Schema v3 added initial-overlay intent to the
 lease-aware schema-v2 record; schema v4 added the pending marker and the
-explicit created/adopted origin. Ready v1-v4 records remain readable. An
+explicit created/adopted origin. Ready v1-v5 records remain readable. An
 incomplete v1/v2 record is refused because it
 cannot prove whether an initial overlay was requested. An incomplete v3 record
 is also refused because it cannot distinguish first-allocation recovery from
@@ -5231,6 +5231,25 @@ Adopted records and completed allocations carry a false marker. Schema v5
 `network_id` is the full immutable Docker object id of the last verified
 network, or null when none has been verified.
 
+Schema v6 adds `base_branch_ref`, a separate key for the moving base. From
+schema 6, `base_ref` is the frozen full commit SHA (equal to `fork_point_sha`
+once saved) and `base_branch_ref` is the canonical LOCAL branch name (no
+`refs/heads/` prefix) that commit was taken from, or JSON null. `create`
+computes it exactly once, before allocation, together with the frozen base
+commit: it is the branch name only when the requested base (an optional leading
+`refs/heads/` removed) names an existing local branch whose commit equals the
+frozen commit; a tag, SHA, remote-tracking ref, `HEAD`, revision syntax
+(`main~0`, `main^0`, `main@{0}`), a branch that moved in between, or a branch
+whose name carries whitespace/control characters, revision-syntax characters or
+a literal `refs/` prefix yields null (Run-Gate then asks for an explicit `--base`). It is persisted with `base_ref` in the durable
+allocation snapshot and is never recomputed by `ensure`. `adopt` always writes
+null; the branch is never inferred from the SHA. In a v6 record the key is
+REQUIRED and, when a string, MUST be non-blank without whitespace or control
+characters; v1-v5 records MUST NOT carry it, and their JSON is unchanged. v5
+records written before v6 keep a frozen-SHA `base_ref` without the key; they
+remain valid for CIU, and a consumer that needs the moving branch (Run-Gate)
+refuses them with an explicit-`--base` remedy.
+
 The initial-overlay pending marker is cleared in the same record write that
 first publishes the allocation as `ready`. It remains clear if a later repair moves the record
 through `allocating`; a retry repairs generated facts but does not replay the
@@ -5239,7 +5258,8 @@ including when a later repair is interrupted. A ready schema-v4 or v5 record
 with pending recovery is malformed and is refused. A ready schema-v3 or v4
 record that needs root repair is upgraded to schema v5 with recovery already
 marked complete before its lifecycle state changes; an origin absent from the
-legacy record remains `null` rather than being invented.
+legacy record remains `null` rather than being invented, and the upgrade never
+invents a `base_branch_ref`.
 
 CIU creates its runtime network with owner label
 `io.ciu.instance-id=<INSTANCE_ID>`. Whenever a present network is used to
