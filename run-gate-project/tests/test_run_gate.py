@@ -16477,6 +16477,37 @@ class TestRg109InterruptedClient:
         assert caught.value.code == 128 + signal.SIGTERM
         assert all(signal.getsignal(s) is h for s, h in previous.items())
 
+    def test_deferred_sigterm_restores_a_c_installed_handler_as_sig_dfl(
+            self, monkeypatch):
+        """`signal.signal` reports a handler Python did not install as None;
+        handing None back raises TypeError and would abort the restore
+        mid-way. The default disposition is restored instead."""
+        real_signal = signal.signal
+        original_sigint = signal.getsignal(signal.SIGINT)
+        restored = []
+
+        def reporting_none_for_sigint(signum, handler):
+            previous = real_signal(signum, handler)
+            if signum == signal.SIGINT and handler is not signal.SIG_DFL \
+                    and previous is original_sigint:
+                return None            # as if a C host had installed it
+            if handler is signal.SIG_DFL:
+                restored.append(signum)
+            return previous
+
+        monkeypatch.setattr(signal, "signal", reporting_none_for_sigint)
+        try:
+            with run_gate.deferred_sigterm():
+                pass
+            # SIGTERM's own previous handler may legitimately be SIG_DFL
+            # (it is under pytest); the point is SIGINT's None became SIG_DFL
+            # instead of a TypeError that would have skipped the rest.
+            assert signal.SIGINT in restored
+            assert signal.getsignal(signal.SIGINT) is signal.SIG_DFL
+        finally:
+            real_signal(signal.SIGINT, original_sigint)
+        assert signal.getsignal(signal.SIGINT) is original_sigint
+
     def test_deferred_sigterm_without_a_signal_is_transparent(self):
         previous = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGINT)}
         with run_gate.deferred_sigterm():

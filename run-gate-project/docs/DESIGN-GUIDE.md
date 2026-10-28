@@ -26,10 +26,13 @@ and [CLI overview](../README.md#distribution-installed-wheel).
 The selftest release coverage floor compares executable lines changed since
 the newest reachable stable `run-gate-vX.Y.Z` tag. The tag remains a fixed
 baseline after the candidate merges to `main`; a `main` merge-base would become
-the candidate itself and report no changed source lines. On the first stable
-release, the selftest's explicit `--allow-first-release` policy reports the
-diff check as `SKIPPED` when no stable tag exists. The test suite still runs,
-and the separate `assay-r1` campaign supplies whole-source line-and-branch
+the candidate itself and report no changed source lines. The selftest lane
+does not pass `--allow-first-release`: stable tags exist, so a checkout that
+can see none (a `--no-tags` clone, a mount missing the tags) is an ERROR
+rather than a `SKIPPED` that reads as green — an absent tag cannot be told
+from a first release. Only `tools/release_candidate.py`'s prepare step may
+accept a first release, and only after it has checked origin's tags. The
+separate `assay-r1` campaign supplies whole-source line-and-branch
 qualification before merge. If stable tags exist but none are reachable from
 the candidate, the check remains an error. Git must identify renames before Run-Gate filters the diff to
 `run_gate.py`. A path-limited diff hides the deleted path from rename

@@ -16026,8 +16026,9 @@ def deferred_sigterm():
     would have raised: `SystemExit(128 + SIGTERM)` when a SIGTERM was seen,
     else `KeyboardInterrupt`. Outside the main thread signals cannot be
     rebound; the body then runs unprotected, exactly as before. Two limits,
-    disclosed in the README: the handlers are installed a few statements
-    after the cleanup begins (a signal in that gap is handled the old way),
+    disclosed in the README: the handlers are installed, and later restored,
+    one signal at a time a few statements after the cleanup begins (a signal
+    in either gap is handled by whichever handler is bound at that instant),
     and a supervisor's kill timer (`docker stop` ~10 s, systemd `TimeoutStopSec`)
     follows its SIGTERM with SIGKILL, which no deferral can outlast."""
     pending: list[int] = []
@@ -16048,7 +16049,11 @@ def deferred_sigterm():
         yield
     finally:
         for signum, handler in previous.items():
-            signal.signal(signum, handler)
+            # `signal.signal` returns None for a handler Python did not
+            # install (set from C by an embedding host); handing None back
+            # raises TypeError. The default disposition is the closest
+            # restorable state, and the one such a host usually meant.
+            signal.signal(signum, signal.SIG_DFL if handler is None else handler)
         if signal.SIGTERM in pending:
             raise SystemExit(128 + signal.SIGTERM)
         if pending:

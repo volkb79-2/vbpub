@@ -127,8 +127,9 @@ clears the in-flight record on the way out (the same `finally` every other
 exit takes; a second SIGTERM or SIGINT during that cleanup is deferred until
 the container is gone and the record cleared, then re-raised — never raised
 mid-cleanup), prints one `interrupted before a closed result` line and exits
-ERROR 2. Two limits: the deferral is installed a few statements after the
-cleanup begins, so a signal in that gap is handled the old way; and it cannot
+ERROR 2. Two limits: the deferral is installed, and afterwards restored, one
+signal at a time a few statements after the cleanup begins, so a signal in
+either gap is handled by whichever handler is bound at that instant; and it cannot
 outlast a supervisor's kill timer (`docker stop` sends SIGKILL after ~10 s,
 systemd after `TimeoutStopSec`) — if the profiling `stop` or `docker rm -f`
 is still running when SIGKILL lands, removal is not guaranteed and the next
