@@ -121,6 +121,13 @@ def _test_child_scope():
             _set_child_subreaper(previous)
 
 
+@pytest.fixture
+def child_process_scope():
+    """Keep intentionally orphaning subprocess tests inside their own boundary."""
+    with _test_child_scope():
+        yield
+
+
 # ---------------------------------------------------------------------------
 # helpers / fixtures
 # ---------------------------------------------------------------------------
@@ -3898,7 +3905,8 @@ exit 64
         assert not (control / "calls").exists()
         assert not (project / ".assay" / "campaign-unit.json").exists()
 
-    def test_a_killed_lane_leaves_no_closeout_of_an_earlier_run(self, tmp_path):
+    def test_a_killed_lane_leaves_no_closeout_of_an_earlier_run(
+            self, tmp_path, child_process_scope):
         project, inner, env, control = self._script(tmp_path, "ok", 0)
         assay = project / ".assay"
         assay.mkdir()
@@ -3979,7 +3987,8 @@ exit 64
         assert inner.count("timeout $__rg_co_cap") == 1
         assert inner.count('"${__rg_co_a[@]}" --format') == 2
 
-    def test_a_json_call_that_times_out_skips_the_text_call(self, tmp_path):
+    def test_a_json_call_that_times_out_skips_the_text_call(
+            self, tmp_path, child_process_scope):
         """The text call would only time out the same way and spend a second
         cap; the exit file records 124 for both and the .err says why."""
         done, calls = self._run_inner(
@@ -22338,7 +22347,8 @@ class TestProfilerClient:
         assert doc is None
         assert "contract" in reason
 
-    def test_timeout_returns_reason_never_raises(self, tmp_path, monkeypatch):
+    def test_timeout_returns_reason_never_raises(
+            self, tmp_path, monkeypatch, child_process_scope):
         set_cgprofile_plan(tmp_path, monkeypatch, version=(None, None, 2))
         monkeypatch.setitem(run_gate.PROFILE_CTL_TIMEOUTS, "version", 0.1)
         client = self._client(tmp_path, monkeypatch)
@@ -24767,7 +24777,7 @@ class TestBareHostProfilingWiring:
         assert not (proj / ".run-gate" / "history.json").exists()
 
     def test_daemon_path_targets_self_id_scope_and_injects_token(
-            self, tmp_path, monkeypatch, capsys):
+            self, tmp_path, monkeypatch, capsys, child_process_scope):
         calls = []
         real_print = print
 
@@ -24835,7 +24845,7 @@ class TestBareHostProfilingWiring:
         assert latest["profile_error"] is None
 
     def test_daemon_path_missing_baseline_discloses_unknown(
-            self, tmp_path, monkeypatch, capsys):
+            self, tmp_path, monkeypatch, capsys, child_process_scope):
         # A daemon may omit its optional baseline. The session still starts;
         # the display must use the unknown marker rather than dividing None.
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
@@ -24857,7 +24867,7 @@ class TestBareHostProfilingWiring:
         assert "baseline ? MiB" in capsys.readouterr().out
 
     def test_daemon_start_with_null_optional_target_still_stops_session(
-            self, tmp_path, monkeypatch):
+            self, tmp_path, monkeypatch, child_process_scope):
         """`target` is optional response metadata.  A valid session with
         JSON null there must remain a daemon session and reach exactly one
         stop; it must not crash after start and silently leak the session."""
