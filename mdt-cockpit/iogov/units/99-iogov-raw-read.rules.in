@@ -1,0 +1,4 @@
+# TEMPLATE, NOT INSTALLED. Grants the iogov user READ-ONLY access to exactly one disk, by a stable identity. Never the `disk`
+# group (that grants write on every disk) and no CAP_SYS_RAWIO (read(2) on a node needs neither).
+# Pick @IOGOV_DISK_ID_PATH@ from `udevadm info -q property -n <disk>` (ID_PATH), and verify the match with `udevadm test`.
+ACTION=="add|change", SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", ENV{ID_PATH}=="@IOGOV_DISK_ID_PATH@", RUN+="/usr/bin/setfacl -m u:@IOGOV_USER@:r /dev/%k"

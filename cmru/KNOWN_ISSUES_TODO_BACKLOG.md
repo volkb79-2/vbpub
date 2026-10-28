@@ -2219,7 +2219,16 @@ Docker's signed `Packages` index). Check CHANGES.md and the versions design befo
 
 ### KI-86 — `cmru abandon` withholds failed feature-source (`--from-worktree`) transactions: "release source record is malformed or does not match"
 
-**Status:** open; severity: minor (retained worktrees and origin branches accumulate; nothing is blocked). Filed
+**Status:** FIXED 2026-10-27 (branch `fable-cmru-20261027`, unreleased). Root cause confirmed by reading: `read_release_source`
+compared `source_commit` with `workspace.base`, and `list_cmru_workspaces` (what `abandon` iterates) fills `base` with the
+worktree's CURRENT HEAD (`entry.head`), which leaves the base with the first `prepare release inputs` commit; `create_workspace`
+and `resume_workspace` fill it with the recorded base, which is why the launcher never saw the mismatch. The reader now compares
+with the shared record's `base_commit` (falling back to `base` when there is no record). Test:
+`tests/test_feature_worktree_preflight_contracts.py::test_ki86_release_source_reader_compares_the_recorded_base_not_the_worktree_head`
+(controlled wrong: a record bound to another base is still refused). Not re-verified against the two 2026-10-18 candidates named
+below (they are no longer retained).
+
+Originally: open; severity: minor (retained worktrees and origin branches accumulate; nothing is blocked). Filed
 2026-10-20 from CMRU-REL-01.
 
 **Observed:** with the bootstrap wheel 6.1.1.dev810+g59ff3e30f (current main), `cmru abandon --dry-run` and
@@ -2322,7 +2331,15 @@ estate reads (KI-89). The same review applies to the other "isolated canary tree
 
 ### KI-91 — a failed `cmru release --dry-run` leaves a durable candidate branch and worktree that `cmru abandon` withholds
 
-**Status:** OPEN. Filed 2026-10-21 from PWMCP-09. Related to, but not the same condition as, KI-86 (that one is a
+**Status:** FIXED 2026-10-27 (branch `fable-cmru-20261027`, unreleased), option (1) of the fix direction: a failed NEW
+`--dry-run` discards its own worktree, branch and sidecars from the launcher (`_release_launcher`), guarded by "backup never
+pushed AND no recorded result" so a candidate with remote or publication evidence keeps the retained path; a dry run of a
+`--resume`d candidate still leaves that candidate in place. The run prints `Release dry run failed ...; its disposable worktree
+... were discarded`. No local-main sync is attempted on that path. Tests:
+`tests/test_cli_release_revert_outcomes_adversarial.py::test_ki91_*` (discard, the two guards, and the real-release path
+unchanged). Documented in `docs/RELEASE-TRANSACTIONS.md` "Failure and retained candidate".
+
+Originally: OPEN. Filed 2026-10-21 from PWMCP-09. Related to, but not the same condition as, KI-86 (that one is a
 `--from-worktree` transaction whose recorded `source_commit` differs from `workspace.base`).
 
 **Observed (2026-10-21, cmru 6.2.0, source checkout).** `cmru release pwmcp --dry-run` (default mode, snapshot of
@@ -2447,7 +2464,21 @@ unless a step needs them.
 
 ### KI-97 - `mirror_package_visibility` hard-fails the release for a brand-new GHCR package that is not visible yet
 
-**Status:** OPEN (filed 2026-10-27 from the pwmcp OCR-sidecar release wiring review; nothing was run, this is read from `src/cmru/ghcr.py`).
+**Status:** FIXED 2026-10-27 (branch `fable-cmru-20261027`, unreleased). Design decision: the sync runs AFTER the image push
+succeeded, so a hard failure there protects nothing and creates the dangerous recovery; it now degrades to the same non-fatal
+`[WARN]` as the unsupported-API case (KI-01). `mirror_package_visibility(..., missing="warn")` (default) returns `None` and warns
+with the cause and the one-time UI remediation (set visibility once, link the package to its repository) when the package is
+still 404 after the retries, OR when the lookup is 401/403 (new typed `PackageLookupUnauthorized`; a brand-new package is
+private and a token without `read:packages` cannot read it; the warning carries the `gh auth refresh` / PAT scope hint and the
+retry loop stops at once). `missing="fail"` keeps the old hard failure for a project that requires the package to pre-exist.
+Other lookup errors (5xx) still fail. `retries`/`delay` were already parameters; no environment knob was added. Every caller
+in the estate (pwmcp, nyxloom, mdt-cockpit, modern-debian-tools-python-debug `build-push.py`) uses the defaults, so the pwmcp-ocr
+first publish gets the tolerant path without a change on its side; pwmcp's documented manual recovery remains valid but should no
+longer be needed. Tests: `tests/test_ghcr.py` (missing -> warn/None; `missing="fail"`; 403 -> warn + scope hint, no retries;
+5xx still fails). Not addressed (KI-103): `repo_visibility()` and an unsupported `owner_type` still hard-fail at the same
+post-push point.
+
+Originally: OPEN (filed 2026-10-27 from the pwmcp OCR-sidecar release wiring review; nothing was run, this is read from `src/cmru/ghcr.py`).
 `GitHubPackages.mirror_package_visibility` retries the package lookup `retries=6` times, `delay=5` s apart (about 25 s), and then calls `_fail(...)`
 (`GHCR package <name> is not visible yet; cannot sync visibility`), which aborts the step. That is a HARD failure, unlike the non-fatal `[WARN]`
 the same function logs when the visibility API is unsupported (KI-01). It bites the FIRST push of a package that did not exist before: pwmcp
@@ -2492,3 +2523,66 @@ what it prints when `git ls-remote` finds the branch absent from origin (already
 
 **Status:** OPEN. The operator waived R2 for the cmru 7.0.0 release on 2026-10-27 ("release and deploy new cmru now without r2"), using the existing KI-79 mechanism (`gate-provisional`, window `>= 7.0.0`, `< 7.1.0`). Only the `mutation` lane is waived; every other gate must pass for the release to proceed. 7.0.0 therefore has no mutation evidence (marker `.assay/mutation-postponed-cmru.json` in the release gate evidence, release notes state it). KI-79 carries the mechanism and window.
 **Close when:** one full-`gate` R2 run against the exact `cmru-v7.0.0` tag (prerequisites as in KI-79 Follow-up) is done, survivors are triaged and fixed or backported, and the report is retained. Deadline: before 7.1.0 (the guard refuses to defer it) or the first release judged worth R2, whichever is first. It is the same campaign as KI-79's obligation; one run on the 7.0.0 tag satisfies both.
+
+### KI-100 - the 7.0.0 release's controller identity does not match the code that ran, and every attempt left orphan sidecars
+
+**Status:** OPEN; severity: major (release evidence integrity), filed 2026-10-27 from the post-release review (`fable-cmru-20261027`).
+**Observed.** All five 7.0.0 attempts (`cmru/logs/release-7.0.0*-2026-10-27_*.log`) print `CMRU release controller: version=6.2.2.dev100+gef92c96f6`
+for BOTH the launcher and the transaction child; `ef92c96f6` is ~40 first-parent commits before the KI-98 merge (`02a8faaa3`). Yet the
+successful r5 child wrote `.git/cmru-release-scopes/20261027_162346-cmru-ko6hmt.untagged-publish.json` at 16:24, a sidecar only KI-98 code
+writes, and that file is the ONLY r5 sidecar left: the launcher's `forget_release_scope` removed every name it knew and not that one, i.e.
+the launcher ran code that predates `d4d0feb00`. The installed venv `cmru` is a plain (non-editable) wheel and no `cmru.egg-info` exists in
+the checkout, so the KI-67 shadowing explanation does not apply as filed. Either the bootstrap wheel's version metadata was stale relative
+to its code (built with a wrong `git describe` input), or the child ran different code than the launcher while reporting the same identity.
+Both break the claim the identity line makes (KI-11/KI-69). The retained failed attempts r3 (`...144853-cmru-ko4six`, no `.backup-pushed`)
+and r4 (`...151917-cmru-z5jy98`) also kept full sidecar sets although their worktrees and branches are gone (removed outside `abandon`),
+plus eight legacy `<12-hex>.{json,progress}` pairs from 2026-08-04/18.
+**Direction.** (1) Have the operator keep the bootstrap wheel used for a self-release and compare its `RECORD`/`METADATA` with the
+`wheel-sha256` printed (`0ca3790bc288...`); (2) make the identity line also print the sha256 of the IMPORTED `cmru` package directory at
+run time (not only the wheel on disk), so a mismatch between metadata and code is visible; (3) `cmru worktrees` should list orphan sidecar
+tokens (now retirable with `cmru abandon <branch>`, this branch) so they stop accumulating silently.
+
+### KI-101 - `cmru cleanup` takes no release lock, so `--policy` can delete a tag the in-flight release just pushed
+
+**Status:** OPEN; severity: major (only with concurrent use; nothing observed). Filed 2026-10-27.
+**Mechanism.** `release`, `build` and `abandon` serialize on `transaction.release_lock`; the `cleanup` verb does not (`_dispatch` "cleanup").
+`cleanup_project_releases_and_tags` deletes every `<prefix>-v*` tag "without a matching Release" (tag-only), and a release transaction pushes
+its tag BEFORE the publish step creates the GitHub Release, so a `--policy` run in that window selects the brand-new tag. `--yes` or a
+pre-captured plan then deletes it (the tag deletion is pinned to the previewed oid, which is the new tag's oid).
+**Fix direction.** Take the release lock for the whole cleanup verb (preview through apply), and treat a versioned tag with no Release as
+"unknown age, keep" when `max_age_days` is set. Until then the precondition "no `cmru release` in flight on the estate" is stated in
+README.md ("cleanup"), docs/RELEASE-TRANSACTIONS.md ("Failure and retained candidate") and the packaged skill (2026-10-27).
+
+### KI-102 - a `--dry-run --resume` commits prepared external-version inputs into the retained candidate it then calls "retained unchanged"
+
+**Status:** OPEN; severity: minor. Filed 2026-10-27 from reading `_release_child` / `_prepare_dry_run_external_versions`.
+A dry run of a project with an `external:` version strategy runs its `prepare` step and `_commit_prepared_generated` in the transaction
+worktree. For a new candidate that worktree is disposable (and since KI-91 it is discarded on failure too), but with `--resume` it is the
+retained candidate, whose tip then moves; the launcher afterwards prints `[DRY RUN] Existing release candidate ... was retained unchanged`.
+A later real `--resume` replays that commit (the prepare output is deterministic, so this is cosmetic today).
+**Fix direction.** Skip the commit on a resumed dry run (leave the prepared files uncommitted and restore them after the plan), or say
+"retained with its prepared inputs committed" when it happened.
+
+### KI-103 - the rest of the post-push GHCR visibility sync still hard-fails the release
+
+**Status:** OPEN; severity: minor, follow-up of KI-97. `GitHubPackages.repo_visibility()` (`_fail` on any HTTP >= 400, or a missing field)
+and `_package_url` (unsupported `owner_type`) exit 1 from the same post-push position KI-97 fixed, and `mirror_package_visibility` still
+fails on a 5xx lookup. Degrade `repo_visibility` failures to the same warning (the push succeeded; visibility can be set once in the UI),
+or move the repository lookup BEFORE the push so a credential/config problem stops the step while nothing has happened.
+
+### KI-104 - `cmru gate-snapshots` cannot select one snapshot by name
+
+**Status:** OPEN; severity: minor. `cmru gate-snapshots --remove` acts on every snapshot judged removable; there is no `NAME` argument,
+so the operator cannot retire one `cmru-gate-<id>` (three are retained in the estate checkout today) without accepting the whole
+removable set. `cmru abandon <cmru-gate-...>` now refuses with a pointer at this verb (this branch). Add an optional exact `BRANCH|PATH`
+argument with the same proofs as the bulk path.
+
+### KI-105 - `cleanup --policy` and `cleanup --remove-assets` select releases with two different grammars
+
+**Status:** OPEN; severity: minor, documentation/design. `--policy` selects per PROJECT by `<prefix>-v*` and keeps `keep_release_tags`,
+`<prefix>-latest` and (since this branch) Releases inside `[cleanup] max_age_days`; `--remove-assets AGE` selects estate-wide by
+`release_tag_prefixes` (where `"*"` means all) and the CLI age, ignoring `max_age_days`. Before this branch `max_age_days` was parsed
+(positive-integer validation in `config.py`) and used by NOTHING: the estate `[cleanup]` table has no such key, so `cmru cleanup --policy
+--yes` would have deleted every versioned Release of every project except the three `-latest` pointers. The key now protects `--policy`;
+`--remove-assets` should either honour it as the default `AGE` or the SPEC should say it is `--policy`-only. Tag-only refs (a versioned tag
+with no Release) have no publication time and are still deleted by `--policy` regardless of the window (see KI-101).

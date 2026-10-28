@@ -589,3 +589,71 @@ and nothing in the cockpit imports it as a library. Revisit only if a cockpit to
 then install the wheel that the SAME bundle release carries, never a separately resolved one. The iogov/iomon
 tooling (IO governor, iomon scripts) stays host-side for the same reason the `topos` daemon does: it needs cgroup
 and block-device access the devcontainer does not have; the image may carry read-only clients once they exist.
+
+## MDT-028 - iogov `watch`: per-cgroup swap, refault and memory.events counters in episodes and ticks (2026-10-27)
+
+**Status:** OPEN. From the second (Fable) review of iogov v1 (7f38a7743). Live monitoring (`docs/IO-MONITORING-SETUP.md`, iomon branch) found the
+protected workload's stalls are driven by memory/swap reclaim (zswap writeback, swap-in, major-fault bursts of thousands per second) while the
+disk is healthy. The review added `memory.pressure` to `watch` episodes and host-wide `/proc/vmstat` swap rates to the passive record, which
+names the stall's resource but not its *per-cgroup* mechanism.
+
+**Add (read-only files, no probe IO):** per protected cgroup, at every `watch` sample inside an episode and in every tick's passive snapshot:
+`memory.stat` (`pgmajfault`, `workingset_refault_anon`, `zswpin`, `zswpout`, `pswpin`/`pswpout` where present), `memory.swap.current`,
+`memory.current`, `memory.events` (`high`, `max`, `oom`, `oom_kill`) and `memory.events.local`; as rates/deltas, not cumulative values.
+Episode evidence gets `peak_majfault_per_s`, `swap_in_bytes` (pages x page size) and the `memory.events` deltas; `analyze`'s harm section
+prints them next to `driver`.
+
+**Acceptance:** a fake-cgroup test in which `memory.pressure` is flat but `pgmajfault`/`zswpin` jump during an episode records the rates and
+labels the episode `driver: memory`; a tick's passive record carries the per-cgroup deltas for the configured `protected_cgroups` and
+`containers`; missing files yield null, never an exception; the journal record stays under `MAX_LINE_BYTES`; design note section 8 updated.
+
+## MDT-029 - iogov: a protected-process-side canary ("what does the game wait on?") (2026-10-27)
+
+**Status:** OPEN. iogov v1 measures the disk from the outside (raw reads, scratch bench) and the protected workload from PSI. Neither says
+*what* the protected process waits on during a stall. The iomon eBPF collector (`stall.bt`: D-state kernel stacks over 100 ms by comm)
+answers it but needs a root container with BPF capabilities and runs for hours at a time.
+
+**Options, cheapest first:** (a) in `watch`, when an episode opens, sample `/proc/<tid>/wchan` (and `/proc/<tid>/syscall`, if readable) of the
+protected cgroups' D-state threads once per second and histogram the wait symbols into the episode evidence (`swap_readpage`,
+`folio_wait_bit`, `jbd2_log_wait_commit`, `blk_mq_get_tag`, ...; readability of `wchan` for another user's tasks depends on `hidepid` and
+the ptrace scope, so this may need the `watch` unit to run with a read-only `CAP_SYS_PTRACE` or be documented as root-only);
+(b) an operator-run attach of the existing iomon eBPF collector for N minutes when `status` shows episodes (documented procedure, no code);
+(c) a tiny in-container canary (one 4 KiB `O_DSYNC` write + one `O_DIRECT` read every 10 s on a pre-allocated file inside the protected
+volume, as iomon's sampler does) so that the *application's* latency path is measured, not the host's.
+
+**Acceptance:** (a) a test with a fake `/proc/<tid>/wchan` tree shows the symbol histogram in an episode; the sampler never reads `/proc/<pid>/maps`
+or `environ`; (c) is only acceptable if the file lives in a dedicated directory the operator names, is created `O_EXCL`, and the IO is
+charged to iogov's daily budget. No automatic cap or setting change (unchanged v1 rule).
+
+## MDT-030 - iogov: gate reachability on a never-calm host, and a bench gate on memory pressure (2026-10-27)
+
+**Status:** OPEN. The write bench runs only when system io PSI `some` <= 1 %, `full` <= 0.1 %, protected pressure <= 1 %, governed writes <= 2 MB/s
+and nothing is in flight. On a host that swaps continuously (the review's devcontainer host showed memory PSI `some` 37 % / `full` 17 % at the time)
+the bench may rarely pass, so the write lanes stay STALE while the read lanes and passive records accumulate. That is the designed failure
+mode (design note section 11.8), but it is invisible in `status` today, and a host in heavy reclaim is not "calm" even when its io PSI is low:
+the bench's writes would compete with zswap writeback and the measurement would be contended without being labelled so.
+
+**Do:** (1) `status` prints, per run kind, the gate pass/skip counts of the last 7 days by reason class (from the journal's `skip`, `passive`
+(`gated`) and `run_start` records) and the age of the last valid window per write lane; (2) add `bench_memory_pressure_some_max` (default 5 %,
+hard max 25 %) to the bench gate (memory PSI in the gate `ctx` is already recorded by the review); (3) document in the design note that a bench
+gated for more than N days means "no write-capability evidence on this host", with the operator's options (a bench window at night, lower
+thresholds justified by a measured `watch` comparison, or accept read-only evidence).
+
+**Acceptance:** tests for the `status` lines and the new gate reason (`memory_pressure_high`); the design note's gate table and section 6 agree with
+`config.py`; `plan` prints the new threshold.
+
+## MDT-031 - iogov -> iobench ceilings bridge (`ceilings.jsonl`, `source: governor`) (2026-10-27)
+
+**Status:** OPEN. MDT-023's P0 was "an observe-only service feeding `libraries/iobench` `ceilings.jsonl` (`source: governor`, IOB-CEI-01)".
+iogov v1 is that service but writes only its own journal; its `w_fresh_qd1`/`w_fresh_qd4` durable rates and confirmed `shift_detected`
+recommendations never reach iobench, so `recalibrate_recommended` in `mdt doctor` (the next MDT-023 step) has nothing to read.
+
+**Do:** an `iogov export-ceilings [--since]` command that prints (never writes outside its state dir, never runs a subprocess: the static
+no-write test must stay green) one `iobench ceilings add --dir write --workload <w> --bps <rate> --duration-s <s> --source governor` line per
+qualifying closed window, or the JSON observation lines themselves for the operator to append. The mapping of iogov's 64 KiB sequential lanes
+to iobench's `seq1m|rand4k` workload names needs an explicit decision (a new workload name, or a documented approximation carrying the
+`file`-kind label of IOB-TGT-09, since iogov measures a file, not the device).
+
+**Acceptance:** a test that a journal with a confirmed downward shift yields export lines whose `plateau_bps` equals the window's median
+durable rate and whose `note` carries the recommendation key; `iobench ceilings add` accepts the printed line in a dry run; the design note's
+"v1 does NOT" list and MDT-023's "Next" paragraph point at each other.

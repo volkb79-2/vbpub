@@ -21,7 +21,7 @@ schema_version = 1
 [lanes.smoke]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/mdt-cockpit && export PYTHONPATH=. MDT_REQUIRE_SHELLS=1 && find . -name '*.py' -print0 | xargs -0 -r python3 -m py_compile && bash host-setup/tests/test-render.sh && /opt/tester-venv/bin/pytest scripts host-setup/tests -q -rs --deselect scripts/test_local_dev.py::test_the_bake_file_gives_a_local_dev_build_only_dev_tags_and_leaves_release_tags_alone --deselect scripts/test_oci_layout_push.py && echo 'smoke: OK'"]
+argv = ["bash", "-c", "cd {worktree}/mdt-cockpit && export PYTHONPATH=. MDT_REQUIRE_SHELLS=1 && find . -name '*.py' -print0 | xargs -0 -r python3 -m py_compile && bash host-setup/tests/test-render.sh && /opt/tester-venv/bin/pytest scripts host-setup/tests iogov/tests -q -rs --deselect scripts/test_local_dev.py::test_the_bake_file_gives_a_local_dev_build_only_dev_tags_and_leaves_release_tags_alone --deselect scripts/test_oci_layout_push.py && echo 'smoke: OK'"]
 budget = "2m"
 
 [lanes.smoke.resources]

@@ -1,0 +1,114 @@
+// iomon stall.bt - what watched workloads wait on, plus iocost / writeback / swap activity.
+// Params: $1 and $2 = cgroup ids (kernfs ids) of the two watched workloads (0 = unused).
+// Everything is aggregated in kernel and printed every 30 s (map cleared after printing);
+// rare threshold events (write() > 50 ms, D-state > 100 ms) are emitted as one JSON line each.
+
+// ---- (2) D-state (uninterruptible sleep) episodes of watched tasks, with kernel stack ----
+tracepoint:sched:sched_switch
+{
+  if ((args.prev_state & 2) && (cgroup == $1 || cgroup == $2)) {
+    @ds[args.prev_pid] = nsecs;
+    @dstk[args.prev_pid] = kstack(10);
+    @dcm[args.prev_pid] = args.prev_comm;
+    @dcg[args.prev_pid] = cgroup;
+  }
+  $s = @ds[args.next_pid];
+  if ($s) {
+    $us = (nsecs - $s) / 1000;
+    $w = @dcg[args.next_pid] == $1 ? 1 : 2;
+    @dstate_us[$w] = hist($us);
+    if ($us > 100000) {
+      @dlong[@dcm[args.next_pid], $w, @dstk[args.next_pid]] = sum($us / 1000);
+      @dlong_n[$w] = count();
+    }
+    delete(@ds[args.next_pid]); delete(@dstk[args.next_pid]);
+    delete(@dcm[args.next_pid]); delete(@dcg[args.next_pid]);
+  }
+}
+
+// ---- (3) fsync / fdatasync and slow write() of watched tasks ----
+kprobe:vfs_fsync_range
+/cgroup == $1 || cgroup == $2/
+{
+  @fs[tid] = nsecs;
+}
+kretprobe:vfs_fsync_range
+/@fs[tid]/
+{
+  $us = (nsecs - @fs[tid]) / 1000;
+  $w = cgroup == $1 ? 1 : 2;
+  @fsync_us[$w] = hist($us);
+  if ($us > 50000) {
+    printf("{\"ev\":\"slow_fsync\",\"w\":%d,\"comm\":\"%s\",\"tid\":%d,\"ms\":%d}\n", $w, comm, tid, $us / 1000);
+  }
+  delete(@fs[tid]);
+}
+kprobe:vfs_write
+/cgroup == $1 || cgroup == $2/
+{
+  @wr[tid] = nsecs;
+}
+kretprobe:vfs_write
+/@wr[tid]/
+{
+  $us = (nsecs - @wr[tid]) / 1000;
+  $w = cgroup == $1 ? 1 : 2;
+  @write_us[$w] = hist($us);
+  if ($us > 50000) {
+    printf("{\"ev\":\"slow_write\",\"w\":%d,\"comm\":\"%s\",\"tid\":%d,\"ms\":%d}\n", $w, comm, tid, $us / 1000);
+  }
+  delete(@wr[tid]);
+}
+
+// ---- (4) iocost controller behaviour (vrate adjustments, activations, shortages) ----
+tracepoint:iocost:iocost_ioc_vrate_adj
+{
+  $d = args.new_vrate > args.old_vrate ? 1 : (args.new_vrate < args.old_vrate ? 2 : 0);
+  @adj[$d] = count();
+  @vrate = stats(args.new_vrate);
+  @busy = stats(args.busy_level);
+  @rqwait_pct = hist(args.rq_wait_pct);
+  @rmiss_ppm = max(args.read_missed_ppm);
+  @wmiss_ppm = max(args.write_missed_ppm);
+  @lagging = max(args.nr_lagging);
+  @shortages = max(args.nr_shortages);
+}
+tracepoint:iocost:iocost_iocg_activate { @iocg_activate = count(); }
+tracepoint:iocost:iocost_iocg_idle { @iocg_idle = count(); }
+tracepoint:iocost:iocost_inuse_shortage { @inuse_shortage = count(); }
+tracepoint:iocost:iocost_iocg_forgive_debt { @forgive_debt = count(); }
+
+// ---- (5) writeback throttling of dirtying tasks, by cgroup inode ----
+tracepoint:writeback:balance_dirty_pages
+/args.pause > 0/
+{
+  @bdp_ms[args.cgroup_ino] = sum(args.pause);
+  @bdp_n[args.cgroup_ino] = count();
+  @bdp_pause_ms = hist(args.pause);
+}
+
+// ---- (7) swap activity: swap-in by faulting task cgroup, swap-out by reclaiming comm
+//      (per-cgroup swap-out comes from memory.swap.current / zswpout deltas in the cg sampler) ----
+kprobe:swap_read_folio
+{
+  @swapin[cgroup] = count();
+}
+kprobe:swap_writeout
+{
+  @swapout[comm] = count();
+}
+
+interval:s:30
+{
+  print(@dstate_us); print(@dlong); print(@dlong_n);
+  print(@fsync_us); print(@write_us);
+  print(@adj); print(@vrate); print(@busy); print(@rqwait_pct); print(@rmiss_ppm); print(@wmiss_ppm);
+  print(@lagging); print(@shortages); print(@iocg_activate); print(@iocg_idle);
+  print(@inuse_shortage); print(@forgive_debt);
+  print(@bdp_ms); print(@bdp_n); print(@bdp_pause_ms); print(@swapin); print(@swapout);
+  clear(@dstate_us); clear(@dlong); clear(@dlong_n); clear(@fsync_us); clear(@write_us);
+  clear(@adj); clear(@vrate); clear(@busy); clear(@rqwait_pct); clear(@rmiss_ppm); clear(@wmiss_ppm);
+  clear(@lagging); clear(@shortages); clear(@iocg_activate); clear(@iocg_idle);
+  clear(@inuse_shortage); clear(@forgive_debt);
+  clear(@bdp_ms); clear(@bdp_n); clear(@bdp_pause_ms); clear(@swapin); clear(@swapout);
+}

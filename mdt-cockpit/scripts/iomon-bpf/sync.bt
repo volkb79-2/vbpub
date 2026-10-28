@@ -1,0 +1,37 @@
+// iomon sync.bt - durability syscalls and synchronous opens, by watched cgroup and comm.
+// Params: $1 and $2 = cgroup ids of the two watched workloads (0 = unused).  who: 1/2 watched, 0 others.
+// Purpose: prove or disprove that a workload really issues no fsync (e.g. libeatmydata preloaded):
+// counts of fsync/fdatasync/sync_file_range/msync/syncfs entering the kernel, their latency,
+// and openat() with O_SYNC/O_DSYNC.  Aggregated in kernel, printed every 30 s.
+tracepoint:syscalls:sys_enter_fsync,
+tracepoint:syscalls:sys_enter_fdatasync,
+tracepoint:syscalls:sys_enter_sync_file_range,
+tracepoint:syscalls:sys_enter_msync,
+tracepoint:syscalls:sys_enter_syncfs
+{
+  $w = cgroup == $1 ? 1 : (cgroup == $2 ? 2 : 0);
+  @sync_n[$w, comm, probe] = count();
+  @sy_t[tid] = nsecs;
+}
+tracepoint:syscalls:sys_exit_fsync,
+tracepoint:syscalls:sys_exit_fdatasync,
+tracepoint:syscalls:sys_exit_sync_file_range,
+tracepoint:syscalls:sys_exit_msync,
+tracepoint:syscalls:sys_exit_syncfs
+/@sy_t[tid]/
+{
+  $w = cgroup == $1 ? 1 : (cgroup == $2 ? 2 : 0);
+  @sync_us[$w] = hist((nsecs - @sy_t[tid]) / 1000);
+  delete(@sy_t[tid]);
+}
+tracepoint:syscalls:sys_enter_openat
+/(args.flags & 0x1000) != 0/
+{
+  $w = cgroup == $1 ? 1 : (cgroup == $2 ? 2 : 0);
+  @osync_open[$w, comm] = count();
+}
+interval:s:30
+{
+  print(@sync_n); print(@sync_us); print(@osync_open);
+  clear(@sync_n); clear(@sync_us); clear(@osync_open);
+}

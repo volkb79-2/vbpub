@@ -1667,12 +1667,16 @@ def test_dockerignore_keeps_repository_only_trove_reports_out_of_the_wheel_sourc
         assert _dockerignore_included(wheel_input, rules), wheel_input
 
 
-_GENERATED_BUILD_OUTPUT_RULES = ("**/build", "**/dist", "**/*.egg-info")
+_GENERATED_BUILD_OUTPUT_RULES = ("**/build", "**/dist", "**/*.egg-info", "**/artifacts")
 
 
 @pytest.mark.parametrize("generated", [
     "cmru/build/lib/cmru/a_module_deleted_from_source.py",
     "cmru/dist/cmru-0.0.0-py3-none-any.whl",
+    # A retained cmru release record in the caller checkout (git-ignored, but a
+    # real file under COPY cmru/): it entered /src/cmru/artifacts in the image.
+    "cmru/artifacts/cmru-v5.0.0/release.json",
+    "cmru/artifacts/cmru-v7.0.0/dist/cmru-7.0.0-py3-none-any.whl",
     "cmru/cmru.egg-info/PKG-INFO",
     "cmru/src/cmru.egg-info/SOURCES.txt",
     "ciu/build/lib/ciu/stale.py",
@@ -1699,7 +1703,7 @@ def test_dockerignore_build_output_rules_hide_no_committed_context_path():
     assert len(without) == len(rules) - len(_GENERATED_BUILD_OUTPUT_RULES)
     hidden = sorted(
         path.as_posix() for path in _git_tree_context_paths()
-        if any(part in {"build", "dist"} or part.endswith(".egg-info") for part in path.parts)
+        if any(part in {"build", "dist", "artifacts"} or part.endswith(".egg-info") for part in path.parts)
         and _dockerignore_included(path.as_posix(), without)
         and not _dockerignore_included(path.as_posix(), rules)
     )
@@ -4551,8 +4555,9 @@ def test_run_gate_host_environment_names_tester_base_and_no_lane_runs_there():
     configs = [REPO_ROOT / "run-gate.root.toml"]
     configs += [
         c for c in REPO_ROOT.glob("**/run-gate.toml")
-        # relative parts: the checkout itself usually lives under a `.worktrees/` directory
-        if not {".worktrees", "node_modules", "fixtures"} & set(c.relative_to(REPO_ROOT).parts)
+        # relative parts: the checkout itself usually lives under a `.worktrees/` directory;
+        # `.run-gate` holds gate output (including stale pytest fixture trees), never a config
+        if not {".worktrees", "node_modules", "fixtures", ".run-gate"} & set(c.relative_to(REPO_ROOT).parts)
     ]
     assert len(configs) > 20, f"the scan saw only {len(configs)} run-gate configs: it would pass vacuously"
     users = {}

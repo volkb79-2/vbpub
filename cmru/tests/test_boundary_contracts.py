@@ -146,12 +146,21 @@ class TestGHCRBoundaries(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 api.package_visibility("image")
 
-    def test_mirror_exhausted_visibility_lookup_fails(self):
+    def test_mirror_exhausted_visibility_lookup_warns_by_default_and_fails_on_demand(self):
+        # KI-97: the sync runs after the push succeeded; an uninspectable package
+        # is a warning by default and a failure only when the caller asks for it.
         api = ghcr.GitHubPackages("o", "r", "t", "user")
-        with patch.object(api, "package_visibility", return_value=None):
+        with patch.object(api, "package_visibility", return_value=None), \
+             patch("cmru.ghcr.sys.stderr", io.StringIO()) as err:
+            self.assertIsNone(api.mirror_package_visibility(
+                "image", expected_visibility="public", retries=1, delay=0,
+            ))
+            self.assertIn("[WARN] Could not sync GHCR visibility for image", err.getvalue())
+        with patch.object(api, "package_visibility", return_value=None), \
+             patch("cmru.ghcr.sys.stderr", io.StringIO()):
             with self.assertRaises(SystemExit):
                 api.mirror_package_visibility("image", expected_visibility="public",
-                                              retries=1, delay=0)
+                                              retries=1, delay=0, missing="fail")
 
     def test_patch_visibility_api_unsupported_is_nonfatal_and_returns_current(self):
         api = ghcr.GitHubPackages("o", "r", "t", "user")

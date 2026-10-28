@@ -105,8 +105,12 @@ def sync_ghcr_package_visibility(package_names: list[str]) -> None:
     repo_visibility = ghcr.repo_visibility()
     log(f"Mirroring GHCR package visibility to {repo_visibility}: {', '.join(package_names)}")
     for package_name in package_names:
-        ghcr.mirror_package_visibility(package_name, expected_visibility=repo_visibility)
-        log(f"Synced {package_name} visibility to {repo_visibility}")
+        synced = ghcr.mirror_package_visibility(package_name, expected_visibility=repo_visibility)
+        if synced is None:
+            # cmru KI-97: the package could not be inspected (warned above); not a release failure.
+            log(f"NOT synced: {package_name} visibility could not be verified (see the warning above)")
+        else:
+            log(f"Synced {package_name} visibility to {synced}")
 
 
 def _bake(extra: list[str], version: str) -> None:

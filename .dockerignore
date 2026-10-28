@@ -104,6 +104,10 @@ libraries/worktree/tests
 **/build
 **/dist
 **/*.egg-info
+# cmru release/build output retained by the caller checkout (`<project>/artifacts/<tag>/`:
+# release.json, evidence, wheels). Git ignores it (`**/artifacts/`); the build context must
+# too, or `COPY cmru/` carries a retained release record into the image's source tree.
+**/artifacts
 # cgroup-profiler ships a built venv and captured runs; neither belongs in a
 # build context (the venv alone is 500 MB).
 scripts/cgroup-profiler/venv

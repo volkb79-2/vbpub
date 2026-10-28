@@ -115,12 +115,20 @@ def test_ghcr_visibility_shapes_and_unsupported_patch_are_explicit(monkeypatch):
     assert client.mirror_package_visibility("pkg", expected_visibility="public") == "public"
 
 
-def test_ghcr_mirror_retries_then_fails_without_inventing_visibility(monkeypatch):
+def test_ghcr_mirror_retries_then_warns_without_inventing_visibility(monkeypatch, capsys):
+    """KI-97: after the retries the sync warns and returns None (never a guessed
+    visibility); the hard failure remains opt-in via ``missing="fail"``."""
     client = ghcr.GitHubPackages("owner", "repo", "token", owner_type="user")
     client.package_visibility = lambda name: None
     monkeypatch.setattr(ghcr.time, "sleep", lambda _: None)
+    assert client.mirror_package_visibility(
+        "pkg", expected_visibility="private", retries=2, delay=0,
+    ) is None
+    assert "[WARN] Could not sync GHCR visibility for pkg" in capsys.readouterr().err
     with pytest.raises(SystemExit) as error:
-        client.mirror_package_visibility("pkg", expected_visibility="private", retries=2, delay=0)
+        client.mirror_package_visibility(
+            "pkg", expected_visibility="private", retries=2, delay=0, missing="fail",
+        )
     assert error.value.code == 1
 
 

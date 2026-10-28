@@ -1,0 +1,17 @@
+# iogov configuration (flat TOML, strict keys: an unknown key is an error). Values shown are the defaults unless noted.
+state_dir = "/var/lib/iogov"
+scratch_dir = "/var/lib/iogov/scratch"        # must be on the filesystem of the data disks; ext4/xfs only by default
+kill_switch_file = "/etc/iogov/disabled"      # `touch` it to stop every run (and abort a running one at its next safe point)
+
+# What to measure: the whole disks behind these volumes are detected (partitions/LVM/md are resolved in sysfs).
+data_paths = ["/var/lib/example-volumes"]     # EXAMPLE VALUE: the protected workload's data directories
+# devices = ["/dev/disk/by-id/example"]       # or name the disk(s) explicitly (overrides detection)
+governed_cgroups = ["/sys/fs/cgroup/dev.slice"]
+protected_cgroups = []                        # e.g. ["/sys/fs/cgroup/system.slice/example.service"]; `watch` samples their io.pressure and memory.pressure
+containers = []                               # container names, resolved via the daemon's config.v2.json (needs read access); prefer container_cgroups
+# container_cgroups = { example = "/sys/fs/cgroup/system.slice/docker-<id>.scope" }   # explicit cgroup paths: no config.v2.json access needed
+
+# Budget (a value beyond the hard limits in config.py is clamped, and the clamp is printed by `plan`; see the design note)
+read_iops_max = 20.0
+region_default = 536870912                    # 512 MiB; adaptive: smaller on small disks / little free space; 0 = write lanes off
+bench_interval_h = 6.0

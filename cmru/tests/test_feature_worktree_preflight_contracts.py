@@ -376,6 +376,49 @@ def test_release_source_record_round_trips_exact_branch_and_commit(tmp_path, mon
         )
 
 
+def test_ki86_release_source_reader_compares_the_recorded_base_not_the_worktree_head(
+    tmp_path, monkeypatch,
+):
+    """A listed workspace carries the worktree HEAD in ``base``; the record is
+    bound to the recorded base commit, which the HEAD leaves with the first
+    prepare commit. The reader must use the record's base (KI-86)."""
+    root, created = _workspace(tmp_path, labels={"cmru.source_mode": "worktree"})
+    scope = root / ".cmru" / "scope"
+    scope.mkdir(parents=True)
+    monkeypatch.setattr(transaction, "_ensure_scope_dir", lambda _root: scope)
+    monkeypatch.setattr(transaction, "_scope_dir", lambda _root: scope)
+    monkeypatch.setattr(transaction, "_valid_local_branch_name", lambda *_: True)
+    transaction.write_release_source(root, created, branch="feature/release", commit="a" * 40)
+
+    listed = transaction.ReleaseWorkspace(
+        root, created.path, created.branch, "c" * 40,  # HEAD after prepare commits
+        SimpleNamespace(
+            workspace_id="workspace-id",
+            base_commit="a" * 40,
+            namespace=SimpleNamespace(labels={"cmru.source_mode": "worktree"}),
+        ),
+    )
+    assert transaction.read_release_source(root, listed)["source_commit"] == "a" * 40
+
+    # Controlled wrong: a record bound to ANOTHER base is still refused, and a
+    # workspace without a recorded base still falls back to ``base``.
+    other_base = transaction.ReleaseWorkspace(
+        root, created.path, created.branch, "c" * 40,
+        SimpleNamespace(
+            workspace_id="workspace-id",
+            base_commit="b" * 40,
+            namespace=SimpleNamespace(labels={"cmru.source_mode": "worktree"}),
+        ),
+    )
+    with pytest.raises(RuntimeError, match="malformed or does not match"):
+        transaction.read_release_source(root, other_base)
+    with pytest.raises(RuntimeError, match="malformed or does not match"):
+        transaction.read_release_source(root, transaction.ReleaseWorkspace(
+            root, created.path, created.branch, "c" * 40,
+            SimpleNamespace(workspace_id="workspace-id", namespace=SimpleNamespace(labels=None)),
+        ))
+
+
 @pytest.mark.parametrize(
     "branch,commit,needle",
     [

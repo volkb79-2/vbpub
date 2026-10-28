@@ -1,0 +1,11 @@
+# TEMPLATE, NOT INSTALLED. Render the @IOGOV_*@ tokens by hand (see ../README.md "Install steps (documentation only)").
+# Slice for the probes. Deliberately LOW weight: a probe that waits behind the governed tier is merely slow (its samples are
+# tagged `contended` and excluded from the recognizer); a probe that competes at the game's weight would be a competitor.
+# This is an assumption to verify on the host (design note, "Assumptions").
+[Unit]
+Description=iogov probes (recommend-only disk capability recorder)
+
+[Slice]
+IOWeight=@IOGOV_IO_WEIGHT@
+CPUWeight=20
+MemoryMax=256M
