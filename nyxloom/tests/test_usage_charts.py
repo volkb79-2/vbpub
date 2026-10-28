@@ -816,4 +816,3 @@ def test_usage_anchor_help_keeps_its_parent_command_prefix(capsys):
 
     assert primary_cli().run(argv=["usage", "anchor", "--help"]) == 0
     assert "Usage: nyxloom usage anchor <verb>" in capsys.readouterr().out
-

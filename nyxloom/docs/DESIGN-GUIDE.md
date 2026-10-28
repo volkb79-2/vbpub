@@ -133,11 +133,11 @@ model, effort, speed, service tier, inference geo, context size, timestamp,
 opaque provenance and stable call ID. `nodes` reference those call IDs and
 carry exact self and subtree totals. `lineage_edges`, `events`, conflicts,
 coverage warnings, labels and reserved price, anchor and chart extension slots
-are also part of the versioned shape. This iteration populates the price and
-anchor slots without changing the ledger or CSV row contract. CSV is intentionally a
-flat call ledger: one report metadata row followed by one row per call; it does
-not substitute overlapping subtree rows for calls. Table output shows the
-hierarchy and self/subtree totals.
+are also part of the versioned shape. CSV is intentionally a flat call ledger:
+one report metadata row followed by one row per call; it does not substitute
+overlapping subtree rows for calls. Its `conflicted` column exposes the
+deterministic representative status. Table, HTML and PDF show conflicted-call
+counts on visible node rows; JSON and CSV retain call-level identity.
 
 Coverage diagnostics retain both lost-data warnings and successful merge
 counters. `partial` is true when malformed, unavailable, incomplete, or
@@ -194,6 +194,11 @@ from prompt length, including input, cache reads and writes; the documented
 fast and US inference rates are explicit. No undocumented `priority` price is
 invented.
 
+Fast and prompt-length tiers are independent price modifiers in the source
+table. Since no precedence is defined for a model that declares both, the
+loader refuses a custom profile with both `fast` and `over_threshold` rates
+instead of silently replacing one rate set with the other.
+
 The E-009 weights remain a named experimental profile: input 1, output 5,
 cache-read 0.1, cache-write 5m 1.25 and cache-write 1h 2. The 1h value is an
 explicit historical assumption, not a verified provider weight. `weighted`
@@ -217,6 +222,11 @@ time assigned to the account. Other plan semantics remain unverified. A
 rolling five-hour query is an analysis range with its own label;
 it is not an account session. A single rejection's `resetsAt` cannot establish
 the preceding interval start. A reset event or rejection never means 100%.
+`usage windows` applies the requested half-open UTC range to calls, rejection
+events, reset evidence timestamps, and interval metrics. Interval metrics use
+the intersection of the observed interval and query range; rolling analysis is
+clipped to the same range. A reset timestamp can lie outside the query when
+its evidence was observed inside it.
 Operator readings therefore include kind, observation time, reset time, source
 and coverage assumption in a private `usage-anchors-v1` store. Fitting a local
 weighted activity ratio to a UI percentage gives only a lower bound when
@@ -225,10 +235,11 @@ consistent readings and an identifiable coverage assumption, the limit
 percentage remains unknown. D-023 records this minimal persistence exception;
 the call ledger and report remain transient query products.
 
-Report and chart commands may select that store with `--anchor-file FILE` and
-otherwise read the default XDG path. Invalid anchor state produces a warning
-and the command continues without anchors, so a damaged optional store cannot
-block a read-only usage report.
+Report, chart and windows commands may select that store with
+`--anchor-file FILE` and otherwise read the default XDG path. Invalid anchor state produces
+a structured `usage_anchors_unreadable` warning and the command continues
+without anchors. JSON status is `unreadable`, so a damaged optional store
+cannot look like an available empty store or block a read-only query.
 
 ## Usage chart data
 
@@ -237,7 +248,9 @@ reserved `extensions.chart_data` slot can carry `usage-charts-v1`; the
 standalone `nyxloom usage charts` command writes that same section. Chart data
 is derived from the windowed full node model before `--depth` or `--min-share`
 folds the displayed tree, so presentation choices cannot remove cost from a
-chart. The exact call ledger remains available for arithmetic and hover lookup.
+chart. HTML attributes a hidden series to its visible folded `other` row or
+nearest displayed parent; hidden points remain selectable through that owner.
+The exact call ledger remains available for arithmetic and hover lookup.
 
 Cost groups partition deduplicated call self-cost. Nodes rank by their own
 experimental weighted units, and a report group with descendants never enters
@@ -352,10 +365,10 @@ are rounded to eight decimal places. Tests inject the clock and compare the
 complete versioned output. The invocation samples `now` once and reuses it for
 window resolution and `generated_at`.
 
-The writer creates missing parent directories, refuses a symlink output file,
-and atomically replaces the destination with mode `0600`. Usage artifacts can
-contain sensitive labels, so the file stays private even when the caller
-chooses a new output directory.
+The writer creates missing parent directories with mode `0700`, refuses a
+symlink output file, and atomically replaces the destination with mode `0600`.
+Usage artifacts can contain sensitive labels, so both directory entries and
+report contents stay private when the caller chooses a new output directory.
 
 The hierarchy is shown directly in the table: session rows contain their own
 calls, child-agent rows, and subtree totals. `--depth` limits visible levels;

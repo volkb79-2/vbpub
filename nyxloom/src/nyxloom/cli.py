@@ -1442,6 +1442,7 @@ def _build_usage_report_data(args, *, now=None):
     weights = load_weights(getattr(args, "weights", None))
     corpus = load_corpus(since=window.since, until=window.until)
     valuation = apply_valuation(corpus, weights)
+    anchor_warnings = []
     try:
         anchors = list_anchors(getattr(args, "anchor_file", None))
     except AnchorError as exc:
@@ -1450,6 +1451,10 @@ def _build_usage_report_data(args, *, now=None):
             file=sys.stderr,
         )
         anchors = []
+        anchor_warnings.append({
+            "code": "usage_anchors_unreadable",
+            "message": "Usage anchor state could not be read; no anchors were used.",
+        })
     calibration = calibrate_anchors(corpus, anchors, [], weights) if anchors else None
     report = build_report(
         corpus,
@@ -1481,7 +1486,11 @@ def _build_usage_report_data(args, *, now=None):
         "anchor_count": len(anchors),
         "anchors": anchors,
         "estimated_limit_pct": None,
-        "status": "observations available; chart estimates require an identifiable, complete interval",
+        "status": (
+            "unreadable" if anchor_warnings
+            else "available" if anchors else "none"
+        ),
+        "warnings": anchor_warnings,
     }
     return report
 
@@ -1523,9 +1532,15 @@ def _write_private_usage_output(path: Path, content: str | bytes) -> None:
     if path.is_symlink():
         raise ValueError("usage report output must not be a symlink")
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if not path.parent.is_dir():
+        missing_parents = []
+        parent = path.parent
+        while not parent.exists():
+            missing_parents.append(parent)
+            parent = parent.parent
+        if not parent.is_dir():
             raise ValueError("usage report output parent must be a directory")
+        for directory in reversed(missing_parents):
+            directory.mkdir(mode=0o700)
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=f".{path.name}.", dir=path.parent,
         )
@@ -1629,7 +1644,7 @@ def cmd_usage_windows(args) -> int:
     """Show observed reset intervals and a separate rolling analysis range."""
     from datetime import datetime, timezone
 
-    from .session_extract.usage.anchors import list_anchors
+    from .session_extract.usage.anchors import AnchorError, list_anchors
     from .session_extract.usage.loader import load_corpus
     from .session_extract.usage.pricing import apply_valuation, load_weights
     from .session_extract.usage.query import resolve_window
@@ -1638,9 +1653,27 @@ def cmd_usage_windows(args) -> int:
     now = datetime.now(timezone.utc)
     query = resolve_window(args.since, args.until, now=now)
     weights = load_weights(args.weights)
-    corpus = load_corpus()
+    corpus = load_corpus(since=query.since, until=query.until)
     apply_valuation(corpus, weights)
-    result = build_usage_windows(corpus, list_anchors(args.anchor_file), query, weights)
+    anchor_warnings = []
+    try:
+        anchors = list_anchors(args.anchor_file)
+    except AnchorError as exc:
+        print(
+            f"warning: usage anchors could not be loaded; continuing without anchors ({exc})",
+            file=sys.stderr,
+        )
+        anchors = []
+        anchor_warnings.append({
+            "code": "usage_anchors_unreadable",
+            "message": "Usage anchor state could not be read; no anchors were used.",
+        })
+    result = build_usage_windows(corpus, anchors, query, weights)
+    result["anchor_status"] = (
+        "unreadable" if anchor_warnings
+        else "available" if anchors else "none"
+    )
+    result["warnings"] = anchor_warnings
     if args.usage_windows_format == "json":
         print(_usage_json(result), end="")
         return 0
@@ -1669,6 +1702,9 @@ def cmd_usage_windows(args) -> int:
     print(f"Threshold events: {len(result['threshold_events'])}; none is treated as a percentage or capacity anchor.")
     for boundary in result["observed_reset_boundaries"]:
         print(f"Observed {boundary['kind']} reset at {boundary['reset_at']} ({len(boundary['evidence'])} evidence record(s)).")
+    print(f"Usage anchors: {result['anchor_status']}.")
+    for warning in result["warnings"]:
+        print(f"Warning: {warning['message']}")
     for kind, status in result["reset_boundary_status"].items():
         if status["interval_status"] != "observed":
             print(f"{kind} interval status: {status['interval_status']}; percentages stay unknown.")

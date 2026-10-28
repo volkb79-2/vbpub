@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from nyxloom.cli_registry import primary_cli
+from nyxloom.session_extract.usage.render import _display_call_owners
 from nyxloom.session_extract.usage import (
     ChartOptions,
     build_report,
@@ -583,6 +584,18 @@ def test_cross_file_copied_prefix_conflict_preserves_and_flags_representative(tm
     assert report["conflicts"][0]["representative_call_id"] == report["calls"][0]["call_id"]
     assert corpus.warnings.cross_file_conflicts == 1
     assert corpus.warnings.conflicted_calls_excluded == 1
+    csv_call = next(
+        row for row in csv.DictReader(render_csv(report).splitlines())
+        if row["record_type"] == "call"
+    )
+    assert csv_call["conflicted"] == "True"
+    assert "CONFLICTED" in render_table(report)
+    folded = _build(corpus, depth=0)
+    assert "CONFLICTED" in render_table(folded)
+    assert _display_call_owners(folded)[report["calls"][0]["call_id"]] == (
+        folded["nodes"][0]["node_id"]
+    )
+    assert "cross_file_conflict" in render_json(report)
 
 
 def test_record_timestamps_control_window_not_mtime_and_truncated_tail_is_visible(tmp_path):

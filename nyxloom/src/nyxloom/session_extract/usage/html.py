@@ -400,7 +400,7 @@ th:first-child,td:first-child,td.name-cell{min-width:0}
   <p class="legend-note">Each node row shows its own calls. A following subtotal row includes its descendants. Observed local share is weighted activity within this report, not a percentage of an account limit.</p>
   <div class="table-wrap"><table id="usage-table"><thead><tr>
     <th scope="col"><button type="button" data-sort="label">Session / agent / topic</button></th>
-    <th scope="col"><button type="button" data-sort="model">Model(s)</button></th><th scope="col"><button type="button" data-sort="effort">Effort</button></th><th scope="col"><button type="button" data-sort="start">Start–end UTC</button></th><th scope="col"><button type="button" data-sort="dur">Duration (s)</button></th><th scope="col"><button type="button" data-sort="calls">Calls</button></th><th scope="col"><button type="button" data-sort="peak">Peak context</button></th><th scope="col">In</th><th scope="col">Cache read</th><th scope="col"><button type="button" data-sort="out">Out</button></th><th scope="col">Cache write 5m / 1h / ?</th><th scope="col"><button type="button" data-sort="cost">Focused measure</button></th><th scope="col">Observed local share</th><th scope="col">Report share</th>
+    <th scope="col"><button type="button" data-sort="model">Model(s)</button></th><th scope="col"><button type="button" data-sort="effort">Effort</button></th><th scope="col"><button type="button" data-sort="start">Start–end UTC</button></th><th scope="col"><button type="button" data-sort="dur">Duration (s)</button></th><th scope="col"><button type="button" data-sort="calls">Calls</button></th><th scope="col">Conflicted</th><th scope="col"><button type="button" data-sort="peak">Peak context</button></th><th scope="col">In</th><th scope="col">Cache read</th><th scope="col"><button type="button" data-sort="out">Out</button></th><th scope="col">Cache write 5m / 1h / ?</th><th scope="col"><button type="button" data-sort="cost">Focused measure</button></th><th scope="col">Observed local share</th><th scope="col">Report share</th>
   </tr></thead><tbody id="usage-rows"></tbody></table></div>
 </section>
 <section aria-labelledby="charts-heading">
@@ -443,10 +443,32 @@ function collectNodes(items, parentId) {
   }
 }
 collectNodes(report.nodes, null);
+const parentNodeById = new Map();
+for (const item of nodes) if (item.parentId) parentNodeById.set(item.node.node_id, item.parentId);
+for (const edge of report.lineage_edges || []) {
+  if (edge.parent_node_id) parentNodeById.set(edge.node_id, edge.parent_node_id);
+}
+function visibleNodeFor(nodeId, sessionId=null) {
+  const visited=new Set();
+  let current=nodeId;
+  while(current&&!visited.has(current)){
+    if(nodeById.has(current))return current;
+    visited.add(current);current=parentNodeById.get(current);
+  }
+  const sessionRoot=nodes.find(item=>item.node.kind==="main"&&item.node.session_id===sessionId);
+  if(sessionRoot)return sessionRoot.node.node_id;
+  const foldedRoot=(report.nodes||[]).find(node=>node.kind==="other");
+  return foldedRoot?.node_id||null;
+}
 const ownerByCall = new Map();
+for (const item of nodes) {
+  for (const callId of item.node.call_ids || []) ownerByCall.set(callId, item.node.node_id);
+}
 for (const call of allCalls) {
+  if (ownerByCall.has(call.call_id)) continue;
   const lookup = callLookup.get(call.call_id);
-  if (lookup && nodeById.has(lookup.node_id)) ownerByCall.set(call.call_id, lookup.node_id);
+  const nodeId=visibleNodeFor(lookup?.node_id,call.session_id);
+  if(nodeId)ownerByCall.set(call.call_id,nodeId);
 }
 const allNodeTopics = [...new Set([...nodes.map(item => item.node.topic), ...allCalls.map(call => call.topic)].filter(Boolean))].sort();
 const topicIds = new Map(allNodeTopics.map((value, index) => [value, `topic-${String(index + 1).padStart(3, "0")}`]));
@@ -632,7 +654,7 @@ function nodeRow(item, selected, depth, hidden=false, compareItems) {
   const modelText=agg=>[...agg.models.entries()].sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0])).map(([key,count])=>`${key} (${count})`).join(", ")||"—";
   const effortText=agg=>[...agg.efforts.entries()].sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0])).map(([key,count])=>`${key} (${count})`).join(", ")||"—";
   appendCell(row,modelText(ownAgg)); appendCell(row,effortText(ownAgg)); appendCell(row,ownAgg.start?`${short(ownAgg.start)} – ${short(ownAgg.end)}`:"—");
-  appendCell(row,fmt(ownAgg.duration)); appendCell(row,fmt(ownAgg.calls)); appendCell(row,fmt(ownAgg.peak));
+  appendCell(row,fmt(ownAgg.duration)); appendCell(row,fmt(ownAgg.calls)); appendCell(row,fmt(own.filter(call=>call.conflicted).length)); appendCell(row,fmt(ownAgg.peak));
   appendCell(row,fmt(ownAgg.tokens.input)); appendCell(row,fmt(ownAgg.tokens.cache_read)); appendCell(row,fmt(ownAgg.tokens.output));
   appendCell(row,`${fmt(ownAgg.tokens.cache_write_5m)} / ${fmt(ownAgg.tokens.cache_write_1h)} / ${fmt(ownAgg.tokens.cache_write_unclassified)}`);
   appendCell(row,metricText(selectedMetric(own)));
@@ -645,7 +667,7 @@ function nodeRow(item, selected, depth, hidden=false, compareItems) {
   if(children.length){
     const totalRow=make("tr",{class:`subtree-row${hidden?" tree-hidden":""}`,dataset:{nodeId:node.node_id,depth}}); decorateSelection(totalRow,node.node_id);
     const label=make("td",{class:"name-cell"}); label.appendChild(make("span",{style:`padding-left:${(Math.min(depth,12)+1.55)*1.1}rem`},"subtree subtotal")); totalRow.appendChild(label);
-    appendCell(totalRow,modelText(subtree)); appendCell(totalRow,effortText(subtree)); appendCell(totalRow,subtree.start?`${short(subtree.start)} – ${short(subtree.end)}`:"—"); appendCell(totalRow,fmt(subtree.duration)); appendCell(totalRow,fmt(subtree.calls)); appendCell(totalRow,fmt(subtree.peak));
+    appendCell(totalRow,modelText(subtree)); appendCell(totalRow,effortText(subtree)); appendCell(totalRow,subtree.start?`${short(subtree.start)} – ${short(subtree.end)}`:"—"); appendCell(totalRow,fmt(subtree.duration)); appendCell(totalRow,fmt(subtree.calls)); appendCell(totalRow,fmt(descendants.filter(call=>call.conflicted).length)); appendCell(totalRow,fmt(subtree.peak));
     appendCell(totalRow,fmt(subtree.tokens.input)); appendCell(totalRow,fmt(subtree.tokens.cache_read)); appendCell(totalRow,fmt(subtree.tokens.output));
     appendCell(totalRow,`${fmt(subtree.tokens.cache_write_5m)} / ${fmt(subtree.tokens.cache_write_1h)} / ${fmt(subtree.tokens.cache_write_unclassified)}`);
     appendCell(totalRow,metricText(selectedMetric(descendants)));
@@ -791,10 +813,11 @@ function renderContext(selected) {
   const axis=setAxis(root,330,max,"context tokens");
   let count=0;
   for(const session of sessions) for(const series of session.series||[]){
-    const nodeId=series.node_id; if(!nodeById.has(nodeId))continue; const group=svg("g",{"data-node-id":nodeId});
     const points=(series.points||[]).filter(point=>selectedSet.has(point.call_id)&&Date.parse(point.timestamp)>=state.start&&Date.parse(point.timestamp)<state.end);
-    if(!points.length)continue; count+=points.length;
-    const name=displayNodeLabel(nodeId,series.label);
+    const nodeId=ownerByCall.get(points[0]?.call_id)||visibleNodeFor(series.node_id,session.session_id);if(!points.length||!nodeById.has(nodeId))continue;
+    const group=svg("g",{"data-node-id":nodeId});
+    count+=points.length;
+    const name=displayNodeLabel(nodeId,nodeLabel(nodeById.get(nodeId))||series.label);
     group.appendChild(svg("text",{x:axis.left+4,y:axis.top+12+(count%8)*13},name));
     for(let i=1;i<points.length;i++)addLineSegment(group,points[i-1],points[i],axis,max);
     for(const point of points){const circle=svg("circle",{cx:xAt(point.timestamp,axis),cy:yAt(point.context_size,axis,max),r:4,fill:colorForModel(point.model),stroke:"var(--ink)","stroke-dasharray":dashForEffort(point.effort)});bindPoint(circle,point.call_id,nodeId);group.appendChild(circle);}
@@ -807,9 +830,11 @@ function renderSwim(selected) {
   const root=byId("swim-chart");root.replaceChildren();const lanes=chart.datasets.swim_lanes.lanes||[];const selectedIds=new Set(selected.map(call=>call.call_id));
   const visible=lanes.filter(lane=>(lane.points||[]).some(point=>selectedIds.has(point.call_id)&&Date.parse(point.timestamp)>=state.start&&Date.parse(point.timestamp)<state.end));
   const axis=setAxis(root,330,visible.length,"agent lane");const laneH=Math.max(22,(axis.bottom-axis.top)/Math.max(1,visible.length));let index=0;
-  for(const lane of visible){const nodeId=lane.node_id;if(!nodeById.has(nodeId))continue;const group=svg("g",{"data-node-id":nodeId});const y0=axis.top+index*laneH;const laneMax=Math.max(1,Number(lane.peak_context||0));
-    group.appendChild(svg("text",{x:axis.left+3,y:y0+11},displayNodeLabel(nodeId,lane.label)));
+  for(const lane of visible){
     const points=(lane.points||[]).filter(point=>selectedIds.has(point.call_id)&&Date.parse(point.timestamp)>=state.start&&Date.parse(point.timestamp)<state.end);
+    const nodeId=ownerByCall.get(points[0]?.call_id)||visibleNodeFor(lane.node_id);if(!points.length||!nodeById.has(nodeId))continue;
+    const group=svg("g",{"data-node-id":nodeId});const y0=axis.top+index*laneH;const laneMax=Math.max(1,Number(lane.peak_context||0));
+    group.appendChild(svg("text",{x:axis.left+3,y:y0+11},displayNodeLabel(nodeId,nodeLabel(nodeById.get(nodeId))||lane.label)));
     const localAxis={...axis,top:y0+13,bottom:y0+laneH-2};for(let i=1;i<points.length;i++)addLineSegment(group,points[i-1],points[i],localAxis,laneMax);
     for(const point of points){const circle=svg("circle",{cx:xAt(point.timestamp,axis),cy:yAt(point.context_size,localAxis,laneMax),r:3.5,fill:colorForModel(point.model),stroke:"var(--ink)","stroke-dasharray":dashForEffort(point.effort)});bindPoint(circle,point.call_id,nodeId);group.appendChild(circle);}
     for(const event of lane.events||[]){if(Date.parse(event.timestamp)<state.start||Date.parse(event.timestamp)>=state.end)continue;addMarker(group,event,xAt(event.timestamp,axis),y0+laneH/2,nodeId);}

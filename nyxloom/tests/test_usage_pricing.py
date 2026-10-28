@@ -619,13 +619,13 @@ def test_windows_separate_observed_resets_weekly_reset_and_rolling_analysis(tmp_
     ]
     corpus = _corpus(calls, events)
     apply_valuation(corpus, load_weights())
-    query = resolve_window("24h", None, now=NOW)
+    query = resolve_window("8d", None, now=NOW)
     weekly_anchor = {
         "anchor_id": "weekly-current",
         "kind": "weekly",
         "observed_at": "2026-10-28T11:00:00Z",
         "percent": 50,
-        "reset_at": "2026-11-04T12:00:00Z",
+        "reset_at": "2026-10-28T12:00:00Z",
         "source": "settings-usage",
         "coverage_assumption": "local-only-lower-bound",
     }
@@ -633,7 +633,7 @@ def test_windows_separate_observed_resets_weekly_reset_and_rolling_analysis(tmp_
         **weekly_anchor,
         "anchor_id": "weekly-prior",
         "observed_at": "2026-10-21T11:00:00Z",
-        "reset_at": "2026-10-28T12:00:00Z",
+        "reset_at": "2026-10-21T12:00:00Z",
     }
 
     report = build_usage_windows(
@@ -644,9 +644,9 @@ def test_windows_separate_observed_resets_weekly_reset_and_rolling_analysis(tmp_
     weekly = next(item for item in report["observed_intervals"] if item["kind"] == "weekly")
     assert five_hour["start"] == "2026-10-28T10:00:00Z"
     assert five_hour["end"] == "2026-10-28T15:00:00Z"
-    assert five_hour["raw_token_units"] == 30
-    assert weekly["start"] == "2026-10-28T12:00:00Z"
-    assert weekly["end"] == "2026-11-04T12:00:00Z"
+    assert five_hour["raw_token_units"] == 10
+    assert weekly["start"] == "2026-10-21T12:00:00Z"
+    assert weekly["end"] == "2026-10-28T12:00:00Z"
     assert report["rolling_analysis"]["kind"] == "rolling_analysis_not_account_session"
     assert report["rolling_analysis"]["start"] == "2026-10-28T07:00:00Z"
     assert report["estimated_limit_pct"] is None
@@ -682,6 +682,93 @@ def test_windows_preserve_one_observed_reset_without_inventing_interval_start():
     }]
     assert report["reset_boundary_status"]["five_hour"]["interval_status"] == "start_unknown"
     assert report["estimated_limit_pct"] is None
+
+
+def test_windows_clip_calls_boundaries_events_and_interval_metrics_to_half_open_query():
+    calls = [
+        _call(call_id="before-since", input_tokens=100,
+              timestamp=datetime(2026, 10, 28, 9, 59, tzinfo=UTC)),
+        _call(call_id="at-since", input_tokens=10,
+              timestamp=datetime(2026, 10, 28, 10, 0, tzinfo=UTC)),
+        _call(call_id="before-until", input_tokens=20,
+              timestamp=datetime(2026, 10, 28, 11, 59, tzinfo=UTC)),
+        _call(call_id="at-until", input_tokens=40,
+              timestamp=datetime(2026, 10, 28, 12, 0, tzinfo=UTC)),
+    ]
+    events = [
+        UsageEvent(
+            event_id="inside", kind="api_rejection",
+            timestamp=datetime(2026, 10, 28, 10, 0, tzinfo=UTC),
+            session_id=SESSION, agent_id=None, source_record_id=None,
+            source_id="source-1", source_line=1, limit_kind="five_hour",
+            reset_at=datetime(2026, 10, 28, 14, 0, tzinfo=UTC),
+        ),
+        UsageEvent(
+            event_id="at-until", kind="api_rejection",
+            timestamp=datetime(2026, 10, 28, 12, 0, tzinfo=UTC),
+            session_id=SESSION, agent_id=None, source_record_id=None,
+            source_id="source-1", source_line=2, limit_kind="five_hour",
+            reset_at=datetime(2026, 10, 28, 17, 0, tzinfo=UTC),
+        ),
+    ]
+    anchors = [
+        {
+            "anchor_id": "before", "kind": "five_hour",
+            "observed_at": "2026-10-28T09:59:00Z", "reset_at": "2026-10-28T04:00:00Z",
+        },
+        {
+            "anchor_id": "start", "kind": "five_hour",
+            "observed_at": "2026-10-28T10:30:00Z", "reset_at": "2026-10-28T09:00:00Z",
+        },
+        {
+            "anchor_id": "end", "kind": "five_hour",
+            "observed_at": "2026-10-28T11:30:00Z", "reset_at": "2026-10-28T14:00:00Z",
+        },
+        {
+            "anchor_id": "future", "kind": "five_hour",
+            "observed_at": "2026-10-28T12:00:00Z", "reset_at": "2026-10-28T19:00:00Z",
+        },
+        {
+            "anchor_id": "weekly-prior", "kind": "weekly",
+            "observed_at": "2026-10-28T10:15:00Z", "reset_at": "2026-10-20T12:00:00Z",
+        },
+        {
+            "anchor_id": "weekly-next", "kind": "weekly",
+            "observed_at": "2026-10-28T11:15:00Z", "reset_at": "2026-10-27T12:00:00Z",
+        },
+    ]
+    query = resolve_window(
+        "2026-10-28T10:00:00Z", "2026-10-28T12:00:00Z", now=NOW,
+    )
+
+    report = build_usage_windows(_corpus(calls, events), anchors, query)
+
+    assert report["query_window"] == {
+        "start": "2026-10-28T10:00:00Z",
+        "end": "2026-10-28T12:00:00Z",
+        "semantics": "[since, until)",
+    }
+    assert [item["reset_at"] for item in report["observed_reset_boundaries"]
+            if item["kind"] == "five_hour"] == [
+        "2026-10-28T09:00:00Z", "2026-10-28T14:00:00Z",
+    ]
+    assert not [
+        item for item in report["observed_intervals"] if item["kind"] == "weekly"
+    ]
+    assert [item["event_id"] for item in report["threshold_events"]] == ["inside"]
+    interval = report["observed_intervals"][0]
+    assert interval["start"] == "2026-10-28T09:00:00Z"
+    assert interval["end"] == "2026-10-28T14:00:00Z"
+    assert interval["metrics_window"] == {
+        "start": "2026-10-28T10:00:00Z",
+        "end": "2026-10-28T12:00:00Z",
+        "semantics": "[since, until)",
+    }
+    assert interval["calls"] == 2
+    assert interval["raw_token_units"] == 30
+    assert report["rolling_analysis"]["start"] == "2026-10-28T10:00:00Z"
+    assert report["rolling_analysis"]["calls"] == 2
+    assert report["rolling_analysis"]["raw_token_units"] == 30
 
 
 def test_calibration_needs_observed_start_and_local_coverage_to_estimate_percentages():
@@ -946,10 +1033,12 @@ def test_private_usage_writer_creates_missing_parent_and_rejects_non_directory_p
     cli._write_private_usage_output(nested, "private")
     assert nested.read_text(encoding="utf-8") == "private"
     assert stat.S_IMODE(nested.stat().st_mode) == 0o600
+    assert stat.S_IMODE((tmp_path / "nested").stat().st_mode) == 0o700
+    assert stat.S_IMODE(nested.parent.stat().st_mode) == 0o700
 
     parent_file = tmp_path / "not-a-directory"
     parent_file.write_text("occupied", encoding="utf-8")
-    with pytest.raises(ValueError, match="cannot prepare usage report output directory"):
+    with pytest.raises(ValueError, match="parent must be a directory"):
         cli._write_private_usage_output(parent_file / "usage.json", "private")
 
     valid_parent = tmp_path / "false-directory-check"
@@ -982,6 +1071,20 @@ def _load_mutated_weights(tmp_path, monkeypatch, mutate):
     source = tmp_path / "weights.toml"
     source.write_text("schema_version = 1\n", encoding="utf-8")
     return load_weights(source)
+
+
+def test_weights_refuse_fast_and_over_threshold_rates_for_the_same_model(
+    tmp_path, monkeypatch,
+):
+    with pytest.raises(UsagePricingError, match="cannot combine fast and over_threshold"):
+        _load_mutated_weights(
+            tmp_path,
+            monkeypatch,
+            lambda raw: raw["models"]["claude-opus-5-5"].update(
+                over_threshold=deepcopy(raw["models"]["claude-haiku-5-5"]["over_threshold"]),
+                prompt_threshold_tokens=100_000,
+            ),
+        )
 
 
 @pytest.mark.parametrize(
@@ -1699,11 +1802,11 @@ def test_usage_report_cli_prints_contract_json_and_privately_writes_requested_re
 
 
 def test_usage_report_continues_without_corrupt_optional_anchor_state(tmp_path, monkeypatch, capsys):
-    from nyxloom.session_extract import usage
+    from nyxloom.session_extract.usage import loader
 
     from nyxloom import cli
 
-    monkeypatch.setattr(usage, "load_corpus", lambda **_kwargs: _corpus([]))
+    monkeypatch.setattr(loader, "load_corpus", lambda **_kwargs: _corpus([]))
     anchor_file = tmp_path / "corrupt-anchors.json"
     anchor_file.write_text("{not-json", encoding="utf-8")
     anchor_file.chmod(0o600)
@@ -1712,6 +1815,11 @@ def test_usage_report_continues_without_corrupt_optional_anchor_state(tmp_path, 
     captured = capsys.readouterr()
 
     assert report["extensions"]["limit_anchors"]["anchor_count"] == 0
+    assert report["extensions"]["limit_anchors"]["status"] == "unreadable"
+    assert report["extensions"]["limit_anchors"]["warnings"] == [{
+        "code": "usage_anchors_unreadable",
+        "message": "Usage anchor state could not be read; no anchors were used.",
+    }]
     assert report["extensions"]["chart_data"]["datasets"]["weighted_cost_buckets"][
         "cumulative_percentage_line"
     ]["status"] == "unknown"
@@ -1758,13 +1866,12 @@ def test_usage_prices_cli_json_and_unfit_text_keep_cost_state_diagnostic_only(
 def test_usage_windows_cli_json_and_text_identify_separate_rolling_view(
     monkeypatch, capsys,
 ):
-    from nyxloom.session_extract import usage
-    from nyxloom.session_extract.usage import anchors
+    from nyxloom.session_extract.usage import anchors, loader
 
     from nyxloom import cli
 
     corpus = _corpus([_call(input_tokens=10)])
-    monkeypatch.setattr(usage, "load_corpus", lambda: corpus)
+    monkeypatch.setattr(loader, "load_corpus", lambda **_kwargs: corpus)
     monkeypatch.setattr(anchors, "list_anchors", lambda _path: [])
 
     args = _usage_cli_args(until="2026-10-28T13:00:00Z")
@@ -1781,6 +1888,59 @@ def test_usage_windows_cli_json_and_text_identify_separate_rolling_view(
     assert "For Max plans" in text
     assert "other plans are unverified" in text
     assert "Percentages remain unknown" in text
+
+
+def test_usage_windows_cli_bounds_the_scan_and_degrades_on_unreadable_anchors(
+    monkeypatch, capsys,
+):
+    from nyxloom.session_extract.usage import anchors, loader
+
+    from nyxloom import cli
+
+    corpus = _corpus([
+        _call(
+            call_id="past-in-range", input_tokens=10,
+            timestamp=datetime(2020, 1, 1, 11, 59, tzinfo=UTC),
+        ),
+        _call(
+            call_id="at-past-until", input_tokens=99,
+            timestamp=datetime(2020, 1, 1, 12, 0, tzinfo=UTC),
+        ),
+    ])
+    scan = {}
+
+    def load_window(**kwargs):
+        scan.update(kwargs)
+        return corpus
+
+    def unreadable(_path):
+        raise AnchorError("cannot read anchor state")
+
+    monkeypatch.setattr(loader, "load_corpus", load_window)
+    monkeypatch.setattr(anchors, "list_anchors", unreadable)
+    args = _usage_cli_args(
+        since="2020-01-01T10:00:00Z",
+        until="2020-01-01T12:00:00Z",
+        anchor_file="corrupt-anchors.json",
+    )
+
+    assert cli.cmd_usage_windows(args) == 0
+
+    captured = capsys.readouterr()
+    output = json.loads(captured.out)
+    assert scan == {
+        "since": datetime(2020, 1, 1, 10, 0, tzinfo=UTC),
+        "until": datetime(2020, 1, 1, 12, 0, tzinfo=UTC),
+    }
+    assert output["rolling_analysis"]["calls"] == 1
+    assert output["rolling_analysis"]["raw_token_units"] == 10
+    assert output["query_window"]["semantics"] == "[since, until)"
+    assert output["anchor_status"] == "unreadable"
+    assert output["warnings"] == [{
+        "code": "usage_anchors_unreadable",
+        "message": "Usage anchor state could not be read; no anchors were used.",
+    }]
+    assert "continuing without anchors" in captured.err
 
 
 def test_anchor_and_calibrate_cli_emit_only_private_metadata_and_qualified_results(

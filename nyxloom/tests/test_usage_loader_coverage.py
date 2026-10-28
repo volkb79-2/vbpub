@@ -39,8 +39,6 @@ def test_loader_identity_and_value_helpers_cover_invalid_values(tmp_path, monkey
     assert loader._opaque_id("test", NOW).startswith("test_")
     with pytest.raises(TypeError, match="unsupported opaque-ID component"):
         loader._opaque_id("test", object())
-    assert loader._project_key(None) is None
-    assert loader._project_key("/work/sample").startswith("project_")
     assert loader._normalise_timestamp(None) is None
     assert loader._normalise_timestamp("not-a-time") is None
     assert loader._normalise_timestamp("2026-10-28T11:00:00") is None

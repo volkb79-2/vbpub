@@ -41,6 +41,7 @@ def _call(call_id: str, *, node_id: str, agent_id: str | None, minute: int,
             "thinking": 1,
         },
         "node_id": node_id,
+        "conflicted": False,
     }
 
 
@@ -102,7 +103,7 @@ def _report(*, no_labels: bool = False) -> dict[str, object]:
         "agent_id": None, "kind": "main", "agent_type": "controller",
         "topic": None if no_labels else "root topic", "depth": 0,
         "self": root_self, "subtree": root_tree,
-        "omitted_descendants": 0,
+        "omitted_descendants": 0, "call_ids": ["call-root"],
         "children": [
             {
                 "node_id": agent_a_id, "parent_id": root_id,
@@ -110,7 +111,7 @@ def _report(*, no_labels: bool = False) -> dict[str, object]:
                 "kind": "subagent", "agent_type": "general-purpose",
                 "topic": None if no_labels else HOSTILE_TOPIC, "depth": 1,
                 "self": agent_a_self, "subtree": agent_a_self,
-                "omitted_descendants": 0, "children": [],
+                "omitted_descendants": 0, "call_ids": ["call-a"], "children": [],
             },
             {
                 "node_id": agent_b_id, "parent_id": root_id,
@@ -118,7 +119,7 @@ def _report(*, no_labels: bool = False) -> dict[str, object]:
                 "kind": "subagent", "agent_type": "general-purpose",
                 "topic": None if no_labels else "second topic", "depth": 1,
                 "self": agent_b_self, "subtree": agent_b_self,
-                "omitted_descendants": 0, "children": [],
+                "omitted_descendants": 0, "call_ids": ["call-b"], "children": [],
             },
         ],
     }]
@@ -239,7 +240,16 @@ def _report(*, no_labels: bool = False) -> dict[str, object]:
         "filters": {"no_labels": no_labels},
         "presentation": {"flat": False, "sort": "cost"},
         "totals": _aggregate(calls), "calls": calls, "events": [],
-        "lineage_edges": [], "coverage": {"scanned_files": 2, "warnings": {}, "partial": False},
+        "lineage_edges": [
+            {
+                "session_id": "session-001", "agent_id": "agent-a",
+                "node_id": agent_a_id, "parent_node_id": root_id,
+            },
+            {
+                "session_id": "session-001", "agent_id": "agent-b",
+                "node_id": agent_b_id, "parent_node_id": root_id,
+            },
+        ], "coverage": {"scanned_files": 2, "warnings": {}, "partial": False},
         "extensions": {
             "prices": {
                 "retrieved_on": "2026-10-28", "weights_sha256": "a" * 64,

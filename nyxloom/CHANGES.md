@@ -16,14 +16,17 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Keep successful deduplication counts visible without mislabeling a complete merged ledger as partial coverage.
 - Keep raw tokens, local weighted shares, API-equivalent USD and subscription-limit percentages distinct; unknown prices and unidentified account coverage remain unknown.
 - Build chart extensions from the complete windowed tree before display folding; `--depth` and `--min-share` now affect only the rendered hierarchy.
-- Let report and chart commands select the private anchor store with `--anchor-file`; invalid optional anchor state warns and leaves report generation available without anchors.
+- Let report, chart and windows commands select the private anchor store with `--anchor-file`; invalid optional anchor state warns, reports `unreadable` with a structured warning, and leaves the query available without anchors.
+- Apply `usage windows` `--since/--until` consistently to calls, reset evidence, threshold events, and interval metrics using the half-open UTC range; clip the rolling view to the same range.
+- Expose conflicted representatives in CSV, table, HTML and PDF outputs, and retain folded-node series in the HTML joined charts under their visible parent or `other` row.
+- Reject custom price tables that combine `fast` and `over_threshold` rates for one model, since the modifier precedence is undefined.
 - Preserve a deterministic cross-file conflict representative with a `conflicted` flag and conflict-record link; clarify that `project_id` is stable across reports and active span is a sum across nodes.
 - Raise the `cli-extended` runtime floor to 0.4.0 for Nyxloom's generated semantic CLI review workflow.
 
 ### Fixed
 - Resolve child rows to the shared tree nodes before sorting the HTML hierarchy, so reports with multiple sibling agents render and print completely.
 - Deduplicate mixed stream rows through both request and message identities, retain cross-file conflict representatives, and sort node events after inferred drop events are appended.
-- Create missing usage-output parent directories and translate preparation/write failures into clean CLI errors.
+- Create private mode-0700 usage-output parent directories, retain mode-0600 files, and translate preparation/write failures into clean CLI errors.
 
 ### Testing
 - Verify the full Nyxloom suite (5,756 passed; two documented opt-in skips), 100% usage-package line and branch coverage, and a live BrowserLease acceptance with zero network requests. The registered tester-unified gate remains controller-owned.

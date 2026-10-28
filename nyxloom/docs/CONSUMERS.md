@@ -57,10 +57,10 @@ deduplicated API request tokens to each session and nested subagent. D-022
 chooses this additive command spelling; the command uses the pure
 `session_extract.usage` service without project registration or daemon state.
 Reports are read-only unless `--out FILE` is supplied, which writes the
-selected rendering to that file with mode `0600`; missing parent directories
-are created and invalid parents produce a clear error. Operator UI
-anchors are the narrow local-state exception: they are written only by the
-explicit `usage anchor add` command. JSON uses the frozen
+selected rendering to that file with mode `0600`. Missing parent directories
+are created with mode `0700`, and invalid parents produce a clear error.
+Operator UI anchors are the narrow local-state exception: they are written
+only by the explicit `usage anchor add` command. JSON uses the frozen
 `usage-report-v1` schema and contains an exact call ledger, nodes with self and
 subtree totals, typed events, lineage edges, conflicts, provenance and coverage
 warnings. It excludes message, thinking and tool content and does not serialize
@@ -70,7 +70,8 @@ filesystem paths.
 and `project_id` is a stable hash of the recorded cwd, so the same project can
 be correlated across reports without exposing its path. Cross-file conflicts
 keep one deterministic call marked `conflicted`; its conflict record identifies
-the representative.
+the representative. JSON and CSV mark the individual call; table, HTML and PDF
+show conflicted-call counts on the corresponding visible node rows.
 
 ```sh
 # Last 24 hours: raw tokens, experimental weighted units, local share and USD estimate.
@@ -136,11 +137,14 @@ scope, monotonicity, cache TTL split, full rank and residual bound all pass.
 An unfit result is expected when records lack 5-minute/1-hour counters or do
 not match the deduplicated family ledger.
 
-`nyxloom usage windows` shows a trailing five-hour analysis window ending at
-`--until`; `--since` selects the history scanned for observed resets and
-threshold events. Account intervals are shown only between consecutive
-observed reset timestamps: a five-hour session reset and the account's fixed
-weekly reset are separate models. Anthropic documents five-hour
+`nyxloom usage windows` applies `--since` and `--until` as a half-open UTC
+range `[since, until)` to transcript calls, rejection events, reset evidence,
+and interval metrics. Reset evidence is selected by its observation timestamp;
+an interval's metrics use only the intersection with the query range. The
+separate five-hour rolling analysis ends at `--until` and clips at `--since`.
+Account intervals are shown only between consecutive observed reset timestamps:
+a five-hour session reset and the account's fixed weekly reset are separate
+models. Anthropic documents five-hour
 session-based resets and an account-assigned weekly reset time, not a rolling
 seven-day token sum ([Max plan limits](https://support.claude.com/en/articles/11049741-what-is-the-max-plan)).
 This reset description has been verified for Max plans only; semantics for
@@ -160,9 +164,13 @@ leaves estimated limit percentage unknown. An all-account fit is conditional
 on the operator's explicit `all-account-usage-observed` assumption. API prices
 and weighted local shares do not establish subscription usage.
 
-`usage report` and `usage charts` read the default XDG anchor store and accept
-`--anchor-file FILE` to select another one. An invalid or unreadable store
-produces a warning; the read-only report continues without anchor data.
+`usage report`, `usage charts`, and `usage windows` read the default XDG anchor
+store and accept `--anchor-file FILE` to select another one. An invalid or
+unreadable store produces a warning; the read-only command continues without
+anchor data. Report JSON sets
+`extensions.limit_anchors.status: "unreadable"`; windows JSON sets
+`anchor_status: "unreadable"`. Both include a structured
+`usage_anchors_unreadable` warning when the store cannot be read.
 
 The table's `ACTIVE SPAN SUM` adds node-local burst spans separated by gaps
 over one hour. Subtree rows sum across nodes; with concurrent subagents,
@@ -229,6 +237,9 @@ pan, or use the keyboard-accessible time controls. Hover context points to see
 session, agent, topic, model, effort, token counts, and timestamp. Selecting a
 table row or chart series highlights that node in both views. Raw token units,
 experimental weighted units, and API-equivalent USD remain separate measures.
+When `--depth` or `--min-share` folds a node out of the table, its joined-chart
+points remain visible and are attributed to the folded `other` row or nearest
+displayed parent.
 
 The anonymize control changes visible labels for the current page but leaves
 the originals in the file. `--no-labels` removes free-text topics before
@@ -282,6 +293,9 @@ For these listed 4.6+ models, documented US inference multiplies every rate by
 1.1; `global` is the standard rate. No priority-tier rate is documented in
 this profile, so that modifier is left unpriced. The exact profile and its
 source metadata ship in `session_extract/usage/usage-weights.toml`.
+For a custom model entry, `fast` and `over_threshold` rates cannot be combined;
+the loader refuses that configuration because no precedence between those
+price modifiers is defined.
 
 The table has one session row per selected session, followed by attributed
 subagents and nested subagents. Each row includes self totals and a subtree

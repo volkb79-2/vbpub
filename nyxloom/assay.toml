@@ -92,9 +92,10 @@ artifact = "coverage.json"
 
 # session-extract: narrow package lane (2026-09-10), added alongside
 # tester-unified rather than modifying it. Its judged source scope is only
-# src/nyxloom/session_extract. The selected CLI tests below exercise the
-# installed harness routes; parser/registry source coverage belongs to the
-# broader tester-unified lane, whose R1 suite covers the complete CLI surface.
+# src/nyxloom/session_extract. Every test_usage_*.py module is selected because
+# the full usage package is in this lane's changed-source scope; the browser
+# acceptance test remains opt-in. Parser/registry source coverage belongs to
+# the broader tester-unified lane, whose R1 suite covers the complete CLI.
 #
 # require_branch = true: unlike tester-unified, this lane's argv passes
 # --cov-branch and this judge.mode is the ONLY thing gating the new
@@ -149,6 +150,12 @@ argv = ["/opt/tester-venv/bin/python", "-m", "pytest",
   "tests/test_usage_report.py",
   "tests/test_usage_pricing.py",
   "tests/test_usage_documentation.py",
+  "tests/test_usage_charts.py",
+  "tests/test_usage_html.py",
+  "tests/test_usage_html_browser.py",
+  "tests/test_usage_pdf.py",
+  "tests/test_usage_loader_coverage.py",
+  "tests/test_usage_coverage.py",
   "tests/test_cli_extract_groups.py",
   "tests/test_cli_help.py",
   "tests/test_cli.py::test_tick",

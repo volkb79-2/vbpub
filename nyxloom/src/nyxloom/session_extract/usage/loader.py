@@ -98,13 +98,6 @@ def _canonical_source(path: Path) -> tuple[str, str]:
     return canonical, _opaque_id("src", canonical)
 
 
-def _project_key(value: str | None) -> str | None:
-    if not value:
-        return None
-    normalized = str(Path(value).expanduser().resolve(strict=False))
-    return _opaque_id("project", normalized)
-
-
 def _normalise_timestamp(value: object) -> datetime | None:
     if not isinstance(value, str) or not value:
         return None

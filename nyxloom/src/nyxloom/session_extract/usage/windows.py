@@ -42,19 +42,30 @@ def _parse_time(value: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
-def _intervals(kind: str, reset_times: set[datetime], calls: list[Call]) -> list[dict[str, Any]]:
+def _intervals(
+    kind: str, reset_times: set[datetime], calls: list[Call], query: Window,
+) -> list[dict[str, Any]]:
     ordered = sorted(reset_times)
     duration = timedelta(hours=5) if kind == "five_hour" else timedelta(days=7)
     intervals = []
     for start, end in pairwise(ordered):
         if end - start != duration:
             continue
+        metrics_start = max(start, query.since)
+        metrics_end = min(end, query.until)
+        if metrics_start >= metrics_end:
+            continue
         intervals.append({
             "kind": kind,
             "model": "observed-reset",
             "start": _iso(start),
             "end": _iso(end),
-            **_metrics(calls, start, end),
+            "metrics_window": {
+                "start": _iso(metrics_start),
+                "end": _iso(metrics_end),
+                "semantics": "[since, until)",
+            },
+            **_metrics(calls, metrics_start, metrics_end),
         })
     return intervals
 
@@ -112,6 +123,15 @@ def build_usage_windows(
                 anchor["kind"], reset, "operator_ui_anchor", observed,
                 str(anchor.get("anchor_id", "unknown")),
             )
+    for boundary in boundary_map.values():
+        boundary["evidence"] = [
+            evidence for evidence in boundary["evidence"]
+            if query.since <= _parse_time(evidence["observed_at"]) < query.until
+        ]
+    boundary_map = {
+        key: boundary for key, boundary in boundary_map.items()
+        if boundary["evidence"]
+    }
     observed_boundaries = sorted(
         boundary_map.values(), key=lambda item: (item["reset_at"], item["kind"]),
     )
@@ -124,16 +144,11 @@ def build_usage_windows(
         for kind in ("five_hour", "weekly")
     }
     intervals = [
-        *_intervals("five_hour", resets_by_kind["five_hour"], calls),
-        *_intervals("weekly", resets_by_kind["weekly"], calls),
-    ]
-    intervals = [
-        interval for interval in intervals
-        if _parse_time(interval["end"]) >= query.since
-        and _parse_time(interval["start"]) <= query.until
+        *_intervals("five_hour", resets_by_kind["five_hour"], calls, query),
+        *_intervals("weekly", resets_by_kind["weekly"], calls, query),
     ]
     intervals.sort(key=lambda item: (item["start"], item["kind"]))
-    rolling_start = query.until - timedelta(hours=5)
+    rolling_start = max(query.until - timedelta(hours=5), query.since)
     rolling = {
         "kind": "rolling_analysis_not_account_session",
         "start": _iso(rolling_start),
@@ -178,6 +193,11 @@ def build_usage_windows(
     events.sort(key=lambda item: (item["timestamp"], item["event_id"]))
     return {
         "schema_version": "usage-windows-v1",
+        "query_window": {
+            "start": _iso(query.since),
+            "end": _iso(query.until),
+            "semantics": "[since, until)",
+        },
         "observed_intervals": intervals,
         "observed_reset_boundaries": observed_boundaries,
         "reset_boundary_status": boundary_status,

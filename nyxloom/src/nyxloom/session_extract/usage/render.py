@@ -14,6 +14,7 @@ CSV_COLUMNS = (
     "timestamp", "model", "effort", "service_tier", "speed", "inference_geo",
     "context_size", "sidechain", "has_fork_source", "source_id", "source_ids",
     "source_line", "provenance", "stream_block_count", "copied_source_count",
+    "conflicted",
     "input_tokens", "cache_read_tokens", "cache_write_5m_tokens",
     "cache_write_1h_tokens", "cache_write_unclassified_tokens", "output_tokens",
     "thinking_tokens", "raw_token_units", "weighted_units", "api_equivalent_usd",
@@ -116,8 +117,81 @@ def _share_text(value: float) -> str:
     return f"{100 * value:.1f}%"
 
 
+def _display_call_owners(report: dict[str, Any]) -> dict[str, str]:
+    """Map every ledger call to its displayed node, including folded calls."""
+    nodes = list(_walk(report["nodes"]))
+    visible_ids = {node["node_id"] for node in nodes}
+    owners = {
+        call_id: node["node_id"]
+        for node in nodes
+        for call_id in node.get("call_ids", [])
+    }
+    parent_by_node = {
+        edge["node_id"]: edge["parent_node_id"]
+        for edge in report.get("lineage_edges", [])
+        if edge.get("parent_node_id") is not None
+    }
+    chart_data = report.get("extensions", {}).get("chart_data")
+    chart_lookup = (
+        {item["call_id"]: item["node_id"] for item in chart_data.get("call_lookup", [])}
+        if isinstance(chart_data, dict) else {}
+    )
+    edges_by_agent = {
+        (edge["session_id"], edge["agent_id"]): edge["node_id"]
+        for edge in report.get("lineage_edges", [])
+    }
+    roots_by_session = {
+        node["session_id"]: node["node_id"]
+        for node in nodes
+        if node.get("kind") == "main"
+    }
+    for call in report["calls"]:
+        call_id = call["call_id"]
+        if call_id in owners:
+            continue
+        node_id = chart_lookup.get(call_id)
+        if node_id is None and call.get("agent_id") is not None:
+            node_id = edges_by_agent.get((call["session_id"], call["agent_id"]))
+        if node_id is None:
+            node_id = roots_by_session.get(call["session_id"])
+        visited: set[str] = set()
+        while node_id is not None and node_id not in visible_ids and node_id not in visited:
+            visited.add(node_id)
+            node_id = parent_by_node.get(node_id)
+        if node_id not in visible_ids:
+            node_id = roots_by_session.get(call["session_id"])
+        if node_id in visible_ids:
+            owners[call_id] = node_id
+    return owners
+
+
+def _subtree_ids(node: dict[str, Any]) -> set[str]:
+    node_ids = {node["node_id"]}
+    for child in node["children"]:
+        node_ids.update(_subtree_ids(child))
+    return node_ids
+
+
+def _conflicted_count(
+    report: dict[str, Any], owners: dict[str, str], node_ids: set[str],
+) -> int:
+    return sum(
+        bool(call.get("conflicted")) and owners.get(call["call_id"]) in node_ids
+        for call in report["calls"]
+    )
+
+
+def _direct_conflicted_count(report: dict[str, Any], node: dict[str, Any]) -> int:
+    call_ids = set(node.get("call_ids", []))
+    return sum(
+        bool(call.get("conflicted")) and call["call_id"] in call_ids
+        for call in report["calls"]
+    )
+
+
 def _table_values(
     label: str, aggregate: dict[str, Any], share: float, weighted_total: float | None,
+    conflicted_calls: int,
 ) -> list[str]:
     tokens = aggregate["tokens"]
     weighted = aggregate.get("weighted_units")
@@ -135,6 +209,7 @@ def _table_values(
         _compact_duration(aggregate["wall_duration_seconds"]),
         _compact_duration(aggregate["active_span_seconds"]),
         f"{aggregate['calls']:,}",
+        f"{conflicted_calls:,}",
         f"{aggregate['peak_context']:,}",
         f"{tokens['input']:,}",
         f"{tokens['cache_read']:,}",
@@ -152,7 +227,7 @@ def _table_values(
 
 _HEADERS = (
     "NODE / TOPIC", "MODEL(S)", "EFFORT", "START UTC", "END UTC", "WALL DUR",
-    "ACTIVE SPAN SUM", "CALLS", "PEAK CTX", "IN", "CACHE READ", "OUT", "WRITE 5M",
+    "ACTIVE SPAN SUM", "CALLS", "CONFLICTED", "PEAK CTX", "IN", "CACHE READ", "OUT", "WRITE 5M",
     "WRITE 1H", "WRITE ?", "RAW TOKENS", "RAW SHARE", "WEIGHTED UNITS",
     "OBS LOCAL SHARE", "API-EQUIVALENT USD (ESTIMATE)",
 )
@@ -182,14 +257,21 @@ def render_table(report: dict[str, Any]) -> str:
     rows: list[list[str]] = []
     weighted_total = report["totals"].get("weighted_units")
     flat = bool(report["presentation"]["flat"])
+    call_owners = _display_call_owners(report)
     if flat:
         for node in _sorted_flat_nodes(report):
             aggregate = node["subtree"]
-            rows.append(_table_values(_label(node), aggregate, aggregate["share_of_total"], weighted_total))
+            rows.append(_table_values(
+                _label(node), aggregate, aggregate["share_of_total"], weighted_total,
+                _conflicted_count(report, call_owners, _subtree_ids(node)),
+            ))
     else:
         def append_node(node: dict[str, Any], depth: int) -> None:
             prefix = "  " * depth
-            rows.append(_table_values(prefix + _label(node), node["self"], node["self"]["share_of_total"], weighted_total))
+            rows.append(_table_values(
+                prefix + _label(node), node["self"], node["self"]["share_of_total"], weighted_total,
+                _direct_conflicted_count(report, node),
+            ))
             self_aggregate = node["self"]
             subtree = node["subtree"]
             if (
@@ -197,7 +279,10 @@ def render_table(report: dict[str, Any]) -> str:
                 or subtree["raw_token_units"] != self_aggregate["raw_token_units"]
                 or node["omitted_descendants"]
             ):
-                rows.append(_table_values(prefix + "  (subtree)", subtree, subtree["share_of_total"], weighted_total))
+                rows.append(_table_values(
+                    prefix + "  (subtree)", subtree, subtree["share_of_total"], weighted_total,
+                    _conflicted_count(report, call_owners, _subtree_ids(node)),
+                ))
             for child in node["children"]:
                 append_node(child, depth + 1)
 
@@ -279,6 +364,7 @@ def _call_row(call: dict[str, Any], report: dict[str, Any], edges: dict[tuple[st
         "provenance": json.dumps(call["provenance"], separators=(",", ":"), sort_keys=True),
         "stream_block_count": call["stream_block_count"],
         "copied_source_count": call["copied_source_count"],
+        "conflicted": bool(call.get("conflicted", False)),
         "input_tokens": tokens["input"],
         "cache_read_tokens": tokens["cache_read"],
         "cache_write_5m_tokens": tokens["cache_write_5m"],

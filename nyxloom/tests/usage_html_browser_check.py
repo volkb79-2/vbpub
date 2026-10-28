@@ -12,6 +12,7 @@ import os
 import shlex
 import shutil
 import sys
+from collections import Counter
 from pathlib import Path
 
 
@@ -59,10 +60,53 @@ def _assert_active_totals_match_ledger(report: dict, page) -> None:
     assert page.locator("#active-totals").text_content() == expected
 
 
+def _assert_joined_chart_points_match_data(report: dict, page) -> None:
+    chart = report["extensions"]["chart_data"]["datasets"]
+    expected_context = [
+        point["call_id"]
+        for session in chart["context_over_time"]["sessions"]
+        for series in session["series"]
+        for point in series["points"]
+    ]
+    expected_swim = [
+        point["call_id"]
+        for lane in chart["swim_lanes"]["lanes"]
+        for point in lane["points"]
+    ]
+    rendered_context_rows = page.locator(
+        "#context-chart [data-call-id]",
+    ).evaluate_all("elements => elements.map(element => element.dataset.callId)")
+    rendered_swim_rows = page.locator(
+        "#swim-chart [data-call-id]",
+    ).evaluate_all("elements => elements.map(element => element.dataset.callId)")
+    visible_nodes = {
+        node["node_id"]
+        for root in report["nodes"]
+        for node in _walk_nodes(root)
+    }
+    context_owners = page.locator(
+        "#context-chart [data-call-id]",
+    ).evaluate_all("elements => elements.map(element => element.dataset.nodeId)")
+    swim_owners = page.locator(
+        "#swim-chart [data-call-id]",
+    ).evaluate_all("elements => elements.map(element => element.dataset.nodeId)")
+    assert Counter(rendered_context_rows) == Counter(expected_context)
+    assert Counter(rendered_swim_rows) == Counter(expected_swim)
+    assert set(context_owners) <= visible_nodes
+    assert set(swim_owners) <= visible_nodes
+
+
+def _walk_nodes(node: dict):
+    yield node
+    for child in node.get("children", []):
+        yield from _walk_nodes(child)
+
+
 def run_browser_check() -> None:
     from pwmcp_client.session import BrowserLease
 
     full_report = _report()
+    full_report["calls"][1]["conflicted"] = True
     html = render_html(full_report, weights_file="usage-weights.toml")
     requests: list[str] = []
     with BrowserLease.connect(label="nyxloom-usage-html-acceptance") as lease:
@@ -76,6 +120,10 @@ def run_browser_check() -> None:
                 timeout=30_000,
             )
             _assert_active_totals_match_ledger(full_report, page)
+            _assert_joined_chart_points_match_data(full_report, page)
+            assert page.locator(
+                "tr[data-node-id='session-001:agent-a'] td:nth-child(7)"
+            ).text_content() == "1"
             assert "Raw 270 · weighted 20.00 · API-equivalent $0.06000000" in (
                 page.locator("#active-totals").text_content() or ""
             )
@@ -174,6 +222,7 @@ def run_browser_check() -> None:
                 timeout=30_000,
             )
             _assert_active_totals_match_ledger(folded_report, folded_page)
+            _assert_joined_chart_points_match_data(folded_report, folded_page)
             assert folded_page.locator("#usage-rows tr.usage-node-row").count() == 1
             assert "Showing 3 of 3 calls" in (
                 folded_page.locator("#active-call-count").text_content() or ""
@@ -185,7 +234,7 @@ def run_browser_check() -> None:
             assert not requests
         finally:
             context.close()
-    print("usage HTML BrowserLease acceptance: PASS (full and folded tables reconcile 3 calls; 0 network requests)")
+    print("usage HTML BrowserLease acceptance: PASS (full and folded ledgers and joined chart points reconcile; 0 network requests)")
 
 
 def main() -> int:

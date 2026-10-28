@@ -145,6 +145,10 @@ def load_weights(path: str | Path | None = None) -> UsageWeights:
             raise UsagePricingError("model prices must use exact model IDs and tables")
         fast = _rate_set(config["fast"], f"models.{model}.fast") if "fast" in config else None
         over = _rate_set(config["over_threshold"], f"models.{model}.over_threshold") if "over_threshold" in config else None
+        if fast is not None and over is not None:
+            raise UsagePricingError(
+                f"models.{model} cannot combine fast and over_threshold rates"
+            )
         threshold = config.get("prompt_threshold_tokens")
         if threshold is not None and (isinstance(threshold, bool) or not isinstance(threshold, int) or threshold <= 0):
             raise UsagePricingError(f"models.{model}.prompt_threshold_tokens must be a positive integer")

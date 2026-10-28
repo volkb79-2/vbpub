@@ -241,15 +241,25 @@ expose price diagnostics, observed reset intervals, and explicitly qualified
 UI readings. See the [usage report guide](docs/CONSUMERS.md#report-claude-code-usage)
 and [design rationale](docs/DESIGN-GUIDE.md#local-usage-report).
 
+`usage windows --since START --until END` uses the half-open UTC interval
+`[START, END)` for calls, reset evidence, threshold events, and interval
+metrics. Custom price tables cannot combine fast and prompt-threshold rates
+for one model; the loader refuses that ambiguous combination. See the
+[design rationale](docs/DESIGN-GUIDE.md#local-usage-report).
+
 `--no-labels` removes session titles and agent topics before serialization.
 `agent_type` remains, and `project_id` is a stable hash of the recorded cwd, so
 the same project can be correlated across reports without including its path.
 Cross-file conflicts keep a deterministic representative call marked
-`conflicted`, with a conflict record that identifies it. Output files use
-mode `0600`; missing parent directories are created.
+`conflicted`, with a conflict record that identifies it. JSON and CSV mark the
+individual call; table, HTML and PDF show conflicted-call counts on node rows.
+Output files use mode `0600`; missing parent directories use mode `0700`.
 Reports and chart exports accept `--anchor-file FILE`; absent that option they
 read the default XDG anchor store. An invalid anchor store produces a warning
-and the report continues without anchor data. The table labels the measure
+and the command continues without anchor data, with JSON status `unreadable`.
+Report JSON exposes this at `extensions.limit_anchors.status`; windows JSON
+uses `anchor_status`. Both include a structured warning.
+The table labels the measure
 `ACTIVE SPAN SUM` as a sum of node-local bursts; it can exceed wall duration
 when nodes overlap.
 
@@ -261,7 +271,8 @@ composition. Cost stacks partition deduplicated call self-cost; subtree totals
 are never stacked with their children. Context lines are decimated for display
 while retaining exact call data in the report ledger. `--depth` and
 `--min-share` fold only the displayed tree; chart ownership and totals use the
-complete windowed tree. Weighted units are an experimental local score, not
+complete windowed tree. HTML maps hidden chart series to the visible folded
+`other` row or nearest displayed parent. Weighted units are an experimental local score, not
 subscription usage. Reports with labels are
 sensitive local artifacts; use `--no-labels` to remove titles and topics before
 writing them. See the [chart guide](docs/CONSUMERS.md#export-usage-chart-data)
