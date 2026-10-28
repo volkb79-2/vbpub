@@ -4,6 +4,8 @@ Labels and order come from truenas/webui ``src/app/services/navigation/navigatio
 2026-10-28): Dashboard, Storage, Datasets, Shares, Data Protection, Credentials (slide-out), Containers,
 Virtual Machines, Apps, Reporting, System (slide-out). There is no "Virtualization" or top-level "Network"
 entry in the v27 UI: Network lives under System, and Containers/VMs are separate top-level items.
+TrueNAS puts “My API Keys” in the top-right account settings menu; tnt nests it under Credentials because its tree has
+no account menu.
 Entries the web UI shows only conditionally (entitlement, feature or hardware dependent) carry ``conditional``:
 Apps, KMIP and Enclosure. M1's Containers and Virtual Machines are always shown as separate top-level workflow
 entries. Per-host detection for the remaining conditional entries is tracked in BACKLOG TNT-35. Deviations are
@@ -48,7 +50,9 @@ MENU: tuple[MenuItem, ...] = (
         MenuItem("cloud-sync", "Cloud Sync Tasks", "implemented", "M2"),
     )),
     MenuItem("credentials", "Credentials", "implemented", "M1", children=(
-        MenuItem("users", "Local Users", "implemented", "M1"), _p("groups", "Groups"), _p("privileges", "Privileges"), _p("directory-services", "Directory Services"),
+        MenuItem("users", "Local Users", "implemented", "M1"),
+        MenuItem("api-keys", "My API Keys", "implemented", "M2", tnt_only=True),
+        _p("groups", "Groups"), _p("privileges", "Privileges"), _p("directory-services", "Directory Services"),
         _p("backup-credentials", "Backup Credentials"), _p("certificates", "Certificates"), _p("s3-access-keys", "S3 Access Keys"),
         _p("kmip", "KMIP", conditional=True))),
     MenuItem("containers", "Containers", "implemented", "M1", matrix=("A-04", "A-06", "B-04")),

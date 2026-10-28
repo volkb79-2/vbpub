@@ -47,7 +47,7 @@ DESTRUCTIVE_METHODS = frozenset({"disk.wipe", "pool.export", "pool.delete", "poo
                                  "vm.delete", "vm.stop", "vm.poweroff", "vm.device.delete", "user.delete",
                                  "sharing.smb.delete", "sharing.nfs.delete", "pool.snapshottask.delete",
                                  "replication.run", "cloudsync.sync",
-                                 "app.delete", "app.uninstall", "pool.dataset.destroy_snapshots", "filesystem.rmdir", "filesystem.unlink",
+                                 "app.delete", "app.uninstall", "api_key.delete", "pool.dataset.destroy_snapshots", "filesystem.rmdir", "filesystem.unlink",
                                  "filesystem.remove", "container.restart", "zfs.pool.delete", "zfs.resource.destroy",
                                  "zfs.resource.snapshot.destroy"})
 DESTRUCTIVE_SUFFIXES = (".delete", ".destroy", ".wipe", ".rollback", ".replace", ".attach", ".offline", ".promote",
@@ -115,7 +115,8 @@ def _manifest_spec(name: str) -> Any:
 
 _SECRET_KEYS = frozenset({"password", "old_password", "new_password", "api_key", "sshpubkey", "private_key",
                           "credentials", "credential", "token", "secret", "secret_access_key", "access_key",
-                          "client_secret", "encryption_password", "encryption_salt"})
+                          "client_secret", "encryption_password", "encryption_salt", "key", "client_key", "salt",
+                          "stored_key", "server_key"})
 
 
 def _canonical_value(value: Any, key: Any = None) -> Any:

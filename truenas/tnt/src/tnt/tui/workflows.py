@@ -412,7 +412,7 @@ class PlanReview(ModalScreen[None]):
     PlanReview #plan-confirm { height: 3; }
     """
 
-    def __init__(self, plan: Plan, session: Session, parent_view: WorkflowView | None = None):
+    def __init__(self, plan: Plan, session: Session, parent_view: Any | None = None):
         super().__init__()
         self.plan = plan
         self.session = session

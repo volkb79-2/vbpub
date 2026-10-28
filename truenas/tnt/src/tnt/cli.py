@@ -196,6 +196,59 @@ def _workflow_action(args: Any, runtime: CliRuntime, opener: SessionOpener, acti
     return 0
 
 
+def _api_key_create(args: Any, runtime: CliRuntime, opener: SessionOpener) -> int:
+    """Apply a create plan, then route the raw response only through the one-time key display."""
+    from .keyfiles import write_api_key_file
+
+    if runtime.json_mode:
+        raise CliFailure("API key creation uses a one-time warning display; omit --json")
+    session = opener(_profile(args), insecure_ack=args.insecure, allow_write=args.allow_write)
+    plan = None
+    result = None
+    entry = None
+    key = None
+    try:
+        action = session.workflows.api_key_create_action(args.name, args.username, args.expires_at)
+        plan = make_plan(action, session.rpc)
+        if args.dry_run:
+            _emit(runtime, {"plan": plan.render(), "applied": False}, plan.render())
+            return 0
+        if not args.allow_write:
+            raise CliFailure(f"plan was not applied; pass --allow-write to apply it\n{plan.render()}")
+        result = apply_plan(plan, session.rpc, allow_write=True)
+        entry = result[0] if isinstance(result, list) and result else None
+        key = entry.get("key") if isinstance(entry, dict) else None
+        if not isinstance(key, str) or not key:
+            raise CliFailure("api_key.create returned no one-time key value; inspect the API key list and rotate manually")
+        saved_to = None
+        save_problem = None
+        if args.write_key:
+            try:
+                saved_to = write_api_key_file(args.write_key, key)
+            except TntError as exc:
+                # A failed optional save must not hide the only plaintext copy returned by TrueNAS.
+                save_problem = str(exc)
+        warning = "WARNING: This API key is shown only once. Copy or save it now."
+        if saved_to:
+            configure = (f"Saved mode 0600 to {saved_to}. Add api_key_file = {json.dumps(saved_to)} under "
+                         f"[profiles.{session.profile.name}] in tnt.toml (open it with $EDITOR tnt.toml).")
+        else:
+            configure = ("To use this key with tnt, save it to a private file, then add api_key_file = \"/absolute/path\" "
+                         f"under [profiles.{session.profile.name}] in tnt.toml (open it with $EDITOR tnt.toml).")
+        text = f"{plan.render()}\n\033[1;31m{warning}\033[0m\nAPI key (one-time): {key}\n{configure}"
+        if save_problem:
+            text += f"\nPrivate file was not written: {save_problem}"
+        text += "\nThe key was not added to tnt.secrets.toml."
+        _emit(runtime, {"plan": plan.render(), "warning": warning, "key": key, "saved_to": saved_to,
+                        "save_problem": save_problem, "configuration": configure}, text)
+        return 0
+    finally:
+        key = None
+        entry = None
+        result = None
+        session.close()
+
+
 def _secret_file(path: str | None) -> prof.Secret:
     if path is None:
         first = getpass.getpass("New password: ")
@@ -933,6 +986,39 @@ def build_cli(cli_identity: CliIdentity | None = None, opener: SessionOpener = o
                                    lambda session: session.workflows.audit_entries(
                                        service=args.service, since=args.since, until=args.until, user=args.user,
                                        event=args.event, limit=args.limit, offset=args.offset))))
+    apikey_registry = CliRegistry(ident, prog="tnt apikey", description="Manage TrueNAS API keys.",
+                                  unexpected_exceptions="report", expected_exceptions=expected)
+    apikey_registry.register(VerbSpec(
+        "list", None, "List API keys without displaying key verifier material.", group=VerbGroup.EXPLORATION.value,
+        options=HOST_OPTIONS,
+        handler=lambda args, runtime: _workflow_read(args, runtime, opener,
+                                                     lambda session: session.workflows.api_keys())))
+    apikey_registry.register(VerbSpec(
+        "create", None, "Create an API key and reveal its raw value once in a warning-marked output.",
+        group=VerbGroup.MODIFICATION.value,
+        arguments=(ArgumentSpec("name", "Human-readable API key name (1–200 characters).", metavar="NAME"),
+                   ArgumentSpec("username", "TrueNAS account that owns the key.", metavar="USERNAME")),
+        options=HOST_OPTIONS + ACTION_OPTIONS + (
+            _value(("--expires-at",), "Expiration time with a UTC offset (default: never expires).", "TIMESTAMP", "WORKFLOW"),
+            _value(("--write-key",), "Optional new absolute file path; created with mode 0600, never overwritten.", "FILE", "WORKFLOW"),
+        ),
+        handler=lambda args, runtime: _api_key_create(args, runtime, opener)))
+    apikey_registry.register(VerbSpec(
+        "rename", None, "Rename an API key without resetting its secret.", group=VerbGroup.MODIFICATION.value,
+        arguments=(ArgumentSpec("key_id", "API key ID.", metavar="ID", parser_kwargs={"type": int}),
+                   ArgumentSpec("name", "New human-readable API key name.", metavar="NAME")),
+        options=HOST_OPTIONS + ACTION_OPTIONS,
+        handler=lambda args, runtime: _workflow_action(
+            args, runtime, opener, lambda session: session.workflows.api_key_rename_action(args.key_id, args.name))))
+    apikey_registry.register(VerbSpec(
+        "revoke", None, "Revoke and remove a key via v27 api_key.delete; type its current name to confirm.",
+        group=VerbGroup.MODIFICATION.value,
+        arguments=(ArgumentSpec("key_id", "API key ID.", metavar="ID", parser_kwargs={"type": int}),),
+        options=HOST_OPTIONS + ACTION_OPTIONS,
+        handler=lambda args, runtime: _workflow_action(
+            args, runtime, opener, lambda session: session.workflows.api_key_revoke_action(args.key_id))))
+    registry.register(VerbSpec("apikey", None, "List, create, rename, and revoke API keys.",
+                               group=VerbGroup.EXPLORATION.value, delegate=apikey_registry.build()))
     return registry.build()
 
 

@@ -12,6 +12,8 @@
   destructive, requires the typed app ID, and preserves TrueNAS-managed data volumes unless explicitly enabled.
 - Added filtered and paginated audit CLI/TUI queries with time, user, event, and service filters; audit fields and
   known inline secret patterns are scrubbed before display. Generic middleware/syslog tailing is unavailable in v27.
+- Added API key list/create/rename/revoke management. Creation reveals the raw key once in a dedicated warning display;
+  optional file storage is exclusive mode `0600`, and verifier fields stay out of ordinary listings and plans.
 - Added schema-versioned `tnt.toml` profiles with explicit config search order, current-user ownership and exact mode-0600 checks,
   inline API-key or password credentials, optional API-key files, and masked profile inspection.
 - Added v27 password login through the pinned client's `PASSWORD_PLAIN` mechanism; API keys continue to use SCRAM.

@@ -13,6 +13,7 @@ from ..menu import MENU, MenuItem, walk
 from ..session import Session
 from .disks import DisksView
 from .audit import AuditView
+from .apikeys import ApiKeysView
 from .network import NetworkView
 from .workflows import WorkflowView
 
@@ -30,6 +31,7 @@ VIEWS = {
     "apps": lambda session: WorkflowView(session, "apps"),
     "network": NetworkView,
     "audit": AuditView,
+    "api-keys": ApiKeysView,
 }
 
 

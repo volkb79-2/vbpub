@@ -86,6 +86,9 @@ class FakeServer:
                             "notes": None, "action_required": False, "portals": {}}
         }
         self.app_delete_options: dict[str, Any] | None = None
+        self.api_keys: dict[int, dict[str, Any]] = {}
+        self.api_key_create_result: dict[str, Any] | None = None
+        self._next_api_key_id = 1
         self.audit_entries: list[dict[str, Any]] = [
             {"audit_id": "audit-1", "message_timestamp": 1793181600, "timestamp": "2026-10-28T10:00:00Z",
              "address": "192.0.2.44", "username": "operator", "session": None, "service": "MIDDLEWARE",
@@ -304,6 +307,10 @@ class FakeServer:
             "app.start": lambda p: self._app_state(p, "RUNNING"),
             "app.stop": lambda p: self._app_state(p, "STOPPED"),
             "app.delete": self._app_delete,
+            "api_key.query": self._api_key_query,
+            "api_key.create": self._api_key_create,
+            "api_key.update": self._api_key_update,
+            "api_key.delete": self._api_key_delete,
             "audit.query": self._audit_query,
             "core.subscribe": lambda p: self._subscribe(p),
             "core.unsubscribe": lambda p: True,
@@ -450,6 +457,51 @@ class FakeServer:
         row = self._get(self.apps, app_id, "app")
         self.app_delete_options = dict(params[1]) if len(params) > 1 else {}
         del self.apps[row["id"]]
+        return True
+
+    def _api_key_query(self, params: list[Any]) -> list[dict[str, Any]]:
+        filters = params[0] if params and isinstance(params[0], list) else []
+        options = params[1] if len(params) > 1 and isinstance(params[1], dict) else {}
+        rows = [dict(row) for row in self.api_keys.values()]
+        for filter_ in filters:
+            if isinstance(filter_, (list, tuple)) and len(filter_) == 3 and filter_[1] == "=":
+                rows = [row for row in rows if row.get(filter_[0]) == filter_[2]]
+        order_by = options.get("order_by", [])
+        if order_by:
+            field = order_by[0]
+            reverse = isinstance(field, str) and field.startswith("-")
+            key = field.lstrip("-") if isinstance(field, str) else "id"
+            rows.sort(key=lambda row: row.get(key), reverse=reverse)
+        offset = options.get("offset", 0)
+        limit = options.get("limit", len(rows))
+        rows = rows[offset:offset + limit]
+        selected = options.get("select")
+        if isinstance(selected, list):
+            rows = [{key: row[key] for key in selected if key in row} for row in rows]
+        return rows
+
+    def _api_key_create(self, params: list[Any]) -> dict[str, Any]:
+        payload = params[0] if params and isinstance(params[0], dict) else {}
+        key_id = self._next_api_key_id
+        self._next_api_key_id += 1
+        row = {"id": key_id, "name": payload.get("name"), "username": payload.get("username"),
+               "user_identifier": 1000, "iterations": 100000, "salt": "synthetic-salt-material",
+               "stored_key": "synthetic-stored-key", "server_key": "synthetic-server-key",
+               "created_at": "2026-10-28T10:00:00Z", "expires_at": payload.get("expires_at"),
+               "local": True, "revoked": False, "revoked_reason": None}
+        self.api_keys[key_id] = row
+        raw_key = f"{key_id}-" + "Q" * 64
+        self.api_key_create_result = {**row, "key": raw_key, "client_key": "synthetic-client-material"}
+        return dict(self.api_key_create_result)
+
+    def _api_key_update(self, params: list[Any]) -> dict[str, Any]:
+        key_id = params[0]
+        row = self.api_keys[key_id]
+        row.update(params[1])
+        return dict(row)
+
+    def _api_key_delete(self, params: list[Any]) -> bool:
+        del self.api_keys[params[0]]
         return True
 
     def _audit_query(self, params: list[Any]) -> list[dict[str, Any]]:

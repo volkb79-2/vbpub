@@ -32,7 +32,7 @@ non-execution requirement.
 | TNT-16 | [DONE M1] Containers and Virtual Machines (matrix A-04..A-06, B-04; v27 `container.*` and `vm.*`). Current image, CPU-count and configured memory-limit fields are unavailable in the verified container schema; see TNT-36/37. | M1 | L |
 | TNT-17 | [DONE M2] Apps: installed app state, upgrade-available flag, start/stop/restart, destructive uninstall with opt-in volume deletion | M2 | M |
 | TNT-18 | [DONE M2] Data Protection periodic snapshot, replication, and cloud-sync tasks (scrub/SMART tasks deferred) | M2 | L |
-| TNT-19 | Credentials, Reporting, Audit, Enclosure | M3 | L |
+| TNT-19 | Credentials other than API Keys, Reporting, Enclosure | M3 | L |
 | TNT-38 | [DONE M1] Snapshots: list/create/clone/hold/release/rollback/delete through CLI and TUI, with drift probes and typed destructive confirmation | M1 | M |
 | TNT-39 | [DONE M1] Containers: list/show/create/update/start/stop/restart/delete through CLI and TUI, including explicit one-shot CPU/memory usage status from `container.metrics`; v27 omits image identity, CPU count, configured memory limit | M1 | L |
 | TNT-40 | [DONE M1] Virtual machines: list/show/create/update/lifecycle/device/console workflows through CLI and TUI; create and device plans are staged because v27 excludes devices from `vm.create` | M1 | L |
@@ -40,6 +40,7 @@ non-execution requirement.
 | TNT-42 | VM create recovery: compensate or guide recovery when a separately reviewed `vm.device.create` plan fails after `vm.create` | M2 | M |
 | TNT-43 | [DONE M2] System > Network: read-only interface/address/route/DNS/default-gateway view through verified v27 methods | M2 | S |
 | TNT-45 | [DONE M2] Audit viewer: filtered, paginated v27 `audit.query` with secret scrubbing; general middleware/syslog tail deferred because v27 exposes no such method | M2 | M |
+| TNT-46 | [DONE M2] API key list/create/rename/revoke with one-time key display, explicit mode-0600 file option, safe verifier projection and typed revoke | M2 | M |
 
 ## Platform and quality
 

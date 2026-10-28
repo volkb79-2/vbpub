@@ -195,6 +195,27 @@ tnt tui --profile lab  # choose System > Audit, set filters, then Refresh/Older/
 scrubs known secret keys and inline secret patterns from event data before output. v27 does not expose a generic
 middleware or syslog tail method. See the [Audit design](DESIGN.md#audit) and [v27 audit schema](API-METHODS-V27.md#audit).
 
+### API Keys
+
+List and rename keys without exposing the stored SCRAM verifier fields. Creation returns a plaintext value that cannot
+be fetched again, so the CLI and TUI show it once in a dedicated warning result. Pass `--write-key` to also create a new
+absolute file with mode `0600`; the file is never overwritten. The returned value is not written to `tnt.secrets.toml`
+or any tnt config automatically:
+
+```sh
+tnt apikey list --profile lab --json
+tnt apikey create deploy-key deploy --profile lab --expires-at 2027-01-01T00:00:00Z \
+  --allow-write --write-key /home/me/.config/tnt/deploy.key
+tnt apikey rename 4 automation --profile lab --allow-write
+tnt apikey revoke 4 --profile lab --allow-write --confirm deploy-key
+$EDITOR tnt.toml  # add api_key_file = "/home/me/.config/tnt/deploy.key" under [profiles.lab]
+```
+
+Do not pass the raw key as a command argument or paste it into shell history. v27 exposes no separate revoke method;
+`apikey revoke` uses `api_key.delete`, which removes and invalidates the key record, and requires typing its current name.
+The web UI places “My API Keys” in the account menu; tnt puts it under Credentials to make it available in the navigation
+tree. See the [API key design](DESIGN.md#api-keys) and [v27 signatures](API-METHODS-V27.md#api-keys).
+
 Use `--file spec.json` for fields beyond a workflow's minimal create options. Passwords are entered through a no-echo
 prompt or `--password-file`, never a command-line argument. User SSH keys are loaded from a public-key file or
 validated public-key text; private keys are not accepted or printed.

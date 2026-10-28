@@ -26,7 +26,8 @@ class RpcClient(Protocol):
 
 _SENSITIVE_KEYS = frozenset({"password", "old_password", "new_password", "api_key", "sshpubkey", "private_key",
                              "credentials", "credential", "token", "secret", "secret_access_key", "access_key",
-                             "client_secret", "encryption_password", "encryption_salt"})
+                             "client_secret", "encryption_password", "encryption_salt", "key", "client_key", "salt",
+                             "stored_key", "server_key"})
 
 
 def _rpc_values(value: Any, *, reveal: bool = False, key: Any = None) -> Any:

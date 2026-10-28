@@ -149,7 +149,9 @@ Findings that differ from the brief's guess: there is no "Virtualization/Instanc
 Virtual Machines as separate top-level items) and Network is under System. The Storage page's own sub-pages (Disks,
 Import Pool, pool management) are reached from the Storage page, not from the menu; tnt shows them as children.
 
-`tnt/menu.py` holds the tree. Datasets, Shares, Data Protection > Snapshots, Credentials > Local Users, Containers, and Virtual
+`tnt/menu.py` holds the tree. TrueNAS places “My API Keys” in the top-right account menu; tnt nests it under Credentials
+as a `tnt_only` tree leaf because the TUI has no account menu. Datasets, Shares, Data Protection > Snapshots,
+Credentials > Local Users/API Keys, Containers, and Virtual
 Machines have workflow views; other entries remain placeholders pending their M2 slices. Containers and Virtual Machines are separate
 top-level entries and are always shown. The TUI omits Shell because it is already a terminal.
 
@@ -196,6 +198,25 @@ event. Event data is treated as untrusted: secret-named keys, inline credential 
 shapes, and PEM private-key blocks are scrubbed before CLI/TUI display. The v27 method index has no general middleware
 or syslog tail API, so tnt does not read logs through shell commands or filesystem paths. See
 [API method evidence](API-METHODS-V27.md#audit).
+
+### API Keys
+
+The API key list uses a v27 `select` projection and returns only ID, name, owner, timestamps, locality, and revocation
+status; salt and SCRAM verifier fields never reach ordinary CLI/TUI display. Create uses `api_key.create` and places
+the returned raw value only in a one-time CLI warning output or a dedicated TUI dialog. The TUI clears the dialog's
+value on close. The normal plan renderer redacts key/verifier field names, and create results bypass generic action
+logging/formatting. An optional absolute `--write-key` path is created exclusively with mode `0600`; it is never
+overwritten and is never added to `tnt.secrets.toml` or `tnt.toml` automatically. The operator may configure that path
+as `api_key_file` afterward.
+
+Rename calls `api_key.update(id, {name, reset: false})`; tnt explicitly avoids the API's key-reset option because a
+reset also returns new plaintext key material. v27 has no public revoke RPC. The user-facing revoke action is the
+destructive `api_key.delete(id)` operation: middleware removes the record and regenerates its PAM state, immediately
+invalidating the key. The plan probes the current ID/name, and apply requires typing the current key name.
+
+The v27 web UI places “My API Keys” in the account settings menu at the top right. tnt places it under Credentials so
+it can be reached from the left navigation tree; this is a documented navigation-only adaptation. See
+[API method evidence](API-METHODS-V27.md#api-keys) and the upstream [TrueNAS API UI note](https://github.com/truenas/documentation/tree/master/content/SCALE/API).
 
 ## 5. UX
 

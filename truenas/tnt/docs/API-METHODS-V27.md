@@ -85,6 +85,22 @@ allows top-level audit filters only on the documented SQL-safe fields (including
 contains no general middleware/syslog tail method; `core.job_download_logs` is job-specific and is not a system log
 viewer. tnt therefore exposes only audit entries.
 
+## API Keys
+
+| Workflow | Method and verified signature | Classification | Evidence |
+|---|---|---|---|
+| API key list | `api_key.query(filters=[], options={}) -> list[ApiKeyEntry]`; `QueryOptions.select` supports a safe field projection | read | [v27 reference](https://api.truenas.com/v27.0/api_methods_api_key.query.html), [v27 model](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/api/v27_0_0/api_key.py), [API key service](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/plugins/api_key.py) |
+| API key creation | `api_key.create(api_key_create: ApiKeyCreate) -> ApiKeyEntryWithKey`; `name` and `username` are required, `expires_at` is optional; result includes `key` and `client_key`, with the raw key only returned on create | write | [v27 reference](https://api.truenas.com/v27.0/api_methods_api_key.create.html), [v27 model](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/api/v27_0_0/api_key.py), [create implementation](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/plugins/api_key.py) |
+| API key rename | `api_key.update(id_: int, api_key_update: ApiKeyUpdate) -> ApiKeyEntryWithKey | ApiKeyEntry`; `reset` is required, and tnt sends `false` with the new name | write | [v27 reference](https://api.truenas.com/v27.0/api_methods_api_key.update.html), [v27 model](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/api/v27_0_0/api_key.py), [update implementation](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/plugins/api_key.py) |
+| API key revoke | `api_key.delete(id_: int) -> true`; deleting the record invalidates the key | destructive | [v27 reference](https://api.truenas.com/v27.0/api_methods_api_key.delete.html), [v27 model](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/api/v27_0_0/api_key.py), [delete implementation](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/plugins/api_key.py) |
+
+The method index has no public `api_key.revoke`; the private middleware revoke helper is not callable through v27. tnt
+uses `api_key.delete` for the user-facing revoke operation and requires typing the current key name. `api_key.query`
+returns `salt`, `stored_key`, and `server_key` in its entry schema, so tnt asks for only `id`, `name`, `username`,
+`created_at`, `expires_at`, `local`, `revoked`, and `revoked_reason`. API keys appear as “My API Keys” in the web UI's
+top-right account settings menu; tnt nests the screen under Credentials for left-tree access, following the upstream
+[TrueNAS API UI note](https://github.com/truenas/documentation/tree/master/content/SCALE/API).
+
 `vm.get_console(id)` returns a non-empty console connection string or command (the VM ID/name form in middleware),
 not a host/port object. VNC/SPICE endpoints come from `vm.get_display_devices(id)`: display attributes include
 `bind`, `port` (VNC/SPICE, `null` for auto-assignment), and `web_port` (`null` for auto-assignment). The result also

@@ -35,8 +35,10 @@ that check fails. Config lookup order is `--config PATH`, `$TNT_CONFIG`, `./tnt.
 `$XDG_CONFIG_HOME/tnt/tnt.toml` (or `~/.config/tnt/tnt.toml` when `XDG_CONFIG_HOME` is unset). `ws://` is refused.
 TLS verification is on by default. A profile with `tls = "insecure"` also requires `--insecure` on each command.
 
-Credentials may be inline by operator choice; see the [secret-handling rationale](docs/DESIGN.md#7-secrets). They never appear in command arguments, log messages, exceptions,
-`profile show`, JSON output, or the TUI. `profile show` masks configured secrets as `***`.
+Credentials may be inline by operator choice; see the [secret-handling rationale](docs/DESIGN.md#7-secrets). They never
+appear in command arguments, logs, exceptions, `profile show`, read JSON, or ordinary TUI screens. The one-time API key
+creation result is shown only in a dedicated warning view/output and is never added to the local config automatically.
+`profile show` masks configured secrets as `***`.
 
 ```toml
 schema_version = 1
@@ -64,6 +66,13 @@ tls = "verify"
 authentication uses its supported `PASSWORD_PLAIN` login flow. Authentication failures are fatal and never retried.
 SSH private-key and known-host paths remain profile facts for optional SSH workflows. M1 user-key edits read an explicit
 OpenSSH `.pub` file or validated public-key text; private key material is never accepted or printed.
+
+`tnt apikey list` masks TrueNAS key verifier fields. `create` shows the raw value once in a bold-warning result; use
+`--write-key` to create a new mode-0600 file without overwriting an existing file. tnt never writes the returned value
+to `tnt.secrets.toml`; add only the private file's `api_key_file` path to a profile when you choose to use the key.
+v27 has no separate revoke RPC, so `apikey revoke` uses destructive `api_key.delete` and requires the current name as
+typed confirmation. See the [API key design](docs/DESIGN.md#api-keys), [consumer workflow](docs/CONSUMERS.md#api-keys),
+and [v27 method evidence](docs/API-METHODS-V27.md#api-keys).
 
 ## Use
 
@@ -93,6 +102,10 @@ tnt app restart demo --profile lab --allow-write
 tnt app uninstall demo --profile lab --allow-write --confirm demo
 tnt network show --profile lab --json
 tnt audit --profile lab --user admin --event USER_LOGIN --limit 100 --json
+tnt apikey list --profile lab --json
+tnt apikey create deploy-key deploy --profile lab --expires-at 2027-01-01T00:00:00Z --allow-write --write-key /home/me/.config/tnt/deploy.key
+tnt apikey rename 4 automation --profile lab --allow-write
+tnt apikey revoke 4 --profile lab --allow-write --confirm automation
 tnt tui --profile lab
 tnt tui --profile lab --allow-write
 ```

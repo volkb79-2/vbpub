@@ -97,6 +97,11 @@ class V27(Backend):
             "network.general.summary": MethodSpec("read"),
         },
         "audit": {"audit.query": MethodSpec("read")},
+        "api-keys": {
+            "api_key.query": MethodSpec("read"), "api_key.get_instance": MethodSpec("read"),
+            "api_key.create": MethodSpec("write"), "api_key.update": MethodSpec("write"),
+            "api_key.delete": MethodSpec("destructive"),
+        },
         "system": {"system.info": MethodSpec("read"), "system.version": MethodSpec("read"),
                    "core.get_methods": MethodSpec("read")},
         # These names are known to be absent from the v27 method index. They remain classified so an accidental
