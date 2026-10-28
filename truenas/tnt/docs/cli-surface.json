@@ -1,0 +1,1439 @@
+{
+  "candidates": [
+    {
+      "id": "case:route:entrypoint:tnt/disks/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:tnt/disks/--insecure"
+      ],
+      "route_id": "route:entrypoint:tnt/disks",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:tnt/disks/--insecure"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:1b9fa4d0db5965dd420744d78756ae0297bc2bb5cb5fa81779b24f4b11f3dd34"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/disks/option-spelling/option:route:entrypoint:tnt/disks/--config/--config",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/disks/--config"
+      ],
+      "route_id": "route:entrypoint:tnt/disks",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/disks/--config",
+        "spelling": "--config"
+      },
+      "signature": "sha256:726f5289cadd24b8c5266ca224c8ee028ae7e901183707628c172311e2c35d1c"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/disks/option-spelling/option:route:entrypoint:tnt/disks/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/disks/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:tnt/disks",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/disks/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:0ed6c6a6a57c66a353293ea68207efecd33cba72094357cfd008eb1cbd748506"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/disks/option-spelling/option:route:entrypoint:tnt/disks/--insecure/--insecure",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/disks/--insecure"
+      ],
+      "route_id": "route:entrypoint:tnt/disks",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/disks/--insecure",
+        "spelling": "--insecure"
+      },
+      "signature": "sha256:f2fcf70f4eff802fdd2c5e2c04e91b0aa9f64a1117a1481219346f06d8751383"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/disks/option-spelling/option:route:entrypoint:tnt/disks/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/disks/--json"
+      ],
+      "route_id": "route:entrypoint:tnt/disks",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/disks/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:57050f59c42c5240fd2d3b59ee2cc926d91cca877ebd57f48fa3b88326b4bca0"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/disks/option-spelling/option:route:entrypoint:tnt/disks/--profile/--profile",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/disks/--profile"
+      ],
+      "route_id": "route:entrypoint:tnt/disks",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/disks/--profile",
+        "spelling": "--profile"
+      },
+      "signature": "sha256:4f56daa92c0f9db0f15ee7e344b14bf137e5d00aea1b94eca1f4d49cd88a43d4"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/doctor/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:tnt/doctor/--insecure",
+        "option:route:entrypoint:tnt/doctor/--online"
+      ],
+      "route_id": "route:entrypoint:tnt/doctor",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:tnt/doctor/--insecure",
+          "option:route:entrypoint:tnt/doctor/--online"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:6ad5d5a873c97c2cc84d0f7bd3559eb6e28bae533f8ac5c5db32ba8ddddfc593"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/doctor/option-spelling/option:route:entrypoint:tnt/doctor/--check/--check",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/doctor/--check"
+      ],
+      "route_id": "route:entrypoint:tnt/doctor",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/doctor/--check",
+        "spelling": "--check"
+      },
+      "signature": "sha256:80a35ecaef0ceaa6ef43302eba42a525d06c65236263e8e8a978fb87b09684d0"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/doctor/option-spelling/option:route:entrypoint:tnt/doctor/--config/--config",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/doctor/--config"
+      ],
+      "route_id": "route:entrypoint:tnt/doctor",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/doctor/--config",
+        "spelling": "--config"
+      },
+      "signature": "sha256:f21a39646b9c9ba2e37612932bcd44cc8e0664b8d56c4d85c496dad23c45f41a"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/doctor/option-spelling/option:route:entrypoint:tnt/doctor/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/doctor/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:tnt/doctor",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/doctor/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:4a3416e5ab01d2d131c836360b8020b3276ab728b5adebc5186c8191f58cc6d8"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/doctor/option-spelling/option:route:entrypoint:tnt/doctor/--insecure/--insecure",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/doctor/--insecure"
+      ],
+      "route_id": "route:entrypoint:tnt/doctor",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/doctor/--insecure",
+        "spelling": "--insecure"
+      },
+      "signature": "sha256:cee0879f8e40fd8ce303ffecd37991f14931a87071ac01333d0adb464bc7922d"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/doctor/option-spelling/option:route:entrypoint:tnt/doctor/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/doctor/--json"
+      ],
+      "route_id": "route:entrypoint:tnt/doctor",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/doctor/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:0be1a368ca493b06dd59d31cfc1c73fef3a935115ee21d1fd340445414902b02"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/doctor/option-spelling/option:route:entrypoint:tnt/doctor/--online/--online",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/doctor/--online"
+      ],
+      "route_id": "route:entrypoint:tnt/doctor",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/doctor/--online",
+        "spelling": "--online"
+      },
+      "signature": "sha256:f25780d84b58d5ae53c42f8e13a40e6cd1afd13ce52bff56613a9971cf6f5025"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/doctor/option-spelling/option:route:entrypoint:tnt/doctor/--profile/--profile",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/doctor/--profile"
+      ],
+      "route_id": "route:entrypoint:tnt/doctor",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/doctor/--profile",
+        "spelling": "--profile"
+      },
+      "signature": "sha256:4b5024d3774980476e51db8798203fcc64f0efd98d593e27c892371c87aa154b"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/profile/list/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:tnt/profile/list",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:82587a2f17c6a83743322e55bae8b95a98a23cc0d179e6f0142b76f215bd776b"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/profile/list/option-spelling/option:route:entrypoint:tnt/profile/list/--config/--config",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/profile/list/--config"
+      ],
+      "route_id": "route:entrypoint:tnt/profile/list",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/profile/list/--config",
+        "spelling": "--config"
+      },
+      "signature": "sha256:b3b2b9da6d8ed24dbed719e04f9474d402b612d44edab3f39b58fd9e4b19c852"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/profile/list/option-spelling/option:route:entrypoint:tnt/profile/list/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/profile/list/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:tnt/profile/list",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/profile/list/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:6a6a52c803b6fa5447cb7ded42958d7224a9f756c0eb39c30012bd328b7f7fc2"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/profile/list/option-spelling/option:route:entrypoint:tnt/profile/list/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/profile/list/--json"
+      ],
+      "route_id": "route:entrypoint:tnt/profile/list",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/profile/list/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:0cd206f133bd0e93a436ddfb080616ed0ba352627fd488ae5691ec9f43032693"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/profile/show/argument-shape/argument:route:entrypoint:tnt/profile/show/name",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:tnt/profile/show/name"
+      ],
+      "route_id": "route:entrypoint:tnt/profile/show",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:tnt/profile/show/name"
+      },
+      "signature": "sha256:a5aff699cf7f206f4f15e8b64a5bc17415248128f86949a1f051f997e7c4cad1"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/profile/show/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:tnt/profile/show",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:d8132dbfc163c9abf40059ad62ecbb530132ab1b79aaeeaca5ac84d6ee190b31"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/profile/show/option-spelling/option:route:entrypoint:tnt/profile/show/--config/--config",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/profile/show/--config"
+      ],
+      "route_id": "route:entrypoint:tnt/profile/show",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/profile/show/--config",
+        "spelling": "--config"
+      },
+      "signature": "sha256:2ae2b7f77e6b6a03f98557a5da51fb8baa046c38831454d707bef2d00520fe12"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/profile/show/option-spelling/option:route:entrypoint:tnt/profile/show/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/profile/show/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:tnt/profile/show",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/profile/show/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:513842f62d650446d0d3aecbe88373934be77871376c765b8e8e9bd1d6457a50"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/profile/show/option-spelling/option:route:entrypoint:tnt/profile/show/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/profile/show/--json"
+      ],
+      "route_id": "route:entrypoint:tnt/profile/show",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/profile/show/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:457635d12710086208c8be3f3eb5f953e5158360679038a1b6b2bf20d586d596"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/tui/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:tnt/tui/--insecure",
+        "option:route:entrypoint:tnt/tui/--allow-write"
+      ],
+      "route_id": "route:entrypoint:tnt/tui",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:tnt/tui/--insecure",
+          "option:route:entrypoint:tnt/tui/--allow-write"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:99c773fde6aaab02b7939fd7bab660015132edf7fffd2a6a748e9c020d78e4d7"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/tui/option-spelling/option:route:entrypoint:tnt/tui/--allow-write/--allow-write",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/tui/--allow-write"
+      ],
+      "route_id": "route:entrypoint:tnt/tui",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/tui/--allow-write",
+        "spelling": "--allow-write"
+      },
+      "signature": "sha256:03ed2fe7517153360f8da59f8bdfaf59608028633b1485d9016444264f90e646"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/tui/option-spelling/option:route:entrypoint:tnt/tui/--config/--config",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/tui/--config"
+      ],
+      "route_id": "route:entrypoint:tnt/tui",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/tui/--config",
+        "spelling": "--config"
+      },
+      "signature": "sha256:7ef98b4764f5f33359be1a4d7a67f9855335040e327c001453569d88d41549ea"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/tui/option-spelling/option:route:entrypoint:tnt/tui/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/tui/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:tnt/tui",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/tui/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:b417dee1a6c99284dd522d045bcf80bef85ecb81b02bb03279e1c9a4091eda71"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/tui/option-spelling/option:route:entrypoint:tnt/tui/--insecure/--insecure",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/tui/--insecure"
+      ],
+      "route_id": "route:entrypoint:tnt/tui",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/tui/--insecure",
+        "spelling": "--insecure"
+      },
+      "signature": "sha256:bd380beb3170f79a42e9047f445bd5bf0f23cfc2207879e61b3f7a9474cc8005"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/tui/option-spelling/option:route:entrypoint:tnt/tui/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/tui/--json"
+      ],
+      "route_id": "route:entrypoint:tnt/tui",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/tui/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:38ae82e5c8b44ca4bba82e203504beabceb789ffa948853e9b6f730cfa965469"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/tui/option-spelling/option:route:entrypoint:tnt/tui/--profile/--profile",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/tui/--profile"
+      ],
+      "route_id": "route:entrypoint:tnt/tui",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/tui/--profile",
+        "spelling": "--profile"
+      },
+      "signature": "sha256:81b8b213c676f7b1e294ef5dca3021b783476bc2b4b8bbf61421acd79b10ce0d"
+    }
+  ],
+  "entrypoint": {
+    "allow_abbrev": false,
+    "builtins": [
+      "help",
+      "help <verb>",
+      "version",
+      "--help",
+      "--version"
+    ],
+    "command": "tnt",
+    "display_name": "tnt",
+    "fromfile_prefix_chars": null,
+    "id": "entrypoint:tnt",
+    "long_name": "TrueNAS terminal UI and CLI",
+    "no_args_action": false,
+    "prefix_chars": "-",
+    "prog": "tnt",
+    "single_command": false
+  },
+  "incomplete": [],
+  "interaction_issues": [],
+  "library_contract": {
+    "name": "cli-extended",
+    "version": 1
+  },
+  "routes": [
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--profile",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Profile name (default: the file's `default`, or its only profile).",
+          "dest": "profile",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--profile"
+          ],
+          "help_group": "TARGET HOST",
+          "hidden": false,
+          "id": "option:route:entrypoint:tnt/disks/--profile",
+          "kind": "option",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "disks"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--config",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Profile file (default: $TNT_CONFIG, else $XDG_CONFIG_HOME/tnt/profiles.toml).",
+          "dest": "config",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--config"
+          ],
+          "help_group": "TARGET HOST",
+          "hidden": false,
+          "id": "option:route:entrypoint:tnt/disks/--config",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "disks"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--insecure",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Confirm TLS verification is OFF for a profile with tls = \"insecure\" (throwaway test hosts only).",
+          "dest": "insecure",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--insecure"
+          ],
+          "help_group": "TARGET HOST",
+          "hidden": false,
+          "id": "option:route:entrypoint:tnt/disks/--insecure",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "disks"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "List disks with their partitions and free space (Storage > Disks).",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:tnt/disks",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "disks"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "disks"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "List disks with their partitions and free space (Storage > Disks).",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._AppendAction",
+          "before_nested_subcommand": false,
+          "canonical": "--check",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "run only this check (repeatable)",
+          "dest": "check",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--check"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:tnt/doctor/--check",
+          "kind": "option",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "action": "append",
+            "default": null
+          },
+          "parser_path": [
+            "doctor"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--profile",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Profile name (default: the file's `default`, or its only profile).",
+          "dest": "profile",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--profile"
+          ],
+          "help_group": "TARGET HOST",
+          "hidden": false,
+          "id": "option:route:entrypoint:tnt/doctor/--profile",
+          "kind": "option",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "doctor"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--config",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Profile file (default: $TNT_CONFIG, else $XDG_CONFIG_HOME/tnt/profiles.toml).",
+          "dest": "config",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--config"
+          ],
+          "help_group": "TARGET HOST",
+          "hidden": false,
+          "id": "option:route:entrypoint:tnt/doctor/--config",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "doctor"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--insecure",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Confirm TLS verification is OFF for a profile with tls = \"insecure\" (throwaway test hosts only).",
+          "dest": "insecure",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--insecure"
+          ],
+          "help_group": "TARGET HOST",
+          "hidden": false,
+          "id": "option:route:entrypoint:tnt/doctor/--insecure",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "doctor"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--online",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Also connect to the host (one login, no retry).",
+          "dest": "online",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--online"
+          ],
+          "help_group": "TARGET HOST",
+          "hidden": false,
+          "id": "option:route:entrypoint:tnt/doctor/--online",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "doctor"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "check this tool's environment and report problems",
+      "group": "MAINTENANCE",
+      "id": "route:entrypoint:tnt/doctor",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "doctor"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "doctor"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "check this tool's environment and report problems",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Inspect connection profiles (list, show).",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:tnt/profile",
+      "kind": "delegate-group",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "profile"
+      ],
+      "single_command": false,
+      "subcommands": [
+        "route:entrypoint:tnt/profile/list",
+        "route:entrypoint:tnt/profile/show"
+      ],
+      "summary": "Inspect connection profiles (list, show).",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--config",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Profile file (default: $TNT_CONFIG, else $XDG_CONFIG_HOME/tnt/profiles.toml).",
+          "dest": "config",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--config"
+          ],
+          "help_group": "TARGET HOST",
+          "hidden": false,
+          "id": "option:route:entrypoint:tnt/profile/list/--config",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "profile",
+            "list"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "Inspect connection profiles (list, show).",
+          "group": "EXPLORATION",
+          "id": null,
+          "name": "profile",
+          "summary": "Inspect connection profiles (list, show).",
+          "synopsis": null
+        }
+      ],
+      "description": "List the profiles in the profile file (never shows key material).",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:tnt/profile/list",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "profile"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "profile",
+            "list"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "profile",
+        "list"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "List the profiles in the profile file (never shows key material).",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Profile name (default: the default profile).",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:tnt/profile/show/name",
+          "kind": "argument",
+          "metavar": "NAME",
+          "minimum_values": 0,
+          "name": "name",
+          "nargs": "?",
+          "parser_kwargs": {
+            "nargs": "?"
+          },
+          "parser_path": [
+            "profile",
+            "show"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--config",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Profile file (default: $TNT_CONFIG, else $XDG_CONFIG_HOME/tnt/profiles.toml).",
+          "dest": "config",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--config"
+          ],
+          "help_group": "TARGET HOST",
+          "hidden": false,
+          "id": "option:route:entrypoint:tnt/profile/show/--config",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "profile",
+            "show"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "Inspect connection profiles (list, show).",
+          "group": "EXPLORATION",
+          "id": null,
+          "name": "profile",
+          "summary": "Inspect connection profiles (list, show).",
+          "synopsis": null
+        }
+      ],
+      "description": "Show one profile and whether its key file is private (never the key).",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:tnt/profile/show",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "profile"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "profile",
+            "show"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "profile",
+        "show"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Show one profile and whether its key file is private (never the key).",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--profile",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Profile name (default: the file's `default`, or its only profile).",
+          "dest": "profile",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--profile"
+          ],
+          "help_group": "TARGET HOST",
+          "hidden": false,
+          "id": "option:route:entrypoint:tnt/tui/--profile",
+          "kind": "option",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "tui"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--config",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Profile file (default: $TNT_CONFIG, else $XDG_CONFIG_HOME/tnt/profiles.toml).",
+          "dest": "config",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--config"
+          ],
+          "help_group": "TARGET HOST",
+          "hidden": false,
+          "id": "option:route:entrypoint:tnt/tui/--config",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "tui"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--insecure",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Confirm TLS verification is OFF for a profile with tls = \"insecure\" (throwaway test hosts only).",
+          "dest": "insecure",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--insecure"
+          ],
+          "help_group": "TARGET HOST",
+          "hidden": false,
+          "id": "option:route:entrypoint:tnt/tui/--insecure",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "tui"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--allow-write",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Open a write-capable session; every change is still planned and confirmed.",
+          "dest": "allow_write",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--allow-write"
+          ],
+          "help_group": "SAFETY",
+          "hidden": false,
+          "id": "option:route:entrypoint:tnt/tui/--allow-write",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "tui"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Open the interactive terminal UI (needs the tui extra).",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:tnt/tui",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "tui"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "tui"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Open the interactive terminal UI (needs the tui extra).",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    }
+  ],
+  "schema_version": 7,
+  "syntax_complete": true
+}

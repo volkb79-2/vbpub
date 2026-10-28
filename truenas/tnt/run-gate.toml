@@ -1,0 +1,17 @@
+# tnt's executable gate matrix. M0 ships r0-r1 only (unit tests, no mutation lane yet: BACKLOG TNT-30).
+# No test touches a real host: the live lane is a separate, operator-run lane (docs/DESIGN.md section 9).
+schema_version = 1
+
+[lanes.r0-r1]
+kind = "command"
+environment = "tester-unified"
+argv = [
+  "bash", "-c",
+  "cd {worktree}/truenas/tnt && PYTHONPATH=src:{worktree}/libraries/cli-extended/src PYTHONDONTWRITEBYTECODE=1 /opt/tester-venv/bin/python3 -m pytest tests -q --cov=tnt --cov-branch --cov-report=term-missing --cov-report=json:coverage.json",
+]
+clean_tree = false
+budget = "20m"
+artifacts = ["coverage.json"]
+
+[lanes.r0-r1.resources]
+memory = "1g"

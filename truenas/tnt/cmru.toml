@@ -1,0 +1,45 @@
+# tnt release contract -- parsed ONLY by cmru. Tags `tnt-v*`; a wheel and its sha256 go to GitHub Releases
+# only, never PyPI. NOT yet registered in cmru.orchestration.toml (a later step; see docs/DESIGN.md section 12).
+schema_version = 1
+
+[runtime]
+kind = "none"
+
+[env]
+TNT_RELEASE_NOTES = "## tnt wheel\n\nTrueNAS terminal UI and CLI over the JSON-RPC API.\n\n**Install (wheel)**\n```bash\npython -m pip install --find-links . 'tnt[tui]'\n```"
+
+[project]
+id = "tnt"
+description = "tnt -- TrueNAS terminal UI and CLI"
+template_revision = 4
+prefix = "tnt-v"
+artifacts = ["wheel"]
+scm_dist = "tnt"
+
+[project.version]
+strategy = "scm"
+bump = "conventional"
+
+[project.release]
+git_tag = true
+build_step = "build"
+artifact_dirs = ["dist"]
+evidence_paths = ["coverage.json"]
+
+[steps.run-tests]
+quiet = true
+commands = [
+  { label = "tnt: r0-r1 (unit + branch coverage)", argv = ["run-gate", "r0-r1"], cwd = "." },
+]
+
+[steps.build]
+quiet = true
+commands = [
+  { label = "tnt: build wheel", argv = ["cmru", "handler", "wheel-build", "--cwd", "."], cwd = "." },
+]
+
+[steps.push]
+quiet = true
+commands = [
+  { label = "tnt: publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "tnt", "--cwd", ".", "--notes-env", "TNT_RELEASE_NOTES"], cwd = "." },
+]
