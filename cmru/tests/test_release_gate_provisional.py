@@ -314,14 +314,31 @@ def _prepare_release_heading(repo, version):
     _git(repo, "commit", "--quiet", "-m", f"prepare {version}")
 
 
-def test_the_ki79_windows_are_the_6_2_and_7_0_patch_lines_and_nothing_wider():
+def test_ki79_refuses_a_non_strict_prepared_heading_instead_of_reading_an_older_one(tmp_path, monkeypatch):
+    repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
+    _prepare_release_heading(repo, "7.0.0")
+    changes = repo / "cmru" / "CHANGES.md"
+    changes.write_text(
+        changes.read_text(encoding="utf-8").replace("## [7.0.0]", "## [7.2.0rc1] - 2026-10-28\n\n- rc\n\n## [7.0.0]", 1),
+        encoding="utf-8",
+    )
+    _git(repo, "add", "cmru/CHANGES.md")
+    _git(repo, "commit", "--quiet", "-m", "prepare 7.2.0rc1")
+
+    with pytest.raises(RuntimeError, match=r"not a strict X\.Y\.Z version.*7\.2\.0rc1"):
+        _gate(repo, private_root, postpone=POSTPONE)
+
+    assert calls == []
+
+
+def test_the_ki79_windows_are_the_6_2_7_0_and_7_1_patch_lines_and_nothing_wider():
     assert run_release_gate.POSTPONEMENT_RELEASE_VERSIONS == {
-        "KI-79": (((6, 2, 0), (6, 3, 0)), ((7, 0, 0), (7, 1, 0)))
+        "KI-79": (((6, 2, 0), (6, 3, 0)), ((7, 0, 0), (7, 1, 0)), ((7, 1, 0), (7, 2, 0)))
     }
 
 
-@pytest.mark.parametrize("version", ["6.2.0", "6.2.1", "6.2.9", "6.2.10", "7.0.0", "7.0.1"])
-def test_ki79_is_authorized_for_the_6_2_and_7_0_patch_lines(tmp_path, monkeypatch, version):
+@pytest.mark.parametrize("version", ["6.2.0", "6.2.1", "6.2.9", "6.2.10", "7.0.0", "7.0.1", "7.1.0", "7.1.1", "7.1.9"])
+def test_ki79_is_authorized_for_the_6_2_7_0_and_7_1_patch_lines(tmp_path, monkeypatch, version):
     repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
     _prepare_release_heading(repo, version)
 
@@ -332,14 +349,14 @@ def test_ki79_is_authorized_for_the_6_2_and_7_0_patch_lines(tmp_path, monkeypatc
     assert marker["target_version"] == version and marker["tracking_id"] == POSTPONE
 
 
-@pytest.mark.parametrize("version", ["6.3.0", "6.3.1", "7.1.0", "8.0.0", "6.1.9", "5.9.9"])
+@pytest.mark.parametrize("version", ["6.3.0", "6.3.1", "7.2.0", "7.2.1", "8.0.0", "6.1.9", "5.9.9"])
 def test_ki79_is_refused_outside_the_authorized_lines_before_any_lane_runs(tmp_path, monkeypatch, version):
     repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
     _prepare_release_heading(repo, version)
 
     with pytest.raises(
         RuntimeError,
-        match=rf"authorized only for CMRU >= 6\.2\.0 and < 6\.3\.0 .* or >= 7\.0\.0 and < 7\.1\.0 .*identifies {version}",
+        match=rf"authorized only for CMRU >= 6\.2\.0 and < 6\.3\.0 .* or >= 7\.0\.0 and < 7\.1\.0 .* or >= 7\.1\.0 and < 7\.2\.0 .*identifies {version}",
     ):
         _gate(repo, private_root, postpone=POSTPONE)
 

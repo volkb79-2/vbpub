@@ -4,7 +4,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Changed
+- The KI-79 R2 (mutation) postponement window also covers the 7.1 patch line (`>= 7.1.0`, `< 7.2.0`), by the operator decision of 2026-10-27 waiving R2 for every release of the current release wave. The window stays a bounded, version-keyed allowlist: 7.2.0 and later refuse, only `mutation` is deferred, and the R2 debt stays open (KI-79, KI-99; now due before 7.2.0).
+
 ### Fixed
+- The KI-79 postponement guard fails closed on a prepared dated release heading that is not strict `X.Y.Z` (for example `7.2.0rc1`) instead of reading an older, authorized heading below it.
 - `cmru abandon` retires a failed `--from-worktree` candidate again (KI-86): the feature-source record is compared with the transaction's recorded base commit, not with the worktree HEAD that `cmru abandon`'s listing carries and that moves with the first prepare commit.
 - A failed `cmru release --dry-run` of a new candidate discards its disposable worktree, branch and sidecars instead of retaining a candidate that `abandon` withheld (KI-91); a dry run of a resumed candidate, or any candidate with a pushed backup or a recorded result, is still retained.
 - GHCR visibility sync after a successful image push no longer fails the release when the package is still not found after the retries or the token may not read it (KI-97): it warns with the cause and the one-time UI remediation (set visibility once, link the package to the repository) and continues; `mirror_package_visibility(..., missing="fail")` keeps the hard failure, 5xx lookups still fail.

@@ -1049,9 +1049,10 @@ FIRST_RELEASE_POSTPONE_REASON = (
 #: ``lowest <= version < below``; an id may list several windows. KI-79: the whole 6.2 patch
 #: line (6.2.0 by the 2026-10-14 operator decision; widened 2026-10-21 -- "release more cmru
 #: also without prior R2" -- to every 6.2.x) and, by the 2026-10-23 operator decision, the 7.0
-#: line (the 7.0.0 release carrying the mandatory `[github] token_source`). Every other version
-#: still refuses; moving a window needs a new operator decision and a reviewed change here.
-POSTPONEMENT_RELEASE_VERSIONS = {"KI-79": (((6, 2, 0), (6, 3, 0)), ((7, 0, 0), (7, 1, 0)))}
+#: line (the 7.0.0 release carrying the mandatory `[github] token_source`) and, by the 2026-10-27
+#: operator decision (R2 waived for every release of the current release wave), the 7.1 line.
+#: Every other version still refuses; moving a window needs a new operator decision and a reviewed change here.
+POSTPONEMENT_RELEASE_VERSIONS = {"KI-79": (((6, 2, 0), (6, 3, 0)), ((7, 0, 0), (7, 1, 0)), ((7, 1, 0), (7, 2, 0)))}
 
 
 def _version_tuple(version: str) -> tuple[int, int, int]:
@@ -1123,6 +1124,12 @@ def _prepared_release_version(project_root: Path) -> str | None:
         )
         if match is not None:
             return match.group(1)
+        # Fail closed: the newest dated heading decides. A prepared heading that is not
+        # strict X.Y.Z (``7.2.0rc1``) must not fall through to an older, authorized one.
+        if re.match(r"## \[(?!Unreleased\])[^\]]*\] - \d{4}-\d{2}-\d{2}", heading.text):
+            raise RuntimeError(
+                f"prepared CMRU release heading is not a strict X.Y.Z version: {heading.text!r}"
+            )
     return None
 
 
