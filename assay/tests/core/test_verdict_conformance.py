@@ -1402,7 +1402,7 @@ def test_verify_refuses_every_non_current_schema_version_with_one_diagnostic(ver
 #: Carries forward the retired W9 gate phase's
 #: `test_shipped_schema_is_byte_identical_to_the_locked_v16_asset`.
 _VERDICT_SCHEMA_SHA256 = {
-    16: "700a0afd0ad3c46fcdc9b41d23ac3e7b993b5e755a2a8c62f0ebd9a07e574fc4",
+    16: "440f28e477a1fb9ecc0b94b793e94279f2d1a8f8d39b73e06b6b4e74a33a0fe6",
 }
 
 

@@ -1814,6 +1814,11 @@ verify its checkout and tag against both values before producing the artifact.
 CMRU MUST clear ambient values for these names from all other project steps.
 The pair is source-consistency metadata, not an authentication token or proof
 of CMRU provenance; publication MUST use the supported `cmru release` workflow.
+For a CMRU-derived release plan, CMRU MUST pass the exact planned version to
+the release `run-tests` step as protected `CMRU_RELEASE_GATE_VERSION`. It MUST
+clear ambient values on other steps, and project and step environment tables
+MUST NOT set this name. External-version projects receive no CMRU-planned
+version.
 Every project step also receives the protected `CMRU_RELEASE_NOTES_SOURCE`
 (KI-75): `changelog:<project-relative path>` naming the project's declared
 changelog, or `none` when the project declares none. It is reserved like the
@@ -2710,6 +2715,9 @@ No other verb exits `4`.
   (`transaction.internal_launcher`); everywhere else the launcher is `cmru` resolved from `PATH`.
   The other four only change presentation and logging and are set by the same process that reads
   them (the flags above), so they are not child-gated.
+- `CMRU_RELEASE_GATE_VERSION` is a protected release-transaction fact for a CMRU-derived
+  version plan, not an operator input. It is set only on the release `run-tests` step and is
+  reserved against project and step environment configuration.
 
 ---
 

@@ -394,6 +394,7 @@ def run_project_step(
             for key in ("CMRU_RELEASE_COMMIT", "CMRU_RELEASE_TAG"):
                 internal_env.setdefault(key, None)
             internal_env.setdefault("CMRU_RELEASE_GATE_COMMIT", None)
+            internal_env.setdefault("CMRU_RELEASE_GATE_VERSION", None)
             # CMRU-SKIP-01: the operator's recorded `--skip-gates` reason reaches
             # the publisher only from a transaction child that set it; an ambient
             # shell value outside one is cleared like every protected name.
@@ -3361,6 +3362,7 @@ def _run_release_gates_on_exact_head(
     names: List[str],
     *,
     skip_gates: Optional[str] = None,
+    release_version: Optional[str] = None,
 ) -> str:
     """Run the declared gate and return only the commit it actually judged.
 
@@ -3370,6 +3372,7 @@ def _run_release_gates_on_exact_head(
     _assert_release_gate_source_matches_commit(repo_root, judged_sha, phase="before")
     _run_release_gates(
         repo_root, configs, names, candidate_sha=judged_sha, skip_gates=skip_gates,
+        release_version=release_version,
     )
     current_sha = _git(repo_root, "rev-parse", "HEAD")
     if current_sha != judged_sha:
@@ -3723,6 +3726,7 @@ def _release_projects_sequentially(
         )
         gated_sha = _run_release_gates_on_exact_head(
             repo_root, configs, [name], skip_gates=gates_skipped,
+            release_version=(version_plan or {}).get(name),
         )
 
         strategy = _version_strategy(project)
@@ -3780,6 +3784,7 @@ def _release_projects_sequentially(
                     )
                     gated_sha = _run_release_gates_on_exact_head(
                         repo_root, configs, [name], skip_gates=gates_skipped,
+                        release_version=(version_plan or {}).get(name),
                     )
                     candidate_sha = _git(repo_root, "rev-parse", "HEAD")
                 if candidate_sha != gated_sha:
@@ -4986,6 +4991,7 @@ def _run_release_gates(
     *,
     candidate_sha: str | None = None,
     skip_gates: Optional[str] = None,
+    release_version: Optional[str] = None,
 ) -> None:
     """Run every selected project's declared release gate before source promotion.
 
@@ -5009,9 +5015,12 @@ def _run_release_gates(
             # a typed refusal that must not depend on a Git checkout.
             gate_commit = _git(repo_root, "rev-parse", "HEAD")
         log_info(f"{name}: running required release gate")
+        protected_env = {"CMRU_RELEASE_GATE_COMMIT": gate_commit}
+        if release_version is not None:
+            protected_env["CMRU_RELEASE_GATE_VERSION"] = release_version
         run_project_step(
             project, "run-tests", repo_root, log_dir,
-            protected_env={"CMRU_RELEASE_GATE_COMMIT": gate_commit},
+            protected_env=protected_env,
         )
 
 

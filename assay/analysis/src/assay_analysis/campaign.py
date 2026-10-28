@@ -981,6 +981,8 @@ def _read_state_dir(state_dir: Path) -> list[dict]:
     """Read state records under explicit directory, record-count, and byte budgets."""
     try:
         state_stat = state_dir.lstat()
+    except FileNotFoundError as exc:
+        raise ValueError(f"state directory is not an existing directory: {state_dir}") from exc
     except OSError as exc:
         raise ValueError(f"cannot inspect state directory {state_dir}: {exc}") from exc
     if not stat.S_ISDIR(state_stat.st_mode):

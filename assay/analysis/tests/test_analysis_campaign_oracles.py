@@ -233,6 +233,57 @@ def test_o10_the_adverse_page_reports_its_total_and_next_offset(tmp_path, monkey
     assert len(second["candidate_details"]["candidates"]) == 1
 
 
+def test_o10b_a_truncated_adverse_list_can_be_continued_to_its_last_record(tmp_path, monkeypatch):
+    """B108 box 3: truncation reports the full total AND a working way to the rest.
+
+    ``adverse.<bucket>.next_offset`` is the ``--offset`` that ``--outcome <bucket>``
+    pages on in ``candidate_details`` (same ordering), so following it must visit
+    every matching record exactly once with a constant ``matching_total``.
+    """
+    root, head, rows = _synthetic(tmp_path, monkeypatch, 7)
+    progress = tmp_path / "progress.jsonl"
+    support.write_records(progress, support.run_records(
+        head, rows, buckets={row["id"]: "survived" for row in rows}
+    ))
+    _code, _err, first = _analyze(root, head, progress, extra=("--limit", "3"))
+    page = first["adverse"]["survived"]
+    seen = [item["candidate_id"] for item in page["candidates"]]
+    assert (len(seen), page["matching_total"], page["next_offset"]) == (3, 7, 3)
+    offset = page["next_offset"]
+    while offset is not None:
+        _code, _err, document = _analyze(root, head, progress, extra=(
+            "--limit", "3", "--outcome", "survived", "--offset", str(offset),
+        ))
+        details = document["candidate_details"]
+        assert details["matching_total"] == 7
+        assert details["offset"] == offset
+        seen.extend(item["candidate_id"] for item in details["candidates"])
+        offset = details["next_offset"]
+    assert len(seen) == len(set(seen)) == 7
+    assert set(seen) == {row["id"] for row in rows}
+    # the pages are slices of ONE stable order, not three unrelated samples
+    _code, _err, everything = _analyze(root, head, progress, extra=(
+        "--limit", "500", "--outcome", "survived",
+    ))
+    assert seen == [item["candidate_id"] for item in everything["candidate_details"]["candidates"]]
+
+
+def test_o10c_an_untruncated_list_offers_no_continuation_and_a_zero_total_is_not_missing(
+    tmp_path, monkeypatch
+):
+    root, head, rows = _synthetic(tmp_path, monkeypatch, 2)
+    progress = tmp_path / "progress.jsonl"
+    support.write_records(progress, support.run_records(
+        head, rows, buckets={row["id"]: "killed" for row in rows}
+    ))
+    _code, _err, document = _analyze(root, head, progress, extra=("--limit", "5"))
+    for bucket in ("survived", "hung", "crashed", "budget_exceeded"):
+        page = document["adverse"][bucket]
+        assert (page["matching_total"], page["candidates"], page["next_offset"]) == (0, [], None)
+    assert document["candidate_details"]["matching_total"] == 2
+    assert document["candidate_details"]["next_offset"] is None
+
+
 # ---- O12 ------------------------------------------------------------------
 
 def test_o12_a_torn_final_record_is_incomplete_without_a_verdict(tmp_path, monkeypatch):

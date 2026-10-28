@@ -411,6 +411,7 @@ def test_the_protected_names_are_spelled_identically_on_both_sides_and_reserved(
     # A project [env] can declare neither, so neither can be forged from configuration.
     assert config.is_reserved_internal_env(transaction.INTERNAL_PYTHON_ENV)
     assert config.is_reserved_internal_env(run_release_gate._GATE_COMMIT_ENV)
+    assert config.is_reserved_internal_env("CMRU_RELEASE_GATE_VERSION")
 
 
 # --- the in-process contract (exact exec argv, environment hygiene) ---------------

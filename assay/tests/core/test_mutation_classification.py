@@ -34,7 +34,6 @@ from conftest import (
     timeout_expired,
 )
 
-import subprocess
 from concurrent.futures import Future
 from datetime import datetime, timezone
 from pathlib import Path

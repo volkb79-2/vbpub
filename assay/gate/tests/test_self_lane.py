@@ -22,6 +22,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
 from pathlib import Path
 
@@ -33,6 +34,7 @@ from assay.cli import main
 from assay.config import load_lane_file
 
 SELF_LANE_FILE = PROJECT_ROOT / "assay.toml"
+REPO_ROOT = PROJECT_ROOT.parent
 
 
 def _load_b105_checker():
@@ -47,6 +49,7 @@ def _load_b105_checker():
 NYXLOOM_TOML = PROJECT_ROOT / "nyxloom-trove" / "nyxloom.toml"
 GATE_ID = "tester-unified"
 QUALIFICATION_ID = "self-qualification"
+PROVISIONAL_ID = "self-qualification-provisional"
 PREFLIGHT_ID = "self-qualification-preflight"
 B110_PILOT_ID = "b110-pilot"
 B110_SCREEN_ID = "b110-screen"
@@ -83,6 +86,7 @@ def test_assays_own_lane_file_loads():
         GATE_ID,
         QUALIFICATION_ID,
         PREFLIGHT_ID,
+        PROVISIONAL_ID,
         "analysis",
         "analysis-r2",
     ]
@@ -106,8 +110,9 @@ def test_b105_run_gate_lanes_use_the_observer_enabled_bare_host_wrapper():
     assert "--cgroupns=private" in wrapper
     assert "--cgroupns=host" not in wrapper
     assert 'ASSAY_RESOURCE_OBSERVER_SOCKET=$RESOURCE_OBSERVER_TARGET' in wrapper
-    assert 'RESOURCE_OBSERVER_TARGET="/run/cgprofile-observer/resource-observer.sock"' in wrapper
-    assert 'dst=$RESOURCE_OBSERVER_TARGET,readonly' in wrapper
+    assert 'RESOURCE_OBSERVER_TARGET_DIRECTORY="/run/cgprofile-observer"' in wrapper
+    assert 'RESOURCE_OBSERVER_TARGET="$RESOURCE_OBSERVER_TARGET_DIRECTORY/resource-observer.sock"' in wrapper
+    assert 'dst=$RESOURCE_OBSERVER_TARGET_DIRECTORY,readonly' in wrapper
     assay_lanes = load_lane_file(SELF_LANE_FILE)
     for lane_id in (QUALIFICATION_ID, PREFLIGHT_ID):
         assert "ASSAY_RESOURCE_OBSERVER_SOCKET" in assay_lanes.lane(lane_id).env_passthrough
@@ -648,7 +653,7 @@ def test_b105_builds_identical_wheels_from_same_oid_with_different_checkout_mtim
 @pytest.mark.parametrize(
     ("stored_digest", "expected_digest", "expected_calls", "expected_status"),
     [
-        ("a" * 64, "a" * 64, ["plan", "run"], 0),
+        ("a" * 64, "a" * 64, ["plan --json", "run"], 0),
         ("a" * 64, "b" * 64, [], 2),
     ],
 )
@@ -991,7 +996,7 @@ def test_b131_analysis_r2_pilot_is_a_separate_exact_source_measurement_gate():
     pilot = _shell_function_body(script, "run_analysis_r2_pilot")
     assert "local state_dir=.assay/analysis-r2-pilot-state-${source_commit:0:12}" in pilot
     assert '--campaign "$campaign" --lane analysis-r2 --hours 2' in pilot
-    assert '"$assay_bin" plan analysis-r2 --file assay.toml --cold-witness' in pilot
+    assert '"$assay_bin" plan analysis-r2 --json --file assay.toml --cold-witness' in pilot
     assert '"$assay_bin" run analysis-r2 --file assay.toml' in pilot
     for marker in (
         "--candidates-file", "--cold-witness", "--resume", "--state-dir",
@@ -1987,3 +1992,398 @@ def test_b105_coverage_export_refuses_a_symlinked_source(tmp_path, monkeypatch):
     monkeypatch.setenv("ASSAY_B105_SOURCE_TREE", "b" * 40)
     with pytest.raises(RuntimeError, match="not a regular file"):
         archive_b105_coverage(session=None, exitstatus=0)
+
+
+# --- the R2-free provisional qualification lane (B169/B170) -------------------
+
+
+def test_the_provisional_lane_is_the_full_qualification_minus_only_r2():
+    lanes = load_lane_file(SELF_LANE_FILE).lanes
+    full, provisional = lanes[QUALIFICATION_ID], lanes[PROVISIONAL_ID]
+
+    assert tuple(provisional.rigor) == ("R0", "R1", "R3")
+    assert tuple(full.rigor) == ("R0", "R1", "R2", "R3")
+    assert provisional.argv[:5] == full.argv[:5]
+    assert provisional.judge.mutation is None
+    # same source, same whole-target 100% line and branch bar, same canary
+    assert provisional.judge.targets == full.judge.targets
+    assert provisional.judge.fail_under == full.judge.fail_under == 100.0
+    assert provisional.judge.require_branch is True
+    assert provisional.judge.canary == full.judge.canary
+
+
+def test_the_provisional_lane_is_registered_with_its_own_wrapper_mode_and_artifacts():
+    lane = tomllib.loads(RUN_GATE_TOML.read_text(encoding="utf-8"))["lanes"][PROVISIONAL_ID]
+    wrapper = (PROJECT_ROOT / "tools" / "self-qualification-container.sh").read_text(encoding="utf-8")
+
+    assert lane["kind"] == "command" and lane["environment"] == "bare-host"
+    assert lane["argv"][-1] == PROVISIONAL_ID
+    assert lane["resources"] == {"shared": ["assay-self-qualification"]}
+    assert ".assay/mutation-postponed-assay.json" in lane["artifacts"]
+    assert "ASSAY_SELF_QUALIFICATION_PROVISIONAL_VERIFIED=1" in wrapper
+
+
+def test_the_postponement_marker_is_keyed_windowed_and_cleared_by_the_full_lane():
+    gate = (PROJECT_ROOT / "tools" / "self-qualification-gate.sh").read_text(encoding="utf-8")
+    body = gate.split("record_r2_postponement() {", 1)[1].split("run_and_verify_lane() {", 1)[0]
+
+    assert 'TRACKING_ID = "B169"' in body
+    assert "operator decision 2026-10-27" in body
+    assert "WINDOW = ((10, 0, 0), (10, 1, 0))" in body
+    assert '"result": "provisional"' in body and '"rigor_postponed": "R2"' in body
+    assert '"cmru_release_gate_version_bound": transaction_version is not None' in body
+    assert "not an R2 pass" in body
+    # the marker is written after the lane was verified, never before
+    flow = gate.split('\nif [[ "$requested_lane" == "self-qualification-provisional" ]]; then\n', 1)[1].split("exit 0", 1)[0]
+    assert flow.index("run_and_verify_lane") < flow.index("record_r2_postponement")
+    # the full lane and a fresh provisional run both delete a stale marker
+    assert gate.count('rm -f -- "$postponed_marker"') == 1
+    assert 'rm -f -- "$r2_manifest_path"' in gate
+
+
+def test_the_cmru_release_version_is_carried_in_the_container_argv_when_set():
+    wrapper = (PROJECT_ROOT / "tools" / "self-qualification-container.sh").read_text(
+        encoding="utf-8"
+    )
+    forwarding = wrapper.split("forwarded_env=()\n", 1)[1].split(
+        "b110_state_env=()\n", 1
+    )[0]
+    docker_run = wrapper.split("docker run -d \\\n", 1)[1].split(
+        ' >"$launch_output"', 1
+    )[0]
+    assert '"${forwarded_env[@]}"' in docker_run
+
+    env = os.environ.copy()
+    env.pop("CGROUP_PARENT_DEV_BACKGROUND", None)
+    env["CMRU_RELEASE_GATE_VERSION"] = "10.0.1"
+    proc = subprocess.run(
+        [
+            "bash", "-c",
+            "forwarded_env=()\n" + forwarding
+            + "if ((${#forwarded_env[@]})); then printf '%s\\0' \"${forwarded_env[@]}\"; fi",
+        ],
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert proc.returncode == 0, proc.stderr.decode(errors="replace")
+    assert proc.stdout.split(b"\0")[:-1] == [
+        b"-e", b"CMRU_RELEASE_GATE_VERSION=10.0.1",
+    ]
+    assert wrapper.count('"CMRU_RELEASE_GATE_VERSION=$CMRU_RELEASE_GATE_VERSION"') == 2
+
+
+def test_the_cmru_release_version_is_not_added_to_container_argv_when_unset():
+    wrapper = (PROJECT_ROOT / "tools" / "self-qualification-container.sh").read_text(
+        encoding="utf-8"
+    )
+    forwarding = wrapper.split("forwarded_env=()\n", 1)[1].split(
+        "b110_state_env=()\n", 1
+    )[0]
+    env = os.environ.copy()
+    env.pop("CGROUP_PARENT_DEV_BACKGROUND", None)
+    env.pop("CMRU_RELEASE_GATE_VERSION", None)
+    proc = subprocess.run(
+        [
+            "bash", "-c",
+            "forwarded_env=()\n" + forwarding
+            + "if ((${#forwarded_env[@]})); then printf '%s\\0' \"${forwarded_env[@]}\"; fi",
+        ],
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert proc.returncode == 0, proc.stderr.decode(errors="replace")
+    assert proc.stdout == b""
+
+
+def test_a_provisional_or_full_lane_clears_a_stale_marker_before_setup_can_fail():
+    gate = (PROJECT_ROOT / "tools" / "self-qualification-gate.sh").read_text(encoding="utf-8")
+    setup = gate.split('worktree="${1:?usage: self-qualification-gate.sh WORKTREE}"', 1)[1]
+    setup = setup.split('[[ -x "$tester_python" ]]', 1)[0]
+
+    assert 'if [[ "$requested_lane" == self-qualification || "$requested_lane" == self-qualification-provisional ]]; then' in setup
+    assert 'rm -f -- "$postponed_marker"' in setup
+
+
+def _run_postponement(
+    tmp_path, tags, prepared_version="10.0.0", *, wheel_version="10.0.0",
+    unlistable_tags=False, changelog_headings=None, cmru_release_version=None,
+):
+    gate = (PROJECT_ROOT / "tools" / "self-qualification-gate.sh").read_text(encoding="utf-8")
+    body = gate.split("record_r2_postponement() {", 1)[1].split("run_and_verify_lane() {", 1)[0]
+    script = body.split("<<'PYEOF'\n", 1)[1].split("\nPYEOF", 1)[0]
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo.parent / "cmru").symlink_to(PROJECT_ROOT.parent / "cmru", target_is_directory=True)
+    git = lambda *a: subprocess.run(["git", "-C", str(repo), *a], check=True, capture_output=True)  # noqa: E731
+    git("init", "-q")
+    git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "--allow-empty", "-qm", "x")
+    for tag in tags:
+        git("tag", tag)
+    if changelog_headings is None:
+        changelog_headings = f"## [{prepared_version}] - 2026-10-28"
+    (repo / "CHANGES.md").write_text(
+        f"## [Unreleased]\n\n{changelog_headings}\n",
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env.pop("CMRU_RELEASE_GATE_VERSION", None)
+    if cmru_release_version is not None:
+        env["CMRU_RELEASE_GATE_VERSION"] = cmru_release_version
+    if unlistable_tags:
+        real_git = shutil.which("git")
+        assert real_git is not None
+        fake_bin = tmp_path / "fake-bin"
+        fake_bin.mkdir()
+        fake_git = fake_bin / "git"
+        fake_git.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = "tag" ] && [ "$2" = "--list" ] && [ "$3" = "assay-v*" ]; then\n'
+            '  echo "tag listing unavailable" >&2\n'
+            "  exit 1\n"
+            "fi\n"
+            f"exec {real_git} \"$@\"\n",
+            encoding="utf-8",
+        )
+        fake_git.chmod(0o755)
+        env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    marker = tmp_path / "marker.json"
+    proc = subprocess.run(
+        [sys.executable, "-c", script, str(marker), "c" * 40, "t" * 40, wheel_version],
+        cwd=repo, capture_output=True, text=True, check=False, env=env,
+    )
+    return proc, marker
+
+
+def test_the_postponement_marker_records_a_provisional_result_inside_its_window(tmp_path):
+    import json
+
+    proc, marker = _run_postponement(
+        tmp_path, ["assay-v9.0.0"], cmru_release_version="10.0.0",
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "not an R2 pass" in proc.stderr
+    document = json.loads(marker.read_text(encoding="utf-8"))
+    assert document["result"] == "provisional" and document["rigor_postponed"] == "R2"
+    assert document["tracking_id"] == "B169" and document["commit"] == "c" * 40
+    assert document["cmru_release_gate_version_bound"] is True
+
+
+def test_the_postponement_is_refused_once_the_window_has_closed(tmp_path):
+    proc, marker = _run_postponement(tmp_path, ["assay-v10.0.0", "assay-v10.1.0"])
+
+    assert proc.returncode != 0
+    assert "valid only below assay 10.1.0" in proc.stderr
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    "prepared_version,allowed",
+    [("10.0.0", True), ("10.0.1", True), ("10.1.0", False), ("9.9.9", False)],
+)
+def test_the_prepared_release_version_must_be_inside_the_postponement_window(
+    tmp_path, prepared_version, allowed,
+):
+    proc, marker = _run_postponement(
+        tmp_path, ["assay-v9.0.0"], prepared_version, wheel_version="10.0.0",
+    )
+
+    assert (proc.returncode == 0) is allowed, proc.stderr
+    assert marker.exists() is allowed
+    if not allowed:
+        assert "authorized only for assay >= 10.0.0, < 10.1.0" in proc.stderr
+    if allowed:
+        import json
+
+        document = json.loads(marker.read_text(encoding="utf-8"))
+        assert document["target_version"] == prepared_version
+        assert document["cmru_release_gate_version_bound"] is False
+
+
+def test_container_reports_missing_python_before_using_it_for_marker_cleanup(tmp_path):
+    wrapper = PROJECT_ROOT / "tools" / "self-qualification-container.sh"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    for command in ("dirname", "realpath", "flock", "chmod", "stat", "git"):
+        command_path = shutil.which(command)
+        assert command_path is not None
+        (fake_bin / command).symlink_to(command_path)
+
+    fixture_root = REPO_ROOT / ".worktrees"
+    fixture_root_preexisted = fixture_root.exists()
+    fixture_root.mkdir(exist_ok=True)
+    scratch = Path(tempfile.mkdtemp(prefix="wrapper-missing-python-", dir=fixture_root))
+    worktree = scratch / "worktree"
+    project = worktree / "assay"
+    try:
+        project.mkdir(parents=True)
+        (project / "pyproject.toml").write_text("[project]\nname='assay-fixture'\n", encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(worktree)], check=True)
+        subprocess.run(
+            ["git", "-C", str(worktree), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+             "add", "assay/pyproject.toml"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(worktree), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+             "commit", "-qm", "fixture"],
+            check=True,
+        )
+
+        proc = subprocess.run(
+            ["/bin/bash", str(wrapper), str(worktree), PROVISIONAL_ID],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={"PATH": str(fake_bin)},
+        )
+
+        assert proc.returncode != 0
+        assert "required host command is unavailable: python3" in proc.stderr
+        assert "command not found" not in proc.stderr
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+        if not fixture_root_preexisted:
+            try:
+                fixture_root.rmdir()
+            except OSError:
+                pass
+
+
+@pytest.mark.parametrize(
+    "first_heading",
+    [
+        "## [10.1.0rc1] - 2026-10-28",
+        "## [10.1.0] — 2026-10-28",
+    ],
+)
+def test_the_postponement_refuses_an_unsupported_first_release_heading_without_falling_through(
+    tmp_path, first_heading,
+):
+    proc, marker = _run_postponement(
+        tmp_path,
+        ["assay-v9.0.0"],
+        changelog_headings=(
+            f"{first_heading}\n\n## [10.0.0] - 2026-10-27"
+        ),
+        cmru_release_version="10.1.0",
+    )
+
+    assert proc.returncode != 0
+    assert "first release heading after Unreleased" in proc.stderr
+    assert not marker.exists()
+
+
+def test_the_postponement_refuses_a_prepared_heading_that_disagrees_with_cmru(
+    tmp_path,
+):
+    proc, marker = _run_postponement(
+        tmp_path,
+        ["assay-v9.0.0"],
+        prepared_version="10.0.1",
+        cmru_release_version="10.0.0",
+    )
+
+    assert proc.returncode != 0
+    assert "does not match CMRU's release transaction version 10.0.0" in proc.stderr
+    assert not marker.exists()
+
+
+def test_the_postponement_accepts_a_valid_first_release_heading_bound_to_cmru(
+    tmp_path,
+):
+    proc, marker = _run_postponement(
+        tmp_path,
+        ["assay-v9.0.0"],
+        prepared_version="10.0.1",
+        cmru_release_version="10.0.1",
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    import json
+
+    assert json.loads(marker.read_text(encoding="utf-8"))["target_version"] == "10.0.1"
+
+
+@pytest.mark.parametrize("fixture_checkout", ["selected-worktree", "main-checkout"])
+def test_outer_wrapper_clears_a_prior_postponement_before_dirty_tree_refusal(fixture_checkout):
+    fixture_repo_root = REPO_ROOT
+    if fixture_checkout == "main-checkout":
+        common_dir = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        fixture_repo_root = Path(common_dir).parent
+    fixture_root = fixture_repo_root / ".worktrees"
+    fixture_root_preexisted = fixture_root.exists()
+    fixture_root.mkdir(exist_ok=True)
+    scratch = Path(tempfile.mkdtemp(prefix="wrapper-refusal-", dir=fixture_root))
+    worktree = scratch / "worktree"
+    project = worktree / "assay"
+    marker = project / ".assay" / "mutation-postponed-assay.json"
+    try:
+        project.mkdir(parents=True)
+        (project / "pyproject.toml").write_text("[project]\nname='assay-fixture'\n", encoding="utf-8")
+        marker.parent.mkdir()
+        marker.write_text('{"result":"provisional"}\n', encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(worktree)], check=True)
+        subprocess.run(
+            ["git", "-C", str(worktree), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+             "add", "assay/pyproject.toml", "assay/.assay/mutation-postponed-assay.json"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(worktree), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+             "commit", "-qm", "fixture"],
+            check=True,
+        )
+        (project / "pyproject.toml").write_text(
+            "[project]\nname='assay-fixture-dirty'\n", encoding="utf-8",
+        )
+
+        proc = subprocess.run(
+            [
+                "bash",
+                str(PROJECT_ROOT / "tools" / "self-qualification-container.sh"),
+                str(worktree),
+                PROVISIONAL_ID,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert proc.returncode != 0
+        assert "worktree is not clean before B105 qualification" in proc.stderr
+        assert not marker.exists()
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+        if not fixture_root_preexisted:
+            try:
+                fixture_root.rmdir()
+            except OSError:
+                pass
+
+
+def test_the_postponement_refuses_when_no_stable_assay_tag_is_visible(tmp_path):
+    proc, marker = _run_postponement(tmp_path, [])
+
+    assert proc.returncode != 0
+    assert "cannot determine the latest stable assay tag" in proc.stderr
+    assert not marker.exists()
+
+
+def test_the_postponement_refuses_when_assay_tags_cannot_be_listed(tmp_path):
+    proc, marker = _run_postponement(
+        tmp_path, ["assay-v9.0.0"], unlistable_tags=True,
+    )
+
+    assert proc.returncode != 0
+    assert "tag listing unavailable" in proc.stderr
+    assert not marker.exists()

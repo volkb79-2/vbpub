@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from conftest import completed_process, timeout_expired
+from conftest import timeout_expired
 
 import errno
 import math
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 

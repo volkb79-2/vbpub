@@ -34,7 +34,6 @@ from __future__ import annotations
 
 from conftest import completed_process, file_not_found, timeout_expired
 
-import subprocess
 from concurrent.futures import Future
 from dataclasses import dataclass
 from datetime import datetime, timezone

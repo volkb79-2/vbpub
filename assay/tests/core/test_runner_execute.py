@@ -15,9 +15,8 @@ wall-clock wait: both are exercised here only through the INJECTED
 
 from __future__ import annotations
 
-from conftest import completed_process, timeout_expired
+from conftest import timeout_expired
 
-import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path

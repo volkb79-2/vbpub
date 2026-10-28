@@ -7,7 +7,6 @@ import json
 import sys
 from pathlib import Path
 
-import pytest
 from conftest import GitRepo
 
 from assay import cli, mutation, resource_limits

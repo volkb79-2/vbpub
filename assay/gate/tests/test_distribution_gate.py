@@ -162,22 +162,24 @@ def test_observer_guards_read_the_host_docker_gid_from_the_runtime_path() -> Non
         assert "getent group docker" not in source
         assert "ASSAY_GATE_HOST_DOCKER_GID" in source
     helper = OBSERVER_GID_HELPER.read_text(encoding="utf-8")
-    assert "control_gid\" != 0" in helper
+    assert 'control_gid" =~ ^[1-9][0-9]*$' in helper
     assert "control_mode\" == 770" in helper
 
 
 @pytest.mark.parametrize(
-    ("control_gid", "control_mode", "socket_gid", "expected_status"),
+    ("control_gid", "control_mode", "socket_gid", "directory_gid", "expected_status"),
     [
-        (994, "770", 995, 0),
-        (0, "770", 995, 1),
-        (994, "750", 995, 1),
-        (994, "770", 994, 1),
+        (994, "770", 995, 995, 0),
+        (0, "770", 995, 995, 1),
+        (994, "750", 995, 995, 1),
+        (994, "770", 994, 994, 1),
+        # the socket's group must equal its directory's group
+        (994, "770", 995, 996, 1),
     ],
 )
 def test_observer_gid_guard_rejects_wrong_host_group_facts(
     tmp_path: Path, control_gid: int, control_mode: str,
-    socket_gid: int, expected_status: int,
+    socket_gid: int, directory_gid: int, expected_status: int,
 ) -> None:
     observer_dir = tmp_path / "observer"
     observer_dir.mkdir()
@@ -189,16 +191,20 @@ def test_observer_gid_guard_rejects_wrong_host_group_facts(
     script = r'''source "$1"
 observer_socket="$2"
 control_dir="$3"
-control_gid="$4"
-control_mode="$5"
-socket_gid="$6"
+# Fact variables use a prefix: the helper declares `local socket_gid` /
+# `control_gid` / `control_mode`, which would shadow same-named test globals
+# inside this dynamically scoped stat stub.
+fact_control_gid="$4"
+fact_control_mode="$5"
+fact_socket_gid="$6"
+fact_directory_gid="$7"
 observer_dir="$(dirname "$observer_socket")"
 stat() {
   local path="${@: -1}"
   case "$path" in
-    "$observer_dir") printf '0 995 751\n' ;;
-    "$observer_socket") printf '0 %s 660\n' "$socket_gid" ;;
-    "$control_dir") printf '0 %s %s\n' "$control_gid" "$control_mode" ;;
+    "$observer_dir") printf '0 %s 751\n' "$fact_directory_gid" ;;
+    "$observer_socket") printf '0 %s 660\n' "$fact_socket_gid" ;;
+    "$control_dir") printf '0 %s %s\n' "$fact_control_gid" "$fact_control_mode" ;;
     *) return 1 ;;
   esac
 }
@@ -208,7 +214,7 @@ assay_resource_observer_gid "$observer_socket" "$control_dir"
         [
             "bash", "-c", script, "observer-gid-test",
             str(OBSERVER_GID_HELPER), str(observer_socket), str(control_dir),
-            str(control_gid), control_mode, str(socket_gid),
+            str(control_gid), control_mode, str(socket_gid), str(directory_gid),
         ],
         capture_output=True, text=True, timeout=10,
     )
@@ -360,7 +366,7 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
 
     proc = run_bash(
         'run_registered_tester_container "/workspaces/vbpub/.worktrees/test" '
-        '"/host/vbpub" "dev-gates.slice" "994"',
+        '"/host/vbpub" "dev-gates.slice" "994" "994"',
         gate_functions=gate_functions,
         env=env,
     )
@@ -405,7 +411,7 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
     env["DOCKER_RUN_STATUS"] = "18"
     failed_launch = run_bash(
         'run_registered_tester_container "/workspaces/vbpub/.worktrees/test" '
-        '"/host/vbpub" "dev-gates.slice" "994"',
+        '"/host/vbpub" "dev-gates.slice" "994" "994"',
         gate_functions=gate_functions,
         env=env,
     )
@@ -417,7 +423,7 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
     env["DOCKER_CID_ON_FAILED_LAUNCH"] = "1"
     accepted_but_transport_failed = run_bash(
         'run_registered_tester_container "/workspaces/vbpub/.worktrees/test" '
-        '"/host/vbpub" "dev-gates.slice" "994"',
+        '"/host/vbpub" "dev-gates.slice" "994" "994"',
         gate_functions=gate_functions,
         env=env,
     )
@@ -429,7 +435,7 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
     env["DOCKER_INSPECT_OWNER_OVERRIDE"] = "f" * 64
     foreign_cidfile = run_bash(
         'run_registered_tester_container "/workspaces/vbpub/.worktrees/test" '
-        '"/host/vbpub" "dev-gates.slice" "994"',
+        '"/host/vbpub" "dev-gates.slice" "994" "994"',
         gate_functions=gate_functions,
         env=env,
     )
@@ -459,7 +465,7 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
     env["TIMEOUT_CALLS"] = str(timeout_calls)
     update_timeout = run_bash(
         'run_registered_tester_container "/workspaces/vbpub/.worktrees/test" '
-        '"/host/vbpub" "dev-gates.slice" "994"',
+        '"/host/vbpub" "dev-gates.slice" "994" "994"',
         gate_functions=gate_functions,
         env=env,
     )
@@ -542,11 +548,13 @@ def test_registered_tester_log_follower_has_a_bound(
     assert production_wait in source
     short_functions = tmp_path / "gate-functions-short-ordinary-log-wait.sh"
     short_functions.write_text(source.replace(production_wait, production_wait[:-2] + "1 1"), encoding="utf-8")
+    # The gate functions source the observer helper next to themselves.
+    shutil.copyfile(OBSERVER_GID_HELPER, tmp_path / OBSERVER_GID_HELPER.name)
 
     proc = run_bash(
         'wait() { if command kill -0 "$1" 2>/dev/null; then printf "live\\n" > "$WAIT_MARKER"; else printf "exited\\n" > "$WAIT_MARKER"; fi; return 0; }\n'
         'run_registered_tester_container "/workspaces/vbpub/.worktrees/test" '
-        '"/host/vbpub" "dev-gates.slice" "994"',
+        '"/host/vbpub" "dev-gates.slice" "994" "994"',
         gate_functions=short_functions,
         env=env,
         timeout=15,
@@ -655,7 +663,7 @@ def test_b145_probe_is_capped_placed_and_waited_before_logs(
 
     proc = run_bash(
         'run_b145_low_pids_probe "/workspaces/vbpub/.worktrees/assay-b145" '
-        '"/host/vbpub" "dev-gates.slice" "994"',
+        '"/host/vbpub" "dev-gates.slice" "994" "994"',
         gate_functions=gate_functions,
         env=env,
     )
@@ -784,7 +792,7 @@ def test_b145_low_pids_wait_timeout_logs_and_force_removes(
 
     proc = run_bash(
         'run_b145_low_pids_probe "/workspaces/vbpub/.worktrees/assay-b145" '
-        '"/host/vbpub" "dev-gates.slice" "994"',
+        '"/host/vbpub" "dev-gates.slice" "994" "994"',
         gate_functions=gate_functions,
         env=env,
     )
@@ -851,7 +859,7 @@ def test_b145_name_conflict_never_removes_by_name_or_unverified_cid(
         (
             "run_b145_low_pids_probe",
             '"/workspaces/vbpub/.worktrees/assay-b145" '
-            '"/host/vbpub" "dev-gates.slice" "994"',
+            '"/host/vbpub" "dev-gates.slice" "994" "994"',
             124,
             "exceeded 150s",
         ),

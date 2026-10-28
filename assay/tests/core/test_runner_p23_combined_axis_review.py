@@ -44,7 +44,7 @@ The module covers seven things the landed suite did not:
 
 from __future__ import annotations
 
-from conftest import completed_process, timeout_expired
+from conftest import completed_process
 
 import json
 import os

@@ -599,6 +599,10 @@ The release gate also receives the selected commit as the protected
 `CMRU_RELEASE_GATE_COMMIT`. This lets a package prepare a commit-bound test
 receipt before CMRU assigns a release tag. CMRU clears ambient values of this
 name on ordinary steps and refuses project configuration that tries to set it.
+For a CMRU-derived release plan, the gate also receives the exact planned
+version as protected `CMRU_RELEASE_GATE_VERSION`. Binding the test to the
+transaction's version lets a gate validate prepared release metadata before
+the tag exists; external-version projects do not receive a CMRU-planned version.
 
 CMRU also rechecks the candidate source around every gate, build, and publish
 step. `git status` alone is insufficient because `assume-unchanged` and

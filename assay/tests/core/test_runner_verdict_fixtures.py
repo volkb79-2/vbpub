@@ -26,10 +26,9 @@ predicted).
 
 from __future__ import annotations
 
-from conftest import completed_process, file_not_found, timeout_expired
+from conftest import file_not_found, timeout_expired
 
 import json
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 

@@ -2754,6 +2754,43 @@ replace evidence with different coverage data. Equivalence for one attempt
 ignores only coverage.py's generated timestamp. The full mutation lane does
 not export per-mutant coverage to this archive directory.
 
+#### Provisional release qualification B169 B170
+
+The R2 waiver is a version-bounded release decision, not a substitute for an
+R2 result. CMRU runs Assay's `run-tests` step in its isolated release
+transaction after preparing the dated `CHANGES.md` heading and before creating
+the release tag. The step runs the ordinary self-hosted release gate, then
+`run-gate self-qualification-provisional`: full-source R0 and R1 (100% whole-
+target line and branch coverage) plus the R3 canary, with R2 omitted. A
+successful run records `.assay/mutation-postponed-assay.json` as `provisional`;
+it never asserts an R2 pass, and the full `self-qualification` lane remains the
+way to produce R2 evidence.
+The marker's `cmru_release_gate_version_bound` boolean records whether the
+protected CMRU transaction version was received and matched (`true`); `false`
+means no transaction binding was applied.
+
+The gate checks the first H2 release heading after `## [Unreleased]` because
+the release tag does not exist when CMRU runs `run-tests`. It refuses a
+malformed or unsupported first heading without searching historical sections,
+and requires the heading to match CMRU's protected planned transaction version.
+The only permitted interval is `10.0.0 <= version < 10.1.0`; a visible stable
+`assay-vX.Y.Z` tag is also required, and the latest visible tag must be below
+10.1.0. Missing, unreadable, or unparseable tag state refuses the waiver.
+
+The bare-host wrapper removes an old postponement marker before its own
+dirty-tree and host-admission checks. Run-Gate can refuse admission before the
+wrapper starts; that refusal leaves prior evidence in place. The JSON marker
+alone does not establish a current result: consumers require successful
+Run-Gate completion bound to the same source tree. This keeps prior evidence
+available without presenting it as the result of a refused invocation.
+
+The provisional lane has a 210-minute Run-Gate budget after the ordinary
+self-hosted gate. Run-Gate's `resources.shared` lock serializes Assay lanes;
+the release transaction does not hold a host-wide gate lock. The gate
+coordinator must keep every other registered gate serial for the full
+qualification window. `ASSAY_GATE_ALLOW_SHARED_HOST=1` does not apply to this
+lane.
+
 Coverage.py's default exclusions are too broad for this claim: they silently
 remove Protocol method bodies and `TYPE_CHECKING` blocks from the denominator.
 The self-qualification suite replaces those defaults with the explicit
@@ -4819,6 +4856,21 @@ name (CD18), judges nothing, and every estimate it prints is diagnostic.
   projection instead of again as fixed cost. The public consumer example and
   the registered B110/B131 plans use one worker because shared cgroup event
   counters cannot attribute overlapping candidate windows.
+
+#### Continuing a truncated list
+
+The four `adverse` lists and `candidate_details` say when they are bounded:
+`matching_total` is the exact number of matching candidates before the cap, and
+`next_offset` is `null` only when the page reached the end. They share
+one ordering (path, line, candidate id), so `adverse.<bucket>.next_offset` is
+also the `--offset` that `--outcome <bucket>` pages on in `candidate_details`.
+Following it visits every remaining record once, with `matching_total`
+unchanged. `unresolved` (never-started `budget_exceeded` candidates after a
+lane timeout) is a convenience subset with an exact `matching_total` but no
+`next_offset`; its members are also `budget_exceeded` rows, so
+`--outcome budget_exceeded` pages all of them. The `adverse` lists ignore
+`--path-prefix`, so continue with `--outcome` and `--offset` only, without a
+prefix. A cap never turns the unseen part into zero.
 
 #### Analyze a bounded pilot
 

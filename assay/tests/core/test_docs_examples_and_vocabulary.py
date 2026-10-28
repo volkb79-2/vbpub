@@ -975,3 +975,25 @@ def test_wave1_new_anchors_are_present_and_resolve():
         assert expected in _readme_design_guide_links(), (
             f"README does not link to {expected}"
         )
+
+
+def test_provisional_self_qualification_is_documented_across_the_public_docs():
+    for document in DOCS:
+        text = document.read_text(encoding="utf-8")
+        assert "self-qualification-provisional" in text, (
+            f"{document.name} does not name the provisional qualification lane"
+        )
+    consumer_text = CONSUMERS.read_text(encoding="utf-8")
+    for required in (
+        "R0, R1 over all of `src/assay`",
+        "the R3 canary",
+        ".assay/mutation-postponed-assay.json",
+        '"result": "provisional"',
+        "10.0.0 <= version < 10.1.0",
+        "CMRU's isolated `run-tests` step",
+    ):
+        assert required in consumer_text, f"CONSUMERS.md omits provisional lane fact {required!r}"
+    expected_anchor = "provisional-release-qualification-b169-b170"
+    assert expected_anchor in _design_guide_anchors()
+    assert expected_anchor in _document_anchors(CONSUMERS)
+    assert expected_anchor in _readme_design_guide_links()

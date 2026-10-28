@@ -13112,3 +13112,83 @@ Unchecked items are a failed deliverable, not a suggestion.
 > yet meet the standard. A green development-shell run is not evidence; run the
 > declared isolated gate.
 ~~~~
+
+## B169 — R2 mutation campaign owed for the assay 10.0.0 provisional release (operator waiver 2026-10-27)
+
+**Status: OPEN.** The operator waived the R2 mutation campaign for every
+release of the 2026-10-27 wave, assay 10.0.0 included. The assay release gate
+(`tools/tester-unified-gate.sh`, the `tester-unified` and `analysis` lanes plus
+the independent self-hosting witness and the distribution build) never ran R2;
+the full-source `self-qualification` (R0-R3) and `analysis-r2` qualification
+lanes were not run for this release, so 10.0.0 has no mutation evidence and no
+R2 pass is claimed. The CHANGES release notes say so.
+
+The provisional-release exception is bounded by the first dated release
+heading after `Unreleased`, which must match CMRU's protected transaction
+version, not only by tags that exist before the gate: B169 is valid for release
+versions `>= 10.0.0` and `< 10.1.0`. The gate also requires at least one
+listable stable `assay-vX.Y.Z` tag and refuses if the latest visible tag is
+10.1.0 or newer. Thus a prepared 10.1.0 release is refused before its tag is
+created, and missing or unreadable tag state cannot authorize the waiver.
+
+**Close when:** one full `self-qualification` run and one `analysis-r2` run are
+completed against the exact `assay-v10.0.0` tag through the registered
+Run-Gate lanes, survivors are triaged and fixed or backported, and the report
+is retained. Deadline: before the next assay release judged worth R2 (the
+same obligation as cmru KI-99 and the other wave members).
+
+**B108 note (2026-10-27 integration):** phase 1 (`assay analyze campaign`)
+is shipped in this release under integration hashes; the leftover truncated-list
+continuation oracles (`test_o10b`, `test_o10c`) and docs landed in the wave
+branch. Phase 2 (automatic Run-Gate closeout; Assay-side docs plus decision
+A-497) is NOT landed: its Run-Gate implementation exists only in a parked
+stash (`On run-gate-rg93-git-metadata-20261013`, parked as
+`park/stash-2026-10-17-park-rg-93-dirty-worktree-before-prerequ`), so B108 stays open.
+
+## B170 — full-source R0/R1 and the R3 canary for the assay 10.0.0 release: provisional lane and R1 gap closure
+
+**Status: IMPLEMENTED (2026-10-28); R2 remains owed under B169.** Operator
+decision 2026-10-27/28: R2 is waived for the release wave but every other
+qualification rigor runs. `self-qualification-provisional` (`assay.toml`,
+`run-gate.toml`, `tools/self-qualification-{container,gate}.sh`, and the
+`cmru.toml` `run-tests` step) is the full `self-qualification` lane minus R2:
+R0, R1 (whole-target 100% line and branch over `src/assay`) and the R3 canary.
+After the lane is verified it records `.assay/mutation-postponed-assay.json`
+(`result: provisional`, tracking id B169, valid only for a prepared release
+version `>= 10.0.0` and `< 10.1.0`; a newer `assay-v10.1.0` or later tag also
+refuses it). The full lane is unchanged and deletes the marker; the marker
+cannot satisfy an R2 request.
+
+The prepared release version is read from the first dated `CHANGES.md` heading
+after `Unreleased` and must match the exact CMRU transaction version passed to
+the gate; the wheel's development version is not used to decide the waiver.
+The outer wrapper removes an old marker before its dirty-tree and host-admission
+checks. Run-Gate admission can refuse before wrapper startup and leave the old
+marker in place, so marker presence alone is not current evidence; require a
+successful result bound to the same source tree. The provisional command has a
+210-minute Run-Gate budget after the ordinary self-hosted release gate. Run-Gate holds the Assay
+lane resource lock; the host-wide serial window remains the gate coordinator's
+responsibility because cross-project gates do not share that lock.
+
+**Evidence:** at `fb88461ca` (and earlier at `4ab0bb0b1`), `run-gate self-qualification-provisional`
+(exclusive host): R0 PASS, R1 PASS, R3 PASS, marker recorded. Before closure
+the lane failed R1 with `UNCOVERED_LINES` (886 lines, 711 branches) and R3 was
+`CANARY_INCONCLUSIVE` because the canary's control must pass R1 as well. Per-file
+gap at `a6f579f12` (lines): `adapters/sql.py` 301, `cli.py` 172, `mutation.py`
+135, `mutation_witness.py` 114, `verify.py` 59, `runner.py` 41, `config.py` 26,
+`adapters/sql_lex.py` 7, `resource_limits.py` 7, `isolation.py` 6,
+`process_tree.py` 6, `liveness.py` 4, `safeio.py` 4, `verdict.py` 4. Closed by
+five new test files (about 1,000 test cases: `test_cli_`, `test_mutation_`,
+`test_runner_config_`, `test_witness_verify_` closure files and
+`adapters/sql/test_sql_adapter_coverage_closure.py`), removal of unreachable
+defensive branches (witness pytest-option scan, SQL `IN` widening and event
+kind chain, pilot-state read), and two small refactors that make a branch
+testable (`_close_if_open`, `_unregister_started_group`). A real defect surfaced
+and was fixed: a dirty tree after the cold-witness R2 baseline raised a bare
+`TypeError`.
+
+**Open:** a few closure tests drive defensive code through monkeypatched seams
+(`runner.py` `witness_dir is None`, `config.py` non-finite duration, `mutation.py`
+`_classified_bucket` with a non-mapping tree proof that ends in an assertion).
+They keep the floor honest but a reviewer may prefer making those states
+unrepresentable. R2 itself: B169.

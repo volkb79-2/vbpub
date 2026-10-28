@@ -81,6 +81,7 @@ def project(tmp_path, monkeypatch) -> Path:
 def test_run_step_executes_in_the_project_root_with_env_and_protected_runtime(project, monkeypatch):
     executed = []
     monkeypatch.setenv("CMRU_RELEASE_GATE_COMMIT", "caller-controlled-value")
+    monkeypatch.setenv("CMRU_RELEASE_GATE_VERSION", "caller-controlled-version")
     monkeypatch.setattr(
         "cmru.cli.execute_step",
         lambda step, root, log_dir, **kwargs: executed.append((step, root, log_dir, kwargs)),
@@ -97,6 +98,7 @@ def test_run_step_executes_in_the_project_root_with_env_and_protected_runtime(pr
     assert Path(kwargs["protected_env"]["CMRU_INTERNAL_BIN"]).name == "cmru"
     assert kwargs["protected_env"]["CMRU_RELEASE_NOTES_SOURCE"] == "changelog:CHANGES.md"
     assert kwargs["protected_env"]["CMRU_RELEASE_GATE_COMMIT"] is None
+    assert kwargs["protected_env"]["CMRU_RELEASE_GATE_VERSION"] is None
 
 
 def test_run_step_quiet_detail_goes_to_the_project_local_log_root(project, monkeypatch, capsys):

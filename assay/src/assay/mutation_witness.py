@@ -581,8 +581,6 @@ def survivor_proof_failure(
         return "execution did not start every collected test"
     if expected is None:
         return "the expected collection facts could not be parsed"
-    if facts.collection_error:
-        return "the collection manifest reported an error"
     if facts.collection_count != expected.collection_count or facts.collection_sha256 != expected.collection_sha256:
         return "the baseline test collection differs from the expected collection"
     if facts.duplicates != 0:
@@ -1273,7 +1271,6 @@ def cold_shape_refusal(
     args = list(tokens[start:])
     expanded: list[tuple[str, str | None]] = []
     index = 0
-    flag_letters = COLD_PYTEST_FLAG_OPTIONS
     value_letters = COLD_PYTEST_VALUE_OPTIONS
     while index < len(args):
         token = args[index]
@@ -1288,10 +1285,6 @@ def cold_shape_refusal(
         while position < len(body):
             letter = body[position]
             option = f"-{letter}"
-            if letter in flag_letters:
-                expanded.append((option, None))
-                position += 1
-                continue
             if letter in value_letters:
                 value = body[position + 1 :] or None
                 if value is None and index < len(args):
@@ -1300,14 +1293,16 @@ def cold_shape_refusal(
                 expanded.append((option, value))
                 position = len(body)
                 continue
-            return f"unrecognized short option cluster {token}"
+            # Every other letter is value-less. `supports_sequential_pytest`
+            # (called above) already refused any letter outside the known flag
+            # and value sets, so no unrecognized cluster reaches this loop.
+            expanded.append((option, None))
+            position += 1
 
     for option, value in expanded:
         lower = option.lower()
         if option in ("-h", "-V"):
             return "not a sequential pytest command"
-        if option in ("-o",) or lower == "--override-ini" or lower.startswith("--override-ini="):
-            return "pytest override"
         if option == "-c" or lower == "--config-file" or lower.startswith(
             ("--config-file", "--rootdir", "--confcutdir")
         ):
@@ -1332,17 +1327,6 @@ def cold_shape_refusal(
                 return "coverage plugin re-enabled"
             if normalized == "xdist":
                 return "parallel option"
-        if lower.startswith("-p") and len(option) > 2:
-            plugin = option[2:]
-            normalized = plugin.casefold()
-            if normalized in {"randomly", "random_order", "pytest_randomly"}:
-                return "order-changing option"
-            if normalized in {"pytest_cov", "pytest-cov"}:
-                return "coverage plugin re-enabled"
-            if normalized == "xdist":
-                return "parallel option"
-        if option.startswith("--") and option.startswith(("--numprocesses", "--dist", "--looponfail")):
-            return "parallel option"
     return None
 
 

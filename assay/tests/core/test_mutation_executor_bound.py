@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from conftest import completed_process, timeout_expired
 
-import subprocess
 import json
 import os
 import stat
@@ -33,10 +32,7 @@ from assay import mutation as mutation_module, runner as runner_module
 from assay.errors import AssayError, Outcome, ReasonCode
 from assay.process_tree import ProcessTreeError
 from assay.mutation import MutationTarget, candidate_id, collect_mutation_sites, run_mutation
-from assay.resource_limits import (
-    ResourceLimitCounters,
-    ResourceLimitObservationError,
-)
+from assay.resource_limits import ResourceLimitCounters
 from assay.runner import execute_command
 
 #: Five independent mutable sites (one per line -- each an unrelated
@@ -517,10 +513,25 @@ def test_after_counter_failure_does_not_hide_process_tree_cleanup_failure(
         nonlocal reads
         reads += 1
         if reads == 3:  # preflight, before candidate, then failed after-read
-            raise ResourceLimitObservationError("observer disappeared")
+            # The patched reader stands in for mutation's own wrapper, which
+            # converts the observer error into the lane-level AssayError.
+            raise AssayError(
+                "observer disappeared",
+                outcome=Outcome.NO_MEASUREMENT,
+                reason_code=ReasonCode.CGROUP_OBSERVATION_UNAVAILABLE,
+            )
         return zero
 
-    def fail_to_prove_cleanup(*_args, **_kwargs):
+    real_execute_plan = runner_module.execute_plan
+    plan_calls = 0
+
+    def fail_to_prove_cleanup(*args, **kwargs):
+        # The first call is _run_queue_case's own R0 baseline (the helper runs
+        # it through execute_command); only candidate executions lose proof.
+        nonlocal plan_calls
+        plan_calls += 1
+        if plan_calls == 1:
+            return real_execute_plan(*args, **kwargs)
         raise ProcessTreeError("the command window is not empty")
 
     monkeypatch.setattr(runner_module, "execute_plan", fail_to_prove_cleanup)

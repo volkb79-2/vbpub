@@ -101,7 +101,9 @@ an installed wheel or zipapp needs nothing extra:
   report is limited to 16 MiB. Refusal JSON is limited to 64 KiB and each
   input-derived error detail to 768 characters; long details are truncated
   while preserving the named refusal. Exceeding a limit is a named evidence
-  error, never a partial report or an invented zero.
+  error, never a partial report or an invented zero. A truncated list reports
+  its full `matching_total` and a `next_offset`; continue it with
+  `--outcome <bucket> --offset <next_offset>` until `next_offset` is `null`.
 
 <!-- assay-analysis-example -->
 ```bash
@@ -310,8 +312,8 @@ assay exists to close that gap mechanically, not by policy:
   `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`. R0/R1 evidence is retained
   and independent R3 can still run. `assay plan --json` and `assay lanes --json`
   report current availability. See the
-  [design](docs/DESIGN-GUIDE.md#native-r2-cgroup-observation-b148-a-494)
-  and [consumer guidance](docs/CONSUMERS.md#native-r2-cgroup-observation-b148-a-494).
+  [design](docs/DESIGN-GUIDE.md#native-r2-cgroup-observation-b148a-494)
+  and [consumer guidance](docs/CONSUMERS.md#native-r2-cgroup-observation-b148a-494).
   If observation is lost or becomes ambiguous after the pre-candidate check,
   Assay stops R2 with `ERROR/EXEC_FAILED`; it never records that attempt as a
   product failure or mutation kill. Run-Gate reports the pre-candidate
@@ -1458,7 +1460,19 @@ you're changing assay itself:
   [consumer guide](docs/CONSUMERS.md#assays-own-full-source-self-qualification-b105).
   The separately invoked `run-gate self-qualification` requires that receipt for
   its own commit and tree (run `run-gate tester-unified` first, in the same worktree and with no commit in between: any later commit, a docs-only or merge commit included, needs a fresh `tester-unified` run; `tester-unified` exits 3 with `ASSAY_GATE_INCONCLUSIVE=` when another `run-gate-*` container is running, which means rerun), then runs full-source
-  R0-R3 qualification in `tester-unified`. The B105 run-gate lanes use the
+  R0-R3 qualification in `tester-unified`. During the explicitly waived 10.0.x
+  release window, CMRU's Assay `run-tests` step also invokes
+  `run-gate self-qualification-provisional`, which runs R0, R1 and R3 and records
+  the R2 postponement in `.assay/mutation-postponed-assay.json`; its
+  `cmru_release_gate_version_bound` field records whether the protected CMRU
+  transaction version was received and matched. It never claims an R2 pass.
+  See the [design rationale](docs/DESIGN-GUIDE.md#provisional-release-qualification-b169-b170)
+  and [release runbook](docs/CONSUMERS.md#provisional-release-qualification-b169-b170).
+  The gate validates the first release heading after `Unreleased` against
+  CMRU's protected transaction version. A marker is current evidence only with
+  a successful Run-Gate result for the same source tree; a Run-Gate admission
+  refusal before the wrapper starts can leave a previous marker in place.
+  The B105 run-gate lanes use the
   bare-host `tools/self-qualification-container.sh` wrapper because the
   generic run-gate tester container has a private cgroup namespace. The
   wrapper derives the Docker host workspace root with `findmnt`, confirms the

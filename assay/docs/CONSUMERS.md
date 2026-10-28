@@ -163,6 +163,48 @@ When preparing coverage outside the full campaign, the registered standalone
 90-minute Nyxloom timeout. The Assay lane itself remains capped at 60 minutes;
 the extra time covers admission, startup, and evidence collection.
 
+### Provisional release qualification B169 B170
+
+For the explicitly waived 10.0.x release, CMRU's isolated `run-tests` step
+runs `tools/tester-unified-gate.sh` first and then invokes
+`run-gate self-qualification-provisional` before it creates the release tag.
+The lane runs R0, R1 over all of `src/assay` with 100% whole-target line and
+branch coverage, and the R3 canary. It omits R2 and, only after the lane is
+verified, records `.assay/mutation-postponed-assay.json` with
+`"result": "provisional"` and tracking id B169. Its
+`cmru_release_gate_version_bound` boolean is true when the protected CMRU
+transaction version was received and matched, and false when no transaction
+binding was applied. That marker says R2 is owed; it is not an R2 pass. Use
+`run-gate self-qualification` when full R0-R3 evidence is required.
+
+The gate reads the first H2 release heading after `## [Unreleased]` in
+`CHANGES.md`, because CMRU runs the release gate before the tag exists. It
+refuses that heading if it is malformed or unsupported, even when an older
+heading is valid. CMRU passes the transaction's planned version as a protected
+gate input; the heading must match it. The accepted target interval is
+`10.0.0 <= version < 10.1.0`; at least one stable `assay-vX.Y.Z` tag must be
+listable, and its latest version must be below 10.1.0. A release at 9.9.9,
+10.1.0 or later, an unreadable tag list, or no visible stable tag refuses the
+waiver.
+
+Once the bare-host wrapper starts for the full or provisional lane, it removes
+an old postponement marker before its dirty-tree and host-admission checks. A
+Run-Gate admission refusal can happen before the wrapper starts, so that
+refusal retains the previous marker. Do not use marker presence alone as a
+current result: require a successful Run-Gate result bound to the same source
+tree. A refused or failed current attempt does not make an older marker current.
+
+**Host and time precondition:** reserve the provisional lane's 210-minute
+Run-Gate budget after the ordinary self-hosted release gate, plus startup and
+evidence-collection time. No other registered gate may run on the host until
+the qualification finishes. Run-Gate holds the configured Assay shared
+resource lock while this lane runs; that lock serializes Assay lanes only.
+The gate coordinator must hold the cross-project serial window. The CMRU
+release transaction does not provide host-wide gate exclusivity, and
+`ASSAY_GATE_ALLOW_SHARED_HOST=1` is not supported for this lane. CMRU's
+`--dry-run` previews a transaction without executing `run-tests`, so it cannot
+prove this host precondition or lane admission.
+
 ### Cold-witness R2 (B114)
 
 Cold-witness mode is an explicit opt-in for the supported native Python pytest
@@ -489,7 +531,7 @@ silently select a namespace setting or add a lane option that substitutes for
 kernel visibility. Candidate-time reader errors still use B145's
 `ERROR/EXEC_FAILED`, since a successful preflight cannot prove that
 observability stayed stable later. See
-the [design rationale](DESIGN-GUIDE.md#native-r2-cgroup-visibility-preflight-b148).
+the [design rationale](DESIGN-GUIDE.md#native-r2-cgroup-observation-b148a-494).
 
 From a clean Assay worktree, capture the gate output under `.assay/` so it does
 not dirty the judged tree:

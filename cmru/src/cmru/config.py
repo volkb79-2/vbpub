@@ -845,6 +845,7 @@ _RESERVED_CMRU_INTERNAL_ENV = frozenset({
     "CMRU_RELEASE_CONTROLLER_WHEEL_SHA256",
     "CMRU_RELEASE_CONTROLLER_FILES_SHA256",
     "CMRU_RELEASE_GATE_COMMIT",
+    "CMRU_RELEASE_GATE_VERSION",
     # Exact tagged candidate identity injected only into release artifact and
     # publisher steps; project env must not be able to shadow the source CMRU
     # already gated and tagged.

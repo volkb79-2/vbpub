@@ -5014,7 +5014,21 @@ def _run_prepared_lane(
                             progress_phase="r2-baseline",
                         )
                         if r2_unit.post_reason is not None:
-                            raise r2_unit.post_reason
+                            post_reason_message = {
+                                ReasonCode.DIRTY_TREE: (
+                                    "the R2 baseline left a dirty Git worktree after the "
+                                    "command ran; its result no longer represents its own commit"
+                                ),
+                                ReasonCode.HEAD_CHANGED: (
+                                    "the R2 baseline changed HEAD after the command ran; "
+                                    "its result no longer represents its own commit"
+                                ),
+                            }[r2_unit.post_reason]
+                            raise AssayError(
+                                post_reason_message,
+                                outcome=Outcome.NO_MEASUREMENT,
+                                reason_code=r2_unit.post_reason,
+                            )
                         r2_result = r2_unit.result
                         if (
                             r2_result.outcome is Outcome.BUDGET_EXCEEDED

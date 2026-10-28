@@ -804,6 +804,35 @@ def test_normalize_verdict_refuses_invalid_resource_counter_deltas(before: int, 
         q.normalize_verdict(actual, assay_version="9.9.9", head_oid="1" * 40, base_oid="2" * 40)
 
 
+def test_normalize_verdict_zeroes_a_valid_cleanup_time_but_keeps_other_tree_facts() -> None:
+    actual = _witness_as_actual()
+    tree = actual["claims"][1]["mutation"]["killed"][0]["process_tree_evidence"]
+    tree["cleanup_seconds"] = 0.123
+    q.compare_with_witness(actual, _WITNESS_PATH, assay_version="9.9.9", head_oid="1" * 40, base_oid="2" * 40)
+    tree["outliving_descendants"] = 1
+    with pytest.raises(q.QualificationError, match="differs from the frozen witness"):
+        q.compare_with_witness(actual, _WITNESS_PATH, assay_version="9.9.9", head_oid="1" * 40, base_oid="2" * 40)
+
+
+@pytest.mark.parametrize("bad", [None, "fast", -1.0, True, "missing"])
+def test_normalize_verdict_refuses_a_missing_or_invalid_cleanup_time(bad) -> None:
+    actual = _witness_as_actual()
+    tree = actual["claims"][1]["mutation"]["killed"][0]["process_tree_evidence"]
+    if bad == "missing":
+        del tree["cleanup_seconds"]
+    else:
+        tree["cleanup_seconds"] = bad
+    with pytest.raises(q.QualificationError, match="cleanup_seconds"):
+        q.normalize_verdict(actual, assay_version="9.9.9", head_oid="1" * 40, base_oid="2" * 40)
+
+
+def test_normalize_verdict_refuses_a_candidate_without_process_tree_evidence() -> None:
+    actual = _witness_as_actual()
+    del actual["claims"][1]["mutation"]["killed"][0]["process_tree_evidence"]
+    with pytest.raises(q.QualificationError, match="process_tree_evidence"):
+        q.normalize_verdict(actual, assay_version="9.9.9", head_oid="1" * 40, base_oid="2" * 40)
+
+
 def test_compare_with_witness_refuses_a_corrupted_mutation_bucket() -> None:
     actual = _witness_as_actual()
     actual["claims"][1]["mutation"]["killed"] = []
@@ -2135,15 +2164,23 @@ def test_a_green_tester_then_a_green_harness_marks_the_phase_once_between_tester
         if value == "--group-add"
     ]
     assert group_ids and all(group_id.isdigit() for group_id in group_ids)
-    assert "994" in group_ids
+    # The runner joins the host Docker group the host launcher verified (994 in
+    # this harness), not whatever group the locally visible socket carries (the
+    # fixture socket's group would be this process's effective gid).
+    assert group_ids == ["994", "994"]  # verified Docker group, then the observer group
+    assert "ASSAY_RESOURCE_OBSERVER_SOCKET=/run/cgprofile-observer/resource-observer.sock" in launch
     assert "--cidfile" in launch
     mounts = [launch[i + 1] for i, value in enumerate(launch[:-1]) if value == "--mount"]
     assert "type=bind,src=/host/vbpub,dst=/host/vbpub" in mounts
     assert "type=bind,src=/host/vbpub,dst=/workspaces/vbpub" in mounts
     socket_source = gate_functions.read_text(encoding="utf-8").split("docker_socket=", 1)[1].split()[0]
     assert f"type=bind,src={socket_source},dst=/var/run/docker.sock" in mounts
-    assert not any("resource-observer.sock" in value for value in launch)
-    assert not any("resource-observer" in value for value in mounts)
+    # v16 native R2 refuses to run without cgroup observation, so the runner gets
+    # the observer DIRECTORY read-only (never a writable or socket-file mount).
+    observer_mounts = [value for value in mounts if "cgprofile-observer" in value]
+    assert len(observer_mounts) == 1
+    assert observer_mounts[0].endswith("target=/run/cgprofile-observer,readonly")
+    assert not any("resource-observer.sock" in value for value in mounts)
     assert not any(value == "-v" for value in launch)
     assert ["logs", "--follow", _FAKE_RUNNER_ID] in calls
     assert ["wait", _FAKE_RUNNER_ID] in calls
@@ -2370,6 +2407,8 @@ def test_a_hung_sql_log_stream_is_bounded_and_exit_cleanup_still_removes_the_run
     assert production_wait in source
     short_functions = tmp_path / "gate-functions-short-log-wait.sh"
     short_functions.write_text(source.replace(production_wait, production_wait[:-2] + "1"), encoding="utf-8")
+    # The gate functions source this helper relative to their own location.
+    shutil.copyfile(_OBSERVER_GID_HELPER, tmp_path / _OBSERVER_GID_HELPER.name)
     proc = run_bash(
         f"run_registered_tester_container() {{ echo stubbed-tester; }}\n"
         "run_b145_bounded_wait_acceptance_probe() { :; }\n"
@@ -2683,6 +2722,24 @@ def test_a_clone_that_is_not_the_gated_commit_is_refused_before_any_harness_or_c
     assert f"SQL clone is not the gated commit {HEX40}" in proc.stderr
     assert not harness_log.exists()
     assert not docker_log.exists()  # no container name existed yet, so the trap removed nothing
+
+
+def test_the_runner_joins_the_verified_host_docker_group_not_the_visible_sockets(
+    tmp_path: Path, gate_functions: Path
+) -> None:
+    """A devcontainer's proxy socket can carry another group than the host socket."""
+    worktree, commit, _tree = _sql_worktree(tmp_path)
+    env, docker_log, _harness_log = _sql_env(tmp_path, out=_MARKER, rc=0)
+    proc = run_bash(
+        f'worktree="{worktree}"\nhost_repo_root="/host/vbpub"\ntrap cleanup_assay_gate_container EXIT\nrun_sql_qualification "{commit}" "dev-gates.slice" "994" "4242"',
+        gate_functions=gate_functions,
+        env=env,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    launch = next(call for call in _docker_calls(docker_log) if call[:2] == ["run", "-d"])
+    group_ids = [launch[i + 1] for i, value in enumerate(launch[:-1]) if value == "--group-add"]
+    assert group_ids == ["4242", "994"]
 
 
 def _run_sql_phase(tmp_path: Path, gate_functions: Path, allow: str | None):

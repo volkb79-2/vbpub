@@ -547,11 +547,16 @@ def test_assay_run_emits_a_b145_counter_refusal_its_own_verify_accepts(
         stderr=err,
     )
 
-    assert code == Outcome.ERROR.exit_code
+    # The pre-candidate probe is the one place a missing observer reports
+    # NO_MEASUREMENT (post-preflight observer loss is ERROR/EXEC_FAILED).
+    assert code == Outcome.NO_MEASUREMENT.exit_code
     document = json.loads(target.read_text(encoding="utf-8"))
     r0, r2 = document["claims"]
     assert (r0["status"], r0.get("reason_code")) == ("PASS", None)
-    assert (r2["status"], r2.get("reason_code")) == ("ERROR", "EXEC_FAILED")
+    assert (r2["status"], r2.get("reason_code")) == (
+        "NO_MEASUREMENT",
+        "CGROUP_OBSERVATION_UNAVAILABLE",
+    )
     assert "mutation" not in r2, "counter preflight ran before candidate execution"
     assert verify.verify_document(document) == [], (
         "assay run emitted an artifact its own assay verify rejects"

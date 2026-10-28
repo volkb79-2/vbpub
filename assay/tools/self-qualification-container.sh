@@ -86,19 +86,19 @@ clear_prior_outputs() {
 }
 
 usage() {
-  die 'usage: self-qualification-container.sh WORKTREE self-qualification|self-qualification-preflight|b110-pilot|b110-screen|analysis-r2-pilot'
+  die 'usage: self-qualification-container.sh WORKTREE self-qualification|self-qualification-preflight|self-qualification-provisional|b110-pilot|b110-screen|analysis-r2-pilot'
 }
 
 [[ $# -eq 2 ]] || usage
 worktree="$1"
 lane="$2"
 case "$lane" in
-  self-qualification|self-qualification-preflight|b110-pilot|b110-screen|analysis-r2-pilot) ;;
+  self-qualification|self-qualification-preflight|self-qualification-provisional|b110-pilot|b110-screen|analysis-r2-pilot) ;;
   *) usage ;;
 esac
 
 case "$worktree" in
-  /workspaces/vbpub|/workspaces/vbpub/.worktrees/*) ;;
+  /workspaces/vbpub|/workspaces/vbpub/.worktrees/*|/workspaces/vbpub/.claude/worktrees/*) ;;
   *) die "worktree $worktree is outside /workspaces/vbpub" ;;
 esac
 worktree="$(cd -- "$worktree" && pwd -P)" \
@@ -107,6 +107,18 @@ worktree="$(cd -- "$worktree" && pwd -P)" \
 project="$worktree/assay"
 [[ -d "$project" && ! -L "$project" && -f "$project/pyproject.toml" ]] \
   || die "selected worktree has no real assay project directory: $project"
+
+for required_command in realpath flock chmod python3 stat; do
+  command -v "$required_command" >/dev/null 2>&1 \
+    || die "required host command is unavailable: $required_command"
+done
+if [[ "$lane" != b110-pilot ]]; then
+  for required_command in rm mkdir mv; do
+    command -v "$required_command" >/dev/null 2>&1 \
+      || die "required host command is unavailable: $required_command"
+  done
+fi
+
 project_identity="$(stat -c '%d:%i' -- "$project")" \
   || die 'cannot capture the Assay project directory identity before container startup'
 [[ "$project_identity" =~ ^([0-9]+):([0-9]+)$ ]] \
@@ -120,15 +132,38 @@ source_commit="$(assay_git -C "$worktree" rev-parse HEAD)" \
 source_tree="$(assay_git -C "$worktree" rev-parse 'HEAD^{tree}')" \
   || die "cannot resolve selected worktree tree"
 
-for required_command in realpath flock chmod python3 stat; do
-  command -v "$required_command" >/dev/null 2>&1 \
-    || die "required host command is unavailable: $required_command"
-done
-if [[ "$lane" != b110-pilot ]]; then
-  for required_command in rm mkdir mv; do
-    command -v "$required_command" >/dev/null 2>&1 \
-      || die "required host command is unavailable: $required_command"
-  done
+if [[ "$lane" == self-qualification || "$lane" == self-qualification-provisional ]]; then
+  # run-gate admission may refuse before this wrapper starts, but once the
+  # wrapper has accepted a real worktree, clear old deferral evidence before
+  # dirty-tree, shared-host, or other outer admission checks can refuse.
+  if ! python3 - "$project" <<'PYEOF'
+import os
+import sys
+
+project_fd = os.open(
+    sys.argv[1], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+)
+try:
+    try:
+        assay_fd = os.open(
+            ".assay", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            dir_fd=project_fd,
+        )
+    except FileNotFoundError:
+        raise SystemExit(0)
+    try:
+        try:
+            os.unlink("mutation-postponed-assay.json", dir_fd=assay_fd)
+        except FileNotFoundError:
+            pass
+    finally:
+        os.close(assay_fd)
+finally:
+    os.close(project_fd)
+PYEOF
+  then
+    die 'cannot safely remove a prior R2 postponement marker before wrapper admission'
+  fi
 fi
 
 # The run-gate `resources.shared` flock is scoped to its caller's /tmp. B105
@@ -285,7 +320,7 @@ host_workspace_root="${ASSAY_GATE_HOST_WORKSPACE_ROOT:-$workspace_fsroot}"
 if ! command -v docker >/dev/null 2>&1; then
   die 'Docker is required to launch the cgroup-visible tester-unified runner'
 fi
-for required_command in timeout setsid od tr paste rg grep sort sed; do
+for required_command in timeout setsid od tr paste grep sort sed; do
   command -v "$required_command" >/dev/null 2>&1 \
     || die "required host command is unavailable: $required_command"
 done
@@ -327,7 +362,7 @@ if ! active_names="$(docker_bounded ps --no-trunc --format '{{.Names}}')"; then
   printf 'ASSAY_GATE_INCONCLUSIVE=host check failed (docker ps) — rerun\n' >&2
   exit 3
 fi
-active_gates="$(printf '%s\n' "$active_names" | rg '^run-gate-' || true)"
+active_gates="$(printf '%s\n' "$active_names" | grep '^run-gate-' || true)"
 if [[ -n "$active_gates" ]]; then
   printf 'ASSAY_GATE_INCONCLUSIVE=host busy — rerun: %s\n' \
     "$(printf '%s' "$active_gates" | paste -sd, -)" >&2
@@ -443,6 +478,9 @@ forwarded_env=()
 if [[ -n "${CGROUP_PARENT_DEV_BACKGROUND:-}" ]]; then
   forwarded_env+=(-e "CGROUP_PARENT_DEV_BACKGROUND=$CGROUP_PARENT_DEV_BACKGROUND")
 fi
+if [[ -v CMRU_RELEASE_GATE_VERSION ]]; then
+  forwarded_env+=(-e "CMRU_RELEASE_GATE_VERSION=$CMRU_RELEASE_GATE_VERSION")
+fi
 b110_state_env=()
 if [[ "$lane" == b110-pilot || "$lane" == b110-screen ]]; then
   [[ "$assay_state_present" == true ]] || die 'B110 did not prepare its .assay state directory'
@@ -471,6 +509,14 @@ case "$lane" in
     wait_timeout_label=65m
     wait_timeout_seconds=3900
     inner_argv=(bash "$project/tools/self-qualification-gate.sh" "$worktree" "$lane")
+    ;;
+  self-qualification-provisional)
+    wait_timeout_label=3h5m
+    wait_timeout_seconds=11100
+    inner_argv=(
+      timeout --verbose --signal=TERM --kill-after=30s 10800s
+      bash "$project/tools/self-qualification-gate.sh" "$worktree" "$lane"
+    )
     ;;
   b110-pilot)
     # The build and venv setup happen before the 90-minute campaign-attempt
@@ -588,11 +634,16 @@ fi
 container_env="$(docker_bounded inspect "$container_id" \
   --format '{{range .Config.Env}}{{println .}}{{end}}')" \
   || die 'could not inspect B105 container environment'
-for expected in \
-  "CGROUP_PARENT_DEV_GATES=$cgroup_parent" \
-  "ASSAY_RESOURCE_OBSERVER_SOCKET=$RESOURCE_OBSERVER_TARGET" \
-  "ASSAY_B105_GATE_EXPECTED_COMMIT=$source_commit" \
-  "ASSAY_B105_GATE_EXPECTED_TREE=$source_tree"; do
+expected_container_env=(
+  "CGROUP_PARENT_DEV_GATES=$cgroup_parent"
+  "ASSAY_RESOURCE_OBSERVER_SOCKET=$RESOURCE_OBSERVER_TARGET"
+  "ASSAY_B105_GATE_EXPECTED_COMMIT=$source_commit"
+  "ASSAY_B105_GATE_EXPECTED_TREE=$source_tree"
+)
+if [[ -v CMRU_RELEASE_GATE_VERSION ]]; then
+  expected_container_env+=("CMRU_RELEASE_GATE_VERSION=$CMRU_RELEASE_GATE_VERSION")
+fi
+for expected in "${expected_container_env[@]}"; do
   if ! printf '%s\n' "$container_env" | grep -Fqx "$expected"; then
     die "B105 container is missing required environment fact: ${expected%%=*}"
   fi
@@ -665,6 +716,9 @@ case "$lane" in
     ;;
   self-qualification-preflight)
     marker=ASSAY_SELF_QUALIFICATION_PREFLIGHT_VERIFIED=1
+    ;;
+  self-qualification-provisional)
+    marker=ASSAY_SELF_QUALIFICATION_PROVISIONAL_VERIFIED=1
     ;;
   b110-pilot)
     if grep -Eq '^B110_SCREEN_(EXIT|VERIFIED|TIMEOUT_FAILSAFE|VERDICT)=' "$scratch/container.log"; then

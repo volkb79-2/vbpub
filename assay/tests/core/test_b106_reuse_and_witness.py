@@ -6,7 +6,6 @@ import hashlib
 import io
 import json
 import os
-import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -26,7 +25,7 @@ from assay.resource_limits import ResourceLimitCounters
 from assay.reuse import classify_candidate, load_reuse_source, prior_only_candidates
 from assay.verdict import Mutation, MutationExecution, MutationWitnessReceipt
 from assay.verify import verify_document
-from conftest import completed_process, isolated_process_runner, timeout_expired
+from conftest import completed_process, isolated_process_runner, process_tree_evidence_dict
 from conftest import (
     TESTS_ROOT,
     GitRepo,
@@ -1191,6 +1190,12 @@ def test_rejudge_outcome_disables_prior_witness_replay(
     record = json.loads(record_path.read_text(encoding="utf-8"))
     record["outcome_bucket"] = "hung"
     record["execution"] = {"mode": "full"}
+    # A hung record is valid only with a timeout-killed leader; otherwise the
+    # state record is rejected and the candidate re-runs for a different reason
+    # than the --rejudge-outcome selection this test is about.
+    record["process_tree_evidence"] = process_tree_evidence_dict(
+        leader_status="timeout-killed"
+    )
     record["terminal_result"] = {
         "outcome": "BUDGET_EXCEEDED",
         "reason_code": "CANDIDATE_HUNG",

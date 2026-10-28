@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 import tomllib
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -20,7 +19,7 @@ from assay.adapters.python import PythonAdapter
 from assay.config import CanaryConfig, MutationConfig, ResultReportConfig
 from assay.errors import AssayError, Outcome, ReasonCode
 from assay.verdict import Claim
-from conftest import completed_process, timeout_expired
+from conftest import completed_process
 from conftest import (
     GitRepo,
     make_deadline,

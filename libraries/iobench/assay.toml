@@ -58,3 +58,16 @@ targets = [
   "src/iobench/testing.py",
 ]
 fail_under = 100.0
+allow_excluded = false
+require_branch = true
+
+[lanes.iobench.judge.coverage]
+format = "coverage-py-json"
+artifact = "coverage.json"
+
+[lanes.iobench.judge.mutation]
+jobs = 1
+max_mutants = 10000
+operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
+budget_per_candidate = "auto"
+liveness = true

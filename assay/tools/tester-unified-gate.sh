@@ -38,6 +38,7 @@ RESOURCE_OBSERVER_SOURCE="/run/cgprofile/observer/resource-observer.sock"
 RESOURCE_OBSERVER_DIRECTORY_SOURCE="$(dirname "$RESOURCE_OBSERVER_SOURCE")"
 RESOURCE_OBSERVER_TARGET_DIRECTORY="/run/cgprofile-observer"
 RESOURCE_OBSERVER_TARGET="$RESOURCE_OBSERVER_TARGET_DIRECTORY/resource-observer.sock"
+# shellcheck source=/dev/null
 source "$(dirname "${BASH_SOURCE[0]}")/resource-observer-gid.sh"
 
 resource_observer_gid() {
@@ -55,7 +56,7 @@ assay_git() {
 
 validate_worktree() {
   case "$1" in
-    /workspaces/vbpub|/workspaces/vbpub/.worktrees/*) ;;
+    /workspaces/vbpub|/workspaces/vbpub/.worktrees/*|/workspaces/vbpub/.claude/worktrees/*) ;;
     *) die "worktree $1 is outside /workspaces/vbpub" ;;
   esac
 }
@@ -1262,7 +1263,10 @@ finish_registered_gate() {
 # scope. Exit 3 means the environment could not answer; it passes through with
 # no receipt or COMPLETE marker.
 run_sql_qualification() {
-  local commit="$1" cgroup="$2" observer_gid="$3" docker_socket_gid container_id runner_cidfile_id runner_inventory wait_status wait_rc logs_status postgres_container_id
+  # $4 (optional): the host Docker GID already verified by the host launcher.
+  # In a devcontainer the socket visible HERE can carry a different group than
+  # the host socket the runner container will bind, so prefer the verified GID.
+  local commit="$1" cgroup="$2" observer_gid="$3" verified_docker_gid="${4:-}" docker_socket_gid container_id runner_cidfile_id runner_inventory wait_status wait_rc logs_status postgres_container_id
   local shared=0 docker_socket=/var/run/docker.sock run_id runner_launch_status runner_launch_stderr
   local forwarded_env=() group_add_args=() sql_runner_script
   # (CD50) The harness opt-in follows the gate's, and only for the exact value 1.
@@ -1282,10 +1286,17 @@ run_sql_qualification() {
     || die "SQL clone is not the gated commit $commit"
   [[ -S "$docker_socket" ]] \
     || die "Docker socket $docker_socket is unavailable to the SQL qualification launcher"
-  docker_socket_gid="$(stat -Lc %g "$docker_socket")" \
-    || die "could not read Docker socket group for $docker_socket"
+  if [[ -n "$verified_docker_gid" ]]; then
+    docker_socket_gid="$verified_docker_gid"
+  else
+    docker_socket_gid="$(stat -Lc %g "$docker_socket")" \
+      || die "could not read Docker socket group for $docker_socket"
+  fi
   [[ "$docker_socket_gid" =~ ^[0-9]+$ ]] || die "Docker socket group is malformed: $docker_socket_gid"
-  group_add_args=(--group-add "$docker_socket_gid")
+  # The runner's native R2 witness needs the same cgroup observer access as the
+  # tester container: the observer group, the read-only observer directory
+  # and the in-container socket path (v16 refuses R2 without observation).
+  group_add_args=(--group-add "$docker_socket_gid" --group-add "$observer_gid")
   if [[ -n ${CGROUP_PARENT_DEV_BACKGROUND:-} ]]; then
     forwarded_env=(-e "CGROUP_PARENT_DEV_BACKGROUND=$CGROUP_PARENT_DEV_BACKGROUND")
   fi
@@ -1348,9 +1359,11 @@ cat "$scratch/expected.marker"
     -e "CGROUP_PARENT_DEV_GATES=$cgroup" \
     "${forwarded_env[@]}" \
     -e 'PATH=/opt/tester-venv/bin:/usr/local/bin:/usr/bin:/bin' \
+    -e "ASSAY_RESOURCE_OBSERVER_SOCKET=$RESOURCE_OBSERVER_TARGET" \
     --network=none \
     --mount "type=bind,src=$host_repo_root,dst=$host_repo_root" \
     --mount "type=bind,src=$host_repo_root,dst=/workspaces/vbpub" \
+    --mount "type=bind,source=$RESOURCE_OBSERVER_DIRECTORY_SOURCE,target=$RESOURCE_OBSERVER_TARGET_DIRECTORY,readonly" \
     --mount "type=bind,src=$docker_socket,dst=/var/run/docker.sock" \
     -w /workspaces/vbpub \
     tester-unified:local \
@@ -1503,7 +1516,7 @@ run_registered_gate() {
   # A plain call, never inside `||`/`if`: the script's `set -e` ends the run with
   # the container's own status, so a red container never reaches the receipt.
   ASSAY_GATE_EXPECTED_COMMIT="$commit" run_registered_tester_container "$worktree" "$host_repo_root" "$cgroup_parent" "$observer_gid" "$docker_gid"
-  run_sql_qualification "$commit" "$cgroup_parent" "$observer_gid"
+  run_sql_qualification "$commit" "$cgroup_parent" "$observer_gid" "$docker_gid"
   finish_registered_gate "$worktree" "$commit" "$tree"
 }
 

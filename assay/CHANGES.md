@@ -9,6 +9,53 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   older verdicts, and v12-v15 reuse state starts cold under the new judge
   identity. Upgrade to Assay 10.0.0 and follow the
   [v15-to-v16 migration notes](docs/CONSUMERS.md#migration-notes-v15-to-v16).
+- Native R2 requires `judge.mutation.jobs = 1` (and `--pilot-jobs 1` /
+  `--project-jobs 1` for bounded pilots): candidate runs share the lane's cgroup
+  event counters. Change native R2 lane configs in the same consumer commit that
+  repins Assay.
+- Executed native R2 state records require `process_tree_evidence`; the B110 and
+  B131 pilot checkers refuse records without it.
+- `assay plan` prints a human summary by default; the machine-readable plan is
+  `assay plan --json` (B166). Scripts that parse its stdout must add `--json`.
+- The `assay analyze campaign` report is schema version 2 (was 1): `schema_version`
+  is const 2, `qualifying` is a boolean (always false for pilots and sharded
+  analyses) rather than const true, `complete_blockers` gains `shard_not_merged`,
+  and pilot analysis adds `plan_json`/`selection_file` evidence. Parsers pinned to
+  version 1 or to `qualifying == true` must be updated.
+- A coverage lane that pairs coverage with pytest fail-fast now warns
+  (`lane_validation_warnings`); the test extras pin `pytest-cov==7.1.0` and
+  `hypothesis==6.169.0` for the reviewed cold-witness hook implementations.
+- Native R2 reports `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` when the
+  complete cgroup counter hierarchy is unavailable before any candidate starts;
+  Run-Gate must be a release that maps it to an infrastructure error.
+
+### Release notes
+- 10.0.0 is a provisional release for mutation purposes: the R2 mutation campaign
+  was waived by operator decision on 2026-10-27 (release wave waiver; see B169).
+  No R2 pass is claimed. Every other gate (R0, R1 line and branch coverage, the
+  analysis lane, the independent self-hosting witness and the distribution build)
+  ran.
+- Added the `self-qualification-provisional` Run-Gate lane (and the assay release
+  step, `cmru.toml` `run-tests`): the full qualification minus R2. It runs R0,
+  R1 over all of `src/assay` (whole-target 100% line and branch) and the R3
+  canary, and records `.assay/mutation-postponed-assay.json` (tracking id B169,
+  operator decision 2026-10-27, valid only for a prepared release version in
+  `[10.0.0, 10.1.0)`, result `provisional`, never an R2 pass). The marker check
+  reads the first dated release heading after `Unreleased`, requires it to
+  match CMRU's protected release-transaction version, and requires a visible
+  stable `assay-vX.Y.Z` tag below 10.1.0; it refuses when no stable tag can be
+  listed. Its `cmru_release_gate_version_bound` boolean records whether the
+  protected transaction version was received and matched.
+  CMRU runs this lane after the self-hosted gate and before tagging, so the
+  prepared version check also refuses the 10.1.0 release before its tag exists.
+  The 210-minute lane requires the gate coordinator to keep other registered
+  gates serial across projects; Run-Gate's Assay resource lock covers only
+  Assay lanes. The full `self-qualification` lane is unchanged and clears the
+  marker. Run at `fb88461ca` it passed R0, R1 (all of
+  `src/assay`, 100% line and branch, no exclusions beyond the reviewed
+  TYPE_CHECKING ones) and the R3 canary. Closing the pre-existing 886-line /
+  711-branch R1 gap took five closure test files and the removal of unreachable
+  branches (B170).
 
 ### Added
 - Native R2 records process-tree evidence for executed candidates and
@@ -23,8 +70,28 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Redact passed-through secrets from subprocess output before clipping verdict
   tails, including secrets that cross the tail boundary.
 - Emit schema-valid non-qualifying campaign summaries for sharded analyses.
+- A dirty tree or moved HEAD detected after the cold-witness R2 baseline is now a
+  typed `NO_MEASUREMENT` refusal carrying that reason (it raised a bare
+  `TypeError` by raising a `ReasonCode`).
+- Name the post-baseline refusal reason (`DIRTY_TREE` or `HEAD_CHANGED`) in its
+  own diagnostic instead of calling both cases Git-visible state.
+- Refuse unknown SQL schema-event kinds instead of processing them as transaction
+  events.
+- Validate the provisional R2 waiver against the prepared release heading and
+  fail closed when the first heading is malformed, disagrees with CMRU's
+  transaction version, or stable assay release tags are missing or unreadable.
+  The outer wrapper clears a stale marker before its dirty-tree and host
+  admission refusals. A Run-Gate admission refusal before wrapper startup can
+  leave the prior marker, which only counts alongside a successful same-source
+  Run-Gate result.
+- Removed unreachable defensive branches in the cold-witness pytest-option
+  scan, the SQL `IN` widening and event scan, and pilot-state handling, so the
+  whole-source R1 floor can be met without exclusions.
 - Treat a complete `0/1` shard as whole-plan qualification because it contains
   the full deterministic candidate inventory.
+- Prove that a truncated `analyze campaign` list can be continued to its last
+  record: `adverse.<bucket>.next_offset` is the `--offset` for
+  `--outcome <bucket>` in `candidate_details` (B108).
 
 <!-- cmru: release history -->
 

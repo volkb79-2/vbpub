@@ -141,6 +141,21 @@ def isolate_mutation_tests_from_the_host_cgroup(monkeypatch: pytest.MonkeyPatch)
 
 
 @pytest.fixture(autouse=True)
+def _reset_the_process_wide_unproven_cleanup_latch():
+    """A window that cannot prove cleanup latches for the whole process.
+
+    The latch is deliberate production behavior (an unproven descendant makes
+    the process unfit for another native R2 window), so a test that provokes it
+    must not leave it armed for the next test in the same worker.
+    """
+    from assay import process_tree
+
+    process_tree._UNPROVEN_CLEANUP = False
+    yield
+    process_tree._UNPROVEN_CLEANUP = False
+
+
+@pytest.fixture(autouse=True)
 def _no_ambient_color(monkeypatch):
     """Help and CLI output must not depend on the caller's terminal colour settings (Python 3.14 argparse colours --help under FORCE_COLOR)."""
     monkeypatch.delenv("FORCE_COLOR", raising=False)
