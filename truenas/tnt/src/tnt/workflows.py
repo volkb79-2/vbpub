@@ -9,7 +9,7 @@ import threading
 from typing import Any, Mapping
 
 from .actions import Action, Kind, RpcCall
-from .errors import Refused
+from .errors import Refused, TransportError
 from .policy import _ambiguous_path, _names_boot_pool, _strings, refusal_for
 from .profile import Secret
 from .transport import GuardedRpc
@@ -20,6 +20,111 @@ class Workflows:
 
     def __init__(self, rpc: GuardedRpc):
         self.rpc = rpc
+
+    # -- SMB and NFS shares -----------------------------------------------------------------------------
+    def shares_smb(self) -> list[dict[str, Any]]:
+        rows = _rows(self.rpc.call("sharing.smb.query", [], {}), "sharing.smb.query")
+        for row in rows:
+            name = row.get("name")
+            if isinstance(name, str):
+                row["acl"] = self.rpc.call("sharing.smb.getacl", {"share_name": name})
+        return rows
+
+    def share_smb(self, name: str) -> dict[str, Any]:
+        row = self._named("sharing.smb.query", name, "SMB share")
+        row["acl"] = self.rpc.call("sharing.smb.getacl", {"share_name": name})
+        return row
+
+    def shares_nfs(self) -> list[dict[str, Any]]:
+        return _rows(self.rpc.call("sharing.nfs.query", [], {}), "sharing.nfs.query")
+
+    def share_nfs(self, path: str) -> dict[str, Any]:
+        if not isinstance(path, str) or not path.strip():
+            raise Refused("workflow-input", "NFS share path is required")
+        rows = _rows(self.rpc.call("sharing.nfs.query", [["path", "=", path]], {}), "sharing.nfs.query")
+        if len(rows) != 1 or rows[0].get("path") != path:
+            raise Refused("workflow-lookup", f"expected exactly one NFS share at {path!r}; found {len(rows)}")
+        return rows[0]
+
+    def share_smb_create_action(self, data: Mapping[str, Any]) -> Action:
+        payload = dict(data)
+        name = self._required_string(payload, "name", "SMB share name")
+        path = self._required_string(payload, "path", "SMB share path")
+        purpose = payload.get("purpose", "DEFAULT_SHARE")
+        if purpose not in {"DEFAULT_SHARE", "LEGACY_SHARE", "TIMEMACHINE_SHARE", "MULTIPROTOCOL_SHARE",
+                           "TIME_LOCKED_SHARE", "PRIVATE_DATASETS_SHARE", "VEEAM_REPOSITORY_SHARE", "FCP_SHARE"}:
+            raise Refused("smb-purpose", "purpose must be a supported v27 SMB share preset")
+        self._validate_share_path(path)
+        options = dict(payload.pop("options", {}) or {})
+        guest = payload.pop("guest", None)
+        if guest is not None:
+            if not isinstance(guest, bool):
+                raise Refused("smb-guest", "guest must be true or false")
+            if guest and purpose != "LEGACY_SHARE":
+                raise Refused("smb-guest", "v27 exposes guest access only for LEGACY_SHARE purpose")
+            if purpose == "LEGACY_SHARE":
+                options["guestok"] = guest
+        for key in ("hostsallow", "hostsdeny"):
+            if key in payload:
+                options[key] = payload.pop(key)
+        if not isinstance(options.get("hostsallow", []), list) or not isinstance(options.get("hostsdeny", []), list):
+            raise Refused("smb-hosts", "hostsallow and hostsdeny must be arrays of strings")
+        if any(not isinstance(item, str) or not item.strip() for key in ("hostsallow", "hostsdeny") for item in options.get(key, [])):
+            raise Refused("smb-hosts", "hostsallow and hostsdeny entries must be non-empty strings")
+        payload["purpose"] = purpose
+        payload["options"] = options
+        payload["path"] = path
+        # Probe now to translate only a confirmed remote missing-path response into the actionable refusal.
+        self._remote_path_stat(path)
+        return Action("TNT-42", Kind.MUTATE, f"Create SMB share {name}",
+                      (RpcCall("sharing.smb.create", (payload,)),),
+                      (RpcCall("filesystem.stat", (path,)), RpcCall("sharing.smb.query", ([["name", "=", name]], {}))))
+
+    def share_nfs_create_action(self, data: Mapping[str, Any]) -> Action:
+        payload = dict(data)
+        path = self._required_string(payload, "path", "NFS share path")
+        self._validate_share_path(path)
+        self._remote_path_stat(path)
+        payload["path"] = path
+        if "maprootuser" in payload and "maproot_user" not in payload:
+            payload["maproot_user"] = payload.pop("maprootuser")
+        security = payload.get("security", [])
+        if not isinstance(security, list) or any(item not in {"SYS", "KRB5", "KRB5I", "KRB5P"} for item in security):
+            raise Refused("nfs-security", "security must contain only SYS, KRB5, KRB5I, or KRB5P")
+        return Action("TNT-42", Kind.MUTATE, f"Create NFS share {path}",
+                      (RpcCall("sharing.nfs.create", (payload,)),),
+                      (RpcCall("filesystem.stat", (path,)), RpcCall("sharing.nfs.query", ([["path", "=", path]], {}))))
+
+    def share_smb_delete_action(self, name: str) -> Action:
+        row = self._named("sharing.smb.query", name, "SMB share")
+        return Action("TNT-42", Kind.DESTRUCTIVE, f"Delete SMB share {name} (share only; data is retained)",
+                      (RpcCall("sharing.smb.delete", (row["id"],)),),
+                      (RpcCall("sharing.smb.query", ([["name", "=", name]], {})),), name)
+
+    def share_nfs_delete_action(self, path: str) -> Action:
+        row = self.share_nfs(path)
+        return Action("TNT-42", Kind.DESTRUCTIVE, f"Delete NFS share {path} (share only; data is retained)",
+                      (RpcCall("sharing.nfs.delete", (row["id"],)),),
+                      (RpcCall("sharing.nfs.query", ([["path", "=", path]], {})),), path)
+
+    def _validate_share_path(self, path: str) -> None:
+        self._refuse_boot_pool("share", (path,))
+        if not path.startswith("/mnt/") or path == "/mnt/":
+            raise Refused("share-path", "share path must be an absolute path below /mnt/ on a data pool")
+
+    def _remote_path_stat(self, path: str) -> dict[str, Any]:
+        try:
+            result = self.rpc.call("filesystem.stat", path)
+        except TransportError as exc:
+            message = str(exc).casefold()
+            if any(marker in message for marker in ("no such file", "does not exist", "not found", "enoent")):
+                raise Refused("share-path", f"share path {path!r} does not exist on the TrueNAS host; tnt never creates paths implicitly") from None
+            raise
+        if not isinstance(result, Mapping) or not isinstance(result.get("realpath"), str):
+            raise Refused("unexpected-response", "filesystem.stat returned no canonical path for the share")
+        if _names_boot_pool(result["realpath"]):
+            raise Refused("refusal-list", "share path resolves under boot-pool, which is never shared from here")
+        return dict(result)
 
     # -- users -------------------------------------------------------------------------------------------
     def users(self) -> list[dict[str, Any]]:
@@ -626,6 +731,31 @@ def validate_plan_preconditions(action: Action, probe_results: Any) -> None:
         matches = [row for row in results if isinstance(row, Mapping) and row.get(key) == expected]
         if matches:
             raise Refused("already-exists", f"{kind} {expected!r} already exists; choose another name")
+
+    share_creates = {
+        "sharing.smb.create": ("sharing.smb.query", "name", "SMB share"),
+        "sharing.nfs.create": ("sharing.nfs.query", "path", "NFS share"),
+    }
+    for call in action.calls:
+        requirement = share_creates.get(call.method)
+        if requirement is None:
+            continue
+        query_method, key, kind = requirement
+        if (len(call.params) != 1 or not isinstance(call.params[0], Mapping) or len(action.probe) != 2
+                or action.probe[0].method != "filesystem.stat" or action.probe[1].method != query_method):
+            raise Refused("share-create-probe", f"{call.method} requires remote path and uniqueness probes")
+        path_probe, matches = probe_results
+        path = call.params[0].get("path")
+        if (not isinstance(path_probe, Mapping) or not isinstance(path_probe.get("realpath"), str)
+                or _names_boot_pool(path_probe["realpath"])):
+            raise Refused("share-path", "share path is missing, unresolved, or resolves under boot-pool")
+        if path_probe["realpath"] != path:
+            raise Refused("share-path", f"share path resolves to {path_probe['realpath']!r}; use the canonical path explicitly")
+        if not isinstance(matches, list):
+            raise Refused("share-create-probe", f"{kind} creation requires a live uniqueness probe")
+        expected = call.params[0].get(key)
+        if any(isinstance(row, Mapping) and row.get(key) == expected for row in matches):
+            raise Refused("already-exists", f"{kind} {expected!r} already exists")
 
     # ID-based updates and lifecycle calls must still resolve to the same named
     # object at both plan time and apply time. The plan fingerprint binds the

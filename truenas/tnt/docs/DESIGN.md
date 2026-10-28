@@ -1,6 +1,6 @@
 # tnt design
 
-Status: M1 core workflows implemented, 2026-10-28. Container image identity, configured CPU count and memory limits
+Status: M2 management workflows in progress, 2026-10-28. Container image identity, configured CPU count and memory limits
 are unavailable in the verified v27 container record; VM creation uses separately reviewed device plans because v27
 does not accept devices in `vm.create`. Inputs: the prior-art research (`truenas-tui-research.md`, release-program brief),
 the canonical action matrix (`docs/ACTION-MATRIX.snapshot.md`, from branch `truenas-restore-iso`), the TrueNAS web UI
@@ -9,12 +9,13 @@ Everything marked UNVERIFIED has not been confirmed against a running host; BACK
 
 ## 1. Goals and non-goals
 
-Goals: run the core operator workflows against a vanilla TrueNAS v27 host: Datasets and Snapshots, Containers, Virtual
-Machines, and local Users. Containers and Virtual Machines are separate menu items, matching the v27 web UI; users
-live under Credentials > Local Users. The TUI and scriptable CLI share one query/action layer. Every write uses
+Goals: run operator workflows against a vanilla TrueNAS v27 host: Datasets and Snapshots, SMB/NFS shares, data
+protection tasks, network status, Apps, Containers, Virtual Machines, local Users, Audit, API Keys, and System actions.
+Containers and Virtual Machines are separate menu items, matching the v27 web UI; users live under Credentials > Local
+Users. The TUI and scriptable CLI share one query/action layer. Every write uses
 plan/apply, displays the exact API calls, re-reads state before apply, and uses typed confirmation for destructive work.
 
-Non-goals: shares, Apps, networking, boot-pool management, pool creation, a REST client, a daemon, and compatibility
+Non-goals: boot-pool management, pool creation, a REST client, a daemon, and compatibility
 with releases other than v27. tnt targets vanilla TrueNAS; it does not rely on any relaxation patch.
 
 ## 2. Architecture
@@ -28,7 +29,7 @@ adapters/    Backend per API generation + method manifest
 domain.py    Plain domain records and formatting
 actions.py   Action, Plan, apply_plan, refusal list      (plan/apply model)
 session.py   Session = profile + guarded rpc + backend; shared workflow query entry point
-cli.py       cli-extended registry: profile, doctor, datasets, snapshots, users, containers, VMs, TUI
+cli.py       cli-extended registry: profile, doctor, datasets, snapshots, shares, users, containers, VMs, TUI
 tui/         Textual app: Tree navigation, workflow views, action list, command palette and plan dialogs
 ```
 
@@ -148,9 +149,19 @@ Findings that differ from the brief's guess: there is no "Virtualization/Instanc
 Virtual Machines as separate top-level items) and Network is under System. The Storage page's own sub-pages (Disks,
 Import Pool, pool management) are reached from the Storage page, not from the menu; tnt shows them as children.
 
-`tnt/menu.py` holds the tree. Datasets, Data Protection > Snapshots, Credentials > Local Users, Containers, and Virtual
-Machines have workflow views; other entries remain placeholders. Containers and Virtual Machines are separate
+`tnt/menu.py` holds the tree. Datasets, Shares, Data Protection > Snapshots, Credentials > Local Users, Containers, and Virtual
+Machines have workflow views; other entries remain placeholders pending their M2 slices. Containers and Virtual Machines are separate
 top-level entries and are always shown. The TUI omits Shell because it is already a terminal.
+
+### Shares
+
+`sharing.smb.create` and `sharing.nfs.create` accept only paths that `filesystem.stat(path)` confirms exist on the
+TrueNAS host. The returned canonical `realpath` must equal the supplied path and must not resolve under boot-pool.
+Missing-path errors are translated to a refusal; transport and permission errors remain visible as failures. SMB
+purpose values are validated against the v27 enum. `guestok` exists only in the `LEGACY_SHARE` options schema; the
+default share preset supports `hostsallow` and `hostsdeny`. Share deletion is destructive and requires typing the
+share name (or NFS path); it deletes the export record and retains the filesystem data. `sharing.smb.getacl` is called
+for each listed SMB share so ACL state is available in both clients.
 
 ## 5. UX
 

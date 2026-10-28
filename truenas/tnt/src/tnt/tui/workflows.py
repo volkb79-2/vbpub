@@ -23,6 +23,7 @@ SCREEN_TITLES = {
     "containers": "Containers",
     "vm": "Virtual Machines",
     "users": "Local Users",
+    "sharing": "Shares",
 }
 
 OPERATIONS = {
@@ -38,6 +39,8 @@ OPERATIONS = {
     "users": (("Create user", "create"), ("Update selected", "update"), ("Set password", "password"),
               ("Add SSH public key", "ssh-key-add"), ("Replace SSH public keys", "ssh-key-replace"),
               ("Remove SSH public keys", "ssh-key-remove"), ("Delete selected", "delete")),
+    "sharing": (("Create SMB share", "create-smb"), ("Create NFS share", "create-nfs"),
+                ("Delete selected SMB share", "delete-smb"), ("Delete selected NFS share", "delete-nfs")),
 }
 
 
@@ -47,6 +50,8 @@ _READERS = {
     "containers": lambda w: w.containers(),
     "vm": lambda w: w.vms(),
     "users": lambda w: w.users(),
+    "sharing": lambda w: ([{"protocol": "SMB", **row} for row in w.shares_smb()] +
+                           [{"protocol": "NFS", **row} for row in w.shares_nfs()]),
 }
 
 
@@ -297,6 +302,17 @@ class WorkflowView(Vertical):
                 return workflows.user_ssh_key_action(str(name), [], remove=True,
                                                      confirm_self=confirm_self, builtin=builtin)
             return workflows.user_delete_action(str(name))
+        if self.key == "sharing":
+            if operation == "create-smb":
+                return workflows.share_smb_create_action(data)
+            if operation == "create-nfs":
+                return workflows.share_nfs_create_action(data)
+            if operation == "delete-smb":
+                target = name_input or selected.get("name")
+                return workflows.share_smb_delete_action(str(target or ""))
+            if operation == "delete-nfs":
+                target = name_input or selected.get("path")
+                return workflows.share_nfs_delete_action(str(target or ""))
         raise ValueError("unsupported workflow action")
 
     def _open_next_vm_device(self) -> None:

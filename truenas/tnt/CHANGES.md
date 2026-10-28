@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added SMB and NFS share list/show/create/delete workflows to CLI and TUI. Creation verifies the remote canonical path,
+  refuses missing and boot-pool paths, and share deletion requires the typed target while retaining data.
 - Added schema-versioned `tnt.toml` profiles with explicit config search order, current-user ownership and exact mode-0600 checks,
   inline API-key or password credentials, optional API-key files, and masked profile inspection.
 - Added v27 password login through the pinned client's `PASSWORD_PLAIN` mechanism; API keys continue to use SCRAM.

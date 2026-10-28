@@ -45,6 +45,7 @@ POOL_NAME_METHODS = frozenset({"pool.scrub.run", "pool.scrub.scrub"})
 DESTRUCTIVE_METHODS = frozenset({"disk.wipe", "pool.export", "pool.delete", "pool.detach", "pool.remove", "pool.dataset.delete",
                                  "pool.snapshot.delete", "pool.snapshot.rollback", "container.delete", "container.stop",
                                  "vm.delete", "vm.stop", "vm.poweroff", "vm.device.delete", "user.delete",
+                                 "sharing.smb.delete", "sharing.nfs.delete",
                                  "app.uninstall", "pool.dataset.destroy_snapshots", "filesystem.rmdir", "filesystem.unlink",
                                  "filesystem.remove", "container.restart", "zfs.pool.delete", "zfs.resource.destroy",
                                  "zfs.resource.snapshot.destroy"})

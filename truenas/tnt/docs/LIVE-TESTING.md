@@ -38,3 +38,26 @@ required. Never place credentials in this command line. Keep them in the mode-06
 Cleanup is attempted for every resource even if an earlier cleanup action fails. A cleanup failure fails the test and
 names the resource class, so inspect the host for any remaining resource whose name starts with `tnt-live-` before
 using that namespace again.
+
+## M2 management live checks (authored, not run)
+
+The M2 acceptance checks below are manual review steps; this implementation does not contact a TrueNAS host. Use a
+disposable v27 host and data pool, inspect every dry-run plan first, and remove only the test share/task/app/API key
+created for that check.
+
+- Shares: create a disposable existing directory under the data pool; dry-run SMB and NFS create payloads; confirm
+  ACL data appears for SMB; delete each export with the exact typed share name/path and verify the directory remains.
+- Data Protection: inspect snapshot, replication, and cloud-sync task lists; run only a disposable, understood task;
+  verify cloud-sync output masks all credential fields.
+- Network: compare interfaces, DNS, routes, IPs, and default gateway with the web UI; verify the screen has no write
+  controls.
+- Apps: list installed apps and upgrade-available state; start/stop/restart only a disposable app; uninstall only an
+  app with disposable data and keep the delete-data-volumes choice at NO unless data deletion is explicitly intended.
+- Audit and API Keys: page through audit results with time/user/event filters; create a temporary API key, copy it from
+  the one-time display, then revoke it after the acceptance check.
+- SSH hand-off: use a host profile with a configured known_hosts file and verify both interactive and one-command
+  sessions return to the TUI/CLI. Never bypass host-key verification.
+- System actions require the additional explicit gate `TNT_LIVE_ALLOW_SYSTEM=1`. Only on a maintenance host with an
+  approved outage window, inspect the running-job/VM/container/SMB-session preflight, then separately verify reboot,
+  shutdown, and update check/apply/reconnect. Without that environment variable, live system-action checks must refuse
+  before issuing any action call. Config export should be written to a new local file and verified as mode `0600`.

@@ -66,7 +66,14 @@ class V27(Backend):
             "user.delete": MethodSpec("destructive"), "user.set_password": MethodSpec("write"),
         },
         "apps": {"app.query": MethodSpec("read")},
-        "shares": {"sharing.smb.query": MethodSpec("read"), "sharing.nfs.query": MethodSpec("read")},
+        "shares": {
+            "sharing.smb.query": MethodSpec("read"), "sharing.smb.get_instance": MethodSpec("read"),
+            "sharing.smb.getacl": MethodSpec("read"), "sharing.smb.create": MethodSpec("write"),
+            "sharing.smb.update": MethodSpec("write"), "sharing.smb.delete": MethodSpec("destructive"),
+            "sharing.nfs.query": MethodSpec("read"), "sharing.nfs.get_instance": MethodSpec("read"),
+            "sharing.nfs.create": MethodSpec("write"), "sharing.nfs.update": MethodSpec("write"),
+            "sharing.nfs.delete": MethodSpec("destructive"), "filesystem.stat": MethodSpec("read"),
+        },
         "system": {"system.info": MethodSpec("read"), "system.version": MethodSpec("read"),
                    "core.get_methods": MethodSpec("read")},
         # These names are known to be absent from the v27 method index. They remain classified so an accidental

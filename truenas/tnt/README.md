@@ -1,8 +1,9 @@
 # tnt (truenas-tui)
 
-`tnt` is a keyboard driven TUI and scriptable CLI for the vanilla TrueNAS v27 JSON-RPC API. The core workflows are
-Datasets and Snapshots, Containers, Virtual Machines, and local Users. Containers and Virtual Machines are separate
-top level menu entries. Shares, Apps, networking, pool creation, and boot-pool changes are outside this release.
+`tnt` is a keyboard driven TUI and scriptable CLI for the vanilla TrueNAS v27 JSON-RPC API. Workflows cover Datasets
+and Snapshots, SMB/NFS Shares, snapshot/replication/cloud-sync tasks, Network status, Apps, Containers, Virtual
+Machines, local Users, Audit, API Keys, and guarded System actions. Containers and Virtual Machines are separate top
+level menu entries. Pool creation and boot-pool changes remain outside scope.
 
 The CLI and TUI share one query and action layer. Every write is planned first, displays the exact API calls, and is
 applied through the default deny guard. Destructive actions require typing the target name. See the
@@ -111,6 +112,10 @@ output masks SSH keys and password hashes. The user SSH-key commands accept Open
 
 v27 has no container restart RPC, so `container restart` plans a stop followed by a start and requires the container
 name as destructive confirmation.
+
+SMB/NFS shares can be listed, inspected, created from a v27 JSON payload, and deleted through the CLI and TUI. Share
+creation checks the path on the TrueNAS host and refuses missing paths and boot-pool paths; deleting a share removes
+only its share configuration, never the data. SMB output includes the share ACL. See the [share adoption examples](docs/CONSUMERS.md#shares).
 
 tnt scans every non-read API payload for boot-pool names and paths, including nested container, VM, sharing, app, and
 user fields, and resolves pool references against the connected host before allowing a plan to apply. Dataset deletion

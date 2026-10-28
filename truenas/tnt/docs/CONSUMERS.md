@@ -86,6 +86,34 @@ tnt tui --profile lab
 tnt tui --profile lab --allow-write
 ```
 
+### Shares
+
+List both protocols independently. Create payloads use v27 field names; the host path must already exist. SMB's
+`purpose` accepts `DEFAULT_SHARE`, `LEGACY_SHARE`, `TIMEMACHINE_SHARE`, `MULTIPROTOCOL_SHARE`, `TIME_LOCKED_SHARE`,
+`PRIVATE_DATASETS_SHARE`, `VEEAM_REPOSITORY_SHARE`, or `FCP_SHARE`. Guest access is available only with
+`LEGACY_SHARE`; the default share options accept `hostsallow` and `hostsdeny`.
+
+```sh
+tnt share smb list --profile lab --json
+tnt share smb show team --profile lab --json
+cat > smb-share.json <<'JSON'
+{"name":"team","path":"/mnt/tank/team","purpose":"DEFAULT_SHARE","enabled":true,"readonly":false,
+ "comment":"Team files","options":{"hostsallow":["10.0.0.0/8"],"hostsdeny":[]}}
+JSON
+tnt share smb create --profile lab --file smb-share.json --allow-write --dry-run
+tnt share nfs list --profile lab --json
+cat > nfs-share.json <<'JSON'
+{"path":"/mnt/tank/export","networks":["10.0.0.0/8"],"hosts":[],"maproot_user":"root",
+ "security":["SYS"],"ro":true}
+JSON
+tnt share nfs create --profile lab --file nfs-share.json --allow-write
+tnt share smb delete team --profile lab --allow-write --confirm team
+```
+
+Share deletion removes only the share record and leaves files intact. Creation uses remote `filesystem.stat`, refuses
+paths that do not exist, and rejects `/mnt/boot-pool` paths. The share form follows the same plan/apply and drift-check
+flow as other writes. See [share safety decisions](DESIGN.md#shares) and the [v27 method signatures](API-METHODS-V27.md#workflows).
+
 Use `--file spec.json` for fields beyond a workflow's minimal create options. Passwords are entered through a no-echo
 prompt or `--password-file`, never a command-line argument. User SSH keys are loaded from a public-key file or
 validated public-key text; private keys are not accepted or printed.

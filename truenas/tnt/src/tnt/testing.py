@@ -65,6 +65,10 @@ class FakeServer:
         self.containers: dict[int, dict[str, Any]] = {}
         self.vms: dict[int, dict[str, Any]] = {}
         self.vm_devices: dict[int, dict[str, Any]] = {}
+        self.smb_shares: dict[int, dict[str, Any]] = {}
+        self.nfs_shares: dict[int, dict[str, Any]] = {}
+        self.share_paths = {"/mnt/tank/share", "/mnt/tank/export"}
+        self._next_share_id = 1
         self.users: dict[int, dict[str, Any]] = {
             0: {"id": 0, "uid": 0, "username": "root", "full_name": "root", "builtin": True, "local": True,
                 "shell": "/usr/bin/zsh", "home": "/root", "groups": [], "sshpubkey": None, "password_disabled": False},
@@ -293,6 +297,18 @@ class FakeServer:
             "user.set_password": self._user_set_password,
             "group.query": lambda p: self._query(self.groups, p),
             "user.shell_choices": lambda p: {"/usr/bin/zsh": "/usr/bin/zsh", "/usr/sbin/nologin": "/usr/sbin/nologin"},
+            "filesystem.stat": self._filesystem_stat,
+            "sharing.smb.query": lambda p: self._query(self.smb_shares, p),
+            "sharing.smb.get_instance": lambda p: self._get(self.smb_shares, p[0], "SMB share"),
+            "sharing.smb.getacl": self._smb_getacl,
+            "sharing.smb.create": self._smb_create,
+            "sharing.smb.update": self._smb_update,
+            "sharing.smb.delete": self._smb_delete,
+            "sharing.nfs.query": lambda p: self._query(self.nfs_shares, p),
+            "sharing.nfs.get_instance": lambda p: self._get(self.nfs_shares, p[0], "NFS share"),
+            "sharing.nfs.create": self._nfs_create,
+            "sharing.nfs.update": self._nfs_update,
+            "sharing.nfs.delete": self._nfs_delete,
         }
         if method not in handlers:
             raise _RpcError(-32601, f"Method not found: {method}")
@@ -345,6 +361,64 @@ class FakeServer:
     def _query(self, rows: dict[Any, dict[str, Any]], params: list[Any], *, username_key: str | None = None) -> list[dict[str, Any]]:
         filters = params[0] if params else []
         return [row for row in rows.values() if self._matches(row, filters, username_key=username_key)]
+
+    def _filesystem_stat(self, params: list[Any]) -> dict[str, Any]:
+        path = params[0] if params else ""
+        if path not in self.share_paths:
+            raise _RpcError(CALL_ERROR, f"No such file or directory: {path}")
+        return {"realpath": path, "type": "DIRECTORY", "size": 4096, "allocation_size": 4096, "mode": 16877,
+                "mount_id": 1, "uid": 0, "gid": 0, "atime": 0.0, "mtime": 0.0, "ctime": 0.0, "btime": 0.0,
+                "dev": 1, "inode": 2, "nlink": 2, "acl": True, "is_mountpoint": False, "is_ctldir": False,
+                "attributes": [], "user": "root", "group": "wheel"}
+
+    def _smb_getacl(self, params: list[Any]) -> dict[str, Any]:
+        share_name = params[0].get("share_name") if params and isinstance(params[0], dict) else None
+        if not any(row.get("name") == share_name for row in self.smb_shares.values()):
+            raise _RpcError(CALL_ERROR, f"SMB share {share_name!r} not found")
+        return {"share_name": share_name, "share_acl": []}
+
+    def _smb_create(self, params: list[Any]) -> dict[str, Any]:
+        data = dict(params[0])
+        if any(row.get("name", "").casefold() == data.get("name", "").casefold() for row in self.smb_shares.values()):
+            raise _RpcError(CALL_ERROR, "SMB share already exists")
+        ident = self._next_share_id
+        self._next_share_id += 1
+        row = {"id": ident, "purpose": "DEFAULT_SHARE", "enabled": True, "comment": "", "readonly": False,
+               "browsable": True, "path": "", "name": "", "options": {}, **data}
+        self.smb_shares[ident] = row
+        self.share_paths.add(row["path"])
+        return dict(row)
+
+    def _smb_update(self, params: list[Any]) -> dict[str, Any]:
+        row = self._get(self.smb_shares, params[0], "SMB share")
+        row.update(params[1])
+        return dict(row)
+
+    def _smb_delete(self, params: list[Any]) -> bool:
+        self._get(self.smb_shares, params[0], "SMB share")
+        del self.smb_shares[int(params[0])]
+        return True
+
+    def _nfs_create(self, params: list[Any]) -> dict[str, Any]:
+        data = dict(params[0])
+        if any(row.get("path") == data.get("path") for row in self.nfs_shares.values()):
+            raise _RpcError(CALL_ERROR, "NFS share already exists")
+        ident = self._next_share_id
+        self._next_share_id += 1
+        row = {"id": ident, "path": "", "networks": [], "hosts": [], "ro": False, "security": [], **data}
+        self.nfs_shares[ident] = row
+        self.share_paths.add(row["path"])
+        return dict(row)
+
+    def _nfs_update(self, params: list[Any]) -> dict[str, Any]:
+        row = self._get(self.nfs_shares, params[0], "NFS share")
+        row.update(params[1])
+        return dict(row)
+
+    def _nfs_delete(self, params: list[Any]) -> bool:
+        self._get(self.nfs_shares, params[0], "NFS share")
+        del self.nfs_shares[int(params[0])]
+        return True
 
     @staticmethod
     def _make_dataset(name: str, *, type_: str = "FILESYSTEM", **values: Any) -> dict[str, Any]:

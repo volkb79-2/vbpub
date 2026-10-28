@@ -236,6 +236,50 @@ def _workflow_group(registry: CliRegistry, ident: CliIdentity, name: str, descri
     registry.register(VerbSpec(name, None, description, group=VerbGroup.EXPLORATION.value, delegate=child.build()))
 
 
+def _share_protocol_verbs(ident: CliIdentity, opener: SessionOpener, protocol: str) -> Any:
+    """Construct one protocol's share subcommands. Create payloads use API v27 field names in a JSON file."""
+    child = CliRegistry(ident, prog=f"tnt share {protocol}", description=f"Inspect and manage {protocol.upper()} shares.",
+                        unexpected_exceptions="report", expected_exceptions=(TntError,))
+    read_opts = HOST_OPTIONS
+    write_opts = HOST_OPTIONS + ACTION_OPTIONS
+    key = protocol.lower()
+    if key == "smb":
+        list_call = lambda s: s.workflows.shares_smb()
+        show_arg = ArgumentSpec("name", "SMB share name.", metavar="NAME")
+        show_call = lambda s, a: s.workflows.share_smb(a.name)
+        create_action = lambda s, a: s.workflows.share_smb_create_action(_read_json_object(a.file))
+        delete_action = lambda s, a: s.workflows.share_smb_delete_action(a.name)
+        label = "SMB"
+    else:
+        list_call = lambda s: s.workflows.shares_nfs()
+        show_arg = ArgumentSpec("path", "Export path.", metavar="PATH")
+        show_call = lambda s, a: s.workflows.share_nfs(a.path)
+        create_action = lambda s, a: s.workflows.share_nfs_create_action(_read_json_object(a.file))
+        delete_action = lambda s, a: s.workflows.share_nfs_delete_action(a.path)
+        label = "NFS"
+    child.register(VerbSpec("list", None, f"List {label} shares.", group=VerbGroup.EXPLORATION.value,
+                            options=read_opts, handler=lambda a, r: _workflow_read(a, r, opener, list_call)))
+    child.register(VerbSpec("show", None, f"Show one {label} share.", group=VerbGroup.EXPLORATION.value,
+                            arguments=(show_arg,), options=read_opts,
+                            handler=lambda a, r: _workflow_read(a, r, opener, lambda s: show_call(s, a))))
+    child.register(VerbSpec("create", None, f"Create a {label} share from a JSON object using v27 fields.",
+                            group=VerbGroup.MODIFICATION.value, options=write_opts + (_value(("--file",), "JSON create payload.", "FILE", "WORKFLOW"),),
+                            handler=lambda a, r: _workflow_action(a, r, opener, lambda s: create_action(s, a))))
+    child.register(VerbSpec("delete", None, f"Delete a {label} share configuration; its data remains on disk.",
+                            group=VerbGroup.MODIFICATION.value, arguments=(show_arg,), options=write_opts,
+                            handler=lambda a, r: _workflow_action(a, r, opener, lambda s: delete_action(s, a))))
+    return child.build()
+
+
+def _share_verbs(ident: CliIdentity, opener: SessionOpener) -> list[VerbSpec]:
+    return [
+        VerbSpec("smb", None, "Manage SMB shares.", group=VerbGroup.EXPLORATION.value,
+                 delegate=_share_protocol_verbs(ident, opener, "smb")),
+        VerbSpec("nfs", None, "Manage NFS shares.", group=VerbGroup.EXPLORATION.value,
+                 delegate=_share_protocol_verbs(ident, opener, "nfs")),
+    ]
+
+
 def _dataset_verbs(ident: CliIdentity, opener: SessionOpener) -> list[VerbSpec]:
     def options(*extra: OptionSpec) -> tuple[OptionSpec, ...]:
         return HOST_OPTIONS + extra
@@ -765,6 +809,7 @@ def build_cli(cli_identity: CliIdentity | None = None, opener: SessionOpener = o
     _workflow_group(registry, ident, "user", "Manage local users and SSH public keys.", _user_verbs(ident, opener))
     _workflow_group(registry, ident, "container", "Manage TrueNAS containers.", _container_verbs(ident, opener))
     _workflow_group(registry, ident, "vm", "Manage virtual machines and their devices.", _vm_verbs(ident, opener))
+    _workflow_group(registry, ident, "share", "Manage SMB and NFS shares.", _share_verbs(ident, opener))
     return registry.build()
 
 

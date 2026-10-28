@@ -40,7 +40,7 @@ MENU: tuple[MenuItem, ...] = (
         _p("storage/boot-data", "Boot pool data", "M2", tnt_only=True, matrix=("B-01", "B-06")),
     )),
     MenuItem("datasets", "Datasets", "implemented", "M1", matrix=("A-01", "A-02", "A-03")),
-    _p("sharing", "Shares", "M3", matrix=("A-07", "B-05")),
+    MenuItem("sharing", "Shares", "implemented", "M2", matrix=("A-07", "B-05")),
     MenuItem("data-protection", "Data Protection", "implemented", "M1", children=(
         MenuItem("snapshots", "Snapshots", "implemented", "M1"),
         _p("replication", "Replication"), _p("cloud-sync", "Cloud Sync"),

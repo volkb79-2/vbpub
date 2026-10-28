@@ -28,7 +28,7 @@ non-execution requirement.
 | TNT-12 | [DONE M1] Datasets (`pool.dataset.query`, tree, usage; create/update/delete behind gates; matrix A-01..A-03) | M1 | L |
 | TNT-13 | System > Boot (`boot.get_state`, `boot.environment.*`; clone/activate/keep) | M1 | M |
 | TNT-14 | System: General, Network, Services, Update (read first) | M3 | L |
-| TNT-15 | Shares: SMB, NFS (matrix A-07, B-05) | M3 | M |
+| TNT-15 | [DONE M2] Shares: SMB, NFS, remote-path guard, ACL read, typed configuration deletion | M2 | M |
 | TNT-16 | [DONE M1] Containers and Virtual Machines (matrix A-04..A-06, B-04; v27 `container.*` and `vm.*`). Current image, CPU-count and configured memory-limit fields are unavailable in the verified container schema; see TNT-36/37. | M1 | L |
 | TNT-17 | Apps | M3 | M |
 | TNT-18 | Data Protection (snapshots, replication, cloud sync, scrub/SMART tasks) | M3 | L |
