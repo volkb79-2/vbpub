@@ -9,6 +9,7 @@ from .adapters.base import Backend
 from .domain import Disk
 from .profile import Profile, Secret
 from .errors import ProfileError
+from .jobs import JobRegistry
 
 
 @dataclass
@@ -19,12 +20,42 @@ class Session:
     insecure_tls: bool = False
     missing_methods: dict[str, list[str]] = field(default_factory=dict)
     credential: Secret | None = field(default=None, repr=False)
+    job_registry: JobRegistry = field(init=False, repr=False)
+    _workflows: Any = field(init=False, repr=False, default=None)
+    _read_views: Any = field(init=False, repr=False, default=None)
+
+    def __post_init__(self) -> None:
+        self.job_registry = JobRegistry(self.profile.name, scrub=self.rpc._scrub)
+        self.rpc.attach_job_registry(self.job_registry)
+        self._make_services()
+
+    def _make_services(self) -> None:
+        from .readviews import ReadViews
+        from .workflows import Workflows
+        self._workflows = Workflows(self.rpc)
+        self._read_views = ReadViews(self.rpc, self.profile.name, self.job_registry)
 
     @property
     def workflows(self):
         """The shared query/action layer used by both CLI handlers and TUI screens."""
-        from .workflows import Workflows
-        return Workflows(self.rpc)
+        return self._workflows
+
+    @property
+    def read_views(self):
+        """Validated read models used by the overview CLI commands and TUI screens."""
+        return self._read_views
+
+    def replace_rpc(self, rpc: transport.GuardedRpc, *, generation: int = 0) -> None:
+        """Replace a disconnected client while retaining this host's jobs and read services."""
+        self.rpc = rpc
+        rpc.attach_job_registry(self.job_registry, generation=generation)
+        self._workflows.rpc = rpc
+        self._read_views.rpc = rpc
+
+    def use_job_registry(self, registry: JobRegistry, *, generation: int = 0) -> None:
+        self.job_registry = registry
+        self.rpc.attach_job_registry(registry, generation=generation)
+        self._read_views.job_registry = registry
 
     def close(self) -> None:
         self.rpc.close()

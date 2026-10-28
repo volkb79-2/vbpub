@@ -1,11 +1,26 @@
 """Shared test doubles: an in-memory host and plan helpers."""
 import pytest  # noqa: F401
+import threading
 
 from tnt.actions import Action, Kind, RpcCall, apply_plan, make_plan
 from tnt.transport import GuardedRpc
 
 
 SIZE = 10 ** 9
+
+
+class ImmediateJob:
+    def __init__(self, job_id, value, callback, method):
+        self.job_id = job_id
+        self.event = threading.Event()
+        self.event.set()
+        self.value = value
+        if callback is not None:
+            callback({"id": job_id, "method": method, "state": "SUCCESS",
+                      "progress": {"percent": 100, "description": "Complete"}})
+
+    def result(self):
+        return self.value
 
 
 class Stub:
@@ -21,12 +36,17 @@ class Stub:
         }
         self.results.update(overrides)
         self.log = []
+        self._next_job_id = 1
 
-    def call(self, method, *params, job=False):
+    def call(self, method, *params, job=False, callback=None):
         self.log.append((method, params))
         value = self.results.get(method, "done")
         if isinstance(value, Exception):
             raise value
+        if job == "RETURN":
+            job_id = str(self._next_job_id)
+            self._next_job_id += 1
+            return ImmediateJob(job_id, value, callback, method)
         return value
 
     def close(self):

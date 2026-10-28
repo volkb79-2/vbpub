@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Callable, Mapping
 
-from .errors import Refused
+from .errors import PlanExecutionError, Refused
 from .policy import (ALWAYS_REFUSED, BOOT_POOL, Caller, SafetyState, compute_state,
                      is_destructive_method, is_read_method, needs_membership, normalise_method, refusal_for)  # noqa: F401
 from .profile import Secret
@@ -121,6 +121,30 @@ class Plan:
         return "\n".join(lines)
 
 
+@dataclass(frozen=True)
+class CallExecution:
+    index: int
+    method: str
+    status: str
+    job_id: str | None = None
+    state: str | None = None
+    generation: int | None = None
+    error: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"index": self.index, "method": self.method, "status": self.status,
+                "job_id": self.job_id, "state": self.state, "generation": self.generation,
+                "error": self.error}
+
+
+class ApplyResult(list):
+    """List-compatible call results plus one outcome record per planned call."""
+
+    def __init__(self, results: list[Any], calls: list[CallExecution]):
+        super().__init__(results)
+        self.calls = tuple(calls)
+
+
 def validate_action(action: Action) -> None:
     """Structural rules that hold for every action, checked at plan time and again at apply time."""
     if not action.calls:
@@ -203,7 +227,7 @@ def make_plan(action: Action, rpc: GuardedRpc, *, cancelled: Callable[[], bool] 
 
 def apply_plan(plan: Plan, rpc: GuardedRpc, *, allow_write: bool, typed_confirmation: str | None = None,
                job_progress: Callable[[Mapping[str, Any]], None] | None = None,
-               cancelled: Callable[[], bool] | None = None) -> list[Any]:
+               cancelled: Callable[[], bool] | None = None) -> ApplyResult:
     if not isinstance(rpc, GuardedRpc):
         raise Refused("unguarded", "plans run only through a GuardedRpc session")
     action = plan.action
@@ -228,12 +252,80 @@ def apply_plan(plan: Plan, rpc: GuardedRpc, *, allow_write: bool, typed_confirma
     _check_cancelled(cancelled)
     grant = rpc.spend(plan.nonce, plan.fingerprint, [c.key() for c in action.calls], state,
                       authority=_APPLY_AUTHORITY, require_grant=action.kind is not Kind.READ)
-    def execute(call: RpcCall) -> Any:
+    results: list[Any] = []
+    records = [CallExecution(index + 1, call.method, "not-started") for index, call in enumerate(action.calls)]
+
+    def partial_message(error: BaseException, index: int) -> str:
+        completed = sum(record.status == "completed" for record in records)
+        current = records[index]
+        detail = f"call {current.index} ({current.method}) is {current.status}"
+        if current.job_id is not None:
+            detail += f" with job ID {current.job_id}"
+        if current.state:
+            detail += f" in state {current.state}"
+        reason = str(error).strip() or type(error).__name__
+        return (f"plan stopped after {completed} completed call(s); {detail}. review Jobs and current host "
+                f"state before planning recovery. Error: {reason}")
+
+    def execute(index: int, call: RpcCall) -> Any:
         _check_cancelled(cancelled)
-        if call.job:
-            return rpc.call(call.method, *call.params, job=True, job_callback=job_progress)
-        return rpc.call(call.method, *call.params)
+        before = len(rpc.calls)
+        handle = None
+        try:
+            if call.job:
+                handle = rpc.call(call.method, *call.params, job=True, job_callback=job_progress)
+                job_id = getattr(handle, "job_id", None)
+                generation = getattr(getattr(handle, "registry", None), "get", lambda _key: None)(
+                    getattr(handle, "local_id", ""))
+                generation = generation.get("generation") if isinstance(generation, Mapping) else None
+                records[index] = CallExecution(index + 1, call.method, "submitted",
+                                               None if job_id is None else str(job_id),
+                                               getattr(handle, "state", "WAITING"), generation)
+                value = handle.wait(cancelled=cancelled)
+                records[index] = CallExecution(index + 1, call.method, "completed", str(job_id),
+                                               getattr(handle, "state", "SUCCESS"), generation)
+            else:
+                value = rpc.call(call.method, *call.params)
+                records[index] = CallExecution(index + 1, call.method, "completed")
+            results.append(value)
+            return value
+        except Exception as exc:
+            attempted = len(rpc.calls) > before
+            if handle is not None:
+                state = getattr(handle, "state", "UNKNOWN")
+                if state in {"FAILED", "ABORTED"}:
+                    status = "failed"
+                elif state == "UNKNOWN":
+                    status = "unknown"
+                else:
+                    status = "submitted"
+                job_id = str(getattr(handle, "job_id", "")) or None
+                record = getattr(getattr(handle, "registry", None), "get", lambda _key: None)(
+                    getattr(handle, "local_id", ""))
+                generation = record.get("generation") if isinstance(record, Mapping) else None
+                records[index] = CallExecution(index + 1, call.method, status, job_id, state, generation,
+                                               str(exc))
+                attempted = True
+            elif attempted:
+                records[index] = CallExecution(index + 1, call.method, "unknown", error=str(exc))
+            if action.kind is not Kind.READ and attempted:
+                raise PlanExecutionError(partial_message(exc, index), ApplyResult(results, records)) from exc
+            if action.kind is not Kind.READ and any(record.status == "completed" for record in records):
+                raise PlanExecutionError(partial_message(exc, index), ApplyResult(results, records)) from exc
+            raise
+
+    def execute_all() -> ApplyResult:
+        for index, call in enumerate(action.calls):
+            try:
+                execute(index, call)
+            except Exception as exc:
+                if (not isinstance(exc, PlanExecutionError) and action.kind is not Kind.READ
+                        and any(record.status == "completed" for record in records)):
+                    raise PlanExecutionError(partial_message(exc, index), ApplyResult(results, records)) from exc
+                raise
+        return ApplyResult(results, records)
+
     if action.kind is Kind.READ:
-        return [execute(c) for c in action.calls]
+        return execute_all()
     with rpc._authorized([c.key() for c in action.calls], grant):
-        return [execute(c) for c in action.calls]
+        return execute_all()

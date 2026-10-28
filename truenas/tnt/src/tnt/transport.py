@@ -21,7 +21,7 @@ from .profile import LOOPBACK, Profile, Secret
 
 
 class RpcClient(Protocol):
-    def call(self, method: str, *params: Any, job: bool = False, callback: Any = None) -> Any: ...
+    def call(self, method: str, *params: Any, job: Any = False, callback: Any = None) -> Any: ...
     def close(self) -> None: ...
 
 
@@ -96,6 +96,18 @@ class GuardedRpc:
         self._event_subscriptions: set[str] = set()
         self.session_id = uuid.uuid4().hex
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
+        from .jobs import JobRegistry
+        self._job_registry = JobRegistry("unknown", scrub=self._scrub)
+        self._job_generation = 0
+
+    def attach_job_registry(self, registry: Any, *, generation: int = 0) -> None:
+        """Bind the host-scoped job ledger to this RPC generation."""
+        if not isinstance(generation, int) or isinstance(generation, bool) or generation < 0:
+            raise ValueError("job generation must be a non-negative integer")
+        with self._lock:
+            self._job_registry = registry
+            self._job_generation = generation
+            registry.set_scrubber(self._scrub)
 
     @staticmethod
     def _identity() -> tuple[int, int | None]:
@@ -240,9 +252,13 @@ class GuardedRpc:
         actual_params = tuple(_rpc_values(p, reveal=True) for p in params)
         try:
             if job:
-                if job_callback is not None:
-                    return self._inner.call(name, *actual_params, job=True, callback=job_callback)
-                return self._inner.call(name, *actual_params, job=True)
+                ticket = self._job_registry.ticket(name, self._job_generation, job_callback)
+                try:
+                    remote = self._inner.call(name, *actual_params, job="RETURN", callback=ticket.on_update)
+                    return ticket.bind(remote)
+                except Exception:
+                    ticket.submission_failed()
+                    raise
             return self._inner.call(name, *actual_params)
         except Exception as exc:  # the client raises its own and websocket exceptions; one scrubbed error type here
             message = f"{name} failed: {exc}"
@@ -255,6 +271,7 @@ class GuardedRpc:
             self._inner.close()
         except Exception:  # closing a dead socket is not an error worth reporting
             pass
+        self._job_registry.mark_disconnected()
 
     def _scrub(self, text: str) -> str:
         return self._secret.scrub(text) if self._secret else text

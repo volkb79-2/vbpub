@@ -1,7 +1,7 @@
 import pytest
 
 from tnt.actions import Action, Kind, Plan, RpcCall, apply_plan, make_plan
-from tnt.errors import Refused, TransportError
+from tnt.errors import PlanExecutionError, Refused
 from tnt.profile import Secret
 from tnt.transport import GuardedRpc
 
@@ -48,10 +48,12 @@ def test_guarded_rpc_reveals_secret_only_to_transport_and_scrubs_failures():
     action = Action("U-1", Kind.MUTATE, "Set password", (RpcCall("user.set_password", params),),
                     (RpcCall("user.query", ([['username', '=', 'alice']], {})), RpcCall("auth.me")))
     plan = make_plan(action, rpc)
-    with pytest.raises(TransportError) as caught:
+    with pytest.raises(PlanExecutionError) as caught:
         apply_plan(plan, rpc, allow_write=True)
 
     assert inner.params == ({"username": "alice", "new_password": PASSWORD},)
+    assert caught.value.partial.calls[0].status == "unknown"
+    assert "user.set_password" in caught.value.partial.calls[0].method
     assert PASSWORD not in str(caught.value)
     assert PASSWORD not in repr(rpc.calls)
 

@@ -60,9 +60,13 @@ class SessionController:
         self.generation = 0
         self.session = initial_session
         self.active_host = initial_session.profile.name if initial_session else None
+        self.job_registries: dict[str, object] = {}
         self.write_modes: dict[str, bool] = {}
         if initial_session is not None:
             self.write_modes[self.active_host] = not initial_session.rpc.read_only
+            registry = getattr(initial_session, "job_registry", None)
+            if registry is not None:
+                self.job_registries[self.active_host] = registry
         self._initial_write = bool(initial_write)
         self._first_selection = initial_session is None
         self._lock = threading.RLock()
@@ -134,6 +138,9 @@ class SessionController:
         for lease in transition.workers:
             lease.finished.wait()
         if transition.previous_session is not None:
+            registry = getattr(transition.previous_session, "job_registry", None)
+            if registry is not None:
+                registry.mark_disconnected()
             transition.previous_session.close()
         if transition.target_host is None:
             with self._lock:
@@ -148,6 +155,15 @@ class SessionController:
             credential = read_credential(profile, self.secret_entries)
             session = self.session_opener(profile, secret=credential, insecure_ack=self.insecure_ack,
                                           allow_write=transition.allow_write)
+            if hasattr(session, "job_registry"):
+                registry = self.job_registries.get(transition.target_host)
+                if registry is None:
+                    registry = session.job_registry
+                    self.job_registries[transition.target_host] = registry
+                use_registry = getattr(session, "use_job_registry", None)
+                if callable(use_registry):
+                    use_registry(registry, generation=transition.generation)
+                registry.reconcile(session.rpc)
         except Exception as exc:
             safe_error = credential.scrub(str(exc)) if credential is not None else str(exc)
             with self._lock:
@@ -249,13 +265,20 @@ class SessionController:
                     replacement.close()
                     raise ProfileError("the selected host session is no longer active")
                 old_rpc = session.rpc
-                session.rpc = replacement.rpc
+                if hasattr(session, "replace_rpc"):
+                    session.replace_rpc(replacement.rpc, generation=generation)
+                else:
+                    session.rpc = replacement.rpc
                 session.backend = replacement.backend
                 session.insecure_tls = replacement.insecure_tls
                 session.missing_methods = replacement.missing_methods
                 session.credential = credential
                 self.last_status[host_name] = "connected"
             old_rpc.close()
+            registry = getattr(session, "job_registry", None)
+            if registry is not None:
+                self.job_registries[host_name] = registry
+                registry.reconcile(session.rpc)
             return session
         except ProfileError:
             raise
@@ -300,6 +323,9 @@ class SessionController:
         for lease in leases:
             lease.finished.wait()
         if session is not None:
+            registry = getattr(session, "job_registry", None)
+            if registry is not None:
+                registry.mark_disconnected()
             session.close()
         with self._lock:
             self._switching = False

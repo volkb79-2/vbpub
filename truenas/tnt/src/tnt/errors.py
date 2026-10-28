@@ -28,3 +28,11 @@ class Refused(TntError):
     def __init__(self, rule: str, message: str):
         super().__init__(f"{rule}: {message}")
         self.rule = rule
+
+
+class PlanExecutionError(TntError):
+    """A plan stopped after one or more calls were attempted; ``partial`` records every call outcome."""
+
+    def __init__(self, message: str, partial):
+        super().__init__(message)
+        self.partial = partial

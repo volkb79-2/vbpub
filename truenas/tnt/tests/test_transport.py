@@ -185,8 +185,27 @@ def test_is_read_method_shapes():
 
 
 def test_job_flag_is_forwarded_and_close_is_quiet():
+    import threading
+
     class Inner:
-        def call(self, method, *params, job=False):
+        calls = []
+
+        class Job:
+            job_id = "31"
+
+            def __init__(self):
+                self.event = threading.Event()
+                self.event.set()
+
+            def result(self):
+                return "job-result"
+
+        def call(self, method, *params, job=False, callback=None):
+            self.calls.append((method, params, job, callback is not None))
+            if job == "RETURN":
+                if callback is not None:
+                    callback({"id": "31", "method": method, "state": "SUCCESS"})
+                return self.Job()
             return (method, params, job)
 
         def close(self):
@@ -197,7 +216,8 @@ def test_job_flag_is_forwarded_and_close_is_quiet():
     action = Action("T-JOB", Kind.MUTATE, "start app", (RpcCall("app.start", ("example-app",), True),),
                     (RpcCall("app.query", ([], {})),))
     plan = make_plan(action, g)
-    assert apply_plan(plan, g, allow_write=True) == [("app.start", ("example-app",), True)]
+    assert apply_plan(plan, g, allow_write=True) == ["job-result"]
+    assert g._inner.calls[-1] == ("app.start", ("example-app",), "RETURN", True)
     g.close()
 
 

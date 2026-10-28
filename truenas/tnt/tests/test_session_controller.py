@@ -126,6 +126,20 @@ def test_initial_write_mode_applies_to_first_picker_choice_only():
     assert calls[0][3] is True and calls[1][3] is False
 
 
+def test_new_session_job_calls_use_the_controller_generation():
+    from tnt.session import Session
+    from tnt.transport import GuardedRpc
+
+    def open_host(host, *, secret, insecure_ack=False, allow_write=False):
+        return Session(host, GuardedRpc(FakeRpc(read_only=not allow_write), read_only=not allow_write), object())
+
+    controller_, _ = controller(open_host)
+    transition = controller_.begin_switch("backup")
+    session = controller_.finish_switch(transition)
+
+    assert session.rpc._job_generation == transition.generation
+
+
 def test_connection_test_uses_read_only_temporary_session_and_preserves_selection():
     created = []
 
