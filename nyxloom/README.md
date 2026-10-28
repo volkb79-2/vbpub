@@ -128,7 +128,7 @@ how these choices stay in sync with their owning schemas and registries.
 | --- | --- | --- |
 | `nyxloom lint` | Frontmatter schema + carve-quality rules (SPEC §6); gates the carve commit. Also validates the managed per-entry backlog: entry frontmatter (BLG2) and the generated `backlog/INDEX.md` freshness (BLG3), when a project adopts `[backlog_entries]` | No |
 | `nyxloom backlog` | Managed per-entry issue tracker (`nyxloom-trove/backlog/`, one file per entry): `new`/`promote`/`note`/`set-status`/`list`/`show`/`index`; merge auto-ticks linked entries to `merged`. Design authority: [docs/backlog-entries-spec.md](docs/backlog-entries-spec.md); adoption: [docs/CONSUMERS.md](docs/CONSUMERS.md) | No |
-| `nyxloom usage report` | Read-only, metadata-only Claude Code usage tree across sessions and nested subagents; table/JSON/CSV render from one versioned tree contract. Adoption: [docs/CONSUMERS.md#report-claude-code-usage](docs/CONSUMERS.md#report-claude-code-usage); rationale: [design guide](docs/DESIGN-GUIDE.md#local-usage-report). | No |
+| `nyxloom usage` | Metadata-only Claude Code usage tree, dated API-equivalent USD estimates, experimental weighted units, observed reset windows, and private operator anchors/calibration across sessions and nested subagents. Report table/JSON/CSV use the frozen `usage-report-v1` contract. Adoption: [docs/CONSUMERS.md#report-claude-code-usage](docs/CONSUMERS.md#report-claude-code-usage); rationale: [design guide](docs/DESIGN-GUIDE.md#local-usage-report). | No |
 | `nyxloom-harness` session tools | Search session words and return ranked session IDs; mechanically extract from Claude Code, Codex, OpenCode, and Reasonix logs; discover/report sessions; resolve bare IDs; render or highlight Markdown; and follow live streams with optional attention delivery. User guide: [`session_extract/README.md`](src/nyxloom/session_extract/README.md); search rationale: [design guide](docs/DESIGN-GUIDE.md#local-session-search). | No |
 | `nyxloomctl tick` | One operator reconcile pass: scan → dispatch/detect/collect → events → render → notify → exit | No |
 | Attempt wrapper | Runs one CLI leg detached; tees log; writes typed receipt with exit code; holds/releases flock leases | Only the launched agent |
@@ -232,10 +232,13 @@ the complete flag behavior and adoption examples.
 across local transcripts, including nested subagents. JSON is the frozen
 `usage-report-v1` contract with an exact deduplicated call ledger and typed
 events; CSV has one report row followed by one row per call. The table shows
-the same raw totals. Message, thinking, tool content, and filesystem paths are
-excluded. Coverage distinguishes omitted or unresolved data from successfully
-deduplicated stream records. U1–U2 report raw token units only, so `--sort cost` and `--min-share`
-use raw token units. See the [usage report guide](docs/CONSUMERS.md#report-claude-code-usage)
+raw token classes, experimental weighted units, local observed share, and
+API-equivalent USD estimates. Message, thinking, tool content, and filesystem
+paths are excluded. API-equivalent USD is dated list-price arithmetic, not a
+billed amount; weighted units do not measure subscription consumption. The
+`usage prices`, `usage windows`, `usage anchor`, and `usage calibrate` verbs
+expose price diagnostics, observed reset intervals, and explicitly qualified
+UI readings. See the [usage report guide](docs/CONSUMERS.md#report-claude-code-usage)
 and [design rationale](docs/DESIGN-GUIDE.md#local-usage-report).
 
 For file-backed sessions, `--follow` reads the appended payload plus only

@@ -107,7 +107,9 @@ command selects a UTC time window across session files and attributes requests
 to sessions and nested subagents. D-022 deliberately selects the additive
 `nyxloom usage report` spelling. Its handler calls the pure
 `session_extract.usage` query service; it does not initialize project or daemon
-state and does not add a persistent store.
+state. Reports are query results; the only persisted usage state is an
+explicitly entered, private operator UI anchor, recorded as the narrow D-023
+exception to D-022.
 
 File-local stream blocks are grouped by request ID, falling back to message ID
 only when request ID is absent. The loader verifies model, effort, usage and
@@ -130,8 +132,9 @@ The frozen JSON `usage-report-v1` contract is the renderer source. Its top-level
 model, effort, speed, service tier, inference geo, context size, timestamp,
 opaque provenance and stable call ID. `nodes` reference those call IDs and
 carry exact self and subtree totals. `lineage_edges`, `events`, conflicts,
-coverage warnings, labels and null extension slots for future prices, anchors
-and chart data are also part of the versioned shape. CSV is intentionally a
+coverage warnings, labels and reserved price, anchor and chart extension slots
+are also part of the versioned shape. This iteration populates the price and
+anchor slots without changing the ledger or CSV row contract. CSV is intentionally a
 flat call ledger: one report metadata row followed by one row per call; it does
 not substitute overlapping subtree rows for calls. Table output shows the
 hierarchy and self/subtree totals.
@@ -146,9 +149,11 @@ The v1 event-kind vocabulary is `compaction`, `api_rejection`, and
 `unexplained_drop`. A compaction event comes only from a structural
 `system.compact_boundary` record; a `user.isCompactSummary` record is paired by
 `parentUuid`, with only its timestamp retained. An API rejection comes from an
-`isApiErrorMessage` record; `limit_kind` is `rate_limit` only for the explicit
-`rate_limit` error code or HTTP status 429, and other rejection classes remain
-unknown. A context-size drop of at least 30% between consecutive calls is an
+`isApiErrorMessage` record. Structured `quotaLimits` or
+`apiErrorParams.rate_limit_info` values map exact `five_hour` and `seven_day`
+values to five-hour and weekly threshold events and preserve their observed
+`resetsAt` epoch. A rejection remains a threshold event, never a percentage or
+capacity anchor. Other rejection classes remain unknown. A context-size drop of at least 30% between consecutive calls is an
 `unexplained_drop` unless a structural compaction boundary lies between them
 by timestamp and source-line tie order. It never becomes a confirmed
 compaction by heuristic.
@@ -173,13 +178,54 @@ thinking, tool input and tool results are not fields in the report. Optional
 title/topic labels come from title and agent metadata; `--no-labels` removes
 them before serialization.
 
-U1–U2 intentionally stop at raw token totals. “Raw token units” sum input,
+The report keeps three measures separate. Raw token units sum input,
 cache-read, cache-write 5-minute, cache-write 1-hour, unclassified cache-write,
-and output tokens. Thinking tokens are reported as a subset of output and are
-not counted twice. Until the verified weight table and cost-state comparison
-land in U3, USD and weighted units stay null, `--sort cost` means raw token
-units, and `--min-share` folds rows by their share of those raw units. This
-avoids making an unverified price or limit formula look authoritative.
+and output tokens. Thinking tokens are a subset of output. The dated default
+price table uses exact Anthropic model IDs, token classes and documented
+modifiers; its values are API-equivalent list-price estimates, not billed
+costs or subscription-limit measurements. Unknown models and modifiers remain
+unpriced rather than matching a model prefix. The Haiku 5.5 tier is selected
+from prompt length, including input, cache reads and writes; the documented
+fast and US inference rates are explicit. No undocumented `priority` price is
+invented.
+
+The E-009 weights remain a named experimental profile: input 1, output 5,
+cache-read 0.1, cache-write 5m 1.25 and cache-write 1h 2. The 1h value is an
+explicit historical assumption, not a verified provider weight. `weighted`
+and API USD are separate columns; `OBS LOCAL SHARE` is only the ratio of local
+weighted units to the local report total. Existing `share_of_total` and
+`--min-share` remain raw-token shares to preserve `usage-report-v1` semantics.
+
+`cost-state` has no top-level snapshot timestamp and often lacks a 5m/1h
+creation split. It is therefore diagnostic, not the price source of truth.
+`usage prices --fit` uses source-line order only within one file and returns
+coefficients only when final counters reconcile exactly to the deduplicated
+transcript family, counters are monotonic, TTL classes are complete and
+identifiable, the design matrix has full rank, modifiers are known, and the
+maximum residual is within the declared bound. Otherwise it reports `unfit`
+without coefficients. This avoids fitting a plausible but underidentified
+cache-write rate.
+
+For Max plans, Anthropic's account window is modeled from observed reset
+markers: consecutive five-hour session reset times, and the fixed weekly reset
+time assigned to the account. Other plan semantics remain unverified. A
+rolling five-hour query is an analysis range with its own label;
+it is not an account session. A single rejection's `resetsAt` cannot establish
+the preceding interval start. A reset event or rejection never means 100%.
+Operator readings therefore include kind, observation time, reset time, source
+and coverage assumption in a private `usage-anchors-v1` store. Fitting a local
+weighted activity ratio to a UI percentage gives only a lower bound when
+other devices or shared account surfaces may contribute. Without enough
+consistent readings and an identifiable coverage assumption, the limit
+percentage remains unknown. D-023 records this minimal persistence exception;
+the call ledger and report remain transient query products.
+
+The public `nyxloom` grammar is registered once in `cli_registry.py`. Its
+generated surface inventory and semantic decisions are maintained through
+`cli-extended` in `docs/cli-surface.json`, the marked section of `docs/SPEC.md`,
+and `docs/cli-review.toml`; parser probes link every generated grammar case to
+a collected test. The minimum runtime floor for this review contract is
+`cli-extended>=0.4.0`.
 
 The interval is half-open `[since, until)` in UTC. Relative `--since` values
 are measured backwards from `--until` when supplied, otherwise from the single

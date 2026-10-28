@@ -22,8 +22,11 @@ complete current grammar.
 
 `nyxloom usage report` is the additive command spelling selected by D-022. It
 uses the pure `session_extract.usage` service to read Claude Code transcript
-metadata over a UTC half-open window and needs no project registration, daemon
-state or persistent store. See
+metadata over a UTC half-open window and needs no project registration or
+daemon state. The separate `usage prices`, `usage windows`, `usage anchor`, and
+`usage calibrate` verbs expose dated list-price estimates, observed reset
+intervals, and private operator readings; only explicit `usage anchor add`
+writes local usage state. See
 [Report Claude Code usage](CONSUMERS.md#report-claude-code-usage) for examples.
 
 ---
@@ -182,7 +185,7 @@ short `-h` alias is not accepted.
 
 | Program | Commands and target | Daemon required? |
 |---|---|---|
-| `nyxloom` | `init`, `onboard`, project-local `lint`, `backlog *`, and read-only `usage report`; authoring edits the checkout, while usage reads local Claude Code transcript metadata. | No |
+| `nyxloom` | `init`, `onboard`, project-local `lint`, `backlog *`, and usage analytics (`report`, `prices`, `windows`, `anchor`, `calibrate`); reports read local Claude Code metadata, while `anchor add` stores private UI readings. | No |
 | `nyxloom-harness` | `search`, `extract`, `extract-lossless`, `extract-debug`, `extract-report`, and `extract-sessions`; reads AI-harness session files/stores. | No |
 | `nyxloomctl` | Local host operations: `project`, host-wide `lint`, `doctor`, `status`, `resync`, workflow/intake/finding actions, `auth`, `route`, model catalogs, `migrate-store`, and `daemon`. This is a local operator tool, not a remote HTTP client. | Only `daemon` starts it; other commands run directly. |
 | `nyxloomd` | Direct service-manager entrypoint for the daemon lifecycle used by the existing container. | Starts the daemon |
@@ -197,6 +200,10 @@ nyxloom backlog new "describe the issue" --type bugfix
 nyxloom backlog new --interactive
 nyxloom backlog edit CIU-1
 nyxloom usage report --since 24h
+nyxloom usage prices --fit
+nyxloom usage windows --since 7d
+nyxloom usage anchor list
+nyxloom usage calibrate
 
 nyxloom-harness extract /path/to/session.jsonl --profile all
 

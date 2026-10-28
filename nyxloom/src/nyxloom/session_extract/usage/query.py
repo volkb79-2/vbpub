@@ -213,6 +213,14 @@ def _combine(aggregates: list[Aggregate]) -> Aggregate:
         active_span_seconds=sum(aggregate.active_span_seconds for aggregate in nonempty),
         models=dict(sorted(models.items())),
         efforts=dict(sorted(efforts.items())),
+        weighted_units=(
+            sum(aggregate.weighted_units for aggregate in nonempty)
+            if all(aggregate.weighted_units is not None for aggregate in nonempty) else None
+        ),
+        usd=(
+            sum(aggregate.usd for aggregate in nonempty)
+            if all(aggregate.usd is not None for aggregate in nonempty) else None
+        ),
     )
 
 

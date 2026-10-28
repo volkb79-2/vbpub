@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import csv
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -994,3 +995,99 @@ def test_primary_cli_usage_spelling_has_help_and_required_since_error(capsys):
 
     assert cli.run(argv=["usage", "report"]) == 2
     assert "required: --since" in capsys.readouterr().err
+
+
+def test_cost_state_non_finite_integer_metadata_is_counted_as_malformed(tmp_path):
+    session_id = "synthetic-cost-overflow"
+    row = {
+        "type": "cost-state",
+        "sessionId": session_id,
+        "hasUnknownModelCost": False,
+        "totalCostUSD": 10**400,
+        "modelUsage": {},
+    }
+    _write_jsonl(tmp_path / "project-key" / f"{session_id}.jsonl", [row])
+
+    corpus = load_corpus(tmp_path)
+
+    assert corpus.cost_states == []
+    assert corpus.malformed_cost_states == 1
+
+
+def test_cost_state_parser_counts_malformed_metadata_without_retaining_it(tmp_path):
+    session_id = "synthetic-cost-malformed"
+    valid_model = {
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "cacheCreationInputTokens": 0,
+        "cacheCreationEphemeral5mInputTokens": 0,
+        "cacheCreationEphemeral1hInputTokens": 0,
+        "costUSD": 0.0,
+    }
+    valid = {
+        "type": "cost-state", "sessionId": session_id,
+        "hasUnknownModelCost": False, "totalCostUSD": 0.0,
+        "modelUsage": {"claude-sonnet-5-5": valid_model},
+    }
+    malformed = []
+    missing_session = deepcopy(valid)
+    del missing_session["sessionId"]
+    malformed.append(missing_session)
+    mismatch = deepcopy(valid)
+    mismatch["sessionId"] = "different-family"
+    malformed.append(mismatch)
+    bad_table = deepcopy(valid)
+    bad_table["modelUsage"] = []
+    malformed.append(bad_table)
+    bad_unknown_flag = deepcopy(valid)
+    bad_unknown_flag["hasUnknownModelCost"] = 1
+    malformed.append(bad_unknown_flag)
+    bad_model_name = deepcopy(valid)
+    bad_model_name["modelUsage"] = {"model/name": valid_model}
+    malformed.append(bad_model_name)
+    bad_model_row = deepcopy(valid)
+    bad_model_row["modelUsage"] = {"claude-sonnet-5-5": []}
+    malformed.append(bad_model_row)
+    bad_input = deepcopy(valid)
+    bad_input["modelUsage"]["claude-sonnet-5-5"]["inputTokens"] = True
+    malformed.append(bad_input)
+    bad_output = deepcopy(valid)
+    bad_output["modelUsage"]["claude-sonnet-5-5"]["outputTokens"] = -1
+    malformed.append(bad_output)
+    bad_cost = deepcopy(valid)
+    bad_cost["modelUsage"]["claude-sonnet-5-5"]["costUSD"] = float("inf")
+    malformed.append(bad_cost)
+    bad_total = deepcopy(valid)
+    bad_total["totalCostUSD"] = -1
+    malformed.append(bad_total)
+
+    _write_jsonl(tmp_path / "project-key" / f"{session_id}.jsonl", malformed)
+
+    corpus = load_corpus(tmp_path)
+
+    assert corpus.cost_states == []
+    assert corpus.malformed_cost_states == len(malformed)
+    assert corpus.warnings.session_id_mismatches == 1
+
+
+def test_cost_state_keeps_valid_base_counters_but_marks_bad_optional_ttl_split_unidentifiable(tmp_path):
+    session_id = "synthetic-cost-ttl"
+    row = {
+        "type": "cost-state", "sessionId": session_id,
+        "hasUnknownModelCost": False, "totalCostUSD": 0.0,
+        "modelUsage": {
+            "claude-sonnet-5-5": {
+                "inputTokens": 0, "outputTokens": 0, "cacheReadInputTokens": 0,
+                "cacheCreationInputTokens": 0,
+                "cacheCreationEphemeral5mInputTokens": -1,
+                "cacheCreationEphemeral1hInputTokens": 0, "costUSD": 0.0,
+            },
+        },
+    }
+    _write_jsonl(tmp_path / "project-key" / f"{session_id}.jsonl", [row])
+
+    corpus = load_corpus(tmp_path)
+
+    assert corpus.malformed_cost_states == 0
+    assert corpus.cost_states[0].models[0].cache_write_5m_tokens is None

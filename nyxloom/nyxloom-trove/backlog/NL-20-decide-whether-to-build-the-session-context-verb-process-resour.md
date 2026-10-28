@@ -104,7 +104,3 @@ result (vs. observe/block only), and whether every dispatched model's own
 system-reminder reliably states its context window size in parseable form.
 Phase 1 (of 6) is explicitly free — discipline-only, applicable today,
 requires no code.
-
-## Updates
-
-**2026-10-28** — U1-U2 provide the read-only raw-token usage tree; iteration-1 review reconciliation freezes its `usage-report-v1` call ledger and exact timestamp/deduplication rules. Deferred by the usage-analysis plan: U3 weights/USD with Anthropic pricing-page verification and cost-state cross-check; U4 limit anchors; C1 joined chart data; H1 interactive HTML; PDF export; and the later TUI. NL-20 remains open for process/resource history and any persistent session-context service; D-022 keeps this CLI free of persistent usage storage.

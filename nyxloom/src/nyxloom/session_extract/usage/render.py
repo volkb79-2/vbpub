@@ -7,7 +7,6 @@ import io
 import json
 from typing import Any
 
-
 CSV_COLUMNS = (
     "record_type", "schema_version", "report", "window_since", "window_until",
     "call_id", "node_id", "parent_id", "depth", "lineage_status", "session_id",
@@ -117,8 +116,16 @@ def _share_text(value: float) -> str:
     return f"{100 * value:.1f}%"
 
 
-def _table_values(label: str, aggregate: dict[str, Any], share: float) -> list[str]:
+def _table_values(
+    label: str, aggregate: dict[str, Any], share: float, weighted_total: float | None,
+) -> list[str]:
     tokens = aggregate["tokens"]
+    weighted = aggregate.get("weighted_units")
+    weighted_share = (
+        float(weighted) / weighted_total
+        if isinstance(weighted, (int, float)) and weighted_total else 0.0
+    )
+    usd = aggregate.get("api_equivalent_usd")
     return [
         label,
         _model_text(aggregate),
@@ -137,13 +144,17 @@ def _table_values(label: str, aggregate: dict[str, Any], share: float) -> list[s
         f"{tokens['cache_write_unclassified']:,}",
         f"{aggregate['raw_token_units']:,}",
         _share_text(share),
+        f"{weighted:,.1f}" if isinstance(weighted, (int, float)) else "—",
+        _share_text(weighted_share),
+        f"${usd:,.4f}" if isinstance(usd, (int, float)) else "—",
     ]
 
 
 _HEADERS = (
     "NODE / TOPIC", "MODEL(S)", "EFFORT", "START UTC", "END UTC", "WALL DUR",
     "ACTIVE SPAN", "CALLS", "PEAK CTX", "IN", "CACHE READ", "OUT", "WRITE 5M",
-    "WRITE 1H", "WRITE ?", "RAW TOKENS", "RAW SHARE",
+    "WRITE 1H", "WRITE ?", "RAW TOKENS", "RAW SHARE", "WEIGHTED UNITS",
+    "OBS LOCAL SHARE", "API-EQUIVALENT USD (ESTIMATE)",
 )
 
 
@@ -153,20 +164,32 @@ def render_table(report: dict[str, Any]) -> str:
         "nyxloom usage report",
         f"Schema: {report['schema_version']}",
         f"Window: [{report['window']['since']}, {report['window']['until']}) UTC",
-        "Basis: raw token units; shares are local report fractions, not account-limit percentages.",
+        "Basis: raw tokens, experimental weighted units and API-equivalent USD estimates. OBS LOCAL SHARE is within this local report, not account usage.",
         "Wall duration spans first-to-last call; active span sums within-node bursts separated by gaps over one hour.",
         "",
     ]
+    price_basis = report["extensions"].get("prices")
+    if isinstance(price_basis, dict):
+        lines.append(
+            f"Price source: {price_basis['source_url']} (retrieved {price_basis['retrieved_on']}); "
+            f"API-equivalent USD is estimated, not billed cost."
+        )
+        lines.append(
+            f"Experimental weight profile: {price_basis['weighted_profile']} "
+            f"{json.dumps(price_basis['weight_profile_values'], sort_keys=True)}"
+        )
+        lines.append("")
     rows: list[list[str]] = []
+    weighted_total = report["totals"].get("weighted_units")
     flat = bool(report["presentation"]["flat"])
     if flat:
         for node in _sorted_flat_nodes(report):
             aggregate = node["subtree"]
-            rows.append(_table_values(_label(node), aggregate, aggregate["share_of_total"]))
+            rows.append(_table_values(_label(node), aggregate, aggregate["share_of_total"], weighted_total))
     else:
         def append_node(node: dict[str, Any], depth: int) -> None:
             prefix = "  " * depth
-            rows.append(_table_values(prefix + _label(node), node["self"], node["self"]["share_of_total"]))
+            rows.append(_table_values(prefix + _label(node), node["self"], node["self"]["share_of_total"], weighted_total))
             self_aggregate = node["self"]
             subtree = node["subtree"]
             if (
@@ -174,7 +197,7 @@ def render_table(report: dict[str, Any]) -> str:
                 or subtree["raw_token_units"] != self_aggregate["raw_token_units"]
                 or node["omitted_descendants"]
             ):
-                rows.append(_table_values(prefix + "  (subtree)", subtree, subtree["share_of_total"]))
+                rows.append(_table_values(prefix + "  (subtree)", subtree, subtree["share_of_total"], weighted_total))
             for child in node["children"]:
                 append_node(child, depth + 1)
 
@@ -185,14 +208,24 @@ def render_table(report: dict[str, Any]) -> str:
     for row in matrix:
         lines.append("  ".join(value.ljust(widths[index]) for index, value in enumerate(row)).rstrip())
     total = report["totals"]
+    usd_value = total.get("api_equivalent_usd")
+    usd_text = f"${usd_value:,.4f}" if isinstance(usd_value, (int, float)) else "unknown"
+    weighted_text = total["weighted_units"] if total["weighted_units"] is not None else "unknown"
+    total_summary = (
+        f"Total: {total['calls']:,} calls, {total['raw_token_units']:,} raw token units; "
+        + f"in={total['tokens']['input']:,}, cache-read={total['tokens']['cache_read']:,}, "
+        + f"out={total['tokens']['output']:,}, cache-write-5m={total['tokens']['cache_write_5m']:,}, "
+        + f"cache-write-1h={total['tokens']['cache_write_1h']:,}, "
+        + f"unclassified-cache-write={total['tokens']['cache_write_unclassified']:,}."
+    )
+    weighted_summary = (
+        f"Experimental weighted units: {weighted_text}; API-equivalent USD estimate: {usd_text}; "
+        + "neither value measures subscription usage or billed cost."
+    )
     lines.extend((
         "",
-        f"Total: {total['calls']:,} calls, {total['raw_token_units']:,} raw token units; "
-        f"in={total['tokens']['input']:,}, cache-read={total['tokens']['cache_read']:,}, "
-        f"out={total['tokens']['output']:,}, cache-write-5m={total['tokens']['cache_write_5m']:,}, "
-        f"cache-write-1h={total['tokens']['cache_write_1h']:,}, "
-        f"unclassified-cache-write={total['tokens']['cache_write_unclassified']:,}.",
-        "Weighted cost, API-equivalent USD, and limit percentages are unavailable in usage-report-v1.",
+        total_summary,
+        weighted_summary,
     ))
     coverage = report["coverage"]
     lines.append(

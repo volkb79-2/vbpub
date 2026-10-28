@@ -1,0 +1,4340 @@
+{
+  "candidates": [
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/edit/argument-shape/argument:route:entrypoint:nyxloom/backlog/edit/entry_id",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:nyxloom/backlog/edit/entry_id"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/edit",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:nyxloom/backlog/edit/entry_id"
+      },
+      "signature": "sha256:216e5c5bddebfccf3b91fa952d06570e7a06d2cbf2b438cb61c0b7cb37e0439a"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/edit/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:nyxloom/backlog/edit/entry_id"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/edit",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {
+          "argument:route:entrypoint:nyxloom/backlog/edit/entry_id": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:nyxloom/backlog/edit/entry_id"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:44b747ef17f66de5d70983d8afd4a69b70e9c7ad18693b5d84f70180e9fb39a8"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/edit/option-spelling/option:route:entrypoint:nyxloom/backlog/edit/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/edit/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/edit",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/edit/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:6ced3c83b502baa5cd11eb81ee5f242eb286d0fe274c91e10c43b232559cee16"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/edit/option-spelling/option:route:entrypoint:nyxloom/backlog/edit/--project-id/--project-id",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/edit/--project-id"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/edit",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/edit/--project-id",
+        "spelling": "--project-id"
+      },
+      "signature": "sha256:7af801f8a5be7824955eb249f8819f27554ba6b83c6c7104d526a38d534d3c10"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/edit/option-spelling/option:route:entrypoint:nyxloom/backlog/edit/--traceback/--traceback",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/edit/--traceback"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/edit",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/edit/--traceback",
+        "spelling": "--traceback"
+      },
+      "signature": "sha256:1ad5526f6a8ca9d31951eaa43dc737b1eeaa7fc0173ea1c937f9c167127bcd29"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/index/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:nyxloom/backlog/index",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:d18d898926e934704043b29560a9781363f690742cd5f892cd4835531bd64431"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/index/option-spelling/option:route:entrypoint:nyxloom/backlog/index/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/index/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/index",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/index/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:117f33eb6f807993a15d8271a9327cae91a4f07747cc31e07c5c6fc66e3d9ff3"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/index/option-spelling/option:route:entrypoint:nyxloom/backlog/index/--project-id/--project-id",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/index/--project-id"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/index",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/index/--project-id",
+        "spelling": "--project-id"
+      },
+      "signature": "sha256:2cd27ba69b20fbbf1a042f8cb1600338f7367c40e352a9b90f6c062d3cb6e75d"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/index/option-spelling/option:route:entrypoint:nyxloom/backlog/index/--traceback/--traceback",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/index/--traceback"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/index",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/index/--traceback",
+        "spelling": "--traceback"
+      },
+      "signature": "sha256:b14197d7695ec85c69c75f6b7d17173ca5ecd774f95a606fe4e6711c61ea046d"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/list/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:nyxloom/backlog/list",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:98f755da86ecba1ce8bfdbd93c5a531072b46e24066755c904ce8b10bd24d7c8"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/list/option-choice/option:route:entrypoint:nyxloom/backlog/list/--status/12aff05139",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/list/--status"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/list",
+      "shape": {
+        "choice": "fixed",
+        "option_id": "option:route:entrypoint:nyxloom/backlog/list/--status"
+      },
+      "signature": "sha256:acc51cb501c539da4bdf5f5ef68e9032bcf90f521e95f330ff7c1262f4f7b0f7"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/list/option-choice/option:route:entrypoint:nyxloom/backlog/list/--status/2d4211a0f2",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/list/--status"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/list",
+      "shape": {
+        "choice": "obsolete",
+        "option_id": "option:route:entrypoint:nyxloom/backlog/list/--status"
+      },
+      "signature": "sha256:7826a92938fb00e7a451cf3b41ed1b975cf2d966c5ec1aa443360495e18a4891"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/list/option-choice/option:route:entrypoint:nyxloom/backlog/list/--status/35ff74aeea",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/list/--status"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/list",
+      "shape": {
+        "choice": "open",
+        "option_id": "option:route:entrypoint:nyxloom/backlog/list/--status"
+      },
+      "signature": "sha256:5f9081e8c577dbb27456809c53839c56435298c2d316c6e847cb578f74410c24"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/list/option-choice/option:route:entrypoint:nyxloom/backlog/list/--status/946e0b019f",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/list/--status"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/list",
+      "shape": {
+        "choice": "withdrawn",
+        "option_id": "option:route:entrypoint:nyxloom/backlog/list/--status"
+      },
+      "signature": "sha256:62b7802cee474a7f16aa5c8b909b46902c7b8babc64e55c6e89f2c493c31d2ae"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/list/option-choice/option:route:entrypoint:nyxloom/backlog/list/--status/b3ec183cdf",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/list/--status"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/list",
+      "shape": {
+        "choice": "merged",
+        "option_id": "option:route:entrypoint:nyxloom/backlog/list/--status"
+      },
+      "signature": "sha256:e8b81c436b0606baf13444884077f5cec090a1d6b6afb0aa43c25ce9756d59f2"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/list/option-choice/option:route:entrypoint:nyxloom/backlog/list/--status/c3257ab40a",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/list/--status"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/list",
+      "shape": {
+        "choice": "carved",
+        "option_id": "option:route:entrypoint:nyxloom/backlog/list/--status"
+      },
+      "signature": "sha256:0a82772b61f5f61d41361efdb18c78cca31e195038977488d12558e82a7e6730"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/list/option-spelling/option:route:entrypoint:nyxloom/backlog/list/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/list/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/list",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/list/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:4dae738933deae5be4c98c8e901f881b8084742fd95986ff7c35f8cb1104e111"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/list/option-spelling/option:route:entrypoint:nyxloom/backlog/list/--project-id/--project-id",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/list/--project-id"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/list",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/list/--project-id",
+        "spelling": "--project-id"
+      },
+      "signature": "sha256:e27d0149f8fc9f5a0c8ef5e6864cce5117ebf7ebaecdcca666872fd501c21e3e"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/list/option-spelling/option:route:entrypoint:nyxloom/backlog/list/--status/--status",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/list/--status"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/list",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/list/--status",
+        "spelling": "--status"
+      },
+      "signature": "sha256:269fd122acd672e879e7b2085df92d0c21a2edd5c7000e17eec4445819209db3"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/list/option-spelling/option:route:entrypoint:nyxloom/backlog/list/--traceback/--traceback",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/list/--traceback"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/list",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/list/--traceback",
+        "spelling": "--traceback"
+      },
+      "signature": "sha256:9d23623440e822aa5510964bdd530279c29009cd47b9844936c21199302b44ea"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/new/argument-shape/argument:route:entrypoint:nyxloom/backlog/new/title",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:nyxloom/backlog/new/title"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/new",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:nyxloom/backlog/new/title"
+      },
+      "signature": "sha256:eb2a9f6cd1adf6cf9b9d848e4d9942500030fbfcd22836cf423fb953dd94f8f9"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/new/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/new/--interactive"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/new",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:nyxloom/backlog/new/--interactive"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:636cb3ab2c8246150e2c09fc2a2bddf7cfe7467cb27e11ba1d739da2d1b3dca0"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/new/option-choice/option:route:entrypoint:nyxloom/backlog/new/--context-estimate/300694740f",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/new/--context-estimate"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/new",
+      "shape": {
+        "choice": "small",
+        "option_id": "option:route:entrypoint:nyxloom/backlog/new/--context-estimate"
+      },
+      "signature": "sha256:0fc715578c4b8bc59593c3d63badc623a7a127bdf14a40c0ae4e394361b1612f"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/new/option-choice/option:route:entrypoint:nyxloom/backlog/new/--context-estimate/60d4c90eee",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/new/--context-estimate"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/new",
+      "shape": {
+        "choice": "medium",
+        "option_id": "option:route:entrypoint:nyxloom/backlog/new/--context-estimate"
+      },
+      "signature": "sha256:5ee6e5e89cf86e6a85cf9c9b56741e8ac2f1057c19b0dcdab307f3adf5a493ba"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/new/option-choice/option:route:entrypoint:nyxloom/backlog/new/--context-estimate/8dd8c429f5",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/new/--context-estimate"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/new",
+      "shape": {
+        "choice": "large",
+        "option_id": "option:route:entrypoint:nyxloom/backlog/new/--context-estimate"
+      },
+      "signature": "sha256:c41c9d8594878e5a241fcb7406372a067db721bfb7626ad6c6935b2d6d3b5c7f"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/new/option-choice/option:route:entrypoint:nyxloom/backlog/new/--severity/364bb70822",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/new/--severity"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/new",
+      "shape": {
+        "choice": "low",
+        "option_id": "option:route:entrypoint:nyxloom/backlog/new/--severity"
+      },
+      "signature": "sha256:7c9125024ac3bbc5a7c7a5f9812da88093f16bbe7af5dd102490adcd20598416"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/new/option-choice/option:route:entrypoint:nyxloom/backlog/new/--severity/60d4c90eee",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/new/--severity"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/new",
+      "shape": {
+        "choice": "medium",
+        "option_id": "option:route:entrypoint:nyxloom/backlog/new/--severity"
+      },
+      "signature": "sha256:46dbf4a81aba06d4f90d2f1ec87ce7f88710d5188e731fb450af665733f84acd"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/new/option-choice/option:route:entrypoint:nyxloom/backlog/new/--severity/b57c4299af",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/new/--severity"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/new",
+      "shape": {
+        "choice": "high",
+        "option_id": "option:route:entrypoint:nyxloom/backlog/new/--severity"
+      },
+      "signature": "sha256:269a87cecc61eab59626a931cced4bd12130f9f2815694cedb562363a79d2898"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/new/option-choice/option:route:entrypoint:nyxloom/backlog/new/--type/1ff4393bcd",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/new/--type"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/new",
+      "shape": {
+        "choice": "feature",
+        "option_id": "option:route:entrypoint:nyxloom/backlog/new/--type"
+      },
+      "signature": "sha256:9dc6d47f9c36c8d26547ceee1825f77677b0511fd33a17b16230d4bbbd3d4498"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/new/option-choice/option:route:entrypoint:nyxloom/backlog/new/--type/b0807f5c43",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/new/--type"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/new",
+      "shape": {
+        "choice": "bugfix",
+        "option_id": "option:route:entrypoint:nyxloom/backlog/new/--type"
+      },
+      "signature": "sha256:504f33bd375ff702017ec8edd7f7398847f0d37200981628ba3ed85a551ac645"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/new/option-spelling/option:route:entrypoint:nyxloom/backlog/new/--body-from/--body-from",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/new/--body-from"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/new",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/new/--body-from",
+        "spelling": "--body-from"
+      },
+      "signature": "sha256:5a358f4f6fa2c3a0f42917c3741a01e949206cd046f16ea7cd0bf1372548ba67"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/new/option-spelling/option:route:entrypoint:nyxloom/backlog/new/--component/--component",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/new/--component"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/new",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/new/--component",
+        "spelling": "--component"
+      },
+      "signature": "sha256:02178ddcf47350358054203a89a82c33a7a2197d5b6ab5b8980511d183b662e6"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/new/option-spelling/option:route:entrypoint:nyxloom/backlog/new/--context-estimate/--context-estimate",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/new/--context-estimate"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/new",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/new/--context-estimate",
+        "spelling": "--context-estimate"
+      },
+      "signature": "sha256:112d319c3dd3a9109a903a7ad73f36a30aa3092a5c97e726818a7012f30a35cc"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/new/option-spelling/option:route:entrypoint:nyxloom/backlog/new/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/new/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/new",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/new/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:4ef9854b073bae555a02ddd77f4da27baf940cb14a6d657091cf25cf1812f875"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/new/option-spelling/option:route:entrypoint:nyxloom/backlog/new/--filed-by/--filed-by",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/new/--filed-by"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/new",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/new/--filed-by",
+        "spelling": "--filed-by"
+      },
+      "signature": "sha256:c4a097815e8c53078b47b9610d5df1597f17007d5d2dbc8d34ca369ce6e48153"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/new/option-spelling/option:route:entrypoint:nyxloom/backlog/new/--folds-into/--folds-into",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/new/--folds-into"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/new",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/new/--folds-into",
+        "spelling": "--folds-into"
+      },
+      "signature": "sha256:b058c0a21baa8c456e1b609bc8bd23bb105829e74c431c454a29da58609b8556"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/new/option-spelling/option:route:entrypoint:nyxloom/backlog/new/--interactive/--interactive",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/new/--interactive"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/new",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/new/--interactive",
+        "spelling": "--interactive"
+      },
+      "signature": "sha256:94fa9b4be3cac5628a86fbb54f079ee6fa72faff6d2c75fdd24eda16f005a3b7"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/new/option-spelling/option:route:entrypoint:nyxloom/backlog/new/--priority/--priority",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/new/--priority"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/new",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/new/--priority",
+        "spelling": "--priority"
+      },
+      "signature": "sha256:f597b8f6341d1274a3a4ebe6ee45aaff05693f8bf553bb6c7ad85193de810e88"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/new/option-spelling/option:route:entrypoint:nyxloom/backlog/new/--project-id/--project-id",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/new/--project-id"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/new",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/new/--project-id",
+        "spelling": "--project-id"
+      },
+      "signature": "sha256:4329490104bab22e7b862f8e1ff93b208d193a1f1b28a4998afd8e2b91c4bb8e"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/new/option-spelling/option:route:entrypoint:nyxloom/backlog/new/--provenance/--provenance",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/new/--provenance"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/new",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/new/--provenance",
+        "spelling": "--provenance"
+      },
+      "signature": "sha256:3a17a5ce1e9a950c6eead881d3d0286bd992eaf42602b89e584841d0cc08757a"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/new/option-spelling/option:route:entrypoint:nyxloom/backlog/new/--severity/--severity",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/new/--severity"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/new",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/new/--severity",
+        "spelling": "--severity"
+      },
+      "signature": "sha256:15f2f6c07a14e5b1ce32310ec39c11a83cb127c160f783cf516cca891a6b61a1"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/new/option-spelling/option:route:entrypoint:nyxloom/backlog/new/--spec-owner/--spec-owner",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/new/--spec-owner"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/new",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/new/--spec-owner",
+        "spelling": "--spec-owner"
+      },
+      "signature": "sha256:1ab910cb2c45d4247d3f2dc62617f1f611b38f75a5d8471fc8dd102e50bb9d8b"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/new/option-spelling/option:route:entrypoint:nyxloom/backlog/new/--traceback/--traceback",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/new/--traceback"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/new",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/new/--traceback",
+        "spelling": "--traceback"
+      },
+      "signature": "sha256:c8fe1b3b40019fbd6d44386662585906fc35556f5b6538fc956dc4a440563538"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/new/option-spelling/option:route:entrypoint:nyxloom/backlog/new/--type/--type",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/new/--type"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/new",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/new/--type",
+        "spelling": "--type"
+      },
+      "signature": "sha256:e44fe01a7bb85dd12cf43e296642903b9e5dd60926aec6c942f538705307bc42"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/note/argument-shape/argument:route:entrypoint:nyxloom/backlog/note/entry_id",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:nyxloom/backlog/note/entry_id"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/note",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:nyxloom/backlog/note/entry_id"
+      },
+      "signature": "sha256:fdffc18615877bcf84de121417f17e7b4a2fd56ad57c2b44de7212b0264faf29"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/note/argument-shape/argument:route:entrypoint:nyxloom/backlog/note/text",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:nyxloom/backlog/note/text"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/note",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:nyxloom/backlog/note/text"
+      },
+      "signature": "sha256:bb7eacbff5bd10b92d247413a3cf3dd36f5743bbb58e3c5520fb130c76ea26ec"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/note/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:nyxloom/backlog/note/entry_id",
+        "argument:route:entrypoint:nyxloom/backlog/note/text"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/note",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {
+          "argument:route:entrypoint:nyxloom/backlog/note/entry_id": 1,
+          "argument:route:entrypoint:nyxloom/backlog/note/text": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:nyxloom/backlog/note/entry_id",
+          "argument:route:entrypoint:nyxloom/backlog/note/text"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:3f3ca7c316551dda399939c89d54b0de36d4c94ae29f0e779af343ff7c7bc9dc"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/note/option-spelling/option:route:entrypoint:nyxloom/backlog/note/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/note/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/note",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/note/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:883fc8e8944ded47b826aa9d3cc049f03cff33ee89a08d3dd4cf1ff3ebd91558"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/note/option-spelling/option:route:entrypoint:nyxloom/backlog/note/--project-id/--project-id",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/note/--project-id"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/note",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/note/--project-id",
+        "spelling": "--project-id"
+      },
+      "signature": "sha256:fb488970ddab7a591a1a1a3c3bf5d728ed97c30ca8a9ef62dbc63b298b7eede8"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/note/option-spelling/option:route:entrypoint:nyxloom/backlog/note/--traceback/--traceback",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/note/--traceback"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/note",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/note/--traceback",
+        "spelling": "--traceback"
+      },
+      "signature": "sha256:44d04e22dcf9b0fa04cfd4e448db18416b789f54825aabd0f9a96e3c5fe2d180"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/promote/argument-shape/argument:route:entrypoint:nyxloom/backlog/promote/inbox_id",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:nyxloom/backlog/promote/inbox_id"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/promote",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:nyxloom/backlog/promote/inbox_id"
+      },
+      "signature": "sha256:8c163c99d6495564189e8718cf1fdbf68598e5689c1ef13566856ac0c6b11e95"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/promote/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:nyxloom/backlog/promote/inbox_id"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/promote",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {
+          "argument:route:entrypoint:nyxloom/backlog/promote/inbox_id": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:nyxloom/backlog/promote/inbox_id"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:ddf091733c38820530ab3169f8732a7de6b52b90323bd7d23fcdb842c07e0580"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/promote/option-spelling/option:route:entrypoint:nyxloom/backlog/promote/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/promote/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/promote",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/promote/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:64f9eccab2f753fe2bbeefddcff521df1fe35d509175d14c1b14d0565a956ddd"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/promote/option-spelling/option:route:entrypoint:nyxloom/backlog/promote/--project-id/--project-id",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/promote/--project-id"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/promote",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/promote/--project-id",
+        "spelling": "--project-id"
+      },
+      "signature": "sha256:f444cd6dc1f27457ded2af8c803b52d6c1a934582cf72080167ebf0409368f4d"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/promote/option-spelling/option:route:entrypoint:nyxloom/backlog/promote/--traceback/--traceback",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/promote/--traceback"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/promote",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/promote/--traceback",
+        "spelling": "--traceback"
+      },
+      "signature": "sha256:f9311eff13a1985910826264b6c3c935dd83a3b8fcf4e541acf6db389937253a"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/set-status/argument-choice/argument:route:entrypoint:nyxloom/backlog/set-status/status/12aff05139",
+      "kind": "argument-choice",
+      "members": [
+        "argument:route:entrypoint:nyxloom/backlog/set-status/status"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/set-status",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:nyxloom/backlog/set-status/status",
+        "choice": "fixed"
+      },
+      "signature": "sha256:d0245fad8dba2591e5c13130d882b1223620fc0147782be37b7b209506e7f337"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/set-status/argument-choice/argument:route:entrypoint:nyxloom/backlog/set-status/status/2d4211a0f2",
+      "kind": "argument-choice",
+      "members": [
+        "argument:route:entrypoint:nyxloom/backlog/set-status/status"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/set-status",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:nyxloom/backlog/set-status/status",
+        "choice": "obsolete"
+      },
+      "signature": "sha256:e9700d56be63c8b7a69ed32dbb46b71d7c29fb2699cb7b33f10b647a88a31ced"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/set-status/argument-choice/argument:route:entrypoint:nyxloom/backlog/set-status/status/35ff74aeea",
+      "kind": "argument-choice",
+      "members": [
+        "argument:route:entrypoint:nyxloom/backlog/set-status/status"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/set-status",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:nyxloom/backlog/set-status/status",
+        "choice": "open"
+      },
+      "signature": "sha256:1ffe5c0e42a19419c982870b55885b1cccaeae94e44263bb4ee0d79b20cca3a5"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/set-status/argument-choice/argument:route:entrypoint:nyxloom/backlog/set-status/status/946e0b019f",
+      "kind": "argument-choice",
+      "members": [
+        "argument:route:entrypoint:nyxloom/backlog/set-status/status"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/set-status",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:nyxloom/backlog/set-status/status",
+        "choice": "withdrawn"
+      },
+      "signature": "sha256:d07a5f624e06274b9670293ec2b818d019181039f99a934239f0ed085c63a14a"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/set-status/argument-choice/argument:route:entrypoint:nyxloom/backlog/set-status/status/c3257ab40a",
+      "kind": "argument-choice",
+      "members": [
+        "argument:route:entrypoint:nyxloom/backlog/set-status/status"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/set-status",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:nyxloom/backlog/set-status/status",
+        "choice": "carved"
+      },
+      "signature": "sha256:6932f3caf21e2a9fff367cee071a9e26c750c6625e79f8e21036ffdf3715566b"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/set-status/argument-shape/argument:route:entrypoint:nyxloom/backlog/set-status/entry_id",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:nyxloom/backlog/set-status/entry_id"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/set-status",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:nyxloom/backlog/set-status/entry_id"
+      },
+      "signature": "sha256:f04b28e4bbcf05efd3cbf50c05a9f430f6e47e21fb69b9c2d5f4b7206fc7ef0d"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/set-status/argument-shape/argument:route:entrypoint:nyxloom/backlog/set-status/status",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:nyxloom/backlog/set-status/status"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/set-status",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:nyxloom/backlog/set-status/status"
+      },
+      "signature": "sha256:c4af37a91b61608d6b569de2cd3f28d903bb4c942b668210a1bdfd2600813985"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/set-status/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:nyxloom/backlog/set-status/entry_id",
+        "argument:route:entrypoint:nyxloom/backlog/set-status/status"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/set-status",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {
+          "argument:route:entrypoint:nyxloom/backlog/set-status/entry_id": 1,
+          "argument:route:entrypoint:nyxloom/backlog/set-status/status": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:nyxloom/backlog/set-status/entry_id",
+          "argument:route:entrypoint:nyxloom/backlog/set-status/status"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:18dd7850ccb699d8642e72a84120e0baee4d5ecd20b6d360b33b8157ac4abbf4"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/set-status/option-spelling/option:route:entrypoint:nyxloom/backlog/set-status/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/set-status/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/set-status",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/set-status/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:11b956650cb60d4c557a16521d32f0839672497fd1de8a9ecbe661764c0ddad4"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/set-status/option-spelling/option:route:entrypoint:nyxloom/backlog/set-status/--project-id/--project-id",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/set-status/--project-id"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/set-status",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/set-status/--project-id",
+        "spelling": "--project-id"
+      },
+      "signature": "sha256:1c1ea7d6c009278e595a4127d539de6a8c4c8f1ac57c79ae06291c8023b2fc1f"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/set-status/option-spelling/option:route:entrypoint:nyxloom/backlog/set-status/--reason/--reason",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/set-status/--reason"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/set-status",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/set-status/--reason",
+        "spelling": "--reason"
+      },
+      "signature": "sha256:7b093469417d6c8319874f4ee37e4d00b6eca22c9d77ead2b53c235408ad6b0e"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/set-status/option-spelling/option:route:entrypoint:nyxloom/backlog/set-status/--traceback/--traceback",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/set-status/--traceback"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/set-status",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/set-status/--traceback",
+        "spelling": "--traceback"
+      },
+      "signature": "sha256:54216f9ed99e90cedc450923bddfb37fead10a50d4ecb56761219ab149c082de"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/show/argument-shape/argument:route:entrypoint:nyxloom/backlog/show/entry_id",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:nyxloom/backlog/show/entry_id"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/show",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:nyxloom/backlog/show/entry_id"
+      },
+      "signature": "sha256:0392327b2c8fe5cea10d538586c1db81b3f604b45c9c4ea91195baa4a90491a6"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/show/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:nyxloom/backlog/show/entry_id"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/show",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {
+          "argument:route:entrypoint:nyxloom/backlog/show/entry_id": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:nyxloom/backlog/show/entry_id"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:86970b333c3dd466eb264b13b1082dda65b05c9b42e6dec0cf98f57f30c01acc"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/show/option-spelling/option:route:entrypoint:nyxloom/backlog/show/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/show/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/show",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/show/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:0ed53cdb7fbf5071cc386f2990985445419179163e9eca7fab5e28ed1d4fec98"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/show/option-spelling/option:route:entrypoint:nyxloom/backlog/show/--project-id/--project-id",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/show/--project-id"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/show",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/show/--project-id",
+        "spelling": "--project-id"
+      },
+      "signature": "sha256:db67efe9f658e3c406bf7a17341c6859c4a2aa6703b59169c1a3186315744835"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/backlog/show/option-spelling/option:route:entrypoint:nyxloom/backlog/show/--traceback/--traceback",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/backlog/show/--traceback"
+      ],
+      "route_id": "route:entrypoint:nyxloom/backlog/show",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/backlog/show/--traceback",
+        "spelling": "--traceback"
+      },
+      "signature": "sha256:3a56220a16f78091c6d938a68d79f343ccd162b1c4b79191635e9e152d3a86e5"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/init/argument-shape/argument:route:entrypoint:nyxloom/init/project_folder",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:nyxloom/init/project_folder"
+      ],
+      "route_id": "route:entrypoint:nyxloom/init",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:nyxloom/init/project_folder"
+      },
+      "signature": "sha256:ca2db5a5d53c31dbd0127ac0fd5af49ba2fe456455f6df9899bd96a53e2ccfeb"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/init/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:nyxloom/init/project_folder"
+      ],
+      "route_id": "route:entrypoint:nyxloom/init",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {
+          "argument:route:entrypoint:nyxloom/init/project_folder": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:nyxloom/init/project_folder"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:85939f6e4a0149e3dab0cfbebf4d13331066a21b922231d1ddf4b991a07a5f35"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/init/option-spelling/option:route:entrypoint:nyxloom/init/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/init/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:nyxloom/init",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/init/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:80342f3ac092f085a6d60b4001a1dc1fe0f4289cd0fd681f9571545eace5331d"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/init/option-spelling/option:route:entrypoint:nyxloom/init/--traceback/--traceback",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/init/--traceback"
+      ],
+      "route_id": "route:entrypoint:nyxloom/init",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/init/--traceback",
+        "spelling": "--traceback"
+      },
+      "signature": "sha256:7ffb545236faa8b2a5db736e548434ef7fd1eccf4d5412c845ff6dc093bfdb67"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/lint/argument-shape/argument:route:entrypoint:nyxloom/lint/path",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:nyxloom/lint/path"
+      ],
+      "route_id": "route:entrypoint:nyxloom/lint",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:nyxloom/lint/path"
+      },
+      "signature": "sha256:0706e0222c23003d444cb03472a0f8d6af8e4e448264b268c318efb36c1a4049"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/lint/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:nyxloom/lint",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:55c8be9205553aea76200d6a81e48af3079d47f6e7d9fe78d3fb8cdb8d8e1802"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/lint/option-spelling/option:route:entrypoint:nyxloom/lint/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/lint/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:nyxloom/lint",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/lint/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:51f55ba5d1cd59bc74dffa3968d377a00c96fb7d07aa6350d5edb52fac33c458"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/lint/option-spelling/option:route:entrypoint:nyxloom/lint/--traceback/--traceback",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/lint/--traceback"
+      ],
+      "route_id": "route:entrypoint:nyxloom/lint",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/lint/--traceback",
+        "spelling": "--traceback"
+      },
+      "signature": "sha256:8b5bd8db783c6f4751defe7b7f39c64440858f3d03abb9fad07e11512cd8ef2f"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/onboard/argument-shape/argument:route:entrypoint:nyxloom/onboard/project_folder",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:nyxloom/onboard/project_folder"
+      ],
+      "route_id": "route:entrypoint:nyxloom/onboard",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:nyxloom/onboard/project_folder"
+      },
+      "signature": "sha256:2977c0da779f9743f74cba80d5ed556d89cad63bce344eb3b507446396193e2f"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/onboard/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:nyxloom/onboard/project_folder",
+        "option:route:entrypoint:nyxloom/onboard/--maturity",
+        "option:route:entrypoint:nyxloom/onboard/--docs",
+        "option:route:entrypoint:nyxloom/onboard/--mode",
+        "option:route:entrypoint:nyxloom/onboard/--scan",
+        "option:route:entrypoint:nyxloom/onboard/--questionnaire",
+        "option:route:entrypoint:nyxloom/onboard/--check-gate",
+        "option:route:entrypoint:nyxloom/onboard/--scaffold-gate"
+      ],
+      "route_id": "route:entrypoint:nyxloom/onboard",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:nyxloom/onboard/--maturity",
+          "option:route:entrypoint:nyxloom/onboard/--docs",
+          "option:route:entrypoint:nyxloom/onboard/--mode",
+          "option:route:entrypoint:nyxloom/onboard/--scan",
+          "option:route:entrypoint:nyxloom/onboard/--questionnaire",
+          "option:route:entrypoint:nyxloom/onboard/--check-gate",
+          "option:route:entrypoint:nyxloom/onboard/--scaffold-gate"
+        ],
+        "required_argument_values": {
+          "argument:route:entrypoint:nyxloom/onboard/project_folder": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:nyxloom/onboard/project_folder"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:283e5dadc4a023e2a638f0ca400e69fd21f3089060256f22562851b879e1b29f"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/onboard/option-choice/option:route:entrypoint:nyxloom/onboard/--docs/15dbb2c436",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/onboard/--docs"
+      ],
+      "route_id": "route:entrypoint:nyxloom/onboard",
+      "shape": {
+        "choice": "absent",
+        "option_id": "option:route:entrypoint:nyxloom/onboard/--docs"
+      },
+      "signature": "sha256:e611cb9f47e32e721c10e7d3add4df596c9e40fcf4871273b167d2598c21c9be"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/onboard/option-choice/option:route:entrypoint:nyxloom/onboard/--docs/94332144d9",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/onboard/--docs"
+      ],
+      "route_id": "route:entrypoint:nyxloom/onboard",
+      "shape": {
+        "choice": "present",
+        "option_id": "option:route:entrypoint:nyxloom/onboard/--docs"
+      },
+      "signature": "sha256:466af6bcf10a1d9b925eac4a63c9fa2bd5072bce4a201916d8e710c7fee6c2bb"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/onboard/option-choice/option:route:entrypoint:nyxloom/onboard/--maturity/2f3435e626",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/onboard/--maturity"
+      ],
+      "route_id": "route:entrypoint:nyxloom/onboard",
+      "shape": {
+        "choice": "mature",
+        "option_id": "option:route:entrypoint:nyxloom/onboard/--maturity"
+      },
+      "signature": "sha256:e134f3f0088934e910aea7489c82bab526c96dc9aa2747777597ba672ed6d2ac"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/onboard/option-choice/option:route:entrypoint:nyxloom/onboard/--maturity/8ac24611cf",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/onboard/--maturity"
+      ],
+      "route_id": "route:entrypoint:nyxloom/onboard",
+      "shape": {
+        "choice": "partial",
+        "option_id": "option:route:entrypoint:nyxloom/onboard/--maturity"
+      },
+      "signature": "sha256:9cf7ef29399cc0d07cd64d3a9a84ef2b46c7168bfd64f39a4e9874edcdba9e12"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/onboard/option-choice/option:route:entrypoint:nyxloom/onboard/--maturity/e6845188b1",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/onboard/--maturity"
+      ],
+      "route_id": "route:entrypoint:nyxloom/onboard",
+      "shape": {
+        "choice": "empty",
+        "option_id": "option:route:entrypoint:nyxloom/onboard/--maturity"
+      },
+      "signature": "sha256:0961c04fbf875a8f2c8a2da55f2276b89cc11dcd1c36cd09473bd03f8f076b90"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/onboard/option-choice/option:route:entrypoint:nyxloom/onboard/--mode/1231221c40",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/onboard/--mode"
+      ],
+      "route_id": "route:entrypoint:nyxloom/onboard",
+      "shape": {
+        "choice": "code-good-docs-absent",
+        "option_id": "option:route:entrypoint:nyxloom/onboard/--mode"
+      },
+      "signature": "sha256:bf79c141bfb354799bec745f53ab70d134a0a2353e18f6b6e88a4e4cbb84f871"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/onboard/option-choice/option:route:entrypoint:nyxloom/onboard/--mode/c5d264a57b",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/onboard/--mode"
+      ],
+      "route_id": "route:entrypoint:nyxloom/onboard",
+      "shape": {
+        "choice": "greenfield-define-it",
+        "option_id": "option:route:entrypoint:nyxloom/onboard/--mode"
+      },
+      "signature": "sha256:d47dc7e1a58db39f67e9354b1bff6c611a67e790805db68c184e03de83964901"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/onboard/option-choice/option:route:entrypoint:nyxloom/onboard/--mode/cac3249c99",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/onboard/--mode"
+      ],
+      "route_id": "route:entrypoint:nyxloom/onboard",
+      "shape": {
+        "choice": "derive-from-code",
+        "option_id": "option:route:entrypoint:nyxloom/onboard/--mode"
+      },
+      "signature": "sha256:ccf4a8278f38491f6db73bb90ff19fb6f40b6a8468a43286dbdd371a9cd3f60f"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/onboard/option-spelling/option:route:entrypoint:nyxloom/onboard/--check-gate/--check-gate",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/onboard/--check-gate"
+      ],
+      "route_id": "route:entrypoint:nyxloom/onboard",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/onboard/--check-gate",
+        "spelling": "--check-gate"
+      },
+      "signature": "sha256:d95763ce47f4c92fb85ed889a0287f81299c1b7b3f1e1b78c4ea2f339b524c8e"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/onboard/option-spelling/option:route:entrypoint:nyxloom/onboard/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/onboard/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:nyxloom/onboard",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/onboard/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:126d59cb30c146011c4ec857c678c31062da7b53e886b0f7be7be8a179715ba8"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/onboard/option-spelling/option:route:entrypoint:nyxloom/onboard/--docs/--docs",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/onboard/--docs"
+      ],
+      "route_id": "route:entrypoint:nyxloom/onboard",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/onboard/--docs",
+        "spelling": "--docs"
+      },
+      "signature": "sha256:f65d4311f4ab13bb43b72e335781d40a25b3bddc7098b08476d8b768f983c5af"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/onboard/option-spelling/option:route:entrypoint:nyxloom/onboard/--maturity/--maturity",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/onboard/--maturity"
+      ],
+      "route_id": "route:entrypoint:nyxloom/onboard",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/onboard/--maturity",
+        "spelling": "--maturity"
+      },
+      "signature": "sha256:247a7cdd52d20fc3bc6b5d1d9fa2a83141ed34e1d80b1c70887eceed3052a7ef"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/onboard/option-spelling/option:route:entrypoint:nyxloom/onboard/--mode/--mode",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/onboard/--mode"
+      ],
+      "route_id": "route:entrypoint:nyxloom/onboard",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/onboard/--mode",
+        "spelling": "--mode"
+      },
+      "signature": "sha256:4f7c7c3486f4cb3407bf94b50765efca2ebccd4e17a87548332477c911c4cbb9"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/onboard/option-spelling/option:route:entrypoint:nyxloom/onboard/--questionnaire/--questionnaire",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/onboard/--questionnaire"
+      ],
+      "route_id": "route:entrypoint:nyxloom/onboard",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/onboard/--questionnaire",
+        "spelling": "--questionnaire"
+      },
+      "signature": "sha256:6feda454032586020102e2046c79b450cc7e9bb5a631dfb7d243c703a8f7b04f"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/onboard/option-spelling/option:route:entrypoint:nyxloom/onboard/--scaffold-gate/--scaffold-gate",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/onboard/--scaffold-gate"
+      ],
+      "route_id": "route:entrypoint:nyxloom/onboard",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/onboard/--scaffold-gate",
+        "spelling": "--scaffold-gate"
+      },
+      "signature": "sha256:373dac36b9519e29e7930ff2d133db56e00c676108281ebedb1c315587f09e0c"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/onboard/option-spelling/option:route:entrypoint:nyxloom/onboard/--scan-path/--scan-path",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/onboard/--scan-path"
+      ],
+      "route_id": "route:entrypoint:nyxloom/onboard",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/onboard/--scan-path",
+        "spelling": "--scan-path"
+      },
+      "signature": "sha256:1971869b3f0985ae0fe0c46e102bf8be2fdaea37e0e7ede24cf2655029c2ac3b"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/onboard/option-spelling/option:route:entrypoint:nyxloom/onboard/--scan/--scan",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/onboard/--scan"
+      ],
+      "route_id": "route:entrypoint:nyxloom/onboard",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/onboard/--scan",
+        "spelling": "--scan"
+      },
+      "signature": "sha256:149a7c241a5dbe7c2cfc794df93d9ba170a28d3a5e4ca9335c5743e7a0823f61"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/onboard/option-spelling/option:route:entrypoint:nyxloom/onboard/--traceback/--traceback",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/onboard/--traceback"
+      ],
+      "route_id": "route:entrypoint:nyxloom/onboard",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/onboard/--traceback",
+        "spelling": "--traceback"
+      },
+      "signature": "sha256:bceffd9326bdaad4b17c648a15178995f2b82c63fda46bad78869210866c91b3"
+    }
+  ],
+  "entrypoint": {
+    "allow_abbrev": false,
+    "builtins": [
+      "help",
+      "help <verb>",
+      "version",
+      "--help",
+      "--version"
+    ],
+    "command": "nyxloom",
+    "display_name": "NYXLOOM",
+    "fromfile_prefix_chars": null,
+    "id": "entrypoint:nyxloom",
+    "long_name": "files-first control plane for role-separated AI-assisted development",
+    "no_args_action": false,
+    "prefix_chars": "-",
+    "prog": "nyxloom",
+    "single_command": false
+  },
+  "incomplete": [],
+  "interaction_issues": [],
+  "library_contract": {
+    "name": "cli-extended",
+    "version": 1
+  },
+  "routes": [
+    {
+      "actions": [],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Manage project-local managed backlog entries.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:nyxloom/backlog",
+      "kind": "delegate-group",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "backlog"
+      ],
+      "single_command": false,
+      "subcommands": [
+        "route:entrypoint:nyxloom/backlog/new",
+        "route:entrypoint:nyxloom/backlog/edit",
+        "route:entrypoint:nyxloom/backlog/promote",
+        "route:entrypoint:nyxloom/backlog/note",
+        "route:entrypoint:nyxloom/backlog/set-status",
+        "route:entrypoint:nyxloom/backlog/list",
+        "route:entrypoint:nyxloom/backlog/show",
+        "route:entrypoint:nyxloom/backlog/index"
+      ],
+      "summary": "Manage project-local managed backlog entries.",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--traceback",
+          "choices": null,
+          "const": true,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "show a traceback for an unexpected command failure",
+          "dest": "traceback",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--traceback"
+          ],
+          "help_group": "DEBUGGING",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/backlog/edit/--traceback",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "backlog",
+            "edit"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Managed entry id",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:nyxloom/backlog/edit/entry_id",
+          "kind": "argument",
+          "metavar": "ENTRY_ID",
+          "minimum_values": 1,
+          "name": "entry_id",
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "backlog",
+            "edit"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--project-id",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Registered project id",
+          "dest": "project_id",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--project-id"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/backlog/edit/--project-id",
+          "kind": "option",
+          "metavar": "PROJECT_ID",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "metavar": "PROJECT_ID"
+          },
+          "parser_path": [
+            "backlog",
+            "edit"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "interactive"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "Manage project-local managed backlog entries.",
+          "group": "EXPLORATION",
+          "id": null,
+          "name": "backlog",
+          "summary": "Manage project-local managed backlog entries.",
+          "synopsis": null
+        }
+      ],
+      "description": "Interactively edit a managed entry's authorable metadata.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:nyxloom/backlog/edit",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "backlog"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "backlog",
+            "edit"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "backlog",
+        "edit"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Interactively edit a managed entry's authorable metadata. [mutating; interactive]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--traceback",
+          "choices": null,
+          "const": true,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "show a traceback for an unexpected command failure",
+          "dest": "traceback",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--traceback"
+          ],
+          "help_group": "DEBUGGING",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/backlog/index/--traceback",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "backlog",
+            "index"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--project-id",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Registered project id",
+          "dest": "project_id",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--project-id"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/backlog/index/--project-id",
+          "kind": "option",
+          "metavar": "PROJECT_ID",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "metavar": "PROJECT_ID"
+          },
+          "parser_path": [
+            "backlog",
+            "index"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "Manage project-local managed backlog entries.",
+          "group": "EXPLORATION",
+          "id": null,
+          "name": "backlog",
+          "summary": "Manage project-local managed backlog entries.",
+          "synopsis": null
+        }
+      ],
+      "description": "Regenerate the managed backlog index.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:nyxloom/backlog/index",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "backlog"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "backlog",
+            "index"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "backlog",
+        "index"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Regenerate the managed backlog index. [mutating]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--traceback",
+          "choices": null,
+          "const": true,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "show a traceback for an unexpected command failure",
+          "dest": "traceback",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--traceback"
+          ],
+          "help_group": "DEBUGGING",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/backlog/list/--traceback",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "backlog",
+            "list"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--project-id",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Registered project id",
+          "dest": "project_id",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--project-id"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/backlog/list/--project-id",
+          "kind": "option",
+          "metavar": "PROJECT_ID",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "metavar": "PROJECT_ID"
+          },
+          "parser_path": [
+            "backlog",
+            "list"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--status",
+          "choices": [
+            "open",
+            "carved",
+            "merged",
+            "fixed",
+            "withdrawn",
+            "obsolete"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Filter by status",
+          "dest": "status",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--status"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/backlog/list/--status",
+          "kind": "option",
+          "metavar": "STATUS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "open",
+              "carved",
+              "merged",
+              "fixed",
+              "withdrawn",
+              "obsolete"
+            ],
+            "default": null,
+            "metavar": "STATUS"
+          },
+          "parser_path": [
+            "backlog",
+            "list"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "Manage project-local managed backlog entries.",
+          "group": "EXPLORATION",
+          "id": null,
+          "name": "backlog",
+          "summary": "Manage project-local managed backlog entries.",
+          "synopsis": null
+        }
+      ],
+      "description": "List managed backlog entries without writing files.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:nyxloom/backlog/list",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "backlog"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "backlog",
+            "list"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "backlog",
+        "list"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "List managed backlog entries without writing files.",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--traceback",
+          "choices": null,
+          "const": true,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "show a traceback for an unexpected command failure",
+          "dest": "traceback",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--traceback"
+          ],
+          "help_group": "DEBUGGING",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/backlog/new/--traceback",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "backlog",
+            "new"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "One-line entry title",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:nyxloom/backlog/new/title",
+          "kind": "argument",
+          "metavar": "TITLE",
+          "minimum_values": 0,
+          "name": "title",
+          "nargs": "?",
+          "parser_kwargs": {
+            "nargs": "?"
+          },
+          "parser_path": [
+            "backlog",
+            "new"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--project-id",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Registered project id",
+          "dest": "project_id",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--project-id"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/backlog/new/--project-id",
+          "kind": "option",
+          "metavar": "PROJECT_ID",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "metavar": "PROJECT_ID"
+          },
+          "parser_path": [
+            "backlog",
+            "new"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--type",
+          "choices": [
+            "feature",
+            "bugfix"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Entry type",
+          "dest": "type",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--type"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/backlog/new/--type",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "feature",
+              "bugfix"
+            ],
+            "default": null
+          },
+          "parser_path": [
+            "backlog",
+            "new"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--severity",
+          "choices": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Entry severity",
+          "dest": "severity",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--severity"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/backlog/new/--severity",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "default": null
+          },
+          "parser_path": [
+            "backlog",
+            "new"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--priority",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Entry priority",
+          "dest": "priority",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--priority"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/backlog/new/--priority",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "builtins.int"
+            }
+          },
+          "parser_path": [
+            "backlog",
+            "new"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--component",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Owning component",
+          "dest": "component",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--component"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/backlog/new/--component",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "backlog",
+            "new"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--context-estimate",
+          "choices": [
+            "small",
+            "medium",
+            "large"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Estimated context size",
+          "dest": "context_estimate",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--context-estimate"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/backlog/new/--context-estimate",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "small",
+              "medium",
+              "large"
+            ],
+            "default": null
+          },
+          "parser_path": [
+            "backlog",
+            "new"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--folds-into",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Related managed entry",
+          "dest": "folds_into",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--folds-into"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/backlog/new/--folds-into",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "backlog",
+            "new"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--provenance",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Where this entry came from",
+          "dest": "provenance",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--provenance"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/backlog/new/--provenance",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "backlog",
+            "new"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--filed-by",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Filer's name",
+          "dest": "filed_by",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--filed-by"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/backlog/new/--filed-by",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "dest": "filed_by"
+          },
+          "parser_path": [
+            "backlog",
+            "new"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--spec-owner",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Owning spec's name",
+          "dest": "spec_owner",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--spec-owner"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/backlog/new/--spec-owner",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "dest": "spec_owner"
+          },
+          "parser_path": [
+            "backlog",
+            "new"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--body-from",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Read the entry body from this file",
+          "dest": "body_from",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--body-from"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/backlog/new/--body-from",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "dest": "body_from",
+            "metavar": "FILE"
+          },
+          "parser_path": [
+            "backlog",
+            "new"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--interactive",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Prompt for entry metadata",
+          "dest": "interactive",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--interactive"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/backlog/new/--interactive",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "default": false
+          },
+          "parser_path": [
+            "backlog",
+            "new"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "interactive"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "Manage project-local managed backlog entries.",
+          "group": "EXPLORATION",
+          "id": null,
+          "name": "backlog",
+          "summary": "Manage project-local managed backlog entries.",
+          "synopsis": null
+        }
+      ],
+      "description": "Create a managed backlog entry.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:nyxloom/backlog/new",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "backlog"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "backlog",
+            "new"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "backlog",
+        "new"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Create a managed backlog entry. [mutating; interactive]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--traceback",
+          "choices": null,
+          "const": true,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "show a traceback for an unexpected command failure",
+          "dest": "traceback",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--traceback"
+          ],
+          "help_group": "DEBUGGING",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/backlog/note/--traceback",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "backlog",
+            "note"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Managed entry id",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:nyxloom/backlog/note/entry_id",
+          "kind": "argument",
+          "metavar": "ENTRY_ID",
+          "minimum_values": 1,
+          "name": "entry_id",
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "backlog",
+            "note"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Note text",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:nyxloom/backlog/note/text",
+          "kind": "argument",
+          "metavar": "TEXT",
+          "minimum_values": 1,
+          "name": "text",
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "backlog",
+            "note"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--project-id",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Registered project id",
+          "dest": "project_id",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--project-id"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/backlog/note/--project-id",
+          "kind": "option",
+          "metavar": "PROJECT_ID",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "metavar": "PROJECT_ID"
+          },
+          "parser_path": [
+            "backlog",
+            "note"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "Manage project-local managed backlog entries.",
+          "group": "EXPLORATION",
+          "id": null,
+          "name": "backlog",
+          "summary": "Manage project-local managed backlog entries.",
+          "synopsis": null
+        }
+      ],
+      "description": "Append a dated update to an entry.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:nyxloom/backlog/note",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "backlog"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "backlog",
+            "note"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "backlog",
+        "note"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Append a dated update to an entry. [mutating]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--traceback",
+          "choices": null,
+          "const": true,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "show a traceback for an unexpected command failure",
+          "dest": "traceback",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--traceback"
+          ],
+          "help_group": "DEBUGGING",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/backlog/promote/--traceback",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "backlog",
+            "promote"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Inbox item id",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:nyxloom/backlog/promote/inbox_id",
+          "kind": "argument",
+          "metavar": "INBOX_ID",
+          "minimum_values": 1,
+          "name": "inbox_id",
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "backlog",
+            "promote"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--project-id",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Registered project id",
+          "dest": "project_id",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--project-id"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/backlog/promote/--project-id",
+          "kind": "option",
+          "metavar": "PROJECT_ID",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "metavar": "PROJECT_ID"
+          },
+          "parser_path": [
+            "backlog",
+            "promote"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "Manage project-local managed backlog entries.",
+          "group": "EXPLORATION",
+          "id": null,
+          "name": "backlog",
+          "summary": "Manage project-local managed backlog entries.",
+          "synopsis": null
+        }
+      ],
+      "description": "Promote an inbox item into the managed backlog.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:nyxloom/backlog/promote",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "backlog"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "backlog",
+            "promote"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "backlog",
+        "promote"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Promote an inbox item into the managed backlog. [mutating]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--traceback",
+          "choices": null,
+          "const": true,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "show a traceback for an unexpected command failure",
+          "dest": "traceback",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--traceback"
+          ],
+          "help_group": "DEBUGGING",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/backlog/set-status/--traceback",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "backlog",
+            "set-status"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Managed entry id",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:nyxloom/backlog/set-status/entry_id",
+          "kind": "argument",
+          "metavar": "ENTRY_ID",
+          "minimum_values": 1,
+          "name": "entry_id",
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "backlog",
+            "set-status"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": [
+            "open",
+            "carved",
+            "fixed",
+            "withdrawn",
+            "obsolete"
+          ],
+          "const": null,
+          "default": null,
+          "description": "New status",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:nyxloom/backlog/set-status/status",
+          "kind": "argument",
+          "metavar": "STATUS",
+          "minimum_values": 1,
+          "name": "status",
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "open",
+              "carved",
+              "fixed",
+              "withdrawn",
+              "obsolete"
+            ]
+          },
+          "parser_path": [
+            "backlog",
+            "set-status"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--project-id",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Registered project id",
+          "dest": "project_id",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--project-id"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/backlog/set-status/--project-id",
+          "kind": "option",
+          "metavar": "PROJECT_ID",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "metavar": "PROJECT_ID"
+          },
+          "parser_path": [
+            "backlog",
+            "set-status"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--reason",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Transition reason",
+          "dest": "reason",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--reason"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/backlog/set-status/--reason",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "backlog",
+            "set-status"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "Manage project-local managed backlog entries.",
+          "group": "EXPLORATION",
+          "id": null,
+          "name": "backlog",
+          "summary": "Manage project-local managed backlog entries.",
+          "synopsis": null
+        }
+      ],
+      "description": "Apply a typed status transition.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:nyxloom/backlog/set-status",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "backlog"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "backlog",
+            "set-status"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "backlog",
+        "set-status"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Apply a typed status transition. [mutating]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--traceback",
+          "choices": null,
+          "const": true,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "show a traceback for an unexpected command failure",
+          "dest": "traceback",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--traceback"
+          ],
+          "help_group": "DEBUGGING",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/backlog/show/--traceback",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "backlog",
+            "show"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Managed entry id",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:nyxloom/backlog/show/entry_id",
+          "kind": "argument",
+          "metavar": "ENTRY_ID",
+          "minimum_values": 1,
+          "name": "entry_id",
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "backlog",
+            "show"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--project-id",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Registered project id",
+          "dest": "project_id",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--project-id"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/backlog/show/--project-id",
+          "kind": "option",
+          "metavar": "PROJECT_ID",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "metavar": "PROJECT_ID"
+          },
+          "parser_path": [
+            "backlog",
+            "show"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "Manage project-local managed backlog entries.",
+          "group": "EXPLORATION",
+          "id": null,
+          "name": "backlog",
+          "summary": "Manage project-local managed backlog entries.",
+          "synopsis": null
+        }
+      ],
+      "description": "Show one managed backlog entry.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:nyxloom/backlog/show",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "backlog"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "backlog",
+            "show"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "backlog",
+        "show"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Show one managed backlog entry.",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--traceback",
+          "choices": null,
+          "const": true,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "show a traceback for an unexpected command failure",
+          "dest": "traceback",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--traceback"
+          ],
+          "help_group": "DEBUGGING",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/init/--traceback",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "init"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Target project folder",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:nyxloom/init/project_folder",
+          "kind": "argument",
+          "metavar": "PROJECT_FOLDER",
+          "minimum_values": 1,
+          "name": "project_folder",
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "init"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Scaffold a Nyxloom trove in a project folder.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:nyxloom/init",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "init"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "init"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Scaffold a Nyxloom trove in a project folder. [mutating]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--traceback",
+          "choices": null,
+          "const": true,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "show a traceback for an unexpected command failure",
+          "dest": "traceback",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--traceback"
+          ],
+          "help_group": "DEBUGGING",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/lint/--traceback",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "lint"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Handoff Markdown paths; omit to discover this project",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:nyxloom/lint/path",
+          "kind": "argument",
+          "metavar": "HANDOFF_FILE",
+          "minimum_values": 0,
+          "name": "path",
+          "nargs": "*",
+          "parser_kwargs": {
+            "nargs": "*"
+          },
+          "parser_path": [
+            "lint"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Lint the current project's configured handoffs, or explicit handoff paths.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:nyxloom/lint",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "lint"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "lint"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Lint the current project's configured handoffs, or explicit handoff paths.",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--traceback",
+          "choices": null,
+          "const": true,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "show a traceback for an unexpected command failure",
+          "dest": "traceback",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--traceback"
+          ],
+          "help_group": "DEBUGGING",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/onboard/--traceback",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "onboard"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Target project folder",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:nyxloom/onboard/project_folder",
+          "kind": "argument",
+          "metavar": "PROJECT_FOLDER",
+          "minimum_values": 1,
+          "name": "project_folder",
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "onboard"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--maturity",
+          "choices": [
+            "empty",
+            "partial",
+            "mature"
+          ],
+          "const": null,
+          "default": "empty",
+          "default_present": true,
+          "description": "Project maturity",
+          "dest": "maturity",
+          "effective_default": "empty",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--maturity"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/onboard/--maturity",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "empty",
+              "partial",
+              "mature"
+            ],
+            "default": "empty"
+          },
+          "parser_path": [
+            "onboard"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--docs",
+          "choices": [
+            "present",
+            "absent"
+          ],
+          "const": null,
+          "default": "absent",
+          "default_present": true,
+          "description": "Whether project docs exist",
+          "dest": "docs",
+          "effective_default": "absent",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--docs"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/onboard/--docs",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "present",
+              "absent"
+            ],
+            "default": "absent"
+          },
+          "parser_path": [
+            "onboard"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--mode",
+          "choices": [
+            "derive-from-code",
+            "code-good-docs-absent",
+            "greenfield-define-it"
+          ],
+          "const": null,
+          "default": "greenfield-define-it",
+          "default_present": true,
+          "description": "Onboarding mode",
+          "dest": "mode",
+          "effective_default": "greenfield-define-it",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--mode"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/onboard/--mode",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "derive-from-code",
+              "code-good-docs-absent",
+              "greenfield-define-it"
+            ],
+            "default": "greenfield-define-it"
+          },
+          "parser_path": [
+            "onboard"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._AppendAction",
+          "before_nested_subcommand": false,
+          "canonical": "--scan-path",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Path for a later AI scan; repeatable",
+          "dest": "scan_paths",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--scan-path"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/onboard/--scan-path",
+          "kind": "option",
+          "metavar": "SCAN_PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "action": "append",
+            "default": null,
+            "dest": "scan_paths",
+            "metavar": "SCAN_PATH"
+          },
+          "parser_path": [
+            "onboard"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--scan",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Run the read-only assessment scan",
+          "dest": "scan",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--scan"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/onboard/--scan",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "default": false
+          },
+          "parser_path": [
+            "onboard"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--questionnaire",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Run the guided questionnaire",
+          "dest": "questionnaire",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--questionnaire"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/onboard/--questionnaire",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "default": false
+          },
+          "parser_path": [
+            "onboard"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--check-gate",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Check whether the project declares a gate",
+          "dest": "check_gate",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--check-gate"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/onboard/--check-gate",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "default": false,
+            "dest": "check_gate"
+          },
+          "parser_path": [
+            "onboard"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--scaffold-gate",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Write a reviewable gate skeleton when none is declared",
+          "dest": "scaffold_gate",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--scaffold-gate"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/onboard/--scaffold-gate",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "default": false,
+            "dest": "scaffold_gate"
+          },
+          "parser_path": [
+            "onboard"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Run the local project onboarding flow.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:nyxloom/onboard",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "onboard"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "onboard"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Run the local project onboarding flow. [mutating]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    }
+  ],
+  "schema_version": 7,
+  "syntax_complete": true
+}

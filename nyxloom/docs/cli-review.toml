@@ -1,0 +1,1303 @@
+schema_version = 1
+cli_id = "nyxloom"
+max_candidates = 200
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/edit/argument-shape/argument:route:entrypoint:nyxloom/backlog/edit/entry_id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:216e5c5bddebfccf3b91fa952d06570e7a06d2cbf2b438cb61c0b7cb37e0439a"
+rationale = "The parser accepts the declared positional shape for `entry_id` on `nyxloom backlog edit`."
+invocation = ["backlog", "edit", "sample"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[0008a9811b68]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/edit/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:44b747ef17f66de5d70983d8afd4a69b70e9c7ad18693b5d84f70180e9fb39a8"
+rationale = "The minimum valid invocation of `nyxloom backlog edit` supplies every required argument and option."
+invocation = ["backlog", "edit", "sample"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[c977771063bd]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/edit/option-spelling/option:route:entrypoint:nyxloom/backlog/edit/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6ced3c83b502baa5cd11eb81ee5f242eb286d0fe274c91e10c43b232559cee16"
+rationale = "`--debug-raw` is an accepted option spelling on `nyxloom backlog edit`."
+invocation = ["backlog", "edit", "--debug-raw", "sample"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[2f10d89d0cdf]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/edit/option-spelling/option:route:entrypoint:nyxloom/backlog/edit/--project-id/--project-id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7af801f8a5be7824955eb249f8819f27554ba6b83c6c7104d526a38d534d3c10"
+rationale = "`--project-id` is an accepted option spelling on `nyxloom backlog edit`."
+invocation = ["backlog", "edit", "--project-id", "sample", "sample"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[5fca6ef4de44]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/edit/option-spelling/option:route:entrypoint:nyxloom/backlog/edit/--traceback/--traceback"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1ad5526f6a8ca9d31951eaa43dc737b1eeaa7fc0173ea1c937f9c167127bcd29"
+rationale = "`--traceback` is an accepted option spelling on `nyxloom backlog edit`."
+invocation = ["backlog", "edit", "--traceback", "sample"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[f625d1299c77]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/index/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d18d898926e934704043b29560a9781363f690742cd5f892cd4835531bd64431"
+rationale = "The minimum valid invocation of `nyxloom backlog index` supplies every required argument and option."
+invocation = ["backlog", "index"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[b1aa51a77304]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/index/option-spelling/option:route:entrypoint:nyxloom/backlog/index/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:117f33eb6f807993a15d8271a9327cae91a4f07747cc31e07c5c6fc66e3d9ff3"
+rationale = "`--debug-raw` is an accepted option spelling on `nyxloom backlog index`."
+invocation = ["backlog", "index", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[0378ccf64b30]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/index/option-spelling/option:route:entrypoint:nyxloom/backlog/index/--project-id/--project-id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2cd27ba69b20fbbf1a042f8cb1600338f7367c40e352a9b90f6c062d3cb6e75d"
+rationale = "`--project-id` is an accepted option spelling on `nyxloom backlog index`."
+invocation = ["backlog", "index", "--project-id", "sample"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[067507e188c6]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/index/option-spelling/option:route:entrypoint:nyxloom/backlog/index/--traceback/--traceback"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b14197d7695ec85c69c75f6b7d17173ca5ecd774f95a606fe4e6711c61ea046d"
+rationale = "`--traceback` is an accepted option spelling on `nyxloom backlog index`."
+invocation = ["backlog", "index", "--traceback"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[c4520d3cd076]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/list/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:98f755da86ecba1ce8bfdbd93c5a531072b46e24066755c904ce8b10bd24d7c8"
+rationale = "The minimum valid invocation of `nyxloom backlog list` supplies every required argument and option."
+invocation = ["backlog", "list"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[bf9b901b6641]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/list/option-choice/option:route:entrypoint:nyxloom/backlog/list/--status/12aff05139"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:acc51cb501c539da4bdf5f5ef68e9032bcf90f521e95f330ff7c1262f4f7b0f7"
+rationale = "`fixed` is an accepted choice for `--status` on `nyxloom backlog list`."
+invocation = ["backlog", "list", "--status", "fixed"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[3c3f7a3b2bc2]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/list/option-choice/option:route:entrypoint:nyxloom/backlog/list/--status/2d4211a0f2"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7826a92938fb00e7a451cf3b41ed1b975cf2d966c5ec1aa443360495e18a4891"
+rationale = "`obsolete` is an accepted choice for `--status` on `nyxloom backlog list`."
+invocation = ["backlog", "list", "--status", "obsolete"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[d2fb060fc2e6]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/list/option-choice/option:route:entrypoint:nyxloom/backlog/list/--status/35ff74aeea"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5f9081e8c577dbb27456809c53839c56435298c2d316c6e847cb578f74410c24"
+rationale = "`open` is an accepted choice for `--status` on `nyxloom backlog list`."
+invocation = ["backlog", "list", "--status", "open"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[cc09a9359223]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/list/option-choice/option:route:entrypoint:nyxloom/backlog/list/--status/946e0b019f"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:62b7802cee474a7f16aa5c8b909b46902c7b8babc64e55c6e89f2c493c31d2ae"
+rationale = "`withdrawn` is an accepted choice for `--status` on `nyxloom backlog list`."
+invocation = ["backlog", "list", "--status", "withdrawn"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[e6b93dadf624]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/list/option-choice/option:route:entrypoint:nyxloom/backlog/list/--status/b3ec183cdf"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e8b81c436b0606baf13444884077f5cec090a1d6b6afb0aa43c25ce9756d59f2"
+rationale = "`merged` is an accepted choice for `--status` on `nyxloom backlog list`."
+invocation = ["backlog", "list", "--status", "merged"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[f73f7bb50555]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/list/option-choice/option:route:entrypoint:nyxloom/backlog/list/--status/c3257ab40a"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0a82772b61f5f61d41361efdb18c78cca31e195038977488d12558e82a7e6730"
+rationale = "`carved` is an accepted choice for `--status` on `nyxloom backlog list`."
+invocation = ["backlog", "list", "--status", "carved"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[36bb6ef566b3]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/list/option-spelling/option:route:entrypoint:nyxloom/backlog/list/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:4dae738933deae5be4c98c8e901f881b8084742fd95986ff7c35f8cb1104e111"
+rationale = "`--debug-raw` is an accepted option spelling on `nyxloom backlog list`."
+invocation = ["backlog", "list", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[8750d40466d4]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/list/option-spelling/option:route:entrypoint:nyxloom/backlog/list/--project-id/--project-id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e27d0149f8fc9f5a0c8ef5e6864cce5117ebf7ebaecdcca666872fd501c21e3e"
+rationale = "`--project-id` is an accepted option spelling on `nyxloom backlog list`."
+invocation = ["backlog", "list", "--project-id", "sample"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[977ae8bbff05]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/list/option-spelling/option:route:entrypoint:nyxloom/backlog/list/--status/--status"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:269fd122acd672e879e7b2085df92d0c21a2edd5c7000e17eec4445819209db3"
+rationale = "`--status` is an accepted option spelling on `nyxloom backlog list`."
+invocation = ["backlog", "list", "--status", "open"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[2630a2f8004b]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/list/option-spelling/option:route:entrypoint:nyxloom/backlog/list/--traceback/--traceback"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9d23623440e822aa5510964bdd530279c29009cd47b9844936c21199302b44ea"
+rationale = "`--traceback` is an accepted option spelling on `nyxloom backlog list`."
+invocation = ["backlog", "list", "--traceback"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[7edb941440eb]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/new/argument-shape/argument:route:entrypoint:nyxloom/backlog/new/title"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:eb2a9f6cd1adf6cf9b9d848e4d9942500030fbfcd22836cf423fb953dd94f8f9"
+rationale = "The parser accepts the declared positional shape for `title` on `nyxloom backlog new`."
+invocation = ["backlog", "new", "sample"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[5fad6a08582d]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/new/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:636cb3ab2c8246150e2c09fc2a2bddf7cfe7467cb27e11ba1d739da2d1b3dca0"
+rationale = "The minimum valid invocation of `nyxloom backlog new` supplies every required argument and option."
+invocation = ["backlog", "new"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[b5b67ace694b]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/new/option-choice/option:route:entrypoint:nyxloom/backlog/new/--context-estimate/300694740f"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0fc715578c4b8bc59593c3d63badc623a7a127bdf14a40c0ae4e394361b1612f"
+rationale = "`small` is an accepted choice for `--context-estimate` on `nyxloom backlog new`."
+invocation = ["backlog", "new", "--context-estimate", "small"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[951b681bbec0]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/new/option-choice/option:route:entrypoint:nyxloom/backlog/new/--context-estimate/60d4c90eee"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5ee6e5e89cf86e6a85cf9c9b56741e8ac2f1057c19b0dcdab307f3adf5a493ba"
+rationale = "`medium` is an accepted choice for `--context-estimate` on `nyxloom backlog new`."
+invocation = ["backlog", "new", "--context-estimate", "medium"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[9070012654e9]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/new/option-choice/option:route:entrypoint:nyxloom/backlog/new/--context-estimate/8dd8c429f5"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c41c9d8594878e5a241fcb7406372a067db721bfb7626ad6c6935b2d6d3b5c7f"
+rationale = "`large` is an accepted choice for `--context-estimate` on `nyxloom backlog new`."
+invocation = ["backlog", "new", "--context-estimate", "large"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[5cb0c77104f9]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/new/option-choice/option:route:entrypoint:nyxloom/backlog/new/--severity/364bb70822"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7c9125024ac3bbc5a7c7a5f9812da88093f16bbe7af5dd102490adcd20598416"
+rationale = "`low` is an accepted choice for `--severity` on `nyxloom backlog new`."
+invocation = ["backlog", "new", "--severity", "low"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[a64e77271920]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/new/option-choice/option:route:entrypoint:nyxloom/backlog/new/--severity/60d4c90eee"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:46dbf4a81aba06d4f90d2f1ec87ce7f88710d5188e731fb450af665733f84acd"
+rationale = "`medium` is an accepted choice for `--severity` on `nyxloom backlog new`."
+invocation = ["backlog", "new", "--severity", "medium"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[e75e97163172]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/new/option-choice/option:route:entrypoint:nyxloom/backlog/new/--severity/b57c4299af"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:269a87cecc61eab59626a931cced4bd12130f9f2815694cedb562363a79d2898"
+rationale = "`high` is an accepted choice for `--severity` on `nyxloom backlog new`."
+invocation = ["backlog", "new", "--severity", "high"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[3b65eac90b5e]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/new/option-choice/option:route:entrypoint:nyxloom/backlog/new/--type/1ff4393bcd"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9dc6d47f9c36c8d26547ceee1825f77677b0511fd33a17b16230d4bbbd3d4498"
+rationale = "`feature` is an accepted choice for `--type` on `nyxloom backlog new`."
+invocation = ["backlog", "new", "--type", "feature"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[e6428b6d5e80]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/new/option-choice/option:route:entrypoint:nyxloom/backlog/new/--type/b0807f5c43"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:504f33bd375ff702017ec8edd7f7398847f0d37200981628ba3ed85a551ac645"
+rationale = "`bugfix` is an accepted choice for `--type` on `nyxloom backlog new`."
+invocation = ["backlog", "new", "--type", "bugfix"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[b01903fd150a]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/new/option-spelling/option:route:entrypoint:nyxloom/backlog/new/--body-from/--body-from"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5a358f4f6fa2c3a0f42917c3741a01e949206cd046f16ea7cd0bf1372548ba67"
+rationale = "`--body-from` is an accepted option spelling on `nyxloom backlog new`."
+invocation = ["backlog", "new", "--body-from", "sample"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[d0217e74ba25]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/new/option-spelling/option:route:entrypoint:nyxloom/backlog/new/--component/--component"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:02178ddcf47350358054203a89a82c33a7a2197d5b6ab5b8980511d183b662e6"
+rationale = "`--component` is an accepted option spelling on `nyxloom backlog new`."
+invocation = ["backlog", "new", "--component", "sample"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[630db3100a30]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/new/option-spelling/option:route:entrypoint:nyxloom/backlog/new/--context-estimate/--context-estimate"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:112d319c3dd3a9109a903a7ad73f36a30aa3092a5c97e726818a7012f30a35cc"
+rationale = "`--context-estimate` is an accepted option spelling on `nyxloom backlog new`."
+invocation = ["backlog", "new", "--context-estimate", "small"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[228d20ecd091]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/new/option-spelling/option:route:entrypoint:nyxloom/backlog/new/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:4ef9854b073bae555a02ddd77f4da27baf940cb14a6d657091cf25cf1812f875"
+rationale = "`--debug-raw` is an accepted option spelling on `nyxloom backlog new`."
+invocation = ["backlog", "new", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[40305123eb3d]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/new/option-spelling/option:route:entrypoint:nyxloom/backlog/new/--filed-by/--filed-by"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c4a097815e8c53078b47b9610d5df1597f17007d5d2dbc8d34ca369ce6e48153"
+rationale = "`--filed-by` is an accepted option spelling on `nyxloom backlog new`."
+invocation = ["backlog", "new", "--filed-by", "."]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[cac9e13dcffa]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/new/option-spelling/option:route:entrypoint:nyxloom/backlog/new/--folds-into/--folds-into"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b058c0a21baa8c456e1b609bc8bd23bb105829e74c431c454a29da58609b8556"
+rationale = "`--folds-into` is an accepted option spelling on `nyxloom backlog new`."
+invocation = ["backlog", "new", "--folds-into", "sample"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[79afdf40f4b1]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/new/option-spelling/option:route:entrypoint:nyxloom/backlog/new/--interactive/--interactive"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:94fa9b4be3cac5628a86fbb54f079ee6fa72faff6d2c75fdd24eda16f005a3b7"
+rationale = "`--interactive` is an accepted option spelling on `nyxloom backlog new`."
+invocation = ["backlog", "new", "--interactive"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[4dc6fb260473]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/new/option-spelling/option:route:entrypoint:nyxloom/backlog/new/--priority/--priority"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f597b8f6341d1274a3a4ebe6ee45aaff05693f8bf553bb6c7ad85193de810e88"
+rationale = "`--priority` is an accepted option spelling on `nyxloom backlog new`."
+invocation = ["backlog", "new", "--priority", "1"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[1c08d7a4fdd8]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/new/option-spelling/option:route:entrypoint:nyxloom/backlog/new/--project-id/--project-id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:4329490104bab22e7b862f8e1ff93b208d193a1f1b28a4998afd8e2b91c4bb8e"
+rationale = "`--project-id` is an accepted option spelling on `nyxloom backlog new`."
+invocation = ["backlog", "new", "--project-id", "sample"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[3491d95bdbed]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/new/option-spelling/option:route:entrypoint:nyxloom/backlog/new/--provenance/--provenance"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:3a17a5ce1e9a950c6eead881d3d0286bd992eaf42602b89e584841d0cc08757a"
+rationale = "`--provenance` is an accepted option spelling on `nyxloom backlog new`."
+invocation = ["backlog", "new", "--provenance", "sample"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[6fb4231f75cb]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/new/option-spelling/option:route:entrypoint:nyxloom/backlog/new/--severity/--severity"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:15f2f6c07a14e5b1ce32310ec39c11a83cb127c160f783cf516cca891a6b61a1"
+rationale = "`--severity` is an accepted option spelling on `nyxloom backlog new`."
+invocation = ["backlog", "new", "--severity", "low"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[7ef7c99ee9d2]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/new/option-spelling/option:route:entrypoint:nyxloom/backlog/new/--spec-owner/--spec-owner"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1ab910cb2c45d4247d3f2dc62617f1f611b38f75a5d8471fc8dd102e50bb9d8b"
+rationale = "`--spec-owner` is an accepted option spelling on `nyxloom backlog new`."
+invocation = ["backlog", "new", "--spec-owner", "sample"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[4fb699ad5698]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/new/option-spelling/option:route:entrypoint:nyxloom/backlog/new/--traceback/--traceback"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c8fe1b3b40019fbd6d44386662585906fc35556f5b6538fc956dc4a440563538"
+rationale = "`--traceback` is an accepted option spelling on `nyxloom backlog new`."
+invocation = ["backlog", "new", "--traceback"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[2edc92303e7b]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/new/option-spelling/option:route:entrypoint:nyxloom/backlog/new/--type/--type"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e44fe01a7bb85dd12cf43e296642903b9e5dd60926aec6c942f538705307bc42"
+rationale = "`--type` is an accepted option spelling on `nyxloom backlog new`."
+invocation = ["backlog", "new", "--type", "feature"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[96123db6597d]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/note/argument-shape/argument:route:entrypoint:nyxloom/backlog/note/entry_id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:fdffc18615877bcf84de121417f17e7b4a2fd56ad57c2b44de7212b0264faf29"
+rationale = "The parser accepts the declared positional shape for `entry_id` on `nyxloom backlog note`."
+invocation = ["backlog", "note", "sample", "sample"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[e0029132ee79]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/note/argument-shape/argument:route:entrypoint:nyxloom/backlog/note/text"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:bb7eacbff5bd10b92d247413a3cf3dd36f5743bbb58e3c5520fb130c76ea26ec"
+rationale = "The parser accepts the declared positional shape for `text` on `nyxloom backlog note`."
+invocation = ["backlog", "note", "sample", "sample"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[d8e5b697b668]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/note/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:3f3ca7c316551dda399939c89d54b0de36d4c94ae29f0e779af343ff7c7bc9dc"
+rationale = "The minimum valid invocation of `nyxloom backlog note` supplies every required argument and option."
+invocation = ["backlog", "note", "sample", "sample"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[c52e92d8ec3b]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/note/option-spelling/option:route:entrypoint:nyxloom/backlog/note/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:883fc8e8944ded47b826aa9d3cc049f03cff33ee89a08d3dd4cf1ff3ebd91558"
+rationale = "`--debug-raw` is an accepted option spelling on `nyxloom backlog note`."
+invocation = ["backlog", "note", "--debug-raw", "sample", "sample"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[a453a15db82f]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/note/option-spelling/option:route:entrypoint:nyxloom/backlog/note/--project-id/--project-id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:fb488970ddab7a591a1a1a3c3bf5d728ed97c30ca8a9ef62dbc63b298b7eede8"
+rationale = "`--project-id` is an accepted option spelling on `nyxloom backlog note`."
+invocation = ["backlog", "note", "--project-id", "sample", "sample", "sample"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[290166346029]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/note/option-spelling/option:route:entrypoint:nyxloom/backlog/note/--traceback/--traceback"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:44d04e22dcf9b0fa04cfd4e448db18416b789f54825aabd0f9a96e3c5fe2d180"
+rationale = "`--traceback` is an accepted option spelling on `nyxloom backlog note`."
+invocation = ["backlog", "note", "--traceback", "sample", "sample"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[4f5510c9e260]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/promote/argument-shape/argument:route:entrypoint:nyxloom/backlog/promote/inbox_id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:8c163c99d6495564189e8718cf1fdbf68598e5689c1ef13566856ac0c6b11e95"
+rationale = "The parser accepts the declared positional shape for `inbox_id` on `nyxloom backlog promote`."
+invocation = ["backlog", "promote", "sample"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[49c0c39c07aa]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/promote/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ddf091733c38820530ab3169f8732a7de6b52b90323bd7d23fcdb842c07e0580"
+rationale = "The minimum valid invocation of `nyxloom backlog promote` supplies every required argument and option."
+invocation = ["backlog", "promote", "sample"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[77a1d9180727]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/promote/option-spelling/option:route:entrypoint:nyxloom/backlog/promote/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:64f9eccab2f753fe2bbeefddcff521df1fe35d509175d14c1b14d0565a956ddd"
+rationale = "`--debug-raw` is an accepted option spelling on `nyxloom backlog promote`."
+invocation = ["backlog", "promote", "--debug-raw", "sample"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[3a3030874565]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/promote/option-spelling/option:route:entrypoint:nyxloom/backlog/promote/--project-id/--project-id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f444cd6dc1f27457ded2af8c803b52d6c1a934582cf72080167ebf0409368f4d"
+rationale = "`--project-id` is an accepted option spelling on `nyxloom backlog promote`."
+invocation = ["backlog", "promote", "--project-id", "sample", "sample"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[fed2b9122f8f]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/promote/option-spelling/option:route:entrypoint:nyxloom/backlog/promote/--traceback/--traceback"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f9311eff13a1985910826264b6c3c935dd83a3b8fcf4e541acf6db389937253a"
+rationale = "`--traceback` is an accepted option spelling on `nyxloom backlog promote`."
+invocation = ["backlog", "promote", "--traceback", "sample"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[985a3f0cdac6]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/set-status/argument-choice/argument:route:entrypoint:nyxloom/backlog/set-status/status/12aff05139"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d0245fad8dba2591e5c13130d882b1223620fc0147782be37b7b209506e7f337"
+rationale = "`fixed` is an accepted positional choice for `status` on `nyxloom backlog set-status`."
+invocation = ["backlog", "set-status", "sample", "fixed"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[28e6d4f8868b]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/set-status/argument-choice/argument:route:entrypoint:nyxloom/backlog/set-status/status/2d4211a0f2"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e9700d56be63c8b7a69ed32dbb46b71d7c29fb2699cb7b33f10b647a88a31ced"
+rationale = "`obsolete` is an accepted positional choice for `status` on `nyxloom backlog set-status`."
+invocation = ["backlog", "set-status", "sample", "obsolete"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[5306fdce69f4]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/set-status/argument-choice/argument:route:entrypoint:nyxloom/backlog/set-status/status/35ff74aeea"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1ffe5c0e42a19419c982870b55885b1cccaeae94e44263bb4ee0d79b20cca3a5"
+rationale = "`open` is an accepted positional choice for `status` on `nyxloom backlog set-status`."
+invocation = ["backlog", "set-status", "sample", "open"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[fe090a929040]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/set-status/argument-choice/argument:route:entrypoint:nyxloom/backlog/set-status/status/946e0b019f"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d07a5f624e06274b9670293ec2b818d019181039f99a934239f0ed085c63a14a"
+rationale = "`withdrawn` is an accepted positional choice for `status` on `nyxloom backlog set-status`."
+invocation = ["backlog", "set-status", "sample", "withdrawn"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[4a8b3470fb70]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/set-status/argument-choice/argument:route:entrypoint:nyxloom/backlog/set-status/status/c3257ab40a"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6932f3caf21e2a9fff367cee071a9e26c750c6625e79f8e21036ffdf3715566b"
+rationale = "`carved` is an accepted positional choice for `status` on `nyxloom backlog set-status`."
+invocation = ["backlog", "set-status", "sample", "carved"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[4028991b08fe]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/set-status/argument-shape/argument:route:entrypoint:nyxloom/backlog/set-status/entry_id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f04b28e4bbcf05efd3cbf50c05a9f430f6e47e21fb69b9c2d5f4b7206fc7ef0d"
+rationale = "The parser accepts the declared positional shape for `entry_id` on `nyxloom backlog set-status`."
+invocation = ["backlog", "set-status", "sample", "open"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[ea30c3405bd2]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/set-status/argument-shape/argument:route:entrypoint:nyxloom/backlog/set-status/status"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c4af37a91b61608d6b569de2cd3f28d903bb4c942b668210a1bdfd2600813985"
+rationale = "The parser accepts the declared positional shape for `status` on `nyxloom backlog set-status`."
+invocation = ["backlog", "set-status", "sample", "open"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[888139f34f20]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/set-status/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:18dd7850ccb699d8642e72a84120e0baee4d5ecd20b6d360b33b8157ac4abbf4"
+rationale = "The minimum valid invocation of `nyxloom backlog set-status` supplies every required argument and option."
+invocation = ["backlog", "set-status", "sample", "open"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[fe69868e2897]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/set-status/option-spelling/option:route:entrypoint:nyxloom/backlog/set-status/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:11b956650cb60d4c557a16521d32f0839672497fd1de8a9ecbe661764c0ddad4"
+rationale = "`--debug-raw` is an accepted option spelling on `nyxloom backlog set-status`."
+invocation = ["backlog", "set-status", "--debug-raw", "sample", "open"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[f3e4c7413db8]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/set-status/option-spelling/option:route:entrypoint:nyxloom/backlog/set-status/--project-id/--project-id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1c1ea7d6c009278e595a4127d539de6a8c4c8f1ac57c79ae06291c8023b2fc1f"
+rationale = "`--project-id` is an accepted option spelling on `nyxloom backlog set-status`."
+invocation = ["backlog", "set-status", "--project-id", "sample", "sample", "open"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[0cfc89176186]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/set-status/option-spelling/option:route:entrypoint:nyxloom/backlog/set-status/--reason/--reason"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7b093469417d6c8319874f4ee37e4d00b6eca22c9d77ead2b53c235408ad6b0e"
+rationale = "`--reason` is an accepted option spelling on `nyxloom backlog set-status`."
+invocation = ["backlog", "set-status", "--reason", "sample", "sample", "open"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[0e4b61b4a2b6]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/set-status/option-spelling/option:route:entrypoint:nyxloom/backlog/set-status/--traceback/--traceback"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:54216f9ed99e90cedc450923bddfb37fead10a50d4ecb56761219ab149c082de"
+rationale = "`--traceback` is an accepted option spelling on `nyxloom backlog set-status`."
+invocation = ["backlog", "set-status", "--traceback", "sample", "open"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[7cb014503650]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/show/argument-shape/argument:route:entrypoint:nyxloom/backlog/show/entry_id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0392327b2c8fe5cea10d538586c1db81b3f604b45c9c4ea91195baa4a90491a6"
+rationale = "The parser accepts the declared positional shape for `entry_id` on `nyxloom backlog show`."
+invocation = ["backlog", "show", "sample"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[e3e8b4b1b1fe]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/show/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:86970b333c3dd466eb264b13b1082dda65b05c9b42e6dec0cf98f57f30c01acc"
+rationale = "The minimum valid invocation of `nyxloom backlog show` supplies every required argument and option."
+invocation = ["backlog", "show", "sample"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[3774151fc0b4]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/show/option-spelling/option:route:entrypoint:nyxloom/backlog/show/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0ed53cdb7fbf5071cc386f2990985445419179163e9eca7fab5e28ed1d4fec98"
+rationale = "`--debug-raw` is an accepted option spelling on `nyxloom backlog show`."
+invocation = ["backlog", "show", "--debug-raw", "sample"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[ebb81b47bd0d]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/show/option-spelling/option:route:entrypoint:nyxloom/backlog/show/--project-id/--project-id"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:db67efe9f658e3c406bf7a17341c6859c4a2aa6703b59169c1a3186315744835"
+rationale = "`--project-id` is an accepted option spelling on `nyxloom backlog show`."
+invocation = ["backlog", "show", "--project-id", "sample", "sample"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[55091d2e5bb1]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/backlog/show/option-spelling/option:route:entrypoint:nyxloom/backlog/show/--traceback/--traceback"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:3a56220a16f78091c6d938a68d79f343ccd162b1c4b79191635e9e152d3a86e5"
+rationale = "`--traceback` is an accepted option spelling on `nyxloom backlog show`."
+invocation = ["backlog", "show", "--traceback", "sample"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[a4180ab210ff]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/init/argument-shape/argument:route:entrypoint:nyxloom/init/project_folder"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ca2db5a5d53c31dbd0127ac0fd5af49ba2fe456455f6df9899bd96a53e2ccfeb"
+rationale = "The parser accepts the declared positional shape for `project_folder` on `nyxloom init`."
+invocation = ["init", "."]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[8482c07149af]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/init/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:85939f6e4a0149e3dab0cfbebf4d13331066a21b922231d1ddf4b991a07a5f35"
+rationale = "The minimum valid invocation of `nyxloom init` supplies every required argument and option."
+invocation = ["init", "."]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[b3965fab6058]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/init/option-spelling/option:route:entrypoint:nyxloom/init/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:80342f3ac092f085a6d60b4001a1dc1fe0f4289cd0fd681f9571545eace5331d"
+rationale = "`--debug-raw` is an accepted option spelling on `nyxloom init`."
+invocation = ["init", "--debug-raw", "."]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[e9be4f2f839b]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/init/option-spelling/option:route:entrypoint:nyxloom/init/--traceback/--traceback"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7ffb545236faa8b2a5db736e548434ef7fd1eccf4d5412c845ff6dc093bfdb67"
+rationale = "`--traceback` is an accepted option spelling on `nyxloom init`."
+invocation = ["init", "--traceback", "."]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[867fac5286e6]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/lint/argument-shape/argument:route:entrypoint:nyxloom/lint/path"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0706e0222c23003d444cb03472a0f8d6af8e4e448264b268c318efb36c1a4049"
+rationale = "The parser accepts the declared positional shape for `path` on `nyxloom lint`."
+invocation = ["lint", "."]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[af7ea73e5e3b]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/lint/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:55c8be9205553aea76200d6a81e48af3079d47f6e7d9fe78d3fb8cdb8d8e1802"
+rationale = "The minimum valid invocation of `nyxloom lint` supplies every required argument and option."
+invocation = ["lint"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[01d5f3fc1351]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/lint/option-spelling/option:route:entrypoint:nyxloom/lint/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:51f55ba5d1cd59bc74dffa3968d377a00c96fb7d07aa6350d5edb52fac33c458"
+rationale = "`--debug-raw` is an accepted option spelling on `nyxloom lint`."
+invocation = ["lint", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[696dba9c024b]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/lint/option-spelling/option:route:entrypoint:nyxloom/lint/--traceback/--traceback"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:8b5bd8db783c6f4751defe7b7f39c64440858f3d03abb9fad07e11512cd8ef2f"
+rationale = "`--traceback` is an accepted option spelling on `nyxloom lint`."
+invocation = ["lint", "--traceback"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[35cda23d646c]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/onboard/argument-shape/argument:route:entrypoint:nyxloom/onboard/project_folder"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2977c0da779f9743f74cba80d5ed556d89cad63bce344eb3b507446396193e2f"
+rationale = "The parser accepts the declared positional shape for `project_folder` on `nyxloom onboard`."
+invocation = ["onboard", "."]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[cf7c40991d34]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/onboard/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:283e5dadc4a023e2a638f0ca400e69fd21f3089060256f22562851b879e1b29f"
+rationale = "The minimum valid invocation of `nyxloom onboard` supplies every required argument and option."
+invocation = ["onboard", "."]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[8bf0d6488ced]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/onboard/option-choice/option:route:entrypoint:nyxloom/onboard/--docs/15dbb2c436"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e611cb9f47e32e721c10e7d3add4df596c9e40fcf4871273b167d2598c21c9be"
+rationale = "`absent` is an accepted choice for `--docs` on `nyxloom onboard`."
+invocation = ["onboard", "--docs", "absent", "."]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[60a94af6076c]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/onboard/option-choice/option:route:entrypoint:nyxloom/onboard/--docs/94332144d9"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:466af6bcf10a1d9b925eac4a63c9fa2bd5072bce4a201916d8e710c7fee6c2bb"
+rationale = "`present` is an accepted choice for `--docs` on `nyxloom onboard`."
+invocation = ["onboard", "--docs", "present", "."]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[7118e5593c24]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/onboard/option-choice/option:route:entrypoint:nyxloom/onboard/--maturity/2f3435e626"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e134f3f0088934e910aea7489c82bab526c96dc9aa2747777597ba672ed6d2ac"
+rationale = "`mature` is an accepted choice for `--maturity` on `nyxloom onboard`."
+invocation = ["onboard", "--maturity", "mature", "."]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[0fb0f04e13b9]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/onboard/option-choice/option:route:entrypoint:nyxloom/onboard/--maturity/8ac24611cf"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9cf7ef29399cc0d07cd64d3a9a84ef2b46c7168bfd64f39a4e9874edcdba9e12"
+rationale = "`partial` is an accepted choice for `--maturity` on `nyxloom onboard`."
+invocation = ["onboard", "--maturity", "partial", "."]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[9057a26cf204]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/onboard/option-choice/option:route:entrypoint:nyxloom/onboard/--maturity/e6845188b1"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0961c04fbf875a8f2c8a2da55f2276b89cc11dcd1c36cd09473bd03f8f076b90"
+rationale = "`empty` is an accepted choice for `--maturity` on `nyxloom onboard`."
+invocation = ["onboard", "--maturity", "empty", "."]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[96cd9ebec281]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/onboard/option-choice/option:route:entrypoint:nyxloom/onboard/--mode/1231221c40"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:bf79c141bfb354799bec745f53ab70d134a0a2353e18f6b6e88a4e4cbb84f871"
+rationale = "`code-good-docs-absent` is an accepted choice for `--mode` on `nyxloom onboard`."
+invocation = ["onboard", "--mode", "code-good-docs-absent", "."]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[63c945cacd87]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/onboard/option-choice/option:route:entrypoint:nyxloom/onboard/--mode/c5d264a57b"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d47dc7e1a58db39f67e9354b1bff6c611a67e790805db68c184e03de83964901"
+rationale = "`greenfield-define-it` is an accepted choice for `--mode` on `nyxloom onboard`."
+invocation = ["onboard", "--mode", "greenfield-define-it", "."]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[e5edc51988f8]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/onboard/option-choice/option:route:entrypoint:nyxloom/onboard/--mode/cac3249c99"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ccf4a8278f38491f6db73bb90ff19fb6f40b6a8468a43286dbdd371a9cd3f60f"
+rationale = "`derive-from-code` is an accepted choice for `--mode` on `nyxloom onboard`."
+invocation = ["onboard", "--mode", "derive-from-code", "."]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[355a926b322e]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/onboard/option-spelling/option:route:entrypoint:nyxloom/onboard/--check-gate/--check-gate"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d95763ce47f4c92fb85ed889a0287f81299c1b7b3f1e1b78c4ea2f339b524c8e"
+rationale = "`--check-gate` is an accepted option spelling on `nyxloom onboard`."
+invocation = ["onboard", "--check-gate", "."]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[a98467e998a6]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/onboard/option-spelling/option:route:entrypoint:nyxloom/onboard/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:126d59cb30c146011c4ec857c678c31062da7b53e886b0f7be7be8a179715ba8"
+rationale = "`--debug-raw` is an accepted option spelling on `nyxloom onboard`."
+invocation = ["onboard", "--debug-raw", "."]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[f35d3c48b878]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/onboard/option-spelling/option:route:entrypoint:nyxloom/onboard/--docs/--docs"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f65d4311f4ab13bb43b72e335781d40a25b3bddc7098b08476d8b768f983c5af"
+rationale = "`--docs` is an accepted option spelling on `nyxloom onboard`."
+invocation = ["onboard", "--docs", "present", "."]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[649150274322]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/onboard/option-spelling/option:route:entrypoint:nyxloom/onboard/--maturity/--maturity"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:247a7cdd52d20fc3bc6b5d1d9fa2a83141ed34e1d80b1c70887eceed3052a7ef"
+rationale = "`--maturity` is an accepted option spelling on `nyxloom onboard`."
+invocation = ["onboard", "--maturity", "empty", "."]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[2defd8cfe411]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/onboard/option-spelling/option:route:entrypoint:nyxloom/onboard/--mode/--mode"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:4f7c7c3486f4cb3407bf94b50765efca2ebccd4e17a87548332477c911c4cbb9"
+rationale = "`--mode` is an accepted option spelling on `nyxloom onboard`."
+invocation = ["onboard", "--mode", "derive-from-code", "."]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[eb98a7f9ec71]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/onboard/option-spelling/option:route:entrypoint:nyxloom/onboard/--questionnaire/--questionnaire"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6feda454032586020102e2046c79b450cc7e9bb5a631dfb7d243c703a8f7b04f"
+rationale = "`--questionnaire` is an accepted option spelling on `nyxloom onboard`."
+invocation = ["onboard", "--questionnaire", "."]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[273adc37ffe4]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/onboard/option-spelling/option:route:entrypoint:nyxloom/onboard/--scaffold-gate/--scaffold-gate"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:373dac36b9519e29e7930ff2d133db56e00c676108281ebedb1c315587f09e0c"
+rationale = "`--scaffold-gate` is an accepted option spelling on `nyxloom onboard`."
+invocation = ["onboard", "--scaffold-gate", "."]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[11d11dacfc01]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/onboard/option-spelling/option:route:entrypoint:nyxloom/onboard/--scan-path/--scan-path"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1971869b3f0985ae0fe0c46e102bf8be2fdaea37e0e7ede24cf2655029c2ac3b"
+rationale = "`--scan-path` is an accepted option spelling on `nyxloom onboard`."
+invocation = ["onboard", "--scan-path", ".", "."]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[f292d2291404]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/onboard/option-spelling/option:route:entrypoint:nyxloom/onboard/--scan/--scan"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:149a7c241a5dbe7c2cfc794df93d9ba170a28d3a5e4ca9335c5743e7a0823f61"
+rationale = "`--scan` is an accepted option spelling on `nyxloom onboard`."
+invocation = ["onboard", "--scan", "."]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[a2c37888a788]"]
+
+[[cases]]
+id = "case:route:entrypoint:nyxloom/onboard/option-spelling/option:route:entrypoint:nyxloom/onboard/--traceback/--traceback"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:bceffd9326bdaad4b17c648a15178995f2b82c63fda46bad78869210866c91b3"
+rationale = "`--traceback` is an accepted option spelling on `nyxloom onboard`."
+invocation = ["onboard", "--traceback", "."]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parser only: accepts this public grammar case and returns its parsed namespace; no command handler or filesystem effect runs."]
+test_ids = ["tests/cli_surface/test_review_cases.py::test_reviewed_parser_case[e4dda9ed93d5]"]

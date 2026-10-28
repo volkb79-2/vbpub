@@ -1,0 +1,75 @@
+# Official API price source: https://platform.claude.com/docs/en/about-claude/pricing
+# Retrieved 2026-10-28. Prices are USD per million tokens; this is a dated
+# list-price profile, not a bill and not a Claude subscription-limit model.
+# Model IDs and rates are exact. Unknown IDs/modifiers remain unpriced.
+# For the listed 4.6+ models, US inference multiplies every rate by 1.1.
+# Fast mode is documented for Opus 5.5 and its exact rates are listed below;
+# no priority-tier price is documented. Haiku 5.5 uses a >100k prompt tier;
+# the other listed models use standard prices at long context.
+schema_version = 1
+default_weight_profile = "e009-historical"
+
+[provenance]
+pricing_url = "https://platform.claude.com/docs/en/about-claude/pricing"
+retrieved_on = "2026-10-28"
+price_unit = "USD per million tokens"
+api_equivalent_usd = "List-price arithmetic from observed token classes; not billed cost or subscription usage."
+missing_modifier_policy = "Use documented standard speed, standard service tier and global inference defaults only when a transcript field is absent; reject unknown explicit modifier values."
+priority_policy = "No priority-tier rate is documented in the cited price table; non-standard service tiers are unpriced."
+
+[weight_profiles.e009-historical]
+description = "Experimental E-009 relative token weights; 1h cache write=2 is a plan-era assumption, not an Anthropic limit weight."
+input = 1.0
+output = 5.0
+cache_read = 0.1
+cache_write_5m = 1.25
+cache_write_1h = 2.0
+cache_write_unclassified = 1.25
+
+[price_modifiers.inference_geo]
+global = 1.0
+us = 1.1
+us_model_ids = ["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]
+
+[models."claude-fable-5-1"]
+input = 10.0
+output = 50.0
+cache_write_5m = 12.5
+cache_write_1h = 20.0
+cache_read = 0.25
+
+[models."claude-opus-5-5"]
+input = 4.0
+output = 20.0
+cache_write_5m = 5.0
+cache_write_1h = 8.0
+cache_read = 0.2
+
+[models."claude-opus-5-5".fast]
+input = 8.0
+output = 40.0
+cache_write_5m = 10.0
+cache_write_1h = 16.0
+cache_read = 0.4
+
+[models."claude-sonnet-5-5"]
+input = 2.0
+output = 10.0
+cache_write_5m = 2.5
+cache_write_1h = 4.0
+cache_read = 0.1
+
+[models."claude-haiku-5-5"]
+input = 0.1
+output = 0.5
+cache_write_5m = 0.125
+cache_write_1h = 0.2
+cache_read = 0.01
+prompt_threshold_tokens = 100000
+
+[models."claude-haiku-5-5".over_threshold]
+input = 0.5
+output = 2.5
+cache_write_5m = 0.625
+cache_write_1h = 1.0
+cache_read = 0.05

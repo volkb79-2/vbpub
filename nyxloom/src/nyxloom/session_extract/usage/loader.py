@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 from collections import defaultdict
@@ -14,7 +15,17 @@ from typing import Any
 
 from ..adapters import claude_code
 from ..stats import extract_compaction_metadata
-from .model import Call, Corpus, LoadWarnings, Node, Session, SourceRef, UsageEvent
+from .model import (
+    Call,
+    Corpus,
+    CostState,
+    CostStateModel,
+    LoadWarnings,
+    Node,
+    Session,
+    SourceRef,
+    UsageEvent,
+)
 
 
 class UsageLoadError(ValueError):
@@ -125,6 +136,71 @@ def _read_int(source: dict[str, Any], key: str, warnings: LoadWarnings) -> int:
         warnings.invalid_usage_fields += 1
         return 0
     return value
+
+
+def _nonnegative_int(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _finite_number(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return number if math.isfinite(number) and number >= 0 else None
+
+
+def _cost_state_from_row(
+    row: dict[str, Any], *, session_id: str, source_id: str,
+    source_line: int, corpus: Corpus,
+) -> CostState | None:
+    """Parse only the observed, content-free cost-state usage schema."""
+    model_usage = row.get("modelUsage")
+    total_cost = _finite_number(row.get("totalCostUSD"))
+    unknown = row.get("hasUnknownModelCost")
+    if not isinstance(model_usage, dict) or total_cost is None or not isinstance(unknown, bool):
+        corpus.malformed_cost_states += 1
+        return None
+    models: list[CostStateModel] = []
+    for model_name, raw in sorted(model_usage.items()):
+        if not isinstance(model_name, str) or _clean_tag(model_name) is None or not isinstance(raw, dict):
+            corpus.malformed_cost_states += 1
+            return None
+        numeric = {
+            key: _nonnegative_int(raw.get(key))
+            for key in (
+                "inputTokens", "outputTokens", "cacheReadInputTokens",
+                "cacheCreationInputTokens",
+            )
+        }
+        model_cost = _finite_number(raw.get("costUSD"))
+        if any(value is None for value in numeric.values()) or model_cost is None:
+            corpus.malformed_cost_states += 1
+            return None
+        split_5m = _nonnegative_int(raw.get("cacheCreationEphemeral5mInputTokens"))
+        split_1h = _nonnegative_int(raw.get("cacheCreationEphemeral1hInputTokens"))
+        models.append(CostStateModel(
+            model=model_name,
+            input_tokens=numeric["inputTokens"],
+            output_tokens=numeric["outputTokens"],
+            cache_read_tokens=numeric["cacheReadInputTokens"],
+            cache_creation_tokens=numeric["cacheCreationInputTokens"],
+            cache_write_5m_tokens=split_5m,
+            cache_write_1h_tokens=split_1h,
+            cost_usd=model_cost,
+        ))
+    return CostState(
+        session_id=session_id,
+        source_id=source_id,
+        source_line=source_line,
+        has_unknown_model_cost=unknown,
+        total_cost_usd=total_cost,
+        models=tuple(models),
+    )
 
 
 def _usage_signature(call: Call) -> tuple[object, ...]:
@@ -493,6 +569,23 @@ def _make_rejection_event(
     status = row.get("apiErrorStatus")
     status = status if isinstance(status, int) and not isinstance(status, bool) else None
     limit_kind = "rate_limit" if error_code == "rate_limit" or status == 429 else None
+    reset_at = None
+    quota = row.get("quotaLimits")
+    if not isinstance(quota, dict):
+        params = row.get("apiErrorParams")
+        quota = params.get("rate_limit_info") if isinstance(params, dict) else None
+    if isinstance(quota, dict) and quota.get("status") == "rejected":
+        observed_type = quota.get("rateLimitType")
+        if observed_type == "five_hour":
+            limit_kind = "five_hour"
+        elif observed_type == "seven_day":
+            limit_kind = "weekly"
+        raw_reset = quota.get("resetsAt")
+        if isinstance(raw_reset, int) and not isinstance(raw_reset, bool):
+            try:
+                reset_at = datetime.fromtimestamp(raw_reset, tz=timezone.utc)
+            except (OverflowError, OSError, ValueError):
+                reset_at = None
     if limit_kind is None:
         warnings.unclassified_rejections += 1
     return UsageEvent(
@@ -513,6 +606,7 @@ def _make_rejection_event(
         limit_kind=limit_kind,
         error_code=error_code,
         status_code=status,
+        reset_at=reset_at,
     )
 
 
@@ -674,6 +768,25 @@ def _scan_file(
                     corpus.warnings.malformed_lines += 1
                     continue
                 record_type = row.get("type")
+                if record_type == "cost-state":
+                    row_session = row.get("sessionId")
+                    if not isinstance(row_session, str) or not row_session:
+                        corpus.malformed_cost_states += 1
+                        continue
+                    if isinstance(row_session, str) and row_session and row_session != build.session_id:
+                        corpus.warnings.session_id_mismatches += 1
+                        corpus.malformed_cost_states += 1
+                        continue
+                    cost_state = _cost_state_from_row(
+                        row,
+                        session_id=build.session_id,
+                        source_id=source_id,
+                        source_line=line_number,
+                        corpus=corpus,
+                    )
+                    if cost_state is not None:
+                        corpus.cost_states.append(cost_state)
+                    continue
                 if record_type not in {
                     "assistant", "system", "user", "ai-title", "custom-title", "agent-name",
                 }:

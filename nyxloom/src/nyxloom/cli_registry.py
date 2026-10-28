@@ -593,11 +593,33 @@ def _local_backlog_group() -> VerbSpec:
 
 def _usage_report_group() -> VerbSpec:
     prog = "nyxloom"
-    return _group(prog, "usage", "Report local Claude Code token usage.", (
+    anchor_group = _group(prog, "anchor", "Record or list private account-usage display readings.", (
+        _leaf(
+            prog, "add", "Store one explicitly observed usage percentage and reset time.",
+            cli.cmd_usage_anchor_add,
+            options=(
+                _opt("--kind", "Account limit shown by the UI", required=True, choices=("five_hour", "weekly")),
+                _opt("--at", "When the displayed percentage was observed (timezone-aware ISO-8601)", required=True, metavar="TIMESTAMP"),
+                _opt("--percent", "Displayed percentage from 0 through 100", required=True, type=float, metavar="PERCENT"),
+                _opt("--reset-at", "Displayed next reset time (timezone-aware ISO-8601)", required=True, metavar="TIMESTAMP"),
+                _opt("--source", "UI source for the reading", required=True, choices=("settings-usage", "account-usage-page")),
+                _opt("--coverage-assumption", "Whether the reading covers only this machine or all account usage", required=True, choices=("local-only-lower-bound", "all-account-usage-observed")),
+                _opt("--anchor-file", "Private state file override", metavar="FILE", default=None),
+            ),
+            examples=("nyxloom usage anchor add --kind five_hour --at 2026-10-28T18:15:00Z --percent 96 --reset-at 2026-10-28T20:00:00Z --source settings-usage --coverage-assumption local-only-lower-bound",),
+            mutating=True,
+        ),
+        _leaf(
+            prog, "list", "List stored account-usage display readings.",
+            cli.cmd_usage_anchor_list,
+            options=(_opt("--anchor-file", "Private state file override", metavar="FILE", default=None),),
+        ),
+    ))
+    return _group(prog, "usage", "Analyze local Claude Code usage metadata.", (
         _leaf(
             prog,
             "report",
-            "Attribute Claude Code request tokens to sessions and nested subagents.",
+            "Attribute raw tokens, experimental weights and API-equivalent USD to sessions and nested subagents.",
             cli.cmd_usage_report,
             options=(
                 _opt("--since", "Start at a duration before --until or now, or an ISO-8601 timestamp", required=True),
@@ -611,6 +633,7 @@ def _usage_report_group() -> VerbSpec:
                 _opt("--flat", "Rank visible nodes as a flat list (cannot combine with --depth)", action="store_true"),
                 _opt("--sort", "Sibling sort key; cost means raw token units in this iteration", choices=("cost", "start", "dur", "calls", "peak", "out"), default="cost"),
                 _opt("--no-labels", "Omit session titles and subagent topic labels", action="store_true"),
+                _opt("--weights", "TOML prices and experimental weights override", metavar="FILE", default=None),
             ),
             validate=_usage_report_guard,
             examples=(
@@ -619,6 +642,39 @@ def _usage_report_group() -> VerbSpec:
                 "nyxloom usage report --since 24h --project /path/to/project --flat --sort calls",
             ),
         ),
+        _leaf(
+            prog, "prices", "Show dated API-equivalent prices and diagnose cost-state fit.",
+            cli.cmd_usage_prices,
+            options=(
+                _opt("--fit", "Attempt a guarded diagnostic fit against cost-state snapshots", action="store_true"),
+                _opt("--weights", "TOML prices and experimental weights override", metavar="FILE", default=None),
+                _opt("--format", "Output encoding", dest="usage_prices_format", choices=("text", "json"), default="text"),
+            ),
+            examples=("nyxloom usage prices", "nyxloom usage prices --fit --format json"),
+        ),
+        _leaf(
+            prog, "windows", "Show observed-reset sessions, fixed weekly resets and a separate rolling analysis window.",
+            cli.cmd_usage_windows,
+            options=(
+                _opt("--since", "Start of history for observed resets and threshold events; duration or ISO-8601 timestamp", default="24h"),
+                _opt("--until", "Exclusive history end; the rolling view is the trailing five hours ending here", default=None),
+                _opt("--weights", "TOML prices and experimental weights override", metavar="FILE", default=None),
+                _opt("--anchor-file", "Private state file override", metavar="FILE", default=None),
+                _opt("--format", "Output encoding", dest="usage_windows_format", choices=("text", "json"), default="text"),
+            ),
+            examples=("nyxloom usage windows", "nyxloom usage windows --since 7d --format json"),
+        ),
+        anchor_group,
+        _leaf(
+            prog, "calibrate", "Fit local weighted usage to explicit UI readings under stated coverage assumptions.",
+            cli.cmd_usage_calibrate,
+            options=(
+                _opt("--weights", "TOML prices and experimental weights override", metavar="FILE", default=None),
+                _opt("--anchor-file", "Private state file override", metavar="FILE", default=None),
+                _opt("--format", "Output encoding", dest="usage_calibrate_format", choices=("text", "json"), default="text"),
+            ),
+            examples=("nyxloom usage calibrate", "nyxloom usage calibrate --format json"),
+        ),
     ))
 
 
@@ -626,7 +682,7 @@ def primary_cli():
     """Build the local project-authoring and Claude Code usage CLI."""
     registry = _registry(
         "nyxloom",
-        "Local Nyxloom project authoring and read-only Claude Code usage analytics.",
+        "Local Nyxloom project authoring and Claude Code usage analytics.",
         getting_started=(
             "nyxloom lint", "nyxloom backlog list",
             "nyxloom usage report --since 24h", "nyxloom --help",

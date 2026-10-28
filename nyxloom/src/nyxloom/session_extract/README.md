@@ -875,9 +875,26 @@ tool-result fields, and source/project paths are opaque. The command spelling
 is the deliberate D-022 choice; it calls this pure query service without
 project registration or daemon state.
 
-U1–U2 report raw token units only; weighted cost, usage-limit estimates, joined
-charts, interactive HTML, PDF and the TUI are later work. The consumer-facing
-examples live in
+The report now keeps raw token units, experimental weighted units and
+API-equivalent USD estimates separate. The default exact-model price table is
+dated 2026-10-28 and cites Anthropic's pricing documentation; API USD is list-
+price arithmetic, not a bill or subscription usage. Unknown models, modifiers
+and unclassified cache writes stay unpriced. `usage prices --fit` treats
+`cost-state` as a guarded diagnostic and reports no coefficients when family
+scope, monotonicity, cache TTL split, rank or residual checks fail.
+
+`usage windows` separates consecutive observed five-hour resets and account
+weekly reset times from a rolling five-hour analysis window. Anthropic's
+documented reset semantics here are for Max plans; other plan semantics remain
+unverified. Rejections are
+threshold events, not 100% anchors. `usage anchor add` stores an explicit UI
+reading with its limit kind, timestamp, reset time, source and coverage
+assumption in a private versioned local file. Calibration reports only a
+capacity lower bound when web, other devices or other shared account surfaces
+may contribute; an estimated limit percentage remains unknown unless the
+coverage fit is identifiable. `usage-report-v1` remains the shared report
+contract; joined charts, interactive HTML, PDF and the TUI are later work.
+The consumer-facing examples live in
 [CONSUMERS.md](../../../docs/CONSUMERS.md#report-claude-code-usage), and design
 choices in [DESIGN-GUIDE.md](../../../docs/DESIGN-GUIDE.md#local-usage-report).
 

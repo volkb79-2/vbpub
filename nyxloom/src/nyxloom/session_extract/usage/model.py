@@ -98,6 +98,32 @@ class UsageEvent:
     current_call_id: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class CostStateModel:
+    """Content-free per-model cost-state counters used only for diagnostics."""
+
+    model: str
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_creation_tokens: int
+    cache_write_5m_tokens: int | None
+    cache_write_1h_tokens: int | None
+    cost_usd: float
+
+
+@dataclass(frozen=True, slots=True)
+class CostState:
+    """A cost-state line in source order; startTime is not a snapshot time."""
+
+    session_id: str
+    source_id: str
+    source_line: int
+    has_unknown_model_cost: bool
+    total_cost_usd: float
+    models: tuple[CostStateModel, ...]
+
+
 @dataclass(slots=True)
 class Aggregate:
     """Self or subtree totals for a node."""
@@ -175,6 +201,14 @@ class Aggregate:
             active_span_seconds=active_span,
             models=dict(sorted(models.items())),
             efforts=dict(sorted(efforts.items())),
+            weighted_units=(
+                sum(call.weighted_cost for call in ordered)
+                if all(call.weighted_cost is not None for call in ordered) else None
+            ),
+            usd=(
+                sum(call.usd_cost for call in ordered)
+                if all(call.usd_cost is not None for call in ordered) else None
+            ),
         )
 
 
@@ -254,6 +288,8 @@ class Corpus:
     warnings: LoadWarnings = field(default_factory=LoadWarnings)
     conflicts: list[dict[str, object]] = field(default_factory=list)
     scanned_files: int = 0
+    cost_states: list[CostState] = field(default_factory=list)
+    malformed_cost_states: int = 0
 
 
 @dataclass(frozen=True, slots=True)

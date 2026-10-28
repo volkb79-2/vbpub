@@ -294,3 +294,18 @@ This receipt refines D-022's implementation details without reopening its comman
 - **Finding 9 — time:** reports use UTC `[since, until)`, one injected invocation time, record timestamps, deterministic tie ordering, wall and active spans, and source clipping flags. Missing or invalid times are excluded and disclosed; sidechain calls remain.
 - **Finding 12 — CLI:** D-022's `nyxloom usage report` spelling is tested and uses the pure usage service without daemon state or persistent storage.
 - **Finding 14 — determinism and measurement:** stable IDs, ordering, schema, and rounding are frozen. D-022's no-persistent-store boundary remains in force. The first measured 24-hour scan had 838 files, 6,549 calls, 1,281,647,531 raw units, 14.876 seconds, and 67,836 KiB peak RSS; an immediate repeat had 6,547 calls, 1,281,247,733 raw units, 13.729 seconds, and 67,840 KiB. OS file-cache state was uncontrolled and active transcripts changed, so these are observations, not thresholds.
+
+### Iteration 2 reconciliation · 2026-10-28
+
+This iteration keeps the `usage-report-v1` ledger, CSV row contract, raw shares, deduplication and time semantics fixed. It populates only the reserved price/anchor extension slots and fields already present in the call/aggregate contract. The no-store statement in D-022 remains true for reports and transcript-derived ledgers; D-023 below is the narrow persistence exception for operator UI readings.
+
+## D-023 · 2026-10-28 · nyxloom-usage-u3-u4 · DECIDED 2026-10-28
+**Question:** What usage-analysis state may be persisted to support calibration without turning local transcript reports into a second usage database?
+**Why it matters:** Account UI percentages and reset times are observations absent from local transcripts. Calibration needs them, while caching transcript rows or generated reports would add sensitive retention and a competing source of truth.
+**Options:**
+- Keep every usage command stateless and leave calibration unavailable.
+- Persist only explicit operator-entered UI readings in a small private, versioned local state file; keep transcript scans, reports and fit outputs transient.
+- Persist transcript ledgers and calibration outputs to make repeated queries faster.
+**Recommendation:** Persist only explicit operator readings. Require limit kind, observation timestamp, displayed reset time, UI source and an explicit coverage assumption; use deterministic IDs, idempotent duplicate handling, conflict refusal and restrictive file permissions.
+**Decision:** Approved the narrow `usage-anchors-v1` file at `$XDG_STATE_HOME/nyxloom/usage-anchors-v1.json` (or `~/.local/state/nyxloom/usage-anchors-v1.json`). `usage anchor add` is the only command that writes usage state. Reports, transcript ledgers and calibration results remain transient. An observed rejection is a threshold event, never a 100% anchor. If web, other devices or shared account surfaces may contribute usage, calibration reports only a local capacity lower bound and leaves estimated limit percentage unknown. This decision supersedes D-022's no-persistence rule only for the explicit UI anchor file.
+**Context pointers:** `nyxloom/src/nyxloom/session_extract/usage/anchors.py`; `nyxloom/src/nyxloom/session_extract/usage/calibration.py`; `nyxloom/docs/DESIGN-GUIDE.md#local-usage-report`; `nyxloom/docs/CONSUMERS.md#report-claude-code-usage`; `nyxloom/docs/CLI-REFERENCE.md#current-command-and-option-contract`.

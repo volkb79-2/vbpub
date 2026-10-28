@@ -55,16 +55,18 @@ resync and refuses unresolved drift unless --force is supplied.
 `nyxloom usage report` scans local Claude Code transcripts and attributes
 deduplicated API request tokens to each session and nested subagent. D-022
 chooses this additive command spelling; the command uses the pure
-`session_extract.usage` service without project registration, daemon state or
-persistent storage. It is read-only unless `--out FILE` is supplied, which
-writes the selected rendering to that file. JSON uses the frozen
+`session_extract.usage` service without project registration or daemon state.
+Reports are read-only unless `--out FILE` is supplied, which writes the
+selected rendering to that file with private file permissions. Operator UI
+anchors are the narrow local-state exception: they are written only by the
+explicit `usage anchor add` command. JSON uses the frozen
 `usage-report-v1` schema and contains an exact call ledger, nodes with self and
 subtree totals, typed events, lineage edges, conflicts, provenance and coverage
 warnings. It excludes message, thinking and tool content and does not serialize
 filesystem paths.
 
 ```sh
-# Last 24 hours, expanded tree and raw-token totals.
+# Last 24 hours: raw tokens, experimental weighted units, local share and USD estimate.
 nyxloom usage report --since 24h
 
 # Select whole sessions recorded under this working directory and save JSON.
@@ -77,6 +79,22 @@ nyxloom usage report --since 24h --format csv --out usage.csv \
 
 # Hide session titles and agent topic labels in a table report.
 nyxloom usage report --since 24h --no-labels
+
+# Inspect the dated official API prices and guarded cost-state reconciliation.
+nyxloom usage prices --fit --format json
+
+# Compare a named rolling analysis range with observed account reset intervals.
+nyxloom usage windows --since 7d --format json
+
+# Record a reading from the account UI; use the exact displayed values.
+read -r -p 'Observed at (ISO-8601 with timezone): ' OBSERVED_AT
+read -r -p 'Displayed percentage (0..100): ' PERCENT
+read -r -p 'Next reset at (ISO-8601 with timezone): ' RESET_AT
+nyxloom usage anchor add --kind five_hour --at "$OBSERVED_AT" --percent "$PERCENT" \
+  --reset-at "$RESET_AT" --source settings-usage \
+  --coverage-assumption local-only-lower-bound
+nyxloom usage anchor list
+nyxloom usage calibrate --format json
 ```
 
 `--since` accepts an ISO-8601 timestamp with a timezone or a positive duration
@@ -90,14 +108,65 @@ records or attribution are missing; successful stream and copied-prefix merges
 remain visible counts without making coverage partial by themselves. `--project` matches recorded `cwd` exactly or
 by a unique basename; `--session` selects one exact loaded session ID.
 
-U1–U2 intentionally report raw tokens only. Raw token units are input plus
+The report labels three separate measures. Raw token units sum input,
 cache-read, cache-write 5-minute, cache-write 1-hour, unclassified cache-write,
-and output; thinking is a reported subset of output and is not double-counted.
-Accordingly `--sort cost` and `--min-share` use raw token units, while weighted
-units and USD remain null. Do not interpret raw shares as a Claude usage-limit
-percentage. The later weights and limit-calibration work will verify prices
-against Anthropic's pricing page and transcript `cost-state` records before
-reporting those figures.
+and output; thinking is a subset of output and is not counted twice. Weighted
+units use the configurable `e009-historical` experimental profile. The default
+TOML file records exact model IDs, documented token-class prices and its
+retrieval date. API-equivalent USD is an estimate from list prices, not a bill
+or a Claude subscription usage value. An unknown model, unknown pricing
+modifier, or unclassified cache-write leaves that call's USD value null and
+adds an explicit unpriced reason. Supply an alternate TOML with `--weights FILE`;
+it must keep schema version 1 and cite the official pricing page.
+
+`nyxloom usage prices --fit` uses `cost-state` only as a diagnostic. It returns
+`unfit` without coefficients unless the file sequence, transcript-family
+scope, monotonicity, cache TTL split, full rank and residual bound all pass.
+An unfit result is expected when records lack 5-minute/1-hour counters or do
+not match the deduplicated family ledger.
+
+`nyxloom usage windows` shows a trailing five-hour analysis window ending at
+`--until`; `--since` selects the history scanned for observed resets and
+threshold events. Account intervals are shown only between consecutive
+observed reset timestamps: a five-hour session reset and the account's fixed
+weekly reset are separate models. Anthropic documents five-hour
+session-based resets and an account-assigned weekly reset time, not a rolling
+seven-day token sum ([Max plan limits](https://support.claude.com/en/articles/11049741-what-is-the-max-plan)).
+This reset description has been verified for Max plans only; semantics for
+other plans remain unverified.
+A single rejection's reset time does not identify the start or capacity of a
+limit window. Rejections are threshold events, never 100% anchors.
+
+Use `usage anchor add` only for a percentage actually read from the account UI.
+Record the limit kind, observation timestamp, displayed reset time, UI source,
+and coverage assumption. The versioned state is private local metadata at
+`$XDG_STATE_HOME/nyxloom/usage-anchors-v1.json` (or
+`~/.local/state/nyxloom/usage-anchors-v1.json`); `--anchor-file` can select a
+private test or alternate file. `local-only-lower-bound` means web, other
+devices and other shared surfaces may have consumed some of the displayed
+allowance. Calibration then reports only a local lower bound on capacity and
+leaves estimated limit percentage unknown. An all-account fit is conditional
+on the operator's explicit `all-account-usage-observed` assumption. API prices
+and weighted local shares do not establish subscription usage.
+
+The shipped price table is retrieved 2026-10-28 from
+[Anthropic's official pricing documentation](https://platform.claude.com/docs/en/about-claude/pricing).
+Rates below are USD per million tokens. The Haiku tier applies to all request
+token classes when prompt length exceeds 100,000 tokens.
+
+| Exact model ID | Prompt tier / mode | Input | Output | Cache write 5m | Cache write 1h | Cache read |
+|---|---:|---:|---:|---:|---:|---:|
+| `claude-fable-5-1` | standard | 10 | 50 | 12.50 | 20 | 0.25 |
+| `claude-opus-5-5` | standard | 4 | 20 | 5 | 8 | 0.20 |
+| `claude-opus-5-5` | fast | 8 | 40 | 10 | 16 | 0.40 |
+| `claude-sonnet-5-5` | standard | 2 | 10 | 2.50 | 4 | 0.10 |
+| `claude-haiku-5-5` | prompt ≤100,000 | 0.10 | 0.50 | 0.125 | 0.20 | 0.01 |
+| `claude-haiku-5-5` | prompt >100,000 | 0.50 | 2.50 | 0.625 | 1 | 0.05 |
+
+For these listed 4.6+ models, documented US inference multiplies every rate by
+1.1; `global` is the standard rate. No priority-tier rate is documented in
+this profile, so that modifier is left unpriced. The exact profile and its
+source metadata ship in `session_extract/usage/usage-weights.toml`.
 
 The table has one session row per selected session, followed by attributed
 subagents and nested subagents. Each row includes self totals and a subtree
@@ -110,7 +179,19 @@ timestamp/session/source/line/call ID; events and tree rollups are available in
 JSON and the table, respectively. When copied sources had different request
 IDs, `request_ids` retains every distinct alias. `--no-labels` strips
 title/topic labels before JSON, CSV or table rendering. Raw token shares are
-local report shares, not account limit percentages.
+local observed activity shares, not account limit percentages. Labelled
+reports can include sidecar topic text and should be treated as sensitive local
+artifacts; `--no-labels` removes those labels before serialization.
+
+The current CLI inventory is generated from Nyxloom's registered command
+grammar in [`docs/SPEC.md`](SPEC.md#generated-cli-surface-and-semantic-review)
+and [`docs/cli-surface.json`](cli-surface.json). Each public argument shape,
+option spelling, closed choice, and minimum route has a reviewed decision in
+[`docs/cli-review.toml`](cli-review.toml) linked to a parser probe. After
+changing `cli_registry.py`, regenerate and check the inventory with
+`cli-extended surface sync` and `cli-extended surface check`. The runtime floor
+is `cli-extended>=0.4.0`, which supplies the project-config and semantic-review
+contract used here.
 
 See the [usage report design](DESIGN-GUIDE.md#local-usage-report) for the
 deduplication, attribution, and privacy choices, and the
@@ -145,6 +226,11 @@ catalog for the installed version.
 | `nyxloom usage report --format` | `table`, `json`, `csv` |
 | `nyxloom usage report --sort` | `cost`, `start`, `dur`, `calls`, `peak`, `out` |
 | `nyxloom usage report --since` relative duration suffixes | `s`, `m`, `h`, `d`, `w` |
+| `nyxloom usage prices --format` | `text`, `json` |
+| `nyxloom usage windows --format`, `nyxloom usage calibrate --format` | `text`, `json` |
+| `nyxloom usage anchor add --kind` | `five_hour`, `weekly` |
+| `nyxloom usage anchor add --source` | `settings-usage`, `account-usage-page` |
+| `nyxloom usage anchor add --coverage-assumption` | `local-only-lower-bound`, `all-account-usage-observed` |
 | `nyxloom backlog new --type` | `feature`, `bugfix` |
 | `nyxloom backlog new --severity` | `low`, `medium`, `high` |
 | `nyxloom backlog new --context-estimate` | `small`, `medium`, `large` |

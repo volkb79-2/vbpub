@@ -8,20 +8,22 @@ dependencies = [
   # vendored: this wheel used to carry cli_extended/* itself through
   # package-dir + packages.find (NYX-CLIX removed that), which put two owners
   # on the same `cli_extended/*` files in one environment (nyxloom 0.10.0 and
-  # a separately installed cli-extended 0.3.0 both wrote them). Floor 0.3.0:
-  # the latest release, and the one nyxloom's suite is verified against.
+  # a separately installed cli-extended 0.3.0 both wrote them). Floor 0.4.0:
+  # its released project config, semantic review catalog, surface workflow,
+  # and pytest marker contract are used by Nyxloom. These APIs arrived in
+  # cli-extended 0.4.0 (2026-10-07), over 14 days before this change.
   # nyxloom imports only package-root names (ArgumentSpec, CliFailure,
   # CliIdentity, CliRegistry, OptionSpec, PromptCancelled, VerbGroup,
   # VerbSpec); all eight also exist in 0.2.0 (checked against the
   # cli-extended-v0.2.0 tag), but 0.2.0 was never tested here, so the floor
-  # is not lowered to it. Same floor as cmru. Published to GitHub Releases only;
+  # is not lowered to it. Published to GitHub Releases only;
   # the bare name is unclaimed on PyPI, so install the cli-extended wheel
   # first / alongside with `--no-index` or `--find-links` (CX-D2). When
   # upgrading from nyxloom 0.10.0, reinstall the official cli-extended wheel
   # AFTER the nyxloom wheel: pip otherwise removes files formerly shared by
   # both distributions but considers cli-extended already satisfied. See
   # docs/CONSUMERS.md; cmru.toml [env] NYXLOOM_RELEASE_NOTES owns release setup.
-  "cli-extended>=0.3.0",
+  "cli-extended>=0.4.0",
   "PyYAML>=6",
   "jsonschema>=4",
   "structlog>=24,<27",  # structlog: D-L1, runtime dep (nyxloom/docs/plan-logging.md)
@@ -84,7 +86,17 @@ git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--mat
 fallback_version = "0.1.0"
 
 [tool.setuptools.package-data]
-nyxloom = ["schemas/*.json"]
+nyxloom = ["schemas/*.json", "session_extract/usage/*.toml"]
+
+[tool.cli-extended]
+schema_version = 1
+
+[[tool.cli-extended.clis]]
+id = "nyxloom"
+factory = "nyxloom.cli_registry:primary_cli"
+review = "docs/cli-review.toml"
+manifest = "docs/cli-surface.json"
+spec = "docs/SPEC.md"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
