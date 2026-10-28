@@ -15,6 +15,7 @@ import subprocess
 import types
 
 import pytest
+from assay.config import load_lane_file
 
 from analysis.tests.test_analysis_campaign import (
     _complete_fixture,
@@ -347,6 +348,25 @@ def _options(**options):
 
 def _log_missing(env):
     return {"extra": ("--log", str(env.tmp_path / "absent-gate.log"))}
+
+
+def test_r2_policy_is_not_inferred_when_verdict_stopped_before_r2(tmp_path, monkeypatch):
+    root, _head, _verdict, _progress = _complete_fixture(
+        tmp_path, monkeypatch, "r2_pass"
+    )
+    lane = load_lane_file(root / "assay.toml").lane("package")
+    early_error_verdict = _fixture_document("r2_error_exec_failed_baseline_crashed")
+    early_error_verdict["lane"] = "package"
+
+    policy = campaign_api._check_verdict_against_lane(
+        early_error_verdict, lane_name="package", lane=lane
+    )
+
+    assert policy == {}
+    assert campaign_api._native_r2(lane, policy) is False
+    # Without a verdict, campaign analysis still needs the declared native
+    # policy to reconstruct a plan from progress-only evidence.
+    assert campaign_api._native_r2(lane, None) is True
 
 
 RESUME = {"event": "resume", "resumed_total": 0, "rejected_total": 0, "rejudged_total": 0}
