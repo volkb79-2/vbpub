@@ -1293,7 +1293,10 @@ run_sql_qualification() {
       || die "could not read Docker socket group for $docker_socket"
   fi
   [[ "$docker_socket_gid" =~ ^[0-9]+$ ]] || die "Docker socket group is malformed: $docker_socket_gid"
-  group_add_args=(--group-add "$docker_socket_gid")
+  # The runner's native R2 witness needs the same cgroup observer access as the
+  # tester container: the observer group, the read-only observer directory
+  # and the in-container socket path (v16 refuses R2 without observation).
+  group_add_args=(--group-add "$docker_socket_gid" --group-add "$observer_gid")
   if [[ -n ${CGROUP_PARENT_DEV_BACKGROUND:-} ]]; then
     forwarded_env=(-e "CGROUP_PARENT_DEV_BACKGROUND=$CGROUP_PARENT_DEV_BACKGROUND")
   fi
@@ -1356,9 +1359,11 @@ cat "$scratch/expected.marker"
     -e "CGROUP_PARENT_DEV_GATES=$cgroup" \
     "${forwarded_env[@]}" \
     -e 'PATH=/opt/tester-venv/bin:/usr/local/bin:/usr/bin:/bin' \
+    -e "ASSAY_RESOURCE_OBSERVER_SOCKET=$RESOURCE_OBSERVER_TARGET" \
     --network=none \
     --mount "type=bind,src=$host_repo_root,dst=$host_repo_root" \
     --mount "type=bind,src=$host_repo_root,dst=/workspaces/vbpub" \
+    --mount "type=bind,source=$RESOURCE_OBSERVER_DIRECTORY_SOURCE,target=$RESOURCE_OBSERVER_TARGET_DIRECTORY,readonly" \
     --mount "type=bind,src=$docker_socket,dst=/var/run/docker.sock" \
     -w /workspaces/vbpub \
     tester-unified:local \
