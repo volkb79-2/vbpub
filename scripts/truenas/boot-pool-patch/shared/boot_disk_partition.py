@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from pathlib import Path
 import re
 
 from middlewared.plugins.pool_.utils import ZPOOL_CACHE_FILE
@@ -23,6 +24,19 @@ MIN_PARTITION_NUMBER = 4
 _LSBLK_COLUMNS = "PATH,NAME,PKNAME,PARTLABEL,PARTTYPE,PARTUUID,PARTN,SIZE,FSTYPE,MOUNTPOINT,TYPE"
 _PARTUUID = re.compile(r"^[0-9a-fA-F-]{36}$")
 _COMMAND_TIMEOUT = 15
+ALLOWED_CREATE_FIELDS = frozenset({"name", "topology"})
+REFUSED_CREATE_FIELDS = frozenset({
+    "all_sed", "allow_duplicate_serials", "checksum", "dedup_table_quota",
+    "dedup_table_quota_value", "deduplication", "encryption", "encryption_options",
+    "force_topology",
+})
+_POOL_CREATE_SCHEMA = json.loads(
+    Path(__file__).with_name("pool_create_schema_v27.json").read_text(encoding="utf-8")
+)
+if _POOL_CREATE_SCHEMA.get("method") != "pool.create" or set(_POOL_CREATE_SCHEMA.get("fields", {})) != (
+    ALLOWED_CREATE_FIELDS | REFUSED_CREATE_FIELDS
+):
+    raise RuntimeError("recorded v27 pool.create schema does not match the shim field classifications")
 
 
 def _walk_lsblk(lsblk_json: dict):
@@ -135,43 +149,43 @@ def reserved_partitions_from_lsblk(
 
 
 def unsupported_create_options(data: dict) -> list[str]:
-    """Name create options the reserved-partition path deliberately refuses."""
+    """Refuse every reserved-pool create field except its schema default."""
     unsupported = []
-    if data.get("encryption"):
-        unsupported.append("encryption")
-
-    encryption_options = data.get("encryption_options") or {}
-    if not isinstance(encryption_options, dict):
-        unsupported.append("encryption_options")
-    else:
-        def secret_is_set(value) -> bool:
-            if hasattr(value, "get_secret_value"):
-                value = value.get_secret_value()
-            return value not in (None, "")
-
-        if (
-            encryption_options.get("generate_key", False)
-            or encryption_options.get("pbkdf2iters", 1_300_000) != 1_300_000
-            or secret_is_set(encryption_options.get("passphrase"))
-            or secret_is_set(encryption_options.get("key"))
-        ):
-            unsupported.append("encryption_options")
-
-    if data.get("deduplication") not in (None, "OFF"):
-        unsupported.append("deduplication")
-    if data.get("dedup_table_quota", "AUTO") != "AUTO":
-        unsupported.append("dedup_table_quota")
-    if data.get("dedup_table_quota_value") is not None:
-        unsupported.append("dedup_table_quota_value")
-    if data.get("checksum") is not None:
-        unsupported.append("checksum")
-    if data.get("allow_duplicate_serials", False):
-        unsupported.append("allow_duplicate_serials")
-    if data.get("all_sed", False):
-        unsupported.append("all_sed")
-    if data.get("force_topology", False):
-        unsupported.append("force_topology")
+    if not isinstance(data, dict):
+        return ["pool.create payload"]
+    fields = _POOL_CREATE_SCHEMA["fields"]
+    for name, value in data.items():
+        if name in ALLOWED_CREATE_FIELDS:
+            continue
+        if name not in REFUSED_CREATE_FIELDS or name not in fields:
+            unsupported.append(name)
+            continue
+        field_schema = fields[name]
+        if "default" in field_schema:
+            default = field_schema["default"]
+        elif "nested_defaults" in field_schema:
+            default = field_schema["nested_defaults"]
+        else:
+            unsupported.append(name)
+            continue
+        if not _matches_schema_default(value, default):
+            unsupported.append(name)
     return unsupported
+
+
+def _matches_schema_default(value, default) -> bool:
+    if hasattr(value, "get_secret_value"):
+        value = value.get_secret_value()
+    if isinstance(default, dict):
+        if not isinstance(value, dict) or value.keys() != default.keys():
+            return False
+        return all(_matches_schema_default(value[key], child) for key, child in default.items())
+    if isinstance(default, list):
+        return isinstance(value, list) and len(value) == len(default) and all(
+            _matches_schema_default(actual, expected)
+            for actual, expected in zip(value, default, strict=True)
+        )
+    return type(value) is type(default) and value == default
 
 
 def match_topology(topology: dict, reserved: list[dict]) -> tuple[dict | None, str | None]:
@@ -284,12 +298,22 @@ class BootDiskPartitionService(Service):
         return row
 
     async def _pool_name_available(self, name: str) -> None:
-        code, imported, err = await self._run(
-            "zpool", "list", "-H", "-o", "name", timeout=_COMMAND_TIMEOUT,
-        )
+        try:
+            code, imported, err = await self._run(
+                "zpool", "list", "-H", "-o", "name", timeout=_COMMAND_TIMEOUT,
+            )
+        except asyncio.TimeoutError as exc:
+            raise CallError(
+                f"timed out after {_COMMAND_TIMEOUT}s listing imported pools before creating {name!r}"
+            ) from exc
         if code:
             raise CallError(f"could not check imported pool names before creating {name!r}: {err.strip()}")
-        code, exported, err = await self._run("zpool", "import", timeout=_COMMAND_TIMEOUT)
+        try:
+            code, exported, err = await self._run("zpool", "import", timeout=_COMMAND_TIMEOUT)
+        except asyncio.TimeoutError as exc:
+            raise CallError(
+                f"timed out after {_COMMAND_TIMEOUT}s scanning exported pools before creating {name!r}"
+            ) from exc
         if code:
             raise CallError(f"could not scan exported pools before creating {name!r}: {err.strip()}")
         exported_names = {record["name"] for record in _pool_import_records(exported)}
@@ -312,9 +336,18 @@ class BootDiskPartitionService(Service):
         code, status, err = await self._run("zpool", "status", "-P", "-L", timeout=_COMMAND_TIMEOUT)
         if code or partition["path"] in _status_leaf_paths(status):
             raise CallError(f"cannot clear labels while {partition['path']} may still be imported: {err.strip()}")
-        code, scan, err = await self._run("zpool", "import", "-d", device, timeout=_COMMAND_TIMEOUT)
+        try:
+            code, scan, err = await self._run("zpool", "import", "-d", device, timeout=_COMMAND_TIMEOUT)
+        except asyncio.TimeoutError as exc:
+            raise CallError(
+                f"timed out after {_COMMAND_TIMEOUT}s checking exported pools on {partition['path']}; "
+                "partition labels were left untouched"
+            ) from exc
         if code or _pool_import_records(scan):
-            raise CallError(f"cannot clear labels while an exported pool remains on {partition['path']}: {err.strip()}")
+            raise CallError(
+                f"cannot clear labels while an exported pool may remain on {partition['path']}: "
+                f"{err.strip() or _pool_import_records(scan)!r}; partition labels were left untouched"
+            )
         await self._verify_partition_identity(partition)
         code, _, err = await self._run("zpool", "labelclear", "-f", device, timeout=_COMMAND_TIMEOUT)
         if code:
@@ -330,11 +363,20 @@ class BootDiskPartitionService(Service):
         if code == 0:
             await self._assert_pool_on_partition(name, partition)
         else:
-            scan_code, scan, scan_err = await self._run(
-                "zpool", "import", "-d", device, timeout=_COMMAND_TIMEOUT,
-            )
+            try:
+                scan_code, scan, scan_err = await self._run(
+                    "zpool", "import", "-d", device, timeout=_COMMAND_TIMEOUT,
+                )
+            except asyncio.TimeoutError as exc:
+                raise CallError(
+                    f"timed out after {_COMMAND_TIMEOUT}s scanning exported rollback pools on "
+                    f"{partition['path']}; partition labels were left untouched"
+                ) from exc
             if scan_code:
-                raise CallError(f"could not inspect exported rollback pool: {scan_err.strip()}")
+                raise CallError(
+                    f"could not inspect exported rollback pool on {partition['path']}: "
+                    f"{scan_err.strip()}; partition labels were left untouched"
+                )
             records = _pool_import_records(scan)
             if records:
                 matches = [record for record in records if record["name"] == name and record["guid"]]
@@ -360,6 +402,26 @@ class BootDiskPartitionService(Service):
         if code:
             raise CallError(f"zpool destroy -f failed for verified pool {name!r}: {err.strip()}")
         await self._clear_created_partition(name, partition, device)
+
+    async def _assert_pool_unregistered(self, name: str) -> None:
+        """Report a stale middleware row left by a partially failed import."""
+        try:
+            rows = await self.middleware.call(
+                "pool.query", [["name", "=", name]], {"select": ["name"]},
+            )
+        except Exception as exc:
+            raise CallError(
+                f"could not verify middleware registration cleanup for pool {name!r}: {exc}"
+            ) from exc
+        if not isinstance(rows, list):
+            raise CallError(
+                f"could not verify middleware registration cleanup for pool {name!r}: "
+                f"pool.query returned {type(rows).__name__}"
+            )
+        if any(isinstance(row, dict) and row.get("name") == name for row in rows):
+            raise CallError(
+                f"stale middleware pool record for {name!r} remains after verified ZFS rollback"
+            )
 
     @private
     async def reserved(self) -> list[dict]:
@@ -458,24 +520,29 @@ class BootDiskPartitionService(Service):
         create_attempted = False
         try:
             create_attempted = True
-            code, _, err = await self._run(
-                "zpool", "create",
-                "-o", "feature@lz4_compress=enabled",
-                "-o", "altroot=/mnt",
-                "-o", f"cachefile={ZPOOL_CACHE_FILE}",
-                "-o", "failmode=continue",
-                "-o", "autoexpand=on",
-                "-o", "ashift=12",
-                "-O", "atime=off",
-                "-O", "acltype=posix",
-                "-O", "aclinherit=discard",
-                "-O", "aclmode=discard",
-                "-O", "compression=lz4",
-                "-O", "xattr=sa",
-                "-O", f"mountpoint=/{name}",
-                name, device,
-                timeout=_COMMAND_TIMEOUT,
-            )
+            try:
+                code, _, err = await self._run(
+                    "zpool", "create",
+                    "-o", "feature@lz4_compress=enabled",
+                    "-o", "altroot=/mnt",
+                    "-o", f"cachefile={ZPOOL_CACHE_FILE}",
+                    "-o", "failmode=continue",
+                    "-o", "autoexpand=on",
+                    "-o", "ashift=12",
+                    "-O", "atime=off",
+                    "-O", "acltype=posix",
+                    "-O", "aclinherit=discard",
+                    "-O", "aclmode=discard",
+                    "-O", "compression=lz4",
+                    "-O", "xattr=sa",
+                    "-O", f"mountpoint=/{name}",
+                    name, device,
+                    timeout=_COMMAND_TIMEOUT,
+                )
+            except asyncio.TimeoutError as exc:
+                raise CallError(
+                    f"zpool create timed out after {_COMMAND_TIMEOUT}s on verified partition {row['path']}"
+                ) from exc
             if code:
                 raise CallError(f"zpool create failed on verified partition {row['path']}: {err.strip()}")
 
@@ -504,6 +571,7 @@ class BootDiskPartitionService(Service):
                 raise
             try:
                 await self._rollback_created_pool(name, row)
+                await self._assert_pool_unregistered(name)
             except Exception as cleanup_exc:
                 raise CallError(
                     f"pool {name!r} creation/adoption failed: {exc}; cleanup incomplete: {cleanup_exc}"

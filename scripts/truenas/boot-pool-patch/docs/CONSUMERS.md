@@ -6,13 +6,16 @@ for guest creation and common credentials setup. These lanes mutate their
 selected disposable TrueNAS guest; inspect the target and required guards
 before running them.
 
+Set `VENV` to the Python virtual environment used for this checkout before
+copying the commands below. The examples run Python through
+`"$VENV/bin/python"` or activate it with `source "$VENV/bin/activate"`.
+
 In this workspace devcontainer, set
 `DOCKER_HOST=unix:///var/run/docker.sock` before running registered container
 gates. The inherited `/run/docker-api/docker.sock` endpoint did not complete
-the tester lifecycle. Activate the estate venv and use its installed
-`run-gate` CLI for registered lanes. `run-live-gate.py` provisions the
-guest-network tester, then delegates the lane verdict to that CLI. Both use
-`$CGROUP_PARENT_DEV_GATES`.
+the tester lifecycle. Use the repository's `./run-gate.py` for registered
+lanes. `run-live-gate.py` provisions the guest-network tester, then delegates
+the lane verdict to that CLI. Both use `$CGROUP_PARENT_DEV_GATES`.
 
 ## Run the patch unit gate
 
@@ -21,9 +24,9 @@ applying a release adapter:
 
 ```bash
 cd scripts/truenas
-source /home/vscode/.venv/bin/activate
+source "$VENV/bin/activate"
 export DOCKER_HOST=unix:///var/run/docker.sock
-run-gate unit-boot-pool-patch --worktree "$(git rev-parse --show-toplevel)" --allow-dirty
+./run-gate.py unit-boot-pool-patch --worktree "$(git rev-parse --show-toplevel)" --allow-dirty
 ```
 
 This runs the boot-pool patch policy, adapter artifact, and live-gate contract
@@ -143,11 +146,11 @@ export TRUENAS_ROOT_SSH_PUBLIC_KEY_FILE="$PWD/golden-iso/vm/root_ed25519.pub"
 export PWMCP_WS_URL=ws://pwmcp:3000/
 export PWMCP_PLAYWRIGHT_VERSION=1.64.0 # use `pwmcp contract`
 
-/home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py live-inspect \
+"$VENV/bin/python" boot-pool-patch/run-live-gate.py live-inspect \
   --docker-network custom-test-bridge --allow-dirty
-/home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py live-v27-patch \
+"$VENV/bin/python" boot-pool-patch/run-live-gate.py live-v27-patch \
   --docker-network custom-test-bridge --allow-dirty
-/home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py live-ui \
+"$VENV/bin/python" boot-pool-patch/run-live-gate.py live-ui \
   --docker-network custom-test-bridge --allow-dirty
 ```
 
@@ -155,7 +158,7 @@ To confirm UI credentials and browser navigation before preparing SSH, run
 the read-only login gate with only the UI settings above:
 
 ```bash
-/home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py live-ui-auth \
+"$VENV/bin/python" boot-pool-patch/run-live-gate.py live-ui-auth \
   --docker-network custom-test-bridge --allow-high-psi --allow-dirty
 ```
 
@@ -164,7 +167,7 @@ lane writes the public key to the built-in root account and changes SSH
 service settings, so it requires the mutation guard:
 
 ```bash
-/home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py live-ui-prepare-ssh \
+"$VENV/bin/python" boot-pool-patch/run-live-gate.py live-ui-prepare-ssh \
   --docker-network custom-test-bridge --allow-high-psi --allow-dirty
 ```
 
@@ -228,7 +231,7 @@ export TRUENAS_UI_SECRET_FILE="$PWD/boot-pool-patch/artifacts/v1001-ui-secrets.t
 export PWMCP_WS_URL=ws://pwmcp:3000/
 export PWMCP_PLAYWRIGHT_VERSION=1.64.0
 
-/home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py live-ui-observed-v1001 \
+"$VENV/bin/python" boot-pool-patch/run-live-gate.py live-ui-observed-v1001 \
   --docker-network custom-test-bridge --allow-high-psi --allow-dirty
 ```
 
@@ -322,10 +325,10 @@ reboot or update; the manifest identifies the original UI-created objects.
 ```bash
 export TRUENAS_UI_WORKLOAD_MANIFEST="$PWD/boot-pool-patch/artifacts/path-a-ui-workloads.json"
 export TRUENAS_TEST_PRESERVE_UI_WORKLOADS=1
-/home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py live-ui \
+"$VENV/bin/python" boot-pool-patch/run-live-gate.py live-ui \
   --vm-container truenas-v27-ui-a-fresh --allow-dirty
 unset TRUENAS_TEST_PRESERVE_UI_WORKLOADS
-/home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py live-ui-workloads \
+"$VENV/bin/python" boot-pool-patch/run-live-gate.py live-ui-workloads \
   --vm-container truenas-v27-ui-a-fresh --allow-dirty
 ```
 
@@ -393,7 +396,7 @@ feature acceptance until the patched API and UI selectors accept the zvols.
 
 ```bash
 cd scripts/truenas
-source /home/vscode/.venv/bin/activate
+source "$VENV/bin/activate"
 : "${TRUENAS_VM_CONTAINER:?set to the fresh managed Path A guest}"
 : "${TRUENAS_TEST_PORT:?set from that guest's verified config}"
 : "${TRUENAS_TEST_KNOWN_HOSTS:?set from that guest's vm-state}"
@@ -430,7 +433,7 @@ the example below sets the selected disk facts and lane guards.
 
 ```bash
 cd scripts/truenas
-source /home/vscode/.venv/bin/activate
+source "$VENV/bin/activate"
 export DOCKER_HOST=unix:///var/run/docker.sock
 : "${TRUENAS_TEST_HOST:?set to the disposable TrueNAS host}"
 : "${TRUENAS_TEST_PORT:?set its SSH port}"
@@ -444,15 +447,15 @@ export TRUENAS_TEST_ALLOW_DISK_PROVISION=1
 : "${TRUENAS_DISK_DEVICE:?set from read-only inventory to the boot-pool disk}"
 : "${TRUENAS_BOOT_POOL_PARTITION:?set from read-only inventory to its boot-pool partition}"
 
-nice -n 10 /home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py \
+nice -n 10 "$VENV/bin/python" boot-pool-patch/run-live-gate.py \
   live-path-b-partition --docker-network "$TRUENAS_DOCKER_NETWORK" \
   --allow-high-psi --allow-dirty
-nice -n 10 /home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py \
+nice -n 10 "$VENV/bin/python" boot-pool-patch/run-live-gate.py \
   live-api-probe --docker-network "$TRUENAS_DOCKER_NETWORK" \
   --allow-high-psi --allow-dirty
 
 export TRUENAS_PATH_B_SETUP=ui-wizard
-nice -n 10 /home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py \
+nice -n 10 "$VENV/bin/python" boot-pool-patch/run-live-gate.py \
   live-ui --docker-network "$TRUENAS_DOCKER_NETWORK" \
   --allow-high-psi --allow-dirty
 ```
@@ -465,6 +468,101 @@ dedup-table quota changes, checksum overrides, duplicate-serial allowance,
 SED mode, forced topology, and destructive export with option-specific
 messages. See the [design rationale](DESIGN-GUIDE.md#path-b-pool-wizard-safety)
 and current [action evidence](../ACTION-MATRIX.md).
+The v27 create schema is closed: `name` and the validated single-Stripe
+`topology` are the only fields the shim honors; every other installed field
+must equal its recorded default, and unknown fields fail. See the
+[recorded schema and defaults](DESIGN-GUIDE.md#v27-pool-create-schema).
+
+#### Reclaim an exported Path B pool
+
+Use this procedure after `pool.export` with `destroy=false`. That export keeps
+the ZFS labels, so the partition remains absent from `disk.details` and the
+pool wizard. Run these steps in a root shell on the TrueNAS host. They stop on
+any failed identity check and use the PARTUUID path for `zpool labelclear`:
+
+```bash
+set -euo pipefail
+POOL=boot-disk-data
+ZFS_GPT_TYPE_GUID=6a898cc3-1dd2-11b2-99a6-080020736631
+
+POOL_ID=$(midclt call pool.query "[[\"name\",\"=\",\"$POOL\"]]" \
+  | python3 -c 'import json,sys; rows=json.load(sys.stdin); assert len(rows)==1; print(rows[0]["id"])')
+[[ "$(zpool list -H -o health "$POOL")" == ONLINE ]]
+mapfile -t POOL_LEAVES < <(zpool status -P -L "$POOL" \
+  | awk '$1 ~ /^\/dev\// && $2 == "ONLINE" { print $1 }')
+[[ "${#POOL_LEAVES[@]}" -eq 1 ]]
+PARTITION=${POOL_LEAVES[0]}
+PARTUUID=$(lsblk -dnro PARTUUID "$PARTITION")
+[[ "$PARTUUID" =~ ^[0-9a-fA-F-]{36}$ ]]
+DEVICE="/dev/disk/by-partuuid/$PARTUUID"
+[[ "$(readlink -f "$DEVICE")" == "$(readlink -f "$PARTITION")" ]]
+PARTN=$(lsblk -dnro PARTN "$PARTITION")
+PARTLABEL=$(lsblk -dnro PARTLABEL "$PARTITION")
+PARTTYPE=$(lsblk -dnro PARTTYPE "$PARTITION" | tr '[:upper:]' '[:lower:]')
+FSTYPE=$(lsblk -dnro FSTYPE "$PARTITION")
+MOUNTPOINT=$(lsblk -dnro MOUNTPOINT "$PARTITION")
+PART_PARENT=$(lsblk -dnro PKNAME "$PARTITION")
+[[ "$PARTN" -ge 4 && "$PARTLABEL" == "$POOL" ]]
+[[ "$PARTTYPE" == "$ZFS_GPT_TYPE_GUID" && "$FSTYPE" == zfs_member && -z "$MOUNTPOINT" ]]
+mapfile -t BOOT_LEAVES < <(zpool status -P -L boot-pool \
+  | awk '$1 ~ /^\/dev\// && $2 ~ /^(ONLINE|DEGRADED)$/ { print $1 }')
+[[ "${#BOOT_LEAVES[@]}" -gt 0 ]]
+BOOT_DISK_MATCH=0
+for BOOT_LEAF in "${BOOT_LEAVES[@]}"; do
+  if [[ "$(lsblk -dnro PKNAME "$BOOT_LEAF")" == "$PART_PARENT" ]]; then
+    BOOT_DISK_MATCH=1
+  fi
+done
+[[ "$BOOT_DISK_MATCH" -eq 1 ]]
+
+# Export without asking middleware to wipe the parent boot disk.
+midclt call -j pool.export "$POOL_ID" '{"destroy":false}'
+if zpool list -H -o name | grep -Fxq "$POOL"; then
+  echo "pool is still imported; stop without clearing labels" >&2
+  exit 1
+fi
+midclt call pool.query "[[\"name\",\"=\",\"$POOL\"]]" \
+  | python3 -c 'import json,sys; assert json.load(sys.stdin)==[]'
+IMPORTED_LEAF=$(zpool status -P -L | awk -v p="$(readlink -f "$DEVICE")" \
+  '$1 == p { found=1 } END { print found+0 }')
+[[ "$IMPORTED_LEAF" -eq 0 ]]
+IMPORT_SCAN=$(zpool import -d "$DEVICE")
+[[ "$(printf '%s\n' "$IMPORT_SCAN" | awk '/^[[:space:]]*pool:/ { print $2 }')" == "$POOL" ]]
+
+# Recheck that the PARTUUID still resolves to the one verified partition.
+[[ "$(lsblk -dnro PARTUUID "$DEVICE")" == "$PARTUUID" ]]
+[[ "$(readlink -f "$DEVICE")" == "$(readlink -f "$PARTITION")" ]]
+[[ "$(lsblk -dnro PARTLABEL "$DEVICE")" == "$POOL" ]]
+[[ "$(lsblk -dnro PARTTYPE "$DEVICE" | tr '[:upper:]' '[:lower:]')" == "$ZFS_GPT_TYPE_GUID" ]]
+IMPORTED_LEAF=$(zpool status -P -L | awk -v p="$(readlink -f "$DEVICE")" \
+  '$1 == p { found=1 } END { print found+0 }')
+[[ "$IMPORTED_LEAF" -eq 0 ]]
+zpool labelclear -f "$DEVICE"
+
+[[ "$(lsblk -dnro PARTUUID "$DEVICE")" == "$PARTUUID" ]]
+[[ "$(lsblk -dnro PARTLABEL "$DEVICE")" == "$POOL" ]]
+[[ -z "$(lsblk -dnro FSTYPE "$DEVICE")" ]]
+ZDB_LABELS=$(zdb -l "$DEVICE" 2>/dev/null | grep -c 'version:' || true)
+[[ "$ZDB_LABELS" == 0 ]]
+DETAILS_JSON=$(midclt call disk.details '{"type":"UNUSED","join_partitions":false}')
+PARTITION_NAME=${PARTITION##*/}
+DETAILS_JSON="$DETAILS_JSON" PARTITION_NAME="$PARTITION_NAME" PARTUUID="$PARTUUID" python3 - <<'PY'
+import json
+import os
+
+rows = json.loads(os.environ["DETAILS_JSON"])
+matches = [row for row in rows if row.get("name") == os.environ["PARTITION_NAME"]]
+assert len(matches) == 1, matches
+assert matches[0].get("identifier") == "{partuuid}" + os.environ["PARTUUID"].lower(), matches[0]
+print("verified reserved partition is offered again by disk.details")
+PY
+```
+
+The `live-api-probe` cleanup step also asserts that its PARTUUID is offered
+again after label clearing. The registered `live-ui` Path B `ui-wizard` lane
+proves the wizard can select the partition and create the pool. That lane uses
+the partition again; repeat the reclaim procedure afterward if it must remain
+available for reuse.
 
 Path B has two explicit setup modes for the registered `live-ui` lane. Both
 start from a fresh disposable managed guest with the v27 relaxation patch
@@ -507,7 +605,7 @@ For a disposable managed v27 guest, the preprovisioned sequence is:
 
 ```bash
 cd scripts/truenas
-source /home/vscode/.venv/bin/activate
+source "$VENV/bin/activate"
 : "${TRUENAS_VM_CONTAINER:?set to a fresh managed Path B guest}"
 export TRUENAS_STORAGE_PROFILE=path-b
 export TRUENAS_EXPECTED_VERSION=27.0.0-RC.1
@@ -577,7 +675,7 @@ export TRUENAS_TEST_KNOWN_HOSTS="$PWD/boot-pool-patch/artifacts/v27-ui-path-a-fr
 export TRUENAS_STORAGE_PROFILE=path-a
 export TRUENAS_EXPECTED_VERSION=27.0.0-RC.1
 
-/home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py live-inspect \
+"$VENV/bin/python" boot-pool-patch/run-live-gate.py live-inspect \
   --vm-container truenas-v27-ui-a-fresh-r4-20261017 --allow-dirty \
   --recover-stale-tester
 ```
@@ -616,9 +714,9 @@ export TRUENAS_TEST_ALLOW_PATCH_REPAIR=1
 export TRUENAS_V27_PRIOR_PATCH_BUNDLE="$PWD/boot-pool-patch/artifacts/v27-fresh-patch-bundle-path-a-3cd9c02ac2.tar.gz"
 export TRUENAS_V27_EXPECTED_PRIOR_BUNDLE_SHA256=61331d7a4f2afd02fbe4e91e13436db70c2028639ba8d7b99a5659a2e9974b7e
 
-/home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py live-inspect \
+"$VENV/bin/python" boot-pool-patch/run-live-gate.py live-inspect \
   --vm-container truenas-v27-ui-a-fresh-r4-20261017 --allow-dirty
-/home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py live-v27-patch \
+"$VENV/bin/python" boot-pool-patch/run-live-gate.py live-v27-patch \
   --vm-container truenas-v27-ui-a-fresh-r4-20261017 --allow-dirty
 ```
 
@@ -666,9 +764,9 @@ export TRUENAS_V27_PRIOR_PATCH_BUNDLE="$PWD/boot-pool-patch/artifacts/v27-fresh-
 export TRUENAS_V27_EXPECTED_PRIOR_BUNDLE_SHA256=4c72faac25ce748b197d118e0b036642518bf44d23d06e6f24ac738b3ed8bd05
 export TRUENAS_V27_EXPECTED_PRIOR_DATASET_SHA256=1cd5b385da5175980c96cdf1697888eb8cccd580bf97de935d7cfb889f021232
 
-/home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py live-inspect \
+"$VENV/bin/python" boot-pool-patch/run-live-gate.py live-inspect \
   --vm-container truenas-v27-ui-a-fresh-r4-20261017 --allow-dirty
-/home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py live-v27-patch \
+"$VENV/bin/python" boot-pool-patch/run-live-gate.py live-v27-patch \
   --vm-container truenas-v27-ui-a-fresh-r4-20261017 --allow-dirty
 ```
 
@@ -728,9 +826,9 @@ export PWMCP_WS_URL=ws://pwmcp:3000/
 export PWMCP_PLAYWRIGHT_VERSION=1.64.0 # use the version reported by `pwmcp contract`
 export TRUENAS_STORAGE_PROFILE=path-a
 
-/home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py live-v27-patch \
+"$VENV/bin/python" boot-pool-patch/run-live-gate.py live-v27-patch \
   --vm-container truenas-v27-ui-a-fresh-20261017 --allow-dirty
-/home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py live-ui \
+"$VENV/bin/python" boot-pool-patch/run-live-gate.py live-ui \
   --vm-container truenas-v27-ui-a-fresh-20261017 --allow-dirty
 ```
 
@@ -802,7 +900,7 @@ export PWMCP_PLAYWRIGHT_VERSION=1.64.0
 export TRUENAS_TEST_RESUME_EXISTING_UI_ROOT=1
 export TRUENAS_TEST_RESUME_EXISTING_UI_DATASET=boot-pool/user-data/ui-acceptance-202610180904493e3e9b
 
-/home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py live-ui \
+"$VENV/bin/python" boot-pool-patch/run-live-gate.py live-ui \
   --vm-container truenas-v27-ui-a-fresh-r4-20261017 --allow-dirty
 ```
 
@@ -850,7 +948,7 @@ export TRUENAS_TEST_ALLOW_MUTATIONS=1
 export TRUENAS_TEST_ALLOW_UPDATE=1
 export TRUENAS_TEST_ALLOW_REBOOT=1
 
-/home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py live-update \
+"$VENV/bin/python" boot-pool-patch/run-live-gate.py live-update \
   --vm-container truenas-v27-path-a-20261016 --allow-dirty
 ```
 
@@ -884,7 +982,7 @@ values:
 export TRUENAS_UPDATE_JOB_ID='<job id printed by the first run>'
 export TRUENAS_UPDATE_PROOF_DATASET='<proof dataset printed by the first run>'
 export TRUENAS_UPDATE_PROOF_SHA256='<marker hash printed by the first run>'
-/home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py live-update \
+"$VENV/bin/python" boot-pool-patch/run-live-gate.py live-update \
   --vm-container truenas-v27-path-a-20261016 --allow-dirty
 ```
 
@@ -930,7 +1028,7 @@ export TRUENAS_STORAGE_PROFILE=path-b
 export TRUENAS_EXPECTED_VERSION='28.0.0-MASTER+20261014-230204'
 export TRUENAS_TEST_ALLOW_MUTATIONS=1
 
-/home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py live-v28-patch \
+"$VENV/bin/python" boot-pool-patch/run-live-gate.py live-v28-patch \
   --vm-container truenas-v28-path-b-20261017 --allow-dirty
 ```
 
@@ -950,7 +1048,7 @@ export TRUENAS_STORAGE_PROFILE=path-a
 export TRUENAS_EXPECTED_VERSION='28.0.0-MASTER+20261014-230204'
 export TRUENAS_TEST_ALLOW_MUTATIONS=1
 
-/home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py live-v28-patch \
+"$VENV/bin/python" boot-pool-patch/run-live-gate.py live-v28-patch \
   --vm-container truenas-v27-path-a-20261016 --allow-dirty
 ```
 
@@ -975,7 +1073,7 @@ installed on this disposable guest:
 export TRUENAS_V28_PATCH_ACTION=replace
 export TRUENAS_TEST_ALLOW_PATCH_REPLACE=1
 export TRUENAS_V28_EXPECTED_PRIOR_BUNDLE_SHA256=2a4fa86979d7234c5aa16f1b03e0f93225c35ae10ddc3a114d1bb9e7ac680a06
-/home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py live-v28-patch \
+"$VENV/bin/python" boot-pool-patch/run-live-gate.py live-v28-patch \
   --vm-container truenas-v27-path-a-20261016 --allow-dirty
 unset TRUENAS_V28_PATCH_ACTION TRUENAS_TEST_ALLOW_PATCH_REPLACE \
   TRUENAS_V28_EXPECTED_PRIOR_BUNDLE_SHA256

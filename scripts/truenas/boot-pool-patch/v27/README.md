@@ -390,6 +390,16 @@ Creation and adoption failures also run a guarded rollback that re-verifies
 the partition before destroying the exact pool or clearing labels on the
 verified PARTUUID.
 
+An operator who intentionally runs `pool.export` with `destroy=false` must
+clear the exported pool's labels before the reserved partition is offered
+again. Verify the selected pool's sole leaf and PARTUUID, use
+`zpool labelclear -f /dev/disk/by-partuuid/<PARTUUID>` for that leaf only, then
+confirm the partition is back in `disk.details`. The exact guarded sequence is
+in the [consumer procedure](../docs/CONSUMERS.md#reclaim-an-exported-path-b-pool).
+The accepted v27 `pool.create` fields and defaults are recorded in the
+[design guide](../docs/DESIGN-GUIDE.md#v27-pool-create-schema); the live probe
+refuses schema drift before it starts storage mutations.
+
 See the rationale in the [design guide](../docs/DESIGN-GUIDE.md#path-b-pool-wizard-safety)
 and the exact registered live sequence in the
 [consumer guide](../docs/CONSUMERS.md#path-b-v27-pool-wizard-safety).

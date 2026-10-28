@@ -97,3 +97,45 @@ The host is the only mutable target (allowlist: server id 804027 /
   matches real call sites for every lane; unit tests for the patch (hunk counts, bundle, apply
   script, anchoring drift); source evidence for "no internal path passes app" recorded in
   `ACTION-MATRIX.md`.
+
+## Phase 5 - TrueNAS shim fixes round 2 (2026-10-28)
+
+- Restored the single existing stock v27 checkpoint and powered the host back on. No new
+  provider snapshot was created. A read-only `live-inspect` confirmed stock v27, no Path B
+  pool, and no patch marker before the run.
+- `unit-boot-pool-patch` PASS: 246 tests and 45 subtests. The focused regression selection
+  had 8 expected failures before implementation. The added L4 case also failed alone when
+  its step marker had only a distant, unrelated assertion; the AST check now requires a
+  nearby `require()` in that step's function. Rollback coverage now includes create
+  failure/timeout, wrong leaf, post-create identity drift, mismatched import scan name,
+  partial middleware registration, and 15-second import-scan timeouts. The action-matrix
+  check parses lane functions and requires a real failure assertion for PASS evidence.
+- `live-v27-patch` PASS with the bundle carrying the new v27 schema data file;
+  `live-path-b-partition` PASS on the guarded free tail. No pool was created by the
+  partition lane.
+- `live-api-probe` PASS. Before any storage write, `core.get_methods` matched the recorded
+  11-field v27 `pool.create` schema. Refusal, create/adoption, vdev isolation, and cleanup
+  checks passed; cleanup cleared the test pool labels and confirmed the same reserved
+  partition was returned by `disk.details`. The boot-pool and partition layout were
+  unchanged.
+- Path B `live-ui` `ui-wizard` PASS. The wizard submitted `pool.create` using only the
+  reserved PARTUUID, middleware registered the pool ONLINE, and the UI dataset/zvol,
+  container, and VM checks passed. The lane removed its UI test tree during cleanup.
+- Executed the documented reclaim procedure on the host after the wizard run (artifact:
+  `artifacts/manual-reclaim-v1001-round2.log`, ignored). It verified the sole ONLINE pool
+  leaf, its PARTUUID/GPT identity and shared boot-pool parent; used `pool.export` with
+  `destroy=false`; verified the pool was neither imported nor registered and appeared in
+  the exported-pool scan; ran `zpool labelclear -f` only through that PARTUUID; confirmed
+  the ZFS signature/labels were gone; and verified `disk.details` offered the same
+  partition again. The procedure exited 0.
+- The live `pool.create` schema file and design guide record the installed field defaults.
+  The API probe now fails before storage mutation if the live schema changes. `README.md`,
+  `docs/DESIGN-GUIDE.md`, `docs/CONSUMERS.md`, and the B-08 action-matrix row describe the
+  field policy and the guarded reclaim procedure. Consumer examples use `$VENV`.
+- Final host state: patched v27 remains installed, `boot-pool` remains online, no
+  `boot-disk-data` pool is imported, the reserved partition has no ZFS member labels and
+  is available through `disk.details` (read-only confirmation: ignored artifact
+  `artifacts/final-host-state-round2.log`). The provider list still contains one snapshot;
+  no second snapshot was needed.
+- Final registered unit evidence: `artifacts/unit-truenas-shim-round2-final.log`;
+  the earlier intentional L4 red run is in `artifacts/unit-truenas-shim-round2-l4-red.log`.

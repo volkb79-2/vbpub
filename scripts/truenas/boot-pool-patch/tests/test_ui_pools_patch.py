@@ -206,33 +206,65 @@ def test_reserved_partition_must_share_the_boot_pool_parent_disk() -> None:
     assert [row["path"] for row in offered] == ["/dev/vda4"]
 
 
-def test_reserved_create_option_detector_names_every_unsupported_nondefault() -> None:
+def test_reserved_create_option_detector_refuses_each_nondefault_schema_field() -> None:
     helper = load_helper()
-    options = [
-        ({"encryption": True}, "encryption"),
-        ({"encryption_options": {"generate_key": True}}, "encryption_options"),
-        ({"deduplication": "ON"}, "deduplication"),
-        ({"dedup_table_quota": "CUSTOM"}, "dedup_table_quota"),
-        ({"dedup_table_quota_value": 1048576}, "dedup_table_quota_value"),
-        ({"checksum": "SHA256"}, "checksum"),
-        ({"allow_duplicate_serials": True}, "allow_duplicate_serials"),
-        ({"all_sed": True}, "all_sed"),
-        ({"force_topology": True}, "force_topology"),
+    schema = json.loads((PATCH_ROOT / "shared" / "pool_create_schema_v27.json").read_text())
+    defaults = {}
+    for name in helper.REFUSED_CREATE_FIELDS:
+        field = schema["fields"][name]
+        default = field.get("default", field.get("nested_defaults"))
+        defaults[name] = default
+        if isinstance(default, bool):
+            changed = not default
+        elif isinstance(default, dict):
+            changed = default | {"generate_key": not default["generate_key"]}
+        elif default is None:
+            changed = "nondefault"
+        elif isinstance(default, str):
+            changed = default + "-nondefault"
+        else:
+            changed = default + 1
+        assert helper.unsupported_create_options({name: changed}) == [name]
+
+    assert helper.unsupported_create_options(defaults) == []
+    assert helper.unsupported_create_options({"all_sed": 0}) == ["all_sed"]
+    assert helper.unsupported_create_options({"future_pool_option": False}) == [
+        "future_pool_option",
     ]
-    for payload, expected in options:
-        assert helper.unsupported_create_options(payload) == [expected]
-    assert helper.unsupported_create_options({
-        "encryption": False,
-        "encryption_options": {"generate_key": False, "pbkdf2iters": 1300000,
-                               "passphrase": None, "key": None},
-        "deduplication": None,
-        "dedup_table_quota": "AUTO",
-        "dedup_table_quota_value": None,
-        "checksum": None,
-        "allow_duplicate_serials": False,
-        "all_sed": False,
-        "force_topology": False,
-    }) == []
+
+    class SecretValue:
+        def __init__(self, value):
+            self.value = value
+
+        def get_secret_value(self):
+            return self.value
+
+    encryption_options = defaults["encryption_options"] | {
+        "key": SecretValue(None),
+        "passphrase": SecretValue(None),
+    }
+    assert helper.unsupported_create_options({"encryption_options": encryption_options}) == []
+
+
+def test_recorded_pool_create_schema_matches_allowlisted_and_defaulted_fields() -> None:
+    helper = load_helper()
+    schema_path = PATCH_ROOT / "shared" / "pool_create_schema_v27.json"
+    schema = json.loads(schema_path.read_text())
+    fields = schema["fields"]
+
+    assert schema["method"] == "pool.create"
+    assert schema["release"] == "27.0.0-RC.1"
+    assert set(fields) == helper.ALLOWED_CREATE_FIELDS | helper.REFUSED_CREATE_FIELDS
+    assert helper.ALLOWED_CREATE_FIELDS == {"name", "topology"}
+
+    for name in helper.REFUSED_CREATE_FIELDS:
+        default = fields[name].get("default", fields[name].get("nested_defaults"))
+        assert "default" in fields[name] or "nested_defaults" in fields[name], name
+        assert helper.unsupported_create_options({name: default}) == []
+
+    assert helper.unsupported_create_options({"future_pool_option": False}) == [
+        "future_pool_option",
+    ]
 
 
 def test_reserved_returns_no_candidates_when_inventory_commands_fail() -> None:
@@ -296,20 +328,31 @@ class _MiddlewareJob:
 class _CreatePoolMiddleware:
     def __init__(self, scenario):
         self.scenario = scenario
+        self.calls = []
+        self.stale_pool_record = False
 
     async def call(self, method, *args):
+        self.calls.append((method, args))
         if method == "pool.import_find":
-            if self.scenario == "find-zero":
+            if self.scenario in {"find-zero", "rollback-scan-timeout", "rollback-scan-wrong-name"}:
                 return _MiddlewareJob([])
             if self.scenario == "find-two":
                 return _MiddlewareJob([
                     {"name": "probe", "guid": "12345"},
                     {"name": "probe", "guid": "67890"},
                 ])
+            if self.scenario == "find-wrong-name":
+                return _MiddlewareJob([{"name": "some-other-pool", "guid": "12345"}])
             return _MiddlewareJob([{"name": "probe", "guid": "12345"}])
         if method == "pool.import_pool":
-            error = "import_pool failed" if self.scenario in {"import-fails", "cleanup-fails"} else None
+            error = "import_pool failed" if self.scenario in {
+                "import-fails", "cleanup-fails", "partial-registration",
+            } else None
+            if self.scenario == "partial-registration":
+                self.stale_pool_record = True
             return _MiddlewareJob(True, error)
+        if method == "pool.query":
+            return ([{"id": 7, "name": "probe"}] if self.stale_pool_record else [])
         raise AssertionError(f"unexpected middleware call: {method} {args!r}")
 
 
@@ -322,6 +365,8 @@ class _CreatePoolHarness:
                 self.verify_count = 0
                 self.import_scan_count = 0
                 self.status_calls = 0
+                self.timeouts = []
+                self.created = False
                 self.middleware = _CreatePoolMiddleware(scenario)
 
             async def reserved(self):
@@ -332,24 +377,38 @@ class _CreatePoolHarness:
                 self.verify_count += 1
                 if self.scenario == "toctou" and self.verify_count == 1:
                     raise helper.CallError("partition PARTUUID changed")
+                if self.scenario == "identity-drift-after-create" and self.verify_count >= 2:
+                    raise helper.CallError("partition PARTUUID changed after zpool create")
                 return expected
 
             async def _run(self, *argv, timeout=15):
                 argv = tuple(argv)
                 self.commands.append(argv)
+                self.timeouts.append((argv, timeout))
                 if argv == ("zpool", "list", "-H", "-o", "name"):
                     pools = "boot-pool\nprobe\n" if self.scenario == "name-imported" else "boot-pool\n"
                     return 0, pools, ""
                 if argv == ("zpool", "import"):
+                    if self.scenario == "initial-scan-timeout":
+                        raise asyncio.TimeoutError()
                     if self.scenario == "name-exported":
                         return 0, "  pool: probe\n    id: 12345\n state: ONLINE\n", ""
                     return 0, "", ""
                 if argv[:2] == ("zpool", "create"):
+                    if self.scenario == "create-fails":
+                        return 1, "", "synthetic create failure"
+                    if self.scenario == "create-timeout":
+                        raise asyncio.TimeoutError()
+                    self.created = True
                     return 0, "", ""
                 if argv[:2] == ("zpool", "status") and argv[-1:] == ("probe",):
                     self.status_calls += 1
+                    if not self.created:
+                        return 1, "", "pool does not exist"
                     if getattr(self, "exported", False):
                         return 1, "", "pool is exported"
+                    if self.scenario == "wrong-leaf":
+                        return 0, "pool: probe\n  /dev/vda5 ONLINE\n", ""
                     return 0, "pool: probe\n  /dev/vda4 ONLINE\n", ""
                 if argv == ("zpool", "export", "probe"):
                     if self.scenario == "export-fails":
@@ -358,7 +417,11 @@ class _CreatePoolHarness:
                     return 0, "", ""
                 if argv[:2] == ("zpool", "import") and "-d" in argv:
                     self.import_scan_count += 1
+                    if self.scenario == "rollback-scan-timeout":
+                        raise asyncio.TimeoutError()
                     if getattr(self, "exported", False):
+                        if self.scenario == "rollback-scan-wrong-name":
+                            return 0, "  pool: other-pool\n    id: 98765\n state: ONLINE\n", ""
                         return 0, "  pool: probe\n    id: 12345\n state: ONLINE\n", ""
                     return 0, "", ""
                 if argv[:4] == ("zpool", "import", "-f", "-N"):
@@ -505,6 +568,53 @@ def test_create_pool_failure_rollbacks_are_partition_scoped(scenario, expected_e
         assert not any(command[:2] == ("zpool", "create") for command in service.commands)
     if scenario == "cleanup-fails":
         assert not any(command[:2] == ("zpool", "labelclear") for command in service.commands)
+
+
+@pytest.mark.parametrize(
+    ("scenario", "expected_error"),
+    [
+        ("create-fails", "synthetic create failure"),
+        ("create-timeout", "timed out after 15s"),
+        ("wrong-leaf", "cleanup incomplete"),
+        ("identity-drift-after-create", "cleanup incomplete"),
+        ("find-wrong-name", "found 0 matches"),
+        ("initial-scan-timeout", "timed out after 15s scanning exported pools"),
+        ("rollback-scan-timeout", "timed out after 15s scanning exported rollback pools"),
+        ("rollback-scan-wrong-name", "exact exported pools named 'probe'"),
+    ],
+)
+def test_create_pool_additional_rollback_failures_are_closed(scenario, expected_error) -> None:
+    helper = load_helper()
+    partition = {"name": "vda4", "path": "/dev/vda4", "parent": "vda",
+                 "parent_path": "/dev/vda", "size": 1 << 30, "partuuid": UUID}
+    service = _CreatePoolHarness(helper, scenario)
+
+    with pytest.raises(helper.CallError, match=re.escape(expected_error)):
+        asyncio.run(service.create_pool("probe", partition))
+
+    create_commands = [command for command in service.commands if command[:2] == ("zpool", "create")]
+    assert bool(create_commands) is (scenario != "initial-scan-timeout")
+    if scenario in {"wrong-leaf", "identity-drift-after-create", "rollback-scan-timeout",
+                    "rollback-scan-wrong-name"}:
+        assert not any(command[:2] == ("zpool", "destroy") for command in service.commands)
+        assert not any(command[:2] == ("zpool", "labelclear") for command in service.commands)
+    if scenario in {"create-timeout", "initial-scan-timeout", "rollback-scan-timeout"}:
+        assert any(timeout == 15 for _, timeout in service.timeouts)
+
+
+def test_partial_import_registration_rolls_back_zfs_and_reports_stale_middleware_row() -> None:
+    helper = load_helper()
+    partition = {"name": "vda4", "path": "/dev/vda4", "parent": "vda",
+                 "parent_path": "/dev/vda", "size": 1 << 30, "partuuid": UUID}
+    service = _CreatePoolHarness(helper, "partial-registration")
+
+    with pytest.raises(helper.CallError, match="stale middleware pool record"):
+        asyncio.run(service.create_pool("probe", partition))
+
+    assert ("zpool", "destroy", "-f", "probe") in service.commands
+    assert any(command[:2] == ("zpool", "labelclear") for command in service.commands)
+    assert service.middleware.stale_pool_record
+    assert any(method == "pool.query" for method, _ in service.middleware.calls)
 
 
 def test_topology_match_refuses_anything_but_a_single_stripe_partition() -> None:

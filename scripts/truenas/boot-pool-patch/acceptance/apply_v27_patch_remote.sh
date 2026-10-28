@@ -85,6 +85,7 @@ patch --batch --fuzz=0 -p1 < "$patch_dir/ui-pools.patch"
 install -m 0644 "$bundle_root/shared/virtualization_support.py" middlewared/plugins/vm/
 install -m 0644 "$bundle_root/shared/boot_pool_user_data.py" middlewared/plugins/
 install -m 0644 "$bundle_root/shared/boot_disk_partition.py" middlewared/plugins/
+install -m 0644 "$bundle_root/shared/pool_create_schema_v27.json" middlewared/plugins/
 
 python3 -m py_compile \
     middlewared/plugins/vm/info.py \

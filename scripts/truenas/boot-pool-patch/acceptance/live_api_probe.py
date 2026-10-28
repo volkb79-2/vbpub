@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import re
 import sys
 
@@ -32,6 +33,7 @@ POOL = "apiprobepool"
 MARKER = "boot-disk-data"
 ZFS_TYPE_GUID = "6a898cc3-1dd2-11b2-99a6-080020736631"
 FAILURES: list[str] = []
+POOL_CREATE_SCHEMA_PATH = Path(__file__).resolve().parents[1] / "shared" / "pool_create_schema_v27.json"
 
 
 def check(key: str, ok: bool, detail: object = "") -> None:
@@ -48,6 +50,61 @@ def attempt(target: Target, method: str, *params, job: bool = False, timeout: in
         return True, " ".join(target.run(argv, timeout=timeout).split())
     except RemoteError as exc:
         return False, " ".join(str(exc).split())
+
+
+def normalized_pool_create_schema(method: dict) -> dict:
+    """Keep the installed top-level fields and nested defaults used by the shim."""
+    signatures = method.get("accepts")
+    if not isinstance(signatures, list) or len(signatures) != 1 or not isinstance(signatures[0], dict):
+        raise ValueError("core.get_methods returned an unexpected pool.create signature")
+    schema = signatures[0]
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        raise ValueError("core.get_methods omitted pool.create properties")
+    required = sorted(schema.get("required") or [])
+    fields = {}
+    for name, field in sorted(properties.items()):
+        if not isinstance(field, dict):
+            raise ValueError(f"core.get_methods returned an invalid field schema for {name!r}")
+        entry = {}
+        if name in required:
+            entry["required"] = True
+        if "default" in field:
+            entry["default"] = field["default"]
+        nested = field.get("properties") or {}
+        if nested:
+            entry["nested_fields"] = sorted(nested)
+            entry["nested_defaults"] = {
+                child: child_schema["default"]
+                for child, child_schema in sorted(nested.items())
+                if isinstance(child_schema, dict) and "default" in child_schema
+            }
+        fields[name] = entry
+    return {"required_fields": required, "fields": fields}
+
+
+def live_pool_create_schema_matches(target: Target) -> tuple[bool, str]:
+    try:
+        recorded = json.loads(POOL_CREATE_SCHEMA_PATH.read_text(encoding="utf-8"))
+        installed_methods = target.call("core.get_methods", timeout=120)
+        installed_method = installed_methods.get("pool.create") if isinstance(installed_methods, dict) else None
+        if not isinstance(installed_method, dict):
+            return False, "core.get_methods did not return pool.create"
+        installed = normalized_pool_create_schema(installed_method)
+    except Exception as exc:
+        return False, f"could not fetch/normalize pool.create schema ({type(exc).__name__})"
+
+    expected = {
+        "required_fields": recorded.get("required_fields", []),
+        "fields": recorded.get("fields", {}),
+    }
+    if installed == expected:
+        return True, f"installed pool.create schema matches {len(installed['fields'])} recorded fields"
+    return False, {
+        "recorded_fields": sorted(expected["fields"]),
+        "installed_fields": sorted(installed["fields"]),
+        "defaults_match": installed == expected,
+    }.__repr__()
 
 
 def boot_pool_state(target: Target) -> str:
@@ -162,6 +219,9 @@ def cleanup(target: Target, partition: str) -> None:
 def run_path_b(target: Target) -> None:
     disk, partition = reserved_partition(target)
     name = partition.rsplit("/", 1)[1]
+    partition_uuid = target.run(["lsblk", "-dnro", "PARTUUID", partition], timeout=30)
+    if re.fullmatch(r"[0-9a-fA-F-]{36}", partition_uuid) is None:
+        raise RemoteError(f"reserved partition {partition} has no valid PARTUUID")
     before = boot_pool_state(target)
     table_before = partition_table_state(target, disk)
     try:
@@ -298,6 +358,14 @@ def run_path_b(target: Target) -> None:
     gone = POOL not in target.shell("zpool list -H -o name", timeout=30).split()
     labels = target.shell(f"zdb -l {partition} 2>/dev/null | grep -c 'version:' || true", timeout=30).strip()
     check("cleanup-complete", gone and labels in ("", "0"), f"pool gone={gone} labels={labels!r}")
+    ok, text = attempt(target, "disk.details", {"type": "UNUSED", "join_partitions": False})
+    details = json.loads(text) if ok else []
+    offered = [
+        row for row in details
+        if row.get("name") == name
+        and row.get("identifier") == "{partuuid}" + partition_uuid.lower()
+    ]
+    check("cleanup-partition-offered-again", ok and len(offered) == 1, text[:300])
     check(
         "boot-pool-unchanged",
         boot_pool_state(target) == before and partition_table_state(target, disk) == table_before,
@@ -316,6 +384,10 @@ def main() -> int:
     version = str(target.call("system.info").get("version", ""))
     if not expected or version != expected:
         raise RemoteError(f"expected TrueNAS {expected!r}, found {version!r}")
+    schema_ok, schema_detail = live_pool_create_schema_matches(target)
+    check("pool-create-schema-live-match", schema_ok, schema_detail)
+    if not schema_ok:
+        raise RemoteError("installed pool.create schema differs from the recorded v27 schema; stopped before storage mutations")
     (run_path_a if profile == "path-a" else run_path_b)(target)
     if FAILURES:
         raise RemoteError(f"failed checks: {', '.join(FAILURES)}")

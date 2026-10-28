@@ -762,6 +762,35 @@ checksum, duplicate-serial allowance, SED mode, and forced topology. Returning
 before stock validation would silently discard those settings. An
 option-specific refusal makes that boundary visible to the wizard caller.
 
+### v27 Pool Create Schema
+
+On 2026-10-28, `core.get_methods` on the tested v27.0.0-RC.1 host returned
+these 11 top-level `pool.create` fields. The normalized schema is stored in
+[`pool_create_schema_v27.json`](../shared/pool_create_schema_v27.json) and is
+compared with the live method schema before the API probe performs storage
+mutations.
+
+| field | installed default or requirement | reserved-partition handling |
+|---|---|---|
+| `name` | required | accepted; stock name validation still applies |
+| `topology` | required; empty `cache`, `dedup`, `log`, `spares`, and `special` arrays are schema defaults | accepted only for one single-disk Stripe data vdev |
+| `all_sed` | `false` | default only |
+| `allow_duplicate_serials` | `false` | default only |
+| `checksum` | `null` | default only |
+| `dedup_table_quota` | `"AUTO"` | default only |
+| `dedup_table_quota_value` | `null` | default only |
+| `deduplication` | `null` | default only |
+| `encryption` | `false` | default only |
+| `encryption_options` | `{"generate_key":false,"key":null,"passphrase":null,"pbkdf2iters":1300000}` | default only |
+| `force_topology` | `false` | default only |
+
+The helper's explicit field classifications must exactly cover the recorded
+schema: only `name` and `topology` are acted on, and each other recorded field
+is accepted only when its value has the exact schema-default type and value.
+Any other key is refused by name. A new or changed installed field makes the
+live probe fail before it reaches pool creation; the unit test also fails if
+the recorded fields no longer match the allowlist and default-only set.
+
 Creation follows the installed v27 `pool.create` properties: ZFS options
 `feature@lz4_compress=enabled`, `altroot=/mnt`, the middleware cachefile,
 `failmode=continue`, `autoexpand=on`, and `ashift=12`; root filesystem options
@@ -782,6 +811,16 @@ The live API probe checks the exact refusal, `boot-pool` GUID/health/status,
 the unchanged `lsblk`/`sgdisk` partition table, and the adopted pool's ONLINE
 state. It also exercises replace, offline/online, detach, and remove while
 checking the other partitions remain unchanged.
+
+`destroy=false` leaves the pool labels on the partition. The reserved-partition
+discovery code then keeps it out of the wizard until the labels are cleared.
+This is deliberate: an export does not prove that the operator intends to
+erase the pool's identity. Reclaim therefore remains a separate, explicit
+operator action: export non-destructively, verify the one pool leaf and its
+PARTUUID, run `zpool labelclear -f /dev/disk/by-partuuid/<PARTUUID>` for that
+leaf only, and verify `disk.details` offers the partition again. The registered probe verifies its own cleanup
+reoffers the same PARTUUID; the exact manual procedure is in the
+[consumer guide](CONSUMERS.md#reclaim-an-exported-path-b-pool).
 
 After `zpool create`, adoption can fail at export, import discovery, or import.
 Rollback re-reads the partition's PARTUUID, label, ZFS type, parent, and boot

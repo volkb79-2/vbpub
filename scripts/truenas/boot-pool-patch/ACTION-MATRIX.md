@@ -42,12 +42,13 @@ certify the current checkout or a later target state.
 | A-08 | A | Export, modify, expand, replace, attach or detach boot-pool from the UI | `pool.export`, `pool.update`, `pool.expand`, `pool.upgrade`, `pool.replace`, `pool.attach`, `pool.detach`, `pool.offline`, `pool.online`, `pool.remove` | n/a | n/a | refused (synthetic row id 0 does not exist) | `ui-pools.patch` | S | n/a | `live-api-probe` : `boot-pool-unchanged` | PASS | pending |
 | A-09 | A | Add cache/log/special vdev | `pool.update` | refused for boot-pool zvols | UI steps show, no valid target | refused | - | L | API-TUI | `live-vdev-topology` : - | refused by design | pending |
 | B-01 | B | Reserve the free-tail partition (label `boot-disk-data`, ZFS type) | - | no method (partitioning is `sgdisk`) | not possible | not possible | - | M | API-TUI | `live-path-b-partition` : `result` | PASS | pending |
-| B-02 | B | Create a pool on the reserved partition from the pool wizard | `pool.create`, `disk.details` | `pool.create` takes disk names only (`vda4` -> EINVAL "disks not found in system"); `disk.details UNUSED` empty | blocked: wizard sees no disks | works: `disk.details` offers the partition, `pool.create` runs stock-property `zpool create` by PARTUUID and adopts it; unsupported create options and destructive export are refused | `ui-pools.patch` | M | patch-UI | `live-ui` : `path-b-pool-ui`; `live-api-probe` : `shim-create-on-partition`; `live-api-probe` : `shim-destroy-refused`; `live-api-probe` : `shim-destroy-partitions-unchanged`; `live-api-probe` : `shim-replace-does-not-touch-other-partitions`; `live-api-probe` : `shim-offline-does-not-touch-other-partitions`; `live-api-probe` : `shim-detach-does-not-touch-other-partitions`; `live-api-probe` : `shim-remove-does-not-touch-other-partitions` | PASS | pending |
+| B-02 | B | Create a pool on the reserved partition from the pool wizard | `pool.create`, `disk.details`, `core.get_methods` | `pool.create` takes disk names only (`vda4` -> EINVAL "disks not found in system"); `disk.details UNUSED` empty | blocked: wizard sees no disks | works: `disk.details` offers the partition, `pool.create` runs stock-property `zpool create` by PARTUUID and adopts it; unsupported create options and destructive export are refused; live `core.get_methods` schema drift fails before storage mutations | `ui-pools.patch` | M | patch-UI | `live-ui` : `path-b-pool-ui`; `live-api-probe` : `pool-create-schema-live-match`; `live-api-probe` : `shim-create-on-partition`; `live-api-probe` : `shim-destroy-refused`; `live-api-probe` : `shim-destroy-partitions-unchanged`; `live-api-probe` : `shim-replace-does-not-touch-other-partitions`; `live-api-probe` : `shim-offline-does-not-touch-other-partitions`; `live-api-probe` : `shim-detach-does-not-touch-other-partitions`; `live-api-probe` : `shim-remove-does-not-touch-other-partitions` | PASS | pending |
 | B-03 | B | Create a further pool on more free space of a device | `pool.create`, `disk.details` | blocked (free space is not a disk) | blocked | works once B-01 reserved another partition; carving free space from the UI is not offered | `ui-pools.patch` | L (carving) | API-TUI | `live-api-probe` : `details-lists-reserved-partition` | pending | pending |
 | B-04 | B | Datasets, zvols, containers and a VM on `boot-disk-data` | `pool.dataset.create`, `container.create`, `vm.create` | works | works | works | `storage.patch` | done | works | `live-ui` : `container-ui` | PASS | pending |
 | B-05 | B | Shares on `boot-disk-data` | `sharing.smb.create` | works | works (a real pool exists) | works | - | done | works | `live-ui` : `shares-ui` | PASS | pending |
 | B-06 | B | Adopt a hand-made pool on the partition | `pool.import_find`, `pool.import_pool` | works: listed and imported ONLINE, shows in `pool.query` | works (Import pool) | works | - | done | API-TUI | `live-api-probe` : `import-hand-made-pool` | PASS | pending |
 | B-07 | B | Mirror the boot pool onto the partition | `boot.attach` | refused: internal TypeError (partition has no disk size) | n/a | refused (the boot pool's own partitions are never offered) | `ui-pools.patch` | - | n/a | `live-api-probe` : `boot-attach-refused-unchanged` | PASS | pending |
+| B-08 | B | Reclaim an exported Path B partition for reuse | `pool.export`, `disk.details` | works: `destroy=false` exports; operator clears labels by verified PARTUUID | blocked: no label-clear control | blocked: use the documented guarded shell procedure; the UI wizard can use the partition again afterward | `ui-pools.patch` | S | API-TUI | `live-api-probe` : `cleanup-partition-offered-again`; `live-ui` : `path-b-pool-ui` | PASS | pending |
 
 ## Patch inventory
 
@@ -90,6 +91,14 @@ directories must appear here.
   quota controls, checksum, duplicate-serial allowance, SED mode, and forced
   topology are explicitly refused when requested; the shim never silently
   drops them.
+- **Installed create schema (B-02).** The v27.0.0-RC.1 `pool.create` field
+  list, required fields, and defaults were read from `core.get_methods` on
+  2026-10-28 and are recorded in
+  [`shared/pool_create_schema_v27.json`](shared/pool_create_schema_v27.json).
+  Only `name` and the validated one-disk Stripe `topology` are honored; every
+  other field must equal its recorded default, and unrecognized keys are
+  refused. The live API probe compares the installed schema before storage
+  mutation and fails closed on any drift.
 - **Destroy path (B-02).** Read-only inspection of the installed v27 middleware
   found that `plugins/pool_/export.py` gets the pool's disks with `pool.get_disks`,
   then calls `disk.wipe` with `QUICK` when `destroy=true`. `pool.get_disks` uses
@@ -105,6 +114,13 @@ directories must appear here.
   ONLINE. It also exercises replace, offline/online, detach, and remove on the
   adopted pool and asserts that those calls leave the other partition layout
   unchanged.
+- **Reclaim after export (B-08).** `pool.export` with `destroy=false` leaves
+  the pool's ZFS labels, so `disk.details` and the wizard do not offer the
+  partition until an operator verifies the sole leaf by PARTUUID and runs
+  `zpool labelclear` on that PARTUUID only. The registered probe checks that
+  cleanup makes the same PARTUUID available through `disk.details`; the UI
+  wizard lane proves it can be selected again. The procedure is documented in
+  [`docs/CONSUMERS.md`](docs/CONSUMERS.md#reclaim-an-exported-path-b-pool).
 - **Stock pool properties (B-02).** Installed `pool_/pool.py` passes
   `feature@lz4_compress=enabled`, `altroot=/mnt`, the middleware
   `ZPOOL_CACHE_FILE`, `failmode=continue`, `autoexpand=on`, and `ashift=12` to

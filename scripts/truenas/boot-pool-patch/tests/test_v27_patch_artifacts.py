@@ -294,3 +294,12 @@ def test_v27_api_and_boot_paths_share_root_mount_policy() -> None:
     patch_text = PATCH_PATH.read_text()
     dataset = additions(patch_section(patch_text, "middlewared/plugins/pool_/dataset.py"))
     assert "user_data_root_mount_config_is_valid" in dataset
+
+
+def test_v27_pool_create_schema_data_is_bundled_and_installed_with_the_helper() -> None:
+    bundle_builder = LIVE_V27_PATCH.read_text()
+    installer = REMOTE_V27_PATCH.read_text()
+
+    assert '"shared" / "pool_create_schema_v27.json"' in bundle_builder
+    assert '"shared/pool_create_schema_v27.json"' in bundle_builder
+    assert '"$bundle_root/shared/pool_create_schema_v27.json" middlewared/plugins/' in installer
