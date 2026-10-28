@@ -108,6 +108,19 @@ def _kill_and_reap_direct_children() -> None:
             raise AssertionError(f"could not reap adopted test children: {children}")
 
 
+@contextlib.contextmanager
+def _test_child_scope():
+    """Adopt and clean subprocess-test descendants so Assay cannot inherit them."""
+    previous = _set_child_subreaper(True)
+    try:
+        yield
+    finally:
+        try:
+            _kill_and_reap_direct_children()
+        finally:
+            _set_child_subreaper(previous)
+
+
 # ---------------------------------------------------------------------------
 # helpers / fixtures
 # ---------------------------------------------------------------------------
@@ -16352,7 +16365,24 @@ def fake_docker_stateful(tmp_path, monkeypatch) -> tuple[Path, Path]:
             # evidence is captured before removal, and a shim that blocked
             # there too would hang the very path a stall depends on.
             case "$*" in
-              *-f*) while [ -f "$S/.hang" ]; do sleep 0.2; done ;;
+              *-f*)
+                __sleep_pid=""
+                __stop_logs() {{
+                  if [ -n "$__sleep_pid" ]; then
+                    kill "$__sleep_pid" 2>/dev/null || :
+                    wait "$__sleep_pid" 2>/dev/null || :
+                  fi
+                  exit 143
+                }}
+                trap '__stop_logs' TERM INT
+                while [ -f "$S/.hang" ]; do
+                  sleep 0.2 &
+                  __sleep_pid=$!
+                  wait "$__sleep_pid"
+                  __sleep_pid=""
+                done
+                trap - TERM INT
+                ;;
             esac
             echo "FAKE-LOGS-LINE"
             ;;
@@ -16438,10 +16468,23 @@ def fake_docker_logstream(tmp_path, monkeypatch) -> tuple[Path, Path]:
               fi
             }}
             if [ "$streaming" = yes ]; then
+              __sleep_pid=""
+              __stop_logs() {{
+                if [ -n "$__sleep_pid" ]; then
+                  kill "$__sleep_pid" 2>/dev/null || :
+                  wait "$__sleep_pid" 2>/dev/null || :
+                fi
+                exit 143
+              }}
+              trap '__stop_logs' TERM INT
               while [ -f "$S/.hang" ]; do
                 emit_new
-                sleep 0.05
+                sleep 0.05 &
+                __sleep_pid=$!
+                wait "$__sleep_pid"
+                __sleep_pid=""
               done
+              trap - TERM INT
             fi
             emit_new
             ;;
@@ -16610,10 +16653,8 @@ class TestRg109InterruptedClient:
             assert not record.exists(), out               # and the record is gone
             assert f"rm\x1f-f\x1f{name}" in log.read_text()
             # Run-Gate terminates the fake `docker logs -f` shell during its
-            # SIGTERM cleanup. Its polling `sleep` is a separate child, so it
-            # can outlive that shell and become an Assay-visible zombie. This
-            # test owns the helper tree and reaps it before returning.
-            _kill_and_reap_direct_children()
+            # SIGTERM cleanup. Its polling `sleep` is a separate child, so the
+            # fake Docker shim must reap it before the shell exits.
             leaked_children = _direct_child_pids()
             child_names = []
             for pid in leaked_children:
@@ -19267,41 +19308,43 @@ class TestStallEndToEnd:
 
     def test_a_silent_lane_is_stopped_with_evidence_and_error_status(
             self, tmp_path, monkeypatch, capsys):
-        # These end-to-end stall tests need a seconds-scale timeout; the
-        # load-time floor (twice the heartbeat) is lifted for them only.
-        monkeypatch.setattr(run_gate, "ASSAY_STALL_FLOOR_SECONDS", 0)  # test-only
-        repo, proj = make_history_repo(tmp_path, """\
-            schema_version = 1
-            [environments.tester-unified]
-            image = "tester-unified:local"
-            [lanes.mutation]
-            kind = "assay"
-            environment = "tester-unified"
-            assay_lane = "cw2b_schema"
-            assay_command = ["./a.pyz"]
-            stall_timeout = "1s"
-            clean_tree = false
-        """)
-        monkeypatch.setenv("RUN_GATE_EVIDENCE_DIR", str(tmp_path / "ev"))
-        monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.2)
-        monkeypatch.setattr(run_gate, "physical_path",
-                            lambda p, **k: Path("/phys"))
-        monkeypatch.chdir(proj)
-        monkeypatch.setattr(sys, "argv", ['run-gate'])
-        log, state = fake_docker_stateful(tmp_path, monkeypatch)
-        (state / ".hang").write_text("")          # `logs -f` never returns
-        write_progress(proj / ".assay" / "progress-cw2b_schema.jsonl",
-                       candidate(37))
-        assert run_gate.main(["mutation"]) == 2
-        err = capsys.readouterr().err
-        assert "lane 'mutation' STALLED" in err
-        assert "still RUNNING but progress-cw2b_schema.jsonl has not advanced" in err
-        assert "last event seen: candidate 37/172" in err
-        assert "container logs preserved at" in err
-        # …and the container is GONE: a stall stops the lane, it does not
-        # leave the thing that stalled running on a shared host.
-        assert state_containers(state) == []
-        assert not (proj / ".run-gate" / "inflight" / "mutation.json").exists()
+        with _test_child_scope():
+            # These end-to-end stall tests need a seconds-scale timeout; the
+            # load-time floor (twice the heartbeat) is lifted for them only.
+            monkeypatch.setattr(run_gate, "ASSAY_STALL_FLOOR_SECONDS", 0)  # test-only
+            repo, proj = make_history_repo(tmp_path, """\
+                schema_version = 1
+                [environments.tester-unified]
+                image = "tester-unified:local"
+                [lanes.mutation]
+                kind = "assay"
+                environment = "tester-unified"
+                assay_lane = "cw2b_schema"
+                assay_command = ["./a.pyz"]
+                stall_timeout = "1s"
+                clean_tree = false
+            """)
+            monkeypatch.setenv("RUN_GATE_EVIDENCE_DIR", str(tmp_path / "ev"))
+            monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.2)
+            monkeypatch.setattr(run_gate, "physical_path",
+                                lambda p, **k: Path("/phys"))
+            monkeypatch.chdir(proj)
+            monkeypatch.setattr(sys, "argv", ['run-gate'])
+            log, state = fake_docker_stateful(tmp_path, monkeypatch)
+            (state / ".hang").write_text("")          # `logs -f` never returns
+            write_progress(proj / ".assay" / "progress-cw2b_schema.jsonl",
+                           candidate(37))
+            assert run_gate.main(["mutation"]) == 2
+            err = capsys.readouterr().err
+            assert "lane 'mutation' STALLED" in err
+            assert "still RUNNING but progress-cw2b_schema.jsonl has not advanced" in err
+            assert "last event seen: candidate 37/172" in err
+            assert "container logs preserved at" in err
+            # …and the container is GONE: a stall stops the lane, it does not
+            # leave the thing that stalled running on a shared host.
+            assert state_containers(state) == []
+            assert not (proj / ".run-gate" / "inflight" / "mutation.json").exists()
+            assert _direct_child_pids() == []
 
     def test_a_moving_lane_is_never_stopped(self, tmp_path, monkeypatch,
                                             capsys):
@@ -19458,35 +19501,37 @@ class TestStallEndToEndCommandLane:
 
     def test_a_silent_command_lane_is_stopped_with_evidence_and_error_status(
             self, tmp_path, monkeypatch, capsys):
-        repo, proj = make_history_repo(tmp_path, self.CMD_LANE)
-        monkeypatch.setenv("RUN_GATE_EVIDENCE_DIR", str(tmp_path / "ev"))
-        monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.2)
-        monkeypatch.setattr(run_gate, "physical_path",
-                            lambda p, **k: Path("/phys"))
-        monkeypatch.chdir(proj)
-        monkeypatch.setattr(sys, "argv", ['run-gate'])
-        log, state = fake_docker_logstream(tmp_path, monkeypatch)
-        (state / ".hang").write_text("")          # `logs -f` never returns
-        assert run_gate.main(["suite"]) == 2
-        out, err = capsys.readouterr()
-        assert "lane 'suite' STALLED" in err
-        assert "still RUNNING but has printed nothing" in err
-        assert "for 1s (stall_timeout 1s)" in err
-        assert "last line seen: (no output yet)" in err
-        assert "container logs preserved at" in err
-        # Round-2 review finding, confirmed by direct reproduction: a
-        # stalled container's pump thread is BY DEFINITION still blocked
-        # reading (nothing more is coming until the container is removed),
-        # so joining it on the stall path used to time out on EVERY stall
-        # and print this WARNING — not just under real host contention, the
-        # case it exists to disclose. It must be silent here — on EITHER
-        # stream (round-3 review: a regression that leaked it onto stdout
-        # instead would not be caught by an err-only assertion).
-        assert "log pump did not finish draining" not in err
-        assert "log pump did not finish draining" not in out
-        # …the container is GONE, same as the assay case: a stall stops the
-        # lane, it does not leave the thing that stalled running.
-        assert not (proj / ".run-gate" / "inflight" / "suite.json").exists()
+        with _test_child_scope():
+            repo, proj = make_history_repo(tmp_path, self.CMD_LANE)
+            monkeypatch.setenv("RUN_GATE_EVIDENCE_DIR", str(tmp_path / "ev"))
+            monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.2)
+            monkeypatch.setattr(run_gate, "physical_path",
+                                lambda p, **k: Path("/phys"))
+            monkeypatch.chdir(proj)
+            monkeypatch.setattr(sys, "argv", ['run-gate'])
+            log, state = fake_docker_logstream(tmp_path, monkeypatch)
+            (state / ".hang").write_text("")          # `logs -f` never returns
+            assert run_gate.main(["suite"]) == 2
+            out, err = capsys.readouterr()
+            assert "lane 'suite' STALLED" in err
+            assert "still RUNNING but has printed nothing" in err
+            assert "for 1s (stall_timeout 1s)" in err
+            assert "last line seen: (no output yet)" in err
+            assert "container logs preserved at" in err
+            # Round-2 review finding, confirmed by direct reproduction: a
+            # stalled container's pump thread is BY DEFINITION still blocked
+            # reading (nothing more is coming until the container is removed),
+            # so joining it on the stall path used to time out on EVERY stall
+            # and print this WARNING — not just under real host contention, the
+            # case it exists to disclose. It must be silent here — on EITHER
+            # stream (round-3 review: a regression that leaked it onto stdout
+            # instead would not be caught by an err-only assertion).
+            assert "log pump did not finish draining" not in err
+            assert "log pump did not finish draining" not in out
+            # …the container is GONE, same as the assay case: a stall stops the
+            # lane, it does not leave the thing that stalled running.
+            assert not (proj / ".run-gate" / "inflight" / "suite.json").exists()
+            assert _direct_child_pids() == []
 
     def test_the_pump_thread_is_joined_even_on_a_stall(
             self, tmp_path, monkeypatch):
