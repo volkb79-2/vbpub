@@ -11,12 +11,13 @@ from . import series as S
 from .devio import FioJob, FioResult
 from .errors import Aborted, IobenchError, Refusal, RunFailed, VerificationFailure
 from .extents import Extents
-from .host import TAIL_BYTES, Host, HostError
+from .host import Host, HostError
 from .proposals import DEFAULT_TARGETS
 from .restore import Safety
 
 FIO_FLOOR = (3, 30)
 SCRATCH = "/run/iobench"
+FIO_LOG = re.compile(r"[A-Za-z0-9_.-]+_(bw|iops|clat_hist)\.[0-9]+\.log")  # the files fio creates from the prefixes iobench passes (`.N.log` per job, N >= 1)
 TICK_S = 1.0
 GIB = 1 << 30
 MIB = 1 << 20
@@ -126,10 +127,16 @@ class Runner:
         sig = self.host.signal_pending()
         if sig is not None:
             raise Aborted(f"signal {sig}")
-        self.watch.check()
+        try:
+            self.watch.check()
+        except (OSError, StopIteration, KeyError, ValueError) as exc:  # the protected cgroup's io.pressure vanished or changed shape
+            raise Aborted(f"the abort guard became unreadable ({type(exc).__name__}: {exc}); a run that cannot be protected does not continue") from exc
 
-    def supervise(self, handles: Sequence[Any], on_tick: Any = None) -> None:
-        """Poll until every handle exits, checking signals and the abort rules each second; kill on any exception."""
+    def supervise(self, handles: Sequence[Any], on_tick: Any = None, units: Sequence[str] = ()) -> None:
+        """Poll until every handle exits, checking signals and the abort rules each second; kill on any exception.
+
+        ``units`` are transient systemd units the handles are clients of: killing a ``systemd-run`` client does not stop its unit, so an abort
+        stops each unit and waits for it (otherwise it lingers and recreates its output file after cleanup, review A N-r3-1)."""
         try:
             while any(h.poll() is None for h in handles):
                 self.host.sleep(TICK_S)
@@ -139,9 +146,24 @@ class Runner:
         except BaseException:
             for h in handles:
                 h.kill()
+            self.stop_units(units)
             if not restore.wait_inflight_zero(self.host, self.disk_name):
                 self.safety.report.warnings.append("inflight_not_drained: the device still had requests in flight 30 s after fio was killed")
             raise
+
+    def stop_units(self, units: Sequence[str]) -> None:
+        """Never raises: this runs inside the abort path, and a failure here must not replace the Aborted being raised."""
+        for unit in units:
+            try:
+                stopped = restore.stop_unit(self.host, unit)
+            except Aborted as exc:  # the operator's second signal: stop waiting on the remaining units too
+                self.safety.report.warnings.append(f"unit_not_stopped: {unit} could not be confirmed stopped ({exc})")
+                break
+            except Exception as exc:  # noqa: BLE001 -- a refused probe or an unusable systemctl
+                self.safety.report.warnings.append(f"unit_not_stopped: {unit} could not be confirmed stopped ({exc})")
+                continue
+            if not stopped:
+                self.safety.report.warnings.append(f"unit_not_stopped: {unit} was still active {restore.UNIT_STOP_WAIT_S:.0f} s after the abort")
 
     def _check_job(self, job: FioJob) -> None:
         if job.filename != self.target.path:
@@ -216,9 +238,12 @@ class Runner:
             workdir = guard.check_workdir(self.host, cfg.work_dir, planned_volume=GIB, installer=cfg.installer,
                                           confirm_quiet_window=cfg.confirm_quiet_window, target_disk=self.disk_name)
             self.workdir = workdir
+            self.host.makedirs(cfg.work_dir)  # "new or empty": a new one is created here, before the first load job needs it
+            self.host.allow_scratch(cfg.work_dir)  # the verified work dir: the only place an unbound fio writer may create a load file
         self.identity = res.s0_identity(self.host, self.target, cfg.work_dir)
         self.safety.begin()
         self.host.makedirs(self.scratch)
+        self.host.allow_scratch(self.scratch)  # the run's own log directory: the only place a fio log prefix may point to
         self.preflight.update({"slice_io_max_before": self.safety.report.io_max_before})
         self.mark("S0", "ok")
 
@@ -289,8 +314,27 @@ class Runner:
         except VerificationFailure as exc:
             return "failed", str(exc), exc.exit_code
         finally:
+            self.clear_scratch()
             self.safety.release()
         return status, message, exit_code
+
+    def clear_scratch(self) -> None:
+        """Remove the run's own log directory (`/run/iobench/<run_id>/`): the fio logs of an ended job go in `finish`, those of a
+        killed job and the directory itself went nowhere before (IOB-BL-09).  Only the fio log files iobench named are removed
+        (`<name>_bw|iops|clat_hist.1.log`), anything else is left and the directory goes only when empty.  Never raises: it runs
+        inside `cleanup`'s `finally`, where an error would skip the lock release and replace the run's status; a failure is a
+        restore warning instead."""
+        try:
+            if not self.host.exists(self.scratch):
+                return
+            for name in self.host.listdir(self.scratch):
+                path = f"{self.scratch}/{name}"
+                st = self.host.stat(path)
+                if FIO_LOG.fullmatch(name) and st is not None and st.is_file and not st.is_symlink:
+                    self.host.remove(path)
+            self.host.rmdir(self.scratch)
+        except Exception as exc:  # noqa: BLE001 -- an unexpected entry or a failing unlink: the directory stays, the run's verdict does not change
+            self.safety.report.warnings.append(f"scratch_not_cleared: {self.scratch} was left in place ({type(exc).__name__}: {exc})")
 
 
 @dataclass

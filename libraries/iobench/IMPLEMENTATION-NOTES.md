@@ -148,3 +148,53 @@ A-S1 (bind `RealHost.write_range`/`run` argv to the authorised extent and use th
 
 ### Could not do / left
 IOB-BL-01..05 (BACKLOG.md). The write BPS time proof (IOB-BL-02) was not small. Nothing here ran against a real device, fio or systemd: RealHost changes (`_run_polled` aside) are untested until IOB-ACC-01.
+
+
+## Pre-release review 2026-10-27 (independent, on top of `wave-iobench-20261027`): findings, fixes, tests
+
+Earlier findings B1..B4 (journal ownership, dirty-ratio coupling, container namespace proof, probe return codes) were re-read and are fixed as described; `tests/test_review_e.py` holds every new test (each red before its fix).
+
+| Finding | Severity | Fix | Test |
+|---|---|---|---|
+| `systemd-run` allowlist accepted any command with a `RuntimeMaxSec=` token (IOB-BL-06 "still open") | high (safety) | exact probe-unit shape in `host._systemd_run_allowed` | `test_rev_e_probe_unit_argv_passes_and_only_that_shape_does` |
+| a fio writer through plain `spawn` had no binding (R2-5); `--rw=trim*` (a DISCARD) passed the key allowlist | high (safety) | `check_argv(bound=)`: writers only to `iobench-*` load files unless bound by `write_range`; `--rw` limited to the four planned workloads; `blkdiscard`/`fallocate -p` only through `discard_range`; FakeHost parity through `_log(bound=)` | `test_rev_e_unbound_fio_writer_*`, `test_rev_e_fio_rw_*`, `test_rev_e_discard_argv_*`, `test_rev_e_fakehost_refuses_*` |
+| the matrix kept every cell's 1 GiB + 256 MiB load files until the end (10+ GiB on a work dir checked for 4 GiB; ENOSPC mid-sweep) | medium (robustness; SPEC DRN-01 says "removed behind itself") | `Matrixer.remove_load_files` after each cell's reduction | `test_rev_e_matrix_load_files_are_removed_behind_each_cell` |
+| a work dir on overlay/multi-device fs (allowed with `--installer`) crashed the matrix in `read_knob`/`written_bytes` | medium | `workdir_disk_unknown` refusal in `Matrixer.body` | `test_rev_e_matrix_refuses_a_work_dir_without_a_block_device_behind_it` |
+| the protected cgroup vanishing mid-run ended the run with a traceback (restore ran, exit 1) | medium (safety) | `Runner._tick` turns a guard read failure into `Aborted` | `test_rev_e_an_unreadable_protect_cgroup_aborts_the_run` |
+| a missing probe binary (docker absent) and an invalid `--production-pattern` were tracebacks | low | `probe_failed` on `OSError`; `production_pattern_invalid` | `test_rev_e_a_missing_probe_binary_*`, `test_rev_e_invalid_production_pattern_*` |
+| a non-UTF-8 `/proc/<pid>/cmdline` of any process broke S0 | low | `UnicodeDecodeError` tolerated in `orphan_fio` | `test_rev_e_orphan_scan_survives_*` |
+| the probe file was journalled once per cell | nit | `register_file` dedupes | `test_rev_e_register_file_journals_each_file_once` |
+| RealHost: `import ctypes` inside `preexec_fn` (post-fork import); file-target marker open followed symlinks | nit (RealHost, untested until ACC-01) | `_PRCTL` resolved at import; `O_NOFOLLOW` for file targets | none (host.py is outside the unit gate) |
+
+Second round (independent Sonnet review of the first commit, same day; `tests/test_review_e.py`):
+
+| Finding | Severity | Fix | Test |
+|---|---|---|---|
+| the load-file rule searched the whole `--filename`: `/dev/sda:/tmp/iobench-x` (fio opens both), `/dev/mapper/iobench-lv`, `/etc/iobench-x`, a trailing newline all passed | high | `SCRATCH_NAME.fullmatch` on the basename; `_clean_path` (absolute, normalised, no `:`/`,`/whitespace/control); `_contained` against `Host.scratch_roots` (realpath of the parent under a root; absent, regular file or directory; never a symlink or device node); S0 authorises the run's log dir and the work dir | `test_rev_e_unbound_fio_writer_*`, `test_rev_e_scratch_name_*`, `test_rev_e_fakehost_refuses_*` |
+| the unit shape checked `bool(script)` only: any script ran as root | high | `a[9] == probe_source.PROBE_SOURCE` (new leaf module, re-exported by `sweep`); every other slot a literal; `DIR`/`OUT` contained, `OUT` iobench-named | `test_rev_e_probe_unit_argv_*`, `test_rev_e_probe_unit_paths_*` |
+| fio log prefixes (`--write_*_log`) took any path; `--offset=-5` only refused on the bound path | medium | log prefixes contained (bound or not); every numeric key `[0-9]+`; `--ioengine`/`--output-format` literal, `--direct`/`--exclusive_open` in {0,1} | `test_rev_e_fio_log_prefixes_*`, `test_rev_e_fio_values_are_typed_*` |
+| mutation survivors (anchor, `-p` slot, `bound=True`, `check_argv` in `discard_range`) | medium | tests: anchored name in both consumers; `--uid=0`/`--setenv=` in the `-p` slot; RealHost `write_range`/`discard_range` on a fake `subprocess.Popen` asserting `check_argv(bound=True, host=self)` ran and refusals raise before any process; AST rule for every `subprocess` call site | `test_rev_e_realhost_*`, `test_rev_e_every_subprocess_call_site_*` |
+| host names in code and tests | low | `restore.py` hints and the test estate use `game-server.*`; `cli.py` examples and `tests/cli_cases.py` keep theirs because `docs/cli-surface.json`/`cli-review.toml` are generated from them (IOB-BL-15) | |
+
+Third round (independent review of `d06f10122`, NOT READY; same file):
+
+| Finding | Severity | Fix | Test |
+|---|---|---|---|
+| `fallocate` allowlist checked `argv[1] in ("-l","-p")` only: `fallocate -l 1 -p /dev/sda` (and `-d`, `-z`, `--punch-hole`) passed an unbound `run` | high | `_fallocate_allowed`: exactly the two builder shapes; unbound `run`/`spawn` refuse every fallocate; `Host.preallocate` is the bound `-l` entry point (RealHost refuses a symlink; `guard.init_file` uses it) | `test_rev_e_non_fio_shapes_*`, `test_rev_e_fallocate_is_refused_unbound_*`, `test_rev_e_realhost_preallocate_*` |
+| `fallocate -l N <any path>` unconstrained through `run` | high | same (no unbound fallocate exists) | same |
+| `RuntimeMaxSec=0` / huge accepted | medium | `[1-9][0-9]*`, `<= RUNTIME_MAX_CAP_S` (600) | `test_rev_e_runtime_max_sec_*` |
+| argv length of blkid / docker ps / systemctl / wipefs / swapon / blkdiscard not pinned; `-.slice` accepted; fio magnitudes unbounded | low | every shape pinned to its builder, unit names typed, `_SLICE` never `-…`, `_FIO_MAX` caps | `test_rev_e_non_fio_shapes_*`, `test_rev_e_fio_magnitudes_*` |
+| `/run/iobench/<run_id>/` never removed (IOB-BL-09) | low | `Runner.clear_scratch` after the restore (files iobench named, directory only when empty); `Host.rmdir` | `test_rev_e_the_run_directory_is_removed_after_the_run` |
+| release notes lacked the caveats | low | `IOBENCH_RELEASE_NOTES` in `cmru.toml` | docs |
+
+Fourth round (re-review of `9da4531f5`: READY, fold-ins):
+
+| Finding | Severity | Fix | Test |
+|---|---|---|---|
+| `Host.preallocate` accepted any path (`/dev/sda`) | medium | `check_preallocate` = `_contained` (RealHost and FakeHost); `guard.init_file` authorises the verified directory and maps the refusal to `path_unclean` | `test_rev_e_preallocate_is_contained_*`, `test_rev_e_realhost_preallocate_refuses_*` |
+| `clear_scratch` unlinked every entry (docstring said otherwise) and ran inside `cleanup`'s `finally`: an unexpected entry would raise before `safety.release()` and replace the verdict | medium (real bug) | only `<name>_bw|iops|clat_hist.<N>.log` regular files (fio's per-job numbering); wrapped, a failure is `scratch_not_cleared` warning. Accepted limit: a foreign file with exactly that name shape placed inside the run's own `/run/iobench/<run_id>/` directory would be removed too | `test_rev_e_the_run_directory_*`, `test_rev_e_a_failing_scratch_cleanup_*` |
+| fio `--name` unvalidated | low | `_FIO_NAME` one clean token | `test_rev_e_fio_job_name_is_one_clean_token` |
+
+Round-4 review lows (folded 2026-10-28): the containment of `preallocate`/`write_range`/the load files is check-then-exec (parent realpath and lstat immediately before the exec; a concurrent writer with write access to the authorised directory can swap a symlink or device node into that window: not defended, stated in SPEC ARC-05); `init_file` authorises the directory only after the file passed every check and revokes it on a refused or failed preallocate (`/dev/<new>` could otherwise have authorised `/dev` for the rest of the process); `devtmpfs`, `devpts`, `proc`, `sysfs` joined `BAD_FS_TYPES` and the fs-type check runs before the UUID check; `FIO_LOG` accepts `.N.log` for any job number. Review of `43eaa540a` (blocking): `revoke_scratch` removed a root by name, so `init_file` revoked a directory that a Runner or the test estate had authorised before; `allow_scratch` now returns whether it added the root and `init_file` revokes only what it added, on every exit but success (except BaseException, revoke-if-added, re-raise; including a `None` stat after fallocate, now a `path_unclean` refusal, and a failing marker or sidecar write).
+
+Judged and left (BACKLOG IOB-BL-09..16): scratch directory cleanup, hosts without docker, file targets on disk-less filesystems, the reclaim-driven stall class the io.pressure guard does not see, the dry-run name mismatch, `_ProcHandle` descriptors, the host-agnostic docs pass, the diskstats row. The iogov division of labour and the IOB-REL-01 prerequisites are in BACKLOG.md.

@@ -15,7 +15,8 @@ def target_ref(host: FakeHost, path: str = "/dev/vda7") -> TargetRef:
 def job(rw="randread", *, off=0, size=GIB, bs=4096, qd=32, rt=30, io=None, metric="iops", hist=False,
         name="j", path="/dev/vda7", rate=None, avg=2000):
     return devio.FioJob(name, path, rw, bs, qd, rt, off, size, io, log_avg_ms=avg, metric=metric, hist=hist,
-                        rate_iops=rate, prefix=f"/run/iobench/{name}")
+                        rate_iops=rate, prefix=f"/run/iobench/{name}",
+                        exclusive=rw in ("write", "randwrite") and path.startswith("/dev/"))  # a device writer is always exclusive (IOB-BL-06 N-r3-3)
 
 
 def run_job(host: FakeHost, j: devio.FioJob, path: str = "/dev/vda7") -> devio.FioResult:
@@ -58,14 +59,14 @@ def make_host(size: int = R1002_SIZE, *, cache: dict | None = None, read: dict |
     host = testing.standard_host(sc, target_size=size)
     if cache is not None:
         host.devices["/dev/vda7"].cache = CacheModel(**cache)
-    host.dynamic["/sys/fs/cgroup/wings.slice/io.pressure"] = lambda: "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+    host.dynamic["/sys/fs/cgroup/game-server.slice/io.pressure"] = lambda: "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
     guard.init_device(host, "/dev/vda7", own=True, expect_size=size, expect_partuuid=R1002_PARTUUID, expect_serial=None, created=CREATED)
     return host
 
 
 def config(**kw) -> stages.Config:
     base = dict(target="/dev/vda7", tool_version="0.1.0", work_dir="/bench/w", confirm_quiet_window=True,
-                protect_cgroup="wings.slice", abort_psi=40.0)
+                protect_cgroup="game-server.slice", abort_psi=40.0)
     base.update(kw)
     return stages.Config(**base)
 

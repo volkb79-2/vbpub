@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Sequence
 
 from . import plan
+from .probe_source import PROBE_SOURCE
 from .series import SeriesError
 
 GIB = 1 << 30
@@ -102,32 +103,7 @@ def sweep_seconds(cells: int, *, worst: bool = False) -> int:
     return plan.sweep_seconds(cells, worst=worst)
 
 
-# -- IOB-SWP-02: the probe script ----------------------------------------------------------
-PROBE_SOURCE = '''import os, sys, time
-
-def run(directory, out, duration, interval, now=time.monotonic, sleep=time.sleep, opener=open):
-    """Append 200 B and fdatasync every `interval` s; one latency (us) per line in `out`."""
-    path = os.path.join(directory, ".iobench-probe")
-    lats = []
-    start = now()
-    nxt = start
-    with opener(path, "ab", buffering=0) as fh:
-        while now() - start < duration:
-            t0 = now()
-            fh.write(b"x" * 200)
-            os.fdatasync(fh.fileno())
-            lats.append((now() - t0) * 1e6)
-            nxt += interval
-            delay = nxt - now()
-            if delay > 0:
-                sleep(delay)
-    with opener(out, "w") as fh:
-        fh.write("".join("%d\\n" % round(v) for v in lats))
-    os.unlink(path)
-
-if __name__ == "__main__":
-    run(sys.argv[1], sys.argv[2], float(sys.argv[3]), float(sys.argv[4]))
-'''
+# -- IOB-SWP-02: the probe script lives in probe_source.py (so that host.check_argv can pin it) and is re-exported here as PROBE_SOURCE.
 
 
 def percentile(values: Sequence[float], q: float) -> float:

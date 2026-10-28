@@ -220,12 +220,12 @@ def test_pla_16_extent_integrity():
     r = cal_mod.Calibrator(host, config())
     r.s0(need_workdir=False)
     r.allowed_writes.add(0, 1 << 30)
-    ok = devio.FioJob(name="x-ok", filename="/dev/vda7", rw="randwrite", bs=4096, iodepth=1, offset=0, size=1 << 20, runtime_s=1)
+    ok = devio.FioJob(name="x-ok", filename="/dev/vda7", rw="randwrite", bs=4096, iodepth=1, offset=0, size=1 << 20, runtime_s=1, exclusive=True, prefix=r.scratch + "/x")
     r.spawn(ok).kill()
-    bad = devio.FioJob(name="x-bad", filename="/dev/vda7", rw="randwrite", bs=4096, iodepth=1, offset=2 << 30, size=1 << 20, runtime_s=1)
+    bad = devio.FioJob(name="x-bad", filename="/dev/vda7", rw="randwrite", bs=4096, iodepth=1, offset=2 << 30, size=1 << 20, runtime_s=1, exclusive=True, prefix=r.scratch + "/x")
     with pytest.raises(IntegrityViolation, match="IOB-PLA-16"):
         r.spawn(bad)
-    tail = devio.FioJob(name="x-tail", filename="/dev/vda7", rw="randwrite", bs=4096, iodepth=1, offset=435853320192 - (1 << 20), size=1 << 20, runtime_s=1)
+    tail = devio.FioJob(name="x-tail", filename="/dev/vda7", rw="randwrite", bs=4096, iodepth=1, offset=435853320192 - (1 << 20), size=1 << 20, runtime_s=1, exclusive=True, prefix=r.scratch + "/x")
     r.allowed_writes.add(0, 435853320192)
     with pytest.raises(IntegrityViolation, match="IOB-PLA-16"):
         r.spawn(tail)

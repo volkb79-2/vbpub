@@ -6,7 +6,7 @@ schema_version = 1
 kind = "none"
 
 [env]
-IOBENCH_RELEASE_NOTES = "## iobench wheel\n\nCache-proof disk benchmark. Requires fio >= 3.30 on the host.\n\n**Install (wheel)**\n```bash\npython -m pip install --no-index --find-links . iobench-*.whl\n```"
+IOBENCH_RELEASE_NOTES = "## iobench wheel\n\nCache-proof disk benchmark: every proposed value says how far it can be trusted. See `libraries/iobench/CHANGES.md` for the full entry.\n\n**Read before running**\n- Verified on a fake host only: `RealHost` (subprocess, sysfs, O_EXCL, prctl) has never run against a real device, fio or systemd; the live acceptance run (IOB-ACC-01) is pending. Treat the first live run as a probe on a disposable target.\n- Runs as root in the host's initial PID and mount namespaces (a container is refused); needs fio >= 3.30 that documents `--exclusive_open` (every device job is opened exclusively; `fio_option_unsupported` otherwise).\n- Writes only to a target prepared by `iobench target init` (a dedicated partition or a preallocated file) and to `iobench-*` load files in the work dir; never persists a setting; restores every changed knob on every exit.\n- `check` exit 7 (valid, some proposal unproven) is the expected answer for `caps` and `iocost_model` until a `seq1m` ceiling history exists (IOB-BL-03, IOB-BL-07).\n- Known limits: the abort guard watches the protected cgroup's `io.pressure` only, not memory/reclaim stalls (IOB-BL-12); a provider throttle visible only on reads is not seen by a write cap (IOB-BL-04). `--confirm-quiet-window` is the operator's protection against both.\n\n**Install (wheel)**\n```bash\npython -m pip install --no-index --find-links . iobench-*.whl cli-extended-*.whl\n```"
 
 [project]
 id = "iobench"

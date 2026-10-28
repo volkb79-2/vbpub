@@ -40,7 +40,7 @@ def test_saf_01_journal_before_first_write():
     s2.set_knob(NR, "16")
     assert journal_first == ["16"]
     with pytest.raises(HostError):
-        s2.set_knob("/sys/fs/cgroup/wings.slice/io.max", "x")
+        s2.set_knob("/sys/fs/cgroup/game-server.slice/io.max", "x")
     with pytest.raises(HostError):
         s2.set_knob("/proc/sys/vm/swappiness", "1")
 
@@ -139,7 +139,7 @@ def test_saf_04_io_max_never_written():
         host.write_sysfs("/sys/fs/cgroup/system.slice/io.max", "8:0 rbps=max")
     with pytest.raises(HostError):
         s.set_knob("/sys/fs/cgroup/system.slice/io.max", "8:0 rbps=max")
-    for bad in (["systemctl", "set-property", "wings.slice", "IOReadBandwidthMax=/dev/vda 1M"], ["systemctl", "daemon-reload"],
+    for bad in (["systemctl", "set-property", "game-server.slice", "IOReadBandwidthMax=/dev/vda 1M"], ["systemctl", "daemon-reload"],
                 ["systemd-run", "-p", "IOWeight=10", "true"]):
         with pytest.raises(HostError):
             host.run(bad)
@@ -149,50 +149,50 @@ def test_saf_04_io_max_never_written():
 def test_saf_04_io_max_changed_by_others_detected():
     host = standard_host()
     host.put("/sys/fs/cgroup/system.slice/io.max", "254:0 rbps=max wbps=max\n")
-    host.put("/sys/fs/cgroup/wings.slice/io.max", "254:0 rbps=1000000\n")
+    host.put("/sys/fs/cgroup/game-server.slice/io.max", "254:0 rbps=1000000\n")
     host.put("/sys/fs/cgroup/io.max", "")
     s = safety(host)
     s.begin()
-    assert set(s.report.io_max_before) == {"/sys/fs/cgroup/system.slice", "/sys/fs/cgroup/wings.slice", "/sys/fs/cgroup"}
+    assert set(s.report.io_max_before) == {"/sys/fs/cgroup/system.slice", "/sys/fs/cgroup/game-server.slice", "/sys/fs/cgroup"}
     s.verify_io_max()
     assert s.report.slice_io_max_unchanged
-    host.put("/sys/fs/cgroup/wings.slice/io.max", "254:0 rbps=2000000\n")  # a neighbour edits a slice meanwhile
+    host.put("/sys/fs/cgroup/game-server.slice/io.max", "254:0 rbps=2000000\n")  # a neighbour edits a slice meanwhile
     with pytest.raises(VerificationFailure) as err:
         s.verify_io_max()
-    assert err.value.exit_code == 9 and "wings.slice" in str(err.value) and not s.report.slice_io_max_unchanged
+    assert err.value.exit_code == 9 and "game-server.slice" in str(err.value) and not s.report.slice_io_max_unchanged
     assert s.report.as_dict()["slice_io_max_unchanged"] is False
 
 
 def pressure_host(**kw):
     host = standard_host(**kw)
-    host.dynamic["/sys/fs/cgroup/wings.slice/io.pressure"] = lambda: "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+    host.dynamic["/sys/fs/cgroup/game-server.slice/io.pressure"] = lambda: "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
     return host
 
 
 def test_saf_05_refuses_with_containers_and_units():
     host = pressure_host()
-    kw = dict(confirm_quiet_window=False, installer=False, production_pattern=None, production_units=[], protect_cgroup="wings.slice", abort_psi=40.0)
+    kw = dict(confirm_quiet_window=False, installer=False, production_pattern=None, production_units=[], protect_cgroup="game-server.slice", abort_psi=40.0)
     assert restore.live_preflight(host, **kw)["containers_active"] == 0
-    host.containers = ["mm-1", "wings-a", "game"]
+    host.containers = ["mm-1", "game-server-a", "game"]
     with pytest.raises(Refusal) as err:
         restore.live_preflight(host, **kw)
     assert err.value.condition == "production_running" and "(3)" in str(err.value) and "not detected" in str(err.value)
     assert restore.live_preflight(host, **{**kw, "confirm_quiet_window": True})["confirmed_quiet_window"]
-    with pytest.raises(Refusal):  # the pattern matches wings-a
-        restore.live_preflight(host, **{**kw, "production_pattern": "^wings"})
+    with pytest.raises(Refusal):  # the pattern matches game-server-a
+        restore.live_preflight(host, **{**kw, "production_pattern": "^game-server"})
     host2 = pressure_host()
-    host2.containers = ["wings-a", "mm"]
+    host2.containers = ["game-server-a", "mm"]
     with pytest.raises(Refusal):
-        restore.live_preflight(host2, **{**kw, "production_pattern": "^wings"})
+        restore.live_preflight(host2, **{**kw, "production_pattern": "^game-server"})
     host3 = pressure_host()
     host3.containers = ["mm"]
-    assert restore.live_preflight(host3, **{**kw, "production_pattern": "^wings"})["containers_active"] == 0
+    assert restore.live_preflight(host3, **{**kw, "production_pattern": "^game-server"})["containers_active"] == 0
     # listed units
     host4 = pressure_host()
-    host4.active_units.add("wings.service")
+    host4.active_units.add("game-server.service")
     host4.known_units.add("other.service")
     with pytest.raises(Refusal, match="listed units are active"):
-        restore.live_preflight(host4, **{**kw, "production_units": ["wings.service", "other.service"]})
+        restore.live_preflight(host4, **{**kw, "production_units": ["game-server.service", "other.service"]})
     assert restore.live_preflight(host4, **{**kw, "production_units": ["other.service"]})["containers_active"] == 0
     # --installer bypasses this check (and SAF-06) only
     host.containers = ["x"]
@@ -202,14 +202,14 @@ def test_saf_05_refuses_with_containers_and_units():
 def test_saf_06_abort_paths_and_required_flags():
     host = standard_host()
     base = dict(confirm_quiet_window=True, installer=False, production_pattern=None, production_units=[])
-    for missing in ({"protect_cgroup": None, "abort_psi": 40.0}, {"protect_cgroup": "wings.slice", "abort_psi": None}, {"protect_cgroup": None, "abort_psi": None}):
+    for missing in ({"protect_cgroup": None, "abort_psi": 40.0}, {"protect_cgroup": "game-server.slice", "abort_psi": None}, {"protect_cgroup": None, "abort_psi": None}):
         with pytest.raises(Refusal) as err:
             restore.live_preflight(host, **base, **missing)
         assert err.value.condition == "abort_guard_required" and err.value.exit_code == 2
     # pressure: above the threshold for 3 consecutive samples aborts; a dip resets the count
     values = iter([50.0, 60.0, 10.0, 50.0, 50.0, 50.0])
-    host.dynamic["/sys/fs/cgroup/wings.slice/io.pressure"] = lambda: f"some avg10={next(values)} avg60=1.00 avg300=1.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
-    watch = restore.AbortWatch(host, "wings.slice", 40.0)
+    host.dynamic["/sys/fs/cgroup/game-server.slice/io.pressure"] = lambda: f"some avg10={next(values)} avg60=1.00 avg300=1.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+    watch = restore.AbortWatch(host, "game-server.slice", 40.0)
     for _ in range(5):
         watch.check()
     with pytest.raises(Aborted) as err:
@@ -344,12 +344,12 @@ def test_saf_03_readback_mismatch_exit_9_in_a_run():
 
 def test_saf_04_io_max_changed_by_others_exit_9_in_a_run():
     host = calibrated_host()
-    host.put("/sys/fs/cgroup/wings.slice/io.max", "254:0 rbps=max\n")
-    host.at(host.now() + 100, lambda: host.put("/sys/fs/cgroup/wings.slice/io.max", "254:0 rbps=1000\n"))
+    host.put("/sys/fs/cgroup/game-server.slice/io.max", "254:0 rbps=max\n")
+    host.at(host.now() + 100, lambda: host.put("/sys/fs/cgroup/game-server.slice/io.max", "254:0 rbps=1000\n"))
     out = matrix(host)
     assert out.exit_code == 9 and "io.max" in out.message and out.status == "failed"
     ok = calibrated_host()
-    ok.put("/sys/fs/cgroup/wings.slice/io.max", "254:0 rbps=max\n")
+    ok.put("/sys/fs/cgroup/game-server.slice/io.max", "254:0 rbps=max\n")
     res_ok = matrix(ok)
     assert res_ok.result["restore"]["slice_io_max_unchanged"] is True
     assert res_ok.result["evidence"]["preflight"]["slice_io_max_before"] == res_ok.result["evidence"]["preflight"]["slice_io_max_after"]
@@ -368,7 +368,7 @@ def test_saf_05_live_host_refuses_in_a_run():
 def test_saf_06_abort_in_a_run_kills_fio_and_restores():
     host = calibrated_host()
     pressure = {"v": 0.0}
-    host.dynamic["/sys/fs/cgroup/wings.slice/io.pressure"] = lambda: f"some avg10={pressure['v']} avg60=0.0 avg300=0.0 total=1\n"
+    host.dynamic["/sys/fs/cgroup/game-server.slice/io.pressure"] = lambda: f"some avg10={pressure['v']} avg60=0.0 avg300=0.0 total=1\n"
     host.at(host.now() + 200, lambda: pressure.update(v=95.0))
     t0 = host.now()
     out = matrix(host)

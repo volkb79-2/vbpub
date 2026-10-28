@@ -43,8 +43,8 @@ def test_arc_05_bad_rw_and_not_fio():
 def test_arc_05_builders_allowed_and_forbidden():
     ok = [devio.fio_version_argv(), devio.blkdiscard_argv("/dev/vda7", 0, 4096), devio.blkid_argv("/dev/vda7"),
           devio.wipefs_check_argv("/dev/vda7"), devio.swapon_show_argv(), devio.fallocate_argv("/x", 10),
-          devio.punch_hole_argv("/x", 0, 10), devio.docker_ps_argv(), devio.unit_active_argv("wings"),
-          devio.probe_unit_argv("u", "iobench.slice", 120, "print(1)", ["/d", "/o", "60", "0.5"])]
+          devio.punch_hole_argv("/x", 0, 10), devio.docker_ps_argv(), devio.unit_active_argv("game-server"),
+          devio.probe_unit_argv("iobench-probe-u", "iobench.slice", 120, __import__("iobench.sweep").sweep.PROBE_SOURCE, ["/d", "/o", "60", "0.5"])]
     for argv in ok:
         assert devio.is_allowed_argv(argv), argv
     bad = [["fstrim", "/"], ["mkfs.ext4", "/dev/x"], ["wipefs", "-a", "/dev/x"], ["mount", "/dev/x", "/m"],

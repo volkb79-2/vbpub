@@ -4,12 +4,11 @@ from __future__ import annotations
 import posixpath
 from typing import Any
 
-from . import ceilings, derive, devio, ladder, plan, plausibility, proposals, sweep
+from . import ceilings, derive, devio, plan, plausibility, proposals, sweep
 from . import result as res
 from . import series as S
-from .errors import Aborted, IobenchError, Refusal, RunFailed
+from .errors import Refusal, RunFailed
 from .extents import Extents
-from .host import HostError
 from .stages import GIB, MIB, Config, Outcome, Runner
 
 LOAD_S = 60
@@ -95,6 +94,12 @@ class Matrixer(Runner):
                           direct=False, fsync=FSYNC_EVERY, log_avg_ms=1000)
         return writer, fsyncj
 
+    def remove_load_files(self, *jobs: devio.FioJob) -> None:
+        """A cell's load files go as soon as the cell is reduced: the work-dir check sized ONE cell's volume (IOB-TGT-05), and a sweep
+        with repeats would otherwise hold ten of them (IOB-DRN-01: "removed behind itself").  They stay journalled: a crash still removes them."""
+        for job in jobs:
+            self.host.remove(job.filename)
+
     # -- S3 ------------------------------------------------------------------------------------------------
     def s3(self) -> None:
         writer, fsyncj = self.load_jobs("s3", LOAD_S)
@@ -104,6 +109,7 @@ class Matrixer(Runner):
         self.supervise(handles, lambda: samples.append(self.written_bytes()))
         self.finish(writer, handles[0], t0)
         self.finish(fsyncj, handles[1], t0)
+        self.remove_load_files(writer, fsyncj)
         self.r_drain = sweep.drain_rate(samples)
         ladder_bps = (self.cal["cap_basis"]["bps"]["write"].get("value")
                       or (self.cal["cap_basis"]["write"].get("value") or 0) * 4096)
@@ -146,13 +152,15 @@ class Matrixer(Runner):
         out_path = posixpath.join(self.cfg.work_dir, f".iobench-probe-{self.run_id}-{tag}")
         self.safety.register_file(out_path)
         self.safety.register_file(posixpath.join(self.cfg.work_dir, ".iobench-probe"))
-        unit = devio.probe_unit_argv(f"iobench-probe-{self.run_id}-{tag}", PROBE_SLICE, seconds + PROBE_SLACK_S, sweep.PROBE_SOURCE,
+        unit_name = f"iobench-probe-{self.run_id}-{tag}"
+        unit = devio.probe_unit_argv(unit_name, PROBE_SLICE, seconds + PROBE_SLACK_S, sweep.PROBE_SOURCE,
                                      [self.cfg.work_dir, out_path, str(seconds), str(sweep.PROBE_INTERVAL_S)])
         t0 = self.host.now()
         handles = self.spawn_all([lambda: self.spawn(writer), lambda: self.spawn(fsyncj), lambda: self.host.spawn(unit)])
-        self.supervise(handles)
+        self.supervise(handles, units=[unit_name])
         self.finish(writer, handles[0], t0)
         out = self.finish(fsyncj, handles[1], t0)
+        self.remove_load_files(writer, fsyncj)
         unit_result = handles[2].wait()
         if unit_result.returncode != 0:
             raise RunFailed(f"the sync-latency probe unit failed ({unit_result.returncode}): {unit_result.stderr.strip()}")
@@ -173,10 +181,10 @@ class Matrixer(Runner):
         if len(measured) < 3 or measured[0]["name"] != "REF" or measured[-1]["name"] != "REF2":
             raise S.SeriesError("the sweep lost a REF cell")
         decision = sweep.choose(measured, {})
-        for name in decision["needs_repeat"][:2]:
+        for k, name in enumerate(decision["needs_repeat"][:2]):
             if self.fits(sweep.SWEEP_CELL_S + 60):
                 cell = next(c for c in plan_cells if c.name == name)
-                self.repeats[name] = self.run_cell(cell, f"s4-rep-{name}")
+                self.repeats[name] = self.run_cell(cell, f"s4-rep-{k}")  # the tag becomes a unit name and a file name: never the cell name (`dirty_bytes/2`)
         self.decision = sweep.choose(measured, self.repeats)
         self.evidence["sweep"] = {"noise_floor_ratio": self.decision["noise_floor_ratio"], "cells": records, "repeats": self.repeats,
                                   "winners": {k: v["name"] for k, v in self.decision["winners"].items()}, "base": self.base}
@@ -348,6 +356,10 @@ class Matrixer(Runner):
     def body(self) -> None:
         self.require_calibration()
         self.s0(need_workdir=True)
+        if not self.workdir.disk_name:
+            raise Refusal("workdir_disk_unknown", f"{self.cfg.work_dir} is on a filesystem with no single block device behind it "
+                          f"({self.workdir.fs.fstype} on {self.workdir.fs.source}); the matrix reads its queue knobs and /proc/diskstats",
+                          "use a work dir on a filesystem mounted from one block device (ext4 or xfs on a partition)")
         self.r_est = self.cal["R_est_bps"]
         self.ws = self.cal["extent_written"][0][1]
         self.read_extent = Extents(self.cal["extent_written"])

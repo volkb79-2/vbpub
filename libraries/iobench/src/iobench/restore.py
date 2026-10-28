@@ -10,7 +10,7 @@ from typing import Any, Sequence
 
 from . import devio
 from .errors import Aborted, Refusal, VerificationFailure
-from .host import Host, HostError
+from .host import Host, HostError, is_scratch_name  # one naming rule, shared with the argv rule of host.check_argv
 
 JOURNAL = "/run/iobench/restore.json"
 LOCK = "/run/iobench/lock"
@@ -29,7 +29,6 @@ COUPLED_RATIO = {
     "/proc/sys/vm/dirty_bytes": "/proc/sys/vm/dirty_ratio",
     "/proc/sys/vm/dirty_background_bytes": "/proc/sys/vm/dirty_background_ratio",
 }
-SCRATCH_FILE = re.compile(r"(^|/)(iobench-[^/]*|\.iobench[^/]*)$")
 
 
 def knob_allowed(path: str) -> bool:
@@ -110,6 +109,29 @@ def wait_inflight_zero(host: Host, disk: str, timeout_s: float = INFLIGHT_WAIT_S
     return True
 
 
+UNIT_STOP_WAIT_S = 30.0
+UNIT_GONE_STATES = ("inactive", "failed")  # anything else (including output we do not recognise) is not "gone"
+
+
+def stop_unit(host: Host, unit: str, timeout_s: float = UNIT_STOP_WAIT_S) -> bool:
+    """Stop a transient probe unit and wait until it is gone. Killing the ``systemd-run`` client leaves the unit running (it lingers until its
+    RuntimeMaxSec and recreates its output file after cleanup), so an abort stops the unit itself. False when it is still active after ``timeout_s``."""
+    try:
+        host.run(devio.unit_stop_argv(unit), timeout=timeout_s)
+    except Aborted:
+        raise  # the operator's second signal ends the wait
+    except Exception:  # noqa: BLE001 -- a stop that timed out or failed to start is judged by the state wait below
+        pass
+    waited = 0.0
+    # `is-active` answers 3 for activating/deactivating too; ActiveState names the stages, so a unit still stopping is not read as gone
+    while devio.probe(host, f"systemctl show {unit}", devio.unit_state_argv(unit)).stdout.strip() not in UNIT_GONE_STATES:
+        if waited >= timeout_s:
+            return False
+        host.sleep(1.0)
+        waited += 1.0
+    return True
+
+
 # -- live-host preflight (SAF-05 / SAF-06) -----------------------------------------------------
 LIMITATION = "Units not named with --production-unit are not detected."
 
@@ -123,7 +145,7 @@ def _validate_guards(host: Host, protect_cgroup: str, abort_psi: float) -> None:
         psi_some_avg10(host, protect_cgroup)
     except (OSError, StopIteration, KeyError, ValueError) as exc:
         raise Refusal("protect_cgroup_unreadable", f"cannot read the io.pressure of {protect_cgroup} ({type(exc).__name__}); the abort guard would not work",
-                      "name an existing cgroup with PSI enabled (for example wings.slice)") from exc
+                      "name an existing cgroup with PSI enabled (for example game-server.slice)") from exc
 
 
 def live_preflight(host: Host, *, confirm_quiet_window: bool, installer: bool, production_pattern: str | None,
@@ -132,19 +154,23 @@ def live_preflight(host: Host, *, confirm_quiet_window: bool, installer: bool, p
     if installer:
         if (protect_cgroup is None) != (abort_psi is None):
             raise Refusal("abort_guard_incomplete", "--protect-cgroup and --abort-psi must be given together; half a guard never aborts",
-                          "pass both (for example --protect-cgroup wings.slice --abort-psi 40) or neither")
+                          "pass both (for example --protect-cgroup game-server.slice --abort-psi 40) or neither")
         if protect_cgroup is not None and abort_psi is not None:
             _validate_guards(host, protect_cgroup, abort_psi)
         return {"containers_active": 0, "confirmed_quiet_window": confirm_quiet_window, "bypassed": True}
-    names = [n for n in devio.probe(host, "docker ps", devio.docker_ps_argv()).stdout.split()
-             if production_pattern is None or re.search(production_pattern, n)]
+    try:
+        pattern = None if production_pattern is None else re.compile(production_pattern)
+    except re.error as exc:
+        raise Refusal("production_pattern_invalid", f"--production-pattern {production_pattern!r} is not a valid regular expression ({exc})",
+                      "pass a Python regular expression, for example '^game-server'") from exc
+    names = [n for n in devio.probe(host, "docker ps", devio.docker_ps_argv()).stdout.split() if pattern is None or pattern.search(n)]
     units = [u for u in production_units if unit_is_active(host, u)]
     if (names or units) and not confirm_quiet_window:
         raise Refusal("production_running", f"production containers are running ({len(names)}) or listed units are active ({len(units)}); {LIMITATION}",
                       "rerun with --confirm-quiet-window in an agreed window")
     if protect_cgroup is None or abort_psi is None:
         raise Refusal("abort_guard_required", "live-host runs need --protect-cgroup and --abort-psi (there are no defaults)",
-                      "pass --protect-cgroup <cgroup> and --abort-psi <threshold> (for example wings.slice and 40)")
+                      "pass --protect-cgroup <cgroup> and --abort-psi <threshold> (for example game-server.slice and 40)")
     _validate_guards(host, protect_cgroup, abort_psi)
     return {"containers_active": len(names), "units_active": units, "confirmed_quiet_window": confirm_quiet_window}
 
@@ -154,7 +180,7 @@ def unit_is_active(host: Host, unit: str) -> bool:
     load = devio.probe(host, f"systemctl show {unit}", devio.unit_loadstate_argv(unit)).stdout.strip()
     if load == "not-found":
         raise Refusal("unit_not_found", f"--production-unit {unit} does not exist (LoadState=not-found); a typo would be read as inactive",
-                      "name an existing unit, for example wings.service")
+                      "name an existing unit, for example game-server.service")
     return devio.probe(host, f"systemctl is-active {unit}", devio.unit_active_argv(unit), ok=(0, 3)).returncode == 0
 
 
@@ -167,8 +193,8 @@ def orphan_fio(host: Host) -> list[str]:
             continue
         try:
             argv = host.read_text(f"/proc/{name}/cmdline").split("\0")
-        except OSError:
-            continue  # the process ended while we looked
+        except (OSError, UnicodeDecodeError):
+            continue  # the process ended while we looked, or its arguments are not UTF-8 (any process on the host: not an fio of ours)
         if posixpath.basename(argv[0]) == "fio" and any(a.startswith("--name=run-") for a in argv):
             found.append(name)
     return found
@@ -225,6 +251,8 @@ class Safety:
         self.journal_written = True
 
     def register_file(self, path: str) -> None:
+        if path in self.files:
+            return  # the probe file is registered by every sweep cell: one entry, one unlink
         self.files.append(path)
         self._write_journal()
 
@@ -361,7 +389,7 @@ def parse_journal(text: str) -> dict[str, Any]:
         if not knob_allowed(entry["path"]):
             raise bad(f"knob outside the allowlist: {entry['path']}")
     for path in doc["files"]:
-        if not (isinstance(path, str) and posixpath.isabs(path) and ".." not in path.split("/") and SCRATCH_FILE.search(path)):
+        if not (isinstance(path, str) and posixpath.isabs(path) and ".." not in path.split("/") and is_scratch_name(path)):
             raise bad(f"file outside the iobench naming: {path!r}")
     for ratio_path, value in doc["coupled"].items():
         if ratio_path not in COUPLED_RATIO.values() or not isinstance(value, str):

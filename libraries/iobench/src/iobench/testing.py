@@ -24,7 +24,7 @@ from typing import Any, Callable, Sequence
 from . import devio
 from .devio import HIST_BINS, PERCENTILES, FioJob, bin_value_ns, parse_job
 from .extents import Extents
-from .host import (TAIL_BYTES, HostError, RunResult, StatInfo, TargetRef, check_argv,
+from .host import (TAIL_BYTES, HostError, RunResult, StatInfo, TargetRef, check_argv, check_preallocate,
                    check_sysfs_path)
 
 GIB = 1 << 30
@@ -529,8 +529,12 @@ class FakeHost:
         self.signals_installed = False
         self.probe_failures: dict[str, RunResult] = {}  # command basename -> a failing result to return instead of the normal one
         self.known_units: set[str] = set()
+        self.stopped_units: list[str] = []
+        self.cancelled_outputs: set[str] = set()
+        self.unit_stop_sticks = True  # False models a unit that stays active after `systemctl stop` (a stuck unit)
         self.probe_start_delay_s = 2.0  # the transient unit starts a little after the fio jobs it observes
         self.fio_options: set[str] = {"exclusive_open"}  # the options the installed (fake) fio documents
+        self.scratch_roots: list[str] = []  # authorised by the Runner (and by standard_host for the test estate), like RealHost
         init_pid, init_mnt = "pid:[4026531836]", "mnt:[4026531841]"
         self.ns_links: dict[str, str] = {"/proc/self/ns/pid": init_pid, "/proc/1/ns/pid": init_pid,
                                          "/proc/self/ns/mnt": init_mnt, "/proc/1/ns/mnt": init_mnt}
@@ -619,8 +623,10 @@ class FakeHost:
         if path in self.symlinks:
             return StatInfo(0, 1, 1, False, False, True)
         real = self._resolve(path)
-        if real in self.devices and self.devices[real].kind == "file":
+        if real in self.devices:
             dev = self.devices[real]
+            if dev.kind != "file":  # a device node: like os.lstat, neither a regular file nor a directory
+                return StatInfo(dev.size, 0, 1, False, False, False)
             return StatInfo(dev.size, dev.inode or 0, self.nlinks.get(real, 1), False, True, False)
         if real in self.files:
             return StatInfo(len(self.files[real]), hash(real) & 0xFFFFFF, self.nlinks.get(real, 1), False, True, False)
@@ -660,6 +666,10 @@ class FakeHost:
 
     def remove(self, path: str) -> None:
         self.files.pop(path, None)
+
+    def rmdir(self, path: str) -> None:
+        if path in self.dirs and not any(p.startswith(path + "/") for p in (*self.files, *self.dirs, *self.devices)):
+            self.dirs.discard(path)
 
     COUPLED = (("/proc/sys/vm/dirty_bytes", "/proc/sys/vm/dirty_ratio"),
                ("/proc/sys/vm/dirty_background_bytes", "/proc/sys/vm/dirty_background_ratio"))
@@ -779,9 +789,18 @@ class FakeHost:
         }
 
     # -- processes -----------------------------------------------------------
-    def _log(self, argv: Sequence[str]) -> None:
-        check_argv(argv)
+    def _log(self, argv: Sequence[str], *, bound: bool = False) -> None:
+        check_argv(argv, bound=bound, host=self)  # the same rule RealHost applies: an unbound run/spawn never writes or discards a target
         self.argv_log.append(list(argv))
+
+    def allow_scratch(self, path: str) -> bool:
+        if path in self.scratch_roots:
+            return False
+        self.scratch_roots.append(path)
+        return True
+
+    def revoke_scratch(self, path: str) -> None:
+        self.scratch_roots = [r for r in self.scratch_roots if r != path]
 
     def run(self, argv: Sequence[str], timeout: float | None = None) -> RunResult:
         self._log(argv)
@@ -802,13 +821,19 @@ class FakeHost:
         if name == "swapon":
             out = "".join(f"{p} partition 1G\n" for p in self.swap_lines())
             return RunResult(0, out, "")
-        if name == "fallocate" and argv[1] == "-l":
-            return self._fallocate(argv[3], int(argv[2]))
         if name == "docker":
             return RunResult(0, "".join(c + "\n" for c in self.containers), "")
+        if name == "systemctl" and argv[1] == "show" and argv[3] == "ActiveState":
+            return RunResult(0, "active\n" if argv[-1] in self.active_units else "inactive\n", "")
         if name == "systemctl" and argv[1] == "show":
             known = argv[-1] in self.active_units or argv[-1] in self.known_units
             return RunResult(0, "loaded\n" if known else "not-found\n", "")
+        if name == "systemctl" and argv[1] == "stop":
+            self.stopped_units.append(argv[2])
+            if self.unit_stop_sticks:
+                self.active_units.discard(argv[2])  # like systemd: a stopped unit never writes its output file afterwards
+            self.cancelled_outputs.add(argv[2])
+            return RunResult(0, "", "")
         if name == "systemctl":
             active = argv[2] in self.active_units
             return RunResult(0 if active else 3, "active\n" if active else "inactive\n", "")
@@ -826,6 +851,11 @@ class FakeHost:
             out.append(f"UUID={dev.fs_uuid}")
         out += [f"TYPE={sig}" for sig in dev.signatures]
         return RunResult(0 if out else 2, "".join(line + "\n" for line in out), "")
+
+    def preallocate(self, path: str, size: int) -> RunResult:
+        check_preallocate(self, path)  # the same containment RealHost applies
+        self._log(devio.fallocate_argv(path, size), bound=True)  # the bound entry point, like RealHost (an unbound fallocate is refused)
+        return self._fallocate(path, size)
 
     def _fallocate(self, path: str, size: int) -> RunResult:
         mp = self._mount_for(path)
@@ -889,7 +919,7 @@ class FakeHost:
         return self._launch(job, dev)
 
     def write_range(self, argv: Sequence[str], target: TargetRef, offset: int, length: int) -> FakeHandle:
-        self._log(argv)
+        self._log(argv, bound=True)
         dev = self._verify(target)
         dev.check_range(offset, length, "fio")
         job = devio.assert_writer_bound(argv, target, offset, length)  # the same binding RealHost enforces (parity)
@@ -907,7 +937,7 @@ class FakeHost:
         return handle
 
     def discard_range(self, argv: Sequence[str], target: TargetRef, offset: int, length: int) -> RunResult:
-        self._log(argv)
+        self._log(argv, bound=True)
         dev = self._verify(target)
         devio.assert_discard_bound(argv, target, offset, length)
         dev.check_range(offset, length, "discard")
@@ -941,6 +971,9 @@ class FakeHost:
         return FakeHandle(self, start + job.runtime_s, RunResult(0, out, ""), sim)
 
     def _spawn_probe(self, argv: Sequence[str]) -> FakeHandle:
+        unit_name = next((t.split("=", 1)[1] for t in argv if t.startswith("--unit=")), "")
+        if not re.fullmatch(r"[A-Za-z0-9:_.\\-]+", unit_name):  # systemd rejects `/`, `*`, `+` in a unit name
+            raise HostError(f"systemd-run would refuse the unit name {unit_name!r}")
         outpath, duration = argv[-3], float(argv[-2])
         outcome = self.sweep_model(self.knobs())
         n = int(duration / float(argv[-1]))
@@ -950,7 +983,14 @@ class FakeHost:
         done = self.clock + duration + self.probe_start_delay_s
         # like the real unit: the output file exists only once the unit has run to its end, and systemd-run returns at that moment
         # only with --wait (without it, it returns as soon as the unit is queued)
-        self.at(done, lambda: self.put(outpath, text))
+        unit = next((t.split("=", 1)[1] for t in argv if t.startswith("--unit=")), "")
+        self.active_units.add(unit)
+
+        def finish_unit() -> None:
+            if unit not in self.cancelled_outputs:
+                self.put(outpath, text)
+                self.active_units.discard(unit)
+        self.at(done, finish_unit)
         waits = "--wait" in argv
         return FakeHandle(self, done if waits else self.clock, RunResult(0, "", ""))
 
@@ -1011,5 +1051,7 @@ def standard_host(scenario: Scenario | None = None, *, target_size: int = R1002_
     host.makedirs("/bench")
     host.makedirs("/run")
     host.makedirs("/sys/fs/cgroup")
+    host.allow_scratch("/run/iobench")  # the test estate's scratch places (a Runner authorises its own run dir and work dir on S0)
+    host.allow_scratch("/bench")
     host.put("/proc/sys/kernel/osrelease", "7.2.9\n")
     return host

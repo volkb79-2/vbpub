@@ -27,6 +27,7 @@ registry = ["ghcr.io"]
 #   topos <- none  (declared release order)
 #   nyxloom <- cli-extended  (declared release order)
 #   pwmcp <- cli-extended  (declared release order)
+#   iobench <- cli-extended  (declared release order)
 #   tls-edge <- none  (declared release order)
 #   modern-debian-tools-python-debug <- cli-extended, ciu, cmru, pwmcp, topos, nyxloom  (declared release order)
 #     consumes first-party wheels: cli-extended, ciu, cmru, topos, nyxloom
@@ -36,7 +37,7 @@ registry = ["ghcr.io"]
 #
 # LEVELS (a project releases after every project on a lower level; longest declared chain)
 #   L0: cli-extended, cgroup-profiler, ciu, assay, topos, tls-edge, tester-base
-#   L1: run-gate-project, nyxloom, pwmcp
+#   L1: run-gate-project, nyxloom, pwmcp, iobench
 #   L2: cmru
 #   L3: modern-debian-tools-python-debug, mdt-cockpit
 #
@@ -48,7 +49,7 @@ registry = ["ghcr.io"]
 # CMRU requires cli-extended at runtime and a published Run-Gate release for its gate.
 # Run-Gate's full R2 qualification requires the released CGProfile observer.
 # project_order must be a topological order of every level; the preflight enforces it.
-project_order = ["cli-extended", "cgroup-profiler", "run-gate-project", "cmru", "ciu", "assay", "topos", "nyxloom", "pwmcp", "tls-edge", "modern-debian-tools-python-debug", "mdt-cockpit", "tester-base"]
+project_order = ["cli-extended", "cgroup-profiler", "run-gate-project", "cmru", "ciu", "assay", "topos", "nyxloom", "pwmcp", "iobench", "tls-edge", "modern-debian-tools-python-debug", "mdt-cockpit", "tester-base"]
 default_steps = ["run-tests", "build", "push"]
 execution_mode = "project-first"
 # Repository credentials live in gitignored root cmru.secret.toml. A project may
@@ -222,6 +223,14 @@ depends_on = ["cli-extended"]
 [orchestration.project.tls-edge]
 config = "tls-edge/cmru.toml"
 depends_on = []
+
+# iobench (libraries/iobench, IOB-REL-01): a stdlib measurement core whose `iobench` CLI shell
+# adopts cli-extended (the wheel requires cli-extended>=0.4.0, CX-D1), so the release preflight
+# demands the declaration. Nothing in the estate consumes the iobench wheel yet (migration
+# phases M1-M4 in libraries/iobench/docs/DESIGN-GUIDE.md); cmru is an installed tool, not a build edge.
+[orchestration.project.iobench]
+config = "libraries/iobench/cmru.toml"
+depends_on = ["cli-extended"]
 
 # Consumes no first-party package (stdlib-only wheel); cmru is the source-built
 # release controller, not a published artifact dependency. id == directory name is a cmru

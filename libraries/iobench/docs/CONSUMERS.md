@@ -33,7 +33,7 @@ root refusals can never be overridden. Without a marker no `calibrate` or `matri
 ## 2. Calibrate (once per host or storage class)
 
 ```bash
-iobench calibrate --target /dev/vda7 --work-dir /bench/iobench-work --profile standard --confirm-quiet-window --protect-cgroup wings.slice --abort-psi 40
+iobench calibrate --target /dev/vda7 --work-dir /bench/iobench-work --profile standard --confirm-quiet-window --protect-cgroup game-server.slice --abort-psi 40
 ```
 
 * Hard budgets: `quick` 12 min, `standard` 60 min, `thorough` 75 min. Skipped stages are recorded, never shortened silently.
@@ -44,8 +44,8 @@ iobench calibrate --target /dev/vda7 --work-dir /bench/iobench-work --profile st
 ## 3. Matrix iteration (the fast path)
 
 ```bash
-iobench matrix --target /dev/vda7 --work-dir /bench/iobench-work --confirm-quiet-window --protect-cgroup wings.slice --abort-psi 40
-iobench matrix --target /dev/vda7 --work-dir /bench/iobench-work --knob max_sectors_kb --candidates 64,128,256 --repeat --confirm-quiet-window --protect-cgroup wings.slice --abort-psi 40
+iobench matrix --target /dev/vda7 --work-dir /bench/iobench-work --confirm-quiet-window --protect-cgroup game-server.slice --abort-psi 40
+iobench matrix --target /dev/vda7 --work-dir /bench/iobench-work --knob max_sectors_kb --candidates 64,128,256 --repeat --confirm-quiet-window --protect-cgroup game-server.slice --abort-psi 40
 ```
 
 The first form runs 6 cells (typical 11 min, worst case 15 min) and writes `/var/lib/iobench/result.json`; the second compares one knob (A B A B, typical 4 min, worst case 8 min). Every runtime
@@ -166,7 +166,7 @@ iobench ceilings summary --window-days 30 --json
 `worst` and `best` feed `min = 100` and `max = ceil(110 x best / worst)` (here 330). With no records the summary says `"history": "single-run"` and every dependent value is `unproven: worst_from_single_run`.
 Until a probe or governor appends observations (D-011), the history is `single-run` on hosts that only ran the benchmark.
 
-## 8. A host with no spare partition: file targets (gstammtisch-class hosts)
+## 8. A host with no spare partition: file targets
 
 The wizard's default (D-IOC-4) must be able to run on production hosts that have no raw partition to give. A **file target** is a preallocated file on an existing filesystem, written once in
 full and accessed with `O_DIRECT`. Its identity is (filesystem UUID, inode, size) with the marker in its last MiB and a sidecar `.iobench-target`; every writing stage re-verifies it. Refused:
@@ -174,7 +174,7 @@ tmpfs/ramfs/overlay, symlinks, hard links, too little free space, and on the roo
 
 ```bash
 iobench target init --file /var/lib/iobench/target.img --size 6442450944 --i-own-this-file --expect-fs-uuid 0b1c2d3e-4f50-4a61-8b72-93a4b5c6d7e8 --confirm-quiet-window
-iobench calibrate --target /var/lib/iobench/target.img --work-dir /var/lib/iobench/work --profile standard --confirm-quiet-window --protect-cgroup wings.slice --abort-psi 40
+iobench calibrate --target /var/lib/iobench/target.img --work-dir /var/lib/iobench/work --profile standard --confirm-quiet-window --protect-cgroup game-server.slice --abort-psi 40
 ```
 
 With a few GiB of free space the cliff is unreachable, so read caps come out `unproven: device_smaller_than_cache_margin` (reads are cheap there); the write cap is what matters and is `proven` by
@@ -201,7 +201,9 @@ prints the stage plan, each stage's allotted seconds, the exact fio argv and the
 A few more refusals you may meet (each names its condition and a remedy; all exit 2):
 
 * `container_pid_namespace` / `mount_namespace_mismatch` / `namespace_unprovable`: iobench is not running in the host's initial PID/mount namespace (or cannot prove it): "run on the host, not in a container".
-* `probe_failed`: `blkid`, `wipefs`, `docker ps`, `systemctl` or `fio --version` failed (not "found nothing"); fix the tool (run as root) and rerun. `unit_not_found`: a `--production-unit` that does not exist.
+* `probe_failed`: `blkid`, `wipefs`, `docker ps`, `systemctl` or `fio --version` failed or is not installed (not "found nothing"); fix the tool (binary on PATH, run as root) and rerun. `unit_not_found`: a `--production-unit` that does not exist; `production_pattern_invalid`: a `--production-pattern` that is not a regular expression.
+* `workdir_disk_unknown` (`matrix` only): the work dir is on a filesystem with no single block device behind it (overlay, multi-device, network); the matrix needs the device's queue knobs and `/proc/diskstats` row. Use a directory on ext4/xfs on a partition.
+* Exit 8 (`aborted`) also when the protected cgroup's `io.pressure` becomes unreadable during the run (the cgroup vanished): a run that cannot be protected does not continue; the knobs are restored.
 * `abort_psi_invalid` (`--abort-psi` must be a finite percentage in (0, 100]), `protect_cgroup_unreadable` (no `io.pressure` for that cgroup), `abort_guard_incomplete` (`--installer` with one guard flag), `stale_abort_file`
   (remove `/run/iobench/abort` yourself), `orphan_fio` (an fio from a dead run still runs), `journal_corrupt` (inspect `/run/iobench/restore.json`).
 * `holder_active` (an md/dm holder), `path_colon`, `exists_without_sidecar` (the sidecar must match the file's inode, size and filesystem UUID), `dry_run_rate_other_target` / `dry_run_rate_unusable`

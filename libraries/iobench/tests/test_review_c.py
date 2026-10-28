@@ -69,7 +69,7 @@ def target_ref(host):
 def test_rev_c_s1_argv_must_match_the_authorised_extent():
     host = standard_host()
     ref = target_ref(host)
-    j = devio.FioJob("j", DEV, "randwrite", 4096, 8, 5, 0, GIB, 4096 * 100, prefix="/run/iobench/j")
+    j = devio.FioJob("j", DEV, "randwrite", 4096, 8, 5, 0, GIB, 4096 * 100, prefix="/run/iobench/j", exclusive=True)
     host.write_range(j.argv(), ref, 0, GIB)
     for bad in (j.with_(filename="/dev/vda3"), j.with_(offset=4096), j.with_(size=2 * GIB)):
         with pytest.raises(HostError, match="authorised"):
@@ -116,7 +116,8 @@ def test_rev_c_n2_the_sync_latency_probe_is_waited_for():
 def test_rev_c_n2_without_wait_the_output_is_read_before_it_exists():
     host = calibrated()
     real = host.spawn
-    host.spawn = lambda argv: real([a for a in argv if a != "--wait"]) if argv[0] == "systemd-run" else real(argv)
+    # straight into the unit model: the argv allowlist would refuse a probe unit without --wait before it ran (test_rev_e_*)
+    host.spawn = lambda argv: host._spawn_probe([a for a in argv if a != "--wait"]) if argv[0] == "systemd-run" else real(argv)
     with pytest.raises(FileNotFoundError):  # what the old argv did on a real host
         matrix(host)
 
@@ -345,7 +346,9 @@ def test_rev_c_s15_two_tier_cache_end_to_end():
 
 def test_rev_c_allowed_but_unsimulated_commands_and_unbounded_probe_units_are_refused():
     host = standard_host()
+    with pytest.raises(HostError, match="discard_range"):
+        host.run(["fallocate", "-p", "-o", "0", "-l", "1", "/x"])  # a hole punch outside discard_range is refused before it is simulated
     with pytest.raises(HostError, match="unsupported command"):
-        host.run(["fallocate", "-p", "-o", "0", "-l", "1", "/x"])
+        host.run(["fio", "--name=x", "--filename=/dev/vda7", "--rw=read"])  # allowed shape, but a job runs only through spawn
     with pytest.raises(HostError, match="allowlist"):
         host.spawn(["systemd-run", "--wait", "python3", "-c", "pass"])  # a probe unit without RuntimeMaxSec

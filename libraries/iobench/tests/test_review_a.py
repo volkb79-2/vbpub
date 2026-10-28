@@ -17,8 +17,8 @@ DIRTY_BG = "/proc/sys/vm/dirty_background_bytes"
 RATIO = "/proc/sys/vm/dirty_ratio"
 RATIO_BG = "/proc/sys/vm/dirty_background_ratio"
 NR = "/sys/class/block/vda/queue/nr_requests"
-PRESSURE = "/sys/fs/cgroup/wings.slice/io.pressure"
-KW = dict(confirm_quiet_window=False, installer=False, production_pattern=None, production_units=[], protect_cgroup="wings.slice", abort_psi=40.0)
+PRESSURE = "/sys/fs/cgroup/game-server.slice/io.pressure"
+KW = dict(confirm_quiet_window=False, installer=False, production_pattern=None, production_units=[], protect_cgroup="game-server.slice", abort_psi=40.0)
 
 
 def holder(host, run="run-a"):
@@ -218,7 +218,7 @@ def test_rev_a_s3_abort_psi_must_be_a_real_percentage(bad):
 
 
 def test_rev_a_s3_protect_cgroup_must_have_readable_pressure():
-    host = standard_host()  # no wings.slice/io.pressure
+    host = standard_host()  # no game-server.slice/io.pressure
     with pytest.raises(Refusal) as err:
         restore.live_preflight(host, **KW)
     assert err.value.condition == "protect_cgroup_unreadable"
@@ -230,7 +230,7 @@ def test_rev_a_s3_protect_cgroup_must_have_readable_pressure():
         restore.live_preflight(host, **{**KW, "installer": True})
     assert err.value.condition == "protect_cgroup_unreadable"
     assert restore.live_preflight(pressure_host(), **{**KW, "installer": True})["bypassed"]
-    restore.AbortWatch(host, "wings.slice", None).check()
+    restore.AbortWatch(host, "game-server.slice", None).check()
 
 
 # -- S4: a stale abort file ---------------------------------------------------------------------------------------
@@ -246,7 +246,7 @@ def test_rev_a_s4_a_stale_abort_file_is_refused_before_any_write():
 # -- S5: io.max verification --------------------------------------------------------------------------------------
 def test_rev_a_s5_no_io_max_verdict_without_a_before_snapshot():
     host = standard_host()
-    host.put("/sys/fs/cgroup/wings.slice/io.max", "254:0 rbps=1000000\n")
+    host.put("/sys/fs/cgroup/game-server.slice/io.max", "254:0 rbps=1000000\n")
     s = holder(host)  # begin() never ran (the run failed in S0)
     s.verify_io_max()
     assert s.report.slice_io_max_unchanged
@@ -254,7 +254,7 @@ def test_rev_a_s5_no_io_max_verdict_without_a_before_snapshot():
 
 def test_rev_a_s5_a_cgroup_appearing_or_vanishing_is_not_an_io_max_change():
     host = standard_host()
-    host.put("/sys/fs/cgroup/wings.slice/io.max", "254:0 rbps=1000000\n")
+    host.put("/sys/fs/cgroup/game-server.slice/io.max", "254:0 rbps=1000000\n")
     host.put("/sys/fs/cgroup/old.slice/io.max", "254:0 rbps=1000\n")
     s = holder(host)
     s.begin()
@@ -262,8 +262,8 @@ def test_rev_a_s5_a_cgroup_appearing_or_vanishing_is_not_an_io_max_change():
     del host.files["/sys/fs/cgroup/old.slice/io.max"]  # another stopped
     s.verify_io_max()
     assert s.report.slice_io_max_unchanged and len(s.report.warnings) == 2
-    host.put("/sys/fs/cgroup/wings.slice/io.max", "254:0 rbps=2\n")
-    with pytest.raises(VerificationFailure, match="wings.slice"):
+    host.put("/sys/fs/cgroup/game-server.slice/io.max", "254:0 rbps=2\n")
+    with pytest.raises(VerificationFailure, match="game-server.slice"):
         s.verify_io_max()
 
 
@@ -367,8 +367,11 @@ def test_rev_a_s10_io_limit_spellings_are_refused(token):
 
 
 def test_rev_a_s10_probe_unit_and_fio_argv_pass():
-    check_argv(devio.probe_unit_argv("u", "iobench-probe.slice", 90, "pass", []))
-    check_argv(["fio", "--ioengine=libaio", "--iodepth=32", "--io_size=1M", "--filename=/dev/vda7"])
+    from iobench.sweep import PROBE_SOURCE
+    host = standard_host()
+    host.makedirs("/bench/w")
+    check_argv(devio.probe_unit_argv("iobench-probe-u", "iobench-probe.slice", 90, PROBE_SOURCE, ["/bench/w", "/bench/w/.iobench-probe-u", "60", "0.5"]), host=host)
+    check_argv(["fio", "--ioengine=libaio", "--iodepth=32", "--io_size=1048576", "--filename=/dev/vda7"])  # byte counts, never fio's `1M`
 
 
 def test_rev_a_b2_a_failing_ratio_write_is_reported_not_raised_raw():

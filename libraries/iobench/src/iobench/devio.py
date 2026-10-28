@@ -175,11 +175,23 @@ def unit_loadstate_argv(unit: str) -> list[str]:
 
 def probe(host: Host, name: str, argv: Sequence[str], ok: Sequence[int] = (0,)) -> RunResult:
     """Run a read-only probe; a return code outside ``ok`` is a refusal naming the probe (never "nothing found")."""
-    res = host.run(argv)
+    try:
+        res = host.run(argv)
+    except OSError as exc:  # the binary is missing or not executable: the same silence, the same answer (never a traceback)
+        raise Refusal("probe_failed", f"the {name} probe could not run ({exc.strerror or exc}); its absence cannot be read as 'nothing found'",
+                      f"install {posixpath.basename(argv[0])} (binary on PATH, run as root) and rerun") from exc
     if res.returncode not in ok:
         raise Refusal("probe_failed", f"the {name} probe failed (exit {res.returncode}: {res.stderr.strip() or 'no message'}); "
                       "its silence cannot be read as 'nothing found'", f"fix {name} (run as root, binary on PATH) and rerun")
     return res
+
+
+def unit_state_argv(unit: str) -> list[str]:
+    return ["systemctl", "show", "-p", "ActiveState", "--value", unit]
+
+
+def unit_stop_argv(unit: str) -> list[str]:
+    return ["systemctl", "stop", unit]
 
 
 def probe_unit_argv(unit: str, slice_name: str, runtime_max_s: int, script: str, args: Sequence[str]) -> list[str]:
@@ -281,6 +293,8 @@ def assert_writer_bound(argv: Sequence[str], target: TargetRef, offset: int, len
     job = parse_job(argv)
     if job.filename != target.path or job.offset != offset or job.size != length:
         raise HostError("writer extent differs from the extent it was authorised for")
+    if target.kind == "device" and not job.exclusive:  # the kernel's O_EXCL refusal (mounted / swap / claimed) must be armed for every device writer
+        raise HostError(f"writer on device {target.path} without --exclusive_open=1")
     if length <= 0 or offset < 0 or job.end > target.size_bytes - TAIL_BYTES:
         raise HostError(f"writer extent [{offset}, {offset + length}) overlaps the reserved tail or the end of {target.path}")
     return job
