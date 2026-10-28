@@ -5,8 +5,9 @@ Labels and order come from truenas/webui ``src/app/services/navigation/navigatio
 Virtual Machines, Apps, Reporting, System (slide-out). There is no "Virtualization" or top-level "Network"
 entry in the v27 UI: Network lives under System, and Containers/VMs are separate top-level items.
 Entries the web UI shows only conditionally (entitlement, feature or hardware dependent) carry ``conditional``:
-Containers, Virtual Machines, Apps, KMIP and Enclosure; tnt will hide them when the host does not support them
-(BACKLOG TNT-35). Deviations are marked ``tnt_only`` and listed in docs/DESIGN.md section 4.
+Apps, KMIP and Enclosure. M1's Containers and Virtual Machines are always shown as separate top-level workflow
+entries. Per-host detection for the remaining conditional entries is tracked in BACKLOG TNT-35. Deviations are
+marked ``tnt_only`` and listed in docs/DESIGN.md section 4.
 """
 from __future__ import annotations
 
@@ -38,15 +39,18 @@ MENU: tuple[MenuItem, ...] = (
         _p("storage/import", "Import Pool", "M2", matrix=("B-06",)),
         _p("storage/boot-data", "Boot pool data", "M2", tnt_only=True, matrix=("B-01", "B-06")),
     )),
-    _p("datasets", "Datasets", "M1", matrix=("A-01", "A-02", "A-03")),
+    MenuItem("datasets", "Datasets", "implemented", "M1", matrix=("A-01", "A-02", "A-03")),
     _p("sharing", "Shares", "M3", matrix=("A-07", "B-05")),
-    _p("data-protection", "Data Protection"),
-    _p("credentials", "Credentials", children=(
-        _p("users", "Users"), _p("groups", "Groups"), _p("privileges", "Privileges"), _p("directory-services", "Directory Services"),
+    MenuItem("data-protection", "Data Protection", "implemented", "M1", children=(
+        MenuItem("snapshots", "Snapshots", "implemented", "M1"),
+        _p("replication", "Replication"), _p("cloud-sync", "Cloud Sync"),
+    )),
+    MenuItem("credentials", "Credentials", "implemented", "M1", children=(
+        MenuItem("users", "Local Users", "implemented", "M1"), _p("groups", "Groups"), _p("privileges", "Privileges"), _p("directory-services", "Directory Services"),
         _p("backup-credentials", "Backup Credentials"), _p("certificates", "Certificates"), _p("s3-access-keys", "S3 Access Keys"),
         _p("kmip", "KMIP", conditional=True))),
-    _p("containers", "Containers", "M3", matrix=("A-04", "A-06", "B-04"), conditional=True),
-    _p("vm", "Virtual Machines", "M3", matrix=("A-05", "A-06", "B-04"), conditional=True),
+    MenuItem("containers", "Containers", "implemented", "M1", matrix=("A-04", "A-06", "B-04")),
+    MenuItem("vm", "Virtual Machines", "implemented", "M1", matrix=("A-05", "A-06", "B-04")),
     _p("apps", "Apps", conditional=True),
     _p("reportsdashboard/cpu", "Reporting"),
     _p("system", "System", "M1", children=(

@@ -7,12 +7,21 @@ from textual.app import App, ComposeResult, SystemCommand
 from textual.containers import Horizontal
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Static, Tree
+from textual.widgets import Select
 
 from ..menu import MENU, MenuItem, walk
 from ..session import Session
 from .disks import DisksView
+from .workflows import WorkflowView
 
-VIEWS = {"storage/disks": DisksView}
+VIEWS = {
+    "storage/disks": DisksView,
+    "datasets": lambda session: WorkflowView(session, "datasets"),
+    "snapshots": lambda session: WorkflowView(session, "snapshots"),
+    "containers": lambda session: WorkflowView(session, "containers"),
+    "vm": lambda session: WorkflowView(session, "vm"),
+    "users": lambda session: WorkflowView(session, "users"),
+}
 
 
 def placeholder(item: MenuItem) -> Static:
@@ -91,3 +100,20 @@ class TntApp(App):
         for path, item in walk():
             if not item.children:
                 yield SystemCommand(f"Go to {' > '.join(path)}", f"{item.status}, {item.milestone}", lambda i=item: self.show(i))
+                factory = VIEWS.get(item.key)
+                if factory is not None and item.key != "storage/disks":
+                    from .workflows import OPERATIONS
+                    for label, operation in OPERATIONS.get(item.key, ()):
+                        yield SystemCommand(f"Plan {label} in {item.label}", "Opens the workflow action form",
+                                            lambda i=item, op=operation: self._open_action(i, op))
+
+    def _open_action(self, item: MenuItem, operation: str) -> None:
+        self.show(item)
+
+        def select_operation() -> None:
+            try:
+                self.query_one("#workflow-operation", Select).value = operation
+            except Exception:
+                return
+
+        self.call_after_refresh(select_operation)
