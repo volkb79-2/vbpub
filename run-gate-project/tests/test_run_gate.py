@@ -16639,35 +16639,78 @@ class TestReattachAcrossADeadClient:
         repo, proj = self._repo(tmp_path)
         log, state = fake_docker_stateful(tmp_path, monkeypatch)
         (state / ".hang").write_text("")      # `docker logs -f` blocks
-        client = subprocess.Popen([sys.executable, str(_TOOL_INVOKE), "suite"],
-                                  cwd=proj, stdout=subprocess.PIPE,
-                                  stderr=subprocess.STDOUT, text=True)
-        deadline = time.monotonic() + 30
-        while not state_containers(state) and time.monotonic() < deadline:
-            time.sleep(0.05)
-        assert state_containers(state), "the fixture never started a container"
-        # …and then until the client has written its record, or 3 s pass.
-        # Waiting is not an assertion: the PRE-FIX client never writes one,
-        # so it is killed on the deadline and still produces the duplicate
-        # this test exists to catch.
-        record = proj / ".run-gate" / "inflight" / "suite.json"
-        deadline = time.monotonic() + 3
-        while not record.exists() and time.monotonic() < deadline:
-            time.sleep(0.05)
-        client.kill()
-        client.wait(timeout=30)
-        first = state_containers(state)
-        assert len(lane_runs(log)) == 1
+        previous_subreaper = _set_child_subreaper(True)
+        client = None
+        try:
+            client_script = tmp_path / "run-gate-client.py"
+            client_script.write_text(textwrap.dedent(f"""\
+                import importlib.util
+                import sys
+                from pathlib import Path
 
-        (state / ".hang").unlink()            # the container finishes
-        out = run_tool(proj, "suite")
-        assert len(lane_runs(log)) == 1, (
-            "a SECOND container was started for a lane that already had one "
-            f"running: {lane_runs(log)}")
-        assert f"run-gate: re-attached to {first[0]}" in out.stdout, out.stdout
-        assert out.returncode == 0
-        assert state_containers(state) == []   # removed in the finally
-        assert not (proj / ".run-gate" / "inflight" / "suite.json").exists()
+                sys.argv[0] = "run-gate"
+                spec = importlib.util.spec_from_file_location(
+                    "run_gate", {str(_TOOL)!r})
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[spec.name] = module
+                spec.loader.exec_module(module)
+                module.physical_path = lambda path, *a, **kw: Path("/phys")
+                raise SystemExit(module.main(["suite"]))
+            """), encoding="utf-8")
+            client = subprocess.Popen([sys.executable, str(client_script)],
+                                      cwd=proj, stdout=subprocess.PIPE,
+                                      stderr=subprocess.STDOUT, text=True)
+            deadline = time.monotonic() + 30
+            while not state_containers(state) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            if not state_containers(state):
+                if client.poll() is None:
+                    client.kill()
+                output, _ = client.communicate(timeout=30)
+                pytest.fail(
+                    "the fixture never started a container; "
+                    f"client exit={client.returncode}, output:\n{output}"
+                )
+            # …and then until the client has written its record, or 3 s pass.
+            # Waiting is not an assertion: the PRE-FIX client never writes one,
+            # so it is killed on the deadline and still produces the duplicate
+            # this test exists to catch.
+            record = proj / ".run-gate" / "inflight" / "suite.json"
+            deadline = time.monotonic() + 3
+            while not record.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            client.kill()
+            client.wait(timeout=30)
+            # SIGKILL cannot run the client-side cleanup. The fake `docker
+            # logs -f` process (and its polling `sleep`) is not the container
+            # whose record this test is preserving, so reap that helper tree
+            # before proving the next client can re-attach to the same state.
+            _kill_and_reap_direct_children()
+            assert _direct_child_pids() == [], (
+                "killing the Run-Gate client left its fake docker logs process "
+                f"tree behind: {_direct_child_pids()}"
+            )
+            first = state_containers(state)
+            assert len(lane_runs(log)) == 1
+
+            (state / ".hang").unlink()        # the container finishes
+            out = run_tool(proj, "suite")
+            assert len(lane_runs(log)) == 1, (
+                "a SECOND container was started for a lane that already had one "
+                f"running: {lane_runs(log)}")
+            assert f"run-gate: re-attached to {first[0]}" in out.stdout, out.stdout
+            assert out.returncode == 0
+            assert state_containers(state) == []   # removed in the finally
+            assert not (proj / ".run-gate" / "inflight" / "suite.json").exists()
+        finally:
+            if client is not None:
+                if client.poll() is None:
+                    client.kill()
+                client.wait(timeout=30)
+            try:
+                _kill_and_reap_direct_children()
+            finally:
+                _set_child_subreaper(previous_subreaper)
 
 
 def plant_inflight(proj: Path, repo: Path, state: Path | None, *,
