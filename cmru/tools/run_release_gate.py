@@ -1049,9 +1049,10 @@ FIRST_RELEASE_POSTPONE_REASON = (
 #: ``lowest <= version < below``; an id may list several windows. KI-79: the whole 6.2 patch
 #: line (6.2.0 by the 2026-10-14 operator decision; widened 2026-10-21 -- "release more cmru
 #: also without prior R2" -- to every 6.2.x) and, by the 2026-10-23 operator decision, the 7.0
-#: line (the 7.0.0 release carrying the mandatory `[github] token_source`). Every other version
-#: still refuses; moving a window needs a new operator decision and a reviewed change here.
-POSTPONEMENT_RELEASE_VERSIONS = {"KI-79": (((6, 2, 0), (6, 3, 0)), ((7, 0, 0), (7, 1, 0)))}
+#: line (the 7.0.0 release carrying the mandatory `[github] token_source`) and, by the 2026-10-27
+#: operator decision (R2 waived for every release of the current release wave), the 7.1 line.
+#: Every other version still refuses; moving a window needs a new operator decision and a reviewed change here.
+POSTPONEMENT_RELEASE_VERSIONS = {"KI-79": (((6, 2, 0), (6, 3, 0)), ((7, 0, 0), (7, 1, 0)), ((7, 1, 0), (7, 2, 0)))}
 
 
 def _version_tuple(version: str) -> tuple[int, int, int]:
