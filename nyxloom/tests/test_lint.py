@@ -2123,3 +2123,73 @@ class TestL1DependsOnTroveResolution:
         findings = lint.lint_file(dependent, cfg)
         l1_dep_errors = [f for f in findings if f.rule == "L1" and "depends_on" in f.message]
         assert l1_dep_errors == []
+
+
+class TestL7ForbidAbsentPathNL26:
+    """NL-26: scope.forbid may name a path that does not exist (a guard
+    against creating it); only abs / ../ / archived references still fail.
+    source.ref keeps the existence requirement."""
+
+    @staticmethod
+    def _handoff(tmp_path, *, touch='"src/test.py"', forbid=None, ref=None):
+        source = '{kind: review, ref: "%s"}' % ref if ref else "{kind: roadmap}"
+        scope = "scope: {touch: [%s]%s}" % (
+            touch, (", forbid: [%s]" % forbid) if forbid else "")
+        content = textwrap.dedent(f"""\
+            ---
+            schema_version: 1
+            id: demo-P01-test
+            project: demo
+            title: Test
+            tier: flash-high
+            input_revision: "0000000"
+            source: {source}
+            {scope}
+            oracles:
+              - id: O1
+                observable: "pass"
+                negative: "fail"
+                gate: pytest-q
+            gates: [pytest-q]
+            escalate_if: ["trigger"]
+            ---
+
+            Body with BLOCKED: marker.
+            worktree branch out of scope read first context to read
+            """)
+        path = tmp_path / "demo-P01-test.md"
+        path.write_text(content)
+        return path
+
+    @staticmethod
+    def _l7_errors(path, project):
+        return [f for f in lint.lint_file(path, project)
+                if f.rule == "L7" and f.severity == "error"]
+
+    def test_absent_forbid_path_is_valid(self, sample_project, tmp_path):
+        path = self._handoff(tmp_path, forbid='"run-gate.footprint.json"')
+        assert self._l7_errors(path, sample_project) == []
+
+    def test_absent_forbid_glob_is_valid(self, sample_project, tmp_path):
+        path = self._handoff(tmp_path, forbid='"nothing/**/matches.*"')
+        assert self._l7_errors(path, sample_project) == []
+
+    def test_absent_touch_path_still_valid(self, sample_project, tmp_path):
+        path = self._handoff(tmp_path, touch='"src/brand_new_file.py"')
+        assert self._l7_errors(path, sample_project) == []
+
+    def test_absent_source_ref_still_errors(self, sample_project, tmp_path):
+        path = self._handoff(tmp_path, ref="docs/nonexistent.md")
+        errors = self._l7_errors(path, sample_project)
+        assert any("does not exist" in f.message for f in errors)
+
+    @pytest.mark.parametrize("bad", ["../x", "/abs/path"])
+    def test_escaping_forbid_still_errors(self, sample_project, tmp_path, bad):
+        path = self._handoff(tmp_path, forbid=f'"{bad}"')
+        errors = self._l7_errors(path, sample_project)
+        assert any("non-resolving" in f.message and bad in f.message for f in errors)
+
+    def test_archived_forbid_still_errors(self, sample_project, tmp_path):
+        path = self._handoff(tmp_path, forbid='"docs/archive/foo.md"')
+        errors = self._l7_errors(path, sample_project)
+        assert any("archived document" in f.message for f in errors)

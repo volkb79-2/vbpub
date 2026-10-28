@@ -108,7 +108,7 @@ rule or template change, not only as prose**.
 | L4 | **No enumerated subset under a universal contract**: a contract saying "every/all X" whose oracle lists specific instances is flagged; the oracle must name the comparison, not the columns | P78 |
 | L5 | **No reviewer-only deliverables in implementer scope**: DECISIONS-INBOX writes, STATUS edits, merge/validate steps in an implementer handoff are rejected | P69 |
 | L6 | **No oracle deferral**: acceptance steps phrased as another role's duty ("the controller/reviewer will validate…") are rejected; every oracle must be executable in the implementer's declared environment, and if that needs an environment build, the build is in scope | P84 |
-| L7 | All referenced paths resolve from the repo root; cross-repo references must be vendored or explicitly marked non-resolvable-context | P69 |
+| L7 | All referenced paths resolve from the repo root (a `scope.touch` file to be created and an absent `scope.forbid` entry are exempt from the existence test; absolute, `../` and archived references always fail); cross-repo references must be vendored or explicitly marked non-resolvable-context | P69 |
 | L8 | `escalate_if` triggers are mechanical (named contract unmet, forbidden file needed, threshold exceeded) — introspective phrasing ("reflect whether…") is rejected | P51 §7 |
 | L9 | Scope touching declared infra globs forces the stack mutex + deploy-validation gate | dstdns §4 |
 | L10 | Handoff token size within project budget (warn, then block at 2×) — carve investment is real but bounded | v2 §11 |

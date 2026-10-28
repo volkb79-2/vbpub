@@ -3,12 +3,14 @@ kind: backlog-entry
 schema_version: 1
 id: NL-26
 title: "nyxloom lint L7 errors on scope.forbid entries naming a path that does not exist yet"
-status: open
+status: fixed
 type: "bugfix"
 severity: "medium"
 component: "nyxloom-lint"
 provenance: "dstdns 2026-09-30 P224 carve"
 filed_date: "2026-09-30"
+closed_date: "2026-10-27"
+closed_reason: "Release wave 2026-10-27: lint L7 no longer errors on a scope.forbid entry naming an absent path or glob; abs, ../ and archived forbid entries and an absent source.ref still error (tests/test_lint.py TestL7ForbidAbsentPathNL26)."
 ---
 
 ## Observed mechanism and reproduction

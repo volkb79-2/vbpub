@@ -233,7 +233,17 @@ def test_wrapper_sigkill_drill(tmp_state, tmp_path):
     try:
         # Give the wrapper a moment to reach RUNNING (lease acquired, child
         # spawned) before pulling the trigger.
-        time.sleep(1.0)
+        # Poll for the observable (ATTEMPT_STARTED) instead of a fixed 1s
+        # sleep: under host/container contention the detached wrapper can
+        # take longer than that to start, and the oracle below needs it to
+        # have started before it is killed.
+        started_deadline = time.monotonic() + 60.0
+        while time.monotonic() < started_deadline:
+            if any(ev.type == EventType.ATTEMPT_STARTED
+                   for ev in storage.iter_events(project)
+                   if ev.attempt_id == attempt_id):
+                break
+            time.sleep(0.05)
         os.kill(pid, signal.SIGKILL)
 
         receipt_path = Path(spec.receipt_path)
