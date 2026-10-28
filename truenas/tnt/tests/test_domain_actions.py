@@ -381,6 +381,16 @@ def test_menu_mirrors_the_webui_labels():
     ]
 
 
+def test_menu_milestones_match_the_post_m2_plan():
+    milestones = {item.key: item.milestone for _, item in walk()}
+    assert milestones["dashboard"] == "It2"
+    assert milestones["reportsdashboard/cpu"] == "It2"
+    assert milestones["services"] == "It2"
+    assert milestones["storage/pools"] == "Later"
+    assert milestones["groups"] == "Later"
+    assert "M3" not in milestones.values()
+
+
 def test_menu_matrix_ids_exist_in_the_snapshot():
     ids = {r.id for r in matrix.load(SNAPSHOT)}
     used = {m for _, i in walk() for m in i.matrix}

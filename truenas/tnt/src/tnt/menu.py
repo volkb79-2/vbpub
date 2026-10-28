@@ -21,25 +21,25 @@ class MenuItem:
     key: str  # stable id; also the web UI route where one exists
     label: str
     status: str = "planned"  # implemented | planned
-    milestone: str = "M3"
+    milestone: str = "Later"
     tnt_only: bool = False
     children: tuple["MenuItem", ...] = ()
     matrix: tuple[str, ...] = ()  # ACTION-MATRIX row ids this screen will carry
     conditional: bool = False  # the web UI shows this entry only when the host supports it (license, feature, hardware)
 
 
-def _p(key: str, label: str, milestone: str = "M3", **kw) -> MenuItem:
+def _p(key: str, label: str, milestone: str = "Later", **kw) -> MenuItem:
     return MenuItem(key, label, milestone=milestone, **kw)
 
 
 MENU: tuple[MenuItem, ...] = (
-    _p("dashboard", "Dashboard", "M1"),
+    _p("dashboard", "Dashboard", "It2"),
     MenuItem("storage", "Storage", "implemented", "M0", children=(
-        _p("storage/pools", "Pools", "M1", matrix=("A-09", "B-03", "B-06")),
+        _p("storage/pools", "Pools", "Later", matrix=("A-09", "B-03", "B-06")),
         MenuItem("storage/disks", "Disks", "implemented", "M0", matrix=("B-01",)),
-        _p("storage/free-space", "Free space and partitions", "M2", tnt_only=True, matrix=("B-01", "B-02", "B-03")),
-        _p("storage/import", "Import Pool", "M2", matrix=("B-06",)),
-        _p("storage/boot-data", "Boot pool data", "M2", tnt_only=True, matrix=("B-01", "B-06")),
+        _p("storage/free-space", "Free space and partitions", "Later", tnt_only=True, matrix=("B-01", "B-02", "B-03")),
+        _p("storage/import", "Import Pool", "Later", matrix=("B-06",)),
+        _p("storage/boot-data", "Boot pool data", "Later", tnt_only=True, matrix=("B-01", "B-06")),
     )),
     MenuItem("datasets", "Datasets", "implemented", "M1", matrix=("A-01", "A-02", "A-03")),
     MenuItem("sharing", "Shares", "implemented", "M2", matrix=("A-07", "B-05")),
@@ -58,14 +58,14 @@ MENU: tuple[MenuItem, ...] = (
     MenuItem("containers", "Containers", "implemented", "M1", matrix=("A-04", "A-06", "B-04")),
     MenuItem("vm", "Virtual Machines", "implemented", "M1", matrix=("A-05", "A-06", "B-04")),
     MenuItem("apps", "Apps", "implemented", "M2", conditional=True),
-    _p("reportsdashboard/cpu", "Reporting"),
+    _p("reportsdashboard/cpu", "Reporting", "It2"),
     MenuItem("system", "System", "implemented", "M2", children=(
         MenuItem("update", "Update", "implemented", "M2"),
         MenuItem("reboot", "Reboot", "implemented", "M2", tnt_only=True),
         MenuItem("shutdown", "Shutdown", "implemented", "M2", tnt_only=True),
         MenuItem("general", "General Settings", "implemented", "M2"), _p("advanced", "Advanced Settings"),
         MenuItem("network", "Network", "implemented", "M2"),
-        _p("boot", "Boot", "M1"), _p("services", "Services"), _p("alert-settings", "Alert Settings"),
+        _p("boot", "Boot", "Later"), _p("services", "Services", "It2"), _p("alert-settings", "Alert Settings"),
         MenuItem("audit", "Audit", "implemented", "M2"),
         _p("viewenclosure", "Enclosure", conditional=True))),
 )

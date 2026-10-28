@@ -49,7 +49,8 @@
   `live` test marker and a namespaced `tnt-live-` acceptance lane that is authored but not run.
 - M0 scaffold remains: `tnt --version`, `tnt doctor`, `tnt profile list|show`, `tnt disks`, `tnt tui` (Storage > Disks).
 - Fixed the registered `r0-r1` coverage suite environment and added focused safety-branch cases without lowering the
-  97% branch-coverage floor.
+  97% combined coverage floor. The final gate reported 97.18% combined line/branch coverage and 95.30% branch-only
+  coverage.
 - Transport over `truenas_api_client` (pinned by sha of tag TS-27.0.0-RC.1): wss only and TLS verification on by
   default. Authentication failures are fatal and not retried.
 - Default-deny `GuardedRpc`: write sessions run only the exact calls of the plan being applied; refusal list with live pool/disk state; disk.wipe protection computed from live membership.
