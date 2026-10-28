@@ -23,6 +23,7 @@ ZFS_GPT_TYPE_GUID = "6a898cc3-1dd2-11b2-99a6-080020736631"
 MIN_PARTITION_NUMBER = 4
 _LSBLK_COLUMNS = "PATH,NAME,PKNAME,PARTLABEL,PARTTYPE,PARTUUID,PARTN,SIZE,FSTYPE,MOUNTPOINT,TYPE"
 _PARTUUID = re.compile(r"^[0-9a-fA-F-]{36}$")
+_POOL_GUID = re.compile(r"^\d+$")
 _COMMAND_TIMEOUT = 15
 ALLOWED_CREATE_FIELDS = frozenset({"name", "topology"})
 REFUSED_CREATE_FIELDS = frozenset({
@@ -297,6 +298,38 @@ class BootDiskPartitionService(Service):
             raise CallError(f"{expected['path']} changed identity or is no longer on the boot-pool disk")
         return row
 
+    async def _verify_labelclear_target(self, expected: dict, device: str) -> dict:
+        """Recheck the reserved parent and mount state at the label-clear boundary."""
+        row = await self._verify_partition_identity(expected)
+        if row.get("parent_path") != expected.get("parent_path"):
+            raise CallError(
+                f"{expected['path']} is no longer on its verified boot-pool disk; labels were left untouched"
+            )
+        if row.get("mountpoint"):
+            raise CallError(
+                f"refusing to clear labels on mounted partition {expected['path']} "
+                f"({row['mountpoint']!r})"
+            )
+        try:
+            code, mounts, err = await self._run(
+                "findmnt", "-rn", "-S", device, timeout=_COMMAND_TIMEOUT,
+            )
+        except asyncio.TimeoutError as exc:
+            raise CallError(
+                f"timed out rechecking mount state for {expected['path']}; labels were left untouched"
+            ) from exc
+        if code == 0:
+            raise CallError(
+                f"refusing to clear labels on mounted partition {expected['path']}: "
+                f"{mounts.strip() or err.strip() or 'findmnt found a mount'}"
+            )
+        if code != 1:
+            raise CallError(
+                f"could not verify mount state for {expected['path']}: {err.strip() or code}; "
+                "labels were left untouched"
+            )
+        return row
+
     async def _pool_name_available(self, name: str) -> None:
         try:
             code, imported, err = await self._run(
@@ -348,19 +381,91 @@ class BootDiskPartitionService(Service):
                 f"cannot clear labels while an exported pool may remain on {partition['path']}: "
                 f"{err.strip() or _pool_import_records(scan)!r}; partition labels were left untouched"
             )
-        await self._verify_partition_identity(partition)
+        await self._verify_labelclear_target(partition, device)
         code, _, err = await self._run("zpool", "labelclear", "-f", device, timeout=_COMMAND_TIMEOUT)
         if code:
             raise CallError(f"labelclear failed on verified partition {partition['path']}: {err.strip()}")
 
-    async def _rollback_created_pool(self, name: str, partition: dict) -> None:
-        """Destroy/export only the pool proved to reside on the verified PARTUUID."""
+    async def _read_pool_guid(self, name: str) -> str:
+        code, output, err = await self._run(
+            "zpool", "get", "-H", "-o", "value", "guid", name, timeout=_COMMAND_TIMEOUT,
+        )
+        guid = output.strip()
+        if code or not _POOL_GUID.fullmatch(guid):
+            raise CallError(
+                f"could not capture/verify the numeric GUID for pool {name!r}: {err.strip() or guid!r}"
+            )
+        return guid
+
+    async def _assert_pool_guid(self, name: str, expected_guid: str) -> None:
+        actual_guid = await self._read_pool_guid(name)
+        if actual_guid != expected_guid:
+            raise CallError(
+                f"pool {name!r} GUID changed: expected {expected_guid}, found {actual_guid}; "
+                "pool was left untouched for manual recovery"
+            )
+
+    async def _query_pool_rows(self, name: str) -> list[dict]:
+        rows = await self.middleware.call(
+            "pool.query", [["name", "=", name]], {"select": ["id", "name", "guid"]},
+        )
+        if not isinstance(rows, list):
+            raise CallError(f"pool.query returned {type(rows).__name__} while checking {name!r}")
+        return rows
+
+    async def _preserve_partial_registration(
+        self, name: str, partition: dict, expected_guid: str,
+    ) -> bool:
+        """Unregister a partial import through middleware while preserving its pool."""
+        rows = await self._query_pool_rows(name)
+        if not rows:
+            return False
+        if (
+            len(rows) != 1
+            or rows[0].get("name") != name
+            or str(rows[0].get("guid")) != expected_guid
+            or not isinstance(rows[0].get("id"), int)
+        ):
+            raise CallError(
+                f"middleware pool row for {name!r} does not identify captured GUID {expected_guid}; "
+                "pool and row were left untouched for manual recovery"
+            )
+        await self._assert_pool_guid(name, expected_guid)
+        await self._assert_pool_on_partition(name, partition)
+        job = await self.middleware.call("pool.export", rows[0]["id"], {"destroy": False})
+        await job.wait(raise_error=True)
+
+        remaining = await self._query_pool_rows(name)
+        if remaining:
+            raise CallError(f"middleware pool row for {name!r} remains after pool.export destroy=false")
+        code, status, err = await self._run(
+            "zpool", "status", "-P", "-L", timeout=_COMMAND_TIMEOUT,
+        )
+        if code or partition["path"] in _status_leaf_paths(status):
+            raise CallError(
+                f"pool.export did not leave {name!r} exported from {partition['path']}: {err.strip()}"
+            )
+        device = f"/dev/disk/by-partuuid/{partition['partuuid']}"
+        code, scan, err = await self._run("zpool", "import", "-d", device, timeout=_COMMAND_TIMEOUT)
+        records = _pool_import_records(scan)
+        if code or len(records) != 1 or records[0] != {"name": name, "guid": expected_guid}:
+            raise CallError(
+                f"middleware row was removed, but exported pool GUID {expected_guid} could not be "
+                f"verified on {partition['path']}: {err.strip() or records!r}"
+            )
+        return True
+
+    async def _rollback_created_pool(self, name: str, partition: dict, expected_guid: str) -> None:
+        """Destroy only the captured pool GUID proved on the verified PARTUUID."""
+        if not _POOL_GUID.fullmatch(expected_guid):
+            raise CallError("rollback has no captured numeric pool GUID; manual recovery is required")
         device = f"/dev/disk/by-partuuid/{partition['partuuid']}"
         await self._verify_partition_identity(partition)
         code, status, err = await self._run(
             "zpool", "status", "-P", "-L", name, timeout=_COMMAND_TIMEOUT,
         )
         if code == 0:
+            await self._assert_pool_guid(name, expected_guid)
             await self._assert_pool_on_partition(name, partition)
         else:
             try:
@@ -379,24 +484,27 @@ class BootDiskPartitionService(Service):
                 )
             records = _pool_import_records(scan)
             if records:
-                matches = [record for record in records if record["name"] == name and record["guid"]]
-                if len(matches) != 1:
+                if len(records) != 1 or records[0] != {"name": name, "guid": expected_guid}:
                     raise CallError(
-                        f"rollback scan found {len(matches)} exact exported pools named {name!r}; "
+                        f"rollback scan did not find only captured pool GUID {expected_guid} named {name!r}; "
                         "partition labels were left untouched"
                     )
                 await self._verify_partition_identity(partition)
                 code, _, err = await self._run(
-                    "zpool", "import", "-f", "-N", matches[0]["guid"], timeout=_COMMAND_TIMEOUT,
+                    "zpool", "import", "-f", "-N", expected_guid, timeout=_COMMAND_TIMEOUT,
                 )
                 if code:
                     raise CallError(f"could not re-import the created pool for rollback: {err.strip()}")
+                await self._assert_pool_guid(name, expected_guid)
                 await self._assert_pool_on_partition(name, partition)
             else:
-                await self._clear_created_partition(name, partition, device)
-                return
+                raise CallError(
+                    f"captured pool GUID {expected_guid} is neither imported nor found in the "
+                    f"export scan on {partition['path']}; labels were left untouched for manual recovery"
+                )
 
         await self._verify_partition_identity(partition)
+        await self._assert_pool_guid(name, expected_guid)
         await self._assert_pool_on_partition(name, partition)
         code, _, err = await self._run("zpool", "destroy", "-f", name, timeout=_COMMAND_TIMEOUT)
         if code:
@@ -406,9 +514,7 @@ class BootDiskPartitionService(Service):
     async def _assert_pool_unregistered(self, name: str) -> None:
         """Report a stale middleware row left by a partially failed import."""
         try:
-            rows = await self.middleware.call(
-                "pool.query", [["name", "=", name]], {"select": ["name"]},
-            )
+            rows = await self._query_pool_rows(name)
         except Exception as exc:
             raise CallError(
                 f"could not verify middleware registration cleanup for pool {name!r}: {exc}"
@@ -517,9 +623,8 @@ class BootDiskPartitionService(Service):
         await self._pool_name_available(name)
         row = await self._verify_partition_identity(row)
         device = f"/dev/disk/by-partuuid/{row['partuuid']}"
-        create_attempted = False
+        created_guid: str | None = None
         try:
-            create_attempted = True
             try:
                 code, _, err = await self._run(
                     "zpool", "create",
@@ -544,8 +649,14 @@ class BootDiskPartitionService(Service):
                     f"zpool create timed out after {_COMMAND_TIMEOUT}s on verified partition {row['path']}"
                 ) from exc
             if code:
-                raise CallError(f"zpool create failed on verified partition {row['path']}: {err.strip()}")
+                raise CallError(
+                    f"zpool create failed on verified partition {row['path']}: {err.strip()}; "
+                    "the outcome is ambiguous and no pool GUID was captured"
+                )
 
+            created_guid = await self._read_pool_guid(name)
+
+            await self._assert_pool_guid(name, created_guid)
             await self._assert_pool_on_partition(name, row)
             await self._verify_partition_identity(row)
             await self._assert_pool_on_partition(name, row)
@@ -555,26 +666,47 @@ class BootDiskPartitionService(Service):
 
             find_job = await self.middleware.call("pool.import_find")
             found = await find_job.wait(raise_error=True)
-            matches = [item for item in found or [] if item.get("name") == name]
-            if len(matches) != 1 or not matches[0].get("guid"):
+            related = [
+                item for item in found or []
+                if item.get("name") == name or str(item.get("guid")) == created_guid
+            ]
+            if (
+                len(related) != 1
+                or related[0].get("name") != name
+                or str(related[0].get("guid")) != created_guid
+            ):
                 raise CallError(
-                    f"pool {name!r} was created on {row['path']} but import discovery found "
-                    f"{len(matches)} matches"
+                    f"pool GUID {created_guid} created on {row['path']} did not have one exact "
+                    f"name/GUID match in import discovery: {related!r}"
                 )
             await self._verify_partition_identity(row)
             import_job = await self.middleware.call(
-                "pool.import_pool", {"guid": matches[0]["guid"], "name": name},
+                "pool.import_pool", {"guid": created_guid, "name": name},
             )
             await import_job.wait(raise_error=True)
+            await self._assert_pool_guid(name, created_guid)
+            await self._assert_pool_on_partition(name, row)
         except Exception as exc:
-            if not create_attempted:
-                raise
+            if created_guid is None:
+                raise CallError(
+                    f"pool {name!r} creation/adoption failed before a GUID was captured: {exc}; "
+                    "the create outcome is ambiguous, labels were left untouched, and manual recovery is required"
+                ) from exc
+            preserved = False
             try:
-                await self._rollback_created_pool(name, row)
-                await self._assert_pool_unregistered(name)
+                preserved = await self._preserve_partial_registration(name, row, created_guid)
+                if not preserved:
+                    await self._rollback_created_pool(name, row, created_guid)
+                    await self._assert_pool_unregistered(name)
             except Exception as cleanup_exc:
                 raise CallError(
                     f"pool {name!r} creation/adoption failed: {exc}; cleanup incomplete: {cleanup_exc}"
+                ) from exc
+            if preserved:
+                raise CallError(
+                    f"pool {name!r} creation/adoption failed: {exc}; partial middleware registration "
+                    f"was removed through pool.export destroy=false and captured GUID {created_guid} "
+                    "was left exported for manual recovery"
                 ) from exc
             raise CallError(
                 f"pool {name!r} creation/adoption failed: {exc}; verified reserved partition cleanup completed"

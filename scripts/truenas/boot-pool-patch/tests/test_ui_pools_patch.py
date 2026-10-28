@@ -326,10 +326,13 @@ class _MiddlewareJob:
 
 
 class _CreatePoolMiddleware:
-    def __init__(self, scenario):
+    def __init__(self, scenario, on_partial_import=None, on_partial_export=None):
         self.scenario = scenario
         self.calls = []
         self.stale_pool_record = False
+        self.partial_pool_exported = False
+        self.on_partial_import = on_partial_import
+        self.on_partial_export = on_partial_export
 
     async def call(self, method, *args):
         self.calls.append((method, args))
@@ -348,11 +351,23 @@ class _CreatePoolMiddleware:
             error = "import_pool failed" if self.scenario in {
                 "import-fails", "cleanup-fails", "partial-registration",
             } else None
+            if self.on_partial_import is not None:
+                self.on_partial_import()
             if self.scenario == "partial-registration":
                 self.stale_pool_record = True
             return _MiddlewareJob(True, error)
         if method == "pool.query":
-            return ([{"id": 7, "name": "probe"}] if self.stale_pool_record else [])
+            return ([{"id": 7, "name": "probe", "guid": "12345"}]
+                    if self.stale_pool_record else [])
+        if method == "pool.export":
+            assert self.scenario == "partial-registration"
+            pool_id, options = args
+            assert pool_id == 7 and options == {"destroy": False}
+            self.stale_pool_record = False
+            self.partial_pool_exported = True
+            if self.on_partial_export is not None:
+                self.on_partial_export()
+            return _MiddlewareJob(True)
         raise AssertionError(f"unexpected middleware call: {method} {args!r}")
 
 
@@ -367,7 +382,13 @@ class _CreatePoolHarness:
                 self.status_calls = 0
                 self.timeouts = []
                 self.created = False
-                self.middleware = _CreatePoolMiddleware(scenario)
+                self.guid_reads = 0
+                self.exported = False
+                self.middleware = _CreatePoolMiddleware(
+                    scenario,
+                    on_partial_import=lambda: setattr(self, "exported", False),
+                    on_partial_export=lambda: setattr(self, "exported", True),
+                )
 
             async def reserved(self):
                 return [{"name": "vda4", "path": "/dev/vda4", "parent": "vda",
@@ -394,6 +415,11 @@ class _CreatePoolHarness:
                     if self.scenario == "name-exported":
                         return 0, "  pool: probe\n    id: 12345\n state: ONLINE\n", ""
                     return 0, "", ""
+                if argv == ("zpool", "get", "-H", "-o", "value", "guid", "probe"):
+                    self.guid_reads += 1
+                    if scenario == "export-fails-foreign-guid" and self.guid_reads >= 3:
+                        return 0, "67890\n", ""
+                    return (0, "12345\n", "") if self.created else (1, "", "pool missing")
                 if argv[:2] == ("zpool", "create"):
                     if self.scenario == "create-fails":
                         return 1, "", "synthetic create failure"
@@ -411,7 +437,7 @@ class _CreatePoolHarness:
                         return 0, "pool: probe\n  /dev/vda5 ONLINE\n", ""
                     return 0, "pool: probe\n  /dev/vda4 ONLINE\n", ""
                 if argv == ("zpool", "export", "probe"):
-                    if self.scenario == "export-fails":
+                    if self.scenario in {"export-fails", "export-fails-foreign-guid"}:
                         return 1, "", "export failed"
                     self.exported = True
                     return 0, "", ""
@@ -436,6 +462,8 @@ class _CreatePoolHarness:
                     return 0, "pool: boot-pool\n  /dev/vda3 ONLINE\n", ""
                 if argv[:2] == ("zpool", "labelclear"):
                     return 0, "", ""
+                if argv[:3] == ("findmnt", "-rn", "-S"):
+                    return 1, "", ""
                 raise AssertionError(f"unexpected command: {argv!r}")
 
         return Harness()
@@ -476,82 +504,46 @@ def test_create_pool_refuses_an_existing_imported_or_exported_pool_name(scenario
     assert service.verify_count == 0
 
 
+def expected_create_rollback_trace(path: str, *, destroy_fails: bool = False) -> list[tuple[str, ...]]:
+    device = f"/dev/disk/by-partuuid/{UUID}"
+    create = ("zpool", "create", "probe", device)
+    guid = ("zpool", "get", "-H", "-o", "value", "guid", "probe")
+    pool_status = ("zpool", "status", "-P", "-L", "probe")
+    base = [
+        ("zpool", "list", "-H", "-o", "name"), ("zpool", "import"), create,
+        guid, guid, pool_status, pool_status, ("zpool", "export", "probe"),
+    ]
+    if path == "imported":
+        rollback = [pool_status, guid, pool_status, guid, pool_status]
+    else:
+        rollback = [
+            pool_status, ("zpool", "import", "-d", device),
+            ("zpool", "import", "-f", "-N", "12345"),
+            guid, pool_status, guid, pool_status,
+        ]
+    rollback.append(("zpool", "destroy", "-f", "probe"))
+    if not destroy_fails:
+        rollback.extend([
+            ("zpool", "status", "-P", "-L"), ("zpool", "import", "-d", device),
+            ("findmnt", "-rn", "-S", device), ("zpool", "labelclear", "-f", device),
+        ])
+    return base + rollback
+
+
 @pytest.mark.parametrize(
-    ("scenario", "expected_error", "expected_commands"),
+    ("scenario", "expected_error", "rollback_path", "destroy_fails"),
     [
-        ("toctou", "changed", [
-            ("zpool", "list", "-H", "-o", "name"), ("zpool", "import"),
-        ]),
-        ("export-fails", "export failed", [
-            ("zpool", "list", "-H", "-o", "name"), ("zpool", "import"),
-            ("zpool", "create", "probe", f"/dev/disk/by-partuuid/{UUID}"),
-            ("zpool", "status", "-P", "-L", "probe"),
-            ("zpool", "status", "-P", "-L", "probe"), ("zpool", "export", "probe"),
-            ("zpool", "status", "-P", "-L", "probe"),
-            ("zpool", "status", "-P", "-L", "probe"),
-            ("zpool", "status", "-P", "-L", "probe"),
-            ("zpool", "destroy", "-f", "probe"),
-            ("zpool", "status", "-P", "-L"),
-            ("zpool", "import", "-d", f"/dev/disk/by-partuuid/{UUID}"),
-            ("zpool", "labelclear", "-f", f"/dev/disk/by-partuuid/{UUID}"),
-        ]),
-        ("find-zero", "found 0", [
-            ("zpool", "list", "-H", "-o", "name"), ("zpool", "import"),
-            ("zpool", "create", "probe", f"/dev/disk/by-partuuid/{UUID}"),
-            ("zpool", "status", "-P", "-L", "probe"),
-            ("zpool", "status", "-P", "-L", "probe"), ("zpool", "export", "probe"),
-            ("zpool", "status", "-P", "-L", "probe"),
-            ("zpool", "import", "-d", f"/dev/disk/by-partuuid/{UUID}"),
-            ("zpool", "import", "-f", "-N", "12345"),
-            ("zpool", "status", "-P", "-L", "probe"),
-            ("zpool", "status", "-P", "-L", "probe"),
-            ("zpool", "destroy", "-f", "probe"), ("zpool", "status", "-P", "-L"),
-            ("zpool", "import", "-d", f"/dev/disk/by-partuuid/{UUID}"),
-            ("zpool", "labelclear", "-f", f"/dev/disk/by-partuuid/{UUID}"),
-        ]),
-        ("find-two", "found 2", [
-            ("zpool", "list", "-H", "-o", "name"), ("zpool", "import"),
-            ("zpool", "create", "probe", f"/dev/disk/by-partuuid/{UUID}"),
-            ("zpool", "status", "-P", "-L", "probe"),
-            ("zpool", "status", "-P", "-L", "probe"), ("zpool", "export", "probe"),
-            ("zpool", "status", "-P", "-L", "probe"),
-            ("zpool", "import", "-d", f"/dev/disk/by-partuuid/{UUID}"),
-            ("zpool", "import", "-f", "-N", "12345"),
-            ("zpool", "status", "-P", "-L", "probe"),
-            ("zpool", "status", "-P", "-L", "probe"),
-            ("zpool", "destroy", "-f", "probe"), ("zpool", "status", "-P", "-L"),
-            ("zpool", "import", "-d", f"/dev/disk/by-partuuid/{UUID}"),
-            ("zpool", "labelclear", "-f", f"/dev/disk/by-partuuid/{UUID}"),
-        ]),
-        ("import-fails", "import_pool failed", [
-            ("zpool", "list", "-H", "-o", "name"), ("zpool", "import"),
-            ("zpool", "create", "probe", f"/dev/disk/by-partuuid/{UUID}"),
-            ("zpool", "status", "-P", "-L", "probe"),
-            ("zpool", "status", "-P", "-L", "probe"), ("zpool", "export", "probe"),
-            ("zpool", "status", "-P", "-L", "probe"),
-            ("zpool", "import", "-d", f"/dev/disk/by-partuuid/{UUID}"),
-            ("zpool", "import", "-f", "-N", "12345"),
-            ("zpool", "status", "-P", "-L", "probe"),
-            ("zpool", "status", "-P", "-L", "probe"),
-            ("zpool", "destroy", "-f", "probe"), ("zpool", "status", "-P", "-L"),
-            ("zpool", "import", "-d", f"/dev/disk/by-partuuid/{UUID}"),
-            ("zpool", "labelclear", "-f", f"/dev/disk/by-partuuid/{UUID}"),
-        ]),
-        ("cleanup-fails", "cleanup incomplete", [
-            ("zpool", "list", "-H", "-o", "name"), ("zpool", "import"),
-            ("zpool", "create", "probe", f"/dev/disk/by-partuuid/{UUID}"),
-            ("zpool", "status", "-P", "-L", "probe"),
-            ("zpool", "status", "-P", "-L", "probe"), ("zpool", "export", "probe"),
-            ("zpool", "status", "-P", "-L", "probe"),
-            ("zpool", "import", "-d", f"/dev/disk/by-partuuid/{UUID}"),
-            ("zpool", "import", "-f", "-N", "12345"),
-            ("zpool", "status", "-P", "-L", "probe"),
-            ("zpool", "status", "-P", "-L", "probe"),
-            ("zpool", "destroy", "-f", "probe"),
-        ]),
+        ("toctou", "changed", None, False),
+        ("export-fails", "export failed", "imported", False),
+        ("find-zero", "one exact name/GUID match", "exported", False),
+        ("find-two", "one exact name/GUID match", "exported", False),
+        ("import-fails", "import_pool failed", "imported", False),
+        ("cleanup-fails", "cleanup incomplete", "imported", True),
     ],
 )
-def test_create_pool_failure_rollbacks_are_partition_scoped(scenario, expected_error, expected_commands) -> None:
+def test_create_pool_failure_rollbacks_are_partition_scoped(
+    scenario, expected_error, rollback_path, destroy_fails,
+) -> None:
     helper = load_helper()
     partition = {"name": "vda4", "path": "/dev/vda4", "parent": "vda",
                  "parent_path": "/dev/vda", "size": 1 << 30, "partuuid": UUID}
@@ -562,7 +554,12 @@ def test_create_pool_failure_rollbacks_are_partition_scoped(scenario, expected_e
         command[:2] + command[-2:] if command[:2] == ("zpool", "create") else command
         for command in service.commands
     ]
-    assert compact == expected_commands
+    if rollback_path is None:
+        assert compact == [("zpool", "list", "-H", "-o", "name"), ("zpool", "import")]
+    else:
+        assert compact == expected_create_rollback_trace(
+            rollback_path, destroy_fails=destroy_fails,
+        )
     if scenario == "toctou":
         assert service.verify_count == 1
         assert not any(command[:2] == ("zpool", "create") for command in service.commands)
@@ -577,10 +574,10 @@ def test_create_pool_failure_rollbacks_are_partition_scoped(scenario, expected_e
         ("create-timeout", "timed out after 15s"),
         ("wrong-leaf", "cleanup incomplete"),
         ("identity-drift-after-create", "cleanup incomplete"),
-        ("find-wrong-name", "found 0 matches"),
+        ("find-wrong-name", "one exact name/GUID match"),
         ("initial-scan-timeout", "timed out after 15s scanning exported pools"),
         ("rollback-scan-timeout", "timed out after 15s scanning exported rollback pools"),
-        ("rollback-scan-wrong-name", "exact exported pools named 'probe'"),
+        ("rollback-scan-wrong-name", "only captured pool GUID 12345"),
     ],
 )
 def test_create_pool_additional_rollback_failures_are_closed(scenario, expected_error) -> None:
@@ -602,19 +599,77 @@ def test_create_pool_additional_rollback_failures_are_closed(scenario, expected_
         assert any(timeout == 15 for _, timeout in service.timeouts)
 
 
-def test_partial_import_registration_rolls_back_zfs_and_reports_stale_middleware_row() -> None:
+@pytest.mark.parametrize("scenario", ["create-fails", "create-timeout"])
+def test_ambiguous_create_failure_stops_for_manual_recovery(scenario) -> None:
+    helper = load_helper()
+    partition = {"name": "vda4", "path": "/dev/vda4", "parent": "vda",
+                 "parent_path": "/dev/vda", "size": 1 << 30, "partuuid": UUID}
+    service = _CreatePoolHarness(helper, scenario)
+
+    with pytest.raises(helper.CallError, match="manual recovery"):
+        asyncio.run(service.create_pool("probe", partition))
+
+    assert any(command[:2] == ("zpool", "create") for command in service.commands)
+    assert not any(command[:2] in {("zpool", "destroy"), ("zpool", "labelclear")}
+                   for command in service.commands)
+    assert not any(command[:2] == ("zpool", "import") and "-d" in command
+                   for command in service.commands)
+
+
+def test_rollback_refuses_to_destroy_a_pool_after_its_guid_changes() -> None:
+    helper = load_helper()
+    partition = {"name": "vda4", "path": "/dev/vda4", "parent": "vda",
+                 "parent_path": "/dev/vda", "size": 1 << 30, "partuuid": UUID}
+    service = _CreatePoolHarness(helper, "export-fails-foreign-guid")
+
+    with pytest.raises(helper.CallError, match="GUID"):
+        asyncio.run(service.create_pool("probe", partition))
+
+    assert service.guid_reads >= 2
+    assert not any(command[:2] in {("zpool", "destroy"), ("zpool", "labelclear")}
+                   for command in service.commands)
+
+
+def test_partial_import_registration_uses_middleware_export_and_preserves_pool() -> None:
     helper = load_helper()
     partition = {"name": "vda4", "path": "/dev/vda4", "parent": "vda",
                  "parent_path": "/dev/vda", "size": 1 << 30, "partuuid": UUID}
     service = _CreatePoolHarness(helper, "partial-registration")
 
-    with pytest.raises(helper.CallError, match="stale middleware pool record"):
+    with pytest.raises(helper.CallError, match="left exported"):
         asyncio.run(service.create_pool("probe", partition))
 
-    assert ("zpool", "destroy", "-f", "probe") in service.commands
-    assert any(command[:2] == ("zpool", "labelclear") for command in service.commands)
-    assert service.middleware.stale_pool_record
+    assert not any(command[:2] == ("zpool", "destroy") for command in service.commands)
+    assert not any(command[:2] == ("zpool", "labelclear") for command in service.commands)
+    assert service.middleware.partial_pool_exported
+    assert not service.middleware.stale_pool_record
+    assert service.exported
+    assert ("pool.export", (7, {"destroy": False})) in service.middleware.calls
     assert any(method == "pool.query" for method, _ in service.middleware.calls)
+
+
+@pytest.mark.parametrize(
+    ("mountpoint", "parent_path", "message"),
+    [("/mnt/data", "/dev/vda", "mounted"), (None, "/dev/vdb", "boot-pool disk")],
+)
+def test_labelclear_target_rechecks_mount_and_boot_disk_parent(mountpoint, parent_path, message) -> None:
+    helper = load_helper()
+    partition = {"name": "vda4", "path": "/dev/vda4", "parent": "vda",
+                 "parent_path": "/dev/vda", "size": 1 << 30, "partuuid": UUID}
+    row = partition | {"parent_path": parent_path, "mountpoint": mountpoint, "fstype": "zfs_member"}
+
+    class Service(helper.BootDiskPartitionService):
+        async def _verify_partition_identity(self, expected):
+            return row
+
+        async def _run(self, *argv, timeout=15):
+            assert argv == ("findmnt", "-rn", "-S", f"/dev/disk/by-partuuid/{UUID}")
+            return 1, "", ""
+
+    with pytest.raises(helper.CallError, match=message):
+        asyncio.run(Service()._verify_labelclear_target(
+            partition, f"/dev/disk/by-partuuid/{UUID}",
+        ))
 
 
 def test_topology_match_refuses_anything_but_a_single_stripe_partition() -> None:
