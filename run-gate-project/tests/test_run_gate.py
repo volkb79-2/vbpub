@@ -16573,24 +16573,69 @@ class TestRg109InterruptedClient:
         repo, proj = make_history_repo(tmp_path, SIMPLE_LANE)
         log, state = fake_docker_stateful(tmp_path, monkeypatch)
         (state / ".hang").write_text("")      # `docker logs -f` blocks
-        client = subprocess.Popen([sys.executable, str(_TOOL_INVOKE), "suite"],
-                                  cwd=proj, stdout=subprocess.PIPE,
-                                  stderr=subprocess.STDOUT, text=True)
-        record = proj / ".run-gate" / "inflight" / "suite.json"
-        deadline = time.monotonic() + 30
-        while not (state_containers(state) and record.exists()) \
-                and time.monotonic() < deadline:
-            time.sleep(0.05)
-        assert state_containers(state) and record.exists()
-        name = state_containers(state)[0]
-        client.send_signal(signal.SIGTERM)
-        out, _ = client.communicate(timeout=60)
-        assert client.returncode == 2, out   # ERROR: interrupted
-        assert ("interrupted before a closed result (exit status 143); "
-                "verdict ERROR, exit 2") in out
-        assert state_containers(state) == [], out   # `docker rm -f` ran
-        assert not record.exists(), out               # and the record is gone
-        assert f"rm\x1f-f\x1f{name}" in log.read_text()
+        previous_subreaper = _set_child_subreaper(True)
+        client = None
+        try:
+            client_script = tmp_path / "run-gate-client.py"
+            client_script.write_text(textwrap.dedent(f"""\
+                import importlib.util
+                import sys
+                from pathlib import Path
+
+                sys.argv[0] = "run-gate"
+                spec = importlib.util.spec_from_file_location(
+                    "run_gate", {str(_TOOL)!r})
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[spec.name] = module
+                spec.loader.exec_module(module)
+                module.physical_path = lambda path, *a, **kw: Path("/phys")
+                raise SystemExit(module.main(["suite"]))
+            """), encoding="utf-8")
+            client = subprocess.Popen([sys.executable, str(client_script)],
+                                      cwd=proj, stdout=subprocess.PIPE,
+                                      stderr=subprocess.STDOUT, text=True)
+            record = proj / ".run-gate" / "inflight" / "suite.json"
+            deadline = time.monotonic() + 30
+            while not (state_containers(state) and record.exists()) \
+                    and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert state_containers(state) and record.exists()
+            name = state_containers(state)[0]
+            client.send_signal(signal.SIGTERM)
+            out, _ = client.communicate(timeout=60)
+            assert client.returncode == 2, out   # ERROR: interrupted
+            assert ("interrupted before a closed result (exit status 143); "
+                    "verdict ERROR, exit 2") in out
+            assert state_containers(state) == [], out   # `docker rm -f` ran
+            assert not record.exists(), out               # and the record is gone
+            assert f"rm\x1f-f\x1f{name}" in log.read_text()
+            # Run-Gate terminates the fake `docker logs -f` shell during its
+            # SIGTERM cleanup. Its polling `sleep` is a separate child, so it
+            # can outlive that shell and become an Assay-visible zombie. This
+            # test owns the helper tree and reaps it before returning.
+            _kill_and_reap_direct_children()
+            leaked_children = _direct_child_pids()
+            child_names = []
+            for pid in leaked_children:
+                try:
+                    name = Path(f"/proc/{pid}/comm").read_text(
+                        encoding="ascii").strip()
+                except OSError:
+                    name = "<exited>"
+                child_names.append((pid, name))
+            assert leaked_children == [], (
+                "SIGTERM cleanup left the fake docker logs process tree behind: "
+                f"{child_names}"
+            )
+        finally:
+            if client is not None:
+                if client.poll() is None:
+                    client.kill()
+                client.wait(timeout=30)
+            try:
+                _kill_and_reap_direct_children()
+            finally:
+                _set_child_subreaper(previous_subreaper)
 
     def test_an_interruption_before_the_wait_keeps_the_container_and_says_so(
             self, tmp_path, monkeypatch, capsys):
