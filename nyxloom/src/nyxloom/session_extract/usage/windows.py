@@ -130,7 +130,7 @@ def build_usage_windows(
         ]
     boundary_map = {
         key: boundary for key, boundary in boundary_map.items()
-        if boundary["evidence"]
+        if boundary["evidence"] and query.since <= key[1] < query.until
     }
     observed_boundaries = sorted(
         boundary_map.values(), key=lambda item: (item["reset_at"], item["kind"]),

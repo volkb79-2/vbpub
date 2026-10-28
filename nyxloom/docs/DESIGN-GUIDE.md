@@ -223,10 +223,10 @@ rolling five-hour query is an analysis range with its own label;
 it is not an account session. A single rejection's `resetsAt` cannot establish
 the preceding interval start. A reset event or rejection never means 100%.
 `usage windows` applies the requested half-open UTC range to calls, rejection
-events, reset evidence timestamps, and interval metrics. Interval metrics use
-the intersection of the observed interval and query range; rolling analysis is
-clipped to the same range. A reset timestamp can lie outside the query when
-its evidence was observed inside it.
+events, reset evidence timestamps, reset timestamps, and interval metrics.
+Reset evidence and its reset timestamp must both fall inside the range.
+Interval metrics use the intersection of the observed interval and query
+range; rolling analysis is clipped to the same range.
 Operator readings therefore include kind, observation time, reset time, source
 and coverage assumption in a private `usage-anchors-v1` store. Fitting a local
 weighted activity ratio to a UI percentage gives only a lower bound when

@@ -242,9 +242,10 @@ UI readings. See the [usage report guide](docs/CONSUMERS.md#report-claude-code-u
 and [design rationale](docs/DESIGN-GUIDE.md#local-usage-report).
 
 `usage windows --since START --until END` uses the half-open UTC interval
-`[START, END)` for calls, reset evidence, threshold events, and interval
-metrics. Custom price tables cannot combine fast and prompt-threshold rates
-for one model; the loader refuses that ambiguous combination. See the
+`[START, END)` for calls, reset evidence and reset timestamps, threshold events,
+and interval metrics. Custom price tables cannot combine fast and
+prompt-threshold rates for one model; the loader refuses that ambiguous
+combination. See the
 [design rationale](docs/DESIGN-GUIDE.md#local-usage-report).
 
 `--no-labels` removes session titles and agent topics before serialization.

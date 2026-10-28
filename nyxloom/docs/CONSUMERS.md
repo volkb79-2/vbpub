@@ -57,8 +57,8 @@ deduplicated API request tokens to each session and nested subagent. D-022
 chooses this additive command spelling; the command uses the pure
 `session_extract.usage` service without project registration or daemon state.
 Reports are read-only unless `--out FILE` is supplied, which writes the
-selected rendering to that file with mode `0600`. Missing parent directories
-are created with mode `0700`, and invalid parents produce a clear error.
+selected rendering to that file with mode `0600`. The writer creates missing
+parent directories with mode `0700` and reports invalid parents clearly.
 Operator UI anchors are the narrow local-state exception: they are written
 only by the explicit `usage anchor add` command. JSON uses the frozen
 `usage-report-v1` schema and contains an exact call ledger, nodes with self and
@@ -139,8 +139,9 @@ not match the deduplicated family ledger.
 
 `nyxloom usage windows` applies `--since` and `--until` as a half-open UTC
 range `[since, until)` to transcript calls, rejection events, reset evidence,
-and interval metrics. Reset evidence is selected by its observation timestamp;
-an interval's metrics use only the intersection with the query range. The
+reset timestamps, and interval metrics. Reset evidence and its reset timestamp
+must both fall inside the range; an interval's metrics use only the
+intersection with the query range. The
 separate five-hour rolling analysis ends at `--until` and clips at `--since`.
 Account intervals are shown only between consecutive observed reset timestamps:
 a five-hour session reset and the account's fixed weekly reset are separate
