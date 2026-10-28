@@ -41,7 +41,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   canary, and records `.assay/mutation-postponed-assay.json` (tracking id B169,
   operator decision 2026-10-27, valid only below assay 10.1.0, result
   `provisional`, never an R2 pass). The full `self-qualification` lane is
-  unchanged and clears the marker. Run at `4ab0bb0b1` it passed R0, R1 (all of
+  unchanged and clears the marker. Run at `fb88461ca` it passed R0, R1 (all of
   `src/assay`, 100% line and branch, no exclusions beyond the reviewed
   TYPE_CHECKING ones) and the R3 canary. Closing the pre-existing 886-line /
   711-branch R1 gap took five closure test files and the removal of unreachable

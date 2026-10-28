@@ -13150,7 +13150,7 @@ After the lane is verified it records `.assay/mutation-postponed-assay.json`
 newer `assay-v10.1.0` or later tag refuses it). The full lane is unchanged and
 deletes the marker; the marker cannot satisfy an R2 request.
 
-**Evidence:** at `4ab0bb0b1`, `run-gate self-qualification-provisional`
+**Evidence:** at `fb88461ca` (and earlier at `4ab0bb0b1`), `run-gate self-qualification-provisional`
 (exclusive host): R0 PASS, R1 PASS, R3 PASS, marker recorded. Before closure
 the lane failed R1 with `UNCOVERED_LINES` (886 lines, 711 branches) and R3 was
 `CANARY_INCONCLUSIVE` because the canary's control must pass R1 as well. Per-file
