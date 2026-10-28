@@ -546,6 +546,14 @@ def test_snapshot_copies_back_only_allowlisted_gate_evidence(tmp_path, monkeypat
             evidence = worktree / "cmru" / ".assay" / "verdict-cmru.json"
             evidence.parent.mkdir(parents=True, exist_ok=True)
             evidence.write_text('{"status":"PASS"}\n', encoding="utf-8")
+            for suffix, content in (
+                ("exit", "0 0\n"),
+                ("json", '{"status":"complete"}\n'),
+                ("txt", "cmru: complete\n"),
+                ("err", ""),
+            ):
+                closeout = evidence.parent / f"campaign-cmru.{suffix}"
+                closeout.write_text(content, encoding="utf-8")
         return 0
 
     monkeypatch.setattr(run_release_gate, "_invoke_lane", _probing(invoke))
@@ -554,6 +562,8 @@ def test_snapshot_copies_back_only_allowlisted_gate_evidence(tmp_path, monkeypat
     assert (repo / "cmru" / ".assay" / "verdict-cmru.json").read_text() == (
         '{"status":"PASS"}\n'
     )
+    for suffix in ("exit", "json", "txt", "err"):
+        assert (repo / "cmru" / ".assay" / f"campaign-cmru.{suffix}").is_file()
     assert (repo / "cmru" / ".assay" / "release-gate-snapshot.json").is_file()
 
 
@@ -569,13 +579,63 @@ def test_unapproved_lane_output_fails_and_is_not_copied_back(tmp_path, monkeypat
             evidence.parent.mkdir(parents=True, exist_ok=True)
             evidence.write_text('{"status":"PASS"}\n', encoding="utf-8")
             (worktree / "cmru" / "unapproved-output.txt").write_text("not evidence")
+            (evidence.parent / "campaign-cmru.csv").write_text("not an approved closeout")
         return 0
 
     monkeypatch.setattr(run_release_gate, "_invoke_lane", _probing(invoke))
     with pytest.raises(RuntimeError, match="unapproved ignored/untracked files"):
         run_release_gate.run_release_gate(repo, temp_parent=private_root)
     assert not (repo / "cmru" / "unapproved-output.txt").exists()
+    assert not (repo / "cmru" / ".assay" / "campaign-cmru.csv").exists()
     assert not (repo / "cmru" / ".assay" / "verdict-cmru.json").exists()
+
+
+def test_first_release_assay_closeout_files_are_approved(tmp_path, monkeypatch):
+    from cmru import gate_snapshot as gs
+
+    repo, *_rest = _fixture(tmp_path, monkeypatch)
+    snapshot = gs.open_gate_snapshot(repo)
+    try:
+        closeout_dir = snapshot.worktree_path / "cmru" / ".assay"
+        closeout_dir.mkdir(parents=True)
+        for suffix in ("exit", "json", "txt", "err"):
+            (closeout_dir / f"campaign-cmru-first-release.{suffix}").write_text(
+                "closeout\n", encoding="utf-8",
+            )
+
+        gs.validate_lane_outputs(
+            snapshot.worktree_path, snapshot.commit,
+            protected_refs=snapshot.protected_refs,
+            expected_refs_sha256=snapshot.refs_sha256,
+            anchor_refs=snapshot.anchor_refs,
+        )
+    finally:
+        gs.close_gate_snapshot(snapshot)
+
+
+@pytest.mark.parametrize(
+    "filename", ["campaign-cmru.csv", "campaign-other-lane.json"],
+)
+def test_unlisted_assay_closeout_file_is_refused(tmp_path, monkeypatch, filename):
+    from cmru import gate_snapshot as gs
+
+    repo, *_rest = _fixture(tmp_path, monkeypatch)
+    snapshot = gs.open_gate_snapshot(repo)
+    try:
+        closeout = snapshot.worktree_path / "cmru" / ".assay" / filename
+        closeout.parent.mkdir(parents=True)
+        closeout.write_text("not approved\n", encoding="utf-8")
+
+        with pytest.raises(RuntimeError) as raised:
+            gs.validate_lane_outputs(
+                snapshot.worktree_path, snapshot.commit,
+                protected_refs=snapshot.protected_refs,
+                expected_refs_sha256=snapshot.refs_sha256,
+                anchor_refs=snapshot.anchor_refs,
+            )
+        assert f"cmru/.assay/{filename}" in str(raised.value)
+    finally:
+        gs.close_gate_snapshot(snapshot)
 
 
 def test_tracked_publisher_secret_refuses_before_any_lane(tmp_path, monkeypatch):

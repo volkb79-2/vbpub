@@ -22,6 +22,11 @@ from pathlib import Path, PurePosixPath
 from typing import Iterator, Mapping
 
 
+# Run-Gate's live Assay lanes in cmru/run-gate.toml emit closeout artifacts
+# using the Assay lane name. Keep this finite set and its suffixes in sync with
+# those two aggregate-gate choices; a directory or prefix allowlist is unsafe.
+_ASSAY_CLOSEOUT_LANES = ("cmru", "cmru-first-release")
+_ASSAY_CLOSEOUT_SUFFIXES = ("exit", "json", "txt", "err")
 _LANE_EVIDENCE_FILES = (
     "cmru/coverage.json",
     "cmru/junit-coverage.xml",
@@ -30,6 +35,11 @@ _LANE_EVIDENCE_FILES = (
     "cmru/.assay/mutation-cmru.json",
     "cmru/.assay/progress-mutation-cmru.jsonl",
     "cmru/.assay/coverage-canary-cmru.json",
+    *(
+        f"cmru/.assay/campaign-{lane}.{suffix}"
+        for lane in _ASSAY_CLOSEOUT_LANES
+        for suffix in _ASSAY_CLOSEOUT_SUFFIXES
+    ),
 )
 _MUTATION_RESUME_FILES = (
     "cmru/.assay/mutation-cmru.json",

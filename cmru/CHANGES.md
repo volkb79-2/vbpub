@@ -33,6 +33,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 - docs(cmru): refresh the zero-release bootstrap guide for the current Run-Gate
   24.1.0 release and include iobench in the L1 dependency table.
+- fix(cmru): retain Run-Gate's exact Assay campaign closeout artifacts in
+  release-gate snapshots while continuing to reject unlisted lane output.
 
 <!-- cmru: release history -->
 
