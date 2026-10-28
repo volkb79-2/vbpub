@@ -687,6 +687,27 @@ def test_windows_preserve_one_observed_reset_without_inventing_interval_start():
     assert report["estimated_limit_pct"] is None
 
 
+def test_usage_windows_counts_nested_node_calls():
+    child_call = _call(
+        call_id="nested-window-call", input_tokens=10,
+        timestamp=datetime(2026, 10, 28, 11, 0, tzinfo=UTC),
+    )
+    child = Node(
+        node_id="nested-agent", parent_id=SESSION, session_id=SESSION,
+        agent_id="agent-a", kind="subagent", calls=[child_call], events=[],
+    )
+    root = Node(
+        node_id=SESSION, parent_id=None, session_id=SESSION, agent_id=None,
+        kind="main", calls=[], events=[], children=[child],
+    )
+    report = build_usage_windows(
+        _make_corpus(root), [], resolve_window("24h", None, now=NOW),
+    )
+
+    assert report["rolling_analysis"]["calls"] == 1
+    assert report["rolling_analysis"]["raw_token_units"] == 10
+
+
 def test_windows_clip_calls_boundaries_events_and_interval_metrics_to_half_open_query():
     calls = [
         _call(call_id="before-since", input_tokens=100,

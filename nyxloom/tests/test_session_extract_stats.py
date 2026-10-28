@@ -81,6 +81,10 @@ def test_extract_compaction_metadata_requires_a_nonempty_structural_record():
     }) == {
         "trigger": "auto", "pre_tokens": 10, "post_tokens": None, "duration_ms": None,
     }
+    assert stats.extract_compaction_metadata({
+        "type": "system", "subtype": "compact_boundary",
+        "compactMetadata": {"trigger": "invalid/path", "preTokens": 10},
+    }) == {"trigger": None, "pre_tokens": 10, "post_tokens": None, "duration_ms": None}
 
 
 def test_build_call_rows_pulls_real_usage_fields(tmp_path):

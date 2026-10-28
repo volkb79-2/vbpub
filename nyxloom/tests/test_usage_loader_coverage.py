@@ -60,6 +60,16 @@ def test_loader_identity_and_value_helpers_cover_invalid_values(tmp_path, monkey
     assert loader._canonical_source(source)[0] == str(source.absolute())
 
 
+def test_default_projects_root_uses_the_configured_locator(tmp_path, monkeypatch):
+    from nyxloom.session_extract import locate
+
+    monkeypatch.setattr(locate, "_claude_projects_root", lambda: tmp_path)
+
+    assert loader.default_projects_root() == tmp_path
+
+
+
+
 def test_loader_integer_and_number_validation_counts_bad_usage_fields():
     warnings = LoadWarnings()
     assert loader._read_int({"n": 4}, "n", warnings) == 4
@@ -134,7 +144,7 @@ def test_call_parser_sanitizes_optional_metadata_and_invalid_token_values():
 
 def test_call_parser_uses_per_turn_effort_and_message_identity_fallback():
     row = _row()
-    row.pop("effort")
+    row.pop("effort", None)
     row["perTurnEffort"] = "high"
     row.pop("requestId")
     warnings = LoadWarnings()
@@ -154,6 +164,10 @@ def test_call_parser_uses_per_turn_effort_and_message_identity_fallback():
 
     row["agentId"] = "row-agent"
     assert _parse_call(row).agent_id == "row-agent"
+
+    row.pop("effort", None)
+    row.pop("perTurnEffort")
+    assert _parse_call(row).effort is None
 
 
 def test_event_parsers_report_missing_times_and_rejection_classification():
@@ -401,6 +415,42 @@ def test_scanner_event_summary_refusal_and_window_filter_paths(tmp_path):
     assert corpus.warnings.missing_timestamps >= 2
     assert corpus.warnings.unclassified_rejections == 0
     assert build.titles == []
+
+
+def test_scanner_keeps_valid_title_records_and_skips_unknown_record_types(tmp_path):
+    root_path = tmp_path / f"{SESSION}.jsonl"
+    agent_path = tmp_path / "agent-a.jsonl"
+    _write_jsonl(root_path, [
+        {"type": "ai-title", "aiTitle": "AI title"},
+        {"type": "custom-title", "customTitle": "Custom title"},
+        {"type": "agent-name", "agentName": "Root agent name"},
+        {"type": "unknown-record", "private": "ignored"},
+        _assistant("root-call", "2026-10-28T11:00:00Z"),
+    ])
+    _write_jsonl(agent_path, [{"type": "agent-name", "agentName": "Worker name"}])
+    build = loader._SessionBuild(
+        session_id=SESSION, project_dir=tmp_path, session_dir=tmp_path,
+        root_file=root_path, root=loader.Node(SESSION, None, SESSION, None),
+        agent_files={"agent-a": agent_path},
+    )
+    corpus = Corpus(sessions=[])
+
+    root_calls = loader._scan_file(
+        root_path, build=build, file_agent_id=None,
+        since=None, until=None, corpus=corpus,
+    )
+    agent_calls = loader._scan_file(
+        agent_path, build=build, file_agent_id="agent-a",
+        since=None, until=None, corpus=corpus,
+    )
+    sessions = loader._assemble([build], root_calls + agent_calls, corpus)
+
+    assert len(root_calls) == 1 and agent_calls == []
+    assert build.titles == ["AI title", "Custom title", "Root agent name"]
+    assert build.agent_names == {"agent-a": "Worker name"}
+    assert sessions[0].root.topic == "Root agent name"
+
+
 
 
 def test_scanner_tracks_api_and_paired_summary_timestamp_failures(tmp_path):

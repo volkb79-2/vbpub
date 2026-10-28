@@ -1023,6 +1023,51 @@ def test_table_json_and_csv_never_serialize_message_or_tool_content(tmp_path):
     assert root_file.exists()
 
 
+def test_display_call_owners_maps_folded_calls_to_visible_nodes():
+    report = {
+        "nodes": [{
+            "node_id": "root", "session_id": "session", "kind": "main",
+            "call_ids": ["visible-call"],
+            "children": [{
+                "node_id": "visible-child", "session_id": "session",
+                "kind": "subagent", "call_ids": [], "children": [],
+            }],
+        }],
+        "calls": [
+            {"call_id": "visible-call", "session_id": "session", "agent_id": None},
+            {"call_id": "chart-call", "session_id": "session", "agent_id": None},
+            {"call_id": "edge-call", "session_id": "session", "agent_id": "edge-agent"},
+            {"call_id": "root-call", "session_id": "session", "agent_id": None},
+            {"call_id": "orphan-call", "session_id": "session", "agent_id": None},
+            {"call_id": "missing-root-call", "session_id": "missing", "agent_id": None},
+        ],
+        "lineage_edges": [
+            {"node_id": "hidden-chart", "parent_node_id": "root",
+             "session_id": "session", "agent_id": "chart-agent"},
+            {"node_id": "hidden-edge", "parent_node_id": "root",
+             "session_id": "session", "agent_id": "edge-agent"},
+            {"node_id": "orphan", "parent_node_id": None,
+             "session_id": "session", "agent_id": "orphan-agent"},
+        ],
+        "extensions": {"chart_data": {"call_lookup": [
+            {"call_id": "chart-call", "node_id": "hidden-chart"},
+            {"call_id": "orphan-call", "node_id": "orphan"},
+        ]}},
+    }
+
+    owners = _display_call_owners(report)
+
+    assert owners == {
+        "visible-call": "root",
+        "chart-call": "root",
+        "edge-call": "root",
+        "root-call": "root",
+        "orphan-call": "root",
+    }
+
+
+
+
 def test_report_does_not_serialize_paths_from_free_text_labels(tmp_path):
     project_dir = tmp_path / "project-key"
     session_dir = project_dir / SESSION

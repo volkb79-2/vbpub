@@ -43,7 +43,7 @@ def _parse_time(value: str) -> datetime:
 
 
 def _intervals(
-    kind: str, reset_times: set[datetime], calls: list[Call], query: Window,
+    kind: str, reset_times: set[datetime], calls: list[Call],
 ) -> list[dict[str, Any]]:
     ordered = sorted(reset_times)
     duration = timedelta(hours=5) if kind == "five_hour" else timedelta(days=7)
@@ -51,21 +51,17 @@ def _intervals(
     for start, end in pairwise(ordered):
         if end - start != duration:
             continue
-        metrics_start = max(start, query.since)
-        metrics_end = min(end, query.until)
-        if metrics_start >= metrics_end:
-            continue
         intervals.append({
             "kind": kind,
             "model": "observed-reset",
             "start": _iso(start),
             "end": _iso(end),
             "metrics_window": {
-                "start": _iso(metrics_start),
-                "end": _iso(metrics_end),
+                "start": _iso(start),
+                "end": _iso(end),
                 "semantics": "[since, until)",
             },
-            **_metrics(calls, metrics_start, metrics_end),
+            **_metrics(calls, start, end),
         })
     return intervals
 
@@ -144,8 +140,8 @@ def build_usage_windows(
         for kind in ("five_hour", "weekly")
     }
     intervals = [
-        *_intervals("five_hour", resets_by_kind["five_hour"], calls, query),
-        *_intervals("weekly", resets_by_kind["weekly"], calls, query),
+        *_intervals("five_hour", resets_by_kind["five_hour"], calls),
+        *_intervals("weekly", resets_by_kind["weekly"], calls),
     ]
     intervals.sort(key=lambda item: (item["start"], item["kind"]))
     rolling_start = max(query.until - timedelta(hours=5), query.since)
