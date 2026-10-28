@@ -38,6 +38,19 @@ class V27(Backend):
             "pool.snapshot.hold": MethodSpec("write"), "pool.snapshot.release": MethodSpec("write"),
             "pool.snapshot.rollback": MethodSpec("destructive"), "pool.snapshot.delete": MethodSpec("destructive"),
         },
+        "snapshot-tasks": {
+            "pool.snapshottask.query": MethodSpec("read"), "pool.snapshottask.get_instance": MethodSpec("read"),
+            "pool.snapshottask.create": MethodSpec("write"), "pool.snapshottask.update": MethodSpec("write"),
+            "pool.snapshottask.run": MethodSpec("write"), "pool.snapshottask.delete": MethodSpec("destructive"),
+        },
+        "replication": {
+            "replication.query": MethodSpec("read"), "replication.get_instance": MethodSpec("read"),
+            "replication.update": MethodSpec("write"), "replication.run": MethodSpec("destructive"),
+        },
+        "cloud-sync": {
+            "cloudsync.query": MethodSpec("read"), "cloudsync.get_instance": MethodSpec("read"),
+            "cloudsync.update": MethodSpec("write"), "cloudsync.sync": MethodSpec("destructive"),
+        },
         "boot": {
             "boot.get_state": MethodSpec("read"), "boot.environment.query": MethodSpec("read"),
         },

@@ -280,6 +280,80 @@ def _share_verbs(ident: CliIdentity, opener: SessionOpener) -> list[VerbSpec]:
     ]
 
 
+def _task_protocol_cli(ident: CliIdentity, opener: SessionOpener, kind: str) -> Any:
+    child = CliRegistry(ident, prog=f"tnt task {kind}", description=f"Inspect and operate {kind} tasks.",
+                        unexpected_exceptions="report", expected_exceptions=(TntError,))
+    write_options = HOST_OPTIONS + ACTION_OPTIONS
+    read_options = HOST_OPTIONS
+    if kind == "snapshot":
+        id_arg = ArgumentSpec("task_id", "Periodic snapshot task ID.", metavar="ID", parser_kwargs={"type": int})
+        child.register(VerbSpec("list", None, "List periodic snapshot tasks.", group=VerbGroup.EXPLORATION.value,
+                                options=read_options, handler=lambda a, r: _workflow_read(a, r, opener,
+                                    lambda s: s.workflows.snapshot_tasks())))
+        child.register(VerbSpec("show", None, "Show one periodic snapshot task.", group=VerbGroup.EXPLORATION.value,
+                                arguments=(id_arg,), options=read_options, handler=lambda a, r: _workflow_read(a, r, opener,
+                                    lambda s: s.workflows.snapshot_task(a.task_id))))
+        child.register(VerbSpec("create", None, "Create a periodic snapshot task from a v27 JSON payload.",
+                                group=VerbGroup.MODIFICATION.value,
+                                options=write_options + (_value(("--file",), "JSON task payload.", "FILE", "WORKFLOW"),),
+                                handler=lambda a, r: _workflow_action(a, r, opener,
+                                    lambda s: s.workflows.snapshot_task_create_action(_read_json_object(a.file)))))
+        child.register(VerbSpec("run", None, "Run a periodic snapshot task now.", group=VerbGroup.MODIFICATION.value,
+                                arguments=(id_arg,), options=write_options, handler=lambda a, r: _workflow_action(a, r, opener,
+                                    lambda s: s.workflows.snapshot_task_run_action(a.task_id))))
+        for verb, enabled in (("enable", True), ("disable", False)):
+            child.register(VerbSpec(verb, None, f"{verb.title()} a periodic snapshot task.", group=VerbGroup.MODIFICATION.value,
+                                    arguments=(id_arg,), options=write_options,
+                                    handler=lambda a, r, value=enabled: _workflow_action(a, r, opener,
+                                        lambda s: s.workflows.snapshot_task_enable_action(a.task_id, value))))
+        child.register(VerbSpec("delete", None, "Delete a periodic snapshot task.", group=VerbGroup.MODIFICATION.value,
+                                arguments=(id_arg,), options=write_options, handler=lambda a, r: _workflow_action(a, r, opener,
+                                    lambda s: s.workflows.snapshot_task_delete_action(a.task_id))))
+    elif kind == "replication":
+        name_arg = ArgumentSpec("name", "Replication task name.", metavar="NAME")
+        child.register(VerbSpec("list", None, "List replication tasks.", group=VerbGroup.EXPLORATION.value,
+                                options=read_options, handler=lambda a, r: _workflow_read(a, r, opener,
+                                    lambda s: s.workflows.replication_tasks())))
+        child.register(VerbSpec("show", None, "Show one replication task.", group=VerbGroup.EXPLORATION.value,
+                                arguments=(name_arg,), options=read_options, handler=lambda a, r: _workflow_read(a, r, opener,
+                                    lambda s: s.workflows.replication_task(a.name))))
+        child.register(VerbSpec("run", None, "Run a replication task now after showing source and target.",
+                                group=VerbGroup.MODIFICATION.value, arguments=(name_arg,), options=write_options,
+                                handler=lambda a, r: _workflow_action(a, r, opener,
+                                    lambda s: s.workflows.replication_run_action(a.name))))
+        for verb, enabled in (("enable", True), ("disable", False)):
+            child.register(VerbSpec(verb, None, f"{verb.title()} a replication task.", group=VerbGroup.MODIFICATION.value,
+                                    arguments=(name_arg,), options=write_options,
+                                    handler=lambda a, r, value=enabled: _workflow_action(a, r, opener,
+                                        lambda s: s.workflows.replication_enable_action(a.name, value))))
+    else:
+        name_arg = ArgumentSpec("description", "Cloud-sync task description.", metavar="NAME")
+        child.register(VerbSpec("list", None, "List cloud-sync tasks with all credentials masked.",
+                                group=VerbGroup.EXPLORATION.value, options=read_options,
+                                handler=lambda a, r: _workflow_read(a, r, opener, lambda s: s.workflows.cloudsync_tasks())))
+        child.register(VerbSpec("show", None, "Show one cloud-sync task with all credentials masked.",
+                                group=VerbGroup.EXPLORATION.value, arguments=(name_arg,), options=read_options,
+                                handler=lambda a, r: _workflow_read(a, r, opener, lambda s: s.workflows.cloudsync_task(a.description))))
+        child.register(VerbSpec("run", None, "Run a cloud-sync task now.", group=VerbGroup.MODIFICATION.value,
+                                arguments=(name_arg,), options=write_options,
+                                handler=lambda a, r: _workflow_action(a, r, opener,
+                                    lambda s: s.workflows.cloudsync_run_action(a.description))))
+        for verb, enabled in (("enable", True), ("disable", False)):
+            child.register(VerbSpec(verb, None, f"{verb.title()} a cloud-sync task.", group=VerbGroup.MODIFICATION.value,
+                                    arguments=(name_arg,), options=write_options,
+                                    handler=lambda a, r, value=enabled: _workflow_action(a, r, opener,
+                                        lambda s: s.workflows.cloudsync_enable_action(a.description, value))))
+    return child.build()
+
+
+def _task_verbs(ident: CliIdentity, opener: SessionOpener) -> list[VerbSpec]:
+    return [VerbSpec(name, None, description, group=VerbGroup.EXPLORATION.value,
+                     delegate=_task_protocol_cli(ident, opener, name))
+            for name, description in (("snapshot", "Manage periodic snapshot tasks."),
+                                      ("replication", "Inspect and run replication tasks."),
+                                      ("cloudsync", "Inspect and run cloud-sync tasks."))]
+
+
 def _dataset_verbs(ident: CliIdentity, opener: SessionOpener) -> list[VerbSpec]:
     def options(*extra: OptionSpec) -> tuple[OptionSpec, ...]:
         return HOST_OPTIONS + extra
@@ -810,6 +884,7 @@ def build_cli(cli_identity: CliIdentity | None = None, opener: SessionOpener = o
     _workflow_group(registry, ident, "container", "Manage TrueNAS containers.", _container_verbs(ident, opener))
     _workflow_group(registry, ident, "vm", "Manage virtual machines and their devices.", _vm_verbs(ident, opener))
     _workflow_group(registry, ident, "share", "Manage SMB and NFS shares.", _share_verbs(ident, opener))
+    _workflow_group(registry, ident, "task", "Inspect and operate data-protection tasks.", _task_verbs(ident, opener))
     return registry.build()
 
 

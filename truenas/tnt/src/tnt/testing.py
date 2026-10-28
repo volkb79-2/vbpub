@@ -62,6 +62,20 @@ class FakeServer:
         self.logins = 0
         self.datasets: dict[str, dict[str, Any]] = {"tank": self._make_dataset("tank", type_="FILESYSTEM")}
         self.snapshots: dict[str, dict[str, Any]] = {}
+        self.snapshot_tasks: dict[int, dict[str, Any]] = {}
+        self.replication_tasks: dict[int, dict[str, Any]] = {
+            10: {"id": 10, "name": "offsite", "enabled": True, "source_datasets": ["tank/home"],
+                 "target_dataset": "archive/home", "direction": "PUSH", "transport": "SSH",
+                 "allow_from_scratch": False, "state": {"state": "FINISHED"}},
+        }
+        self.cloudsync_tasks: dict[int, dict[str, Any]] = {
+            20: {"id": 20, "description": "offsite-copy", "enabled": True, "path": "/mnt/tank/home",
+                 "direction": "PUSH", "transfer_mode": "COPY", "credentials": {
+                     "id": 4, "name": "backup-account", "provider": "S3",
+                     "attributes": {"secret_access_key": "synthetic-cloud-secret"}},
+                 "encryption_password": "synthetic-cloud-secret", "encryption_salt": "synthetic-cloud-secret",
+                 "job": None, "locked": False},
+        }
         self.containers: dict[int, dict[str, Any]] = {}
         self.vms: dict[int, dict[str, Any]] = {}
         self.vm_devices: dict[int, dict[str, Any]] = {}
@@ -69,6 +83,7 @@ class FakeServer:
         self.nfs_shares: dict[int, dict[str, Any]] = {}
         self.share_paths = {"/mnt/tank/share", "/mnt/tank/export"}
         self._next_share_id = 1
+        self._next_snapshot_task_id = 1
         self.users: dict[int, dict[str, Any]] = {
             0: {"id": 0, "uid": 0, "username": "root", "full_name": "root", "builtin": True, "local": True,
                 "shell": "/usr/bin/zsh", "home": "/root", "groups": [], "sshpubkey": None, "password_disabled": False},
@@ -147,7 +162,8 @@ class FakeServer:
                     raise _RpcError(CALL_ERROR, "Not authenticated")
                 else:
                     result = self._dispatch(method, params)
-                    if method in {"container.create", "container.stop", "container.delete", "vm.stop", "vm.restart"}:
+                    if method in {"container.create", "container.stop", "container.delete", "vm.stop", "vm.restart",
+                                  "pool.snapshottask.run", "replication.run", "cloudsync.sync"}:
                         self._send_job(ws, msg["id"], result)
                         continue
                 reply: dict[str, Any] = {"jsonrpc": "2.0", "id": msg["id"], "result": result}
@@ -263,6 +279,20 @@ class FakeServer:
             "pool.snapshot.release": lambda p: self._snapshot_hold(p, False),
             "pool.snapshot.rollback": lambda p: self._get(self.snapshots, p[0], "snapshot"),
             "pool.snapshot.delete": self._snapshot_delete,
+            "pool.snapshottask.query": lambda p: self._query(self.snapshot_tasks, p),
+            "pool.snapshottask.get_instance": lambda p: self._get(self.snapshot_tasks, p[0], "periodic snapshot task"),
+            "pool.snapshottask.create": self._snapshot_task_create,
+            "pool.snapshottask.update": self._snapshot_task_update,
+            "pool.snapshottask.delete": self._snapshot_task_delete,
+            "pool.snapshottask.run": self._snapshot_task_run,
+            "replication.query": lambda p: self._query(self.replication_tasks, p),
+            "replication.get_instance": lambda p: self._get(self.replication_tasks, p[0], "replication task"),
+            "replication.update": self._replication_update,
+            "replication.run": self._replication_run,
+            "cloudsync.query": lambda p: self._query(self.cloudsync_tasks, p),
+            "cloudsync.get_instance": lambda p: self._get(self.cloudsync_tasks, p[0], "cloud-sync task"),
+            "cloudsync.update": self._cloudsync_update,
+            "cloudsync.sync": self._cloudsync_run,
             "container.query": lambda p: self._query(self.containers, p),
             "container.get_instance": lambda p: self._get(self.containers, p[0], "container"),
             "container.create": self._container_create,
@@ -419,6 +449,48 @@ class FakeServer:
         self._get(self.nfs_shares, params[0], "NFS share")
         del self.nfs_shares[int(params[0])]
         return True
+
+    def _snapshot_task_create(self, params: list[Any]) -> dict[str, Any]:
+        ident = self._next_snapshot_task_id
+        self._next_snapshot_task_id += 1
+        row = {"id": ident, "enabled": True, "recursive": False, "lifetime_value": 2,
+               "lifetime_unit": "WEEK", "naming_schema": "auto-%Y-%m-%d_%H-%M", "allow_empty": True,
+               "exclude": [], "schedule": {}, "vmware_sync": False, "state": {"state": "WAITING"}, **dict(params[0])}
+        self.snapshot_tasks[ident] = row
+        return dict(row)
+
+    def _snapshot_task_update(self, params: list[Any]) -> dict[str, Any]:
+        row = self._get(self.snapshot_tasks, params[0], "periodic snapshot task")
+        row.update(params[1])
+        return dict(row)
+
+    def _snapshot_task_delete(self, params: list[Any]) -> bool:
+        self._get(self.snapshot_tasks, params[0], "periodic snapshot task")
+        del self.snapshot_tasks[int(params[0])]
+        return True
+
+    def _snapshot_task_run(self, params: list[Any]) -> None:
+        row = self._get(self.snapshot_tasks, params[0], "periodic snapshot task")
+        row["last_run"] = "2026-10-28T00:00:00Z"
+        return None
+
+    def _replication_update(self, params: list[Any]) -> dict[str, Any]:
+        row = self._get(self.replication_tasks, params[0], "replication task")
+        row.update(params[1])
+        return dict(row)
+
+    def _replication_run(self, params: list[Any]) -> None:
+        self._get(self.replication_tasks, params[0], "replication task")
+        return None
+
+    def _cloudsync_update(self, params: list[Any]) -> dict[str, Any]:
+        row = self._get(self.cloudsync_tasks, params[0], "cloud-sync task")
+        row.update(params[1])
+        return dict(row)
+
+    def _cloudsync_run(self, params: list[Any]) -> None:
+        self._get(self.cloudsync_tasks, params[0], "cloud-sync task")
+        return None
 
     @staticmethod
     def _make_dataset(name: str, *, type_: str = "FILESYSTEM", **values: Any) -> dict[str, Any]:

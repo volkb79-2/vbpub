@@ -121,14 +121,14 @@ def test_navigation_shows_the_disks_view_fed_by_the_query_layer(session, server)
     asyncio.run(go())
 
 
-def test_planned_screens_say_so_and_the_palette_lists_every_leaf(session):
+def test_implemented_screens_load_and_the_palette_lists_every_leaf(session):
     async def go():
         app = TntApp(session)
         async with app.run_test(size=(140, 40)) as pilot:
-            select(app, "Replication")
-            await pilot.pause(0.2)
-            text = str(app.query_one("#view-planned", Static).render())
-            assert "Replication: planned" in text
+            select(app, "Replication Tasks")
+            await settle(pilot, app, lambda: "loaded" in str(app.query_one("#workflow-note", Static).render()))
+            assert app.current == "replication"
+            assert "Run selected now" in str(app.query_one("#workflow-actions", Static).render())
             titles = [c.title for c in app.get_system_commands(app.screen)]
             assert "Go to Storage > Disks" in titles and "Go to System > Network" in titles and "Go to Dashboard" in titles
             assert "Go to Containers" in titles and "Go to Virtual Machines" in titles

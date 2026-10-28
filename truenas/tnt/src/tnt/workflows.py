@@ -107,6 +107,125 @@ class Workflows:
                       (RpcCall("sharing.nfs.delete", (row["id"],)),),
                       (RpcCall("sharing.nfs.query", ([["path", "=", path]], {})),), path)
 
+    # -- scheduled protection tasks --------------------------------------------------------------------
+    def snapshot_tasks(self) -> list[dict[str, Any]]:
+        return _rows(self.rpc.call("pool.snapshottask.query", [], {}), "pool.snapshottask.query")
+
+    def snapshot_task(self, task_id: int) -> dict[str, Any]:
+        return self._task_by_id("pool.snapshottask.get_instance", task_id, "periodic snapshot task")
+
+    def snapshot_task_create_action(self, data: Mapping[str, Any]) -> Action:
+        payload = dict(data)
+        dataset = self._required_string(payload, "dataset", "snapshot task dataset")
+        self._refuse_boot_pool("pool.snapshottask.create", (payload,))
+        schedule = payload.get("schedule")
+        schedule_keys = {"minute", "hour", "dom", "month", "dow", "begin", "end"}
+        if (not isinstance(schedule, Mapping) or not schedule
+                or set(schedule) - schedule_keys
+                or any(not isinstance(value, str) or not value.strip() for value in schedule.values())):
+            raise Refused("snapshot-task-schedule", "provide a non-empty v27 cron schedule with string values")
+        lifetime = payload.get("lifetime_value")
+        if not isinstance(lifetime, int) or isinstance(lifetime, bool) or lifetime < 1:
+            raise Refused("snapshot-task-retention", "lifetime_value must be a positive integer")
+        if payload.get("lifetime_unit") not in {"HOUR", "DAY", "WEEK", "MONTH", "YEAR"}:
+            raise Refused("snapshot-task-retention", "lifetime_unit must be HOUR, DAY, WEEK, MONTH, or YEAR")
+        naming_schema = payload.get("naming_schema")
+        if not isinstance(naming_schema, str) or not naming_schema.strip() or not (
+                "%s" in naming_schema or all(token in naming_schema for token in ("%Y", "%m", "%d", "%H", "%M"))):
+            raise Refused("snapshot-task-naming-schema", "naming_schema must contain %Y, %m, %d, %H, and %M, or %s")
+        allowed = {"dataset", "recursive", "lifetime_value", "lifetime_unit", "enabled", "exclude",
+                   "naming_schema", "allow_empty", "schedule"}
+        if set(payload) - allowed:
+            raise Refused("snapshot-task-fields", f"unsupported v27 snapshot task fields: {sorted(set(payload) - allowed)}")
+        self.rpc.call("pool.dataset.get_instance", dataset)
+        return Action("TNT-43", Kind.MUTATE, f"Create periodic snapshot task for {dataset}",
+                      (RpcCall("pool.snapshottask.create", (payload,)),),
+                      (RpcCall("pool.dataset.get_instance", (dataset,)),))
+
+    def snapshot_task_enable_action(self, task_id: int, enabled: bool) -> Action:
+        if not isinstance(enabled, bool):
+            raise Refused("snapshot-task-enabled", "enabled must be true or false")
+        row = self.snapshot_task(task_id)
+        return Action("TNT-43", Kind.MUTATE, f"{'Enable' if enabled else 'Disable'} snapshot task {row['dataset']} (ID {task_id})",
+                      (RpcCall("pool.snapshottask.update", (task_id, {"enabled": enabled})),),
+                      (RpcCall("pool.snapshottask.get_instance", (task_id,)),))
+
+    def snapshot_task_run_action(self, task_id: int) -> Action:
+        row = self.snapshot_task(task_id)
+        return Action("TNT-43", Kind.MUTATE, f"Run snapshot task for {row['dataset']} now",
+                      (RpcCall("pool.snapshottask.run", (task_id,), job=True),),
+                      (RpcCall("pool.snapshottask.get_instance", (task_id,)),))
+
+    def snapshot_task_delete_action(self, task_id: int) -> Action:
+        row = self.snapshot_task(task_id)
+        target = f"{row['dataset']} [{task_id}]"
+        return Action("TNT-43", Kind.DESTRUCTIVE, f"Delete periodic snapshot task for {row['dataset']}",
+                      (RpcCall("pool.snapshottask.delete", (task_id,)),),
+                      (RpcCall("pool.snapshottask.get_instance", (task_id,)),), target)
+
+    def replication_tasks(self) -> list[dict[str, Any]]:
+        rows = _rows(self.rpc.call("replication.query", [], {}), "replication.query")
+        return [_safe_value(row) for row in rows]
+
+    def replication_task(self, name: str) -> dict[str, Any]:
+        return _safe_value(self._named("replication.query", name, "replication task"))
+
+    def replication_enable_action(self, name: str, enabled: bool) -> Action:
+        if not isinstance(enabled, bool):
+            raise Refused("replication-enabled", "enabled must be true or false")
+        row = self._named("replication.query", name, "replication task")
+        return Action("TNT-43", Kind.MUTATE, f"{'Enable' if enabled else 'Disable'} replication task {name}",
+                      (RpcCall("replication.update", (row["id"], {"enabled": enabled})),),
+                      (RpcCall("replication.get_instance", (row["id"],)),))
+
+    def replication_run_action(self, name: str) -> Action:
+        row = self._named("replication.query", name, "replication task")
+        sources = row.get("source_datasets")
+        target = row.get("target_dataset")
+        if not isinstance(sources, list) or not sources or not isinstance(target, str) or not target:
+            raise Refused("replication-target", "replication task does not report its source datasets and target")
+        source_text = ", ".join(str(source) for source in sources)
+        risk = " (allow_from_scratch may remove destination snapshots)" if row.get("allow_from_scratch") is True else ""
+        return Action("TNT-43", Kind.DESTRUCTIVE, f"Run replication {name}: {source_text} -> {target}{risk}",
+                      (RpcCall("replication.run", (row["id"],), job=True),),
+                      (RpcCall("replication.get_instance", (row["id"],)),), name)
+
+    def cloudsync_tasks(self) -> list[dict[str, Any]]:
+        rows = _rows(self.rpc.call("cloudsync.query", [], {}), "cloudsync.query")
+        return [_safe_value(row) for row in rows]
+
+    def cloudsync_task(self, description: str) -> dict[str, Any]:
+        if not isinstance(description, str) or not description.strip():
+            raise Refused("workflow-input", "cloud-sync task description is required")
+        rows = _rows(self.rpc.call("cloudsync.query", [["description", "=", description]], {}), "cloudsync.query")
+        matches = [row for row in rows if row.get("description") == description]
+        if len(matches) != 1:
+            raise Refused("workflow-lookup", f"expected exactly one cloud-sync task named {description!r}; found {len(matches)}")
+        return _safe_value(matches[0])
+
+    def cloudsync_enable_action(self, description: str, enabled: bool) -> Action:
+        if not isinstance(enabled, bool):
+            raise Refused("cloudsync-enabled", "enabled must be true or false")
+        row = self.cloudsync_task(description)
+        return Action("TNT-43", Kind.MUTATE, f"{'Enable' if enabled else 'Disable'} cloud-sync task {description}",
+                      (RpcCall("cloudsync.update", (row["id"], {"enabled": enabled})),),
+                      (RpcCall("cloudsync.get_instance", (row["id"],)),))
+
+    def cloudsync_run_action(self, description: str) -> Action:
+        row = self.cloudsync_task(description)
+        risk = " (MOVE deletes local source files after transfer)" if row.get("transfer_mode") == "MOVE" else ""
+        return Action("TNT-43", Kind.DESTRUCTIVE, f"Run cloud-sync task {description}{risk}",
+                      (RpcCall("cloudsync.sync", (row["id"], {"dry_run": False}), job=True),),
+                      (RpcCall("cloudsync.get_instance", (row["id"],)),), description)
+
+    def _task_by_id(self, method: str, task_id: int, label: str) -> dict[str, Any]:
+        if not isinstance(task_id, int) or isinstance(task_id, bool) or task_id < 1:
+            raise Refused("workflow-input", f"{label} ID must be a positive integer")
+        row = self.rpc.call(method, task_id)
+        if not isinstance(row, Mapping) or row.get("id") != task_id:
+            raise Refused("unexpected-response", f"{method} returned an invalid {label}")
+        return dict(row)
+
     def _validate_share_path(self, path: str) -> None:
         self._refuse_boot_pool("share", (path,))
         if not path.startswith("/mnt/") or path == "/mnt/":
@@ -682,8 +801,11 @@ def validate_ssh_public_keys(text: str) -> list[str]:
 
 
 def _safe_value(value: Any, key: Any = None) -> Any:
-    sensitive = {"password", "old_password", "new_password", "api_key", "sshpubkey", "private_key", "unixhash", "smbhash"}
-    if isinstance(value, Secret) or isinstance(key, str) and key.casefold() in sensitive:
+    sensitive = {"password", "old_password", "new_password", "api_key", "sshpubkey", "private_key", "unixhash", "smbhash",
+                 "credentials", "credential", "token", "secret", "secret_access_key", "access_key", "client_secret",
+                 "encryption_password", "encryption_salt"}
+    key_text = key.casefold() if isinstance(key, str) else ""
+    if isinstance(value, Secret) or key_text in sensitive or any(marker in key_text for marker in ("password", "secret", "credential", "token")):
         return "***"
     if isinstance(value, Mapping):
         return {name: _safe_value(child, name) for name, child in value.items()}

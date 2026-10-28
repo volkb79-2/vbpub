@@ -114,6 +114,37 @@ Share deletion removes only the share record and leaves files intact. Creation u
 paths that do not exist, and rejects `/mnt/boot-pool` paths. The share form follows the same plan/apply and drift-check
 flow as other writes. See [share safety decisions](DESIGN.md#shares) and the [v27 method signatures](API-METHODS-V27.md#workflows).
 
+### Data Protection tasks
+
+Periodic snapshot tasks require a dataset, cron schedule, retention, and a v27 naming schema. Snapshot runs add
+snapshots; deletion removes only the scheduled task. Replication run plans identify source and target before apply.
+Cloud-sync credential records and encryption values are masked in both clients. The task name is the replication
+`name` or cloud-sync `description`; snapshot task actions use its numeric ID.
+
+```sh
+tnt task snapshot list --profile lab --json
+cat > snapshot-task.json <<'JSON'
+{"dataset":"tank/home","schedule":{"minute":"00","hour":"02","dom":"*","month":"*","dow":"*"},
+ "lifetime_value":14,"lifetime_unit":"DAY","naming_schema":"daily-%Y-%m-%d_%H-%M","enabled":true}
+JSON
+tnt task snapshot create --profile lab --file snapshot-task.json --allow-write
+tnt task snapshot run 1 --profile lab --allow-write
+tnt task snapshot disable 1 --profile lab --allow-write
+tnt task snapshot delete 1 --profile lab --allow-write --confirm 'tank/home [1]'
+tnt task replication list --profile lab --json
+tnt task replication show nightly --profile lab --json
+tnt task replication run nightly --profile lab --allow-write --confirm nightly
+tnt task replication disable nightly --profile lab --allow-write
+tnt task cloudsync list --profile lab --json
+tnt task cloudsync run offsite-copy --profile lab --allow-write --confirm offsite-copy
+```
+
+For snapshot task retention, `lifetime_unit` is one of `HOUR`, `DAY`, `WEEK`, `MONTH`, or `YEAR`. Replication task
+run-now is typed-confirmed because a configured `allow_from_scratch` task may remove destination snapshots. Cloud sync
+`transfer_mode` accepts `SYNC`, `COPY`, or `MOVE`; `MOVE` removes the local source after transfer and is called out in
+the confirmation plan. Replication `direction` is `PUSH` or `PULL`, and `transport` is `SSH`, `SSH+NETCAT`, or `LOCAL`.
+See the [task safety decisions](DESIGN.md#data-protection-tasks) and [v27 API schemas](API-METHODS-V27.md#workflows).
+
 Use `--file spec.json` for fields beyond a workflow's minimal create options. Passwords are entered through a no-echo
 prompt or `--password-file`, never a command-line argument. User SSH keys are loaded from a public-key file or
 validated public-key text; private keys are not accepted or printed.

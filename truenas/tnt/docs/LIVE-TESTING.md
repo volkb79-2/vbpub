@@ -47,8 +47,10 @@ created for that check.
 
 - Shares: create a disposable existing directory under the data pool; dry-run SMB and NFS create payloads; confirm
   ACL data appears for SMB; delete each export with the exact typed share name/path and verify the directory remains.
-- Data Protection: inspect snapshot, replication, and cloud-sync task lists; run only a disposable, understood task;
-  verify cloud-sync output masks all credential fields.
+- Data Protection: create a periodic snapshot task for a disposable dataset, verify its cron/retention/naming fields,
+  run it once, disable it, then delete only the task using its typed dataset/ID target. Inspect replication source and
+  target in the plan; do not run a task with `allow_from_scratch` unless destination snapshot removal is intended.
+  Run only a disposable cloud-sync task; verify credential fields stay masked and treat `MOVE` as source deletion.
 - Network: compare interfaces, DNS, routes, IPs, and default gateway with the web UI; verify the screen has no write
   controls.
 - Apps: list installed apps and upgrade-available state; start/stop/restart only a disposable app; uninstall only an

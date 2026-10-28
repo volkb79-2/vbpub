@@ -44,7 +44,9 @@ class RpcCall:
         return (self.method, self.params, self.job)
 
 
-_SENSITIVE_KEYS = frozenset({"password", "old_password", "new_password", "api_key", "sshpubkey", "private_key"})
+_SENSITIVE_KEYS = frozenset({"password", "old_password", "new_password", "api_key", "sshpubkey", "private_key",
+                             "credentials", "credential", "token", "secret", "secret_access_key", "access_key",
+                             "client_secret", "encryption_password", "encryption_salt"})
 
 
 def _redact(value: Any, key: Any = None) -> Any:

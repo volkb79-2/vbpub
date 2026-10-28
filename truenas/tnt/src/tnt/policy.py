@@ -45,7 +45,8 @@ POOL_NAME_METHODS = frozenset({"pool.scrub.run", "pool.scrub.scrub"})
 DESTRUCTIVE_METHODS = frozenset({"disk.wipe", "pool.export", "pool.delete", "pool.detach", "pool.remove", "pool.dataset.delete",
                                  "pool.snapshot.delete", "pool.snapshot.rollback", "container.delete", "container.stop",
                                  "vm.delete", "vm.stop", "vm.poweroff", "vm.device.delete", "user.delete",
-                                 "sharing.smb.delete", "sharing.nfs.delete",
+                                 "sharing.smb.delete", "sharing.nfs.delete", "pool.snapshottask.delete",
+                                 "replication.run", "cloudsync.sync",
                                  "app.uninstall", "pool.dataset.destroy_snapshots", "filesystem.rmdir", "filesystem.unlink",
                                  "filesystem.remove", "container.restart", "zfs.pool.delete", "zfs.resource.destroy",
                                  "zfs.resource.snapshot.destroy"})
@@ -112,7 +113,9 @@ def _manifest_spec(name: str) -> Any:
     return None
 
 
-_SECRET_KEYS = frozenset({"password", "old_password", "new_password", "api_key", "sshpubkey", "private_key"})
+_SECRET_KEYS = frozenset({"password", "old_password", "new_password", "api_key", "sshpubkey", "private_key",
+                          "credentials", "credential", "token", "secret", "secret_access_key", "access_key",
+                          "client_secret", "encryption_password", "encryption_salt"})
 
 
 def _canonical_value(value: Any, key: Any = None) -> Any:

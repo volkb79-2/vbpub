@@ -24,6 +24,9 @@ SCREEN_TITLES = {
     "vm": "Virtual Machines",
     "users": "Local Users",
     "sharing": "Shares",
+    "snapshot-tasks": "Periodic Snapshot Tasks",
+    "replication": "Replication Tasks",
+    "cloud-sync": "Cloud Sync Tasks",
 }
 
 OPERATIONS = {
@@ -41,6 +44,10 @@ OPERATIONS = {
               ("Remove SSH public keys", "ssh-key-remove"), ("Delete selected", "delete")),
     "sharing": (("Create SMB share", "create-smb"), ("Create NFS share", "create-nfs"),
                 ("Delete selected SMB share", "delete-smb"), ("Delete selected NFS share", "delete-nfs")),
+    "snapshot-tasks": (("Create task", "create"), ("Run selected now", "run"),
+                        ("Enable selected", "enable"), ("Disable selected", "disable"), ("Delete selected", "delete")),
+    "replication": (("Run selected now", "run"), ("Enable selected", "enable"), ("Disable selected", "disable")),
+    "cloud-sync": (("Run selected now", "run"), ("Enable selected", "enable"), ("Disable selected", "disable")),
 }
 
 
@@ -52,6 +59,9 @@ _READERS = {
     "users": lambda w: w.users(),
     "sharing": lambda w: ([{"protocol": "SMB", **row} for row in w.shares_smb()] +
                            [{"protocol": "NFS", **row} for row in w.shares_nfs()]),
+    "snapshot-tasks": lambda w: w.snapshot_tasks(),
+    "replication": lambda w: w.replication_tasks(),
+    "cloud-sync": lambda w: w.cloudsync_tasks(),
 }
 
 
@@ -152,14 +162,16 @@ class WorkflowView(Vertical):
         table = self.query_one("#workflow-table", DataTable)
         table.clear()
         for index, row in enumerate(self.rows):
-            name = row.get("username", row.get("name", row.get("id", "")))
+            name = row.get("username", row.get("name", row.get("description", row.get("dataset", row.get("id", "")))))
             state = row.get("type", "")
             status = row.get("status")
             if isinstance(status, dict):
                 state = status.get("state", state)
             summary = {key: row.get(key) for key in ("used", "available", "quota", "refquota", "recordsize", "comments",
                                                        "compression", "readonly", "mounted", "mountpoint", "vcpus", "memory",
-                                                       "cpuset", "autostart", "builtin") if key in row}
+                                                       "cpuset", "autostart", "builtin", "enabled", "source_datasets",
+                                                       "target_dataset", "direction", "transfer_mode", "schedule",
+                                                       "lifetime_value", "lifetime_unit") if key in row}
             if self.key == "containers":
                 summary["image"] = "not exposed by v27"
                 summary["CPU count"] = "not exposed by v27"
@@ -313,6 +325,31 @@ class WorkflowView(Vertical):
             if operation == "delete-nfs":
                 target = name_input or selected.get("path")
                 return workflows.share_nfs_delete_action(str(target or ""))
+        if self.key == "snapshot-tasks":
+            if operation == "create":
+                return workflows.snapshot_task_create_action(data)
+            try:
+                task_id = int(name)
+            except (TypeError, ValueError):
+                raise ValueError("select a periodic snapshot task ID") from None
+            if operation == "run":
+                return workflows.snapshot_task_run_action(task_id)
+            if operation in {"enable", "disable"}:
+                return workflows.snapshot_task_enable_action(task_id, operation == "enable")
+            if operation == "delete":
+                return workflows.snapshot_task_delete_action(task_id)
+        if self.key == "replication":
+            target = name_input or selected.get("name")
+            if operation == "run":
+                return workflows.replication_run_action(str(target or ""))
+            if operation in {"enable", "disable"}:
+                return workflows.replication_enable_action(str(target or ""), operation == "enable")
+        if self.key == "cloud-sync":
+            target = name_input or selected.get("description")
+            if operation == "run":
+                return workflows.cloudsync_run_action(str(target or ""))
+            if operation in {"enable", "disable"}:
+                return workflows.cloudsync_enable_action(str(target or ""), operation == "enable")
         raise ValueError("unsupported workflow action")
 
     def _open_next_vm_device(self) -> None:

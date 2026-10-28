@@ -163,6 +163,16 @@ default share preset supports `hostsallow` and `hostsdeny`. Share deletion is de
 share name (or NFS path); it deletes the export record and retains the filesystem data. `sharing.smb.getacl` is called
 for each listed SMB share so ACL state is available in both clients.
 
+### Data Protection tasks
+
+Periodic snapshot tasks use the v27 `pool.snapshottask.*` methods. Creation requires a dataset that resolves through
+`pool.dataset.get_instance`, a non-empty cron object, positive `lifetime_value`, a supported `lifetime_unit`, and a
+`naming_schema` with the v27 date/time directives or `%s`. Snapshot task deletion is destructive and confirms the
+dataset plus task ID. Replication and cloud-sync task writes are limited to enable/disable and run-now. Run-now plans
+are destructive and typed: replication shows source dataset(s), target, and whether `allow_from_scratch` can remove
+destination snapshots; cloud sync warns when `MOVE` deletes source files after transfer. Cloud-sync credentials and
+encryption fields are masked before they reach CLI or TUI presentation.
+
 ## 5. UX
 
 - Left navigation is a Textual `Tree` (arrows, enter, expand/collapse), content pane on the right, a banner line with

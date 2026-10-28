@@ -117,6 +117,11 @@ SMB/NFS shares can be listed, inspected, created from a v27 JSON payload, and de
 creation checks the path on the TrueNAS host and refuses missing paths and boot-pool paths; deleting a share removes
 only its share configuration, never the data. SMB output includes the share ACL. See the [share adoption examples](docs/CONSUMERS.md#shares).
 
+Data Protection includes periodic snapshot task create/list/show/run/enable/disable/delete, plus replication and
+cloud-sync task list/show/run/enable/disable. Run plans show replication source and target and require the typed task
+name; cloud-sync credential fields are always masked. Snapshot task creation validates its dataset, cron schedule,
+retention, and naming schema. See [task commands](docs/CONSUMERS.md#data-protection-tasks).
+
 tnt scans every non-read API payload for boot-pool names and paths, including nested container, VM, sharing, app, and
 user fields, and resolves pool references against the connected host before allowing a plan to apply. Dataset deletion
 requires `--recursive` when the target is mounted, has children, or is attached to a running workload, and always

@@ -42,8 +42,10 @@ MENU: tuple[MenuItem, ...] = (
     MenuItem("datasets", "Datasets", "implemented", "M1", matrix=("A-01", "A-02", "A-03")),
     MenuItem("sharing", "Shares", "implemented", "M2", matrix=("A-07", "B-05")),
     MenuItem("data-protection", "Data Protection", "implemented", "M1", children=(
+        MenuItem("snapshot-tasks", "Periodic Snapshot Tasks", "implemented", "M2"),
         MenuItem("snapshots", "Snapshots", "implemented", "M1"),
-        _p("replication", "Replication"), _p("cloud-sync", "Cloud Sync"),
+        MenuItem("replication", "Replication Tasks", "implemented", "M2"),
+        MenuItem("cloud-sync", "Cloud Sync Tasks", "implemented", "M2"),
     )),
     MenuItem("credentials", "Credentials", "implemented", "M1", children=(
         MenuItem("users", "Local Users", "implemented", "M1"), _p("groups", "Groups"), _p("privileges", "Privileges"), _p("directory-services", "Directory Services"),
