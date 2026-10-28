@@ -152,6 +152,14 @@ budget = "20m"
 required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_TEST_ALLOW_DISK_PROVISION", "TRUENAS_DISK_DEVICE", "TRUENAS_BOOT_POOL_PARTITION"]
 description = "Reserve only the guarded Path B free-tail GPT partition so the registered UI lane creates the ZFS pool"
 
+[lanes.live-api-probe]
+kind = "command"
+environment = "networked-tester"
+argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && \"$TESTER_VENV/bin/python\" live_api_probe.py"]
+budget = "20m"
+required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS"]
+description = "Record the exact middleware API limits (pool.create/boot.attach on a partition, pool.import_find/import_pool of a hand-made pool) on the reserved Path B partition"
+
 [lanes.live-ui]
 kind = "command"
 environment = "networked-tester"

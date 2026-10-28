@@ -249,7 +249,7 @@ for the `live-ui` and `live-ui-workloads` workflow.
   `--allow-high-psi` switch is a one-run external-host override for PSI
   thresholds only; CPU, hard-memory, and tester caps remain enforced.
   Run `unit-boot-pool-patch` with `run-gate` from `scripts/truenas`.
-- [`UI-ACTION-MATRIX.md`](UI-ACTION-MATRIX.md) is the canonical Path A/B web-UI action
+- [`ACTION-MATRIX.md`](ACTION-MATRIX.md) is the canonical Path A/B web-UI action
   matrix (works / patch hunk / lane per release); a unit test keeps it in sync
   with the patch files and live lanes.
 - [`HANDOFF.md`](HANDOFF.md) is the current release/path test matrix and

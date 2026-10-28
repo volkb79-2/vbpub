@@ -59,3 +59,19 @@ The host is the only mutable target (allowlist: server id 804027 /
   Shares page (a real pool exists, so the gate passes).
 - Remaining: live-ui-workloads (not allowed in external mode by the wrapper), Path A shares
   decision, v28 (ISO not fetched). Host left in patched Path B state; snapshot unchanged.
+
+## Phase 3 - ui-pools patch, action matrix, Path B API spike (2026-10-28)
+
+- `v27/ui-pools.patch` (pool.py): externally originated `pool.query` (UI/midclt) also returns
+  one read-only synthetic `boot-pool` row (id 0) while `/mnt/boot-pool/user-data` is mounted.
+  live-ui Path A on stock+patch now PASSES incl. the Shares step
+  (`live-ui-v1001-patha-2-20261028.log`). `pool.export 0` / `pool.update 0` fail with
+  ENOENT "Pool 0 does not exist" (jobs 32/33; boot-pool stayed ONLINE).
+- New lane `live-api-probe` (external-host allowed) recorded on the partition-only Path B state
+  (`live-api-probe-v1001-20261028.log`): `disk.query` lists only `vda`; `disk.details UNUSED`
+  is empty; `pool.create` with `vda4` -> EINVAL "disks not found in system"; `boot.attach vda4`
+  -> internal TypeError (no disk size); a hand-made pool on the partition IS listed by
+  `pool.import_find`, imported ONLINE by `pool.import_pool`, and shows in `pool.query`.
+- `ACTION-MATRIX.md` is the single canonical action table; `tests/test_action_matrix.py`
+  fails on doc/code drift (patch inventory, lanes, steps, API methods both ways).
+- Unit lane: 203 tests pass.

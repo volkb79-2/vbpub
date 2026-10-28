@@ -83,6 +83,7 @@ For a dedicated host that can be reset between runs, the wrapper can place its
 bounded tester on an explicitly selected custom Docker bridge and connect to
 the host by SSH. External mode is limited to `live-ui-auth`, `live-inspect`,
 `live-v27-patch`, `live-path-b-provision`, `live-path-b-partition`,
+`live-api-probe`,
 `live-ui-prepare-ssh`, `live-ui`, and the fingerprint-pinned exploratory
 `live-ui-observed-v1001` lane. It refuses
 update, reboot, vdev-topology, and workload-resume lanes; those need a managed
@@ -409,6 +410,14 @@ python3 boot-pool-patch/run-live-gate.py live-vdev-topology \
   --vm-container "$TRUENAS_VM_CONTAINER" --allow-dirty
 ```
 
+
+The registered `live-api-probe` lane records the exact middleware limits for
+Path B actions on the partition-only state left by `live-path-b-partition`:
+`disk.query`/`disk.details` visibility of the partition, the refusal text of
+`pool.create` and `boot.attach` given a partition name, and whether
+`pool.import_find`/`pool.import_pool` adopt a hand-made pool on the partition.
+Its only mutation is a throwaway pool that it removes. Results feed
+[`ACTION-MATRIX`](../ACTION-MATRIX.md).
 
 Path B has two explicit setup modes for the registered `live-ui` lane. Both
 start from a fresh disposable managed guest with the v27 relaxation patch

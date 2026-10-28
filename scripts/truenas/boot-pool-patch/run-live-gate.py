@@ -62,7 +62,7 @@ LIVE_LANES = frozenset({
     "live-storage", "live-boot", "live-update", "live-v27-patch", "live-v28-patch",
     "live-path-b-provision", "live-path-b-partition", "live-ui", "live-vdev-topology",
     "live-ui-workloads", "live-ui-auth", "live-ui-prepare-ssh", "live-ui-observed-v1001",
-    "live-inspect",
+    "live-inspect", "live-api-probe",
 })
 UI_LANES = frozenset({
     "live-ui", "live-ui-workloads", "live-ui-auth", "live-ui-prepare-ssh",
@@ -72,6 +72,7 @@ SSH_LANES = LIVE_LANES - {"live-ui-auth", "live-ui-prepare-ssh"}
 EXTERNAL_TARGET_LANES = frozenset({
     "live-inspect", "live-v27-patch", "live-path-b-provision", "live-ui-auth",
     "live-ui-prepare-ssh", "live-path-b-partition", "live-ui", "live-ui-observed-v1001",
+    "live-api-probe",
 })
 LIVE_LANE_TIMEOUT_SECONDS = {
     "live-storage": 2400,
@@ -88,6 +89,7 @@ LIVE_LANE_TIMEOUT_SECONDS = {
     "live-ui-workloads": 2700,
     "live-vdev-topology": 3600,
     "live-inspect": 900,
+    "live-api-probe": 900,
 }
 
 
