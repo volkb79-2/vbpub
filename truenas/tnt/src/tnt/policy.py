@@ -41,7 +41,16 @@ POOL_ID_METHODS = frozenset({"pool.export", "pool.update", "pool.delete", "pool.
 # exposes this set as ``Backend.destructive``.
 DESTRUCTIVE_METHODS = frozenset({"disk.wipe", "pool.export", "pool.delete", "pool.detach", "pool.remove", "pool.dataset.delete",
                                  "pool.snapshot.delete", "zfs.pool.delete", "zfs.resource.destroy", "zfs.resource.snapshot.destroy"})
-DESTRUCTIVE_SUFFIXES = (".delete", ".destroy", ".wipe")
+DESTRUCTIVE_SUFFIXES = (".delete", ".destroy", ".wipe", ".rollback", ".replace", ".attach", ".offline", ".promote",
+                        ".rename", ".stop", ".reset", ".clear", ".format", ".recursive_destroy", ".import_pool")
+# Methods already used by the action/refusal model but not currently exposed in the adapter's feature manifest.
+# New write methods must be added to a version manifest or deliberately reviewed into this small allow-list.
+EXPLICIT_WRITE_ALLOWLIST = frozenset({
+    "pool.export", "pool.update", "pool.delete", "pool.expand", "pool.scrub", "pool.attach", "pool.detach",
+    "pool.replace", "pool.remove", "pool.offline", "pool.online", "pool.upgrade", "pool.scrub.delete",
+    "pool.dataset.update", "pool.dataset.delete", "pool.snapshot.delete", "zfs.pool.delete", "zfs.resource.destroy",
+    "zfs.resource.snapshot.destroy", "disk.wipe",
+})
 
 
 def is_destructive_method(method: Any) -> bool:
@@ -97,12 +106,32 @@ def _names_boot_pool(text: str) -> bool:
     """True when the string names boot-pool or something under it: a bare name, ``boot-pool/x``, ``boot-pool@snap``,
     ``/mnt/boot-pool/x`` or ``/dev/zvol/boot-pool/x`` after collapsing slashes and dots. Whole components only:
     ``boot-pool-data`` and ``/mnt/boot-pool-data/x`` are different names."""
+    # Normalise before stripping known mount/device prefixes. This also collapses a leading /./ and embedded dots.
     t = re.sub(r"/+", "/", text.strip().casefold())
-    for prefix in ("/mnt/", "/dev/zvol/"):
+    t = posixpath.normpath(t) if t else t
+    for prefix in ("/mnt/", "/dev/zvol/", "mnt/"):
         if t.startswith(prefix):
             t = t[len(prefix):]
-    t = posixpath.normpath(t).lstrip("/") if t else t
+    t = t.lstrip("/")
     return re.split(r"[/@#]", t)[0] == BOOT_POOL
+
+
+def _boot_pool_id_in_mapping(value: Any, state: SafetyState | None) -> bool:
+    """Resolve explicitly named pool references nested in method arguments against live pool ids."""
+    if state is None:
+        return False
+    pool_keys = {"pool", "pool_id", "pool_name"}
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            key_name = key.strip().casefold().replace("-", "_") if isinstance(key, str) else ""
+            if (key_name in pool_keys and isinstance(child, int) and not isinstance(child, bool)
+                    and _names_boot_pool(state.pools.get(child, ""))):
+                return True
+            if _boot_pool_id_in_mapping(child, state):
+                return True
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        return any(_boot_pool_id_in_mapping(child, state) for child in value)
+    return False
 
 
 @dataclass(frozen=True)
@@ -113,7 +142,7 @@ class SafetyState:
     protected_disks: frozenset[str] = frozenset()  # disks in any pool (boot included) or with a mounted partition
     known_disks: frozenset[str] = frozenset()
     disk_sizes: Mapping[str, int | None] = field(default_factory=dict)
-    unresolved: tuple[str, ...] = ()  # pool members that could not be mapped to a listed disk (blocks disk.wipe only)
+    unresolved: tuple[str, ...] = ()  # unmapped members or pools without usable topology (blocks disk.wipe only)
 
 
 def normalise_disk(name: str) -> str:
@@ -157,6 +186,13 @@ def refusal_for(method: Any, params: Iterable[Any] = (), state: SafetyState | No
         return None
     if name.startswith("boot.") and name not in BOOT_WRITE_ALLOWED:
         return "the boot family is read-only from tnt (default-deny; boot.format, install_loader, scrub, ... are never executed)"
+    if _boot_pool_id_in_mapping(args, state):
+        return "a pool reference resolves to boot-pool, which is never changed from here (ACTION-MATRIX A-08)"
+    # Every pool method's first integer argument is treated as a pool reference for boot-pool protection. Other
+    # parameter validation remains limited to POOL_ID_METHODS because methods such as pool.scrub.delete take task ids.
+    if name.startswith("pool.") and args and isinstance(args[0], int) and not isinstance(args[0], bool):
+        if state is not None and _names_boot_pool(state.pools.get(args[0], "")):
+            return "a pool reference resolves to boot-pool, which is never changed from here (ACTION-MATRIX A-08)"
     if name == "disk.wipe":
         if state is None:
             return "disk membership is unknown (no safety state): wipe is refused"
@@ -168,7 +204,7 @@ def refusal_for(method: Any, params: Iterable[Any] = (), state: SafetyState | No
         if disk in state.protected_disks:
             return f"disk {disk} belongs to a pool or has a mounted partition; wipe refuses disks that are in use"
         if state.unresolved:
-            return f"pool members {list(state.unresolved)} could not be mapped to a disk, so membership is unknown: wipe is refused"
+            return f"pool membership is unknown ({list(state.unresolved)}): wipe is refused"
         size = state.disk_sizes.get(disk)
         if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
             return f"disk {disk} reports no usable size: wipe is refused"
@@ -253,21 +289,27 @@ def _node_refs(node: Mapping[str, Any]) -> list[str]:
     return [node[k] for k in keys if isinstance(node.get(k), str) and node[k]]
 
 
+def _has_usable_topology(topology: Any) -> bool:
+    """A pool topology is usable only when at least one vdev carries a disk reference."""
+    return any(_node_refs(node) for node in _vdev_nodes(topology))
+
+
 def _members(topology: Any, disks: Mapping[str, Mapping[str, Any]], aliases: Mapping[str, str]) -> tuple[set[str], list[str]]:
-    """(listed disks that are pool members, references that could not be resolved). The first resolvable reference of a
-    vdev decides; a vdev with references but none resolvable is reported unresolved."""
+    """(listed disks that are pool members, references that could not be resolved). All resolvable references of a vdev
+    are included; a vdev with references but none resolvable is reported unresolved."""
     members: set[str] = set()
     unresolved: list[str] = []
     for node in _vdev_nodes(topology):
         refs = _node_refs(node)
         if not refs:
             continue
+        resolved = False
         for ref in refs:
             disk = _resolve(ref, disks, aliases)
             if disk:
                 members.add(disk)
-                break
-        else:
+                resolved = True
+        if not resolved:
             unresolved.append(refs[-1])
     return members, unresolved
 
@@ -275,8 +317,8 @@ def _members(topology: Any, disks: Mapping[str, Mapping[str, Any]], aliases: Map
 def compute_state(rpc: Caller) -> SafetyState:
     """Pool ids, pool members (boot pool included), mounted partitions and disk sizes from live reads; fails closed.
 
-    Called only for actions whose calls touch disks or pools (``needs_membership``). An unresolvable pool member does
-    not raise: it is recorded in ``unresolved`` and blocks disk.wipe only.
+    Called only for actions whose calls touch disks or pools (``needs_membership``). An unresolvable pool member or a
+    pool without usable topology does not raise: it is recorded in ``unresolved`` and blocks disk.wipe only.
     """
     try:
         pools = rpc.call("pool.query")
@@ -295,18 +337,33 @@ def compute_state(rpc: Caller) -> SafetyState:
     ids: dict[int, str] = {}
     protected: set[str] = set()
     unresolved: list[str] = []
-    topologies = [boot.get("topology")]
+    boot_topology = boot.get("topology")
+    boot_name = boot.get("name")
+    boot_topology_usable = _has_usable_topology(boot_topology)
+    topologies = [boot_topology]
+    pool_rows: list[Mapping[str, Any]] = []
     for pool in pools:
         if not isinstance(pool, Mapping) or not isinstance(pool.get("id"), int) or not isinstance(pool.get("name"), str):
             raise Refused("safety-state", "pool.query returned a pool without id and name")
+        pool_rows.append(pool)
         ids[pool["id"]] = pool["name"]
-        topologies.append(pool.get("topology"))
+        topology = pool.get("topology")
+        if not _has_usable_topology(topology) and not (_names_boot_pool(pool["name"]) and boot_topology_usable):
+            unresolved.append(f"pool {pool['name']!r} has no usable topology")
+        topologies.append(topology)
+    # boot.get_state can be the usable topology source when pool.query omits it. A named boot pool with no topology in
+    # either response is indeterminate and blocks disk.wipe too.
+    if isinstance(boot_name, str) and _names_boot_pool(boot_name) and not boot_topology_usable:
+        listed_boot_usable = any(_names_boot_pool(pool["name"]) and _has_usable_topology(pool.get("topology"))
+                                 for pool in pool_rows)
+        if not listed_boot_usable:
+            unresolved.append("boot-pool has no usable topology")
     for topology in topologies:
         members, lost = _members(topology, disks, aliases)
         protected |= members
         unresolved += lost
     for name, row in disks.items():
-        if row.get("pool"):
+        if row.get("pool") or row.get("exported_zpool"):
             protected.add(name)
         for part in row.get("partitions") or []:
             if isinstance(part, Mapping) and (part.get("mountpoint") or part.get("mounted")):

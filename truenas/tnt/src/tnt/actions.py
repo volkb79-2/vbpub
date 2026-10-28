@@ -15,8 +15,8 @@ from enum import StrEnum
 from typing import Any
 
 from .errors import Refused
-from .policy import (ALWAYS_REFUSED, BOOT_POOL, Caller, SafetyState, compute_state, is_destructive_method,  # noqa: F401
-                     is_read_method, needs_membership, refusal_for)
+from .policy import (ALWAYS_REFUSED, BOOT_POOL, EXPLICIT_WRITE_ALLOWLIST, Caller, SafetyState, compute_state,
+                     is_destructive_method, is_read_method, needs_membership, normalise_method, refusal_for)  # noqa: F401
 from .transport import GuardedRpc
 
 
@@ -87,11 +87,25 @@ def validate_action(action: Action) -> None:
         for call in action.calls:
             if is_destructive_method(call.method):
                 raise Refused("kind-mismatch", f"{action.id}: {call.method} destroys data, so the action must be DESTRUCTIVE (probe and typed confirmation)")
+    from .adapters import GENERATIONS
+    manifested_writes = {
+        normalise_method(method)
+        for backend_type in GENERATIONS.values()
+        for methods in backend_type.manifest.values()
+        for method in methods
+        if not is_read_method(method)
+    }
+    known_writes = manifested_writes | EXPLICIT_WRITE_ALLOWLIST
+    for call in action.calls:
+        method = normalise_method(call.method)
+        if not is_read_method(method) and method not in known_writes:
+            raise Refused("unknown-write", f"{action.id}: {method} is not in a supported adapter manifest or explicit write allow-list")
 
 
-def fingerprint_of(rpc: Caller, action: Action) -> str:
+def fingerprint_of(rpc: GuardedRpc, action: Action, nonce: str) -> str:
     material = {
         "id": action.id, "kind": str(action.kind), "confirm": action.confirm_target,
+        "session": rpc.session_id, "nonce": nonce,
         "calls": [[c.method, list(c.params), c.job] for c in action.calls],
         "probe": [[c.method, list(c.params), rpc.call(c.method, *c.params)] for c in action.probe],
     }
@@ -103,7 +117,10 @@ def make_plan(action: Action, rpc: GuardedRpc) -> Plan:
     if not isinstance(rpc, GuardedRpc):
         raise Refused("unguarded", "plans are made only through a GuardedRpc session")
     validate_action(action)
-    return Plan(action, fingerprint_of(rpc, action), rpc.session_id, uuid.uuid4().hex)
+    nonce = uuid.uuid4().hex
+    fingerprint = fingerprint_of(rpc, action, nonce)
+    rpc._issue_plan(nonce, fingerprint)
+    return Plan(action, fingerprint, rpc.session_id, nonce)
 
 
 def apply_plan(plan: Plan, rpc: GuardedRpc, *, allow_write: bool, typed_confirmation: str | None = None) -> list[Any]:
@@ -113,6 +130,7 @@ def apply_plan(plan: Plan, rpc: GuardedRpc, *, allow_write: bool, typed_confirma
     validate_action(action)
     if plan.session_id != rpc.session_id:
         raise Refused("foreign-session", "this plan was made on another session; plan again on this one")
+    rpc.check_plan(plan.nonce, plan.fingerprint)
     state: SafetyState | None = None
     if any(needs_membership(c.method) for c in action.calls):  # lazy: unrelated actions never depend on pool membership
         state = compute_state(rpc)
@@ -124,9 +142,9 @@ def apply_plan(plan: Plan, rpc: GuardedRpc, *, allow_write: bool, typed_confirma
         raise Refused("read-only", f"{action.id} changes the host; rerun with --allow-write")
     if action.kind is Kind.DESTRUCTIVE and (action.confirm_target is None or typed_confirmation != action.confirm_target):
         raise Refused("typed-confirmation", f"{action.id} is destructive: type {action.confirm_target!r} exactly to confirm")
-    if fingerprint_of(rpc, action) != plan.fingerprint:
+    if fingerprint_of(rpc, action, plan.nonce) != plan.fingerprint:
         raise Refused("state-drift", f"the host or the action changed since {action.id} was planned; plan again")
-    rpc.spend(plan.nonce)
+    rpc.spend(plan.nonce, plan.fingerprint)
     if action.kind is Kind.READ:
         return [rpc.call(c.method, *c.params, job=True) if c.job else rpc.call(c.method, *c.params) for c in action.calls]
     with rpc.authorized([c.key() for c in action.calls], state):

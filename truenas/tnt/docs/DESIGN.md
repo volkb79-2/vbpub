@@ -92,11 +92,17 @@ action has calls; every probe call is a read method (also in a write session); a
 methods; a DESTRUCTIVE action has a non-empty probe (else the drift check would be vacuous) and a non-blank
 confirmation target; an action containing a data-destroying method (the manifest-level `destructive` set: `disk.wipe`,
 `pool.export|delete|detach|remove`, `pool.dataset.delete`, `pool.snapshot.delete`, `zfs.pool.delete`,
-`zfs.resource.destroy`, plus any method ending `.delete`, `.destroy` or `.wipe`) must be DESTRUCTIVE. `make_plan` runs the probe
-and fingerprints the action id, kind, confirm target, exact calls and probe results, so swapping the calls or the
-target under a plan is detected. A plan carries the id of the session that made it and a nonce: applying it through
+`zfs.resource.destroy`, plus any method ending `.delete`, `.destroy`, `.wipe`, `.rollback`, `.replace`, `.attach`,
+`.offline`, `.promote`, `.rename`, `.stop`, `.reset`, `.clear`, `.format`, `.recursive_destroy` or `.import_pool`)
+must be DESTRUCTIVE. Every non-read call must appear in a v27/v28 adapter manifest or the explicit write allow-list;
+`validate_action` refuses unlisted writes. `make_plan` runs the probe
+and fingerprints the action id, kind, confirm target, exact calls, probe results, session id and nonce, so swapping the
+calls, target or identity under a plan is detected. A plan carries the id of the session that made it and a nonce: applying it through
 another `GuardedRpc` is refused (`foreign-session`) and applying it twice is refused (`plan-reused`; the nonce is spent
-only once every gate has passed, so a wrong confirmation does not burn the plan). `Plan.render()` prints the exact RPC calls in order. `apply_plan` (which accepts only
+only once every gate has passed, so a wrong confirmation does not burn the plan). `GuardedRpc` registers each issued
+nonce with its fingerprint, so replacing a plan's nonce or fingerprint does not create a valid plan. This protects
+against accidental reuse and honest mistakes; code in the same Python process can reach internal state, so the guard
+is not a security boundary against that code. `Plan.render()` prints the exact RPC calls in order. `apply_plan` (which accepts only
 a `GuardedRpc`) checks, in this order, and stops at the first failure:
 
 1. validity (above);
@@ -178,9 +184,9 @@ Default-deny, enforced in the client object itself, not only in the action layer
 - A non-read method is refused in a read-only session. In a write session it is refused unless it is the next call of the
   plan currently executing in `apply_plan` (exact method, parameters and job flag, in order). Outside a plan a write
   session can call nothing but reads. Every granted call must still pass `refusal_for`.
-- The grant is bound to the executing thread and asyncio task, and every call takes a lock, so another thread or task
-  can never consume a plan call or run between its calls (`foreign-caller`). Plans are session-bound and single-use
-  (section 2.4).
+- The grant is bound to the executing thread and asyncio task, so another thread or task cannot consume a plan call
+  (`foreign-caller`). RPC calls share a lock: a concurrent read waits while an RPC is in flight, then can run between
+  plan calls. Plans are session-bound and single-use (section 2.4).
 - `--allow-write` therefore changes nothing by itself: every change goes through plan/apply with its gates.
 - DESTRUCTIVE actions need the typed target name; the kind is tied to the methods (section 2.4).
 - `refusal_for` (second wall, for calls an action declares by mistake):
@@ -191,25 +197,29 @@ Default-deny, enforced in the client object itself, not only in the action layer
     `attach|detach|replace` (B-07) and `environment.*` writes are refused until a later decision adds them to
     `BOOT_WRITE_ALLOWED` (TNT-13);
   - for the `pool.`, `zfs.`, `filesystem.`, `boot.` and `disk.` families, any string parameter (nested, dict keys
-    included) that names boot-pool is refused. A name counts by whole path component after collapsing `//`, `.` and the
-    `/mnt/` and `/dev/zvol/` prefixes, with `@snapshot` and `#bookmark` suffixes: `boot-pool`, `boot-pool/ROOT`,
-    `/mnt/boot-pool/x`, `boot-pool@s` are refused; `boot-pool-data` and `/mnt/boot-pool-data/x` are legal names. A path
-    with a `..` component is ambiguous and refused;
+    included) that names boot-pool is refused. A name counts by whole path component after collapsing `//` and `.`,
+    then stripping `/mnt/`, relative `mnt/` or `/dev/zvol/`, with `@snapshot` and `#bookmark` suffixes:
+    `boot-pool`, `boot-pool/ROOT`, `/mnt/boot-pool/x`, `mnt/boot-pool/x`, `boot-pool@s` are refused;
+    `boot-pool-data` and `/mnt/boot-pool-data/x` are legal names. A path with a `..` component is ambiguous and refused;
   - the pool-id position: only methods whose first parameter is a pool (`pool.export|update|delete|expand|scrub|attach|
     detach|replace|remove|offline|online|upgrade`) are resolved. The parameter must be exactly an int (resolved to a name
     through live `pool.query`; unknown id refused; boot-pool refused) or the exact name of a listed pool; floats, bools,
     digit strings, lists and mappings with `id`/`name`/`pool` are refused. Other `pool.*` methods (for example
-    `pool.scrub.delete`, whose parameter is a task id) have no pool-id position and are not resolved as one;
-  - `disk.wipe` is refused for any disk in a pool (boot included), any disk with a mounted partition, any disk the host
-    does not list, any disk without a usable positive integer size, and whenever any pool member could not be mapped to
-    a disk. There is no override by probe evidence yet. A non-string or missing parameter raises `Refused`.
+    `pool.scrub.delete`, whose parameter is a task id) have no general pool-id position and are not resolved as one.
+    Boot-pool protection also resolves integer values under `pool`, `pool_id` or `pool_name` mapping keys in every
+    method family, and checks the first integer argument of any `pool.*` method against the boot-pool id;
+  - `disk.wipe` is refused for any disk in a pool (boot included) or reported with `exported_zpool`, any disk with a
+    mounted partition, any disk the host does not list, any disk without a usable positive integer size, and whenever
+    any pool member could not be mapped to a disk or a pool has no usable topology. There is no override by probe
+    evidence yet. A non-string or missing parameter raises `Refused`.
 - Pool membership (`policy.compute_state`) is read from `pool.query`, `boot.get_state` and `disk.query`, and only for
   actions that touch disks or pools. A vdev is resolved by its `disk` key first, then `device`/`devname`, its `name` (for
   `DISK` nodes), then its `path`: `/dev/` stripped, partition suffixes (`sda3`, `nvme0n1p2`, `mmcblk0p1`) mapped to the
   disk, and `/dev/disk/by-*` links mapped through exact identifiers from `disk.query` (serial, wwn, identifier, lunid and
   each partition's name/partuuid/uuid/id); a link also matches by a whole dash/underscore-separated token, never by
   substring, and an identifier shared by two disks resolves to neither. Mirror/raidz/draid nesting and the
-  cache/log/spare/special/dedup groups are walked. A vdev that cannot be resolved is recorded and blocks `disk.wipe`
+  cache/log/spare/special/dedup groups are walked. All resolvable references on a vdev are included in membership. A
+  vdev that cannot be resolved or a pool with no usable topology is recorded and blocks `disk.wipe`
   only; it does not block `pool.export` of another pool or any unrelated action. If the reads fail or return an
   unexpected shape, the action is refused (`safety-state`).
 - Limit: mounted non-ZFS partitions are visible only if `disk.query` reports a mountpoint for them; this is UNVERIFIED

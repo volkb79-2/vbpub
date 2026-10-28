@@ -41,6 +41,7 @@ class GuardedRpc:
         self._owner: tuple[int, int | None] | None = None
         self._lock = threading.RLock()
         self._spent: set[str] = set()
+        self._issued_plans: dict[str, str] = {}
         self.session_id = uuid.uuid4().hex
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
 
@@ -53,11 +54,27 @@ class GuardedRpc:
             task = None
         return (threading.get_ident(), None if task is None else id(task))
 
-    def spend(self, nonce: str) -> None:
-        """Mark a plan nonce used; a plan runs at most once, and only on the session that made it."""
-        if not nonce or nonce in self._spent:
-            raise Refused("plan-reused", "this plan was already applied (or has no identity); plan again")
-        self._spent.add(nonce)
+    def _issue_plan(self, nonce: str, fingerprint: str) -> None:
+        """Register an internally created plan identity so a copied/edited Plan cannot invent a fresh nonce."""
+        with self._lock:
+            if not nonce or nonce in self._issued_plans:
+                raise Refused("plan-reused", "this plan already has an identity; plan again")
+            self._issued_plans[nonce] = fingerprint
+
+    def check_plan(self, nonce: str, fingerprint: str) -> None:
+        """Check issuance and prior use before reading live state or spending the plan."""
+        with self._lock:
+            if (not nonce or nonce in self._spent or nonce not in self._issued_plans
+                    or self._issued_plans[nonce] != fingerprint):
+                raise Refused("plan-reused", "this plan was already applied or has no issued identity; plan again")
+
+    def spend(self, nonce: str, fingerprint: str | None = None) -> None:
+        """Spend an issued plan identity once, matching the fingerprint registered by this session."""
+        with self._lock:
+            if (not nonce or nonce in self._spent or nonce not in self._issued_plans
+                    or self._issued_plans[nonce] != fingerprint):
+                raise Refused("plan-reused", "this plan was already applied or has no issued identity; plan again")
+            self._spent.add(nonce)
 
     @contextmanager
     def authorized(self, calls: Iterable[tuple[str, tuple[Any, ...], bool]], state: SafetyState | None) -> Iterator[None]:

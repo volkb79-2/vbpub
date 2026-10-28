@@ -49,11 +49,11 @@ def test_an_unresolvable_member_blocks_wipe_only_not_other_pool_calls():
 
 def test_unrelated_actions_never_read_pool_membership():
     stub = Stub(**{"pool.query": RuntimeError("pool.query is down")})
-    action = Action("S-1", Kind.MUTATE, "stop a service", (RpcCall("service.stop", ("ssh",)),))
+    action = Action("S-1", Kind.MUTATE, "start a container", (RpcCall("container.start", ("demo",)),))
     rpc = guarded(stub)
     assert apply_plan(make_plan(action, rpc), rpc, allow_write=True) == ["done"]
     assert "pool.query" not in stub.executed() and "boot.get_state" not in stub.executed()
-    assert stub.executed() == ["service.stop"]
+    assert stub.executed() == ["container.start"]
 
 
 def test_actions_that_touch_pools_or_disks_do_read_membership_and_fail_closed():
