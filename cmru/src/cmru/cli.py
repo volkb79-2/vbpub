@@ -125,6 +125,9 @@ class CleanupConfig:
     keep_release_tags: List[str]
     ghcr_packages: List[str]
     ghcr_delete_packages: List[str]
+    #: ``[cleanup] max_age_days``: ``--policy`` keeps Releases published within
+    #: this many days (None: no age window, every versioned Release is selected).
+    max_age_days: Optional[int] = None
 
 
 @dataclass
@@ -813,6 +816,7 @@ def load_config(
         keep_release_tags=list(cleanup_raw.keep_release_tags) if cleanup_raw else [],
         ghcr_packages=list(cleanup_raw.ghcr_packages) if cleanup_raw else [],
         ghcr_delete_packages=list(cleanup_raw.ghcr_delete_packages) if cleanup_raw else [],
+        max_age_days=getattr(cleanup_raw, "max_age_days", None) if cleanup_raw else None,
     )
     github_config = GitHubConfig(
         owner=forge.github.owner, repo=forge.github.repo,
@@ -1844,15 +1848,20 @@ def cleanup_project_releases_and_tags(
     git_auth: GitHubGitAuth | None = None,
     plan: CleanupPlan | None = None,
     outcomes: dict[str, bool] | None = None,
+    max_age_days: int | None = None,
 ) -> list[str]:
     """Delete all GitHub Releases (and their git tags) for *prefix*-v* except kept ones.
 
     *keep_tags* is a combined list of ``keep_release_tags`` from config PLUS the
-    ``<prefix>-latest`` pointer (never deleted by cleanup).  Returns a list of
-    tags that were (or would have been) deleted.
+    ``<prefix>-latest`` pointer (never deleted by cleanup).  With *max_age_days*
+    (``[cleanup] max_age_days``) a Release published within that many days, or
+    whose publication time is unknown, is kept too, together with its tag; without
+    it EVERY versioned Release and tag outside the keep list is deleted.  Returns
+    a list of tags that were (or would have been) deleted.
 
     Edge cases:
-    - Missing Release for a tag (tag-only) → delete the tag anyway (tag cleanup).
+    - Missing Release for a tag (tag-only) → delete the tag anyway (tag cleanup);
+      a tag has no publication time, so ``max_age_days`` cannot protect it.
     - Missing tag for a Release → delete the Release.
     - 404 on delete → log and continue (idempotent).
     """
@@ -1860,8 +1869,15 @@ def cleanup_project_releases_and_tags(
     # Collect all versioned releases for this prefix.
     version_marker = f"{prefix}-v"
     latest_tag = f"{prefix}-latest"
-    # Build keep set: always keep -latest + explicit keep_release_tags list.
+    # Build keep set: always keep -latest + explicit keep_release_tags list, and
+    # (with an age policy) every Release still inside the window.
     keep_set = set(keep_tags) | {latest_tag}
+    cutoff = _policy_cutoff(max_age_days)
+    if cutoff is not None:
+        for rel in all_releases:
+            tag = rel.get("tag_name") or ""
+            if tag.startswith(version_marker) and _release_within_policy_window(rel, cutoff):
+                keep_set.add(tag)
 
     # GitHub Releases to delete.
     to_delete_releases: list[tuple[str, int, dict]] = []  # (tag_name, release_id, preview record)
@@ -1870,7 +1886,13 @@ def cleanup_project_releases_and_tags(
         if not tag.startswith(version_marker) and tag != latest_tag:
             continue
         if tag in keep_set:
-            log_info(f"  Keeping Release {tag} (in keep list)")
+            if cutoff is not None and tag not in keep_tags and tag != latest_tag:
+                log_info(
+                    f"  Keeping Release {tag} (published within max_age_days={max_age_days}, "
+                    "or its publication time is unknown)"
+                )
+            else:
+                log_info(f"  Keeping Release {tag} (in keep list)")
             continue
         release_id = rel.get("id")
         if release_id:
@@ -1911,7 +1933,8 @@ def cleanup_project_releases_and_tags(
                     expected_updated_at=expected_updated_at,
                     expected_asset_inventory=expected_asset_inventory,
                     cleanup_outcomes=cleanup_outcomes,
-                    release_outcomes=release_deletion_results:
+                    release_outcomes=release_deletion_results,
+                    cutoff=cutoff:
                         _record_release_cleanup_result(
                             expected_tag,
                             _delete_release_if_tag_still_matches(
@@ -1919,9 +1942,13 @@ def cleanup_project_releases_and_tags(
                                 expected_updated_at=expected_updated_at,
                                 expected_asset_inventory=expected_asset_inventory,
                                 eligible=lambda current, selected_prefix=selected_prefix,
-                                selected_keep_set=selected_keep_set: (
+                                selected_keep_set=selected_keep_set, cutoff=cutoff: (
                                     (current.get("tag_name") or "").startswith(selected_prefix)
                                     and (current.get("tag_name") or "") not in selected_keep_set
+                                    and not (
+                                        cutoff is not None
+                                        and _release_within_policy_window(current, cutoff)
+                                    )
                                 ),
                             ),
                             cleanup_outcomes=cleanup_outcomes,
@@ -1978,6 +2005,30 @@ def cleanup_project_releases_and_tags(
             deleted.append(tag)
 
     return deleted
+
+
+def _policy_cutoff(max_age_days: int | None) -> datetime | None:
+    """The ``[cleanup] max_age_days`` cutoff for ``--policy``, or None (no age window)."""
+    if max_age_days is None:
+        return None
+    if not isinstance(max_age_days, int) or isinstance(max_age_days, bool) or max_age_days <= 0:
+        raise ValueError("cleanup.max_age_days must be a positive integer")
+    return datetime.now(timezone.utc) - timedelta(days=max_age_days)
+
+
+def _release_within_policy_window(release: Mapping[str, object], cutoff: datetime) -> bool:
+    """True when the Release must be KEPT by the age policy: published at or after
+    the cutoff, or with no usable publication time (unknown age is never deleted)."""
+    raw = release.get("published_at") or release.get("created_at") or release.get("updated_at")
+    if not isinstance(raw, str) or not raw:
+        return True
+    try:
+        published = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if published.tzinfo is None:
+        published = published.replace(tzinfo=timezone.utc)
+    return published >= cutoff
 
 
 def _delete_project_tag_after_release_check(
@@ -2284,8 +2335,20 @@ def run_cleanup_verb(
         bare = _bare_prefix(prefix)
 
         log_info(f"Cleanup: {name} (prefix={prefix})")
+        # Say exactly what the policy selects before listing it: without an age
+        # window this is every versioned release of the project.
+        window = (
+            f"Releases published in the last {cleanup.max_age_days} day(s)"
+            if cleanup.max_age_days else "no age window: EVERY versioned Release"
+        )
+        log_info(
+            f"  policy: delete {prefix}* Releases and Git tags except {bare}-latest, "
+            f"keep_release_tags ({', '.join(keep_tags) if keep_tags else 'none'}) and "
+            f"{window}" + (" is deleted" if not cleanup.max_age_days else "")
+        )
 
-        # 1. Delete old Releases + their git tags; keep -latest + keep_release_tags.
+        # 1. Delete old Releases + their git tags; keep -latest + keep_release_tags
+        #    (+ the max_age_days window).
         cleanup_outcomes: dict[str, bool] = {}
         deleted = cleanup_project_releases_and_tags(
             repo_root, owner, repo, token,
@@ -2293,6 +2356,7 @@ def run_cleanup_verb(
             git_auth=_git_auth_for_repository(github_config),
             plan=plan,
             outcomes=cleanup_outcomes,
+            max_age_days=cleanup.max_age_days,
         )
         any_deleted.extend(deleted)
 
@@ -7108,6 +7172,25 @@ def _release_launcher(
                         "Release plan refused before any project started; no changes "
                         "were made (see the error above). Worktree discarded."
                     )
+            elif (
+                vargs.dry_run and not vargs.resume
+                and not transaction.backup_was_pushed(transaction_root, workspace)
+                and not transaction.read_release_results(transaction_root, workspace)
+            ):
+                # KI-91: a dry run's child stops before the candidate push, so a
+                # failed NEW dry-run candidate exists only locally, with nothing to
+                # inspect that the error above did not already say. Retaining it
+                # left a worktree and branch that `cmru abandon` withheld (no scope
+                # record is written for a dry run). A resumed dry run is not ours
+                # to discard; a candidate with a pushed backup or a result is never
+                # a dry run's and keeps the retained path below.
+                transaction.remove_workspace(workspace)
+                transaction.forget_release_scope(transaction_root, workspace)
+                log_error(
+                    "Release dry run failed (see the error above); its disposable "
+                    f"worktree {workspace.path} and branch {workspace.branch} were "
+                    "discarded. No tags were pushed, nothing was built or published."
+                )
             else:
                 # Promotion is now the final step of every project's
                 # candidate cycle. A failed project therefore leaves its
@@ -7604,6 +7687,153 @@ def _abandon_remote_candidate(args, runtime, repo_root: Path) -> int | None:
     return 0
 
 
+def _abandon_orphan_sidecars(args, runtime, repo_root: Path) -> int | None:
+    """Retire the sidecar files of a release transaction that has no worktree,
+    no local branch and (checked by the caller) no origin branch; ``None`` when
+    there are no such files.
+
+    Sidecars outlive a candidate when its worktree and branch were removed by
+    hand, or by an older cmru that did not know every sidecar name (the 7.0.0
+    release left ``.untagged-publish.json`` files behind this way). They hold no
+    state that anything can still resume, so retiring them touches nothing but
+    those files; what they record is shown before confirmation.
+    """
+    from cli_extended import CliFailure
+
+    try:
+        sidecars = transaction.release_sidecar_paths(repo_root, args.branch)
+    except _DOMAIN_ERRORS as exc:
+        raise CliFailure(f"cannot inspect transaction sidecars for {args.branch}: {exc}", exit_code=2) from exc
+    if not sidecars:
+        return None
+    local = run_local_git(
+        repo_root, "show-ref", "--verify", "--quiet", "refs/heads/" + args.branch,
+        capture_output=True, text=True, check=False,
+    )
+    if local.returncode == 0:
+        raise CliFailure(
+            f"a local branch {args.branch} exists without a registered worktree; inspect it "
+            "(`git log`) and delete it by hand before its transaction sidecars can be retired",
+            exit_code=exit_codes.REFUSED,
+        )
+    if local.returncode != 1:
+        raise CliFailure(
+            f"cannot tell whether a local branch {args.branch} exists: "
+            + (local.stderr.strip() or f"git show-ref exit {local.returncode}"),
+            exit_code=2,
+        )
+    workspace = transaction.ReleaseWorkspace(repo_root, repo_root, args.branch, "")
+    # The sidecars are the ONLY remaining record of what this transaction
+    # published. Like every other abandon path, publication evidence withholds:
+    # a recorded result, an untagged publication that started, or a release-tag
+    # push attempt without a confirmed-absent record, and any record that
+    # cannot be read (its content is then unknown, not absent).
+    withhold: list[str] = []
+
+    def _read(label: str, reader):
+        try:
+            return reader(repo_root, workspace)
+        except _DOMAIN_ERRORS as exc:
+            withhold.append(f"the {label} record cannot be read ({exc})")
+            return None
+
+    scope = _read("scope", transaction.read_release_scope)
+    results = _read("results", transaction.read_release_results) or {}
+    started_record = _read("untagged-publication", transaction.read_untagged_publication_record)
+    started = started_record or []
+    attempts = _read("tag-attempt", transaction.read_release_tag_attempts) or {}
+    absent = _read("tag-absence", transaction.read_confirmed_absent_release_tag_attempts) or {}
+    unconfirmed = sorted(
+        _tag_ref_name(ref) for ref, oid in attempts.items() if absent.get(ref) != oid
+    )
+    if started_record is None:
+        # KI-98: without the record (a transaction older than it) an untagged
+        # project's publication state cannot be proven, exactly as on the
+        # normal abandon path. Which scope projects are untagged is a config
+        # fact; an unknown project or an unreadable scope is treated as such.
+        try:
+            scoped_configs = load_config(_resolve_config(getattr(args, "config", None)))[1]
+        except _DOMAIN_ERRORS as exc:
+            raise CliFailure(
+                f"cannot load project release policy to classify {args.branch}: {exc}",
+                exit_code=2,
+            ) from exc
+        if scope is None:
+            withhold.append(
+                "no untagged-publication record and no readable scope: whether an untagged "
+                "project published cannot be proven"
+            )
+        else:
+            unprovable = [
+                name for name in scope
+                if name not in scoped_configs or not getattr(scoped_configs[name], "git_tag", False)
+            ]
+            if unprovable:
+                withhold.append(
+                    "no untagged-publication record (transaction predates it), so publication "
+                    "cannot be proven for untagged project(s): " + ", ".join(unprovable)
+                )
+    if results:
+        withhold.append(
+            "recorded published result(s): "
+            + ", ".join(f"{name}:{tag}" for name, tag in sorted(results.items()))
+        )
+    if started:
+        withhold.append("untagged publication started for: " + ", ".join(sorted(started)))
+    if unconfirmed:
+        withhold.append(
+            "release tag push attempt(s) with no confirmed-absent record: " + ", ".join(unconfirmed)
+        )
+    print(
+        f"{'Withheld' if withhold else 'Retire'} (orphan transaction sidecars): {args.branch}\n"
+        "  worktree: none registered; local branch: none; origin branch: none\n"
+        f"  sidecars: {', '.join(path.name for path in sidecars)}\n"
+        f"  recorded scope: {', '.join(scope) if scope else 'unavailable'}\n"
+        "  recorded results: "
+        + (", ".join(f"{name}:{tag}" for name, tag in sorted(results.items())) if results else "none")
+        + "\n  untagged publications started: "
+        + (
+            "no record (transaction predates KI-98)" if started_record is None
+            else ", ".join(sorted(started)) if started else "none"
+        )
+        + "\n  release tag push attempts: "
+        + (", ".join(sorted(_tag_ref_name(ref) for ref in attempts)) if attempts else "none")
+        + (
+            "\n  reason: " + "; ".join(withhold)
+            + "\n  the sidecars are the only record of that publication state; inspect the "
+            "published tags/Releases, then remove the files by hand if they are unneeded"
+            if withhold else
+            "\n  after retirement: only the sidecar files above are removed; no branch, "
+            "worktree, tag, Release or asset is touched"
+        )
+    )
+    if withhold:
+        if args.dry_run:
+            log_info("[DRY RUN] No branch, worktree, metadata, or remote state was changed.")
+            return exit_codes.REFUSED
+        raise CliFailure(
+            f"{args.branch} has publication evidence in its sidecars; nothing was retired",
+            exit_code=exit_codes.REFUSED,
+        )
+    if args.dry_run:
+        log_info("[DRY RUN] No branch, worktree, metadata, or remote state was changed.")
+        return 0
+    if not (getattr(args, "yes", False) or runtime.confirm(
+        "Remove exactly the orphan transaction sidecar files listed above?"
+    )):
+        return 0
+    transaction.forget_release_scope(repo_root, workspace)
+    remaining = transaction.release_sidecar_paths(repo_root, args.branch)
+    if remaining:
+        raise CliFailure(
+            "unknown sidecar file(s) were left in place; inspect and remove them by hand: "
+            + ", ".join(str(path) for path in remaining),
+            exit_code=1,
+        )
+    log_info(f"Retired orphan transaction sidecars of {args.branch}")
+    return 0
+
+
 def _abandon_locked(args, runtime, repo_root: Path) -> int:
     """Inspect and, after exact confirmation, discard candidates under release lock."""
     from cli_extended import CliFailure
@@ -7623,9 +7853,24 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
             if item.branch == args.branch
             or (requested_path.is_absolute() and Path(item.path) == requested_path)
         ]
+        if not selected and (
+            args.branch.startswith("cmru-gate-") or requested_path.name.startswith("cmru-gate-")
+        ):
+            # A release-gate snapshot is a sidecar of the aggregate gate, not a
+            # transaction: it has its own lifecycle verb with its own proofs.
+            raise CliFailure(
+                f"{args.branch!r} is a release-gate snapshot, not a build or release "
+                "transaction; `cmru abandon` does not manage it. List it with "
+                "`cmru gate-snapshots`, preview with `cmru gate-snapshots --remove --dry-run`, "
+                "then remove with `cmru gate-snapshots --remove`",
+                exit_code=2,
+            )
         if not selected and transaction._is_release_branch(args.branch):
             # KI-35: an origin-only candidate (its worktree is long gone).
             handled = _abandon_remote_candidate(args, runtime, repo_root)
+            if handled is None:
+                # Neither here nor on origin: only sidecars can remain.
+                handled = _abandon_orphan_sidecars(args, runtime, repo_root)
             if handled is not None:
                 return handled
         if not selected:
@@ -8302,7 +8547,7 @@ def _build_cli():
     registry.register(VerbSpec("release", description="Release selected projects from an isolated origin/main snapshot, or with --from-worktree from a clean feature branch already pushed to its same-named origin branch.", group=VerbGroup.MIXED.value, arguments=common_target, options=release_options, mutating=True, dry_run=True, include_confirmation=False, include_json=False, include_progress=False, handler=direct()))
     registry.register(VerbSpec("status", description="Preview changed projects and their next versions (read-only).", group=VerbGroup.EXPLORATION.value, arguments=common_target, options=status_options, include_json=True, include_progress=False, handler=direct()))
     cleanup_options = (
-        OptionSpec(("--policy",), "apply the configured [cleanup] policy: delete Releases, tags and GHCR versions per project, run steps.clean, and commit", parser_kwargs={"action": "store_true", "default": False}, mutually_exclusive_group="cleanup-mode", mutually_exclusive_required=True),
+        OptionSpec(("--policy",), "apply the configured [cleanup] policy per selected project: delete EVERY <prefix>-v* Release and Git tag except <prefix>-latest, keep_release_tags and (only when max_age_days is set) Releases published within that window; delete the packages in ghcr_delete_packages; run steps.clean and commit", parser_kwargs={"action": "store_true", "default": False}, mutually_exclusive_group="cleanup-mode", mutually_exclusive_required=True),
         OptionSpec(("--remove-assets",), "age-based remote Releases and GHCR cleanup (estate-wide; takes no project target)", metavar="AGE", parser_kwargs={"default": None, "type": _non_empty}, mutually_exclusive_group="cleanup-mode", mutually_exclusive_required=True),
         OptionSpec(("--delete-unmanaged-release-tag",), "delete one exact non-CMRU GitHub Release, never its Git tag", metavar="TAG", parser_kwargs={"default": None, "type": _non_empty}, mutually_exclusive_group="cleanup-mode", mutually_exclusive_required=True),
         OptionSpec(("--delete-build-output",), "delete one exact local build record", metavar="ID", parser_kwargs={"default": None, "type": _non_empty}, mutually_exclusive_group="cleanup-mode", mutually_exclusive_required=True),
@@ -8311,7 +8556,7 @@ def _build_cli():
     registry.register(VerbSpec("cleanup", description="Remove remote release assets (--policy, --remove-assets, --delete-unmanaged-release-tag) or one retained local build record (--delete-build-output); one mode is required. It does not abandon release transactions.", group=VerbGroup.MAINTENANCE.value, arguments=common_target, options=cleanup_options, mutating=True, dry_run=True, include_confirmation=True, include_json=False, include_progress=False, handler=direct()))
     registry.register(VerbSpec(
         "abandon",
-        description=("Inspect and discard retained local release transactions (no argument) or one retained build or release worktree (BRANCH or PATH). Removes the exact CMRU candidate branch if present, worktree, in-worktree logs/artifacts, and transaction sidecars. Published candidates are withheld except a completed feature-source release whose exact final commit is already in origin/main; if its origin branch is absent, that exact ancestry must still be verified. Retirement preserves public tags and assets. A cmru-release-* BRANCH that exists only on origin is retired only when every commit is already on origin/main; otherwise it is withheld (exit 4)."),
+        description=("Inspect and discard retained local release transactions (no argument) or one retained build or release worktree (BRANCH or PATH). Removes the exact CMRU candidate branch if present, worktree, in-worktree logs/artifacts, and transaction sidecars. Published candidates are withheld except a completed feature-source release whose exact final commit is already in origin/main; if its origin branch is absent, that exact ancestry must still be verified. Retirement preserves public tags and assets. A cmru-release-* BRANCH that exists only on origin is retired only when every commit is already on origin/main; otherwise it is withheld (exit 4). A BRANCH gone everywhere that left only transaction sidecars has exactly those files retired. A cmru-gate-* snapshot is refused (exit 2): use gate-snapshots."),
         group=VerbGroup.MAINTENANCE.value,
         arguments=(ArgumentSpec("branch", "exact managed build or release branch, or the path of its worktree; omit to select all retained release transactions", metavar="BRANCH|PATH", parser_kwargs={"nargs": "?", "default": None}),),
         options=(config_opt,),

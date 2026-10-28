@@ -235,7 +235,12 @@ handlers module adapter, every option, and the required semantic review table, i
 in the [canonical CLI spec](docs/SPEC.md#s-cli9-canonical-cli-grammar-and-semantic-audit).
 
 `cleanup` applies the configured remote asset policy: GitHub Release records and their
-assets, release tags covered by that policy, and GHCR package versions. Every mutating cleanup
+assets, release tags covered by that policy, and GHCR package versions. `--policy` selects
+EVERY `<prefix>-v*` Release and tag of a project except `<prefix>-latest`, `keep_release_tags`
+and, only when `[cleanup] max_age_days` is set, Releases published within that window. Run it
+only while no `cmru release` is in flight on the estate: `cleanup` takes no release lock
+(KI-101) and would treat a tag a release just pushed, whose Release does not exist yet, as a
+stale tag. Every mutating cleanup
 mode first displays pending actions and asks for confirmation; `--yes` accepts that displayed
 set, and `--dry-run` stops after the preview. CMRU applies the captured target IDs and names
 after confirmation instead of rediscovering targets, so an asset that appears or ages into the

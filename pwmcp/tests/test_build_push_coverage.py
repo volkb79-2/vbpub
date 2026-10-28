@@ -111,6 +111,35 @@ def test_sync_visibility_mirrors_each_normalized_package(monkeypatch: pytest.Mon
     assert calls == [("pwmcp", "private"), ("bundle", "private")]
 
 
+def test_sync_visibility_reports_a_package_cmru_could_not_sync(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """cmru KI-97: mirror_package_visibility returns None (after its own warning)
+    when the package cannot be inspected; the step must not claim it was synced."""
+    monkeypatch.setenv("GITHUB_USERNAME", "owner")
+    monkeypatch.setenv("GITHUB_REPO", "repo")
+    monkeypatch.setenv("GITHUB_PUSH_PAT", "secret")
+    monkeypatch.setenv("GITHUB_OWNER_TYPE", "User")
+
+    class FakePackages:
+        def __init__(self, *args: str) -> None:
+            pass
+
+        def repo_visibility(self) -> str:
+            return "public"
+
+        def mirror_package_visibility(self, name: str, *, expected_visibility: str) -> str | None:
+            return None if name == "pwmcp-ocr" else expected_visibility
+
+    monkeypatch.setattr(build_push, "GitHubPackages", FakePackages)
+    build_push.sync_ghcr_package_visibility(["pwmcp", "pwmcp-ocr"])
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "Synced pwmcp visibility to public" in output
+    assert "NOT synced: pwmcp-ocr visibility could not be verified" in output
+    assert "Synced pwmcp-ocr visibility" not in output
+
+
 def test_builder_config_is_frozen() -> None:
     config = _config()
     with pytest.raises(FrozenInstanceError):
