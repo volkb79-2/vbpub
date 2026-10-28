@@ -1544,9 +1544,13 @@ def _fixed_components(latest: dict) -> dict[str, float | None]:
     return {"coverage_baseline": coverage, "r2_baseline": r2, "other": other}
 
 
+def _declares_r2(lane) -> bool:
+    return "R2" in lane.rigor
+
+
 def _declares_native_r2(lane) -> bool:
     return bool(
-        "R2" in lane.rigor
+        _declares_r2(lane)
         and lane.judge is not None
         and lane.judge.mutation is not None
         and lane.judge.mutation.format is None
@@ -1975,7 +1979,8 @@ def campaign(
     )
     ingested_lane = _ingested_r2(lane, r2_policy)
     inventory_established = verdict is not None and (
-        complete_inventory or complete_empty_plan or ingested_lane
+        not _declares_r2(lane)
+        or complete_inventory or complete_empty_plan or ingested_lane
     )
     if verdict is None:
         inventory_exhausted = selection == plan_id_set and pending_total == 0
