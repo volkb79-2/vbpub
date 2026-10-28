@@ -33,7 +33,7 @@ def _value(flags: tuple[str, ...], text: str, metavar: str, group: str = "TARGET
     return OptionSpec(flags, text, group=group, metavar=metavar, parser_kwargs={"default": None, **kw})
 
 
-CONFIG = _value(("--config",), "Profile file (default: $TNT_CONFIG, else $XDG_CONFIG_HOME/tnt/profiles.toml).", "FILE")
+CONFIG = _value(("--config",), "Profile file (default: $TNT_CONFIG, else ./tnt.toml, then $XDG_CONFIG_HOME/tnt/tnt.toml).", "FILE")
 PROFILE = _value(("--profile",), "Profile name (default: the file's `default`, or its only profile).", "NAME")
 INSECURE = _flag(("--insecure",), "Confirm TLS verification is OFF for a profile with tls = \"insecure\" (throwaway test hosts only).")
 HOST_OPTIONS = (PROFILE, CONFIG, INSECURE)
@@ -80,14 +80,14 @@ def _check_profiles(runtime: CliRuntime, args: Any) -> CheckResult:
     return CheckResult("ok", f"{len(profiles)} profile(s) in {path}", details={"profiles": sorted(profiles)})
 
 
-def _check_key(runtime: CliRuntime, args: Any) -> CheckResult:
+def _check_credentials(runtime: CliRuntime, args: Any) -> CheckResult:
     try:
         p = _profile(args)
-        prof.read_secret(p)
+        prof.read_credential(p)
     except TntError as exc:
         return CheckResult("skip" if "profile" in str(exc).lower() and "no profile file" in str(exc) else "fail", str(exc),
-                           remedy="chmod 600 the key file, or set TNT_API_KEY_FILE / TNT_API_KEY")
-    return CheckResult("ok", f"API key for {p.name} is readable and not group/other accessible")
+                           remedy="chmod 600 tnt.toml and any referenced key file; configure the selected credential on its profile")
+    return CheckResult("ok", f"credentials for {p.name} are configured and private")
 
 
 def _check_connect(runtime: CliRuntime, args: Any, opener: SessionOpener) -> CheckResult:
@@ -96,7 +96,7 @@ def _check_connect(runtime: CliRuntime, args: Any, opener: SessionOpener) -> Che
     try:
         session = opener(_profile(args), insecure_ack=args.insecure)
     except TntError as exc:
-        return CheckResult("fail", str(exc), remedy="check url, key and TLS; an auth failure is never retried (rate limit)")
+        return CheckResult("fail", str(exc), remedy="check url, configured credential and TLS; an auth failure is never retried (rate limit)")
     try:
         return CheckResult("ok", session.banner(), details={"generation": session.backend.generation, "manifest": session.backend.verified})
     finally:
@@ -155,11 +155,11 @@ def build_cli(cli_identity: CliIdentity | None = None, opener: SessionOpener = o
         DoctorCheck("python", "Python version is supported", _check_python),
         DoctorCheck("deps", "transport and UI libraries import", _check_deps),
         DoctorCheck("profiles", "the profile file parses", _check_profiles),
-        DoctorCheck("key", "the API key file is readable and private", _check_key),
+        DoctorCheck("credentials", "the selected credentials are configured", _check_credentials),
         DoctorCheck("connect", "the host answers and login works", lambda runtime, args: _check_connect(runtime, args, opener)),
     ], options=HOST_OPTIONS + (_flag(("--online",), "Also connect to the host (one login, no retry)."),))
 
-    profile_registry = CliRegistry(ident, prog="tnt profile", description="Inspect connection profiles (host URL, key file, TLS mode).",
+    profile_registry = CliRegistry(ident, prog="tnt profile", description="Inspect connection profiles (host URL, authentication, TLS mode).",
                                    unexpected_exceptions="report", expected_exceptions=expected)
     profile_registry.register(VerbSpec("list", None, "List the profiles in the profile file (never shows key material).",
                                        group=VerbGroup.EXPLORATION.value, examples=("tnt profile list --json",),

@@ -27,7 +27,7 @@ test keeps every such row id mentioned here) and from the M0 scaffold's known ga
 | TNT-13 | System > Boot (`boot.get_state`, `boot.environment.*`; clone/activate/keep) | M1 | M |
 | TNT-14 | System: General, Network, Services, Update (read first) | M3 | L |
 | TNT-15 | Shares: SMB, NFS (matrix A-07, B-05) | M3 | M |
-| TNT-16 | Containers and Virtual Machines (matrix A-04..A-06, B-04; v27 `container.*`, v25.10/26 `virt.*` through the adapter) | M3 | L |
+| TNT-16 | Containers and Virtual Machines (matrix A-04..A-06, B-04; v27 `container.*` and `vm.*`) | M1 | L |
 | TNT-17 | Apps | M3 | M |
 | TNT-18 | Data Protection (snapshots, replication, cloud sync, scrub/SMART tasks) | M3 | L |
 | TNT-19 | Credentials, Reporting, Audit, Enclosure | M3 | L |
@@ -37,8 +37,7 @@ test keeps every such row id mentioned here) and from the M0 scaffold's known ga
 | id | what | size | milestone |
 |---|---|---|---|
 | TNT-20 | Live lane: read-only contract tests replaying the fake's scenarios against the throwaway host (a throwaway test VM only, never a production host), opt-in marker, key from file | M | M1 |
-| TNT-21 | SCRAM: the fake server implements only `API_KEY_PLAIN`; SCRAM-SHA-512 with channel binding is covered only by the live lane. Add a SCRAM stub to the fake or record a captured exchange | M | M1 |
-| TNT-22 | Real v28 adapter: diff the v28 nightly method list (`core.get_methods`) against the v27 manifest; replace the copied manifest | M | M1 |
+| TNT-21 | SCRAM fake-server handshake for the pinned client and password login support (completed in config/credential step) | M | M1 |
 | TNT-23 | Manifest drift test: compare each adapter manifest with the fetched `https://api.truenas.com/v27.0` method index (opt-in network test, not in the gate) | S | M1 |
 | TNT-24 | Audit log (no secrets) of every executed action under the XDG state dir | S | M2 |
 | TNT-25 | Live updates: subscribe to `core.get_jobs` / collection updates so tables refresh without `r` | M | M2 |
@@ -51,4 +50,4 @@ test keeps every such row id mentioned here) and from the M0 scaffold's known ga
 | TNT-32 | Register `tnt` in `cmru.orchestration.toml` and the root run-gate registry (not done in M0: see DESIGN section 12) | S | M0 close |
 | TNT-33 | Gate environment: the r0-r1 lane needs `tnt` installed in the tester venv (the CLI resolves its version from installed metadata, like iobench) plus `textual` and `websockets` from the test extra | S | M0 close |
 | TNT-35 | Detect per host which conditional menu entries (Containers, Virtual Machines, Apps, KMIP, Enclosure) the web UI would show, and hide the others | S | M1 |
-| TNT-34 | Verify the exact v28/v27 `auth.mechanism_choices` result and whether `API_KEY_PLAIN` stays enabled on a hardened host (affects `auth = "plain"` profiles) | S | M1 |
+| TNT-36 | Revisit container memory controls if a future v27 schema exposes a supported memory resource field; current `ContainerCreate`/`ContainerUpdate` schema exposes `cpuset` but no memory limit (deferred by verified v27 schema) | S | M1 |

@@ -7,14 +7,13 @@ from typing import Any, Mapping
 from ..errors import UnsupportedVersion
 from .base import Backend
 from .v27 import V27
-from .v28 import V28
 
-GENERATIONS: dict[int, type[Backend]] = {27: V27, 28: V28}
+GENERATIONS: dict[int, type[Backend]] = {27: V27}
 _MAJOR = re.compile(r"(?<![0-9])(\d{2})\.(\d{1,2})(?![0-9])")
 
 
 def parse_major(version: str) -> int:
-    """'TrueNAS-27.0.0-RC.1' -> 27; a nightly such as '28.04-MASTER-20261014-...' -> 28."""
+    """'TrueNAS-27.0.0-RC.1' -> 27."""
     match = _MAJOR.search(version)
     if not match:
         raise UnsupportedVersion(f"cannot read an API generation from the reported version {version!r}")

@@ -2,10 +2,14 @@
 
 ## [Unreleased]
 
-- M0 scaffold: `tnt --version`, `tnt doctor`, `tnt profile list|show`, `tnt disks`, `tnt tui` (Storage > Disks).
-- Transport over `truenas_api_client` (pinned by sha of tag TS-27.0.0-RC.1): wss only, TLS verification on by
-  default, API key from a mode-0600 file or the environment, never printed.
-- Per-version adapters v27 and v28 (v28 is a stub) with a method manifest.
+- Added schema-versioned `tnt.toml` profiles with explicit config search order, current-user ownership and exact mode-0600 checks,
+  inline API-key or password credentials, optional API-key files, and masked profile inspection.
+- Added v27 password login through the pinned client's `PASSWORD_PLAIN` mechanism; API keys continue to use SCRAM.
+- Removed the postponed generation adapter. Only v27 is accepted; the adapter boundary remains extensible.
+- Added the committed `tnt.toml.example` and ignored local `tnt.toml` configuration.
+- M0 scaffold remains: `tnt --version`, `tnt doctor`, `tnt profile list|show`, `tnt disks`, `tnt tui` (Storage > Disks).
+- Transport over `truenas_api_client` (pinned by sha of tag TS-27.0.0-RC.1): wss only and TLS verification on by
+  default. Authentication failures are fatal and not retried.
 - Default-deny `GuardedRpc`: write sessions run only the exact calls of the plan being applied; refusal list with live pool/disk state; disk.wipe protection computed from live membership.
 - Re-review hardening: lazy membership with real topologies (disk key, partuuid, nvme, nested/aux vdevs), thread/task-bound grant and call lock, kind tied to destructive methods, normalised paths and strict pool-id forms, default-deny boot family, single-use session-bound plans.
 - Guard review round 3: normalise boot-pool paths before prefix removal; refuse unmanifested writes and require destructive kind for additional data-changing methods; resolve boot-pool ids in nested references; block disk wipes when pool topology is unknown or disks report `exported_zpool`; union vdev references; register issued plan nonces against their fingerprints; document concurrent-read locking and the same-process trust boundary.

@@ -28,7 +28,7 @@ def test_ws_is_refused_without_the_loopback_test_hook(server):
 
 
 def test_ws_to_a_non_loopback_host_is_refused_even_with_the_hook():
-    p = Profile("x", "ws://nas.example.invalid/api/current", "tnt", auth="plain")
+    p = Profile("x", "ws://nas.example.invalid/api/current", "tnt", auth="api_key")
     with pytest.raises(TransportError, match="ws:// is refused"):
         transport.connect(p, Secret("1-k"), allow_loopback_ws=True)
 
@@ -75,8 +75,29 @@ def test_scram_login_uses_channel_binding_over_wss():
         def login_with_api_key(self, user, key, mech, *, channel_binding):
             calls.append((user, mech.value, channel_binding))
 
-    transport.connect(Profile("a", "wss://h.example.invalid/api/current", "u", auth="scram"), Secret("1-k"), client_factory=Client)
+    transport.connect(Profile("a", "wss://h.example.invalid/api/current", "u", auth="api_key"), Secret("1-k"), client_factory=Client)
     assert calls == [("u", "SCRAM", True)]
+
+
+def test_password_login_uses_pinned_client_mechanism_and_fake_server_once(server):
+    session = open_session(server.profile(auth="password"), allow_loopback_ws=True)
+    login = next(request for request in server.requests if request["method"] == "auth.login_ex")
+    assert login["params"][0] == {
+        "mechanism": "PASSWORD_PLAIN",
+        "username": "tnt",
+        "password": "fake-password-material",
+    }
+    assert server.logins == 1
+    session.close()
+
+
+def test_password_login_failure_is_fatal_scrubbed_and_not_retried(server):
+    profile = server.profile(auth="password", password=Secret("wrong-password-material"))
+    with pytest.raises(TransportError, match="login to 127.0.0.1") as err:
+        open_session(profile, allow_loopback_ws=True)
+    assert err.value.kind == "auth"
+    assert "wrong-password-material" not in str(err.value)
+    assert server.logins == 1
 
 
 def test_auth_failure_is_fatal_scrubbed_and_not_retried():
@@ -183,7 +204,6 @@ def test_session_closes_the_client_when_detection_fails():
 
 def test_adapter_selection():
     assert adapters.select("TrueNAS-27.0.0-RC.1").generation == "v27"
-    assert adapters.select("28.04-MASTER-20261014-1").generation == "v28"
     assert adapters.parse_major("TrueNAS-SCALE-25.10.3") == 25
     with pytest.raises(UnsupportedVersion, match="no adapter"):
         adapters.select("TrueNAS-25.10.3")
@@ -200,9 +220,8 @@ def test_manifest_diff_against_live_method_list(server):
     session.close()
 
 
-def test_manifests_declare_how_they_were_verified_and_v27_has_no_virt_namespace():
+def test_manifest_declares_v27_and_has_no_virt_namespace():
     from tnt.adapters.v27 import V27
-    from tnt.adapters.v28 import V28
-    assert V27.verified == "reference" and V28.verified == "copied"
+    assert V27.verified == "reference"
     methods = {m for ms in V27.manifest.values() for m in ms}
     assert not any(m.startswith("virt.") for m in methods) and "container.query" in methods

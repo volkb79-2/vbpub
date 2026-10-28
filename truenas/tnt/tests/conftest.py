@@ -19,11 +19,13 @@ def opener(server):
     return _open
 
 
-PROFILE_TOML = """default = "lab"
+PROFILE_TOML = """schema_version = 1
+default = "lab"
 
 [profiles.lab]
 url = "wss://lab.example.invalid/api/current"
 username = "tnt"
+auth = "api_key"
 api_key_file = "{key}"
 tls = "verify"
 
@@ -31,7 +33,7 @@ tls = "verify"
 url = "wss://vm.example.invalid/api/current"
 username = "tnt"
 tls = "insecure"
-auth = "plain"
+auth = "api_key"
 """
 
 
@@ -40,6 +42,7 @@ def config(tmp_path):
     key = tmp_path / "lab.key"
     key.write_text("1-notarealkey\n")
     key.chmod(0o600)
-    path = tmp_path / "profiles.toml"
+    path = tmp_path / "tnt.toml"
     path.write_text(PROFILE_TOML.format(key=key))
+    path.chmod(0o600)
     return path

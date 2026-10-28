@@ -1,14 +1,18 @@
 """Test support: a minimal fake TrueNAS JSON-RPC 2.0 websocket server.
 
 It speaks just enough of the middleware protocol for ``truenas_api_client``: ``core.set_options``,
-``auth.mechanism_choices``, ``auth.login_ex`` with ``API_KEY_PLAIN`` (SCRAM is not implemented: the live lane
-covers it), ``system.version``, ``system.info``, ``core.get_methods``, ``disk.query`` and ``disk.details``.
+``auth.mechanism_choices``, ``auth.login_ex`` with the API-key SCRAM and password flows, ``system.version``,
+``system.info``, ``core.get_methods``, ``disk.query`` and ``disk.details``.
 It listens on loopback only and records every request, so tests can assert which methods were called.
 This module imports ``websockets``: it is for tests only and is never imported by the shipped CLI or TUI.
 """
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
+import os
 import threading
 from typing import Any, Callable
 
@@ -41,10 +45,11 @@ def standard_disks() -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any
 
 class FakeServer:
     def __init__(self, *, version: str = "TrueNAS-27.0.0-RC.1", username: str = "tnt", api_key: str = FAKE_KEY,
+                 password: str = "fake-password-material",
                  disks: list[dict[str, Any]] | None = None, parts: dict[str, list[dict[str, Any]]] | None = None,
                  methods: list[str] | None = None, fail: dict[str, str] | None = None, details_as_flat_list: bool = False):
         std_disks, std_parts = standard_disks()
-        self.version, self.username, self.api_key = version, username, api_key
+        self.version, self.username, self.api_key, self.password = version, username, api_key, password
         self.disks = std_disks if disks is None else disks
         self.parts = std_parts if parts is None else parts
         self.methods = sorted(m for ms in V27.manifest.values() for m in ms) if methods is None else methods
@@ -54,6 +59,7 @@ class FakeServer:
         self.details_as_flat_list = details_as_flat_list
         self.requests: list[dict[str, Any]] = []
         self.logins = 0
+        self._scram: dict[str, dict[str, Any]] = {}
         self._server: Any = None
         self._thread: threading.Thread | None = None
 
@@ -83,7 +89,11 @@ class FakeServer:
         return f"ws://127.0.0.1:{self.port}/api/current"
 
     def profile(self, name: str = "fake", **kw: Any) -> Profile:
-        return Profile(name=name, url=self.url, username=self.username, tls="verify", auth="plain", **kw)
+        auth = kw.pop("auth", "api_key")
+        api_key = kw.pop("api_key", Secret(self.api_key) if auth == "api_key" else None)
+        password = kw.pop("password", Secret(self.password) if auth == "password" else None)
+        return Profile(name=name, url=self.url, username=self.username, tls="verify", auth=auth,
+                       api_key=api_key, password=password, **kw)
 
     def secret(self) -> Secret:
         return Secret(self.api_key)
@@ -104,7 +114,7 @@ class FakeServer:
                 if method == "auth.login_ex":
                     result, authed = self._login(params, authed)
                 elif method in ("core.set_options", "auth.mechanism_choices"):
-                    result = ["API_KEY_PLAIN"] if method == "auth.mechanism_choices" else None
+                    result = ["SCRAM", "API_KEY_PLAIN", "PASSWORD_PLAIN"] if method == "auth.mechanism_choices" else None
                 elif not authed:
                     raise _RpcError(CALL_ERROR, "Not authenticated")
                 else:
@@ -118,11 +128,69 @@ class FakeServer:
             ws.send(json.dumps(reply))
 
     def _login(self, params: list[Any], authed: bool) -> tuple[Any, bool]:
-        self.logins += 1
         p = params[0] if params else {}
+        if p.get("mechanism") == "PASSWORD_PLAIN":
+            self.logins += 1
+            ok = p.get("username") == self.username and p.get("password") == self.password
+            return ({"response_type": "SUCCESS"} if ok else {"response_type": "AUTH_ERR"}, ok or authed)
         if p.get("mechanism") == "API_KEY_PLAIN" and p.get("username") == self.username and p.get("api_key") == self.api_key:
+            self.logins += 1
             return {"response_type": "SUCCESS"}, True
+        if p.get("mechanism") == "SCRAM":
+            return self._scram_login(p, authed)
         return {"response_type": "AUTH_ERR"}, authed
+
+    def _scram_login(self, payload: dict[str, Any], authed: bool) -> tuple[Any, bool]:
+        """Test server for the pinned client's real SCRAM-SHA-512 websocket exchange."""
+        rfc = payload.get("rfc_str", "")
+        fields = {part.split("=", 1)[0]: part.split("=", 1)[1] for part in rfc.split(",") if "=" in part}
+        if payload.get("scram_type") == "CLIENT_FIRST_MESSAGE":
+            self.logins += 1
+            client_bare = rfc[3:] if rfc.startswith(("n,,", "y,,")) else ""
+            user = fields.get("n", "")
+            if ":" not in user or not fields.get("r"):
+                return {"response_type": "AUTH_ERR"}, authed
+            username, key_id = user.rsplit(":", 1)
+            try:
+                actual_id, material = self.api_key.split("-", 1)
+            except ValueError:
+                return {"response_type": "AUTH_ERR"}, authed
+            if username != self.username or key_id != actual_id:
+                return {"response_type": "AUTH_ERR"}, authed
+            try:
+                nonce = base64.b64encode(base64.b64decode(fields["r"], validate=True) + os.urandom(32)).decode()
+            except (ValueError, TypeError):
+                return {"response_type": "AUTH_ERR"}, authed
+            salt = os.urandom(16)
+            iterations = 50000
+            first = f"r={nonce},s={base64.b64encode(salt).decode()},i={iterations}"
+            self._scram[nonce] = {"client_bare": client_bare, "server_first": first, "material": material,
+                                  "salt": salt, "iterations": iterations}
+            return ({"response_type": "SCRAM_RESPONSE", "scram_type": "SERVER_FIRST_RESPONSE", "rfc_str": first}, authed)
+        if payload.get("scram_type") != "CLIENT_FINAL_MESSAGE":
+            return {"response_type": "AUTH_ERR"}, authed
+        nonce = fields.get("r", "")
+        state = self._scram.pop(nonce, None)
+        if state is None or not fields.get("p"):
+            return {"response_type": "AUTH_ERR"}, authed
+        try:
+            proof = base64.b64decode(fields["p"], validate=True)
+        except (ValueError, TypeError):
+            return {"response_type": "AUTH_ERR"}, authed
+        without_proof = ",".join(part for part in rfc.split(",") if not part.startswith("p="))
+        auth_message = f'{state["client_bare"]},{state["server_first"]},{without_proof}'.encode()
+        salted = hashlib.pbkdf2_hmac("sha512", state["material"].encode(), state["salt"], state["iterations"])
+        client_key = hmac.new(salted, b"Client Key", hashlib.sha512).digest()
+        stored_key = hashlib.sha512(client_key).digest()
+        signature = hmac.new(stored_key, auth_message, hashlib.sha512).digest()
+        recovered = bytes(a ^ b for a, b in zip(proof, signature))
+        if len(recovered) != len(client_key) or not hmac.compare_digest(hashlib.sha512(recovered).digest(), stored_key):
+            return {"response_type": "AUTH_ERR"}, authed
+        server_key = hmac.new(salted, b"Server Key", hashlib.sha512).digest()
+        server_signature = hmac.new(server_key, auth_message, hashlib.sha512).digest()
+        result = {"response_type": "SCRAM_RESPONSE", "scram_type": "SERVER_FINAL_RESPONSE",
+                  "rfc_str": f"v={base64.b64encode(server_signature).decode()}"}
+        return result, True
 
     def _dispatch(self, method: str, params: list[Any]) -> Any:
         handlers: dict[str, Callable[[list[Any]], Any]] = {

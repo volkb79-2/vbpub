@@ -1,34 +1,33 @@
 # tnt design
 
-Status: M0 scaffold, 2026-10-28. Inputs: the prior-art research (`truenas-tui-research.md`, release-program brief),
+Status: M1 core workflows, 2026-10-28. Inputs: the prior-art research (`truenas-tui-research.md`, release-program brief),
 the canonical action matrix (`docs/ACTION-MATRIX.snapshot.md`, from branch `truenas-restore-iso`), the TrueNAS web UI
 source (`truenas/webui` `navigation.service.ts`, read on master 2026-10-28) and the estate's cli-extended conventions.
 Everything marked UNVERIFIED has not been confirmed against a running host; BACKLOG TNT-01 is the first spike.
 
 ## 1. Goals and non-goals
 
-Goals: (1) one tool that does the storage jobs the web UI and the stock API cannot (disk free space and partitions,
-a pool on a partition or free space, boot-pool data management, cache/log/special vdevs; reserving the free-tail
-partition) using the API for everything it can and an explicit, gated fallback for the rest; (2) a TUI an experienced
-TrueNAS user navigates without learning anything; (3) every TUI action available as a scriptable CLI verb; (4) safe by
-construction on a host that may be production.
+Goals: run the core operator workflows against a vanilla TrueNAS v27 host: Datasets and Snapshots, Containers, Virtual
+Machines, and local Users. Containers and Virtual Machines are separate menu items, matching the v27 web UI; users
+live under Credentials > Local Users. The TUI and scriptable CLI share one query/action layer. Every write uses
+plan/apply, displays the exact API calls, re-reads state before apply, and uses typed confirmation for destructive work.
 
-Non-goals: replacing the web UI wholesale; a REST client (removed in 26); managing hosts below v27 (the v27 RC is the
-floor; v25.10/26 adapters are possible later, TNT-22 notes the `virt.*` difference); a daemon.
+Non-goals: shares, Apps, networking, boot-pool management, pool creation, a REST client, a daemon, and compatibility
+with releases other than v27. tnt targets vanilla TrueNAS; it does not rely on any relaxation patch.
 
 ## 2. Architecture
 
 One-way layers; each only imports the ones above it in this list.
 
 ```
-profile.py   Profile, Secret, key-file checks            (no I/O beyond reading config and the key file)
+profile.py   Profile, Secret, versioned tnt.toml ownership/mode and key-file checks
 transport.py RpcClient protocol, connect(), GuardedRpc   (the only module that touches truenas_api_client)
 adapters/    Backend per API generation + method manifest
-domain.py    Disk, Partition (free_bytes), human_bytes   (plain values)
+domain.py    Plain domain records and formatting
 actions.py   Action, Plan, apply_plan, refusal list      (plan/apply model)
-session.py   Session = profile + guarded rpc + backend; the single query entry point (Session.disks())
-cli.py       cli-extended registry: doctor, profile, disks, tui
-tui/         Textual app: Tree navigation, content view per screen, command palette
+session.py   Session = profile + guarded rpc + backend; shared workflow query entry point
+cli.py       cli-extended registry: profile, doctor, datasets, snapshots, users, containers, VMs, TUI
+tui/         Textual app: Tree navigation, workflow views, action list, command palette and plan dialogs
 ```
 
 The CLI and the TUI both call `Session` methods; the TUI holds no query logic. `build_cli(opener=...)` takes the
@@ -40,34 +39,26 @@ session opener so tests substitute a fake-server-backed one.
 `wss://HOST/api/current`). Pinned by git sha of tag `TS-27.0.0-RC.1` (commit dated 2026-08-31, 58 days old on
 2026-10-28, so past the 14-day third-party rule); it is not on PyPI. The pin is re-checked by TNT-31 at GA.
 
-- Login: `Client.login_with_api_key(user, key, mechanism, channel_binding=...)`. This client helper sends
-  `auth.login_ex` (`SCRAM` default, SCRAM-SHA-512 with tls-server-end-point channel binding over wss; or
-  `API_KEY_PLAIN` when the profile says `auth = "plain"`). The deprecated middleware method
-  `auth.login_with_api_key` is never called (a test asserts the wire never carries it). The client never
-  auto-downgrades SCRAM to PLAIN; neither does tnt.
+- Login: API keys use `Client.login_with_api_key` with SCRAM-SHA-512 and TLS channel binding over wss. Password
+  profiles use the pinned client's `Client.login_with_password`, which uses `auth.login_ex` with `PASSWORD_PLAIN` on
+  v27. The pinned client source at the commit in `pyproject.toml` was checked for this method and mechanism. tnt never
+  calls the deprecated `auth.login_with_api_key` middleware method or retries a failed login.
 - One persistent session. A failed login is fatal and not retried (rate limit: 20 unauthenticated requests per 60 s,
   then 10 minutes of lockout). `tnt doctor --online` is one login.
 - `ws://` is refused: TrueNAS revokes API keys sent without TLS. Profiles reject it at load time and `connect()`
   rejects it again. The only exception is the loopback hook the tests use for the fake server
   (`allow_loopback_ws`, honoured for 127.0.0.1/::1/localhost, not reachable from the CLI or from a profile).
 - TLS verification is ON. `tls = "insecure"` in a profile turns it off only when the command line also carries
-  `--insecure`, and the TUI then shows a red banner on every screen. A throwaway host that runs with
-  `verify_ssl = false` keeps that explicit per profile.
-- Errors from the client are wrapped into one `TransportError(kind, message)` with the API key scrubbed from the text.
+  `--insecure`, and the TUI then shows a red banner on every screen.
+- Errors from the client are wrapped into one `TransportError(kind, message)` with configured credentials scrubbed.
 
 ### 2.2 Version adapters and the method manifest
 
-API methods move between generations (v27.0 has no `virt.*`; containers are `container.*`; `pool.snapshot.*` coexists
-with `zfs.resource.snapshot.*`; job result shapes changed in 25.10). So the UI never calls a method name directly:
-screens call `Backend` operations and each `Backend` subclass knows its generation's names.
-
-- `adapters.select(version)` parses the major from `system.version` (`TrueNAS-27.0.0-RC.1` -> 27; a nightly like
-  `28.04-MASTER-...` -> 28) and picks `V27` or `V28`; any other major raises `UnsupportedVersion` (fail closed).
-- Every adapter carries `manifest`: feature -> RPC methods it needs, and `verified`: how that list was obtained
-  (`reference` = read from api.truenas.com/v27.0; `live` = confirmed against a host; `copied` = inherited, unconfirmed).
-  `V27` is `reference`, `V28` is a `copied` stub of V27.
-- `adapters.missing_methods(backend, core.get_methods result)` diffs the manifest against what a host lists; `doctor`
-  will use it (the name `core.get_methods` as the method-list call is UNVERIFIED on v27 until TNT-01/22).
+The adapter boundary remains extensible, but this release ships only v27. `adapters.select(version)` parses the major
+from `system.version` and selects `V27`; every other major raises `UnsupportedVersion` (fail closed). The adapter
+manifest lists its API methods and their read/write/destructive classification. A schema name is not admitted just
+because it follows a familiar suffix.
+- `adapters.missing_methods(backend, core.get_methods result)` diffs supported manifest entries against what a host lists.
 - Planned: a drift test that diffs manifests against the fetched reference index (TNT-23, opt-in, outside the gate).
 
 ### 2.3 Domain and the partition-data question
@@ -94,7 +85,7 @@ confirmation target; an action containing a data-destroying method (the manifest
 `pool.export|delete|detach|remove`, `pool.dataset.delete`, `pool.snapshot.delete`, `zfs.pool.delete`,
 `zfs.resource.destroy`, plus any method ending `.delete`, `.destroy`, `.wipe`, `.rollback`, `.replace`, `.attach`,
 `.offline`, `.promote`, `.rename`, `.stop`, `.reset`, `.clear`, `.format`, `.recursive_destroy` or `.import_pool`)
-must be DESTRUCTIVE. Every non-read call must appear in a v27/v28 adapter manifest or the explicit write allow-list;
+must be DESTRUCTIVE. Every non-read call must appear in the v27 adapter manifest or the explicit write allow-list;
 `validate_action` refuses unlisted writes. `make_plan` runs the probe
 and fingerprints the action id, kind, confirm target, exact calls, probe results, session id and nonce, so swapping the
 calls, target or identity under a plan is detected. A plan carries the id of the session that made it and a nonce: applying it through
@@ -114,14 +105,14 @@ a `GuardedRpc`) checks, in this order, and stops at the first failure:
 5. state drift: the fingerprint is recomputed and must equal the plan's, else "plan again";
 6. execute inside `GuardedRpc.authorized(...)`, which lets exactly these calls through, in order (default-deny).
 
-The TUI shows the plan in a modal (TNT-27); the CLI will expose `plan`/`apply` verbs with cli-extended's `--dry-run` /
-`--yes` (TNT-26). Both use the same functions. No real action exists at M0; the model is implemented and tested so the
-first one (TNT-04, import a pool) only supplies calls.
+The CLI and TUI use the same plan/apply functions. CLI mutation verbs require `--allow-write`; they print the exact
+plan and require `--confirm TARGET` for destructive work. The TUI action dialog shows the same calls and confirmation
+target. Every mutation has a probe that re-reads its target before apply.
 
 ## 3. Action backlog from the matrix
 
-Rows with verdict `API-TUI` or `pending decision` are the TUI's backlog (seeded into `BACKLOG.md`; a test keeps them
-in step). The API-TUI-fallback rows come first, as asked:
+The action matrix still tracks the separate storage work. M1 focuses on the core workflows in the user brief:
+Datasets, Snapshots, Users, Containers, and Virtual Machines. Boot-pool datasets remain refused.
 
 | row | action | tnt |
 |---|---|---|
@@ -132,31 +123,31 @@ in step). The API-TUI-fallback rows come first, as asked:
 | (derived) | boot-pool data management | TNT-06 |
 | A-09 | cache/log/special vdev | TNT-07 |
 | B-07, A-08 | must stay refused | refusal list |
-| A-01..A-07, B-04, B-05 | work in the (patched) web UI or the stock API | later screens (Datasets, Shares, Containers, VMs) |
+| A-01, A-02, A-03 | remain refused when they name boot-pool; regular-pool datasets are supported |
+| A-04, A-05 | boot-pool targets remain refused; regular-pool workloads are supported |
+| A-07, B-05 | Shares are outside this release |
 
 ## 4. Screens map (mirrors the web UI menu)
 
-Top-level labels and order are taken from the web UI source (`navigation.service.ts`, master): Dashboard, Storage,
-Datasets, Shares, Data Protection, Credentials (slide-out: Users, Groups, Privileges, Directory Services, Backup
+Top-level labels and order are taken from the v27 web UI source (`navigation.service.ts`): Dashboard, Storage,
+Datasets, Shares, Data Protection, Credentials (slide-out: Local Users, Groups, Privileges, Directory Services, Backup
 Credentials, Certificates, S3 Access Keys, KMIP), Containers, Virtual Machines, Apps, Reporting, System (slide-out:
 Update, General Settings, Advanced Settings, Network, Boot, Services, Shell, Alert Settings, Audit, Enclosure).
 Findings that differ from the brief's guess: there is no "Virtualization/Instances" entry (v27 has Containers and
 Virtual Machines as separate top-level items) and Network is under System. The Storage page's own sub-pages (Disks,
 Import Pool, pool management) are reached from the Storage page, not from the menu; tnt shows them as children.
 
-`tnt/menu.py` holds the tree; `implemented` screens get a view, the rest show a "planned, milestone Mx, matrix rows"
-placeholder, so the whole map is navigable from day one. Deviations from the web UI (all marked `tnt_only`): under
-Storage, "Free space and partitions" and "Boot pool data" (the gap features); Shell is omitted (a TUI is already a
-shell; reconsidered at M3).
+`tnt/menu.py` holds the tree. Datasets, Credentials > Local Users, Containers, and Virtual Machines have workflow
+views; other entries remain placeholders. The TUI omits Shell because it is already a terminal.
 
 ## 5. UX
 
 - Left navigation is a Textual `Tree` (arrows, enter, expand/collapse), content pane on the right, a banner line with
   `profile host generation version read-only|WRITE ENABLED [TLS VERIFICATION OFF]`.
-- Command palette: Textual's built-in `ctrl+p`; `get_system_commands` adds a "Go to A > B" entry for every leaf, so a
-  user can type "net" and jump to System > Network. Planned: action entries per screen ("Import pool...").
+- Command palette: Textual's built-in `ctrl+p`; `get_system_commands` adds a "Go to A > B" entry for every leaf and
+  an entry for each available workflow action.
 - Keys: `ctrl+n` menu, `r` refresh (app-level so it works from the menu), `?` keys, `q` quit. Chords are not used.
-- Per-screen action list (footer plus palette), each action opening the plan modal with the exact calls (TNT-27).
+- Per-screen action list (footer plus palette), each action opening the plan modal with the exact calls.
 - Long reads run in worker threads (`@work(thread=True)`); the client is synchronous and thread-safe enough for one
   worker at a time (`exclusive=True`). Subscriptions come later (TNT-25).
 - Target host is selected by profile only; no URL or key is ever typed into the TUI.
@@ -168,11 +159,24 @@ SystemCommands, Pilot), `websockets>=15` in the test extra, `truenas_api_client`
 
 ## 7. Secrets
 
-Key only from a profile's `api_key_file` (must be a regular file, no group/other permission bits), then
-`TNT_API_KEY_FILE`, then `TNT_API_KEY`. Never an argument, never in the profile file (the loader rejects `api_key`,
-`password`, `token` keys), never printed: `Secret.__repr__/__str__` are redacted, `profile show` prints only the file
-path and whether its mode is acceptable, every wrapped transport error is scrubbed, and cli-extended's `--debug-raw`
-is the only way raw diagnostics appear (and it says so). `truenas.toml`-style files hold URI and user only.
+`tnt.toml` has required `schema_version = 1` and may hold one or more inline API keys or passwords by operator choice; API keys may instead use a private
+`api_key_file`. The selected config must be a regular file owned by the current user and exactly mode `0600`. Config
+search is `--config`, `TNT_CONFIG`, `./tnt.toml`, then `$XDG_CONFIG_HOME/tnt/tnt.toml`. API keys also retain the
+`TNT_API_KEY_FILE` and `TNT_API_KEY` fallback. Secret values are wrapped in `Secret`, whose `repr` and `str` redact;
+`profile show` returns `***`; action plans redact password and SSH key fields; transport and RPC errors scrub
+credentials. Passwords are never accepted on argv; password prompts do not echo and password files are private.
+
+```toml
+schema_version = 1
+default = "lab"
+
+[profiles.lab]
+url = "wss://truenas.example.invalid/api/current"
+username = "admin"
+auth = "api_key"
+api_key = "REPLACE_WITH_API_KEY"
+tls = "verify"
+```
 
 ## 8. Safety rules and the refusal list
 
@@ -243,10 +247,9 @@ B-01 is a backlog item (TNT-03) and the refusal list covers nothing SSH-related 
 - Unit: pure modules (profile, domain, actions, matrix, menu) with direct tests; the refusal list, gate order and
   drift check each have a test that fails if the gate is removed.
 - Fake server: `tnt.testing.FakeServer`, a real websocket server on loopback (the `websockets` sync server) that speaks
-  JSON-RPC 2.0 with the middleware's error shape, `auth.login_ex` (`API_KEY_PLAIN` only), `system.version`,
-  `core.get_methods`, `disk.query`, `disk.details`; it records requests and has error injection (`fail=`). The tests
-  therefore drive the real `truenas_api_client` over a real socket, including login and failure paths. It does not
-  implement SCRAM (TNT-21) or jobs yet.
+  JSON-RPC 2.0 with the middleware's error shape, API-key SCRAM and `PASSWORD_PLAIN` login, `system.version`,
+  `core.get_methods`, and the workflow methods. It records requests and has error injection (`fail=`). Tests drive the
+  pinned `truenas_api_client` over a real socket; job-returning methods use realistic job replies.
 - TUI: Textual `Pilot` (`run_test`) against a session on the fake: navigation, palette entries, load, failure, refresh,
   insecure banner.
 - CLI: cli-extended `build_cli(opener=...)`, assertions on `--json` output and exit codes; `doctor` checks both ways.
@@ -260,23 +263,19 @@ B-01 is a backlog item (TNT-03) and the refusal list covers nothing SSH-related 
 
 | milestone | scope | size |
 |---|---|---|
-| M0 (this) | scaffold: transport, profile/secret handling, v27/v28 adapter and manifest, plan/apply model with refusal list, `doctor`/`profile`/`disks`/`tui`, Storage > Disks view, fake server, tests, docs | done (M) |
-| M1 | spikes TNT-01 (partition data, params) and TNT-34; real exact free-space view (TNT-02 groundwork); Dashboard, Pools, Datasets read views, System > Boot with boot-environment actions; live lane; SCRAM in the fake; cli-extended surface review; real v28 manifest | L (about 8-10 days) |
-| M2 | the gap features through plan/apply: Import Pool (TNT-04), reserve partition (TNT-03, SSH fallback), pool on partition/free space (TNT-05, after the decision), boot-pool data (TNT-06); confirm-gate modal; audit log; live job/subscription updates; plan/apply CLI verbs | L (about 10-15 days, live-host bound) |
-| M3 | breadth: Shares, Containers, VMs, Apps, Data Protection, System pages, Credentials/Reporting read views; A-09 vdevs; first release `tnt-v0.1.0` via cmru | XL (open-ended, per screen M) |
+| M0 | scaffold: transport, profile, v27 adapter, plan/apply model, `doctor`/`profile`/`disks`/`tui`, Storage > Disks, fake server | done |
+| M1 | config and credential flows; v27 default-deny manifest; datasets, snapshots, users, containers and VMs in CLI/TUI; fake-server workflows; written opt-in live lane | this brief |
+| Later | storage partitioning, pool creation, boot-pool management, shares, Apps, networking, and other TrueNAS screens | deferred |
 
-## 11. Cross-version risks
+## 11. Supported host
 
-The v28 nightly moved middleware code (`v28-nightly-20261014/middleware.patch` is a UI-affecting patch), so a v28
-adapter cannot be trusted until TNT-22. A v26 or v25.10 host works only if an adapter is added (`virt.*`). The matrix's
-v28 column is `pending` for every row.
+tnt accepts only a host whose reported API generation is v27. The adapter package stays extensible for a future
+generation, but no other generation is accepted or represented in the shipped manifest.
 
 ## 12. Decisions, open questions and estate registration
 
 Decided by the controller on 2026-10-28: the pinned git-sha dependency on `truenas_api_client` is accepted for now
-(documented in `pyproject.toml`); SSH only for B-01 partitioning, as planned in section 8.1, not implemented; B-02/B-03
-are `zpool create` on the partition followed by `pool.import_find` + `pool.import_pool` (matches the shim the TrueNAS
-agent is building; BACKLOG TNT-05); no v26/v25.10 adapters; no Shell menu entry.
+(documented in `pyproject.toml`); no relaxation patches; no other API generation; no Shell menu entry.
 
 Still open: Q6 where the live-lane host and key live (TNT-20); Q7 how conditional menu entries (Containers, Virtual
 Machines, Apps, KMIP, Enclosure; flagged `conditional` in `menu.py`) are detected per host (TNT-35).

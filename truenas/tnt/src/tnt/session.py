@@ -7,7 +7,7 @@ from typing import Any, Callable, Mapping
 from . import adapters, transport
 from .adapters.base import Backend
 from .domain import Disk
-from .profile import Profile, Secret, read_secret
+from .profile import Profile, Secret, read_credential
 
 
 @dataclass
@@ -36,9 +36,9 @@ SessionOpener = Callable[..., Session]
 def open_session(profile: Profile, *, insecure_ack: bool = False, allow_write: bool = False, env: Mapping[str, str] | None = None,
                  secret: Secret | None = None, **connect_kwargs: Any) -> Session:
     """Connect, authenticate (once, no retry), detect the API generation, pick the adapter."""
-    secret = secret or read_secret(profile, env)
-    client = transport.connect(profile, secret, insecure_ack=insecure_ack, **connect_kwargs)
-    rpc = transport.GuardedRpc(client, read_only=not allow_write, secret=secret)
+    credential = secret or read_credential(profile, env)
+    client = transport.connect(profile, credential, insecure_ack=insecure_ack, **connect_kwargs)
+    rpc = transport.GuardedRpc(client, read_only=not allow_write, secret=credential)
     try:
         backend = adapters.detect(rpc)
     except Exception:

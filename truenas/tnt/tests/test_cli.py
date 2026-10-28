@@ -31,9 +31,26 @@ def test_profile_list_and_show_never_print_keys(capsys, config):
     assert "tls: insecure" in out and "key_file_problem: None" in out
     code, out, _ = run(capsys, ["profile", "show", "--config", str(config), "--json"])
     assert json.loads(out)["name"] == "lab"
+    assert json.loads(out)["api_key"] == "***"
     os.chmod(json.loads(out)["api_key_file"], 0o644)
     code, out, _ = run(capsys, ["profile", "show", "lab", "--config", str(config), "--json"])
     assert "group/other" in json.loads(out)["key_file_problem"]
+
+
+def test_profile_show_masks_inline_password_json(capsys, tmp_path):
+    path = tmp_path / "tnt.toml"
+    path.write_text('''schema_version = 1
+[profiles.lab]
+url = "wss://lab.example.invalid/api/current"
+username = "operator"
+auth = "password"
+password = "fake-password-material"
+''')
+    path.chmod(0o600)
+    code, out, _ = run(capsys, ["profile", "show", "lab", "--config", str(path), "--json"])
+    assert code == 0
+    assert json.loads(out)["password"] == "***"
+    assert "fake-password-material" not in out
 
 
 def test_profile_errors_are_one_line_with_exit_1(capsys, tmp_path):
@@ -57,7 +74,8 @@ def test_disks_with_insecure_profile_needs_the_flag(capsys, config):
 
 def test_disks_refuses_ws_without_the_test_hook(capsys, tmp_path, server):
     path = tmp_path / "p.toml"
-    path.write_text('[profiles.a]\nurl = "ws://127.0.0.1:1/api/current"\nusername = "u"\n')
+    path.write_text('schema_version = 1\n[profiles.a]\nurl = "ws://127.0.0.1:1/api/current"\nusername = "u"\nauth = "api_key"\n')
+    path.chmod(0o600)
     code, out, err = run(capsys, ["disks", "--config", str(path)])
     assert code != 0 and "ws://" in err
 
@@ -65,7 +83,7 @@ def test_disks_refuses_ws_without_the_test_hook(capsys, tmp_path, server):
 def test_doctor_offline_and_online(capsys, config, opener, server):
     code, out, _ = run(capsys, ["doctor", "--config", str(config), "--json"], opener)
     checks = {c["name"]: c for c in json.loads(out)["checks"]}
-    assert code == 0 and checks["connect"]["status"] == "skip" and checks["key"]["status"] == "ok"
+    assert code == 0 and checks["connect"]["status"] == "skip" and checks["credentials"]["status"] == "ok"
     assert checks["python"]["status"] == checks["deps"]["status"] == checks["profiles"]["status"] == "ok"
     code, out, _ = run(capsys, ["doctor", "--config", str(config), "--online", "--json"], opener)
     checks = {c["name"]: c for c in json.loads(out)["checks"]}
@@ -75,7 +93,7 @@ def test_doctor_offline_and_online(capsys, config, opener, server):
 def test_doctor_reports_failures_without_a_profile_file(capsys, tmp_path):
     code, out, _ = run(capsys, ["doctor", "--config", str(tmp_path / "none.toml"), "--json"])
     checks = {c["name"]: c for c in json.loads(out)["checks"]}
-    assert checks["profiles"]["status"] == "warn" and checks["key"]["status"] == "skip"
+    assert checks["profiles"]["status"] == "warn" and checks["credentials"]["status"] == "skip"
 
 
 def test_doctor_key_check_fails_on_loose_mode(capsys, config):
@@ -83,7 +101,7 @@ def test_doctor_key_check_fails_on_loose_mode(capsys, config):
     key.chmod(0o644)
     code, out, _ = run(capsys, ["doctor", "--config", str(config), "--json"])
     checks = {c["name"]: c for c in json.loads(out)["checks"]}
-    assert code == 1 and checks["key"]["status"] == "fail" and "notarealkey" not in out
+    assert code == 1 and checks["credentials"]["status"] == "fail" and "notarealkey" not in out
 
 
 def test_doctor_connect_failure(capsys, config):

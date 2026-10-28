@@ -1,13 +1,15 @@
 # tnt (truenas-tui)
 
-A keyboard-driven terminal UI and a scriptable CLI for TrueNAS, built on the versioned JSON-RPC 2.0 API over
-websocket. The look and menu follow the TrueNAS web UI loosely, so an experienced user finds things where they
-expect them; the CLI does everything the TUI does, non-interactively. Its first job is the gap the web UI cannot
-fill: free space and partitions of a disk, pools on partitions or free space, and boot-pool data management
-(see `docs/DESIGN.md` and the action matrix).
+`tnt` is a keyboard driven TUI and scriptable CLI for the vanilla TrueNAS v27 JSON-RPC API. The core workflows are
+Datasets and Snapshots, Containers, Virtual Machines, and local Users. Containers and Virtual Machines are separate
+top level menu entries. Shares, Apps, networking, pool creation, and boot-pool changes are outside this release.
 
-Status: M0 scaffold (`CHANGES.md`). Read-only. Design: [`docs/DESIGN.md`](docs/DESIGN.md). Work list:
-[`BACKLOG.md`](BACKLOG.md).
+The CLI and TUI share one query and action layer. Every write is planned first, displays the exact API calls, and is
+applied through the default deny guard. Destructive actions require typing the target name. See the
+[design guide](docs/DESIGN.md) for the safety rules and v27 schema choices. The original storage action matrix remains
+available in [`docs/ACTION-MATRIX.snapshot.md`](docs/ACTION-MATRIX.snapshot.md).
+Scope and safety choices are explained in the [design guide](docs/DESIGN.md#1-goals-and-non-goals); copyable setup and
+workflow examples are in the [consumer guide](docs/CONSUMERS.md#configure-a-profile).
 
 ## Install
 
@@ -15,47 +17,84 @@ Status: M0 scaffold (`CHANGES.md`). Read-only. Design: [`docs/DESIGN.md`](docs/D
 pip install 'tnt[tui]'        # the CLI alone: pip install tnt
 ```
 
-`truenas_api_client` (LGPL-3.0, official) is not on PyPI and installs from a pinned git sha; the reason for the pin is in
-`pyproject.toml`.
+`truenas_api_client` (LGPL-3.0, official) is installed from a pinned git commit; the pin rationale is in `pyproject.toml`.
 
-## Profiles
+## Configure a host
 
-`$XDG_CONFIG_HOME/tnt/profiles.toml` (or `$TNT_CONFIG`, or `--config FILE`). The file never holds a key.
+Copy [`tnt.toml.example`](tnt.toml.example) to `tnt.toml`, fill in one or more profiles, then set mode `0600`:
+
+```bash
+cp tnt.toml.example tnt.toml
+chmod 600 tnt.toml
+```
+
+The selected file must be a regular file owned by the current user with exactly mode `0600`; tnt refuses to start if
+that check fails. Config lookup order is `--config PATH`, `$TNT_CONFIG`, `./tnt.toml`, then
+`$XDG_CONFIG_HOME/tnt/tnt.toml` (or `~/.config/tnt/tnt.toml` when `XDG_CONFIG_HOME` is unset). `ws://` is refused.
+TLS verification is on by default. A profile with `tls = "insecure"` also requires `--insecure` on each command.
+
+Credentials may be inline by operator choice; see the [secret-handling rationale](docs/DESIGN.md#7-secrets). They never appear in command arguments, log messages, exceptions,
+`profile show`, JSON output, or the TUI. `profile show` masks configured secrets as `***`.
 
 ```toml
+schema_version = 1
 default = "lab"
 
 [profiles.lab]
-url = "wss://nas.example.net/api/current"   # ws:// is refused
-username = "tnt"
-api_key_file = "/home/me/.config/tnt/lab.key"  # mode 0600, else tnt refuses to read it
-tls = "verify"                                 # default; "insecure" only for a throwaway host
-auth = "scram"                                 # default; "plain" = API_KEY_PLAIN over TLS
+url = "wss://nas.example.invalid/api/current"
+username = "admin"
+auth = "api_key"
+api_key = "REPLACE_WITH_API_KEY" # Or use api_key_file = "/home/me/.config/tnt/lab.key".
+tls = "verify"
+ssh_user = "admin"
+ssh_key_files = ["~/.ssh/id_ed25519"]
+ssh_known_hosts = "~/.ssh/known_hosts"
+
+[profiles.password-auth]
+url = "wss://nas2.example.invalid/api/current"
+username = "operator"
+auth = "password"
+password = "REPLACE_WITH_PASSWORD"
+tls = "verify"
 ```
 
-The key comes from `api_key_file`, else `$TNT_API_KEY_FILE`, else `$TNT_API_KEY`; never from the command line.
-A profile with `tls = "insecure"` additionally needs `--insecure` on every command and shows a red banner in the TUI.
+`schema_version` is required and currently `1`. The example contains placeholders only. API key authentication uses the pinned client's SCRAM flow. Password
+authentication uses its supported `PASSWORD_PLAIN` login flow. Authentication failures are fatal and never retried.
+SSH paths are retained for user key management; tnt never prints SSH key material.
 
 ## Use
 
 ```bash
 tnt --version
 tnt profile list
-tnt doctor                       # offline checks
-tnt doctor --online --profile lab  # also one login (never retried: TrueNAS rate-limits logins)
-tnt disks --profile lab          # disks, partitions, free space (--json for scripts)
-tnt tui --profile lab            # Storage > Disks is the one implemented screen at M0
+tnt profile show lab
+tnt doctor --online --profile lab       # one login, no retry
+tnt dataset list --profile lab --json
+tnt dataset create --profile lab --name tank/home --type filesystem --allow-write
+tnt snapshot create --profile lab tank/home nightly --allow-write
+tnt container list --profile lab --json
+tnt vm list --profile lab --json
+tnt user list --profile lab --json
+tnt tui --profile lab
 ```
 
-TUI keys: arrows/enter navigate the menu, `ctrl+p` opens the command palette (every screen is a "Go to ..."
-entry), `r` refreshes, `?` shows keys, `q` quits.
+Each write command requires `--allow-write`; destructive commands also require `--confirm TARGET`. Use `--dry-run` to
+render the plan without applying it. Password entry uses a no-echo prompt or `--password-file`; tnt does not accept a
+password argument. API payloads not covered by a minimal create wizard can be supplied as a JSON `--file`.
+
+Container resource settings follow the v27 `container.create`/`container.update` schema: CPU affinity is exposed as
+`cpuset`; v27 has no container memory limit field. VM console information is displayed as returned by v27; tnt does
+not embed a VNC client.
+
+TUI keys: arrows/enter navigate the TrueNAS menu, `ctrl+p` opens the command palette, `r` refreshes, `?` shows keys,
+and `q` quits. Destructive action dialogs display the plan and ask for the exact confirmation target.
 
 ## Tests
 
-```bash
-pip install -e '.[test]'          # needs a version source: SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0.dev0 outside a tagged checkout
-nice -n 10 python -m pytest tests -q
-```
+Tests use the in-memory `tnt.testing.FakeServer` over loopback with the real `truenas_api_client`. No test contacts a
+TrueNAS host. The optional Textual, websockets, and test dependencies are required by the test suite; missing
+dependencies fail the suite.
 
-No test contacts a real host: they run against `tnt.testing.FakeServer`, a fake JSON-RPC websocket server on loopback.
-Optional dependencies (textual, websockets) are required by the suite: a missing one fails the tests, it does not skip them.
+```bash
+PYTHONPATH=src nice python -m pytest -q -p no:xdist
+```

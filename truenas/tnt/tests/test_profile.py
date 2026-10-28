@@ -6,6 +6,12 @@ from tnt import profile as prof
 from tnt.errors import ProfileError
 
 
+def write_config(path, body):
+    path.write_text(body)
+    path.chmod(0o600)
+    return path
+
+
 def test_load_and_pick_default(config):
     profiles, default = prof.load_profiles(config)
     assert default == "lab" and set(profiles) == {"lab", "throwaway"}
@@ -25,21 +31,20 @@ def test_pick_errors(config):
 
 
 @pytest.mark.parametrize("body,match", [
-    ('[profiles.a]\nurl="ws://h/api/current"\nusername="u"\n', "ws:// is refused"),
-    ('[profiles.a]\nurl="wss://h/api/current"\nusername="u"\napi_key="1-secret"\n', "never belongs in the profile file"),
-    ('[profiles.a]\nurl="wss://h/x"\n', "username is required"),
-    ('[profiles.a]\nurl="wss://h/x"\nusername="u"\ntls="off"\n', "tls must be"),
-    ('[profiles.a]\nurl="wss://h/x"\nusername="u"\nauth="md5"\n', "auth must be"),
-    ('[profiles.a]\nurl="wss://h/x"\nusername="u"\napi_key_file="rel/key"\n', "absolute"),
-    ('[profiles."bad name"]\nurl="wss://h/x"\nusername="u"\n', "profile name"),
-    ('[profiles]\n', r"no \[profiles"),
-    ('default="zz"\n[profiles.a]\nurl="wss://h/x"\nusername="u"\n', "not a defined profile"),
-    ('this is not toml', "cannot read"),
-    ('[profiles]\na = 3\n', "url is required"),
+    ('schema_version=1\n[profiles.a]\nurl="ws://h/api/current"\nusername="u"\n', "ws:// is refused"),
+    ('schema_version=1\n[profiles.a]\nurl="wss://h/x"\n', "username is required"),
+    ('schema_version=1\n[profiles.a]\nurl="wss://h/x"\nusername="u"\ntls="off"\n', "tls must be"),
+    ('schema_version=1\n[profiles.a]\nurl="wss://h/x"\nusername="u"\nauth="md5"\n', "auth must be"),
+    ('schema_version=1\n[profiles.a]\nurl="wss://h/x"\nusername="u"\napi_key_file="rel/key"\n', "absolute"),
+    ('schema_version=1\n[profiles."bad name"]\nurl="wss://h/x"\nusername="u"\n', "profile name"),
+    ('schema_version=1\n[profiles]\n', r"no \[profiles"),
+    ('schema_version=1\ndefault="zz"\n[profiles.a]\nurl="wss://h/x"\nusername="u"\n', "not a defined profile"),
+    ('schema_version=1\nthis is not toml', "cannot read"),
+    ('schema_version=1\n[profiles]\na = 3\n', "url is required"),
 ])
 def test_invalid_profile_files(tmp_path, body, match):
     path = tmp_path / "p.toml"
-    path.write_text(body)
+    write_config(path, body)
     with pytest.raises(ProfileError, match=match):
         prof.load_profiles(path)
 
@@ -49,11 +54,82 @@ def test_missing_file(tmp_path):
         prof.load_profiles(tmp_path / "absent.toml")
 
 
+@pytest.mark.parametrize("body", [
+    '[profiles.a]\nurl="wss://h/api/current"\nusername="u"\n',
+    'schema_version = 2\n[profiles.a]\nurl="wss://h/api/current"\nusername="u"\n',
+    'schema_version = true\n[profiles.a]\nurl="wss://h/api/current"\nusername="u"\n',
+])
+def test_schema_version_is_required_and_exact(tmp_path, body):
+    path = write_config(tmp_path / "tnt.toml", body)
+    with pytest.raises(ProfileError, match="schema_version must be 1"):
+        prof.load_profiles(path)
+
+
 def test_default_config_path_order(tmp_path):
     assert prof.default_config_path({"TNT_CONFIG": "/x/y.toml"}).as_posix() == "/x/y.toml"
-    assert prof.default_config_path({"XDG_CONFIG_HOME": "/xdg"}).as_posix() == "/xdg/tnt/profiles.toml"
-    assert prof.default_config_path({}).as_posix().endswith(".config/tnt/profiles.toml")
-    assert prof.default_config_path().name == "profiles.toml"
+    xdg = prof.default_config_path({"XDG_CONFIG_HOME": "/xdg"}, cwd=tmp_path)
+    assert xdg.as_posix() == "/xdg/tnt/tnt.toml"
+    assert prof.default_config_path({}, cwd=tmp_path).as_posix().endswith(".config/tnt/tnt.toml")
+    local = tmp_path / "tnt.toml"
+    write_config(local, "")
+    assert prof.default_config_path({"XDG_CONFIG_HOME": "/xdg"}, cwd=tmp_path) == local
+    assert prof.default_config_path().name == "tnt.toml"
+
+
+@pytest.mark.parametrize("mode,owner_ok,accepted", [
+    (0o600, True, True), (0o640, True, False), (0o400, True, False), (0o600, False, False),
+])
+def test_config_file_must_be_owned_by_current_user_and_exactly_mode_0600(tmp_path, monkeypatch, mode, owner_ok, accepted):
+    path = tmp_path / "tnt.toml"
+    path.write_text('schema_version=1\n[profiles.a]\nurl="wss://h/api/current"\nusername="u"\nauth="password"\npassword="not-a-secret"\n')
+    path.chmod(mode)
+    uid = path.stat().st_uid
+    if not owner_ok:
+        monkeypatch.setattr(os, "geteuid", lambda: uid + 1)
+    if accepted:
+        assert prof.load_profiles(path)[0]["a"].password.reveal() == "not-a-secret"
+    else:
+        with pytest.raises(ProfileError, match="mode 0600|owned by uid"):
+            prof.load_profiles(path)
+
+
+def test_inline_api_key_and_password_are_supported_and_redacted(tmp_path):
+    path = tmp_path / "tnt.toml"
+    write_config(path, '''schema_version = 1
+[profiles.key]
+url = "wss://nas.example.invalid/api/current"
+username = "admin"
+auth = "api_key"
+api_key = "1-fake-api-key-material"
+ssh_user = "admin"
+ssh_key_files = ["~/.ssh/id_ed25519"]
+ssh_known_hosts = "~/.ssh/known_hosts"
+
+[profiles.password]
+url = "wss://other.example.invalid/api/current"
+username = "operator"
+auth = "password"
+password = "fake-password-material"
+''')
+    profiles, _ = prof.load_profiles(path)
+    assert profiles["key"].api_key.reveal() == "1-fake-api-key-material"
+    assert profiles["password"].password.reveal() == "fake-password-material"
+    assert profiles["key"].describe()["api_key"] == "***"
+    assert profiles["password"].describe()["password"] == "***"
+    assert "fake-api-key-material" not in repr(profiles["key"])
+    assert "fake-password-material" not in repr(profiles["password"])
+    assert "fake-api-key-material" not in str(profiles["key"].describe())
+    assert "fake-password-material" not in str(profiles["password"].describe())
+
+
+def test_auth_modes_reject_mixed_or_missing_credentials(tmp_path):
+    path = tmp_path / "tnt.toml"
+    write_config(path, 'schema_version=1\n[profiles.a]\nurl="wss://h/api/current"\nusername="u"\nauth="password"\n')
+    with pytest.raises(ProfileError, match="password is required"):
+        prof.load_profiles(path)
+    write_config(path, 'schema_version=1\n[profiles.a]\nurl="wss://h/api/current"\nusername="u"\nauth="api_key"\npassword="x"\n')
+    with pytest.raises(ProfileError, match="does not accept password"):
+        prof.load_profiles(path)
 
 
 def test_secret_never_shows_and_scrubs():
@@ -104,4 +180,7 @@ def test_read_secret_uses_process_environment(config, monkeypatch):
 
 def test_describe_has_no_secret_fields(config):
     profiles, _ = prof.load_profiles(config)
-    assert set(profiles["lab"].describe()) == {"name", "url", "username", "api_key_file", "tls", "auth"}
+    described = profiles["lab"].describe()
+    assert set(described) == {"name", "url", "username", "api_key_file", "api_key", "password", "tls", "auth",
+                              "ssh_user", "ssh_key_files", "ssh_known_hosts"}
+    assert described["api_key"] == "***" and described["password"] is None

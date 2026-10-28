@@ -1,7 +1,7 @@
 """Transport: one persistent JSON-RPC session over ``truenas_api_client``.
 
-The API key is only ever passed to ``Client.login_with_api_key`` (which uses ``auth.login_ex``; the deprecated
-``auth.login_with_api_key`` middleware method is never called). A login failure is fatal and is not retried:
+API keys use ``Client.login_with_api_key``/SCRAM and passwords use the pinned client's
+``Client.login_with_password``/``PASSWORD_PLAIN`` flow. A login failure is fatal and is not retried:
 TrueNAS rate-limits 20 unauthenticated attempts per 60 s and then locks out for 10 minutes.
 """
 from __future__ import annotations
@@ -146,7 +146,7 @@ def connect(profile: Profile, secret: Secret, *, insecure_ack: bool = False, all
     parts = urlsplit(profile.url)
     plain_ws = parts.scheme == "ws"
     if plain_ws and not (allow_loopback_ws and parts.hostname in LOOPBACK):
-        raise TransportError("refused", "ws:// is refused: TrueNAS revokes API keys sent without TLS; use wss://")
+        raise TransportError("refused", "ws:// is refused: credentials require TLS; use wss://")
     if parts.scheme not in ("ws", "wss"):
         raise TransportError("refused", f"unsupported URL scheme {parts.scheme!r}")
     if profile.insecure and not insecure_ack:
@@ -158,9 +158,13 @@ def connect(profile: Profile, secret: Secret, *, insecure_ack: bool = False, all
     except Exception as exc:
         raise TransportError("connect", secret.scrub(f"cannot connect to {profile.host}: {exc}")) from None
     try:
-        from truenas_api_client import APIKeyAuthMech
-        mech = APIKeyAuthMech.SCRAM if profile.auth == "scram" else APIKeyAuthMech.PLAIN
-        client.login_with_api_key(profile.username, secret.reveal(), mech, channel_binding=not plain_ws and profile.auth == "scram")
+        if profile.auth == "api_key":
+            from truenas_api_client import APIKeyAuthMech
+            client.login_with_api_key(profile.username, secret.reveal(), APIKeyAuthMech.SCRAM, channel_binding=not plain_ws)
+        elif profile.auth == "password":
+            client.login_with_password(profile.username, secret.reveal())
+        else:
+            raise ValueError(f"unsupported authentication mode {profile.auth!r}")
     except Exception as exc:
         try:
             client.close()
