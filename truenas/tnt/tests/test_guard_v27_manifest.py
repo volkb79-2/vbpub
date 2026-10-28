@@ -67,7 +67,7 @@ def test_pool_scrub_task_id_is_not_treated_as_a_pool_id():
     ("vms", "vm.poweroff", "destructive"),
     ("datasets", "pool.dataset.update", "write"),
     ("snapshots", "pool.snapshot.rollback", "destructive"),
-    ("users", "user.set_password", "destructive"),
+    ("users", "user.set_password", "write"),
 ])
 def test_v27_manifest_classifies_supported_methods_explicitly(feature, method, classification):
     from tnt.adapters.v27 import V27
@@ -86,14 +86,16 @@ def test_v27_manifest_classifies_supported_methods_explicitly(feature, method, c
 ])
 def test_new_v27_writes_are_validated_against_the_manifest(method):
     kind = Kind.DESTRUCTIVE if is_destructive_method(method) else Kind.MUTATE
+    probe = ((RpcCall("pool.dataset.details"), RpcCall("container.query", ([], {})), RpcCall("vm.query", ([], {})))
+             if method == "pool.dataset.delete" else (RpcCall("system.info"),))
     action = Action("T-TEST", kind, method, (RpcCall(method, ({"name": "tank/test"},)),),
-                    (RpcCall("system.info"),), "tank/test" if kind is Kind.DESTRUCTIVE else None)
+                    probe, "tank/test" if kind is Kind.DESTRUCTIVE else None)
     validate_action(action)
 
 
 @pytest.mark.parametrize("method", [
     "container.delete", "container.stop", "vm.delete", "vm.stop", "vm.poweroff", "pool.dataset.delete",
-    "pool.snapshot.delete", "pool.snapshot.rollback", "user.delete", "user.set_password",
+    "pool.snapshot.delete", "pool.snapshot.rollback", "user.delete",
     "app.uninstall", "pool.dataset.destroy_snapshots", "filesystem.rmdir", "filesystem.unlink", "filesystem.remove",
 ])
 def test_destructive_classification_is_explicit_or_conservative(method):

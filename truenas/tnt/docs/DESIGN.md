@@ -1,6 +1,8 @@
 # tnt design
 
-Status: M1 core workflows, 2026-10-28. Inputs: the prior-art research (`truenas-tui-research.md`, release-program brief),
+Status: M1 core workflows implemented, 2026-10-28. Container image identity, configured CPU count and memory limits
+are unavailable in the verified v27 container record; VM creation uses separately reviewed device plans because v27
+does not accept devices in `vm.create`. Inputs: the prior-art research (`truenas-tui-research.md`, release-program brief),
 the canonical action matrix (`docs/ACTION-MATRIX.snapshot.md`, from branch `truenas-restore-iso`), the TrueNAS web UI
 source (`truenas/webui` `navigation.service.ts`, read on master 2026-10-28) and the estate's cli-extended conventions.
 Everything marked UNVERIFIED has not been confirmed against a running host; BACKLOG TNT-01 is the first spike.
@@ -62,6 +64,8 @@ because it follows a familiar suffix.
 - Every manifest entry has an explicit classification. Entries with `supported = false` keep known dangerous names
   classified without admitting them to plans. The v27 method signatures and source evidence are recorded in
   [`docs/API-METHODS-V27.md`](API-METHODS-V27.md).
+- v27 has no `container.restart` RPC. tnt composes the user-facing restart action as `container.stop` followed by
+  `container.start`, so its plan is destructive and requires typing the container name.
 - Planned: a drift test that diffs manifests against the fetched reference index (TNT-23, opt-in, outside the gate).
 
 ### 2.3 Domain and the partition-data question
@@ -86,7 +90,8 @@ action has calls; every probe call is a read method (also in a write session); a
 methods; a DESTRUCTIVE action has a non-empty probe (else the drift check would be vacuous) and a non-blank
 confirmation target; an action containing a data-destroying method (the explicit manifest classifications, including
 `disk.wipe`, pool and dataset deletion, snapshot rollback/deletion, container stop/deletion, VM stop/poweroff/deletion,
-VM device deletion, user deletion and password reset; plus the conservative suffix fallback for names ending
+VM device deletion and user deletion; a `user.set_password` plan is promoted to DESTRUCTIVE only when its target is the
+current login user, and then it also needs `--confirm-self`; plus the conservative suffix fallback for names ending
 `.delete`, `.destroy`, `.wipe`, `.rollback`, `.replace`, `.attach`, `.offline`, `.promote`, `.rename`, `.stop`,
 `.reset`, `.clear`, `.format`, `.recursive_destroy`, `.import_pool`, `.uninstall`, `.destroy_snapshots`, `.rmdir`,
 `.unlink` or `.remove`)
@@ -112,7 +117,8 @@ a `GuardedRpc`) checks, in this order, and stops at the first failure:
 
 The CLI and TUI use the same plan/apply functions. CLI mutation verbs require `--allow-write`; they print the exact
 plan and require `--confirm TARGET` for destructive work. The TUI action dialog shows the same calls and confirmation
-target. Every mutation has a probe that re-reads its target before apply.
+target. Every mutation has a probe that re-reads its target before apply. Name-based updates and lifecycle calls probe
+one exact query result and bind the write ID or username to that result; a broad or mismatched lookup is refused.
 
 ## 3. Action backlog from the matrix
 
@@ -142,8 +148,9 @@ Findings that differ from the brief's guess: there is no "Virtualization/Instanc
 Virtual Machines as separate top-level items) and Network is under System. The Storage page's own sub-pages (Disks,
 Import Pool, pool management) are reached from the Storage page, not from the menu; tnt shows them as children.
 
-`tnt/menu.py` holds the tree. Datasets, Credentials > Local Users, Containers, and Virtual Machines have workflow
-views; other entries remain placeholders. The TUI omits Shell because it is already a terminal.
+`tnt/menu.py` holds the tree. Datasets, Data Protection > Snapshots, Credentials > Local Users, Containers, and Virtual
+Machines have workflow views; other entries remain placeholders. Containers and Virtual Machines are separate
+top-level entries and are always shown. The TUI omits Shell because it is already a terminal.
 
 ## 5. UX
 
@@ -154,7 +161,9 @@ views; other entries remain placeholders. The TUI omits Shell because it is alre
 - Keys: `ctrl+n` menu, `r` refresh (app-level so it works from the menu), `?` keys, `q` quit. Chords are not used.
 - Per-screen action list (footer plus palette), each action opening the plan modal with the exact calls.
 - Long reads run in worker threads (`@work(thread=True)`); the client is synchronous and thread-safe enough for one
-  worker at a time (`exclusive=True`). Subscriptions come later (TNT-25).
+  worker at a time (`exclusive=True`). Container reads subscribe once to v27 `container.metrics`, wait up to 2.5
+  seconds, then unsubscribe. Missing metrics remain an explicit status, never a zero value; continuous refreshes are
+  still deferred (TNT-25).
 - Target host is selected by profile only; no URL or key is ever typed into the TUI.
 
 ## 6. Version policy
@@ -164,12 +173,13 @@ SystemCommands, Pilot), `websockets>=15` in the test extra, `truenas_api_client`
 
 ## 7. Secrets
 
-`tnt.toml` has required `schema_version = 1` and may hold one or more inline API keys or passwords by operator choice; API keys may instead use a private
-`api_key_file`. The selected config must be a regular file owned by the current user and exactly mode `0600`. Config
-search is `--config`, `TNT_CONFIG`, `./tnt.toml`, then `$XDG_CONFIG_HOME/tnt/tnt.toml`. API keys also retain the
-`TNT_API_KEY_FILE` and `TNT_API_KEY` fallback. Secret values are wrapped in `Secret`, whose `repr` and `str` redact;
-`profile show` returns `***`; action plans redact password and SSH key fields; transport and RPC errors scrub
-credentials. Passwords are never accepted on argv; password prompts do not echo and password files are private.
+`tnt.toml` has required `schema_version = 1` and may hold one or more inline API keys or passwords by operator choice;
+API keys may instead use a private `api_key_file`. The selected config must be a regular file owned by the current user
+and exactly mode `0600`. Config search is `--config`, `TNT_CONFIG`, `./tnt.toml`, then
+`$XDG_CONFIG_HOME/tnt/tnt.toml`. API keys also retain the `TNT_API_KEY_FILE` and `TNT_API_KEY` fallback. Secret values
+are wrapped in `Secret`, whose `repr` and `str` redact; `profile show` returns `***`; action plans redact password and
+SSH key fields; transport and RPC errors scrub credentials. Passwords are never accepted on argv; password prompts do
+not echo and password files are private.
 
 ```toml
 schema_version = 1
@@ -180,6 +190,16 @@ url = "wss://truenas.example.invalid/api/current"
 username = "admin"
 auth = "api_key"
 api_key = "REPLACE_WITH_API_KEY"
+tls = "verify"
+ssh_user = "admin"
+ssh_key_files = ["~/.ssh/id_ed25519"]
+ssh_known_hosts = "~/.ssh/known_hosts"
+
+[profiles.password-auth]
+url = "wss://nas2.example.invalid/api/current"
+username = "operator"
+auth = "password"
+password = "REPLACE_WITH_PASSWORD"
 tls = "verify"
 ```
 
@@ -258,8 +278,9 @@ B-01 is a backlog item (TNT-03) and the refusal list covers nothing SSH-related 
 - TUI: Textual `Pilot` (`run_test`) against a session on the fake: navigation, palette entries, load, failure, refresh,
   insecure banner.
 - CLI: cli-extended `build_cli(opener=...)`, assertions on `--json` output and exit codes; `doctor` checks both ways.
-- Live lane (TNT-20, not in the gate): the same read-only scenarios against the throwaway host, key from a file,
-  opt-in marker; mutating live tests only on the designated throwaway VM.
+- Live lane (TNT-20, not in the gate): explicit `TNT_LIVE=1` and `TNT_LIVE_PROFILE` select a protected profile;
+  operator-supplied pool, group, image and VM sizing prerequisites are mandatory. The written acceptance test creates
+  only `tnt-live-`-prefixed test resources and cleans each up through plans. It is not run as part of M1.
 - Drift lane (TNT-23): manifests vs the fetched API reference. Optional dependencies required by the suite fail, never skip.
 - Gate: `run-gate.toml` lane `r0-r1` (pytest with branch coverage). The registered lane runs without a mutation lane at
   M0 (TNT-30). Tests are deterministic under host load: no timing assertions beyond bounded waits for a worker.
@@ -269,7 +290,7 @@ B-01 is a backlog item (TNT-03) and the refusal list covers nothing SSH-related 
 | milestone | scope | size |
 |---|---|---|
 | M0 | scaffold: transport, profile, v27 adapter, plan/apply model, `doctor`/`profile`/`disks`/`tui`, Storage > Disks, fake server | done |
-| M1 | config and credential flows; v27 default-deny manifest; datasets, snapshots, users, containers and VMs in CLI/TUI; fake-server workflows; written opt-in live lane | in progress |
+| M1 | config and credential flows; v27 default-deny manifest; datasets, snapshots, users, containers and VMs in CLI/TUI; fake-server workflows; written opt-in live lane | implemented; container metadata is limited to v27 fields and VM creation is staged |
 | Later | storage partitioning, pool creation, boot-pool management, shares, Apps, networking, and other TrueNAS screens | deferred |
 
 ## 11. Supported host
@@ -282,8 +303,9 @@ generation, but no other generation is accepted or represented in the shipped ma
 Decided by the controller on 2026-10-28: the pinned git-sha dependency on `truenas_api_client` is accepted for now
 (documented in `pyproject.toml`); no relaxation patches; no other API generation; no Shell menu entry.
 
-Still open: Q6 where the live-lane host and key live (TNT-20); Q7 how conditional menu entries (Containers, Virtual
-Machines, Apps, KMIP, Enclosure; flagged `conditional` in `menu.py`) are detected per host (TNT-35).
+Still open: Q7 how conditional menu entries (Apps, KMIP, Enclosure; flagged `conditional` in `menu.py`) are detected
+per host (TNT-35). Live-lane profile selection and required variables are documented in
+[`docs/CONSUMERS.md`](CONSUMERS.md#explicit-live-lane); the operator supplies the test host and its disposable pool.
 
 `tnt.testing` ships inside the wheel but imports `websockets` at module level; `websockets` is a test-extra dependency
 only, so importing `tnt.testing` without the test extra fails, and nothing in the runtime imports it.

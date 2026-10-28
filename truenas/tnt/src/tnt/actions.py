@@ -17,6 +17,7 @@ from typing import Any
 from .errors import Refused
 from .policy import (ALWAYS_REFUSED, BOOT_POOL, EXPLICIT_WRITE_ALLOWLIST, Caller, SafetyState, compute_state,
                      is_destructive_method, is_read_method, needs_membership, normalise_method, refusal_for)  # noqa: F401
+from .profile import Secret
 from .transport import GuardedRpc
 
 
@@ -33,11 +34,44 @@ class RpcCall:
     job: bool = False
 
     def render(self) -> str:
-        args = ", ".join(json.dumps(p, sort_keys=True) for p in self.params)
+        args = ", ".join(json.dumps(_redact(p), sort_keys=True) for p in self.params)
         return f"{self.method}({args})" + ("  [job]" if self.job else "")
+
+    def __repr__(self) -> str:
+        return f"RpcCall(method={self.method!r}, params={_redact(self.params)!r}, job={self.job!r})"
 
     def key(self) -> tuple[str, tuple[Any, ...], bool]:
         return (self.method, self.params, self.job)
+
+
+_SENSITIVE_KEYS = frozenset({"password", "old_password", "new_password", "api_key", "sshpubkey", "private_key"})
+
+
+def _redact(value: Any, key: Any = None) -> Any:
+    """Return a display-safe copy of JSON-shaped call data."""
+    if isinstance(value, Secret) or (isinstance(key, str) and key.casefold() in _SENSITIVE_KEYS):
+        return "***"
+    if isinstance(value, dict):
+        return {k: _redact(v, k) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_redact(item) for item in value]
+    return value
+
+
+def _fingerprint_value(value: Any, nonce: str, key: Any = None) -> Any:
+    """Bind secret values into a plan without placing them in its display or stored digest material."""
+    sensitive_key = isinstance(key, str) and key.casefold() in _SENSITIVE_KEYS
+    if isinstance(value, Secret):
+        raw = value.reveal()
+        return {"secret_sha256": hashlib.sha256(nonce.encode() + b"\0" + raw.encode()).hexdigest()}
+    if sensitive_key:
+        raw = value if isinstance(value, str) else repr(value)
+        return {"secret_sha256": hashlib.sha256(nonce.encode() + b"\0" + raw.encode()).hexdigest()}
+    if isinstance(value, dict):
+        return {k: _fingerprint_value(v, nonce, k) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_fingerprint_value(item, nonce) for item in value]
+    return value
 
 
 @dataclass(frozen=True)
@@ -87,6 +121,10 @@ def validate_action(action: Action) -> None:
         for call in action.calls:
             if is_destructive_method(call.method):
                 raise Refused("kind-mismatch", f"{action.id}: {call.method} destroys data, so the action must be DESTRUCTIVE (probe and typed confirmation)")
+    if any(call.method == "pool.dataset.delete" for call in action.calls):
+        expected = ("pool.dataset.details", "container.query", "vm.query")
+        if tuple(call.method for call in action.probe) != expected:
+            raise Refused("dataset-delete-probe", "pool.dataset.delete requires dataset, container, and VM usage probes")
     from .adapters import GENERATIONS
     manifested_writes = {
         normalise_method(method)
@@ -103,11 +141,15 @@ def validate_action(action: Action) -> None:
 
 
 def fingerprint_of(rpc: GuardedRpc, action: Action, nonce: str) -> str:
+    probe_results = [rpc.call(c.method, *c.params) for c in action.probe]
+    from .workflows import validate_plan_preconditions
+    validate_plan_preconditions(action, probe_results)
     material = {
         "id": action.id, "kind": str(action.kind), "confirm": action.confirm_target,
         "session": rpc.session_id, "nonce": nonce,
-        "calls": [[c.method, list(c.params), c.job] for c in action.calls],
-        "probe": [[c.method, list(c.params), rpc.call(c.method, *c.params)] for c in action.probe],
+        "calls": [[c.method, _fingerprint_value(c.params, nonce), c.job] for c in action.calls],
+        "probe": [[c.method, _fingerprint_value(c.params, nonce), _fingerprint_value(result, nonce)]
+                  for c, result in zip(action.probe, probe_results)],
     }
     return hashlib.sha256(json.dumps(material, sort_keys=True, default=str).encode()).hexdigest()
 
@@ -132,7 +174,7 @@ def apply_plan(plan: Plan, rpc: GuardedRpc, *, allow_write: bool, typed_confirma
         raise Refused("foreign-session", "this plan was made on another session; plan again on this one")
     rpc.check_plan(plan.nonce, plan.fingerprint)
     state: SafetyState | None = None
-    if any(needs_membership(c.method) for c in action.calls):  # lazy: unrelated actions never depend on pool membership
+    if any(needs_membership(c.method, c.params) for c in action.calls):  # lazy: unrelated actions never depend on pool membership
         state = compute_state(rpc)
     for call in action.calls:
         reason = refusal_for(call.method, call.params, state)

@@ -17,6 +17,12 @@ class Session:
     backend: Backend
     insecure_tls: bool = False
 
+    @property
+    def workflows(self):
+        """The shared query/action layer used by both CLI handlers and TUI screens."""
+        from .workflows import Workflows
+        return Workflows(self.rpc)
+
     def close(self) -> None:
         self.rpc.close()
 

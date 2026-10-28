@@ -61,7 +61,8 @@ tls = "verify"
 
 `schema_version` is required and currently `1`. The example contains placeholders only. API key authentication uses the pinned client's SCRAM flow. Password
 authentication uses its supported `PASSWORD_PLAIN` login flow. Authentication failures are fatal and never retried.
-SSH paths are retained for user key management; tnt never prints SSH key material.
+SSH private-key and known-host paths remain profile facts for optional SSH workflows. M1 user-key edits read an explicit
+OpenSSH `.pub` file or validated public-key text; private key material is never accepted or printed.
 
 ## Use
 
@@ -71,23 +72,50 @@ tnt profile list
 tnt profile show lab
 tnt doctor --online --profile lab       # one login, no retry
 tnt dataset list --profile lab --json
-tnt dataset create --profile lab --name tank/home --type filesystem --allow-write
-tnt snapshot create --profile lab tank/home nightly --allow-write
+tnt dataset create tank/home --profile lab --type filesystem --compression LZ4 --allow-write
+tnt snapshot create tank/home nightly --profile lab --allow-write
+tnt snapshot rollback tank/home@nightly --profile lab --allow-write --confirm tank/home@nightly
 tnt container list --profile lab --json
+tnt container create web --profile lab --image nginx --image-version latest --pool tank --no-autostart --allow-write
+tnt container restart web --profile lab --allow-write --confirm web
 tnt vm list --profile lab --json
+tnt vm create guest --profile lab --memory 2048 --vcpus 2 --disk-zvol tank/vms/guest --disk-size 10737418240 --allow-write
+tnt vm console guest --profile lab --json
 tnt user list --profile lab --json
+tnt user create deploy "Deploy user" --profile lab --group 1001 --password-disabled --allow-write
+tnt user ssh-key set deploy --profile lab --file ~/.ssh/id_ed25519.pub --add --allow-write
+tnt user password deploy --profile lab --password-file /home/me/.config/tnt/new-password --allow-write
+tnt user ssh-key remove deploy --profile lab --allow-write
+tnt user delete deploy --profile lab --allow-write --confirm deploy
 tnt tui --profile lab
+tnt tui --profile lab --allow-write
 ```
 
 Each write command requires `--allow-write`; destructive commands also require `--confirm TARGET`. Use `--dry-run` to
-render the plan without applying it. Password entry uses a no-echo prompt or `--password-file`; tnt does not accept a
-password argument. API payloads not covered by a minimal create wizard can be supplied as a JSON `--file`.
+render the plan without applying it. Changing the current login user's password additionally requires
+`--confirm-self`; it remains destructive and needs `--confirm USER`. Other users' password changes are planned writes.
+Password entry uses a no-echo prompt or `--password-file`; tnt does not accept a password argument. API payloads not
+covered by a minimal create wizard can be supplied as a JSON `--file`.
 
-Container resource settings follow the v27 `container.create`/`container.update` schema: CPU affinity is exposed as
-`cpuset`; the verified container CRUD schema has no memory limit or current image field. VM console information is
-displayed as returned by v27; tnt does not embed a VNC client. tnt scans every non-read API payload for boot-pool
-names and paths, including nested container, VM, sharing, app, and user fields, and resolves pool references against
-the connected host before allowing a plan to apply.
+VM creation uses a `vm.create` plan followed by separately reviewed `vm.device.create` plans for its required disk
+and any optional ISO or NIC. The v27 schema excludes devices from `vm.create`, so a later device-plan failure can
+leave the VM record in place; inspect it before retrying. VM console output includes the v27 console command, display
+bind/port endpoints (or `auto-assigned`), and web display URI when configured; tnt does not embed a VNC client.
+
+`container list` reports name, state, autostart, CPU affinity (`cpuset`), and current CPU/memory usage from the
+`container.metrics` event source; `container update` changes autostart and CPU affinity. If a running container
+produces no event within the bounded read window, output says so explicitly. The verified container CRUD record has
+no current image field, CPU-count setting, or configured memory limit; list output and the TUI label those fields as unavailable. Dataset
+properties include used/available space, quota/refquota, compression, readonly, mount state, and mountpoint. User list
+output masks SSH keys and password hashes. The user SSH-key commands accept OpenSSH public keys only.
+
+v27 has no container restart RPC, so `container restart` plans a stop followed by a start and requires the container
+name as destructive confirmation.
+
+tnt scans every non-read API payload for boot-pool names and paths, including nested container, VM, sharing, app, and
+user fields, and resolves pool references against the connected host before allowing a plan to apply. Dataset deletion
+requires `--recursive` when the target is mounted, has children, or is attached to a running workload, and always
+requires typing the full dataset name.
 
 TUI keys: arrows/enter navigate the TrueNAS menu, `ctrl+p` opens the command palette, `r` refreshes, `?` shows keys,
 and `q` quits. Destructive action dialogs display the plan and ask for the exact confirmation target.
@@ -96,7 +124,9 @@ and `q` quits. Destructive action dialogs display the plan and ask for the exact
 
 Tests use the in-memory `tnt.testing.FakeServer` over loopback with the real `truenas_api_client`. No test contacts a
 TrueNAS host. The optional Textual, websockets, and test dependencies are required by the test suite; missing
-dependencies fail the suite.
+dependencies fail the suite. A host integration lane is available only with the explicit `live` marker and the
+`TNT_LIVE=1` opt-in; it creates and cleans up resources under a `tnt-live-` prefix. It is not part of the normal suite.
+See the [live testing guide](docs/LIVE-TESTING.md) for required variables, host restrictions, and cleanup behavior.
 
 ```bash
 PYTHONPATH=src nice python -m pytest -q -p no:xdist

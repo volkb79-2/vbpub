@@ -63,7 +63,7 @@ class V27(Backend):
             "user.query": MethodSpec("read"), "user.get_instance": MethodSpec("read"),
             "user.shell_choices": MethodSpec("read"), "group.query": MethodSpec("read"),
             "user.create": MethodSpec("write"), "user.update": MethodSpec("write"),
-            "user.delete": MethodSpec("destructive"), "user.set_password": MethodSpec("destructive"),
+            "user.delete": MethodSpec("destructive"), "user.set_password": MethodSpec("write"),
         },
         "apps": {"app.query": MethodSpec("read")},
         "shares": {"sharing.smb.query": MethodSpec("read"), "sharing.nfs.query": MethodSpec("read")},

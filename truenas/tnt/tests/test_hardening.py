@@ -118,5 +118,6 @@ def test_websockets_is_a_test_only_dependency():
 
 def test_menu_marks_conditional_entries_and_uses_upstream_route_keys():
     conditional = sorted(i.label for _, i in walk() if i.conditional)
-    assert conditional == ["Apps", "Containers", "Enclosure", "KMIP", "Virtual Machines"]
+    assert conditional == ["Apps", "Enclosure", "KMIP"]
+    assert {i.label for _, i in walk()} >= {"Containers", "Virtual Machines"}
     assert "reportsdashboard/cpu" in [i.key for _, i in walk()]

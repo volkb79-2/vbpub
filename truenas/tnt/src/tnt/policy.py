@@ -7,6 +7,7 @@ second wall for calls an action declares by mistake, not the primary control.
 from __future__ import annotations
 
 import json
+import hashlib
 import posixpath
 import re
 from dataclasses import dataclass, field
@@ -14,6 +15,7 @@ from functools import lru_cache
 from typing import Any, Iterable, Mapping, Protocol
 
 from .errors import Refused
+from .profile import Secret
 
 BOOT_POOL = "boot-pool"
 _METHOD = re.compile(r"[a-z0-9_]+(\.[a-z0-9_]+)+")
@@ -42,7 +44,7 @@ POOL_NAME_METHODS = frozenset({"pool.scrub.run", "pool.scrub.scrub"})
 # exposes this set as ``Backend.destructive``.
 DESTRUCTIVE_METHODS = frozenset({"disk.wipe", "pool.export", "pool.delete", "pool.detach", "pool.remove", "pool.dataset.delete",
                                  "pool.snapshot.delete", "pool.snapshot.rollback", "container.delete", "container.stop",
-                                 "vm.delete", "vm.stop", "vm.poweroff", "vm.device.delete", "user.delete", "user.set_password",
+                                 "vm.delete", "vm.stop", "vm.poweroff", "vm.device.delete", "user.delete",
                                  "app.uninstall", "pool.dataset.destroy_snapshots", "filesystem.rmdir", "filesystem.unlink",
                                  "filesystem.remove", "container.restart", "zfs.pool.delete", "zfs.resource.destroy",
                                  "zfs.resource.snapshot.destroy"})
@@ -67,10 +69,11 @@ def is_destructive_method(method: Any) -> bool:
     return name in DESTRUCTIVE_METHODS or name.endswith(DESTRUCTIVE_SUFFIXES)
 
 
-def needs_membership(method: Any) -> bool:
+def needs_membership(method: Any, params: Iterable[Any] = ()) -> bool:
     """Whether judging this call needs live pool/disk state (so the state is only read for actions that touch disks or pools)."""
     name = normalise_method(method)
-    return not is_read_method(name) and name.startswith(("pool.", "zfs.", "boot.", "disk."))
+    return not is_read_method(name) and (name.startswith(("pool.", "zfs.", "boot.", "disk.")) or
+                                         _contains_pool_reference(params))
 
 
 def normalise_method(method: Any) -> str:
@@ -108,8 +111,25 @@ def _manifest_spec(name: str) -> Any:
     return None
 
 
+_SECRET_KEYS = frozenset({"password", "old_password", "new_password", "api_key", "sshpubkey", "private_key"})
+
+
+def _canonical_value(value: Any, key: Any = None) -> Any:
+    if isinstance(value, Secret):
+        value = value.reveal()
+        return {"secret_sha256": hashlib.sha256(value.encode()).hexdigest()}
+    if isinstance(key, str) and key.casefold() in _SECRET_KEYS:
+        raw = value if isinstance(value, str) else repr(value)
+        return {"secret_sha256": hashlib.sha256(raw.encode()).hexdigest()}
+    if isinstance(value, Mapping):
+        return {k: _canonical_value(v, k) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_canonical_value(v) for v in value]
+    return value
+
+
 def canonical_params(params: Iterable[Any]) -> str:
-    return json.dumps(list(params), sort_keys=True, default=str)
+    return json.dumps(_canonical_value(list(params)), sort_keys=True, default=str)
 
 
 def _strings(value: Any) -> Iterable[str]:
@@ -150,6 +170,15 @@ def _pool_reference_key(key: Any) -> str:
         return ""
     separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key)
     return separated.casefold().replace("-", "_")
+
+
+def _contains_pool_reference(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        return any(_pool_reference_key(key) in POOL_REFERENCE_KEYS or _contains_pool_reference(child)
+                   for key, child in value.items())
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return any(_contains_pool_reference(child) for child in value)
+    return False
 
 
 def _pool_value_refusal(value: Any, state: SafetyState | None) -> str | None:

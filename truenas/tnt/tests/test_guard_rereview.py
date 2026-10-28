@@ -48,12 +48,18 @@ def test_an_unresolvable_member_blocks_wipe_only_not_other_pool_calls():
 
 
 def test_unrelated_actions_never_read_pool_membership():
-    stub = Stub(**{"pool.query": RuntimeError("pool.query is down")})
-    action = Action("S-1", Kind.MUTATE, "start a container", (RpcCall("container.start", ("demo",)),))
+    stub = Stub(**{
+        "pool.query": RuntimeError("pool.query is down"),
+        "container.query": [{"id": 7, "name": "demo", "status": {"state": "STOPPED"}}],
+    })
+    action = Action(
+        "S-1", Kind.MUTATE, "start a container", (RpcCall("container.start", (7,)),),
+        (RpcCall("container.query", ([["name", "=", "demo"]], {})),),
+    )
     rpc = guarded(stub)
     assert apply_plan(make_plan(action, rpc), rpc, allow_write=True) == ["done"]
     assert "pool.query" not in stub.executed() and "boot.get_state" not in stub.executed()
-    assert stub.executed() == ["container.start"]
+    assert stub.executed() == ["container.query", "container.query", "container.start"]
 
 
 def test_actions_that_touch_pools_or_disks_do_read_membership_and_fail_closed():

@@ -30,9 +30,10 @@ ssh_key_files = ["~/.ssh/id_ed25519"]
 ssh_known_hosts = "~/.ssh/known_hosts"
 ```
 
-Set `auth = "password"` and a `password` field to use the pinned client's supported v27 password login. The other
-closed `auth` value is `"api_key"`; its key may instead come from an `api_key_file`. The closed `tls` values are
-`"verify"` and `"insecure"`; the latter also requires `--insecure` on every command. `ws://` URLs are refused.
+The closed `auth` values are `"api_key"` and `"password"`; for password auth include `password = "..."` in the
+protected profile file to use the pinned client's v27 `PASSWORD_PLAIN` login. An API key may instead come from an
+`api_key_file`. The closed `tls` values are `"verify"` and `"insecure"`; the latter also requires `--insecure` on
+every command. `ws://` URLs are refused.
 
 ## Run the core workflows
 
@@ -41,22 +42,105 @@ apply a planned mutation. Destructive operations also need `--confirm` with the 
 
 ```sh
 tnt dataset list --profile lab --json
-tnt dataset create --profile lab --name tank/home --type filesystem --allow-write
-tnt snapshot list --profile lab tank/home --json
+tnt dataset show tank/home --profile lab --json
+tnt dataset create tank/home --profile lab --type filesystem --compression LZ4 --allow-write
+tnt dataset create tank/archive --profile lab --type zvol --volsize 10737418240 --allow-write
+tnt dataset update tank/home --profile lab --readonly ON --allow-write
+tnt dataset delete tank/archive --profile lab --recursive --allow-write --confirm tank/archive
+tnt snapshot list tank/home --profile lab --json
+tnt snapshot create tank/home before-maintenance --profile lab --allow-write
+tnt snapshot hold tank/home@before-maintenance --profile lab --allow-write
+tnt snapshot release tank/home@before-maintenance --profile lab --allow-write
+tnt snapshot rollback tank/home@before-maintenance --profile lab --allow-write --confirm tank/home@before-maintenance
+tnt snapshot clone tank/home@before-maintenance tank/recovered --profile lab --allow-write
+tnt snapshot delete tank/home@before-maintenance --profile lab --allow-write --confirm tank/home@before-maintenance
 tnt container list --profile lab --json
+tnt container show web --profile lab --json
+tnt container create web --profile lab --image nginx --image-version latest --pool tank --no-autostart --allow-write
+tnt container update web --profile lab --cpuset 0-1 --autostart --allow-write
+tnt container start web --profile lab --allow-write
+tnt container stop web --profile lab --allow-write --confirm web
+tnt container restart web --profile lab --allow-write --confirm web
+tnt container delete web --profile lab --allow-write --confirm web
 tnt vm list --profile lab --json
+tnt vm create guest --profile lab --memory 2048 --vcpus 2 --disk-zvol tank/guests/guest --disk-size 10737418240 --allow-write
+tnt vm device add guest --profile lab --type iso --path /mnt/tank/install.iso --allow-write
+tnt vm device add guest --profile lab --type nic --attach br0 --allow-write
+tnt vm update guest --profile lab --memory 4096 --vcpus 4 --no-autostart --allow-write
+tnt vm start guest --profile lab --allow-write
+tnt vm stop guest --profile lab --allow-write --confirm guest
+tnt vm poweroff guest --profile lab --allow-write --confirm guest
+tnt vm suspend guest --profile lab --allow-write
+tnt vm resume guest --profile lab --allow-write
+tnt vm console guest --profile lab --json
+tnt vm delete guest --profile lab --allow-write --confirm guest
 tnt user list --profile lab --json
+tnt user create deploy "Deployment account" --profile lab --group 1001 --password-disabled --allow-write
+tnt user update deploy --profile lab --full-name "Deployment service" --groups 1001,1002 --allow-write
+tnt user ssh-key set deploy --profile lab --file ~/.ssh/id_ed25519.pub --add --allow-write
+tnt user ssh-key set deploy --profile lab --file ~/.ssh/id_ed25519.pub --allow-write
+tnt user ssh-key remove deploy --profile lab --allow-write
+tnt user password deploy --profile lab --password-file ~/.config/tnt/deploy-password --allow-write
+tnt user delete deploy --profile lab --allow-write --confirm deploy
 tnt tui --profile lab
+tnt tui --profile lab --allow-write
 ```
 
 Use `--file spec.json` for fields beyond a workflow's minimal create options. Passwords are entered through a no-echo
 prompt or `--password-file`, never a command-line argument. User SSH keys are loaded from a public-key file or
 validated public-key text; private keys are not accepted or printed.
 
+The dataset CLI kind is `filesystem` or `zvol`, which map to v27 API `type` values `FILESYSTEM` and `VOLUME` when
+you use a JSON `--file`; readonly values are `ON`, `OFF`, or `INHERIT`. The compact VM
+device option accepts `disk`, `iso`, or `nic`; a schema-complete device JSON file uses v27 device types `DISK`,
+`CDROM`, `NIC`, `DISPLAY`, `PCI`, `RAW`, or `USB`. Destructive actions show their exact call plan and ask for the
+full target via `--confirm`. Password changes to another account are planned writes; changing the current login
+account also needs `--confirm-self` and typed confirmation. Built-in users cannot be deleted. Add `--builtin` only
+when intentionally editing a built-in user; it never enables deletion.
+
+For VM creation, v27 requires two stages: tnt first reviews `vm.create`, then resolves the new VM ID and displays a
+separate exact `vm.device.create` plan for each disk, ISO, or NIC before applying that call. A later device failure
+may leave the VM record and any earlier device in place; inspect it before retrying. In the TUI, enter the `disk_zvol`
+and `disk_size` values in the VM create action data; `iso` and `nic_attach` are optional. Each generated device call
+gets its own plan review.
+
 Each non-read plan is checked recursively for boot-pool names and paths, wherever they occur in its payload. Pool
 references in mapping fields such as `pool`, `poolId`, `pool_ids`, and `pools` must resolve to a listed pool; unknown,
 null, numeric-string, list, and nested mapping references are refused. VM/container stop, dataset and snapshot removal,
-snapshot rollback, user deletion, and password changes are destructive operations and show their typed confirmation
-target before apply. The v27 container CRUD schema exposes CPU affinity as `cpuset`; it does not expose the current
-container image or a memory limit.
+snapshot rollback, user deletion, and a password reset of the current login account are destructive operations and
+show their typed confirmation target before apply. Other user password changes are planned writes. v27 has no direct
+container restart RPC; tnt's restart plan calls stop then start and needs the same typed target confirmation as stop.
+Container list adds current
+CPU/memory usage from v27's `container.metrics` event source, with a bounded 2.5 second wait and an explicit status
+when no sample arrives; update changes autostart and CPU affinity. The v27 CRUD record exposes CPU affinity as
+`cpuset`, but not the current image, CPU-count setting, or configured memory limit; JSON and TUI output identify these
+unavailable fields. VM console info includes configured display bind/port endpoints and the v27 web display URI when
+available, without embedding a VNC client. Use the TUI command palette (`ctrl+p`) to open each implemented workflow
+and plan actions.
+
+## Explicit live lane
+
+The default pytest config deselects tests marked `live`; `tests/test_live_lane_config.py` asserts that registration and
+default exclusion remain in place. The live test never skips. If selected, it fails unless `TNT_LIVE=1`, the
+`TNT_LIVE_PROFILE` exists in the selected protected config file, and all pool/group/image/VM sizing variables below
+are present. Run it only against an operator-designated v27 test host with a disposable data pool and image available.
+The test creates a dataset, snapshot/clone, user, container, and VM with names prefixed `tnt-live-`, then removes each
+through the same plan/apply guard. It was written for M1 but is intentionally not run as part of this work.
+
+```sh
+export TNT_CONFIG="$PWD/tnt.toml"
+export TNT_LIVE=1
+export TNT_LIVE_PROFILE=lab
+export TNT_LIVE_POOL=tank
+export TNT_LIVE_GROUP_ID=1001
+export TNT_LIVE_CONTAINER_IMAGE_NAME=nginx
+export TNT_LIVE_CONTAINER_IMAGE_VERSION=latest
+export TNT_LIVE_VM_MEMORY_MIB=2048
+export TNT_LIVE_VM_DISK_BYTES=10737418240
+PYTHONPATH=src nice python -m pytest -q -p no:xdist -m live tests/live
+```
+
+Set `TNT_LIVE_INSECURE=1` only when the selected profile has `tls = "insecure"`; TLS verification stays enabled by
+default. The live test is not a replacement for the default FakeServer suite and it must not be pointed at a host with
+production data or workloads.
 

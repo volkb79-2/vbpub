@@ -184,3 +184,45 @@ def test_describe_has_no_secret_fields(config):
     assert set(described) == {"name", "url", "username", "api_key_file", "api_key", "password", "tls", "auth",
                               "ssh_user", "ssh_key_files", "ssh_known_hosts"}
     assert described["api_key"] == "***" and described["password"] is None
+
+
+@pytest.mark.parametrize("body,match", [
+    ('schema_version=1\n[profiles.a]\nurl="wss://host:bad/api/current"\nusername="u"\n', "valid URL"),
+    ('schema_version=1\n[profiles.a]\nurl="wss://user:pass@host/api/current"\nusername="u"\n', "must not carry credentials"),
+    ('schema_version=1\n[profiles.a]\nurl="wss://host/api/current?token=x"\nusername="u"\n', "must not carry credentials"),
+    ('schema_version=1\n[profiles.a]\nurl="wss://host/api/current#part"\nusername="u"\n', "must not carry credentials"),
+    ('schema_version=1\n[profiles.a]\nurl="wss://host/api/current"\nusername="u"\napi_key=""\n', "non-empty string"),
+    ('schema_version=1\n[profiles.a]\nurl="wss://host/api/current"\nusername="u"\napi_key="/tmp/key"\n', "key material"),
+    ('schema_version=1\n[profiles.a]\nurl="wss://host/api/current"\nusername="u"\napi_key="x"\napi_key_file="/tmp/key"\n', "either api_key"),
+    ('schema_version=1\n[profiles.a]\nurl="wss://host/api/current"\nusername="u"\nauth="password"\npassword="p"\napi_key_file="/tmp/key"\n', "does not accept api_key"),
+    ('schema_version=1\n[profiles.a]\nurl="wss://host/api/current"\nusername="u"\nssh_user=""\n', "ssh_user must"),
+    ('schema_version=1\n[profiles.a]\nurl="wss://host/api/current"\nusername="u"\nssh_key_files="bad"\n', "ssh_key_files must"),
+    ('schema_version=1\n[profiles.a]\nurl="wss://host/api/current"\nusername="u"\nssh_known_hosts=""\n', "ssh_known_hosts must"),
+    ('schema_version=1\nwrong="top"\n[profiles.a]\nurl="wss://host/api/current"\nusername="u"\n', "unknown top-level"),
+])
+def test_remaining_profile_schema_refusals(tmp_path, body, match):
+    path = write_config(tmp_path / "tnt.toml", body)
+    with pytest.raises(ProfileError, match=match):
+        prof.load_profiles(path)
+
+
+def test_profile_file_must_be_regular_and_credential_reads_are_auth_specific(tmp_path):
+    with pytest.raises(ProfileError, match="not a regular config file"):
+        prof.load_profiles(tmp_path)
+    password_profile = prof.Profile("p", "wss://host/api/current", "u", None, "verify", "password",
+                                   password=prof.Secret("fake-password"))
+    with pytest.raises(ProfileError, match="API-key credentials requested"):
+        prof.read_secret(password_profile, {})
+    api_profile = prof.Profile("a", "wss://host/api/current", "u", None, "verify", "api_key")
+    with pytest.raises(ProfileError, match="password credentials are not configured"):
+        prof.read_password(api_profile)
+
+
+def test_inline_api_key_read_and_empty_or_pathlike_environment_values(config):
+    profiles, _ = prof.load_profiles(config)
+    assert prof.read_secret(profiles["lab"], {}).reveal() == "1-notarealkey"
+    bare = profiles["throwaway"]
+    with pytest.raises(ProfileError, match="the API key is empty"):
+        prof.read_secret(bare, {"TNT_API_KEY": "  "})
+    with pytest.raises(ProfileError, match="starts with"):
+        prof.read_secret(bare, {"TNT_API_KEY": "/tmp/key"})

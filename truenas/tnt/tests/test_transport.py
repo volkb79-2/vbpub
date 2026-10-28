@@ -187,6 +187,30 @@ def test_job_flag_is_forwarded_and_close_is_quiet():
     g.close()
 
 
+def test_only_the_reviewed_container_metrics_event_can_be_subscribed():
+    class Inner:
+        def __init__(self):
+            self.events = []
+
+        def subscribe(self, name, callback, payload=None, sync=False):
+            self.events.append(("subscribe", name, sync))
+            return "event-1"
+
+        def unsubscribe(self, subscription_id):
+            self.events.append(("unsubscribe", subscription_id))
+
+    inner = Inner()
+    rpc = transport.GuardedRpc(inner)
+    with pytest.raises(Refused, match="only the container.metrics"):
+        rpc.subscribe_event("system.health", lambda *_: None)
+    subscription = rpc.subscribe_event("container.metrics", lambda *_args, **_kwargs: None)
+    assert subscription == "event-1"
+    with pytest.raises(Refused, match="does not own"):
+        rpc.unsubscribe_event("unowned")
+    rpc.unsubscribe_event(subscription)
+    assert inner.events == [("subscribe", "container.metrics", True), ("unsubscribe", "event-1")]
+
+
 def test_guard_without_secret_keeps_the_message():
     class Inner:
         def call(self, method, *params):
@@ -225,3 +249,72 @@ def test_manifest_declares_v27_and_has_no_virt_namespace():
     assert V27.verified == "reference"
     methods = set(V27.supported_methods())
     assert not any(m.startswith("virt.") for m in methods) and "container.query" in methods
+
+
+def test_event_subscription_capability_and_lifecycle_failures_are_explicit():
+    class NoEvents:
+        def call(self, method, *params, job=False):
+            return None
+        def close(self):
+            pass
+
+    rpc = transport.GuardedRpc(NoEvents())
+    with pytest.raises(TransportError, match="does not support event subscriptions"):
+        rpc.subscribe_event("container.metrics", lambda *_args, **_kwargs: None)
+    with pytest.raises(Refused, match="only the container.metrics"):
+        rpc.subscribe_event("container.metrics", None)
+
+    class BrokenSubscribe:
+        def subscribe(self, *args, **kwargs):
+            raise OSError("subscribe failed")
+    rpc = transport.GuardedRpc(BrokenSubscribe(), secret=Secret("fake-event-secret"))
+    with pytest.raises(TransportError, match="cannot subscribe") as error:
+        rpc.subscribe_event("container.metrics", lambda *_args, **_kwargs: None)
+    assert "fake-event-secret" not in str(error.value)
+
+    class EmptyId:
+        def subscribe(self, *args, **kwargs):
+            return ""
+    with pytest.raises(TransportError, match="invalid subscription id"):
+        transport.GuardedRpc(EmptyId()).subscribe_event("container.metrics", lambda *_args, **_kwargs: None)
+
+    class NoUnsubscribe:
+        def subscribe(self, *args, **kwargs):
+            return "owned"
+    rpc = transport.GuardedRpc(NoUnsubscribe())
+    subscription = rpc.subscribe_event("container.metrics", lambda *_args, **_kwargs: None)
+    with pytest.raises(TransportError, match="cannot cancel"):
+        rpc.unsubscribe_event(subscription)
+
+    class BrokenUnsubscribe:
+        def subscribe(self, *args, **kwargs):
+            return "owned"
+        def unsubscribe(self, subscription_id):
+            raise OSError("unsubscribe failed")
+    rpc = transport.GuardedRpc(BrokenUnsubscribe())
+    subscription = rpc.subscribe_event("container.metrics", lambda *_args, **_kwargs: None)
+    with pytest.raises(TransportError, match="cannot unsubscribe"):
+        rpc.unsubscribe_event(subscription)
+
+
+def test_unexpected_auth_mode_and_read_refusal_are_wrapped(monkeypatch):
+    class Client:
+        closed = False
+        def __init__(self, uri, verify):
+            pass
+        def close(self):
+            self.closed = True
+
+    client = Client("", True)
+    profile = Profile("odd", "wss://host.example.invalid/api/current", "u", auth="future-auth")
+    with pytest.raises(TransportError, match="unsupported authentication mode"):
+        transport.connect(profile, Secret("fake"), client_factory=lambda uri, verify: client)
+    assert client.closed
+
+    real = transport.refusal_for
+    monkeypatch.setattr(transport, "refusal_for", lambda method, params, state: "synthetic read refusal")
+    try:
+        with pytest.raises(Refused, match="synthetic read refusal"):
+            transport.GuardedRpc(type("Inner", (), {"call": lambda self, *a, **k: None})()).call("system.info")
+    finally:
+        monkeypatch.setattr(transport, "refusal_for", real)

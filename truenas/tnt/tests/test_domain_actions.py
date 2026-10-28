@@ -380,10 +380,12 @@ def test_menu_mirrors_the_webui_labels():
     assert top == ["Dashboard", "Storage", "Datasets", "Shares", "Data Protection", "Credentials", "Containers", "Virtual Machines", "Apps",
                    "Reporting", "System"]
     labels = {i.label for _, i in walk()}
-    assert {"Disks", "Boot", "Network", "Services", "Users", "S3 Access Keys"} <= labels
+    assert {"Disks", "Boot", "Network", "Services", "Local Users", "S3 Access Keys"} <= labels
     keys = [i.key for _, i in walk()]
     assert len(keys) == len(set(keys))
-    assert [i.key for _, i in walk() if i.status == "implemented"] == ["storage", "storage/disks"]
+    assert [i.key for _, i in walk() if i.status == "implemented"] == [
+        "storage", "storage/disks", "datasets", "data-protection", "snapshots", "credentials", "users", "containers", "vm",
+    ]
     assert [i.label for _, i in walk() if i.tnt_only] == ["Free space and partitions", "Boot pool data"]
 
 

@@ -24,6 +24,37 @@ class RpcClient(Protocol):
     def close(self) -> None: ...
 
 
+_SENSITIVE_KEYS = frozenset({"password", "old_password", "new_password", "api_key", "sshpubkey", "private_key"})
+
+
+def _rpc_values(value: Any, *, reveal: bool = False, key: Any = None) -> Any:
+    if isinstance(value, Secret):
+        return value.reveal() if reveal else "***"
+    if isinstance(value, dict):
+        return {k: _rpc_values(v, reveal=reveal, key=k) for k, v in value.items()}
+    if isinstance(value, tuple):
+        return tuple(_rpc_values(v, reveal=reveal) for v in value)
+    if isinstance(value, list):
+        return [_rpc_values(v, reveal=reveal) for v in value]
+    if not reveal and isinstance(key, str) and key.casefold() in _SENSITIVE_KEYS:
+        return "***"
+    return value
+
+
+def _rpc_secrets(value: Any, key: Any = None) -> Iterable[Secret]:
+    if isinstance(value, Secret):
+        yield value
+    elif isinstance(value, dict):
+        for name, child in value.items():
+            if isinstance(name, str) and name.casefold() in _SENSITIVE_KEYS and isinstance(child, str):
+                yield Secret(child)
+            else:
+                yield from _rpc_secrets(child, name)
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            yield from _rpc_secrets(child)
+
+
 class GuardedRpc:
     """The only object a screen or verb gets to call the host with; it enforces the policy itself.
 
@@ -42,6 +73,7 @@ class GuardedRpc:
         self._lock = threading.RLock()
         self._spent: set[str] = set()
         self._issued_plans: dict[str, str] = {}
+        self._event_subscriptions: set[str] = set()
         self.session_id = uuid.uuid4().hex
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
 
@@ -96,6 +128,37 @@ class GuardedRpc:
         with self._lock:  # one call at a time: another thread or task can never interleave with a plan's calls
             return self._call(method, params, job)
 
+    def subscribe_event(self, name: str, callback: Callable[..., Any]) -> str:
+        """Subscribe to the one reviewed read-only event source used by container inventory."""
+        if name != "container.metrics" or not callable(callback):
+            raise Refused("event-not-allowed", "only the container.metrics read event is available")
+        subscribe = getattr(self._inner, "subscribe", None)
+        if not callable(subscribe):
+            raise TransportError("event", "the connected client does not support event subscriptions")
+        try:
+            subscription_id = subscribe(name, callback, sync=True)
+        except Exception as exc:
+            raise TransportError("event", self._scrub(f"cannot subscribe to {name}: {exc}")) from None
+        if not isinstance(subscription_id, str) or not subscription_id:
+            raise TransportError("event", f"{name} returned an invalid subscription id")
+        with self._lock:
+            self._event_subscriptions.add(subscription_id)
+        return subscription_id
+
+    def unsubscribe_event(self, subscription_id: str) -> None:
+        """Unsubscribe only an event subscription issued by this guarded session."""
+        with self._lock:
+            if not isinstance(subscription_id, str) or subscription_id not in self._event_subscriptions:
+                raise Refused("event-subscription", "this session does not own that event subscription")
+            self._event_subscriptions.remove(subscription_id)
+        unsubscribe = getattr(self._inner, "unsubscribe", None)
+        if not callable(unsubscribe):
+            raise TransportError("event", "the connected client cannot cancel event subscriptions")
+        try:
+            unsubscribe(subscription_id)
+        except Exception as exc:
+            raise TransportError("event", self._scrub(f"cannot unsubscribe from container.metrics: {exc}")) from None
+
     def _call(self, method: str, params: tuple[Any, ...], job: bool) -> Any:
         name = normalise_method(method)
         if not is_read_method(name):
@@ -114,11 +177,15 @@ class GuardedRpc:
             queue.popleft()
         elif (reason := refusal_for(name, params, None)):
             raise Refused("refusal-list", f"{name}: {reason}")
-        self.calls.append((name, params))
+        self.calls.append((name, _rpc_values(params)))
+        actual_params = tuple(_rpc_values(p, reveal=True) for p in params)
         try:
-            return self._inner.call(name, *params, job=job) if job else self._inner.call(name, *params)
+            return self._inner.call(name, *actual_params, job=job) if job else self._inner.call(name, *actual_params)
         except Exception as exc:  # the client raises its own and websocket exceptions; one scrubbed error type here
-            raise TransportError("call", self._scrub(f"{name} failed: {exc}")) from None
+            message = f"{name} failed: {exc}"
+            for secret in _rpc_secrets(params):
+                message = secret.scrub(message)
+            raise TransportError("call", self._scrub(message)) from None
 
     def close(self) -> None:
         try:

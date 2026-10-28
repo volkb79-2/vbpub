@@ -11,6 +11,18 @@
   `docs/API-METHODS-V27.md`; known non-RPC or unavailable destructive names remain classified but unsupported.
 - Extended boot-pool and ambiguous-pool-reference refusals to nested string values and pool mapping spellings across
   every non-read method family. Pool/task ID checks now follow each method's v27 parameter meaning.
+- Added shared query/action workflows for datasets, snapshots, local users, containers, and virtual machines to the
+  CLI and Textual screens. Mutations use exact API plans, target re-reads, drift checks, and typed confirmation for
+  destructive actions; dataset deletion also checks children, mount state, and running workload attachments.
+- Added guarded local-user create/update/delete, SSH public-key set/add/remove, and password changes. Current-login
+  password changes require the extra self-confirmation and typed username; other-account password changes remain
+  ordinary planned writes. Secrets stay masked in plans and returned JSON.
+- Added v27 VM lifecycle/device/console workflows. VM creation and each device use separate plans because the v27
+  `vm.create` request excludes devices; a device failure can leave the VM record for operator inspection.
+- Added one bounded `container.metrics` subscription per container read. Missing samples are reported explicitly;
+  current image identity, configured CPU count, and memory limit are unavailable in the v27 container CRUD schema.
+- Extended `FakeServer` and end-to-end workflow tests through the pinned `truenas_api_client`; added a default-deselected
+  `live` test marker and a namespaced `tnt-live-` acceptance lane that is authored but not run.
 - M0 scaffold remains: `tnt --version`, `tnt doctor`, `tnt profile list|show`, `tnt disks`, `tnt tui` (Storage > Disks).
 - Transport over `truenas_api_client` (pinned by sha of tag TS-27.0.0-RC.1): wss only and TLS verification on by
   default. Authentication failures are fatal and not retried.
