@@ -34,7 +34,7 @@ The checked-in level view must match the graph:
 
 ```project-order
 L0: cli-extended, cgroup-profiler, ciu, assay, topos, tls-edge, tester-base
-L1: run-gate-project, nyxloom, pwmcp
+L1: run-gate-project, nyxloom, pwmcp, iobench
 L2: cmru
 L3: modern-debian-tools-python-debug, mdt-cockpit
 ```
@@ -143,17 +143,17 @@ supplies the whole-source line-and-branch qualification.
    `cli_extended-*.whl` produced above into the git-ignored
    `tester-unified/local-wheel/`. Build the Run-Gate wheel from the selected
    commit using the planned stable version (the example is for the current
-   24.0.1 release); its path is derived from what the build produced. The
+   24.1.0 release); its path is derived from what the build produced. The
    handler needs the build parent from the prerequisites
    (`$CGROUP_PARENT_DEV_BACKGROUND` or `CMRU_DOCKER_CGROUP_PARENT`):
 
    ```bash
    mkdir -p tester-unified/local-wheel
    cp "$BOOTSTRAP_CLI_EXTENDED_WHEEL" tester-unified/local-wheel/
-   SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE=24.0.1 \
+   SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE=24.1.0 \
      cmru handler wheel-build --cwd run-gate-project
    shopt -s nullglob
-   run_gate_wheels=("$PWD"/run-gate-project/dist/run_gate-24.0.1-*.whl)
+   run_gate_wheels=("$PWD"/run-gate-project/dist/run_gate-24.1.0-*.whl)
    test "${#run_gate_wheels[@]}" -eq 1
    RUN_GATE_CANDIDATE_WHEEL="${run_gate_wheels[0]}"
    CMRU_TESTER_MEMORY=1g \
@@ -285,11 +285,11 @@ supplies the whole-source line-and-branch qualification.
    block below passes it only with `latest`. After the build it inspects the
    image's `org.vbpub.cli-extended.wheel-sha256` and
    `org.vbpub.tester-unified.base-image` labels before the gate may use the
-   image. Those three `RUN_GATE_TESTER_*` inputs are read by Run-Gate 24.0.1's
-   `run-gate-project/tools/release_candidate.py`; Run-Gate 24.0.0 and older
-   ignore them without an error, so release Run-Gate from this checkout's
-   source. Only the Run-Gate release rebuilds a tester image, so the CGProfile
-   release receives the image alone. Do not switch back to the source
+   image. Those three `RUN_GATE_TESTER_*` inputs were added in Run-Gate 24.0.1;
+   Run-Gate 24.0.0 and older ignore them without an error; release Run-Gate
+   from this checkout's source to use those inputs. Only the Run-Gate release
+   rebuilds a tester image, so the CGProfile release receives the image alone.
+   Do not switch back to the source
    bootstrap wheel. The CGProfile command pins its image, and the Run-Gate
    release gate builds and pins its own, so it is correct to run them from
    different shells:
@@ -304,7 +304,7 @@ supplies the whole-source line-and-branch qualification.
    if [ "$CLI_EXTENDED_RESOLVE" = latest ]; then
      run_gate_tester_env+=(RUN_GATE_TESTER_CLI_EXTENDED_SHA256="${CLI_EXTENDED_RELEASED_SHA256:?set in step 3}")
    fi
-   env "${run_gate_tester_env[@]}" cmru release run-gate-project --set-version 24.0.1
+   env "${run_gate_tester_env[@]}" cmru release run-gate-project --set-version 24.1.0
    ```
 
    The first Run-Gate release publishes the artifact that CMRU's own release
@@ -318,10 +318,10 @@ supplies the whole-source line-and-branch qualification.
    ```bash
    mapfile -t run_gate_wheels < <(
      find run-gate-project/artifacts -type f \
-       -path '*/dist/run_gate-24.0.1-*.whl' -print
+       -path '*/dist/run_gate-24.1.0-*.whl' -print
    )
    if [ "${#run_gate_wheels[@]}" -ne 1 ]; then
-     echo "Expected exactly one retained Run-Gate 24.0.1 wheel" >&2
+     echo "Expected exactly one retained Run-Gate 24.1.0 wheel" >&2
      exit 2
    fi
    RUN_GATE_RELEASE_WHEEL="${run_gate_wheels[0]}"

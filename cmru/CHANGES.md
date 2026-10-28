@@ -31,6 +31,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      volume); it skips it with a stderr WARN. The release-notes generator picks this up from
      the `fix(cmru): ...` commit subject. -->
 
+- docs(cmru): refresh the zero-release bootstrap guide for the current Run-Gate
+  24.1.0 release and include iobench in the L1 dependency table.
+
 <!-- cmru: release history -->
 
 ## [7.1.0] - 2026-10-28
