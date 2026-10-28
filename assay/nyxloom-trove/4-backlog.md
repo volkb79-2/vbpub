@@ -13137,27 +13137,38 @@ A-497) is NOT landed: its Run-Gate implementation exists only in a parked
 stash (`On run-gate-rg93-git-metadata-20261013`, parked as
 `park/stash-2026-10-17-park-rg-93-dirty-worktree-before-prerequ`), so B108 stays open.
 
-## B170 — full-source R0/R1 coverage and the R3 canary were not run for the assay 10.0.0 release gate
+## B170 — full-source R0/R1 and the R3 canary for the assay 10.0.0 release: provisional lane and R1 gap closure
 
-**Status: OPEN.** The release gate (`tools/tester-unified-gate.sh`: the
-`tester-unified` and `analysis` lanes, the independent self-hosting witness,
-pyflakes, the SQL qualification and the distribution build) passed for 10.0.0.
-It does not include the full-source qualification lanes. Run on 2026-10-28 at
-`a6f579f12` with an exclusive host, `run-gate self-qualification-preflight`
-(R0 + R1, whole-target 100% line and branch over `src/assay`) FAILED with
-`UNCOVERED_LINES`: 886 uncovered lines. The R3 canary only exists inside
-`self-qualification` (R0-R3, with R2, which the operator waived for this
-wave), so it was not run. Pending operator confirmation of the R3 decision,
-these are "not run in this release gate".
+**Status: IMPLEMENTED (2026-10-28); R2 remains owed under B169.** Operator
+decision 2026-10-27/28: R2 is waived for the release wave but every other
+qualification rigor runs. `self-qualification-provisional` (`assay.toml`,
+`run-gate.toml`, `tools/self-qualification-{container,gate}.sh`, and the
+`cmru.toml` `run-tests` step) is the full `self-qualification` lane minus R2:
+R0, R1 (whole-target 100% line and branch over `src/assay`) and the R3 canary.
+After the lane is verified it records `.assay/mutation-postponed-assay.json`
+(`result: provisional`, tracking id B169, valid only below assay 10.1.0; a
+newer `assay-v10.1.0` or later tag refuses it). The full lane is unchanged and
+deletes the marker; the marker cannot satisfy an R2 request.
 
-Uncovered lines by file (from the retained coverage snapshot):
-`adapters/sql.py` 301, `cli.py` 172, `mutation.py` 135, `mutation_witness.py`
-114, `verify.py` 59, `runner.py` 41, `config.py` 26, `adapters/sql_lex.py` 7,
-`resource_limits.py` 7, `isolation.py` 6, `process_tree.py` 6, `liveness.py`
-4, `safeio.py` 4, `verdict.py` 4 (branch gaps of similar size per file, for
-example `sql.py` 304, `cli.py` 93, `mutation.py` 117, `mutation_witness.py` 81).
+**Evidence:** at `4ab0bb0b1`, `run-gate self-qualification-provisional`
+(exclusive host): R0 PASS, R1 PASS, R3 PASS, marker recorded. Before closure
+the lane failed R1 with `UNCOVERED_LINES` (886 lines, 711 branches) and R3 was
+`CANARY_INCONCLUSIVE` because the canary's control must pass R1 as well. Per-file
+gap at `a6f579f12` (lines): `adapters/sql.py` 301, `cli.py` 172, `mutation.py`
+135, `mutation_witness.py` 114, `verify.py` 59, `runner.py` 41, `config.py` 26,
+`adapters/sql_lex.py` 7, `resource_limits.py` 7, `isolation.py` 6,
+`process_tree.py` 6, `liveness.py` 4, `safeio.py` 4, `verdict.py` 4. Closed by
+five new test files (about 1,000 test cases: `test_cli_`, `test_mutation_`,
+`test_runner_config_`, `test_witness_verify_` closure files and
+`adapters/sql/test_sql_adapter_coverage_closure.py`), removal of unreachable
+defensive branches (witness pytest-option scan, SQL `IN` widening and event
+kind chain, pilot-state read), and two small refactors that make a branch
+testable (`_close_if_open`, `_unregister_started_group`). A real defect surfaced
+and was fixed: a dirty tree after the cold-witness R2 baseline raised a bare
+`TypeError`.
 
-**Close when:** `self-qualification-preflight` passes (R0 + R1 at the declared
-100% with no unreviewed exclusions) and one R3 canary run (an R2-free lane or
-the full `self-qualification` run, which also closes B169) is retained against
-a released tag.
+**Open:** a few closure tests drive defensive code through monkeypatched seams
+(`runner.py` `witness_dir is None`, `config.py` non-finite duration, `mutation.py`
+`_classified_bucket` with a non-mapping tree proof that ends in an assertion).
+They keep the floor honest but a reviewer may prefer making those states
+unrepresentable. R2 itself: B169.
