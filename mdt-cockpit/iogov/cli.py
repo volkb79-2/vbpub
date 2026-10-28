@@ -1,4 +1,4 @@
-"""Command line: plan | tick | bench | watch | analyze | status | devices | annotate | quiet-experiment | cleanup | config."""
+"""Command line: plan | tick | bench | watch | analyze | status | preflight | devices | annotate | quiet-experiment | cleanup | config."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from . import __version__
 from .config import ConfigError, effective, load
 from . import experiment
 from .env import Env
+from . import hostcheck
 from .episodes import watch
 from .report import analyze, status
 from . import safeio
@@ -34,6 +35,7 @@ def make_parser() -> argparse.ArgumentParser:
     a.add_argument("--lane", help="only lanes starting with this name")
     a.add_argument("--no-plots", action="store_true")
     sub.add_parser("status", help="read-only (root or the service user): kill switch, last runs, budget used today, recognizer state, prevention checks")
+    sub.add_parser("preflight", help="check the host tools/packages/kernel facilities the install needs (apt package named per item); exit 1 if any is missing")
     sub.add_parser("devices", help="show the disks that would be probed (sysfs lookups only)")
     for name in ("annotate", "note"):
         n = sub.add_parser(name, help="annotate the journal ('provider optimise run', 'snapshot taken', ...) or reset the baselines")
@@ -64,6 +66,10 @@ def main(argv: list[str] | None = None, env: Env | None = None) -> int:
     if cmd == "config":
         print(json.dumps(effective(cfg), indent=1, sort_keys=True))
         return 0
+    if cmd == "preflight":
+        text, code = hostcheck.render(hostcheck.run_checks(cfg))
+        print(text)
+        return code
     if cmd == "analyze":
         print(analyze(cfg, args.path or cfg.journal_dir(), as_json=args.json, lane_filter=args.lane, plots=not args.no_plots))
         return 0

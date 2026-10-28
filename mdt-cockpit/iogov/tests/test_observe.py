@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from pathlib import Path
 
 import pytest
 from conftest import make_env, write_file
@@ -213,7 +214,10 @@ def test_data_path_detection_goes_through_st_dev(tmp_path, world):
 
 
 def test_detection_excludes_virtual_devices_and_says_when_nothing_is_configured(tmp_path):
-    cfg = from_mapping({"sysfs_root": str(tmp_path), "dev_root": str(tmp_path), "devices": ["/dev/loop3", "/dev/zram0", "/dev/vda"]})
+    nodes = [str(tmp_path / n) for n in ("loop3", "zram0", "vda")]
+    for n in nodes:
+        write_file(Path(n), "")
+    cfg = from_mapping({"sysfs_root": str(tmp_path), "dev_root": str(tmp_path), "devices": nodes})
     disks, notes = detect(cfg)
     assert [d.kname for d in disks] == ["vda"] and sum("excluded" in n for n in notes) == 2
     assert "nothing to probe" in detect(from_mapping({}))[1][0]

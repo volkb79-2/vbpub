@@ -311,3 +311,30 @@ shift in what the probes measure; whether the game suffers is the `harm` section
 8. **A host that is never calm.** The bench gate (system io `some` <= 1 %, `full` <= 0.1 %, nothing in flight) may rarely pass on a host that swaps
    continuously; the write lanes then show as STALE and only the read lanes and passive evidence accumulate. That is the designed failure mode, not a
    bug, but it must be visible: check the skip counts in `analyze` after the first days (backlog MDT-030 for a gate pass-rate line in `status`).
+
+## 12. Deployment options (host install vs a minimal container)
+
+Question (operator, 2026-10-27, after `setfacl` turned out to be missing on the host): should iogov ship as a container with a defined minimal
+environment, so that tool requirements are self-contained?
+
+Facts that decide it:
+
+| Concern | Host install (systemd units) | Container |
+| --- | --- | --- |
+| Raw O_DIRECT read of the disk | ACL on the node for the service user, `DeviceAllow=<node> r`, empty capability set | `--device <node>:<node>:r` (device-cgroup read-only) plus the same uid/ACL question inside; the alternative is root inside the container, a bigger blast radius than an unprivileged user that can only read one node |
+| udev ACL rule | lives on the HOST either way: `setfacl` runs in the host's udev, so a container does not remove the `acl` requirement (the very package that was missing) | same: still needs `acl` on the host, or gives up the unprivileged identity |
+| Scheduling and bounds | timers, `TimeoutStartSec` backstop (kills a run stuck in a kernel read), `Slice=` low IO weight, `ProtectSystem=strict` | an in-container loop or a host timer calling `docker run`; the hung-read backstop becomes `docker stop`/`--stop-timeout` and depends on the daemon |
+| cgroup visibility | reads `/sys/fs/cgroup/...` of the game scopes directly | needs `--cgroupns=host` (or a bind of the cgroup tree) to see sibling cgroups; the estate's incident rule says never reach for `--cgroupns=host`/`--pid=host` casually |
+| Device detection | works from `data_paths` | the container sees its own mount namespace: `data_paths` detection is meaningless, `devices` must be explicit, scratch must be a bind of a directory on the data filesystem |
+| State/journal/scratch | `/var/lib/iogov` 0700 owned by the user | bind mounts, uid mapping, same modes to maintain |
+| Failure coupling | independent of dockerd | the monitor of a dockerd-hosted game server would itself depend on dockerd, which is the first thing that stalls under the IO pressure it should record |
+| Package integrity | root-owned files in a root-owned directory (`install.sh`) | an image digest pinned in the unit/compose file; equal strength only if pinned and the registry/build path is trusted |
+| Tool requirements | explicit list + `iogov preflight` + `install.sh` (apt names, exit 1) | Python and `systemd-analyze` become self-contained; the host-side items (`acl`, `udev`, systemd units, cgroup v2, PSI) do not |
+
+Recommendation: **keep v1 as a host install** (root-owned package, systemd units, one ACL rule), made self-checking by `iogov preflight` and
+`install.sh --dry-run`. The only requirement a container would not absorb is the host's `acl`, and the container would add dockerd as a runtime
+dependency, host cgroup-namespace exposure, uid/bind-mount bookkeeping and a weaker hung-read backstop on a host that carries latency-sensitive
+production workloads. Use a container only for the part that needs no privilege: the offline `analyze`/`report` tools (read-only bind of the journal, no
+device, no cgroup access), which is where a pinned minimal image removes real environment drift. Revisit a full container only for a fleet of
+hosts, and then as a `.deb` (declaring `Depends: acl, udev, systemd, python3 (>= 3.11)`) rather than an image, because the privileged pieces
+are host objects either way.
