@@ -102,46 +102,7 @@ def test_disk_json_names_the_bound():
 
 
 # -- safety: S1..S4 --------------------------------------------------------------------------------------
-class Stub:
-    """An in-memory host: results by method name; records everything it was asked."""
-
-    def __init__(self, **overrides):
-        self.results = {
-            "pool.query": [{"id": 1, "name": "tank", "topology": {"data": [{"disk": "sdb", "path": "/dev/sdb1"}]}},
-                           {"id": 2, "name": "boot-pool", "topology": {"data": [{"disk": "sda3", "path": "/dev/sda3"}]}}],
-            "boot.get_state": {"name": "boot-pool", "topology": {"data": [{"disk": "sda3"}]}},
-            "disk.query": [{"name": "sda", "serial": "BOOT0001", "pool": "boot-pool"}, {"name": "sdb", "serial": "DATA0002", "pool": "tank"},
-                           {"name": "sdc", "serial": "SPARE003"}, {"name": "sdd", "serial": "SPARE004"}],
-        }
-        self.results.update(overrides)
-        self.log = []
-
-    def call(self, method, *params, job=False):
-        self.log.append((method, params))
-        value = self.results.get(method, "done")
-        if isinstance(value, Exception):
-            raise value
-        return value
-
-    def close(self):
-        pass
-
-    def executed(self):
-        return [m for m, _ in self.log]
-
-
-def guarded(stub, read_only=False):
-    return GuardedRpc(stub, read_only=read_only)
-
-
-def run_plan(stub, action, *, typed=None, allow_write=True, read_only=False):
-    rpc = guarded(stub, read_only)
-    plan = make_plan(action, rpc)
-    return apply_plan(plan, rpc, allow_write=allow_write, typed_confirmation=typed)
-
-
-def destructive(method, *params, job=False, probe=(RpcCall("disk.query", ([], {})),)):
-    return Action("T-1", Kind.DESTRUCTIVE, "test", (RpcCall(method, params, job),), probe=probe, confirm_target="x")
+from helpers import SIZE, Stub, destructive, guarded, run_plan  # noqa: E402
 
 
 @pytest.mark.parametrize("method,params", [
@@ -189,11 +150,11 @@ def test_disk_wipe_protection_is_computed_from_live_state(target, refused):
 
 def test_disk_wipe_resolves_by_id_paths_and_mounted_partitions():
     by_id = {"pool.query": [{"id": 1, "name": "tank", "topology": {"data": [{"path": "/dev/disk/by-id/ata-DATADISK_DATA0002-part1"}]}}],
-             "boot.get_state": {"topology": {}}, "disk.query": [{"name": "sdb", "serial": "DATA0002"}, {"name": "sdc", "serial": "SPARE003"}]}
+             "boot.get_state": {"topology": {}}, "disk.query": [{"name": "sdb", "serial": "DATA0002", "size": SIZE}, {"name": "sdc", "serial": "SPARE003", "size": SIZE}]}
     with pytest.raises(Refused, match="wipe"):
         run_plan(Stub(**by_id), destructive("disk.wipe", "sdb"), typed="x")
     assert run_plan(Stub(**by_id), destructive("disk.wipe", "sdc"), typed="x") == ["done"]
-    mounted = {"pool.query": [], "boot.get_state": {}, "disk.query": [{"name": "sdc", "partitions": [{"name": "sdc1", "mountpoint": "/data"}]}, {"name": "sdd", "partitions": [{"name": "sdd1"}, "junk"]}]}
+    mounted = {"pool.query": [], "boot.get_state": {}, "disk.query": [{"name": "sdc", "size": SIZE, "partitions": [{"name": "sdc1", "mountpoint": "/data"}]}, {"name": "sdd", "size": SIZE, "partitions": [{"name": "sdd1"}, "junk"]}]}
     with pytest.raises(Refused, match="mounted partition"):
         run_plan(Stub(**mounted), destructive("disk.wipe", "sdc"), typed="x")
     assert run_plan(Stub(**mounted), destructive("disk.wipe", "sdd"), typed="x") == ["done"]
@@ -228,8 +189,14 @@ def test_disk_wipe_with_dict_style_or_missing_params_raises_refused_not_typeerro
 
 def test_pool_id_without_state_is_refused_and_bool_ids_are_not_ids():
     assert "cannot be resolved" in refusal_for("pool.export", [1], None)
-    assert refusal_for("pool.export", [True], SafetyState({1: "tank"}, frozenset(), frozenset())) is None
+    state = SafetyState({1: "tank", 2: "boot-pool"}, frozenset(), frozenset())
+    assert refusal_for("pool.export", [1], state) is None and refusal_for("pool.export", ["tank"], state) is None
+    for form in (True, 2.0, 1.0, "2", " 1 ", [2], (1,), {"id": 2}, {"name": "tank"}, "unknown", None, b"1"):
+        assert refusal_for("pool.export", [form], state), form
+    assert refusal_for("pool.export", [], state) is None  # no parameter, nothing to resolve (the call itself fails on the host)
     assert refusal_for("pool.dataset.create", ["tank/x"], None) is None  # a dataset name, not a pool id
+    assert refusal_for("pool.scrub.delete", [5], state) is None  # a task id: pool.scrub.* has no pool-id position
+    assert refusal_for("pool.create", [{"name": "boot-pool-data", "topology": {}}], state) is None
 
 
 # -- S3: the guarded client enforces by itself ------------------------------------------------------------------
@@ -253,7 +220,7 @@ def test_a_plan_grants_exactly_its_calls_in_order_and_nothing_else():
         with pytest.raises(Refused, match="not-in-plan"):
             rpc.call("pool.scrub", "tank")  # job flag differs
         with pytest.raises(Refused, match="not-in-plan"):
-            rpc.call("pool.scrub", "other", job=True)  # parameters differ
+            rpc.call("pool.scrub", 1, job=True)  # parameters differ
         rpc.call("pool.scrub", "tank", job=True)
         with pytest.raises(Refused, match="nested-plan"):
             with rpc.authorized([], None):
@@ -261,8 +228,10 @@ def test_a_plan_grants_exactly_its_calls_in_order_and_nothing_else():
         rpc.call("pool.update", 1, {"a": 1})
         with pytest.raises(Refused, match="not-in-plan"):
             rpc.call("pool.update", 1, {"a": 1})  # already consumed
-    with pytest.raises(Refused, match="no-plan"):
+    with pytest.raises(Refused):
         rpc.call("pool.scrub", "tank", job=True)  # the grant ends with the plan
+    with pytest.raises(Refused, match="no-plan"):
+        rpc.call("pool.create", {"name": "x"})
 
 
 def test_a_granted_call_must_still_pass_the_refusal_list():
@@ -304,7 +273,9 @@ def test_the_tui_path_does_not_hand_out_an_unguarded_object(server):
 
 def test_apply_plan_requires_a_guarded_client():
     stub = Stub()
-    plan = make_plan(destructive("pool.export", 1), stub)
+    with pytest.raises(Refused, match="unguarded"):
+        make_plan(destructive("pool.export", 1), stub)
+    plan = make_plan(destructive("pool.export", 1), guarded(stub))
     with pytest.raises(Refused, match="unguarded"):
         apply_plan(plan, stub, allow_write=True, typed_confirmation="x")
 
@@ -313,18 +284,19 @@ def test_apply_plan_requires_a_guarded_client():
 def test_a_read_action_may_only_call_read_methods():
     bad = Action("R-1", Kind.READ, "sneaky", (RpcCall("pool.export", (1,)),))
     with pytest.raises(Refused, match="read-action"):
-        make_plan(bad, Stub())
+        make_plan(bad, guarded(Stub()))
     with pytest.raises(Refused, match="read-action"):
         apply_plan(Plan(bad, "x"), guarded(Stub()), allow_write=True)
+    ro = guarded(Stub(), read_only=True)
     good = Action("R-2", Kind.READ, "list", (RpcCall("disk.query"),))
-    assert apply_plan(make_plan(good, Stub()), guarded(Stub(), read_only=True), allow_write=False) == [Stub().results["disk.query"]]
+    assert apply_plan(make_plan(good, ro), ro, allow_write=False) == [Stub().results["disk.query"]]
     job = Action("R-3", Kind.READ, "job", (RpcCall("pool.query", job=True),))
-    assert apply_plan(make_plan(job, Stub()), guarded(Stub(), read_only=True), allow_write=False) == [Stub().results["pool.query"]]
+    assert apply_plan(make_plan(job, ro), ro, allow_write=False) == [Stub().results["pool.query"]]
 
 
 def test_a_destructive_action_needs_a_probe():
     with pytest.raises(Refused, match="empty-probe"):
-        make_plan(destructive("pool.export", 1, probe=()), Stub())
+        make_plan(destructive("pool.export", 1, probe=()), guarded(Stub()))
     with pytest.raises(Refused, match="empty-probe"):
         apply_plan(Plan(destructive("pool.export", 1, probe=()), "x"), guarded(Stub()), allow_write=True, typed_confirmation="x")
 
@@ -336,17 +308,17 @@ def test_probes_must_be_reads_even_in_a_write_session_and_actions_need_calls():
         make_plan(action, guarded(stub))
     assert "pool.update" not in stub.executed()
     with pytest.raises(Refused, match="empty-action"):
-        make_plan(Action("E-1", Kind.MUTATE, "nothing", ()), Stub())
+        make_plan(Action("E-1", Kind.MUTATE, "nothing", ()), guarded(Stub()))
 
 
 def test_the_fingerprint_binds_the_calls_and_the_confirmation_target():
     stub = Stub()
     rpc = guarded(stub)
     plan = make_plan(destructive("pool.export", 1), rpc)
-    swapped = Plan(destructive("pool.export", 1, {"force": True}), plan.fingerprint)
+    swapped = Plan(destructive("pool.export", 1, {"force": True}), plan.fingerprint, plan.session_id, plan.nonce)
     with pytest.raises(Refused, match="state-drift"):
         apply_plan(swapped, rpc, allow_write=True, typed_confirmation="x")
-    other_target = Plan(Action("T-1", Kind.DESTRUCTIVE, "test", plan.action.calls, plan.action.probe, confirm_target="y"), plan.fingerprint)
+    other_target = Plan(Action("T-1", Kind.DESTRUCTIVE, "test", plan.action.calls, plan.action.probe, confirm_target="y"), plan.fingerprint, plan.session_id, plan.nonce)
     with pytest.raises(Refused, match="state-drift"):
         apply_plan(other_target, rpc, allow_write=True, typed_confirmation="y")
     assert "pool.export" not in stub.executed()
@@ -359,11 +331,12 @@ def _action(kind=Kind.DESTRUCTIVE, calls=(RpcCall("pool.export", (1,)),), target
 
 def test_plan_renders_the_exact_calls():
     stub = Stub()
-    plan = make_plan(_action(calls=(RpcCall("disk.wipe", ("sdc", "QUICK"), job=True),)), stub)
+    rpc = guarded(stub)
+    plan = make_plan(_action(calls=(RpcCall("disk.wipe", ("sdc", "QUICK"), job=True),)), rpc)
     text = plan.render()
     assert 'disk.wipe("sdc", "QUICK")  [job]' in text and "type 'x'" in text and plan.fingerprint[:12] in text
     assert stub.log == [("disk.query", ([], {}))]  # planning only reads
-    assert "type " not in make_plan(_action(Kind.MUTATE, target=None), stub).render()
+    assert "type " not in make_plan(_action(Kind.MUTATE, (RpcCall("pool.scrub", (1,)),), target=None), rpc).render()
 
 
 def test_apply_gates_in_order_and_execution():
@@ -374,8 +347,10 @@ def test_apply_gates_in_order_and_execution():
         apply_plan(plan, rpc, allow_write=False, typed_confirmation="x")
     with pytest.raises(Refused, match="typed-confirmation"):
         apply_plan(plan, rpc, allow_write=True, typed_confirmation="nope")
-    with pytest.raises(Refused, match="typed-confirmation"):
-        apply_plan(make_plan(_action(target=None), rpc), rpc, allow_write=True, typed_confirmation=None)
+    with pytest.raises(Refused, match="empty-confirm"):
+        make_plan(_action(target=None), rpc)
+    with pytest.raises(Refused, match="empty-confirm"):
+        make_plan(_action(target="  "), rpc)
     assert "pool.export" not in stub.executed()
     stub.results["disk.query"] = stub.results["disk.query"] + [{"name": "sde"}]
     with pytest.raises(Refused, match="state-drift"):
@@ -385,6 +360,10 @@ def test_apply_gates_in_order_and_execution():
     assert apply_plan(plan, rpc, allow_write=True, typed_confirmation="x") == ["done"]
     mutate = make_plan(_action(Kind.MUTATE, (RpcCall("pool.scrub", ("tank",), True),), None), rpc)
     assert apply_plan(mutate, rpc, allow_write=True) == ["done"] and stub.log[-1] == ("pool.scrub", ("tank",))
+    stub.log.clear()
+    with pytest.raises(Refused, match="plan-reused"):
+        apply_plan(mutate, rpc, allow_write=True)
+    assert "pool.scrub" not in stub.executed()
 
 
 def test_refusal_list_texts():
@@ -392,7 +371,7 @@ def test_refusal_list_texts():
     assert "B-07" in refusal_for("boot.attach", ("vda4",))
     assert "credentials" in refusal_for("auth.set_password")
     assert "A-08" in refusal_for("pool.export", (0, {"x": "boot-pool"}))
-    assert refusal_for("pool.export", ("tank",)) is None
+    assert refusal_for("pool.export", ("tank",), SafetyState({1: "tank"}, frozenset(), frozenset())) is None
     assert refusal_for("pool.dataset.create", ("tank/boot-pool-notes",)) is None
 
 

@@ -2,6 +2,7 @@ import pytest
 
 from tnt import adapters, transport
 from tnt.errors import Refused, TransportError, UnsupportedVersion
+from tnt.policy import SafetyState
 from tnt.profile import Profile, Secret
 from tnt.session import open_session
 from tnt.testing import FakeServer
@@ -160,8 +161,8 @@ def test_job_flag_is_forwarded_and_close_is_quiet():
         def close(self):
             raise OSError("x")
     g = transport.GuardedRpc(Inner(), read_only=False)
-    with g.authorized([("pool.scrub", ("tank",), True)], None):
-        assert g.call("pool.scrub", "tank", job=True) == ("pool.scrub", ("tank",), True)
+    with g.authorized([("pool.scrub", (1,), True)], SafetyState({1: "tank"}, frozenset(), frozenset())):
+        assert g.call("pool.scrub", 1, job=True) == ("pool.scrub", (1,), True)
     g.close()
 
 

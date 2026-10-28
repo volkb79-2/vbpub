@@ -6,6 +6,9 @@ TrueNAS rate-limits 20 unauthenticated attempts per 60 s and then locks out for 
 """
 from __future__ import annotations
 
+import asyncio
+import threading
+import uuid
 from collections import deque
 from contextlib import contextmanager
 from typing import Any, Callable, Iterable, Iterator, Protocol
@@ -35,21 +38,48 @@ class GuardedRpc:
         self.read_only = read_only
         self._secret = secret
         self._grant: tuple[deque, SafetyState | None] | None = None
+        self._owner: tuple[int, int | None] | None = None
+        self._lock = threading.RLock()
+        self._spent: set[str] = set()
+        self.session_id = uuid.uuid4().hex
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
+
+    @staticmethod
+    def _identity() -> tuple[int, int | None]:
+        """Who is calling: the thread and, inside an event loop, the asyncio task."""
+        try:
+            task = asyncio.current_task()
+        except RuntimeError:
+            task = None
+        return (threading.get_ident(), None if task is None else id(task))
+
+    def spend(self, nonce: str) -> None:
+        """Mark a plan nonce used; a plan runs at most once, and only on the session that made it."""
+        if not nonce or nonce in self._spent:
+            raise Refused("plan-reused", "this plan was already applied (or has no identity); plan again")
+        self._spent.add(nonce)
 
     @contextmanager
     def authorized(self, calls: Iterable[tuple[str, tuple[Any, ...], bool]], state: SafetyState | None) -> Iterator[None]:
         if self.read_only:
             raise Refused("read-only", "a read-only session cannot execute a plan")
-        if self._grant is not None:
-            raise Refused("nested-plan", "a plan is already executing")
-        self._grant = (deque((normalise_method(m), canonical_params(p), bool(j)) for m, p, j in calls), state)
+        with self._lock:
+            if self._grant is not None:
+                raise Refused("nested-plan", "a plan is already executing")
+            self._grant = (deque((normalise_method(m), canonical_params(p), bool(j)) for m, p, j in calls), state)
+            self._owner = self._identity()
         try:
             yield
         finally:
-            self._grant = None
+            with self._lock:
+                self._grant = None
+                self._owner = None
 
     def call(self, method: str, *params: Any, job: bool = False) -> Any:
+        with self._lock:  # one call at a time: another thread or task can never interleave with a plan's calls
+            return self._call(method, params, job)
+
+    def _call(self, method: str, params: tuple[Any, ...], job: bool) -> Any:
         name = normalise_method(method)
         if not is_read_method(name):
             reason = refusal_for(name, params, self._grant[1] if self._grant else None)
@@ -59,6 +89,8 @@ class GuardedRpc:
                 raise Refused("refusal-list", f"{name}: {reason}")
             if self._grant is None:
                 raise Refused("no-plan", f"{name} is not part of a confirmed plan being applied; write sessions are default-deny")
+            if self._owner != self._identity():
+                raise Refused("foreign-caller", f"{name}: the plan being applied belongs to another thread or task")
             queue = self._grant[0]
             if not queue or queue[0] != (name, canonical_params(params), bool(job)):
                 raise Refused("not-in-plan", f"{name} with these parameters is not the next call of the plan being applied")

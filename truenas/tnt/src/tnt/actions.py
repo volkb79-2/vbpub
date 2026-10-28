@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
 from .errors import Refused
-from .policy import (ALWAYS_REFUSED, BOOT_POOL, Caller, SafetyState, compute_state, is_read_method,  # noqa: F401
-                     refusal_for)
+from .policy import (ALWAYS_REFUSED, BOOT_POOL, Caller, SafetyState, compute_state, is_destructive_method,  # noqa: F401
+                     is_read_method, needs_membership, refusal_for)
 from .transport import GuardedRpc
 
 
@@ -51,8 +52,12 @@ class Action:
 
 @dataclass(frozen=True)
 class Plan:
+    """A plan is bound to the session that made it and is single-use (see ``GuardedRpc.spend``)."""
+
     action: Action
     fingerprint: str
+    session_id: str = ""
+    nonce: str = ""
 
     def render(self) -> str:
         lines = [f"{self.action.id} [{self.action.kind}] {self.action.title}", "Exact calls, in order:"]
@@ -76,6 +81,12 @@ def validate_action(action: Action) -> None:
                 raise Refused("read-action", f"{action.id} is a READ action but calls {call.method}, which is not a read method")
     if action.kind is Kind.DESTRUCTIVE and not action.probe:
         raise Refused("empty-probe", f"{action.id} is destructive but has no probe: the drift check would be vacuous")
+    if action.kind is Kind.DESTRUCTIVE and not (action.confirm_target and action.confirm_target.strip()):
+        raise Refused("empty-confirm", f"{action.id} is destructive but names no confirmation target to type")
+    if action.kind is not Kind.DESTRUCTIVE:
+        for call in action.calls:
+            if is_destructive_method(call.method):
+                raise Refused("kind-mismatch", f"{action.id}: {call.method} destroys data, so the action must be DESTRUCTIVE (probe and typed confirmation)")
 
 
 def fingerprint_of(rpc: Caller, action: Action) -> str:
@@ -87,10 +98,12 @@ def fingerprint_of(rpc: Caller, action: Action) -> str:
     return hashlib.sha256(json.dumps(material, sort_keys=True, default=str).encode()).hexdigest()
 
 
-def make_plan(action: Action, rpc: Caller) -> Plan:
+def make_plan(action: Action, rpc: GuardedRpc) -> Plan:
     """Planning only ever reads; the probe calls are checked to be read methods before any of them runs."""
+    if not isinstance(rpc, GuardedRpc):
+        raise Refused("unguarded", "plans are made only through a GuardedRpc session")
     validate_action(action)
-    return Plan(action, fingerprint_of(rpc, action))
+    return Plan(action, fingerprint_of(rpc, action), rpc.session_id, uuid.uuid4().hex)
 
 
 def apply_plan(plan: Plan, rpc: GuardedRpc, *, allow_write: bool, typed_confirmation: str | None = None) -> list[Any]:
@@ -98,8 +111,10 @@ def apply_plan(plan: Plan, rpc: GuardedRpc, *, allow_write: bool, typed_confirma
         raise Refused("unguarded", "plans run only through a GuardedRpc session")
     action = plan.action
     validate_action(action)
+    if plan.session_id != rpc.session_id:
+        raise Refused("foreign-session", "this plan was made on another session; plan again on this one")
     state: SafetyState | None = None
-    if action.kind is not Kind.READ:
+    if any(needs_membership(c.method) for c in action.calls):  # lazy: unrelated actions never depend on pool membership
         state = compute_state(rpc)
     for call in action.calls:
         reason = refusal_for(call.method, call.params, state)
@@ -111,6 +126,7 @@ def apply_plan(plan: Plan, rpc: GuardedRpc, *, allow_write: bool, typed_confirma
         raise Refused("typed-confirmation", f"{action.id} is destructive: type {action.confirm_target!r} exactly to confirm")
     if fingerprint_of(rpc, action) != plan.fingerprint:
         raise Refused("state-drift", f"the host or the action changed since {action.id} was planned; plan again")
+    rpc.spend(plan.nonce)
     if action.kind is Kind.READ:
         return [rpc.call(c.method, *c.params, job=True) if c.job else rpc.call(c.method, *c.params) for c in action.calls]
     with rpc.authorized([c.key() for c in action.calls], state):

@@ -89,14 +89,20 @@ method (section 8.1).
 `Action(id, kind, title, calls, probe, confirm_target)`; `kind` is READ, MUTATE or DESTRUCTIVE. `id` is an
 ACTION-MATRIX row id (A-xx/B-xx) or a TNT id. Structural rules (`validate_action`, at plan and again at apply): an
 action has calls; every probe call is a read method (also in a write session); a READ action's calls are all read
-methods; a DESTRUCTIVE action has a non-empty probe (else the drift check would be vacuous). `make_plan` runs the probe
+methods; a DESTRUCTIVE action has a non-empty probe (else the drift check would be vacuous) and a non-blank
+confirmation target; an action containing a data-destroying method (the manifest-level `destructive` set: `disk.wipe`,
+`pool.export|delete|detach|remove`, `pool.dataset.delete`, `pool.snapshot.delete`, `zfs.pool.delete`,
+`zfs.resource.destroy`, plus any method ending `.delete`, `.destroy` or `.wipe`) must be DESTRUCTIVE. `make_plan` runs the probe
 and fingerprints the action id, kind, confirm target, exact calls and probe results, so swapping the calls or the
-target under a plan is detected. `Plan.render()` prints the exact RPC calls in order. `apply_plan` (which accepts only
+target under a plan is detected. A plan carries the id of the session that made it and a nonce: applying it through
+another `GuardedRpc` is refused (`foreign-session`) and applying it twice is refused (`plan-reused`; the nonce is spent
+only once every gate has passed, so a wrong confirmation does not burn the plan). `Plan.render()` prints the exact RPC calls in order. `apply_plan` (which accepts only
 a `GuardedRpc`) checks, in this order, and stops at the first failure:
 
 1. validity (above);
-2. live safety state (`policy.compute_state`: pool ids, members of every pool incl. boot, mounted partitions) and the
-   refusal list for every call, never overridable;
+2. live safety state, read only when some call touches disks or pools (`needs_membership`: non-read `pool.`, `zfs.`,
+   `boot.`, `disk.` methods; an action such as `service.stop` never depends on pool membership), and the refusal list
+   for every call, never overridable;
 3. write session (`--allow-write`), for MUTATE and DESTRUCTIVE;
 4. typed confirmation, for DESTRUCTIVE: the operator types the target name exactly;
 5. state drift: the fingerprint is recomputed and must equal the plan's, else "plan again";
@@ -170,20 +176,42 @@ Default-deny, enforced in the client object itself, not only in the action layer
   normalised (strip, lower-case) and must be plain dotted words. Reads (`*.query`, `*.details`, listed `get_*`,
   `system.info|version`, `core.get_methods`, ...) are allowed in every session.
 - A non-read method is refused in a read-only session. In a write session it is refused unless it is the next call of the
-  plan currently executing in `apply_plan` (exact method, parameters and job flag, in order). Outside a plan, a write
+  plan currently executing in `apply_plan` (exact method, parameters and job flag, in order). Outside a plan a write
   session can call nothing but reads. Every granted call must still pass `refusal_for`.
+- The grant is bound to the executing thread and asyncio task, and every call takes a lock, so another thread or task
+  can never consume a plan call or run between its calls (`foreign-caller`). Plans are session-bound and single-use
+  (section 2.4).
 - `--allow-write` therefore changes nothing by itself: every change goes through plan/apply with its gates.
-- DESTRUCTIVE actions need the typed target name.
-- `refusal_for` (second wall, for calls an action declares by mistake): all `core.*` except `core.get_methods`
-  (`core.call`/`core.bulk` run any method); `system.reboot|shutdown`; `boot.attach|detach|replace` (matrix B-07),
-  `boot.environment.destroy`; any `auth.*` except `auth.me` and `auth.mechanism_choices`; for the `pool.`, `zfs.`,
-  `filesystem.`, `boot.` and `disk.` families any parameter (nested, keys included) equal to `boot-pool`, starting with
-  `boot-pool/` or `/mnt/boot-pool` (so `boot-pool-data` is a legal name); `pool.*` calls with an integer pool id are
-  resolved to a name from live `pool.query` and refused for `boot-pool` or an unknown id; `disk.wipe` is refused for any
-  disk in a pool (boot included), any disk with a mounted partition, any disk the host does not list, and whenever
-  membership cannot be determined (reads failing, unexpected shapes, a `/dev/disk/by-*` or other vdev reference that
-  does not resolve to a listed disk). `/dev/sda`, `sda3`, `nvme0n1p2` and by-id/serial references are normalised to the
-  disk. A non-string or missing `disk.wipe` parameter raises `Refused`.
+- DESTRUCTIVE actions need the typed target name; the kind is tied to the methods (section 2.4).
+- `refusal_for` (second wall, for calls an action declares by mistake):
+  - all `core.*` except `core.get_methods` (`core.call`/`core.bulk` run any method); `system.reboot|shutdown`; any
+    `auth.*` except `auth.me` and `auth.mechanism_choices`;
+  - the boot family is default-deny with an explicit read allow-list: only read methods run (`boot.get_state`,
+    `boot.get_disks`, `boot.environment.query`, ...); `boot.format`, `install_loader`, `scrub`, `set_scrub_interval`,
+    `attach|detach|replace` (B-07) and `environment.*` writes are refused until a later decision adds them to
+    `BOOT_WRITE_ALLOWED` (TNT-13);
+  - for the `pool.`, `zfs.`, `filesystem.`, `boot.` and `disk.` families, any string parameter (nested, dict keys
+    included) that names boot-pool is refused. A name counts by whole path component after collapsing `//`, `.` and the
+    `/mnt/` and `/dev/zvol/` prefixes, with `@snapshot` and `#bookmark` suffixes: `boot-pool`, `boot-pool/ROOT`,
+    `/mnt/boot-pool/x`, `boot-pool@s` are refused; `boot-pool-data` and `/mnt/boot-pool-data/x` are legal names. A path
+    with a `..` component is ambiguous and refused;
+  - the pool-id position: only methods whose first parameter is a pool (`pool.export|update|delete|expand|scrub|attach|
+    detach|replace|remove|offline|online|upgrade`) are resolved. The parameter must be exactly an int (resolved to a name
+    through live `pool.query`; unknown id refused; boot-pool refused) or the exact name of a listed pool; floats, bools,
+    digit strings, lists and mappings with `id`/`name`/`pool` are refused. Other `pool.*` methods (for example
+    `pool.scrub.delete`, whose parameter is a task id) have no pool-id position and are not resolved as one;
+  - `disk.wipe` is refused for any disk in a pool (boot included), any disk with a mounted partition, any disk the host
+    does not list, any disk without a usable positive integer size, and whenever any pool member could not be mapped to
+    a disk. There is no override by probe evidence yet. A non-string or missing parameter raises `Refused`.
+- Pool membership (`policy.compute_state`) is read from `pool.query`, `boot.get_state` and `disk.query`, and only for
+  actions that touch disks or pools. A vdev is resolved by its `disk` key first, then `device`/`devname`, its `name` (for
+  `DISK` nodes), then its `path`: `/dev/` stripped, partition suffixes (`sda3`, `nvme0n1p2`, `mmcblk0p1`) mapped to the
+  disk, and `/dev/disk/by-*` links mapped through exact identifiers from `disk.query` (serial, wwn, identifier, lunid and
+  each partition's name/partuuid/uuid/id); a link also matches by a whole dash/underscore-separated token, never by
+  substring, and an identifier shared by two disks resolves to neither. Mirror/raidz/draid nesting and the
+  cache/log/spare/special/dedup groups are walked. A vdev that cannot be resolved is recorded and blocks `disk.wipe`
+  only; it does not block `pool.export` of another pool or any unrelated action. If the reads fail or return an
+  unexpected shape, the action is refused (`safety-state`).
 - Limit: mounted non-ZFS partitions are visible only if `disk.query` reports a mountpoint for them; this is UNVERIFIED
   (TNT-01). The typed confirmation and the plan text remain the control for that case.
 - Host-impacting operations keep the estate rules: a throwaway VM host only for mutating live tests, never a production

@@ -31,6 +31,7 @@ class Backend:
     generation: ClassVar[str]
     verified: ClassVar[str]
     manifest: ClassVar[Mapping[str, tuple[str, ...]]]
+    destructive: ClassVar[frozenset[str]]
 
     def __init__(self, version: str):
         self.version = version
