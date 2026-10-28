@@ -793,9 +793,11 @@ class FakeHost:
         check_argv(argv, bound=bound, host=self)  # the same rule RealHost applies: an unbound run/spawn never writes or discards a target
         self.argv_log.append(list(argv))
 
-    def allow_scratch(self, path: str) -> None:
-        if path not in self.scratch_roots:
-            self.scratch_roots.append(path)
+    def allow_scratch(self, path: str) -> bool:
+        if path in self.scratch_roots:
+            return False
+        self.scratch_roots.append(path)
+        return True
 
     def revoke_scratch(self, path: str) -> None:
         self.scratch_roots = [r for r in self.scratch_roots if r != path]

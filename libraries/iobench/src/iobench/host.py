@@ -292,7 +292,7 @@ class Host(Protocol):
     def unlock(self) -> None: ...
     def signal_pending(self) -> str | None: ...
     def install_signals(self) -> None: ...
-    def allow_scratch(self, path: str) -> None: ...
+    def allow_scratch(self, path: str) -> bool: ...  # True when the root was added by this call (a caller revokes only what it added)
     def revoke_scratch(self, path: str) -> None: ...
 
 
@@ -363,9 +363,11 @@ class RealHost:
         self._escalated = False  # a second signal arrived while the first was still pending
         self.scratch_roots: list[str] = []  # the directories an unbound argv may name (the run's log dir, the verified work dir)
 
-    def allow_scratch(self, path: str) -> None:
-        if path not in self.scratch_roots:
-            self.scratch_roots.append(path)
+    def allow_scratch(self, path: str) -> bool:
+        if path in self.scratch_roots:
+            return False
+        self.scratch_roots.append(path)
+        return True
 
     def revoke_scratch(self, path: str) -> None:
         self.scratch_roots = [r for r in self.scratch_roots if r != path]

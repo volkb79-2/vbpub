@@ -535,16 +535,76 @@ def test_rev_e_preallocate_is_contained_and_never_a_device_node():
     with pytest.raises(Refusal) as err:
         guard.init_file(fresh, "/bench/t img", size=1 << 30, own=True, expect_fs_uuid="22222222-2222-2222-2222-222222222222",
                         confirm_quiet_window=False, allow_large_root_target=False, created="2026-10-28T00:00:00Z")
-    assert err.value.condition == "path_unclean" and "/bench" not in fresh.scratch_roots  # a refused init authorises nothing
+    assert err.value.condition == "path_unclean" and "/bench" in fresh.scratch_roots  # /bench was authorised BEFORE (the estate's): not this init's to revoke
     fresh.preallocate = lambda path, size: devio.RunResult(1, "", "boom")
     with pytest.raises(Refusal) as err:
         guard.init_file(fresh, "/bench/t.img", size=1 << 30, own=True, expect_fs_uuid="22222222-2222-2222-2222-222222222222",
                         confirm_quiet_window=False, allow_large_root_target=False, created="2026-10-28T00:00:00Z")
-    assert err.value.condition == "fallocate_failed" and "/bench" not in fresh.scratch_roots
+    assert err.value.condition == "fallocate_failed" and "/bench" in fresh.scratch_roots
     del fresh.preallocate
     assert guard.init_file(fresh, "/bench/t.img", size=1 << 30, own=True, expect_fs_uuid="22222222-2222-2222-2222-222222222222",
                            confirm_quiet_window=False, allow_large_root_target=False, created="2026-10-28T00:00:00Z").kind == "file"
-    assert "/bench" in fresh.scratch_roots  # authorised only once the file passed every check
+    assert fresh.scratch_roots.count("/bench") == 1
+
+
+def _init(host, path, **kw):
+    from iobench import guard
+    args = dict(size=1 << 30, own=True, expect_fs_uuid="22222222-2222-2222-2222-222222222222", confirm_quiet_window=False,
+                allow_large_root_target=False, created="2026-10-28T00:00:00Z")
+    args.update(kw)
+    return guard.init_file(host, path, **args)
+
+
+def test_rev_e_init_file_revokes_only_the_root_it_added():
+    from iobench import guard
+    from iobench.host import StatInfo
+    host = standard_host()
+    host.makedirs("/bench/sub")
+    assert "/bench/sub" not in host.scratch_roots
+    # a refused preallocation (path_unclean) and a failed one: the directory this init added is gone again, the estate's /bench stays
+    with pytest.raises(Refusal) as err:
+        _init(host, "/bench/sub/t img")
+    assert err.value.condition == "path_unclean" and "/bench/sub" not in host.scratch_roots and "/bench" in host.scratch_roots
+    host.preallocate = lambda path, size: devio.RunResult(1, "", "boom")
+    with pytest.raises(Refusal) as err:
+        _init(host, "/bench/sub/t.img")
+    assert err.value.condition == "fallocate_failed" and "/bench/sub" not in host.scratch_roots and "/bench" in host.scratch_roots
+    del host.preallocate
+    # a stat that comes back empty after a "successful" fallocate is a refusal, not an AttributeError, and revokes too
+    real_stat = host.stat
+    host.stat = lambda path: None if path == "/bench/sub/t.img" else real_stat(path)
+    with pytest.raises(Refusal) as err:
+        _init(host, "/bench/sub/t.img")
+    assert err.value.condition == "path_unclean" and "/bench/sub" not in host.scratch_roots
+    # a symlink that appears AFTER the preallocation (the pre-check saw a plain path): refused on the post-stat, root revoked
+    def swapped(path):
+        if path == "/bench/sub/t2.img" and any(a[0] == "fallocate" and a[-1] == path for a in host.argv_log):
+            return StatInfo(1 << 30, 5, 1, False, False, True)
+        return real_stat(path)
+
+    host.stat = swapped
+    with pytest.raises(Refusal) as err:
+        _init(host, "/bench/sub/t2.img")
+    assert err.value.condition == "path_unclean" and "/bench/sub" not in host.scratch_roots
+    host.stat = real_stat
+    # a marker or sidecar write that raises leaves no root behind either, and the error itself is not swallowed
+    host.write_marker = lambda ref, text: (_ for _ in ()).throw(HostError("marker write failed"))
+    with pytest.raises(HostError, match="marker"):
+        _init(host, "/bench/sub/t3.img")
+    assert "/bench/sub" not in host.scratch_roots
+    del host.write_marker
+    host.write_atomic = lambda path, text, mode=0o644: (_ for _ in ()).throw(OSError(28, "No space left on device", path))
+    with pytest.raises(OSError):
+        _init(host, "/bench/sub/t4.img")
+    assert "/bench/sub" not in host.scratch_roots
+    del host.write_atomic
+    # success keeps the root it added; a pre-authorised one is left as it was (count 1, never duplicated)
+    assert _init(host, "/bench/sub/t5.img").kind == "file" and host.scratch_roots.count("/bench/sub") == 1
+    assert _init(host, "/bench/t6.img").kind == "file" and host.scratch_roots.count("/bench") == 1
+    # the pre-authorised directory survives a refused init inside it
+    with pytest.raises(Refusal):
+        _init(host, "/bench/sub/t img")
+    assert "/bench/sub" in host.scratch_roots
     # a pseudo or volatile filesystem is never a target (or a work dir), before any path check
     for fstype in ("devtmpfs", "devpts", "proc", "sysfs", "tmpfs", "ramfs"):
         pseudo = standard_host()

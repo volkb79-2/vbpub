@@ -411,19 +411,26 @@ def init_file(host: Host, path: str, *, size: int | None, own: bool, expect_fs_u
     if dry_run:
         return Target("file", path, size, None, None, None, fs.uuid, 0)
     directory = posixpath.dirname(path)
-    host.allow_scratch(directory)  # the verified directory: the only place the bound fallocate may create the file
+    # the verified directory: the only place the bound fallocate may create the file. A root this init ADDED is revoked on any exit
+    # but success; a root that was authorised before (a Runner's work dir, the run's log dir) is someone else's and stays.
+    added = host.allow_scratch(directory)
     try:
-        run = host.preallocate(path, size)  # the bound fallocate: a plain `run` refuses every fallocate
-    except HostError as exc:  # a path that is not a plain, cleanly named file place (a device node, a symlinked parent, odd characters)
-        host.revoke_scratch(directory)  # a refused init authorises nothing for the rest of the process
-        raise Refusal("path_unclean", str(exc), "name a new or regular file on the intended filesystem, with a plain path") from exc
-    if run.returncode != 0:
-        host.revoke_scratch(directory)
-    _need(run.returncode == 0, "fallocate_failed", f"fallocate failed: {run.stderr.strip()}", "free some space or pass a smaller --size")
-    inode = host.stat(path).inode
-    target = Target("file", path, size, None, None, None, fs.uuid, inode)
-    host.write_marker(target.ref, marker_text(size, None, None, created, fs_uuid=fs.uuid, inode=inode))
-    host.write_atomic(sidecar_path(path), json.dumps({"fs_uuid": fs.uuid, "inode": inode, "size": size, "created": created}))
+        try:
+            run = host.preallocate(path, size)  # the bound fallocate: a plain `run` refuses every fallocate
+        except HostError as exc:  # not a plain, cleanly named file place (a device node, a symlinked parent, odd characters)
+            raise Refusal("path_unclean", str(exc), "name a new or regular file on the intended filesystem, with a plain path") from exc
+        _need(run.returncode == 0, "fallocate_failed", f"fallocate failed: {run.stderr.strip()}", "free some space or pass a smaller --size")
+        st = host.stat(path)
+        _need(st is not None and st.is_file and not st.is_symlink, "path_unclean", f"{path} is not a regular file after preallocation",
+              "name a new or regular file on the intended filesystem, with a plain path")
+        inode = st.inode
+        target = Target("file", path, size, None, None, None, fs.uuid, inode)
+        host.write_marker(target.ref, marker_text(size, None, None, created, fs_uuid=fs.uuid, inode=inode))
+        host.write_atomic(sidecar_path(path), json.dumps({"fs_uuid": fs.uuid, "inode": inode, "size": size, "created": created}))
+    except BaseException:
+        if added:
+            host.revoke_scratch(directory)
+        raise
     return target
 
 
