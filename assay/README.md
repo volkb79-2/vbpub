@@ -1460,7 +1460,13 @@ you're changing assay itself:
   [consumer guide](docs/CONSUMERS.md#assays-own-full-source-self-qualification-b105).
   The separately invoked `run-gate self-qualification` requires that receipt for
   its own commit and tree (run `run-gate tester-unified` first, in the same worktree and with no commit in between: any later commit, a docs-only or merge commit included, needs a fresh `tester-unified` run; `tester-unified` exits 3 with `ASSAY_GATE_INCONCLUSIVE=` when another `run-gate-*` container is running, which means rerun), then runs full-source
-  R0-R3 qualification in `tester-unified`. The B105 run-gate lanes use the
+  R0-R3 qualification in `tester-unified`. During the explicitly waived 10.0.x
+  release window, CMRU's Assay `run-tests` step also invokes
+  `run-gate self-qualification-provisional`, which runs R0, R1 and R3 and records
+  the R2 postponement in `.assay/mutation-postponed-assay.json`; it never claims
+  an R2 pass. See the [design rationale](docs/DESIGN-GUIDE.md#provisional-release-qualification-b169-b170)
+  and [release runbook](docs/CONSUMERS.md#provisional-release-qualification-b169-b170).
+  The B105 run-gate lanes use the
   bare-host `tools/self-qualification-container.sh` wrapper because the
   generic run-gate tester container has a private cgroup namespace. The
   wrapper derives the Docker host workspace root with `findmnt`, confirms the

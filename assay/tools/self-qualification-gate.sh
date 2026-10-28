@@ -543,10 +543,15 @@ case "$requested_lane" in
   *) die "unsupported self-qualification lane: $requested_lane" ;;
 esac
 
-[[ -x "$tester_python" ]] || die "B105 requires tester-unified's $tester_python"
-[[ -f "$project/pyproject.toml" ]] || die "selected worktree has no assay/pyproject.toml: $project"
-
 cd "$project"
+postponed_marker=".assay/mutation-postponed-assay.json"
+if [[ "$requested_lane" == self-qualification || "$requested_lane" == self-qualification-provisional ]]; then
+  # Clear success-shaped evidence before any setup check can refuse this run.
+  rm -f -- "$postponed_marker"
+fi
+[[ -x "$tester_python" ]] || die "B105 requires tester-unified's $tester_python"
+[[ -f pyproject.toml ]] || die "selected worktree has no assay/pyproject.toml: $project"
+
 if [[ "$requested_lane" == b110-pilot || "$requested_lane" == b110-screen ]]; then
   pin_b110_assay_state
 else
@@ -789,37 +794,95 @@ echo "B105_CAMPAIGN_DEADLINE=$deadline"
 check_campaign_wheel_digest \
   || die "persisted campaign deadline does not bind this deterministic source wheel"
 
-# The R2 waiver is keyed to an explicit operator decision and a version window,
-# never silent: the provisional lane is refused once an assay release at or
-# above the window's upper bound exists, and the full `self-qualification` lane
-# deletes any marker so a postponement can never stand in for an R2 result.
-postponed_marker=".assay/mutation-postponed-assay.json"
+# The R2 waiver is keyed to an explicit operator decision and the prepared
+# release heading, never the pre-tag wheel version: the provisional lane is
+# valid only for assay 10.0.x, and refuses if release tags cannot be inspected
+# or an assay release at or above the window's upper bound exists. The full
+# `self-qualification` lane deletes any marker so a postponement can never
+# stand in for an R2 result.
 record_r2_postponement() {
   "$scratch/run-venv/bin/python" - "$postponed_marker" "$source_commit" "$source_tree" "$version" <<'PYEOF'
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 marker, commit, tree, version = sys.argv[1:]
 TRACKING_ID = "B169"
 DECISION = "operator decision 2026-10-27: R2 mutation waived for the release wave"
 WINDOW = ((10, 0, 0), (10, 1, 0))  # `>= 10.0.0`, `< 10.1.0`
+VERSION_RE = re.compile(
+    r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+)
 
-tags = subprocess.run(
-    ["git", "tag", "--list", "assay-v*"], capture_output=True, text=True, check=True
-).stdout.split()
-def parse(tag):
-    try:
-        return tuple(int(part) for part in tag.removeprefix("assay-v").split("."))
-    except ValueError:
+try:
+    changelog = Path("CHANGES.md").read_text(encoding="utf-8")
+except OSError as exc:
+    raise SystemExit(f"cannot read prepared release changelog CHANGES.md: {exc}")
+cmru_source = Path.cwd().parent / "cmru" / "src"
+sys.path.insert(0, str(cmru_source))
+try:
+    from cmru.release_notes import markdown_h2_headings
+except ImportError as exc:
+    raise SystemExit(f"cannot load CMRU's prepared release-heading parser: {exc}")
+prepared_release_version = None
+for heading in markdown_h2_headings(changelog):
+    match = re.fullmatch(
+        r"## \[((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))\] - "
+        r"\d{4}-\d{2}-\d{2}",
+        heading.text,
+    )
+    if match is not None:
+        prepared_release_version = match.group(1)
+        break
+if prepared_release_version is None:
+    raise SystemExit(
+        "the R2 postponement B169 requires a dated, prepared release heading in CHANGES.md"
+    )
+def version_tuple(value):
+    if VERSION_RE.fullmatch(value) is None:
         return None
-newest = max((t for t in map(parse, tags) if t is not None and len(t) == 3), default=None)
-if newest is not None and newest >= WINDOW[1]:
+    return tuple(int(part) for part in value.split("."))
+
+release_version_tuple = version_tuple(prepared_release_version)
+if not WINDOW[0] <= release_version_tuple < WINDOW[1]:
+    raise SystemExit(
+        "the R2 postponement B169 is authorized only for assay >= 10.0.0, < 10.1.0; "
+        f"prepared changelog release is {prepared_release_version}. "
+        "Run the full self-qualification lane."
+    )
+
+try:
+    tag_result = subprocess.run(
+        ["git", "tag", "--list", "assay-v*"], capture_output=True, text=True, check=False
+    )
+except OSError as exc:
+    raise SystemExit(f"cannot list existing assay release tags: {exc}")
+if tag_result.returncode != 0:
+    detail = tag_result.stderr.strip() or f"git exited {tag_result.returncode}"
+    raise SystemExit(f"cannot list existing assay release tags: {detail}")
+tags = tag_result.stdout.split()
+stable_tags = []
+for tag in tags:
+    if not tag.startswith("assay-v"):
+        continue
+    parsed = version_tuple(tag.removeprefix("assay-v"))
+    if parsed is not None:
+        stable_tags.append((parsed, tag))
+newest = max(stable_tags, default=None)
+if newest is None:
+    raise SystemExit(
+        "cannot determine the latest stable assay tag: `git tag --list assay-v*` "
+        "returned no valid X.Y.Z release tags"
+    )
+newest_version, newest_tag = newest
+if newest_version >= WINDOW[1]:
     raise SystemExit(
         f"the R2 postponement {TRACKING_ID} is valid only below assay "
-        f"{'.'.join(map(str, WINDOW[1]))}; tag assay-v{'.'.join(map(str, newest))} exists. "
+        f"{'.'.join(map(str, WINDOW[1]))}; tag {newest_tag} exists. "
         "Run the full self-qualification lane."
     )
 document = {
@@ -831,6 +894,7 @@ document = {
     "tracking_id": TRACKING_ID,
     "decision": DECISION,
     "window": "assay >= 10.0.0, < 10.1.0",
+    "target_version": prepared_release_version,
     "commit": commit,
     "tree": tree,
     "assay_version": version,
@@ -875,7 +939,6 @@ run_and_verify_lane() {
       ;;
     self-qualification-provisional)
       expected_rigor="R0,R1,R3"
-      rm -f -- "$postponed_marker"
       # Unlike the preflight, this lane also runs the R3 canary, whose control
       # and transformed runs re-execute the same pytest command: the
       # coverage-archive export hook in tests/conftest.py must not be armed
@@ -888,7 +951,7 @@ run_and_verify_lane() {
       expected_rigor="R0,R1,R2,R3"
       unset ASSAY_B105_COVERAGE_SOURCE ASSAY_B105_COVERAGE_ARCHIVE_DIR \
         ASSAY_B105_SOURCE_COMMIT ASSAY_B105_SOURCE_TREE
-      rm -f -- "$r2_manifest_path" "$postponed_marker"
+      rm -f -- "$r2_manifest_path"
       lane_flags+=(--cold-witness --r2-manifest "$r2_manifest_path")
       r2_manifest_args=(--r2-manifest "$r2_manifest_path")
       ;;

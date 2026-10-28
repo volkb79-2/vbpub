@@ -1482,6 +1482,18 @@ def test_unknown_transaction_event_value_leaves_state_untouched(monkeypatch):
     assert any(offset == 50 for offset, _ in got)
 
 
+def test_unknown_schema_state_event_kind_is_rejected(monkeypatch):
+    src, masked = _mk("CREATE SCHEMA s; SELECT 1;")
+    monkeypatch.setattr(
+        S,
+        "_search_path_state_events",
+        lambda *args, **kwargs: [(50, "future-kind", None)],
+    )
+
+    with pytest.raises(ValueError, match="unknown SQL schema-state event kind 'future-kind'"):
+        S._search_path_temporary_creation_events(src, masked)
+
+
 def test_view_references_skip_a_letter_the_source_does_not_read_as_identifier():
     # mask and source disagree on the byte after the first relation: the
     # scanner must not guess a relation name from the mask alone

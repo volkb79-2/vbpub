@@ -2807,14 +2807,14 @@ def _unqualified_type_names_created_in_temp_schema(
     return frozenset(names)
 
 
-def _search_path_temporary_creation_events(
+def _search_path_state_events(
     source: bytes,
     masked: bytes,
     *,
     dollar_body_ranges: tuple[tuple[int, int], ...] | None = None,
     check_deadline: Remaining | None = None,
-) -> tuple[tuple[int, bool], ...]:
-    """Track temporary creation possibility as path/schema facts change."""
+) -> list[tuple[int, str, object]]:
+    """Collect schema/path state events before the ordered state scan."""
     events: list[tuple[int, str, object]] = []
     if dollar_body_ranges is None:
         dollar_body_ranges = lex_sql(
@@ -2939,6 +2939,23 @@ def _search_path_temporary_creation_events(
         elif revocation[0]:
             events.append((statement_start, "revoke-schema-usage", revocation))
     events.sort(key=lambda event: event[0])
+    return events
+
+
+def _search_path_temporary_creation_events(
+    source: bytes,
+    masked: bytes,
+    *,
+    dollar_body_ranges: tuple[tuple[int, int], ...] | None = None,
+    check_deadline: Remaining | None = None,
+) -> tuple[tuple[int, bool], ...]:
+    """Track temporary creation possibility as path/schema facts change."""
+    events = _search_path_state_events(
+        source,
+        masked,
+        dollar_body_ranges=dollar_body_ranges,
+        check_deadline=check_deadline,
+    )
 
     known_schemas = {b"pg_catalog"}
     schema_owners: dict[bytes, bytes | None] = {}
@@ -3021,7 +3038,7 @@ def _search_path_temporary_creation_events(
                 local_role_active = False
                 known_schemas = {b"pg_catalog"}
                 schema_owners.clear()
-        else:  # kind == "transaction": the last of the event kinds
+        elif kind == "transaction":
             if value == "begin":
                 if transaction_baseline is None:
                     transaction_baseline = set(known_schemas)
@@ -3090,6 +3107,8 @@ def _search_path_temporary_creation_events(
                     transaction_role_baseline = None
                     transaction_path_baseline = None
                     transaction_uncertain = False
+        else:
+            raise ValueError(f"unknown SQL schema-state event kind {kind!r}")
         path_events.append(
             (
                 offset,

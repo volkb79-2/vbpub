@@ -2035,24 +2035,59 @@ def test_the_postponement_marker_is_keyed_windowed_and_cleared_by_the_full_lane(
     assert flow.index("run_and_verify_lane") < flow.index("record_r2_postponement")
     # the full lane and a fresh provisional run both delete a stale marker
     assert gate.count('rm -f -- "$postponed_marker"') == 1
-    assert 'rm -f -- "$r2_manifest_path" "$postponed_marker"' in gate
+    assert 'rm -f -- "$r2_manifest_path"' in gate
 
 
-def _run_postponement(tmp_path, tags):
+def test_a_provisional_or_full_lane_clears_a_stale_marker_before_setup_can_fail():
+    gate = (PROJECT_ROOT / "tools" / "self-qualification-gate.sh").read_text(encoding="utf-8")
+    setup = gate.split('worktree="${1:?usage: self-qualification-gate.sh WORKTREE}"', 1)[1]
+    setup = setup.split('[[ -x "$tester_python" ]]', 1)[0]
+
+    assert 'if [[ "$requested_lane" == self-qualification || "$requested_lane" == self-qualification-provisional ]]; then' in setup
+    assert 'rm -f -- "$postponed_marker"' in setup
+
+
+def _run_postponement(
+    tmp_path, tags, prepared_version="10.0.0", *, wheel_version="10.0.0",
+    unlistable_tags=False,
+):
     gate = (PROJECT_ROOT / "tools" / "self-qualification-gate.sh").read_text(encoding="utf-8")
     body = gate.split("record_r2_postponement() {", 1)[1].split("run_and_verify_lane() {", 1)[0]
     script = body.split("<<'PYEOF'\n", 1)[1].split("\nPYEOF", 1)[0]
     repo = tmp_path / "repo"
     repo.mkdir()
+    (repo.parent / "cmru").symlink_to(PROJECT_ROOT.parent / "cmru", target_is_directory=True)
     git = lambda *a: subprocess.run(["git", "-C", str(repo), *a], check=True, capture_output=True)  # noqa: E731
     git("init", "-q")
     git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "--allow-empty", "-qm", "x")
     for tag in tags:
         git("tag", tag)
+    (repo / "CHANGES.md").write_text(
+        f"## [Unreleased]\n\n## [{prepared_version}] - 2026-10-28\n",
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    if unlistable_tags:
+        real_git = shutil.which("git")
+        assert real_git is not None
+        fake_bin = tmp_path / "fake-bin"
+        fake_bin.mkdir()
+        fake_git = fake_bin / "git"
+        fake_git.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = "tag" ] && [ "$2" = "--list" ] && [ "$3" = "assay-v*" ]; then\n'
+            '  echo "tag listing unavailable" >&2\n'
+            "  exit 1\n"
+            "fi\n"
+            f"exec {real_git} \"$@\"\n",
+            encoding="utf-8",
+        )
+        fake_git.chmod(0o755)
+        env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
     marker = tmp_path / "marker.json"
     proc = subprocess.run(
-        [sys.executable, "-c", script, str(marker), "c" * 40, "t" * 40, "10.0.0"],
-        cwd=repo, capture_output=True, text=True, check=False,
+        [sys.executable, "-c", script, str(marker), "c" * 40, "t" * 40, wheel_version],
+        cwd=repo, capture_output=True, text=True, check=False, env=env,
     )
     return proc, marker
 
@@ -2074,4 +2109,43 @@ def test_the_postponement_is_refused_once_the_window_has_closed(tmp_path):
 
     assert proc.returncode != 0
     assert "valid only below assay 10.1.0" in proc.stderr
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    "prepared_version,allowed",
+    [("10.0.0", True), ("10.0.1", True), ("10.1.0", False), ("9.9.9", False)],
+)
+def test_the_prepared_release_version_must_be_inside_the_postponement_window(
+    tmp_path, prepared_version, allowed,
+):
+    proc, marker = _run_postponement(
+        tmp_path, ["assay-v9.0.0"], prepared_version, wheel_version="10.0.0",
+    )
+
+    assert (proc.returncode == 0) is allowed, proc.stderr
+    assert marker.exists() is allowed
+    if not allowed:
+        assert "authorized only for assay >= 10.0.0, < 10.1.0" in proc.stderr
+    if allowed:
+        import json
+
+        assert json.loads(marker.read_text(encoding="utf-8"))["target_version"] == prepared_version
+
+
+def test_the_postponement_refuses_when_no_stable_assay_tag_is_visible(tmp_path):
+    proc, marker = _run_postponement(tmp_path, [])
+
+    assert proc.returncode != 0
+    assert "cannot determine the latest stable assay tag" in proc.stderr
+    assert not marker.exists()
+
+
+def test_the_postponement_refuses_when_assay_tags_cannot_be_listed(tmp_path):
+    proc, marker = _run_postponement(
+        tmp_path, ["assay-v9.0.0"], unlistable_tags=True,
+    )
+
+    assert proc.returncode != 0
+    assert "tag listing unavailable" in proc.stderr
     assert not marker.exists()

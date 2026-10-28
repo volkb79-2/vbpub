@@ -2754,6 +2754,33 @@ replace evidence with different coverage data. Equivalence for one attempt
 ignores only coverage.py's generated timestamp. The full mutation lane does
 not export per-mutant coverage to this archive directory.
 
+#### Provisional release qualification B169 B170
+
+The R2 waiver is a version-bounded release decision, not a substitute for an
+R2 result. CMRU runs Assay's `run-tests` step in its isolated release
+transaction after preparing the dated `CHANGES.md` heading and before creating
+the release tag. The step runs the ordinary self-hosted release gate, then
+`run-gate self-qualification-provisional`: full-source R0 and R1 (100% whole-
+target line and branch coverage) plus the R3 canary, with R2 omitted. A
+successful run records `.assay/mutation-postponed-assay.json` as `provisional`;
+it never asserts an R2 pass, and the full `self-qualification` lane remains the
+way to produce R2 evidence.
+
+The gate checks the prepared changelog version itself because the release tag
+does not exist when CMRU runs `run-tests`. The only permitted interval is
+`10.0.0 <= version < 10.1.0`; a visible stable `assay-vX.Y.Z` tag is also
+required, and the latest visible tag must be below 10.1.0. Missing, unreadable,
+or unparseable tag state refuses the waiver. Both this lane and the full lane
+remove an old postponement marker at startup, before setup can fail, so stale
+evidence cannot survive a refused attempt.
+
+The provisional lane has a 210-minute Run-Gate budget after the ordinary
+self-hosted gate. Run-Gate's `resources.shared` lock serializes Assay lanes;
+the release transaction does not hold a host-wide gate lock. The gate
+coordinator must keep every other registered gate serial for the full
+qualification window. `ASSAY_GATE_ALLOW_SHARED_HOST=1` does not apply to this
+lane.
+
 Coverage.py's default exclusions are too broad for this claim: they silently
 remove Protocol method bodies and `TYPE_CHECKING` blocks from the denominator.
 The self-qualification suite replaces those defaults with the explicit

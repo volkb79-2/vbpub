@@ -505,20 +505,29 @@ def test_r2_baseline_assay_lane_timeout_is_converted_to_a_baseline_timeout(
     assert "ran out of lane time" in claim["detail"]
 
 
-def test_r2_baseline_post_reason_is_a_typed_no_measurement_refusal(cold_repo, tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "reason,detail_fragment",
+    [
+        (ReasonCode.DIRTY_TREE, "left a dirty Git worktree"),
+        (ReasonCode.HEAD_CHANGED, "changed HEAD"),
+    ],
+)
+def test_r2_baseline_post_reason_is_typed_and_reason_specific(
+    cold_repo, tmp_path, monkeypatch, reason, detail_fragment,
+):
     # The R2 baseline's own post-run Git check (dirty tree / moved HEAD) is a
     # NO_MEASUREMENT AssayError carrying that reason, never a bare TypeError from
     # raising a ReasonCode.
     repo, config = cold_repo
     _intercept_r2_unit(
-        monkeypatch, lambda unit: _Proxy(unit, post_reason=ReasonCode.DIRTY_TREE)
+        monkeypatch, lambda unit: _Proxy(unit, post_reason=reason)
     )
     code, stderr, verdict, _manifest = _cold(repo, config, tmp_path)
     assert code == Outcome.NO_MEASUREMENT.exit_code, stderr
     claim = _r2(verdict)
     assert claim["status"] == "NO_MEASUREMENT"
-    assert claim["reason_code"] == "DIRTY_TREE"
-    assert "R2 baseline left Git-visible state" in claim["detail"]
+    assert claim["reason_code"] == reason.value
+    assert detail_fragment in claim["detail"]
     assert "BaseException" not in stderr
 
 

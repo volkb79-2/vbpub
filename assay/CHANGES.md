@@ -39,9 +39,16 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   step, `cmru.toml` `run-tests`): the full qualification minus R2. It runs R0,
   R1 over all of `src/assay` (whole-target 100% line and branch) and the R3
   canary, and records `.assay/mutation-postponed-assay.json` (tracking id B169,
-  operator decision 2026-10-27, valid only below assay 10.1.0, result
-  `provisional`, never an R2 pass). The full `self-qualification` lane is
-  unchanged and clears the marker. Run at `fb88461ca` it passed R0, R1 (all of
+  operator decision 2026-10-27, valid only for a prepared release version in
+  `[10.0.0, 10.1.0)`, result `provisional`, never an R2 pass). The marker check
+  reads the prepared dated `CHANGES.md` heading and requires a visible stable
+  `assay-vX.Y.Z` tag below 10.1.0; it refuses when no stable tag can be listed.
+  CMRU runs this lane after the self-hosted gate and before tagging, so the
+  prepared version check also refuses the 10.1.0 release before its tag exists.
+  The 210-minute lane requires the gate coordinator to keep other registered
+  gates serial across projects; Run-Gate's Assay resource lock covers only
+  Assay lanes. The full `self-qualification` lane is unchanged and clears the
+  marker. Run at `fb88461ca` it passed R0, R1 (all of
   `src/assay`, 100% line and branch, no exclusions beyond the reviewed
   TYPE_CHECKING ones) and the R3 canary. Closing the pre-existing 886-line /
   711-branch R1 gap took five closure test files and the removal of unreachable
@@ -63,6 +70,14 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - A dirty tree or moved HEAD detected after the cold-witness R2 baseline is now a
   typed `NO_MEASUREMENT` refusal carrying that reason (it raised a bare
   `TypeError` by raising a `ReasonCode`).
+- Name the post-baseline refusal reason (`DIRTY_TREE` or `HEAD_CHANGED`) in its
+  own diagnostic instead of calling both cases Git-visible state.
+- Refuse unknown SQL schema-event kinds instead of processing them as transaction
+  events.
+- Validate the provisional R2 waiver against the prepared release heading and
+  fail closed when stable assay release tags are missing or unreadable. Clear a
+  stale postponement marker at the start of both qualification lanes, before
+  setup can refuse.
 - Removed unreachable defensive branches in the cold-witness pytest-option
   scan, the SQL `IN` widening and event scan, and pilot-state handling, so the
   whole-source R1 floor can be met without exclusions.

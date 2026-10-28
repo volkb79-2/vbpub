@@ -13123,6 +13123,13 @@ the full-source `self-qualification` (R0-R3) and `analysis-r2` qualification
 lanes were not run for this release, so 10.0.0 has no mutation evidence and no
 R2 pass is claimed. The CHANGES release notes say so.
 
+The provisional-release exception is bounded by the prepared dated changelog
+heading, not only by tags that exist before the gate: B169 is valid for release
+versions `>= 10.0.0` and `< 10.1.0`. The gate also requires at least one
+listable stable `assay-vX.Y.Z` tag and refuses if the latest visible tag is
+10.1.0 or newer. Thus a prepared 10.1.0 release is refused before its tag is
+created, and missing or unreadable tag state cannot authorize the waiver.
+
 **Close when:** one full `self-qualification` run and one `analysis-r2` run are
 completed against the exact `assay-v10.0.0` tag through the registered
 Run-Gate lanes, survivors are triaged and fixed or backported, and the report
@@ -13146,9 +13153,19 @@ qualification rigor runs. `self-qualification-provisional` (`assay.toml`,
 `cmru.toml` `run-tests` step) is the full `self-qualification` lane minus R2:
 R0, R1 (whole-target 100% line and branch over `src/assay`) and the R3 canary.
 After the lane is verified it records `.assay/mutation-postponed-assay.json`
-(`result: provisional`, tracking id B169, valid only below assay 10.1.0; a
-newer `assay-v10.1.0` or later tag refuses it). The full lane is unchanged and
-deletes the marker; the marker cannot satisfy an R2 request.
+(`result: provisional`, tracking id B169, valid only for a prepared release
+version `>= 10.0.0` and `< 10.1.0`; a newer `assay-v10.1.0` or later tag also
+refuses it). The full lane is unchanged and deletes the marker; the marker
+cannot satisfy an R2 request.
+
+The prepared release version is read from the dated `CHANGES.md` heading,
+matching CMRU's pre-tag release-version source; the wheel's development version
+is not used to decide the waiver. Both the provisional and full lanes remove an
+old marker before gate setup, so an early refusal cannot leave prior deferral
+evidence looking current. The provisional command has a 210-minute Run-Gate
+budget after the ordinary self-hosted release gate. Run-Gate holds the Assay
+lane resource lock; the host-wide serial window remains the gate coordinator's
+responsibility because cross-project gates do not share that lock.
 
 **Evidence:** at `fb88461ca` (and earlier at `4ab0bb0b1`), `run-gate self-qualification-provisional`
 (exclusive host): R0 PASS, R1 PASS, R3 PASS, marker recorded. Before closure
