@@ -15,7 +15,10 @@ Path B, method names in backticks, `-` for "none").
 - every `lane : step` names a `report("step"...)` tag of that lane's source;
 - every API method named here appears in the acceptance code, every method that
   `live_api_probe.py` calls is named here, and every storage-exercising
-  `live-ui` step has a row.
+  `live-ui` step has a row;
+- every cited live API/UI step in each PASS cell has its own meaningful
+  condition, and the step's assertion path fails the lane when that condition
+  is false.
 
 Columns. `API (stock)`, `UI (stock)` and `UI (patched)` are what was measured
 on stock and patched TrueNAS v27.0.0-RC.1 on the hosted Netcup test VM
@@ -48,7 +51,13 @@ certify the current checkout or a later target state.
 | B-05 | B | Shares on `boot-disk-data` | `sharing.smb.create` | works | works (a real pool exists) | works | - | done | works | `live-ui` : `shares-ui` | PASS | pending |
 | B-06 | B | Adopt a hand-made pool on the partition | `pool.import_find`, `pool.import_pool` | works: listed and imported ONLINE, shows in `pool.query` | works (Import pool) | works | - | done | API-TUI | `live-api-probe` : `import-hand-made-pool` | PASS | pending |
 | B-07 | B | Mirror the boot pool onto the partition | `boot.attach` | refused: internal TypeError (partition has no disk size) | n/a | refused (the boot pool's own partitions are never offered) | `ui-pools.patch` | - | n/a | `live-api-probe` : `boot-attach-refused-unchanged` | PASS | pending |
-| B-08 | B | Reclaim an exported Path B partition for reuse | `pool.export`, `disk.details` | works: `destroy=false` exports; operator clears labels by verified PARTUUID | blocked: no label-clear control | blocked: use the documented guarded shell procedure; the UI wizard can use the partition again afterward | `ui-pools.patch` | S | API-TUI | `live-api-probe` : `cleanup-partition-offered-again`; `live-ui` : `path-b-pool-ui` | PASS | pending |
+| B-08 | B | Reclaim an exported Path B partition for reuse | `pool.export`, `disk.details` | works: export with `destroy=false`, then use the guarded helper with the explicit pool name, PARTUUID, and expected pool GUID | blocked: no label-clear control | blocked: run `shared/reclaim_path_b.py`; the wizard can use the partition again afterward | `ui-pools.patch` | M | API-TUI | `live-api-probe` : `cleanup-partition-offered-again`; `live-ui` : `path-b-pool-ui` | PASS | pending |
+
+The B-08 API probe step validates cleanup of its own throwaway pool; it does
+not certify the operator reclaim helper. The helper's imported state, state
+after an interrupted export, and already-clear state are covered by unit
+tests. The cited Path B UI step separately checks that the wizard can use an
+offered partition.
 
 ## Patch inventory
 

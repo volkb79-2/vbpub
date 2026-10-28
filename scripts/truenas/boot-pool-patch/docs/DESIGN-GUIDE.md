@@ -812,23 +812,37 @@ the unchanged `lsblk`/`sgdisk` partition table, and the adopted pool's ONLINE
 state. It also exercises replace, offline/online, detach, and remove while
 checking the other partitions remain unchanged.
 
-`destroy=false` leaves the pool labels on the partition. The reserved-partition
-discovery code then keeps it out of the wizard until the labels are cleared.
-This is deliberate: an export does not prove that the operator intends to
-erase the pool's identity. Reclaim therefore remains a separate, explicit
-operator action: export non-destructively, verify the one pool leaf and its
-PARTUUID, run `zpool labelclear -f /dev/disk/by-partuuid/<PARTUUID>` for that
-leaf only, and verify `disk.details` offers the partition again. The registered probe verifies its own cleanup
-reoffers the same PARTUUID; the exact manual procedure is in the
+`destroy=false` leaves the pool labels on the partition. Reserved-partition
+discovery then keeps it out of the wizard until labels are cleared. Export does
+not prove that the operator intends to erase the pool's identity, so reclaim
+is a separate, explicit operation. The v27 `shared/reclaim_path_b.py` helper
+requires the operator to supply the exact pool name, captured PARTUUID, and
+expected numeric pool GUID. It supports three states: middleware-managed and
+imported, exported after an interrupted run, and already clear. Each path
+rechecks the PARTUUID, GPT marker, parent disk containing `boot-pool`, mount
+state, and ZFS import scan; it clears labels through the PARTUUID device only
+when the exported scan identifies exactly the expected single-leaf pool, then
+uses `zpool labelclear -f` on `/dev/disk/by-partuuid/<PARTUUID>`. The
+already-clear path verifies `disk.details` and returns without another write.
+This keeps reruns useful after interruption while refusing to infer ownership
+from a pool name. The operator workflow is in the
 [consumer guide](CONSUMERS.md#reclaim-an-exported-path-b-pool).
 
+The live API probe has separate cleanup for its own disposable pool. Its
+`cleanup-partition-offered-again` check does not certify the consumer reclaim
+procedure; imported, interrupted-export, and repeated already-clear states of
+the helper have dedicated unit tests.
+
 After `zpool create`, adoption can fail at export, import discovery, or import.
-Rollback re-reads the partition's PARTUUID, label, ZFS type, parent, and boot
-pool leaves before destructive steps. It destroys only a pool whose status
-shows the exact reserved partition, or clears labels only on the verified
-PARTUUID after confirming the pool is neither imported nor exported there.
-Ambiguous state or failed cleanup raises a `CallError` that reports the
-remaining state instead of presenting a successful creation.
+Rollback captures the new numeric pool GUID after a successful create and
+requires that GUID together with the exact reserved PARTUUID and sole leaf
+before `zpool destroy`. It re-reads the partition identity and boot-pool parent
+before label clearing, and refuses to clear a mounted partition. If create
+fails, times out, or no GUID can be captured, rollback stops and reports manual
+recovery rather than guessing which pool owns the name. If import leaves a
+partial middleware row, the helper removes it through middleware
+`pool.export` with `destroy=false` and preserves the captured pool exported
+for reconciliation; the test checks the row and ZFS pool state together.
 
 The Web UI gates the VM page on `vm.virtualization_details.supported`, so the
 middleware capability update exposes the existing page without a UI source

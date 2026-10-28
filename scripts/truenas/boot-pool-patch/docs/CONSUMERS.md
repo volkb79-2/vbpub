@@ -475,94 +475,62 @@ must equal its recorded default, and unknown fields fail. See the
 
 #### Reclaim an exported Path B pool
 
-Use this procedure after `pool.export` with `destroy=false`. That export keeps
-the ZFS labels, so the partition remains absent from `disk.details` and the
-pool wizard. Run these steps in a root shell on the TrueNAS host. They stop on
-any failed identity check and use the PARTUUID path for `zpool labelclear`:
+The shim accepts pool names other than `boot-disk-data`; that value is the GPT
+partition label, not a required pool name. Choose the exact pool name
+explicitly. Before export, record that name, the sole leaf's PARTUUID, and the
+numeric GUID from `zpool get`. Do not rely on a pool name alone after an
+interrupted export.
+
+For an imported pool, run these read-only commands on the TrueNAS host and
+confirm each value before proceeding:
 
 ```bash
-set -euo pipefail
-POOL=boot-disk-data
-ZFS_GPT_TYPE_GUID=6a898cc3-1dd2-11b2-99a6-080020736631
-
-POOL_ID=$(midclt call pool.query "[[\"name\",\"=\",\"$POOL\"]]" \
-  | python3 -c 'import json,sys; rows=json.load(sys.stdin); assert len(rows)==1; print(rows[0]["id"])')
-[[ "$(zpool list -H -o health "$POOL")" == ONLINE ]]
+POOL=boot-disk-data  # Explicit operator choice; replace if this pool has another name.
 mapfile -t POOL_LEAVES < <(zpool status -P -L "$POOL" \
-  | awk '$1 ~ /^\/dev\// && $2 == "ONLINE" { print $1 }')
-[[ "${#POOL_LEAVES[@]}" -eq 1 ]]
-PARTITION=${POOL_LEAVES[0]}
-PARTUUID=$(lsblk -dnro PARTUUID "$PARTITION")
-[[ "$PARTUUID" =~ ^[0-9a-fA-F-]{36}$ ]]
-DEVICE="/dev/disk/by-partuuid/$PARTUUID"
-[[ "$(readlink -f "$DEVICE")" == "$(readlink -f "$PARTITION")" ]]
-PARTN=$(lsblk -dnro PARTN "$PARTITION")
-PARTLABEL=$(lsblk -dnro PARTLABEL "$PARTITION")
-PARTTYPE=$(lsblk -dnro PARTTYPE "$PARTITION" | tr '[:upper:]' '[:lower:]')
-FSTYPE=$(lsblk -dnro FSTYPE "$PARTITION")
-MOUNTPOINT=$(lsblk -dnro MOUNTPOINT "$PARTITION")
-PART_PARENT=$(lsblk -dnro PKNAME "$PARTITION")
-[[ "$PARTN" -ge 4 && "$PARTLABEL" == "$POOL" ]]
-[[ "$PARTTYPE" == "$ZFS_GPT_TYPE_GUID" && "$FSTYPE" == zfs_member && -z "$MOUNTPOINT" ]]
-mapfile -t BOOT_LEAVES < <(zpool status -P -L boot-pool \
   | awk '$1 ~ /^\/dev\// && $2 ~ /^(ONLINE|DEGRADED)$/ { print $1 }')
-[[ "${#BOOT_LEAVES[@]}" -gt 0 ]]
-BOOT_DISK_MATCH=0
-for BOOT_LEAF in "${BOOT_LEAVES[@]}"; do
-  if [[ "$(lsblk -dnro PKNAME "$BOOT_LEAF")" == "$PART_PARENT" ]]; then
-    BOOT_DISK_MATCH=1
-  fi
-done
-[[ "$BOOT_DISK_MATCH" -eq 1 ]]
-
-# Export without asking middleware to wipe the parent boot disk.
-midclt call -j pool.export "$POOL_ID" '{"destroy":false}'
-if zpool list -H -o name | grep -Fxq "$POOL"; then
-  echo "pool is still imported; stop without clearing labels" >&2
-  exit 1
-fi
-midclt call pool.query "[[\"name\",\"=\",\"$POOL\"]]" \
-  | python3 -c 'import json,sys; assert json.load(sys.stdin)==[]'
-IMPORTED_LEAF=$(zpool status -P -L | awk -v p="$(readlink -f "$DEVICE")" \
-  '$1 == p { found=1 } END { print found+0 }')
-[[ "$IMPORTED_LEAF" -eq 0 ]]
-IMPORT_SCAN=$(zpool import -d "$DEVICE")
-[[ "$(printf '%s\n' "$IMPORT_SCAN" | awk '/^[[:space:]]*pool:/ { print $2 }')" == "$POOL" ]]
-
-# Recheck that the PARTUUID still resolves to the one verified partition.
-[[ "$(lsblk -dnro PARTUUID "$DEVICE")" == "$PARTUUID" ]]
-[[ "$(readlink -f "$DEVICE")" == "$(readlink -f "$PARTITION")" ]]
-[[ "$(lsblk -dnro PARTLABEL "$DEVICE")" == "$POOL" ]]
-[[ "$(lsblk -dnro PARTTYPE "$DEVICE" | tr '[:upper:]' '[:lower:]')" == "$ZFS_GPT_TYPE_GUID" ]]
-IMPORTED_LEAF=$(zpool status -P -L | awk -v p="$(readlink -f "$DEVICE")" \
-  '$1 == p { found=1 } END { print found+0 }')
-[[ "$IMPORTED_LEAF" -eq 0 ]]
-zpool labelclear -f "$DEVICE"
-
-[[ "$(lsblk -dnro PARTUUID "$DEVICE")" == "$PARTUUID" ]]
-[[ "$(lsblk -dnro PARTLABEL "$DEVICE")" == "$POOL" ]]
-[[ -z "$(lsblk -dnro FSTYPE "$DEVICE")" ]]
-ZDB_LABELS=$(zdb -l "$DEVICE" 2>/dev/null | grep -c 'version:' || true)
-[[ "$ZDB_LABELS" == 0 ]]
-DETAILS_JSON=$(midclt call disk.details '{"type":"UNUSED","join_partitions":false}')
-PARTITION_NAME=${PARTITION##*/}
-DETAILS_JSON="$DETAILS_JSON" PARTITION_NAME="$PARTITION_NAME" PARTUUID="$PARTUUID" python3 - <<'PY'
-import json
-import os
-
-rows = json.loads(os.environ["DETAILS_JSON"])
-matches = [row for row in rows if row.get("name") == os.environ["PARTITION_NAME"]]
-assert len(matches) == 1, matches
-assert matches[0].get("identifier") == "{partuuid}" + os.environ["PARTUUID"].lower(), matches[0]
-print("verified reserved partition is offered again by disk.details")
-PY
+[[ "${#POOL_LEAVES[@]}" -eq 1 ]]
+PARTUUID=$(lsblk -dnro PARTUUID "${POOL_LEAVES[0]}")
+[[ "$PARTUUID" =~ ^[0-9a-fA-F-]{36}$ ]]
+EXPECTED_POOL_GUID=$(zpool get -H -o value guid "$POOL")
+[[ "$EXPECTED_POOL_GUID" =~ ^[0-9]+$ ]]
+printf 'POOL=%s PARTUUID=%s EXPECTED_POOL_GUID=%s\n' \
+  "$POOL" "$PARTUUID" "$EXPECTED_POOL_GUID"
 ```
 
-The `live-api-probe` cleanup step also asserts that its PARTUUID is offered
-again after label clearing. The registered `live-ui` Path B `ui-wizard` lane
-proves the wizard can select the partition and create the pool. That lane uses
-the partition again; repeat the reclaim procedure afterward if it must remain
-available for reuse.
+Make the v27 source file
+[`shared/reclaim_path_b.py`](../shared/reclaim_path_b.py) available on the
+TrueNAS host using your approved file-transfer method. Run it as root with the
+three values you recorded:
+
+```bash
+python3 /tmp/reclaim_path_b.py \
+  --pool "$POOL" \
+  --partuuid "$PARTUUID" \
+  --expected-pool-guid "$EXPECTED_POOL_GUID"
+```
+
+The helper exports an imported middleware pool with `destroy=false`, then
+rechecks the middleware row, pool GUID, sole ZFS leaf, PARTUUID, GPT marker,
+boot-pool parent disk, mount state, and imported/exported pool state before it
+runs `zpool labelclear -f` on `/dev/disk/by-partuuid/$PARTUUID`. It verifies
+that the pool signature is gone and the same PARTUUID appears in
+`disk.details`.
+
+If the procedure stops after export, rerun the same command with the same
+explicit `POOL`, `PARTUUID`, and `EXPECTED_POOL_GUID`. The helper recognizes
+the exported pool by both PARTUUID and GUID. If the label was already cleared,
+it verifies the partition is clear and offered by `disk.details`, then returns
+`already_clear` without another write. If those values were not recorded, do
+not guess; inspect the partition and the exported pool read-only, then supply
+the matching identity explicitly. Any changed identity, mount, leaf, or row
+stops the helper before label clearing.
+
+The acceptance probe has its own cleanup checks for its throwaway pool. Those
+checks are not evidence for this operator procedure; the helper's imported,
+interrupted-export, and already-clear states have separate unit coverage. The
+registered `live-ui` Path B `ui-wizard` lane also proves the wizard can use the
+partition after it has been reclaimed. That lane uses the partition again;
+repeat this procedure with the new pool GUID if it must remain available.
 
 Path B has two explicit setup modes for the registered `live-ui` lane. Both
 start from a fresh disposable managed guest with the v27 relaxation patch

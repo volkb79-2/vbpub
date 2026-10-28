@@ -16,6 +16,11 @@ available.
 | 27.0.0-RC.1 | Registered gates pass existing-container destroy/snapshot refusal and survival on Path A and B. Fresh Path A UI acceptance created/wrote a filesystem, created zvols, selected `boot-pool` for a container, and submitted a VM wizard using an existing boot-pool zvol. A separate UI workload gate started/stopped the container and blank VM; after a controlled v27 reboot it verified the root remounted, hashes persisted, the VM autostarted, and UI Start/Stop worked again. After the 2026-10-21 host restart, the resumed guest passed a second read-only inventory and another UI lifecycle cycle with the same filesystem/zvol hashes; the blank VM required its Power Off control to stop. Session Timeout was visible in the signed-in account menu → Preferences (300 seconds). The 2026-10-18 Path B UI refusal predates the current shim. The 2026-10-28 review rerun passed `live-inspect`, `live-v27-patch`, `live-path-b-partition`, `live-api-probe`, and Path B `live-ui` `ui-wizard`. The live schema check matched all 11 recorded `pool.create` fields before storage mutation. The documented `destroy=false` reclaim procedure passed on v1001: it verified the single leaf by PARTUUID, cleared only that partition's labels, and confirmed `disk.details` offered it again. The boot pool remained unchanged; after cleanup the patched host had no imported Path B pool and the reserved partition was available. The unit lane passed with 246 tests and 45 subtests. The topology diagnostic showed Cache/Log/Special UI steps, omitted the boot-pool zvols, and safely refused their API paths before ZFS attachment. | Retention and natural post-update accessibility of these pre-existing Path A workloads through v27→v28 and v28 patch/reboot remain untested. The current container test does not prove a user filesystem mounted inside the container, and the VM has no guest OS. Downstream UI acceptance in the `preprovisioned` mode, accepted auxiliary-vdev roles through middleware/UI, existing-pool expansion, a disk-backed cache target, share-client access, VM guest boot, and actual live KVM selection remain open. |
 | 28.0.0-MASTER+20261014-230204 | Exact target checks and guarded replacement passed. Path A and Path B provision/storage gates refuse destroy/snapshot against existing managed container data and verify survival. Path B provision passed on a reserved tail; Path A reboot/remount passed. A marker survived the v27-to-v28 update after manual mounting. A fresh post-restart Path B COW guest booted, but admission refused its registered inventory; it was then cleanly stopped with its overlay preserved. | Path B reboot/import, automatic remount and retention of pre-existing data/container/VM records through update and v28 patch reapplication, full UI, share-client access, guest OS boot, actual KVM selection, and a real second-disk cache/import-order check remain open. |
 
+The v1001 reclaim PASS above records the earlier manual sequence. The current
+GUID-pinned `shared/reclaim_path_b.py` helper was added afterward; its imported,
+interrupted-export, and already-clear states have unit coverage, but it has not
+been run on a live host.
+
 The prior v28 Path B `live-storage` attempt did not survive the host restart;
 its October 17 PASS is historical evidence only. The fresh guest
 `truenas-v28-path-b-clean-20261021` booted from a clean COW overlay over the
@@ -98,12 +103,13 @@ reservation remains a separate guarded setup step.
 The shim refuses `pool.export` with `destroy=true` because stock v27 resolves
 the partition to its parent boot disk before wiping. `destroy=false` exports
 the pool while leaving its ZFS labels, so the partition stays hidden from the
-wizard until an operator verifies its PARTUUID, clears that partition's label,
-and checks it appears in `disk.details` again. Verify the sole leaf with
-`zpool status -P -L`, resolve its PARTUUID through
-`/dev/disk/by-partuuid/<PARTUUID>`, then run
-`zpool labelclear -f /dev/disk/by-partuuid/<PARTUUID>` on that verified leaf
-only. Follow the [full reclaim procedure](docs/CONSUMERS.md#reclaim-an-exported-path-b-pool).
+wizard. Use the v27 [PARTUUID and pool-GUID reclaim helper](shared/reclaim_path_b.py)
+to resume safely after export, run `zpool labelclear` through that partition's
+PARTUUID, and verify that `disk.details` offers it again. The operator chooses
+the exact pool name;
+the reclaim command requires that name, the captured PARTUUID, and the pool
+GUID. See the [consumer procedure](docs/CONSUMERS.md#reclaim-an-exported-path-b-pool)
+and [design rationale](docs/DESIGN-GUIDE.md#path-b-pool-wizard-safety).
 The [recorded v27 `pool.create` schema](docs/DESIGN-GUIDE.md#v27-pool-create-schema)
 lists every accepted field and default; the live API probe checks it before
 storage mutations and fails on drift.

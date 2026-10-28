@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 import re
+import sys
 import tomllib
 
 PATCH_ROOT = Path(__file__).resolve().parents[1]
@@ -63,44 +64,126 @@ def _call_name(node: ast.Call) -> str | None:
     return None
 
 
-def _has_call(node: ast.AST, name: str) -> bool:
-    return any(isinstance(child, ast.Call) and _call_name(child) == name for child in ast.walk(node))
+def _top_level_functions(tree: ast.AST) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
+    return {
+        node.name: node for node in getattr(tree, "body", [])
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+
+def _function_scope_nodes(function: ast.FunctionDef | ast.AsyncFunctionDef):
+    """Walk executable statements without treating nested definitions as calls."""
+    pending = list(reversed(function.body))
+    while pending:
+        node = pending.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            continue
+        yield node
+        pending.extend(reversed(list(ast.iter_child_nodes(node))))
+
+
+def _called_function_names(expression: ast.AST) -> set[str]:
+    if isinstance(expression, ast.Name):
+        return {expression.id}
+    if isinstance(expression, ast.IfExp):
+        return _called_function_names(expression.body) | _called_function_names(expression.orelse)
+    if isinstance(expression, ast.BoolOp):
+        return set().union(*(_called_function_names(value) for value in expression.values))
+    return set()
 
 
 def _step_calls(tree: ast.AST, marker: str, step: str) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
     owners = []
-    for function in (node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))):
+    for function in _top_level_functions(tree).values():
         if any(
             isinstance(call, ast.Call)
             and _call_name(call) == marker
             and call.args
             and isinstance(call.args[0], ast.Constant)
             and call.args[0].value == step
-            for call in ast.walk(function)
+            for node in _function_scope_nodes(function)
+            for call in (node,) if isinstance(node, ast.Call)
         ):
             owners.append(function)
     return owners
 
 
-def _step_has_nearby_assertion(
-    function: ast.FunctionDef | ast.AsyncFunctionDef, marker: str, step: str,
+def _expression_names(expression: ast.AST) -> set[str]:
+    return {
+        node.id for node in ast.walk(expression)
+        if isinstance(node, ast.Name)
+    }
+
+
+def _meaningful_condition(expression: ast.AST) -> bool:
+    return bool(_expression_names(expression)) and not (
+        isinstance(expression, ast.Constant) and expression.value is True
+    )
+
+
+def _api_step_has_meaningful_check(
+    function: ast.FunctionDef | ast.AsyncFunctionDef, step: str,
+) -> bool:
+    return any(
+        isinstance(call, ast.Call)
+        and _call_name(call) == "check"
+        and len(call.args) >= 2
+        and isinstance(call.args[0], ast.Constant)
+        and call.args[0].value == step
+        and _meaningful_condition(call.args[1])
+        for node in _function_scope_nodes(function)
+        for call in (node,) if isinstance(node, ast.Call)
+    )
+
+
+def _main_calls_function(tree: ast.AST, function_name: str) -> bool:
+    functions = _top_level_functions(tree)
+    if "main" not in functions:
+        return False
+    pending = ["main"]
+    visited = set()
+    while pending:
+        current = pending.pop()
+        if current == function_name:
+            return True
+        if current in visited:
+            continue
+        visited.add(current)
+        function = functions.get(current)
+        if function is None:
+            continue
+        pending.extend(
+            called_name for node in _function_scope_nodes(function)
+            if isinstance(node, ast.Call)
+            for called_name in _called_function_names(node.func)
+            if called_name in functions and called_name not in visited
+        )
+    return False
+
+
+def _ui_step_has_related_assertion(
+    function: ast.FunctionDef | ast.AsyncFunctionDef, step: str,
     *, max_line_distance: int = 30,
 ) -> bool:
     markers = [
-        node for node in ast.walk(function)
+        node for node in _function_scope_nodes(function)
         if isinstance(node, ast.Call)
-        and _call_name(node) == marker
-        and node.args
+        and _call_name(node) == "report"
+        and len(node.args) >= 2
         and isinstance(node.args[0], ast.Constant)
         and node.args[0].value == step
     ]
     assertions = [
-        node for node in ast.walk(function)
-        if isinstance(node, ast.Call) and _call_name(node) == "require"
+        node for node in _function_scope_nodes(function)
+        if isinstance(node, ast.Call)
+        and _call_name(node) == "require"
+        and node.args
+        and _meaningful_condition(node.args[0])
     ]
     return any(
-        abs(assertion.lineno - marker_call.lineno) <= max_line_distance
-        for marker_call in markers for assertion in assertions
+        abs(assertion.lineno - marker.lineno) <= max_line_distance
+        and _expression_names(assertion.args[0]) & _expression_names(marker.args[1])
+        for marker in markers for assertion in assertions
     )
 
 
@@ -228,13 +311,18 @@ def source_step_is_asserting(lane: str, step: str, source: str | None = None) ->
     if lane == "live-api-probe":
         return (
             _api_probe_failures_reach_lane_exit(tree)
-            and any(_has_call(owner, "check") for owner in _step_calls(tree, "check", step))
+            and any(
+                _main_calls_function(tree, owner.name)
+                and _api_step_has_meaningful_check(owner, step)
+                for owner in _step_calls(tree, "check", step)
+            )
         )
     if lane == "live-ui":
         return (
             _ui_requires_fail_the_lane(tree)
             and any(
-                _step_has_nearby_assertion(owner, "report", step)
+                _main_calls_function(tree, owner.name)
+                and _ui_step_has_related_assertion(owner, step)
                 for owner in _step_calls(tree, "report", step)
             )
         )
@@ -243,6 +331,10 @@ def source_step_is_asserting(lane: str, step: str, source: str | None = None) ->
 
 def lane_step_is_asserting(lane: str, step: str) -> bool:
     return source_step_is_asserting(lane, step)
+
+
+def all_live_evidence_steps_asserting(steps: list[tuple[str, str]]) -> bool:
+    return bool(steps) and all(lane_step_is_asserting(lane, step) for lane, step in steps)
 
 
 def method_has_call_site(method: str) -> bool:
@@ -312,8 +404,8 @@ def test_every_pass_cell_names_an_asserting_lane_and_step() -> None:
                     if lane in {"live-api-probe", "live-ui"}
                 ]
                 if live_ui_api_steps:
-                    assert any(lane_step_is_asserting(lane, step) for lane, step in live_ui_api_steps), (
-                        f"{row['id']} {column}: PASS must cite a live API/UI step with an AST assertion")
+                    assert all_live_evidence_steps_asserting(live_ui_api_steps), (
+                        f"{row['id']} {column}: every cited live API/UI step must have its own AST assertion")
 
 
 def test_pass_patch_ui_rows_cite_asserting_lane_steps() -> None:
@@ -322,10 +414,13 @@ def test_pass_patch_ui_rows_cite_asserting_lane_steps() -> None:
             continue
         if not any(row[column].startswith("PASS") for column in ("v27", "v28")):
             continue
-        assert any(
-            step and lane_step_is_asserting(lane, step)
-            for lane, step in pairs(row["lane"])
-        ), f"{row['id']}: PASS patch-UI evidence must name an asserting lane step"
+        steps = [
+            (lane, step) for lane, step in pairs(row["lane"])
+            if step and lane in {"live-api-probe", "live-ui"}
+        ]
+        assert all_live_evidence_steps_asserting(steps), (
+            f"{row['id']}: every cited PASS patch-UI API/UI step must assert its own condition"
+        )
 
 
 def test_ast_assertion_check_rejects_a_report_only_step() -> None:
@@ -334,6 +429,80 @@ def run():
     report("unsafe-step", "looks good")
 '''
     assert not source_step_is_asserting("live-ui", "unsafe-step", source)
+
+
+def test_ast_assertion_check_rejects_an_api_step_with_constant_true() -> None:
+    source = '''
+FAILURES = []
+
+def check(key, ok, detail=""):
+    if not ok:
+        FAILURES.append(key)
+
+def run():
+    check("hollow-step", True, "unconditional PASS")
+
+def main():
+    run()
+    if FAILURES:
+        raise RemoteError("failed checks")
+'''
+    assert not source_step_is_asserting("live-api-probe", "hollow-step", source)
+
+
+def test_ast_assertion_check_rejects_an_unreachable_api_step() -> None:
+    source = '''
+FAILURES = []
+
+def check(key, ok, detail=""):
+    if not ok:
+        FAILURES.append(key)
+
+def unused_runner():
+    check("hollow-step", pool_is_online, "pool is online")
+
+def main():
+    def never_called():
+        unused_runner()
+    if FAILURES:
+        raise RemoteError("failed checks")
+'''
+    assert not source_step_is_asserting("live-api-probe", "hollow-step", source)
+
+
+def test_ast_assertion_check_rejects_a_ui_report_with_an_unrelated_condition() -> None:
+    source = '''
+class RemoteError(Exception):
+    pass
+
+def report(*args):
+    pass
+
+def require(condition, message):
+    if not condition:
+        raise RemoteError(message)
+
+def run():
+    require(pool_is_online, "an unrelated pool check")
+    report("hollow-step", f"completed {unrelated_pool_name}")
+
+def main():
+    try:
+        run()
+    except RemoteError:
+        sys.exit(1)
+'''
+    assert not source_step_is_asserting("live-ui", "hollow-step", source)
+
+
+def test_pass_evidence_requires_every_cited_live_step_to_assert(monkeypatch) -> None:
+    monkeypatch.setattr(
+        sys.modules[__name__], "lane_step_is_asserting",
+        lambda lane, step: lane == "live-api-probe" and step == "real-step",
+    )
+    assert not all_live_evidence_steps_asserting([
+        ("live-api-probe", "real-step"), ("live-api-probe", "hollow-step"),
+    ])
 
 
 def test_ast_assertion_check_rejects_a_report_with_only_a_distant_assertion() -> None:
@@ -400,6 +569,7 @@ def test_reclaim_action_is_documented_as_an_api_tui_fallback() -> None:
     assert row is not None
     assert row["verdict"] == "API-TUI"
     assert {"pool.export", "disk.details"} <= set(names(row["methods"]))
+    assert "shared/reclaim_path_b.py" in row["ui_patched"]
     assert any(step == "cleanup-partition-offered-again" for _, step in pairs(row["lane"]))
 
     documents = [
@@ -414,6 +584,18 @@ def test_reclaim_action_is_documented_as_an_api_tui_fallback() -> None:
         assert "partuuid" in text, path
         assert "zpool labelclear" in text, path
         assert "disk.details" in text, path
+
+    consumer_text = (PATCH_ROOT / "docs" / "CONSUMERS.md").read_text()
+    assert "--pool \"$POOL\"" in consumer_text
+    assert "--partuuid \"$PARTUUID\"" in consumer_text
+    assert "--expected-pool-guid \"$EXPECTED_POOL_GUID\"" in consumer_text
+    assert "rerun the same command" in consumer_text
+    assert "already_clear" in consumer_text
+    reclaim_script = PATCH_ROOT / "shared" / "reclaim_path_b.py"
+    reclaim_tests = (PATCH_ROOT / "tests" / "test_path_b_reclaim.py").read_text()
+    assert reclaim_script.is_file()
+    assert "test_reclaim_resumes_when_middleware_export_already_completed" in reclaim_tests
+    assert "test_reclaim_is_idempotent_when_the_pool_signature_is_already_clear" in reclaim_tests
 
 
 def test_consumer_guide_does_not_pin_the_devcontainer_venv_path() -> None:

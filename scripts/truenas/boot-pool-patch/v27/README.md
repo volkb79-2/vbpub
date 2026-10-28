@@ -11,6 +11,10 @@ KVM selection, patched-data update survival, full submitted VM/share UI
 workflows, and another v27 build remain untested. Check target fingerprints
 before applying it elsewhere.
 
+Path B API cleanup uses `disk.details` to confirm the reserved partition is
+available again after `pool.export` with `destroy=false` and the explicit
+PARTUUID/GUID reclaim procedure described in the [consumer guide](../docs/CONSUMERS.md#reclaim-an-exported-path-b-pool).
+
 ## Why v27 needs two changes
 
 The installed RC reports KVM availability from `/dev/kvm`, and its VM
@@ -386,16 +390,18 @@ and last 32 MiB. The adapter therefore refuses `pool.export` with
 `destroy=true` for a pool on the reserved boot-disk partition. The API probe
 checks that refusal alongside unchanged boot-pool status and GPT layout, and
 exercises replace, offline/online, detach, and remove against the adopted pool.
-Creation and adoption failures also run a guarded rollback that re-verifies
-the partition before destroying the exact pool or clearing labels on the
-verified PARTUUID.
+Creation and adoption failures also run a guarded rollback. It captures the
+new pool GUID after `zpool create`, requires that GUID and the exact reserved
+PARTUUID before destroy, and stops for manual recovery when create's outcome
+is ambiguous.
 
-An operator who intentionally runs `pool.export` with `destroy=false` must
-clear the exported pool's labels before the reserved partition is offered
-again. Verify the selected pool's sole leaf and PARTUUID, use
-`zpool labelclear -f /dev/disk/by-partuuid/<PARTUUID>` for that leaf only, then
-confirm the partition is back in `disk.details`. The exact guarded sequence is
-in the [consumer procedure](../docs/CONSUMERS.md#reclaim-an-exported-path-b-pool).
+An operator who intentionally exports a pool with `destroy=false` must clear
+its labels before the reserved partition is offered again. Use the v27
+[`shared/reclaim_path_b.py`](../shared/reclaim_path_b.py) helper with the
+explicit pool name, recorded PARTUUID, and expected pool GUID. It resumes after
+export, checks the pool is the sole leaf on that PARTUUID, verifies mount and
+boot-disk parent state before `zpool labelclear`, and accepts an already-clear
+partition idempotently. See the [consumer procedure](../docs/CONSUMERS.md#reclaim-an-exported-path-b-pool).
 The accepted v27 `pool.create` fields and defaults are recorded in the
 [design guide](../docs/DESIGN-GUIDE.md#v27-pool-create-schema); the live probe
 refuses schema drift before it starts storage mutations.

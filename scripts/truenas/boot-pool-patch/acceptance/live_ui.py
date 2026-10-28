@@ -1026,7 +1026,7 @@ def create_path_b_pool_in_ui(
             report(
                 "path-b-pool-ui",
                 f"evidence={evidence_source}; pool.create used {expected_partition} "
-                f"(PARTUUID {partuuid}) only; "
+                f"(PARTUUID {partuuid}) only; vdev={vdev}; expected={expected_vdev}; "
                 "middleware registered it ONLINE and container.pool_choices includes it",
             )
             return "boot-disk-data"
@@ -2230,11 +2230,19 @@ def main() -> int:
                 state="visible", timeout=60_000
             )
             share_text = page.locator("body").inner_text(timeout=30_000)
-            require("Windows (SMB) Shares" in share_text and "UNIX (NFS) Shares" in share_text,
+            share_sections_present = (
+                "Windows (SMB) Shares" in share_text and "UNIX (NFS) Shares" in share_text
+            )
+            require(share_sections_present,
                     "sharing UI does not expose both SMB and NFS sections")
-            require(page.get_by_role("button", name=re.compile(r"\bAdd\b")).count() >= 2,
+            share_add_actions = page.get_by_role("button", name=re.compile(r"\bAdd\b")).count()
+            require(share_add_actions >= 2,
                     "sharing UI does not expose the SMB and NFS Add actions")
             report("shares-ui", "SMB and NFS share pages/actions are available")
+            report(
+                "shares-ui",
+                f"SMB/NFS sections present={share_sections_present}; Add actions={share_add_actions}",
+            )
             if path_b_setup == "preprovisioned":
                 require(
                     not contains_pool_create_request(pool_create_requests),
