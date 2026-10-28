@@ -1463,8 +1463,10 @@ you're changing assay itself:
   R0-R3 qualification in `tester-unified`. During the explicitly waived 10.0.x
   release window, CMRU's Assay `run-tests` step also invokes
   `run-gate self-qualification-provisional`, which runs R0, R1 and R3 and records
-  the R2 postponement in `.assay/mutation-postponed-assay.json`; it never claims
-  an R2 pass. See the [design rationale](docs/DESIGN-GUIDE.md#provisional-release-qualification-b169-b170)
+  the R2 postponement in `.assay/mutation-postponed-assay.json`; its
+  `cmru_release_gate_version_bound` field records whether the protected CMRU
+  transaction version was received and matched. It never claims an R2 pass.
+  See the [design rationale](docs/DESIGN-GUIDE.md#provisional-release-qualification-b169-b170)
   and [release runbook](docs/CONSUMERS.md#provisional-release-qualification-b169-b170).
   The gate validates the first release heading after `Unreleased` against
   CMRU's protected transaction version. A marker is current evidence only with

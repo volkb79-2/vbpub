@@ -929,6 +929,7 @@ document = {
     "decision": DECISION,
     "window": "assay >= 10.0.0, < 10.1.0",
     "target_version": prepared_release_version,
+    "cmru_release_gate_version_bound": transaction_version is not None,
     "commit": commit,
     "tree": tree,
     "assay_version": version,

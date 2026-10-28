@@ -44,7 +44,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   reads the first dated release heading after `Unreleased`, requires it to
   match CMRU's protected release-transaction version, and requires a visible
   stable `assay-vX.Y.Z` tag below 10.1.0; it refuses when no stable tag can be
-  listed.
+  listed. Its `cmru_release_gate_version_bound` boolean records whether the
+  protected transaction version was received and matched.
   CMRU runs this lane after the self-hosted gate and before tagging, so the
   prepared version check also refuses the 10.1.0 release before its tag exists.
   The 210-minute lane requires the gate coordinator to keep other registered

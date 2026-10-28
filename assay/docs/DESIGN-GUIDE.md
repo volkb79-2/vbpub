@@ -2765,6 +2765,9 @@ target line and branch coverage) plus the R3 canary, with R2 omitted. A
 successful run records `.assay/mutation-postponed-assay.json` as `provisional`;
 it never asserts an R2 pass, and the full `self-qualification` lane remains the
 way to produce R2 evidence.
+The marker's `cmru_release_gate_version_bound` boolean records whether the
+protected CMRU transaction version was received and matched (`true`); `false`
+means no transaction binding was applied.
 
 The gate checks the first H2 release heading after `## [Unreleased]` because
 the release tag does not exist when CMRU runs `run-tests`. It refuses a

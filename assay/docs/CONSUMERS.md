@@ -171,9 +171,11 @@ runs `tools/tester-unified-gate.sh` first and then invokes
 The lane runs R0, R1 over all of `src/assay` with 100% whole-target line and
 branch coverage, and the R3 canary. It omits R2 and, only after the lane is
 verified, records `.assay/mutation-postponed-assay.json` with
-`"result": "provisional"` and tracking id B169. That marker says R2 is owed; it is not an
-R2 pass. Use `run-gate self-qualification` when full R0-R3 evidence is
-required.
+`"result": "provisional"` and tracking id B169. Its
+`cmru_release_gate_version_bound` boolean is true when the protected CMRU
+transaction version was received and matched, and false when no transaction
+binding was applied. That marker says R2 is owed; it is not an R2 pass. Use
+`run-gate self-qualification` when full R0-R3 evidence is required.
 
 The gate reads the first H2 release heading after `## [Unreleased]` in
 `CHANGES.md`, because CMRU runs the release gate before the tag exists. It

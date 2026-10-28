@@ -107,6 +107,18 @@ worktree="$(cd -- "$worktree" && pwd -P)" \
 project="$worktree/assay"
 [[ -d "$project" && ! -L "$project" && -f "$project/pyproject.toml" ]] \
   || die "selected worktree has no real assay project directory: $project"
+
+for required_command in realpath flock chmod python3 stat; do
+  command -v "$required_command" >/dev/null 2>&1 \
+    || die "required host command is unavailable: $required_command"
+done
+if [[ "$lane" != b110-pilot ]]; then
+  for required_command in rm mkdir mv; do
+    command -v "$required_command" >/dev/null 2>&1 \
+      || die "required host command is unavailable: $required_command"
+  done
+fi
+
 project_identity="$(stat -c '%d:%i' -- "$project")" \
   || die 'cannot capture the Assay project directory identity before container startup'
 [[ "$project_identity" =~ ^([0-9]+):([0-9]+)$ ]] \
@@ -152,17 +164,6 @@ PYEOF
   then
     die 'cannot safely remove a prior R2 postponement marker before wrapper admission'
   fi
-fi
-
-for required_command in realpath flock chmod python3 stat; do
-  command -v "$required_command" >/dev/null 2>&1 \
-    || die "required host command is unavailable: $required_command"
-done
-if [[ "$lane" != b110-pilot ]]; then
-  for required_command in rm mkdir mv; do
-    command -v "$required_command" >/dev/null 2>&1 \
-      || die "required host command is unavailable: $required_command"
-  done
 fi
 
 # The run-gate `resources.shared` flock is scoped to its caller's /tmp. B105
@@ -477,6 +478,9 @@ forwarded_env=()
 if [[ -n "${CGROUP_PARENT_DEV_BACKGROUND:-}" ]]; then
   forwarded_env+=(-e "CGROUP_PARENT_DEV_BACKGROUND=$CGROUP_PARENT_DEV_BACKGROUND")
 fi
+if [[ -v CMRU_RELEASE_GATE_VERSION ]]; then
+  forwarded_env+=(-e "CMRU_RELEASE_GATE_VERSION=$CMRU_RELEASE_GATE_VERSION")
+fi
 b110_state_env=()
 if [[ "$lane" == b110-pilot || "$lane" == b110-screen ]]; then
   [[ "$assay_state_present" == true ]] || die 'B110 did not prepare its .assay state directory'
@@ -630,11 +634,16 @@ fi
 container_env="$(docker_bounded inspect "$container_id" \
   --format '{{range .Config.Env}}{{println .}}{{end}}')" \
   || die 'could not inspect B105 container environment'
-for expected in \
-  "CGROUP_PARENT_DEV_GATES=$cgroup_parent" \
-  "ASSAY_RESOURCE_OBSERVER_SOCKET=$RESOURCE_OBSERVER_TARGET" \
-  "ASSAY_B105_GATE_EXPECTED_COMMIT=$source_commit" \
-  "ASSAY_B105_GATE_EXPECTED_TREE=$source_tree"; do
+expected_container_env=(
+  "CGROUP_PARENT_DEV_GATES=$cgroup_parent"
+  "ASSAY_RESOURCE_OBSERVER_SOCKET=$RESOURCE_OBSERVER_TARGET"
+  "ASSAY_B105_GATE_EXPECTED_COMMIT=$source_commit"
+  "ASSAY_B105_GATE_EXPECTED_TREE=$source_tree"
+)
+if [[ -v CMRU_RELEASE_GATE_VERSION ]]; then
+  expected_container_env+=("CMRU_RELEASE_GATE_VERSION=$CMRU_RELEASE_GATE_VERSION")
+fi
+for expected in "${expected_container_env[@]}"; do
   if ! printf '%s\n' "$container_env" | grep -Fqx "$expected"; then
     die "B105 container is missing required environment fact: ${expected%%=*}"
   fi
