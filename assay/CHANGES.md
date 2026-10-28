@@ -4,6 +4,137 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [10.0.0] - 2026-10-28
+<!-- cmru: generated -->
+<!-- cmru: source-end=8429862e154b1aeb89248a90a816c1e494298c1b -->
+
+### Added
+- feat(assay): self-qualification-provisional lane (R0, R1 whole-source, R3 canary; R2 postponed with an operator-decision-keyed marker) (e08fbcd29)
+- feat(assay,ciu,cmru,cgroup-profiler,nyxloom,run-gate): complete integrated release wave (1fa737782)
+- feat(run-gate): make wheel SemVer the only supported interface (9a0e192ab)
+- feat(assay): make plan JSON output explicit (d29d5d850)
+- feat(assay)!: ship verdict v16 and process boundaries (4104a79c1)
+- feat: add contract-2 resource event attribution (90dc9078d)
+- feat(rg55): adopt observer contract 2 and local events (2b1bd7f39)
+- feat(rg-89): observe native mutation resource limits (219997c93)
+
+### Fixed
+- fix(assay): forward CMRU release binding to gate container (74f98777e)
+- fix(assay): bind provisional waiver to release transaction (beb4128fd)
+- fix(assay): close provisional release review findings (8ce3a2e9b)
+- fix(assay): keep the TYPE_CHECKING exclusion fixture lines stable (helper moved to the end of liveness.py) (4ab0bb0b1)
+- fix(assay): provisional lane leaves the coverage-archive export hook unarmed so the R3 canary's control run is not refused (ccbf5af0e)
+- fix(assay): SQL witness carries process-tree evidence (v16) with the measured cleanup time normalized (a6f579f12)
+- fix(assay): SQL qualification runner gets the read-only cgroup observer (v16 native R2 refuses without observation) (ba5d5fe22)
+- fix(assay): SQL qualification runner joins the host Docker group verified by the launcher (devcontainer socket group differs from the host socket's) (980eb75d9)
+- fix(assay): repair the registered tester-unified R0 lane: process-tree latch isolation and subreaper restore, plan --json callers, stale gate-driver harnesses, broken-baseline None-plan crash, unused imports, rg-free container wrapper, real-selector analysis test (490a48899)
+- fix(assay): accept the .claude/worktrees checkout location in the registered gate drivers (bdc241541)
+- fix(assay): repair main's red assay tests: v16 fixture evidence, empty-shard verdict fixture, frozen schema digest, state-dir missing refusal, iobench lane config; fix doc anchors; document schema v2 of analyze campaign (154983976)
+- fix(assay): preserve memory max as telemetry (87eb333f7)
+- fix: bind release gates to exact tool candidates (cd673fecd)
+- fix: close release-wave followup findings (08632f747)
+- fix: close release-wave review findings (49e4be092)
+- fix: bound Assay refusals and harden observer setup (ad173675f)
+- fix(assay): validate pilot process tree evidence (099ee7962)
+- fix(assay): bound analysis campaign artifacts (2feb6cc21)
+- fix(assay): bind analysis pilot state to source revision (f34575e3d)
+- fix(assay): admit reviewed Hypothesis cold-witness hooks (aec06c3e6)
+- fix(assay): forward observer to analysis R2 tests (13aacc3c7)
+- fix: retain frozen witness receipt compatibility (6d40f426b)
+- fix(assay): attribute resource events by cgroup scope (8c874ce87)
+- fix(assay): bound context scans and cold witness checks (2372bd34d)
+- fix(assay): preserve deadline-free mutation preflights (8dcc4ff14)
+- fix(assay): bound SQL context deadline scans (0dec47f7e)
+- fix(assay): bound SQL context and Docker cap updates (d752368f8)
+- fix(assay): bound resource observer preflight (df270a15d)
+- fix(assay): correct B105 Docker group inspection (d4ea3ab35)
+- fix(assay): harden SQL schema and role analysis (832c9a690)
+- fix(assay): close SQL and warning edge cases (778057227)
+- fix(assay): close SQL mutation safety gaps (2980858be)
+- fix(assay): count complete R0 refusal detail (e437eaba7)
+- fix(assay): parse quoted SQL ALTER identifiers (5220acf26)
+- fix(assay): guard SQL type context and retain R0 detail (f22b93386)
+- fix(assay): complete B146 diagnostics and warnings (853da74ff)
+- fix(assay): cover git pump EOF and test placement (e7dc4629c)
+- fix(assay): complete SQL mutation safety context (d6b3a48eb)
+- fix(assay): resolve SQL mutation context safely (e7674e1e2)
+- fix(assay): harden SQL mutation qualification (ea2b79061)
+- fix(rg89): align leaf-counter oracle and close RG-45 index (7f2340729)
+- fix(assay): use valid coreutils timeout durations for R2 gates (1587b05c2)
+- fix(assay): keep nested gate namespaces private (80254340b)
+- fix(rg89): qualify nested R2 observer and bound JSON parsing (b7a32f149)
+- fix(run-gate): support observer-backed command lanes (c9d488fc1)
+
+### Changed
+- debian-install-v2: assay jobs = 1 and a live-consumer config guard test (INT-01 I4) (7f41ea242)
+- Merge main into CGProfile release candidate (f4933a2d5)
+- backlog: file B156 (acceptance contract as assay consumer doc), note B005 span half (filed from dstdns W21) (b92efaea3)
+- merge Assay analysis pilot and Run-Gate verdict fix (4d2495194)
+- Merge branch 'assay-b108-phase1-closeout-20261013' into assay-pilot-tree-evidence-20261013 (8b0060337)
+- wip: checkpoint integrated release candidate (91a4ab26a)
+- chore: integrate contract-2 release wave (336336d81)
+- assay: preserve completed pilot summary shape (572aa1c7a)
+- assay: tighten incomplete pilot diagnostic oracles (2e5eb11d0)
+- assay: report diagnostics for every incomplete pilot (ad4c14abe)
+- assay: retain incomplete pilot claim diagnostics (00539db42)
+- Merge branch 'assay-b132-b134-review-fixes' into cgprofile-cp20-contract2-20261012 (97e203c00)
+- test assay resource preflight deadline deterministically (8b28c5352)
+- fix assay SQL and deadline gate regressions (1217b931d)
+- fix assay review findings and SQL deadline paths (1d9a3a804)
+- merge main into assay B132-B134 review fixes (36e5abfb3)
+- Merge branch 'main' into rg89-p1-r2-20261009 (1ba536805)
+- Merge branch 'main' into rg89-p1-r2-20261009 (2631d8981)
+- merge: reconcile RG-89 with current main (a4d68181b)
+- Record RG-55 integration probe evidence (40d284ce0)
+- Merge main into RG-89 integration branch (a9b2ff7c6)
+- Forward resource observer into Assay analysis lane (5c43550b1)
+- Preserve specific cgroup slice refusal diagnostics (dc1ffcd59)
+- Avoid cgroup probe ID fixture variable collision (456540b53)
+- Report bounded diagnostics for malformed cgroup probe IDs (fe3ab85d9)
+- Assay: accept observer in qualified lane policy (1266057b3)
+- Assay: repair observer qualification fixtures (9a89b5685)
+- assay: keep probe diagnostic off slice output (c94388ab2)
+- assay: query host slice over unprivileged system bus (8655daf71)
+- merge: RG-89 observer reconciled with current main (8ff8af93f)
+- Merge main into rg89-resource-observer (3cd1b1444)
+
+### Documentation
+- docs(assay): cite the final-tree provisional lane run (660123784)
+- docs(assay): CHANGES and B170 describe what the provisional lane runs and its measured verdicts (4aca915ac)
+- docs(assay): land B108 truncated-list continuation oracles and docs; record 10.0.0 breaking list and the R2 waiver (B169) (e0d9b6f62)
+- docs(assay): align B167 with CIU v8 gate lifecycle (68dd3c6ef)
+- docs: track release notes and adoption blockers (3af2bc238)
+- docs(assay): save system review report (0c4b17e77)
+- docs(assay): clarify cgroup event attribution (9a951ed96)
+- docs(assay): record B132 gate follow-up (f5baaa91d)
+- docs(assay): record pilot admission refusals (8a2afc3ce)
+- docs(assay): scope SQL hazard assertions precisely (b403b2ba6)
+
+### Testing
+- test(assay): wait for the background log follower's trace instead of racing the launcher exit (fb88461ca)
+- test(assay): close the whole-source R1 gap (886 lines / 711 branches) with five closure test files; remove unreachable branches; fix the cold-witness R2 baseline post-reason TypeError; run the provisional lane in the assay release step (a6341d76b)
+- test(assay): provisional lane shape, registration and postponement-marker window tests (29357ec40)
+- test(assay): sleeping-mutant start marker and recorded leader status; validate cleanup_seconds before zeroing; CHANGES + B170 for the lanes not run in the 10.0.0 gate (ce9336e3a)
+- test(assay): close the analysis lane's R1 line and branch coverage gaps (24 tests) (47675d694)
+- test(assay): normalize accepted budget-exceeded leader status before the full artifact comparison (7775cc385)
+- test(assay): launch_env supplies the host docker gid; budget-exceeded process-tree status accepts the verifier's allowed set (f7b9bb1f6)
+- test(assay): make gate-container-only failures deterministic: valid hung state record in the rejudge test (was vacuous without witness hooks), generous lane budget in the budget-outlives test, launcher stderr in cancellation test failures (45378a98c)
+- test(assay): cover socket-vs-directory group mismatch in the observer gid guard; iobench lane enforces branch coverage (f372310c2)
+- test(assay): align cold-witness hook expectations (6c46f59ef)
+- test: keep analysis refusal fixture valid under v16 (bee8c81b8)
+- test(assay): repair gate failure oracles (6fc0e86f2)
+- test(assay): call resource observation preflight API (139b9f9f3)
+- test(assay): avoid nested shallow plan snapshots (a96dff786)
+- test(assay): keep local-role SQL witness in session (5d64e59c5)
+- test(assay): exercise revoked-schema hazard in source session (90f2e3abd)
+- test(assay): expect R0 failure detail in standalone claim (a8a18d0e4)
+- test(assay): make SQL hazard probes construct specific (3743a6c3e)
+- test(assay): clean read-only gate fixtures (efaf11294)
+- test(assay): pin resource observer lane opt-in (7dc6ebeec)
+
+<!-- cmru: pending release notes begin -->
 ### Breaking Changes
 - Verdict schema v16 is a hard cut from v15. `assay verify` rejects v15 and
   older verdicts, and v12-v15 reuse state starts cold under the new judge
@@ -92,8 +223,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Prove that a truncated `analyze campaign` list can be continued to its last
   record: `adverse.<bucket>.next_offset` is the `--offset` for
   `--outcome <bucket>` in `candidate_details` (B108).
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [9.0.0] - 2026-10-10
 <!-- cmru: generated -->
