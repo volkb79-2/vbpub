@@ -21,6 +21,52 @@ the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.18.0] - 2026-10-28
+<!-- cmru: generated -->
+<!-- cmru: source-end=2fa170b29ef870cd8e985d5ea895a1b87423ce98 -->
+
+### Added
+- feat(ciu): worktree record schema 6 adds base_branch_ref (the moving base Run-Gate needs) (2661864ea)
+- feat(ciu): add permission-specific worktree removal retry (CIU-134) (63a696707)
+
+### Fixed
+- fix(run-gate): RG-109 — SIGTERM during a lane's cleanup is deferred, the pre-wait window is disclosed, an interrupted run says so (14e8ab9ca)
+- fix(ciu): base_branch_ref is a canonical short branch name only (review round 1) (3d147a166)
+- fix(ciu): CIU-134 retry accepts the CIU record Git already deleted when the shared ledger proves the target (07090690e)
+- fix(ciu): pass base by keyword to discover_committed_roots; fakes accept allocation_lock_held (129135e74)
+- fix(ciu): escape worktree option braces in usage (ad0caffcf)
+- fix(cgprofile): CGP-110 review fixes: own-cgroup slice proof, wedged-worker escalation, shutdown force (ac7e17e7b)
+- fix(cgprofile): serve refuses to run under an unbounded cgprofile.slice (Sol B4) (353d90c95)
+
+### Changed
+- Merge ciu 7.18 wave: CIU-107/120/134, run-gate schema-6 reader, docs — vbpub@04a4b6587 (2fa170b29)
+- revert(ciu): park the CIU-134 root-escalation retry (unfixed adversarial review: 6 blocking P1 findings) (a6b4cb524)
+- Merge cgp-110-20261021 (6ea5ef2fb): CGP-110 / Sol blockers B1-B6 for cgprofile 1.1.0 (keep CIU-150 and CIU-151) (68762c9ca)
+
+### Documentation
+- docs(ciu): SPEC states which branch names record base_branch_ref null (review round 2 nit) (04a4b6587)
+- docs(ciu): fix gate-evidence pointer and Run-Gate version wording (review round 2) (41decb132)
+- docs(ciu): CHANGES 7.18 notes, CIU-135 disposition, CIU-153 wording (review round 1) (d23f76050)
+
+### Testing
+- test(ciu): cover the ungated line's uncovered managed-worktree branches; drop one unreachable guard (c7cdb6568)
+- test(ciu): restore the pre-CIU-134 removal-message assertions after parking the retry (cf48deae9)
+- test(ciu): capabilities list no longer carries the parked rm-root-retry capability (bc7aa1d40)
+- test(ciu): repair managed-worktree tests that drifted from the ungated 7.17.0 line; file CIU-152/CIU-153 (855b1d2ff)
+- test(ciu): supply selected root in dispatch fixture (14b037d8a)
+
+<!-- cmru: pending release notes begin -->
+### Fixed
+- `ciu worktree create` no longer fails every managed create with `TypeError: discover_committed_roots() takes 1 positional argument` from the overlay-root preflight (the base commit is now passed by keyword). The 7.17.0 line was released without its gate; its suite had 182 failing tests and 36 errors, and the managed-worktree area had about 125 uncovered lines. The tests were brought back to the current contract (schema-5 records, `allocation_lock_held`/`owner_instance_id` keywords, explicit CIU-root selection, Git-family fixtures), behavior tests were added for every uncovered branch, and one unreachable guard in `ensure` was removed. The suite and the 100% line and branch floor pass in tester-unified (the three Run-Gate seam tests need the first Run-Gate release after 24.0.1, which reads schema 6).
+
+### Changed
+- Worktree instance record schema 6 adds `base_branch_ref`: the canonical local branch name (no `refs/heads/` prefix) that the frozen `base_ref` commit was taken from, or `null` for an adopted checkout, a tag, a raw commit, a remote-tracking ref, `HEAD`, or a branch that did not point at the frozen commit. `create` decides it once, together with the frozen base commit, and persists it with `base_ref`; `ensure` never recomputes it and `adopt` always writes `null`. Records v1-v5 keep their meaning and are not upgraded by reads. v5 records written by 7.17.0 keep a frozen-SHA `base_ref` and no `base_branch_ref`: they remain fully valid for CIU itself, but Run-Gate refuses them and names an explicit `--base` as the remedy.
+
+### Adoption / Migration Notes
+- Safe to ignore unless you read `ciu.worktree-instance.json` yourself: new records are schema 6 (one additive key, `base_branch_ref`); v1-v5 records still read and are not rewritten. If you gate worktrees with Run-Gate, use the first Run-Gate release after 24.0.1 (it reads schema 6 and `base_branch_ref`); an older Run-Gate refuses these records and asks for an explicit `--base`.
+- The CIU-134 `--root-escalation` removal retry is NOT in this release (parked with an unresolved adversarial review; see CIU-134). `ciu worktree rm` is unchanged, including its branch deletion (CIU-153) and its pruning of ignored state (CIU-154).
+<!-- cmru: pending release notes end -->
+
 ## [7.17.0] - 2026-10-21
 <!-- cmru: generated -->
 <!-- cmru: source-end=bd3a933f255e3e3d63182de557a68b825ab4f50f -->
@@ -125,16 +171,6 @@ the technical detail below it.
 <!-- cmru: pending release notes end -->
 
 ## [Unreleased]
-
-### Fixed
-- `ciu worktree create` no longer fails every managed create with `TypeError: discover_committed_roots() takes 1 positional argument` from the overlay-root preflight (the base commit is now passed by keyword). The 7.17.0 line was released without its gate; its suite had 182 failing tests and 36 errors, and the managed-worktree area had about 125 uncovered lines. The tests were brought back to the current contract (schema-5 records, `allocation_lock_held`/`owner_instance_id` keywords, explicit CIU-root selection, Git-family fixtures), behavior tests were added for every uncovered branch, and one unreachable guard in `ensure` was removed. The suite and the 100% line and branch floor pass in tester-unified (the three Run-Gate seam tests need the first Run-Gate release after 24.0.1, which reads schema 6).
-
-### Changed
-- Worktree instance record schema 6 adds `base_branch_ref`: the canonical local branch name (no `refs/heads/` prefix) that the frozen `base_ref` commit was taken from, or `null` for an adopted checkout, a tag, a raw commit, a remote-tracking ref, `HEAD`, or a branch that did not point at the frozen commit. `create` decides it once, together with the frozen base commit, and persists it with `base_ref`; `ensure` never recomputes it and `adopt` always writes `null`. Records v1-v5 keep their meaning and are not upgraded by reads. v5 records written by 7.17.0 keep a frozen-SHA `base_ref` and no `base_branch_ref`: they remain fully valid for CIU itself, but Run-Gate refuses them and names an explicit `--base` as the remedy.
-
-### Adoption / Migration Notes
-- Safe to ignore unless you read `ciu.worktree-instance.json` yourself: new records are schema 6 (one additive key, `base_branch_ref`); v1-v5 records still read and are not rewritten. If you gate worktrees with Run-Gate, use the first Run-Gate release after 24.0.1 (it reads schema 6 and `base_branch_ref`); an older Run-Gate refuses these records and asks for an explicit `--base`.
-- The CIU-134 `--root-escalation` removal retry is NOT in this release (parked with an unresolved adversarial review; see CIU-134). `ciu worktree rm` is unchanged, including its branch deletion (CIU-153) and its pruning of ignored state (CIU-154).
 
 ## [7.16.0] - 2026-10-07
 <!-- cmru: generated -->
