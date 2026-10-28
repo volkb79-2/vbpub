@@ -6,12 +6,13 @@ it created there. It requires a disposable data pool with enough capacity for th
 requested VM zvol. Do not point it at a production system or a pool that cannot safely hold temporary test data.
 
 The default test command excludes the `live` marker through `pytest.ini`; `tests/test_live_lane_config.py` checks that
-the exclusion remains configured. The live test is not skipped when selected: missing variables, an absent profile,
-or a profile that cannot connect make the test fail. This implementation task wrote the live lane but did not run it.
+the exclusion remains configured. The live test is not skipped when selected: missing variables, an absent host,
+or a host that cannot connect make the test fail. This implementation task wrote the live lane but did not run it.
 
-Before running it, configure a private `tnt.toml` with a profile that is allowed to create and delete temporary
-resources on the chosen host. The test uses the same profile loader and TLS rules as the CLI. Supply all required
-environment values explicitly:
+Before running it, configure paired `tnt.toml` and `tnt.secrets.toml` files with a host allowed to create and delete
+temporary resources on the chosen host. Copy the committed examples and keep both files mode `0600`; credentials
+belong only in `tnt.secrets.toml`. The test uses the same host loader, credential checks, and TLS rules as the CLI.
+Supply all required environment values explicitly:
 
 ```sh
 TNT_LIVE=1 \
@@ -31,9 +32,9 @@ pool and group are checked before any resource is created, and all generated tes
 `tnt-live-`.
 
 TLS verification stays enabled by default. For a deliberately disposable host with a self-signed certificate, set
-`TNT_LIVE_INSECURE=1` and use a profile with `tls = "insecure"`; both the profile and explicit acknowledgement are
-required. Never place credentials in this command line. Keep them in the mode-0600 profile file described in the
-[configuration guide](../README.md#configure-a-host).
+`TNT_LIVE_INSECURE=1` and use a host with `tls = "insecure"`; both the host setting and explicit acknowledgement are
+required. Never place credentials in this command line. Keep them in the mode-0600 secrets file described in the
+[multi-host configuration guide](../README.md#configure-multiple-hosts).
 
 Cleanup is attempted for every resource even if an earlier cleanup action fails. A cleanup failure fails the test and
 names the resource class, so inspect the host for any remaining resource whose name starts with `tnt-live-` before

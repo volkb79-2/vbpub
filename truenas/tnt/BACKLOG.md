@@ -54,8 +54,8 @@ implemented work. `[AUTHORED, NOT RUN]` is intentional for the live lane per its
 | TNT-24 | Audit log (no secrets) of every executed action under the XDG state dir | S | Later |
 | TNT-25 | Continuous live updates and the non-blocking job engine: job handles, progress/log/error records, applied job IDs, and reconnect reconciliation | M | It2 |
 | TNT-26 | Plan/apply CLI verbs (`tnt plan`, `tnt apply`) once the first action exists, with `--dry-run` / `--yes` from cli-extended | M | Later |
-| TNT-27 | TUI plan review and write-session control, including host-generation invalidation and the It1 profile/host switcher | M | It1 |
-| TNT-28 | Paired multi-host and secrets file support, safe profile/host edit verbs, and session controller before the host picker | L | It1 |
+| TNT-27 | [DONE It1] TUI plan review and write-session control, including host-generation invalidation and the It1 host switcher | M | It1 |
+| TNT-28 | [DONE It1] Paired multi-host and secrets file support, safe host-edit verbs, and session controller before the host picker | L | It1 |
 | TNT-29 | cli-extended surface review (AC-17): the review catalog `docs/cli-review.toml` is empty; run `surface pack`, review, link `cli_case` tests, then `surface check` must pass | M | It4 |
 | TNT-30 | Mutation lane (assay R2) for `tnt`, `assay.toml` + gate lane; coverage threshold (iobench holds 100%) | M | It4 |
 | TNT-31 | Re-pin `truenas_api_client` from the TS-27.0.0-RC.1 sha to the TS-27.0.0 GA tag once it is 14 days old | S | GA+14d |

@@ -1,2 +1,3 @@
 schema_version = 1
 cli_id = "tnt"
+max_candidates = 1150

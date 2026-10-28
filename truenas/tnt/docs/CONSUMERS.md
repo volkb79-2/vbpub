@@ -1,104 +1,154 @@
 # Using tnt
 
-This guide shows a pasteable profile and commands for a vanilla TrueNAS v27 host. For the feature scope and its safety
+This guide shows pasteable multi-host config and commands for a vanilla TrueNAS v27 host. For the feature scope and its safety
 choices, see the [design guide](DESIGN.md#1-goals-and-non-goals). The quick overview is in the [README](../README.md).
 The v27 request shapes and the source revision they were checked against are in [API method evidence](API-METHODS-V27.md).
 
-## Configure a profile
+## Configure multiple hosts
 
-Start from the committed example and protect the copy before entering credentials:
+Copy both committed examples and protect each private file before entering credentials:
 
 ```sh
 cp tnt.toml.example tnt.toml
+cp tnt.secrets.toml.example tnt.secrets.toml
 chmod 600 tnt.toml
+chmod 600 tnt.secrets.toml
 ```
 
-The selected config file must be owned by your user and have exact mode `0600`. Edit the copy to match this shape:
+`tnt.toml` contains connection facts only. `tnt.secrets.toml` contains credentials with the same host names. Both must
+be regular files owned by your user with exact mode `0600`; tnt refuses symlinks and checks the descriptors it reads.
+Credentials in `tnt.toml` are rejected. The paired files use this schema:
 
 ```toml
 schema_version = 1
-default = "lab"
+default_host = "lab"
 
-[profiles.lab]
+[hosts.lab]
 url = "wss://truenas.example.invalid/api/current"
 username = "admin"
 auth = "api_key"
-api_key = "REPLACE_WITH_API_KEY"
 tls = "verify"
 ssh_user = "admin"
-ssh_key_files = ["~/.ssh/id_ed25519"]
-ssh_known_hosts = "~/.ssh/known_hosts"
+ssh_key_files = ["/home/me/.ssh/id_ed25519"]
+ssh_known_hosts = "/home/me/.ssh/known_hosts"
+description = "Primary TrueNAS host"
+tags = ["primary", "storage"]
+
+[hosts.backup]
+url = "wss://backup.example.invalid/api/current"
+username = "operator"
+auth = "password"
+tls = "verify"
+description = "Backup host"
 ```
 
-The closed `auth` values are `"api_key"` and `"password"`; for password auth include `password = "..."` in the
-protected profile file to use the pinned client's v27 `PASSWORD_PLAIN` login. An API key may instead come from an
-`api_key_file`. The closed `tls` values are `"verify"` and `"insecure"`; the latter also requires `--insecure` on
-every command. `ws://` URLs are refused.
+Save credentials in the separate file:
+
+```toml
+schema_version = 1
+
+[hosts.lab]
+api_key = "REPLACE_WITH_API_KEY"
+# Or set api_key_file to an absolute path to a separate mode-0600 key file.
+
+[hosts.backup]
+password = "REPLACE_WITH_PASSWORD"
+```
+
+`auth` values are `api_key` and `password`; `tls` values are `verify` and `insecure`. Password auth uses the pinned
+client's v27 `PASSWORD_PLAIN` login. API keys use its SCRAM flow. `api_key_file`, when used, is stored only in
+`tnt.secrets.toml`; the referenced file must also be owned by you with exact mode `0600`. `ws://` is refused and TLS
+verification is on by default. `tls = "insecure"` also requires `--insecure` per connection and explicit warning
+acknowledgement when saved.
+
+Config and secrets resolve independently: `--config PATH` or `--secrets PATH`, the matching `$TNT_CONFIG` or
+`$TNT_SECRETS`, an existing file in the current directory, then `$XDG_CONFIG_HOME/tnt/` (or `~/.config/tnt/`). They
+may live in different directories and pair by matching host name. Supply an explicit path or matching environment
+variable for whichever file is outside its default search locations. Set `default_host` to connect automatically. If it is unset
+with multiple hosts, `tnt tui` opens the picker and CLI commands list available host names and ask for `--host NAME`.
+A single host is selected automatically.
+
+Manage the paired files through the CLI. Passwords and API keys are prompted with input hidden:
+
+```sh
+tnt hosts list
+tnt hosts show lab
+tnt hosts add staging --url wss://staging.example.invalid/api/current --username operator --auth api_key --make-default
+tnt hosts edit staging --description "Staging system"
+tnt hosts test staging --insecure
+tnt hosts set-default lab
+tnt hosts remove staging --confirm staging
+```
+
+The TUI picker shows host name, URL, description, and last status. Press `h` or use the command palette to switch
+hosts; `w` reopens the selected host in the other write mode. A switch invalidates its plans, cancels and drains host
+work, closes the old session, then connects the new one. SSH user, key-file, and known-host settings may be stored now
+for the It3 hand-off; those paths are not shown.
 
 ## Check a host's v27 methods
 
-After configuring the profile, make one authenticated connection to compare the host's WebSocket method list with
+After configuring the hosts, make one authenticated connection to compare the selected host's WebSocket method list with
 tnt's exact v27 adapter manifest:
 
 ```sh
-tnt doctor --online --profile lab
+tnt doctor --online --host lab
 ```
 
 The doctor result includes missing manifest methods grouped by feature. A listed gap means workflows that need one of
 those methods are unavailable on that host; check the role requirements separately because method presence does not
-grant the authenticated user permission to call it. See the [capability-check design](DESIGN.md#22-version-adapters-and-the-method-manifest)
+grant the authenticated user permission to call it. See the [capability-check design](DESIGN.md#23-version-adapters-and-the-method-manifest)
 and the [verified v27 contract](API-METHODS-V27.md#v27-adapter-contract).
 
 ## Run the core workflows
 
-Every command accepts `--profile NAME`, `--config PATH`, and `--json` where it returns data. Add `--allow-write` to
+Every command accepts `--host NAME`, `--config PATH`, and `--json` where it returns data. Add `--allow-write` to
 apply a planned mutation. Destructive operations also need `--confirm` with the exact target shown in the plan.
 
 ```sh
-tnt dataset list --profile lab --json
-tnt dataset show tank/home --profile lab --json
-tnt dataset create tank/home --profile lab --type filesystem --compression LZ4 --allow-write
-tnt dataset create tank/archive --profile lab --type zvol --volsize 10737418240 --allow-write
-tnt dataset update tank/home --profile lab --readonly ON --allow-write
-tnt dataset delete tank/archive --profile lab --recursive --allow-write --confirm tank/archive
-tnt snapshot list tank/home --profile lab --json
-tnt snapshot create tank/home before-maintenance --profile lab --allow-write
-tnt snapshot hold tank/home@before-maintenance --profile lab --allow-write
-tnt snapshot release tank/home@before-maintenance --profile lab --allow-write
-tnt snapshot rollback tank/home@before-maintenance --profile lab --allow-write --confirm tank/home@before-maintenance
-tnt snapshot clone tank/home@before-maintenance tank/recovered --profile lab --allow-write
-tnt snapshot delete tank/home@before-maintenance --profile lab --allow-write --confirm tank/home@before-maintenance
-tnt container list --profile lab --json
-tnt container show web --profile lab --json
-tnt container create web --profile lab --image nginx --image-version latest --pool tank --no-autostart --allow-write
-tnt container update web --profile lab --cpuset 0-1 --autostart --allow-write
-tnt container start web --profile lab --allow-write
-tnt container stop web --profile lab --allow-write --confirm web
-tnt container restart web --profile lab --allow-write --confirm web
-tnt container delete web --profile lab --allow-write --confirm web
-tnt vm list --profile lab --json
-tnt vm create guest --profile lab --memory 2048 --vcpus 2 --disk-zvol tank/guests/guest --disk-size 10737418240 --allow-write
-tnt vm device add guest --profile lab --type iso --path /mnt/tank/install.iso --allow-write
-tnt vm device add guest --profile lab --type nic --attach br0 --allow-write
-tnt vm update guest --profile lab --memory 4096 --vcpus 4 --no-autostart --allow-write
-tnt vm start guest --profile lab --allow-write
-tnt vm stop guest --profile lab --allow-write --confirm guest
-tnt vm poweroff guest --profile lab --allow-write --confirm guest
-tnt vm suspend guest --profile lab --allow-write
-tnt vm resume guest --profile lab --allow-write
-tnt vm console guest --profile lab --json
-tnt vm delete guest --profile lab --allow-write --confirm guest
-tnt user list --profile lab --json
-tnt user create deploy "Deployment account" --profile lab --group 1001 --password-disabled --allow-write
-tnt user update deploy --profile lab --full-name "Deployment service" --allow-write
-tnt user access deploy --profile lab --groups 1001,1002 --allow-write --confirm deploy
-tnt user ssh-key set deploy --profile lab --file ~/.ssh/id_ed25519.pub --add --allow-write
-tnt user ssh-key set deploy --profile lab --file ~/.ssh/id_ed25519.pub --allow-write
-tnt user ssh-key remove deploy --profile lab --allow-write
-tnt user password deploy --profile lab --password-file ~/.config/tnt/deploy-password --allow-write
-tnt user delete deploy --profile lab --allow-write --confirm deploy
-tnt tui --profile lab
-tnt tui --profile lab --allow-write
+tnt dataset list --host lab --json
+tnt dataset show tank/home --host lab --json
+tnt dataset create tank/home --host lab --type filesystem --compression LZ4 --allow-write
+tnt dataset create tank/archive --host lab --type zvol --volsize 10737418240 --allow-write
+tnt dataset update tank/home --host lab --readonly ON --allow-write
+tnt dataset delete tank/archive --host lab --recursive --allow-write --confirm tank/archive
+tnt snapshot list tank/home --host lab --json
+tnt snapshot create tank/home before-maintenance --host lab --allow-write
+tnt snapshot hold tank/home@before-maintenance --host lab --allow-write
+tnt snapshot release tank/home@before-maintenance --host lab --allow-write
+tnt snapshot rollback tank/home@before-maintenance --host lab --allow-write --confirm tank/home@before-maintenance
+tnt snapshot clone tank/home@before-maintenance tank/recovered --host lab --allow-write
+tnt snapshot delete tank/home@before-maintenance --host lab --allow-write --confirm tank/home@before-maintenance
+tnt container list --host lab --json
+tnt container show web --host lab --json
+tnt container create web --host lab --image nginx --image-version latest --pool tank --no-autostart --allow-write
+tnt container update web --host lab --cpuset 0-1 --autostart --allow-write
+tnt container start web --host lab --allow-write
+tnt container stop web --host lab --allow-write --confirm web
+tnt container restart web --host lab --allow-write --confirm web
+tnt container delete web --host lab --allow-write --confirm web
+tnt vm list --host lab --json
+tnt vm create guest --host lab --memory 2048 --vcpus 2 --disk-zvol tank/guests/guest --disk-size 10737418240 --allow-write
+tnt vm device add guest --host lab --type iso --path /mnt/tank/install.iso --allow-write
+tnt vm device add guest --host lab --type nic --attach br0 --allow-write
+tnt vm update guest --host lab --memory 4096 --vcpus 4 --no-autostart --allow-write
+tnt vm start guest --host lab --allow-write
+tnt vm stop guest --host lab --allow-write --confirm guest
+tnt vm poweroff guest --host lab --allow-write --confirm guest
+tnt vm suspend guest --host lab --allow-write
+tnt vm resume guest --host lab --allow-write
+tnt vm console guest --host lab --json
+tnt vm delete guest --host lab --allow-write --confirm guest
+tnt user list --host lab --json
+tnt user create deploy "Deployment account" --host lab --group 1001 --password-disabled --allow-write
+tnt user update deploy --host lab --full-name "Deployment service" --allow-write
+tnt user access deploy --host lab --groups 1001,1002 --allow-write --confirm deploy
+tnt user ssh-key set deploy --host lab --file ~/.ssh/id_ed25519.pub --add --allow-write
+tnt user ssh-key set deploy --host lab --file ~/.ssh/id_ed25519.pub --allow-write
+tnt user ssh-key remove deploy --host lab --allow-write
+tnt user password deploy --host lab --password-file ~/.config/tnt/deploy-password --allow-write
+tnt user delete deploy --host lab --allow-write --confirm deploy
+tnt tui --host lab
+tnt tui --host lab --allow-write
 ```
 
 ### Shares
@@ -109,20 +159,20 @@ List both protocols independently. Create payloads use v27 field names; the host
 `LEGACY_SHARE`; the default share options accept `hostsallow` and `hostsdeny`.
 
 ```sh
-tnt share smb list --profile lab --json
-tnt share smb show team --profile lab --json
+tnt share smb list --host lab --json
+tnt share smb show team --host lab --json
 cat > smb-share.json <<'JSON'
 {"name":"team","path":"/mnt/tank/team","purpose":"DEFAULT_SHARE","enabled":true,"readonly":false,
  "comment":"Team files","options":{"hostsallow":["10.0.0.0/8"],"hostsdeny":[]}}
 JSON
-tnt share smb create --profile lab --file smb-share.json --allow-write --dry-run
-tnt share nfs list --profile lab --json
+tnt share smb create --host lab --file smb-share.json --allow-write --dry-run
+tnt share nfs list --host lab --json
 cat > nfs-share.json <<'JSON'
 {"path":"/mnt/tank/export","networks":["10.0.0.0/8"],"hosts":[],"maproot_user":"root",
  "security":["SYS"],"ro":true}
 JSON
-tnt share nfs create --profile lab --file nfs-share.json --allow-write
-tnt share smb delete team --profile lab --allow-write --confirm team
+tnt share nfs create --host lab --file nfs-share.json --allow-write
+tnt share smb delete team --host lab --allow-write --confirm team
 ```
 
 Share deletion removes only the share record and leaves files intact. Creation uses remote `filesystem.stat`, refuses
@@ -137,21 +187,21 @@ Cloud-sync credential records and encryption values are masked in both clients. 
 `name` or cloud-sync `description`; snapshot task actions use its numeric ID.
 
 ```sh
-tnt task snapshot list --profile lab --json
+tnt task snapshot list --host lab --json
 cat > snapshot-task.json <<'JSON'
 {"dataset":"tank/home","schedule":{"minute":"00","hour":"02","dom":"*","month":"*","dow":"*"},
  "lifetime_value":14,"lifetime_unit":"DAY","naming_schema":"daily-%Y-%m-%d_%H-%M","enabled":true}
 JSON
-tnt task snapshot create --profile lab --file snapshot-task.json --allow-write
-tnt task snapshot run 1 --profile lab --allow-write
-tnt task snapshot disable 1 --profile lab --allow-write
-tnt task snapshot delete 1 --profile lab --allow-write --confirm 'tank/home [1]'
-tnt task replication list --profile lab --json
-tnt task replication show nightly --profile lab --json
-tnt task replication run nightly --profile lab --allow-write --confirm nightly
-tnt task replication disable nightly --profile lab --allow-write
-tnt task cloudsync list --profile lab --json
-tnt task cloudsync run offsite-copy --profile lab --allow-write --confirm offsite-copy
+tnt task snapshot create --host lab --file snapshot-task.json --allow-write
+tnt task snapshot run 1 --host lab --allow-write
+tnt task snapshot disable 1 --host lab --allow-write
+tnt task snapshot delete 1 --host lab --allow-write --confirm 'tank/home [1]'
+tnt task replication list --host lab --json
+tnt task replication show nightly --host lab --json
+tnt task replication run nightly --host lab --allow-write --confirm nightly
+tnt task replication disable nightly --host lab --allow-write
+tnt task cloudsync list --host lab --json
+tnt task cloudsync run offsite-copy --host lab --allow-write --confirm offsite-copy
 ```
 
 For snapshot task retention, `lifetime_unit` is one of `HOUR`, `DAY`, `WEEK`, `MONTH`, or `YEAR`. Replication task
@@ -166,9 +216,9 @@ Inspect active addresses, interface configuration, installed routes, DNS nameser
 read-only network view:
 
 ```sh
-tnt network show --profile lab
-tnt network show --profile lab --json > network-status.json
-tnt tui --profile lab  # choose System > Network
+tnt network show --host lab
+tnt network show --host lab --json > network-status.json
+tnt tui --host lab  # choose System > Network
 ```
 
 This screen does not edit interface or resolver configuration. The JSON includes `interfaces`, `addresses`, `routes`,
@@ -181,13 +231,13 @@ List installed apps and their running state, installed version, and upgrade avai
 to v27 app lifecycle methods:
 
 ```sh
-tnt app list --profile lab --json
-tnt app show demo --profile lab --json
-tnt app start demo --profile lab --allow-write --dry-run
-tnt app stop demo --profile lab --allow-write
-tnt app restart demo --profile lab --allow-write
-tnt app uninstall demo --profile lab --allow-write --confirm demo
-tnt app uninstall demo --profile lab --allow-write --delete-data-volumes --confirm demo
+tnt app list --host lab --json
+tnt app show demo --host lab --json
+tnt app start demo --host lab --allow-write --dry-run
+tnt app stop demo --host lab --allow-write
+tnt app restart demo --host lab --allow-write
+tnt app uninstall demo --host lab --allow-write --confirm demo
+tnt app uninstall demo --host lab --allow-write --delete-data-volumes --confirm demo
 ```
 
 Restart is an ordered `app.stop` then `app.start` pair. Uninstall is destructive and requires typing the exact app ID;
@@ -200,10 +250,10 @@ Audit results are read-only and paginated. `--since` is inclusive, `--until` is 
 ISO-8601 timestamps with an explicit UTC offset. Use `--offset` to request the next page:
 
 ```sh
-tnt audit --profile lab --service MIDDLEWARE --since 2026-10-27T00:00:00Z \
+tnt audit --host lab --service MIDDLEWARE --since 2026-10-27T00:00:00Z \
   --until 2026-10-29T00:00:00Z --user admin --event USER_LOGIN --limit 100 --offset 0 --json
-tnt audit --profile lab --service MIDDLEWARE --limit 100 --offset 100 --json
-tnt tui --profile lab  # choose System > Audit, set filters, then Refresh/Older/Newer
+tnt audit --host lab --service MIDDLEWARE --limit 100 --offset 100 --json
+tnt tui --host lab  # choose System > Audit, set filters, then Refresh/Older/Newer
 ```
 
 `--service` is one of `MIDDLEWARE`, `S3`, `SMB`, `SUDO`, or `SYSTEM`; one service is queried per request. The viewer
@@ -212,18 +262,19 @@ middleware or syslog tail method. See the [Audit design](DESIGN.md#audit) and [v
 
 ### API Keys
 
-List and rename keys without exposing the stored SCRAM verifier fields. Creation returns a plaintext value that cannot
-be fetched again, so the CLI and TUI show it once in a dedicated warning result. Pass `--write-key` to also create a new
-absolute file with mode `0600`; the file is never overwritten. The returned value is not written to `tnt.secrets.toml`
-or any tnt config automatically:
+List and rename keys without exposing the stored SCRAM verifier fields. The CLI can display the one-time key only in
+non-JSON terminal output. TUI creation requires an absolute output path and writes directly to a new mode-0600 file;
+the raw value never appears on screen. Pass `--write-key` for CLI file output. The TUI updates the paired secrets path
+for the selected host when it uses API-key auth. A password-authenticated host must be changed to `api_key` auth in
+the host editor before tnt can use the new key:
 
 ```sh
-tnt apikey list --profile lab --json
-tnt apikey create deploy-key deploy --profile lab --expires-at 2027-01-01T00:00:00Z \
+tnt apikey list --host lab --json
+tnt apikey create deploy-key deploy --host lab --expires-at 2027-01-01T00:00:00Z \
   --allow-write --write-key /home/me/.config/tnt/deploy.key
-tnt apikey rename 4 automation --profile lab --allow-write
-tnt apikey revoke 4 --profile lab --allow-write --confirm deploy-key
-$EDITOR tnt.toml  # add api_key_file = "/home/me/.config/tnt/deploy.key" under [profiles.lab]
+tnt apikey rename 4 automation --host lab --allow-write
+tnt apikey revoke 4 --host lab --allow-write --confirm deploy-key
+tnt hosts edit lab --api-key-file /home/me/.config/tnt/deploy.key
 ```
 
 Do not pass the raw key as a command argument or paste it into shell history. v27 exposes no separate revoke method;
@@ -238,8 +289,8 @@ the first release-notes paragraph. Apply the exact version shown; the CLI follow
 separate action:
 
 ```sh
-tnt system update check --profile lab --json
-tnt system update apply TrueNAS-27.0.0-RC.2 --profile lab --allow-write \
+tnt system update check --host lab --json
+tnt system update apply TrueNAS-27.0.0-RC.2 --host lab --allow-write \
   --confirm TrueNAS-27.0.0-RC.2
 ```
 
@@ -249,10 +300,10 @@ session count. Running jobs block the action unless `--force-with-jobs` is suppl
 must still be typed exactly. Reboot and shutdown accept an optional 0–86400 second delay:
 
 ```sh
-tnt system reboot --profile lab --delay 60 --allow-write --confirm HOST_NAME_FROM_PLAN
-tnt system shutdown --profile lab --allow-write --confirm HOST_NAME_FROM_PLAN
-tnt system reboot --profile lab --force-with-jobs --allow-write --confirm HOST_NAME_FROM_PLAN
-tnt tui --profile lab  # System > Update, Reboot, or Shutdown; reboot reconnects with bounded retries
+tnt system reboot --host lab --delay 60 --allow-write --confirm HOST_NAME_FROM_PLAN
+tnt system shutdown --host lab --allow-write --confirm HOST_NAME_FROM_PLAN
+tnt system reboot --host lab --force-with-jobs --allow-write --confirm HOST_NAME_FROM_PLAN
+tnt tui --host lab  # System > Update, Reboot, or Shutdown; reboot reconnects with bounded retries
 ```
 
 The TUI checks `system.state` after reboot and stops retrying after bounded attempts; an authentication failure stops
@@ -266,10 +317,10 @@ destination directory must already exist and an existing file is never overwritt
 file is sensitive too:
 
 ```sh
-tnt system config-export /home/me/truenas-config.tar --profile lab --allow-write
-tnt system config-export /home/me/truenas-config-with-ssh.tar --profile lab \
+tnt system config-export /home/me/truenas-config.tar --host lab --allow-write
+tnt system config-export /home/me/truenas-config-with-ssh.tar --host lab \
   --include-root-authorized-keys --allow-write
-tnt tui --profile lab  # System > General Settings
+tnt tui --host lab  # System > General Settings
 ```
 
 Store the export as a credential. See [system action decisions](DESIGN.md#system-actions) and the
@@ -317,9 +368,11 @@ and plan actions.
 ## Explicit live lane
 
 The default pytest config deselects tests marked `live`; `tests/test_live_lane_config.py` asserts that registration and
-default exclusion remain in place. The live test never skips. If selected, it fails unless `TNT_LIVE=1`, the
-`TNT_LIVE_PROFILE` exists in the selected protected config file, and all pool/group/image/VM sizing variables below
-are present. Run it only against an operator-designated v27 test host with a disposable data pool and image available.
+default exclusion remain in place. The live test never skips. If selected, it fails unless `TNT_LIVE=1`, the host named
+by `TNT_LIVE_PROFILE` exists in the selected protected config file with a matching credential in the paired secrets
+file, and all pool/group/image/VM sizing variables below are present. Run it only against an operator-designated v27
+test host with a disposable data pool and image available. Config and secrets resolve independently; set `TNT_CONFIG`
+and/or `TNT_SECRETS` when the corresponding file is outside its explicit, environment, current-directory, and XDG search paths.
 The test creates a dataset, snapshot/clone, user, container, and VM with names prefixed `tnt-live-`, then removes each
 through the same plan/apply guard. It is reserved for It4 acceptance and is intentionally not run during M1, M2, or It1–It3.
 
@@ -336,7 +389,7 @@ export TNT_LIVE_VM_DISK_BYTES=10737418240
 PYTHONPATH=src nice python -m pytest -q -p no:xdist -m live tests/live
 ```
 
-Set `TNT_LIVE_INSECURE=1` only when the selected profile has `tls = "insecure"`; TLS verification stays enabled by
+Set `TNT_LIVE_INSECURE=1` only when the selected host has `tls = "insecure"`; TLS verification stays enabled by
 default. The live test is not a replacement for the default FakeServer suite and it must not be pointed at a host with
 production data or workloads.
 

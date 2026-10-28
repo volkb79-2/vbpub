@@ -1,6 +1,6 @@
 # tnt design
 
-Status: M1 core workflows and M2 management workflows implemented, 2026-10-28. It1–It4 are planned in section 10.
+Status: M1, M2, and It1 are implemented, 2026-10-28. It2–It4 are planned in section 10.
 Container image identity, configured CPU count and memory limits
 are unavailable in the verified v27 container record; VM creation uses separately reviewed device plans because v27
 does not accept devices in `vm.create`. Inputs: the prior-art research (`truenas-tui-research.md`, release-program brief),
@@ -24,14 +24,16 @@ with releases other than v27. tnt targets vanilla TrueNAS; it does not rely on a
 One-way layers; each only imports the ones above it in this list.
 
 ```
-profile.py   Profile, Secret, versioned tnt.toml ownership/mode and key-file checks
+profile.py   Profile, Secret, paired versioned host/secrets files and descriptor checks
+host_store.py serialized paired-file edits, rename, defaults, and atomic replacement
 transport.py RpcClient protocol, connect(), GuardedRpc   (the only module that touches truenas_api_client)
 adapters/    Backend per API generation + method manifest
 domain.py    Plain domain records and formatting
 actions.py   Action, Plan, apply_plan, refusal list      (plan/apply model)
-session.py   Session = profile + guarded rpc + backend; shared workflow query entry point
-cli.py       cli-extended registry: profile, doctor, datasets, snapshots, shares, users, containers, VMs, TUI
-tui/         Textual app: Tree navigation, workflow views, action list, command palette and plan dialogs
+session.py   Session = host profile + guarded rpc + backend; shared workflow query entry point
+session_controller.py host generation, active session, per-host write mode, worker cancellation/drain
+cli.py       cli-extended registry: hosts, doctor, datasets, snapshots, shares, users, containers, VMs, TUI
+tui/         Textual app: host picker, session-bound workers, workflow views, palette and plan dialogs
 ```
 
 The CLI and the TUI both call `Session` methods; the TUI holds no query logic. `build_cli(opener=...)` takes the
@@ -56,7 +58,20 @@ session opener so tests substitute a fake-server-backed one.
   `--insecure`, and the TUI then shows a red banner on every screen.
 - Errors from the client are wrapped into one `TransportError(kind, message)` with configured credentials scrubbed.
 
-### 2.2 Version adapters and the method manifest
+### 2.2 Boundary with `scripts/truenas`
+
+The `scripts/truenas` utility is a separate subproject, even though it also wraps the official `truenas_api_client`.
+It has its own CLI lifecycle and currently targets a broader API-generation boundary. tnt is an installable product
+targeting vanilla v27, with a guarded plan/apply surface, a multi-host TUI, and a paired config/secrets contract. It
+does not import `scripts/truenas` or copy its environment-based credential handling. Both projects use the same
+upstream transport implementation; that is the shared protocol boundary.
+
+If a later change needs common code, first extract a small neutral package with its own tests and dependency contract.
+Candidates are generic job tracking/progress helpers and the lazy loading pattern for the official client. Host
+selection, config search, credential storage, and error policy stay owned by tnt because their user and security
+contracts differ.
+
+### 2.3 Version adapters and the method manifest
 
 The adapter boundary remains extensible, but this release ships only v27. `adapters.select(version)` parses the major
 from `system.version` and selects `V27`; every other major raises `UnsupportedVersion` (fail closed). The supported
@@ -74,7 +89,7 @@ without admitting them to plans.
   `container.start`, so its plan is destructive and requires typing the container name.
 - Planned: a drift test that diffs manifests against the fetched reference index (TNT-23, opt-in, outside the gate).
 
-### 2.3 Domain and the partition-data question
+### 2.4 Domain and the partition-data question
 
 `Disk.partitions` is `None` when the partition data is unknown and `()` only when it is corroborated; the free-space
 figure is `free_upper_bound_bytes` (CLI column "FREE (UPPER BOUND)" shown as `<= 411.5 GiB`, JSON key
@@ -88,7 +103,7 @@ that does have a partition. The M0 adapter asks `disk.query` with `extra.pools` 
 cannot expose partitions, the source becomes an SSH `lsblk --json` / `sgdisk -p` fallback behind the same `Backend`
 method (section 8.1).
 
-### 2.4 Action model (plan/apply)
+### 2.5 Action model (plan/apply)
 
 `Action(id, kind, title, calls, probe, confirm_target)`; `kind` is READ, MUTATE or DESTRUCTIVE. `id` is an
 ACTION-MATRIX row id (A-xx/B-xx) or a TNT id. Structural rules (`validate_action`, at plan and again at apply): an
@@ -228,11 +243,11 @@ or syslog tail API, so tnt does not read logs through shell commands or filesyst
 
 The API key list uses a v27 `select` projection and returns only ID, name, owner, timestamps, locality, and revocation
 status; salt and SCRAM verifier fields never reach ordinary CLI/TUI display. Create uses `api_key.create` and places
-the returned raw value only in a one-time CLI warning output or a dedicated TUI dialog. The TUI clears the dialog's
-value on close. The normal plan renderer redacts key/verifier field names, and create results bypass generic action
-logging/formatting. An optional absolute `--write-key` path is created exclusively with mode `0600`; it is never
-overwritten and is never added to `tnt.secrets.toml` or `tnt.toml` automatically. The operator may configure that path
-as `api_key_file` afterward.
+the returned raw value only in a one-time non-JSON CLI warning output. The TUI requires a private output path and writes
+the returned value directly to a new mode-0600 file without displaying it. For an API-key-authenticated host, the TUI
+updates `tnt.secrets.toml` to point to that file for the next connection. The normal plan renderer redacts key/verifier
+field names, and create results bypass generic action logging/formatting. CLI `--write-key` is optional, exclusive,
+and never overwrites an existing path or edits either config file automatically.
 
 Rename calls `api_key.update(id, {name, reset: false})`; tnt explicitly avoids the API's key-reset option because a
 reset also returns new plaintext key material. v27 has no public revoke RPC. The user-facing revoke action is the
@@ -273,16 +288,21 @@ must be stored as a credential. See [v27 method evidence](API-METHODS-V27.md#sys
 ## 5. UX
 
 - Left navigation is a Textual `Tree` (arrows, enter, expand/collapse), content pane on the right, a banner line with
-  `profile host generation version read-only|WRITE ENABLED [TLS VERIFICATION OFF]`.
+  selected host name, API generation, read-only/write-enabled mode, session generation, and insecure-TLS warning.
 - Command palette: Textual's built-in `ctrl+p`; `get_system_commands` adds a "Go to A > B" entry for every leaf and
-  an entry for each available workflow action.
-- Keys: `ctrl+n` menu, `r` refresh (app-level so it works from the menu), `?` keys, `q` quit. Chords are not used.
+  an entry for each available workflow action, plus host selection and write-mode switching.
+- Keys: `ctrl+n` menu, `h` host picker, `w` toggle the selected host's write mode, `r` refresh, `?` keys, `q` quit.
 - Per-screen action list (footer plus palette), each action opening the plan modal with the exact calls.
-- Long reads run in worker threads (`@work(thread=True)`); the client is synchronous and thread-safe enough for one
-  worker at a time (`exclusive=True`). Container reads subscribe once to v27 `container.metrics`, wait up to 2.5
-  seconds, then unsubscribe. Missing metrics remain an explicit status, never a zero value; continuous refreshes are
-  still deferred (TNT-25).
-- Target host is selected by profile only; no URL or key is ever typed into the TUI.
+- Reads, plan probes, and applies run in worker threads. Each captures a session identity and generation. A host switch
+  increments the generation before cancellation, invalidates open plans, asks old-generation workers to stop, waits
+  for them to drain, closes the old session, then opens the new one. Results posted after a switch are rejected on the
+  UI thread by generation and session identity. Apply checks cancellation between its RPC calls.
+- Connection testing opens a temporary read-only session and closes it without replacing the selected session.
+  Write mode is stored independently per host; changing it reopens that host session in the chosen mode.
+- The picker shows host name, URL, description, and last connection status. Password and API-key inputs are hidden;
+  a newly created API key is written directly to a mode-0600 file and is never shown in the TUI. SSH key paths are not
+  displayed. Container reads subscribe once to v27 `container.metrics`, wait up to 2.5 seconds, then unsubscribe.
+  Missing metrics remain an explicit status, never a zero value; continuous refreshes are still deferred (TNT-25).
 
 ## 6. Version policy
 
@@ -291,34 +311,59 @@ SystemCommands, Pilot), `websockets>=15` in the test extra, `truenas_api_client`
 
 ## 7. Secrets
 
-`tnt.toml` has required `schema_version = 1` and may hold one or more inline API keys or passwords by operator choice;
-API keys may instead use a private `api_key_file`. The selected config must be a regular file owned by the current user
-and exactly mode `0600`. Config search is `--config`, `TNT_CONFIG`, `./tnt.toml`, then
-`$XDG_CONFIG_HOME/tnt/tnt.toml`. API keys also retain the `TNT_API_KEY_FILE` and `TNT_API_KEY` fallback. Secret values
-are wrapped in `Secret`, whose `repr` and `str` redact; `profile show` returns `***`; action plans redact password and
-SSH key fields; transport and RPC errors scrub credentials. Passwords are never accepted on argv; password prompts do
-not echo and password files are private.
+`tnt.toml` and `tnt.secrets.toml` are schema-versioned independently at version `1`. The former contains only
+`default_host` and `[hosts.NAME]` connection facts; any credential key or credential-bearing nested value is refused.
+The latter contains exactly one of `api_key`, `api_key_file`, or `password` per configured host. `api_key_file` is an
+absolute path stored only in the secrets file. Environment credential fallbacks are not used.
+
+Config and secrets are resolved independently with the same precedence: the explicit `--config`/`--secrets` path,
+the matching `$TNT_CONFIG`/`$TNT_SECRETS`, an existing current-directory file, then
+`$XDG_CONFIG_HOME/tnt/` (or `~/.config/tnt/`). The files may live in different directories and pair by host name; supply
+an explicit path or matching environment variable for whichever file is outside its own search path. This avoids making a credential
+path an accidental consequence of where a non-secret config was found.
+
+Both TOML files and any API-key file must be regular files owned by the current user with exact mode `0600` and are
+opened with no-follow semantics. Ownership, type, and mode are checked with `fstat` on the descriptor that is read.
+The config store serializes updates with file locks, stages mode-0600 replacements, fsyncs them, and restores prior
+contents if a paired replacement fails. Host rename updates the config and matching secret table together.
+
+Credential values are wrapped in `Secret`, whose `repr` and `str` redact. `Profile` repr omits SSH key and known-host
+paths. Host list/show and JSON output only report whether credentials or SSH files are configured. Transport, host
+connection status, and RPC errors scrub credential material. Passwords and API keys are never accepted in argv.
+Password and API-key prompts do not echo; API-key creation in the TUI writes directly to a private file rather than
+showing the one-time key. The CLI's one-time key output is disabled in JSON mode.
 
 ```toml
 schema_version = 1
-default = "lab"
+default_host = "lab"
 
-[profiles.lab]
+[hosts.lab]
 url = "wss://truenas.example.invalid/api/current"
 username = "admin"
 auth = "api_key"
-api_key = "REPLACE_WITH_API_KEY"
 tls = "verify"
 ssh_user = "admin"
-ssh_key_files = ["~/.ssh/id_ed25519"]
-ssh_known_hosts = "~/.ssh/known_hosts"
+ssh_key_files = ["/home/me/.ssh/id_ed25519"]
+ssh_known_hosts = "/home/me/.ssh/known_hosts"
+description = "Primary TrueNAS host"
+tags = ["primary"]
 
-[profiles.password-auth]
+[hosts.password-auth]
 url = "wss://nas2.example.invalid/api/current"
 username = "operator"
 auth = "password"
-password = "REPLACE_WITH_PASSWORD"
 tls = "verify"
+```
+
+```toml
+schema_version = 1
+
+[hosts.lab]
+api_key = "REPLACE_WITH_API_KEY"
+# Or use api_key_file = "/home/me/.config/tnt/lab.key".
+
+[hosts.password-auth]
+password = "REPLACE_WITH_PASSWORD"
 ```
 
 ## 8. Safety rules and the refusal list
@@ -338,9 +383,9 @@ Default-deny, enforced in the client object itself, not only in the action layer
   process, it is not a sandbox against hostile code that can import private implementation details.
 - The grant is bound to the executing thread and asyncio task, so another thread or task cannot consume a plan call
   (`foreign-caller`). RPC calls share a lock: a concurrent read waits while an RPC is in flight, then can run between
-  plan calls. Plans are session-bound and single-use (section 2.4).
+  plan calls. Plans are session-bound and single-use (section 2.5).
 - `--allow-write` therefore changes nothing by itself: every change goes through plan/apply with its gates.
-- DESTRUCTIVE actions need the typed target name; the kind is tied to the methods (section 2.4).
+- DESTRUCTIVE actions need the typed target name; the kind is tied to the methods (section 2.5).
 - `refusal_for` (second wall, for calls an action declares by mistake):
   - all `core.*` except `core.get_methods` (`core.call`/`core.bulk` run any method); `system.reboot|shutdown`; any
     `auth.*` except `auth.me` and `auth.mechanism_choices`;
@@ -417,7 +462,7 @@ B-01 is a backlog item (TNT-03); no storage SSH fallback exists in the current p
 | M0 | Historical scaffold: transport, profile, v27 adapter, plan/apply model, `doctor`/`profile`/`disks`/`tui`, Storage > Disks, fake server | complete |
 | M1 | Core workflows: configuration and credentials, v27 default-deny manifest, datasets, snapshots, users, containers, and VMs in CLI/TUI | implemented; container metadata is limited to v27 fields and VM creation is staged |
 | M2 | Management workflows: SMB/NFS shares, data protection tasks, Network, Apps, Audit, API Keys, and guarded System actions | implemented; generic middleware/syslog tail and scrub/SMART task management are absent from v27 or deferred |
-| It1 | Paired multi-host configuration/secrets and the session controller: host generation, plan invalidation, worker draining, stale-callback rejection, connection testing, and per-host write mode | planned; controller before picker |
+| It1 | Paired multi-host configuration/secrets and the session controller: host generation, plan invalidation, worker draining, stale-callback rejection, connection testing, and per-host write mode | implemented |
 | It2 | Non-blocking job engine and read-only core views: Dashboard, Alerts, Jobs, Services, Storage health, and global view UX | planned; job engine first, then views |
 | It3 | Hardened interactive SSH hand-off with pinned host-key sources and no arbitrary remote command mode | planned |
 | It4 | Vanilla-v27 live acceptance, remaining hardening and consistency review, estate registration, and release readiness | planned; live run is controller-operated |

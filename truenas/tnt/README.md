@@ -11,15 +11,15 @@ applied through the default deny guard. Destructive actions require typing the t
 for the verified method signatures. The original storage action matrix remains available in
 [`docs/ACTION-MATRIX.snapshot.md`](docs/ACTION-MATRIX.snapshot.md).
 Scope and safety choices are explained in the [design guide](docs/DESIGN.md#1-goals-and-non-goals); copyable setup and
-workflow examples are in the [consumer guide](docs/CONSUMERS.md#configure-a-profile).
+workflow examples are in the [consumer guide](docs/CONSUMERS.md#configure-multiple-hosts).
 
-M1 core workflows and M2 management workflows are implemented. The planned work after them is It1 multi-host
-configuration and session control, It2 the non-blocking job engine and read-only overview views, It3 hardened SSH
-hand-off, and It4 vanilla-v27 acceptance. See the [milestone plan](docs/DESIGN.md#10-milestones).
+M1 core workflows, M2 management workflows, and It1 multi-host configuration and session control are implemented.
+The planned work after them is It2 the non-blocking job engine and read-only overview views, It3 hardened SSH hand-off,
+and It4 vanilla-v27 acceptance. See the [milestone plan](docs/DESIGN.md#10-milestones).
 
 At connection time tnt checks the v27 WebSocket method list. Methods missing from a host are reported by
 `doctor --online` and refused if a workflow needs them; a method-name match does not grant an RBAC role. See the
-[capability-check design](docs/DESIGN.md#22-version-adapters-and-the-method-manifest) and the
+[capability-check design](docs/DESIGN.md#23-version-adapters-and-the-method-manifest) and the
 [verified v27 contract](docs/API-METHODS-V27.md#v27-adapter-contract).
 
 ## Install
@@ -30,55 +30,83 @@ pip install 'tnt[tui]'        # the CLI alone: pip install tnt
 
 `truenas_api_client` (LGPL-3.0, official) is installed from a pinned git commit; the pin rationale is in `pyproject.toml`.
 
-## Configure a host
+## Configure multiple hosts
 
-Copy [`tnt.toml.example`](tnt.toml.example) to `tnt.toml`, fill in one or more profiles, then set mode `0600`:
+Copy both committed examples and set each file to mode `0600`:
 
 ```bash
 cp tnt.toml.example tnt.toml
+cp tnt.secrets.toml.example tnt.secrets.toml
 chmod 600 tnt.toml
+chmod 600 tnt.secrets.toml
 ```
 
-The selected file must be a regular file owned by the current user with exactly mode `0600`; tnt refuses to start if
-that check fails. Config lookup order is `--config PATH`, `$TNT_CONFIG`, `./tnt.toml`, then
-`$XDG_CONFIG_HOME/tnt/tnt.toml` (or `~/.config/tnt/tnt.toml` when `XDG_CONFIG_HOME` is unset). `ws://` is refused.
-TLS verification is on by default. A profile with `tls = "insecure"` also requires `--insecure` on each command.
+The non-secret `tnt.toml` stores `default_host` and one `[hosts.NAME]` table per host. Credentials belong only in the
+paired `tnt.secrets.toml` under matching `[hosts.NAME]` tables. Both files must be regular files owned by you with
+exact mode `0600`; symlinks are refused. tnt validates the opened descriptors before reading. Credentials in
+`tnt.toml` are refused. An `api_key_file` path belongs in the secrets file, and the referenced key file must also be
+owned by you with exact mode `0600`.
 
-Credentials may be inline by operator choice; see the [secret-handling rationale](docs/DESIGN.md#7-secrets). They never
-appear in command arguments, logs, exceptions, `profile show`, read JSON, or ordinary TUI screens. The one-time API key
-creation result is shown only in a dedicated warning view/output and is never added to the local config automatically.
-`profile show` masks configured secrets as `***`.
+Config and secrets resolve independently. Each uses its explicit `--config` or `--secrets` path first, then its
+`TNT_CONFIG` or `TNT_SECRETS` environment variable, then an existing file in the current directory, then
+`$XDG_CONFIG_HOME/tnt/` (or `~/.config/tnt/`). The secrets file is paired with config by matching host name and may
+live in a different directory. `ws://` is refused. TLS verification is on by default. A host with `tls = "insecure"`
+also requires `--insecure` for each connection and a prominent warning acknowledgement when saving that mode.
+
+Set `default_host` to connect automatically. If you leave it unset and configure several hosts, `tnt tui` opens the
+host picker and CLI commands require `--host NAME`, showing the available names on error. A single configured host is
+selected automatically. Use `tnt hosts list|show|add|edit|remove|test|set-default` to manage the pair. The TUI shows
+host name, URL, description, and last connection status; `h` or the command palette opens the picker, and `w` changes
+that host's read-only/write-enabled session. Switching hosts invalidates old plans, drains host-bound work, closes
+the old session, then connects the new one. SSH connection settings may be recorded now; the SSH hand-off is It3.
+
+Credentials never appear in argv, logs, exceptions, `hosts show`, JSON, or TUI output. Password and API-key fields in
+the TUI are hidden while editing. API-key creation writes the one-time key directly to a new mode-0600 file in the
+TUI; the CLI can display its one-time result only in non-JSON terminal output. See the [secret-handling rationale](docs/DESIGN.md#7-secrets).
 
 ```toml
 schema_version = 1
-default = "lab"
+default_host = "lab"
 
-[profiles.lab]
+[hosts.lab]
 url = "wss://nas.example.invalid/api/current"
 username = "admin"
 auth = "api_key"
-api_key = "REPLACE_WITH_API_KEY" # Or use api_key_file = "/home/me/.config/tnt/lab.key".
 tls = "verify"
 ssh_user = "admin"
-ssh_key_files = ["~/.ssh/id_ed25519"]
-ssh_known_hosts = "~/.ssh/known_hosts"
+ssh_key_files = ["/home/me/.ssh/id_ed25519"]
+ssh_known_hosts = "/home/me/.ssh/known_hosts"
+description = "Primary TrueNAS host"
+tags = ["primary", "storage"]
 
-[profiles.password-auth]
+[hosts.password-auth]
 url = "wss://nas2.example.invalid/api/current"
 username = "operator"
 auth = "password"
-password = "REPLACE_WITH_PASSWORD"
 tls = "verify"
 ```
 
-`schema_version` is required and currently `1`. The example contains placeholders only. API key authentication uses the pinned client's SCRAM flow. Password
-authentication uses its supported `PASSWORD_PLAIN` login flow. Authentication failures are fatal and never retried.
-SSH private-key and known-host paths remain profile facts for optional SSH workflows. M1 user-key edits read an explicit
-OpenSSH `.pub` file or validated public-key text; private key material is never accepted or printed.
+```toml
+schema_version = 1
 
-`tnt apikey list` masks TrueNAS key verifier fields. `create` shows the raw value once in a bold-warning result; use
-`--write-key` to create a new mode-0600 file without overwriting an existing file. tnt never writes the returned value
-to `tnt.secrets.toml`; add only the private file's `api_key_file` path to a profile when you choose to use the key.
+[hosts.lab]
+api_key = "REPLACE_WITH_API_KEY"
+# Or use api_key_file = "/home/me/.config/tnt/lab.key".
+
+[hosts.password-auth]
+password = "REPLACE_WITH_PASSWORD"
+```
+
+The first example is `tnt.toml`; the second is `tnt.secrets.toml`. `schema_version` is required and currently `1`.
+The examples contain placeholders only. API keys use the pinned client's SCRAM flow. Password authentication uses its
+supported `PASSWORD_PLAIN` login flow. Authentication failures are fatal and never retried. SSH private-key and
+known-host paths are recorded for the later SSH hand-off. M1 user-key edits read an explicit OpenSSH `.pub` file or
+validated public-key text; private key material is never accepted or printed.
+
+`tnt apikey list` masks TrueNAS key verifier fields. CLI `create` shows the raw value once in non-JSON terminal output;
+use `--write-key` to create a new mode-0600 file without overwriting an existing file. TUI `create` requires an output
+path and writes the key directly to that private file without displaying it. With API-key auth, the TUI updates the
+selected host's `api_key_file` entry for its next connection. The value is never written to `tnt.toml`.
 v27 has no separate revoke RPC, so `apikey revoke` uses destructive `api_key.delete` and requires the current name as
 typed confirmation. See the [API key design](docs/DESIGN.md#api-keys), [consumer workflow](docs/CONSUMERS.md#api-keys),
 and [v27 method evidence](docs/API-METHODS-V27.md#api-keys).
@@ -87,38 +115,38 @@ and [v27 method evidence](docs/API-METHODS-V27.md#api-keys).
 
 ```bash
 tnt --version
-tnt profile list
-tnt profile show lab
-tnt doctor --online --profile lab       # one login, no retry
-tnt dataset list --profile lab --json
-tnt dataset create tank/home --profile lab --type filesystem --compression LZ4 --allow-write
-tnt snapshot create tank/home nightly --profile lab --allow-write
-tnt snapshot rollback tank/home@nightly --profile lab --allow-write --confirm tank/home@nightly
-tnt container list --profile lab --json
-tnt container create web --profile lab --image nginx --image-version latest --pool tank --no-autostart --allow-write
-tnt container restart web --profile lab --allow-write --confirm web
-tnt vm list --profile lab --json
-tnt vm create guest --profile lab --memory 2048 --vcpus 2 --disk-zvol tank/vms/guest --disk-size 10737418240 --allow-write
-tnt vm console guest --profile lab --json
-tnt user list --profile lab --json
-tnt user create deploy "Deploy user" --profile lab --group 1001 --password-disabled --allow-write
-tnt user update deploy --profile lab --full-name "Deployment service" --allow-write
-tnt user access deploy --profile lab --groups 1001,1002 --allow-write --confirm deploy
-tnt user ssh-key set deploy --profile lab --file ~/.ssh/id_ed25519.pub --add --allow-write
-tnt user password deploy --profile lab --password-file /home/me/.config/tnt/new-password --allow-write
-tnt user ssh-key remove deploy --profile lab --allow-write
-tnt user delete deploy --profile lab --allow-write --confirm deploy
-tnt app list --profile lab --json
-tnt app restart demo --profile lab --allow-write
-tnt app uninstall demo --profile lab --allow-write --confirm demo
-tnt network show --profile lab --json
-tnt audit --profile lab --user admin --event USER_LOGIN --limit 100 --json
-tnt apikey list --profile lab --json
-tnt apikey create deploy-key deploy --profile lab --expires-at 2027-01-01T00:00:00Z --allow-write --write-key /home/me/.config/tnt/deploy.key
-tnt apikey rename 4 automation --profile lab --allow-write
-tnt apikey revoke 4 --profile lab --allow-write --confirm automation
-tnt tui --profile lab
-tnt tui --profile lab --allow-write
+tnt hosts list
+tnt hosts show lab
+tnt doctor --online --host lab       # one login, no retry
+tnt dataset list --host lab --json
+tnt dataset create tank/home --host lab --type filesystem --compression LZ4 --allow-write
+tnt snapshot create tank/home nightly --host lab --allow-write
+tnt snapshot rollback tank/home@nightly --host lab --allow-write --confirm tank/home@nightly
+tnt container list --host lab --json
+tnt container create web --host lab --image nginx --image-version latest --pool tank --no-autostart --allow-write
+tnt container restart web --host lab --allow-write --confirm web
+tnt vm list --host lab --json
+tnt vm create guest --host lab --memory 2048 --vcpus 2 --disk-zvol tank/vms/guest --disk-size 10737418240 --allow-write
+tnt vm console guest --host lab --json
+tnt user list --host lab --json
+tnt user create deploy "Deploy user" --host lab --group 1001 --password-disabled --allow-write
+tnt user update deploy --host lab --full-name "Deployment service" --allow-write
+tnt user access deploy --host lab --groups 1001,1002 --allow-write --confirm deploy
+tnt user ssh-key set deploy --host lab --file ~/.ssh/id_ed25519.pub --add --allow-write
+tnt user password deploy --host lab --password-file /home/me/.config/tnt/new-password --allow-write
+tnt user ssh-key remove deploy --host lab --allow-write
+tnt user delete deploy --host lab --allow-write --confirm deploy
+tnt app list --host lab --json
+tnt app restart demo --host lab --allow-write
+tnt app uninstall demo --host lab --allow-write --confirm demo
+tnt network show --host lab --json
+tnt audit --host lab --user admin --event USER_LOGIN --limit 100 --json
+tnt apikey list --host lab --json
+tnt apikey create deploy-key deploy --host lab --expires-at 2027-01-01T00:00:00Z --allow-write --write-key /home/me/.config/tnt/deploy.key
+tnt apikey rename 4 automation --host lab --allow-write
+tnt apikey revoke 4 --host lab --allow-write --confirm automation
+tnt tui --host lab
+tnt tui --host lab --allow-write
 ```
 
 Each write command requires `--allow-write`; destructive commands also require `--confirm TARGET`. Use `--dry-run` to
@@ -173,11 +201,11 @@ If the connection drops after reboot or shutdown submission, the TUI treats the 
 power action, and asks you to verify host state before retrying.
 
 ```sh
-tnt system update check --profile lab --json
-tnt system update apply TrueNAS-27.0.0-RC.2 --profile lab --allow-write --confirm TrueNAS-27.0.0-RC.2
-tnt system reboot --profile lab --delay 60 --allow-write --confirm HOST_NAME_FROM_PLAN
-tnt system shutdown --profile lab --allow-write --confirm HOST_NAME_FROM_PLAN
-tnt system config-export /home/me/truenas-config.tar --profile lab --allow-write
+tnt system update check --host lab --json
+tnt system update apply TrueNAS-27.0.0-RC.2 --host lab --allow-write --confirm TrueNAS-27.0.0-RC.2
+tnt system reboot --host lab --delay 60 --allow-write --confirm HOST_NAME_FROM_PLAN
+tnt system shutdown --host lab --allow-write --confirm HOST_NAME_FROM_PLAN
+tnt system config-export /home/me/truenas-config.tar --host lab --allow-write
 ```
 
 Configuration export writes a new mode-0600 tar file, includes the TrueNAS secret seed, and refuses overwrite. Store
