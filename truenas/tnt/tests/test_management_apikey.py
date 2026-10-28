@@ -372,3 +372,50 @@ def test_api_key_tui_handles_empty_selection_bad_create_result_and_revoke():
             asyncio.run(go())
         finally:
             session.close()
+
+
+def test_api_key_tui_reports_query_errors_and_refuses_rename_without_a_valid_selection(monkeypatch):
+    import asyncio
+
+    with FakeServer() as server:
+        server.fail["api_key.query"] = "synthetic query failure"
+        session = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True, allow_write=True)
+
+        async def go():
+            app = TntApp(session)
+            async with app.run_test(size=(160, 50)) as pilot:
+                tree = app.query_one("#nav", Tree)
+                key_node = None
+
+                def find(node):
+                    nonlocal key_node
+                    for child in node.children:
+                        if child.data and child.data.key == "api-keys":
+                            key_node = child
+                            return
+                        find(child)
+
+                find(tree.root)
+                tree.select_node(key_node)
+                await _wait_for(pilot, lambda: "synthetic query failure" in str(
+                    app.query_one("#apikey-note", Static).render()), count=300)
+                assert "synthetic-stored-key" not in str(app.query_one("#apikey-note", Static).render())
+
+                server.fail.pop("api_key.query")
+                server.api_keys[1] = _row()
+                view = app.query_one(ApiKeysView)
+                view.action_refresh()
+                await _wait_for(pilot, lambda: view.query_one("#apikey-table", DataTable).row_count == 1)
+                monkeypatch.setattr(DataTable, "coordinate_to_cell_key", lambda *_: None)
+                assert view._selected() is None
+
+                app.query_one("#apikey-operation", Select).value = "rename"
+                view.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="apikey-plan")))
+                assert "select an API key" in str(app.query_one("#apikey-note", Static).render())
+                assert not any(row["method"] in {"api_key.create", "api_key.update", "api_key.delete"}
+                               for row in server.requests)
+
+        try:
+            asyncio.run(go())
+        finally:
+            session.close()

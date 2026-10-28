@@ -241,7 +241,10 @@ tnt tui --profile lab  # System > Update, Reboot, or Shutdown; reboot reconnects
 ```
 
 The TUI checks `system.state` after reboot and stops retrying after bounded attempts; an authentication failure stops
-retries immediately. Do not start a system action outside an approved maintenance window.
+retries immediately. If the connection closes before the reboot request returns, tnt checks the host without resending
+the action. It reports the outcome as uncertain unless a boot-state transition is observed; inspect host state before
+retrying. A lost shutdown response is also uncertain and is never resubmitted. Do not start a system action outside an
+approved maintenance window.
 
 Configuration export writes a new local `.tar` file with mode `0600`. It includes the TrueNAS secret seed. The
 destination directory must already exist and an existing file is never overwritten. The optional root authorized-keys

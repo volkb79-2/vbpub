@@ -16,6 +16,8 @@
   optional file storage is exclusive mode `0600`, and verifier fields stay out of ordinary listings and plans.
 - Added destructive system update, reboot, and shutdown workflows with a FULL_ADMIN job-visibility preflight, running
   VM/container and SMB-session summary, typed confirmation, update train binding/progress, and bounded TUI reconnect.
+  A lost power-action reply now triggers bounded state checks without resubmitting the action; unconfirmed outcomes
+  remain explicit.
   Added configuration tar export to a new local mode-0600 file; the export contains the secret seed and its download
   URL is never displayed. System and config-export live checks are documented but were not run.
 - Added schema-versioned `tnt.toml` profiles with explicit config search order, current-user ownership and exact mode-0600 checks,

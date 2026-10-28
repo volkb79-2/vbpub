@@ -510,6 +510,66 @@ def test_reboot_tui_bounds_reconnect_and_stops_on_non_connection_failures(mode, 
                 await _wait_for(pilot, lambda: expected in str(
                     app.screen.query_one("#system-power-note", Static).render()), count=300)
                 assert reconnect_calls == calls
+                assert server.called().count("system.reboot") == 1
+
+        try:
+            asyncio.run(go())
+        finally:
+            session.close()
+
+
+@pytest.mark.parametrize(("operation", "reconnect_calls"), [("reboot", 1), ("shutdown", 0)])
+def test_power_action_call_error_is_uncertain_and_never_resubmitted(operation, reconnect_calls, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from tnt.tui.system import SystemPowerView
+
+    with FakeServer() as server:
+        if operation == "reboot":
+            server._system_reboot = lambda _params: True
+        session = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True, allow_write=True)
+        original_call = session.rpc._inner.call
+
+        def lose_power_reply(method, *params, **kwargs):
+            if method in {"system.reboot", "system.shutdown"}:
+                try:
+                    original_call(method, *params, **kwargs)
+                finally:
+                    server.system_state = "READY"
+                raise RuntimeError("synthetic lost reply after the power request")
+            return original_call(method, *params, **kwargs)
+
+        monkeypatch.setattr(session.rpc._inner, "call", lose_power_reply)
+        reconnect_count = 0
+
+        def reconnect(profile, **kwargs):
+            nonlocal reconnect_count
+            reconnect_count += 1
+            return open_session(server.profile(profile.name), secret=server.secret(), allow_loopback_ws=True, **kwargs)
+
+        async def go():
+            app = TntApp(session, session_opener=reconnect, reconnect_delays=(0,))
+            async with app.run_test(size=(160, 50)) as pilot:
+                _select_key(app, operation)
+                await _wait_for(pilot, lambda: "destructive" in str(
+                    app.screen.query_one("#system-power-note", Static).render()), count=300)
+                app.screen.query_one("#system-power-delay", Input).value = "0"
+                app.screen.query_one(SystemPowerView).on_button_pressed(
+                    SimpleNamespace(button=SimpleNamespace(id="system-power-plan")))
+                await _wait_for(pilot, lambda: isinstance(app.screen, PlanReview), count=300)
+                app.screen.query_one("#plan-confirm", Input).value = "test"
+                app.screen.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="plan-apply")))
+                def final_note_visible():
+                    if isinstance(app.screen, PlanReview):
+                        return False
+                    note = str(app.screen.query_one("#system-power-note", Static).render())
+                    if operation == "reboot":
+                        return "Host is reachable and READY" in note or "automatic reconnect stopped" in note
+                    return "outcome is uncertain" in note
+
+                await _wait_for(pilot, final_note_visible, count=300)
+                assert reconnect_count == reconnect_calls
+                assert server.called().count(f"system.{operation}") == 1
 
         try:
             asyncio.run(go())

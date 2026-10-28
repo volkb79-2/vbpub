@@ -153,6 +153,8 @@ Update check shows the current train/version, the exact available target train/v
 uses the shown version as typed confirmation and leaves reboot separate. Reboot and shutdown show active jobs, running
 VMs and containers, and the active SMB-session count; any running job blocks apply unless `--force-with-jobs` is
 explicit. Every power/update action still requires typing the host name or target version shown in its plan.
+If the connection drops after reboot or shutdown submission, the TUI treats the result as uncertain, never resubmits the
+power action, and asks you to verify host state before retrying.
 
 ```sh
 tnt system update check --profile lab --json

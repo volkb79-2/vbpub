@@ -458,6 +458,7 @@ class PlanReview(ModalScreen[None]):
     @work(thread=True, exclusive=True)
     def _apply_system_plan(self, confirmation: str | None) -> None:
         methods = {call.method for call in self.plan.action.calls}
+        calls_before = len(self.session.rpc.calls)
         try:
             if "update.run" in methods:
                 result = apply_plan(
@@ -466,7 +467,14 @@ class PlanReview(ModalScreen[None]):
             else:
                 result = apply_plan(self.plan, self.session.rpc, allow_write=True, typed_confirmation=confirmation)
         except Exception as exc:
-            self.app.call_from_thread(self._system_apply_failed, str(exc))
+            # Power actions can close the websocket after TrueNAS accepts the request. The request result is
+            # then unknown: never submit it again, but dismiss the plan and let the power view check the host.
+            power_methods = methods & {"system.reboot", "system.shutdown"}
+            power_was_called = any(method in power_methods for method, _params in self.session.rpc.calls[calls_before:])
+            if power_was_called:
+                self.app.call_from_thread(self._system_apply_uncertain)
+            else:
+                self.app.call_from_thread(self._system_apply_failed, str(exc))
         else:
             self.app.call_from_thread(self._system_apply_succeeded, result)
 
@@ -482,6 +490,11 @@ class PlanReview(ModalScreen[None]):
         self.query_one("#plan-apply", Button).disabled = False
         self.query_one("#plan-progress", Static).update("")
         self.query_one("#plan-render", Static).update(f"Plan refused: {message}\n\n{self.plan.render()}")
+
+    def _system_apply_uncertain(self) -> None:
+        self.dismiss()
+        if self.parent_view is not None:
+            self.parent_view._plan_apply_uncertain(self.plan)
 
     def _system_apply_succeeded(self, result: Any) -> None:
         self.dismiss()

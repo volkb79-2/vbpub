@@ -232,7 +232,11 @@ matches its version, manifest, release notes, and release-notes URL to exactly o
 Ambiguous or incomplete records refuse the operation. Update apply binds that exact version and train into
 `update.run`, sets `reboot=false`, and follows the returned job's progress. Reboot and shutdown accept a 0–86400 second
 delay. After reboot, the TUI waits between fresh login attempts, checks `system.state`, and stops after five bounded
-attempts; authentication errors stop retries immediately to respect the middleware login cooldown.
+attempts; authentication errors stop retries immediately to respect the middleware login cooldown. If the reboot RPC
+loses its connection before returning, tnt treats submission as uncertain and checks the host without resending the
+power action. It reports success only after observing a boot-state transition; an immediate READY response remains
+uncertain and requires the operator to inspect host state before retrying. A lost shutdown response is reported as
+uncertain and is never resubmitted.
 
 General Settings offers configuration export through `core.download("config.save", [{secretseed: true, ...}],
 filename, false)`. The one-time download URL is not displayed. tnt requires a READY host, validates that the URL is

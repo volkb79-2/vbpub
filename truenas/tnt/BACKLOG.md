@@ -41,7 +41,7 @@ non-execution requirement.
 | TNT-43 | [DONE M2] System > Network: read-only interface/address/route/DNS/default-gateway view through verified v27 methods | M2 | S |
 | TNT-45 | [DONE M2] Audit viewer: filtered, paginated v27 `audit.query` with secret scrubbing; general middleware/syslog tail deferred because v27 exposes no such method | M2 | M |
 | TNT-46 | [DONE M2] API key list/create/rename/revoke with one-time key display, explicit mode-0600 file option, safe verifier projection and typed revoke | M2 | M |
-| TNT-47 | [DONE M2] System update/reboot/shutdown destructive plans, complete preflight, update job progress, bounded TUI reconnect, and private config export | M2 | L |
+| TNT-47 | [DONE M2] System update/reboot/shutdown destructive plans, complete preflight, update job progress, bounded TUI reconnect, and private config export; a lost power-action reply is never retried and is reported as uncertain unless reboot is observed | M2 | L |
 | TNT-48 | System > Services read/status and service lifecycle workflows | M3 | M |
 
 ## Platform and quality

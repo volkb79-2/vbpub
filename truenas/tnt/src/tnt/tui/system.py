@@ -59,14 +59,24 @@ class SystemPowerView(Vertical):
         self.query_one("#system-power-note", Static).update("Host rebooting. Waiting before reconnecting…")
         self._reconnect_after_reboot()
 
+    def _plan_apply_uncertain(self, plan: Plan) -> None:
+        if self.operation == "shutdown":
+            self.query_one("#system-power-note", Static).update(
+                "Shutdown request outcome is uncertain after the connection closed. Verify host state before retrying.")
+            return
+        self.query_one("#system-power-note", Static).update(
+            "Reboot request outcome is uncertain; checking the host without resubmitting the action…")
+        self._reconnect_after_reboot(uncertain=True)
+
     def _plan_cancelled(self, plan: Plan) -> None:
         self.query_one("#system-power-note", Static).update("System action cancelled.")
 
     @work(thread=True, exclusive=True)
-    def _reconnect_after_reboot(self) -> None:
+    def _reconnect_after_reboot(self, *, uncertain: bool = False) -> None:
         app = self.app
         delays = app.reconnect_delays
         last_error = "the host did not return to READY"
+        saw_power_transition = False
         for attempt, delay in enumerate(delays, 1):
             app.call_from_thread(self._reconnect_progress, attempt, len(delays), delay)
             time.sleep(delay)
@@ -89,32 +99,41 @@ class SystemPowerView(Vertical):
                 last_error = f"system.state failed: {type(exc).__name__}"
                 continue
             if state == "READY":
-                self.app.call_from_thread(self._reconnected, new_session)
+                self.app.call_from_thread(self._reconnected, new_session,
+                                          uncertain=uncertain and not saw_power_transition)
                 return
             new_session.close()
             if state not in {"BOOTING", "SHUTTING_DOWN"}:
                 last_error = f"system.state returned unexpected state {state!r}"
                 break
+            saw_power_transition = True
             last_error = f"host is still {state.lower()}"
-        self.app.call_from_thread(self._reconnect_failed, last_error)
+        self.app.call_from_thread(self._reconnect_failed, last_error, uncertain=uncertain)
 
     def _reconnect_progress(self, attempt: int, total: int, delay: int) -> None:
         self.query_one("#system-power-note", Static).update(
             f"Host rebooting. Reconnect attempt {attempt}/{total} after {delay} seconds; login retries are bounded.")
 
-    def _reconnected(self, new_session: Session) -> None:
+    def _reconnected(self, new_session: Session, *, uncertain: bool = False) -> None:
         old_rpc = self.session.rpc
         self.session.rpc = new_session.rpc
         self.session.backend = new_session.backend
         self.session.insecure_tls = new_session.insecure_tls
         old_rpc.close()
         self.app.query_one("#banner", Static).update(self.session.banner())
-        self.query_one("#system-power-note", Static).update("Host rebooted and returned to READY.")
+        message = ("Host is reachable and READY. The reboot request outcome remains uncertain; inspect host state "
+                   "before retrying." if uncertain else "Host rebooted and returned to READY.")
+        self.query_one("#system-power-note", Static).update(message)
 
-    def _reconnect_failed(self, reason: str) -> None:
-        self.query_one("#system-power-note", Static).update(
-            f"Host rebooting; automatic reconnect stopped after {len(self.app.reconnect_delays)} bounded attempts: {reason}. "
-            "Exit tnt and reconnect later.")
+    def _reconnect_failed(self, reason: str, *, uncertain: bool = False) -> None:
+        if uncertain:
+            message = (f"Reboot request outcome is uncertain; automatic reconnect stopped after "
+                       f"{len(self.app.reconnect_delays)} bounded attempts: {reason}. "
+                       "Verify host state before retrying the power action.")
+        else:
+            message = (f"Host rebooting; automatic reconnect stopped after {len(self.app.reconnect_delays)} bounded "
+                       f"attempts: {reason}. Exit tnt and reconnect later.")
+        self.query_one("#system-power-note", Static).update(message)
 
 
 class SystemUpdateView(Vertical):
