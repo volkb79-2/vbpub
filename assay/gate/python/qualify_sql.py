@@ -1016,10 +1016,17 @@ def normalize_verdict(document: Mapping[str, Any], *, assay_version: str, head_o
         for bucket in ("killed", "survived", "equivalent", "crashed", "hung", "budget_exceeded"):
             for candidate in mutation.get(bucket, []):
                 tree = candidate.get("process_tree_evidence")
-                if tree is not None:
-                    # The cleanup wall time is measured, not a stable witness
-                    # value; every other process-tree fact stays exact.
-                    tree["cleanup_seconds"] = 0.0
+                if not isinstance(tree, dict):
+                    raise QualificationError("a witness candidate lacks process_tree_evidence")
+                cleanup = tree.get("cleanup_seconds")
+                if isinstance(cleanup, bool) or not isinstance(cleanup, (int, float)) or cleanup < 0:
+                    raise QualificationError(
+                        "process_tree_evidence.cleanup_seconds must be a nonnegative number"
+                    )
+                # The cleanup wall time is measured, not a stable witness value;
+                # it is validated above and zeroed here. Every other
+                # process-tree fact stays exact.
+                tree["cleanup_seconds"] = 0.0
                 evidence = candidate.get("resource_limit_evidence")
                 if evidence is None:
                     continue

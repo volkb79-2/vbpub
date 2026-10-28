@@ -35,6 +35,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   No R2 pass is claimed. Every other gate (R0, R1 line and branch coverage, the
   analysis lane, the independent self-hosting witness and the distribution build)
   ran.
+- The full-source R0/R1 qualification (`self-qualification-preflight`, which
+  currently reports 886 uncovered lines in `src/assay`, a pre-existing gap) and
+  the R3 canary lane (which only exists in `self-qualification`, together with
+  R2) were not run in this release gate; tracked as backlog item B170.
 
 ### Added
 - Native R2 records process-tree evidence for executed candidates and

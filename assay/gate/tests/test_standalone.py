@@ -832,6 +832,11 @@ def _expected_r2_artifact(
     return document
 
 
+#: Leader statuses observed for `budget_exceeded` candidates by `_assert_complete`
+#: (it accepts the verifier's allowed set; tests report which variant occurred).
+OBSERVED_BUDGET_LEADER_STATUSES: list[str] = []
+
+
 def _assert_complete(real: dict, expected: dict) -> None:
     # `assay_version`/`started`/`ended` are values a real run genuinely cannot
     # hand-inject. B014's optional output tails are diagnosis evidence whose
@@ -935,8 +940,10 @@ def _assert_complete(real: dict, expected: dict) -> None:
                     "budget_exceeded": {"timeout-killed", "not-started"},
                 }.get(bucket, {"exited"})
                 assert evidence["leader_status"] in allowed_leader_statuses
-                # Normalize the accepted variants to the expected artifact's.
+                # Record which variant occurred (the caller reports it), then
+                # normalize it to the expected artifact's for the comparison.
                 if bucket == "budget_exceeded":
+                    OBSERVED_BUDGET_LEADER_STATUSES.append(evidence["leader_status"])
                     evidence["leader_status"] = "timeout-killed"
                 assert isinstance(evidence["cleanup_seconds"], (int, float))
                 assert evidence["cleanup_seconds"] >= 0
@@ -1202,7 +1209,8 @@ def test_a_real_r2_lane_propagates_an_adverse_baseline_verbatim(
 
 
 def test_a_real_r2_mutant_that_outlives_the_lane_budget_is_its_own_bucket(
-    standalone: Standalone, git_repo: GitRepo, validator: Draft202012Validator
+    standalone: Standalone, git_repo: GitRepo, validator: Draft202012Validator,
+    tmp_path: Path, record_property,
 ):
     """O4's ``budget-exceeded`` shape, through a real timeout rather than an
     injected one -- the only one of the six that a real lane can only reach
@@ -1213,13 +1221,18 @@ def test_a_real_r2_mutant_that_outlives_the_lane_budget_is_its_own_bucket(
     lane budget expires. Serial execution preserves both dispositions without
     overlapping the cgroup event windows used by native R2.
 
-    The margin is deliberate, not tuned: 5s of budget against a 300s sleep,
-    with the passing paths doing one `grep` on a six-line file. This cannot
-    flip on a slow machine without the whole suite already having failed
-    for a different reason (AUTHORING.md §3b.A's own reading -- a slow-host
-    red here would be a TRUE red).
+    The margin is deliberate, not tuned: 5s of budget against a 300s sleep.
+    The sleeping mutant writes a marker file first, and the test asserts it:
+    a run whose budget expired before line 6's mutant began fails instead of
+    passing as "outlived". The recorded process-tree leader status of the
+    budget-exceeded candidate may be `timeout-killed` or `not-started` (both
+    are valid for a lane timeout per the verifier); which one occurred is
+    reported through `record_property` and stdout, not hidden.
     """
-    script = "grep -q 'y > 1' src/mod.py || sleep 300"
+    # The sleeping mutant records that it really started, so a run in which the
+    # lane budget expired before line 6's mutant began cannot pass as "outlived".
+    marker = tmp_path / "sleeping-mutant-started.marker"
+    script = f"grep -q 'y > 1' src/mod.py || {{ : > '{marker}'; sleep 300; }}"
     base_rev = _seed_two_compare_swap_sites(git_repo)
     lane_file = _write_lane_file(
         git_repo.path,
@@ -1228,9 +1241,11 @@ def test_a_real_r2_mutant_that_outlives_the_lane_budget_is_its_own_bucket(
     git_repo.commit_all("add assay.toml")
     before = _tracked_file_hashes(git_repo.path)
 
+    OBSERVED_BUDGET_LEADER_STATUSES.clear()
     proc = _run_assay(standalone, lane_file)
 
     assert proc.returncode == 4, proc.stderr  # Outcome.BUDGET_EXCEEDED.exit_code
+    assert marker.exists(), "line 6's mutant never started, so it did not outlive the lane budget"
     real = json.loads(proc.stdout)
     assert why_invalid(validator, real) == []
     _assert_complete(
@@ -1270,6 +1285,10 @@ def test_a_real_r2_mutant_that_outlives_the_lane_budget_is_its_own_bucket(
         ),
     )
     assert _tracked_file_hashes(git_repo.path) == before
+    # Report which accepted variant occurred for the budget-exceeded candidate.
+    assert len(OBSERVED_BUDGET_LEADER_STATUSES) >= 1
+    record_property("budget_exceeded_leader_status", ",".join(OBSERVED_BUDGET_LEADER_STATUSES))
+    print("budget_exceeded leader_status observed:", OBSERVED_BUDGET_LEADER_STATUSES)
 
 
 # --- P19 (work item 6 / O2-O3) adds R3: an isolated canary, through the ------
