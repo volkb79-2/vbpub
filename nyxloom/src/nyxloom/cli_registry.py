@@ -271,6 +271,27 @@ def _backlog_new_guard(args: Any) -> None:
         )
 
 
+def _usage_share(value: str) -> float:
+    from .session_extract.usage import parse_share_percent
+
+    try:
+        return parse_share_percent(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def _usage_report_guard(args: Any) -> None:
+    if getattr(args, "flat", False) and getattr(args, "depth", None) is not None:
+        raise CliFailure(
+            "--flat and --depth are mutually exclusive",
+            exit_code=2,
+            show_help=True,
+        )
+    depth = getattr(args, "depth", None)
+    if depth is not None and depth < 0:
+        raise CliFailure("--depth must be zero or greater", exit_code=2, show_help=True)
+
+
 def _resync_guard(args: Any) -> None:
     if getattr(args, "apply_content_merges", False) and not getattr(args, "apply", False):
         raise CliFailure(
@@ -570,12 +591,46 @@ def _local_backlog_group() -> VerbSpec:
     return _group(prog, "backlog", "Manage project-local managed backlog entries.", children)
 
 
+def _usage_report_group() -> VerbSpec:
+    prog = "nyxloom"
+    return _group(prog, "usage", "Report local Claude Code token usage.", (
+        _leaf(
+            prog,
+            "report",
+            "Attribute Claude Code request tokens to sessions and nested subagents.",
+            cli.cmd_usage_report,
+            options=(
+                _opt("--since", "Start at a duration before --until or now, or an ISO-8601 timestamp", required=True),
+                _opt("--until", "Inclusive ISO-8601 end timestamp; omitted means now", default=None),
+                _opt("--project", "Select sessions with this recorded cwd or unique cwd basename", default=None),
+                _opt("--session", "Select one exact Claude Code session id", default=None),
+                _opt("--format", "Report encoding", dest="usage_format", choices=("table", "json", "csv"), default="table"),
+                _opt("--out", "Write the report to this file instead of stdout", metavar="FILE", default=None),
+                _opt("--depth", "Maximum visible tree depth (root is depth 0)", type=int, default=None),
+                _opt("--min-share", "Fold smaller subtrees below this raw-token percentage", type=_usage_share, default=0.0),
+                _opt("--flat", "Rank visible nodes as a flat list (cannot combine with --depth)", action="store_true"),
+                _opt("--sort", "Sibling sort key; cost means raw token units in this iteration", choices=("cost", "start", "dur", "calls", "peak", "out"), default="cost"),
+                _opt("--no-labels", "Omit session titles and subagent topic labels", action="store_true"),
+            ),
+            validate=_usage_report_guard,
+            examples=(
+                "nyxloom usage report --since 24h",
+                "nyxloom usage report --since 2026-10-27T00:00:00Z --format json --out usage.json",
+                "nyxloom usage report --since 24h --project /path/to/project --flat --sort calls",
+            ),
+        ),
+    ))
+
+
 def primary_cli():
-    """Build the local project-authoring CLI."""
+    """Build the local project-authoring and Claude Code usage CLI."""
     registry = _registry(
         "nyxloom",
-        "Local Nyxloom project authoring. No registry or daemon is required.",
-        getting_started=("nyxloom lint", "nyxloom backlog list", "nyxloom --help"),
+        "Local Nyxloom project authoring and read-only Claude Code usage analytics.",
+        getting_started=(
+            "nyxloom lint", "nyxloom backlog list",
+            "nyxloom usage report --since 24h", "nyxloom --help",
+        ),
     )
     registry.register(_leaf("nyxloom", "lint", "Lint the current project's configured handoffs, or explicit handoff paths.",
                             cli.cmd_lint_local,
@@ -597,6 +652,7 @@ def primary_cli():
                                 _opt("--scaffold-gate", "Write a reviewable gate skeleton when none is declared", action="store_true", dest="scaffold_gate"),
                             ), mutating=True))
     registry.register(_local_backlog_group())
+    registry.register(_usage_report_group())
     return registry.build()
 
 

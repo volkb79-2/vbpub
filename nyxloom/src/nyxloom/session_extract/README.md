@@ -848,6 +848,24 @@ empty because the source records do not contain timestamps.
    agent-authored condensation of segments the mechanical path structurally
    can't recover.
 
+## Local Claude Code usage report
+
+`nyxloom usage report --since 24h` is the cross-session metadata query built
+alongside this extraction package. It reads Claude Code session JSONL,
+subagent JSONL, and agent metadata to report de-duplicated request tokens in a
+session → subagent → nested-subagent tree. The table, JSON, and CSV outputs use
+the same versioned query result. The JSON includes per-request time, model,
+effort, tier/speed, token classes, context size, and compaction/sidechain flags
+for later timeline renderers.
+
+This report deliberately does not reuse the extract's content selection or
+rendering: its model has no message, thinking, tool-input, or tool-result
+fields. U1–U2 are raw-token-only; weighted cost, usage-limit estimates, joined
+charts, interactive HTML, PDF, and the TUI are later work. The consumer-facing
+examples live in
+[CONSUMERS.md](../../../docs/CONSUMERS.md#report-claude-code-usage), and design
+choices in [DESIGN-GUIDE.md](../../../docs/DESIGN-GUIDE.md#local-usage-report).
+
 ## Relationship to `jsonl-metrics.py` and the context-lifecycle experiments
 
 `dstdns/nyxloom-trove/orientation/jsonl-metrics.py` and the E-001..E-008
@@ -855,9 +873,9 @@ experiment log in `nyxloom/docs/design-context-lifecycle-experiments.md`
 are a **different deliverable**: content-based "coherent boundary"
 detection (`gate_green`/`gate_red`/`gate_unknown`, commit,
 `edit_cluster_end`, `log_report_write`) for *pipeline-agent* transcripts,
-producing aggregate statistics — never raw prose. This tool never
-produces stats; it only ever produces prose (or a structured event list
-that renders to prose). The two are complementary: `jsonl-metrics.py`-style
+producing aggregate statistics — never raw prose. The extraction workflow
+described here does not produce stats; it produces prose (or a structured
+event list that renders to prose). The two are complementary: `jsonl-metrics.py`-style
 boundary detection could plausibly inform a *future* checkpoint signal
 here, but no code is shared today.
 

@@ -12,12 +12,18 @@ dispatches cheap implementer agents behind an independent review gate, and
 discipline rather than trust.
 
 The wheel installs three human commands by data boundary: `nyxloom` authors a
-project's local trove, `nyxloom-harness` reads harness session stores, and
-`nyxloomctl` performs local host operations. The first two do not require a
-daemon or project registration. `nyxloomd` is the directly executable service
+project's local trove and reports local Claude Code usage, `nyxloom-harness`
+reads and extracts harness session stores, and `nyxloomctl` performs local
+host operations. The first two do not require a daemon or project
+registration. `nyxloomd` is the directly executable service
 entrypoint inside the daemon container. See the
 [CLI reference](CLI-REFERENCE.md#current-command-and-option-contract) for the
 complete current grammar.
+
+`nyxloom usage report` is a read-only analytics command on the primary CLI. It
+reads Claude Code transcript metadata across the selected time window without
+requiring project registration or daemon state. See
+[Report Claude Code usage](CONSUMERS.md#report-claude-code-usage) for examples.
 
 ---
 
@@ -175,7 +181,7 @@ short `-h` alias is not accepted.
 
 | Program | Commands and target | Daemon required? |
 |---|---|---|
-| `nyxloom` | `init`, `onboard`, project-local `lint`, and `backlog *`; edits files in the current project checkout. | No |
+| `nyxloom` | `init`, `onboard`, project-local `lint`, `backlog *`, and read-only `usage report`; authoring edits the checkout, while usage reads local Claude Code transcript metadata. | No |
 | `nyxloom-harness` | `search`, `extract`, `extract-lossless`, `extract-debug`, `extract-report`, and `extract-sessions`; reads AI-harness session files/stores. | No |
 | `nyxloomctl` | Local host operations: `project`, host-wide `lint`, `doctor`, `status`, `resync`, workflow/intake/finding actions, `auth`, `route`, model catalogs, `migrate-store`, and `daemon`. This is a local operator tool, not a remote HTTP client. | Only `daemon` starts it; other commands run directly. |
 | `nyxloomd` | Direct service-manager entrypoint for the daemon lifecycle used by the existing container. | Starts the daemon |
@@ -189,6 +195,7 @@ nyxloom lint
 nyxloom backlog new "describe the issue" --type bugfix
 nyxloom backlog new --interactive
 nyxloom backlog edit CIU-1
+nyxloom usage report --since 24h
 
 nyxloom-harness extract /path/to/session.jsonl --profile all
 

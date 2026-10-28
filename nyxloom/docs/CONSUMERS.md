@@ -1,7 +1,8 @@
-# CONSUMERS.md — adopting nyxloom's managed backlog entries
+# CONSUMERS.md — adopting Nyxloom CLI workflows
 
-Worked recipes for the per-entry backlog (`nyxloom-trove/backlog/`, one file
-per issue). Design authority (WHY it exists, rejected alternatives):
+Pasteable recipes for the installed Nyxloom command surfaces, including the
+per-entry backlog (`nyxloom-trove/backlog/`, one file per issue). Backlog
+design authority (WHY it exists, rejected alternatives):
 [`backlog-entries-spec.md`](backlog-entries-spec.md).
 
 The [canonical CLI reference](CLI-REFERENCE.md) records every accepted
@@ -49,6 +50,62 @@ state transitions. The lower-confidence content-merge channel requires both
 --apply and --apply-content-merges. Project-level resume separately dry-runs
 resync and refuses unresolved drift unless --force is supplied.
 
+## Report Claude Code usage
+
+`nyxloom usage report` scans the configured local Claude Code project
+transcripts and attributes de-duplicated API request tokens to each session
+and nested subagent. It is read-only unless `--out FILE` is supplied, which
+writes the selected rendering to that file. The JSON format is schema version
+1 and carries the same session tree used by the table and CSV renderers,
+including metadata-only per-request rows for later timeline charts. Message,
+thinking, and tool content are excluded.
+
+```sh
+# Last 24 hours, expanded tree and raw-token totals.
+nyxloom usage report --since 24h
+
+# Select whole sessions recorded under this working directory and save JSON.
+nyxloom usage report --since 7d --project /path/to/project \
+  --format json --out usage-7d.json
+
+# Write flat CSV rows, rank by request count, and fold rows below 1% share.
+nyxloom usage report --since 24h --format csv --out usage.csv \
+  --flat --sort calls --min-share 1%
+
+# Hide session titles and agent topic labels in a table report.
+nyxloom usage report --since 24h --no-labels
+```
+
+`--since` accepts an ISO-8601 timestamp with a timezone or a positive duration
+using seconds, minutes, hours, days, or weeks (`s`, `m`, `h`, `d`, `w`). A
+relative start counts backward from `--until` when it is present, otherwise
+from invocation time. `--until` is inclusive; all timestamps are reported in
+UTC. `--project` matches the recorded `cwd` exactly or by a unique basename;
+it includes a session if any loaded request in that session has that `cwd`.
+`--session` selects one exact session ID.
+
+U1–U2 intentionally report raw tokens only. Raw token units are input plus
+cache-read, cache-write 5-minute, cache-write 1-hour, unclassified cache-write,
+and output; thinking is a reported subset of output and is not double-counted.
+Accordingly `--sort cost` and `--min-share` use raw token units, while weighted
+units and USD remain null. Do not interpret raw shares as a Claude usage-limit
+percentage. The later weights and limit-calibration work will verify prices
+against Anthropic's pricing page and transcript `cost-state` records before
+reporting those figures.
+
+The tree has one session row per selected session, followed by attributed
+subagents and nested subagents. Each row includes self totals and a subtree
+subtotal; `--depth N` shows levels 0 through N. `--min-share PCT` folds smaller
+subtrees or session roots into explicit “other” rows. Use `--flat` for a global
+ranked list; it cannot be combined with `--depth`. JSON retains the full tree
+unless one of those presentation controls folds or hides rows. CSV contains
+one row per visible tree node.
+
+See the [usage report design](DESIGN-GUIDE.md#local-usage-report) for the
+deduplication, attribution, and privacy choices, and the
+[CLI reference](CLI-REFERENCE.md#current-command-and-option-contract) for all
+accepted options and output effects.
+
 ## Daemon service entrypoint
 
 The service manager starts the foreground daemon with no arguments. Inspect the
@@ -74,6 +131,9 @@ catalog for the installed version.
 | `nyxloom onboard --maturity` | `empty`, `partial`, `mature` |
 | `nyxloom onboard --docs` | `present`, `absent` |
 | `nyxloom onboard --mode` | `derive-from-code`, `code-good-docs-absent`, `greenfield-define-it` |
+| `nyxloom usage report --format` | `table`, `json`, `csv` |
+| `nyxloom usage report --sort` | `cost`, `start`, `dur`, `calls`, `peak`, `out` |
+| `nyxloom usage report --since` relative duration suffixes | `s`, `m`, `h`, `d`, `w` |
 | `nyxloom backlog new --type` | `feature`, `bugfix` |
 | `nyxloom backlog new --severity` | `low`, `medium`, `high` |
 | `nyxloom backlog new --context-estimate` | `small`, `medium`, `large` |

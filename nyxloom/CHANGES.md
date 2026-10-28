@@ -4,6 +4,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Added
+- Add `nyxloom usage report` for metadata-only, de-duplicated Claude Code token usage across sessions and nested subagents, with table/JSON/CSV output.
+
 <!-- cmru: release history -->
 
 ## [0.11.0] - 2026-10-21

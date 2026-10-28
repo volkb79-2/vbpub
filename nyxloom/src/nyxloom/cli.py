@@ -1418,6 +1418,46 @@ def cmd_extract_report(args) -> int:
     return 0
 
 
+def cmd_usage_report(args) -> int:
+    """usage report --since 24h [metadata filters and table/json/csv output]
+
+    Read Claude Code session and subagent transcripts, retain only token and
+    attribution metadata, and report a de-duplicated UTC window. Message text,
+    thinking text, tool inputs, and tool results are never report fields.
+    """
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    from .session_extract.usage import (
+        build_report,
+        load_corpus,
+        render_report,
+        resolve_window,
+    )
+
+    now = datetime.now(timezone.utc)
+    window = resolve_window(args.since, args.until, now=now)
+    corpus = load_corpus(since=window.since, until=window.until)
+    report = build_report(
+        corpus,
+        window=window,
+        project=args.project,
+        session=args.session,
+        depth=args.depth,
+        min_share=args.min_share,
+        flat=args.flat,
+        sort=args.sort,
+        no_labels=args.no_labels,
+        generated_at=now,
+    )
+    rendered = render_report(report, args.usage_format)
+    if args.out:
+        Path(args.out).write_text(rendered, encoding="utf-8")
+    else:
+        print(rendered, end="")
+    return 0
+
+
 def cmd_extract_sessions(args) -> int:
     """extract-sessions <claude|codex|opencode|path> [--recurse [true|false]] [--json]
 

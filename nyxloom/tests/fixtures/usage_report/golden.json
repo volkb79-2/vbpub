@@ -1,0 +1,86 @@
+{
+  "basis": {
+    "definition": "input + cache_read + cache_write_5m + cache_write_1h + cache_write_unclassified + output",
+    "limit_share": null,
+    "mode": "raw",
+    "usd": null,
+    "weighted_units": null
+  },
+  "schema_version": 1,
+  "report": "nyxloom-usage-tree",
+  "totals": {
+    "calls": 1,
+    "duration_seconds": 0,
+    "efforts": {
+      "medium": 1
+    },
+    "end": "2026-10-28T11:00:00Z",
+    "models": {
+      "claude-sonnet-5-5": 1
+    },
+    "peak_context": 29,
+    "peak_context_at": "2026-10-28T11:00:00Z",
+    "raw_token_units": 36,
+    "share_of_total": 1.0,
+    "start": "2026-10-28T11:00:00Z",
+    "tokens": {
+      "cache_read": 11,
+      "cache_write_1h": 4,
+      "cache_write_5m": 9,
+      "cache_write_unclassified": 0,
+      "input": 5,
+      "output": 7,
+      "thinking": 2
+    },
+    "usd": null,
+    "weighted_units": null
+  },
+  "node": {
+    "calls": 1,
+    "call_details": [
+      {
+        "agent_id": null,
+        "agent_type": "main",
+        "compaction_before": false,
+        "compaction_post_tokens": null,
+        "compaction_pre_tokens": null,
+        "context_size": 29,
+        "effort": "medium",
+        "kind": "normal",
+        "model": "claude-sonnet-5-5",
+        "project": "/work/sample",
+        "raw_token_units": 36,
+        "request_id": "golden",
+        "service_tier": "standard",
+        "session_id": "session-001",
+        "sidechain": false,
+        "source_order": 1,
+        "speed": "standard",
+        "timestamp": "2026-10-28T11:00:00Z",
+        "topic": null,
+        "tokens": {
+          "cache_read": 11,
+          "cache_write_1h": 4,
+          "cache_write_5m": 9,
+          "cache_write_unclassified": 0,
+          "input": 5,
+          "output": 7,
+          "thinking": 2
+        },
+        "usd": null,
+        "weighted_units": null
+      }
+    ],
+    "kind": "main",
+    "raw_token_units": 36,
+    "tokens": {
+      "cache_read": 11,
+      "cache_write_1h": 4,
+      "cache_write_5m": 9,
+      "cache_write_unclassified": 0,
+      "input": 5,
+      "output": 7,
+      "thinking": 2
+    }
+  }
+}

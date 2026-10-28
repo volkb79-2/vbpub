@@ -128,6 +128,7 @@ how these choices stay in sync with their owning schemas and registries.
 | --- | --- | --- |
 | `nyxloom lint` | Frontmatter schema + carve-quality rules (SPEC §6); gates the carve commit. Also validates the managed per-entry backlog: entry frontmatter (BLG2) and the generated `backlog/INDEX.md` freshness (BLG3), when a project adopts `[backlog_entries]` | No |
 | `nyxloom backlog` | Managed per-entry issue tracker (`nyxloom-trove/backlog/`, one file per entry): `new`/`promote`/`note`/`set-status`/`list`/`show`/`index`; merge auto-ticks linked entries to `merged`. Design authority: [docs/backlog-entries-spec.md](docs/backlog-entries-spec.md); adoption: [docs/CONSUMERS.md](docs/CONSUMERS.md) | No |
+| `nyxloom usage report` | Read-only, metadata-only Claude Code usage tree across sessions and nested subagents; table/JSON/CSV render from one versioned tree contract. Adoption: [docs/CONSUMERS.md#report-claude-code-usage](docs/CONSUMERS.md#report-claude-code-usage); rationale: [design guide](docs/DESIGN-GUIDE.md#local-usage-report). | No |
 | `nyxloom-harness` session tools | Search session words and return ranked session IDs; mechanically extract from Claude Code, Codex, OpenCode, and Reasonix logs; discover/report sessions; resolve bare IDs; render or highlight Markdown; and follow live streams with optional attention delivery. User guide: [`session_extract/README.md`](src/nyxloom/session_extract/README.md); search rationale: [design guide](docs/DESIGN-GUIDE.md#local-session-search). | No |
 | `nyxloomctl tick` | One operator reconcile pass: scan → dispatch/detect/collect → events → render → notify → exit | No |
 | Attempt wrapper | Runs one CLI leg detached; tees log; writes typed receipt with exit code; holds/releases flock leases | Only the launched agent |
@@ -226,6 +227,14 @@ delivered through a terminal bell, an operator hook, or a registered project’s
 notify channel. See the [design rationale](docs/design-context-lifecycle-experiments.md#e-017--2026-09-12--session-log-location-presentation-and-live-following)
 and the [session extraction guide](src/nyxloom/session_extract/README.md) for
 the complete flag behavior and adoption examples.
+
+`nyxloom usage report --since 24h` summarizes Claude Code API request usage
+across the local transcript store, including nested subagents. Its table,
+JSON, and CSV formats share one tree with de-duplicated per-request token
+metadata; message and tool content are excluded. U1–U2 report raw token units
+only, so `--sort cost` and `--min-share` use raw token units until the later
+weights work ships. See the [usage report guide](docs/CONSUMERS.md#report-claude-code-usage)
+and [design rationale](docs/DESIGN-GUIDE.md#local-usage-report).
 
 For file-backed sessions, `--follow` reads the appended payload plus only
 bounded prefix/tail fingerprints as needed for rewrite detection; it never

@@ -70,12 +70,15 @@ lists each option's effective omission, type, choices, placement, and effects.
 
 ## CLI boundaries and safety choices
 
-The three user CLIs follow who is working and which files the command targets:
+The user-facing command surfaces follow who is working and which files the
+command targets:
 
-- `nyxloom` edits one project's trove: `init`, `onboard`, local `lint`, and
-  `backlog`. It can work on an unregistered checkout without a daemon.
-- `nyxloom-harness` reads session files and stores for `extract*` workflows.
-  It does not load the Nyxloom project registry or initialize host state.
+- `nyxloom` edits one project's trove and offers the read-only `usage report`
+  query over local Claude Code transcripts. Both work without project
+  registration or a daemon.
+- `nyxloom-harness` searches, discovers, and extracts session files and
+  stores. It does not load the Nyxloom project registry or initialize host
+  state.
 - `nyxloomctl` handles local host operations such as registry, workflow state,
   routes/models, credentials, all-project lint, and local `daemon` control.
   It is not a remote API client. The dashboard remains the HTTP/SSE client.
@@ -94,6 +97,52 @@ The exact command ownership and old-to-new command map are in the
 directory or explicit file paths. `nyxloomctl lint` preserves the registered
 project scan. A project author therefore does not need to register the project
 with a local daemon host just to validate a handoff.
+
+## Local usage report
+
+`nyxloom usage report` is a read-only analytics query over Claude Code's local
+project transcripts. It is a separate workflow from `nyxloom-harness
+extract-report`: that command summarizes one selected source file, while this
+command selects a UTC time window across session files and attributes requests
+to sessions and nested subagents. Parent edges join `.meta.json` `toolUseId`
+values to `Agent` tool-use IDs in the dispatching transcript; `parentAgentId`
+and `spawnDepth` supply the available recovery information when a join is
+missing. Repeated transcript rows use the session-scoped `requestId`, falling
+back to message ID, and the last row wins so streaming copies do not inflate
+usage.
+
+The JSON tree is the shared query result for table, JSON, and CSV renderers.
+Each node carries self and subtree totals plus metadata-only per-request rows
+for future timeline charts. The loader inspects transcript content in memory
+only to identify `Agent` calls and then drops it; neither messages, thinking,
+tool input, nor tool results are fields in the usage model or serialized
+report. Optional title/topic labels come only from title and agent metadata;
+`--no-labels` removes them. This boundary makes the result useful for analysis
+without turning it into another transcript export.
+
+U1–U2 intentionally stop at raw token totals. “Raw token units” sum input,
+cache-read, cache-write 5-minute, cache-write 1-hour, unclassified cache-write,
+and output tokens. Thinking tokens are reported as a subset of output and are
+not counted twice. Until the verified weight table and cost-state comparison
+land in U3, USD and weighted units stay null, `--sort cost` means raw token
+units, and `--min-share` folds rows by their share of those raw units. This
+avoids making an unverified price or limit formula look authoritative.
+
+Relative `--since` values are measured backwards from `--until` when supplied,
+otherwise from invocation time. Both inclusive bounds and all call timestamps
+are normalized to UTC. Filesystem modification time only prunes inactive
+session families; each retained request is still selected by its transcript
+timestamp. Project selection uses the recorded `cwd` (exact normalized path
+or an unambiguous basename) and includes the complete matching session tree.
+The report exposes scan/prune counts and parsing/attribution warnings so a
+partial local store cannot look silently complete.
+
+The hierarchy is shown directly in the table: session rows contain their own
+calls, child-agent rows, and subtree totals. `--depth` limits visible levels;
+`--min-share` folds small child trees and session roots into explicit “other”
+rows; `--flat` sorts visible nodes globally. The query and output contract are
+documented in the [consumer guide](CONSUMERS.md#report-claude-code-usage) and
+[canonical CLI reference](CLI-REFERENCE.md#current-command-and-option-contract).
 
 Mutations keep Nyxloom's existing safeguards as consent: explicit verbs,
 state-transition validation, role checks, `--apply` plus confidence flags,

@@ -8,7 +8,7 @@ This is the canonical contract for the four entrypoints shipped in the Nyxloom w
 
 | Executable | User and data target | Daemon / registration boundary |
 |---|---|---|
-| `nyxloom` | Project authoring: `init`, `onboard`, project-local `lint`, and managed `backlog` files in the current project checkout. | Works without project registration or a running daemon. |
+| `nyxloom` | Project authoring: `init`, `onboard`, project-local `lint`, and managed `backlog` files; read-only local Claude Code usage analytics. | Works without project registration or a running daemon. |
 | `nyxloom-harness` | Searches, discovers, and extracts Claude Code, Codex, OpenCode, and Reasonix session files or stores. | Reads the selected harness source; does not initialize Nyxloom host state or require registration/daemon availability. |
 | `nyxloomctl` | Local host operator, administrator, or developer: registry, workflow state, local daemon operation, routes/models, credentials, migrations, and diagnostics. | Calls local Nyxloom modules and state; it is not an HTTP client for remote admin. Most commands work without the daemon. |
 | `nyxloomd` | Service manager starting the resident daemon in the existing container. | Bare invocation starts the foreground daemon. `--help` and `--version` exit before service initialization; unknown arguments are rejected. |
@@ -51,6 +51,7 @@ Options and choices named here are detailed in the option table below. Effects d
 | `nyxloom backlog list [--project-id ID] [--status STATUS]` | List managed entries, optionally filtered by status. | Read-only. Renders from entries in memory if INDEX.md is absent; does not regenerate it. |
 | `nyxloom backlog show ENTRY_ID [--project-id ID]` | Display one managed entry. | Read-only; unknown entry returns a failure. |
 | `nyxloom backlog index [--project-id ID]` | Generate the managed backlog index. | Writes INDEX.md; this is the explicit index writer. |
+| `nyxloom usage report --since WINDOW [options]` | Attribute Claude Code request token usage across the local time window to sessions and nested subagents. | Read-only transcript scan; emits a hierarchical table by default, or the shared schema-versioned tree as JSON and flat node rows as CSV. `--out FILE` writes the selected report. Message and tool content are excluded. Raw token units are used until weighted cost ships. |
 | `nyxloom-harness extract SESSION_LOG [options]` | Select and render a resumable, structured session extract. | Reads a supported session file/store. Defaults to operator-review; generated help groups controls by source, window selection, content, output, redaction/task, and following. `--follow`, hook, bell, and notify options add long-running or external effects. |
 | `nyxloom-harness extract-lossless SESSION_LOG [options]` | Render recovered source prose/thinking without selection/windowing. | Read-only source path. `--redact-pattern` is unsupported because this output promises verbatim content. |
 | `nyxloom-harness extract-debug SESSION_LOG [options]` | Inspect extraction selection, classification, and gap decisions. | Read-only source path; defaults to operator-review. Output controls do not change the session. |
@@ -93,6 +94,7 @@ Options and choices named here are detailed in the option table below. Effects d
 | Old installed path | Current path | Compatibility and behavior |
 |---|---|---|
 | `nyxloom init`, `nyxloom onboard`, `nyxloom backlog *` | Same `nyxloom` paths. | Kept as project-local authoring. `backlog new --interactive [TITLE]` and `backlog edit ENTRY_ID` are added. |
+| `nyxloom usage report` | New additive `nyxloom usage report` path. | Read-only local Claude Code analytics; it does not replace single-file `nyxloom-harness extract-report`. |
 | `nyxloom lint [paths]` with no paths | `nyxloom lint` for the current checkout; `nyxloomctl lint` for all registered projects. | The old all-project scope moves; local lint no longer depends on registry state. Explicit handoff paths remain local. |
 | `nyxloom extract*` | `nyxloom-harness extract*` | Old paths are removed without forwarding aliases. |
 | `nyxloom project`, `status`, `doctor`, `resync`, `render`, `tick`, `migrate-store`, `auth`, workflow/intake/finding/model/route commands | `nyxloomctl` with the same command paths after the executable name. | Old paths are removed without forwarding aliases; commands remain local operations. |
@@ -143,6 +145,17 @@ The executable name is included in every valid command path. Each row is a comma
 
 | Valid command path | Option | Type, choices, arity, multiplicity | When omitted | User task and behavior changed | Placement and effects |
 |---|---|---|---|---|---|
+| `nyxloom usage report` | `--since` | string; positive duration with suffix `s`, `m`, `h`, `d`, or `w`, or timezone-aware ISO-8601 timestamp; 1 value; repeat accepted; required | Required; omission is a usage error and the handler is not called. | Inclusive UTC start bound; a relative duration counts back from `--until` or invocation time. | After the complete leaf path. Effect: reads local Claude Code transcripts and displays the report; no state write unless `--out` is supplied. |
+| `nyxloom usage report` | `--until` | string; timezone-aware ISO-8601 timestamp; 1 value; repeat accepted | omitted: invocation time | Inclusive UTC end bound. | After the complete leaf path. Effect: narrows transcript timestamps; read-only unless `--out` is supplied. |
+| `nyxloom usage report` | `--project` | string; 1 value; repeat accepted | omitted: include all matching sessions | Select sessions by exact recorded `cwd` or unique `cwd` basename. | After the complete leaf path. Effect: selects whole matching sessions from local transcript metadata. |
+| `nyxloom usage report` | `--session` | string; 1 value; repeat accepted | omitted: include all matching sessions | Select one exact loaded session ID. | After the complete leaf path. Effect: narrows the local transcript query. |
+| `nyxloom usage report` | `--format` | string; choices: table, json, csv; 1 value; repeat accepted | `table` | Choose the versioned JSON tree, flat node-row CSV, or hierarchical table renderer. | After the complete leaf path. Effect: changes encoding only. |
+| `nyxloom usage report` | `--out` | string path; 1 value; repeat accepted | omitted: write to stdout | Write the rendered report to this file. | After the complete leaf path. Effect: writes only the requested output file. |
+| `nyxloom usage report` | `--depth` | integer; 1 value; repeat accepted | omitted: show the full hierarchy | Maximum visible tree depth; session roots are depth zero. | After the complete leaf path. Effect: hides deeper rows and reports omitted descendant counts. Conflicts with `--flat`. |
+| `nyxloom usage report` | `--min-share` | string percentage from 0 to 100; optional trailing `%`; 1 value; repeat accepted | `0` (no folding) | Fold rows whose raw-token-unit share of the full report is below this threshold. | After the complete leaf path. Effect: presentation-only grouping into explicit “other” rows. |
+| `nyxloom usage report` | `--flat` | boolean flag; 0 values | false (disabled) | Rank visible session and agent nodes in one flat list. | After the complete leaf path. Effect: presentation-only global ordering. Conflicts with `--depth`. |
+| `nyxloom usage report` | `--sort` | string; choices: cost, start, dur, calls, peak, out; 1 value; repeat accepted | `cost` | Sort siblings or flat rows; in U1–U2, `cost` means raw token units. | After the complete leaf path. Effect: presentation-only ordering. |
+| `nyxloom usage report` | `--no-labels` | boolean flag; 0 values | false (disabled) | Omit session title and subagent topic labels. | After the complete leaf path. Effect: suppresses title/topic metadata; IDs and numeric fields remain available. |
 | `nyxloom onboard` | `--maturity` | string; choices: empty, partial, mature; 1 value; repeat accepted; the last supplied value wins | `empty` | State the project’s current maturity so onboarding scaffolds only the needed spine. | After the complete leaf path; may appear before or after leaf positionals. Effect: reads the project and writes onboarding artifacts; assessment and questionnaire options may invoke configured AI. |
 | `nyxloom onboard` | `--docs` | string; choices: present, absent; 1 value; repeat accepted; the last supplied value wins | `absent` | State whether the project has documentation for onboarding decisions. | After the complete leaf path; may appear before or after leaf positionals. Effect: reads the project and writes onboarding artifacts; assessment and questionnaire options may invoke configured AI. |
 | `nyxloom onboard` | `--mode` | string; choices: derive-from-code, code-good-docs-absent, greenfield-define-it; 1 value; repeat accepted; the last supplied value wins | `greenfield-define-it` | Choose the project’s onboarding path. | After the complete leaf path; may appear before or after leaf positionals. Effect: reads the project and writes onboarding artifacts; assessment and questionnaire options may invoke configured AI. |
@@ -334,6 +347,7 @@ The executable name is included in every valid command path. Each row is a comma
 | `--debug-raw`, `--traceback` | Diagnostic controls. Raw debug is supported only where a handler emits those values; traceback changes unexpected exception presentation, not handled refusals. |
 | `--color` + `--no-color` | Mutually exclusive; color is applied only by output paths that render it. |
 | `--since` + `--since-file` | Mutually exclusive on cursor-capable extraction paths. Markers are adapter-specific. |
+| `usage report --flat` + `--depth` | Rejected together; `--flat` globally ranks visible nodes while `--depth` prunes the hierarchy. |
 | `--render-markdown` + `--highlight` | Mutually exclusive output modes. `--highlight` preserves source markup; rendering consumes it. |
 | `--show-tool-call-intent` without `--show-tool-calls` | Refused; intent is a detail of visible tool calls. |
 | Text-only extraction controls + `--json` | Task banners, ledger, and incompatible text rendering controls are refused in JSON mode; output stays machine-readable. |
@@ -782,16 +796,17 @@ runtime yet.
   identifies a gap: a task created outside daemon dispatch has no command to
   enter the state model, so it is absent from those read paths.
 - **Automation:** selected commands expose JSON (`extract`, `extract-report`,
-  `extract-sessions`, and `events`); other commands are text only. Parser
+  `extract-sessions`, `usage report`, and `events`); other commands are text only. Parser
   errors use 2 while handler failures commonly use 1 or 2, so a follow-up must
   preserve command-specific exits and pin JSON schemas. No interactive prompt
   is a general authorization contract; operation-specific safeguards remain
   the consent boundary.
 - **Inspection:** `routes`, `free-models`, `capability-map`, findings, events,
-  leases, digests, and session extraction cover configuration, model/catalog,
-  workflow, and transcript views. Capability JSON is not a global format;
-  session reports and event output have distinct schemas. NL-20's process
-  history would overlap run-gate/cgprofile and extract-report.
+  leases, digests, session extraction, and `usage report` cover configuration,
+  model/catalog, workflow, and transcript views. Capability JSON is not a
+  global format; usage-report JSON is a metadata-only session tree distinct
+  from extract-report and event output. NL-20's process history overlaps
+  run-gate/cgprofile and remains a separate design question.
 - **Release operator:** the installed Nyxloom CLI has no release/publish verb;
   the repository's CMRU workflow releases the Nyxloom wheel. Do not fold
   build/publish or OCI lifecycle into the project-operator CLI as a side effect
@@ -815,7 +830,7 @@ runtime yet.
 | Manual-task backfill (NL-18) | A manual controller carves/dispatches/merges without daemon-created state, so operator journeys cannot see those tasks in status/resync/digest. No current command writes a task from a handoff. | Keep open for separate design. Additive state mutation; require duplicate refusal, source provenance, idempotence, and status visibility. Existing commands remain compatible; new state enters their normal read model. |
 | Orientation pack (NL-19) | A project author/carver needs role-tailored, verbatim context packs before dispatch; tools/pack.py provides build/delta/verify/score but is not registered and has root/score dependency assumptions. | Keep standalone until path derivation and score dependencies are resolved. A future pack group is additive but would require package config/path rules and docs/SPEC ownership; do not include it in parser adoption. |
 | Transcript-derived pack input (NL-21) | Proposes building a read list from a recon agent transcript; overlaps pack build and depends on transcript/read-source evidence. | Keep after NL-19. Risk is treating an incomplete transcript as a complete read set; require path normalization and an explicit incomplete-evidence state. A future mode is additive, with no compatibility effect until callers opt in. |
-| Session context/process registry (NL-20) | Agents/operators need measured session token usage and process/resource history. Session usage overlaps extract-report; process history overlaps cgprofile and run-gate history; service ownership remains undecided. | Keep as separate design decision. This is new runtime/service scope, with operational state and privacy/resource risks; no migration is warranted before ownership and lifecycle are decided. No CLI surface exists today. |
+| Session context/process registry (NL-20) | Agents/operators need measured session token usage and process/resource history. `nyxloom usage report` now supplies read-only raw-token analytics across Claude sessions; process history overlaps cgprofile and run-gate history, and any persistent session-context service remains undecided. | Keep the process/resource registry and session-context service as separate design work. The U1–U2 CLI is additive and uses transcript files as its source; there is no persistent-store migration. |
 | Tool intent in gaps (NL-22) | Session-review users want Bash/Task descriptions visible while reading compact gaps. Current standalone labels already expose opt-in name/intent fields where available. | Keep current behavior and assess bounded opt-in gap aggregation separately. Risk is transcript bloat or leaking the full tool input; any output change should be opt-in and only include source description text. |
 
 The backlog candidates have these explicit scope, risk, and compatibility
@@ -830,7 +845,7 @@ dispositions:
 | NL-17 | Adapt webhook payloads for Mattermost/Slack; overlaps configured notification transport used by extraction follow. | Misrouted or malformed notification, and disclosure of the excerpt. | Transport-only follow-up; preserve current CLI flags, so no syntax migration. Require backend fixtures before enabling. |
 | NL-18 | Add an explicit way to backfill a manually created handoff/task into Nyxloom state; overlaps daemon task ingestion/read models. | Duplicate tasks, false provenance, or non-idempotent state. | Separate additive state/API design; no existing-task migration, but new records must appear consistently in status/resync/digest. |
 | NL-19 | Decide whether to register orientation-pack build/delta/verify/score actions; overlaps `tools/pack.py` and project-author context preparation. | Wrong root or absent score source can produce a plausible but incomplete pack. | Keep standalone until sources are authoritative; future CLI integration is additive, with path/config docs and no required migration for current users. |
-| NL-20 | Decide ownership/storage for session token and process/resource history; overlaps extract-report, cgprofile, and run-gate history. | Sensitive persistent data, retention burden, and duplicate sources of truth. | Separate service/design scope before adding commands; no current CLI migration. |
+| NL-20 | Decide ownership/storage for session token and process/resource history; overlaps `usage report`/extract-report, cgprofile, and run-gate history. `usage report` now provides raw local transcript analytics without persistent storage. | A persistent service would add sensitive data, retention burden, and duplicate sources of truth. | Keep service/process history as separate design scope; the additive raw report needs no state migration. |
 | NL-21 | Allow pack inputs from a recon transcript; overlaps NL-19 and transcript source/read evidence. | An incomplete transcript may be mistaken for a complete read list. | Defer until NL-19; opt-in additive mode with normalized paths and explicit incomplete evidence, no current caller migration. |
 | NL-22 | Add bounded tool descriptions to compact session gaps; overlaps existing opt-in tool labels. | Transcript bloat or exposing full tool input. | Separate extraction behavior change; keep default output stable and make any addition opt-in, so existing invocations need no migration. |
 
