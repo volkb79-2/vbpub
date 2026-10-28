@@ -10,6 +10,7 @@ import ast
 import calendar
 import contextlib
 import concurrent.futures
+import ctypes
 import fcntl
 import hashlib
 from importlib import metadata as importlib_metadata
@@ -64,6 +65,47 @@ sys.modules["run_gate"] = run_gate
 _spec.loader.exec_module(run_gate)
 
 CGROUP_VAR = "CGROUP_PARENT_DEV_GATES"
+
+_PR_SET_CHILD_SUBREAPER = 36
+_PR_GET_CHILD_SUBREAPER = 37
+
+
+def _set_child_subreaper(enabled: bool) -> bool:
+    """Set Linux child-subreaper mode and return its previous value."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    previous = ctypes.c_int()
+    if libc.prctl(_PR_GET_CHILD_SUBREAPER, ctypes.byref(previous), 0, 0, 0) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+    if bool(previous.value) != enabled:
+        if libc.prctl(_PR_SET_CHILD_SUBREAPER, int(enabled), 0, 0, 0) != 0:
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error))
+    return bool(previous.value)
+
+
+def _direct_child_pids() -> list[int]:
+    """Read this test process's direct children from Linux procfs."""
+    children = Path("/proc/self/task") / str(threading.get_native_id()) / "children"
+    return [int(pid) for pid in children.read_text(encoding="ascii").split()]
+
+
+def _kill_and_reap_direct_children() -> None:
+    """Clean children orphaned by a client killed in a subprocess test."""
+    deadline = time.monotonic() + 5.0
+    while children := _direct_child_pids():
+        for pid in children:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        for pid in children:
+            try:
+                os.waitpid(pid, 0)
+            except ChildProcessError:
+                pass
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"could not reap adopted test children: {children}")
 
 
 # ---------------------------------------------------------------------------
@@ -28704,18 +28746,16 @@ class TestExecLaneInflightRecord:
         lane's own real precedent
         (`TestReattachAcrossADeadClient::test_a_killed_client_leaves_a_
         container_the_next_run_re_attaches_to`): a REAL client subprocess
-        is spawned against a REAL (shimmed) exec-mode project, killed
-        mid-exec (the shim's `docker exec` actually runs `sleep 30`, wide
-        enough to guarantee the kill lands before it finishes), and the
-        record is read back from OUTSIDE that process -- proof it demonstrably
-        survives a client that never reaches its own `finally`, not merely
-        that the record functions can round-trip a dict."""
+        is spawned against a REAL (shimmed) exec-mode project and killed
+        inside its Docker-call boundary. The record is read back from OUTSIDE
+        that process, proving it survives a client that never reaches its own
+        `finally`. The boundary blocks in the client process so the local
+        fake does not leave a child behind when the client dies."""
         repo = make_repo(tmp_path)
         (repo / ".gitignore").write_text(".run-gate/\n")
-        cfg = self._cfg().replace('argv = ["true"]',
-                                  'argv = ["bash", "-c", "sleep 30"]')
+        cfg = self._cfg()
         proj = make_project(repo, cfg)
-        fake_docker_executing(tmp_path, monkeypatch)
+        fake_docker(tmp_path, monkeypatch)
         shim = shim_dir_of(monkeypatch) / "docker"
         body = shim.read_text()
         body = body.replace(
@@ -28725,26 +28765,80 @@ class TestExecLaneInflightRecord:
             f'2026-09-02T11:00:00Z|{RG55_CONTAINER_ID}\\n\' ;;\n'
             '  ps) printf \'the-runner\\n\' ;;')
         shim.write_text(body)
-        client = subprocess.Popen([sys.executable, str(_TOOL_INVOKE), "suite"],
-                                  cwd=proj, stdout=subprocess.PIPE,
-                                  stderr=subprocess.STDOUT, text=True)
-        record_path = proj / ".run-gate" / "inflight" / "suite.json"
-        deadline = time.monotonic() + 15
-        while not record_path.exists() and time.monotonic() < deadline:
-            time.sleep(0.05)
-        assert record_path.exists(), \
-            "the record must exist before the exec finishes (sleep 30 " \
-            "guarantees this branch is not just lucky timing)"
-        client.kill()
-        client.wait(timeout=30)
-        # RG-60's own scope: the record existing to be FOUND, not
-        # reconciliation (unlike a container lane, there is no re-attach
-        # here) -- it must still be there, untouched, after the client
-        # died mid-exec without ever reaching its `finally`.
-        recovered = run_gate.load_inflight_record(record_path)
-        assert recovered is not None
-        assert recovered["container"] == "the-runner"
-        assert recovered["lane"] == "suite"
+
+        client_blocked = tmp_path / "client-blocked-in-docker-exec"
+        client_script = tmp_path / "run-gate-client.py"
+        client_script.write_text(textwrap.dedent(f"""\
+            import importlib.util
+            import subprocess
+            import sys
+            import time
+            from pathlib import Path
+
+            sys.argv[0] = "run-gate"
+
+            spec = importlib.util.spec_from_file_location("run_gate", {str(_TOOL)!r})
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = module
+            spec.loader.exec_module(module)
+
+            client_blocked = Path({str(client_blocked)!r})
+            real_popen = module.subprocess.Popen
+
+            def hold_docker_exec(argv, *args, **kwargs):
+                if len(argv) >= 2 and Path(argv[0]).name == "docker" and argv[1] == "exec":
+                    client_blocked.write_text("entered", encoding="utf-8")
+                    while True:
+                        time.sleep(1)
+                return real_popen(argv, *args, **kwargs)
+
+            module.subprocess.Popen = hold_docker_exec
+            raise SystemExit(module.main(["suite"]))
+        """), encoding="utf-8")
+
+        previous_subreaper = _set_child_subreaper(True)
+        client = None
+        try:
+            client = subprocess.Popen([sys.executable, str(client_script)],
+                                      cwd=proj, stdout=subprocess.PIPE,
+                                      stderr=subprocess.STDOUT, text=True)
+            record_path = proj / ".run-gate" / "inflight" / "suite.json"
+            deadline = time.monotonic() + 15
+            while (
+                (not record_path.exists() or not client_blocked.exists())
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.05)
+            if not record_path.exists() or not client_blocked.exists():
+                client.kill()
+                client_output, _ = client.communicate(timeout=30)
+                raise AssertionError(
+                    "run-gate client did not reach docker exec; output:\n"
+                    f"{client_output}"
+                )
+            client.kill()
+            client.wait(timeout=30)
+            # RG-60's own scope: the record existing to be FOUND, not
+            # reconciliation (unlike a container lane, there is no re-attach
+            # here) -- it must still be there, untouched, after the client
+            # died mid-exec without ever reaching its `finally`.
+            recovered = run_gate.load_inflight_record(record_path)
+            assert recovered is not None
+            assert recovered["container"] == "the-runner"
+            assert recovered["lane"] == "suite"
+            assert _direct_child_pids() == [], (
+                "the killed client left its fake docker exec process in the "
+                f"test process tree: {_direct_child_pids()}"
+            )
+        finally:
+            if client is not None:
+                if client.poll() is None:
+                    client.kill()
+                client.wait(timeout=30)
+            try:
+                _kill_and_reap_direct_children()
+            finally:
+                _set_child_subreaper(previous_subreaper)
 
     def test_record_written_even_when_profiling_disabled(self, tmp_path,
                                                           monkeypatch):
