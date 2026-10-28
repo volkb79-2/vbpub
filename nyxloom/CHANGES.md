@@ -6,6 +6,20 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [0.11.1] - 2026-10-28
+<!-- cmru: generated -->
+<!-- cmru: source-end=4305298770107130718c89a5dc35aaea45f8bda9 -->
+
+### Fixed
+- fix(cmru): orphan-sidecar abandon withholds on publication evidence; build-push callers report an unsynced package; cleanup --policy precondition documented (review round 1) (336938cab)
+- fix(nyxloom): lint L7 accepts an absent scope.forbid path (NL-26) (2b83e5921)
+
+### Changed
+- Merge nyxloom 0.11.1 wave: deterministic capture/SIGKILL drill tests, L7 lint, NL-26 — vbpub@0204aa8a3 (430529877)
+
+### Testing
+- test(nyxloom): make the stream-json capture and SIGKILL drill tests ordering-deterministic; L7 SPEC row + archived-forbid test (NL-26 review) (0204aa8a3)
+
 ## [0.11.0] - 2026-10-21
 <!-- cmru: generated -->
 <!-- cmru: source-end=b44ee3604f3460d74c7d82d6e78f92cbfb7dfbc1 -->
