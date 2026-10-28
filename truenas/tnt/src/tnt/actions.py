@@ -1,7 +1,9 @@
 """The plan/apply action model: every mutating feature renders the exact RPC calls first, then applies behind gates.
 
-Gates, in order, for ``apply_plan``: refusal list (never overridable) -> write session -> typed confirmation for
-destructive actions -> state drift check (the probe fingerprint taken at plan time must still hold) -> execute.
+Gates, in order, for ``apply_plan``: action validity -> live safety state and refusal list (never overridable) ->
+write session -> typed confirmation for destructive actions -> state drift (the fingerprint binds the calls, the
+confirmation target and the probe results) -> execute through the guarded client, which only lets exactly these
+calls run (default-deny, see ``transport.GuardedRpc``).
 """
 from __future__ import annotations
 
@@ -9,9 +11,12 @@ import hashlib
 import json
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Iterable, Protocol
+from typing import Any
 
 from .errors import Refused
+from .policy import (ALWAYS_REFUSED, BOOT_POOL, Caller, SafetyState, compute_state, is_read_method,  # noqa: F401
+                     refusal_for)
+from .transport import GuardedRpc
 
 
 class Kind(StrEnum):
@@ -29,6 +34,9 @@ class RpcCall:
     def render(self) -> str:
         args = ", ".join(json.dumps(p, sort_keys=True) for p in self.params)
         return f"{self.method}({args})" + ("  [job]" if self.job else "")
+
+    def key(self) -> tuple[str, tuple[Any, ...], bool]:
+        return (self.method, self.params, self.job)
 
 
 @dataclass(frozen=True)
@@ -55,55 +63,55 @@ class Plan:
         return "\n".join(lines)
 
 
-class Caller(Protocol):
-    def call(self, method: str, *params: Any, job: bool = False) -> Any: ...
+def validate_action(action: Action) -> None:
+    """Structural rules that hold for every action, checked at plan time and again at apply time."""
+    if not action.calls:
+        raise Refused("empty-action", f"{action.id} has no calls")
+    for call in action.probe:
+        if not is_read_method(call.method):
+            raise Refused("probe-not-read", f"{action.id}: probe call {call.method} is not a read method")
+    if action.kind is Kind.READ:
+        for call in action.calls:
+            if not is_read_method(call.method):
+                raise Refused("read-action", f"{action.id} is a READ action but calls {call.method}, which is not a read method")
+    if action.kind is Kind.DESTRUCTIVE and not action.probe:
+        raise Refused("empty-probe", f"{action.id} is destructive but has no probe: the drift check would be vacuous")
 
 
-# -- refusal list (docs/DESIGN.md section 8). These are never executed, with or without confirmation. -------
-ALWAYS_REFUSED = {
-    "system.reboot": "tnt never reboots or shuts down a host",
-    "system.shutdown": "tnt never reboots or shuts down a host",
-    "boot.attach": "boot-pool topology is out of scope (ACTION-MATRIX B-07: attach to a partition raises an internal TypeError)",
-    "boot.detach": "boot-pool topology is out of scope (ACTION-MATRIX B-07)",
-    "boot.replace": "boot-pool topology is out of scope (ACTION-MATRIX B-07)",
-}
-BOOT_POOL_REFUSED = {"pool.export", "pool.update", "pool.dataset.delete", "pool.snapshot.delete"}  # ACTION-MATRIX A-08
-
-
-def refusal_for(call: RpcCall, protected_disks: Iterable[str] = ()) -> str | None:
-    if call.method in ALWAYS_REFUSED:
-        return ALWAYS_REFUSED[call.method]
-    if call.method.startswith("auth.") and call.method not in ("auth.me", "auth.mechanism_choices"):
-        return "tnt does not change credentials or sessions"
-    if call.method in BOOT_POOL_REFUSED and "boot-pool" in json.dumps(call.params, default=str):
-        return "boot-pool is never exported, updated or deleted from here (ACTION-MATRIX A-08)"
-    if call.method == "disk.wipe" and call.params and call.params[0] in set(protected_disks):
-        return f"disk {call.params[0]} belongs to a pool; wipe refuses disks that are in use"
-    return None
-
-
-def fingerprint_of(rpc: Caller, probe: Iterable[RpcCall]) -> str:
-    material = [[c.method, list(c.params), rpc.call(c.method, *c.params)] for c in probe]
+def fingerprint_of(rpc: Caller, action: Action) -> str:
+    material = {
+        "id": action.id, "kind": str(action.kind), "confirm": action.confirm_target,
+        "calls": [[c.method, list(c.params), c.job] for c in action.calls],
+        "probe": [[c.method, list(c.params), rpc.call(c.method, *c.params)] for c in action.probe],
+    }
     return hashlib.sha256(json.dumps(material, sort_keys=True, default=str).encode()).hexdigest()
 
 
 def make_plan(action: Action, rpc: Caller) -> Plan:
-    """Planning only ever reads: the probe calls must be read methods (the guarded client enforces that)."""
-    return Plan(action, fingerprint_of(rpc, action.probe))
+    """Planning only ever reads; the probe calls are checked to be read methods before any of them runs."""
+    validate_action(action)
+    return Plan(action, fingerprint_of(rpc, action))
 
 
-def apply_plan(plan: Plan, rpc: Caller, *, allow_write: bool, typed_confirmation: str | None = None,
-               protected_disks: Iterable[str] = ()) -> list[Any]:
+def apply_plan(plan: Plan, rpc: GuardedRpc, *, allow_write: bool, typed_confirmation: str | None = None) -> list[Any]:
+    if not isinstance(rpc, GuardedRpc):
+        raise Refused("unguarded", "plans run only through a GuardedRpc session")
     action = plan.action
-    protected = tuple(protected_disks)
+    validate_action(action)
+    state: SafetyState | None = None
+    if action.kind is not Kind.READ:
+        state = compute_state(rpc)
     for call in action.calls:
-        reason = refusal_for(call, protected)
+        reason = refusal_for(call.method, call.params, state)
         if reason:
             raise Refused("refusal-list", f"{call.method}: {reason}")
-    if action.kind is not Kind.READ and not allow_write:
+    if action.kind is not Kind.READ and (not allow_write or rpc.read_only):
         raise Refused("read-only", f"{action.id} changes the host; rerun with --allow-write")
     if action.kind is Kind.DESTRUCTIVE and (action.confirm_target is None or typed_confirmation != action.confirm_target):
         raise Refused("typed-confirmation", f"{action.id} is destructive: type {action.confirm_target!r} exactly to confirm")
-    if fingerprint_of(rpc, action.probe) != plan.fingerprint:
-        raise Refused("state-drift", f"the host changed since {action.id} was planned; plan again")
-    return [rpc.call(c.method, *c.params, job=True) if c.job else rpc.call(c.method, *c.params) for c in action.calls]
+    if fingerprint_of(rpc, action) != plan.fingerprint:
+        raise Refused("state-drift", f"the host or the action changed since {action.id} was planned; plan again")
+    if action.kind is Kind.READ:
+        return [rpc.call(c.method, *c.params, job=True) if c.job else rpc.call(c.method, *c.params) for c in action.calls]
+    with rpc.authorized([c.key() for c in action.calls], state):
+        return [rpc.call(c.method, *c.params, job=True) if c.job else rpc.call(c.method, *c.params) for c in action.calls]

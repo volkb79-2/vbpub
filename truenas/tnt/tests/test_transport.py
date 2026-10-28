@@ -126,11 +126,12 @@ def test_read_only_guard_allows_reads_and_refuses_writes(server):
     session.close()
 
 
-def test_write_session_passes_non_read_methods_through(server):
+def test_write_session_is_default_deny_outside_a_plan(server):
     session = _open(server, allow_write=True)
     assert "WRITE ENABLED" in session.banner()
-    with pytest.raises(TransportError, match="Method not found"):  # the fake has no pool.create; the guard did not stop it
+    with pytest.raises(Refused, match="no-plan"):
         session.rpc.call("pool.create", {})
+    assert "pool.create" not in server.called()
     session.close()
 
 
@@ -159,7 +160,8 @@ def test_job_flag_is_forwarded_and_close_is_quiet():
         def close(self):
             raise OSError("x")
     g = transport.GuardedRpc(Inner(), read_only=False)
-    assert g.call("pool.scrub", "tank", job=True) == ("pool.scrub", ("tank",), True)
+    with g.authorized([("pool.scrub", ("tank",), True)], None):
+        assert g.call("pool.scrub", "tank", job=True) == ("pool.scrub", ("tank",), True)
     g.close()
 
 

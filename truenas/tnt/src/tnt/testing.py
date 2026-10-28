@@ -49,6 +49,8 @@ class FakeServer:
         self.parts = std_parts if parts is None else parts
         self.methods = sorted(m for ms in V27.manifest.values() for m in ms) if methods is None else methods
         self.fail = dict(fail or {})
+        self.pools: Any = [{"id": 1, "name": "tank", "topology": {"data": [{"type": "DISK", "disk": "sdb", "path": "/dev/sdb1"}]}}]
+        self.boot_state: Any = {"name": "boot-pool", "topology": {"data": [{"type": "DISK", "disk": "sda3", "path": "/dev/sda3"}]}}
         self.details_as_flat_list = details_as_flat_list
         self.requests: list[dict[str, Any]] = []
         self.logins = 0
@@ -129,6 +131,8 @@ class FakeServer:
             "core.get_methods": lambda p: {m: {} for m in self.methods},
             "disk.query": lambda p: self.disks,
             "disk.details": self._details,
+            "pool.query": lambda p: self.pools,
+            "boot.get_state": lambda p: self.boot_state,
         }
         if method not in handlers:
             raise _RpcError(-32601, f"Method not found: {method}")

@@ -4,7 +4,9 @@ Labels and order come from truenas/webui ``src/app/services/navigation/navigatio
 2026-10-28): Dashboard, Storage, Datasets, Shares, Data Protection, Credentials (slide-out), Containers,
 Virtual Machines, Apps, Reporting, System (slide-out). There is no "Virtualization" or top-level "Network"
 entry in the v27 UI: Network lives under System, and Containers/VMs are separate top-level items.
-Deviations are marked ``tnt_only`` and listed in docs/DESIGN.md section 4.
+Entries the web UI shows only conditionally (entitlement, feature or hardware dependent) carry ``conditional``:
+Containers, Virtual Machines, Apps, KMIP and Enclosure; tnt will hide them when the host does not support them
+(BACKLOG TNT-35). Deviations are marked ``tnt_only`` and listed in docs/DESIGN.md section 4.
 """
 from __future__ import annotations
 
@@ -20,6 +22,7 @@ class MenuItem:
     tnt_only: bool = False
     children: tuple["MenuItem", ...] = ()
     matrix: tuple[str, ...] = ()  # ACTION-MATRIX row ids this screen will carry
+    conditional: bool = False  # the web UI shows this entry only when the host supports it (license, feature, hardware)
 
 
 def _p(key: str, label: str, milestone: str = "M3", **kw) -> MenuItem:
@@ -41,15 +44,15 @@ MENU: tuple[MenuItem, ...] = (
     _p("credentials", "Credentials", children=(
         _p("users", "Users"), _p("groups", "Groups"), _p("privileges", "Privileges"), _p("directory-services", "Directory Services"),
         _p("backup-credentials", "Backup Credentials"), _p("certificates", "Certificates"), _p("s3-access-keys", "S3 Access Keys"),
-        _p("kmip", "KMIP"))),
-    _p("containers", "Containers", "M3", matrix=("A-04", "A-06", "B-04")),
-    _p("vm", "Virtual Machines", "M3", matrix=("A-05", "A-06", "B-04")),
-    _p("apps", "Apps"),
-    _p("reportsdashboard", "Reporting"),
+        _p("kmip", "KMIP", conditional=True))),
+    _p("containers", "Containers", "M3", matrix=("A-04", "A-06", "B-04"), conditional=True),
+    _p("vm", "Virtual Machines", "M3", matrix=("A-05", "A-06", "B-04"), conditional=True),
+    _p("apps", "Apps", conditional=True),
+    _p("reportsdashboard/cpu", "Reporting"),
     _p("system", "System", "M1", children=(
         _p("update", "Update"), _p("general", "General Settings"), _p("advanced", "Advanced Settings"), _p("network", "Network"),
         _p("boot", "Boot", "M1"), _p("services", "Services"), _p("alert-settings", "Alert Settings"), _p("audit", "Audit"),
-        _p("viewenclosure", "Enclosure"))),
+        _p("viewenclosure", "Enclosure", conditional=True))),
 )
 
 

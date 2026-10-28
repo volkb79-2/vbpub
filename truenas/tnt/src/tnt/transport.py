@@ -6,10 +6,13 @@ TrueNAS rate-limits 20 unauthenticated attempts per 60 s and then locks out for 
 """
 from __future__ import annotations
 
-from typing import Any, Callable, Protocol
+from collections import deque
+from contextlib import contextmanager
+from typing import Any, Callable, Iterable, Iterator, Protocol
 from urllib.parse import urlsplit
 
 from .errors import Refused, TransportError
+from .policy import SafetyState, canonical_params, is_read_method, normalise_method, refusal_for
 from .profile import LOOPBACK, Profile, Secret
 
 
@@ -18,33 +21,55 @@ class RpcClient(Protocol):
     def close(self) -> None: ...
 
 
-# Method-name shapes a read-only session may call. Everything else needs an explicit write session.
-READ_PREFIXES = ("system.info", "system.version", "core.get_methods", "auth.me", "auth.mechanism_choices")
-READ_SUFFIXES = (".query", ".details", ".get_instance", ".config", ".get_disks", ".get_state", ".choices", ".pool_choices", ".get_used",
-                 ".import_find", ".validate_name", ".temperatures")
-
-
-def is_read_method(method: str) -> bool:
-    return method in READ_PREFIXES or method.endswith(READ_SUFFIXES)
-
-
 class GuardedRpc:
-    """Wraps a client; a read-only session refuses every method that is not on the read list."""
+    """The only object a screen or verb gets to call the host with; it enforces the policy itself.
+
+    Reads are allowed in every session. A non-read method is refused in a read-only session, and in a write
+    session it runs only inside ``authorized(...)``: the exact calls (method, parameters, job flag, in order) of a
+    confirmed plan, each of which must also pass ``refusal_for``. ``authorized`` is meant to be entered only by
+    ``actions.apply_plan``; nothing else in tnt calls it.
+    """
 
     def __init__(self, inner: RpcClient, *, read_only: bool = True, secret: Secret | None = None):
         self._inner = inner
         self.read_only = read_only
         self._secret = secret
+        self._grant: tuple[deque, SafetyState | None] | None = None
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
 
-    def call(self, method: str, *params: Any, job: bool = False) -> Any:
-        if self.read_only and not is_read_method(method):
-            raise Refused("read-only", f"{method} is not a read method; this session has no write access (use --allow-write)")
-        self.calls.append((method, params))
+    @contextmanager
+    def authorized(self, calls: Iterable[tuple[str, tuple[Any, ...], bool]], state: SafetyState | None) -> Iterator[None]:
+        if self.read_only:
+            raise Refused("read-only", "a read-only session cannot execute a plan")
+        if self._grant is not None:
+            raise Refused("nested-plan", "a plan is already executing")
+        self._grant = (deque((normalise_method(m), canonical_params(p), bool(j)) for m, p, j in calls), state)
         try:
-            return self._inner.call(method, *params, job=job) if job else self._inner.call(method, *params)
+            yield
+        finally:
+            self._grant = None
+
+    def call(self, method: str, *params: Any, job: bool = False) -> Any:
+        name = normalise_method(method)
+        if not is_read_method(name):
+            reason = refusal_for(name, params, self._grant[1] if self._grant else None)
+            if self.read_only:
+                raise Refused("read-only", f"{name} is not a read method; this session has no write access (use --allow-write)")
+            if reason:
+                raise Refused("refusal-list", f"{name}: {reason}")
+            if self._grant is None:
+                raise Refused("no-plan", f"{name} is not part of a confirmed plan being applied; write sessions are default-deny")
+            queue = self._grant[0]
+            if not queue or queue[0] != (name, canonical_params(params), bool(job)):
+                raise Refused("not-in-plan", f"{name} with these parameters is not the next call of the plan being applied")
+            queue.popleft()
+        elif (reason := refusal_for(name, params, None)):
+            raise Refused("refusal-list", f"{name}: {reason}")
+        self.calls.append((name, params))
+        try:
+            return self._inner.call(name, *params, job=job) if job else self._inner.call(name, *params)
         except Exception as exc:  # the client raises its own and websocket exceptions; one scrubbed error type here
-            raise TransportError("call", self._scrub(f"{method} failed: {exc}")) from None
+            raise TransportError("call", self._scrub(f"{name} failed: {exc}")) from None
 
     def close(self) -> None:
         try:

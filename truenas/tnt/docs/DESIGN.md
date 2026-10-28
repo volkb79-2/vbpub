@@ -51,8 +51,8 @@ session opener so tests substitute a fake-server-backed one.
   rejects it again. The only exception is the loopback hook the tests use for the fake server
   (`allow_loopback_ws`, honoured for 127.0.0.1/::1/localhost, not reachable from the CLI or from a profile).
 - TLS verification is ON. `tls = "insecure"` in a profile turns it off only when the command line also carries
-  `--insecure`, and the TUI then shows a red banner on every screen. Estate hosts that run with `verify_ssl = false`
-  (the existing `scripts/truenas/truenas.toml` does for v1001) keep that explicit per profile.
+  `--insecure`, and the TUI then shows a red banner on every screen. A throwaway host that runs with
+  `verify_ssl = false` keeps that explicit per profile.
 - Errors from the client are wrapped into one `TransportError(kind, message)` with the API key scrubbed from the text.
 
 ### 2.2 Version adapters and the method manifest
@@ -72,24 +72,35 @@ screens call `Backend` operations and each `Backend` subclass knows its generati
 
 ### 2.3 Domain and the partition-data question
 
-`Disk.partitions` is `None` when the API gave no partition data and `()` when the disk has none; `free_bytes` is `None`
-for unknown, so "unknown" can never be mistaken for "full" or "empty". `free_bytes` is an upper bound (alignment and the
-backup GPT are not subtracted) until TNT-02 computes exact extents. The M0 adapter asks `disk.query` with
-`extra.pools` and `disk.details` with `{type: BOTH, join_partitions: true}`; both parameter shapes are UNVERIFIED on
-a live v27 host (TNT-01). If the API cannot expose partitions, the source becomes an SSH `lsblk --json` / `sgdisk -p`
-fallback behind the same `Backend` method.
+`Disk.partitions` is `None` when the partition data is unknown and `()` only when it is corroborated; the free-space
+figure is `free_upper_bound_bytes` (CLI column "FREE (UPPER BOUND)" shown as `<= 411.5 GiB`, JSON key
+`free_upper_bound_bytes`): alignment gaps and the backup GPT are not subtracted until TNT-02 computes exact extents.
+It is `None` ("?") whenever it cannot be known: no partition data, no usable disk size, or any partition without a
+usable size. Unparseable, missing, negative or boolean sizes become `None`, never 0. An empty partition list is
+believed only with evidence that the API really joins partition data (some disk shows partitions) and only for a disk
+that is not a pool member; otherwise it reads unknown, because the matrix measured `disk.details` as empty for a disk
+that does have a partition. The M0 adapter asks `disk.query` with `extra.pools` and `disk.details` with
+`{type: BOTH, join_partitions: true}`; both parameter shapes are UNVERIFIED on a live v27 host (TNT-01). If the API
+cannot expose partitions, the source becomes an SSH `lsblk --json` / `sgdisk -p` fallback behind the same `Backend`
+method (section 8.1).
 
 ### 2.4 Action model (plan/apply)
 
 `Action(id, kind, title, calls, probe, confirm_target)`; `kind` is READ, MUTATE or DESTRUCTIVE. `id` is an
-ACTION-MATRIX row id (A-xx/B-xx) or a TNT id. `make_plan` runs the read-only `probe` calls and stores a fingerprint;
-`Plan.render()` prints the exact RPC calls in order. `apply_plan` checks, in this order, and stops at the first failure:
+ACTION-MATRIX row id (A-xx/B-xx) or a TNT id. Structural rules (`validate_action`, at plan and again at apply): an
+action has calls; every probe call is a read method (also in a write session); a READ action's calls are all read
+methods; a DESTRUCTIVE action has a non-empty probe (else the drift check would be vacuous). `make_plan` runs the probe
+and fingerprints the action id, kind, confirm target, exact calls and probe results, so swapping the calls or the
+target under a plan is detected. `Plan.render()` prints the exact RPC calls in order. `apply_plan` (which accepts only
+a `GuardedRpc`) checks, in this order, and stops at the first failure:
 
-1. refusal list (section 8), never overridable;
-2. write session (`--allow-write`), for MUTATE and DESTRUCTIVE;
-3. typed confirmation, for DESTRUCTIVE: the operator types the target name exactly;
-4. state drift: the probe is re-run and its fingerprint must equal the plan's, else "plan again";
-5. execute the calls (jobs via `job=True`).
+1. validity (above);
+2. live safety state (`policy.compute_state`: pool ids, members of every pool incl. boot, mounted partitions) and the
+   refusal list for every call, never overridable;
+3. write session (`--allow-write`), for MUTATE and DESTRUCTIVE;
+4. typed confirmation, for DESTRUCTIVE: the operator types the target name exactly;
+5. state drift: the fingerprint is recomputed and must equal the plan's, else "plan again";
+6. execute inside `GuardedRpc.authorized(...)`, which lets exactly these calls through, in order (default-deny).
 
 The TUI shows the plan in a modal (TNT-27); the CLI will expose `plan`/`apply` verbs with cli-extended's `--dry-run` /
 `--yes` (TNT-26). Both use the same functions. No real action exists at M0; the model is implemented and tested so the
@@ -153,18 +164,41 @@ is the only way raw diagnostics appear (and it says so). `truenas.toml`-style fi
 
 ## 8. Safety rules and the refusal list
 
-- A session is read-only by default. `GuardedRpc` refuses any method that is not a read shape (`*.query`, `*.details`,
-  `*.get_*` listed, `system.info|version`, ...) before it reaches the socket. `--allow-write` opens a write session;
-  that alone changes nothing: every change still goes through plan/apply.
-- DESTRUCTIVE actions (wipe, pool destroy/export, dataset delete, detach) need the typed target name.
-- Never executed, with or without confirmation (`actions.ALWAYS_REFUSED`, `BOOT_POOL_REFUSED`): `system.reboot`,
-  `system.shutdown`; `boot.attach|detach|replace` (matrix B-07: a partition has no disk size, internal TypeError);
-  `pool.export|update|dataset.delete|snapshot.delete` that mention `boot-pool` (A-08); any `auth.*` except `auth.me`
-  and `auth.mechanism_choices`; `disk.wipe` of a disk that belongs to a pool.
-- Host-impacting operations keep the estate rules: a throwaway VM host only for mutating live tests, never production
-  or nano1; loop-device/swap work is out of scope (the 2026-09-09 host-hang incident).
-- The SSH fallback (TNT-03) is a second explicit switch (`--allow-ssh`), runs a fixed, listed set of commands, and each
-  appears in the plan.
+Default-deny, enforced in the client object itself, not only in the action layer:
+
+- `GuardedRpc` is the only object a screen or verb receives (`Session.rpc`, also with `--allow-write`). Method names are
+  normalised (strip, lower-case) and must be plain dotted words. Reads (`*.query`, `*.details`, listed `get_*`,
+  `system.info|version`, `core.get_methods`, ...) are allowed in every session.
+- A non-read method is refused in a read-only session. In a write session it is refused unless it is the next call of the
+  plan currently executing in `apply_plan` (exact method, parameters and job flag, in order). Outside a plan, a write
+  session can call nothing but reads. Every granted call must still pass `refusal_for`.
+- `--allow-write` therefore changes nothing by itself: every change goes through plan/apply with its gates.
+- DESTRUCTIVE actions need the typed target name.
+- `refusal_for` (second wall, for calls an action declares by mistake): all `core.*` except `core.get_methods`
+  (`core.call`/`core.bulk` run any method); `system.reboot|shutdown`; `boot.attach|detach|replace` (matrix B-07),
+  `boot.environment.destroy`; any `auth.*` except `auth.me` and `auth.mechanism_choices`; for the `pool.`, `zfs.`,
+  `filesystem.`, `boot.` and `disk.` families any parameter (nested, keys included) equal to `boot-pool`, starting with
+  `boot-pool/` or `/mnt/boot-pool` (so `boot-pool-data` is a legal name); `pool.*` calls with an integer pool id are
+  resolved to a name from live `pool.query` and refused for `boot-pool` or an unknown id; `disk.wipe` is refused for any
+  disk in a pool (boot included), any disk with a mounted partition, any disk the host does not list, and whenever
+  membership cannot be determined (reads failing, unexpected shapes, a `/dev/disk/by-*` or other vdev reference that
+  does not resolve to a listed disk). `/dev/sda`, `sda3`, `nvme0n1p2` and by-id/serial references are normalised to the
+  disk. A non-string or missing `disk.wipe` parameter raises `Refused`.
+- Limit: mounted non-ZFS partitions are visible only if `disk.query` reports a mountpoint for them; this is UNVERIFIED
+  (TNT-01). The typed confirmation and the plan text remain the control for that case.
+- Host-impacting operations keep the estate rules: a throwaway VM host only for mutating live tests, never a production
+  host; loop-device/swap work is out of scope (the 2026-09-09 host-hang incident).
+
+### 8.1 SSH fallback for partitioning (planned, not implemented)
+
+The API has no partitioning method (matrix B-01), so reserving the free-tail partition needs `sgdisk` on the host. Design
+(controller decision 2026-10-28): the only SSH use in tnt is a planned, guarded Action for B-01. It is a second explicit
+switch (`--allow-ssh`) on top of `--allow-write`; it runs a fixed, listed set of commands (a `sgdisk` create of one
+partition in a named free extent, and read-only `sgdisk -p`/`lsblk --json`), each of which appears in the plan text; it
+uses the repo's known-hosts policy (`StrictHostKeyChecking=yes`, a key file from the profile, no password, no agent
+forwarding); the target disk must pass the same `compute_state` checks as `disk.wipe` (never a pool member or mounted
+disk) and the plan is DESTRUCTIVE (typed disk name, probe = the partition table read just before). Until implemented,
+B-01 is a backlog item (TNT-03) and the refusal list covers nothing SSH-related because nothing SSH-related exists.
 
 ## 9. Test strategy
 
@@ -199,13 +233,18 @@ The v28 nightly moved middleware code (`v28-nightly-20261014/middleware.patch` i
 adapter cannot be trusted until TNT-22. A v26 or v25.10 host works only if an adapter is added (`virt.*`). The matrix's
 v28 column is `pending` for every row.
 
-## 12. Open design questions and estate registration
+## 12. Decisions, open questions and estate registration
 
-Open questions for the operator are listed in the hand-back report and repeated here:
-Q1 package/pin policy (hard dependency on a git sha vs. a vendored wheel in the estate's artifact store);
-Q2 the SSH fallback for partitioning (allowed at all? which user, key handling, which commands);
-Q3 decision B-02/B-03 (pool on partition by `zpool create` + import, or a middleware patch);
-Q4 whether v26/v25.10 hosts need adapters; Q5 the Shell menu entry; Q6 where the live-lane host and key live.
+Decided by the controller on 2026-10-28: the pinned git-sha dependency on `truenas_api_client` is accepted for now
+(documented in `pyproject.toml`); SSH only for B-01 partitioning, as planned in section 8.1, not implemented; B-02/B-03
+are `zpool create` on the partition followed by `pool.import_find` + `pool.import_pool` (matches the shim the TrueNAS
+agent is building; BACKLOG TNT-05); no v26/v25.10 adapters; no Shell menu entry.
+
+Still open: Q6 where the live-lane host and key live (TNT-20); Q7 how conditional menu entries (Containers, Virtual
+Machines, Apps, KMIP, Enclosure; flagged `conditional` in `menu.py`) are detected per host (TNT-35).
+
+`tnt.testing` ships inside the wheel but imports `websockets` at module level; `websockets` is a test-extra dependency
+only, so importing `tnt.testing` without the test extra fails, and nothing in the runtime imports it.
 
 Estate registration is deliberately not done at M0: `cmru.orchestration.toml` and the root run-gate registry need an
 entry for `truenas/tnt` (TNT-32), and the gate environment needs `tnt` installed for the cli-extended version lookup

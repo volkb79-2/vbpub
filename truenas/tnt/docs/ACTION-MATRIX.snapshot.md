@@ -1,4 +1,4 @@
-<!-- Snapshot of scripts/truenas/boot-pool-patch/ACTION-MATRIX.md from branch truenas-restore-iso, taken 2026-10-28 (vbpub@89504a321 base). The canonical copy lives on that branch until it merges; refresh this file from it, do not edit it here. -->
+<!-- Snapshot of scripts/truenas/boot-pool-patch/ACTION-MATRIX.md from branch truenas-restore-iso, taken 2026-10-28 (vbpub@89504a321 base). The canonical copy lives on that branch until it merges; refresh this file from it, do not edit it here. Only host identifiers were genericised. -->
 
 # Storage action matrix (Path A / Path B)
 
@@ -20,8 +20,8 @@ Path B, method names in backticks, `-` for "none").
   `live-ui` step has a row.
 
 Columns. `API (stock)`, `UI (stock)` and `UI (patched)` are what was measured
-on stock and patched TrueNAS v27.0.0-RC.1 on the hosted Netcup test VM
-(2026-10-27/28, see `LIVE-V1001-RUN-LOG.md`): `works`, `blocked: <why>`,
+on stock and patched TrueNAS v27.0.0-RC.1 on the hosted throwaway test VM
+(2026-10-27/28, see the live run log): `works`, `blocked: <why>`,
 `refused`, `n/a`. `size` is the patch size: `done`, `S` (<50 lines), `M`
 (<300), `L` (more, with partition-aware disk handling). `verdict`: `works`,
 `patch-UI`, `API-TUI` (too large or unsafe for the product; use the API script

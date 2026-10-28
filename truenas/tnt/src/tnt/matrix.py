@@ -48,6 +48,25 @@ def load(path: Path) -> list[Row]:
     return parse(path.read_text("utf-8"))
 
 
+def backlog_matrix_ids(backlog: str) -> dict[str, set[str]]:
+    """TNT item id -> the matrix row ids named in that item's matrix COLUMN (the second cell of its table row).
+
+    A row id that only appears in a notes column or in prose does not count as covered.
+    """
+    out: dict[str, set[str]] = {}
+    for line in backlog.splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if line.startswith("| TNT-") and len(cells) >= 2:
+            out[cells[0]] = {t for t in re.findall(r"[AB]-\d{2}", cells[1])}
+    return out
+
+
+def uncovered(rows: list[Row], backlog: str) -> list[str]:
+    """Backlog-verdict matrix rows that no TNT item names in its matrix column."""
+    named = set().union(*backlog_matrix_ids(backlog).values()) if backlog_matrix_ids(backlog) else set()
+    return [r.id for r in backlog_rows(rows) if r.id not in named]
+
+
 def backlog_rows(rows: list[Row]) -> list[Row]:
     """Rows whose verdict says the TUI (not the patched UI) is the product path."""
     return [r for r in rows if r.verdict in BACKLOG_VERDICTS]

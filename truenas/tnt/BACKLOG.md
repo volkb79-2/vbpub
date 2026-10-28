@@ -10,9 +10,9 @@ test keeps every such row id mentioned here) and from the M0 scaffold's known ga
 |---|---|---|---|---|---|
 | TNT-01 | B-01 (input) | SPIKE: partition data source. What do `disk.details` (`join_partitions`?) and `pool.get_disks` return for a disk with partitions and a free tail; is SSH `sgdisk -p` / `lsblk --json` needed? Verify the `disk.query extra.pools` and `disk.details` params used by the M0 adapter on the throwaway host | S | M1 | Gate for TNT-02/03/04. Until closed the manifest says `verified = "reference"` and the `disks` command shows `?` for a disk without partition data |
 | TNT-02 | disk free space | Storage > Free space and partitions: per-disk extents (start/size/gap), alignment, backup GPT; upgrade `Disk.free_bytes` from an upper bound to exact extents | M | M2 | Depends on TNT-01 |
-| TNT-03 | B-01 | Reserve the free-tail partition (plan/apply). The API has no partitioning method, so this is the SSH fallback (`sgdisk`) behind a typed-confirmation gate and a second, explicit `--allow-ssh` switch | M | M2 | Needs the SSH-fallback design decision (DESIGN section 12, Q2) |
+| TNT-03 | B-01 | Reserve the free-tail partition (plan/apply). The API has no partitioning method, so this is the SSH fallback (`sgdisk`) behind a typed-confirmation gate and a second, explicit `--allow-ssh` switch | M | M2 | Design decided (DESIGN section 8.1): second switch `--allow-ssh`, fixed command list, `StrictHostKeyChecking=yes`, key file, no password; not implemented |
 | TNT-04 | B-06 | Import Pool screen: `pool.import_find` then `pool.import_pool` (adopt a hand-made pool on a partition). Measured PASS via API on v27 | S | M2 | First write action; builds the plan/apply UI around `tnt.actions` |
-| TNT-05 | B-02, B-03 | Create a pool on a partition or on free space. Stock `pool.create` takes disk names only (measured: EINVAL). Decision pending: (a) partition + `zpool create` + TNT-04 adoption, or (b) a middleware patch. tnt implements (a) only after the operator decides | L | M2 | Matrix verdict is "pending decision" |
+| TNT-05 | B-02, B-03 | Create a pool on a partition or on free space. Stock `pool.create` takes disk names only (measured: EINVAL). Path: partition + `zpool create` + TNT-04 adoption. Decided 2026-10-28: (a), `zpool create` on the partition then TNT-04 adoption (matches the TrueNAS agent's shim); depends on TNT-03 and TNT-04 | L | M2 | Matrix verdict is "pending decision" |
 | TNT-06 | B-01, B-06 | Boot pool data management (`boot-pool-data` / `boot-disk-data` layout): create, inspect, export-safe, reboot persistence | L | M2 | Depends on TNT-03/04/05 and the live reboot test |
 | TNT-07 | A-09 | Cache/log/special vdev management through `pool.update` for ordinary pools; boot-pool zvol targets stay refused by design | L | M3 | Refusal rows B-07, A-08 are already on the refusal list in `tnt.actions` |
 | TNT-08 | B-07, A-08 | Keep the refusal list in step with the matrix (a test already checks B-07's methods); extend when new `n/a` rows appear | S | all | |
@@ -36,7 +36,7 @@ test keeps every such row id mentioned here) and from the M0 scaffold's known ga
 
 | id | what | size | milestone |
 |---|---|---|---|
-| TNT-20 | Live lane: read-only contract tests replaying the fake's scenarios against the throwaway host (r1002/v1001-class VM only, never production or nano1), opt-in marker, key from file | M | M1 |
+| TNT-20 | Live lane: read-only contract tests replaying the fake's scenarios against the throwaway host (a throwaway test VM only, never a production host), opt-in marker, key from file | M | M1 |
 | TNT-21 | SCRAM: the fake server implements only `API_KEY_PLAIN`; SCRAM-SHA-512 with channel binding is covered only by the live lane. Add a SCRAM stub to the fake or record a captured exchange | M | M1 |
 | TNT-22 | Real v28 adapter: diff the v28 nightly method list (`core.get_methods`) against the v27 manifest; replace the copied manifest | M | M1 |
 | TNT-23 | Manifest drift test: compare each adapter manifest with the fetched `https://api.truenas.com/v27.0` method index (opt-in network test, not in the gate) | S | M1 |
@@ -50,4 +50,5 @@ test keeps every such row id mentioned here) and from the M0 scaffold's known ga
 | TNT-31 | Re-pin `truenas_api_client` from the TS-27.0.0-RC.1 sha to the TS-27.0.0 GA tag once it is 14 days old | S | GA+14d |
 | TNT-32 | Register `tnt` in `cmru.orchestration.toml` and the root run-gate registry (not done in M0: see DESIGN section 12) | S | M0 close |
 | TNT-33 | Gate environment: the r0-r1 lane needs `tnt` installed in the tester venv (the CLI resolves its version from installed metadata, like iobench) plus `textual` and `websockets` from the test extra | S | M0 close |
+| TNT-35 | Detect per host which conditional menu entries (Containers, Virtual Machines, Apps, KMIP, Enclosure) the web UI would show, and hide the others | S | M1 |
 | TNT-34 | Verify the exact v28/v27 `auth.mechanism_choices` result and whether `API_KEY_PLAIN` stays enabled on a hardened host (affects `auth = "plain"` profiles) | S | M1 |

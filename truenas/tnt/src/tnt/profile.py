@@ -1,14 +1,16 @@
 """Profiles: which host, which API key file, which TLS mode. Secrets never live in the profile file."""
 from __future__ import annotations
 
+import base64
 import os
 import re
 import stat
+import json
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from .errors import ProfileError
 
@@ -35,8 +37,19 @@ class Secret:
 
     __str__ = __repr__
 
+    def _variants(self) -> list[str]:
+        """The key and the common ways it turns up in an error text: its secret part, base64, percent-, hex- and JSON-encoding."""
+        raw = self._value
+        found = {raw, raw.split("-", 1)[-1], json.dumps(raw)[1:-1], quote(raw, safe=""), raw.encode().hex(), raw.encode().hex().upper()}
+        for encoder in (base64.b64encode, base64.urlsafe_b64encode):
+            enc = encoder(raw.encode()).decode()
+            found.update({enc, enc.rstrip("=")})
+        return sorted((v for v in found if v and (v == raw or len(v) >= 4)), key=len, reverse=True)
+
     def scrub(self, text: str) -> str:
-        return text.replace(self._value, "<redacted>") if self._value else text
+        for variant in self._variants():
+            text = text.replace(variant, "<redacted>")
+        return text
 
 
 @dataclass(frozen=True)
@@ -81,7 +94,13 @@ def _validate(name: str, raw: Mapping[str, object]) -> Profile:
         if not isinstance(raw.get(required), str) or not raw[required]:
             raise ProfileError(f"profile {name}: {required} is required")
     url = str(raw["url"])
-    parts = urlsplit(url)
+    try:
+        parts = urlsplit(url)
+        parts.port  # noqa: B018 - raises ValueError on a malformed port
+    except ValueError:
+        raise ProfileError(f"profile {name}: url is not a valid URL") from None
+    if parts.username is not None or parts.password is not None or parts.query or parts.fragment:
+        raise ProfileError(f"profile {name}: url must not carry credentials, a query or a fragment (the key never goes in the URL)")
     if parts.scheme != "wss" or not parts.hostname:
         raise ProfileError(f"profile {name}: url must be wss://HOST/api/current (ws:// is refused: TrueNAS revokes API keys sent in clear)")
     tls = str(raw.get("tls", "verify"))
@@ -131,6 +150,8 @@ def key_file_problem(path: str) -> str | None:
         return f"cannot stat {path}: {exc.strerror}"
     if not stat.S_ISREG(st.st_mode):
         return f"{path} is not a regular file"
+    if st.st_uid != os.geteuid():
+        return f"{path} is owned by uid {st.st_uid}, not by you (uid {os.geteuid()})"
     if st.st_mode & 0o077:
         return f"{path} is accessible to group/other (mode {stat.S_IMODE(st.st_mode):04o}); chmod 600 it"
     return None
@@ -144,11 +165,17 @@ def read_secret(profile: Profile, env: Mapping[str, str] | None = None) -> Secre
         problem = key_file_problem(path)
         if problem:
             raise ProfileError(problem)
-        value = Path(path).read_text("utf-8").strip()
+        try:
+            value = Path(path).read_text("utf-8").strip()
+        except (OSError, UnicodeDecodeError) as exc:
+            raise ProfileError(f"cannot read the key file {path}: {type(exc).__name__}") from None
     elif env.get("TNT_API_KEY"):
         value = env["TNT_API_KEY"].strip()
     else:
         raise ProfileError(f"profile {profile.name}: no API key (set api_key_file, TNT_API_KEY_FILE or TNT_API_KEY)")
     if not value:
         raise ProfileError(f"profile {profile.name}: the API key is empty")
+    if value.startswith("/"):
+        # truenas_api_client treats an absolute path as "read the key from this file": never let key material do that
+        raise ProfileError(f"profile {profile.name}: the API key starts with '/', which the client would read as a path")
     return Secret(value)

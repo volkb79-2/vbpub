@@ -18,7 +18,8 @@ VIEWS = {"storage/disks": DisksView}
 def placeholder(item: MenuItem) -> Static:
     where = f"milestone {item.milestone}"
     rows = f" Action-matrix rows: {', '.join(item.matrix)}." if item.matrix else ""
-    return Static(f"{item.label}: planned, {where}.{rows}\nSee docs/DESIGN.md and BACKLOG.md.", id="view-planned")
+    cond = " The web UI shows this entry only when the host supports it." if item.conditional else ""
+    return Static(f"{item.label}: planned, {where}.{rows}{cond}\nSee docs/DESIGN.md and BACKLOG.md.", id="view-planned")
 
 
 class TntApp(App):

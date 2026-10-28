@@ -7,7 +7,7 @@ kind = "command"
 environment = "tester-unified"
 argv = [
   "bash", "-c",
-  "cd {worktree}/truenas/tnt && PYTHONPATH=src:{worktree}/libraries/cli-extended/src PYTHONDONTWRITEBYTECODE=1 /opt/tester-venv/bin/python3 -m pytest tests -q --cov=tnt --cov-branch --cov-report=term-missing --cov-report=json:coverage.json",
+  "cd {worktree}/truenas/tnt && PYTHONPATH=src:{worktree}/libraries/cli-extended/src PYTHONDONTWRITEBYTECODE=1 /opt/tester-venv/bin/python3 -m pytest tests -q --cov=tnt --cov-branch --cov-fail-under=97 --cov-report=term-missing --cov-report=json:coverage.json",
 ]
 clean_tree = false
 budget = "20m"

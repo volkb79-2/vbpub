@@ -44,10 +44,10 @@ def test_profile_errors_are_one_line_with_exit_1(capsys, tmp_path):
 def test_disks_json_and_table(capsys, config, opener):
     code, out, _ = run(capsys, ["disks", "--config", str(config), "--json"], opener)
     rows = {r["name"]: r for r in json.loads(out)}
-    assert code == 0 and rows["sdc"]["free_bytes"] == 256 * 1024 ** 3 and rows["sdd"]["partitions"] is None
+    assert code == 0 and rows["sdc"]["free_upper_bound_bytes"] == 256 * 1024 ** 3 and rows["sdd"]["partitions"] is None
     code, out, _ = run(capsys, ["disks", "--config", str(config)], opener)
-    assert out.splitlines()[0].split() == ["NAME", "SIZE", "TYPE", "MODEL", "SERIAL", "POOL", "PARTS", "FREE"]
-    assert "256.0 GiB" in out and " ? " in out + " "
+    assert out.splitlines()[0].split() == ["NAME", "SIZE", "TYPE", "MODEL", "SERIAL", "POOL", "PARTS", "FREE", "(UPPER", "BOUND)"]
+    assert "<= 256.0 GiB" in out and " ? " in out + " "
 
 
 def test_disks_with_insecure_profile_needs_the_flag(capsys, config):
