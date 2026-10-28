@@ -175,13 +175,22 @@ verified, records `.assay/mutation-postponed-assay.json` with
 R2 pass. Use `run-gate self-qualification` when full R0-R3 evidence is
 required.
 
-The gate reads the prepared dated release heading in `CHANGES.md`, because
-CMRU runs the release gate before the tag exists. The accepted target interval
-is `10.0.0 <= version < 10.1.0`; at least one stable `assay-vX.Y.Z` tag must
-be listable, and its latest version must be below 10.1.0. A release at 9.9.9,
+The gate reads the first H2 release heading after `## [Unreleased]` in
+`CHANGES.md`, because CMRU runs the release gate before the tag exists. It
+refuses that heading if it is malformed or unsupported, even when an older
+heading is valid. CMRU passes the transaction's planned version as a protected
+gate input; the heading must match it. The accepted target interval is
+`10.0.0 <= version < 10.1.0`; at least one stable `assay-vX.Y.Z` tag must be
+listable, and its latest version must be below 10.1.0. A release at 9.9.9,
 10.1.0 or later, an unreadable tag list, or no visible stable tag refuses the
-waiver. The full and provisional lanes both clear a stale marker before setup
-can refuse.
+waiver.
+
+Once the bare-host wrapper starts for the full or provisional lane, it removes
+an old postponement marker before its dirty-tree and host-admission checks. A
+Run-Gate admission refusal can happen before the wrapper starts, so that
+refusal retains the previous marker. Do not use marker presence alone as a
+current result: require a successful Run-Gate result bound to the same source
+tree. A refused or failed current attempt does not make an older marker current.
 
 **Host and time precondition:** reserve the provisional lane's 210-minute
 Run-Gate budget after the ordinary self-hosted release gate, plus startup and

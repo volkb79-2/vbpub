@@ -22,6 +22,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
 from pathlib import Path
 
@@ -2049,7 +2050,7 @@ def test_a_provisional_or_full_lane_clears_a_stale_marker_before_setup_can_fail(
 
 def _run_postponement(
     tmp_path, tags, prepared_version="10.0.0", *, wheel_version="10.0.0",
-    unlistable_tags=False,
+    unlistable_tags=False, changelog_headings=None, cmru_release_version=None,
 ):
     gate = (PROJECT_ROOT / "tools" / "self-qualification-gate.sh").read_text(encoding="utf-8")
     body = gate.split("record_r2_postponement() {", 1)[1].split("run_and_verify_lane() {", 1)[0]
@@ -2062,11 +2063,16 @@ def _run_postponement(
     git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "--allow-empty", "-qm", "x")
     for tag in tags:
         git("tag", tag)
+    if changelog_headings is None:
+        changelog_headings = f"## [{prepared_version}] - 2026-10-28"
     (repo / "CHANGES.md").write_text(
-        f"## [Unreleased]\n\n## [{prepared_version}] - 2026-10-28\n",
+        f"## [Unreleased]\n\n{changelog_headings}\n",
         encoding="utf-8",
     )
     env = os.environ.copy()
+    env.pop("CMRU_RELEASE_GATE_VERSION", None)
+    if cmru_release_version is not None:
+        env["CMRU_RELEASE_GATE_VERSION"] = cmru_release_version
     if unlistable_tags:
         real_git = shutil.which("git")
         assert real_git is not None
@@ -2095,7 +2101,9 @@ def _run_postponement(
 def test_the_postponement_marker_records_a_provisional_result_inside_its_window(tmp_path):
     import json
 
-    proc, marker = _run_postponement(tmp_path, ["assay-v9.0.0"])
+    proc, marker = _run_postponement(
+        tmp_path, ["assay-v9.0.0"], cmru_release_version="10.0.0",
+    )
 
     assert proc.returncode == 0, proc.stderr
     assert "not an R2 pass" in proc.stderr
@@ -2131,6 +2139,113 @@ def test_the_prepared_release_version_must_be_inside_the_postponement_window(
         import json
 
         assert json.loads(marker.read_text(encoding="utf-8"))["target_version"] == prepared_version
+
+
+@pytest.mark.parametrize(
+    "first_heading",
+    [
+        "## [10.1.0rc1] - 2026-10-28",
+        "## [10.1.0] — 2026-10-28",
+    ],
+)
+def test_the_postponement_refuses_an_unsupported_first_release_heading_without_falling_through(
+    tmp_path, first_heading,
+):
+    proc, marker = _run_postponement(
+        tmp_path,
+        ["assay-v9.0.0"],
+        changelog_headings=(
+            f"{first_heading}\n\n## [10.0.0] - 2026-10-27"
+        ),
+        cmru_release_version="10.1.0",
+    )
+
+    assert proc.returncode != 0
+    assert "first release heading after Unreleased" in proc.stderr
+    assert not marker.exists()
+
+
+def test_the_postponement_refuses_a_prepared_heading_that_disagrees_with_cmru(
+    tmp_path,
+):
+    proc, marker = _run_postponement(
+        tmp_path,
+        ["assay-v9.0.0"],
+        prepared_version="10.0.1",
+        cmru_release_version="10.0.0",
+    )
+
+    assert proc.returncode != 0
+    assert "does not match CMRU's release transaction version 10.0.0" in proc.stderr
+    assert not marker.exists()
+
+
+def test_the_postponement_accepts_a_valid_first_release_heading_bound_to_cmru(
+    tmp_path,
+):
+    proc, marker = _run_postponement(
+        tmp_path,
+        ["assay-v9.0.0"],
+        prepared_version="10.0.1",
+        cmru_release_version="10.0.1",
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    import json
+
+    assert json.loads(marker.read_text(encoding="utf-8"))["target_version"] == "10.0.1"
+
+
+def test_outer_wrapper_clears_a_prior_postponement_before_dirty_tree_refusal():
+    state_root = PROJECT_ROOT / ".assay"
+    state_root_preexisted = state_root.exists()
+    state_root.mkdir(exist_ok=True)
+    scratch = Path(tempfile.mkdtemp(prefix="wrapper-refusal-", dir=state_root))
+    worktree = scratch / "worktree"
+    project = worktree / "assay"
+    marker = project / ".assay" / "mutation-postponed-assay.json"
+    try:
+        project.mkdir(parents=True)
+        (project / "pyproject.toml").write_text("[project]\nname='assay-fixture'\n", encoding="utf-8")
+        marker.parent.mkdir()
+        marker.write_text('{"result":"provisional"}\n', encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(worktree)], check=True)
+        subprocess.run(
+            ["git", "-C", str(worktree), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+             "add", "assay/pyproject.toml", "assay/.assay/mutation-postponed-assay.json"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(worktree), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+             "commit", "-qm", "fixture"],
+            check=True,
+        )
+        (project / "pyproject.toml").write_text(
+            "[project]\nname='assay-fixture-dirty'\n", encoding="utf-8",
+        )
+
+        proc = subprocess.run(
+            [
+                "bash",
+                str(PROJECT_ROOT / "tools" / "self-qualification-container.sh"),
+                str(worktree),
+                PROVISIONAL_ID,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert proc.returncode != 0
+        assert "worktree is not clean before B105 qualification" in proc.stderr
+        assert not marker.exists()
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+        if not state_root_preexisted:
+            try:
+                state_root.rmdir()
+            except OSError:
+                pass
 
 
 def test_the_postponement_refuses_when_no_stable_assay_tag_is_visible(tmp_path):

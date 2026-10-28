@@ -120,6 +120,40 @@ source_commit="$(assay_git -C "$worktree" rev-parse HEAD)" \
 source_tree="$(assay_git -C "$worktree" rev-parse 'HEAD^{tree}')" \
   || die "cannot resolve selected worktree tree"
 
+if [[ "$lane" == self-qualification || "$lane" == self-qualification-provisional ]]; then
+  # run-gate admission may refuse before this wrapper starts, but once the
+  # wrapper has accepted a real worktree, clear old deferral evidence before
+  # dirty-tree, shared-host, or other outer admission checks can refuse.
+  if ! python3 - "$project" <<'PYEOF'
+import os
+import sys
+
+project_fd = os.open(
+    sys.argv[1], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+)
+try:
+    try:
+        assay_fd = os.open(
+            ".assay", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            dir_fd=project_fd,
+        )
+    except FileNotFoundError:
+        raise SystemExit(0)
+    try:
+        try:
+            os.unlink("mutation-postponed-assay.json", dir_fd=assay_fd)
+        except FileNotFoundError:
+            pass
+    finally:
+        os.close(assay_fd)
+finally:
+    os.close(project_fd)
+PYEOF
+  then
+    die 'cannot safely remove a prior R2 postponement marker before wrapper admission'
+  fi
+fi
+
 for required_command in realpath flock chmod python3 stat; do
   command -v "$required_command" >/dev/null 2>&1 \
     || die "required host command is unavailable: $required_command"

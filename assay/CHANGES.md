@@ -41,8 +41,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   canary, and records `.assay/mutation-postponed-assay.json` (tracking id B169,
   operator decision 2026-10-27, valid only for a prepared release version in
   `[10.0.0, 10.1.0)`, result `provisional`, never an R2 pass). The marker check
-  reads the prepared dated `CHANGES.md` heading and requires a visible stable
-  `assay-vX.Y.Z` tag below 10.1.0; it refuses when no stable tag can be listed.
+  reads the first dated release heading after `Unreleased`, requires it to
+  match CMRU's protected release-transaction version, and requires a visible
+  stable `assay-vX.Y.Z` tag below 10.1.0; it refuses when no stable tag can be
+  listed.
   CMRU runs this lane after the self-hosted gate and before tagging, so the
   prepared version check also refuses the 10.1.0 release before its tag exists.
   The 210-minute lane requires the gate coordinator to keep other registered
@@ -75,9 +77,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Refuse unknown SQL schema-event kinds instead of processing them as transaction
   events.
 - Validate the provisional R2 waiver against the prepared release heading and
-  fail closed when stable assay release tags are missing or unreadable. Clear a
-  stale postponement marker at the start of both qualification lanes, before
-  setup can refuse.
+  fail closed when the first heading is malformed, disagrees with CMRU's
+  transaction version, or stable assay release tags are missing or unreadable.
+  The outer wrapper clears a stale marker before its dirty-tree and host
+  admission refusals. A Run-Gate admission refusal before wrapper startup can
+  leave the prior marker, which only counts alongside a successful same-source
+  Run-Gate result.
 - Removed unreachable defensive branches in the cold-witness pytest-option
   scan, the SQL `IN` widening and event scan, and pilot-state handling, so the
   whole-source R1 floor can be met without exclusions.

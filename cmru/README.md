@@ -359,7 +359,10 @@ Release body. It skips nothing else, never excuses a project that declares no ga
 `release` detects changed projects, runs their explicit prepare/gate/tag/build/push/promote
 contract in dependency order, and retains a failed transaction for diagnosis. It publishes
 from the exact gated candidate commit and supplies its SHA to each gate as the protected
-`CMRU_RELEASE_GATE_COMMIT`. Around each gate, artifact build, and publish step, CMRU checks
+`CMRU_RELEASE_GATE_COMMIT`. For a CMRU-derived release plan, it also supplies the exact
+planned version as protected `CMRU_RELEASE_GATE_VERSION`; external-version projects have no
+CMRU-planned version. Both values are cleared on ordinary steps and cannot be set by project
+environment configuration. Around each gate, artifact build, and publish step, CMRU checks
 tracked file bytes and modes against that commit and refuses index flags that can hide edits;
 ignored logs and build outputs remain allowed. It then pushes that same commit to `origin/main`.
 If main

@@ -2766,13 +2766,20 @@ successful run records `.assay/mutation-postponed-assay.json` as `provisional`;
 it never asserts an R2 pass, and the full `self-qualification` lane remains the
 way to produce R2 evidence.
 
-The gate checks the prepared changelog version itself because the release tag
-does not exist when CMRU runs `run-tests`. The only permitted interval is
-`10.0.0 <= version < 10.1.0`; a visible stable `assay-vX.Y.Z` tag is also
-required, and the latest visible tag must be below 10.1.0. Missing, unreadable,
-or unparseable tag state refuses the waiver. Both this lane and the full lane
-remove an old postponement marker at startup, before setup can fail, so stale
-evidence cannot survive a refused attempt.
+The gate checks the first H2 release heading after `## [Unreleased]` because
+the release tag does not exist when CMRU runs `run-tests`. It refuses a
+malformed or unsupported first heading without searching historical sections,
+and requires the heading to match CMRU's protected planned transaction version.
+The only permitted interval is `10.0.0 <= version < 10.1.0`; a visible stable
+`assay-vX.Y.Z` tag is also required, and the latest visible tag must be below
+10.1.0. Missing, unreadable, or unparseable tag state refuses the waiver.
+
+The bare-host wrapper removes an old postponement marker before its own
+dirty-tree and host-admission checks. Run-Gate can refuse admission before the
+wrapper starts; that refusal leaves prior evidence in place. The JSON marker
+alone does not establish a current result: consumers require successful
+Run-Gate completion bound to the same source tree. This keeps prior evidence
+available without presenting it as the result of a refused invocation.
 
 The provisional lane has a 210-minute Run-Gate budget after the ordinary
 self-hosted gate. Run-Gate's `resources.shared` lock serializes Assay lanes;

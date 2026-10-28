@@ -828,20 +828,54 @@ try:
     from cmru.release_notes import markdown_h2_headings
 except ImportError as exc:
     raise SystemExit(f"cannot load CMRU's prepared release-heading parser: {exc}")
-prepared_release_version = None
-for heading in markdown_h2_headings(changelog):
-    match = re.fullmatch(
-        r"## \[((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))\] - "
-        r"\d{4}-\d{2}-\d{2}",
-        heading.text,
+headings = markdown_h2_headings(changelog)
+unreleased_indexes = [
+    index for index, heading in enumerate(headings)
+    if heading.text == "## [Unreleased]"
+]
+if len(unreleased_indexes) != 1:
+    raise SystemExit(
+        "the R2 postponement B169 requires exactly one Unreleased heading in CHANGES.md"
     )
-    if match is not None:
-        prepared_release_version = match.group(1)
-        break
-if prepared_release_version is None:
+first_release_index = unreleased_indexes[0] + 1
+if first_release_index >= len(headings):
     raise SystemExit(
         "the R2 postponement B169 requires a dated, prepared release heading in CHANGES.md"
     )
+first_release_heading = headings[first_release_index].text
+match = re.fullmatch(
+    r"## \[((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))\] - "
+    r"(\d{4}-\d{2}-\d{2})",
+    first_release_heading,
+)
+if match is None:
+    raise SystemExit(
+        "the first release heading after Unreleased is not a supported dated stable release heading: "
+        f"{first_release_heading!r}"
+    )
+prepared_release_version, prepared_release_date = match.groups()
+try:
+    datetime.strptime(prepared_release_date, "%Y-%m-%d")
+except ValueError:
+    raise SystemExit(
+        "the first release heading after Unreleased has an invalid release date: "
+        f"{first_release_heading!r}"
+    ) from None
+
+transaction_version = os.environ.get("CMRU_RELEASE_GATE_VERSION")
+if transaction_version is not None:
+    if VERSION_RE.fullmatch(transaction_version) is None:
+        raise SystemExit(
+            "CMRU's release transaction version is not a stable X.Y.Z version: "
+            f"{transaction_version!r}"
+        )
+    if transaction_version != prepared_release_version:
+        raise SystemExit(
+            "the prepared release heading "
+            f"{prepared_release_version} does not match CMRU's release transaction version "
+            f"{transaction_version}"
+        )
+
 def version_tuple(value):
     if VERSION_RE.fullmatch(value) is None:
         return None

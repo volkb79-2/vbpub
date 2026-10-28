@@ -1438,6 +1438,11 @@ During a release gate, CMRU supplies the candidate SHA as the protected
 `CMRU_RELEASE_GATE_COMMIT`. Release preparation steps can use it to bind a
 pre-tag receipt to the exact candidate. CMRU clears ambient values on other
 steps, and project configuration cannot set this name.
+For CMRU-derived releases, the gate also receives the transaction's exact
+planned version as protected `CMRU_RELEASE_GATE_VERSION`. A gate that validates
+a prepared changelog can compare its first release section with this value
+before CMRU creates the tag. External-version projects do not receive a
+CMRU-planned version.
 
 A build that derives artifact identity from Git should check `HEAD` and the local
 tag against both values, then build from that exact commit. Invoke `cmru release`

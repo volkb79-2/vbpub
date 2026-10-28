@@ -13123,8 +13123,9 @@ the full-source `self-qualification` (R0-R3) and `analysis-r2` qualification
 lanes were not run for this release, so 10.0.0 has no mutation evidence and no
 R2 pass is claimed. The CHANGES release notes say so.
 
-The provisional-release exception is bounded by the prepared dated changelog
-heading, not only by tags that exist before the gate: B169 is valid for release
+The provisional-release exception is bounded by the first dated release
+heading after `Unreleased`, which must match CMRU's protected transaction
+version, not only by tags that exist before the gate: B169 is valid for release
 versions `>= 10.0.0` and `< 10.1.0`. The gate also requires at least one
 listable stable `assay-vX.Y.Z` tag and refuses if the latest visible tag is
 10.1.0 or newer. Thus a prepared 10.1.0 release is refused before its tag is
@@ -13158,12 +13159,14 @@ version `>= 10.0.0` and `< 10.1.0`; a newer `assay-v10.1.0` or later tag also
 refuses it). The full lane is unchanged and deletes the marker; the marker
 cannot satisfy an R2 request.
 
-The prepared release version is read from the dated `CHANGES.md` heading,
-matching CMRU's pre-tag release-version source; the wheel's development version
-is not used to decide the waiver. Both the provisional and full lanes remove an
-old marker before gate setup, so an early refusal cannot leave prior deferral
-evidence looking current. The provisional command has a 210-minute Run-Gate
-budget after the ordinary self-hosted release gate. Run-Gate holds the Assay
+The prepared release version is read from the first dated `CHANGES.md` heading
+after `Unreleased` and must match the exact CMRU transaction version passed to
+the gate; the wheel's development version is not used to decide the waiver.
+The outer wrapper removes an old marker before its dirty-tree and host-admission
+checks. Run-Gate admission can refuse before wrapper startup and leave the old
+marker in place, so marker presence alone is not current evidence; require a
+successful result bound to the same source tree. The provisional command has a
+210-minute Run-Gate budget after the ordinary self-hosted release gate. Run-Gate holds the Assay
 lane resource lock; the host-wide serial window remains the gate coordinator's
 responsibility because cross-project gates do not share that lock.
 

@@ -1466,6 +1466,10 @@ you're changing assay itself:
   the R2 postponement in `.assay/mutation-postponed-assay.json`; it never claims
   an R2 pass. See the [design rationale](docs/DESIGN-GUIDE.md#provisional-release-qualification-b169-b170)
   and [release runbook](docs/CONSUMERS.md#provisional-release-qualification-b169-b170).
+  The gate validates the first release heading after `Unreleased` against
+  CMRU's protected transaction version. A marker is current evidence only with
+  a successful Run-Gate result for the same source tree; a Run-Gate admission
+  refusal before the wrapper starts can leave a previous marker in place.
   The B105 run-gate lanes use the
   bare-host `tools/self-qualification-container.sh` wrapper because the
   generic run-gate tester container has a private cgroup namespace. The
