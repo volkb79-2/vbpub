@@ -86,14 +86,14 @@ clear_prior_outputs() {
 }
 
 usage() {
-  die 'usage: self-qualification-container.sh WORKTREE self-qualification|self-qualification-preflight|b110-pilot|b110-screen|analysis-r2-pilot'
+  die 'usage: self-qualification-container.sh WORKTREE self-qualification|self-qualification-preflight|self-qualification-provisional|b110-pilot|b110-screen|analysis-r2-pilot'
 }
 
 [[ $# -eq 2 ]] || usage
 worktree="$1"
 lane="$2"
 case "$lane" in
-  self-qualification|self-qualification-preflight|b110-pilot|b110-screen|analysis-r2-pilot) ;;
+  self-qualification|self-qualification-preflight|self-qualification-provisional|b110-pilot|b110-screen|analysis-r2-pilot) ;;
   *) usage ;;
 esac
 
@@ -472,6 +472,14 @@ case "$lane" in
     wait_timeout_seconds=3900
     inner_argv=(bash "$project/tools/self-qualification-gate.sh" "$worktree" "$lane")
     ;;
+  self-qualification-provisional)
+    wait_timeout_label=3h5m
+    wait_timeout_seconds=11100
+    inner_argv=(
+      timeout --verbose --signal=TERM --kill-after=30s 10800s
+      bash "$project/tools/self-qualification-gate.sh" "$worktree" "$lane"
+    )
+    ;;
   b110-pilot)
     # The build and venv setup happen before the 90-minute campaign-attempt
     # cap. The inner cap covers campaign init, plan, selection, Assay, report
@@ -665,6 +673,9 @@ case "$lane" in
     ;;
   self-qualification-preflight)
     marker=ASSAY_SELF_QUALIFICATION_PREFLIGHT_VERIFIED=1
+    ;;
+  self-qualification-provisional)
+    marker=ASSAY_SELF_QUALIFICATION_PROVISIONAL_VERIFIED=1
     ;;
   b110-pilot)
     if grep -Eq '^B110_SCREEN_(EXIT|VERIFIED|TIMEOUT_FAILSAFE|VERDICT)=' "$scratch/container.log"; then

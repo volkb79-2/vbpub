@@ -83,6 +83,27 @@ artifacts = [
   ".assay/coverage-self-qualification-preflight-snapshots",
 ]
 
+# B169/B170 (operator decision 2026-10-27): the full qualification MINUS R2.
+# R0, R1 (whole-target line and branch over src/assay) and the R3 canary run;
+# R2 mutation is explicitly postponed and the run records
+# .assay/mutation-postponed-assay.json (deferral evidence, never an R2 pass).
+# Valid only below assay 10.1.0; the full `self-qualification` lane is unchanged
+# and clears the marker. The campaign deadline is its own b105-prov-* file.
+[lanes.self-qualification-provisional]
+kind = "command"
+environment = "bare-host"
+argv = ["bash", "{worktree}/assay/tools/self-qualification-container.sh", "{worktree}", "self-qualification-provisional"]
+exit_map = { "3" = "ERROR" }
+resources = { shared = ["assay-self-qualification"] }
+clean_tree = true
+budget = "210m"
+artifacts = [
+  ".assay/verdict-self-qualification-provisional.json",
+  ".assay/progress-self-qualification-provisional.jsonl",
+  ".assay/mutation-postponed-assay.json",
+  ".assay/coverage-self-qualification-provisional-snapshots",
+]
+
 # A-474 / B110 P7: the bounded pilot is a non-qualifying measurement. Campaign
 # init happens after clone/build/venv setup and before plan/selection. Campaign
 # init, planning, selection and Assay execution share one hard 90m

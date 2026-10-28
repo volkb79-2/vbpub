@@ -539,7 +539,7 @@ requested_lane="${2:-self-qualification}"
 project="$worktree/assay"
 
 case "$requested_lane" in
-  self-qualification|self-qualification-preflight|b110-pilot|b110-screen|analysis-r2-pilot) ;;
+  self-qualification|self-qualification-preflight|self-qualification-provisional|b110-pilot|b110-screen|analysis-r2-pilot) ;;
   *) die "unsupported self-qualification lane: $requested_lane" ;;
 esac
 
@@ -674,6 +674,9 @@ if [[ "$requested_lane" == "self-qualification" ]]; then
 elif [[ "$requested_lane" == "self-qualification-preflight" ]]; then
   campaign="b105-pre-${source_commit:0:12}"
   deadline=".assay/campaign-deadline-$campaign.json"
+elif [[ "$requested_lane" == "self-qualification-provisional" ]]; then
+  campaign="b105-prov-${source_commit:0:12}"
+  deadline=".assay/campaign-deadline-$campaign.json"
 elif [[ "$requested_lane" == "b110-pilot" ]]; then
   campaign="b110-pilot-${source_commit:0:12}"
   deadline="$assay_state_root/campaign-deadline-$campaign.json"
@@ -751,6 +754,21 @@ if [[ "$requested_lane" == "self-qualification" ]]; then
       exit "$init_status"
     fi
   fi
+elif [[ "$requested_lane" == "self-qualification-provisional" ]]; then
+  if [[ ! -e "$deadline" ]]; then
+    if "$assay_bin" campaign init --file assay.toml \
+        --campaign "$campaign" \
+        --lane self-qualification-provisional \
+        --hours 2 \
+        --state-dir .assay/mutation-state-self-qualification-provisional \
+        --wheel-sha256 "$wheel_digest"; then
+      :
+    else
+      init_status=$?
+      echo "B105_CAMPAIGN_INIT_REFUSED=1" >&2
+      exit "$init_status"
+    fi
+  fi
 else
   if [[ ! -e "$deadline" ]]; then
     if "$assay_bin" campaign init --file assay.toml \
@@ -770,6 +788,63 @@ fi
 echo "B105_CAMPAIGN_DEADLINE=$deadline"
 check_campaign_wheel_digest \
   || die "persisted campaign deadline does not bind this deterministic source wheel"
+
+# The R2 waiver is keyed to an explicit operator decision and a version window,
+# never silent: the provisional lane is refused once an assay release at or
+# above the window's upper bound exists, and the full `self-qualification` lane
+# deletes any marker so a postponement can never stand in for an R2 result.
+postponed_marker=".assay/mutation-postponed-assay.json"
+record_r2_postponement() {
+  "$scratch/run-venv/bin/python" - "$postponed_marker" "$source_commit" "$source_tree" "$version" <<'PYEOF'
+import json
+import os
+import subprocess
+import sys
+from datetime import datetime, timezone
+
+marker, commit, tree, version = sys.argv[1:]
+TRACKING_ID = "B169"
+DECISION = "operator decision 2026-10-27: R2 mutation waived for the release wave"
+WINDOW = ((10, 0, 0), (10, 1, 0))  # `>= 10.0.0`, `< 10.1.0`
+
+tags = subprocess.run(
+    ["git", "tag", "--list", "assay-v*"], capture_output=True, text=True, check=True
+).stdout.split()
+def parse(tag):
+    try:
+        return tuple(int(part) for part in tag.removeprefix("assay-v").split("."))
+    except ValueError:
+        return None
+newest = max((t for t in map(parse, tags) if t is not None and len(t) == 3), default=None)
+if newest is not None and newest >= WINDOW[1]:
+    raise SystemExit(
+        f"the R2 postponement {TRACKING_ID} is valid only below assay "
+        f"{'.'.join(map(str, WINDOW[1]))}; tag assay-v{'.'.join(map(str, newest))} exists. "
+        "Run the full self-qualification lane."
+    )
+document = {
+    "schema_version": 1,
+    "status": "postponed",
+    "result": "provisional",
+    "lane": "self-qualification-provisional",
+    "rigor_postponed": "R2",
+    "tracking_id": TRACKING_ID,
+    "decision": DECISION,
+    "window": "assay >= 10.0.0, < 10.1.0",
+    "commit": commit,
+    "tree": tree,
+    "assay_version": version,
+    "recorded_at": datetime.now(timezone.utc).isoformat(),
+    "note": "This is deferral evidence, not an R2 pass. R0, R1 and R3 were judged; R2 is owed.",
+}
+tmp = marker + ".tmp"
+with open(tmp, "w", encoding="utf-8") as handle:
+    json.dump(document, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+os.replace(tmp, marker)
+print(f"B105_WARN=R2 mutation postponed under {TRACKING_ID} ({DECISION}); this is not an R2 pass", file=sys.stderr)
+PYEOF
+}
 
 run_and_verify_lane() {
   local lane="$1" run_status=0 expected_rigor coverage_archive_root coverage_archive_attempt
@@ -798,11 +873,23 @@ run_and_verify_lane() {
       echo "B105_COVERAGE_ARCHIVE_DIR=$coverage_archive_attempt"
       echo "B105_COVERAGE_ARCHIVE=$coverage_archive_attempt/coverage-self-qualification-preflight-snapshot-$source_commit-$source_tree.json"
       ;;
+    self-qualification-provisional)
+      expected_rigor="R0,R1,R3"
+      rm -f -- "$postponed_marker"
+      export ASSAY_B105_COVERAGE_SOURCE=".assay/coverage-$lane.json"
+      coverage_archive_root="$project/.assay/coverage-self-qualification-provisional-snapshots"
+      mkdir -p "$coverage_archive_root"
+      coverage_archive_attempt="$(mktemp -d "$coverage_archive_root/attempt.XXXXXXXX")"
+      export ASSAY_B105_COVERAGE_ARCHIVE_DIR="$coverage_archive_attempt"
+      export ASSAY_B105_SOURCE_COMMIT="$source_commit"
+      export ASSAY_B105_SOURCE_TREE="$source_tree"
+      echo "B105_COVERAGE_ARCHIVE_DIR=$coverage_archive_attempt"
+      ;;
     self-qualification)
       expected_rigor="R0,R1,R2,R3"
       unset ASSAY_B105_COVERAGE_SOURCE ASSAY_B105_COVERAGE_ARCHIVE_DIR \
         ASSAY_B105_SOURCE_COMMIT ASSAY_B105_SOURCE_TREE
-      rm -f -- "$r2_manifest_path"
+      rm -f -- "$r2_manifest_path" "$postponed_marker"
       lane_flags+=(--cold-witness --r2-manifest "$r2_manifest_path")
       r2_manifest_args=(--r2-manifest "$r2_manifest_path")
       ;;
@@ -884,6 +971,21 @@ if [[ "$requested_lane" == "self-qualification-preflight" ]]; then
   echo "B105_VERDICT=.assay/verdict-$requested_lane.json"
   echo "B105_PROGRESS=.assay/progress-$requested_lane.jsonl"
   echo "ASSAY_SELF_QUALIFICATION_PREFLIGHT_VERIFIED=1"
+  exit 0
+fi
+
+if [[ "$requested_lane" == "self-qualification-provisional" ]]; then
+  run_and_verify_lane "$requested_lane"
+  ensure_source_unchanged
+  # The R2 postponement is recorded only after every other rigor level of the
+  # lane was judged and its verdict verified; a failed lane returned above.
+  record_r2_postponement
+  echo "B105_VERIFIED_SOURCE_COMMIT=$source_commit"
+  echo "B105_VERIFIED_SOURCE_TREE=$source_tree"
+  echo "B105_VERDICT=.assay/verdict-$requested_lane.json"
+  echo "B105_PROGRESS=.assay/progress-$requested_lane.jsonl"
+  echo "B105_R2_POSTPONED=$postponed_marker"
+  echo "ASSAY_SELF_QUALIFICATION_PROVISIONAL_VERIFIED=1"
   exit 0
 fi
 
