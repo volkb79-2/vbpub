@@ -843,6 +843,7 @@ def launch_env(tmp_path: Path, *, mode: str):
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "CGROUP_PARENT_DEV_GATES": "dev-gates.slice",
+        "ASSAY_GATE_HOST_DOCKER_GID": "994",
         "CGROUP_PARENT_DEV_INTERACTIVE": "dev-interactive.slice",
         "HOSTNAME": "deliberately-not-the-parent-container-name",
         "DOCKER_TRACE": str(trace),
