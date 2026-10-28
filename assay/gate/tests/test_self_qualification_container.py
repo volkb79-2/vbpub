@@ -3714,20 +3714,37 @@ def test_b110_container_wait_and_log_follow_include_the_exact_bounds(
     )
 
     assert proc.returncode == 0, proc.stderr
-    timeouts = [
-        json.loads(line)
-        for line in (tmp_path / "timeout.jsonl").read_text(encoding="utf-8").splitlines()
-    ]
+    def traced_timeouts():
+        return [
+            json.loads(line)
+            for line in (tmp_path / "timeout.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+
+    def follower_of(timeouts):
+        return next(
+            (
+                args for args in timeouts
+                if "docker" in args
+                and args[args.index("docker") + 1 : args.index("docker") + 4]
+                == ["logs", "--follow", CONTAINER_ID]
+            ),
+            None,
+        )
+
+    # The log follower is a background child: under host contention the launcher
+    # can exit before the child's `timeout` wrapper has recorded its invocation.
+    deadline = time.monotonic() + 30
+    timeouts = traced_timeouts()
+    while follower_of(timeouts) is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+        timeouts = traced_timeouts()
     wait = next(
         args for args in timeouts
         if "docker" in args and args[args.index("docker") + 1 : args.index("docker") + 3]
         == ["wait", CONTAINER_ID]
     )
-    follower = next(
-        args for args in timeouts
-        if "docker" in args and args[args.index("docker") + 1 : args.index("docker") + 4]
-        == ["logs", "--follow", CONTAINER_ID]
-    )
+    follower = follower_of(timeouts)
+    assert follower is not None, "the log follower's timeout invocation was never traced"
     assert wait[wait.index("docker") - 1] == f"{wait_seconds}s"
     assert follower[follower.index("docker") - 1] == f"{wait_seconds + 90}s"
 
