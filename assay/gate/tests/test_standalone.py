@@ -935,6 +935,9 @@ def _assert_complete(real: dict, expected: dict) -> None:
                     "budget_exceeded": {"timeout-killed", "not-started"},
                 }.get(bucket, {"exited"})
                 assert evidence["leader_status"] in allowed_leader_statuses
+                # Normalize the accepted variants to the expected artifact's.
+                if bucket == "budget_exceeded":
+                    evidence["leader_status"] = "timeout-killed"
                 assert isinstance(evidence["cleanup_seconds"], (int, float))
                 assert evidence["cleanup_seconds"] >= 0
                 evidence["cleanup_seconds"] = 0.0
