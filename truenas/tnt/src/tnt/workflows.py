@@ -56,6 +56,42 @@ class Workflows:
             "default_gateways": list(summary["default_routes"]),
         }
 
+    # -- Apps -------------------------------------------------------------------------------------------
+    def apps(self) -> list[dict[str, Any]]:
+        rows = _rows(self.rpc.call("app.query", [], {}), "app.query")
+        for row in rows:
+            if (not isinstance(row.get("id"), str) or not row["id"]
+                    or not isinstance(row.get("name"), str) or not isinstance(row.get("state"), str)
+                    or not isinstance(row.get("upgrade_available"), bool)):
+                raise Refused("app-shape", "app.query returned a record missing its v27 ID, name, state, or upgrade status")
+        return rows
+
+    def app(self, app_id: str) -> dict[str, Any]:
+        return self._app_by_id(app_id)
+
+    def app_lifecycle_action(self, app_id: str, operation: str) -> Action:
+        row = self._app_by_id(app_id)
+        if operation not in {"start", "stop", "restart"}:
+            raise Refused("app-operation", f"unsupported app lifecycle operation {operation!r}")
+        # v27 has no app.restart RPC. Keep restart distinct from app.redeploy, which pulls newer images:
+        # run the documented stop and start jobs in order, with both exact calls visible in the plan.
+        methods = {"start": ("app.start",), "stop": ("app.stop",), "restart": ("app.stop", "app.start")}[operation]
+        calls = tuple(RpcCall(method, (app_id,), job=True) for method in methods)
+        label = row["name"]
+        return Action("TNT-44", Kind.MUTATE, f"{operation.title()} app {label} ({app_id})", calls,
+                      (RpcCall("app.query", ([ ["id", "=", app_id] ], {})),))
+
+    def app_delete_action(self, app_id: str, *, delete_data_volumes: bool = False) -> Action:
+        row = self._app_by_id(app_id)
+        if not isinstance(delete_data_volumes, bool):
+            raise Refused("app-delete", "delete_data_volumes must be true or false")
+        options = {"remove_images": False, "remove_ix_volumes": delete_data_volumes}
+        choice = "YES" if delete_data_volumes else "NO"
+        return Action("TNT-44", Kind.DESTRUCTIVE,
+                      f"Uninstall app {row['name']} ({app_id}); delete TrueNAS-managed data volumes: {choice}",
+                      (RpcCall("app.delete", (app_id, options), job=True),),
+                      (RpcCall("app.query", ([["id", "=", app_id]], {}),),), app_id)
+
     def share_nfs(self, path: str) -> dict[str, Any]:
         if not isinstance(path, str) or not path.strip():
             raise Refused("workflow-input", "NFS share path is required")
@@ -581,6 +617,15 @@ class Workflows:
         matches = [row for row in rows if isinstance(row, Mapping) and row.get("name" if kind != "user" else "username") == name]
         if len(matches) != 1:
             raise Refused("workflow-lookup", f"expected exactly one {kind} named {name!r}; found {len(matches)}")
+        return dict(matches[0])
+
+    def _app_by_id(self, app_id: str) -> dict[str, Any]:
+        if not isinstance(app_id, str) or not app_id.strip():
+            raise Refused("workflow-input", "installed app ID is required")
+        rows = self.apps()
+        matches = [row for row in rows if row["id"] == app_id]
+        if len(matches) != 1:
+            raise Refused("workflow-lookup", f"expected exactly one installed app with ID {app_id!r}; found {len(matches)}")
         return dict(matches[0])
 
     # -- datasets ----------------------------------------------------------------------------------------

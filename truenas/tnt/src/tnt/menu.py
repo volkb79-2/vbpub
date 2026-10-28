@@ -53,7 +53,7 @@ MENU: tuple[MenuItem, ...] = (
         _p("kmip", "KMIP", conditional=True))),
     MenuItem("containers", "Containers", "implemented", "M1", matrix=("A-04", "A-06", "B-04")),
     MenuItem("vm", "Virtual Machines", "implemented", "M1", matrix=("A-05", "A-06", "B-04")),
-    _p("apps", "Apps", conditional=True),
+    MenuItem("apps", "Apps", "implemented", "M2", conditional=True),
     _p("reportsdashboard/cpu", "Reporting"),
     _p("system", "System", "M1", children=(
         _p("update", "Update"), _p("general", "General Settings"), _p("advanced", "Advanced Settings"),

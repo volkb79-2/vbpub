@@ -354,6 +354,30 @@ def _task_verbs(ident: CliIdentity, opener: SessionOpener) -> list[VerbSpec]:
                                       ("cloudsync", "Inspect and run cloud-sync tasks."))]
 
 
+def _app_verbs(ident: CliIdentity, opener: SessionOpener) -> list[VerbSpec]:
+    app_id = ArgumentSpec("app_id", "Installed app ID (the v27 app_name identifier).", metavar="APP_ID")
+    writes = HOST_OPTIONS + ACTION_OPTIONS
+    return [
+        VerbSpec("list", None, "List installed apps, state, and the v27 upgrade-available flag.",
+                 group=VerbGroup.EXPLORATION.value, options=HOST_OPTIONS,
+                 handler=lambda args, runtime: _workflow_read(args, runtime, opener, lambda session: session.workflows.apps())),
+        VerbSpec("show", None, "Show one installed app by v27 app ID.", group=VerbGroup.EXPLORATION.value,
+                 arguments=(app_id,), options=HOST_OPTIONS,
+                 handler=lambda args, runtime: _workflow_read(args, runtime, opener, lambda session: session.workflows.app(args.app_id))),
+        *[VerbSpec(operation, None, f"{label} an installed app through a reviewed plan.",
+                   group=VerbGroup.MODIFICATION.value, arguments=(app_id,), options=writes,
+                   handler=lambda args, runtime, op=operation: _workflow_action(
+                       args, runtime, opener, lambda session: session.workflows.app_lifecycle_action(args.app_id, op)))
+          for operation, label in (("start", "Start"), ("stop", "Stop"), ("restart", "Restart"))],
+        VerbSpec("uninstall", None, "Uninstall an app (destructive; app data volumes default to preserved).",
+                 group=VerbGroup.MODIFICATION.value, arguments=(app_id,),
+                 options=writes + (_flag(("--delete-data-volumes",), "Also delete TrueNAS-managed app data volumes (default: preserve).", "SAFETY"),),
+                 handler=lambda args, runtime: _workflow_action(args, runtime, opener,
+                     lambda session: session.workflows.app_delete_action(args.app_id,
+                                                                          delete_data_volumes=args.delete_data_volumes))),
+    ]
+
+
 def _dataset_verbs(ident: CliIdentity, opener: SessionOpener) -> list[VerbSpec]:
     def options(*extra: OptionSpec) -> tuple[OptionSpec, ...]:
         return HOST_OPTIONS + extra
@@ -885,6 +909,7 @@ def build_cli(cli_identity: CliIdentity | None = None, opener: SessionOpener = o
     _workflow_group(registry, ident, "vm", "Manage virtual machines and their devices.", _vm_verbs(ident, opener))
     _workflow_group(registry, ident, "share", "Manage SMB and NFS shares.", _share_verbs(ident, opener))
     _workflow_group(registry, ident, "task", "Inspect and operate data-protection tasks.", _task_verbs(ident, opener))
+    _workflow_group(registry, ident, "app", "Inspect and operate installed TrueNAS Apps.", _app_verbs(ident, opener))
     _workflow_group(registry, ident, "network", "Read network interfaces, addresses, routes, DNS, and gateways.", [
         VerbSpec("show", None, "Show live network status (read-only).", group=VerbGroup.EXPLORATION.value,
                  options=HOST_OPTIONS,

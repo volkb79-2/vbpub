@@ -88,6 +88,9 @@ tnt user ssh-key set deploy --profile lab --file ~/.ssh/id_ed25519.pub --add --a
 tnt user password deploy --profile lab --password-file /home/me/.config/tnt/new-password --allow-write
 tnt user ssh-key remove deploy --profile lab --allow-write
 tnt user delete deploy --profile lab --allow-write --confirm deploy
+tnt app list --profile lab --json
+tnt app restart demo --profile lab --allow-write
+tnt app uninstall demo --profile lab --allow-write --confirm demo
 tnt network show --profile lab --json
 tnt tui --profile lab
 tnt tui --profile lab --allow-write
@@ -114,6 +117,11 @@ output masks SSH keys and password hashes. The user SSH-key commands accept Open
 `tnt network show --json` and System > Network are read-only views of configured interfaces, live IP addresses, installed
 routes, DNS nameservers, and default gateways. See the [network adoption example](docs/CONSUMERS.md#network-status) and
 the [v27 read signatures](docs/API-METHODS-V27.md#network-status).
+
+`tnt app list` reports installed app state and v27's `upgrade_available` flag. Restart runs the v27 stop and start jobs
+in sequence; uninstall requires typing the app ID and preserves TrueNAS-managed data volumes unless
+`--delete-data-volumes` is explicitly supplied. See the [Apps guide](docs/CONSUMERS.md#apps) and
+[v27 method evidence](docs/API-METHODS-V27.md#apps).
 
 v27 has no container restart RPC, so `container restart` plans a stop followed by a start and requires the container
 name as destructive confirmation.

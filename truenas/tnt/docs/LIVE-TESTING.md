@@ -54,8 +54,10 @@ created for that check.
 - Network: run `tnt network show --json`; compare `interfaces`, `addresses`, `routes`, `dns`, and
   `default_gateways` with System > Network in the web UI, then confirm the TUI screen exposes no write controls. This
   check is authored only and has not been run.
-- Apps: list installed apps and upgrade-available state; start/stop/restart only a disposable app; uninstall only an
-  app with disposable data and keep the delete-data-volumes choice at NO unless data deletion is explicitly intended.
+- Apps: run `tnt app list --json` and verify state and `upgrade_available`; start/stop/restart only a disposable app.
+  Dry-run uninstall and verify `remove_ix_volumes=false`; uninstall only an app with disposable data, keeping the
+  delete-data-volumes choice at NO unless data deletion is explicitly intended. This check is authored only and has
+  not been run.
 - Audit and API Keys: page through audit results with time/user/event filters; create a temporary API key, copy it from
   the one-time display, then revoke it after the acceptance check.
 - SSH hand-off: use a host profile with a configured known_hosts file and verify both interactive and one-command

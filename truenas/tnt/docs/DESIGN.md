@@ -180,6 +180,14 @@ summary supplies active interface addresses, DNS nameservers, and default gatewa
 interface state and installed IPv4/IPv6 routes. The display is read-only, and missing required summary fields are a
 schema failure instead of an empty network state. See [API method evidence](API-METHODS-V27.md#network-status).
 
+### Apps
+
+The app list uses `app.query` without the option that retrieves app configuration, and displays the API's
+`upgrade_available` value alongside state and version. v27 has `app.start` and `app.stop` jobs but no `app.restart`
+method; tnt implements restart as those two ordered jobs. It does not use `app.redeploy`, whose v27 behavior also
+pulls images. Uninstall is `app.delete`, requires the typed app ID, keeps images and TrueNAS-managed data volumes by
+default, and exposes an explicit opt-in for `remove_ix_volumes`. See [API method evidence](API-METHODS-V27.md#apps).
+
 ## 5. UX
 
 - Left navigation is a Textual `Tree` (arrows, enter, expand/collapse), content pane on the right, a banner line with

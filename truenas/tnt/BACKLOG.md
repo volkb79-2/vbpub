@@ -30,7 +30,7 @@ non-execution requirement.
 | TNT-14 | System: General, Network, Services, Update (read first) | M3 | L |
 | TNT-15 | [DONE M2] Shares: SMB, NFS, remote-path guard, ACL read, typed configuration deletion | M2 | M |
 | TNT-16 | [DONE M1] Containers and Virtual Machines (matrix A-04..A-06, B-04; v27 `container.*` and `vm.*`). Current image, CPU-count and configured memory-limit fields are unavailable in the verified container schema; see TNT-36/37. | M1 | L |
-| TNT-17 | Apps | M3 | M |
+| TNT-17 | [DONE M2] Apps: installed app state, upgrade-available flag, start/stop/restart, destructive uninstall with opt-in volume deletion | M2 | M |
 | TNT-18 | [DONE M2] Data Protection periodic snapshot, replication, and cloud-sync tasks (scrub/SMART tasks deferred) | M2 | L |
 | TNT-19 | Credentials, Reporting, Audit, Enclosure | M3 | L |
 | TNT-38 | [DONE M1] Snapshots: list/create/clone/hold/release/rollback/delete through CLI and TUI, with drift probes and typed destructive confirmation | M1 | M |

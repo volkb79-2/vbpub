@@ -8,6 +8,8 @@
   Runs use job plans with source/target context and typed confirmation; cloud-sync credentials and encryption values are masked.
 - Added read-only `tnt network show` and System > Network views for v27 interfaces, active IPs, installed routes,
   DNS nameservers, and default gateways, with explicit schema-shape refusal for incomplete summaries.
+- Added Apps list/show/start/stop/restart/uninstall workflows. Restart is an ordered stop/start job pair; uninstall is
+  destructive, requires the typed app ID, and preserves TrueNAS-managed data volumes unless explicitly enabled.
 - Added schema-versioned `tnt.toml` profiles with explicit config search order, current-user ownership and exact mode-0600 checks,
   inline API-key or password credentials, optional API-key files, and masked profile inspection.
 - Added v27 password login through the pinned client's `PASSWORD_PLAIN` mechanism; API keys continue to use SCRAM.

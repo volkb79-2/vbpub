@@ -160,6 +160,25 @@ This screen does not edit interface or resolver configuration. The JSON includes
 `dns`, and `default_gateways`; a response that omits required summary fields is an error, not an empty status. See the
 [network view design](DESIGN.md#network-status) and [v27 read signatures](API-METHODS-V27.md#network-status).
 
+### Apps
+
+List installed apps and their running state, installed version, and upgrade availability. App IDs are the values passed
+to v27 app lifecycle methods:
+
+```sh
+tnt app list --profile lab --json
+tnt app show demo --profile lab --json
+tnt app start demo --profile lab --allow-write --dry-run
+tnt app stop demo --profile lab --allow-write
+tnt app restart demo --profile lab --allow-write
+tnt app uninstall demo --profile lab --allow-write --confirm demo
+tnt app uninstall demo --profile lab --allow-write --delete-data-volumes --confirm demo
+```
+
+Restart is an ordered `app.stop` then `app.start` pair. Uninstall is destructive and requires typing the exact app ID;
+it preserves data volumes by default. The final example explicitly opts into deleting TrueNAS-managed app volumes.
+See the [Apps design decisions](DESIGN.md#apps) and [v27 app schemas](API-METHODS-V27.md#apps).
+
 Use `--file spec.json` for fields beyond a workflow's minimal create options. Passwords are entered through a no-echo
 prompt or `--password-file`, never a command-line argument. User SSH keys are loaded from a public-key file or
 validated public-key text; private keys are not accepted or printed.

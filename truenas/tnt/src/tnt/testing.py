@@ -76,6 +76,16 @@ class FakeServer:
                  "encryption_password": "synthetic-cloud-secret", "encryption_salt": "synthetic-cloud-secret",
                  "job": None, "locked": False},
         }
+        self.apps: dict[str, dict[str, Any]] = {
+            "example-app": {"id": "example-app", "name": "Example App", "state": "STOPPED",
+                            "upgrade_available": False, "latest_version": "1.0.0", "latest_app_version": "1.0.0",
+                            "image_updates_available": False, "custom_app": False, "migrated": False,
+                            "human_version": "1.0.0", "version": "1.0.0", "metadata": {},
+                            "active_workloads": {"containers": 0, "used_ports": [], "used_host_ips": [],
+                                                 "container_details": [], "volumes": [], "images": [], "networks": []},
+                            "notes": None, "action_required": False, "portals": {}}
+        }
+        self.app_delete_options: dict[str, Any] | None = None
         self.containers: dict[int, dict[str, Any]] = {}
         self.vms: dict[int, dict[str, Any]] = {}
         self.vm_devices: dict[int, dict[str, Any]] = {}
@@ -182,7 +192,8 @@ class FakeServer:
                 else:
                     result = self._dispatch(method, params)
                     if method in {"container.create", "container.stop", "container.delete", "vm.stop", "vm.restart",
-                                  "pool.snapshottask.run", "replication.run", "cloudsync.sync"}:
+                                  "pool.snapshottask.run", "replication.run", "cloudsync.sync",
+                                  "app.start", "app.stop", "app.delete"}:
                         self._send_job(ws, msg["id"], result)
                         continue
                 reply: dict[str, Any] = {"jsonrpc": "2.0", "id": msg["id"], "result": result}
@@ -280,6 +291,10 @@ class FakeServer:
             "interface.query": lambda p: self.interfaces,
             "route.system_routes": lambda p: self.routes,
             "network.general.summary": lambda p: self.network_summary,
+            "app.query": lambda p: self._query(self.apps, p),
+            "app.start": lambda p: self._app_state(p, "RUNNING"),
+            "app.stop": lambda p: self._app_state(p, "STOPPED"),
+            "app.delete": self._app_delete,
             "core.subscribe": lambda p: self._subscribe(p),
             "core.unsubscribe": lambda p: True,
             "auth.me": lambda p: {"pw_name": self.username, "pw_uid": 1000, "pw_gid": 1},
@@ -413,6 +428,19 @@ class FakeServer:
     def _query(self, rows: dict[Any, dict[str, Any]], params: list[Any], *, username_key: str | None = None) -> list[dict[str, Any]]:
         filters = params[0] if params else []
         return [row for row in rows.values() if self._matches(row, filters, username_key=username_key)]
+
+    def _app_state(self, params: list[Any], state: str) -> None:
+        app_id = params[0] if params else ""
+        row = self._get(self.apps, app_id, "app")
+        row["state"] = state
+        return None
+
+    def _app_delete(self, params: list[Any]) -> bool:
+        app_id = params[0] if params else ""
+        row = self._get(self.apps, app_id, "app")
+        self.app_delete_options = dict(params[1]) if len(params) > 1 else {}
+        del self.apps[row["id"]]
+        return True
 
     def _filesystem_stat(self, params: list[Any]) -> dict[str, Any]:
         path = params[0] if params else ""

@@ -60,6 +60,18 @@ middleware CRUD reads for the relevant service.
 | Network | `route.system_routes(filters=[], options={}) -> list[RouteSystemRoutesItem]`; returns installed IPv4/IPv6 routes including default routes | read | [v27 reference](https://api.truenas.com/v27.0/api_methods_route.system_routes.html), [v27 model](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/api/v27_0_0/route.py), [service](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/plugins/network_/route.py) |
 | Network | `network.general.summary() -> {ips: object, default_routes: list[IPvAnyAddress], nameservers: list[IPvAnyAddress]}` | read | [v27 reference](https://api.truenas.com/v27.0/api_methods_network.general.summary.html), [v27 model](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/api/v27_0_0/network_general.py), [service](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/plugins/network_/general.py) |
 
+## Apps
+
+| Workflow | Method and verified signature | Classification | Evidence |
+|---|---|---|---|
+| Apps | `app.query(filters=[], options={}) -> list[AppEntry]`; `AppEntry` contains `id`, `name`, `state`, `upgrade_available`, and version fields | read | [v27 reference](https://api.truenas.com/v27.0/api_methods_app.query.html), [v27 model](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/api/v27_0_0/app.py), [query service](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/plugins/apps/crud.py) |
+| Apps | `app.start(app_name: str)` and `app.stop(app_name: str)` are jobs returning `null` | write | [start](https://api.truenas.com/v27.0/api_methods_app.start.html), [stop](https://api.truenas.com/v27.0/api_methods_app.stop.html), [v27 models](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/api/v27_0_0/app.py), [lifecycle service](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/plugins/apps/app_scale.py) |
+| Apps | `app.delete(app_name: str, options={remove_images: bool, remove_ix_volumes: bool, force_remove_custom_app: bool})` is a job; tnt explicitly sets `remove_images=false` and `remove_ix_volumes=false` unless opted in | destructive | [v27 reference](https://api.truenas.com/v27.0/api_methods_app.delete.html), [v27 model](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/api/v27_0_0/app.py), [delete service](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/plugins/apps/crud.py) |
+
+There is no `app.restart` RPC in the v27 method index. tnt's restart workflow uses sequential `app.stop(app_name)` and
+`app.start(app_name)` jobs. It does not use `app.redeploy(app_name)`, which the v27 schema describes as stopping the
+app, pulling latest images, and restarting it.
+
 `vm.get_console(id)` returns a non-empty console connection string or command (the VM ID/name form in middleware),
 not a host/port object. VNC/SPICE endpoints come from `vm.get_display_devices(id)`: display attributes include
 `bind`, `port` (VNC/SPICE, `null` for auto-assignment), and `web_port` (`null` for auto-assignment). The result also

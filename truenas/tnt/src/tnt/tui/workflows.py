@@ -27,6 +27,7 @@ SCREEN_TITLES = {
     "snapshot-tasks": "Periodic Snapshot Tasks",
     "replication": "Replication Tasks",
     "cloud-sync": "Cloud Sync Tasks",
+    "apps": "Apps",
 }
 
 OPERATIONS = {
@@ -48,6 +49,8 @@ OPERATIONS = {
                         ("Enable selected", "enable"), ("Disable selected", "disable"), ("Delete selected", "delete")),
     "replication": (("Run selected now", "run"), ("Enable selected", "enable"), ("Disable selected", "disable")),
     "cloud-sync": (("Run selected now", "run"), ("Enable selected", "enable"), ("Disable selected", "disable")),
+    "apps": (("Start selected", "start"), ("Stop selected", "stop"), ("Restart selected", "restart"),
+             ("Uninstall selected", "delete")),
 }
 
 
@@ -62,6 +65,7 @@ _READERS = {
     "snapshot-tasks": lambda w: w.snapshot_tasks(),
     "replication": lambda w: w.replication_tasks(),
     "cloud-sync": lambda w: w.cloudsync_tasks(),
+    "apps": lambda w: w.apps(),
 }
 
 
@@ -132,7 +136,7 @@ class WorkflowView(Vertical):
             yield Input(placeholder="Name or target (uses selected row when blank)", id="workflow-name")
             yield Input(placeholder="Password or SSH key (hidden)", password=True, id="workflow-secret")
             with Horizontal():
-                yield Checkbox("Recursive", id="workflow-recursive")
+                yield Checkbox("Delete data volumes" if self.key == "apps" else "Recursive", id="workflow-recursive")
                 yield Checkbox("Built-in user", id="workflow-builtin")
                 yield Checkbox("Confirm current user", id="workflow-confirm-self")
             yield Button("Plan action", id="workflow-plan", variant="primary")
@@ -163,7 +167,7 @@ class WorkflowView(Vertical):
         table.clear()
         for index, row in enumerate(self.rows):
             name = row.get("username", row.get("name", row.get("description", row.get("dataset", row.get("id", "")))))
-            state = row.get("type", "")
+            state = row.get("type", row.get("state", ""))
             status = row.get("status")
             if isinstance(status, dict):
                 state = status.get("state", state)
@@ -171,7 +175,8 @@ class WorkflowView(Vertical):
                                                        "compression", "readonly", "mounted", "mountpoint", "vcpus", "memory",
                                                        "cpuset", "autostart", "builtin", "enabled", "source_datasets",
                                                        "target_dataset", "direction", "transfer_mode", "schedule",
-                                                       "lifetime_value", "lifetime_unit") if key in row}
+                                                       "lifetime_value", "lifetime_unit", "upgrade_available",
+                                                       "latest_version", "latest_app_version", "version") if key in row}
             if self.key == "containers":
                 summary["image"] = "not exposed by v27"
                 summary["CPU count"] = "not exposed by v27"
@@ -350,6 +355,14 @@ class WorkflowView(Vertical):
                 return workflows.cloudsync_run_action(str(target or ""))
             if operation in {"enable", "disable"}:
                 return workflows.cloudsync_enable_action(str(target or ""), operation == "enable")
+        if self.key == "apps":
+            target = name_input or selected.get("id")
+            if not isinstance(target, str) or not target:
+                raise ValueError("select an installed app or enter its exact app ID")
+            if operation in {"start", "stop", "restart"}:
+                return workflows.app_lifecycle_action(target, operation)
+            if operation == "delete":
+                return workflows.app_delete_action(target, delete_data_volumes=recursive)
         raise ValueError("unsupported workflow action")
 
     def _open_next_vm_device(self) -> None:

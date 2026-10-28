@@ -26,6 +26,7 @@ VIEWS = {
     "vm": lambda session: WorkflowView(session, "vm"),
     "users": lambda session: WorkflowView(session, "users"),
     "sharing": lambda session: WorkflowView(session, "sharing"),
+    "apps": lambda session: WorkflowView(session, "apps"),
     "network": NetworkView,
 }
 
