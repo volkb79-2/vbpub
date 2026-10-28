@@ -75,3 +75,25 @@ The host is the only mutable target (allowlist: server id 804027 /
 - `ACTION-MATRIX.md` is the single canonical action table; `tests/test_action_matrix.py`
   fails on doc/code drift (patch inventory, lanes, steps, API methods both ways).
 - Unit lane: 203 tests pass.
+
+## Phase 4 - partition pool shim, review fixes (2026-10-28)
+
+- `ui-pools.patch` now also patches `disk_/availability.py` (reserved partition offered as an
+  unused pseudo-disk by `disk.details`) and `pool_/pool.py` (`pool.create` on that partition runs
+  `zpool create` and adopts the pool); helper `shared/boot_disk_partition.py`.
+- `live-api-probe` now asserts (checks keyed by name): path-b `details-lists-reserved-partition`,
+  `create-mixed-refused`, `create-mirror-refused`, `boot-attach-refused-unchanged`,
+  `shim-create-on-partition`, `shim-pool-registered`, `import-hand-made-pool`, `cleanup-complete`,
+  `boot-pool-unchanged`; path-a `synthetic-row-present`, `refused-pool.*` (id 0), `boot-pool-unchanged`.
+  Finding: `pool.scrub.run` takes a name and starts a (non-destructive) scrub on boot-pool in stock
+  v27 as well, so it is documented, not refused.
+- `live-ui` ui-wizard on Path B: the wizard offers the partition (Unassigned Disks 495.5 GiB x 1);
+  the lane uses the automated Data step and the stock erase confirmation (Confirm checkbox,
+  Continue). PASS with the pool created through the UI (`live-ui-v1001-wizard4-20261028.log`).
+- Logs of these runs (`live-ui-*`, `live-api-probe-*`) stay in the ignored `artifacts/` directory and
+  are intentionally not committed.
+- Review fixes: synthetic row `info` override order, `zpool get` timeout and 5 s cache,
+  narrowed `.system` subtree match, matrix test ties PASS cells to an asserting lane step and
+  matches real call sites for every lane; unit tests for the patch (hunk counts, bundle, apply
+  script, anchoring drift); source evidence for "no internal path passes app" recorded in
+  `ACTION-MATRIX.md`.

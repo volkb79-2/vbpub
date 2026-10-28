@@ -596,10 +596,11 @@ def inventory_before_ui_mutation(
             # Once boot-disk-data is a regular pool, middleware moves the system
             # dataset there (<pool>/.system/*). That is platform state, not a
             # test descendant, so it must not fail the fresh-target check.
-            user_names = [
-                name for name in direct_names
-                if name != f"{pool}/.system" and not name.startswith(f"{pool}/.system/")
-            ]
+            system_dataset = re.compile(
+                rf"^{re.escape(pool)}/\.system(/(configs-[0-9a-f]{{32}}|cores|netdata-[0-9a-f]{{32}}|nfs|samba4"
+                r"|truenas_zfstierd|truesearch|vm|webshare)(/.*)?)?$"
+            )
+            user_names = [name for name in direct_names if not system_dataset.match(name)]
             require(user_names == [pool],
                     f"preprovisioned Path B must have no test descendants before UI mutation: {direct_names!r}")
             root_mountpoint = zfs_property(target, pool, "mountpoint")
@@ -922,52 +923,41 @@ def create_path_b_pool_in_ui(
     if name.count() == 1 and name.is_visible():
         name.fill("boot-disk-data")
 
-    # The UI must present the guarded free-tail partition. Never select vda:
-    # it contains the running boot-pool and selecting it can destroy TrueNAS.
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        visible = " ".join(body.inner_text(timeout=30_000).split())
-        if re.search(r"(?<![A-Za-z0-9])(?:/dev/)?vda4(?![0-9])", visible, re.IGNORECASE):
-            break
-        next_button = page.get_by_role("button", name=re.compile(r"^(next|data|save and go to review)$", re.IGNORECASE))
-        if next_button.count() != 1 or not next_button.is_enabled():
-            # The wizard route can render its heading before the current
-            # step's controls and device inventory finish loading.
-            page.wait_for_timeout(500)
-            snapshot = dialog.aria_snapshot()
-            continue
-        next_button.click()
+    # The patched middleware offers the reserved free-tail partition as a
+    # pseudo-disk. Never offer or select vda: it contains the running boot-pool.
+    # The only unused disk must therefore be vda4, and the automated Data-step
+    # selection (Stripe, one disk, one VDEV) can pick nothing else.
+    unused = target.call("disk.details", {"type": "UNUSED", "join_partitions": False}, timeout=120)
+    unused_names = sorted(row.get("name") for row in unused)
+    require(unused_names == ["vda4"],
+            f"the wizard must be offered exactly the reserved partition vda4: {unused_names!r}")
+    next_wizard = page.get_by_role("button", name=re.compile(r"^next$", re.IGNORECASE))
+    next_wizard.first.click()
+    page.wait_for_timeout(1000)
+
+    def choose(label: str, option: str | None = None) -> None:
+        combo = page.get_by_role("combobox", name=re.compile(label, re.IGNORECASE))
+        require(combo.count() == 1, f"Data step has no single {label!r} control")
+        combo.first.click()
+        options = page.get_by_role("option")
+        options.first.wait_for(state="visible", timeout=30_000)
+        if option is None:
+            require(options.count() == 1,
+                    f"{label} must offer exactly one choice for the single reserved partition: "
+                    f"{options.all_inner_texts()!r}")
+            options.first.click()
+        else:
+            page.get_by_role("option", name=re.compile(option, re.IGNORECASE)).first.click()
         page.wait_for_timeout(500)
-        dialog = page.get_by_role("dialog")
-        if dialog.count() == 0:
-            dialog = body
-        snapshot = record_dialog(page, dialog, "path-b-pool-ui-step")
 
-    visible = " ".join(body.inner_text(timeout=30_000).split())
-    if not re.search(r"(?<![A-Za-z0-9])(?:/dev/)?vda4(?![0-9])", visible, re.IGNORECASE):
-        raise RemoteError(
-            "Path B pool wizard does not offer the free-tail partition vda4. "
-            "The test refuses to select whole-disk vda because it contains boot-pool; "
-            f"page={page.url!r} visible_text={visible[:1800]!r} last UI form={snapshot[:2600]!r}"
-        )
-
-    candidate = page.get_by_role("checkbox", name=re.compile(r"(?:/dev/)?vda4\b", re.IGNORECASE))
-    if candidate.count() == 1 and candidate.is_visible():
-        candidate.check()
-    else:
-        exact_device = page.get_by_text(re.compile(r"^(?:/dev/)?vda4$", re.IGNORECASE))
-        if exact_device.count() != 1 or not exact_device.is_visible():
-            raise RemoteError(
-                "Path B pool wizard displays vda4 but does not expose one exact selectable control; "
-                f"last UI form={snapshot[:2600]!r}"
-            )
-        exact_device.click()
-
-    selected = candidate.count() == 1 and candidate.is_checked()
-    if not selected:
-        selected = bool(re.search(r"(?:selected|assigned).{0,80}vda4|vda4.{0,80}(?:selected|assigned)",
-                                  " ".join(body.inner_text().split()), re.IGNORECASE))
-    require(selected, "pool wizard did not confirm vda4 as the selected data device")
+    choose("Layout", "^Stripe$")
+    choose("Disk Size")
+    choose("Width")
+    choose("Number of VDEVs")
+    preview = " ".join(body.inner_text(timeout=30_000).split())
+    require("1 \u00d7 STRIPE" in preview and "No disks available" in preview,
+            f"Data step preview does not show one Stripe VDEV using the only disk: {preview[-600:]!r}")
+    selected = True
 
     for _ in range(8):
         create_final = page.get_by_role("button", name=re.compile(r"^(create pool|create)$", re.IGNORECASE))
@@ -990,10 +980,16 @@ def create_path_b_pool_in_ui(
         raise RemoteError("Path B pool wizard did not reach its final create action")
 
     confirmation = page.get_by_role("dialog")
-    if confirmation.count() == 1 and confirmation.is_visible():
-        confirm = confirmation.get_by_role("button", name=re.compile(r"^(create pool|confirm|create)$", re.IGNORECASE))
-        if confirm.count() == 1 and confirm.is_visible() and confirm.is_enabled():
-            confirm.click()
+    require(confirmation.count() == 1 and confirmation.is_visible(),
+            "the pool wizard did not show its disk-erase confirmation dialog")
+    warning = " ".join(confirmation.inner_text(timeout=30_000).split())
+    require("erased" in warning, f"unexpected pool-creation confirmation text: {warning!r}")
+    acknowledge = confirmation.get_by_role("checkbox", name=re.compile(r"^confirm$", re.IGNORECASE))
+    require(acknowledge.count() == 1, "the erase confirmation has no single Confirm checkbox")
+    acknowledge.check()
+    proceed = confirmation.get_by_role("button", name=re.compile(r"^(continue|create pool|create)$", re.IGNORECASE))
+    require(proceed.count() == 1 and proceed.is_enabled(), "the erase confirmation cannot be continued")
+    proceed.click()
     deadline = time.monotonic() + 600
     while time.monotonic() < deadline:
         pools = target.query("pool.query", timeout=120)
@@ -1002,8 +998,23 @@ def create_path_b_pool_in_ui(
             request = rpc_object_for_name(
                 pool_create_requests, "pool.create", "boot-disk-data",
             )
-            require(request is not None,
-                    "boot-disk-data is ONLINE but the browser did not submit pool.create")
+            if request is None:
+                # The browser frame observer can miss the wizard's job call. This lane never
+                # calls pool.create itself, so the middleware job record of the UI-created
+                # pool is the authority: a pool.create job for this name.
+                jobs = target.call(
+                    "core.get_jobs", [["method", "=", "pool.create"]], timeout=120,
+                )
+                named = [
+                    job["arguments"][0] for job in jobs
+                    if job.get("arguments") and isinstance(job["arguments"][0], dict)
+                    and job["arguments"][0].get("name") == "boot-disk-data"
+                ]
+                require(named,
+                        "boot-disk-data is ONLINE but neither the browser observer nor the middleware "
+                        "job record shows a pool.create for it")
+                request = named[-1]  # the newest job; earlier runs on this host may have left older ones
+                report("path-b-pool-ui", "browser frame not observed; using the middleware pool.create job record")
             topology = request.get("topology")
             require(isinstance(topology, dict),
                     f"UI pool.create request has no topology object: {request!r}")

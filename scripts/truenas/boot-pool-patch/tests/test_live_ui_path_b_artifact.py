@@ -138,5 +138,6 @@ def test_preprovisioned_fresh_check_ignores_the_platform_system_dataset() -> Non
     source = LIVE_UI.read_text()
     # boot-disk-data becomes the system dataset pool, so <pool>/.system/* exists
     # before any UI mutation and is not a test descendant.
-    assert 'name.startswith(f"{pool}/.system/")' in source
+    assert "truenas_zfstierd|truesearch|vm|webshare" in source  # known middleware subtree only
+    assert 'startswith(f"{pool}/.system/")' not in source
     assert "require(user_names == [pool]," in source

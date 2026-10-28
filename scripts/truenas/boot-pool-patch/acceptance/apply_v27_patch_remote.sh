@@ -84,11 +84,14 @@ patch --batch --fuzz=0 -p1 < "$patch_dir/zvol-blocksize.patch"
 patch --batch --fuzz=0 -p1 < "$patch_dir/ui-pools.patch"
 install -m 0644 "$bundle_root/shared/virtualization_support.py" middlewared/plugins/vm/
 install -m 0644 "$bundle_root/shared/boot_pool_user_data.py" middlewared/plugins/
+install -m 0644 "$bundle_root/shared/boot_disk_partition.py" middlewared/plugins/
 
 python3 -m py_compile \
     middlewared/plugins/vm/info.py \
     middlewared/plugins/vm/virtualization_support.py \
     middlewared/plugins/boot_pool_user_data.py \
+    middlewared/plugins/boot_disk_partition.py \
+    middlewared/plugins/disk_/availability.py \
     middlewared/async_validators.py \
     middlewared/plugins/pool_/dataset_query_utils.py \
     middlewared/plugins/pool_/dataset.py \

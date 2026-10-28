@@ -73,6 +73,7 @@ def make_bundle(profile: str) -> tuple[Path, str]:
         (PATCH_ROOT / "v27" / "targets.sha256", "v27/targets.sha256"),
         (PATCH_ROOT / "shared" / "virtualization_support.py", "shared/virtualization_support.py"),
         (PATCH_ROOT / "shared" / "boot_pool_user_data.py", "shared/boot_pool_user_data.py"),
+        (PATCH_ROOT / "shared" / "boot_disk_partition.py", "shared/boot_disk_partition.py"),
         (PATCH_ROOT / "acceptance" / "apply_v27_patch_remote.sh",
          "acceptance/apply_v27_patch_remote.sh"),
         (PATCH_ROOT / "acceptance" / "repair_v27_root_create_remote.sh",

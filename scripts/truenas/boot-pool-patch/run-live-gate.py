@@ -264,7 +264,9 @@ def required_live_environment(
     if lane == "live-vdev-topology" and profile != "path-a":
         raise RunnerError("live-vdev-topology requires a fresh Path A guest with a UI-created boot-pool/user-data root")
     path_b_provision: dict[str, str] = {}
-    if lane in {"live-path-b-provision", "live-path-b-partition"}:
+    if lane in {"live-path-b-provision", "live-path-b-partition"} or (
+        lane == "live-api-probe" and profile == "path-b"
+    ):
         if profile != "path-b":
             raise RunnerError("live-path-b-provision requires TRUENAS_STORAGE_PROFILE=path-b")
         if os.environ.get("TRUENAS_TEST_ALLOW_DISK_PROVISION") != "1":

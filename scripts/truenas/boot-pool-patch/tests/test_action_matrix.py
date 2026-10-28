@@ -11,10 +11,6 @@ TRUENAS_ROOT = PATCH_ROOT.parent
 ACCEPTANCE = PATCH_ROOT / "acceptance"
 DOC = (PATCH_ROOT / "ACTION-MATRIX.md").read_text()
 RELEASE_DIRS = ("v27", "v28-nightly-20261014")
-LANE_SOURCES = {
-    "live-ui": ACCEPTANCE / "live_ui.py",
-    "live-ui-workloads": ACCEPTANCE / "live_ui_workloads.py",
-}
 VERDICTS = {"works", "patch-UI", "API-TUI", "n/a", "pending decision"}
 COLUMNS = ["id", "path", "action", "methods", "api", "ui", "ui_patched", "patch", "size",
            "verdict", "lane", "v27", "v28"]
@@ -39,6 +35,42 @@ ACTIONS = [dict(zip(COLUMNS, row, strict=True)) for row in section("Actions")]
 INVENTORY = section("Patch inventory")
 RUN_GATE = tomllib.loads((TRUENAS_ROOT / "run-gate.toml").read_text())["lanes"]
 ACCEPTANCE_TEXT = "\n".join(path.read_text() for path in ACCEPTANCE.glob("*.py"))
+
+
+def lane_source(lane: str) -> Path | None:
+    for arg in RUN_GATE[lane].get("argv", []):
+        if found := re.search(r"\b(live_[a-z0-9_]+\.py)\b", arg):
+            return ACCEPTANCE / found.group(1)
+    return None
+
+
+def step_exists(source: str, step: str) -> bool:
+    """A step is a report("step"), print("[step]"), or check("step") call site."""
+    escaped = re.escape(step)
+    return bool(
+        re.search(rf'report\(\s*"{escaped}"', source)
+        or re.search(rf'check\(\s*"{escaped}"', source)
+        or re.search(rf'\[{escaped}\]', source)
+    )
+
+
+def method_has_call_site(method: str) -> bool:
+    quoted = rf'["\']{re.escape(method)}["\']'
+    return bool(re.search(
+        rf'(?:\.call|\.query|attempt|call_job|observe_rpc_method|\.call_sync)\(\s*(?:target,|page,)?\s*{quoted}'
+        rf'|\(\s*{quoted}\s*,\s*\(',
+        ACCEPTANCE_TEXT,
+    ))
+
+
+def pairs(cell: str) -> list[tuple[str, str | None]]:
+    """Parse ``lane : step`` evidence pairs; several may be separated by ``;``."""
+    result = []
+    for part in cell.split(";"):
+        found = re.fullmatch(r"\s*`([^`]+)`\s*:\s*(?:`([^`]+)`|-)\s*", part)
+        assert found, f"bad lane cell {cell!r}"
+        result.append((found.group(1), found.group(2)))
+    return result
 
 
 def doc_methods() -> set[str]:
@@ -70,12 +102,20 @@ def test_action_rows_reference_existing_patches_lanes_and_steps() -> None:
     for row in ACTIONS:
         for patch in names(row["patch"]):
             assert patch in patch_names, (row["id"], patch)
-        lane_cell = names(row["lane"])
-        assert lane_cell[0] in RUN_GATE, (row["id"], lane_cell[0])
-        if len(lane_cell) > 1:
-            source = LANE_SOURCES[lane_cell[0]].read_text()
-            assert re.search(rf'report\(\s*"{re.escape(lane_cell[1])}"', source), (
-                row["id"], lane_cell[1])
+        for lane, step in pairs(row["lane"]):
+            assert lane in RUN_GATE, (row["id"], lane)
+            if step is not None:
+                source = lane_source(lane)
+                assert source is not None and source.is_file(), (row["id"], lane)
+                assert step_exists(source.read_text(), step), (row["id"], step)
+
+
+def test_every_pass_cell_names_an_asserting_lane_and_step() -> None:
+    for row in ACTIONS:
+        for column in ("v27", "v28"):
+            if row[column].startswith("PASS"):
+                assert any(step for _, step in pairs(row["lane"])), (
+                    f"{row['id']} {column}: PASS needs `lane : step` evidence")
 
 
 def test_every_ui_patch_is_used_by_an_action_row() -> None:
@@ -88,7 +128,7 @@ def test_every_ui_patch_is_used_by_an_action_row() -> None:
 
 def test_every_api_method_in_the_doc_is_exercised_in_acceptance_code() -> None:
     for method in sorted(doc_methods()):
-        assert f'"{method}"' in ACCEPTANCE_TEXT or f"'{method}'" in ACCEPTANCE_TEXT, method
+        assert method_has_call_site(method), f"no call site for {method}"
 
 
 def test_every_method_the_api_probe_calls_is_in_the_doc() -> None:
@@ -100,9 +140,9 @@ def test_every_method_the_api_probe_calls_is_in_the_doc() -> None:
 
 def test_every_ui_acceptance_step_that_exercises_an_action_has_a_row() -> None:
     exercising = {"path-a-root-ui", "dataset-ui", "zvol-ui", "container-ui", "vm-ui", "shares-ui",
-                  "path-b-partition-ui-inventory"}
-    source = LANE_SOURCES["live-ui"].read_text()
-    row_steps = {names(row["lane"])[1] for row in ACTIONS if len(names(row["lane"])) > 1}
+                  "path-b-pool-ui"}
+    source = lane_source("live-ui").read_text()
+    row_steps = {step for row in ACTIONS for _, step in pairs(row["lane"]) if step}
     for step in exercising:
         assert re.search(rf'"{step}"', source), step
         assert step in row_steps, f"no matrix row covers live-ui step {step}"
