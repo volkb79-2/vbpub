@@ -410,7 +410,11 @@ def init_file(host: Host, path: str, *, size: int | None, own: bool, expect_fs_u
           f"the filesystem under {path} refuses O_DIRECT", "use another filesystem")
     if dry_run:
         return Target("file", path, size, None, None, None, fs.uuid, 0)
-    run = host.preallocate(path, size)  # the bound fallocate: a plain `run` refuses every fallocate
+    host.allow_scratch(posixpath.dirname(path))  # the verified directory: the only place the bound fallocate may create the file
+    try:
+        run = host.preallocate(path, size)  # the bound fallocate: a plain `run` refuses every fallocate
+    except HostError as exc:  # a path that is not a plain, cleanly named file place (a device node, a symlinked parent, odd characters)
+        raise Refusal("path_unclean", str(exc), "name a new or regular file on the intended filesystem, with a plain path") from exc
     _need(run.returncode == 0, "fallocate_failed", f"fallocate failed: {run.stderr.strip()}", "free some space or pass a smaller --size")
     inode = host.stat(path).inode
     target = Target("file", path, size, None, None, None, fs.uuid, inode)

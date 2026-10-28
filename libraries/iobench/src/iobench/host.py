@@ -109,6 +109,13 @@ def _contained(host: Any, value: str, *, directory: bool = False) -> bool:
     return (st.is_dir if directory else st.is_file) and not st.is_symlink
 
 
+def check_preallocate(host: Any, path: str) -> None:
+    """A file target is preallocated only inside an authorised scratch root (the guard authorises the verified parent directory),
+    at a path that is absent or a regular file: never a device node, a symlink or anything outside the root."""
+    if not _contained(host, path):
+        raise HostError(f"{path}: a file target is preallocated only as a regular file inside an authorised directory (never a device node or a symlink)")
+
+
 def check_argv(argv: Sequence[str], *, bound: bool = False, host: Any = None) -> None:
     """Refuse argv that could change an io.max-style limit or a filesystem, and (unless ``bound``) any argv that writes or discards
     without the extent binding of ``Host.write_range`` / ``Host.discard_range``: a plain ``run``/``spawn`` can never reach a target.
@@ -156,6 +163,7 @@ _FIO_RW = ("read", "write", "randread", "randwrite")  # `trim`/`trimwrite`/`rand
 _FIO_INT_KEYS = ("--bs", "--iodepth", "--direct", "--runtime", "--offset", "--size", "--numjobs", "--log_avg_msec", "--exclusive_open",
                  "--io_size", "--log_hist_msec", "--log_hist_coarseness", "--rate_iops", "--fsync")  # non-negative integers only (`--offset=-5` is refused here)
 _FIO_FIXED = {"--ioengine": "libaio", "--output-format": "json", "--direct": None, "--exclusive_open": None}
+_FIO_NAME = re.compile(r"[A-Za-z0-9_.-]+")  # one clean token: a job name reaches fio's JSON and log file names
 # Magnitude caps, each well above what any planner emits (bs 1 MiB, QD 64, 900 s observation, 1 job, 1 s logs): a value beyond
 # them is not a planned job, whatever the caller.
 _FIO_MAX = {"--bs": 16 << 20, "--iodepth": 256, "--runtime": 7200, "--numjobs": 8, "--log_avg_msec": 60_000, "--log_hist_msec": 60_000,
@@ -181,6 +189,8 @@ def _fio_allowed(a: list[str]) -> bool:
     if len(set(keys)) != len(keys) or not set(keys) <= _FIO_KEYS:  # a repeated key (`--filename=`, `--exclusive_open=0` after `=1`) is a second say
         return False
     if "--rw" in keys and _fio_opt(a, "--rw") not in _FIO_RW:
+        return False
+    if "--name" in keys and _FIO_NAME.fullmatch(_fio_opt(a, "--name") or "") is None:
         return False
     for key in _FIO_INT_KEYS:
         value = _fio_opt(a, key)
@@ -448,11 +458,7 @@ class RealHost:
     def preallocate(self, path: str, size: int) -> RunResult:
         """`fallocate -l SIZE PATH` for a verified file-target path (guard.init_file): the one unbound-free way to run fallocate."""
         from . import devio
-        try:
-            if os.lstat(path).st_mode & 0o170000 == 0o120000:  # S_IFLNK: the guard saw a plain path a moment ago
-                raise HostError(f"{path} became a symlink")
-        except FileNotFoundError:
-            pass
+        check_preallocate(self, path)  # inside the authorised directory (realpath, so a symlinked parent resolves), regular file or absent
         argv = devio.fallocate_argv(path, size)
         check_argv(argv, bound=True, host=self)
         return self._run_polled(argv, None)

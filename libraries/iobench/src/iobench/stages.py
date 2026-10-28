@@ -17,6 +17,7 @@ from .restore import Safety
 
 FIO_FLOOR = (3, 30)
 SCRATCH = "/run/iobench"
+FIO_LOG = re.compile(r"[A-Za-z0-9_.-]+_(bw|iops|clat_hist)\.1\.log")  # the files fio creates from the prefixes iobench passes
 TICK_S = 1.0
 GIB = 1 << 30
 MIB = 1 << 20
@@ -319,13 +320,21 @@ class Runner:
 
     def clear_scratch(self) -> None:
         """Remove the run's own log directory (`/run/iobench/<run_id>/`): the fio logs of an ended job go in `finish`, those of a
-        killed job and the directory itself went nowhere before (IOB-BL-09).  Only files iobench named are removed; the directory
-        goes only when empty."""
-        if not self.host.exists(self.scratch):
-            return
-        for name in self.host.listdir(self.scratch):
-            self.host.remove(f"{self.scratch}/{name}")
-        self.host.rmdir(self.scratch)
+        killed job and the directory itself went nowhere before (IOB-BL-09).  Only the fio log files iobench named are removed
+        (`<name>_bw|iops|clat_hist.1.log`), anything else is left and the directory goes only when empty.  Never raises: it runs
+        inside `cleanup`'s `finally`, where an error would skip the lock release and replace the run's status; a failure is a
+        restore warning instead."""
+        try:
+            if not self.host.exists(self.scratch):
+                return
+            for name in self.host.listdir(self.scratch):
+                path = f"{self.scratch}/{name}"
+                st = self.host.stat(path)
+                if FIO_LOG.fullmatch(name) and st is not None and st.is_file and not st.is_symlink:
+                    self.host.remove(path)
+            self.host.rmdir(self.scratch)
+        except Exception as exc:  # noqa: BLE001 -- an unexpected entry or a failing unlink: the directory stays, the run's verdict does not change
+            self.safety.report.warnings.append(f"scratch_not_cleared: {self.scratch} was left in place ({type(exc).__name__}: {exc})")
 
 
 @dataclass

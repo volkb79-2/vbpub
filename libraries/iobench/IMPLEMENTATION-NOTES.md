@@ -187,4 +187,12 @@ Third round (independent review of `d06f10122`, NOT READY; same file):
 | `/run/iobench/<run_id>/` never removed (IOB-BL-09) | low | `Runner.clear_scratch` after the restore (files iobench named, directory only when empty); `Host.rmdir` | `test_rev_e_the_run_directory_is_removed_after_the_run` |
 | release notes lacked the caveats | low | `IOBENCH_RELEASE_NOTES` in `cmru.toml` | docs |
 
+Fourth round (re-review of `9da4531f5`: READY, fold-ins):
+
+| Finding | Severity | Fix | Test |
+|---|---|---|---|
+| `Host.preallocate` accepted any path (`/dev/sda`) | medium | `check_preallocate` = `_contained` (RealHost and FakeHost); `guard.init_file` authorises the verified directory and maps the refusal to `path_unclean` | `test_rev_e_preallocate_is_contained_*`, `test_rev_e_realhost_preallocate_refuses_*` |
+| `clear_scratch` unlinked every entry (docstring said otherwise) and ran inside `cleanup`'s `finally`: an unexpected entry would raise before `safety.release()` and replace the verdict | medium (real bug) | only `<name>_bw|iops|clat_hist.1.log` regular files; wrapped, a failure is `scratch_not_cleared` warning | `test_rev_e_the_run_directory_*`, `test_rev_e_a_failing_scratch_cleanup_*` |
+| fio `--name` unvalidated | low | `_FIO_NAME` one clean token | `test_rev_e_fio_job_name_is_one_clean_token` |
+
 Judged and left (BACKLOG IOB-BL-09..16): scratch directory cleanup, hosts without docker, file targets on disk-less filesystems, the reclaim-driven stall class the io.pressure guard does not see, the dry-run name mismatch, `_ProcHandle` descriptors, the host-agnostic docs pass, the diskstats row. The iogov division of labour and the IOB-REL-01 prerequisites are in BACKLOG.md.

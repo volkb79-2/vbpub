@@ -433,6 +433,7 @@ def test_rev_e_realhost_preallocate_binds_and_refuses_a_symlink(tmp_path, monkey
     _FakePopen.calls = []
     host = RealHost()
     path = tmp_path / "target.img"
+    host.allow_scratch(str(tmp_path))
     assert host.preallocate(str(path), 4096).returncode == 0 and _FakePopen.calls == [devio.fallocate_argv(str(path), 4096)]
     link = tmp_path / "link.img"
     link.symlink_to("/etc/passwd")
@@ -480,8 +481,82 @@ def test_rev_e_the_run_directory_is_removed_after_the_run():
     host2 = scratch_host()
     host2.makedirs("/run/iobench/run-x")
     host2.put("/run/iobench/run-x/sub/keep", "x")  # a nested entry iobench did not create: the directory stays
+    host2.put("/run/iobench/run-x/notes.txt", "x")  # not a fio log iobench named: left alone
+    host2.put("/run/iobench/run-x/s1_bw.1.log", "x")  # a fio log of a killed job: removed
     from iobench.stages import Runner
     from types import SimpleNamespace
-    Runner.clear_scratch(SimpleNamespace(host=host2, scratch="/run/iobench/run-x"))
-    assert "/run/iobench/run-x" in host2.dirs and "/run/iobench/run-x/sub/keep" in host2.files
-    Runner.clear_scratch(SimpleNamespace(host=host2, scratch="/run/iobench/run-missing"))
+    ns = SimpleNamespace(host=host2, scratch="/run/iobench/run-x", safety=SimpleNamespace(report=SimpleNamespace(warnings=[])))
+    Runner.clear_scratch(ns)
+    assert "/run/iobench/run-x" in host2.dirs and "/run/iobench/run-x/sub/keep" in host2.files and "/run/iobench/run-x/notes.txt" in host2.files
+    assert "/run/iobench/run-x/s1_bw.1.log" not in host2.files and ns.safety.report.warnings == []
+    ns.scratch = "/run/iobench/run-missing"
+    Runner.clear_scratch(ns)
+    assert ns.safety.report.warnings == []
+
+
+def test_rev_e_a_failing_scratch_cleanup_never_skips_the_lock_release_or_masks_the_status():
+    from helpers import INVERSION, calibrate, make_host
+    from iobench.stages import Runner
+    from types import SimpleNamespace
+    host = scratch_host()
+    host.makedirs("/run/iobench/run-x")
+    host.put("/run/iobench/run-x/s1_bw.1.log", "x")
+    host.remove = lambda path: (_ for _ in ()).throw(PermissionError(13, "Operation not permitted", path))
+    ns = SimpleNamespace(host=host, scratch="/run/iobench/run-x", safety=SimpleNamespace(report=SimpleNamespace(warnings=[])))
+    Runner.clear_scratch(ns)  # a failing unlink is a warning, never an exception out of cleanup's finally
+    assert ns.safety.report.warnings and ns.safety.report.warnings[0].startswith("scratch_not_cleared: /run/iobench/run-x") and "PermissionError" in ns.safety.report.warnings[0]
+    # a complete run whose directory cannot be emptied keeps its verdict and releases the lock
+    host2 = make_host(cache=INVERSION)
+    real_rmdir = host2.rmdir
+    host2.rmdir = lambda path: (_ for _ in ()).throw(OSError(16, "busy", path))
+    out2 = calibrate(host2)
+    assert out2.status == "complete" and out2.exit_code == 0 and not host2.locks
+    assert any(w.startswith("scratch_not_cleared") for w in out2.result["restore"]["warnings"])
+    host2.rmdir = real_rmdir
+
+
+def test_rev_e_preallocate_is_contained_and_never_a_device_node():
+    host = scratch_host()
+    for path in ("/dev/vda7", "/dev/sda", "/etc/target.img", "/bench/w/esc/t.img"):
+        host.symlinks["/bench/w/esc"] = "/etc"
+        with pytest.raises(HostError, match="regular file"):
+            host.preallocate(path, 1)
+    host.allow_scratch("/dev")
+    with pytest.raises(HostError, match="regular file"):
+        host.preallocate("/dev/vda7", 1)  # inside a root, but a device node
+    assert not any(a[0] == "fallocate" for a in host.argv_log)
+    assert host.preallocate("/bench/w/t.img", 4096).returncode == 0
+    # target init authorises the verified directory itself and turns the Host's refusal into a refusal with a remedy
+    from iobench import guard
+    fresh = standard_host()
+    with pytest.raises(Refusal) as err:
+        guard.init_file(fresh, "/bench/t img", size=1 << 30, own=True, expect_fs_uuid="22222222-2222-2222-2222-222222222222",
+                        confirm_quiet_window=False, allow_large_root_target=False, created="2026-10-28T00:00:00Z")
+    assert err.value.condition == "path_unclean" and "/bench" in fresh.scratch_roots
+    assert guard.init_file(fresh, "/bench/t.img", size=1 << 30, own=True, expect_fs_uuid="22222222-2222-2222-2222-222222222222",
+                           confirm_quiet_window=False, allow_large_root_target=False, created="2026-10-28T00:00:00Z").kind == "file"
+
+
+def test_rev_e_realhost_preallocate_refuses_a_device_node_and_an_unauthorised_place(tmp_path, monkeypatch):
+    from iobench import host as host_mod
+    from iobench.host import RealHost
+    monkeypatch.setattr(host_mod.subprocess, "Popen", _FakePopen)
+    _FakePopen.calls = []
+    host = RealHost()
+    with pytest.raises(HostError, match="regular file"):
+        host.preallocate(str(tmp_path / "t.img"), 1)  # no root authorised
+    host.allow_scratch(str(tmp_path))
+    host.allow_scratch("/dev")
+    with pytest.raises(HostError, match="regular file"):
+        host.preallocate("/dev/null", 1)  # a device node inside an authorised root
+    (tmp_path / "sub").symlink_to("/etc")
+    with pytest.raises(HostError, match="regular file"):
+        host.preallocate(str(tmp_path / "sub" / "t.img"), 1)  # a symlinked parent resolves outside
+    assert _FakePopen.calls == []
+    assert host.preallocate(str(tmp_path / "t.img"), 1).returncode == 0 and len(_FakePopen.calls) == 1
+
+
+@pytest.mark.parametrize("name", ["x y", "", "../x", "x;id", "x/y", "x\n", "a=b", "x:y"])
+def test_rev_e_fio_job_name_is_one_clean_token(name):
+    assert not is_allowed_argv(["fio", f"--name={name}", "--filename=/bench/w/x", "--rw=read"])
+    assert is_allowed_argv(["fio", "--name=run-20261027T120000Z-a1b2-s4-rep-0.ext", "--filename=/bench/w/x", "--rw=read"])

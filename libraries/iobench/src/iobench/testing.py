@@ -24,7 +24,7 @@ from typing import Any, Callable, Sequence
 from . import devio
 from .devio import HIST_BINS, PERCENTILES, FioJob, bin_value_ns, parse_job
 from .extents import Extents
-from .host import (TAIL_BYTES, HostError, RunResult, StatInfo, TargetRef, check_argv,
+from .host import (TAIL_BYTES, HostError, RunResult, StatInfo, TargetRef, check_argv, check_preallocate,
                    check_sysfs_path)
 
 GIB = 1 << 30
@@ -848,6 +848,7 @@ class FakeHost:
         return RunResult(0 if out else 2, "".join(line + "\n" for line in out), "")
 
     def preallocate(self, path: str, size: int) -> RunResult:
+        check_preallocate(self, path)  # the same containment RealHost applies
         self._log(devio.fallocate_argv(path, size), bound=True)  # the bound entry point, like RealHost (an unbound fallocate is refused)
         return self._fallocate(path, size)
 
