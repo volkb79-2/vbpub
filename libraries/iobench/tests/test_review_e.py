@@ -619,6 +619,26 @@ def test_rev_e_init_file_revokes_only_the_root_it_added():
         assert err.value.condition == "workdir_fs"
 
 
+@pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit])
+def test_rev_e_init_file_revokes_added_root_and_reraises_base_exceptions(interrupt):
+    host = standard_host()
+    host.makedirs("/bench/sub")
+    assert "/bench" in host.scratch_roots  # already authorised by the test estate
+    assert "/bench/sub" not in host.scratch_roots
+    failure = interrupt("marker write interrupted")
+
+    def fail_marker(ref, text):
+        raise failure
+
+    host.write_marker = fail_marker
+    with pytest.raises(interrupt) as err:
+        _init(host, "/bench/sub/t.img")
+
+    assert err.value is failure
+    assert "/bench/sub" not in host.scratch_roots  # init_file added this root and revoked it
+    assert "/bench" in host.scratch_roots  # init_file must keep the pre-authorised root
+
+
 def test_rev_e_realhost_preallocate_refuses_a_device_node_and_an_unauthorised_place(tmp_path, monkeypatch):
     from iobench import host as host_mod
     from iobench.host import RealHost
