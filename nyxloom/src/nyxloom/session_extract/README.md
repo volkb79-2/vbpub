@@ -897,7 +897,13 @@ contract. The C1 chart-data extension and offline interactive HTML renderer
 are available. The HTML report uses exact ledger calls for table totals and
 filters, while visual context decimation remains display-only. Its in-page
 anonymize control is presentation-only; `--no-labels` removes topics before
-serialization. PDF export and the optional TUI remain later work.
+serialization. `--format pdf --out FILE` renders this same HTML and report
+contract through the optional PWMCP `BrowserLease` client. Print pages repeat
+the table header, keep rows together where they fit, and flow every row across
+as many A4 landscape pages as needed. PDF files are private mode `0600`; the
+managed browser receives generated HTML in memory, so use `--no-labels` to
+remove sensitive free-text labels before serialization. The optional Textual
+TUI remains deferred for re-evaluation after H2.
 The consumer-facing examples live in
 [CONSUMERS.md](../../../docs/CONSUMERS.md#report-claude-code-usage), and design
 choices in [DESIGN-GUIDE.md](../../../docs/DESIGN-GUIDE.md#local-usage-report).

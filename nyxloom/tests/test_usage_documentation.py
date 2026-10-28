@@ -50,3 +50,9 @@ def test_usage_anchor_choice_values_are_documented():
     human_docs = "\n".join(path.read_text(encoding="utf-8") for path in DOCS)
     for choice in KINDS | SOURCES | COVERAGE_ASSUMPTIONS:
         assert f"`{choice}`" in human_docs
+
+
+def test_every_usage_report_format_is_documented():
+    human_docs = "\n".join(path.read_text(encoding="utf-8") for path in DOCS)
+    for value in ("table", "json", "csv", "html", "pdf"):
+        assert f"`{value}`" in human_docs

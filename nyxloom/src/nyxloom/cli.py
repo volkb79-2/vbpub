@@ -1511,7 +1511,7 @@ def cmd_usage_charts(args) -> int:
     return 0
 
 
-def _write_private_usage_output(path: Path, content: str) -> None:
+def _write_private_usage_output(path: Path, content: str | bytes) -> None:
     """Atomically write a potentially sensitive report with mode 0600."""
     if path.is_symlink():
         raise ValueError("usage report output must not be a symlink")
@@ -1520,7 +1520,11 @@ def _write_private_usage_output(path: Path, content: str) -> None:
     )
     try:
         os.fchmod(descriptor, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
+        if isinstance(content, bytes):
+            handle = os.fdopen(descriptor, "wb")
+        else:
+            handle = os.fdopen(descriptor, "w", encoding="utf-8", newline="")
+        with handle:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())

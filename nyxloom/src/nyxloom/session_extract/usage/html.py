@@ -315,7 +315,7 @@ td.name-cell{white-space:normal;
 .header{padding:.7rem}
 }
 
-@media print{@page{size:landscape;
+@media print{@page{size:A4 landscape;
   margin:8mm}
 :root{color-scheme:light;
   --bg:#fff;
@@ -333,6 +333,7 @@ main{max-width:none;
 .header,.panel,.provenance,.controls,.summary{background:#fff!important;
   border-color:#888!important;
   break-inside:avoid}
+.panel[aria-labelledby="tree-heading"]{break-inside:auto}
 .controls,.anonymize-label,.time-actions,.mode-buttons,.chart-actions,.tree-toggle{display:none!important}
 .provenance{font-size:7pt}
 .table-wrap{overflow:visible;
@@ -342,14 +343,20 @@ table{width:100%;
   min-width:0;
   table-layout:auto;
   font-size:6pt}
-thead{position:static}
+table,tbody{break-inside:auto}
+thead{position:static;
+  display:table-header-group}
+tr{break-inside:avoid;
+  page-break-inside:avoid}
 th,td{white-space:normal;
   padding:2px 3px;
-  border-color:#aaa}
+  border-color:#aaa;
+  overflow-wrap:anywhere}
 th:first-child,td:first-child,td.name-cell{min-width:0}
 .tree-hidden{display:table-row!important}
 .charts{grid-template-columns:1fr 1fr}
-.chart-panel{break-inside:avoid}
+.chart-panel{break-inside:avoid;
+  page-break-inside:avoid}
 .chart-panel svg{height:70mm;
   min-height:0;
   border-color:#888}
@@ -609,7 +616,10 @@ function nodeRow(item, selected, depth, hidden=false, compareItems) {
   decorateSelection(row,node.node_id);
   const name=make("td",{class:"name-cell"});
   const controls=make("div",{class:"node-controls",style:`padding-left:${Math.min(depth,12)*1.1}rem`});
-  const children=(item.children||[]).filter(child=>nodeCalls(child.node_id,selected,true).length>0).sort(compareItems);
+  const children=(item.children||[])
+    .map(child=>nodeById.get(child.node_id))
+    .filter(child=>child&&nodeCalls(child.node.node_id,selected,true).length>0)
+    .sort(compareItems);
   if(children.length){
     const open=!state.collapsed.has(node.node_id);
     const toggle=make("button",{type:"button",class:"tree-toggle","aria-expanded":String(open),"aria-label":`${open?"Collapse":"Expand"} ${nodeLabel(item)}`},open?"▾":"▸");
@@ -643,7 +653,7 @@ function nodeRow(item, selected, depth, hidden=false, compareItems) {
     const treeValue=selectedMetric(descendants); const treeShare=make("td"); treeShare.appendChild(shareNode(reportTotal!==null&&reportTotal>0&&treeValue!==null?treeValue/reportTotal:null)); totalRow.appendChild(treeShare); result.push(totalRow);
   }
   const hideChildren=hidden||state.collapsed.has(node.node_id);
-  for(const child of children) result.push(...nodeRow(nodeById.get(child.node_id),selected,depth+1,hideChildren,compareItems));
+  for(const child of children) result.push(...nodeRow(child,selected,depth+1,hideChildren,compareItems));
   return result;
 }
 function renderTable(selected) {

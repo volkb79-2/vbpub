@@ -218,8 +218,33 @@ the originals in the file. `--no-labels` removes free-text topics before
 serialization when the file must not contain them. Labeled HTML files may
 contain sensitive sidecar descriptions; keep them local and protect the
 mode-0600 output. Print CSS includes collapsed table rows and works with A4 or
-Letter landscape; long tables continue across pages. PDF export is tracked
-separately in [NL-51](../nyxloom-trove/backlog/NL-51-complete-usage-report-renderers-joined-charts-offline-html-pdf.md).
+Letter landscape; long tables continue across pages.
+
+### PDF export
+
+PDF output uses the same `usage-report-v1` data and HTML renderer. It sends the
+generated page in memory to the managed PWMCP browser through `BrowserLease`,
+waits for the report-ready marker, selects print media, and asks Chromium for a
+PDF. The output has selectable vector text and crisp SVG charts. A4 landscape
+pagination repeats the table header, keeps each row together where it fits, and
+flows the complete hierarchy across as many pages as needed.
+
+Install the optional `report` extra from a wheelhouse containing Nyxloom, the
+matching PWMCP client wheel, and its declared dependencies. The PWMCP client is
+distributed in its verified GitHub release bundle; use its contract so the
+client's Playwright version matches the managed browser service.
+
+```sh
+python -m pip install --no-index --find-links ./wheelhouse 'nyxloom[report]'
+nyxloom usage report --since 24h --format pdf --out usage.pdf
+nyxloom usage report --since 7d --format pdf --no-labels --out anonymous.pdf
+```
+
+PDF generation requires the managed PWMCP service. If the optional client or
+service is unavailable, Nyxloom reports the remedy and writes no output file.
+PDF files use mode `0600`. Labeled reports are sensitive metadata artifacts;
+`--no-labels` removes free-text labels before the browser receives the page.
+PDF generation sends the generated HTML in memory, without a local file URL.
 
 The shipped price table is retrieved 2026-10-28 from
 [Anthropic's official pricing documentation](https://platform.claude.com/docs/en/about-claude/pricing).
@@ -295,7 +320,7 @@ catalog for the installed version.
 | `nyxloom onboard --maturity` | `empty`, `partial`, `mature` |
 | `nyxloom onboard --docs` | `present`, `absent` |
 | `nyxloom onboard --mode` | `derive-from-code`, `code-good-docs-absent`, `greenfield-define-it` |
-| `nyxloom usage report --format` | `table`, `json`, `csv`, `html` |
+| `nyxloom usage report --format` | `table`, `json`, `csv`, `html`, `pdf` |
 | `nyxloom usage charts --group-by` | `agent`, `topic`, `model`, `effort`, `session` |
 | `nyxloom usage report --sort` | `cost`, `start`, `dur`, `calls`, `peak`, `out` |
 | `nyxloom usage report --since` relative duration suffixes | `s`, `m`, `h`, `d`, `w` |

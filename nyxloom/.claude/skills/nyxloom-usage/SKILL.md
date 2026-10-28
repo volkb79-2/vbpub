@@ -16,6 +16,7 @@ for the measurement rules. The accepted grammar is in the
 ```sh
 nyxloom usage report --since 24h
 nyxloom usage report --since 7d --format json --no-labels
+nyxloom usage report --since 24h --format pdf --no-labels --out usage.pdf
 nyxloom usage prices --fit --format json
 nyxloom usage windows --since 7d --format json
 nyxloom usage anchor list
@@ -67,3 +68,5 @@ The only persistent usage data are explicit operator anchors in the private
 Other devices and shared account surfaces may consume the same allowance, so a
 local-only calibration is a lower bound. Use `--no-labels` when topic and
 session labels are not needed; reports with labels are sensitive local files.
+PDF output needs the optional `nyxloom[report]` extra and the matching managed
+PWMCP browser client. See the [PDF export setup](../../../docs/CONSUMERS.md#pdf-export).

@@ -299,7 +299,10 @@ def test_html_is_single_file_offline_and_has_landscape_print_layout():
     assert "Content-Security-Policy" in output
     assert "connect-src 'none'" in output
     assert "@media print" in output
-    assert "@page{size:landscape" in output
+    assert "@page{size:A4 landscape" in output
+    assert "display:table-header-group" in output
+    assert "page-break-inside:avoid" in output
+    assert ".tree-hidden{display:table-row!important}" in output
     assert re.search(r"https?://", output, re.IGNORECASE) is None
     assert re.search(r"\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|eval)\s*(?:\(|\b)", markup) is None
     assert re.search(r"\s(?:src|href)\s*=", markup, re.IGNORECASE) is None

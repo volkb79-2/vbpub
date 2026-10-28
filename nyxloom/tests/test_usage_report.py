@@ -1009,7 +1009,7 @@ def test_primary_cli_usage_spelling_has_help_and_required_since_error(capsys):
     help_output = capsys.readouterr().out
     assert "nyxloom usage report" in help_output
     assert "Exclusive ISO-8601 end timestamp" in help_output
-    assert "--format {table,json,csv,html}" in help_output
+    assert "--format {table,json,csv,html,pdf}" in help_output
 
     assert cli.run(argv=["usage", "report"]) == 2
     assert "required: --since" in capsys.readouterr().err
@@ -1033,6 +1033,26 @@ def test_usage_html_rejects_missing_output_before_calling_handler(monkeypatch, c
     assert status == 2
     assert not called
     assert "--format html requires --out FILE" in capsys.readouterr().err
+
+
+def test_usage_pdf_rejects_missing_output_before_calling_handler(monkeypatch, capsys):
+    from nyxloom import cli
+
+    called = False
+
+    def forbidden(_args):
+        nonlocal called
+        called = True
+        return 0
+
+    monkeypatch.setattr(cli, "cmd_usage_report", forbidden)
+    status = primary_cli().run(
+        argv=["usage", "report", "--since", "24h", "--format", "pdf"],
+    )
+
+    assert status == 2
+    assert not called
+    assert "--format pdf requires --out FILE" in capsys.readouterr().err
 
 
 def test_cost_state_non_finite_integer_metadata_is_counted_as_malformed(tmp_path):

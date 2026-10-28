@@ -286,8 +286,33 @@ Labeled reports are sensitive local files and are written privately. The
 in-page anonymize control changes visible labels only; `--no-labels` removes
 topic text before serialization. The footer keeps API-equivalent USD,
 experimental weighted units, and local activity shares separate from billed
-cost and account-limit usage. PDF export and the optional TUI remain separate
-renderer work in [NL-51](../nyxloom-trove/backlog/NL-51-complete-usage-report-renderers-joined-charts-offline-html-pdf.md).
+cost and account-limit usage.
+
+## PDF usage report
+
+The PDF feasibility spike confirmed that PWMCP's existing Python `BrowserLease`
+can open a page, render supplied HTML, wait for a readiness signal, apply print
+media, and return `page.pdf()` bytes. A synthetic 120-row table produced a
+five-page PDF. The implementation passes the generated HTML with
+`page.set_content`; it needs no file URL or PWMCP server/MCP change. The
+optional `nyxloom[report]` extra uses the already-operated browser service, so
+Nyxloom's default install gains no browser or PDF dependency.
+
+This route was selected over ReportLab or Matplotlib because those would add a
+separate layout and chart renderer, while the existing HTML already supplies
+the report table and SVG charts. It was selected over browser-print instructions
+alone because the CLI needs to produce a named, reproducible PDF itself. The
+spike measured a valid five-page, searchable PDF from a synthetic 120-row table;
+the managed browser and the released PWMCP client contract supply the runtime.
+
+The PDF renderer consumes the same frozen report and HTML, preserving vector
+text and SVG charts. Pagination is flow-based: A4 landscape, repeating table
+headers, row-preserving breaks, and every tree row visible. Long reports use as
+many pages as required; the layout does not assume a fixed page count. Labeled
+HTML is sent to the managed browser in memory and may contain sensitive sidecar
+descriptions, so `--no-labels` strips those values before serialization when
+they are not needed. The output remains a mode-0600 local file. The consumer
+setup and error remedies are documented in [PDF export](CONSUMERS.md#pdf-export).
 
 The public `nyxloom` grammar is registered once in `cli_registry.py`. Its
 generated surface inventory and semantic decisions are maintained through

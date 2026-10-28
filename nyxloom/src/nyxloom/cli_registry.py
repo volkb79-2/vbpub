@@ -301,9 +301,9 @@ def _usage_report_guard(args: Any) -> None:
     depth = getattr(args, "depth", None)
     if depth is not None and depth < 0:
         raise CliFailure("--depth must be zero or greater", exit_code=2, show_help=True)
-    if report_format == "html" and not getattr(args, "out", None):
+    if report_format in {"html", "pdf"} and not getattr(args, "out", None):
         raise CliFailure(
-            "--format html requires --out FILE",
+            f"--format {report_format} requires --out FILE",
             exit_code=2,
             show_help=True,
         )
@@ -649,8 +649,8 @@ def _usage_report_group() -> VerbSpec:
                 _opt("--until", "Exclusive ISO-8601 end timestamp; omitted means the invocation time", default=None),
                 _opt("--project", "Select sessions with this recorded cwd or unique cwd basename", default=None),
                 _opt("--session", "Select one exact Claude Code session id", default=None),
-                _opt("--format", "Report encoding", dest="usage_format", choices=("table", "json", "csv", "html"), default="table"),
-                _opt("--out", "Write a private report file; required for HTML", metavar="FILE", default=None),
+                _opt("--format", "Report encoding", dest="usage_format", choices=("table", "json", "csv", "html", "pdf"), default="table"),
+                _opt("--out", "Write a private report file; required for HTML and PDF", metavar="FILE", default=None),
                 _opt("--depth", "Maximum visible tree depth (root is depth 0)", type=int, default=None),
                 _opt("--min-share", "Fold smaller subtrees below this raw-token percentage", type=_usage_share, default=0.0),
                 _opt("--flat", "Rank visible nodes as a flat list (cannot combine with --depth)", action="store_true"),
@@ -665,6 +665,7 @@ def _usage_report_group() -> VerbSpec:
                 "nyxloom usage report --since 24h",
                 "nyxloom usage report --since 2026-10-27T00:00:00Z --format json --out usage.json",
                 "nyxloom usage report --since 24h --format html --out usage.html",
+                "nyxloom usage report --since 24h --format pdf --no-labels --out usage.pdf",
                 "nyxloom usage report --since 24h --format json --top 12 --group-by agent",
                 "nyxloom usage report --since 24h --project /path/to/project --flat --sort calls",
             ),

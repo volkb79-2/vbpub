@@ -9,12 +9,16 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Add dated exact-model Anthropic API-equivalent USD estimates, configurable experimental weights, guarded `cost-state` fit diagnostics, observed-reset windows, and private versioned operator usage anchors with bounded calibration.
 - Add the `usage-charts-v1` chart-data extension and `nyxloom usage charts`: self-cost-partitioned time buckets, top-N plus exact `other`, joined context data, packed swim lanes, deterministic IDs/colors, and peak/event-preserving context decimation.
 - Add `nyxloom usage report --format html --out FILE` as a private offline single-file report with a hierarchical table, joined SVG diagrams, exact live filtering, synchronized isolation, keyboard controls, safe embedded JSON, and A4 landscape print CSS.
+- Add `nyxloom usage report --format pdf --out FILE` through the optional PWMCP `BrowserLease` client, with repeated table headers, unbounded page flow, row-preserving breaks, and private PDF output.
 
 ### Changed
 - Reconcile usage reporting with the plan review: file-local stream deduplication and exact copied-prefix identity, explicit conflict handling, structural compaction events, shared lineage resolution, deterministic IDs/order, and timestamp-based clipping.
 - Keep successful deduplication counts visible without mislabeling a complete merged ledger as partial coverage.
 - Keep raw tokens, local weighted shares, API-equivalent USD and subscription-limit percentages distinct; unknown prices and unidentified account coverage remain unknown.
 - Raise the `cli-extended` runtime floor to 0.4.0 for Nyxloom's generated semantic CLI review workflow.
+
+### Fixed
+- Resolve child rows to the shared tree nodes before sorting the HTML hierarchy, so reports with multiple sibling agents render and print completely.
 
 <!-- cmru: release history -->
 
