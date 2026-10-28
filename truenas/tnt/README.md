@@ -148,6 +148,24 @@ SMB/NFS shares can be listed, inspected, created from a v27 JSON payload, and de
 creation checks the path on the TrueNAS host and refuses missing paths and boot-pool paths; deleting a share removes
 only its share configuration, never the data. SMB output includes the share ACL. See the [share adoption examples](docs/CONSUMERS.md#shares).
 
+System actions are under `System > Update`, `Reboot`, `Shutdown`, and `General Settings` (configuration export).
+Update check shows the current train/version, the exact available target train/version, and a changelog summary. Apply
+uses the shown version as typed confirmation and leaves reboot separate. Reboot and shutdown show active jobs, running
+VMs and containers, and the active SMB-session count; any running job blocks apply unless `--force-with-jobs` is
+explicit. Every power/update action still requires typing the host name or target version shown in its plan.
+
+```sh
+tnt system update check --profile lab --json
+tnt system update apply TrueNAS-27.0.0-RC.2 --profile lab --allow-write --confirm TrueNAS-27.0.0-RC.2
+tnt system reboot --profile lab --delay 60 --allow-write --confirm HOST_NAME_FROM_PLAN
+tnt system shutdown --profile lab --allow-write --confirm HOST_NAME_FROM_PLAN
+tnt system config-export /home/me/truenas-config.tar --profile lab --allow-write
+```
+
+Configuration export writes a new mode-0600 tar file, includes the TrueNAS secret seed, and refuses overwrite. Store
+the file as a credential. See the [system action decisions](docs/DESIGN.md#system-actions),
+[copyable system commands](docs/CONSUMERS.md#system-actions), and [verified v27 methods](docs/API-METHODS-V27.md#system-actions).
+
 Data Protection includes periodic snapshot task create/list/show/run/enable/disable/delete, plus replication and
 cloud-sync task list/show/run/enable/disable. Run plans show replication source and target and require the typed task
 name; cloud-sync credential fields are always masked. Snapshot task creation validates its dataset, cron schedule,

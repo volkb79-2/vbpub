@@ -12,7 +12,7 @@ import json
 import uuid
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import Any, Callable, Mapping
 
 from .errors import Refused
 from .policy import (ALWAYS_REFUSED, BOOT_POOL, EXPLICIT_WRITE_ALLOWLIST, Caller, SafetyState, compute_state,
@@ -85,6 +85,8 @@ class Action:
     calls: tuple[RpcCall, ...]
     probe: tuple[RpcCall, ...] = ()  # read-only calls whose result must not change between plan and apply
     confirm_target: str | None = None  # the name the operator types for a destructive action
+    force_with_jobs: bool = False
+    system_preflight: tuple[Any, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -101,6 +103,17 @@ class Plan:
         lines += [f"  {i}. {c.render()}" for i, c in enumerate(self.action.calls, 1)]
         if self.action.confirm_target:
             lines.append(f"Destructive: type {self.action.confirm_target!r} to confirm.")
+        if self.action.system_preflight:
+            host, jobs, vms, containers, sessions, full_admin = self.action.system_preflight
+            lines.append(f"System preflight for {host}:")
+            if full_admin:
+                lines.append("  FULL_ADMIN verified; the job list covers all sessions.")
+            lines.append(f"  {len(jobs)} running job(s): " + (", ".join(f"{ident} {method}" for ident, method in jobs) or "none"))
+            lines.append(f"  {len(vms)} running VM(s): " + (", ".join(vms) or "none"))
+            lines.append(f"  {len(containers)} running container(s): " + (", ".join(containers) or "none"))
+            lines.append(f"  {sessions} active SMB sessions")
+            if self.action.force_with_jobs:
+                lines.append("  Force with running jobs: requested; typed confirmation is still required.")
         lines.append(f"State fingerprint: {self.fingerprint[:12]}")
         return "\n".join(lines)
 
@@ -120,6 +133,10 @@ def validate_action(action: Action) -> None:
         raise Refused("empty-probe", f"{action.id} is destructive but has no probe: the drift check would be vacuous")
     if action.kind is Kind.DESTRUCTIVE and not (action.confirm_target and action.confirm_target.strip()):
         raise Refused("empty-confirm", f"{action.id} is destructive but names no confirmation target to type")
+    if not isinstance(action.force_with_jobs, bool) or not isinstance(action.system_preflight, tuple):
+        raise Refused("action-policy", "system action safety metadata is malformed")
+    if action.force_with_jobs and not action.system_preflight:
+        raise Refused("action-policy", "force_with_jobs is available only for a preflighted system action")
     if action.kind is not Kind.DESTRUCTIVE:
         for call in action.calls:
             if is_destructive_method(call.method):
@@ -148,7 +165,8 @@ def fingerprint_of(rpc: GuardedRpc, action: Action, nonce: str) -> str:
     from .workflows import validate_plan_preconditions
     validate_plan_preconditions(action, probe_results)
     material = {
-        "id": action.id, "kind": str(action.kind), "confirm": action.confirm_target,
+        "id": action.id, "kind": str(action.kind), "title": action.title, "confirm": action.confirm_target,
+        "force_with_jobs": action.force_with_jobs, "system_preflight": action.system_preflight,
         "session": rpc.session_id, "nonce": nonce,
         "calls": [[c.method, _fingerprint_value(c.params, nonce), c.job] for c in action.calls],
         "probe": [[c.method, _fingerprint_value(c.params, nonce), _fingerprint_value(result, nonce)]
@@ -168,7 +186,8 @@ def make_plan(action: Action, rpc: GuardedRpc) -> Plan:
     return Plan(action, fingerprint, rpc.session_id, nonce)
 
 
-def apply_plan(plan: Plan, rpc: GuardedRpc, *, allow_write: bool, typed_confirmation: str | None = None) -> list[Any]:
+def apply_plan(plan: Plan, rpc: GuardedRpc, *, allow_write: bool, typed_confirmation: str | None = None,
+               job_progress: Callable[[Mapping[str, Any]], None] | None = None) -> list[Any]:
     if not isinstance(rpc, GuardedRpc):
         raise Refused("unguarded", "plans run only through a GuardedRpc session")
     action = plan.action
@@ -190,7 +209,11 @@ def apply_plan(plan: Plan, rpc: GuardedRpc, *, allow_write: bool, typed_confirma
     if fingerprint_of(rpc, action, plan.nonce) != plan.fingerprint:
         raise Refused("state-drift", f"the host or the action changed since {action.id} was planned; plan again")
     rpc.spend(plan.nonce, plan.fingerprint)
+    def execute(call: RpcCall) -> Any:
+        if call.job:
+            return rpc.call(call.method, *call.params, job=True, job_callback=job_progress)
+        return rpc.call(call.method, *call.params)
     if action.kind is Kind.READ:
-        return [rpc.call(c.method, *c.params, job=True) if c.job else rpc.call(c.method, *c.params) for c in action.calls]
+        return [execute(c) for c in action.calls]
     with rpc.authorized([c.key() for c in action.calls], state):
-        return [rpc.call(c.method, *c.params, job=True) if c.job else rpc.call(c.method, *c.params) for c in action.calls]
+        return [execute(c) for c in action.calls]

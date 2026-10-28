@@ -67,7 +67,9 @@ created for that check.
   This check is authored only and has not been run.
 - SSH hand-off: use a host profile with a configured known_hosts file and verify both interactive and one-command
   sessions return to the TUI/CLI. Never bypass host-key verification.
-- System actions require the additional explicit gate `TNT_LIVE_ALLOW_SYSTEM=1`. Only on a maintenance host with an
-  approved outage window, inspect the running-job/VM/container/SMB-session preflight, then separately verify reboot,
-  shutdown, and update check/apply/reconnect. Without that environment variable, live system-action checks must refuse
-  before issuing any action call. Config export should be written to a new local file and verified as mode `0600`.
+- System actions have a separate manual acceptance gate. Before any live reboot, shutdown, or update apply command,
+  require the operator to set `TNT_LIVE_ALLOW_SYSTEM=1` in that shell and make sure a maintenance window is approved;
+  a suggested guard is `test "${TNT_LIVE_ALLOW_SYSTEM:-}" = 1 || exit 1`. Then inspect the running-job, VM, container,
+  and SMB session preflight and separately verify reboot, shutdown, and update check/apply/reconnect. This environment variable
+  gates these written live-check instructions; it is not a runtime CLI option. Never perform these checks as part of
+  this implementation task. Config export should be written to a new local file and verified as mode `0600`.

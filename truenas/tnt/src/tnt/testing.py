@@ -11,12 +11,17 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import io
 import json
 import os
+import tarfile
 import threading
+import time
 from typing import Any, Callable
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlsplit
 
+from websockets.datastructures import Headers
+from websockets.http11 import Response
 from websockets.sync.server import ServerConnection, serve
 
 from .adapters.v27 import V27
@@ -25,6 +30,17 @@ from .profile import Profile, Secret
 GIB = 1024 ** 3
 CALL_ERROR = -32001  # truenas_api_client.JSONRPCError.TRUENAS_CALL_ERROR
 FAKE_KEY = "1-fakefakefakefakefakefakefakefake"
+
+
+def _fake_config_tar() -> bytes:
+    output = io.BytesIO()
+    with tarfile.open(fileobj=output, mode="w") as archive:
+        body = b"synthetic TrueNAS configuration export"
+        info = tarfile.TarInfo("config.db")
+        info.size = len(body)
+        info.mode = 0o600
+        archive.addfile(info, io.BytesIO(body))
+    return output.getvalue()
 
 
 def standard_disks() -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
@@ -51,6 +67,19 @@ class FakeServer:
                  methods: list[str] | None = None, fail: dict[str, str] | None = None, details_as_flat_list: bool = False):
         std_disks, std_parts = standard_disks()
         self.version, self.username, self.api_key, self.password = version, username, api_key, password
+        self.system_hostname = "test"
+        self.system_state = "READY"
+        self._system_state_checks = 0
+        self.active_jobs: list[dict[str, Any]] = []
+        self.active_smb_sessions = 0
+        self.system_roles = ["FULL_ADMIN"]
+        self.update_train = "TrueNAS-SCALE-27-STABLE"
+        self.update_target_train = self.update_train
+        self.update_new_version = "TrueNAS-27.0.0-RC.2"
+        self.update_release_notes = "This maintenance release adds synthetic management coverage.\n\nAdditional details."
+        self._download_tokens: dict[int, str] = {}
+        self._used_downloads: set[int] = set()
+        self.config_backup_bytes = _fake_config_tar()
         self.disks = std_disks if disks is None else disks
         self.parts = std_parts if parts is None else parts
         self.methods = sorted(V27.supported_methods()) if methods is None else methods
@@ -145,7 +174,7 @@ class FakeServer:
 
     # -- lifecycle ----------------------------------------------------------------------------------------
     def start(self) -> "FakeServer":
-        self._server = serve(self._handle, "127.0.0.1", 0)
+        self._server = serve(self._handle, "127.0.0.1", 0, process_request=self._process_request)
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
         return self
@@ -205,8 +234,14 @@ class FakeServer:
                     result = self._dispatch(method, params)
                     if method in {"container.create", "container.stop", "container.delete", "vm.stop", "vm.restart",
                                   "pool.snapshottask.run", "replication.run", "cloudsync.sync",
-                                  "app.start", "app.stop", "app.delete"}:
+                                  "app.start", "app.stop", "app.delete", "system.reboot", "system.shutdown", "update.run"}:
                         self._send_job(ws, msg["id"], result)
+                        if method == "system.reboot":
+                            ws.close(code=1012, reason="system reboot")
+                            break
+                        if method == "system.shutdown":
+                            ws.close(code=1012, reason="system shutdown")
+                            break
                         continue
                 reply: dict[str, Any] = {"jsonrpc": "2.0", "id": msg["id"], "result": result}
             except _RpcError as exc:
@@ -221,14 +256,44 @@ class FakeServer:
     def _send_job(self, ws: ServerConnection, request_id: Any, result: Any) -> None:
         job_id = str(self._next_job_id)
         self._next_job_id += 1
+        method = next((request["method"] for request in reversed(self.requests)
+                       if request.get("id") == request_id), "unknown")
         ws.send(json.dumps({"jsonrpc": "2.0", "method": "collection_update", "params": {
             "collection": "core.get_jobs", "msg": "added", "id": job_id,
-            "fields": {"id": job_id, "state": "RUNNING", "message_ids": [request_id]},
+            "fields": {"id": job_id, "method": method, "state": "RUNNING",
+                       "progress": {"percent": 25, "description": "Working"}, "message_ids": [request_id]},
         }}))
+        time.sleep(0.01)
+        for percent in (25, 75):
+            ws.send(json.dumps({"jsonrpc": "2.0", "method": "collection_update", "params": {
+                "collection": "core.get_jobs", "msg": "changed", "id": job_id,
+                "fields": {"id": job_id, "method": method, "state": "RUNNING",
+                           "progress": {"percent": percent, "description": "Working"}, "message_ids": []},
+            }}))
+            time.sleep(0.01)
         ws.send(json.dumps({"jsonrpc": "2.0", "method": "collection_update", "params": {
             "collection": "core.get_jobs", "msg": "changed", "id": job_id,
-            "fields": {"id": job_id, "state": "SUCCESS", "result": result, "message_ids": []},
+            "fields": {"id": job_id, "method": method, "state": "SUCCESS", "result": result,
+                       "progress": {"percent": 100, "description": "Complete"}, "message_ids": []},
         }}))
+
+    def _process_request(self, connection: ServerConnection, request: Any) -> Response | None:
+        parsed = urlsplit(request.path)
+        if not parsed.path.startswith("/_download/"):
+            return None
+        try:
+            job_id = int(parsed.path.rsplit("/", 1)[-1])
+        except ValueError:
+            return Response(404, "Not Found", Headers([("Content-Length", "0")]), b"")
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        token = query.get("auth_token", [None])
+        if (job_id not in self._download_tokens or token != [self._download_tokens[job_id]]
+                or job_id in self._used_downloads):
+            return Response(404, "Not Found", Headers([("Content-Length", "0")]), b"")
+        self._used_downloads.add(job_id)
+        body = self.config_backup_bytes
+        return Response(200, "OK", Headers([("Content-Type", "application/octet-stream"),
+                                             ("Content-Length", str(len(body)))]), body)
 
     def _login(self, params: list[Any], authed: bool) -> tuple[Any, bool]:
         p = params[0] if params else {}
@@ -298,7 +363,17 @@ class FakeServer:
     def _dispatch(self, method: str, params: list[Any]) -> Any:
         handlers: dict[str, Callable[[list[Any]], Any]] = {
             "system.version": lambda p: self.version,
-            "system.info": lambda p: {"version": self.version, "hostname": "fake"},
+            "system.info": lambda p: {"version": self.version, "hostname": self.system_hostname},
+            "system.state": self._system_state,
+            "system.boot_id": lambda p: "fake-boot-id",
+            "system.reboot": self._system_reboot,
+            "system.shutdown": self._system_shutdown,
+            "update.status": self._update_status,
+            "update.available_versions": self._update_available_versions,
+            "update.run": lambda p: True,
+            "core.get_jobs": self._get_jobs,
+            "core.download": self._core_download,
+            "smb.status": lambda p: self.active_smb_sessions,
             "core.get_methods": lambda p: {m: {} for m in self.methods},
             "interface.query": lambda p: self.interfaces,
             "route.system_routes": lambda p: self.routes,
@@ -314,7 +389,8 @@ class FakeServer:
             "audit.query": self._audit_query,
             "core.subscribe": lambda p: self._subscribe(p),
             "core.unsubscribe": lambda p: True,
-            "auth.me": lambda p: {"pw_name": self.username, "pw_uid": 1000, "pw_gid": 1},
+            "auth.me": lambda p: {"pw_name": self.username, "pw_uid": 1000, "pw_gid": 1,
+                                   "privilege": {"roles": list(self.system_roles)}},
             "disk.query": lambda p: self.disks,
             "disk.details": self._details,
             "pool.query": lambda p: self.pools,
@@ -444,7 +520,70 @@ class FakeServer:
 
     def _query(self, rows: dict[Any, dict[str, Any]], params: list[Any], *, username_key: str | None = None) -> list[dict[str, Any]]:
         filters = params[0] if params else []
-        return [row for row in rows.values() if self._matches(row, filters, username_key=username_key)]
+        result = [row for row in rows.values() if self._matches(row, filters, username_key=username_key)]
+        options = params[1] if len(params) > 1 and isinstance(params[1], dict) else {}
+        offset = options.get("offset", 0)
+        limit = options.get("limit")
+        if isinstance(offset, int) and not isinstance(offset, bool) and offset >= 0:
+            result = result[offset:]
+        if isinstance(limit, int) and not isinstance(limit, bool) and limit >= 0:
+            result = result[:limit]
+        selected = options.get("select")
+        if isinstance(selected, list) and all(isinstance(field, str) for field in selected):
+            projected = []
+            for row in result:
+                output: dict[str, Any] = {}
+                for field in selected:
+                    value: Any = row
+                    for part in field.split("."):
+                        value = value.get(part) if isinstance(value, dict) else None
+                    output[field.split(".")[0]] = {**output.get(field.split(".")[0], {}), field.split(".")[-1]: value} \
+                        if "." in field else value
+                projected.append(output)
+            return projected
+        return result
+
+    def _system_state(self, params: list[Any]) -> str:
+        if self.system_state == "BOOTING":
+            self._system_state_checks += 1
+            if self._system_state_checks > 1:
+                self.system_state = "READY"
+        return self.system_state
+
+    def _system_reboot(self, params: list[Any]) -> bool:
+        self.system_state = "BOOTING"
+        self._system_state_checks = 0
+        return True
+
+    def _system_shutdown(self, params: list[Any]) -> bool:
+        self.system_state = "SHUTTING_DOWN"
+        return True
+
+    def _update_status(self, params: list[Any]) -> dict[str, Any]:
+        new = None if self.update_new_version is None else {
+            "version": self.update_new_version, "release_notes": self.update_release_notes,
+            "release_notes_url": "https://updates.example.invalid/release-notes",
+            "manifest": {"changelog": "Synthetic changelog summary."}}
+        return {"code": "NORMAL", "status": {
+            "current_version": {"train": self.update_train, "profile": "SCALE", "matches_profile": True},
+            "new_version": new,
+        }, "error": None}
+
+    def _update_available_versions(self, params: list[Any]) -> list[dict[str, Any]]:
+        status = self._update_status([])["status"]["new_version"]
+        return [{"train": self.update_target_train, "version": status}]
+
+    def _get_jobs(self, params: list[Any]) -> list[dict[str, Any]]:
+        return self._query({row.get("id"): row for row in self.active_jobs}, params)
+
+    def _core_download(self, params: list[Any]) -> list[Any]:
+        if len(params) != 4 or params[0] != "config.save":
+            raise _RpcError(CALL_ERROR, "unsupported fake download")
+        job_id = self._next_job_id
+        self._next_job_id += 1
+        token = f"synthetic-download-token-{job_id}"
+        self._download_tokens[job_id] = token
+        return [job_id, f"/_download/{job_id}?auth_token={token}"]
 
     def _app_state(self, params: list[Any], state: str) -> None:
         app_id = params[0] if params else ""

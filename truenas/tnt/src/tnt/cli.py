@@ -146,7 +146,7 @@ def _tui(args: Any, runtime: CliRuntime, opener: SessionOpener) -> int:
         raise CliFailure("textual is not installed; run: pip install 'tnt[tui]'", exit_code=2) from None
     session = opener(_profile(args), insecure_ack=args.insecure, allow_write=args.allow_write)
     try:
-        TntApp(session).run()
+        TntApp(session, session_opener=opener, insecure_ack=args.insecure).run()
     finally:
         session.close()
     return 0
@@ -194,6 +194,70 @@ def _workflow_action(args: Any, runtime: CliRuntime, opener: SessionOpener, acti
     payload = {"plan": plan.render(), "result": safe_result}
     _emit(runtime, payload, f"{plan.render()}\nResult: {json.dumps(safe_result, indent=2, sort_keys=True, default=str)}")
     return 0
+
+
+def _system_action(args: Any, runtime: CliRuntime, opener: SessionOpener, action_factory: Any) -> int:
+    session = opener(_profile(args), insecure_ack=args.insecure, allow_write=args.allow_write)
+    try:
+        action = action_factory(session)
+        plan = make_plan(action, session.rpc)
+        if args.dry_run:
+            _emit(runtime, {"plan": plan.render(), "applied": False}, plan.render())
+            return 0
+        if not args.allow_write:
+            raise CliFailure(f"plan was not applied; pass --allow-write to apply it\n{plan.render()}")
+        methods = {call.method for call in action.calls}
+
+        def progress(job: Any) -> None:
+            detail = job.get("progress") if isinstance(job, dict) else None
+            percent = detail.get("percent") if isinstance(detail, dict) else None
+            if isinstance(percent, (int, float)) and not isinstance(percent, bool):
+                print(f"\rUpdate job progress: {percent:.0f}%", file=sys.stderr, end="", flush=True)
+
+        result = apply_plan(plan, session.rpc, allow_write=True, typed_confirmation=args.confirm,
+                            job_progress=progress if "update.run" in methods else None)
+        if "update.run" in methods:
+            print(file=sys.stderr, flush=True)
+        payload = {"plan": plan.render(), "result": result, "completed": True}
+        text = f"{plan.render()}\nSystem action completed."
+        if "system.reboot" in methods:
+            text += " The host is rebooting; the CLI session will close."
+        elif "system.shutdown" in methods:
+            text += " The host is shutting down."
+        _emit(runtime, payload, text)
+        return 0
+    finally:
+        session.close()
+
+
+def _system_config_export(args: Any, runtime: CliRuntime, opener: SessionOpener) -> int:
+    from .config_export import download_config_export
+
+    session = opener(_profile(args), insecure_ack=args.insecure, allow_write=args.allow_write)
+    result = None
+    download_url = None
+    try:
+        action = session.workflows.config_export_action(args.path, root_authorized_keys=args.include_root_authorized_keys)
+        plan = make_plan(action, session.rpc)
+        if args.dry_run:
+            _emit(runtime, {"plan": plan.render(), "applied": False}, plan.render())
+            return 0
+        if not args.allow_write:
+            raise CliFailure(f"plan was not applied; pass --allow-write to apply it\n{plan.render()}")
+        result = apply_plan(plan, session.rpc, allow_write=True)
+        returned = result[0] if isinstance(result, list) and result else None
+        if not isinstance(returned, (list, tuple)) or len(returned) != 2:
+            raise CliFailure("core.download returned an invalid config export result; the URL was not displayed")
+        job_id, download_url = returned
+        saved_to = download_config_export(session.profile, session.insecure_tls, job_id, download_url, args.path)
+        payload = {"plan": plan.render(), "saved_to": saved_to, "mode": "0600", "includes_secret_seed": True}
+        _emit(runtime, payload, f"{plan.render()}\nConfiguration tar saved to {saved_to} with mode 0600. "
+                               "It contains the TrueNAS secret seed; store it securely.")
+        return 0
+    finally:
+        result = None
+        download_url = None
+        session.close()
 
 
 def _api_key_create(args: Any, runtime: CliRuntime, opener: SessionOpener) -> int:
@@ -428,6 +492,44 @@ def _app_verbs(ident: CliIdentity, opener: SessionOpener) -> list[VerbSpec]:
                  handler=lambda args, runtime: _workflow_action(args, runtime, opener,
                      lambda session: session.workflows.app_delete_action(args.app_id,
                                                                           delete_data_volumes=args.delete_data_volumes))),
+    ]
+
+
+def _system_verbs(ident: CliIdentity, opener: SessionOpener) -> list[VerbSpec]:
+    force_jobs = _flag(("--force-with-jobs",), "Allow a system action to proceed with listed running jobs; typed confirmation remains required.", "SAFETY")
+    delay = _value(("--delay",), "Delay before reboot or shutdown, in seconds (0–86400).", "SECONDS", "WORKFLOW", type=int)
+    update_registry = CliRegistry(ident, prog="tnt system update", description="Check and apply v27 system updates.",
+                                  unexpected_exceptions="report", expected_exceptions=(TntError,))
+    update_registry.register(VerbSpec("check", None, "Check for an update and show train, versions, and release notes.",
+                                      group=VerbGroup.EXPLORATION.value, options=HOST_OPTIONS,
+                                      handler=lambda args, runtime: _workflow_read(
+                                          args, runtime, opener, lambda session: session.workflows.update_check())))
+    update_registry.register(VerbSpec(
+        "apply", None, "Apply the exact currently available update as a destructive job; reboot is separate.",
+        group=VerbGroup.MODIFICATION.value,
+        arguments=(ArgumentSpec("version", "Exact available target version; also the typed confirmation.", metavar="VERSION"),),
+        options=HOST_OPTIONS + ACTION_OPTIONS + (force_jobs,),
+        handler=lambda args, runtime: _system_action(
+            args, runtime, opener,
+            lambda session: session.workflows.update_apply_action(args.version, force_with_jobs=args.force_with_jobs))))
+    return [
+        VerbSpec("update", None, "Check and apply a v27 system update.", group=VerbGroup.EXPLORATION.value,
+                 delegate=update_registry.build()),
+        *[VerbSpec(
+            operation, None, f"{operation.title()} the host as a destructive v27 system job.",
+            group=VerbGroup.MODIFICATION.value,
+            options=HOST_OPTIONS + ACTION_OPTIONS + (delay, force_jobs),
+            handler=lambda args, runtime, op=operation: _system_action(
+                args, runtime, opener,
+                lambda session: session.workflows.system_power_action(
+                    op, delay=args.delay, force_with_jobs=args.force_with_jobs)))
+          for operation in ("reboot", "shutdown")],
+        VerbSpec("config-export", None, "Download a configuration tar to a new local mode-0600 file.",
+                 group=VerbGroup.MODIFICATION.value,
+                 arguments=(ArgumentSpec("path", "New absolute local .tar destination.", metavar="PATH"),),
+                 options=HOST_OPTIONS + ACTION_OPTIONS + (_flag(
+                     ("--include-root-authorized-keys",), "Include the host root authorized_keys file in the tar export.", "WORKFLOW"),),
+                 handler=lambda args, runtime: _system_config_export(args, runtime, opener)),
     ]
 
 
@@ -963,6 +1065,7 @@ def build_cli(cli_identity: CliIdentity | None = None, opener: SessionOpener = o
     _workflow_group(registry, ident, "share", "Manage SMB and NFS shares.", _share_verbs(ident, opener))
     _workflow_group(registry, ident, "task", "Inspect and operate data-protection tasks.", _task_verbs(ident, opener))
     _workflow_group(registry, ident, "app", "Inspect and operate installed TrueNAS Apps.", _app_verbs(ident, opener))
+    _workflow_group(registry, ident, "system", "Review and run guarded TrueNAS system actions.", _system_verbs(ident, opener))
     _workflow_group(registry, ident, "network", "Read network interfaces, addresses, routes, DNS, and gateways.", [
         VerbSpec("show", None, "Show live network status (read-only).", group=VerbGroup.EXPLORATION.value,
                  options=HOST_OPTIONS,

@@ -255,6 +255,94 @@ def test_workflow_view_input_refusals_loading_and_vm_recovery_messages(config):
     session.close()
 
 
+def test_workflow_action_builders_cover_management_screens(config):
+    from tnt.session import open_session
+    from tnt.testing import FakeServer
+
+    with FakeServer() as server:
+        server.smb_shares[1] = {"id": 1, "name": "team", "path": "/mnt/tank/share", "enabled": True}
+        server.nfs_shares[2] = {"id": 2, "path": "/mnt/tank/export", "enabled": True}
+        server.snapshot_tasks[7] = {"id": 7, "dataset": "tank", "enabled": True,
+                                    "schedule": {"hour": "02"}, "lifetime_value": 2,
+                                    "lifetime_unit": "WEEK", "naming_schema": "auto-%Y-%m-%d_%H-%M"}
+        session = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True, allow_write=True)
+
+        async def go():
+            app = TntApp(session)
+            async with app.run_test(size=(160, 50)) as pilot:
+                for key, operations in (
+                    ("sharing", [
+                        ("create-smb", {"name": "team-new", "path": "/mnt/tank/share"}, "team-new", "sharing.smb.create"),
+                        ("create-nfs", {"path": "/mnt/tank/export", "networks": ["192.0.2.0/24"]}, "", "sharing.nfs.create"),
+                        ("delete-smb", {}, "team", "sharing.smb.delete"),
+                        ("delete-nfs", {}, "/mnt/tank/export", "sharing.nfs.delete"),
+                    ]),
+                    ("snapshot-tasks", [
+                        ("create", {"dataset": "tank", "schedule": {"hour": "02"}, "lifetime_value": 2,
+                                    "lifetime_unit": "WEEK", "naming_schema": "auto-%Y-%m-%d_%H-%M"}, "", "pool.snapshottask.create"),
+                        ("run", {}, "7", "pool.snapshottask.run"),
+                        ("enable", {}, "7", "pool.snapshottask.update"),
+                        ("disable", {}, "7", "pool.snapshottask.update"),
+                        ("delete", {}, "7", "pool.snapshottask.delete"),
+                    ]),
+                    ("replication", [
+                        ("run", {}, "offsite", "replication.run"),
+                        ("enable", {}, "offsite", "replication.update"),
+                        ("disable", {}, "offsite", "replication.update"),
+                    ]),
+                    ("cloud-sync", [
+                        ("run", {}, "offsite-copy", "cloudsync.sync"),
+                        ("enable", {}, "offsite-copy", "cloudsync.update"),
+                        ("disable", {}, "offsite-copy", "cloudsync.update"),
+                    ]),
+                    ("apps", [
+                        ("start", {}, "example-app", "app.start"),
+                        ("stop", {}, "example-app", "app.stop"),
+                        ("restart", {}, "example-app", "app.stop"),
+                        ("delete", {}, "example-app", "app.delete"),
+                    ]),
+                ):
+                    target = None
+                    tree = app.query_one("#nav", Tree)
+
+                    def find(node):
+                        nonlocal target
+                        for child in node.children:
+                            if child.data and child.data.key == key:
+                                target = child
+                                return
+                            find(child)
+
+                    find(tree.root)
+                    assert target is not None
+                    tree.select_node(target)
+                    await wait_loaded(pilot, app)
+                    view = app.query_one(f"#view-{key}", WorkflowView)
+                    for operation, data, name, method in operations:
+                        view.query_one("#workflow-data", TextArea).text = json.dumps(data)
+                        view.query_one("#workflow-name", Input).value = name
+                        view.query_one("#workflow-recursive", Checkbox).value = False
+                        action = view._build_action(operation)
+                        methods = [call.method for call in action.calls]
+                        assert method in methods, (key, operation, methods)
+                        if key == "apps" and operation == "delete":
+                            assert action.calls[0].params[1]["remove_ix_volumes"] is False
+                    if key == "snapshot-tasks":
+                        view.query_one("#workflow-name", Input).value = "not-an-id"
+                        with pytest.raises(ValueError, match="task ID"):
+                            view._build_action("run")
+                    if key == "apps":
+                        view.query_one("#workflow-name", Input).value = ""
+                        view._loaded([])
+                        with pytest.raises(ValueError, match="exact app ID"):
+                            view._build_action("start")
+
+        try:
+            asyncio.run(go())
+        finally:
+            session.close()
+
+
 def test_plan_review_refusal_apply_cancel_and_parent_callbacks(config):
     host = Host({"container.query": [{"id": 4, "name": "web", "status": {"state": "STOPPED"},
                                       "autostart": False}]})

@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import base64
 import struct
+from dataclasses import replace
 
 import pytest
 
 from tnt.actions import Action, Kind, RpcCall
 from tnt.errors import Refused
 from tnt.profile import Secret
-from tnt.workflows import (_attachment_names, _flatten, _host_port, _rows, _running_names,
+from tnt.workflows import (Workflows, _attachment_names, _flatten, _host_port, _rows, _running_names,
                            validate_plan_preconditions, validate_ssh_public_keys)
 
 
@@ -109,4 +110,80 @@ def test_password_preconditions_bind_username_and_current_login_classification()
                       (probe, auth_probe))
     with pytest.raises(Refused, match="password target does not match"):
         validate_plan_preconditions(mismatch, [[{"id": 2, "username": "alice"}], {"pw_name": "operator"}])
+
+
+def test_share_create_preconditions_bind_canonical_path_and_unique_name():
+    path = "/mnt/tank/share"
+    call = RpcCall("sharing.smb.create", ({"name": "team", "path": path},))
+    probes = (RpcCall("filesystem.stat", (path,)), RpcCall("sharing.smb.query", ([['name', '=', "team"]], {})))
+    action = Action("T", Kind.MUTATE, "create SMB", (call,), probes)
+    validate_plan_preconditions(action, [{"realpath": path}, []])
+
+    with pytest.raises(Refused, match="remote path and uniqueness probes"):
+        validate_plan_preconditions(replace(action, probe=probes[1:]), [[], []])
+    with pytest.raises(Refused, match="missing, unresolved, or resolves under boot-pool"):
+        validate_plan_preconditions(action, [None, []])
+    with pytest.raises(Refused, match="boot-pool"):
+        validate_plan_preconditions(action, [{"realpath": "/mnt/boot-pool/share"}, []])
+    with pytest.raises(Refused, match="canonical path explicitly"):
+        validate_plan_preconditions(action, [{"realpath": "/mnt/tank/other"}, []])
+    with pytest.raises(Refused, match="live uniqueness probe"):
+        validate_plan_preconditions(action, [{"realpath": path}, None])
+    with pytest.raises(Refused, match="already exists"):
+        validate_plan_preconditions(action, [{"realpath": path}, [{"name": "team"}]])
+
+
+def test_config_export_preconditions_bind_host_state_and_exact_tar_call(tmp_path):
+    path = str(tmp_path / "backup.tar")
+    action = Workflows(object()).config_export_action(path)
+    probes = [{"hostname": "test"}, "TrueNAS-27.0.0-RC.1", "READY", "boot-id"]
+    validate_plan_preconditions(action, probes)
+    with pytest.raises(Refused, match="exact v27 host"):
+        validate_plan_preconditions(replace(action, probe=action.probe[:-1]), probes)
+    with pytest.raises(Refused, match="valid name, version, and boot ID"):
+        validate_plan_preconditions(action, [{}, *probes[1:]])
+    with pytest.raises(Refused, match="valid name, version, and boot ID"):
+        validate_plan_preconditions(action, [probes[0], probes[1], "BOOTING", probes[3]])
+    with pytest.raises(Refused, match="title must bind"):
+        validate_plan_preconditions(replace(action, title="Export config"), probes)
+    changed_call = replace(action, calls=(replace(action.calls[0], params=("config.save", [{"secretseed": False}],
+                                                                         "backup.tar", False)),))
+    with pytest.raises(Refused, match="explicit config.save tar download"):
+        validate_plan_preconditions(changed_call, probes)
+    changed_target = replace(action, calls=(replace(action.calls[0], params=("config.save", [{"secretseed": True}],
+                                                                            "elsewhere.tar", False)),))
+    with pytest.raises(Refused, match="explicit config.save tar download"):
+        validate_plan_preconditions(changed_target, probes)
+
+    bad_delete = Action("T", Kind.DESTRUCTIVE, "delete", (RpcCall("pool.dataset.delete", ("tank/home",)),), ())
+    with pytest.raises(Refused, match="invalid target or options"):
+        validate_plan_preconditions(bad_delete, [])
+
+
+def test_api_key_preconditions_bind_id_name_and_revoke_confirmation():
+    id_probe = RpcCall("api_key.query", ([['id', '=', 5]], {}))
+    rename_probe = RpcCall("api_key.query", ([['name', '=', "renamed"]], {}))
+    rename = Action("T", Kind.MUTATE, "rename", (RpcCall("api_key.update", (5, {"name": "renamed", "reset": False})),),
+                    (id_probe, rename_probe))
+    validate_plan_preconditions(rename, [[{"id": 5, "name": "old"}], []])
+
+    with pytest.raises(Refused, match="exact ID lookup"):
+        validate_plan_preconditions(replace(rename, probe=(RpcCall("api_key.query", ([], {})), rename_probe)),
+                                    [[{"id": 5, "name": "old"}], []])
+    wrong_id = replace(rename, calls=(RpcCall("api_key.update", (6, {"name": "renamed", "reset": False})),))
+    with pytest.raises(Refused, match="ID probe does not match"):
+        validate_plan_preconditions(wrong_id, [[{"id": 5, "name": "old"}], []])
+    with pytest.raises(Refused, match="did not resolve exactly one"):
+        validate_plan_preconditions(rename, [[], []])
+    malformed = replace(rename, calls=(RpcCall("api_key.update", (5, "unsafe")),))
+    with pytest.raises(Refused, match="invalid update payload"):
+        validate_plan_preconditions(malformed, [[{"id": 5, "name": "old"}], []])
+    conflict = replace(rename, probe=(id_probe, rename_probe))
+    with pytest.raises(Refused, match="already in use"):
+        validate_plan_preconditions(conflict, [[{"id": 5, "name": "old"}], [{"id": 9, "name": "renamed"}]])
+
+    revoke = Action("T", Kind.DESTRUCTIVE, "revoke", (RpcCall("api_key.delete", (5,)),), (id_probe,), "old")
+    validate_plan_preconditions(revoke, [[{"id": 5, "name": "old"}]])
+    with pytest.raises(Refused, match="typed confirmation"):
+        validate_plan_preconditions(replace(revoke, confirm_target="stale"), [[{"id": 5, "name": "old"}]])
 

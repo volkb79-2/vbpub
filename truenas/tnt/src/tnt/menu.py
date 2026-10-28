@@ -59,8 +59,11 @@ MENU: tuple[MenuItem, ...] = (
     MenuItem("vm", "Virtual Machines", "implemented", "M1", matrix=("A-05", "A-06", "B-04")),
     MenuItem("apps", "Apps", "implemented", "M2", conditional=True),
     _p("reportsdashboard/cpu", "Reporting"),
-    _p("system", "System", "M1", children=(
-        _p("update", "Update"), _p("general", "General Settings"), _p("advanced", "Advanced Settings"),
+    MenuItem("system", "System", "implemented", "M2", children=(
+        MenuItem("update", "Update", "implemented", "M2"),
+        MenuItem("reboot", "Reboot", "implemented", "M2", tnt_only=True),
+        MenuItem("shutdown", "Shutdown", "implemented", "M2", tnt_only=True),
+        MenuItem("general", "General Settings", "implemented", "M2"), _p("advanced", "Advanced Settings"),
         MenuItem("network", "Network", "implemented", "M2"),
         _p("boot", "Boot", "M1"), _p("services", "Services"), _p("alert-settings", "Alert Settings"),
         MenuItem("audit", "Audit", "implemented", "M2"),

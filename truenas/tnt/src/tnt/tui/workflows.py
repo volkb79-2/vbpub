@@ -410,6 +410,7 @@ class PlanReview(ModalScreen[None]):
     PlanReview > Vertical { width: 85%; max-height: 85%; border: thick $primary; background: $surface; padding: 1 2; }
     PlanReview #plan-render { height: auto; max-height: 1fr; overflow-y: auto; }
     PlanReview #plan-confirm { height: 3; }
+    PlanReview #plan-progress { height: auto; color: $text-muted; }
     """
 
     def __init__(self, plan: Plan, session: Session, parent_view: Any | None = None):
@@ -421,6 +422,7 @@ class PlanReview(ModalScreen[None]):
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(self.plan.render(), id="plan-render")
+            yield Static("", id="plan-progress")
             if self.plan.action.confirm_target:
                 yield Input(placeholder=f"Type {self.plan.action.confirm_target} exactly", id="plan-confirm")
             with Horizontal():
@@ -438,11 +440,50 @@ class PlanReview(ModalScreen[None]):
         confirmation = None
         if self.plan.action.confirm_target:
             confirmation = self.query_one("#plan-confirm", Input).value
+        methods = {call.method for call in self.plan.action.calls}
+        if methods & {"system.reboot", "system.shutdown", "update.run"}:
+            self.query_one("#plan-apply", Button).disabled = True
+            self.query_one("#plan-progress", Static).update("Applying system job…")
+            self._apply_system_plan(confirmation)
+            return
         try:
             result = apply_plan(self.plan, self.session.rpc, allow_write=True, typed_confirmation=confirmation)
         except TntError as exc:
             self.query_one("#plan-render", Static).update(f"Plan refused: {exc}\n\n{self.plan.render()}")
             return
+        self.dismiss()
+        if self.parent_view is not None:
+            self.parent_view._plan_applied(self.plan, result)
+
+    @work(thread=True, exclusive=True)
+    def _apply_system_plan(self, confirmation: str | None) -> None:
+        methods = {call.method for call in self.plan.action.calls}
+        try:
+            if "update.run" in methods:
+                result = apply_plan(
+                    self.plan, self.session.rpc, allow_write=True, typed_confirmation=confirmation,
+                    job_progress=lambda job: self.app.call_from_thread(self._show_job_progress, job))
+            else:
+                result = apply_plan(self.plan, self.session.rpc, allow_write=True, typed_confirmation=confirmation)
+        except Exception as exc:
+            self.app.call_from_thread(self._system_apply_failed, str(exc))
+        else:
+            self.app.call_from_thread(self._system_apply_succeeded, result)
+
+    def _show_job_progress(self, job: Any) -> None:
+        progress = job.get("progress") if isinstance(job, dict) else None
+        percent = progress.get("percent") if isinstance(progress, dict) else None
+        if isinstance(percent, (int, float)) and not isinstance(percent, bool):
+            self.query_one("#plan-progress", Static).update(f"Update job progress: {percent:.0f}%")
+        else:
+            self.query_one("#plan-progress", Static).update("Update job is running…")
+
+    def _system_apply_failed(self, message: str) -> None:
+        self.query_one("#plan-apply", Button).disabled = False
+        self.query_one("#plan-progress", Static).update("")
+        self.query_one("#plan-render", Static).update(f"Plan refused: {message}\n\n{self.plan.render()}")
+
+    def _system_apply_succeeded(self, result: Any) -> None:
         self.dismiss()
         if self.parent_view is not None:
             self.parent_view._plan_applied(self.plan, result)

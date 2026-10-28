@@ -25,8 +25,6 @@ READ_SUFFIXES = (".query", ".details", ".get_instance", ".config", ".get_disks",
                  ".import_find", ".validate_name", ".temperatures")
 
 ALWAYS_REFUSED = {
-    "system.reboot": "tnt never reboots or shuts down a host",
-    "system.shutdown": "tnt never reboots or shuts down a host",
     "boot.attach": "boot-pool topology is out of scope (ACTION-MATRIX B-07: attach to a partition raises an internal TypeError)",
     "boot.detach": "boot-pool topology is out of scope (ACTION-MATRIX B-07)",
     "boot.replace": "boot-pool topology is out of scope (ACTION-MATRIX B-07)",
@@ -48,6 +46,7 @@ DESTRUCTIVE_METHODS = frozenset({"disk.wipe", "pool.export", "pool.delete", "poo
                                  "sharing.smb.delete", "sharing.nfs.delete", "pool.snapshottask.delete",
                                  "replication.run", "cloudsync.sync",
                                  "app.delete", "app.uninstall", "api_key.delete", "pool.dataset.destroy_snapshots", "filesystem.rmdir", "filesystem.unlink",
+                                 "system.reboot", "system.shutdown", "update.run",
                                  "filesystem.remove", "container.restart", "zfs.pool.delete", "zfs.resource.destroy",
                                  "zfs.resource.snapshot.destroy"})
 DESTRUCTIVE_SUFFIXES = (".delete", ".destroy", ".wipe", ".rollback", ".replace", ".attach", ".offline", ".promote",
@@ -299,7 +298,25 @@ def refusal_for(method: Any, params: Iterable[Any] = (), state: SafetyState | No
     args = tuple(params)
     if name in ALWAYS_REFUSED:
         return ALWAYS_REFUSED[name]
-    if name.startswith("core.") and name != "core.get_methods":
+    if name == "core.download":
+        if (len(args) != 4 or args[0] != "config.save" or not isinstance(args[1], list) or len(args[1]) != 1
+                or not isinstance(args[1][0], Mapping)
+                or set(args[1][0]) - {"secretseed", "root_authorized_keys"}
+                or args[1][0].get("secretseed") is not True
+                or any(not isinstance(value, bool) for value in args[1][0].values())
+                or not isinstance(args[2], str) or not args[2].endswith(".tar")
+                or "/" in args[2] or "\\" in args[2]
+                or args[3] is not False):
+            return "core.download is limited to an explicit v27 config.save tar export"
+        texts = list(_strings(args))
+        if any(_ambiguous_path(text) for text in texts):
+            return "a path with '..' is ambiguous and refused"
+        if any(_names_boot_pool(text) for text in texts):
+            return "boot-pool and its datasets are never changed from here (ACTION-MATRIX A-08)"
+        if reason := _pool_mapping_refusal(args, state):
+            return reason
+        return None
+    if name.startswith("core.") and name not in {"core.get_methods", "core.get_jobs"}:
         return "core.* is an indirection (core.call/core.bulk can run any method) and is never executed"
     if name.startswith("auth.") and name not in ("auth.me", "auth.mechanism_choices"):
         return "tnt does not change credentials or sessions"

@@ -216,6 +216,47 @@ Do not pass the raw key as a command argument or paste it into shell history. v2
 The web UI places “My API Keys” in the account menu; tnt puts it under Credentials to make it available in the navigation
 tree. See the [API key design](DESIGN.md#api-keys) and [v27 signatures](API-METHODS-V27.md#api-keys).
 
+### System actions
+
+Check updates first. The output shows the current train and version, the exact available target train and version, and
+the first release-notes paragraph. Apply the exact version shown; the CLI follows the update job, and reboot remains a
+separate action:
+
+```sh
+tnt system update check --profile lab --json
+tnt system update apply TrueNAS-27.0.0-RC.2 --profile lab --allow-write \
+  --confirm TrueNAS-27.0.0-RC.2
+```
+
+Replace the example target with the version returned by the check. Before apply, reboot, or shutdown, tnt requires
+`FULL_ADMIN` so it can inspect all active jobs. The plan shows those jobs, running VM/container names, and active SMB
+session count. Running jobs block the action unless `--force-with-jobs` is supplied; the host name or target version
+must still be typed exactly. Reboot and shutdown accept an optional 0–86400 second delay:
+
+```sh
+tnt system reboot --profile lab --delay 60 --allow-write --confirm HOST_NAME_FROM_PLAN
+tnt system shutdown --profile lab --allow-write --confirm HOST_NAME_FROM_PLAN
+tnt system reboot --profile lab --force-with-jobs --allow-write --confirm HOST_NAME_FROM_PLAN
+tnt tui --profile lab  # System > Update, Reboot, or Shutdown; reboot reconnects with bounded retries
+```
+
+The TUI checks `system.state` after reboot and stops retrying after bounded attempts; an authentication failure stops
+retries immediately. Do not start a system action outside an approved maintenance window.
+
+Configuration export writes a new local `.tar` file with mode `0600`. It includes the TrueNAS secret seed. The
+destination directory must already exist and an existing file is never overwritten. The optional root authorized-keys
+file is sensitive too:
+
+```sh
+tnt system config-export /home/me/truenas-config.tar --profile lab --allow-write
+tnt system config-export /home/me/truenas-config-with-ssh.tar --profile lab \
+  --include-root-authorized-keys --allow-write
+tnt tui --profile lab  # System > General Settings
+```
+
+Store the export as a credential. See [system action decisions](DESIGN.md#system-actions) and the
+[verified v27 methods](API-METHODS-V27.md#system-actions).
+
 Use `--file spec.json` for fields beyond a workflow's minimal create options. Passwords are entered through a no-echo
 prompt or `--password-file`, never a command-line argument. User SSH keys are loaded from a public-key file or
 validated public-key text; private keys are not accepted or printed.

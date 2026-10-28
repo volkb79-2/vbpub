@@ -3,15 +3,17 @@ from __future__ import annotations
 
 import base64
 import binascii
+import os
 import re
 import struct
 import threading
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Mapping
 
 from .actions import Action, Kind, RpcCall
 from .errors import Refused, TransportError
-from .policy import _ambiguous_path, _names_boot_pool, _strings, refusal_for
+from .policy import _ambiguous_path, _names_boot_pool, _strings, normalise_method, refusal_for
 from .profile import Secret
 from .transport import GuardedRpc
 
@@ -21,6 +23,67 @@ class Workflows:
 
     def __init__(self, rpc: GuardedRpc):
         self.rpc = rpc
+
+    # -- system safety and updates ----------------------------------------------------------------------
+    def system_preflight(self) -> tuple[Any, ...]:
+        calls = _system_preflight_calls()
+        return _system_preflight_snapshot([self.rpc.call(call.method, *call.params) for call in calls])
+
+    def system_power_action(self, operation: str, *, delay: int | None = None,
+                            force_with_jobs: bool = False) -> Action:
+        if operation not in {"reboot", "shutdown"}:
+            raise Refused("system-operation", "system power operation must be reboot or shutdown")
+        if (delay is not None and (not isinstance(delay, int) or isinstance(delay, bool) or delay < 0 or delay > 86400)):
+            raise Refused("system-delay", "delay must be an integer from 0 through 86400 seconds")
+        if not isinstance(force_with_jobs, bool):
+            raise Refused("system-force", "force_with_jobs must be true or false")
+        preflight = self.system_preflight()
+        options = {"delay": delay}
+        method = f"system.{operation}"
+        action = Action("TNT-47", Kind.DESTRUCTIVE,
+                        f"{operation.title()} TrueNAS host {preflight[0]} after a {delay if delay is not None else 'no'} second delay",
+                        (RpcCall(method, (f"tnt requested {operation}", options), job=True),),
+                        _system_preflight_calls(), preflight[0], force_with_jobs, preflight)
+        return action
+
+    def update_check(self) -> dict[str, Any]:
+        current_version = self.rpc.call("system.version")
+        raw = self.rpc.call("update.status")
+        status = raw.get("status") if isinstance(raw, Mapping) else None
+        candidate = status.get("new_version") if isinstance(status, Mapping) else None
+        available = self.rpc.call("update.available_versions") if candidate is not None else []
+        return _update_status_summary(current_version, raw, available)
+
+    def update_apply_action(self, target_version: str, *, force_with_jobs: bool = False) -> Action:
+        if not isinstance(target_version, str) or not target_version.strip():
+            raise Refused("update-target", "type an exact available target version")
+        target_version = target_version.strip()
+        if not isinstance(force_with_jobs, bool):
+            raise Refused("system-force", "force_with_jobs must be true or false")
+        preflight = self.system_preflight()
+        update = self.update_check()
+        if update["new_version"] != target_version:
+            raise Refused("update-target", f"{target_version!r} is not the currently available target version")
+        attrs = {"dataset_name": None, "resume": False, "train": update["target_train"],
+                 "version": target_version, "reboot": False}
+        probes = (*_system_preflight_calls(), RpcCall("update.status"), RpcCall("update.available_versions"),
+                  RpcCall("system.version"))
+        return Action("TNT-47", Kind.DESTRUCTIVE,
+                      f"Apply TrueNAS update {target_version} from train {update['target_train']}; reboot remains separate",
+                      (RpcCall("update.run", (attrs,), job=True),), probes, target_version, force_with_jobs, preflight)
+
+    def config_export_action(self, path: str, *, root_authorized_keys: bool = False) -> Action:
+        target = _absolute_tar_path(path)
+        if not isinstance(root_authorized_keys, bool):
+            raise Refused("config-export-options", "root_authorized_keys must be true or false")
+        # secretseed is explicit because config.save otherwise returns a database, not the requested tar archive.
+        options = {"secretseed": True}
+        if root_authorized_keys:
+            options["root_authorized_keys"] = True
+        filename = target.rsplit("/", 1)[-1]
+        return Action("TNT-47", Kind.MUTATE, f"Export configuration tar to {target} (includes secret seed)",
+                      (RpcCall("core.download", ("config.save", [options], filename, False)),),
+                      (RpcCall("system.info"), RpcCall("system.version"), RpcCall("system.state"), RpcCall("system.boot_id")))
 
     # -- SMB and NFS shares -----------------------------------------------------------------------------
     def shares_smb(self) -> list[dict[str, Any]]:
@@ -62,7 +125,8 @@ class Workflows:
         rows = _rows(self.rpc.call("app.query", [], {}), "app.query")
         for row in rows:
             if (not isinstance(row.get("id"), str) or not row["id"]
-                    or not isinstance(row.get("name"), str) or not isinstance(row.get("state"), str)
+                    or not isinstance(row.get("name"), str) or not row["name"]
+                    or not isinstance(row.get("state"), str)
                     or not isinstance(row.get("upgrade_available"), bool)):
                 raise Refused("app-shape", "app.query returned a record missing its v27 ID, name, state, or upgrade status")
         return rows
@@ -1026,8 +1090,226 @@ def _rows(value: Any, method: str) -> list[dict[str, Any]]:
     return [dict(row) for row in value]
 
 
+def _system_preflight_calls() -> tuple[RpcCall, ...]:
+    # core.get_jobs is both a v27 query method and a collection event. The bounded query returns every
+    # non-terminal job visible to FULL_ADMIN. auth.me verifies the role because other sessions see only their own jobs.
+    active_filter = [["state", "!=", "SUCCESS"], ["state", "!=", "FAILED"], ["state", "!=", "ABORTED"]]
+    jobs_options = {"select": ["id", "method", "state"], "limit": 10000}
+    return (
+        RpcCall("system.info"),
+        RpcCall("auth.me"),
+        RpcCall("core.get_jobs", (active_filter, jobs_options)),
+        RpcCall("vm.query", ([], {"select": ["id", "name", "status.state"]})),
+        RpcCall("container.query", ([], {"select": ["id", "name", "status.state"]})),
+        RpcCall("smb.status", ("SESSIONS", [], {"count": True})),
+    )
+
+
+def _system_preflight_snapshot(results: Any) -> tuple[Any, ...]:
+    if not isinstance(results, (list, tuple)) or len(results) != 6:
+        raise Refused("system-preflight", "system actions require complete host, role, jobs, VM, container, and SMB-session probes")
+    info, me, jobs_raw, vms_raw, containers_raw, smb_sessions = results
+    hostname = info.get("hostname") if isinstance(info, Mapping) else None
+    if not isinstance(hostname, str) or not hostname.strip():
+        raise Refused("system-preflight", "system.info did not return the current host name")
+    privilege = me.get("privilege") if isinstance(me, Mapping) else None
+    roles = privilege.get("roles") if isinstance(privilege, Mapping) else None
+    if (not isinstance(roles, list) or any(not isinstance(role, str) or not role for role in roles)
+            or "FULL_ADMIN" not in roles):
+        raise Refused("system-preflight-role", "system preflight requires auth.me to verify FULL_ADMIN for complete job visibility")
+    jobs = _rows(jobs_raw, "core.get_jobs")
+    active_jobs: list[tuple[int, str]] = []
+    terminal = {"SUCCESS", "FAILED", "ABORTED"}
+    for row in jobs:
+        job_id, method, state = row.get("id"), row.get("method"), row.get("state")
+        if (not isinstance(job_id, int) or isinstance(job_id, bool) or not isinstance(method, str) or not method
+                or not isinstance(state, str)):
+            raise Refused("system-job-shape", "core.get_jobs returned an entry without an ID, method, or state")
+        state = state.upper()
+        if state in {"WAITING", "RUNNING"}:
+            active_jobs.append((job_id, method))
+        elif state not in terminal:
+            raise Refused("system-job-state", f"core.get_jobs returned unknown state {state!r}; refusing system action")
+    if len(jobs) >= 10000:
+        raise Refused("system-job-limit", "the job preflight reached v27's 10000-row query limit; refusing an incomplete safety view")
+
+    def running_names(rows_raw: Any, method: str) -> tuple[str, ...]:
+        rows = _rows(rows_raw, method)
+        running: list[str] = []
+        allowed = {"RUNNING", "STOPPED", "SUSPENDED"}
+        for row in rows:
+            name, status = row.get("name"), row.get("status")
+            state = status.get("state") if isinstance(status, Mapping) else None
+            if not isinstance(name, str) or not name or not isinstance(state, str):
+                raise Refused("system-instance-state", f"{method} omitted a valid name or state; refusing to guess runtime counts")
+            state = state.upper()
+            if state not in allowed:
+                raise Refused("system-instance-state", f"{method} returned unknown state {state!r}; refusing to guess runtime counts")
+            if state == "RUNNING":
+                running.append(name)
+        return tuple(sorted(running, key=str.casefold))
+
+    running_vms = running_names(vms_raw, "vm.query")
+    running_containers = running_names(containers_raw, "container.query")
+    if not isinstance(smb_sessions, int) or isinstance(smb_sessions, bool) or smb_sessions < 0:
+        raise Refused("smb-session-count", "smb.status did not return a numeric session count")
+    return (hostname.strip(), tuple(sorted(active_jobs)), running_vms, running_containers, smb_sessions, True)
+
+
+def _update_status_summary(current_version: Any, raw: Any, available_versions: Any) -> dict[str, Any]:
+    if (not isinstance(current_version, str) or not current_version.strip() or not isinstance(raw, Mapping)
+            or not isinstance(available_versions, list)):
+        raise Refused("update-status-shape", "v27 update check omitted the current version or status object")
+    code = raw.get("code")
+    if code == "ERROR":
+        error = raw.get("error")
+        reason = error.get("reason") if isinstance(error, Mapping) else None
+        raise Refused("update-status", f"v27 could not check for updates: {reason or 'the API returned an unspecified error'}")
+    if code != "NORMAL":
+        raise Refused("update-status", f"update.status returned unknown status code {code!r}")
+    status = raw.get("status")
+    current = status.get("current_version") if isinstance(status, Mapping) else None
+    if not isinstance(current, Mapping):
+        raise Refused("update-status-shape", "update.status omitted current train/profile details")
+    train, profile = current.get("train"), current.get("profile")
+    if not isinstance(train, str) or not train or not isinstance(profile, str) or not profile:
+        raise Refused("update-status-shape", "update.status returned an invalid train or profile")
+    new = status.get("new_version")
+    if new is not None and (not isinstance(new, Mapping) or not isinstance(new.get("version"), str) or not new["version"]):
+        raise Refused("update-status-shape", "update.status returned an invalid new-version record")
+    target_train = None
+    if new is not None:
+        version_fields = ("version", "manifest", "release_notes", "release_notes_url")
+        if (any(key not in new for key in version_fields) or not isinstance(new.get("manifest"), Mapping)
+                or new.get("release_notes") is not None and not isinstance(new.get("release_notes"), str)
+                or new.get("release_notes_url") is not None and not isinstance(new.get("release_notes_url"), str)):
+            raise Refused("update-status-shape", "update.status returned an incomplete v27 available-version record")
+        version_rows = _rows(available_versions, "update.available_versions")
+        exact_matches = []
+        for row in version_rows:
+            candidate = row.get("version")
+            if (not isinstance(row.get("train"), str) or not row["train"] or not isinstance(candidate, Mapping)
+                    or any(key not in candidate for key in version_fields)
+                    or not isinstance(candidate.get("version"), str) or not candidate["version"]
+                    or not isinstance(candidate.get("manifest"), Mapping)
+                    or candidate.get("release_notes") is not None and not isinstance(candidate.get("release_notes"), str)
+                    or candidate.get("release_notes_url") is not None and not isinstance(candidate.get("release_notes_url"), str)):
+                raise Refused("update-available-shape", "update.available_versions returned an incomplete v27 train/version record")
+            if all(candidate[key] == new[key] for key in version_fields):
+                exact_matches.append(row["train"])
+        if len(exact_matches) != 1:
+            raise Refused("update-target-train", "v27 could not map the exact available version and manifest to one update train")
+        target_train = exact_matches[0]
+    notes = new.get("release_notes") if isinstance(new, Mapping) else None
+    manifest = new.get("manifest") if isinstance(new, Mapping) else None
+    if isinstance(notes, str) and notes.strip():
+        summary = notes.strip().split("\n\n", 1)[0].replace("\n", " ").strip()
+        if len(summary) > 800:
+            summary = summary[:797].rstrip() + "..."
+    elif isinstance(manifest, Mapping) and isinstance(manifest.get("changelog"), str) and manifest["changelog"].strip():
+        summary = manifest["changelog"].strip()[:800]
+    else:
+        summary = "No release notes were supplied by update.status."
+    return {
+        "code": code,
+        "train": train,
+        "target_train": target_train,
+        "profile": profile,
+        "matches_profile": current.get("matches_profile"),
+        "current_version": current_version.strip(),
+        "new_version": new.get("version") if isinstance(new, Mapping) else None,
+        "changelog_summary": summary,
+        "release_notes_url": new.get("release_notes_url") if isinstance(new, Mapping) else None,
+    }
+
+
+def _absolute_tar_path(path: str) -> str:
+    if not isinstance(path, str) or not path.strip():
+        raise Refused("config-export-path", "provide an absolute local path ending in .tar")
+    target = Path(path.strip()).expanduser()
+    if not target.is_absolute() or target.suffix.casefold() != ".tar":
+        raise Refused("config-export-path", "the local config export path must be absolute and end in .tar")
+    if os.path.lexists(target):
+        raise Refused("config-export-path", f"refusing to overwrite existing local path {target}")
+    return str(target)
+
+
+def _validate_system_preflight(action: Action, probe_results: Any) -> None:
+    system_methods = {"system.reboot", "system.shutdown", "update.run"}
+    system_calls = [call for call in action.calls if normalise_method(call.method) in system_methods]
+    if not system_calls and not action.system_preflight:
+        return
+    probes = _system_preflight_calls()
+    method = normalise_method(system_calls[0].method) if len(system_calls) == 1 else None
+    extra = ((RpcCall("update.status"), RpcCall("update.available_versions"), RpcCall("system.version"))
+             if method == "update.run" else ())
+    if (len(system_calls) != 1 or tuple(action.probe[:len(probes)]) != probes
+            or tuple(action.probe[len(probes):]) != extra
+            or not isinstance(probe_results, (list, tuple)) or len(probe_results) != len(probes) + len(extra)):
+        raise Refused("system-preflight", "a system action requires its exact v27 host, job, VM, container, and SMB probes")
+    snapshot = _system_preflight_snapshot(probe_results[:len(probes)])
+    if snapshot != action.system_preflight:
+        raise Refused("system-preflight-drift", "the host safety counts changed before the plan was created; plan again")
+    if snapshot[1] and not action.force_with_jobs:
+        detail = ", ".join(f"{method} (job {ident})" for ident, method in snapshot[1])
+        raise Refused("system-running-jobs", f"running jobs prevent this system action: {detail}; pass --force-with-jobs and type the target to continue")
+    call = system_calls[0]
+    if method in {"system.reboot", "system.shutdown"}:
+        if (action.kind is not Kind.DESTRUCTIVE or not call.job or len(call.params) != 2
+                or not isinstance(call.params[0], str) or not call.params[0]
+                or not isinstance(call.params[1], Mapping) or set(call.params[1]) != {"delay"}
+                or (call.params[1]["delay"] is not None and
+                    (not isinstance(call.params[1]["delay"], int) or isinstance(call.params[1]["delay"], bool)
+                     or call.params[1]["delay"] < 0 or call.params[1]["delay"] > 86400))
+                or action.confirm_target != snapshot[0]):
+            raise Refused("system-action-shape", "reboot and shutdown require a destructive host-name-confirmed v27 job")
+    else:
+        if action.kind is not Kind.DESTRUCTIVE or not call.job or len(call.params) != 1 or not isinstance(call.params[0], Mapping):
+            raise Refused("update-action-shape", "update.run must be a destructive v27 job")
+        attrs = call.params[0]
+        if (set(attrs) != {"dataset_name", "resume", "train", "version", "reboot"}
+                or attrs.get("dataset_name") is not None or attrs.get("resume") is not False or attrs.get("reboot") is not False
+                or not isinstance(attrs.get("train"), str) or not isinstance(attrs.get("version"), str)
+                or action.confirm_target != attrs.get("version")):
+            raise Refused("update-action-shape", "update.run must bind one exact target version and leave reboot separate")
+        summary = _update_status_summary(probe_results[8], probe_results[6], probe_results[7])
+        if summary["new_version"] != attrs["version"] or summary["target_train"] != attrs["train"]:
+            raise Refused("update-target-drift", "the requested update is no longer the version available on this train")
+
+
+def _validate_config_export_probe(action: Action, probe_results: Any) -> None:
+    calls = [call for call in action.calls if call.method == "core.download"]
+    expected_probe = (RpcCall("system.info"), RpcCall("system.version"),
+                      RpcCall("system.state"), RpcCall("system.boot_id"))
+    if (len(calls) != 1 or tuple(action.probe) != expected_probe
+            or not isinstance(probe_results, (list, tuple)) or len(probe_results) != len(expected_probe)):
+        raise Refused("config-export-probe", "configuration export requires its exact v27 host, version, state, and boot-ID probes")
+    info, version, state, boot_id = probe_results
+    if (not isinstance(info, Mapping) or not isinstance(info.get("hostname"), str) or not info["hostname"].strip()
+            or not isinstance(version, str) or not version.strip() or state != "READY"
+            or not isinstance(boot_id, str) or not boot_id.strip()):
+        raise Refused("config-export-probe", "configuration export requires a READY host with a valid name, version, and boot ID")
+    call = calls[0]
+    prefix = "Export configuration tar to "
+    suffix = " (includes secret seed)"
+    if not action.title.startswith(prefix) or not action.title.endswith(suffix):
+        raise Refused("config-export-shape", "configuration export title must bind its local target path")
+    path = _absolute_tar_path(action.title[len(prefix):-len(suffix)])
+    options = call.params[1][0] if len(call.params) > 1 and isinstance(call.params[1], list) \
+        and len(call.params[1]) == 1 and isinstance(call.params[1][0], Mapping) else None
+    if (action.kind is not Kind.MUTATE or call.job or len(call.params) != 4 or call.params[0] != "config.save"
+            or options is None or options.get("secretseed") is not True
+            or set(options) - {"secretseed", "root_authorized_keys"}
+            or any(not isinstance(value, bool) for value in options.values())
+            or call.params[2] != Path(path).name or call.params[3] is not False):
+        raise Refused("config-export-shape", "configuration export must be one explicit config.save tar download with secret seed")
+
+
 def validate_plan_preconditions(action: Action, probe_results: Any) -> None:
     """Enforce data-use checks on both plan creation and apply, after fresh probe reads."""
+    _validate_system_preflight(action, probe_results)
+    if any(call.method == "core.download" for call in action.calls):
+        _validate_config_export_probe(action, probe_results)
     deletions = [call for call in action.calls if call.method == "pool.dataset.delete"]
     for call in deletions:
         if len(call.params) < 2 or not isinstance(call.params[0], str) or not isinstance(call.params[1], Mapping):

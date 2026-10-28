@@ -9,7 +9,7 @@ import asyncio
 from tnt.actions import Action, Kind, Plan, RpcCall, apply_plan, make_plan, refusal_for
 from tnt.domain import Disk, Partition, human_bytes, human_free
 from tnt.errors import Refused
-from tnt.policy import SafetyState, is_read_method, normalise_method
+from tnt.policy import SafetyState, is_destructive_method, is_read_method, normalise_method
 from tnt.transport import GuardedRpc
 from tnt.tui.app import TntApp
 from tnt.menu import MENU, walk
@@ -132,7 +132,8 @@ def test_names_are_normalised_and_junk_names_are_refused():
         with pytest.raises(Refused, match="method"):
             normalise_method(junk)
     assert is_read_method("DISK.QUERY") and not is_read_method("pool..query") and not is_read_method(5)
-    assert refusal_for("SYSTEM.REBOOT") and refusal_for(" core.call ")
+    assert refusal_for("SYSTEM.REBOOT") is None and refusal_for(" core.call ")
+    assert is_destructive_method("SYSTEM.REBOOT")
     assert refusal_for("core.get_methods") is None and refusal_for("auth.me") is None and refusal_for("disk.query") is None
 
 
@@ -367,7 +368,7 @@ def test_apply_gates_in_order_and_execution():
 
 
 def test_refusal_list_texts():
-    assert "reboots" in refusal_for("system.reboot")
+    assert refusal_for("system.reboot") is None  # executable only inside a guarded, fully preflighted typed plan
     assert "B-07" in refusal_for("boot.attach", ("vda4",))
     assert "credentials" in refusal_for("auth.set_password")
     assert "A-08" in refusal_for("pool.export", (0, {"x": "boot-pool"}))
@@ -384,9 +385,13 @@ def test_menu_mirrors_the_webui_labels():
     keys = [i.key for _, i in walk()]
     assert len(keys) == len(set(keys))
     assert [i.key for _, i in walk() if i.status == "implemented"] == [
-        "storage", "storage/disks", "datasets", "data-protection", "snapshots", "credentials", "users", "containers", "vm",
+        "storage", "storage/disks", "datasets", "sharing", "data-protection", "snapshot-tasks", "snapshots",
+        "replication", "cloud-sync", "credentials", "users", "api-keys", "containers", "vm", "apps", "system",
+        "update", "reboot", "shutdown", "general", "network", "audit",
     ]
-    assert [i.label for _, i in walk() if i.tnt_only] == ["Free space and partitions", "Boot pool data"]
+    assert [i.label for _, i in walk() if i.tnt_only] == [
+        "Free space and partitions", "Boot pool data", "My API Keys", "Reboot", "Shutdown",
+    ]
 
 
 def test_menu_matrix_ids_exist_in_the_snapshot():

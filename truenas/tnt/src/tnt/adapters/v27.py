@@ -102,8 +102,17 @@ class V27(Backend):
             "api_key.create": MethodSpec("write"), "api_key.update": MethodSpec("write"),
             "api_key.delete": MethodSpec("destructive"),
         },
-        "system": {"system.info": MethodSpec("read"), "system.version": MethodSpec("read"),
-                   "core.get_methods": MethodSpec("read")},
+        "system": {
+            "auth.me": MethodSpec("read"),
+            "system.info": MethodSpec("read"), "system.version": MethodSpec("read"),
+            "system.state": MethodSpec("read"), "system.boot_id": MethodSpec("read"),
+            "system.reboot": MethodSpec("destructive"), "system.shutdown": MethodSpec("destructive"),
+            "update.status": MethodSpec("read"), "update.available_versions": MethodSpec("read"),
+            "update.run": MethodSpec("destructive"),
+            "core.get_methods": MethodSpec("read"), "core.get_jobs": MethodSpec("read"),
+            "core.download": MethodSpec("write"),
+            "smb.status": MethodSpec("read"),
+        },
         # These names are known to be absent from the v27 method index. They remain classified so an accidental
         # action cannot treat them as harmless, but supported=False keeps them out of the callable allow-list.
         "policy-only": {

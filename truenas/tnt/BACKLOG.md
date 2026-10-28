@@ -27,7 +27,7 @@ non-execution requirement.
 | TNT-11 | Storage > Pools (`pool.query`, vdev tree, scrub status; scrub as the first MUTATE action) | M1 | M |
 | TNT-12 | [DONE M1] Datasets (`pool.dataset.query`, tree, usage; create/update/delete behind gates; matrix A-01..A-03) | M1 | L |
 | TNT-13 | System > Boot (`boot.get_state`, `boot.environment.*`; clone/activate/keep) | M1 | M |
-| TNT-14 | System: General, Network, Services, Update (read first) | M3 | L |
+| TNT-14 | [DONE M2] System > General configuration export, Network, Update, reboot, and shutdown | M2 | L |
 | TNT-15 | [DONE M2] Shares: SMB, NFS, remote-path guard, ACL read, typed configuration deletion | M2 | M |
 | TNT-16 | [DONE M1] Containers and Virtual Machines (matrix A-04..A-06, B-04; v27 `container.*` and `vm.*`). Current image, CPU-count and configured memory-limit fields are unavailable in the verified container schema; see TNT-36/37. | M1 | L |
 | TNT-17 | [DONE M2] Apps: installed app state, upgrade-available flag, start/stop/restart, destructive uninstall with opt-in volume deletion | M2 | M |
@@ -41,6 +41,8 @@ non-execution requirement.
 | TNT-43 | [DONE M2] System > Network: read-only interface/address/route/DNS/default-gateway view through verified v27 methods | M2 | S |
 | TNT-45 | [DONE M2] Audit viewer: filtered, paginated v27 `audit.query` with secret scrubbing; general middleware/syslog tail deferred because v27 exposes no such method | M2 | M |
 | TNT-46 | [DONE M2] API key list/create/rename/revoke with one-time key display, explicit mode-0600 file option, safe verifier projection and typed revoke | M2 | M |
+| TNT-47 | [DONE M2] System update/reboot/shutdown destructive plans, complete preflight, update job progress, bounded TUI reconnect, and private config export | M2 | L |
+| TNT-48 | System > Services read/status and service lifecycle workflows | M3 | M |
 
 ## Platform and quality
 

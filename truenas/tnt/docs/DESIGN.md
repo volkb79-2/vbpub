@@ -1,6 +1,6 @@
 # tnt design
 
-Status: M2 management workflows in progress, 2026-10-28. Container image identity, configured CPU count and memory limits
+Status: M2 management workflows implemented, 2026-10-28. Container image identity, configured CPU count and memory limits
 are unavailable in the verified v27 container record; VM creation uses separately reviewed device plans because v27
 does not accept devices in `vm.create`. Inputs: the prior-art research (`truenas-tui-research.md`, release-program brief),
 the canonical action matrix (`docs/ACTION-MATRIX.snapshot.md`, from branch `truenas-restore-iso`), the TrueNAS web UI
@@ -137,7 +137,7 @@ Datasets, Snapshots, Users, Containers, and Virtual Machines. Boot-pool datasets
 | B-07, A-08 | must stay refused | refusal list |
 | A-01, A-02, A-03 | remain refused when they name boot-pool; regular-pool datasets are supported |
 | A-04, A-05 | boot-pool targets remain refused; regular-pool workloads are supported |
-| A-07, B-05 | Shares are outside this release |
+| A-07, B-05 | SMB/NFS export records | TNT-15 (M2; does not create or remove filesystem data) |
 
 ## 4. Screens map (mirrors the web UI menu)
 
@@ -150,10 +150,10 @@ Virtual Machines as separate top-level items) and Network is under System. The S
 Import Pool, pool management) are reached from the Storage page, not from the menu; tnt shows them as children.
 
 `tnt/menu.py` holds the tree. TrueNAS places “My API Keys” in the top-right account menu; tnt nests it under Credentials
-as a `tnt_only` tree leaf because the TUI has no account menu. Datasets, Shares, Data Protection > Snapshots,
-Credentials > Local Users/API Keys, Containers, and Virtual
-Machines have workflow views; other entries remain placeholders pending their M2 slices. Containers and Virtual Machines are separate
-top-level entries and are always shown. The TUI omits Shell because it is already a terminal.
+as a `tnt_only` tree leaf because the TUI has no account menu. Datasets, Shares, Data Protection tasks and Snapshots,
+Credentials > Local Users/API Keys, Containers, Virtual Machines, Apps, Network, Audit, Update, Reboot, Shutdown, and
+General Settings have workflow views. Other entries remain placeholders pending later slices. Containers and Virtual
+Machines are separate top-level entries and are always shown. The TUI omits Shell because it is already a terminal.
 
 ### Shares
 
@@ -217,6 +217,29 @@ invalidating the key. The plan probes the current ID/name, and apply requires ty
 The v27 web UI places “My API Keys” in the account settings menu at the top right. tnt places it under Credentials so
 it can be reached from the left navigation tree; this is a documented navigation-only adaptation. See
 [API method evidence](API-METHODS-V27.md#api-keys) and the upstream [TrueNAS API UI note](https://github.com/truenas/documentation/tree/master/content/SCALE/API).
+
+### System actions
+
+`system.reboot`, `system.shutdown`, and `update.run` are always destructive actions. Before creating a plan, tnt reads
+`system.info`, `auth.me`, `core.get_jobs`, `vm.query`, `container.query`, and `smb.status`. It requires `FULL_ADMIN`
+because v27 filters `core.get_jobs` to the caller's own jobs for less privileged sessions. The plan prints the host
+name, every active job ID/method, running VM and container names, and the active SMB-session count. Any active job
+blocks planning unless `--force-with-jobs` is explicit; the exact host name or target update version must still be
+typed. The same reads are fingerprinted and checked again at apply time.
+
+Update check reads `system.version` and `update.status`; because the latter's `new_version` has no train field, tnt
+matches its version, manifest, release notes, and release-notes URL to exactly one `update.available_versions` row.
+Ambiguous or incomplete records refuse the operation. Update apply binds that exact version and train into
+`update.run`, sets `reboot=false`, and follows the returned job's progress. Reboot and shutdown accept a 0–86400 second
+delay. After reboot, the TUI waits between fresh login attempts, checks `system.state`, and stops after five bounded
+attempts; authentication errors stop retries immediately to respect the middleware login cooldown.
+
+General Settings offers configuration export through `core.download("config.save", [{secretseed: true, ...}],
+filename, false)`. The one-time download URL is not displayed. tnt requires a READY host, validates that the URL is
+same-origin and names the returned job, disables redirects and proxies, and creates a new local `.tar` file
+exclusively with mode `0600`. It validates the tar before keeping it. The archive includes TrueNAS's secret seed and
+must be stored as a credential. See [v27 method evidence](API-METHODS-V27.md#system-actions) and the
+[system action examples](CONSUMERS.md#system-actions).
 
 ## 5. UX
 
@@ -357,7 +380,8 @@ B-01 is a backlog item (TNT-03) and the refusal list covers nothing SSH-related 
 |---|---|---|
 | M0 | scaffold: transport, profile, v27 adapter, plan/apply model, `doctor`/`profile`/`disks`/`tui`, Storage > Disks, fake server | done |
 | M1 | config and credential flows; v27 default-deny manifest; datasets, snapshots, users, containers and VMs in CLI/TUI; fake-server workflows; written opt-in live lane | implemented; container metadata is limited to v27 fields and VM creation is staged |
-| Later | storage partitioning, pool creation, boot-pool management, shares, Apps, networking, and other TrueNAS screens | deferred |
+| M2 | SMB/NFS shares, data protection tasks, Network, Apps, Audit, API Keys, and System actions in CLI/TUI | implemented; generic middleware/syslog tail and scrub/SMART task management are absent from v27 or deferred |
+| Later | storage partitioning, pool creation, boot-pool management, and other TrueNAS screens | deferred |
 
 ## 11. Supported host
 

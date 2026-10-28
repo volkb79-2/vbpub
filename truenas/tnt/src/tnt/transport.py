@@ -11,7 +11,7 @@ import threading
 import uuid
 from collections import deque
 from contextlib import contextmanager
-from typing import Any, Callable, Iterable, Iterator, Protocol
+from typing import Any, Callable, Iterable, Iterator, Mapping, Protocol
 from urllib.parse import urlsplit
 
 from .errors import Refused, TransportError
@@ -20,7 +20,7 @@ from .profile import LOOPBACK, Profile, Secret
 
 
 class RpcClient(Protocol):
-    def call(self, method: str, *params: Any, job: bool = False) -> Any: ...
+    def call(self, method: str, *params: Any, job: bool = False, callback: Any = None) -> Any: ...
     def close(self) -> None: ...
 
 
@@ -127,9 +127,10 @@ class GuardedRpc:
                 self._grant = None
                 self._owner = None
 
-    def call(self, method: str, *params: Any, job: bool = False) -> Any:
+    def call(self, method: str, *params: Any, job: bool = False,
+             job_callback: Callable[[Mapping[str, Any]], None] | None = None) -> Any:
         with self._lock:  # one call at a time: another thread or task can never interleave with a plan's calls
-            return self._call(method, params, job)
+            return self._call(method, params, job, job_callback)
 
     def subscribe_event(self, name: str, callback: Callable[..., Any]) -> str:
         """Subscribe to the one reviewed read-only event source used by container inventory."""
@@ -162,7 +163,8 @@ class GuardedRpc:
         except Exception as exc:
             raise TransportError("event", self._scrub(f"cannot unsubscribe from container.metrics: {exc}")) from None
 
-    def _call(self, method: str, params: tuple[Any, ...], job: bool) -> Any:
+    def _call(self, method: str, params: tuple[Any, ...], job: bool,
+              job_callback: Callable[[Mapping[str, Any]], None] | None = None) -> Any:
         name = normalise_method(method)
         if not is_read_method(name):
             reason = refusal_for(name, params, self._grant[1] if self._grant else None)
@@ -183,7 +185,11 @@ class GuardedRpc:
         self.calls.append((name, _rpc_values(params)))
         actual_params = tuple(_rpc_values(p, reveal=True) for p in params)
         try:
-            return self._inner.call(name, *actual_params, job=job) if job else self._inner.call(name, *actual_params)
+            if job:
+                if job_callback is not None:
+                    return self._inner.call(name, *actual_params, job=True, callback=job_callback)
+                return self._inner.call(name, *actual_params, job=True)
+            return self._inner.call(name, *actual_params)
         except Exception as exc:  # the client raises its own and websocket exceptions; one scrubbed error type here
             message = f"{name} failed: {exc}"
             for secret in _rpc_secrets(params):

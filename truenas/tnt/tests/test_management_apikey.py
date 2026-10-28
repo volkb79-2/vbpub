@@ -2,6 +2,7 @@ import asyncio
 import json
 import stat
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 from textual.widgets import Button, DataTable, Input, Select, Static, Tree
@@ -15,6 +16,14 @@ from tnt.testing import FakeServer
 from tnt.tui.apikeys import ApiKeyReveal, ApiKeysView
 from tnt.tui.app import TntApp
 from tnt.tui.workflows import PlanReview
+
+
+async def _wait_for(pilot, predicate, *, count=100):
+    for _ in range(count):
+        await pilot.pause(0.05)
+        if predicate():
+            return
+    assert predicate(), "condition did not become true before the bounded UI wait ended"
 
 
 def _row(key_id=1, name="automation"):
@@ -107,6 +116,42 @@ def test_api_key_cli_lists_scrubbed_and_create_shows_once_and_writes_private_fil
     assert len([row for row in server.requests if row["method"] == "api_key.create"]) == creates_before
 
 
+def test_api_key_cli_dry_run_refusal_and_optional_save_failure_preserve_the_one_time_key(
+        config, opener, capsys, server, monkeypatch, tmp_path):
+    import tnt.keyfiles as keyfiles
+    from tnt.errors import Refused
+
+    cli = build_cli(opener=opener)
+    code = cli.run(argv=["apikey", "create", "preview-key", "operator", "--config", str(config), "--dry-run"])
+    output = capsys.readouterr().out
+    assert code == 0 and "api_key.create" in output
+    assert not any(row["method"] == "api_key.create" for row in server.requests)
+
+    code = cli.run(argv=["apikey", "create", "blocked-key", "operator", "--config", str(config)])
+    captured = capsys.readouterr()
+    assert code != 0 and "--allow-write" in (captured.out + captured.err)
+    assert not any(row["method"] == "api_key.create" for row in server.requests)
+
+    monkeypatch.setattr(keyfiles, "write_api_key_file", lambda *_: (_ for _ in ()).throw(
+        Refused("api-key-file", "synthetic write failure")))
+    target = tmp_path / "private.key"
+    code = cli.run(argv=["apikey", "create", "save-failure", "operator", "--config", str(config),
+                         "--allow-write", "--write-key", str(target)])
+    output = capsys.readouterr().out
+    key = server.api_key_create_result["key"]
+    assert code == 0 and output.count(key) == 1 and "synthetic write failure" in output
+    assert "WARNING" in output and not target.exists()
+
+
+def test_api_key_cli_refuses_a_create_result_without_plaintext_key(config, opener, capsys, server, monkeypatch):
+    server._api_key_create = lambda _params: {"id": 99, "name": "unrecoverable", "key": None}
+    cli = build_cli(opener=opener)
+    code = cli.run(argv=["apikey", "create", "unrecoverable", "operator", "--config", str(config), "--allow-write"])
+    captured = capsys.readouterr()
+    assert code != 0 and "no one-time key value" in (captured.out + captured.err)
+    assert "None" not in (captured.out + captured.err)
+
+
 def test_api_key_cli_rename_and_revoke_require_typed_name(config, opener, capsys, server):
     server.api_keys[1] = _row()
     cli = build_cli(opener=opener)
@@ -136,6 +181,66 @@ def test_api_key_file_is_exclusive_and_mode_0600(tmp_path):
         assert "existing" in str(exc)
     else:
         raise AssertionError("writing over an existing API-key file must be refused")
+
+
+@pytest.mark.parametrize(("path", "key", "message"), [
+    (None, "key", "provide an absolute path"),
+    ("", "key", "provide an absolute path"),
+    ("relative.key", "key", "must be absolute"),
+    ("/tmp/key", None, "value is empty"),
+    ("/tmp/key", "", "value is empty"),
+])
+def test_api_key_file_rejects_bad_paths_and_values(path, key, message):
+    from tnt.keyfiles import write_api_key_file
+
+    with pytest.raises(Refused, match=message):
+        write_api_key_file(path, key)
+
+
+def test_api_key_file_reports_open_and_finish_errors_and_cleans_partial_files(monkeypatch, tmp_path):
+    import os
+    from tnt import keyfiles
+
+    target = tmp_path / "save.key"
+    monkeypatch.setattr(keyfiles.os, "open", lambda *args: (_ for _ in ()).throw(OSError("open failed")))
+    with pytest.raises(Refused, match="cannot create API key file"):
+        keyfiles.write_api_key_file(str(target), "secret")
+    assert not target.exists()
+    monkeypatch.undo()
+
+    original_fchmod = os.fchmod
+    monkeypatch.setattr(keyfiles.os, "fchmod", lambda *_: (_ for _ in ()).throw(OSError("chmod failed")))
+    with pytest.raises(Refused, match="cannot finish writing"):
+        keyfiles.write_api_key_file(str(target), "secret")
+    assert not target.exists()
+    monkeypatch.setattr(keyfiles.os, "fchmod", original_fchmod)
+
+    monkeypatch.setattr(keyfiles.os, "write", lambda *_: 0)
+    with pytest.raises(Refused, match="cannot finish writing"):
+        keyfiles.write_api_key_file(str(target), "secret")
+    assert not target.exists()
+    monkeypatch.undo()
+
+    monkeypatch.setattr(keyfiles.os, "fsync", lambda *_: (_ for _ in ()).throw(OSError("sync failed")))
+    with pytest.raises(Refused, match="cannot finish writing"):
+        keyfiles.write_api_key_file(str(target), "secret")
+    assert not target.exists()
+
+
+def test_api_key_file_cleanup_failure_does_not_hide_short_write(monkeypatch, tmp_path):
+    from pathlib import Path
+
+    from tnt import keyfiles
+
+    target = tmp_path / "partial.key"
+    with monkeypatch.context() as patcher:
+        patcher.delattr(keyfiles.os, "O_NOFOLLOW")
+        patcher.setattr(keyfiles.os, "write", lambda _fd, _view: 0)
+        patcher.setattr(Path, "unlink", lambda _path, **_kwargs: (_ for _ in ()).throw(OSError("busy")))
+        with pytest.raises(Refused, match="cannot finish writing"):
+            keyfiles.write_api_key_file(str(target), "synthetic-key")
+    assert target.exists()
+    target.unlink()
 
 
 def test_api_key_tui_has_one_time_reveal_dialog_and_clears_it_on_close(tmp_path):
@@ -192,14 +297,76 @@ def test_api_key_tui_has_one_time_reveal_dialog_and_clears_it_on_close(tmp_path)
                 secret_widget = dialog.query_one("#apikey-secret", Static)
                 assert raw_key and raw_key in str(secret_widget.render())
                 assert "synthetic-client-material" not in str(dialog.render())
+                dialog.query_one("#apikey-save-path", Input).value = "relative.key"
+                await pilot.click("#apikey-save")
+                assert "File was not written" in str(dialog.query_one("#apikey-reveal-note", Static).render())
                 target = tmp_path / "tui-api.key"
                 dialog.query_one("#apikey-save-path", Input).value = str(target)
-                await pilot.click("#apikey-save")
+                dialog.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="apikey-save")))
                 assert target.read_text("utf-8").strip() == raw_key
-                await pilot.click("#apikey-close")
+                dialog.action_close()
                 assert dialog.key == ""
                 assert raw_key not in str(secret_widget.render())
                 assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+        try:
+            asyncio.run(go())
+        finally:
+            session.close()
+
+
+def test_api_key_tui_handles_empty_selection_bad_create_result_and_revoke():
+    import asyncio
+
+    with FakeServer() as server:
+        server._api_key_create = lambda params: {"id": 9, "name": params[0]["name"]}
+        session = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True, allow_write=True)
+
+        async def go():
+            app = TntApp(session)
+            async with app.run_test(size=(160, 50)) as pilot:
+                tree = app.query_one("#nav", Tree)
+                key_node = None
+
+                def find(node):
+                    nonlocal key_node
+                    for child in node.children:
+                        if child.data and child.data.key == "api-keys":
+                            key_node = child
+                            return
+                        find(child)
+
+                find(tree.root)
+                tree.select_node(key_node)
+                await _wait_for(pilot, lambda: "API key(s)." in str(
+                    app.query_one("#apikey-note", Static).render()), count=300)
+                view = app.query_one(ApiKeysView)
+                assert view._selected() is None
+                view.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="other")))
+                app.query_one("#apikey-operation", Select).value = "create"
+                app.query_one("#apikey-name", Input).value = "one-time"
+                app.query_one("#apikey-username", Input).value = "operator"
+                await pilot.click("#apikey-plan")
+                await _wait_for(pilot, lambda: isinstance(app.screen, PlanReview), count=300)
+                await pilot.click("#plan-apply")
+                await _wait_for(pilot, lambda: "returned no one-time key" in str(
+                    app.query_one("#apikey-note", Static).render()))
+
+                server.api_keys[1] = _row()
+                view.action_refresh()
+                await _wait_for(pilot, lambda: view.query_one("#apikey-table", DataTable).row_count == 1)
+                app.query_one("#apikey-operation", Select).value = "rename"
+                app.query_one("#apikey-name", Input).value = "automation"
+                await pilot.click("#apikey-plan")
+                assert "already has that name" in str(app.query_one("#apikey-note", Static).render())
+                app.query_one("#apikey-operation", Select).value = "revoke"
+                view.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="apikey-plan")))
+                await pilot.pause(0.1)
+                assert isinstance(app.screen, PlanReview), str(app.query_one("#apikey-note", Static).render())
+                app.screen.query_one("#plan-confirm", Input).value = "automation"
+                await pilot.click("#plan-apply")
+                await _wait_for(pilot, lambda: server.api_keys == {})
+                assert "api_key.delete" in server.called()
 
         try:
             asyncio.run(go())

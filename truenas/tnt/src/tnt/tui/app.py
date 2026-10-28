@@ -11,11 +11,13 @@ from textual.widgets import Select
 
 from ..menu import MENU, MenuItem, walk
 from ..session import Session
+from ..session import SessionOpener, open_session
 from .disks import DisksView
 from .audit import AuditView
 from .apikeys import ApiKeysView
 from .network import NetworkView
 from .workflows import WorkflowView
+from .system import SystemGeneralView, SystemPowerView, SystemUpdateView
 
 VIEWS = {
     "storage/disks": DisksView,
@@ -32,6 +34,8 @@ VIEWS = {
     "network": NetworkView,
     "audit": AuditView,
     "api-keys": ApiKeysView,
+    "update": SystemUpdateView,
+    "general": SystemGeneralView,
 }
 
 
@@ -52,9 +56,13 @@ class TntApp(App):
     """
     BINDINGS = [("q", "quit", "Quit"), ("ctrl+n", "focus_nav", "Menu"), ("r", "refresh", "Refresh"), ("question_mark", "help", "Help")]
 
-    def __init__(self, session: Session):
+    def __init__(self, session: Session, *, session_opener: SessionOpener = open_session,
+                 insecure_ack: bool = False, reconnect_delays: tuple[int, ...] = (2, 4, 8, 16, 32)):
         super().__init__()
         self.session = session
+        self.session_opener = session_opener
+        self.insecure_ack = insecure_ack
+        self.reconnect_delays = reconnect_delays
         self.current: str | None = None
 
     def compose(self) -> ComposeResult:
@@ -90,7 +98,10 @@ class TntApp(App):
         content = self.query_one("#content")
         content.remove_children()
         factory = VIEWS.get(item.key)
-        content.mount(factory(self.session) if factory else placeholder(item))
+        if item.key in {"reboot", "shutdown"}:
+            content.mount(SystemPowerView(self.session, item.key))
+        else:
+            content.mount(factory(self.session) if factory else placeholder(item))
         self.current = item.key
 
     def action_refresh(self) -> None:

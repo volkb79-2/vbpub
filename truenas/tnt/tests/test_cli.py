@@ -185,3 +185,16 @@ def test_python_dash_m_entry_point():
     import sys
     done = subprocess.run([sys.executable, "-m", "tnt", "--version"], capture_output=True, text=True, timeout=60)
     assert done.returncode == 0 and done.stdout.strip()
+def test_python_module_entrypoint_delegates_to_main(monkeypatch):
+    import runpy
+    import sys
+    import tnt.cli
+
+    monkeypatch.setattr(tnt.cli, "main", lambda: 23)
+    monkeypatch.setattr(sys, "argv", ["tnt", "--help"])
+    try:
+        runpy.run_module("tnt.__main__", run_name="__main__")
+    except SystemExit as exc:
+        assert exc.code == 23
+    else:
+        raise AssertionError("module entry point must exit with the CLI status")

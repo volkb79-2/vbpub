@@ -14,6 +14,10 @@
   known inline secret patterns are scrubbed before display. Generic middleware/syslog tailing is unavailable in v27.
 - Added API key list/create/rename/revoke management. Creation reveals the raw key once in a dedicated warning display;
   optional file storage is exclusive mode `0600`, and verifier fields stay out of ordinary listings and plans.
+- Added destructive system update, reboot, and shutdown workflows with a FULL_ADMIN job-visibility preflight, running
+  VM/container and SMB-session summary, typed confirmation, update train binding/progress, and bounded TUI reconnect.
+  Added configuration tar export to a new local mode-0600 file; the export contains the secret seed and its download
+  URL is never displayed. System and config-export live checks are documented but were not run.
 - Added schema-versioned `tnt.toml` profiles with explicit config search order, current-user ownership and exact mode-0600 checks,
   inline API-key or password credentials, optional API-key files, and masked profile inspection.
 - Added v27 password login through the pinned client's `PASSWORD_PLAIN` mechanism; API keys continue to use SCRAM.
