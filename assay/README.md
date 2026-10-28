@@ -95,8 +95,12 @@ an installed wheel or zipapp needs nothing extra:
   [workflow](docs/CONSUMERS.md#close-out-a-mutation-campaign-with-assay-analyze-campaign-b108)
   and [design](docs/DESIGN-GUIDE.md#mutation-campaign-closeout-b108-phase-1).
   A `0/1` shard covers the full inventory and can qualify; one shard of a
-  multi-shard campaign cannot. `qualifying: true` means whole-plan scope, not
-  that the campaign is complete or passed. State input is limited to 50,000
+  multi-shard campaign cannot. `qualifying: true` means whole requested scope, not
+  that the campaign is complete or passed. This scope flag remains true for a
+  lane with no R2 declaration and for plan-only ingested analysis without a
+  verdict. If a verified native-R2 verdict stops before `judgment.r2`, the
+  campaign remains incomplete and `qualifying` is false because no native
+  inventory was established. State input is limited to 50,000
   directory entries, 10,000 mutation records and 64 MiB total, and a JSON
   report is limited to 16 MiB. Refusal JSON is limited to 64 KiB and each
   input-derived error detail to 768 characters; long details are truncated
@@ -104,6 +108,15 @@ an installed wheel or zipapp needs nothing extra:
   error, never a partial report or an invented zero. A truncated list reports
   its full `matching_total` and a `next_offset`; continue it with
   `--outcome <bucket> --offset <next_offset>` until `next_offset` is `null`.
+
+If an R0 baseline fails before native R2 runs, the verified verdict has no
+`judgment.r2` and does not establish mutation inventory. Campaign analysis stays
+`incomplete` with `inventory_not_exhausted`, reports `qualifying: false`, and
+marks the native plan `not_supported` because native R2 was not judged. A
+matching progress terminal and `--command-exit` confirm that the command ended;
+they do not establish the missing inventory. Inventory without a native plan
+requires an explicit `producer = "ingested"` verdict on a lane configured with
+`judge.mutation.format`.
 
 <!-- assay-analysis-example -->
 ```bash

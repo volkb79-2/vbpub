@@ -4837,11 +4837,19 @@ name (CD18), judges nothing, and every estimate it prints is diagnostic.
   768-character cap; details are truncated while retaining the failure kind,
   so a duplicate key or other input-derived detail cannot bypass the output
   cap.
-- **`qualifying` is scope metadata.** `true` means analysis used the whole
-  declared plan rather than a selected pilot. It does not mean the campaign is
-  complete, passed, or acceptable. Read `status`, `verdict`, and
+- **`qualifying` is scope metadata.** `true` means analysis uses the whole
+  requested scope rather than a selected pilot or shard. It does not mean the
+  campaign is complete, passed, or acceptable. The flag remains true for lanes
+  without an R2 declaration and for plan-only ingested analysis before a
+  verdict exists. Read `status`, `verdict`, and
   `complete_blockers` for those conclusions. A report can be
-  `qualifying: true` with `status: incomplete` or a non-PASS verdict.
+  `qualifying: true` with `status: incomplete` or a non-PASS verdict. A native
+  lane whose verified verdict lacks `judgment.r2` has no established native
+  inventory: it remains `incomplete` with `inventory_not_exhausted`, and is not
+  `qualifying`. A matching terminal event and observed command exit prove the
+  command ended, not that the R2 inventory ran. Inventory without a native plan
+  requires an explicit ingested producer on a lane configured with a mutation
+  report format.
 - **A single shard is the whole plan.** The `0/1` selection contains every
   candidate in the deterministic inventory, so a complete and reconciled
   `0/1` campaign can qualify just like an unsharded campaign. A shard from a

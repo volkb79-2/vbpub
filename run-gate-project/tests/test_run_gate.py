@@ -10,6 +10,7 @@ import ast
 import calendar
 import contextlib
 import concurrent.futures
+import ctypes
 import fcntl
 import hashlib
 from importlib import metadata as importlib_metadata
@@ -64,6 +65,77 @@ sys.modules["run_gate"] = run_gate
 _spec.loader.exec_module(run_gate)
 
 CGROUP_VAR = "CGROUP_PARENT_DEV_GATES"
+
+_PR_SET_CHILD_SUBREAPER = 36
+_PR_GET_CHILD_SUBREAPER = 37
+
+
+def _set_child_subreaper(enabled: bool) -> bool:
+    """Set Linux child-subreaper mode and return its previous value."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    previous = ctypes.c_int()
+    if libc.prctl(_PR_GET_CHILD_SUBREAPER, ctypes.byref(previous), 0, 0, 0) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+    if bool(previous.value) != enabled:
+        if libc.prctl(_PR_SET_CHILD_SUBREAPER, int(enabled), 0, 0, 0) != 0:
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error))
+    return bool(previous.value)
+
+
+def _direct_child_pids() -> list[int]:
+    """Read direct children of every thread in this test process from procfs."""
+    task_root = Path("/proc/self/task")
+    children = []
+    for task in task_root.iterdir():
+        try:
+            children.extend(
+                int(pid)
+                for pid in (task / "children").read_text(encoding="ascii").split()
+            )
+        except FileNotFoundError:
+            # A short-lived thread can exit between listing tasks and reading it.
+            continue
+    return sorted(set(children))
+
+
+def _kill_and_reap_direct_children() -> None:
+    """Clean children orphaned by a client killed in a subprocess test."""
+    deadline = time.monotonic() + 5.0
+    while children := _direct_child_pids():
+        for pid in children:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        for pid in children:
+            try:
+                os.waitpid(pid, 0)
+            except ChildProcessError:
+                pass
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"could not reap adopted test children: {children}")
+
+
+@contextlib.contextmanager
+def _test_child_scope():
+    """Adopt and clean subprocess-test descendants so Assay cannot inherit them."""
+    previous = _set_child_subreaper(True)
+    try:
+        yield
+    finally:
+        try:
+            _kill_and_reap_direct_children()
+        finally:
+            _set_child_subreaper(previous)
+
+
+@pytest.fixture
+def child_process_scope():
+    """Keep intentionally orphaning subprocess tests inside their own boundary."""
+    with _test_child_scope():
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -3843,7 +3915,8 @@ exit 64
         assert not (control / "calls").exists()
         assert not (project / ".assay" / "campaign-unit.json").exists()
 
-    def test_a_killed_lane_leaves_no_closeout_of_an_earlier_run(self, tmp_path):
+    def test_a_killed_lane_leaves_no_closeout_of_an_earlier_run(
+            self, tmp_path, child_process_scope):
         project, inner, env, control = self._script(tmp_path, "ok", 0)
         assay = project / ".assay"
         assay.mkdir()
@@ -3924,7 +3997,8 @@ exit 64
         assert inner.count("timeout $__rg_co_cap") == 1
         assert inner.count('"${__rg_co_a[@]}" --format') == 2
 
-    def test_a_json_call_that_times_out_skips_the_text_call(self, tmp_path):
+    def test_a_json_call_that_times_out_skips_the_text_call(
+            self, tmp_path, child_process_scope):
         """The text call would only time out the same way and spend a second
         cap; the exit file records 124 for both and the .err says why."""
         done, calls = self._run_inner(
@@ -16310,7 +16384,24 @@ def fake_docker_stateful(tmp_path, monkeypatch) -> tuple[Path, Path]:
             # evidence is captured before removal, and a shim that blocked
             # there too would hang the very path a stall depends on.
             case "$*" in
-              *-f*) while [ -f "$S/.hang" ]; do sleep 0.2; done ;;
+              *-f*)
+                __sleep_pid=""
+                __stop_logs() {{
+                  if [ -n "$__sleep_pid" ]; then
+                    kill "$__sleep_pid" 2>/dev/null || :
+                    wait "$__sleep_pid" 2>/dev/null || :
+                  fi
+                  exit 143
+                }}
+                trap '__stop_logs' TERM INT
+                while [ -f "$S/.hang" ]; do
+                  sleep 0.2 &
+                  __sleep_pid=$!
+                  wait "$__sleep_pid"
+                  __sleep_pid=""
+                done
+                trap - TERM INT
+                ;;
             esac
             echo "FAKE-LOGS-LINE"
             ;;
@@ -16396,10 +16487,23 @@ def fake_docker_logstream(tmp_path, monkeypatch) -> tuple[Path, Path]:
               fi
             }}
             if [ "$streaming" = yes ]; then
+              __sleep_pid=""
+              __stop_logs() {{
+                if [ -n "$__sleep_pid" ]; then
+                  kill "$__sleep_pid" 2>/dev/null || :
+                  wait "$__sleep_pid" 2>/dev/null || :
+                fi
+                exit 143
+              }}
+              trap '__stop_logs' TERM INT
               while [ -f "$S/.hang" ]; do
                 emit_new
-                sleep 0.05
+                sleep 0.05 &
+                __sleep_pid=$!
+                wait "$__sleep_pid"
+                __sleep_pid=""
               done
+              trap - TERM INT
             fi
             emit_new
             ;;
@@ -16531,24 +16635,67 @@ class TestRg109InterruptedClient:
         repo, proj = make_history_repo(tmp_path, SIMPLE_LANE)
         log, state = fake_docker_stateful(tmp_path, monkeypatch)
         (state / ".hang").write_text("")      # `docker logs -f` blocks
-        client = subprocess.Popen([sys.executable, str(_TOOL_INVOKE), "suite"],
-                                  cwd=proj, stdout=subprocess.PIPE,
-                                  stderr=subprocess.STDOUT, text=True)
-        record = proj / ".run-gate" / "inflight" / "suite.json"
-        deadline = time.monotonic() + 30
-        while not (state_containers(state) and record.exists()) \
-                and time.monotonic() < deadline:
-            time.sleep(0.05)
-        assert state_containers(state) and record.exists()
-        name = state_containers(state)[0]
-        client.send_signal(signal.SIGTERM)
-        out, _ = client.communicate(timeout=60)
-        assert client.returncode == 2, out   # ERROR: interrupted
-        assert ("interrupted before a closed result (exit status 143); "
-                "verdict ERROR, exit 2") in out
-        assert state_containers(state) == [], out   # `docker rm -f` ran
-        assert not record.exists(), out               # and the record is gone
-        assert f"rm\x1f-f\x1f{name}" in log.read_text()
+        previous_subreaper = _set_child_subreaper(True)
+        client = None
+        try:
+            client_script = tmp_path / "run-gate-client.py"
+            client_script.write_text(textwrap.dedent(f"""\
+                import importlib.util
+                import sys
+                from pathlib import Path
+
+                sys.argv[0] = "run-gate"
+                spec = importlib.util.spec_from_file_location(
+                    "run_gate", {str(_TOOL)!r})
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[spec.name] = module
+                spec.loader.exec_module(module)
+                module.physical_path = lambda path, *a, **kw: Path("/phys")
+                raise SystemExit(module.main(["suite"]))
+            """), encoding="utf-8")
+            client = subprocess.Popen([sys.executable, str(client_script)],
+                                      cwd=proj, stdout=subprocess.PIPE,
+                                      stderr=subprocess.STDOUT, text=True)
+            record = proj / ".run-gate" / "inflight" / "suite.json"
+            deadline = time.monotonic() + 30
+            while not (state_containers(state) and record.exists()) \
+                    and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert state_containers(state) and record.exists()
+            name = state_containers(state)[0]
+            client.send_signal(signal.SIGTERM)
+            out, _ = client.communicate(timeout=60)
+            assert client.returncode == 2, out   # ERROR: interrupted
+            assert ("interrupted before a closed result (exit status 143); "
+                    "verdict ERROR, exit 2") in out
+            assert state_containers(state) == [], out   # `docker rm -f` ran
+            assert not record.exists(), out               # and the record is gone
+            assert f"rm\x1f-f\x1f{name}" in log.read_text()
+            # Run-Gate terminates the fake `docker logs -f` shell during its
+            # SIGTERM cleanup. Its polling `sleep` is a separate child, so the
+            # fake Docker shim must reap it before the shell exits.
+            leaked_children = _direct_child_pids()
+            child_names = []
+            for pid in leaked_children:
+                try:
+                    name = Path(f"/proc/{pid}/comm").read_text(
+                        encoding="ascii").strip()
+                except OSError:
+                    name = "<exited>"
+                child_names.append((pid, name))
+            assert leaked_children == [], (
+                "SIGTERM cleanup left the fake docker logs process tree behind: "
+                f"{child_names}"
+            )
+        finally:
+            if client is not None:
+                if client.poll() is None:
+                    client.kill()
+                client.wait(timeout=30)
+            try:
+                _kill_and_reap_direct_children()
+            finally:
+                _set_child_subreaper(previous_subreaper)
 
     def test_an_interruption_before_the_wait_keeps_the_container_and_says_so(
             self, tmp_path, monkeypatch, capsys):
@@ -16597,35 +16744,78 @@ class TestReattachAcrossADeadClient:
         repo, proj = self._repo(tmp_path)
         log, state = fake_docker_stateful(tmp_path, monkeypatch)
         (state / ".hang").write_text("")      # `docker logs -f` blocks
-        client = subprocess.Popen([sys.executable, str(_TOOL_INVOKE), "suite"],
-                                  cwd=proj, stdout=subprocess.PIPE,
-                                  stderr=subprocess.STDOUT, text=True)
-        deadline = time.monotonic() + 30
-        while not state_containers(state) and time.monotonic() < deadline:
-            time.sleep(0.05)
-        assert state_containers(state), "the fixture never started a container"
-        # …and then until the client has written its record, or 3 s pass.
-        # Waiting is not an assertion: the PRE-FIX client never writes one,
-        # so it is killed on the deadline and still produces the duplicate
-        # this test exists to catch.
-        record = proj / ".run-gate" / "inflight" / "suite.json"
-        deadline = time.monotonic() + 3
-        while not record.exists() and time.monotonic() < deadline:
-            time.sleep(0.05)
-        client.kill()
-        client.wait(timeout=30)
-        first = state_containers(state)
-        assert len(lane_runs(log)) == 1
+        previous_subreaper = _set_child_subreaper(True)
+        client = None
+        try:
+            client_script = tmp_path / "run-gate-client.py"
+            client_script.write_text(textwrap.dedent(f"""\
+                import importlib.util
+                import sys
+                from pathlib import Path
 
-        (state / ".hang").unlink()            # the container finishes
-        out = run_tool(proj, "suite")
-        assert len(lane_runs(log)) == 1, (
-            "a SECOND container was started for a lane that already had one "
-            f"running: {lane_runs(log)}")
-        assert f"run-gate: re-attached to {first[0]}" in out.stdout, out.stdout
-        assert out.returncode == 0
-        assert state_containers(state) == []   # removed in the finally
-        assert not (proj / ".run-gate" / "inflight" / "suite.json").exists()
+                sys.argv[0] = "run-gate"
+                spec = importlib.util.spec_from_file_location(
+                    "run_gate", {str(_TOOL)!r})
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[spec.name] = module
+                spec.loader.exec_module(module)
+                module.physical_path = lambda path, *a, **kw: Path("/phys")
+                raise SystemExit(module.main(["suite"]))
+            """), encoding="utf-8")
+            client = subprocess.Popen([sys.executable, str(client_script)],
+                                      cwd=proj, stdout=subprocess.PIPE,
+                                      stderr=subprocess.STDOUT, text=True)
+            deadline = time.monotonic() + 30
+            while not state_containers(state) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            if not state_containers(state):
+                if client.poll() is None:
+                    client.kill()
+                output, _ = client.communicate(timeout=30)
+                pytest.fail(
+                    "the fixture never started a container; "
+                    f"client exit={client.returncode}, output:\n{output}"
+                )
+            # …and then until the client has written its record, or 3 s pass.
+            # Waiting is not an assertion: the PRE-FIX client never writes one,
+            # so it is killed on the deadline and still produces the duplicate
+            # this test exists to catch.
+            record = proj / ".run-gate" / "inflight" / "suite.json"
+            deadline = time.monotonic() + 3
+            while not record.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            client.kill()
+            client.wait(timeout=30)
+            # SIGKILL cannot run the client-side cleanup. The fake `docker
+            # logs -f` process (and its polling `sleep`) is not the container
+            # whose record this test is preserving, so reap that helper tree
+            # before proving the next client can re-attach to the same state.
+            _kill_and_reap_direct_children()
+            assert _direct_child_pids() == [], (
+                "killing the Run-Gate client left its fake docker logs process "
+                f"tree behind: {_direct_child_pids()}"
+            )
+            first = state_containers(state)
+            assert len(lane_runs(log)) == 1
+
+            (state / ".hang").unlink()        # the container finishes
+            out = run_tool(proj, "suite")
+            assert len(lane_runs(log)) == 1, (
+                "a SECOND container was started for a lane that already had one "
+                f"running: {lane_runs(log)}")
+            assert f"run-gate: re-attached to {first[0]}" in out.stdout, out.stdout
+            assert out.returncode == 0
+            assert state_containers(state) == []   # removed in the finally
+            assert not (proj / ".run-gate" / "inflight" / "suite.json").exists()
+        finally:
+            if client is not None:
+                if client.poll() is None:
+                    client.kill()
+                client.wait(timeout=30)
+            try:
+                _kill_and_reap_direct_children()
+            finally:
+                _set_child_subreaper(previous_subreaper)
 
 
 def plant_inflight(proj: Path, repo: Path, state: Path | None, *,
@@ -19137,41 +19327,43 @@ class TestStallEndToEnd:
 
     def test_a_silent_lane_is_stopped_with_evidence_and_error_status(
             self, tmp_path, monkeypatch, capsys):
-        # These end-to-end stall tests need a seconds-scale timeout; the
-        # load-time floor (twice the heartbeat) is lifted for them only.
-        monkeypatch.setattr(run_gate, "ASSAY_STALL_FLOOR_SECONDS", 0)  # test-only
-        repo, proj = make_history_repo(tmp_path, """\
-            schema_version = 1
-            [environments.tester-unified]
-            image = "tester-unified:local"
-            [lanes.mutation]
-            kind = "assay"
-            environment = "tester-unified"
-            assay_lane = "cw2b_schema"
-            assay_command = ["./a.pyz"]
-            stall_timeout = "1s"
-            clean_tree = false
-        """)
-        monkeypatch.setenv("RUN_GATE_EVIDENCE_DIR", str(tmp_path / "ev"))
-        monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.2)
-        monkeypatch.setattr(run_gate, "physical_path",
-                            lambda p, **k: Path("/phys"))
-        monkeypatch.chdir(proj)
-        monkeypatch.setattr(sys, "argv", ['run-gate'])
-        log, state = fake_docker_stateful(tmp_path, monkeypatch)
-        (state / ".hang").write_text("")          # `logs -f` never returns
-        write_progress(proj / ".assay" / "progress-cw2b_schema.jsonl",
-                       candidate(37))
-        assert run_gate.main(["mutation"]) == 2
-        err = capsys.readouterr().err
-        assert "lane 'mutation' STALLED" in err
-        assert "still RUNNING but progress-cw2b_schema.jsonl has not advanced" in err
-        assert "last event seen: candidate 37/172" in err
-        assert "container logs preserved at" in err
-        # …and the container is GONE: a stall stops the lane, it does not
-        # leave the thing that stalled running on a shared host.
-        assert state_containers(state) == []
-        assert not (proj / ".run-gate" / "inflight" / "mutation.json").exists()
+        with _test_child_scope():
+            # These end-to-end stall tests need a seconds-scale timeout; the
+            # load-time floor (twice the heartbeat) is lifted for them only.
+            monkeypatch.setattr(run_gate, "ASSAY_STALL_FLOOR_SECONDS", 0)  # test-only
+            repo, proj = make_history_repo(tmp_path, """\
+                schema_version = 1
+                [environments.tester-unified]
+                image = "tester-unified:local"
+                [lanes.mutation]
+                kind = "assay"
+                environment = "tester-unified"
+                assay_lane = "cw2b_schema"
+                assay_command = ["./a.pyz"]
+                stall_timeout = "1s"
+                clean_tree = false
+            """)
+            monkeypatch.setenv("RUN_GATE_EVIDENCE_DIR", str(tmp_path / "ev"))
+            monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.2)
+            monkeypatch.setattr(run_gate, "physical_path",
+                                lambda p, **k: Path("/phys"))
+            monkeypatch.chdir(proj)
+            monkeypatch.setattr(sys, "argv", ['run-gate'])
+            log, state = fake_docker_stateful(tmp_path, monkeypatch)
+            (state / ".hang").write_text("")          # `logs -f` never returns
+            write_progress(proj / ".assay" / "progress-cw2b_schema.jsonl",
+                           candidate(37))
+            assert run_gate.main(["mutation"]) == 2
+            err = capsys.readouterr().err
+            assert "lane 'mutation' STALLED" in err
+            assert "still RUNNING but progress-cw2b_schema.jsonl has not advanced" in err
+            assert "last event seen: candidate 37/172" in err
+            assert "container logs preserved at" in err
+            # …and the container is GONE: a stall stops the lane, it does not
+            # leave the thing that stalled running on a shared host.
+            assert state_containers(state) == []
+            assert not (proj / ".run-gate" / "inflight" / "mutation.json").exists()
+            assert _direct_child_pids() == []
 
     def test_a_moving_lane_is_never_stopped(self, tmp_path, monkeypatch,
                                             capsys):
@@ -19328,35 +19520,37 @@ class TestStallEndToEndCommandLane:
 
     def test_a_silent_command_lane_is_stopped_with_evidence_and_error_status(
             self, tmp_path, monkeypatch, capsys):
-        repo, proj = make_history_repo(tmp_path, self.CMD_LANE)
-        monkeypatch.setenv("RUN_GATE_EVIDENCE_DIR", str(tmp_path / "ev"))
-        monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.2)
-        monkeypatch.setattr(run_gate, "physical_path",
-                            lambda p, **k: Path("/phys"))
-        monkeypatch.chdir(proj)
-        monkeypatch.setattr(sys, "argv", ['run-gate'])
-        log, state = fake_docker_logstream(tmp_path, monkeypatch)
-        (state / ".hang").write_text("")          # `logs -f` never returns
-        assert run_gate.main(["suite"]) == 2
-        out, err = capsys.readouterr()
-        assert "lane 'suite' STALLED" in err
-        assert "still RUNNING but has printed nothing" in err
-        assert "for 1s (stall_timeout 1s)" in err
-        assert "last line seen: (no output yet)" in err
-        assert "container logs preserved at" in err
-        # Round-2 review finding, confirmed by direct reproduction: a
-        # stalled container's pump thread is BY DEFINITION still blocked
-        # reading (nothing more is coming until the container is removed),
-        # so joining it on the stall path used to time out on EVERY stall
-        # and print this WARNING — not just under real host contention, the
-        # case it exists to disclose. It must be silent here — on EITHER
-        # stream (round-3 review: a regression that leaked it onto stdout
-        # instead would not be caught by an err-only assertion).
-        assert "log pump did not finish draining" not in err
-        assert "log pump did not finish draining" not in out
-        # …the container is GONE, same as the assay case: a stall stops the
-        # lane, it does not leave the thing that stalled running.
-        assert not (proj / ".run-gate" / "inflight" / "suite.json").exists()
+        with _test_child_scope():
+            repo, proj = make_history_repo(tmp_path, self.CMD_LANE)
+            monkeypatch.setenv("RUN_GATE_EVIDENCE_DIR", str(tmp_path / "ev"))
+            monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.2)
+            monkeypatch.setattr(run_gate, "physical_path",
+                                lambda p, **k: Path("/phys"))
+            monkeypatch.chdir(proj)
+            monkeypatch.setattr(sys, "argv", ['run-gate'])
+            log, state = fake_docker_logstream(tmp_path, monkeypatch)
+            (state / ".hang").write_text("")          # `logs -f` never returns
+            assert run_gate.main(["suite"]) == 2
+            out, err = capsys.readouterr()
+            assert "lane 'suite' STALLED" in err
+            assert "still RUNNING but has printed nothing" in err
+            assert "for 1s (stall_timeout 1s)" in err
+            assert "last line seen: (no output yet)" in err
+            assert "container logs preserved at" in err
+            # Round-2 review finding, confirmed by direct reproduction: a
+            # stalled container's pump thread is BY DEFINITION still blocked
+            # reading (nothing more is coming until the container is removed),
+            # so joining it on the stall path used to time out on EVERY stall
+            # and print this WARNING — not just under real host contention, the
+            # case it exists to disclose. It must be silent here — on EITHER
+            # stream (round-3 review: a regression that leaked it onto stdout
+            # instead would not be caught by an err-only assertion).
+            assert "log pump did not finish draining" not in err
+            assert "log pump did not finish draining" not in out
+            # …the container is GONE, same as the assay case: a stall stops the
+            # lane, it does not leave the thing that stalled running.
+            assert not (proj / ".run-gate" / "inflight" / "suite.json").exists()
+            assert _direct_child_pids() == []
 
     def test_the_pump_thread_is_joined_even_on_a_stall(
             self, tmp_path, monkeypatch):
@@ -22163,7 +22357,8 @@ class TestProfilerClient:
         assert doc is None
         assert "contract" in reason
 
-    def test_timeout_returns_reason_never_raises(self, tmp_path, monkeypatch):
+    def test_timeout_returns_reason_never_raises(
+            self, tmp_path, monkeypatch, child_process_scope):
         set_cgprofile_plan(tmp_path, monkeypatch, version=(None, None, 2))
         monkeypatch.setitem(run_gate.PROFILE_CTL_TIMEOUTS, "version", 0.1)
         client = self._client(tmp_path, monkeypatch)
@@ -24518,8 +24713,8 @@ class TestBareHostProfilingWiring:
         assert resources["started_at"] == resources["ended_at"]
         assert resources["duration_seconds"] == 0.375
 
-    def test_daemon_path_never_computes_a_floor(self, tmp_path, monkeypatch,
-                                               capsys):
+    def test_daemon_path_never_computes_a_floor(
+            self, tmp_path, monkeypatch, capsys, child_process_scope):
         """RW-46b is a rusage-path-only concept (the daemon path measures
         via a real cgroup) -- a daemon-path run must leave floor_bytes/
         peak_at_floor out of the picture entirely (both null, contract
@@ -24592,7 +24787,7 @@ class TestBareHostProfilingWiring:
         assert not (proj / ".run-gate" / "history.json").exists()
 
     def test_daemon_path_targets_self_id_scope_and_injects_token(
-            self, tmp_path, monkeypatch, capsys):
+            self, tmp_path, monkeypatch, capsys, child_process_scope):
         calls = []
         real_print = print
 
@@ -24660,7 +24855,7 @@ class TestBareHostProfilingWiring:
         assert latest["profile_error"] is None
 
     def test_daemon_path_missing_baseline_discloses_unknown(
-            self, tmp_path, monkeypatch, capsys):
+            self, tmp_path, monkeypatch, capsys, child_process_scope):
         # A daemon may omit its optional baseline. The session still starts;
         # the display must use the unknown marker rather than dividing None.
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
@@ -24682,7 +24877,7 @@ class TestBareHostProfilingWiring:
         assert "baseline ? MiB" in capsys.readouterr().out
 
     def test_daemon_start_with_null_optional_target_still_stops_session(
-            self, tmp_path, monkeypatch):
+            self, tmp_path, monkeypatch, child_process_scope):
         """`target` is optional response metadata.  A valid session with
         JSON null there must remain a daemon session and reach exactly one
         stop; it must not crash after start and silently leak the session."""
@@ -28704,18 +28899,16 @@ class TestExecLaneInflightRecord:
         lane's own real precedent
         (`TestReattachAcrossADeadClient::test_a_killed_client_leaves_a_
         container_the_next_run_re_attaches_to`): a REAL client subprocess
-        is spawned against a REAL (shimmed) exec-mode project, killed
-        mid-exec (the shim's `docker exec` actually runs `sleep 30`, wide
-        enough to guarantee the kill lands before it finishes), and the
-        record is read back from OUTSIDE that process -- proof it demonstrably
-        survives a client that never reaches its own `finally`, not merely
-        that the record functions can round-trip a dict."""
+        is spawned against a REAL (shimmed) exec-mode project and killed
+        inside its Docker-call boundary. The record is read back from OUTSIDE
+        that process, proving it survives a client that never reaches its own
+        `finally`. The boundary blocks in the client process so the local
+        fake does not leave a child behind when the client dies."""
         repo = make_repo(tmp_path)
         (repo / ".gitignore").write_text(".run-gate/\n")
-        cfg = self._cfg().replace('argv = ["true"]',
-                                  'argv = ["bash", "-c", "sleep 30"]')
+        cfg = self._cfg()
         proj = make_project(repo, cfg)
-        fake_docker_executing(tmp_path, monkeypatch)
+        fake_docker(tmp_path, monkeypatch)
         shim = shim_dir_of(monkeypatch) / "docker"
         body = shim.read_text()
         body = body.replace(
@@ -28725,26 +28918,80 @@ class TestExecLaneInflightRecord:
             f'2026-09-02T11:00:00Z|{RG55_CONTAINER_ID}\\n\' ;;\n'
             '  ps) printf \'the-runner\\n\' ;;')
         shim.write_text(body)
-        client = subprocess.Popen([sys.executable, str(_TOOL_INVOKE), "suite"],
-                                  cwd=proj, stdout=subprocess.PIPE,
-                                  stderr=subprocess.STDOUT, text=True)
-        record_path = proj / ".run-gate" / "inflight" / "suite.json"
-        deadline = time.monotonic() + 15
-        while not record_path.exists() and time.monotonic() < deadline:
-            time.sleep(0.05)
-        assert record_path.exists(), \
-            "the record must exist before the exec finishes (sleep 30 " \
-            "guarantees this branch is not just lucky timing)"
-        client.kill()
-        client.wait(timeout=30)
-        # RG-60's own scope: the record existing to be FOUND, not
-        # reconciliation (unlike a container lane, there is no re-attach
-        # here) -- it must still be there, untouched, after the client
-        # died mid-exec without ever reaching its `finally`.
-        recovered = run_gate.load_inflight_record(record_path)
-        assert recovered is not None
-        assert recovered["container"] == "the-runner"
-        assert recovered["lane"] == "suite"
+
+        client_blocked = tmp_path / "client-blocked-in-docker-exec"
+        client_script = tmp_path / "run-gate-client.py"
+        client_script.write_text(textwrap.dedent(f"""\
+            import importlib.util
+            import subprocess
+            import sys
+            import time
+            from pathlib import Path
+
+            sys.argv[0] = "run-gate"
+
+            spec = importlib.util.spec_from_file_location("run_gate", {str(_TOOL)!r})
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = module
+            spec.loader.exec_module(module)
+
+            client_blocked = Path({str(client_blocked)!r})
+            real_popen = module.subprocess.Popen
+
+            def hold_docker_exec(argv, *args, **kwargs):
+                if len(argv) >= 2 and Path(argv[0]).name == "docker" and argv[1] == "exec":
+                    client_blocked.write_text("entered", encoding="utf-8")
+                    while True:
+                        time.sleep(1)
+                return real_popen(argv, *args, **kwargs)
+
+            module.subprocess.Popen = hold_docker_exec
+            raise SystemExit(module.main(["suite"]))
+        """), encoding="utf-8")
+
+        previous_subreaper = _set_child_subreaper(True)
+        client = None
+        try:
+            client = subprocess.Popen([sys.executable, str(client_script)],
+                                      cwd=proj, stdout=subprocess.PIPE,
+                                      stderr=subprocess.STDOUT, text=True)
+            record_path = proj / ".run-gate" / "inflight" / "suite.json"
+            deadline = time.monotonic() + 15
+            while (
+                (not record_path.exists() or not client_blocked.exists())
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.05)
+            if not record_path.exists() or not client_blocked.exists():
+                client.kill()
+                client_output, _ = client.communicate(timeout=30)
+                raise AssertionError(
+                    "run-gate client did not reach docker exec; output:\n"
+                    f"{client_output}"
+                )
+            client.kill()
+            client.wait(timeout=30)
+            # RG-60's own scope: the record existing to be FOUND, not
+            # reconciliation (unlike a container lane, there is no re-attach
+            # here) -- it must still be there, untouched, after the client
+            # died mid-exec without ever reaching its `finally`.
+            recovered = run_gate.load_inflight_record(record_path)
+            assert recovered is not None
+            assert recovered["container"] == "the-runner"
+            assert recovered["lane"] == "suite"
+            assert _direct_child_pids() == [], (
+                "the killed client left child processes in the test process "
+                f"tree: {_direct_child_pids()}"
+            )
+        finally:
+            if client is not None:
+                if client.poll() is None:
+                    client.kill()
+                client.wait(timeout=30)
+            try:
+                _kill_and_reap_direct_children()
+            finally:
+                _set_child_subreaper(previous_subreaper)
 
     def test_record_written_even_when_profiling_disabled(self, tmp_path,
                                                           monkeypatch):
