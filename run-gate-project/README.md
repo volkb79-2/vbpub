@@ -1,8 +1,8 @@
 # run-gate — the per-project gate entrypoint
 
-**Status:** BUILT (P01, 2026-08-22). First consumer: **nyxloom** (controller
-amendment A1 — ciu was under parallel development and is DEFERRED; its assay
-lane ships construction-tested with live proof at its adoption). This README describes the current user-facing surface; **`SPEC.md` is the
+**Status:** released as a wheel (`run-gate-vX.Y.Z` tags; see `CHANGES.md`),
+adopted by every internal project's gate (cmru's release gate, assay, ciu,
+nyxloom, cgroup-profiler, ...). This README describes the current user-facing surface; **`SPEC.md` is the
 normative implementation contract**. The installed wheel's SemVer is the
 public tool identity. Build-and-adopt handoff: `HANDOFF-P01-build-and-adopt-ciu.md`;
 chronological build log incl. every failure:
@@ -120,6 +120,28 @@ NOT_RUN reasons are closed: realness-mismatch, service-down,
 environment-down, environment-mismatch, env-missing, external-missing,
 external-down, dirty-tree, no-headroom, lock-busy, no-base, judge-floor,
 judge-digest, provenance-mismatch, and state-mount.
+
+**Interrupting a run (SIGTERM / Ctrl-C; RG-109).** A client stopped
+gracefully while it waits on its lane removes the container it started and
+clears the in-flight record on the way out (the same `finally` every other
+exit takes; a second SIGTERM or SIGINT during that cleanup is deferred until
+the container is gone and the record cleared, then re-raised — never raised
+mid-cleanup), prints one `interrupted before a closed result` line and exits
+ERROR 2. Two limits: the deferral is installed, and afterwards restored, one
+signal at a time a few statements after the cleanup begins, so a signal in
+either gap is handled by whichever handler is bound at that instant; and it cannot
+outlast a supervisor's kill timer (`docker stop` sends SIGKILL after ~10 s,
+systemd after `TimeoutStopSec`) — if the profiling `stop` or `docker rm -f`
+is still running when SIGKILL lands, removal is not guaranteed and the next
+invocation adopts or collects the container like any dead client's. Adoption by a
+later invocation (follow / collect / `--fresh`) is for a client that DIED
+(SIGKILL, crash, reboot), not for one that was asked to stop. The one window
+in which a stopped client keeps its container is between a successful
+`docker run -d` and the wait (the profiling `ctl start`, up to 10 s): the
+container and its in-flight record are kept, adoptable, and the client says
+so with the exact `docker rm -f <name>` to discard it and that the lane budget
+is not enforced while no client is attached. An exec-mode lane's in-container
+process is bounded by its own `timeout` wrapper regardless.
 
 Container lanes receive Git's `safe.directory=*` through per-process
 `GIT_CONFIG_COUNT` variables, appended after any entries the runner already
@@ -298,6 +320,23 @@ calibration can include completed profiled FAIL runs with `--include-failed`,
 and `footprint --write --lane <name>` merges selected lanes into an existing
 manifest. See [failure evidence and footprint updates](CONSUMERS.md#failure-evidence-and-selective-footprint-updates).
 
+A live `kind = "assay"` lane also gets an automatic **campaign closeout**:
+after `assay run`, Run-Gate runs Assay's `analyze campaign` over the lane's own
+verdict, progress, state directory, judged commit and actual exit, and retains
+the JSON and text under `<evidence dir>/lanes/<lane>/<run id>.campaign.*`.
+The closeout is information only. It never changes the lane's verdict, exit or
+reason; its own condition is a separate `status` (`complete`, `incomplete`,
+`evidence_error`, `unavailable`, `invalid`, `retention_error` or
+`not_applicable`) printed beside the unchanged lane result. `not_applicable`
+needs a verdict whose claims are all `source = "computed"` and
+`verified_by_assay = true`, with valid unique rigors and statuses and a valid
+reason code, none of them R2; malformed or unverified claims are analyzed
+instead. A
+`kind = "command"` lane is never analyzed, even if it wraps Assay, and no key
+opts it in (Assay decision A-497). See the
+[adoption guide](CONSUMERS.md#automatic-assay-campaign-closeout-b108-phase-2)
+and the [design rationale](docs/DESIGN-GUIDE.md#the-closeout-is-evidence-never-a-verdict-b108-phase-2).
+
 ### Version probe
 
 `run-gate --version` prints exactly one `run-gate X.Y.Z` line from installed
@@ -320,12 +359,19 @@ This project's own `run-gate.toml` declares five lanes (dogfooding — see
    before testing. Wheel/image preparation requires CMRU's protected
    `CMRU_RELEASE_GATE_COMMIT` to match the selected checkout; a manual command
    cannot stamp a stable release version onto an unrelated tree. In `tester-unified`, it runs
-   `/opt/tester-venv/bin/python -m pytest tests -q --cov=. --cov-branch`, followed by
+   `/opt/tester-venv/bin/python -m pytest tests -q -rs --cov=. --cov-branch` (`-rs`:
+   every skip is named in the gate log; a missing optional test dependency FAILS
+   rather than skips — `tests/_testdeps.py`, opt out with
+   `RUN_GATE_ALLOW_MISSING_TEST_DEPS=1` on a checkout that really lacks it; the
+   one structural skip, the real-container smoke test, needs a Docker socket
+   the lane container does not have and fails instead where
+   `RUN_GATE_REQUIRE_CONTAINER_SMOKE=1` is set), followed by
    the vendored `tools/coverage_gate.py`, scoped to `--source run_gate.py`
    alone — a diff-coverage floor at 100% on every executable line changed
-   since the newest reachable stable `run-gate-vX.Y.Z` release tag. On the
-   first stable release, when no stable Run-Gate tag exists, it reports the
-   diff check as `SKIPPED` because there is no released source baseline. The
+   since the newest reachable stable `run-gate-vX.Y.Z` release tag. The lane
+   does not pass `--allow-first-release`: stable tags exist, so a checkout
+   that cannot see one (a `--no-tags` clone) is an ERROR, never a `SKIPPED`
+   exit 0 that would read as green (RG-116). The
    release transaction's preparation accepts a first release only when origin
    shows no stable tag, and refuses a checkout missing origin's release tags
    ([why](docs/DESIGN-GUIDE.md#the-release-gate-tests-the-published-wheel)); the
@@ -419,6 +465,10 @@ directory:
 ```
 run-gate <lane>          # run one gate lane
 run-gate <lane> --base REF   # comparison base for a lane that delegates it
+                         # (default inside a `ciu worktree`: its recorded fork commit, found
+                         #  through the branch ciu records as `base_branch_ref` in record schema v6
+                         #  or the symbolic `base_ref` in v1-v5; an unusable record is ignored with
+                         #  a reason and `@{upstream}` applies — see CONSUMERS "recorded fork point")
 run-gate doctor          # preflight: docker, slices, git, images, assay toolchains (sequence lanes: each member's environment)
 run-gate doctor --worktree B   # … for tree B's state, not this checkout's
 run-gate --check-env --worktree B   # … same redirect for the drift/toolchain report

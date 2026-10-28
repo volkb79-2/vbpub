@@ -26,10 +26,13 @@ and [CLI overview](../README.md#distribution-installed-wheel).
 The selftest release coverage floor compares executable lines changed since
 the newest reachable stable `run-gate-vX.Y.Z` tag. The tag remains a fixed
 baseline after the candidate merges to `main`; a `main` merge-base would become
-the candidate itself and report no changed source lines. On the first stable
-release, the selftest's explicit `--allow-first-release` policy reports the
-diff check as `SKIPPED` when no stable tag exists. The test suite still runs,
-and the separate `assay-r1` campaign supplies whole-source line-and-branch
+the candidate itself and report no changed source lines. The selftest lane
+does not pass `--allow-first-release`: stable tags exist, so a checkout that
+can see none (a `--no-tags` clone, a mount missing the tags) is an ERROR
+rather than a `SKIPPED` that reads as green — an absent tag cannot be told
+from a first release. Only `tools/release_candidate.py`'s prepare step may
+accept a first release, and only after it has checked origin's tags. The
+separate `assay-r1` campaign supplies whole-source line-and-branch
 qualification before merge. If stable tags exist but none are reachable from
 the candidate, the check remains an error. Git must identify renames before Run-Gate filters the diff to
 `run_gate.py`. A path-limited diff hides the deleted path from rename
@@ -85,6 +88,38 @@ The receipt is stored under the candidate's ignored `.assay/` directory and
 names the exact commit, wheel, and image. A normal local `run-gate selftest`
 does not require a release receipt; CMRU sets the receipt variable only for its
 release transaction. See the [consumer release workflow](../CONSUMERS.md#exact-wheel-release-verification).
+
+## A recorded fork point is anchored on the base BRANCH, not the pinned commit
+
+Inside a `ciu worktree` Run-Gate prefers the commit the tree forked from over
+`@{upstream}` (RG-51), but only while that record still describes a live fork:
+once the base branch has absorbed the tree, `merge-base(base, HEAD)` moves and
+judging against it would silently drop the tree's own work. The check is the
+equality of a freshly computed merge-base with the recorded `fork_point_sha`,
+and it needs a MOVING anchor.
+
+ciu record schema v6 pins `base_ref` to the fork commit's SHA. That is the right
+thing to record (the fork never changes) and the wrong thing to ask git about:
+a commit that is an ancestor of HEAD has `merge-base(commit, HEAD) == commit`
+for ever, whatever `main` does, so a reader anchored on `base_ref` accepts
+exactly the absorbed record it exists to refuse — a false green. The producer
+therefore adds a separate `base_branch_ref`, and Run-Gate runs every freshness
+clause against `refs/heads/<base_branch_ref>` while still handing the judge the
+immutable `fork_point_sha`.
+
+Alternatives rejected: recovering the branch from the SHA (`git branch
+--contains` is ambiguous across branches, tags and remote-tracking refs, and
+guessing a base is the failure this feature prevents); falling back to a
+default `main` (names a branch the worktree may not have been forked from); and
+treating a null branch as "unmoved" (a frozen adopt/tag/SHA base is exactly the
+case where absorption is undetectable). Each of these refuses instead, with
+an explicit-`--base` remedy — a refusal costs only the `@{upstream}` fallback.
+The branch is resolved by its full `refs/heads/` name so a tag or
+remote-tracking ref spelled like it cannot stand in, and a future schema is
+refused rather than read as v6. Records v1-v5 keep the symbolic reading, where
+`base_ref` already is the branch; a frozen SHA there is refused. See
+[SPEC.md R-35a](../SPEC.md) and the
+[consumer guide](../CONSUMERS.md#lanes-that-take-their-comparison-base-from-the-gate-rg-26).
 
 ## A worktree is the complete judgment boundary
 
@@ -812,3 +847,53 @@ run can replace them. The archive is git-ignored, owner-only, and bounded to
 ten entries per lane. A short digest is printed at the point of failure so
 the operator can see the first failing node ids without opening the full
 transcript.
+
+## The closeout is evidence, never a verdict (B108 phase 2)
+
+After an assay lane Run-Gate runs Assay's campaign analysis and retains its
+text and JSON. Three rules, each answering a way this could have gone wrong.
+
+**It cannot touch the result.** The lane's exit status is captured by the
+script before the analysis starts and re-raised after it, so no analysis
+failure (a nonzero exit, a judge that predates `analyze campaign`, a timeout)
+can leave the shell early with its own status. On the host the lane's
+`LaneResult` is already final when the closeout is read; the closeout reads it
+for one comparison and returns a separate record. A closeout whose verified
+verdict differs from the lane result is `invalid`, not a correction: the lane
+result is computed from the verified verdict by Run-Gate and nothing the
+analysis prints can promote, demote or mask it.
+
+**It never guesses.** The analysis receives the exact verdict, progress, state
+directory, request base and judged commit the run itself was given, and runs
+under the same judge command in the same environment. `--verdict` and
+`--command-exit` travel together and only when a verdict file exists, because
+a command exit has nothing to bind to without one, and a progress stream is
+never promoted to a verdict. A `kind = "command"` lane that wraps `assay run`
+is not analyzed: its artifact paths are not facts Run-Gate holds, and
+declaring them would need a new public key, and Assay's A-497 decides that for
+this release there is none: command lanes have no opt-in, and nothing is
+inferred from argv. The gate log is not handed to the analysis either: it is a
+host file outside the lane environment, and the retained closeout is filed
+beside it under the same run id.
+
+**Each condition keeps its own name.** The closed set is `complete`,
+`incomplete`, `evidence_error`, `unavailable`, `invalid`, `retention_error`
+and `not_applicable`; the first three are Assay's own status and the rest
+describe the closeout itself. Absent or zero-byte output is
+`unavailable`, not an empty campaign (the script's own redirections create
+empty files when the judge crashes, so emptiness proves nothing). Output that
+is another lane's or commit's, whose text disagrees with its JSON, or whose
+exits are not the ones its status documents is `invalid` and still retained for
+forensics. A refusal from the analysis is `evidence_error`, its own result, not
+a lane failure. A lane whose verified claim set (every entry computed and verified by Assay,
+with a recognized unique rigor, a recognized status and a string-or-null
+reason code, the same checks the observer-refusal rollup makes) has no R2
+claim has no campaign (`not_applicable`); a malformed, unverified or partial
+claim set proves nothing, because `assay_lane_result` does not validate
+general claims, so it is analyzed. An unverified R0/R1 list must not be able
+to say "no mutation judgment". The
+decision comes from the verified verdict rather than from an inventory read (`R-38`'s
+rule against a second reading of an assay-owned fact still stands). Stale
+closeout files are deleted at script start, so a lane killed mid-run cannot
+inherit an earlier run's. A lane stopped by its budget has no closeout; the
+operator runs `assay analyze campaign` on its progress directly.

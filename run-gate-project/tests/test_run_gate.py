@@ -39,6 +39,8 @@ from pathlib import Path
 
 import pytest
 
+import _testdeps   # missing optional test dependencies FAIL by default
+
 RUN_GATE_DIR = Path(__file__).resolve().parent.parent
 _TOOL = RUN_GATE_DIR / "run_gate.py"
 
@@ -3675,6 +3677,900 @@ exit 0
         assert "JUDGE-REACHED-R0" not in captured.out
 
 
+class TestAssayCampaignCloseout:
+    """B108 phase 2 (SPEC R-38 "Campaign closeout"): a registered
+    `kind = "assay"` lane is followed, inside the same script, by Assay's own
+    `analyze campaign` over the lane's OWN verdict/progress/state paths; the
+    text and JSON closeouts are retained with the gate evidence.
+
+    The fake judge below is deliberately dumb: it answers `run` with a
+    controlled exit and `analyze` with a controlled document. Every oracle
+    asserts on what Run-Gate does with those answers -- the original lane
+    verdict and exit must survive every closeout outcome unchanged."""
+
+    _COMMIT = "a" * 40
+    _JUDGE = """\
+#!/bin/sh
+case "$*" in
+  *"lanes --json"*) cat <<'JSON'
+@INVENTORY@
+JSON
+    exit 0 ;;
+  *--version*) echo "assay 9.0.0"; exit 0 ;;
+esac
+printf '%s\\n' "$*" >> "$FAKE_CONTROL/calls"
+if [ "$1" = "run" ]; then
+  if [ -f "$FAKE_CONTROL/kill_parent" ]; then kill -9 "$PPID"; fi
+  verdict=""; previous=""
+  for argument in "$@"; do
+    if [ "$previous" = "--verdict-json" ]; then verdict=$argument; fi
+    previous=$argument
+  done
+  if [ -n "$verdict" ]; then mkdir -p "$(dirname "$verdict")"; echo '{}' > "$verdict"; fi
+  exit "$(cat "$FAKE_CONTROL/run_exit")"
+fi
+if [ "$1" = "analyze" ]; then
+  lane=$3; commit=""; fmt=""; previous=""
+  for argument in "$@"; do
+    if [ "$previous" = "--expected-commit" ]; then commit=$argument; fi
+    if [ "$previous" = "--format" ]; then fmt=$argument; fi
+    previous=$argument
+  done
+  mode=$(cat "$FAKE_CONTROL/analyze")
+  run_exit=$(cat "$FAKE_CONTROL/run_exit")
+  case "$run_exit" in
+    0) outcome=PASS ;; 1) outcome=FAIL ;; 4) outcome=BUDGET_EXCEEDED ;;
+    *) outcome=ERROR ;;
+  esac
+  status=incomplete; code=3; verdict_exit=$run_exit
+  case "$mode" in
+    crash) echo "analysis exploded" >&2; exit 9 ;;
+    unsupported) echo "assay: error: unrecognized arguments: campaign" >&2; exit 2 ;;
+    empty) exit 0 ;;
+    disagree) outcome=PASS; verdict_exit=0; status=complete; code=0 ;;
+    ok) ;;
+  esac
+  if [ "$fmt" = text ]; then
+    printf '%s: %s outcome=%s planned=1 completed=1 pending=0\\n' "$lane" "$status" "$outcome"
+  else
+    printf '{"schema_version":2,"analysis":"mutation_campaign","status":"%s","lane":"%s","expected_commit":"%s","verdict":{"outcome":"%s","exit_code":%s,"observed_command_exit":%s}}\\n' "$status" "$lane" "$commit" "$outcome" "$verdict_exit" "$verdict_exit"
+  fi
+  exit "$code"
+fi
+exit 64
+"""
+
+    # -- the generated script (executed, with a fake judge) -----------------
+
+    def _script(self, tmp_path, analyze, run_exit, **lane_extra):
+        control = tmp_path / "control"
+        control.mkdir(exist_ok=True)
+        (control / "analyze").write_text(analyze)
+        (control / "run_exit").write_text(str(run_exit))
+        judge = tmp_path / "bin" / "assay"
+        judge.parent.mkdir(exist_ok=True)
+        judge.write_text(self._JUDGE.replace("@INVENTORY@", _inventory(
+            name="unit", rigor=["R0"])))
+        judge.chmod(0o755)
+        repo = tmp_path / "repo"
+        project = repo / "proj"
+        project.mkdir(parents=True, exist_ok=True)
+        (repo / ".run-gate").mkdir(exist_ok=True)
+        lane = {"assay_lane": "unit", "assay_command": [str(judge)],
+                "pins": {}, **lane_extra}
+        inner = run_gate.build_assay_inner(
+            lane, project, repo, worktree=repo, state_root=repo / ".run-gate",
+            closeout_commit=self._COMMIT)
+        env = dict(os.environ, FAKE_CONTROL=str(control))
+        return project, inner, env, control
+
+    def _execute(self, project, inner, env):
+        return subprocess.run(["bash", "-c", inner], cwd=project, env=env,
+                              capture_output=True, text=True)
+
+    @pytest.mark.parametrize("run_exit", [0, 1, 2, 4, 7])
+    @pytest.mark.parametrize("analyze", ["ok", "crash", "unsupported",
+                                         "empty", "disagree"])
+    def test_script_exit_is_the_judges_exit_whatever_the_analysis_does(
+            self, tmp_path, analyze, run_exit):
+        project, inner, env, _control = self._script(
+            tmp_path, analyze, run_exit)
+        proc = self._execute(project, inner, env)
+        assert proc.returncode == run_exit, proc.stderr
+        # the analysis was attempted exactly as the script promises, in both
+        # renderings, and never wrote into the lane's own output stream
+        assert (project / ".assay" / "campaign-unit.exit").is_file()
+        assert "analysis exploded" not in proc.stdout + proc.stderr
+
+    def test_analysis_binds_the_lanes_own_paths_commit_and_exit(self, tmp_path):
+        project, inner, env, control = self._script(tmp_path, "ok", 1)
+        assert self._execute(project, inner, env).returncode == 1
+        calls = (control / "calls").read_text().splitlines()
+        analyses = [call for call in calls if call.startswith("analyze ")]
+        assert len(analyses) == 2
+        state = tmp_path / "repo" / ".run-gate" / "assay-state" / "proj"
+        for call, fmt in zip(analyses, ("json", "text")):
+            assert call == (
+                f"analyze campaign unit --file assay.toml "
+                f"--expected-commit {self._COMMIT} "
+                f"--progress .assay/progress-unit.jsonl "
+                f"--state-dir {state} "
+                f"--verdict .assay/verdict-unit.json --command-exit 1 "
+                f"--format {fmt}")
+        assert (project / ".assay" / "campaign-unit.exit").read_text() \
+            == "3 3\n"
+
+    def test_request_base_is_passed_to_the_analysis_like_the_run(self, tmp_path):
+        project, _inner, env, control = self._script(tmp_path, "ok", 0)
+        lane = {"assay_lane": "unit", "pins": {},
+                "assay_command": [str(tmp_path / "bin" / "assay")]}
+        inner = run_gate.build_assay_inner(
+            lane, project, tmp_path / "repo", "deadbeef",
+            worktree=tmp_path / "repo", state_root=tmp_path / "repo" / ".run-gate",
+            closeout_commit=self._COMMIT)
+        assert self._execute(project, inner, env).returncode == 0
+        analysis = [c for c in (control / "calls").read_text().splitlines()
+                    if c.startswith("analyze ")][0]
+        assert "--request-base deadbeef" in analysis
+
+    def test_a_lane_without_a_verdict_gets_no_command_exit_binding(self, tmp_path):
+        """`--command-exit` is only meaningful against a verified verdict;
+        Assay refuses it otherwise, so it is never passed without one."""
+        project, inner, env, control = self._script(tmp_path, "ok", 0)
+        # a judge that writes no verdict (it never touches .assay/verdict-*)
+        assert self._execute(project, inner, env).returncode == 0
+        verdictless = inner.replace(
+            "if [ -f .assay/verdict-unit.json ]", "if [ -f /nonexistent/verdict ]")
+        assert verdictless != inner
+        (control / "calls").unlink()
+        assert self._execute(project, verdictless, env).returncode == 0
+        analysis = [c for c in (control / "calls").read_text().splitlines()
+                    if c.startswith("analyze ")][0]
+        assert "--verdict" not in analysis and "--command-exit" not in analysis
+
+    def test_a_failed_setup_runs_neither_the_judge_nor_the_analysis(
+            self, tmp_path):
+        project, _inner, env, control = self._script(tmp_path, "ok", 0)
+        lane = {"assay_lane": "unit",
+                "assay_command": [str(tmp_path / "bin" / "assay")],
+                "pins": {"judge": {"sha256": "missing.sha256"}}}
+        inner = run_gate.build_assay_inner(
+            lane, project, tmp_path / "repo", worktree=tmp_path / "repo",
+            state_root=tmp_path / "repo" / ".run-gate",
+            closeout_commit=self._COMMIT)
+        proc = self._execute(project, inner, env)
+        assert proc.returncode != 0
+        assert not (control / "calls").exists()
+        assert not (project / ".assay" / "campaign-unit.json").exists()
+
+    def test_a_killed_lane_leaves_no_closeout_of_an_earlier_run(self, tmp_path):
+        project, inner, env, control = self._script(tmp_path, "ok", 0)
+        assay = project / ".assay"
+        assay.mkdir()
+        for suffix in run_gate.ASSAY_CLOSEOUT_SUFFIXES:
+            (assay / f"campaign-unit.{suffix}").write_text("STALE")
+        (control / "kill_parent").write_text("")
+        proc = self._execute(project, inner, env)
+        assert proc.returncode != 0  # SIGKILL of the script itself
+        assert [p.name for p in assay.glob("campaign-unit.*")] == []
+
+    def test_without_a_commit_the_script_is_the_pre_closeout_script(self, tmp_path):
+        lane = {"assay_lane": "unit", "assay_command": ["assay"], "pins": {}}
+        inner = run_gate.build_assay_inner(lane, Path("/p"), Path("/r"))
+        assert "campaign" not in inner and "rc=" not in inner
+        assert inner.rstrip().split()[-2] == "--state-dir"
+        with_commit = run_gate.build_assay_inner(
+            lane, Path("/p"), Path("/r"), closeout_commit=self._COMMIT)
+        assert "campaign-unit.json" in with_commit
+        assert 'exit "$rc"; }' in with_commit
+
+    def _run_inner(self, tmp_path, budget, *, analyze_sleep=0, edit=None):
+        """Execute the real inner script with a recording fake judge whose
+        `analyze` can be made slow; `edit` rewrites the script before it
+        runs (to shrink a cap without a minutes-long sleep)."""
+        project = tmp_path / "proj"
+        project.mkdir(exist_ok=True)
+        (tmp_path / ".run-gate").mkdir(exist_ok=True)
+        fake = tmp_path / "fake-assay"
+        log = tmp_path / "calls.log"
+        fake.write_text(f'#!/bin/sh\necho "$1" >> {log}\n'
+                        f'[ "$1" = analyze ] && sleep {analyze_sleep}\nexit 0\n')
+        fake.chmod(0o755)
+        lane = {"assay_lane": "unit", "assay_command": [str(fake)], "pins": {}}
+        if budget is not None:
+            lane["budget"] = budget
+        inner = run_gate.build_assay_inner(
+            lane, project, tmp_path, closeout_commit=self._COMMIT)
+        if edit is not None:
+            edited = edit(inner)
+            assert edited != inner
+            inner = edited
+        done = subprocess.run(["bash", "-c", inner], cwd=project,
+                              capture_output=True, text=True, timeout=60)
+        calls = log.read_text().split() if log.exists() else []
+        return done, calls
+
+    def test_the_closeout_runs_inside_a_roomy_budget_and_keeps_the_lane_exit(self, tmp_path):
+        done, calls = self._run_inner(tmp_path, "1h")
+        assert done.returncode == 0, done.stderr
+        assert calls == ["run", "analyze", "analyze"]
+        exits = (tmp_path / "proj" / ".assay" / "campaign-unit.exit").read_text()
+        assert exits == "0 0\n"
+
+    def test_the_closeout_is_skipped_when_the_lane_budget_is_nearly_spent(self, tmp_path):
+        done, calls = self._run_inner(tmp_path, "10s")
+        assert done.returncode == 0, done.stderr
+        assert calls == ["run"]  # no analysis eats the lane's remaining budget
+        assay = tmp_path / "proj" / ".assay"
+        # The skip names itself where the host's "unavailable" reason reads
+        # its hint, and leaves no json/text/exit file to mistake for a run.
+        err = (assay / "campaign-unit.err").read_text()
+        assert err.startswith("closeout skipped: ") and "40 s floor" in err
+        assert sorted(p.name for p in assay.glob("campaign-unit.*")) == \
+            ["campaign-unit.err"]
+
+    def test_each_analysis_call_gets_a_quarter_of_the_remaining_budget(self, tmp_path):
+        """Two calls, each at most a quarter of what is left: together they
+        can never take more than half, whatever the judge does."""
+        lane = {"assay_lane": "unit", "assay_command": ["assay"], "pins": {},
+                "budget": "100s"}
+        inner = run_gate.build_assay_inner(
+            lane, Path("/p"), Path("/r"), closeout_commit=self._COMMIT)
+        assert "__rg_co_left=$((100 - SECONDS))" in inner
+        assert "__rg_co_cap=$((__rg_co_left / 4 - 5))" in inner
+        assert f"-gt {run_gate.ASSAY_CLOSEOUT_TIMEOUT_SECONDS}" in inner
+        assert 'if [ "$__rg_co_cap" -ge 5 ]' in inner   # i.e. >= 40 s left
+        # Two calls of (left/4 - 5) each, so at most left/2 - 10 in total.
+        assert inner.count("timeout $__rg_co_cap") == 1
+        assert inner.count('"${__rg_co_a[@]}" --format') == 2
+
+    def test_a_json_call_that_times_out_skips_the_text_call(self, tmp_path):
+        """The text call would only time out the same way and spend a second
+        cap; the exit file records 124 for both and the .err says why."""
+        done, calls = self._run_inner(
+            tmp_path, "1h", analyze_sleep=5,
+            edit=lambda s: s.replace("__rg_co_cap=$((__rg_co_left / 4 - 5))",
+                                     "__rg_co_cap=1").replace(
+                'if [ "$__rg_co_cap" -ge 5 ]', 'if [ "$__rg_co_cap" -ge 1 ]'))
+        assert done.returncode == 0, done.stderr
+        assert calls == ["run", "analyze"]
+        assay = tmp_path / "proj" / ".assay"
+        assert (assay / "campaign-unit.exit").read_text() == "124 124\n"
+        assert "timed out after 1 s; text rendering skipped" in \
+            (assay / "campaign-unit.err").read_text()
+        assert not (assay / "campaign-unit.txt").exists()
+
+    def test_the_closeout_without_a_declared_budget_still_runs(self, tmp_path):
+        done, calls = self._run_inner(tmp_path, None)
+        assert done.returncode == 0, done.stderr
+        assert calls == ["run", "analyze", "analyze"]
+
+    # -- the host collector (no shell) --------------------------------------
+
+    def _doc(self, **over):
+        document = {"schema_version": 2, "analysis": "mutation_campaign",
+                    "status": "incomplete", "lane": "unit",
+                    "expected_commit": self._COMMIT,
+                    "verdict": {"outcome": "FAIL", "exit_code": 1,
+                                "observed_command_exit": 1}}
+        document.update(over)
+        return document
+
+    def _seed(self, tmp_path, document=None, *, text=None, exits="3 3\n",
+              err=None):
+        assay = tmp_path / "proj" / ".assay"
+        assay.mkdir(parents=True, exist_ok=True)
+        document = self._doc() if document is None else document
+        body = json.dumps(document) if isinstance(document, dict) else document
+        (assay / "campaign-unit.json").write_text(body)
+        (assay / "campaign-unit.txt").write_text(
+            f"unit: {document['status']} outcome=FAIL planned=1\n"
+            if text is None else text)
+        if exits is not None:
+            (assay / "campaign-unit.exit").write_text(exits)
+        if err is not None:
+            (assay / "campaign-unit.err").write_text(err)
+        return assay / "verdict-unit.json"
+
+    def _collect(self, tmp_path, monkeypatch, verdict_path, *, commit=None,
+                 result=None, verdict_document=None, run_id="run1"):
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR,
+                           str(tmp_path / "evidence"))
+        result = result or run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL")
+        return run_gate.collect_assay_closeout(
+            {"assay_lane": "unit"}, "unit", run_id, commit or self._COMMIT,
+            verdict_path, result, verdict_document)
+
+    def test_a_coherent_closeout_is_retained_verbatim_and_named(
+            self, tmp_path, monkeypatch):
+        verdict = self._seed(tmp_path)
+        closeout = self._collect(tmp_path, monkeypatch, verdict)
+        assert closeout["status"] == "incomplete"
+        assert closeout["analysis_status"] == "incomplete"
+        assert closeout["analysis_exit"] == 3
+        json_path, text_path = Path(closeout["json_path"]), Path(closeout["text_path"])
+        assert json_path.parent == tmp_path / "evidence" / "lanes" / "unit"
+        assert json_path.name == "run1.campaign.json"
+        assert text_path.name == "run1.campaign.txt"
+        source = verdict.parent
+        assert json_path.read_bytes() == (source / "campaign-unit.json").read_bytes()
+        assert text_path.read_bytes() == (source / "campaign-unit.txt").read_bytes()
+        assert json_path.stat().st_mode & 0o777 == 0o600
+        assert closeout["json_sha256"] == hashlib.sha256(
+            json_path.read_bytes()).hexdigest()
+        assert closeout["text_sha256"] == hashlib.sha256(
+            text_path.read_bytes()).hexdigest()
+
+    def test_a_lane_with_no_r2_claim_has_no_campaign_and_retains_nothing(
+            self, tmp_path, monkeypatch):
+        verdict = self._seed(tmp_path)
+        closeout = self._collect(
+            tmp_path, monkeypatch, verdict,
+            verdict_document={"claims": [
+                self._claim("R0"), self._claim("R1")]})
+        assert closeout["status"] == "not_applicable"
+        assert closeout["json_path"] is None
+        assert not (tmp_path / "evidence").exists()
+
+    @staticmethod
+    def _claim(rigor, status="PASS", **over):
+        claim = {"rigor": rigor, "status": status, "source": "computed",
+                 "verified_by_assay": True, "reason_code": None}
+        claim.update(over)
+        return claim
+
+    @pytest.mark.parametrize("claims", [
+        [{"rigor": "R0", "status": "PASS", "source": "computed",
+          "verified_by_assay": True}, "R1"],                  # non-dict entry
+        [{"rigor": "R0", "status": "PASS", "source": "computed",
+          "verified_by_assay": True}, None],
+        [{"rigor": "R0", "status": "PASS", "source": "computed",
+          "verified_by_assay": True},
+         {"status": "PASS", "source": "computed",
+          "verified_by_assay": True}],                        # no rigor
+        [{"rigor": None, "status": "PASS", "source": "computed",
+          "verified_by_assay": True}],
+        [{"rigor": 1, "status": "PASS", "source": "computed",
+          "verified_by_assay": True}],
+        [{"rigor": "R9", "status": "PASS", "source": "computed",
+          "verified_by_assay": True}],
+        [{"rigor": "r2", "status": "PASS", "source": "computed",
+          "verified_by_assay": True}],
+        [{"rigor": ["R2"], "status": "PASS", "source": "computed",
+          "verified_by_assay": True}],
+        [{"rigor": "R0", "source": "computed", "verified_by_assay": True}],
+        [{"rigor": "R0", "status": "GREEN", "source": "computed",
+          "verified_by_assay": True}],                        # unknown status
+        [{"rigor": "R0", "status": 0, "source": "computed",
+          "verified_by_assay": True}],
+        # forged / unverified metadata: a plausible R0/R1 list that Assay
+        # never computed or verified must not prove "no R2"
+        [{"rigor": "R0", "status": "PASS"}],                  # both missing
+        [{"rigor": "R0", "status": "PASS", "source": "computed"}],
+        [{"rigor": "R0", "status": "PASS", "verified_by_assay": True}],
+        [{"rigor": "R0", "status": "PASS", "source": "computed",
+          "verified_by_assay": False}],
+        [{"rigor": "R0", "status": "PASS", "source": "computed",
+          "verified_by_assay": "true"}],                      # truthy, not True
+        [{"rigor": "R0", "status": "PASS", "source": "computed",
+          "verified_by_assay": 1}],
+        [{"rigor": "R0", "status": "PASS", "source": "adjudicated",
+          "verified_by_assay": True}],
+        [{"rigor": "R0", "status": "PASS", "source": "attested",
+          "verified_by_assay": True}],
+        [{"rigor": "R0", "status": "PASS", "source": None,
+          "verified_by_assay": True}],
+        [{"rigor": "R0", "status": "PASS", "source": "computed",
+          "verified_by_assay": True, "reason_code": 5}],     # bad reason_code
+        [{"rigor": "R0", "status": "PASS", "source": "computed",
+          "verified_by_assay": True, "reason_code": ["X"]}],
+        # one good claim does not launder an unverified sibling
+        [{"rigor": "R0", "status": "PASS", "source": "computed",
+          "verified_by_assay": True},
+         {"rigor": "R1", "status": "PASS", "source": "computed",
+          "verified_by_assay": False}],
+        # duplicates and a real R2
+        [{"rigor": "R1", "status": "PASS", "source": "computed",
+          "verified_by_assay": True},
+         {"rigor": "R1", "status": "PASS", "source": "computed",
+          "verified_by_assay": True}],
+        [{"rigor": "R0", "status": "PASS", "source": "computed",
+          "verified_by_assay": True},
+         {"rigor": "R2", "status": "PASS", "source": "computed",
+          "verified_by_assay": True}],
+        [], {"R0": "PASS"}, "R0", None,
+    ])
+    def test_malformed_unverified_or_incomplete_claims_never_prove_not_applicable(
+            self, tmp_path, monkeypatch, claims):
+        assert run_gate.claims_prove_no_r2(claims) is False
+        verdict = self._seed(tmp_path)
+        closeout = self._collect(
+            tmp_path, monkeypatch, verdict,
+            verdict_document={"claims": claims},
+            run_id=f"run-{abs(hash(repr(claims)))}")
+        # the closeout is analyzed and retained, not declared absent
+        assert closeout["status"] == "incomplete"
+        assert closeout["json_path"] is not None
+
+    def test_only_a_verified_wellformed_claim_set_without_r2_is_not_applicable(
+            self):
+        good = [self._claim("R0"),
+                self._claim("R1", "FAIL", reason_code="COVERAGE_BELOW_FLOOR")]
+        assert run_gate.claims_prove_no_r2(good) is True
+        assert run_gate.claims_prove_no_r2(good[:1]) is True
+        absent = {k: v for k, v in good[0].items() if k != "reason_code"}
+        assert run_gate.claims_prove_no_r2([absent]) is True
+        assert run_gate.claims_prove_no_r2(
+            good + [self._claim("R2")]) is False
+        for key, value in (("verified_by_assay", False), ("source", "attested")):
+            forged = [dict(good[0], **{key: value})]
+            assert run_gate.claims_prove_no_r2(forged) is False
+
+    def test_an_r2_claim_or_unreadable_claims_never_read_as_not_applicable(
+            self, tmp_path, monkeypatch):
+        verdict = self._seed(tmp_path)
+        for document in ({"claims": [{"rigor": "R2"}]}, {"claims": []},
+                         {"claims": "x"}, {}, None):
+            closeout = self._collect(
+                tmp_path, monkeypatch, verdict, verdict_document=document,
+                run_id=f"run-{abs(hash(repr(document)))}")
+            assert closeout["status"] == "incomplete", document
+
+    @pytest.mark.parametrize("name,mutate", [
+        ("another lane", lambda d: d.update(lane="other")),
+        ("another commit", lambda d: d.update(expected_commit="b" * 40)),
+        ("unknown status", lambda d: d.update(status="done")),
+        ("wrong analysis kind", lambda d: d.update(analysis="progress")),
+        ("verdict outcome differs", lambda d: d["verdict"].update(outcome="PASS")),
+        ("verdict exit differs", lambda d: d["verdict"].update(exit_code=2)),
+        ("observed exit differs",
+         lambda d: d["verdict"].update(observed_command_exit=0)),
+    ])
+    def test_a_closeout_that_is_not_this_lanes_this_commit_is_invalid(
+            self, tmp_path, monkeypatch, name, mutate):
+        document = self._doc()
+        mutate(document)
+        verdict = self._seed(tmp_path, document)
+        closeout = self._collect(tmp_path, monkeypatch, verdict)
+        assert closeout["status"] == "invalid", name
+        # still retained for forensics -- invalid is a closeout status, not a
+        # reason to lose the bytes -- and the lane result is not an input
+        assert closeout["json_path"] is not None
+
+    def test_a_closeout_cannot_promote_a_failed_lane(self, tmp_path, monkeypatch):
+        document = self._doc(status="complete", verdict={
+            "outcome": "PASS", "exit_code": 0, "observed_command_exit": 0})
+        verdict = self._seed(tmp_path, document, exits="0 0\n",
+                             text="unit: complete outcome=PASS planned=1\n")
+        result = run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL")
+        closeout = self._collect(tmp_path, monkeypatch, verdict, result=result)
+        assert closeout["status"] == "invalid"
+        assert result == run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL")
+
+    @pytest.mark.parametrize("exits", [None, "0 0\n", "3 0\n", "3 2\n", "x\n"])
+    def test_exits_must_be_the_ones_the_status_documents(
+            self, tmp_path, monkeypatch, exits):
+        verdict = self._seed(tmp_path, exits=exits)
+        assert self._collect(tmp_path, monkeypatch, verdict)["status"] \
+            == "invalid"
+
+    def test_text_that_disagrees_with_the_json_status_is_invalid(
+            self, tmp_path, monkeypatch):
+        verdict = self._seed(tmp_path, text="unit: complete outcome=PASS\n")
+        assert self._collect(tmp_path, monkeypatch, verdict)["status"] \
+            == "invalid"
+
+    def test_an_analysis_refusal_is_its_own_status_not_a_lane_failure(
+            self, tmp_path, monkeypatch):
+        refusal = {"schema_version": 2, "kind": "assay-campaign-analysis",
+                   "status": "evidence_error", "lane": "unit",
+                   "expected_commit": self._COMMIT,
+                   "errors": [{"source": "progress", "message": "torn"}],
+                   "errors_truncated": False}
+        verdict = self._seed(tmp_path, refusal, exits="2 2\n",
+                             text=json.dumps(refusal))
+        closeout = self._collect(tmp_path, monkeypatch, verdict)
+        assert closeout["status"] == "evidence_error"
+        assert closeout["analysis_exit"] == 2
+
+    def test_missing_files_are_unavailable_never_an_empty_or_zero_closeout(
+            self, tmp_path, monkeypatch):
+        assay = tmp_path / "proj" / ".assay"
+        assay.mkdir(parents=True)
+        (assay / "campaign-unit.err").write_text(
+            "assay: error: unrecognized arguments: campaign\n")
+        closeout = self._collect(tmp_path, monkeypatch, assay / "verdict-unit.json")
+        assert closeout["status"] == "unavailable"
+        assert "unrecognized arguments: campaign" in closeout["reason"]
+        assert closeout["json_path"] is None
+        assert not (tmp_path / "evidence").exists()
+
+    def test_an_empty_closeout_is_no_analysis_not_a_zero_campaign(
+            self, tmp_path, monkeypatch):
+        assay = tmp_path / "proj" / ".assay"
+        assay.mkdir(parents=True)
+        for suffix in ("json", "txt"):
+            (assay / f"campaign-unit.{suffix}").write_text("")
+        (assay / "campaign-unit.exit").write_text("0 0\n")
+        closeout = self._collect(tmp_path, monkeypatch, assay / "verdict-unit.json")
+        assert closeout["status"] == "unavailable"
+        assert closeout["analysis_exit"] == 0
+        assert closeout["json_path"] is None
+        assert not (tmp_path / "evidence").exists()
+
+    def test_a_symlinked_or_oversized_artifact_is_refused_by_name(
+            self, tmp_path, monkeypatch):
+        verdict = self._seed(tmp_path)
+        target = tmp_path / "elsewhere.json"
+        target.write_text(json.dumps(self._doc()))
+        link = verdict.parent / "campaign-unit.json"
+        link.unlink()
+        link.symlink_to(target)
+        closeout = self._collect(tmp_path, monkeypatch, verdict)
+        assert closeout["status"] == "unavailable"
+        assert "campaign-unit.json" in closeout["reason"]
+        link.unlink()
+        with link.open("wb") as stream:
+            stream.truncate(run_gate.ASSAY_CLOSEOUT_MAX_BYTES + 1)
+        closeout = self._collect(tmp_path, monkeypatch, verdict, run_id="run2")
+        assert closeout["status"] == "unavailable"
+        assert "is over" in closeout["reason"]
+
+    def test_an_unresolved_commit_requests_no_analysis(self, tmp_path, monkeypatch):
+        verdict = self._seed(tmp_path)
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR, str(tmp_path / "e"))
+        closeout = run_gate.collect_assay_closeout(
+            {"assay_lane": "unit"}, "unit", "r", None, verdict,
+            run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL"), None)
+        assert closeout["status"] == "unavailable"
+        assert "commit" in closeout["reason"]
+
+    def test_unwritable_evidence_is_retention_error_and_never_overwrites(
+            self, tmp_path, monkeypatch):
+        verdict = self._seed(tmp_path)
+        first = self._collect(tmp_path, monkeypatch, verdict)
+        assert first["status"] == "incomplete"
+        before = Path(first["json_path"]).read_bytes()
+        again = self._collect(tmp_path, monkeypatch, verdict)  # same run id
+        assert again["status"] == "retention_error"
+        assert Path(first["json_path"]).read_bytes() == before
+        blocker = tmp_path / "blocker"
+        blocker.write_text("a file, not a directory")
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR, str(blocker / "x"))
+        broken = run_gate.collect_assay_closeout(
+            {"assay_lane": "unit"}, "unit", "run3", self._COMMIT, verdict,
+            run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL"), None)
+        assert broken["status"] == "retention_error"
+        assert broken["json_sha256"] is not None
+
+    def test_finish_never_raises_and_never_returns_a_lane_result(
+            self, tmp_path, monkeypatch, capsys):
+        def explode(*_a, **_k):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(run_gate, "collect_assay_closeout", explode)
+        record = {"run_id": "r"}
+        result = run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL")
+        closeout = run_gate.finish_assay_closeout(
+            {"assay_lane": "unit"}, "unit", record, self._COMMIT,
+            tmp_path / "v.json", result, None)
+        assert closeout["status"] == "unavailable"
+        assert "RuntimeError: boom" in closeout["reason"]
+        assert record["closeout"] == closeout
+        assert result == run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL")
+        assert "WARNING: assay closeout unavailable" in capsys.readouterr().err
+
+    # -- registered lanes through main() ------------------------------------
+
+    def _project(self, tmp_path, monkeypatch, *, analyze, run_exit, cfg=None):
+        cfg = cfg or ASSAY_LANE_CFG.replace(
+            'environment = "tester-unified"', 'environment = "bare-host"', 1)
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, cfg)
+        (proj / "assay.toml").write_text("# judged by the fake judge\n")
+        commit_all(repo, "assay config")
+        control = tmp_path / "control"
+        control.mkdir()
+        (control / "analyze").write_text(analyze)
+        (control / "run_exit").write_text(str(run_exit))
+        monkeypatch.setenv("FAKE_CONTROL", str(control))
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR,
+                           str(tmp_path / "evidence"))
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda p, **k: Path("/phys/host/root"))
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ["run-gate"])
+        fake_docker(tmp_path, monkeypatch)
+        install_fake_assay(monkeypatch, self._JUDGE.replace(
+            "@INVENTORY@", _inventory(rigor=["R0", "R1"])))
+        seen = []
+        real = run_gate.finish_assay_closeout
+
+        def spy(*args, **kwargs):
+            seen.append(real(*args, **kwargs))
+            return seen[-1]
+
+        monkeypatch.setattr(run_gate, "finish_assay_closeout", spy)
+        return repo, proj, control, seen
+
+    _EXPECTED = {0: "PASS", 1: "FAIL", 2: "ERROR", 4: "BUDGET_EXCEEDED"}
+
+    def test_registered_lane_retains_text_and_json_with_gate_evidence(
+            self, tmp_path, monkeypatch, capfd):
+        _repo, _proj, _control, seen = self._project(
+            tmp_path, monkeypatch, analyze="ok", run_exit=1)
+        assert run_gate.main(["ui-unit"]) == run_gate.VERDICT_EXIT_CODES["FAIL"]
+        out = capfd.readouterr()
+        assert "verdict FAIL" in out.out
+        assert "assay closeout: campaign incomplete" in out.out
+        assert "unchanged" in out.out
+        [closeout] = seen
+        assert closeout["status"] == "incomplete"
+        document = json.loads(Path(closeout["json_path"]).read_text())
+        assert document["lane"] == "ui_unit"
+        assert document["expected_commit"] == run_gate.head_commit(_repo)
+        text = Path(closeout["text_path"]).read_text()
+        assert text.startswith("ui_unit: incomplete ")
+        # the closeout is filed under the GATE's lane name, where the lane
+        # log of the same run lives
+        assert Path(closeout["json_path"]).parent == (
+            tmp_path / "evidence" / "lanes" / "ui-unit")
+        assert Path(closeout["text_path"]).parent \
+            == Path(closeout["json_path"]).parent
+
+    @pytest.mark.parametrize("analyze", ["ok", "crash", "unsupported", "empty",
+                                         "disagree"])
+    @pytest.mark.parametrize("run_exit", [0, 1, 2, 4])
+    def test_the_lane_verdict_and_exit_are_independent_of_the_closeout(
+            self, tmp_path, monkeypatch, capfd, analyze, run_exit):
+        _repo, _proj, _control, seen = self._project(
+            tmp_path, monkeypatch, analyze=analyze, run_exit=run_exit)
+        expected = self._EXPECTED[run_exit]
+        assert run_gate.main(["ui-unit"]) == run_gate.VERDICT_EXIT_CODES[expected]
+        out = capfd.readouterr()
+        assert f"verdict {expected}" in out.out
+        assert len(seen) == 1
+        if analyze in ("crash", "unsupported", "empty"):
+            # a failed analysis leaves empty files: that is no closeout
+            assert seen[0]["status"] == "unavailable"
+            assert seen[0]["json_path"] is None
+            assert "assay closeout unavailable" in out.err
+            assert not list((tmp_path / "evidence").rglob("*.campaign.*"))
+        elif analyze == "disagree" and run_exit != 0:
+            # the closeout claims a complete PASS; the lane result stands
+            assert seen[0]["status"] == "invalid"
+            assert "assay closeout invalid" in out.err
+            assert "verdict PASS" not in out.out
+        elif analyze == "disagree":
+            assert seen[0]["status"] == "complete"
+        else:
+            assert seen[0]["status"] == "incomplete"
+
+    def test_evidence_that_cannot_be_written_is_named_and_the_lane_stands(
+            self, tmp_path, monkeypatch, capfd):
+        _repo, _proj, _control, seen = self._project(
+            tmp_path, monkeypatch, analyze="ok", run_exit=1)
+        blocker = tmp_path / "blocker"
+        blocker.write_text("not a directory")
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR, str(blocker / "ev"))
+        assert run_gate.main(["ui-unit"]) == run_gate.VERDICT_EXIT_CODES["FAIL"]
+        out = capfd.readouterr()
+        assert seen[0]["status"] == "retention_error"
+        assert "assay closeout retention_error" in out.err
+        assert "verdict FAIL" in out.out
+
+    def test_a_command_lane_that_wraps_assay_is_never_analyzed_by_inference(
+            self, tmp_path, monkeypatch, capfd):
+        cfg = """\
+            schema_version = 1
+
+            [lanes.wrap]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["bash", "-c", "cd {worktree}/proj && mkdir -p .assay && echo '{}' > .assay/progress-ui_unit.jsonl && assay run ui_unit --file assay.toml --verdict-json .assay/verdict-ui_unit.json --progress .assay/progress-ui_unit.jsonl"]
+            clean_tree = false
+        """
+        _repo, _proj, control, seen = self._project(
+            tmp_path, monkeypatch, analyze="ok", run_exit=0, cfg=cfg)
+        assert run_gate.main(["wrap"]) == 0
+        capfd.readouterr()
+        assert seen == []
+        assert [line.split()[0] for line in
+                (control / "calls").read_text().splitlines()] == ["run"]
+        assert not (tmp_path / "evidence").exists() or not list(
+            (tmp_path / "evidence").rglob("*.campaign.*"))
+
+    @pytest.mark.parametrize("name,body,text,exits", [
+        ("json is not UTF-8", b"\xff\xfe", "unit: incomplete x\n", "3 3\n"),
+        ("json is an array", b"[]", "unit: incomplete x\n", "3 3\n"),
+        ("refusal without its kind", json.dumps({
+            "status": "evidence_error", "lane": "unit",
+            "expected_commit": "a" * 40}).encode(), "{}", "2 2\n"),
+        ("refusal text is not JSON", json.dumps({
+            "kind": "assay-campaign-analysis", "status": "evidence_error",
+            "lane": "unit", "expected_commit": "a" * 40}).encode(),
+         "not json", "2 2\n"),
+        ("refusal text says another status", json.dumps({
+            "kind": "assay-campaign-analysis", "status": "evidence_error",
+            "lane": "unit", "expected_commit": "a" * 40}).encode(),
+         json.dumps({"status": "complete"}), "2 2\n"),
+        ("complete without a verdict has no documented exit", json.dumps({
+            "analysis": "mutation_campaign", "status": "complete",
+            "lane": "unit", "expected_commit": "a" * 40}).encode(),
+         "unit: complete x\n", "0 0\n"),
+    ])
+    def test_every_other_way_a_closeout_can_be_incoherent_is_invalid(
+            self, tmp_path, monkeypatch, name, body, text, exits):
+        assay = tmp_path / "proj" / ".assay"
+        assay.mkdir(parents=True)
+        (assay / "campaign-unit.json").write_bytes(body)
+        (assay / "campaign-unit.txt").write_text(text)
+        (assay / "campaign-unit.exit").write_text(exits)
+        closeout = self._collect(tmp_path, monkeypatch, assay / "verdict-unit.json")
+        assert closeout["status"] == "invalid", name
+
+    def test_text_that_is_not_utf8_is_invalid(self, tmp_path, monkeypatch):
+        verdict = self._seed(tmp_path)
+        (verdict.parent / "campaign-unit.txt").write_bytes(b"\xff\xfe")
+        assert self._collect(tmp_path, monkeypatch, verdict)["status"] == "invalid"
+
+    def test_a_directory_in_place_of_a_closeout_file_is_named(
+            self, tmp_path, monkeypatch):
+        verdict = self._seed(tmp_path)
+        (verdict.parent / "campaign-unit.txt").unlink()
+        (verdict.parent / "campaign-unit.txt").mkdir()
+        closeout = self._collect(tmp_path, monkeypatch, verdict)
+        assert closeout["status"] == "unavailable"
+        assert "campaign-unit.txt" in closeout["reason"]
+
+    def test_read_closeout_artifact_bounds_and_refuses_non_regular_files(self, tmp_path):
+        read = run_gate._read_closeout_artifact
+        assert read(tmp_path / "absent", 10) == (None, None)
+        data, why = read(tmp_path, 10)
+        assert data is None and "is not a regular file" in why
+        big = tmp_path / "big.json"
+        big.write_bytes(b"x" * 50)
+        data, why = read(big, 10)
+        assert data is None and "is over 10 bytes" in why
+        data, why = read(big, 10, truncate=True)
+        assert data == b"x" * 10 and why is None
+        small = tmp_path / "small.json"
+        small.write_bytes(b"{}")
+        assert read(small, 10) == (b"{}", None)
+
+    def test_read_closeout_artifact_survives_a_file_that_grows_or_fails_to_read(
+            self, tmp_path, monkeypatch):
+        read = run_gate._read_closeout_artifact
+        grown = tmp_path / "grown.json"
+        grown.write_bytes(b"x" * 50)
+        real_fstat = os.fstat
+
+        class _Small:
+            def __init__(self, info):
+                self.st_mode, self.st_size = info.st_mode, 0
+
+        # fstat said "small", the read finds more: refuse (or cut) after the fact.
+        monkeypatch.setattr(run_gate.os, "fstat", lambda fd: _Small(real_fstat(fd)))
+        data, why = read(grown, 10)
+        assert data is None and "is over 10 bytes" in why
+        assert read(grown, 10, truncate=True) == (b"x" * 10, None)
+        monkeypatch.undo()
+
+        def broken(*_a, **_k):
+            raise OSError("boom")
+        monkeypatch.setattr(run_gate.os, "fdopen", broken)
+        data, why = read(grown, 100)
+        assert data is None and "cannot read grown.json: boom" in why
+
+    def test_expected_exit_of_a_complete_closeout_without_a_verdict_is_unknown(self):
+        expected = run_gate._closeout_expected_exit
+        assert expected({"status": "complete"}) is None
+        assert expected({"status": "complete", "verdict": {"outcome": 3}}) is None
+        assert expected({"status": "complete", "verdict": {"outcome": "PASS"}}) == 0
+        assert expected({"status": "complete", "verdict": {"outcome": "FAIL"}}) == 1
+        assert expected({"status": "incomplete"}) == 3
+        assert expected({"status": "evidence_error"}) == 2
+        assert expected({"status": "other"}) is None
+
+    def test_the_stderr_hint_is_empty_for_blank_output(self):
+        assert run_gate._closeout_stderr_hint(None) == ""
+        assert run_gate._closeout_stderr_hint(b"  \n\n") == ""
+        assert run_gate._closeout_stderr_hint(b"a\nb") == "; analysis stderr: b"
+
+    def test_stderr_is_only_a_bounded_hint_and_never_refuses_the_closeout(
+            self, tmp_path, monkeypatch):
+        assay = tmp_path / "proj" / ".assay"
+        assay.mkdir(parents=True)
+        (assay / "campaign-unit.err").write_text(
+            "first\n" + "x" * 10_000 + "\nlast line\n")
+        closeout = self._collect(tmp_path, monkeypatch, assay / "verdict-unit.json")
+        assert closeout["status"] == "unavailable"
+        assert "analysis stderr: " in closeout["reason"]
+        assert len(closeout["reason"]) < 1500
+        assert "first" not in closeout["reason"]
+
+    def test_the_disclosure_line_matches_each_status(self, tmp_path, capsys):
+        result = run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL")
+        quiet = run_gate._closeout_record("not_applicable", "no campaign")
+        run_gate.report_assay_closeout(quiet, result)
+        captured = capsys.readouterr()
+        assert captured.out == "" and captured.err == ""
+        done = run_gate._closeout_record(
+            "incomplete", None, json_path="/e/j", text_path="/e/t")
+        run_gate.report_assay_closeout(done, result)
+        captured = capsys.readouterr()
+        assert "campaign incomplete" in captured.out
+        assert "lane verdict FAIL (exit 1) is unchanged" in captured.out
+        assert captured.err == ""
+        retained = run_gate._closeout_record(
+            "invalid", "disagrees", json_path="/e/j", text_path="/e/t")
+        run_gate.report_assay_closeout(retained, result)
+        captured = capsys.readouterr()
+        assert "WARNING: assay closeout invalid: disagrees" in captured.err
+        assert "retained json /e/j" in captured.err and captured.out == ""
+        bare = run_gate._closeout_record("unavailable", "nothing")
+        run_gate.report_assay_closeout(bare, result)
+        assert "retained" not in capsys.readouterr().err
+        with pytest.raises(ValueError):
+            run_gate._closeout_record("passed")
+
+    def test_a_disclosure_failure_cannot_change_the_lane_either(
+            self, tmp_path, monkeypatch, capsys):
+        def explode(*_a, **_k):
+            raise RuntimeError("print failed")
+
+        verdict = self._seed(tmp_path)
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR, str(tmp_path / "e"))
+        monkeypatch.setattr(run_gate, "report_assay_closeout", explode)
+        result = run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL")
+        closeout = run_gate.finish_assay_closeout(
+            {"assay_lane": "unit"}, "unit", None, self._COMMIT, verdict,
+            result, None)
+        assert closeout["status"] == "incomplete"
+        assert "could not be reported: print failed" in capsys.readouterr().err
+        assert result == run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL")
+
+    def test_a_run_without_a_record_still_gets_a_unique_evidence_name(
+            self, tmp_path, monkeypatch):
+        verdict = self._seed(tmp_path)
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR, str(tmp_path / "e"))
+        result = run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL")
+        names = set()
+        for _ in range(2):
+            closeout = run_gate.finish_assay_closeout(
+                {"assay_lane": "unit"}, "unit", None, self._COMMIT, verdict,
+                result, None)
+            assert closeout["status"] == "incomplete"
+            names.add(Path(closeout["json_path"]).name)
+        assert len(names) == 2
+
+    def test_whitespace_only_stderr_adds_no_hint(self, tmp_path, monkeypatch):
+        assay = tmp_path / "proj" / ".assay"
+        assay.mkdir(parents=True)
+        (assay / "campaign-unit.err").write_text("  \n\n")
+        closeout = self._collect(tmp_path, monkeypatch, assay / "verdict-unit.json")
+        assert closeout["status"] == "unavailable"
+        assert "analysis stderr" not in closeout["reason"]
+
+    def test_every_closeout_status_is_documented_where_adopters_look(self):
+        """The vocabulary is closed and public: a status added to the code
+        but not to all four documents must turn this red."""
+        for name in ("SPEC.md", "README.md", "CONSUMERS.md",
+                     "docs/DESIGN-GUIDE.md"):
+            body = (RUN_GATE_DIR / name).read_text(encoding="utf-8")
+            for status in run_gate.ASSAY_CLOSEOUT_STATUSES:
+                assert f"`{status}`" in body, (name, status)
+        assert set(run_gate.ASSAY_CLOSEOUT_STATUSES) == {
+            "complete", "incomplete", "evidence_error", "unavailable",
+            "invalid", "retention_error", "not_applicable"}
+
+    def test_a_dry_run_never_collects_a_closeout(self, tmp_path, monkeypatch):
+        _repo, _proj, _control, seen = self._project(
+            tmp_path, monkeypatch, analyze="ok", run_exit=0)
+        run_gate.main(["--dry-run", "ui-unit"])
+        assert seen == []
+
+
 class TestExecDisclosure:
     """Review fix (R-05/R-28): exec lanes disclose mechanics exactly like
     ephemeral lanes do — the governing slice (naming-only: docker exec can
@@ -5588,7 +6484,7 @@ class TestPointerLinkageEstate:
     def test_cmru_release_step_names_a_real_lane(self):
         cmru_doc = RUN_GATE_DIR.parent / "cmru" / "cmru.toml"
         if not cmru_doc.is_file():
-            pytest.skip("cmru not present in this checkout")
+            _testdeps.missing("cmru/cmru.toml", "cmru not present in this checkout")
         proc = subprocess.run(
             [sys.executable, str(_TOOL), "validate-pointers", str(cmru_doc)],
             capture_output=True, text=True, cwd=str(RUN_GATE_DIR))
@@ -9793,6 +10689,249 @@ def make_feature_repo(tmp_path: Path) -> Path:
     return repo
 
 
+def write_v6_record(directory: Path, *, drop=(), **over) -> Path:
+    """A ciu worktree record in schema v6, as the producer contract fixes it:
+    `base_ref` and `fork_point_sha` are the SAME pinned fork commit and
+    `base_branch_ref` names the moving local branch (or is null). `drop`
+    removes keys outright, which `**over` cannot express (None is a value)."""
+    pinned = fork_sha(directory, "main")
+    fields = {"schema_version": 6, "base_ref": pinned,
+              "fork_point_sha": pinned, "base_branch_ref": "main"}
+    fields.update(over)
+    path = write_instance_record(directory, **fields)
+    if drop:
+        doc = json.loads(path.read_text())
+        for key in drop:
+            doc.pop(key, None)
+        path.write_text(json.dumps(doc, indent=2))
+    return path
+
+
+class TestRecordedWorktreeBaseSchemaV6:
+    """R-35a: ciu schema v6 pins `base_ref` to a SHA and names the moving
+    base in `base_branch_ref`. The freshness anchor must be that branch — the
+    pinned SHA is an ancestor of HEAD forever, so a reader anchored on it can
+    never see the base absorb the tree — and the branch is never inferred."""
+
+    def test_pinned_sha_with_a_local_branch_is_accepted_and_returns_the_fork(
+            self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        record = write_v6_record(repo)
+        pinned = git_head(repo, "main")
+        doc = json.loads(record.read_text())
+        assert doc["base_ref"] == doc["fork_point_sha"] == pinned   # not a branch
+        assert run_gate.recorded_worktree_base(repo, repo) == (
+            pinned, record, "")
+
+    def test_a_record_in_a_nested_ciu_root_is_found_like_any_other(
+            self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        proj = repo / "proj"
+        proj.mkdir()
+        record = write_v6_record(proj)
+        assert run_gate.recorded_worktree_base(repo, repo, proj) == (
+            git_head(repo, "main"), record, "")
+
+    @pytest.mark.parametrize("how", ["merge", "fast-forward"])
+    def test_a_base_that_absorbed_the_branch_is_refused_as_moved(
+            self, tmp_path, how):
+        """The absorption oracle, end to end: the record was healthy when
+        written; `main` then absorbed the branch and the branch kept going."""
+        repo = make_feature_repo(tmp_path)
+        write_v6_record(repo)
+        if how == "merge":
+            git(repo, "checkout", "-q", "main")
+            git(repo, "merge", "-q", "--no-ff", "-m", "merge feature",
+                "feature")
+            git(repo, "checkout", "-q", "feature")
+        else:
+            git(repo, "branch", "-f", "main", "feature")
+        (repo / "after.txt").write_text("more\n")
+        commit_all(repo, "one more")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "MOVED since the record was written" in why
+
+    def test_a_reader_anchored_on_the_pinned_sha_accepts_the_absorbed_record(
+            self, tmp_path):
+        """Controlled wrong implementation: the same checks with the pinned
+        SHA as the freshness anchor ACCEPT the record that the real reader
+        refuses — which is exactly what makes the absorption oracle above
+        discriminating rather than decorative."""
+        repo = make_feature_repo(tmp_path)
+        record = write_v6_record(repo)
+        git(repo, "branch", "-f", "main", "feature")
+        (repo / "after.txt").write_text("more\n")
+        commit_all(repo, "one more")
+        doc = json.loads(record.read_text())
+
+        wrong = run_gate._fork_base_if_unmoved(
+            repo, doc, doc["base_ref"], "pinned", "refs/heads/main")
+        assert wrong == (doc["fork_point_sha"], "")           # false green
+        assert run_gate.merge_base_of(repo, doc["base_ref"]) == \
+            doc["fork_point_sha"]                              # blind anchor
+        assert run_gate.merge_base_of(repo, "refs/heads/main") != \
+            doc["fork_point_sha"]                              # real anchor
+        real, _found, why = run_gate.recorded_worktree_base(repo, repo)
+        assert real is None and "MOVED" in why
+
+    def test_null_base_branch_ref_is_refused_with_the_base_remedy(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        write_v6_record(repo, base_branch_ref=None)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "'base_branch_ref' is null" in why
+        assert "--base" in why
+
+    def test_missing_base_branch_ref_is_refused(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        write_v6_record(repo, drop=("base_branch_ref",))
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "no 'base_branch_ref' key" in why
+
+    @pytest.mark.parametrize("value", [
+        "", "   ", " main", "main ", 7, True, ["main"], {"name": "main"},
+        "main;touch /tmp/PWNED", "-main", "ma in", "bad\x00ref", "main~1",
+    ])
+    def test_malformed_or_unsafe_base_branch_ref_is_refused(
+            self, tmp_path, value):
+        repo = make_feature_repo(tmp_path)
+        write_v6_record(repo, base_branch_ref=value)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None and why
+
+    @pytest.mark.parametrize("value", [
+        "gone", "refs/heads/main", "heads/main", "origin/main", "v1.0.0",
+        "HEAD",
+    ])
+    def test_a_name_that_is_not_a_canonical_live_local_branch_is_refused(
+            self, tmp_path, value):
+        """Deleted/renamed branches, non-canonical spellings, a remote-tracking
+        ref, a tag and revision syntax never stand in for the branch — and the
+        branch is never recovered from the pinned SHA that is sitting right
+        there in the same record."""
+        repo = make_feature_repo(tmp_path)
+        git(repo, "update-ref", "refs/remotes/origin/main", "main")
+        git(repo, "tag", "v1.0.0", "main")
+        write_v6_record(repo, base_branch_ref=value)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "does not name a local branch in this tree" in why
+
+    def test_a_tag_spelled_like_a_branch_is_not_that_branch(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        git(repo, "tag", "release", "main")
+        write_v6_record(repo, base_branch_ref="release")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "does not name a local branch in this tree" in why
+
+    @pytest.mark.parametrize(("over", "drop", "fragment"), [
+        ({"base_ref": "main"}, (), "not the pinned full commit id"),
+        ({"base_ref": "a" * 12}, (), "not the pinned full commit id"),
+        ({}, ("base_ref",), "not the pinned full commit id"),
+        ({}, ("fork_point_sha",), "no usable 'fork_point_sha'"),
+        ({"fork_point_sha": "abc"}, (), "no usable 'fork_point_sha'"),
+        ({"fork_point_sha": 7}, (), "no usable 'fork_point_sha'"),
+        ({"fork_point_sha": "b" * 40}, (), "disagree"),
+    ], ids=["symbolic-base-ref", "abbreviated-base-ref", "no-base-ref",
+            "no-fork", "short-fork", "non-string-fork", "inconsistent"])
+    def test_missing_malformed_or_inconsistent_sha_evidence_is_refused(
+            self, tmp_path, over, drop, fragment):
+        repo = make_feature_repo(tmp_path)
+        write_v6_record(repo, drop=drop, **over)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert fragment in why
+
+    def test_a_record_for_another_branch_is_refused(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        write_v6_record(repo, branch="some-other-task")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "no longer describes it" in why
+
+    def test_a_tree_with_no_work_of_its_own_is_refused(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        write_v6_record(repo)
+        git(repo, "checkout", "-q", "main")
+        git(repo, "checkout", "-q", "-B", "feature", "main")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "already contains this tree's HEAD" in why
+
+    @pytest.mark.parametrize("version", ["6", 6.0, True, 0, -1, [6]])
+    def test_a_malformed_schema_version_is_refused(self, tmp_path, version):
+        repo = make_feature_repo(tmp_path)
+        write_v6_record(repo, schema_version=version)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "schema_version" in why
+
+    def test_a_newer_schema_is_refused_not_guessed_at(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        write_v6_record(repo, schema_version=7)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "newer than the v6" in why and "--base" in why
+
+
+class TestRecordedWorktreeBaseLegacySchemas:
+    """v1-v5 keep the symbolic-`base_ref` reading; a frozen SHA there is
+    refused (never promoted to a branch), with the explicit-`--base` remedy."""
+
+    @pytest.mark.parametrize("version", [1, 2, 3, 4, 5])
+    def test_a_symbolic_local_base_ref_is_still_accepted(self, tmp_path, version):
+        repo = make_feature_repo(tmp_path)
+        record = write_instance_record(repo, schema_version=version,
+                                       base_ref="main")
+        assert run_gate.recorded_worktree_base(repo, repo) == (
+            git_head(repo, "main"), record, "")
+
+    def test_a_record_with_no_schema_version_keeps_its_legacy_reading(
+            self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        path = write_instance_record(repo, base_ref="main")
+        doc = json.loads(path.read_text())
+        doc.pop("schema_version")
+        path.write_text(json.dumps(doc))
+        assert run_gate.recorded_worktree_base(repo, repo) == (
+            git_head(repo, "main"), path, "")
+
+    @pytest.mark.parametrize("version", [1, 5])
+    def test_a_pinned_sha_base_ref_is_refused_with_the_base_remedy(
+            self, tmp_path, version):
+        repo = make_feature_repo(tmp_path)
+        pinned = git_head(repo, "main")
+        write_instance_record(repo, schema_version=version, base_ref=pinned,
+                              fork_point_sha=pinned)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "does not name a local branch in this tree" in why
+        assert "--base" in why
+
+    def test_a_stray_base_branch_ref_in_a_v5_record_is_never_used(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        pinned = git_head(repo, "main")
+        write_instance_record(repo, schema_version=5, base_ref=pinned,
+                              fork_point_sha=pinned, base_branch_ref="main")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "does not name a local branch in this tree" in why
+
+    def test_a_symbolic_base_that_absorbed_the_branch_is_still_moved(
+            self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, schema_version=5, base_ref="main")
+        git(repo, "branch", "-f", "main", "feature")
+        (repo / "after.txt").write_text("more\n")
+        commit_all(repo, "one more")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "MOVED since the record was written" in why
+
+
 class TestRecordedWorktreeBase:
     """RG-51 unit level: `recorded_worktree_base` reads ANOTHER project's
     serialized output, so every documented shape and every degenerate one is
@@ -9954,7 +11093,7 @@ class TestRecordedWorktreeBase:
             assert run_gate.recorded_worktree_base(repo, repo) == \
                 (None, None, "")
 
-    @pytest.mark.skipif(os.geteuid() == 0,
+    @pytest.mark.skipif(os.geteuid() == 0,   # testdeps-exception: structural
                         reason="root reads a 0o000 file regardless")
     def test_an_unreadable_record_is_reported(self, tmp_path):
         repo = make_feature_repo(tmp_path)
@@ -10508,14 +11647,23 @@ class TestRecordedWorktreeBase:
         assert run_gate.recorded_worktree_base(repo, repo)[0] == \
             fork_sha(repo, legal)
 
-    def test_an_unknown_schema_version_still_reads(self, tmp_path):
-        """`base_ref` is present and identical in every schema ciu has
-        shipped, and nothing here validates a field it does not use — so a
-        future v3 with new keys must NOT start falling back."""
+    def test_unknown_extra_keys_in_a_known_schema_still_read(self, tmp_path):
+        """`base_ref` is present and identical in every schema v1-v5, and
+        nothing here validates a field it does not use — so a record with new
+        KEYS in a known schema must NOT start falling back."""
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref="main", schema_version=5,
+                              lease=None, some_future_key={"a": 1})
+        assert run_gate.recorded_worktree_base(repo, repo)[0] == fork_sha(repo)
+
+    def test_a_schema_newer_than_the_reader_fails_closed(self, tmp_path):
+        """v6 changed the MEANING of `base_ref` (symbolic -> pinned SHA), so a
+        future schema may do it again: it is refused with the `--base` remedy
+        rather than guessed at (supersedes the pre-v6 "unknown still reads")."""
         repo = make_feature_repo(tmp_path)
         write_instance_record(repo, base_ref="main", schema_version=99,
                               lease=None, some_future_key={"a": 1})
-        assert run_gate.recorded_worktree_base(repo, repo)[0] == fork_sha(repo)
+        assert run_gate.recorded_worktree_base(repo, repo)[0] is None
 
     def test_a_record_carrying_only_base_ref_is_refused(self, tmp_path):
         """Before CIU-106 this was enough. It no longer is: without a
@@ -10985,12 +12133,16 @@ class TestWheelPackaging:
         assert (RUN_GATE_DIR / "run_gate.py").is_file()
         assert not (RUN_GATE_DIR / "run-gate.py").exists()
 
+    # A class-scoped fixture must not be an instance method (pytest 9
+    # deprecation, removed in 10): it runs once per class while every test
+    # gets a fresh instance, so `self` would be a lie.
     @pytest.fixture(scope="class")
-    def built_wheel(self, tmp_path_factory):
+    @staticmethod
+    def built_wheel(tmp_path_factory):
         if not (_has_module("setuptools") and _has_module("build")
                 and _has_module("setuptools_scm")):
-            warnings.warn("run-gate wheel tests SKIPPED: wheel toolchain unavailable")
-            pytest.skip("wheel toolchain unavailable")
+            _testdeps.missing("the wheel toolchain (setuptools, build, "
+                              "setuptools_scm)", "wheel toolchain unavailable")
         import setuptools
         from importlib.metadata import version as _dist_version
         pyproject = tomllib.loads((RUN_GATE_DIR / "pyproject.toml").read_text())
@@ -11000,9 +12152,8 @@ class TestWheelPackaging:
                        if r.startswith(f"{dist}=="))
             want = pin.split("==")[1]
             if have != want:
-                warnings.warn(f"run-gate wheel tests SKIPPED: local {dist} "
-                              f"{have} != pinned {want}")
-                pytest.skip(f"local {dist} {have} != pinned {want}")
+                _testdeps.missing(f"the pinned {dist}=={want}",
+                                  f"local {dist} {have} != pinned {want}")
         stage = tmp_path_factory.mktemp("wheel-stage")
         for name in ("run_gate.py", "run_gate_admission.py", "pyproject.toml",
                      "README.md"):
@@ -11803,7 +12954,13 @@ class TestEstateBudgetTimeoutPairing:
     invokes a helper rather than a lane (srdm's canary-run.sh) pairs with
     nothing and is skipped by construction."""
 
-    TROVES = sorted(RUN_GATE_DIR.parent.glob("*/nyxloom-trove/nyxloom.toml"))
+    # Only projects that declare lanes can pair: a trove whose project has no
+    # run-gate.toml (ciu8, the shelved v8 subproject) is not a case at all,
+    # so it is filtered here rather than collected and skipped — a skip in
+    # the gate log must mean something is missing, never "not applicable".
+    TROVES = sorted(trove for trove
+                    in RUN_GATE_DIR.parent.glob("*/nyxloom-trove/nyxloom.toml")
+                    if (trove.parent.parent / "run-gate.toml").is_file())
 
     @staticmethod
     def _pair(trove):
@@ -11849,8 +13006,8 @@ class TestEstateBudgetTimeoutPairing:
     def test_consumer_timeouts_never_cut_lanes_short(self, trove):
         proj_dir = trove.parent.parent
         paired = self._pair(trove)
-        if paired is None:
-            pytest.skip(f"{proj_dir.name} has no run-gate.toml")
+        assert paired is not None, \
+            f"{proj_dir.name} lost its run-gate.toml after collection"
         for gate_name, lane_name, timeout, budget in paired:
             assert timeout >= _budget_seconds(budget), (
                 f"{trove}: [gates.{gate_name}] timeout_seconds="
@@ -11872,7 +13029,8 @@ class TestEstateBudgetTimeoutPairing:
             seen.extend((trove.parent.parent.name, p[0])
                         for p in (self._pair(trove) or []))
         if not self.TROVES:
-            pytest.skip("no troves scanned (estate layout absent)")
+            _testdeps.missing("the estate's nyxloom troves",
+                              "no troves scanned (estate layout absent)")
         assert len(seen) >= 3, (
             f"estate-wide pairing collapsed to {seen} — the "
             f"sweep's grammar and the estate's gate tables have drifted "
@@ -14661,6 +15819,7 @@ class TestResumeAndProgressAlways:
 
     def test_state_root_preflight_refuses_before_assay_and_uses_exact_runner(
             self, monkeypatch, tmp_path):
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
         calls = []
 
         def run(argv, **_kwargs):
@@ -14812,6 +15971,7 @@ class TestResumeAndProgressAlways:
 
     def test_state_root_dry_run_discloses_probe_without_running_it(
             self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
         calls = []
 
         def run(argv, **_kwargs):
@@ -14951,6 +16111,7 @@ class TestResumeAndProgressAlways:
             self, tmp_path, monkeypatch, capfd):
         """The judge prints its executed argv and writes a valid verdict, so
         both the handover and the normal closed-result path are exercised."""
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
         cfg = ASSAY_LANE_CFG.replace('environment = "tester-unified"',
                                      'environment = "bare-host"', 1)
         TestComparisonBasePassthrough._project(self, tmp_path, monkeypatch, cfg)
@@ -14961,6 +16122,7 @@ class TestResumeAndProgressAlways:
               *"lanes --json"*) echo '{"inventory_schema": 1, "lanes": [
                   {"name": "ui_unit", "base_source": "request", "rigor": ["R0"],
                    "external_tools": [], "argv0": null, "language": null}]}' ;;
+              analyze*) exit 0 ;;  # B108-2: the closeout call must not rewrite the verdict
               *) echo "JUDGE-ARGV: $*"
                  mkdir -p .assay
                  cat > .assay/verdict-ui_unit.json <<'JSON'
@@ -15273,6 +16435,147 @@ def logstream_container(state: Path) -> str | None:
     names = sorted(p.name for p in state.glob("run-gate-*")
                    if not p.name.endswith(".stream"))
     return names[0] if names else None
+
+
+class TestRg109InterruptedClient:
+    """RG-109: what a SIGTERM to run-gate leaves behind, pinned.
+
+    A client STOPPED gracefully during the wait removes its container and
+    clears its record (adoption is for a client that DIED); a second SIGTERM
+    during that cleanup is deferred, never raised mid-cleanup; and an
+    interruption after `docker run -d` but before the wait keeps the
+    container (adoptable) and says so."""
+
+    def test_deferred_sigterm_records_the_signal_and_re_raises_after_the_body(self):
+        previous = signal.getsignal(signal.SIGTERM)
+        reached = []
+        with pytest.raises(SystemExit) as caught:
+            with run_gate.deferred_sigterm():
+                os.kill(os.getpid(), signal.SIGTERM)
+                reached.append("body ran to its end despite the signal")
+                reached.append(signal.getsignal(signal.SIGTERM) is not previous)
+        assert caught.value.code == 128 + signal.SIGTERM
+        assert reached == ["body ran to its end despite the signal", True]
+        assert signal.getsignal(signal.SIGTERM) is previous   # restored
+
+    def test_deferred_sigint_is_re_raised_as_keyboard_interrupt_after_the_body(self):
+        """Ctrl-C during the cleanup (README: SIGTERM / Ctrl-C) is deferred
+        the same way and comes back as the KeyboardInterrupt Python's own
+        handler would have raised; a SIGTERM seen as well wins (exit 143)."""
+        previous = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGINT)}
+        reached = []
+        with pytest.raises(KeyboardInterrupt):
+            with run_gate.deferred_sigterm():
+                os.kill(os.getpid(), signal.SIGINT)
+                reached.append("body ran to its end despite Ctrl-C")
+        assert reached == ["body ran to its end despite Ctrl-C"]
+        assert all(signal.getsignal(s) is h for s, h in previous.items())
+        with pytest.raises(SystemExit) as caught:
+            with run_gate.deferred_sigterm():
+                os.kill(os.getpid(), signal.SIGINT)
+                os.kill(os.getpid(), signal.SIGTERM)
+        assert caught.value.code == 128 + signal.SIGTERM
+        assert all(signal.getsignal(s) is h for s, h in previous.items())
+
+    def test_deferred_sigterm_restores_a_c_installed_handler_as_sig_dfl(
+            self, monkeypatch):
+        """`signal.signal` reports a handler Python did not install as None;
+        handing None back raises TypeError and would abort the restore
+        mid-way. The default disposition is restored instead."""
+        real_signal = signal.signal
+        original_sigint = signal.getsignal(signal.SIGINT)
+        restored = []
+
+        def reporting_none_for_sigint(signum, handler):
+            previous = real_signal(signum, handler)
+            if signum == signal.SIGINT and handler is not signal.SIG_DFL \
+                    and previous is original_sigint:
+                return None            # as if a C host had installed it
+            if handler is signal.SIG_DFL:
+                restored.append(signum)
+            return previous
+
+        monkeypatch.setattr(signal, "signal", reporting_none_for_sigint)
+        try:
+            with run_gate.deferred_sigterm():
+                pass
+            # SIGTERM's own previous handler may legitimately be SIG_DFL
+            # (it is under pytest); the point is SIGINT's None became SIG_DFL
+            # instead of a TypeError that would have skipped the rest.
+            assert signal.SIGINT in restored
+            assert signal.getsignal(signal.SIGINT) is signal.SIG_DFL
+        finally:
+            real_signal(signal.SIGINT, original_sigint)
+        assert signal.getsignal(signal.SIGINT) is original_sigint
+
+    def test_deferred_sigterm_without_a_signal_is_transparent(self):
+        previous = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGINT)}
+        with run_gate.deferred_sigterm():
+            pass
+        assert all(signal.getsignal(s) is h for s, h in previous.items())
+
+    def test_deferred_sigterm_outside_the_main_thread_runs_the_body_unprotected(self):
+        seen = []
+
+        def body():
+            with run_gate.deferred_sigterm():   # signal() raises ValueError here
+                seen.append(threading.current_thread() is not threading.main_thread())
+
+        worker = threading.Thread(target=body)
+        worker.start()
+        worker.join(timeout=10)
+        assert seen == [True]
+
+    def test_a_sigterm_during_the_wait_removes_the_container_and_clears_the_record(
+            self, tmp_path, monkeypatch):
+        repo, proj = make_history_repo(tmp_path, SIMPLE_LANE)
+        log, state = fake_docker_stateful(tmp_path, monkeypatch)
+        (state / ".hang").write_text("")      # `docker logs -f` blocks
+        client = subprocess.Popen([sys.executable, str(_TOOL_INVOKE), "suite"],
+                                  cwd=proj, stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, text=True)
+        record = proj / ".run-gate" / "inflight" / "suite.json"
+        deadline = time.monotonic() + 30
+        while not (state_containers(state) and record.exists()) \
+                and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert state_containers(state) and record.exists()
+        name = state_containers(state)[0]
+        client.send_signal(signal.SIGTERM)
+        out, _ = client.communicate(timeout=60)
+        assert client.returncode == 2, out   # ERROR: interrupted
+        assert ("interrupted before a closed result (exit status 143); "
+                "verdict ERROR, exit 2") in out
+        assert state_containers(state) == [], out   # `docker rm -f` ran
+        assert not record.exists(), out               # and the record is gone
+        assert f"rm\x1f-f\x1f{name}" in log.read_text()
+
+    def test_an_interruption_before_the_wait_keeps_the_container_and_says_so(
+            self, tmp_path, monkeypatch, capsys):
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+        repo, proj = make_history_repo(tmp_path)
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ["run-gate"])
+        # the stateful shim: `docker run -d` creates a container `inspect`
+        # can answer for, so the lane reaches the profiling start (the window)
+        log, state = fake_docker_stateful(tmp_path, monkeypatch)
+        called = []
+
+        def interrupted(*args, **kwargs):
+            called.append(args[6])            # the container name
+            raise SystemExit(128 + signal.SIGTERM)
+
+        monkeypatch.setattr(run_gate, "start_lane_profiling", interrupted)
+        assert run_gate.main(["suite"]) == 2
+        assert len(called) == 1, "the profiling start (the window) never ran"
+        name = called[0]
+        err = capsys.readouterr().err
+        assert (f"interrupted before lane 'suite' was awaited: container {name} "
+                f"keeps running and its in-flight record is kept") in err
+        assert f"`docker rm -f {name}` to discard it" in err
+        assert "budget is not enforced while no client is attached" in err
+        assert f"rm\x1f-f\x1f{name}" not in log.read_text()   # kept, by design
+        assert (proj / ".run-gate" / "inflight" / "suite.json").exists()
 
 
 class TestReattachAcrossADeadClient:
@@ -18726,6 +20029,7 @@ class TestInflightRecordStore:
 
     def test_fresh_launch_failure_cannot_reuse_stale_pass_but_attach_keeps_it(
             self, tmp_path, monkeypatch):
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
         repo = make_repo(tmp_path)
         lane = {"kind": "assay", "assay_lane": "unit",
                 "environment": "runner"}
@@ -21921,6 +23225,162 @@ class TestProfilingOrchestration:
         assert result["profile_error"] is not None
         assert state["warning"] == result["profile_error"]
 
+    # -- cgprofile 1.1.0: `stop-incomplete`, `stop_forced`, `damon_cleanup` --
+
+    @staticmethod
+    def _client_with_stop_answers(tmp_path, monkeypatch, answers):
+        """A ProfilerClient whose `_ctl` answers `stop` from a scripted list
+        of `(doc, reason, refusal_code)`; records the calls."""
+        fake_docker(tmp_path, monkeypatch)
+        client = run_gate.ProfilerClient(shutil.which("docker"),
+                                         run_gate.PROFILE_DAEMON_DEFAULT)
+        script = iter(answers)
+        calls = []
+
+        def fake_ctl(verb, *args):
+            calls.append((verb, args))
+            doc, reason, code = next(script)
+            client.last_refusal_code = code
+            return doc, reason
+
+        monkeypatch.setattr(client, "_ctl", fake_ctl)
+        return client, calls
+
+    def test_stop_retries_while_the_daemon_answers_stop_incomplete(
+            self, tmp_path, monkeypatch):
+        stop = json.loads((RG55_FIXTURES / "stop-v1.json").read_text())
+        incomplete = (None, "`cgprofile ctl stop` refused (stop-incomplete): "
+                      "sampling worker still running", "stop-incomplete")
+        client, calls = self._client_with_stop_answers(
+            tmp_path, monkeypatch, [incomplete, incomplete, (stop, None, None)])
+        slept = []
+        doc, reason = client.stop("s-1", sleep=slept.append)
+        assert doc is stop and reason is None
+        assert calls == [("stop", ("s-1",))] * 3
+        assert slept == [run_gate.PROFILE_STOP_RETRY_SECONDS] * 2
+
+    def test_stop_gives_up_after_the_bounded_attempts_and_says_so(
+            self, tmp_path, monkeypatch):
+        incomplete = (None, "`cgprofile ctl stop` refused (stop-incomplete): "
+                      "sampling worker still running", "stop-incomplete")
+        client, calls = self._client_with_stop_answers(
+            tmp_path, monkeypatch, [incomplete] * 10)
+        slept = []
+        doc, reason = client.stop("s-1", sleep=slept.append)
+        assert doc is None
+        assert len(calls) == run_gate.PROFILE_STOP_RETRY_ATTEMPTS == 4
+        assert len(slept) == 3
+        assert reason.startswith("`cgprofile ctl stop` refused (stop-incomplete)")
+        assert reason.endswith("(still incomplete after 4 attempts 2 s apart; "
+                               "the daemon did not force the stop)")
+
+    def test_stop_stops_retrying_when_a_later_call_times_out(self, tmp_path, monkeypatch):
+        """Review finding: a timeout answers without `_parse_response`, so the
+        refusal code of the PREVIOUS call must not survive into this one —
+        otherwise `stop-incomplete` followed by a dead daemon meant four
+        30 s timeouts. The scripted fake sets `None` as `_ctl` now does."""
+        incomplete = (None, "`cgprofile ctl stop` refused (stop-incomplete): "
+                      "sampling worker still running", "stop-incomplete")
+        timed_out = (None, "`cgprofile ctl stop` timed out after 30s", None)
+        client, calls = self._client_with_stop_answers(
+            tmp_path, monkeypatch, [incomplete, timed_out, incomplete, incomplete])
+        slept = []
+        doc, reason = client.stop("s-1", sleep=slept.append)
+        assert doc is None and reason.endswith("timed out after 30s")
+        assert len(calls) == 2 and len(slept) == 1
+
+    def test_ctl_clears_the_refusal_code_before_every_call(self, tmp_path, monkeypatch):
+        """The real `_ctl`: a carrier timeout or an unknown transport returns
+        before `_parse_response` could reset the code."""
+        fake_docker(tmp_path, monkeypatch)
+        client = run_gate.ProfilerClient(shutil.which("docker"),
+                                         run_gate.PROFILE_DAEMON_DEFAULT,
+                                         transport="exec")
+        client.last_refusal_code = "stop-incomplete"
+        monkeypatch.setattr(client, "_exec_ctl", lambda verb, *args: (
+            None, f"`cgprofile ctl {verb}` timed out after 30s"))
+        assert client._ctl("stop", "s-1") == (
+            None, "`cgprofile ctl stop` timed out after 30s")
+        assert client.last_refusal_code is None
+        client.last_refusal_code = "stop-incomplete"
+        client.transport = "carrier-pigeon"
+        doc, reason = client._ctl("stop", "s-1")
+        assert doc is None and "unknown profiler transport" in reason
+        assert client.last_refusal_code is None
+
+    def test_stop_does_not_retry_any_other_refusal(self, tmp_path, monkeypatch):
+        client, calls = self._client_with_stop_answers(
+            tmp_path, monkeypatch,
+            [(None, "`cgprofile ctl stop` refused (no-such-session): gone",
+              "no-such-session")] * 3)
+        slept = []
+        doc, reason = client.stop("s-1", sleep=slept.append)
+        assert doc is None and "no-such-session" in reason
+        assert len(calls) == 1 and slept == []
+
+    def test_parse_response_records_the_refusal_code(self, tmp_path, monkeypatch):
+        fake_docker(tmp_path, monkeypatch)
+        client = run_gate.ProfilerClient(shutil.which("docker"),
+                                         run_gate.PROFILE_DAEMON_DEFAULT)
+        refused = {"contract": run_gate.PROFILE_CONTRACT, "ok": False,
+                   "error": {"code": "stop-incomplete", "message": "busy"}}
+        doc, reason = client._parse_response("stop", json.dumps(refused))
+        assert doc is None and "(stop-incomplete): busy" in reason
+        assert client.last_refusal_code == "stop-incomplete"
+        refused["error"] = {"code": 7}
+        client._parse_response("stop", json.dumps(refused))
+        assert client.last_refusal_code is None   # a non-string code is none
+        accepted = {"contract": run_gate.PROFILE_CONTRACT, "ok": True,
+                    "summary": {}}
+        doc, reason = client._parse_response("stop", json.dumps(accepted))
+        assert doc == accepted and client.last_refusal_code is None
+        client._parse_response("stop", "not json", returncode=1, stderr="x")
+        assert client.last_refusal_code is None
+
+    def test_finish_daemon_forced_stop_keeps_the_summary_and_warns(
+            self, tmp_path, monkeypatch, capsys):
+        stop = json.loads((RG55_FIXTURES / "stop-v1.json").read_text())
+        stop["summary"]["stop_forced"] = "sampler-still-running"
+        set_cgprofile_plan(tmp_path, monkeypatch, stop=(json.dumps(stop), None, None))
+        fake_docker(tmp_path, monkeypatch)
+        client = run_gate.ProfilerClient(shutil.which("docker"),
+                                         run_gate.PROFILE_DAEMON_DEFAULT)
+        state = {"mode": "daemon", "client": client,
+                 "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                 "session": "s-x", "warning": None}
+        result = run_gate.finish_lane_profiling(state)
+        assert result["resources"] == stop["summary"]   # recorded verbatim
+        assert result["profile_error"] is None
+        assert "stop_forced='sampler-still-running'" in state["warning"]
+        assert "may be incomplete" in state["warning"]
+        run_gate.print_profile_warning(state)
+        err = capsys.readouterr().err
+        assert "WARNING profiling: cgprofile finalized the session" in err
+        assert err.rstrip().endswith("— profile recorded with this caveat")
+
+    def test_finish_daemon_unconfirmed_damon_teardown_warns_confirmed_does_not(
+            self, tmp_path, monkeypatch):
+        stop = json.loads((RG55_FIXTURES / "stop-v1.json").read_text())
+        stop["summary"]["damon_cleanup"] = {"confirmed": False, "slot": 2,
+                                            "quarantined": True}
+        set_cgprofile_plan(tmp_path, monkeypatch, stop=(json.dumps(stop), None, None))
+        fake_docker(tmp_path, monkeypatch)
+        client = run_gate.ProfilerClient(shutil.which("docker"),
+                                         run_gate.PROFILE_DAEMON_DEFAULT)
+        state = {"mode": "daemon", "client": client,
+                 "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                 "session": "s-x", "warning": "earlier"}
+        result = run_gate.finish_lane_profiling(state)
+        assert result["resources"]["damon_cleanup"]["slot"] == 2
+        assert state["warning"] == "earlier"   # the first warning wins
+        caveat = run_gate.profile_summary_caveat(stop["summary"])
+        assert "slot 2, quarantined=True" in caveat and "not the same as DAMON off" in caveat
+        stop["summary"]["damon_cleanup"]["confirmed"] = True
+        assert run_gate.profile_summary_caveat(stop["summary"]) is None
+        assert run_gate.profile_summary_caveat(None) is None
+        assert run_gate.profile_summary_caveat({"stop_forced": None}) is None
+        assert run_gate.profile_summary_caveat({"damon_cleanup": "odd"}) is None
+
     def test_finish_basic(self, tmp_path, monkeypatch):
         fake_docker(tmp_path, monkeypatch)
         docker = shutil.which("docker")
@@ -23612,6 +25072,7 @@ class TestBareHostProfilingWiring:
 
     def test_bare_host_rusage_fallback_stall_terminates_group_and_keeps_rusage(
             self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
         class Watch:
             def __init__(self):
                 self.calls = 0
@@ -23679,6 +25140,7 @@ class TestBareHostProfilingWiring:
 
     def test_bare_host_rusage_fallback_is_polled_at_the_progress_cadence(
             self, tmp_path, monkeypatch):
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
         class Watch:
             def __init__(self):
                 self.calls = 0
@@ -23720,6 +25182,7 @@ class TestBareHostProfilingWiring:
 
     def test_bare_host_watch_failure_degrades_to_unwatched_rusage_wait(
             self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
         class Watch:
             def __init__(self):
                 self.calls = 0
@@ -23754,6 +25217,7 @@ class TestBareHostProfilingWiring:
 
     def test_bare_host_profiling_disabled_assay_lane_keeps_progress_liveness(
             self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
         class Watch:
             def poll(self):
                 return "assay progress stopped"
@@ -23793,6 +25257,7 @@ class TestBareHostProfilingWiring:
 
     def test_bare_host_daemon_watch_failure_uses_progress_fallback(
             self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
         class Client:
             def watch(self, session):
                 raise OSError("planted daemon watch failure")
@@ -23832,6 +25297,7 @@ class TestBareHostProfilingWiring:
 
     def test_bare_host_reattach_failure_keeps_lane_exit_via_fallback(
             self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
         class DaemonWatch:
             def drain(self):
                 return []
@@ -23898,6 +25364,7 @@ class TestBareHostProfilingWiring:
         announcement is printed exactly once on stdout, even across further
         idle polls served by the fallback, and the profiler warning names the
         second idle."""
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
         class DaemonWatch:
             def drain(self):
                 return []
@@ -23968,6 +25435,7 @@ class TestBareHostProfilingWiring:
         """Same double-idle path with NO progress fallback: no in-process
         announcement, the warning says liveness continues without the daemon,
         and the lane exit code is unaffected."""
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
         class DaemonWatch:
             def drain(self):
                 return []
@@ -28543,6 +30011,52 @@ class TestRG78AndRG76DirectOracles:
             assert tomllib.loads(migrated)["environments"] == {
                 "bare-host": {"mode": "host"}}
 
+    def test_environment_user_invoker_resolves_to_the_invoking_identity(self, monkeypatch):
+        """RG-106: `user = "invoker"` derives uid:gid; a literal passes; absent stays absent."""
+        monkeypatch.setattr(run_gate.os, "getuid", lambda: 1234)
+        monkeypatch.setattr(run_gate.os, "getgid", lambda: 5678)
+        monkeypatch.delenv(run_gate.HOST_IMAGE_ENV_VAR, raising=False)
+        central = {"environments": {
+            "derived": {"mode": "ephemeral", "image": "base:local", "user": "invoker"},
+            "literal": {"mode": "ephemeral", "image": "base:local", "user": "1000:1000"},
+            "plain": {"mode": "ephemeral", "image": "base:local"},
+        }}
+        def resolve(name):
+            return run_gate.resolve_environment(
+                {"environment": name}, "unit", {}, central,
+                Path("run-gate.toml"), Path("run-gate.root.toml"))[0]
+        assert resolve("derived")["user"] == "1234:5678"
+        assert resolve("literal")["user"] == "1000:1000"
+        assert "user" not in resolve("plain")
+        # The central table itself is never mutated by a resolution.
+        assert central["environments"]["derived"]["user"] == "invoker"
+
+    def test_environment_user_rejects_malformed_values_and_host_mode(self):
+        for value in ("root", "1000:", ":1000", "1:2:3", "-1", 1000, True, ""):
+            with pytest.raises(run_gate.GateError, match="'user' must be"):
+                run_gate._validate_environment(
+                    "e", {"mode": "ephemeral", "image": "base:local", "user": value},
+                    "run-gate.toml")
+        for env in ({"mode": "host", "user": "invoker"},
+                    {"mode": "exec", "image": "r:1", "user": "invoker"}):
+            with pytest.raises(run_gate.GateError, match="'user' requires mode"):
+                run_gate._validate_environment("e", env, "run-gate.toml")
+        for value in ("invoker", "1000", "1000:100"):
+            run_gate._validate_environment(
+                "e", {"mode": "ephemeral", "image": "base:local", "user": value},
+                "run-gate.toml")
+
+    def test_declared_user_wins_over_the_host_image_override_default(self, monkeypatch):
+        monkeypatch.setattr(run_gate.os, "getuid", lambda: 1)
+        monkeypatch.setattr(run_gate.os, "getgid", lambda: 2)
+        monkeypatch.setenv(run_gate.HOST_IMAGE_ENV_VAR, "operator:v2")
+        central = {"environments": {"host": {
+            "mode": "ephemeral", "image": "d:v1", "user": "7:8"}}}
+        resolved, _ = run_gate.resolve_environment(
+            {"environment": "host"}, "unit", {}, central,
+            Path("run-gate.toml"), Path("run-gate.root.toml"))
+        assert resolved["image"] == "operator:v2" and resolved["user"] == "7:8"
+
     def test_environment_image_override_requires_valid_name_and_container_mode(self):
         for value in ("", "1IMAGE", "IMAGE-NAME"):
             with pytest.raises(run_gate.GateError, match="valid environment-variable name"):
@@ -29607,10 +31121,18 @@ class TestLaneDeadlineEnforcement:
         assert captured.err == ""
 
     def test_main_converts_dependency_system_exit_to_closed_error(self,
-                                                                 monkeypatch):
+                                                                 monkeypatch,
+                                                                 capsys):
         monkeypatch.setattr(run_gate, "_dispatch",
                             lambda _argv: (_ for _ in ()).throw(SystemExit(255)))
         assert run_gate.main(["unit"]) == 2
+        err = capsys.readouterr().err
+        assert ("interrupted before a closed result (exit status 255); "
+                "verdict ERROR, exit 2") in err   # RG-109: never silent
+        monkeypatch.setattr(run_gate, "_dispatch",
+                            lambda _argv: (_ for _ in ()).throw(KeyboardInterrupt()))
+        assert run_gate.main(["unit"]) == 2
+        assert "(exit status SIGINT); verdict ERROR, exit 2" in capsys.readouterr().err
         with pytest.raises(SystemExit) as caught:
             run_gate._sigterm_as_exit(signal.SIGTERM, None)
         assert caught.value.code == 128 + signal.SIGTERM
@@ -32151,10 +33673,19 @@ class TestRgNarrowRealContainer:
             self, tmp_path, monkeypatch):
         image = os.environ.get("RUN_GATE_NARROW_SMOKE_IMAGE",
                                "tester-unified:local")
-        if not (shutil.which("docker") and _docker_image_present(image)):
-            pytest.skip(f"real container smoke needs docker + {image}")
-        if not os.environ.get(CGROUP_VAR):
-            pytest.skip(f"real container smoke needs ${CGROUP_VAR}")
+        # testdeps-exception: the ONE structural skip (see tests/_testdeps.py).
+        # Inside the selftest lane's own container the Docker socket is absent
+        # by design, so this cannot be a failing default there; where Docker
+        # is reachable, RUN_GATE_REQUIRE_CONTAINER_SMOKE=1 makes it one.
+        absent = (f"real container smoke needs docker + {image}"
+                  if not (shutil.which("docker") and _docker_image_present(image))
+                  else f"real container smoke needs ${CGROUP_VAR}"
+                  if not os.environ.get(CGROUP_VAR) else None)
+        if absent is not None:
+            if _testdeps.require_container_smoke():
+                pytest.fail(f"{absent} ({_testdeps.REQUIRE_CONTAINER_SMOKE_VAR}=1)",
+                            pytrace=False)
+            pytest.skip(absent)  # testdeps-exception
         monkeypatch.delenv(run_gate.ALLOW_MAIN_CHECKOUT_ENV_VAR, raising=False)
         repo = _narrow_repo(tmp_path)
         wt = make_worktree(repo, repo / ".worktrees", "w1")
@@ -32229,12 +33760,17 @@ class TestRgNarrowRealContainer:
             "git -c user.name=a -c user.email=a@b.invalid commit --allow-empty "
             "-qm in-container; "
             "test \"$(git log -1 --format=%s)\" = in-container; "
-            "test ! -e host-hook-fired; "
+            # the host hook writes to `git rev-parse --show-toplevel`, the
+            # WORKTREE root (one above proj/); the lane's commit must not run it
+            "test ! -e {worktree}/host-hook-fired; "
             "no touch $common/hooks/post-commit; "
             "no sh -c 'printf compromised >> \"$1/info/exclude\"' sh $common; "
-            # gc sees the siblings' HEAD and index and keeps their objects
-            # (FIRST, so only the gc check can fail a lane that hides them)
-            "git gc --prune=now -q; "
+            # repack+prune see the siblings' HEAD and index and keep their
+            # objects (FIRST, so only this check can fail a lane that hides
+            # them). Not `git gc`: its reflog expiry locks every sibling's
+            # HEAD under the read-only `worktrees/` admin mount and fails on
+            # git >= 2.4x — by design (RG-112), the siblings stay untouchable.
+            "git repack -a -d -q && git prune --expire=now; "
             f"git cat-file -e {head_sha}; git cat-file -e {blob_sha}; "
             # assay's snapshot is `clone --no-local`; `git worktree add` needs a
             # NEW admin dir under the read-only `worktrees/` and must fail
@@ -32273,6 +33809,9 @@ class TestRgNarrowRealContainer:
             clean_tree = false
         """)
         proj = make_project(repo, config)
+        # The worktree was forked before the project was committed to main;
+        # bring it level (a fast-forward: no commit, so no host hook fires).
+        git(wt, "merge", "-q", "--ff-only", "main")
         (other_wt / "other.secret").write_text("FAKE-OTHER-SECRET\n")
         (wt / "proj" / ".local-overlay").write_text("ignored but mine\n")
         proc = run_tool(proj, "suite", "--worktree", str(wt))
@@ -32280,7 +33819,7 @@ class TestRgNarrowRealContainer:
         assert "NARROW-OK" in proc.stdout, proc.stdout
         for path, contents in original_pointers.items():
             assert path.read_bytes() == contents, path
-        assert not (wt / "proj" / "host-hook-fired").exists()
+        assert not (wt / "host-hook-fired").exists()   # the hook's $root is wt
         assert post_commit.read_text(encoding="utf-8").startswith("#!/bin/sh\n")
         assert exclude.read_bytes() == original_exclude
         fsmonitor_marker = tmp_path / "host-fsmonitor-fired"
@@ -32308,7 +33847,7 @@ class TestRgNarrowRealContainer:
             capture_output=True, text=True,
         )
         assert host_commit.returncode == 0, host_commit.stderr
-        assert (wt / "proj" / "host-hook-fired").read_text() == "host-hook-ran"
+        assert (wt / "host-hook-fired").read_text() == "host-hook-ran"
         assert post_commit.read_text(encoding="utf-8").startswith("#!/bin/sh\n")
         # the in-container prune and gc left every host admin dir and every
         # sibling-only object intact

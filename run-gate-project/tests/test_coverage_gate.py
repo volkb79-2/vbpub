@@ -54,6 +54,55 @@ def test_parse_added_lines_ignores_deleted_files():
     assert coverage_gate.parse_added_lines(diff) == {}
 
 
+def test_parse_added_lines_does_not_count_the_no_newline_marker_as_a_line():
+    """RG-116 item 1: `\\ No newline at end of file` follows the `-` side when
+    the OLD file lacked a trailing newline. Counted as a context line it
+    pushed every later `+` line one too far (the true lines 10-11 became
+    11-12, and 12 does not exist), so a changed last line escaped the gate."""
+    diff = (
+        "diff --git a/run_gate.py b/run_gate.py\n"
+        "--- a/run_gate.py\n"
+        "+++ b/run_gate.py\n"
+        "@@ -10 +10,2 @@\n"
+        "-foo\n"
+        "\\ No newline at end of file\n"
+        "+foo2\n"
+        "+bar\n"
+        "\\ No newline at end of file\n"
+    )
+    assert coverage_gate.parse_added_lines(diff) == {"run_gate.py": {10, 11}}
+
+
+def test_git_added_lines_ignores_a_colouring_user_config(tmp_path):
+    """RG-116 item 5: `color.diff=always` wraps `+++` and `@@` in escapes; the
+    parser then matched nothing and the gate reported 0 changed lines
+    (SKIPPED, exit 0). The diff is asked for plain text regardless."""
+    import subprocess
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(tmp_path), *args],
+                       check=True, capture_output=True, text=True)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "test")
+    git("config", "color.diff", "always")
+    git("config", "color.ui", "always")
+    (tmp_path / "demo.py").write_text("a\nb\n", encoding="utf-8")
+    git("add", "demo.py")
+    git("commit", "-q", "-m", "base")
+    base_rev = subprocess.run(
+        ["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True).stdout.strip()
+    (tmp_path / "demo.py").write_text("a\nb\nc\n", encoding="utf-8")
+    coloured = subprocess.run(
+        ["git", "-C", str(tmp_path), "diff", "--unified=0", base_rev],
+        check=True, capture_output=True, text=True).stdout
+    assert "\x1b[" in coloured          # the config really colours a plain diff
+    assert coverage_gate._git_added_lines(str(tmp_path), base_rev) == \
+        {"demo.py": {3}}
+
+
 def test_evaluate_covered_change_passes():
     added = {"run-gate-project/run_gate.py": {5}}
     coverage_files = {

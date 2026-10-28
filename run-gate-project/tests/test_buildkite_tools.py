@@ -31,10 +31,7 @@ from pathlib import Path
 
 import pytest
 
-try:                                    # optional: strengthens the YAML asserts
-    import yaml
-except ImportError:                     # pragma: no cover - depends on the venv
-    yaml = None
+import _testdeps   # missing optional test dependencies FAIL by default
 
 TOOLS = Path(__file__).resolve().parent.parent / "tools" / "buildkite"
 PIPELINE_SH = TOOLS / "pipeline.sh"
@@ -136,8 +133,9 @@ def test_pipeline_emits_the_section_3_step_shape(tmp_path):
     assert proj.joinpath("run-gate.toml").exists()
 
 
-@pytest.mark.skipif(yaml is None, reason="PyYAML not importable in this venv")
 def test_pipeline_output_parses_as_the_documented_pipeline(tmp_path):
+    # PyYAML strengthens the asserts; a venv without it FAILS here by default.
+    yaml = _testdeps.optional_module("yaml", "PyYAML not importable in this venv")
     _stub_project(tmp_path / "proj")
     res = _run(PIPELINE_SH, "proj", cwd=tmp_path,
                env={"RUN_GATE_QUEUE": "gate-alpha",
@@ -207,7 +205,8 @@ def test_pipeline_refuses_a_bad_timeout(tmp_path):
 def test_pipeline_refuses_a_leading_zero_timeout(tmp_path, value):
     """N4: `timeout_in_minutes: 0300` is read by a YAML parser as OCTAL 192,
     so emitting it verbatim would silently quarter the budget."""
-    assert yaml is None or yaml.safe_load("c: 0300")["c"] == 192   # the reason
+    yaml = _testdeps.optional_module("yaml", "PyYAML not importable in this venv")
+    assert yaml.safe_load("c: 0300")["c"] == 192   # the reason
     _stub_project(tmp_path / "proj")
     res = _run(PIPELINE_SH, "proj", cwd=tmp_path,
                env={"RUN_GATE_QUEUE": "q1", "RUN_GATE_LANES": "selftest",

@@ -5546,3 +5546,19 @@ rid of a stale checkout, and it is blocked for an old checkout (compare CIU-115,
 `clean` it runs elsewhere, and only then remove the checkout; if it cannot, it must say which resources it could not verify and
 offer a `--force` that prints the exact `docker` objects it is skipping. Oracle: a fixture checkout without the marker, with a
 recorded instance and one labelled volume, is removed by `rm` with the volume cleaned, and without the volume left behind.
+
+## CIU-152 — worktree record schema v6: pin `base_ref` to the fork SHA and name the moving base separately as `base_branch_ref` (run-gate's R-35a reader already ships)
+
+**Status:** OPEN 2026-10-27 (filed from the run-gate 24.1.0 wave; producer-side contract). Severity Low until ciu changes `base_ref`.
+
+**Context.** run-gate 24.1.0 reads `ciu.worktree-instance.json` schema v6 (`run_gate.py` `_usable_recorded_branch_base`,
+`CIU_BASE_BRANCH_SCHEMA_VERSION = 6`; docs `run-gate-project/docs/DESIGN-GUIDE.md` "ciu record schema v6", `CONSUMERS.md`,
+SPEC R-35a) and refuses v7+. ciu today emits v1..v5 (`src/ciu/worktree.py:75-79`) with a symbolic `base_ref`; no v6 exists
+yet, so the reader is a run-gate-side statement of the contract it expects.
+
+**Required contract when ciu bumps to v6.** `schema_version: 6`; `base_ref` = the pinned FULL fork commit id (40/64 hex),
+equal to `fork_point_sha`; a new `base_branch_ref` = the canonical LOCAL branch name the tree was forked from (plain
+gate-safe text; never `refs/heads/...`, a tag, a remote-tracking ref or a SHA), or JSON null when ciu cannot name one
+(adopt, tag, raw commit). run-gate anchors every freshness clause on `refs/heads/<base_branch_ref>` and hands the judge
+`fork_point_sha`; any deviation degrades with a `--base` remedy. If ciu's v6 ends up shaped differently, run-gate's reader
+must change in the same release wave.

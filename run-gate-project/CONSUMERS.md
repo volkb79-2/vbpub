@@ -159,7 +159,10 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
 
 `run-gate.root.toml` at the REPO ROOT holds environment facts once for all
 internal projects (`[environments.<name>]`: `image`, optional ephemeral-only `image_env`,
-`cgroup_slice` or `cgroup_slice_env`) and, since RG-16, SHARED LANES too: every package can use
+`cgroup_slice` or `cgroup_slice_env`, optional ephemeral-only `user` — `"invoker"` for the
+invoking process's `uid:gid` or a numeric `uid[:gid]`, passed as `--user` so files the
+container writes into the bind-mounted worktree are owned by its owner, RG-106) and, since
+RG-16, SHARED LANES too: every package can use
 the identical lane without copying definitions. Discovery: nearest STRICT
 ancestor of the project dir; project entries shadow a central name entirely
 (whole table, no field merging — same rule for environments and lanes).
@@ -200,6 +203,7 @@ image = "tester-unified:local"
 image_env = "RUN_GATE_TESTER_UNIFIED_IMAGE" # optional per-invocation image override
 cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
 forward_env = ["SCHEMA_GATE_PW", "CGROUP_PARENT_DEV_BACKGROUND"]
+# user = "invoker"                           # optional (ephemeral only): run as the invoker's uid:gid (RG-106)
 
 [lanes.suite]
 kind = "command"
@@ -829,6 +833,55 @@ elapsed clock. Do not truncate the progress file to reset monitoring;
 `--resume` owns that history. See the
 [progress design](docs/DESIGN-GUIDE.md#progress-is-scoped-to-the-current-assay-run).
 
+### Automatic Assay campaign closeout (B108 phase 2)
+
+Every live `kind = "assay"` lane is followed by Assay's `analyze campaign`
+without any configuration. Nothing to paste into `run-gate.toml`; the lane you
+already have is enough:
+
+<!-- run-gate-config -->
+```toml
+schema_version = 1
+
+[environments.tester-unified]
+mode = "ephemeral"
+image = "tester-unified:local"
+
+[lanes.r2]
+kind = "assay"
+environment = "tester-unified"
+assay_lane = "r2"
+```
+
+```bash
+run-gate r2    # lane result and exit are exactly what they were before
+# run-gate: assay closeout: campaign incomplete (analysis only; lane verdict FAIL (exit 1) is unchanged); json .../r2/<run id>.campaign.json, text .../r2/<run id>.campaign.txt
+ls "${RUN_GATE_EVIDENCE_DIR:-/tmp/run-gate}/lanes/r2/"   # <run id>.log  <run id>.campaign.json  <run id>.campaign.txt
+```
+
+The two files sit beside the lane log, owner-only, named by the run id. The run
+record (`run-gate history`) carries `closeout` with the status, the analysis
+exit, both paths and both SHA-256 digests. Statuses: `complete`, `incomplete`,
+`evidence_error` (Assay's own), `unavailable` (no analysis output: a pinned
+judge older than `analyze campaign`, a crash, the per-call cap — a quarter of
+the lane budget left, 900 s at most — hit, or the lane budget nearly spent so
+the closeout was skipped; the reason names which),
+`invalid` (not this lane's or commit's, or it disagrees with the lane result),
+`retention_error` (the evidence directory is not writable) and
+`not_applicable` (the verdict's verified claim set carries no R2 claim; nothing
+is printed; a malformed or unverified claim set is analyzed, never assumed
+absent). Every
+status other than `complete`/`incomplete` prints a `WARNING` on stderr saying
+the lane verdict and exit are unchanged. Pin the judge to a version with
+`analyze campaign` (see Assay's README) to avoid a standing `unavailable`.
+
+A `kind = "command"` lane that runs `assay run` itself is not analyzed, and
+this release has no key that opts it in (Assay decision A-497); run
+`assay analyze campaign` by hand over its artifacts (Assay CONSUMERS,
+"Run the closeout automatically from Run-Gate"). A lane stopped by its budget
+or killed has no closeout for the same reason. Design:
+[the closeout is evidence, never a verdict](docs/DESIGN-GUIDE.md#the-closeout-is-evidence-never-a-verdict-b108-phase-2).
+
 ### Shared assay lane imports
 
 An external-assay consumer can pin the judge once and import the exact lane
@@ -1072,11 +1125,23 @@ single project (`ciu_root_offset = "run-gate-project"`) covers that project
 only — a gate run for a sibling project in the same worktree finds no record
 and falls through to `@{upstream}` exactly as before.
 
+**Which key names the branch (ciu record schema).** In records v1–v5 the
+symbolic `base_ref` (`main`) is the branch. From schema **v6** ciu pins
+`base_ref` to the fork commit's SHA (equal to `fork_point_sha`) and records the
+moving branch separately as `base_branch_ref`; run-gate then applies every
+check below to that branch and hands the judge the validated `fork_point_sha`.
+It never derives the branch from the SHA. A v6 record whose `base_branch_ref` is
+`null` (an adopted checkout, a tag, a raw commit), missing, malformed or unsafe,
+or whose SHA fields are missing or disagree, is ignored with a reason; so is a
+v1–v5 record whose `base_ref` is a SHA. In both cases pass an explicit `--base`
+if you want something other than `@{upstream}`.
+
 **When a record is present but NOT used.** run-gate uses the record only when
-its `branch` still matches the tree, git resolves `base_ref` to a LOCAL branch
-there, `merge-base(base_ref, HEAD)` still equals the `fork_point_sha` ciu
-recorded at creation, and that branch does not already contain the tree's
-HEAD. Anything else is ignored with a reason on stdout:
+its `branch` still matches the tree, git resolves the base branch (`base_ref`
+in v1–v5, `base_branch_ref` in v6) to a LOCAL branch there,
+`merge-base(branch, HEAD)` still equals the `fork_point_sha` ciu recorded at
+creation, and that branch does not already contain the tree's HEAD. Anything
+else is ignored with a reason on stdout:
 
 ```bash
 # run-gate: ignoring /w/proj/ciu.worktree-instance.json: the shared history of 'main' and this tree has MOVED since the record was written: merge-base is now 388737cc2461, the recorded fork point is 9f2c1ab0de34. Whichever way it moved — 'main' absorbed this branch (a merge or a fast-forward), or this branch took 'main' in (a merge or a rebase), or the record describes a different tree — judging against the new merge-base could silently drop work this branch really did, so the record is spent
@@ -1626,7 +1691,7 @@ store: /workspaces/vbpub/.worktrees/feat-x/run-gate-project/.run-gate/history.js
 
 In `--json` that tree appears as `worktree_scope` (`null` when the flag is
 absent). A `--worktree` that is not a directory refuses (exit 2), and one
-that is not a git work tree refuses (exit 3) — never a quiet fallback to the
+that is not a git work tree refuses (ERROR, exit 2) — never a quiet fallback to the
 invoking checkout's store, which would hand you tree A's medians under tree
 B's name.
 
@@ -1993,12 +2058,15 @@ The lane invokes its coverage helper this way:
 
 ```console
 python tools/coverage_gate.py --repo . --base latest-release-tag \
-  --allow-first-release --coverage-json coverage.json --source run_gate.py
+  --coverage-json coverage.json --source run_gate.py
 ```
 
-On the first stable release, when no stable Run-Gate tag exists, the explicit
-`--allow-first-release` option reports this diff check as `SKIPPED`: there is
-no released source baseline to compare. The test suite still runs, and the
+Only on a project's FIRST stable release, when no stable tag exists anywhere,
+may the explicit `--allow-first-release` option report this diff check as
+`SKIPPED` (no released source baseline to compare); Run-Gate's own lane no
+longer passes it, because its stable tags exist and a checkout that cannot
+see them (a `--no-tags` clone) must ERROR rather than read as green
+(RG-116). The test suite still runs, and the
 separate `assay-r1` lane must supply whole-source line-and-branch
 qualification before merge. If stable tags exist but none are reachable from
 the candidate, the helper still errors rather than treating that as a first

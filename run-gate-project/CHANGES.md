@@ -9,6 +9,119 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Added
+- A live `kind = "assay"` lane now runs Assay's `analyze campaign` over its own
+  verdict, progress, state directory, judged commit and actual exit, and
+  retains the JSON and text closeouts as
+  `<evidence dir>/lanes/<lane>/<run id>.campaign.{json,txt}` with a `closeout`
+  entry in the run record. The lane's verdict, exit and reason are never
+  inputs to or outputs of the closeout; its own outcome is one of `complete`,
+  `incomplete`, `evidence_error`, `unavailable`, `invalid`, `retention_error`
+  or `not_applicable` (only for claims that are all computed, verified by
+  Assay, with valid unique rigors/statuses and reason codes, none R2; malformed
+  or unverified claims are analyzed instead). A `kind = "command"` lane is
+  never analyzed and has no opt-in (B108 phase 2, SPEC R-38, Assay A-497). The analysis only uses budget
+  the lane did not need: the analysis runs twice (json, then text) and each
+  call gets at most a quarter of what remains of the lane's `budget` (the pair
+  never more than half; capped at 900 s per call); the closeout is skipped
+  when under 40 s remain, a json call that times out skips the text call, and
+  a skip or timeout is named in the closeout's "unavailable" reason. So it can
+  never turn a lane that finished in budget into BUDGET_EXCEEDED. (Review
+  round 3: the round-2 cap was half PER CALL, so the pair could spend nearly
+  the whole remainder.)
+- Note (RG-110): a tester-unified image for ANOTHER tool's release gate is built
+  from the PUBLISHED Run-Gate wheel with `tester-unified/build-image.sh
+  --run-gate-published latest|X.Y.Z` (staged, digest-verified, by
+  `tester-unified/fetch-run-gate-wheel.py`; runbook in
+  `tester-unified/docs/CONSUMERS.md`). That mechanism shipped from the
+  tester-image stream; this wave's duplicate (`--run-gate-release`,
+  `fetch-run-gate-release.py`) was dropped at merge. The default stays the
+  source-tree wheel for Run-Gate's own candidate gate.
+- Change (cgprofile 1.1.0): `ctl stop` is retried while the daemon answers
+  the error code `stop-incomplete` (the sampling worker is still running and
+  the session keeps its resources) — four attempts 2 s apart; the daemon
+  finalizes anyway after the third consecutive incomplete attempt. 24.0.1 gave
+  up on the first refusal and lost the whole summary (`resources: null`). A
+  summary that carries `stop_forced` (finalized while the sampler ran;
+  resources may be incomplete) or `damon_cleanup.confirmed == false` (DAMON
+  teardown unverified, which is not "DAMON off") is recorded verbatim in
+  `resources` and disclosed as the lane's one profiling WARNING line, suffixed
+  "profile recorded with this caveat"; the verdict is untouched (R-36h).
+- Fix (RG-109): interrupting run-gate (SIGTERM / Ctrl-C) during the wait on
+  an ephemeral lane always removes the container and clears the in-flight
+  record: a second SIGTERM arriving while that cleanup runs (daemon `stop`,
+  up to 30 s) is now deferred until the cleanup is done instead of raised in
+  the middle of it, which is what left the orphan RG-109 was filed for. An
+  interruption between a successful `docker run -d` and the wait keeps the
+  container and record (adoptable by the next invocation, as before) and
+  now says so, with the exact `docker rm -f <name>` and the note that the
+  budget is not enforced unattended. Every interrupted run prints one
+  `interrupted before a closed result` line (it printed nothing and exited 2).
+  README "Interrupting a run"; remainder RG-114. Backlog: RG-112..RG-118
+  filed (RG-116/117 are the 2026-10-27 audit's unverified candidates),
+  ciu CIU-152 (the schema-v6 producer contract the v6 reader expects).
+- Fix (RG-116 item 2): the selftest lane no longer passes
+  `--allow-first-release` to the diff-coverage gate: stable tags exist, so a
+  checkout that cannot see one (a `--no-tags` clone) is an ERROR instead of a
+  `SKIPPED` exit 0 that read as green. Only `tools/release_candidate.py`'s
+  prepare step may accept a first release, after checking origin's tags.
+- Fix (RG-117, admission): a container removed between `docker ps` and
+  `docker inspect` (another gate's tombstone reap or ticket release) made
+  `inspect` exit 1 and the whole admission ERROR; the surviving objects are
+  kept when stderr says only `No such object`; any other failure still refuses.
+- Fix (review of the cgprofile retry): `ProfilerClient._ctl` clears the
+  refusal code before every call, so a `stop-incomplete` followed by a carrier
+  timeout or an unreachable daemon is not retried four times (~2 minutes).
+- Fix (review of RG-109): `deferred_sigterm` defers SIGINT as well as SIGTERM
+  (README said "SIGTERM / Ctrl-C"); a deferred Ctrl-C comes back as the
+  KeyboardInterrupt Python would have raised, a SIGTERM wins. README names the
+  two limits: the handlers are installed a few statements into the cleanup,
+  and a supervisor's SIGKILL timer cannot be outlasted.
+- Fix (RG-116 items 1 and 5, `tools/coverage_gate.py`): a `\ No newline at
+  end of file` marker was counted as a context line, so every `+` line after
+  an old side without a trailing newline was attributed one line too far and
+  a changed last line could leave the diff-coverage denominator; and the
+  `git diff` the gate parses is now requested as plain text (`--no-color
+  --no-ext-diff --no-textconv`), so a colouring or external-diff user config
+  can no longer turn the gate into "0 changed lines, SKIPPED".
+- Docs: every "exit 3" that the code answers with ERROR 2 (stall, not a git
+  work tree, ambiguous inspect — SPEC, CONSUMERS, `--help`); SPEC's flat
+  `timeout 900` closeout claim; SPEC R-33 calling the selftest lane
+  `bare-host`; the `user` key in CONSUMERS; the README status header; the
+  backlog index (RG-106/RG-109 statuses, RG-110..RG-119 rows). Remainder
+  RG-119.
+- Fix (tests): missing optional test dependencies FAIL by default
+  (`tests/_testdeps.py`, opt out with `RUN_GATE_ALLOW_MISSING_TEST_DEPS=1`);
+  the selftest lane runs pytest with `-rs`. The pre-24.1.0 candidate gate's two
+  unexplained skips were a not-applicable parametrization (ciu8 has no
+  run-gate.toml; now filtered at collection) and the real-container smoke
+  test, the one documented structural exception (no Docker socket inside the
+  lane container; `RUN_GATE_REQUIRE_CONTAINER_SMOKE=1` makes it fail). That
+  smoke test had never run end to end and is fixed (RG-112: `git gc` cannot
+  lock a sibling worktree's read-only admin dir on git >= 2.4x; the lane keeps
+  `repack`/`prune`).
+- Add (RG-106): an environment may declare `user = "invoker"` (the invoking
+  process's `uid:gid`, derived at resolve time) or a numeric `uid[:gid]` for an
+  `ephemeral` environment; it is passed as `--user` to the lane and probe containers, so
+  files written into the bind-mounted worktree are owned by the worktree's
+  owner even on an image that runs as root. A malformed value, or `user` on a
+  non-`ephemeral` environment, is refused at load. A declared `user` wins over
+  the `RUN_GATE_HOST_IMAGE` default. The check that the image has a passwd
+  entry for the resolved uid is not implemented (RG-106 oracle 5 stays open).
+
+### Changed
+- Fix: a ciu worktree record whose schema is newer than the reader (v7+) is
+  refused with the explicit-`--base` remedy instead of being read as v1-v5
+  (v6 already changed the meaning of `base_ref`). Supersedes the pre-v6
+  "unknown schema still reads" test.
+- Fix: read ciu worktree record schema v6 (reader only: no ciu on this tree emits v6 yet; until it does, every record is v1-v5 and reads as before). `base_ref` is now a pinned fork SHA
+  there, so Run-Gate takes the moving base from the new `base_branch_ref` (a
+  canonical local branch name) for its absorption/freshness checks and returns
+  the validated `fork_point_sha`; a null, missing, malformed or unsafe branch,
+  or missing/inconsistent SHA evidence, is refused with a reason and an
+  explicit-`--base` remedy. v1-v5 keep the symbolic `base_ref` reading, and a
+  frozen-SHA `base_ref` there is refused with the same remedy. The branch is
+  never inferred from a SHA, tag, remote-tracking ref or default.
 - Fix (RG-55, baseline liveness): the in-process assay progress fallback now
   bounds the R2 baseline. It follows Assay's `command_started` /
   `command_running` heartbeat (300 s minimum idle bound, reset by each tick)

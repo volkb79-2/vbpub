@@ -98,6 +98,13 @@ def parse_added_lines(diff_text: str) -> dict[str, set[int]]:
             new_lineno += 1
         elif line.startswith("-"):
             continue
+        elif line.startswith("\\"):
+            # `\ No newline at end of file` is a marker, not a line of either
+            # side. Counted as context it advanced the new-side number once
+            # per marker, so every `+` line after an old side that lacked a
+            # trailing newline was attributed one line too far — and a
+            # changed last line left the denominator (RG-116 item 1).
+            continue
         else:
             new_lineno += 1  # context line (only with -U>0)
     return added
@@ -413,9 +420,14 @@ def _git_added_lines(repo: str, base_rev: str) -> dict[str, set[int]]:
     # in particular, replacing the old `run_gate.py` symlink with the wheel
     # module made the entire module look newly added. `-B` breaks a rewritten
     # destination into delete/add pairs so `-M` can pair it with the old file.
+    # The parser reads git's own plain text: a user config that colours the
+    # diff (`color.diff=always`), substitutes an external diff driver or a
+    # textconv filter would otherwise leave no `+++`/`@@` line to match and
+    # turn the whole gate into "0 changed lines, SKIPPED" (RG-116 item 5).
     out = _git(
         repo,
-        ["diff", "--relative", "--find-renames=50%",
+        ["-c", "color.diff=false", "diff", "--no-color", "--no-ext-diff",
+         "--no-textconv", "--relative", "--find-renames=50%",
          "--break-rewrites=50%", "--unified=0", base_rev],
     )
     return parse_added_lines(out)

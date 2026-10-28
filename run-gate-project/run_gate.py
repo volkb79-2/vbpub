@@ -518,6 +518,11 @@ ASSAY_RESOURCE_OBSERVER_ENV = "ASSAY_RESOURCE_OBSERVER_SOCKET"
 HOST_ENV = "host"
 BARE_HOST_ENV = "bare-host"
 HOST_IMAGE_ENV_VAR = "RUN_GATE_HOST_IMAGE"
+# RG-106: an environment's `user` key. "invoker" derives uid:gid from the
+# invoking process at resolve time, so files a container writes into the
+# bind-mounted worktree are owned by the worktree's owner (never a hard-coded
+# uid).
+ENV_USER_INVOKER = "invoker"
 DEFAULT_HOST_IMAGE = "ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-php8.5-latest"
 EXTRA_MOUNT_ENV_VAR = "RUN_GATE_EXTRA_MOUNTS"
 MOUNT_ALIAS_ENV_VAR = "RUN_GATE_MOUNT_ALIAS"
@@ -529,6 +534,18 @@ ALLOW_MAIN_CHECKOUT_ENV_VAR = "RUN_GATE_ALLOW_MAIN_CHECKOUT"
 EVIDENCE_DIR_ENV_VAR = "RUN_GATE_EVIDENCE_DIR"
 EVIDENCE_DIR_DEFAULT = "/tmp/run-gate"
 EVIDENCE_TAIL_LINES = 10
+# B108 phase 2 / SPEC R-38: the closed vocabulary of the post-lane Assay
+# campaign closeout. `complete`/`incomplete`/`evidence_error` are the
+# ANALYSIS's own status, retained verbatim; the rest name a condition of the
+# closeout itself. None of them is a lane verdict and none can change one.
+ASSAY_CLOSEOUT_STATUSES = (
+    "complete", "incomplete", "evidence_error",
+    "unavailable", "invalid", "not_applicable", "retention_error",
+)
+ASSAY_CLOSEOUT_SUFFIXES = ("json", "txt", "err", "exit")
+ASSAY_CLOSEOUT_MAX_BYTES = 17 * 1024 * 1024  # Assay's 16 MiB report cap + slack
+ASSAY_CLOSEOUT_STDERR_BYTES = 4096
+ASSAY_CLOSEOUT_TIMEOUT_SECONDS = 900
 CGROUPFS_ROOT_ENV_VAR = "RUN_GATE_CGROUPFS_ROOT"  # tests / hidden cgroup mounts
 PROC_ROOT_ENV_VAR = "RUN_GATE_PROC_ROOT"  # tests / hidden /proc mounts (RG-55 host PSI)
 # RG-55 / SPEC R-43g: `RUN_GATE_PROFILE` ('on'|'off') is an OPERATOR-FACING
@@ -678,6 +695,16 @@ PROFILE_DAEMON_DEFAULT = "cgprofile-host-daemon"
 PROFILE_SAMPLE_SECONDS = 5
 PROFILE_CTL_TIMEOUTS = {"version": 5, "host": 5, "start": 10,
                         "status": 5, "stop": 30}   # contract Sec 1.5, verbatim
+# cgprofile 1.1.0: `stop` answers the error code `stop-incomplete` while the
+# session's sampling worker is still running and keeps the session's
+# resources; the contract says retry. After the third consecutive incomplete
+# attempt the daemon finalizes anyway and the Summary carries
+# `stop_forced: "sampler-still-running"`. Four attempts therefore always end
+# in a summary (forced at worst) unless the daemon is gone, which is a
+# different refusal and is not retried.
+PROFILE_STOP_INCOMPLETE_CODE = "stop-incomplete"
+PROFILE_STOP_RETRY_ATTEMPTS = 4
+PROFILE_STOP_RETRY_SECONDS = 2.0
 PROFILE_TRANSPORT_ENV_VAR = "RUN_GATE_PROFILE_TRANSPORT"
 PROFILE_TRANSPORTS = ("auto", "exec", "socket")
 PROFILE_TRANSPORT_DEFAULT = "auto"
@@ -933,7 +960,7 @@ def _check_keys(table: dict, allowed: set, where: str) -> None:
 
 def _validate_environment(name: str, table: dict, where: str) -> None:
     _check_keys(table, {"image", "image_env", "cgroup_slice", "cgroup_slice_env", "mode", "container_name",
-                        "forward_env", "resources", "state_root"},
+                        "forward_env", "resources", "state_root", "user"},
                 f"{where} [environments.{name}]")
     image = table.get("image")
     mode = table.get("mode")
@@ -949,6 +976,16 @@ def _validate_environment(name: str, table: dict, where: str) -> None:
                  "host subprocess and cannot declare 'image'")
     elif not isinstance(image, str) or not image.strip():
         fail(f"{where} [environments.{name}]: 'image' must be a non-empty string")
+    user = table.get("user")
+    if user is not None:
+        if mode != "ephemeral":
+            fail(f"{where} [environments.{name}]: 'user' requires mode = "
+                 "'ephemeral' (a host subprocess has no container identity and "
+                 "`docker exec` into a shared runner would ignore it)")
+        if not isinstance(user, str) or not (
+                user == ENV_USER_INVOKER or re.fullmatch(r"[0-9]+(:[0-9]+)?", user)):
+            fail(f"{where} [environments.{name}]: 'user' must be \"invoker\" "
+                 "(the invoking process's uid:gid) or a numeric 'uid[:gid]'")
     image_env = table.get("image_env")
     if image_env is not None:
         if mode != "ephemeral":
@@ -2045,6 +2082,8 @@ def resolve_environment(lane: dict, lane_name: str, project: dict, central: dict
     if resolved is not None:
         if resolved["mode"] == "host":
             return {}, source
+        if resolved.get("user") == ENV_USER_INVOKER:
+            resolved["user"] = f"{os.getuid()}:{os.getgid()}"
         image_env = resolved.pop("image_env", None)
         if image_env is not None:
             declared_image = resolved["image"]
@@ -2065,7 +2104,7 @@ def resolve_environment(lane: dict, lane_name: str, project: dict, central: dict
         # behavior; its required `mode` does.
         if name == HOST_ENV and os.environ.get(HOST_IMAGE_ENV_VAR):
             resolved["image"] = os.environ[HOST_IMAGE_ENV_VAR]
-            resolved["user"] = f"{os.getuid()}:{os.getgid()}"
+            resolved.setdefault("user", f"{os.getuid()}:{os.getgid()}")
         return resolved, source
     # Review fix: name the file ACTUALLY searched, never a generic claim —
     # when no root config exists at all, say which root-specific filename the
@@ -2436,6 +2475,10 @@ class ProfilerClient:
         self.socket_path = socket_path
         self._carrier: str | None = None
         self.transport_reason: str | None = None
+        # The `error.code` of the last refused response (None after any
+        # other outcome): `stop` reads it to tell a retryable
+        # `stop-incomplete` from every other refusal.
+        self.last_refusal_code: str | None = None
 
     _REQUIRED_KEY = {"start": "session", "stop": "summary"}
 
@@ -2446,6 +2489,7 @@ class ProfilerClient:
 
     def _parse_response(self, verb: str, raw: str, returncode: int = 0,
                         stderr: str = "") -> tuple[dict | None, str | None]:
+        self.last_refusal_code = None
         stderr_tail = (stderr.strip().splitlines() or ["(no stderr)"])[-1]
         try:
             doc = json.loads(raw)
@@ -2483,6 +2527,8 @@ class ProfilerClient:
                 return None, (f"`cgprofile ctl {verb}` response has a "
                               "non-object 'error' value")
             err = err or {}
+            code = err.get("code")
+            self.last_refusal_code = code if isinstance(code, str) else None
             return None, (f"`cgprofile ctl {verb}` refused "
                           f"({err.get('code', 'unknown')}): "
                           f"{err.get('message', stderr_tail)}")
@@ -2608,6 +2654,11 @@ class ProfilerClient:
                                     proc.stderr)
 
     def _ctl(self, verb: str, *args: str) -> tuple[dict | None, str | None]:
+        # Every call starts with no refusal code: a timeout, a carrier error
+        # or an unknown transport answers without reaching `_parse_response`,
+        # and a stale `stop-incomplete` from the previous call would make
+        # `stop` retry a dead daemon four times (review finding).
+        self.last_refusal_code = None
         if self.transport not in PROFILE_TRANSPORTS:
             return None, (f"unknown profiler transport {self.transport!r}")
         if self.transport == "auto" and self._carrier is None:
@@ -2669,8 +2720,24 @@ class ProfilerClient:
                 args += [f"--{key}", str(value)]
         return self._ctl("start", *args)
 
-    def stop(self, session: str) -> tuple[dict | None, str | None]:
-        return self._ctl("stop", session)
+    def stop(self, session: str, sleep: Callable[[float], None] = time.sleep
+             ) -> tuple[dict | None, str | None]:
+        """`ctl stop`, retried while the daemon answers `stop-incomplete`
+        (cgprofile 1.1.0: the sampler is still running; the session keeps
+        its resources). Any other refusal, or a summary, returns at once;
+        the last of `PROFILE_STOP_RETRY_ATTEMPTS` refusals is returned with
+        the attempt count so the record says the retries happened."""
+        for attempt in range(1, PROFILE_STOP_RETRY_ATTEMPTS + 1):
+            doc, reason = self._ctl("stop", session)
+            if doc is not None \
+                    or self.last_refusal_code != PROFILE_STOP_INCOMPLETE_CODE:
+                return doc, reason
+            if attempt == PROFILE_STOP_RETRY_ATTEMPTS:
+                return None, (f"{reason} (still incomplete after {attempt} "
+                              f"attempts {PROFILE_STOP_RETRY_SECONDS:g} s "
+                              f"apart; the daemon did not force the stop)")
+            sleep(PROFILE_STOP_RETRY_SECONDS)
+        raise AssertionError("unreachable")  # pragma: no cover
 
     def watch(self, session: str, watch_interval: int = 30) -> "ProfilerWatch":
         return ProfilerWatch(self, session, watch_interval)
@@ -3562,6 +3629,30 @@ def tick_lane_profiling(state: dict) -> None:
         state["sampler"].sample_once()
 
 
+def profile_summary_caveat(summary: object) -> str | None:
+    """cgprofile 1.1.0's additive Summary keys that qualify the summary
+    itself: `stop_forced` (the daemon finalized the session while its
+    sampler was still running; the manifest is `aborted`) and
+    `damon_cleanup.confirmed == false` (the kdamond teardown could not be
+    verified — NOT "DAMON off"). Either is worth one warning line; neither
+    touches the verdict. Anything malformed is not a caveat (the summary is
+    recorded verbatim anyway)."""
+    if not isinstance(summary, dict):
+        return None
+    forced = summary.get("stop_forced")
+    if forced:
+        return (f"cgprofile finalized the session while its sampler was "
+                f"still running (stop_forced={forced!r}); the recorded "
+                f"resources may be incomplete")
+    cleanup = summary.get("damon_cleanup")
+    if isinstance(cleanup, dict) and cleanup.get("confirmed") is False:
+        return (f"cgprofile could not confirm the DAMON teardown for this "
+                f"session (slot {cleanup.get('slot')!r}, quarantined="
+                f"{cleanup.get('quarantined')!r}); DAMON may still be "
+                f"active, which is not the same as DAMON off")
+    return None
+
+
 def finish_lane_profiling(state: dict) -> dict:
     """Contract Sec 4 obligation 2: called in the SAME `finally` that removes
     the container/runner exec, BEFORE it. Returns the three record-level
@@ -3577,7 +3668,17 @@ def finish_lane_profiling(state: dict) -> dict:
         # B1c: `.get()` -- see the matching comment on `start_doc["session"]`
         # above; `_ctl` already validates `summary` is present, this is
         # defense in depth, not a load-bearing check.
-        return {"resources": stop_doc.get("summary"), "profile_error": None,
+        summary = stop_doc.get("summary")
+        # cgprofile 1.1.0: a summary can carry a caveat about ITSELF (forced
+        # stop, unconfirmed DAMON teardown). It is recorded verbatim in
+        # `resources` and disclosed as the lane's profiling warning; the
+        # verdict is untouched (R-36h) and `profile_error` stays None,
+        # because a profile WAS recorded.
+        caveat = profile_summary_caveat(summary)
+        if caveat:
+            state["warning"] = state["warning"] or caveat
+            state["profile_recorded"] = True
+        return {"resources": summary, "profile_error": None,
                 "profile_ref": {"daemon": state["daemon"],
                                 "session": state["session"],
                                 "session_dir": stop_doc.get("session_dir")}}
@@ -3903,6 +4004,8 @@ def print_profile_warning(state: dict) -> None:
         state["_warned"] = True
         suffix = ("basic in-lane sampling only" if state["mode"] == "basic"
                  else "coarse rusage sampling only" if state["mode"] == "rusage"
+                 else "profile recorded with this caveat"
+                 if state.get("profile_recorded")
                  else "no profile recorded")
         print(f"run-gate: WARNING profiling: {state['warning']} — {suffix}",
               file=sys.stderr, flush=True)
@@ -6449,11 +6552,17 @@ def evidence_dir() -> Path:
     return Path(os.environ.get(EVIDENCE_DIR_ENV_VAR) or EVIDENCE_DIR_DEFAULT)
 
 
+def lane_evidence_directory(lane_name: str) -> Path:
+    """The per-lane evidence directory; the lane log and its Assay closeout
+    (B108 phase 2) share it so one run id names all of a run's evidence."""
+    safe_lane = re.sub(r"[^A-Za-z0-9_.-]+", "_", lane_name).strip("._") or "lane"
+    return evidence_dir() / "lanes" / safe_lane
+
+
 def allocate_lane_log(lane_name: str, run_id: str) -> Path | None:
     """Create an owner-only log destination outside the judged worktree."""
     try:
-        safe_lane = re.sub(r"[^A-Za-z0-9_.-]+", "_", lane_name).strip("._") or "lane"
-        directory = evidence_dir() / "lanes" / safe_lane
+        directory = lane_evidence_directory(lane_name)
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         path = directory / f"{run_id}.log"
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
@@ -8037,6 +8146,10 @@ GATE_SAFE_BASE_RE = re.compile(r"\A[A-Za-z0-9._/+@][A-Za-z0-9._/+@-]*\Z")
 #: The only shape ciu's `fork_point_sha` (CIU-106) may take. Always inside
 #: GATE_SAFE_BASE_RE, so handing it downstream needs no separate guard.
 FULL_SHA_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
+#: The ciu worktree-record schema that pins `base_ref` to a commit and names
+#: the moving base separately in `base_branch_ref` (R-35a). Records v1-v5 keep
+#: a symbolic `base_ref`.
+CIU_BASE_BRANCH_SCHEMA_VERSION = 6
 
 
 def read_instance_record(record: Path) -> dict | None:
@@ -8271,7 +8384,29 @@ def usable_recorded_base(worktree: Path, doc: dict) -> tuple[str | None, str]:
        against the real functions); clause 6 is kept, and kept first, because
        it names a different and far more common cause and answers from the
        graph without diffing two trees.
+
+    **Schema v6.** The clauses above are written for a symbolic `base_ref`
+    (v1-v5). From ciu schema v6 `base_ref` is the pinned fork SHA and the
+    moving branch is the separate `base_branch_ref`; the same clauses run
+    against that branch (`_usable_recorded_branch_base`). A v1-v5 record whose
+    `base_ref` is a frozen SHA is refused by clause 4 with the `--base`
+    remedy; a branch is never inferred from a SHA.
     """
+    # Schema dispatch. ciu schema v6 records the symbolic base separately
+    # (`base_branch_ref`) because `base_ref` became the pinned SHA; v1-v5 keep
+    # the symbolic-`base_ref` reading below, byte for byte. A record with no
+    # `schema_version` at all is read as legacy, as it always was.
+    version = doc.get("schema_version")
+    if version is not None:
+        if type(version) is not int or version < 1:
+            return None, (f"its 'schema_version' {version!r} is not a "
+                          f"positive integer")
+        if version == CIU_BASE_BRANCH_SCHEMA_VERSION:
+            return _usable_recorded_branch_base(worktree, doc)
+        if version > CIU_BASE_BRANCH_SCHEMA_VERSION:
+            return None, (f"its schema_version {version} is newer than the "
+                          f"v{CIU_BASE_BRANCH_SCHEMA_VERSION} this Run-Gate "
+                          f"reads; pass an explicit `--base`")
     base = doc.get("base_ref")
     if not isinstance(base, str) or not base.strip():
         return None, "its 'base_ref' is missing, blank, or not a string"
@@ -8281,14 +8416,9 @@ def usable_recorded_base(worktree: Path, doc: dict) -> tuple[str | None, str]:
                       f"ref carrying shell metacharacters, or a leading '-', "
                       f"is substituted verbatim into a conjunction lane's "
                       f"inner shell (RG-52)")
-    recorded_branch = doc.get("branch")
-    current = current_branch_ref(worktree)
-    if isinstance(recorded_branch, str) and recorded_branch.strip():
-        expected = f"refs/heads/{recorded_branch.strip()}"
-        if expected != current:
-            return None, (f"it describes branch {recorded_branch.strip()!r}, "
-                          f"but this tree is on {current or 'a detached HEAD'}"
-                          f" — the record no longer describes it")
+    mismatch = _record_branch_mismatch(worktree, doc)
+    if mismatch is not None:
+        return None, mismatch
     full = local_branch_ref_name(worktree, base)
     if full is None:
         return None, (f"its base_ref {base!r} does not name a local branch in "
@@ -8296,7 +8426,34 @@ def usable_recorded_base(worktree: Path, doc: dict) -> tuple[str | None, str]:
                       f"adopt` records), a tag, a remote-tracking ref, or a "
                       f"deleted/renamed one; only a local branch both "
                       f"self-updates through merge-base and escapes the "
-                      f"remote-tracking staleness RG-51 is about")
+                      f"remote-tracking staleness RG-51 is about. Pass an "
+                      f"explicit `--base` for this tree")
+    return _fork_base_if_unmoved(worktree, doc, base, base, full)
+
+
+def _record_branch_mismatch(worktree: Path, doc: dict) -> str | None:
+    """Why `doc`'s `branch` no longer describes `worktree` (clause 3 of
+    `usable_recorded_base`), or None. A record with no usable `branch` skips
+    the clause: the omission cannot make the base narrower."""
+    recorded_branch = doc.get("branch")
+    if not isinstance(recorded_branch, str) or not recorded_branch.strip():
+        return None
+    current = current_branch_ref(worktree)
+    if f"refs/heads/{recorded_branch.strip()}" != current:
+        return (f"it describes branch {recorded_branch.strip()!r}, but this "
+                f"tree is on {current or 'a detached HEAD'} — the record no "
+                f"longer describes it")
+    return None
+
+
+def _fork_base_if_unmoved(worktree: Path, doc: dict, anchor: str, label: str,
+                          full: str) -> tuple[str | None, str]:
+    """Clauses 5-7 of `usable_recorded_base`: with `anchor` (a ref git can
+    resolve in `worktree`; `label` is how messages name it, `full` its full
+    ref name) already shown to be a live LOCAL branch, accept the record only
+    while `merge-base(anchor, HEAD)` still equals the recorded fork point and
+    the judged diff is non-empty. Returns the verified fork commit."""
+    base = label
     fork = doc.get("fork_point_sha")
     if not isinstance(fork, str) or not FULL_SHA_RE.fullmatch(fork):
         return None, (f"it records no usable 'fork_point_sha' (ciu CIU-106); "
@@ -8304,7 +8461,7 @@ def usable_recorded_base(worktree: Path, doc: dict) -> tuple[str | None, str]:
                       f"was forked, a moved base cannot be told from a live "
                       f"one — `ciu worktree create` records it since "
                       f"CIU-106, `adopt` never does")
-    seen = merge_base_of(worktree, base)
+    seen = merge_base_of(worktree, anchor)
     if seen is None:
         return None, (f"merge-base of {base!r} with HEAD could not be "
                       f"computed in this tree (no common history, or git "
@@ -8319,8 +8476,8 @@ def usable_recorded_base(worktree: Path, doc: dict) -> tuple[str | None, str]:
                       f"or the record describes a different tree — judging "
                       f"against the new merge-base could silently drop work "
                       f"this branch really did, so the record is spent")
-    if base_already_contains_head(worktree, base):
-        return None, (f"its base_ref {base!r} ({full}) already contains this "
+    if base_already_contains_head(worktree, anchor):
+        return None, (f"its base {base!r} ({full}) already contains this "
                       f"tree's HEAD, so merge-base would be HEAD and the lane "
                       f"would judge NOTHING — this tree has committed nothing "
                       f"of its own since it was forked")
@@ -8337,6 +8494,64 @@ def usable_recorded_base(worktree: Path, doc: dict) -> tuple[str | None, str]:
     # verification, suite run). Every other source on this path already hands
     # down an immutable commit; this one now does too.
     return fork, ""
+
+
+def _usable_recorded_branch_base(worktree: Path, doc: dict
+                                 ) -> tuple[str | None, str]:
+    """`usable_recorded_base` for ciu record schema v6 (`base_branch_ref`).
+
+    In v6 `base_ref` is the PINNED commit the tree was forked from and
+    `fork_point_sha` the same immutable fork commit; neither can say whether
+    the base has since absorbed this branch, because a SHA that is an ancestor
+    of HEAD always has `merge-base == itself`. The moving anchor is therefore
+    the separate `base_branch_ref`: a canonical LOCAL branch name, or JSON
+    null when ciu could not name one (an adopted checkout, a tag, a raw
+    commit). It is never inferred from the SHA, a tag, a remote-tracking ref
+    or a default. Every defect — a missing key, null, a non-string, unsafe
+    text, a name that is not a live local branch in this tree, SHA evidence
+    that is missing, malformed or inconsistent — DEGRADES with a reason, like
+    every other reader on this path, and the caller discloses it.
+    """
+    if "base_branch_ref" not in doc:
+        return None, ("its schema v6 record has no 'base_branch_ref' key, so "
+                      "the branch whose motion marks a spent record is unknown")
+    branch = doc["base_branch_ref"]
+    if branch is None:
+        return None, ("its 'base_branch_ref' is null — ciu could not name a "
+                      "local base branch (an adopted checkout, a tag or a "
+                      "raw commit), so absorption by the base cannot be "
+                      "detected; pass an explicit `--base`")
+    if not isinstance(branch, str) or not branch.strip() \
+            or branch != branch.strip():
+        return None, "its 'base_branch_ref' is blank or not a plain string"
+    if not GATE_SAFE_BASE_RE.match(branch):
+        return None, (f"its base_branch_ref {branch!r} is not gate-safe ref "
+                      f"text (RG-52)")
+    pinned = doc.get("base_ref")
+    fork = doc.get("fork_point_sha")
+    if not isinstance(pinned, str) or not FULL_SHA_RE.fullmatch(pinned):
+        return None, ("its schema v6 'base_ref' is not the pinned full commit "
+                      "id")
+    if not isinstance(fork, str) or not FULL_SHA_RE.fullmatch(fork):
+        return None, ("its schema v6 record has no usable 'fork_point_sha' "
+                      "(a full commit id)")
+    if pinned != fork:
+        return None, (f"its pinned base_ref {pinned[:12]} and fork_point_sha "
+                      f"{fork[:12]} disagree, so the record's own SHA "
+                      f"evidence is inconsistent")
+    mismatch = _record_branch_mismatch(worktree, doc)
+    if mismatch is not None:
+        return None, mismatch
+    # Resolve the branch through its FULL name so a tag or remote-tracking
+    # ref spelled like it can never stand in; the returned name must be the
+    # one asked for, which also rejects `refs/heads/x`-style spellings.
+    anchor = f"refs/heads/{branch}"
+    full = local_branch_ref_name(worktree, anchor)
+    if full != anchor:
+        return None, (f"its base_branch_ref {branch!r} does not name a local "
+                      f"branch in this tree (deleted, renamed, or not a "
+                      f"canonical branch name); pass an explicit `--base`")
+    return _fork_base_if_unmoved(worktree, doc, anchor, branch, full)
 
 
 def recorded_worktree_base(worktree: Path, *candidates: Path
@@ -9788,6 +10003,304 @@ def _report_failed_assay(lane_name: str, record: dict | None,
     archive_failed_assay(lane_name, record, project_dir, repo, lane, verdict)
 
 
+# ---------------------------------------------------------------------------
+# B108 phase 2 -- the post-lane Assay campaign closeout
+# ---------------------------------------------------------------------------
+
+def _closeout_record(status: str, reason: str | None = None, **fields) -> dict:
+    """The one shape every closeout takes -- every key always present, so a
+    consumer never has to guess whether an absent key means 'none' or
+    'not collected'."""
+    if status not in ASSAY_CLOSEOUT_STATUSES:
+        raise ValueError(f"unknown closeout status {status!r}")
+    record = {"status": status, "reason": reason, "analysis_status": None,
+              "analysis_exit": None, "json_path": None, "text_path": None,
+              "json_sha256": None, "text_sha256": None}
+    record.update(fields)
+    return record
+
+
+def _read_closeout_artifact(path: Path, limit: int, *, truncate: bool = False
+                            ) -> tuple[bytes | None, str | None]:
+    """(bytes, None) | (None, None) when ABSENT | (None, why) when present but
+    unreadable. Absence and unreadability are different conditions and the
+    caller names them differently; neither is ever read as an empty file.
+    `truncate` keeps the first `limit` bytes of an oversize file instead of
+    refusing it -- for the analysis's stderr, which is only a hint."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None, None
+    except OSError as exc:
+        return None, f"cannot open {path.name}: {exc}"
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            return None, f"{path.name} is not a regular file"
+        if info.st_size > limit and not truncate:
+            return None, f"{path.name} is over {limit} bytes"
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            data = stream.read(limit + 1)
+    except OSError as exc:
+        return None, f"cannot read {path.name}: {exc}"
+    finally:
+        os.close(fd)
+    if len(data) > limit:
+        if not truncate:
+            return None, f"{path.name} is over {limit} bytes"
+        data = data[:limit]
+    return data, None
+
+
+def _closeout_stderr_hint(err: bytes | None) -> str:
+    if not err:
+        return ""
+    line = err.decode("utf-8", "replace").strip().splitlines()
+    return f"; analysis stderr: {line[-1][:300]}" if line else ""
+
+
+def _closeout_expected_exit(document: dict) -> int | None:
+    """The exit status `assay analyze campaign` documents for this status
+    (assay README / DESIGN-GUIDE, B108): None when it cannot be derived."""
+    status = document.get("status")
+    if status == "evidence_error":
+        return 2
+    if status == "incomplete":
+        return 3
+    if status == "complete":
+        verdict = document.get("verdict")
+        if isinstance(verdict, dict) and isinstance(verdict.get("outcome"), str):
+            return 0 if verdict["outcome"] == "PASS" else 1
+    return None
+
+
+def _check_closeout(assay_lane: str, commit: str, result: "LaneResult",
+                    json_bytes: bytes, text_bytes: bytes,
+                    exits: tuple[int, int] | None
+                    ) -> tuple[dict | None, str | None]:
+    """(analysis document, None) when the retained pair is a coherent
+    closeout of THIS lane at THIS commit; (None, problem) otherwise.
+
+    Every comparison here is one the status message relies on: the document
+    names the lane and commit Run-Gate asked about, the text rendering says
+    the same status as the JSON, the recorded exits are the exits that
+    status documents, and a verified verdict in the document agrees with
+    the lane result Run-Gate computed itself."""
+    try:
+        document = json.loads(json_bytes.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError):
+        return None, "the JSON closeout is not valid UTF-8 JSON"
+    if not isinstance(document, dict):
+        return None, "the JSON closeout is not an object"
+    status = document.get("status")
+    if status == "evidence_error":
+        if document.get("kind") != "assay-campaign-analysis":
+            return None, "the evidence_error document has no analysis kind"
+    elif status in ("complete", "incomplete"):
+        if document.get("analysis") != "mutation_campaign":
+            return None, f"the {status} document is not a mutation_campaign"
+    else:
+        return None, f"the JSON closeout has unknown status {status!r}"
+    if document.get("lane") != assay_lane:
+        return None, (f"the closeout is for lane {document.get('lane')!r}, "
+                      f"not {assay_lane!r}")
+    if document.get("expected_commit") != commit:
+        return None, "the closeout names another expected commit"
+    expected_exit = _closeout_expected_exit(document)
+    if expected_exit is None:
+        return None, "the closeout's documented exit cannot be derived"
+    if exits is None or exits[0] != expected_exit or exits[1] != expected_exit:
+        return None, (f"the analysis exits {exits} do not match the "
+                      f"{expected_exit} that status {status!r} documents")
+    try:
+        text = text_bytes.decode("utf-8")
+    except UnicodeError:
+        return None, "the text closeout is not UTF-8"
+    if status == "evidence_error":
+        try:
+            text_document = json.loads(text)
+        except json.JSONDecodeError:
+            return None, "the text closeout of a refusal is not its JSON"
+        if not isinstance(text_document, dict) \
+                or text_document.get("status") != "evidence_error":
+            return None, "the text closeout disagrees with the JSON status"
+    elif not text.startswith(f"{assay_lane}: {status} "):
+        return None, "the text closeout disagrees with the JSON status"
+    verdict = document.get("verdict")
+    if isinstance(verdict, dict):
+        if verdict.get("outcome") != result.assay_outcome \
+                or verdict.get("exit_code") != result.exit_code:
+            return None, (f"the closeout's verified verdict "
+                          f"({verdict.get('outcome')!r}, exit "
+                          f"{verdict.get('exit_code')!r}) differs from the "
+                          f"lane result ({result.assay_outcome!r}, exit "
+                          f"{result.exit_code!r}); the lane result stands")
+        if verdict.get("observed_command_exit") not in (None, result.exit_code):
+            return None, ("the closeout observed another command exit than "
+                          "the lane's")
+    return document, None
+
+
+def claims_prove_no_r2(claims: object) -> bool:
+    """True only when `claims` is a well-formed claim set that PROVES the
+    lane judged no R2: a nonempty list, every entry an object that passes the
+    same verified-claim checks `_observer_unavailable_rollup` applies
+    (`source == "computed"`, `verified_by_assay is True`, a recognized and
+    unique `rigor`, a recognized `status`, a string-or-null `reason_code`),
+    and none of them R2. `assay_lane_result` does not validate general
+    claims, so anything malformed, unverified, forged, partial or
+    unrecognized is "cannot tell", never "no R2": the caller then analyzes
+    instead of declaring the closeout not applicable."""
+    if not isinstance(claims, list) or not claims:
+        return False
+    seen: set[str] = set()
+    for claim in claims:
+        if not isinstance(claim, dict):
+            return False
+        rigor = claim.get("rigor")
+        status = claim.get("status")
+        reason_code = claim.get("reason_code")
+        if (not isinstance(rigor, str) or rigor not in ASSAY_RIGORS
+                or rigor in seen
+                or claim.get("source") != "computed"
+                or claim.get("verified_by_assay") is not True
+                or not isinstance(status, str)
+                or status not in ASSAY_OUTCOMES
+                or (reason_code is not None
+                    and not isinstance(reason_code, str))):
+            return False
+        seen.add(rigor)
+    return "R2" not in seen
+
+
+def collect_assay_closeout(lane: dict, lane_name: str, run_id: str,
+                           commit: str | None, verdict_path: Path,
+                           result: "LaneResult",
+                           verdict_document: dict | None) -> dict:
+    """Read, check and retain the closeout the lane's inner script wrote.
+
+    Pure of side effects on the lane: it takes the finished `LaneResult` by
+    value and returns a separate record. It reads ONLY the four files the
+    inner script names beside the verdict -- it never derives an artifact
+    path, never reads progress as a verdict, and never raises: every failure
+    is a named closeout status."""
+    assay_lane = lane["assay_lane"]
+    if isinstance(verdict_document, dict) and claims_prove_no_r2(
+            verdict_document.get("claims")):
+        return _closeout_record(
+            "not_applicable",
+            "the verified verdict's complete, recognized claim set carries "
+            "no R2 claim: the lane does not declare a mutation judgment, so "
+            "there is no campaign")
+    if not commit:
+        return _closeout_record(
+            "unavailable", "the judged commit could not be resolved, so no "
+            "analysis was requested")
+    directory = verdict_path.parent
+    files = {suffix: directory / f"campaign-{assay_lane}.{suffix}"
+             for suffix in ASSAY_CLOSEOUT_SUFFIXES}
+    data: dict[str, bytes | None] = {}
+    for suffix, path in files.items():
+        limit = (ASSAY_CLOSEOUT_STDERR_BYTES if suffix in ("err", "exit")
+                 else ASSAY_CLOSEOUT_MAX_BYTES)
+        content, problem = _read_closeout_artifact(
+            path, limit, truncate=suffix == "err")
+        if problem is not None:
+            return _closeout_record("unavailable", problem)
+        data[suffix] = content
+    hint = _closeout_stderr_hint(data["err"])
+    exits = None
+    if data["exit"] is not None:
+        match = re.fullmatch(r"(\d+) (\d+)\n?", data["exit"].decode("ascii", "replace"))
+        if match:
+            exits = (int(match.group(1)), int(match.group(2)))
+    # Absent AND zero-byte both mean "the analysis produced nothing": the
+    # script's own redirections create an empty file even when the judge
+    # crashed or predates `analyze campaign`, so emptiness is not a closeout.
+    if not data["json"] or not data["txt"]:
+        missing = [name for name, key in (("JSON", "json"), ("text", "txt"))
+                   if not data[key]]
+        return _closeout_record(
+            "unavailable",
+            f"the analysis wrote no {' or '.join(missing)} closeout "
+            f"(exits {exits}); the lane may have been stopped before it ran "
+            f"or its judge may predate `analyze campaign`{hint}",
+            analysis_exit=None if exits is None else exits[0])
+    document, problem = _check_closeout(
+        assay_lane, commit, result, data["json"], data["txt"], exits)
+    fields = {"analysis_exit": None if exits is None else exits[0],
+              "json_sha256": hashlib.sha256(data["json"]).hexdigest(),
+              "text_sha256": hashlib.sha256(data["txt"]).hexdigest()}
+    try:
+        directory_out = lane_evidence_directory(lane_name)
+        directory_out.mkdir(mode=0o700, parents=True, exist_ok=True)
+        retained = {}
+        for suffix, key in (("json", "json"), ("txt", "txt")):
+            target = directory_out / f"{run_id}.campaign.{suffix}"
+            out_fd = os.open(
+                target, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
+                0o600)
+            with os.fdopen(out_fd, "wb") as stream:
+                stream.write(data[key])
+            retained[suffix] = str(target)
+        fields["json_path"] = retained["json"]
+        fields["text_path"] = retained["txt"]
+    except OSError as exc:
+        return _closeout_record(
+            "retention_error",
+            f"the closeout could not be retained as gate evidence: {exc}",
+            **fields)
+    if problem is not None:
+        return _closeout_record("invalid", f"{problem}{hint}", **fields)
+    return _closeout_record(document["status"], None,
+                            analysis_status=document["status"], **fields)
+
+
+def report_assay_closeout(closeout: dict, result: "LaneResult") -> None:
+    """One disclosure line; a failure of the closeout is a WARNING on its
+    own line and says the lane verdict and exit are unchanged."""
+    status = closeout["status"]
+    if status == "not_applicable":
+        return
+    lane_part = (f"lane verdict {result.verdict} (exit {result.exit_code}) "
+                 f"is unchanged")
+    if status in ("complete", "incomplete"):
+        print(f"{PROG}: assay closeout: campaign {status} (analysis only; "
+              f"{lane_part}); json {closeout['json_path']}, "
+              f"text {closeout['text_path']}", flush=True)
+        return
+    where = (f"; retained json {closeout['json_path']}, "
+             f"text {closeout['text_path']}" if closeout["json_path"] else "")
+    print(f"{PROG}: WARNING: assay closeout {status}: {closeout['reason']} "
+          f"({lane_part}){where}", file=sys.stderr, flush=True)
+
+
+def finish_assay_closeout(lane: dict, lane_name: str, record: dict | None,
+                          commit: str | None, verdict_path: Path,
+                          result: "LaneResult",
+                          verdict_document: dict | None) -> dict:
+    """Collect, record and disclose the closeout. NEVER raises and NEVER
+    returns anything that could replace `result`: the caller keeps its own
+    LaneResult and this only attaches the closeout to the run record."""
+    run_id = (record.get("run_id") if record else None) or secrets.token_hex(16)
+    try:
+        closeout = collect_assay_closeout(
+            lane, lane_name, run_id, commit, verdict_path, result,
+            verdict_document)
+    except Exception as exc:  # noqa: BLE001 -- the lane result is the product
+        closeout = _closeout_record(
+            "unavailable",
+            f"closeout collection crashed: {type(exc).__name__}: {exc}")
+    if record is not None:
+        record["closeout"] = closeout
+    try:
+        report_assay_closeout(closeout, result)
+    except Exception as exc:  # noqa: BLE001 -- disclosure cannot change a verdict
+        print(f"{PROG}: WARNING: assay closeout could not be reported: "
+              f"{exc}", file=sys.stderr, flush=True)
+    return closeout
+
+
 def print_assay_failure_digest(verdict: str, log_path: str | None,
                                progress_path: Path) -> None:
     failures, summary = _assay_failure_summary(log_path, progress_path)
@@ -10427,7 +10940,16 @@ def git_safe_directory_setup() -> list[str]:
 def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
                       request_base: str | None = None,
                       worktree: Path | None = None,
-                      state_root: str | Path | None = None) -> str:
+                      state_root: str | Path | None = None,
+                      closeout_commit: str | None = None) -> str:
+    """The in-environment script for a `kind = "assay"` lane.
+
+    `closeout_commit` (B108 phase 2): the judged commit Run-Gate already
+    resolved. When given, the lane's own exit status is captured, Assay's
+    campaign analysis is run over the lane's OWN verdict/progress/state paths
+    (never a guessed one) and the script exits with the lane's status, so
+    the closeout can add evidence but never change the result. `None`
+    builds the script without it (direct callers, dry-run probes)."""
     verdict = assay_verdict_rel(lane["assay_lane"])
     selected_worktree = worktree or repo
     command = assay_command_text(lane)
@@ -10453,6 +10975,10 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
              f"cd {shlex.quote(str(project_dir))}",
              "mkdir -p .assay",
              f"rm -f -- {shlex.quote(verdict)}",
+             # A closeout is only ever THIS run's: a stale one from an earlier
+             # invocation must never be retained as evidence for this one.
+             *([f"rm -f -- {' '.join(shlex.quote(assay_closeout_rel(lane['assay_lane'], s)) for s in ASSAY_CLOSEOUT_SUFFIXES)}"]
+               if closeout_commit else []),
              *git_safe_directory_setup(),
              *assay_source_setup(lane, selected_worktree, project_dir)]
     for pin_name, pin in lane.get("pins", {}).items():
@@ -10583,9 +11109,98 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
     if not assay_state_root_is_inside_worktree(state_root_path,
                                                selected_worktree):
         judge_env.insert(0, f"TMPDIR={quoted_temp_root}")
-    parts.append(f"{' '.join(judge_env)} "
-                 f"{command} {shlex.join(run_argv)}")
+    run_text = (f"{' '.join(judge_env)} "
+                f"{command} {shlex.join(run_argv)}")
+    if closeout_commit:
+        parts.append(assay_closeout_group(
+            lane, run_text, command, closeout_commit, progress,
+            verdict, state_dir, request_base))
+    else:
+        parts.append(run_text)
     return " && ".join(parts)
+
+
+def assay_closeout_rel(assay_lane: str, suffix: str) -> str:
+    """`.assay/campaign-<lane>.<json|txt|err|exit>`, beside the verdict."""
+    return f".assay/campaign-{assay_lane}.{suffix}"
+
+
+def assay_closeout_group(lane: dict, run_text: str, command: str,
+                         commit: str, progress: str, verdict: str,
+                         state_dir: Path, request_base: str | None) -> str:
+    """The last element of an assay inner when a closeout is requested.
+
+    One brace group so an earlier setup failure short-circuits the whole
+    group exactly as it short-circuits the bare run command. Inside it:
+
+    * the run's status is captured with `|| rc=$?` and re-raised by the final
+      `exit "$rc"` -- the closeout is not part of the lane's result;
+    * `set +e` before the analysis, so no analysis failure (nonzero exit,
+      missing subcommand on an old judge, timeout) can leave the shell early
+      with ITS status;
+    * `--verdict` and `--command-exit` are passed only when the verdict file
+      exists: the analysis refuses a command exit without a verdict, and a
+      lane that wrote no verdict has no verified result to bind it to;
+    * the same paths the run was given, the same judge command, the same
+      `--request-base`; nothing is derived or guessed here;
+    * analysis stderr goes to the `.err` file, never the lane log, so a judge
+      without `analyze campaign` cannot dirty every R0 lane's output."""
+    lane_name = lane["assay_lane"]
+    rel = {s: shlex.quote(assay_closeout_rel(lane_name, s))
+           for s in ASSAY_CLOSEOUT_SUFFIXES}
+    q = shlex.quote
+    base_args = ["analyze", "campaign", lane_name, "--file", "assay.toml",
+                 "--expected-commit", commit, "--progress", progress,
+                 "--state-dir", str(state_dir)]
+    if request_base:
+        base_args += ["--request-base", request_base]
+    run_one = (
+        '${__rg_co_t[@]+"${__rg_co_t[@]}"} '
+        f'{command} "${{__rg_co_a[@]}}" --format')
+    # The closeout runs inside the lane's budgeted scope (the exec wrapper's
+    # `timeout` and the post-exit budget check). It must therefore never eat
+    # the budget the lane itself earned: the analysis runs TWICE (json, then
+    # text), so EACH call gets at most a quarter of what is LEFT (bash
+    # `$SECONDS` counts from the script start) — the pair together never
+    # more than half — capped at the fixed analysis timeout per call, and the
+    # closeout is skipped outright when under 40 s remain (review round 3:
+    # the earlier half-per-call cap let the pair spend nearly the whole
+    # remainder). A json call that hits its cap (exit 124) skips the text
+    # call, which would only time out the same way. Each skip or timeout is
+    # written to the `.err` file so the host's "unavailable" closeout names
+    # the cause. So a lane that finished inside its budget is never turned
+    # into BUDGET_EXCEEDED by the analysis.
+    budget = lane.get("budget")
+    budget_s = budget_seconds(budget) if isinstance(budget, str) else 0
+    if budget_s:
+        left = (f"__rg_co_left=$(({budget_s} - SECONDS)); "
+                f"__rg_co_cap=$((__rg_co_left / 4 - 5)); "
+                f"if [ \"$__rg_co_cap\" -gt {ASSAY_CLOSEOUT_TIMEOUT_SECONDS} ]; "
+                f"then __rg_co_cap={ASSAY_CLOSEOUT_TIMEOUT_SECONDS}; fi; ")
+        gate_open = 'if [ "$__rg_co_cap" -ge 5 ]; then '
+        gate_close = ("else printf 'closeout skipped: %s s of the lane "
+                      "budget remain, under the 40 s floor\\n' "
+                      f"\"$__rg_co_left\" >{rel['err']}; fi; ")
+        cap = '$__rg_co_cap'
+    else:
+        left, gate_open, gate_close = "", "", ""
+        cap = str(ASSAY_CLOSEOUT_TIMEOUT_SECONDS)
+    return (
+        "{ rc=0; " + run_text + ' || rc=$?; set +e; '
+        f"__rg_co_a=({shlex.join(base_args)}); "
+        f"if [ -f {q(verdict)} ]; then "
+        f'__rg_co_a+=(--verdict {q(verdict)} --command-exit "$rc"); fi; '
+        + left + gate_open +
+        "__rg_co_t=(); if command -v timeout >/dev/null 2>&1; then "
+        f"__rg_co_t=(timeout {cap}); fi; "
+        f"{run_one} json >{rel['json']} 2>{rel['err']}; __rg_co_j=$?; "
+        f"if [ \"$__rg_co_j\" -eq 124 ]; then __rg_co_x=124; "
+        f"printf 'closeout analysis timed out after %s s; text rendering "
+        f"skipped\\n' {cap} >>{rel['err']}; else "
+        f"{run_one} text >{rel['txt']} 2>>{rel['err']}; __rg_co_x=$?; fi; "
+        f"printf '%s %s\\n' \"$__rg_co_j\" \"$__rg_co_x\" >{rel['exit']}; "
+        + gate_close +
+        'exit "$rc"; }')
 
 
 def build_command_inner(lane: dict, worktree: Path,
@@ -11985,6 +12600,10 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
             if path is not None:
                 run_record["log_path"] = str(path)
     finally:
+      # RG-109: this cleanup runs on a SIGTERM-turned-SystemExit too; a second
+      # SIGTERM while it runs is deferred until the container is removed and
+      # the record cleared (`deferred_sigterm`), never raised mid-cleanup.
+      with deferred_sigterm():
         if daemon_watch is not None:
             daemon_watch.close()
         # RG-55/contract Sec 4 obligation 2: `stop` (or the basic sampler's
@@ -12557,7 +13176,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     verify_slice_loaded(slice_name)
     inner = build_assay_inner(lane, project_dir, repo, request_base,
                               worktree=worktree,
-                              state_root=env.get("state_root")) \
+                              state_root=env.get("state_root"),
+                              closeout_commit=head_commit(worktree)) \
         if lane["kind"] == "assay" \
         else build_command_inner(lane, worktree, request_base)
     name = f"run-gate-{repo.name}-{lane_name}-{os.getpid()}-{int(time.time())}"
@@ -12770,6 +13390,11 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                 lane, lane_name, project_dir, worktree, docker, profile_plan,
                 name, container_id, cgroup, "container",
                 preflight=profile_preflight)
+        except (SystemExit, KeyboardInterrupt):
+            # RG-109: the container is up and recorded, nothing awaits it
+            # yet, and `main()` is about to end this process — say so.
+            disclose_interrupted_before_await(name, lane_name)
+            raise
         except Exception as exc:
             # B1d (round-1 review): the whole point of `start_lane_profiling`
             # is to never raise -- this call-site wrap is defense in depth
@@ -12906,7 +13531,8 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
             f"{start_remedy}")
     inner = build_assay_inner(lane, project_dir, repo, request_base,
                               worktree=worktree,
-                              state_root=env.get("state_root")) \
+                              state_root=env.get("state_root"),
+                              closeout_commit=head_commit(worktree)) \
         if lane["kind"] == "assay" \
         else build_command_inner(lane, worktree, request_base)
     argv = [docker, "exec", "--workdir", str(repo)]
@@ -13384,7 +14010,8 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     # config, which R-04 calls a defect. The assay inner is built exactly
     # as it is for the two container runners.
     argv = (["bash", "-c", build_assay_inner(
-                lane, project_dir, repo, request_base, worktree=worktree)]
+                lane, project_dir, repo, request_base, worktree=worktree,
+                closeout_commit=head_commit(worktree))]
             if lane["kind"] == "assay"
             else lane_command_argv(lane, worktree, request_base))
     print(f"run-gate: {installed_version()} | lane {lane_name} | env {env_source}",
@@ -14047,7 +14674,7 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "  stall_timeout  optional lane key (the `budget` grammar) — stops the",
         "              lane ONLY while the container is still running AND its",
         "              liveness signal (progress file or log stream) has been",
-        "              silent that long: exit 3, evidence saved, the last",
+        "              silent that long: ERROR (exit 2), evidence saved, the last",
         "              event/line named. NEVER on total elapsed time; `budget`",
         "              is a hard elapsed-time bound. Legal on both assay and command",
         "              lanes; only meaningful where a container is actually",
@@ -15260,6 +15887,7 @@ def _dispatch(argv: list[str] | None = None, *,
                      f"{admission_release_error}")
         # RG-27: outside the shared-infra lock — telemetry never extends a
         # hold another gate is waiting on.
+        closeout_verdict_document = None
         if lane["kind"] == "assay" and not args.dry_run:
             recorded_verdict = record.get("_verdict_path") if record else None
             verdict_path = (Path(recorded_verdict)
@@ -15276,6 +15904,7 @@ def _dispatch(argv: list[str] | None = None, *,
                     result = LaneResult("ERROR", code,
                                         "assay verdict is not a JSON object")
                 else:
+                    closeout_verdict_document = verdict_doc
                     identity_mode = (record.get("_assay_identity_mode")
                                      if record else None)
                     if not isinstance(identity_mode, str) \
@@ -15305,6 +15934,14 @@ def _dispatch(argv: list[str] | None = None, *,
                 and result.verdict != "PASS"):
             _report_failed_assay(args.lane, record, eff_proj, repo, lane,
                                  result.verdict)
+        if lane["kind"] == "assay" and not args.dry_run:
+            # B108 phase 2: attach the Assay campaign closeout to the run
+            # record and disclose it. `result` is read, never replaced: a
+            # closeout failure is its own named status, not a lane verdict.
+            finish_assay_closeout(
+                lane, args.lane, record,
+                record.get("commit") if record else None,
+                verdict_path, result, closeout_verdict_document)
         # A promoted follower retains the private identity mode through this
         # parser. Remove it before returning; finish() records the parsed
         # result and must never persist the launch-only mode.
@@ -15375,6 +16012,68 @@ def _sigterm_as_exit(signum, _frame) -> None:
     raise SystemExit(128 + signum)
 
 
+@contextlib.contextmanager
+def deferred_sigterm():
+    """RG-109: a SIGTERM or SIGINT that lands while a lane's cleanup is
+    already running must not abandon that cleanup. `main()` turns SIGTERM
+    into `SystemExit` (and Python turns Ctrl-C into `KeyboardInterrupt`) so
+    the `finally` that removes the lane container and clears its in-flight
+    record runs; but a SECOND signal arriving inside that `finally` (daemon
+    `stop` can take up to 30 s) raised a new exception from the middle of it
+    and skipped `docker rm -f` — the orphan RG-109 was filed for. Inside this
+    context both signals are only recorded; on exit the previous handlers
+    are restored and a recorded signal is re-raised as what its handler
+    would have raised: `SystemExit(128 + SIGTERM)` when a SIGTERM was seen,
+    else `KeyboardInterrupt`. Outside the main thread signals cannot be
+    rebound; the body then runs unprotected, exactly as before. Two limits,
+    disclosed in the README: the handlers are installed, and later restored,
+    one signal at a time a few statements after the cleanup begins (a signal
+    in either gap is handled by whichever handler is bound at that instant),
+    and a supervisor's kill timer (`docker stop` ~10 s, systemd `TimeoutStopSec`)
+    follows its SIGTERM with SIGKILL, which no deferral can outlast."""
+    pending: list[int] = []
+
+    def record(signum, _frame) -> None:
+        pending.append(signum)
+
+    previous: dict[int, object] = {}
+    try:
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            previous[signum] = signal.signal(signum, record)
+    except ValueError:
+        # Not the main thread: the FIRST rebinding already failed, so nothing
+        # was installed and there is nothing to restore.
+        yield
+        return
+    try:
+        yield
+    finally:
+        for signum, handler in previous.items():
+            # `signal.signal` returns None for a handler Python did not
+            # install (set from C by an embedding host); handing None back
+            # raises TypeError. The default disposition is the closest
+            # restorable state, and the one such a host usually meant.
+            signal.signal(signum, signal.SIG_DFL if handler is None else handler)
+        if signal.SIGTERM in pending:
+            raise SystemExit(128 + signal.SIGTERM)
+        if pending:
+            raise KeyboardInterrupt()
+
+
+def disclose_interrupted_before_await(name: str, lane_name: str) -> None:
+    """RG-109: an interruption AFTER `docker run -d` succeeded but BEFORE the
+    wait (the profiling `ctl start`, up to 10 s) leaves the container running
+    with its in-flight record in place — adoptable by the next invocation, by
+    design — but nobody would have said so. One line names the container,
+    both remedies, and the one thing an unattended container lacks."""
+    print(f"{PROG}: interrupted before lane {lane_name!r} was awaited: "
+          f"container {name} keeps running and its in-flight record is kept "
+          f"— re-run `run-gate {lane_name}` to adopt or collect it, or "
+          f"`docker rm -f {name}` to discard it (the lane budget is not "
+          f"enforced while no client is attached)",
+          file=sys.stderr, flush=True)
+
+
 def is_pid1_without_init() -> bool:
     """PID 1 in a container has no init reaper in front of run-gate."""
     return os.getpid() == 1
@@ -15416,11 +16115,20 @@ def main(argv: list[str] | None = None) -> int:
                         sys.stderr.write(output)
                 elif output:
                     sys.stdout.write(output)
-        except (SystemExit, KeyboardInterrupt):
+        except (SystemExit, KeyboardInterrupt) as exc:
             # Dependencies and signal handlers do not get to leak Python's
             # arbitrary process statuses around the closed result table. Keep
             # finish outside this handler so a partial telemetry flush cannot
-            # trigger a second finalization attempt.
+            # trigger a second finalization attempt. RG-109: this result has
+            # no lane name and no record, so `finish` prints nothing for it —
+            # say here that the run was interrupted, or the process ends
+            # silently with exit 2 after its cleanup already ran.
+            status = exc.code if isinstance(exc, SystemExit) else "SIGINT"
+            print(f"{PROG}: interrupted before a closed result (exit status "
+                  f"{status}); verdict ERROR, exit 2 — a lane container "
+                  f"started by this client was removed on the way out unless "
+                  f"a line above says it was kept",
+                  file=sys.stderr, flush=True)
             result = LaneResult(
                 "ERROR", reason="interrupted-before-a-closed-result")
         return finish(result)

@@ -133,7 +133,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
 - **environment** — a named container/host execution fact set: `image`
   (required for container modes), `image_env` (optional valid environment
   variable name selecting an invocation-specific image in `ephemeral` mode),
-  `cgroup_slice` or `cgroup_slice_env` (at most one, optional), `mode`
+  `cgroup_slice` or `cgroup_slice_env` (at most one, optional), `user`
+  (optional, `ephemeral` mode only: `"invoker"` = the invoking process's
+  `uid:gid`, or a numeric `uid[:gid]`; passed as `--user` to every container
+  the environment starts, RG-106), `mode`
   (required, exactly one of
   `"ephemeral"`, `"exec"`, or `"host"`), `forward_env` (optional list of
   environment-variable names). The names `host` and `bare-host` are ordinary
@@ -1205,9 +1208,38 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     **not** a `ValueError`), a missing/non-string/blank `base_ref`, and each
     rejection above. Nothing this read does can raise or block: it is a
     better DEFAULT, never a requirement, and a malformed record must not be
-    able to abort a gate run. `schema_version`, `state` and `lease` are NOT
-    inspected — validating fields run-gate does not use would turn a
-    forward-compatible read into a new drift surface.
+    able to abort a gate run. `state` and `lease` are NOT inspected —
+    validating fields run-gate does not use would turn a forward-compatible
+    read into a new drift surface. `schema_version` is read for exactly one
+    purpose, choosing which of the two readings below applies.
+  - **Schema v6 — `base_branch_ref` is the moving anchor.** From ciu schema
+    v6, `base_ref` is the PINNED full commit id the worktree was forked from
+    and `fork_point_sha` the same immutable fork commit; the symbolic base
+    moves to a separate key, `base_branch_ref`: a canonical LOCAL branch name,
+    or JSON null when ciu could not name one (an adopted checkout, a tag, a
+    raw commit). A pinned SHA cannot detect that the base absorbed the tree —
+    it is an ancestor of HEAD forever, so `merge-base(SHA, HEAD)` is the SHA
+    whatever `main` does — so the clauses of this rule (live local branch,
+    `merge-base` equals the fork point, base does not already contain HEAD,
+    non-empty judged diff) run against `refs/heads/<base_branch_ref>`, and
+    what is handed downstream is the validated `fork_point_sha`. The branch is
+    never inferred from the SHA, a tag, a remote-tracking ref or a default.
+    A v6 record is **refused** (degrading to `R-35`'s fall-through, with the
+    reason printed and an explicit `--base` as the remedy) when
+    `base_branch_ref` is absent, null, blank or not a plain string, is not
+    gate-safe text (`R-35b`), or does not resolve — by its full
+    `refs/heads/` name — to a live local branch in this tree (which also
+    rejects `refs/heads/x`/`heads/x` spellings, tags, remote-tracking refs and
+    revision syntax); when `base_ref` is not a full commit id, `fork_point_sha`
+    is missing or malformed, or the two disagree; when `branch` no longer
+    describes the tree; and when the branch absorbed this tree
+    (`merge-base` moved: the MOVED reason). A `schema_version` that is not a
+    positive integer is refused; one newer than 6 is refused rather than read
+    as v6. A record with no `schema_version` keeps the legacy reading.
+  - **Schemas v1–v5 keep the symbolic `base_ref` reading** described above,
+    unchanged. A v1–v5 record whose `base_ref` is a frozen SHA fails the
+    live-local-branch clause with a reason that says to pass an explicit
+    `--base`; a `base_branch_ref` key in such a record is never consulted.
   - **What is handed downstream is the verified FORK COMMIT**, not the
     branch name. Equality has just established that both spellings resolve
     to the same commit, and an OID cannot be moved by another session
@@ -1378,11 +1410,12 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   after that resolves normally. The release gate IS the project's own
   dogfooded lane (`cmru.toml [steps.run-tests]` runs `run-gate selftest` —
   SSOT, D-110/D-111: one parser, no duplicated pytest
-  invocation), run in `bare-host` mode deliberately (R-42; not `host`'s
-  now-default container, and not tester-unified either: this suite is
+  invocation), run in the `tester-unified` environment (an ephemeral
+  container the lane owns, `run-gate.toml [lanes.selftest]`; the suite is
   self-referential — it exercises `physical_path()`'s real
-  `/proc/self/mountinfo` lookup against its own pytest fixtures, which
-  breaks under any container layer) which chains `pytest` with
+  `/proc/self/mountinfo` lookup against its own pytest fixtures — so pytest's
+  basetemp is kept under the bind-mounted checkout, where the real mountinfo
+  comparison still resolves) which chains `pytest` with
   `tools/coverage_gate.py` (vendored from `topos/tools/`, the estate's
   thinnest copy — MIGRATION PENDING per its header, do not fork further;
   its own `--source` default is scoped to `run_gate.py` alone, not the
@@ -1505,7 +1538,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     line; a `worktree_scope` key, `null` when unflagged). Resolution is
     opt-in: an unflagged query stays git-free and keeps answering where git
     cannot. An override that is not a directory refuses (exit 2) and one that
-    is not a git work tree refuses (exit 3, carrying git's own line) -- a read
+    is not a git work tree refuses (ERROR, exit 2, carrying git's own line) -- a read
     has no downstream to fail in, so falling back to the invoking checkout
     here would reintroduce the same substitution through the error path.
     `--json` is honored by this verb AND `footprint` (`R-44`, rev 10); every
@@ -1600,7 +1633,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     invoking checkout's. Unlike `doctor`, `--check-env` has no per-check
     ledger for a bad override to land in gracefully, so resolution happens
     upfront and a bad `--worktree` refuses the whole command (exit 2 not a
-    directory, exit 3 not a git work tree, carrying git's own line) rather
+    directory, ERROR exit 2 not a git work tree, carrying git's own line) rather
     than silently scanning nothing under a nonexistent tree's name — the
     same refuse-loud shape `R-36i` uses for `history`'s read side.
 
@@ -1688,6 +1721,51 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     An unknown state probe result is ERROR, never a writable-root
     certification. For `doctor`, a confirmed missing or unwritable root is
     FAIL and an indeterminate probe is SKIP.
+  - **Campaign closeout (B108 phase 2).** For a `kind = "assay"` lane only,
+    live runs only, the inner script (every runner) captures the lane's own
+    exit status, then runs `assay analyze campaign <assay_lane> --file
+    assay.toml --expected-commit <judged commit> --progress <the lane's
+    progress path> --state-dir <the lane's state dir> [--request-base <the
+    run's>] [--verdict <the lane's verdict> --command-exit <captured exit>]
+    --format json|text` with the SAME judge command, writes the two renderings
+    to `.assay/campaign-<assay_lane>.{json,txt}` (stderr to `.err`, both exit
+    statuses to `.exit`), and exits with the captured lane status. `--verdict`
+    and `--command-exit` are passed only when the verdict file exists. The
+    stale files are deleted at script start, and the analysis is bounded, when
+    `timeout` exists, by the budget the lane did not need: each of the two
+    calls (json, then text) gets at most a quarter of what remains of the lane
+    `budget` (the pair never more than half), 900 s at most; the closeout is
+    skipped under 40 s remaining, a json call that times out skips the text
+    call, and a skip or timeout is written to the `.err` file so the host's
+    `unavailable` reason names it. No argument is derived or guessed;
+    the judged commit is the one Run-Gate already resolved. After the lane's
+    result is final, the host reads those four files from beside the verdict,
+    checks them, retains the JSON and text as
+    `<evidence dir>/lanes/<lane>/<run id>.campaign.{json,txt}` (0600, never
+    overwriting) and records `closeout` in the run record. Its closed
+    `status` vocabulary is `complete`, `incomplete`, `evidence_error` (the
+    analysis's own status, retained verbatim), `unavailable` (absent or
+    zero-byte output, unreadable or oversize file, unresolved commit),
+    `invalid` (output that is not this lane's or this commit's, whose text
+    disagrees with its JSON, whose exits are not the ones that status
+    documents, or whose verified verdict differs from the lane result),
+    `retention_error` and `not_applicable` (the verified verdict's claims are a
+    nonempty list of objects, each passing the verified-claim checks of
+    `_observer_unavailable_rollup` (`source == "computed"`,
+    `verified_by_assay is True`, a recognized unique `rigor`, a recognized
+    `status`, a string-or-null `reason_code`), and none is R2; a malformed,
+    unverified, forged, partial, duplicated or unrecognized claim set proves
+    nothing and is analyzed instead; R-38 still
+    reads no inventory). **The closeout never
+    alters the lane:** verdict, `exit_code`, `reason`, `assay_outcome`, log
+    and gate exit are computed first and are not inputs to anything the
+    closeout does except as a comparison; every closeout failure is a
+    `WARNING` naming its status and saying the lane verdict and exit are
+    unchanged. A `kind = "command"` lane, including one whose argv runs
+    `assay run`, never triggers a closeout: it has no resolved Assay
+    artifact paths and Run-Gate does not infer them. No lane key opts a
+    command lane in for this release (Assay decision A-497). A lane stopped by its
+    budget or killed produces none. A `--dry-run` produces none.
 
 - `R-39` **Re-attach: a lane's container outlives its client, and is found
   again (RG-35).** A container lane runs detached (`R-15`) and is removed by
@@ -1763,11 +1841,11 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     exit 2, naming both commits, the container, and `--fresh`; **`--fresh`**
     → remove the named container (by name, disclosed), clear the record, run
     anew. An `inspect` answer that parses as NEITHER a state nor a gone
-    signal refuses (exit 3) rather than guessing — guessing "gone" would
+    signal refuses (ERROR, exit 2) rather than guessing — guessing "gone" would
     start the duplicate this requirement exists to prevent.
     - **What "gone" is, exactly.** ONLY `No such object` / `No such
       container` on `docker inspect`'s stderr. Every other inspect failure —
-      an unreachable daemon above all — is INFRASTRUCTURE: exit 3, the
+      an unreachable daemon above all — is INFRASTRUCTURE: ERROR exit 2, the
       record UNTOUCHED, no history write. Reading a daemon outage as gone
       (rev 34's first cut did) writes a false `aborted` entry and deletes
       the only thing on disk that can find the still-running container once
@@ -1996,7 +2074,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   - **`R-40c` `stall_timeout`, an optional lane key with the `budget`
     grammar.** The lane is stopped ONLY when the container is STILL RUNNING
     and its liveness signal has not advanced for that long — `docker rm -f`,
-    evidence saved (`R-26`), exit 3, naming the stall, the last event seen
+    evidence saved (`R-26`), ERROR exit 2, naming the stall, the last event seen
     and the age. **NEVER on total elapsed time**: the hard `budget` separately bounds total wall-clock
     duration and returns BUDGET_EXCEEDED when it expires. The "still running" half is structural, not
     asserted: the check only ever runs in the poll of a `docker logs -f` that
@@ -2238,7 +2316,13 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     host-PSI line (`| profiler <daemon> (cgprofile <ver>, damon <on|off|
     unavailable>)` appended only when a `version` call already answered
     it), the profile-session line (daemon path only), the ONE warning line
-    (`R-43e`), and the footprint line (`R-44`). `--dry-run` prints the plan
+    (`R-43e`), and the footprint line (`R-44`). cgprofile 1.1.0: `ctl stop`
+    is retried while the daemon answers the error code `stop-incomplete`
+    (four attempts 2 s apart; the daemon finalizes anyway after the third
+    consecutive incomplete attempt); a summary carrying `stop_forced` or
+    `damon_cleanup.confirmed == false` is recorded verbatim in `resources`
+    and disclosed as the one warning line suffixed "profile recorded with
+    this caveat" — never a verdict change (`R-36h`). `--dry-run` prints the plan
     (daemon name, scope, damon, token env) and starts nothing — UNCONDITIONAL
     on whether profiling is enabled, so a disabled lane's dry run still
     names WHY (a fix in the same commit that shipped this: gating the print
