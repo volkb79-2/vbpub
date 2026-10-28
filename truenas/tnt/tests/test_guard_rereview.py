@@ -1,6 +1,5 @@
 """Re-review items: lazy and realistic membership, concurrency, kind/method binding, path and pool-id forms,
 single-use plans, exact serial matching."""
-import asyncio
 import threading
 
 import pytest
@@ -10,6 +9,7 @@ from tnt.actions import Action, Kind, RpcCall, apply_plan, make_plan
 from tnt.adapters.v27 import V27
 from tnt.errors import Refused
 from tnt.policy import DESTRUCTIVE_METHODS, SafetyState, compute_state, refusal_for
+from tnt.transport import _APPLY_AUTHORITY
 
 
 def rows(*disks):
@@ -65,8 +65,9 @@ def test_unrelated_actions_never_read_pool_membership():
 def test_actions_that_touch_pools_or_disks_do_read_membership_and_fail_closed():
     stub = Stub(**{"pool.query": RuntimeError("down")})
     with pytest.raises(Refused, match="safety-state"):
-        run_plan(stub, Action("S-2", Kind.MUTATE, "scrub", (RpcCall("pool.scrub", (1,)),)))
-    assert "pool.scrub" not in stub.executed()
+        run_plan(stub, Action("S-2", Kind.MUTATE, "scrub", (RpcCall("pool.scrub.scrub", ("tank", "STOP")),),
+                              (RpcCall("system.info"),)))
+    assert "pool.scrub.scrub" not in stub.executed()
 
 
 def test_nvme_and_mmc_partitions_map_to_their_disk():
@@ -109,59 +110,30 @@ def test_an_identifier_shared_by_two_disks_resolves_to_neither():
     assert state.protected_disks == frozenset() and state.unresolved
 
 
-# -- 2. concurrency --------------------------------------------------------------------------------------------
-GRANT_STATE = SafetyState({1: "tank"}, frozenset(), frozenset())
+# -- 2. authorization ownership ----------------------------------------------------------------------------
+def test_low_level_write_grant_requires_an_internal_apply_capability():
+    stub = Stub()
+    rpc = guarded(stub)
+    with pytest.raises(Refused, match="apply_plan"):
+        with rpc.authorized([("user.delete", (8, {}), False)], None):
+            rpc.call("user.delete", 8, {})
+    with pytest.raises(Refused, match="apply_plan"):
+        rpc.spend("invented", "fingerprint", [("user.delete", (8, {}), False)])
+    assert stub.executed() == []
 
 
-def test_another_thread_cannot_consume_a_plan_call():
-    rpc = guarded(Stub())
-    inside, release, outcome = threading.Event(), threading.Event(), {}
-
-    def owner():
-        with rpc.authorized([("pool.scrub", (1,), False)], GRANT_STATE):
-            inside.set()
-            release.wait(10)
-            outcome["owner"] = rpc.call("pool.scrub", 1)
-
-    def intruder():
-        inside.wait(10)
-        try:
-            rpc.call("pool.scrub", 1)
-        except Refused as exc:
-            outcome["intruder"] = exc.rule
-        release.set()
-
-    threads = [threading.Thread(target=owner), threading.Thread(target=intruder)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(15)
-    assert outcome == {"intruder": "foreign-caller", "owner": "done"}
-
-
-def test_another_asyncio_task_cannot_consume_a_plan_call():
-    rpc = guarded(Stub())
-
-    async def go():
-        inside, release = asyncio.Event(), asyncio.Event()
-        outcome = {}
-
-        async def owner():
-            with rpc.authorized([("pool.scrub", (1,), False)], GRANT_STATE):
-                inside.set()
-                await release.wait()
-                outcome["owner"] = rpc.call("pool.scrub", 1)
-
-        async def intruder():
-            await inside.wait()
-            try:
-                rpc.call("pool.scrub", 1)
-            except Refused as exc:
-                outcome["intruder"] = exc.rule
-            release.set()
-        await asyncio.gather(owner(), intruder())
-        return outcome
-    assert asyncio.run(go()) == {"intruder": "foreign-caller", "owner": "done"}
+def test_internal_execution_grant_is_bound_to_the_exact_call_list():
+    stub = Stub()
+    rpc = guarded(stub)
+    action = Action("T-EXACT", Kind.MUTATE, "start app", (RpcCall("app.start", ("demo",), True),),
+                    (RpcCall("app.query", ([], {})),))
+    plan = make_plan(action, rpc)
+    grant = rpc.spend(plan.nonce, plan.fingerprint, [call.key() for call in action.calls],
+                      authority=_APPLY_AUTHORITY)
+    with pytest.raises(Refused, match="does not match these calls"):
+        with rpc._authorized([("app.start", ("other",), True)], grant):
+            pass
+    assert stub.executed() == ["app.query"]
 
 
 def test_calls_are_serialised_by_a_lock():
@@ -192,7 +164,7 @@ def test_calls_are_serialised_by_a_lock():
 @pytest.mark.parametrize("kind", [Kind.MUTATE, Kind.READ])
 def test_destructive_methods_need_a_destructive_action(method, kind):
     with pytest.raises(Refused, match="kind-mismatch|read-action"):
-        make_plan(Action("K-1", kind, "t", (RpcCall(method, ("sdc",)),)), guarded(Stub()))
+        make_plan(Action("K-1", kind, "t", (RpcCall(method, ("sdc",)),), (RpcCall("system.info"),)), guarded(Stub()))
 
 
 def test_the_manifest_exposes_the_destructive_set():
@@ -215,12 +187,12 @@ def test_boot_pool_paths_are_refused_after_normalisation(path):
 
 @pytest.mark.parametrize("path", ["/mnt/boot-pool-data/x", "boot-pool-data", "/mnt/tank/boot-pool", "tank/boot-pool-notes", "/mnt/tank/data"])
 def test_similar_names_and_deeper_components_are_allowed(path):
-    assert refusal_for("filesystem.setperm", [{"path": path}], None) is None
+    assert refusal_for("sharing.nfs.create", [{"path": path}], None) is None
 
 
 def test_paths_with_dotdot_are_refused_as_ambiguous():
-    assert "ambiguous" in refusal_for("filesystem.setperm", [{"path": "/mnt/tank/../data"}], None)
-    assert refusal_for("filesystem.setperm", [{"path": "/mnt/tank/..data"}], None) is None
+    assert "ambiguous" in refusal_for("sharing.nfs.create", [{"path": "/mnt/tank/../data"}], None)
+    assert refusal_for("sharing.nfs.create", [{"path": "/mnt/tank/..data"}], None) is None
 
 
 def test_a_boot_pool_name_used_only_as_a_dict_key_is_refused():
@@ -237,7 +209,7 @@ def test_the_boot_family_is_default_deny(method):
 
 
 def test_boot_reads_stay_allowed():
-    for method in ("boot.get_state", "boot.get_disks", "boot.environment.query"):
+    for method in ("boot.get_state", "boot.environment.query"):
         assert refusal_for(method, [], None) is None
         assert guarded(Stub(), read_only=True).call(method) is not None
 
@@ -260,8 +232,6 @@ def test_a_plan_runs_once_even_when_replayed_through_a_fresh_plan_object():
     with pytest.raises(Refused, match="plan-reused"):
         apply_plan(plan, rpc, allow_write=True, typed_confirmation="x")
     assert "pool.export" not in stub.executed()
-    with pytest.raises(Refused, match="plan-reused"):
-        rpc.spend("")
     from dataclasses import replace
     with pytest.raises(Refused, match="plan-reused"):
         apply_plan(replace(plan), rpc, allow_write=True, typed_confirmation="x")

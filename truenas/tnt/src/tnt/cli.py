@@ -106,7 +106,12 @@ def _check_connect(runtime: CliRuntime, args: Any, opener: SessionOpener) -> Che
     except TntError as exc:
         return CheckResult("fail", str(exc), remedy="check url, configured credential and TLS; an auth failure is never retried (rate limit)")
     try:
-        return CheckResult("ok", session.banner(), details={"generation": session.backend.generation, "manifest": session.backend.verified})
+        details = {"generation": session.backend.generation, "manifest": session.backend.verified,
+                   "live_capabilities": "checked", "missing_methods": session.missing_methods}
+        if session.missing_methods:
+            return CheckResult("warn", session.banner(), remedy="review the listed v27 capability gaps; affected features are unavailable",
+                               details=details)
+        return CheckResult("ok", session.banner(), details=details)
     finally:
         session.close()
 

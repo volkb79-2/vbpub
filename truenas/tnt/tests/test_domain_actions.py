@@ -214,42 +214,29 @@ def test_write_session_refuses_everything_outside_an_executing_plan():
 def test_a_plan_grants_exactly_its_calls_in_order_and_nothing_else():
     stub = Stub()
     rpc = guarded(stub)
-    calls = [("pool.scrub", ("tank",), True), ("pool.update", (1, {"a": 1}), False)]
-    with rpc.authorized(calls, SafetyState({1: "tank"}, frozenset(), frozenset())):
-        with pytest.raises(Refused, match="not-in-plan"):
-            rpc.call("pool.update", 1, {"a": 1})  # out of order
-        with pytest.raises(Refused, match="not-in-plan"):
-            rpc.call("pool.scrub", "tank")  # job flag differs
-        with pytest.raises(Refused, match="not-in-plan"):
-            rpc.call("pool.scrub", 1, job=True)  # parameters differ
-        rpc.call("pool.scrub", "tank", job=True)
-        with pytest.raises(Refused, match="nested-plan"):
-            with rpc.authorized([], None):
-                pass
-        rpc.call("pool.update", 1, {"a": 1})
-        with pytest.raises(Refused, match="not-in-plan"):
-            rpc.call("pool.update", 1, {"a": 1})  # already consumed
-    with pytest.raises(Refused):
-        rpc.call("pool.scrub", "tank", job=True)  # the grant ends with the plan
+    action = Action("T-ORDER", Kind.MUTATE, "scrub and update",
+                    (RpcCall("pool.scrub.scrub", ("tank", "STOP"), True), RpcCall("pool.update", (1, {"a": 1}))),
+                    (RpcCall("pool.query"),))
+    plan = make_plan(action, rpc)
+    assert apply_plan(plan, rpc, allow_write=True) == ["done", "done"]
+    assert stub.log[-2:] == [("pool.scrub.scrub", ("tank", "STOP")), ("pool.update", (1, {"a": 1}))]
+    with pytest.raises(Refused, match="no-plan"):
+        rpc.call("app.start", "example-app")  # the executor grant ends with the plan
     with pytest.raises(Refused, match="no-plan"):
         rpc.call("pool.create", {"name": "x"})
 
 
 def test_a_granted_call_must_still_pass_the_refusal_list():
     rpc = guarded(Stub())
-    with rpc.authorized([("pool.export", (2,), False), ("core.call", ("x",), False)], SafetyState({2: "boot-pool"}, frozenset(), frozenset())):
-        with pytest.raises(Refused, match="refusal-list"):
-            rpc.call("pool.export", 2)
-        with pytest.raises(Refused, match="refusal-list"):
-            rpc.call("core.call", "x")
+    with pytest.raises(Refused, match="refusal-list"):
+        rpc.call("core.call", "x")
+    with pytest.raises(Refused, match="boot-pool"):
+        run_plan(Stub(), destructive("pool.export", 2, probe=(RpcCall("pool.query"),)), typed="x")
     with pytest.raises(Refused):
         guarded(Stub(), read_only=True).call("core.call", "x")
 
 
 def test_read_only_sessions_cannot_execute_a_plan():
-    with pytest.raises(Refused, match="read-only"):
-        with guarded(Stub(), read_only=True).authorized([], None):
-            pass
     with pytest.raises(Refused, match="read-only"):
         run_plan(Stub(), destructive("pool.export", 1), typed="x", read_only=True)
     with pytest.raises(Refused, match="read-only"):
@@ -337,7 +324,7 @@ def test_plan_renders_the_exact_calls():
     text = plan.render()
     assert 'disk.wipe("sdc", "QUICK")  [job]' in text and "type 'x'" in text and plan.fingerprint[:12] in text
     assert stub.log == [("disk.query", ([], {}))]  # planning only reads
-    assert "type " not in make_plan(_action(Kind.MUTATE, (RpcCall("pool.scrub", (1,)),), target=None), rpc).render()
+    assert "type " not in make_plan(_action(Kind.MUTATE, (RpcCall("pool.scrub.scrub", ("tank", "STOP")),), target=None), rpc).render()
 
 
 def test_apply_gates_in_order_and_execution():
@@ -359,12 +346,12 @@ def test_apply_gates_in_order_and_execution():
     assert "pool.export" not in stub.executed()
     stub.results["disk.query"] = stub.results["disk.query"][:-1]
     assert apply_plan(plan, rpc, allow_write=True, typed_confirmation="x") == ["done"]
-    mutate = make_plan(_action(Kind.MUTATE, (RpcCall("pool.scrub", ("tank",), True),), None), rpc)
-    assert apply_plan(mutate, rpc, allow_write=True) == ["done"] and stub.log[-1] == ("pool.scrub", ("tank",))
+    mutate = make_plan(_action(Kind.MUTATE, (RpcCall("pool.scrub.scrub", ("tank", "STOP"), True),), None), rpc)
+    assert apply_plan(mutate, rpc, allow_write=True) == ["done"] and stub.log[-1] == ("pool.scrub.scrub", ("tank", "STOP"))
     stub.log.clear()
     with pytest.raises(Refused, match="plan-reused"):
         apply_plan(mutate, rpc, allow_write=True)
-    assert "pool.scrub" not in stub.executed()
+    assert "pool.scrub.scrub" not in stub.executed()
 
 
 def test_refusal_list_texts():

@@ -131,6 +131,32 @@ def test_unknown_write_stays_default_deny():
                                (RpcCall("user.query"),)))
 
 
+def test_unlisted_suffix_shaped_names_are_not_reads_or_supported_calls():
+    from tnt.policy import is_read_method
+
+    for method in ("widget.query", "mystery.config", "made_up.get_instance"):
+        assert not is_read_method(method)
+        assert refusal_for(method) is not None
+
+
+def test_pool_delete_and_namespace_scrub_are_not_v27_callables():
+    from tnt.adapters.v27 import V27
+
+    assert not V27.method_supported("pool.delete")
+    assert not V27.method_supported("pool.scrub")
+    for method in ("pool.delete", "pool.scrub"):
+        action = Action("T-UNVERIFIED", Kind.DESTRUCTIVE, method, (RpcCall(method, (1,)),),
+                        (RpcCall("pool.query"),), "tank")
+        with pytest.raises(Refused, match="not in a supported adapter manifest"):
+            validate_action(action)
+
+
+def test_mutating_actions_require_a_live_target_probe():
+    action = Action("T-NO-PROBE", Kind.MUTATE, "update", (RpcCall("user.update", (1, {"full_name": "A"})),))
+    with pytest.raises(Refused, match="empty-probe"):
+        validate_action(action)
+
+
 @pytest.mark.parametrize(("pool_ref", "message"), [
     (1, "cannot be resolved to a name"),
     ("tank", "cannot be resolved without live pool state"),

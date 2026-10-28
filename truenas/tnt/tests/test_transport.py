@@ -2,7 +2,6 @@ import pytest
 
 from tnt import adapters, transport
 from tnt.errors import Refused, TransportError, UnsupportedVersion
-from tnt.policy import SafetyState
 from tnt.profile import Profile, Secret
 from tnt.session import open_session
 from tnt.testing import FakeServer
@@ -182,9 +181,69 @@ def test_job_flag_is_forwarded_and_close_is_quiet():
         def close(self):
             raise OSError("x")
     g = transport.GuardedRpc(Inner(), read_only=False)
-    with g.authorized([("pool.scrub", (1,), True)], SafetyState({1: "tank"}, frozenset(), frozenset())):
-        assert g.call("pool.scrub", 1, job=True) == ("pool.scrub", (1,), True)
+    from tnt.actions import Action, Kind, RpcCall, apply_plan, make_plan
+
+    action = Action("T-JOB", Kind.MUTATE, "start app", (RpcCall("app.start", ("example-app",), True),),
+                    (RpcCall("app.query", ([], {})),))
+    plan = make_plan(action, g)
+    assert apply_plan(plan, g, allow_write=True) == [("app.start", ("example-app",), True)]
     g.close()
+
+
+def test_public_authorized_context_cannot_create_a_write_grant():
+    g = transport.GuardedRpc(type("Inner", (), {"call": lambda self, *a, **k: "done", "close": lambda self: None})(),
+                             read_only=False)
+    with pytest.raises(Refused, match="apply_plan"):
+        with g.authorized([("user.delete", (8, {}), False)], None):
+            g.call("user.delete", 8, {})
+
+
+def test_open_session_records_live_v27_capabilities_and_blocks_missing_calls():
+    from tnt.adapters.v27 import V27
+
+    methods = [method for method in V27.supported_methods() if method != "disk.details"]
+    server = FakeServer(methods=methods)
+    with server:
+        session = _open(server)
+        assert session.backend.verified == "reference"
+        assert session.missing_methods == {"disks": ["disk.details"]}
+        assert "disk.details" in session.banner()
+        with pytest.raises(Refused, match="not reported by the live v27 capability list"):
+            session.rpc.call("disk.details", {"type": "BOTH"})
+        assert "disk.details" not in [request["method"] for request in server.requests]
+        session.close()
+
+
+def test_open_session_rejects_non_string_capability_names_and_closes_client(monkeypatch):
+    class Client:
+        closed = False
+
+        def call(self, method, *params, job=False):
+            if method == "system.version":
+                return "TrueNAS-SCALE-27.0"
+            if method == "core.get_methods":
+                return {27: {}}
+            raise AssertionError(method)
+
+        def close(self):
+            self.closed = True
+
+    client = Client()
+    monkeypatch.setattr(transport, "connect", lambda *args, **kwargs: client)
+    profile = Profile("fake", "wss://nas.example.invalid/api/current", "tnt")
+    with pytest.raises(TransportError, match="invalid v27 WebSocket method list"):
+        open_session(profile, secret=Secret("fake-key"))
+    assert client.closed
+
+
+def test_guarded_rpc_capability_set_is_single_use_and_requires_mapping():
+    inner = type("Inner", (), {"call": lambda self, *a, **k: "done", "close": lambda self: None})()
+    rpc = transport.GuardedRpc(inner)
+    with pytest.raises(Refused, match="metadata object"):
+        rpc._set_live_capabilities([])
+    rpc._set_live_capabilities({"system.info": {}})
+    with pytest.raises(Refused, match="already set"):
+        rpc._set_live_capabilities({"system.version": {}})
 
 
 def test_only_the_reviewed_container_metrics_event_can_be_subscribed():

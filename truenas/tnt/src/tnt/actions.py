@@ -15,10 +15,10 @@ from enum import StrEnum
 from typing import Any, Callable, Mapping
 
 from .errors import Refused
-from .policy import (ALWAYS_REFUSED, BOOT_POOL, EXPLICIT_WRITE_ALLOWLIST, Caller, SafetyState, compute_state,
+from .policy import (ALWAYS_REFUSED, BOOT_POOL, Caller, SafetyState, compute_state,
                      is_destructive_method, is_read_method, needs_membership, normalise_method, refusal_for)  # noqa: F401
 from .profile import Secret
-from .transport import GuardedRpc
+from .transport import GuardedRpc, _APPLY_AUTHORITY
 
 
 class Kind(StrEnum):
@@ -132,8 +132,8 @@ def validate_action(action: Action) -> None:
         for call in action.calls:
             if not is_read_method(call.method):
                 raise Refused("read-action", f"{action.id} is a READ action but calls {call.method}, which is not a read method")
-    if action.kind is Kind.DESTRUCTIVE and not action.probe:
-        raise Refused("empty-probe", f"{action.id} is destructive but has no probe: the drift check would be vacuous")
+    if action.kind is not Kind.READ and not action.probe:
+        raise Refused("empty-probe", f"{action.id} changes host state but has no target probe: the drift check would be vacuous")
     if action.kind is Kind.DESTRUCTIVE and not (action.confirm_target and action.confirm_target.strip()):
         raise Refused("empty-confirm", f"{action.id} is destructive but names no confirmation target to type")
     if (not isinstance(action.force_with_jobs, bool) or not isinstance(action.system_preflight, tuple)
@@ -157,11 +157,10 @@ def validate_action(action: Action) -> None:
         for method, spec in methods.items()
         if spec.supported and spec.classification != "read"
     }
-    known_writes = manifested_writes | EXPLICIT_WRITE_ALLOWLIST
     for call in action.calls:
         method = normalise_method(call.method)
-        if not is_read_method(method) and method not in known_writes:
-            raise Refused("unknown-write", f"{action.id}: {method} is not in a supported adapter manifest or explicit write allow-list")
+        if not is_read_method(method) and method not in manifested_writes:
+            raise Refused("unknown-write", f"{action.id}: {method} is not in a supported adapter manifest for v27")
 
 
 def fingerprint_of(rpc: GuardedRpc, action: Action, nonce: str) -> str:
@@ -213,12 +212,13 @@ def apply_plan(plan: Plan, rpc: GuardedRpc, *, allow_write: bool, typed_confirma
         raise Refused("typed-confirmation", f"{action.id} is destructive: type {action.confirm_target!r} exactly to confirm")
     if fingerprint_of(rpc, action, plan.nonce) != plan.fingerprint:
         raise Refused("state-drift", f"the host or the action changed since {action.id} was planned; plan again")
-    rpc.spend(plan.nonce, plan.fingerprint)
+    grant = rpc.spend(plan.nonce, plan.fingerprint, [c.key() for c in action.calls], state,
+                      authority=_APPLY_AUTHORITY, require_grant=action.kind is not Kind.READ)
     def execute(call: RpcCall) -> Any:
         if call.job:
             return rpc.call(call.method, *call.params, job=True, job_callback=job_progress)
         return rpc.call(call.method, *call.params)
     if action.kind is Kind.READ:
         return [execute(c) for c in action.calls]
-    with rpc.authorized([c.key() for c in action.calls], state):
+    with rpc._authorized([c.key() for c in action.calls], grant):
         return [execute(c) for c in action.calls]

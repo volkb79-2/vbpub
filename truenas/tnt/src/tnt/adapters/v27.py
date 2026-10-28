@@ -19,9 +19,9 @@ class V27(Backend):
             "pool.import_find": MethodSpec("read"), "pool.scrub.query": MethodSpec("read"),
             "pool.scrub.get_instance": MethodSpec("read"), "pool.scrub.create": MethodSpec("write"),
             "pool.scrub.update": MethodSpec("write"), "pool.scrub.run": MethodSpec("write"),
-            "pool.scrub.delete": MethodSpec("destructive"), "pool.create": MethodSpec("write"),
+            "pool.scrub.scrub": MethodSpec("write"), "pool.scrub.delete": MethodSpec("destructive"), "pool.create": MethodSpec("write"),
             "pool.import_pool": MethodSpec("destructive"), "pool.update": MethodSpec("write"),
-            "pool.export": MethodSpec("destructive"), "pool.delete": MethodSpec("destructive"),
+            "pool.export": MethodSpec("destructive"),
             "pool.expand": MethodSpec("write"), "pool.attach": MethodSpec("destructive"),
             "pool.detach": MethodSpec("destructive"), "pool.replace": MethodSpec("destructive"),
             "pool.remove": MethodSpec("destructive"), "pool.offline": MethodSpec("destructive"),
@@ -117,6 +117,8 @@ class V27(Backend):
         # action cannot treat them as harmless, but supported=False keeps them out of the callable allow-list.
         "policy-only": {
             "app.uninstall": MethodSpec("destructive", supported=False),
+            "pool.delete": MethodSpec("destructive", supported=False),
+            "pool.scrub": MethodSpec("write", supported=False),
             "pool.dataset.destroy_snapshots": MethodSpec("destructive", supported=False),
             "filesystem.rmdir": MethodSpec("destructive", supported=False),
             "filesystem.unlink": MethodSpec("destructive", supported=False),

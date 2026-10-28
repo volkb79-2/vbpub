@@ -8,6 +8,49 @@ Source links below use that immutable commit. The API model files define the web
 plugin files expose the corresponding methods. `query(filters, options)` and `get_instance(id)` are the standard
 middleware CRUD reads for the relevant service.
 
+## v27 adapter contract
+
+[`src/tnt/adapters/v27.py`](../src/tnt/adapters/v27.py) is the exact supported callable allow-list. A method is not
+accepted as a read because its name ends in `.query`, `.details`, or `get_instance`; every read, write, and destructive
+method has an explicit manifest entry. Guard-only entries marked `supported = false` are classification evidence,
+not callable methods.
+
+At connection time tnt obtains the method-name mapping with `core.get_methods(service=None, target="WS")`, then
+compares it with the supported manifest and checks every subsequent call against that live set. This is a presence
+check: `core.get_methods` metadata does not establish that the current user has the method's required role, that a
+method's result matches the documented schema, or that a call will succeed. RBAC refusal and malformed data remain
+errors; tnt does not turn either into empty or zero-valued state. The copyable check is
+[`tnt doctor --online`](CONSUMERS.md#check-a-hosts-v27-methods).
+
+The pool method names follow the v27 index exactly. There is no callable `pool.delete` and no callable `pool.scrub`
+method: `pool.scrub` is a namespace. `pool.export(id, options={destroy: bool})` is the pool export method, and its
+`destroy` option is destructive. Scrub scheduling and execution use `pool.scrub.query`, `pool.scrub.create`,
+`pool.scrub.update`, `pool.scrub.delete(id_)`, `pool.scrub.run(name, threshold=35)`, and
+`pool.scrub.scrub(name, action="START" | "STOP" | "PAUSE")`. The last two take a pool name; `pool.scrub.delete`
+takes a scrub schedule ID. `pool.scrub.run` and `.scrub` are deprecated in v27 in favor of `zpool.scrub.run`, which
+this release does not expose. These shapes and classifications were checked against the API method pages and pinned
+v27 middleware sources linked below.
+
+## Iteration 2 read-view contract (verified v27 reference)
+
+These rows record the v27 contract for the planned job engine and read-only overview views. Methods already present in
+the manifest are marked as such; this table does not add methods to the manifest or implement screens. Any new method
+must be added only after its result schema, role, paging and unavailable behavior are covered by focused tests.
+
+| View data | Manifest status and verified method, result, and role | Paging, refresh, and unavailable behavior for the planned consumer |
+|---|---|---|
+| Host facts (manifested) | `system.info() -> SystemInfoResult`, including `hostname`, `physmem` (bytes), CPU `model`, `cores`, `physical_cores`, `loadavg` (1/5/15 minute averages), `uptime`, and `uptime_seconds`; role `READONLY_ADMIN` | One read on view entry and explicit refresh. It does not provide current CPU or memory utilization percentages. A missing method or RBAC refusal is an unavailable/error state, never zero. [API reference](https://api.truenas.com/v27.0/api_methods_system.info.html) |
+| CPU and memory history (not manifested) | `reporting.get_data(graphs, query)` returns one time-series result per graph with `data`, `aggregations` (`min`, `mean`, `max`), `start`, `end`, and `legend`; graph names include `cpu` and `memory`; role `REPORTING_READ` | The request uses either `unit` + `page` or `start` + `end`, not both; `page` starts at 1 and `aggregate` defaults to true. This is historical data, not a live counter. Refresh cadence is client-controlled; an iteration 2 view should use bounded windows and avoid overlapping reads. Missing role/method is shown as unavailable, with no fabricated zero series. [API reference](https://api.truenas.com/v27.0/api_methods_reporting.get_data.html) |
+| Alerts (not manifested) | `alert.list() -> list[Alert]` returns all current active and dismissed alerts; the displayed contract includes `uuid`, `source`, `klass`, `datetime`, `last_occurrence`, `dismissed`, `text`, `level`, and `formatted`; role `ALERT_LIST_READ` | No pagination arguments. Refresh on entry and explicitly or on the view's configured timer; prevent overlapping requests. A permission or method error is shown as unavailable/error, not as an empty alert list. `alert.dismiss` and `alert.restore` are writes and remain outside the overview read contract. [API reference](https://api.truenas.com/v27.0/api_methods_alert.list.html) |
+| Jobs (manifested) | `core.get_jobs(filters, options) -> list[CoreGetJobsItem]`, including `id`, `method`, `state`, and progress; tnt's existing read asks for non-terminal rows and selects `id`, `method`, `state` with `limit=10000` | `offset` and `limit` support paging (maximum `limit=10000`); results are volatile, so pages are not a snapshot. Without `FULL_ADMIN`, TrueNAS returns only jobs owned by the authenticated session. Any view must label that scope and poll without overlapping requests; it cannot claim a host-wide list for a less privileged session. A permission/method error is not an empty job list. [API reference](https://api.truenas.com/v27.0/api_methods_core.get_jobs.html) |
+| Services (not manifested) | `service.query(filters=[], options={extra: {include_state: true}, select: [id, service, enable, state]}) -> list[ServiceEntry]`; rows have `id`, `service`, `enable`, `state`, and `pids`; role `SERVICE_READ` | Query options include `offset` and `limit` (maximum `10000`); `include_state` defaults to true. A planned status view may refresh on entry and its configured timer with only one outstanding request. No missing or denied call is rendered as “stopped”; all service writes are out of scope for the read view. [API reference](https://api.truenas.com/v27.0/api_methods_service.query.html) |
+| Pool health (manifested) | `pool.query(filters=[], options={}) -> list[PoolEntry]`, including `name`, `healthy`, `warning`, `status_code`, `scan`, `expand`, and `topology`; role `POOL_READ` | Query options support `offset` and `limit` (maximum `10000`); results are volatile, not a consistent snapshot across pages. Refresh is client-controlled with one outstanding request. Missing or denied data is unavailable, never “healthy”. [API reference](https://api.truenas.com/v27.0/api_methods_pool.query.html) |
+| Disk inventory (manifested) | `disk.query(filters=[], options={extra: {pools: true}}) -> list[DiskQueryResultItem]`, including `name`, `size`, `model`, `serial`, `devname`, and nullable `pool`; role `DISK_READ` | Query options support `offset` and `limit` (maximum `10000`); `extra.pools` joins the pool name. Do not request `extra.passwords`; display only fields needed by the view. Missing or denied data is unavailable, not an empty inventory. [API reference](https://api.truenas.com/v27.0/api_methods_disk.query.html) |
+
+The planned status views use one in-flight request per method, refresh on entry, and retain the last successful sample with
+its timestamp if a later refresh fails. Until an operator chooses a timer for each view during iteration 2, refresh is
+manual; no polling interval is implied by these RPC schemas. A returned null or absent nullable field remains unknown.
+
 ## Workflows
 
 | Workflow | Method and verified signature | Classification | Evidence |

@@ -11,6 +11,7 @@ import threading
 import uuid
 from collections import deque
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Iterator, Mapping, Protocol
 from urllib.parse import urlsplit
 
@@ -22,6 +23,20 @@ from .profile import LOOPBACK, Profile, Secret
 class RpcClient(Protocol):
     def call(self, method: str, *params: Any, job: bool = False, callback: Any = None) -> Any: ...
     def close(self) -> None: ...
+
+
+_APPLY_AUTHORITY = object()
+
+
+@dataclass(frozen=True)
+class _ExecutionGrant:
+    """One-use internal permit created only by the action executor after all plan gates pass."""
+
+    rpc: Any
+    nonce: str
+    fingerprint: str
+    calls: tuple[tuple[str, tuple[Any, ...], bool], ...]
+    state: SafetyState | None
 
 
 _SENSITIVE_KEYS = frozenset({"password", "old_password", "new_password", "api_key", "sshpubkey", "private_key",
@@ -62,9 +77,9 @@ class GuardedRpc:
     """The only object a screen or verb gets to call the host with; it enforces the policy itself.
 
     Reads are allowed in every session. A non-read method is refused in a read-only session, and in a write
-    session it runs only inside ``authorized(...)``: the exact calls (method, parameters, job flag, in order) of a
-    confirmed plan, each of which must also pass ``refusal_for``. ``authorized`` is meant to be entered only by
-    ``actions.apply_plan``; nothing else in tnt calls it.
+    session it runs only inside the private ``_authorized(...)`` path, with a one-use grant issued by
+    ``actions.apply_plan`` after validation, live-state checks, confirmation and drift checks. Each call must also
+    pass ``refusal_for``. The process is a trust boundary; the private capability prevents accidental bypasses.
     """
 
     def __init__(self, inner: RpcClient, *, read_only: bool = True, secret: Secret | None = None):
@@ -76,6 +91,8 @@ class GuardedRpc:
         self._lock = threading.RLock()
         self._spent: set[str] = set()
         self._issued_plans: dict[str, str] = {}
+        self._execution_grants: dict[str, _ExecutionGrant] = {}
+        self._live_capabilities: frozenset[str] | None = None
         self._event_subscriptions: set[str] = set()
         self.session_id = uuid.uuid4().hex
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
@@ -103,22 +120,41 @@ class GuardedRpc:
                     or self._issued_plans[nonce] != fingerprint):
                 raise Refused("plan-reused", "this plan was already applied or has no issued identity; plan again")
 
-    def spend(self, nonce: str, fingerprint: str | None = None) -> None:
-        """Spend an issued plan identity once, matching the fingerprint registered by this session."""
+    def spend(self, nonce: str, fingerprint: str | None = None,
+              calls: Iterable[tuple[str, tuple[Any, ...], bool]] = (), state: SafetyState | None = None,
+              *, authority: object | None = None, require_grant: bool = True) -> _ExecutionGrant | None:
+        """Spend an issued plan identity and optionally issue its private, exact-call execution grant."""
+        if authority is not _APPLY_AUTHORITY:
+            raise Refused("apply-capability", "plan execution grants can only be issued by actions.apply_plan")
+        exact_calls = tuple((normalise_method(method), canonical_params(params), bool(job))
+                            for method, params, job in calls)
         with self._lock:
             if (not nonce or nonce in self._spent or nonce not in self._issued_plans
                     or self._issued_plans[nonce] != fingerprint):
                 raise Refused("plan-reused", "this plan was already applied or has no issued identity; plan again")
             self._spent.add(nonce)
+            if not require_grant:
+                return None
+            grant = _ExecutionGrant(self, nonce, str(fingerprint), exact_calls, state)
+            self._execution_grants[nonce] = grant
+            return grant
 
     @contextmanager
-    def authorized(self, calls: Iterable[tuple[str, tuple[Any, ...], bool]], state: SafetyState | None) -> Iterator[None]:
+    def _authorized(self, calls: Iterable[tuple[str, tuple[Any, ...], bool]], grant: _ExecutionGrant | None) -> Iterator[None]:
         if self.read_only:
             raise Refused("read-only", "a read-only session cannot execute a plan")
+        exact_calls = tuple((normalise_method(method), canonical_params(params), bool(job))
+                            for method, params, job in calls)
         with self._lock:
+            if not isinstance(grant, _ExecutionGrant) or grant.rpc is not self:
+                raise Refused("apply-capability", "only an internal apply_plan grant can authorize calls")
+            issued = self._execution_grants.pop(grant.nonce, None)
+            if (issued is not grant or grant.nonce not in self._spent or not grant.fingerprint
+                    or grant.calls != exact_calls):
+                raise Refused("apply-capability", "this execution grant is invalid, spent, or does not match these calls")
             if self._grant is not None:
                 raise Refused("nested-plan", "a plan is already executing")
-            self._grant = (deque((normalise_method(m), canonical_params(p), bool(j)) for m, p, j in calls), state)
+            self._grant = (deque(grant.calls), grant.state)
             self._owner = self._identity()
         try:
             yield
@@ -126,6 +162,22 @@ class GuardedRpc:
             with self._lock:
                 self._grant = None
                 self._owner = None
+
+    def authorized(self, calls: Iterable[tuple[str, tuple[Any, ...], bool]], state: SafetyState | None) -> Iterator[None]:
+        """Reject the former public grant API; writes must pass through ``actions.apply_plan``."""
+        raise Refused("apply-capability", "direct authorization is disabled; use actions.apply_plan")
+
+    def _set_live_capabilities(self, available: Mapping[str, Any]) -> None:
+        """Install the method names returned by core.get_methods at session open."""
+        if not isinstance(available, Mapping):
+            raise Refused("method-capabilities", "core.get_methods did not return a method metadata object")
+        methods: set[str] = set()
+        for method in available:
+            methods.add(normalise_method(method))
+        with self._lock:
+            if self._live_capabilities is not None:
+                raise Refused("method-capabilities", "live method capabilities are already set for this session")
+            self._live_capabilities = frozenset(methods)
 
     def call(self, method: str, *params: Any, job: bool = False,
              job_callback: Callable[[Mapping[str, Any]], None] | None = None) -> Any:
@@ -166,6 +218,8 @@ class GuardedRpc:
     def _call(self, method: str, params: tuple[Any, ...], job: bool,
               job_callback: Callable[[Mapping[str, Any]], None] | None = None) -> Any:
         name = normalise_method(method)
+        if self._live_capabilities is not None and name not in self._live_capabilities:
+            raise Refused("method-unavailable", f"{name} is not reported by the live v27 capability list; this method is unavailable on this host")
         if not is_read_method(name):
             reason = refusal_for(name, params, self._grant[1] if self._grant else None)
             if self.read_only:

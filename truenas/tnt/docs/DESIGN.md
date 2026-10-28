@@ -1,6 +1,7 @@
 # tnt design
 
-Status: M2 management workflows implemented, 2026-10-28. Container image identity, configured CPU count and memory limits
+Status: M1 core workflows and M2 management workflows implemented, 2026-10-28. It1–It4 are planned in section 10.
+Container image identity, configured CPU count and memory limits
 are unavailable in the verified v27 container record; VM creation uses separately reviewed device plans because v27
 does not accept devices in `vm.create`. Inputs: the prior-art research (`truenas-tui-research.md`, release-program brief),
 the canonical action matrix (`docs/ACTION-MATRIX.snapshot.md`, from branch `truenas-restore-iso`), the TrueNAS web UI
@@ -58,13 +59,17 @@ session opener so tests substitute a fake-server-backed one.
 ### 2.2 Version adapters and the method manifest
 
 The adapter boundary remains extensible, but this release ships only v27. `adapters.select(version)` parses the major
-from `system.version` and selects `V27`; every other major raises `UnsupportedVersion` (fail closed). The adapter
-manifest lists its API methods and their read/write/destructive classification. A schema name is not admitted just
-because it follows a familiar suffix.
-- `adapters.missing_methods(backend, core.get_methods result)` diffs supported manifest entries against what a host lists.
-- Every manifest entry has an explicit classification. Entries with `supported = false` keep known dangerous names
-  classified without admitting them to plans. The v27 method signatures and source evidence are recorded in
-  [`docs/API-METHODS-V27.md`](API-METHODS-V27.md).
+from `system.version` and selects `V27`; every other major raises `UnsupportedVersion` (fail closed). The supported
+entries in the adapter manifest are the exact callable allow-list: an unlisted method is not a read or write just
+because its name ends in `.query`, `.details`, or a familiar verb. Every entry has an explicit read/write/destructive
+classification; `supported = false` entries retain guard classifications for known unsafe or nonexistent names
+without admitting them to plans.
+- On every connection, `Session` calls `core.get_methods(service=None, target="WS")` and installs the returned method
+  names in `GuardedRpc`. Calls absent from this live list fail as unavailable before they reach the client. The
+  handshake proves method presence only; it does not prove the caller's RBAC roles or validate a response schema.
+- `adapters.missing_methods(backend, core.get_methods result)` reports each feature's supported manifest methods that
+  the host does not list. `tnt doctor --online` reports these gaps; a missing method stays unavailable for that
+  session. Review the exact v27 method and schema evidence in [`docs/API-METHODS-V27.md`](API-METHODS-V27.md).
 - v27 has no `container.restart` RPC. tnt composes the user-facing restart action as `container.stop` followed by
   `container.start`, so its plan is destructive and requires typing the container name.
 - Planned: a drift test that diffs manifests against the fetched reference index (TNT-23, opt-in, outside the gate).
@@ -87,8 +92,9 @@ method (section 8.1).
 
 `Action(id, kind, title, calls, probe, confirm_target)`; `kind` is READ, MUTATE or DESTRUCTIVE. `id` is an
 ACTION-MATRIX row id (A-xx/B-xx) or a TNT id. Structural rules (`validate_action`, at plan and again at apply): an
-action has calls; every probe call is a read method (also in a write session); a READ action's calls are all read
-methods; a DESTRUCTIVE action has a non-empty probe (else the drift check would be vacuous) and a non-blank
+action has calls; every probe call is an explicitly classified read method (also in a write session); a READ action's
+calls are all read methods; every MUTATE and DESTRUCTIVE action has a non-empty target probe (else the drift check
+would be vacuous); a DESTRUCTIVE action also has a non-blank
 confirmation target; an action containing a data-destroying method (the explicit manifest classifications, including
 `disk.wipe`, pool and dataset deletion, snapshot rollback/deletion, container stop/deletion, VM stop/poweroff/deletion,
 VM device deletion and user deletion; a `user.set_password` plan is promoted to DESTRUCTIVE only when its target is the
@@ -96,7 +102,7 @@ current login user, and then it also needs `--confirm-self`; plus the conservati
 `.delete`, `.destroy`, `.wipe`, `.rollback`, `.replace`, `.attach`, `.offline`, `.promote`, `.rename`, `.stop`,
 `.reset`, `.clear`, `.format`, `.recursive_destroy`, `.import_pool`, `.uninstall`, `.destroy_snapshots`, `.rmdir`,
 `.unlink` or `.remove`)
-must be DESTRUCTIVE. Every non-read call must appear in the v27 adapter manifest or the explicit write allow-list;
+must be DESTRUCTIVE. Every non-read call must appear as supported in the v27 adapter manifest;
 `validate_action` refuses unlisted writes. `make_plan` runs the probe
 and fingerprints the action id, kind, confirm target, exact calls, probe results, session id and nonce, so swapping the
 calls, target or identity under a plan is detected. A plan carries the id of the session that made it and a nonce: applying it through
@@ -114,7 +120,9 @@ a `GuardedRpc`) checks, in this order, and stops at the first failure:
 3. write session (`--allow-write`), for MUTATE and DESTRUCTIVE;
 4. typed confirmation, for DESTRUCTIVE: the operator types the target name exactly;
 5. state drift: the fingerprint is recomputed and must equal the plan's, else "plan again";
-6. execute inside `GuardedRpc.authorized(...)`, which lets exactly these calls through, in order (default-deny).
+6. execute inside the private `GuardedRpc._authorized(...)` path with a one-use grant issued only by
+   `actions.apply_plan`; it lets exactly these calls through, in order (default-deny). The former public
+   `authorized(...)` entry point refuses every call.
 
 The CLI and TUI use the same plan/apply functions. CLI mutation verbs require `--allow-write`; they print the exact
 plan and require `--confirm TARGET` for destructive work. The TUI action dialog shows the same calls and confirmation
@@ -138,8 +146,9 @@ current-login SSH-key change is also destructive, asks for typed username confir
 
 ## 3. Action backlog from the matrix
 
-The action matrix still tracks the separate storage work. M1 focuses on the core workflows in the user brief:
-Datasets, Snapshots, Users, Containers, and Virtual Machines. Boot-pool datasets remain refused.
+The action matrix still tracks the separate storage work. M1 delivered the core workflows: Datasets, Snapshots, Users,
+Containers, and Virtual Machines. M2 added the management workflows listed in section 10. Boot-pool datasets remain
+refused; the remaining storage matrix work is Later unless section 10 assigns it an iteration.
 
 | row | action | tnt |
 |---|---|---|
@@ -167,8 +176,9 @@ Import Pool, pool management) are reached from the Storage page, not from the me
 `tnt/menu.py` holds the tree. TrueNAS places “My API Keys” in the top-right account menu; tnt nests it under Credentials
 as a `tnt_only` tree leaf because the TUI has no account menu. Datasets, Shares, Data Protection tasks and Snapshots,
 Credentials > Local Users/API Keys, Containers, Virtual Machines, Apps, Network, Audit, Update, Reboot, Shutdown, and
-General Settings have workflow views. Other entries remain placeholders pending later slices. Containers and Virtual
-Machines are separate top-level entries and are always shown. The TUI omits Shell because it is already a terminal.
+General Settings have workflow views. Dashboard, Reporting, and Services are It2 work; multi-host/session controls are
+It1; interactive SSH hand-off is It3. Other entries remain Later placeholders. Containers and Virtual Machines are
+separate top-level entries and are always shown. The TUI omits Shell because it is already a terminal.
 
 ### Shares
 
@@ -316,11 +326,16 @@ tls = "verify"
 Default-deny, enforced in the client object itself, not only in the action layer:
 
 - `GuardedRpc` is the only object a screen or verb receives (`Session.rpc`, also with `--allow-write`). Method names are
-  normalised (strip, lower-case) and must be plain dotted words. Reads (`*.query`, `*.details`, listed `get_*`,
-  `system.info|version`, `core.get_methods`, ...) are allowed in every session.
+  normalised (strip, lower-case) and must be plain dotted words. Only exact read methods in the v27 manifest, plus
+  the small named bootstrap reads, are read methods. After the `core.get_methods` handshake, a method must also be
+  present in that session's live WebSocket method list.
 - A non-read method is refused in a read-only session. In a write session it is refused unless it is the next call of the
   plan currently executing in `apply_plan` (exact method, parameters and job flag, in order). Outside a plan a write
   session can call nothing but reads. Every granted call must still pass `refusal_for`.
+- `apply_plan` receives a private execution capability only after the plan identity, refusal list, write flag,
+  destructive confirmation and fresh probe fingerprint all pass. A direct call to the former public grant API is
+  refused. This prevents accidental bypass through the transport API; because application code shares one Python
+  process, it is not a sandbox against hostile code that can import private implementation details.
 - The grant is bound to the executing thread and asyncio task, so another thread or task cannot consume a plan call
   (`foreign-caller`). RPC calls share a lock: a concurrent read waits while an RPC is in flight, then can run between
   plan calls. Plans are session-bound and single-use (section 2.4).
@@ -329,8 +344,8 @@ Default-deny, enforced in the client object itself, not only in the action layer
 - `refusal_for` (second wall, for calls an action declares by mistake):
   - all `core.*` except `core.get_methods` (`core.call`/`core.bulk` run any method); `system.reboot|shutdown`; any
     `auth.*` except `auth.me` and `auth.mechanism_choices`;
-  - the boot family is default-deny with an explicit read allow-list: only read methods run (`boot.get_state`,
-    `boot.get_disks`, `boot.environment.query`, ...); `boot.format`, `install_loader`, `scrub`, `set_scrub_interval`,
+  - the boot family is default-deny with an explicit read allow-list: only manifested read methods run
+    (`boot.get_state`, `boot.environment.query`); `boot.format`, `install_loader`, `scrub`, `set_scrub_interval`,
     `attach|detach|replace` (B-07) and `environment.*` writes are refused until a later decision adds them to
     `BOOT_WRITE_ALLOWED` (TNT-13);
   - for every non-read method, any string parameter (nested, dict keys included) that names boot-pool is refused.
@@ -367,13 +382,14 @@ Default-deny, enforced in the client object itself, not only in the action layer
 ### 8.1 SSH fallback for partitioning (planned, not implemented)
 
 The API has no partitioning method (matrix B-01), so reserving the free-tail partition needs `sgdisk` on the host. Design
-(controller decision 2026-10-28): the only SSH use in tnt is a planned, guarded Action for B-01. It is a second explicit
+(controller decision 2026-10-28): this storage fallback is separate from It3's interactive SSH hand-off. If implemented,
+it is a planned, guarded Action for B-01 with a second explicit
 switch (`--allow-ssh`) on top of `--allow-write`; it runs a fixed, listed set of commands (a `sgdisk` create of one
 partition in a named free extent, and read-only `sgdisk -p`/`lsblk --json`), each of which appears in the plan text; it
 uses the repo's known-hosts policy (`StrictHostKeyChecking=yes`, a key file from the profile, no password, no agent
 forwarding); the target disk must pass the same `compute_state` checks as `disk.wipe` (never a pool member or mounted
 disk) and the plan is DESTRUCTIVE (typed disk name, probe = the partition table read just before). Until implemented,
-B-01 is a backlog item (TNT-03) and the refusal list covers nothing SSH-related because nothing SSH-related exists.
+B-01 is a backlog item (TNT-03); no storage SSH fallback exists in the current product.
 
 ## 9. Test strategy
 
@@ -386,21 +402,26 @@ B-01 is a backlog item (TNT-03) and the refusal list covers nothing SSH-related 
 - TUI: Textual `Pilot` (`run_test`) against a session on the fake: navigation, palette entries, load, failure, refresh,
   insecure banner.
 - CLI: cli-extended `build_cli(opener=...)`, assertions on `--json` output and exit codes; `doctor` checks both ways.
-- Live lane (TNT-20, not in the gate): explicit `TNT_LIVE=1` and `TNT_LIVE_PROFILE` select a protected profile;
+- Live lane (TNT-20, It4 acceptance, not in the gate): explicit `TNT_LIVE=1` and `TNT_LIVE_PROFILE` select a protected profile;
   operator-supplied pool, group, image and VM sizing prerequisites are mandatory. The written acceptance test creates
-  only `tnt-live-`-prefixed test resources and cleans each up through plans. It is not run as part of M1.
-- Drift lane (TNT-23): manifests vs the fetched API reference. Optional dependencies required by the suite fail, never skip.
-- Gate: `run-gate.toml` lane `r0-r1` (pytest with branch coverage). The registered lane runs without a mutation lane at
-  M0 (TNT-30). Tests are deterministic under host load: no timing assertions beyond bounded waits for a worker.
+  only `tnt-live-`-prefixed test resources and cleans each up through plans. It is reserved for It4 acceptance.
+- Drift lane (TNT-23, It4): manifests vs the fetched API reference. Optional dependencies required by the suite fail, never skip.
+- Gate: `run-gate.toml` lane `r0-r1` (pytest with branch coverage). The registered unit lane retains its 97% floor;
+  the separate mutation lane is It4 work (TNT-30). Tests are deterministic under host load: no timing assertions
+  beyond bounded waits for a worker.
 
 ## 10. Milestones
 
 | milestone | scope | size |
 |---|---|---|
-| M0 | scaffold: transport, profile, v27 adapter, plan/apply model, `doctor`/`profile`/`disks`/`tui`, Storage > Disks, fake server | done |
-| M1 | config and credential flows; v27 default-deny manifest; datasets, snapshots, users, containers and VMs in CLI/TUI; fake-server workflows; written opt-in live lane | implemented; container metadata is limited to v27 fields and VM creation is staged |
-| M2 | SMB/NFS shares, data protection tasks, Network, Apps, Audit, API Keys, and System actions in CLI/TUI | implemented; generic middleware/syslog tail and scrub/SMART task management are absent from v27 or deferred |
-| Later | storage partitioning, pool creation, boot-pool management, and other TrueNAS screens | deferred |
+| M0 | Historical scaffold: transport, profile, v27 adapter, plan/apply model, `doctor`/`profile`/`disks`/`tui`, Storage > Disks, fake server | complete |
+| M1 | Core workflows: configuration and credentials, v27 default-deny manifest, datasets, snapshots, users, containers, and VMs in CLI/TUI | implemented; container metadata is limited to v27 fields and VM creation is staged |
+| M2 | Management workflows: SMB/NFS shares, data protection tasks, Network, Apps, Audit, API Keys, and guarded System actions | implemented; generic middleware/syslog tail and scrub/SMART task management are absent from v27 or deferred |
+| It1 | Paired multi-host configuration/secrets and the session controller: host generation, plan invalidation, worker draining, stale-callback rejection, connection testing, and per-host write mode | planned; controller before picker |
+| It2 | Non-blocking job engine and read-only core views: Dashboard, Alerts, Jobs, Services, Storage health, and global view UX | planned; job engine first, then views |
+| It3 | Hardened interactive SSH hand-off with pinned host-key sources and no arbitrary remote command mode | planned |
+| It4 | Vanilla-v27 live acceptance, remaining hardening and consistency review, estate registration, and release readiness | planned; live run is controller-operated |
+| Later | Storage partitioning, pool creation, boot-pool management, and other TrueNAS screens not assigned above | deferred |
 
 ## 11. Supported host
 
@@ -419,6 +440,6 @@ per host (TNT-35). Live-lane profile selection and required variables are docume
 `tnt.testing` ships inside the wheel but imports `websockets` at module level; `websockets` is a test-extra dependency
 only, so importing `tnt.testing` without the test extra fails, and nothing in the runtime imports it.
 
-Estate registration is deliberately not done at M0: `cmru.orchestration.toml` and the root run-gate registry need an
-entry for `truenas/tnt` (TNT-32), and the gate environment needs `tnt` installed for the cli-extended version lookup
-(TNT-33). `cmru.toml` and `run-gate.toml` in this directory are ready for that step.
+Estate registration remains It4 work: `cmru.orchestration.toml` and the root run-gate registry need an entry for
+`truenas/tnt` (TNT-32), and the gate environment needs `tnt` installed for the cli-extended version lookup (TNT-33).
+`cmru.toml` and `run-gate.toml` in this directory are ready for that step.

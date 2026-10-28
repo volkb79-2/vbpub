@@ -11,8 +11,8 @@ from tnt.policy import SafetyState, _alias_map, _members, compute_state, is_dest
 
 def test_boot_pool_paths_normalise_before_prefix_removal():
     for path in ("/./mnt/boot-pool/x", "/dev/./zvol/boot-pool", "mnt/boot-pool/x"):
-        assert refusal_for("filesystem.setperm", [{"path": path}])
-    assert refusal_for("filesystem.setperm", [{"path": "/mnt/./tank/../boot-pool/x"}])
+        assert refusal_for("sharing.nfs.create", [{"path": path}])
+    assert refusal_for("sharing.nfs.create", [{"path": "/mnt/./tank/../boot-pool/x"}])
 
 
 @pytest.mark.parametrize("method", [
@@ -23,12 +23,14 @@ def test_boot_pool_paths_normalise_before_prefix_removal():
 def test_new_destructive_method_families_require_destructive_kind(method):
     assert is_destructive_method(method)
     with pytest.raises(Refused, match="kind-mismatch"):
-        make_plan(Action("R3", Kind.MUTATE, "unsafe", (RpcCall(method, ("tank",)),)), guarded(Stub()))
+        make_plan(Action("R3", Kind.MUTATE, "unsafe", (RpcCall(method, ("tank",)),), (RpcCall("system.info"),)),
+                  guarded(Stub()))
 
 
 def test_unknown_writes_are_not_accepted_as_actions():
     with pytest.raises(Refused, match="unknown-write"):
-        make_plan(Action("R3", Kind.MUTATE, "unknown", (RpcCall("pool.new_method", ()),)), guarded(Stub()))
+        make_plan(Action("R3", Kind.MUTATE, "unknown", (RpcCall("pool.new_method", ()),), (RpcCall("system.info"),)),
+                  guarded(Stub()))
     with pytest.raises(Refused, match="unknown-write"):
         make_plan(destructive("service.stop", "ssh"), guarded(Stub()))
 

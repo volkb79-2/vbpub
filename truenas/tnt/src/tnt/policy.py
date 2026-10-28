@@ -21,8 +21,6 @@ BOOT_POOL = "boot-pool"
 _METHOD = re.compile(r"[a-z0-9_]+(\.[a-z0-9_]+)+")
 
 READ_EXACT = ("system.info", "system.version", "core.get_methods", "auth.me", "auth.mechanism_choices")
-READ_SUFFIXES = (".query", ".details", ".get_instance", ".config", ".get_disks", ".get_state", ".choices", ".pool_choices", ".get_used",
-                 ".import_find", ".validate_name", ".temperatures")
 
 ALWAYS_REFUSED = {
     "boot.attach": "boot-pool topology is out of scope (ACTION-MATRIX B-07: attach to a partition raises an internal TypeError)",
@@ -35,7 +33,7 @@ ALWAYS_REFUSED = {
 BOOT_WRITE_ALLOWED: frozenset[str] = frozenset()
 # Methods whose FIRST parameter is a pool id (or name). Anything else under pool.* (pool.scrub.delete takes a task id,
 # pool.dataset.* a dataset name, pool.create a dict) has no pool-id position and is not resolved as one.
-POOL_ID_METHODS = frozenset({"pool.export", "pool.update", "pool.delete", "pool.expand", "pool.scrub", "pool.attach", "pool.detach",
+POOL_ID_METHODS = frozenset({"pool.export", "pool.update", "pool.expand", "pool.attach", "pool.detach",
                              "pool.replace", "pool.remove", "pool.offline", "pool.online", "pool.upgrade"})
 POOL_NAME_METHODS = frozenset({"pool.scrub.run", "pool.scrub.scrub"})
 # Methods that destroy data. An action containing one must be DESTRUCTIVE (probe + typed confirmation); the v27 manifest
@@ -52,16 +50,6 @@ DESTRUCTIVE_METHODS = frozenset({"disk.wipe", "pool.export", "pool.delete", "poo
 DESTRUCTIVE_SUFFIXES = (".delete", ".destroy", ".wipe", ".rollback", ".replace", ".attach", ".offline", ".promote",
                         ".rename", ".stop", ".reset", ".clear", ".format", ".recursive_destroy", ".import_pool",
                         ".uninstall", ".destroy_snapshots", ".rmdir", ".unlink", ".remove")
-# Methods already used by the action/refusal model but not currently exposed in the adapter's feature manifest.
-# New write methods must be added to a version manifest or deliberately reviewed into this small allow-list.
-EXPLICIT_WRITE_ALLOWLIST = frozenset({
-    "pool.export", "pool.update", "pool.delete", "pool.expand", "pool.scrub", "pool.attach", "pool.detach",
-    "pool.replace", "pool.remove", "pool.offline", "pool.online", "pool.upgrade", "pool.scrub.delete",
-    "pool.dataset.update", "pool.dataset.delete", "pool.snapshot.delete", "zfs.pool.delete", "zfs.resource.destroy",
-    "zfs.resource.snapshot.destroy", "disk.wipe",
-})
-
-
 def is_destructive_method(method: Any) -> bool:
     name = normalise_method(method)
     spec = _manifest_spec(name)
@@ -94,8 +82,8 @@ def is_read_method(method: Any) -> bool:
         return False
     spec = _manifest_spec(name)
     if spec is not None:
-        return spec.classification == "read"
-    return name in READ_EXACT or name.endswith(READ_SUFFIXES)
+        return spec.supported and spec.classification == "read"
+    return name in READ_EXACT
 
 
 @lru_cache(maxsize=None)
@@ -324,6 +312,9 @@ def refusal_for(method: Any, params: Iterable[Any] = (), state: SafetyState | No
         return None
     if name.startswith("boot.") and name not in BOOT_WRITE_ALLOWED:
         return "the boot family is read-only from tnt (default-deny; boot.format, install_loader, scrub, ... are never executed)"
+    spec = _manifest_spec(name)
+    if spec is None or not spec.supported:
+        return f"{name} is not in a supported adapter manifest for v27"
     texts = list(_strings(args))
     if any(_ambiguous_path(text) for text in texts):
         return "a path with '..' is ambiguous and refused"

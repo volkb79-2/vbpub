@@ -13,6 +13,15 @@ for the verified method signatures. The original storage action matrix remains a
 Scope and safety choices are explained in the [design guide](docs/DESIGN.md#1-goals-and-non-goals); copyable setup and
 workflow examples are in the [consumer guide](docs/CONSUMERS.md#configure-a-profile).
 
+M1 core workflows and M2 management workflows are implemented. The planned work after them is It1 multi-host
+configuration and session control, It2 the non-blocking job engine and read-only overview views, It3 hardened SSH
+hand-off, and It4 vanilla-v27 acceptance. See the [milestone plan](docs/DESIGN.md#10-milestones).
+
+At connection time tnt checks the v27 WebSocket method list. Methods missing from a host are reported by
+`doctor --online` and refused if a workflow needs them; a method-name match does not grant an RBAC role. See the
+[capability-check design](docs/DESIGN.md#22-version-adapters-and-the-method-manifest) and the
+[verified v27 contract](docs/API-METHODS-V27.md#v27-adapter-contract).
+
 ## Install
 
 ```bash

@@ -2,7 +2,6 @@ import pytest
 
 from tnt.actions import Action, Kind, Plan, RpcCall, apply_plan, make_plan
 from tnt.errors import Refused, TransportError
-from tnt.policy import SafetyState
 from tnt.profile import Secret
 from tnt.transport import GuardedRpc
 
@@ -17,8 +16,9 @@ class Inner:
 
     def call(self, method, *params, job=False):
         self.params = params
-        if self.fail:
-            raise RuntimeError(f"middleware echoed {params[0]['password']}")
+        if self.fail and method == "user.set_password":
+            secret = params[0].get("password", params[0].get("new_password"))
+            raise RuntimeError(f"middleware echoed {secret}")
         if method == "user.query":
             return [{"id": 1, "username": "alice"}]
         if method == "auth.me":
@@ -44,12 +44,14 @@ def test_guarded_rpc_reveals_secret_only_to_transport_and_scrubs_failures():
     inner = Inner(fail=True)
     rpc = GuardedRpc(inner, read_only=False)
     secret = Secret(PASSWORD)
-    params = ({"password": secret},)
+    params = ({"username": "alice", "new_password": secret},)
+    action = Action("U-1", Kind.MUTATE, "Set password", (RpcCall("user.set_password", params),),
+                    (RpcCall("user.query", ([['username', '=', 'alice']], {})), RpcCall("auth.me")))
+    plan = make_plan(action, rpc)
     with pytest.raises(TransportError) as caught:
-        with rpc.authorized([("user.create", params, False)], SafetyState()):
-            rpc.call("user.create", *params)
+        apply_plan(plan, rpc, allow_write=True)
 
-    assert inner.params == ({"password": PASSWORD},)
+    assert inner.params == ({"username": "alice", "new_password": PASSWORD},)
     assert PASSWORD not in str(caught.value)
     assert PASSWORD not in repr(rpc.calls)
 

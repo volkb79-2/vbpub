@@ -35,6 +35,20 @@ protected profile file to use the pinned client's v27 `PASSWORD_PLAIN` login. An
 `api_key_file`. The closed `tls` values are `"verify"` and `"insecure"`; the latter also requires `--insecure` on
 every command. `ws://` URLs are refused.
 
+## Check a host's v27 methods
+
+After configuring the profile, make one authenticated connection to compare the host's WebSocket method list with
+tnt's exact v27 adapter manifest:
+
+```sh
+tnt doctor --online --profile lab
+```
+
+The doctor result includes missing manifest methods grouped by feature. A listed gap means workflows that need one of
+those methods are unavailable on that host; check the role requirements separately because method presence does not
+grant the authenticated user permission to call it. See the [capability-check design](DESIGN.md#22-version-adapters-and-the-method-manifest)
+and the [verified v27 contract](API-METHODS-V27.md#v27-adapter-contract).
+
 ## Run the core workflows
 
 Every command accepts `--profile NAME`, `--config PATH`, and `--json` where it returns data. Add `--allow-write` to
@@ -307,7 +321,7 @@ default exclusion remain in place. The live test never skips. If selected, it fa
 `TNT_LIVE_PROFILE` exists in the selected protected config file, and all pool/group/image/VM sizing variables below
 are present. Run it only against an operator-designated v27 test host with a disposable data pool and image available.
 The test creates a dataset, snapshot/clone, user, container, and VM with names prefixed `tnt-live-`, then removes each
-through the same plan/apply guard. It was written for M1 but is intentionally not run as part of this work.
+through the same plan/apply guard. It is reserved for It4 acceptance and is intentionally not run during M1, M2, or It1–It3.
 
 ```sh
 export TNT_CONFIG="$PWD/tnt.toml"
