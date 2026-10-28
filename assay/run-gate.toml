@@ -101,7 +101,6 @@ artifacts = [
   ".assay/verdict-self-qualification-provisional.json",
   ".assay/progress-self-qualification-provisional.jsonl",
   ".assay/mutation-postponed-assay.json",
-  ".assay/coverage-self-qualification-provisional-snapshots",
 ]
 
 # A-474 / B110 P7: the bounded pilot is a non-qualifying measurement. Campaign

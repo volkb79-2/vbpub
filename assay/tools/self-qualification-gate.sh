@@ -876,14 +876,13 @@ run_and_verify_lane() {
     self-qualification-provisional)
       expected_rigor="R0,R1,R3"
       rm -f -- "$postponed_marker"
-      export ASSAY_B105_COVERAGE_SOURCE=".assay/coverage-$lane.json"
-      coverage_archive_root="$project/.assay/coverage-self-qualification-provisional-snapshots"
-      mkdir -p "$coverage_archive_root"
-      coverage_archive_attempt="$(mktemp -d "$coverage_archive_root/attempt.XXXXXXXX")"
-      export ASSAY_B105_COVERAGE_ARCHIVE_DIR="$coverage_archive_attempt"
-      export ASSAY_B105_SOURCE_COMMIT="$source_commit"
-      export ASSAY_B105_SOURCE_TREE="$source_tree"
-      echo "B105_COVERAGE_ARCHIVE_DIR=$coverage_archive_attempt"
+      # Unlike the preflight, this lane also runs the R3 canary, whose control
+      # and transformed runs re-execute the same pytest command: the
+      # coverage-archive export hook in tests/conftest.py must not be armed
+      # for them (it refuses a second, different export), exactly as for the
+      # full lane.
+      unset ASSAY_B105_COVERAGE_SOURCE ASSAY_B105_COVERAGE_ARCHIVE_DIR \
+        ASSAY_B105_SOURCE_COMMIT ASSAY_B105_SOURCE_TREE
       ;;
     self-qualification)
       expected_rigor="R0,R1,R2,R3"

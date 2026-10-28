@@ -312,14 +312,7 @@ argv = [
   "--cov-report=json:.assay/coverage-self-qualification-provisional.json",
 ]
 env = {}
-env_passthrough = [
-  "PATH",
-  "ASSAY_RESOURCE_OBSERVER_SOCKET",
-  "ASSAY_B105_COVERAGE_SOURCE",
-  "ASSAY_B105_COVERAGE_ARCHIVE_DIR",
-  "ASSAY_B105_SOURCE_COMMIT",
-  "ASSAY_B105_SOURCE_TREE",
-]
+env_passthrough = ["PATH", "ASSAY_RESOURCE_OBSERVER_SOCKET"]
 budget = "60m"
 allow_argv_append = false
 
