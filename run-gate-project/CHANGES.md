@@ -9,6 +9,70 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [24.1.0] - 2026-10-28
+<!-- cmru: generated -->
+<!-- cmru: source-end=39e502f03145e77dbc2cb07c85997d66c67e378b -->
+
+### Added
+- feat(run-gate): cgprofile 1.1.0 stop-incomplete retry; stop_forced and unconfirmed damon_cleanup disclosed (0f3e60667)
+
+### Fixed
+- fix(run-gate): deferred_sigterm restores a C-installed (None) handler as SIG_DFL; DESIGN-GUIDE drops the stale first-release SKIPPED claim (7629f095e)
+- fix(run-gate): review round on 0e17e62b3 — stop-retry code reset per call, SIGINT deferred too, lane drops --allow-first-release, admission inspect race tolerated (77f13ba22)
+- fix(run-gate): diff-coverage parser skips the no-newline marker and asks git for plain text; docs drift from the audit (0e17e62b3)
+- fix(run-gate): RG-109 — SIGTERM during a lane's cleanup is deferred, the pre-wait window is disclosed, an interrupted run says so (14e8ab9ca)
+- fix(run-gate): the Assay closeout's two analysis calls share half the remaining budget (review round 3) (81a7d3ee5)
+- fix(run-gate): the campaign closeout never spends the lane's own budget (review round 2); CHANGES headings; stronger fetch test (076c381f5)
+- fix(run-gate): 600 s R2 window before the plan; disclose unproven rigor (review RG55-FIN r2) (4eb554a4e)
+- fix(cgprofile): CGP-110 review fixes: own-cgroup slice proof, wedged-worker escalation, shutdown force (ac7e17e7b)
+- fix(cgprofile): report an unconfirmed DAMON teardown to the consumer (Sol B3) (c201d69b6)
+- fix(run-gate): arm the post-command liveness bound only for R2; review RG55-FIN fixes (071742f7c)
+- fix(run-gate): bound R2 baseline liveness without changing verdicts (0d6c8c2f5)
+
+### Changed
+- Merge remote-tracking branch 'origin/main' into fable-run-gate-20261027 (a9c28b683)
+- Merge origin/main into fable-run-gate-20261027: reconcile RG-110 to the reviewed tester-unified --run-gate-published mechanism (drop the duplicate --run-gate-release flag, fetch-run-gate-release.py and its test) (c589a5d9a)
+- run-gate: review round 1 fixes (config-example marker, head_commit test fakes, user only for ephemeral, v6 reader note) (08bf08055)
+- run-gate: land parked B108 phase 2 closeout + ciu worktree record v6 reader, RG-106 environment user, RG-110 published-wheel tester image (3b1ea94dd)
+- Merge cgp-110-20261021 (6ea5ef2fb): CGP-110 / Sol blockers B1-B6 for cgprofile 1.1.0 (keep CIU-150 and CIU-151) (68762c9ca)
+- run-gate: drop unreachable fallback_announced guard in bare-host watch (8ffd52068)
+- Merge origin/main into rg55-fin-20261021 (gate the integrated tree) (1bbeda5a8)
+- Merge origin/main into int-02-20261021 (gate the integrated tree) (62497cb0a)
+- BL-01: review fixes - label facts vs hypotheses, drop out-of-repo citations (e79dd01aa)
+- BL-01: renumber filed entries to free IDs (RG-108->RG-109, CIU-150->CIU-151, CP-24->CP-27) (4d384174c)
+- BL-01: file backlog entries RG-108, CIU-150 (+ CIU-134 third reproduction), CP-24 (d5761487d)
+- docs/test: INT-02 review fixes I-01..I-07 (f4267688a)
+- backlog(run-gate): file RG-107 (a test reads local release tags, so assay-r1 fails in R0 on a tag-less snapshot) (d575647c1)
+- tester-unified: Docker's pinned docker-compose-plugin instead of Debian's docker-compose (INT-01 D-006 decided) (2f33410e2)
+- INT-01 fix round 2: base pull, marker guard, tester-base identity (reviews A-13..A-17, B-08, B-09) (792bcadc9)
+- mdt-cockpit README: resolve committed conflict markers; add a repo-wide marker guard (review A-01) (236cd57fe)
+- INT-01 gate fixes: overlap tests, bootstrap oracle, topos lane, mattermost drift (fbe8720e5)
+- Merge mdt-home-persistence-20261018 (daf47a2e9) (INT-01 step 4) (5e2dff706)
+- cmru image tests: parse every run-gate.toml for host users incl. [assay] defaults and central lanes (V5); RG-106 filed (D-007) (c461f1086)
+- tester-base: minimal gate base image; tester-unified, wheel-builder and run-gate host move onto it (MDTC-02 T1-T5, T9) (d8f5fda2f)
+
+### Documentation
+- docs(rg55): record the R2 budget decision (keep 4h) in the final report (ffdd33223)
+- docs(rg55): final wave report, backlog reconciliation, RG-105 duplicate -> RG-108 (295bbbd88)
+- docs(run-gate): INT-02 round 2: correct __revision__ and RG-82 D3/Q9 statements (R2-01..R2-03) (3a4e9329a)
+- docs(run-gate): RG-62 FIXED status + RG-SMALL report (historical, annotated) (04ea71c41)
+- docs(run-gate): mark RG-82 design as historical record (24.0.0/24.0.1 shipped) (d09391f09)
+- docs(run-gate): RG-82 design - record operator resolutions Q1-Q9, D7 cockpit-provided wheels, package M (mdt image) (9546e8801)
+- docs(run-gate): RG-82 design for run-gate 24.0.0 on cli-extended (48f6e8131)
+
+### Testing
+- test(run-gate): the interrupted-run line is pinned for SystemExit and KeyboardInterrupt (RG-109) (b02e6f10b)
+- test(run-gate): missing optional test dependencies FAIL by default; the gate names every skip (9f3e4f56d)
+- test(run-gate): cover the closeout reader's grown-file and read-failure paths and the unknown expected exit (03fc816b0)
+- test(run-gate): cover the closeout artifact reader and stderr hint (diff-coverage floor) (385a15593)
+- test(run-gate): closeout-aware fakes (head_commit, assay analyze) for ten lane tests (c4c31c6c0)
+- test(run-gate): RG-107 make release-body changelog test independent of ambient tags (ca4be1bac)
+- test(run-gate): cover bare-host double-idle in-process watch announcement (d48940530)
+- test(run-gate): RG-62 make the two order/timing-sensitive selftests deterministic (a2f7152b1)
+
+<!-- cmru: pending release notes begin -->
 ### Added
 - A live `kind = "assay"` lane now runs Assay's `analyze campaign` over its own
   verdict, progress, state directory, judged commit and actual exit, and
@@ -144,8 +208,7 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   re-attached, is disclosed and degrades to ordinary waiting instead of
   affecting the lane's exit. A stall remains an infrastructure outcome.
   Ported as a third version of the unmerged `a612d8460` against current main.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [24.0.1] - 2026-10-18
 <!-- cmru: generated -->
