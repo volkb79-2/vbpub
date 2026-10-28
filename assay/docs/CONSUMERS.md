@@ -5476,10 +5476,11 @@ Without `--verdict`, a plan whose lane delegates its base to the request needs `
 For a lane that declares R1 coverage, include `--coverage` with its declared
 artifact; without it the report stays incomplete. The artifact must be present
 in the worktree (and ignored by Git) even when the judge produced it inside a
-snapshot. `qualifying: true` identifies whole-plan scope only; it does not
-mean the verdict passed or that all evidence is complete. A `0/1` shard covers
-the full inventory and can qualify; a single result from a multi-shard campaign
-cannot qualify the combined plan.
+snapshot. `qualifying: true` identifies whole requested scope only; it does not
+mean the verdict passed or that all evidence is complete. It remains true for a
+lane without an R2 declaration and for plan-only ingested analysis before a
+verdict exists. A `0/1` shard covers the full inventory and can qualify; a
+single result from a multi-shard campaign cannot qualify the combined plan.
 
 A matching `verdict_written` event and `--command-exit` do not establish that
 native R2 ran. If a verified verdict stopped before `judgment.r2` (such as an

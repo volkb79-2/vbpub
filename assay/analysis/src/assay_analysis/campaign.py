@@ -2047,9 +2047,17 @@ def campaign(
         # run remains incomplete even when this shard happens to contain every
         # candidate in a small or empty plan; only merged shard evidence can
         # establish whole-plan completion.
+        # Preserve whole-scope metadata for lanes without R2 and plan-only
+        # analysis. A supplied verdict for a declared R2 lane must establish
+        # inventory through its native plan or an ingested producer.
         "qualifying": (
             not pilot_requested and not multi_shard
-            and (plan_total is not None or ingested_lane)
+            and (
+                not _declares_r2(lane)
+                or plan_total is not None
+                or ingested_lane
+                or verdict is None
+            )
         ),
         "complete_blockers": sorted(blockers),
         "expected_commit": expected_commit,

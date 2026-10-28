@@ -68,7 +68,7 @@ def test_a_non_native_mutation_lane_is_reported_not_supported(tmp_path, monkeypa
     assert document["plan"]["planned_total"] is None
     assert document["plan"]["inventory_sha256"] is None
     assert document["status"] == "incomplete"
-    assert document["qualifying"] is False
+    assert document["qualifying"] is True
 
 
 def test_request_base_reaches_the_planner_for_a_lane_that_delegates_its_base(tmp_path, monkeypatch):

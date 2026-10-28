@@ -95,8 +95,12 @@ an installed wheel or zipapp needs nothing extra:
   [workflow](docs/CONSUMERS.md#close-out-a-mutation-campaign-with-assay-analyze-campaign-b108)
   and [design](docs/DESIGN-GUIDE.md#mutation-campaign-closeout-b108-phase-1).
   A `0/1` shard covers the full inventory and can qualify; one shard of a
-  multi-shard campaign cannot. `qualifying: true` means whole-plan scope, not
-  that the campaign is complete or passed. State input is limited to 50,000
+  multi-shard campaign cannot. `qualifying: true` means whole requested scope, not
+  that the campaign is complete or passed. This scope flag remains true for a
+  lane with no R2 declaration and for plan-only ingested analysis without a
+  verdict. If a verified native-R2 verdict stops before `judgment.r2`, the
+  campaign remains incomplete and `qualifying` is false because no native
+  inventory was established. State input is limited to 50,000
   directory entries, 10,000 mutation records and 64 MiB total, and a JSON
   report is limited to 16 MiB. Refusal JSON is limited to 64 KiB and each
   input-derived error detail to 768 characters; long details are truncated

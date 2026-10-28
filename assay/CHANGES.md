@@ -69,6 +69,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   baselines remain incomplete with `inventory_not_exhausted` and
   `qualifying: false`; inventory without a native plan now requires an explicit
   ingested producer on a lane configured with a mutation report format.
+  Whole-scope `qualifying` remains true for R0/R1-only lanes and plan-only
+  ingested analysis; see the
+  [campaign design](docs/DESIGN-GUIDE.md#mutation-campaign-closeout-b108-phase-1)
+  and [consumer guide](docs/CONSUMERS.md#close-out-a-mutation-campaign-with-assay-analyze-campaign-b108).
 - Treat `memory.events:max` as resource telemetry rather than candidate
   failure evidence; only failed-fork or OOM-related counters invalidate an R2
   result. Successful reclaim at `memory.max` no longer marks a mutant crashed.
