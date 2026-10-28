@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import time
 from typing import Any
 
 from textual import work
@@ -14,6 +13,8 @@ from ..actions import Plan, make_plan
 from ..errors import Refused, TntError, TransportError
 from ..session import Session
 from .workflows import PlanReview
+from .session_work import (begin as begin_session_work, error_message, post as post_session_callback,
+                           run as run_session_work, run_cancellable as run_cancellable_session_work)
 
 
 class SystemPowerView(Vertical):
@@ -46,11 +47,23 @@ class SystemPowerView(Vertical):
             delay = None if not raw_delay else int(raw_delay)
             action = self.session.workflows.system_power_action(
                 self.operation, delay=delay, force_with_jobs=self.query_one("#system-power-force", Checkbox).value)
-            plan = make_plan(action, self.session.rpc)
         except (TntError, ValueError) as exc:
             self.query_one("#system-power-note", Static).update(f"Plan refused: {exc}")
             return
+        self.query_one("#system-power-note", Static).update("Checking current host state and preparing the plan…")
+        self._make_plan(action)
+
+    @work(thread=True, exclusive=True)
+    def _make_plan(self, action) -> None:
+        run_cancellable_session_work(
+            self, lambda session, lease: make_plan(action, session.rpc, cancelled=lease.cancelled.is_set),
+            "_plan_ready", "_plan_failed")
+
+    def _plan_ready(self, plan: Plan) -> None:
         self.app.push_screen(PlanReview(plan, self.session, parent_view=self))
+
+    def _plan_failed(self, message: str) -> None:
+        self.query_one("#system-power-note", Static).update(f"Plan refused: {message}")
 
     def _plan_applied(self, plan: Plan, result: Any) -> None:
         if self.operation == "shutdown":
@@ -74,58 +87,66 @@ class SystemPowerView(Vertical):
     @work(thread=True, exclusive=True)
     def _reconnect_after_reboot(self, *, uncertain: bool = False) -> None:
         app = self.app
+        lease = begin_session_work(self)
+        if lease is None or lease.session is None:
+            return
         delays = app.reconnect_delays
         last_error = "the host did not return to READY"
         saw_power_transition = False
-        for attempt, delay in enumerate(delays, 1):
-            app.call_from_thread(self._reconnect_progress, attempt, len(delays), delay)
-            time.sleep(delay)
-            try:
-                new_session = app.session_opener(
-                    self.session.profile, insecure_ack=app.insecure_ack,
-                    allow_write=not self.session.rpc.read_only)
-            except TransportError as exc:
-                last_error = str(exc)
-                if exc.kind != "connect":
+        try:
+            for attempt, delay in enumerate(delays, 1):
+                if lease.cancelled.is_set():
+                    return
+                post_session_callback(self, lease, "_reconnect_progress", attempt, len(delays), delay)
+                if lease.cancelled.wait(delay):
+                    return
+                try:
+                    app.session_controller.reconnect_current(lease.generation, lease.session)
+                except TransportError as exc:
+                    last_error = error_message(lease.session, exc)
+                    if exc.kind != "connect":
+                        break
+                    continue
+                except TntError as exc:
+                    last_error = error_message(lease.session, exc)
                     break
-                continue
-            except TntError as exc:
-                last_error = str(exc)
-                break
-            try:
-                state = new_session.rpc.call("system.state")
-            except Exception as exc:
-                new_session.close()
-                last_error = f"system.state failed: {type(exc).__name__}"
-                continue
-            if state == "READY":
-                self.app.call_from_thread(self._reconnected, new_session,
-                                          uncertain=uncertain and not saw_power_transition)
-                return
-            new_session.close()
-            if state not in {"BOOTING", "SHUTTING_DOWN"}:
-                last_error = f"system.state returned unexpected state {state!r}"
-                break
-            saw_power_transition = True
-            last_error = f"host is still {state.lower()}"
-        self.app.call_from_thread(self._reconnect_failed, last_error, uncertain=uncertain)
+                except Exception as exc:
+                    last_error = f"reconnect failed: {type(exc).__name__}"
+                    break
+                try:
+                    state = lease.session.rpc.call("system.state")
+                except TransportError as exc:
+                    last_error = error_message(lease.session, exc)
+                    # State probes are read-only and safe to retry within this bounded loop.
+                    if exc.kind in {"connect", "call"}:
+                        continue
+                    break
+                except TntError as exc:
+                    last_error = error_message(lease.session, exc)
+                    break
+                if state == "READY":
+                    post_session_callback(self, lease, "_reconnected", uncertain and not saw_power_transition)
+                    return
+                if state not in {"BOOTING", "SHUTTING_DOWN"}:
+                    last_error = f"system.state returned unexpected state {state!r}"
+                    break
+                saw_power_transition = True
+                last_error = f"host is still {state.lower()}"
+            post_session_callback(self, lease, "_reconnect_failed", last_error, uncertain)
+        finally:
+            app.finish_session_work(lease)
 
     def _reconnect_progress(self, attempt: int, total: int, delay: int) -> None:
         self.query_one("#system-power-note", Static).update(
             f"Host rebooting. Reconnect attempt {attempt}/{total} after {delay} seconds; login retries are bounded.")
 
-    def _reconnected(self, new_session: Session, *, uncertain: bool = False) -> None:
-        old_rpc = self.session.rpc
-        self.session.rpc = new_session.rpc
-        self.session.backend = new_session.backend
-        self.session.insecure_tls = new_session.insecure_tls
-        old_rpc.close()
+    def _reconnected(self, uncertain: bool = False) -> None:
         self.app.query_one("#banner", Static).update(self.session.banner())
         message = ("Host is reachable and READY. The reboot request outcome remains uncertain; inspect host state "
                    "before retrying." if uncertain else "Host rebooted and returned to READY.")
         self.query_one("#system-power-note", Static).update(message)
 
-    def _reconnect_failed(self, reason: str, *, uncertain: bool = False) -> None:
+    def _reconnect_failed(self, reason: str, uncertain: bool = False) -> None:
         if uncertain:
             message = (f"Reboot request outcome is uncertain; automatic reconnect stopped after "
                        f"{len(self.app.reconnect_delays)} bounded attempts: {reason}. "
@@ -169,12 +190,7 @@ class SystemUpdateView(Vertical):
 
     @work(thread=True, exclusive=True)
     def _check(self) -> None:
-        try:
-            status = self.session.workflows.update_check()
-        except Exception as exc:
-            self.app.call_from_thread(self._check_failed, str(exc))
-        else:
-            self.app.call_from_thread(self._checked, status)
+        run_session_work(self, lambda session: session.workflows.update_check(), "_checked", "_check_failed")
 
     def _check_failed(self, message: str) -> None:
         self.status = None
@@ -206,11 +222,23 @@ class SystemUpdateView(Vertical):
         try:
             action = self.session.workflows.update_apply_action(
                 target, force_with_jobs=self.query_one("#system-update-force", Checkbox).value)
-            plan = make_plan(action, self.session.rpc)
         except (TntError, ValueError) as exc:
             self.query_one("#system-update-note", Static).update(f"Plan refused: {exc}")
             return
+        self.query_one("#system-update-note", Static).update("Checking current host state and preparing the plan…")
+        self._make_plan(action)
+
+    @work(thread=True, exclusive=True)
+    def _make_plan(self, action) -> None:
+        run_cancellable_session_work(
+            self, lambda session, lease: make_plan(action, session.rpc, cancelled=lease.cancelled.is_set),
+            "_plan_ready", "_plan_failed")
+
+    def _plan_ready(self, plan: Plan) -> None:
         self.app.push_screen(PlanReview(plan, self.session, parent_view=self))
+
+    def _plan_failed(self, message: str) -> None:
+        self.query_one("#system-update-note", Static).update(f"Plan refused: {message}")
 
     def _plan_applied(self, plan: Plan, result: Any) -> None:
         self.query_one("#system-update-note", Static).update(
@@ -248,12 +276,25 @@ class SystemGeneralView(Vertical):
         try:
             action = self.session.workflows.config_export_action(
                 path, root_authorized_keys=self.query_one("#system-general-root-keys", Checkbox).value)
-            plan = make_plan(action, self.session.rpc)
         except (TntError, ValueError) as exc:
             self.query_one("#system-general-note", Static).update(f"Plan refused: {exc}")
             return
         self.pending_path = path
+        self.query_one("#system-general-note", Static).update("Checking current host state and preparing the plan…")
+        self._make_plan(action)
+
+    @work(thread=True, exclusive=True)
+    def _make_plan(self, action) -> None:
+        run_cancellable_session_work(
+            self, lambda session, lease: make_plan(action, session.rpc, cancelled=lease.cancelled.is_set),
+            "_plan_ready", "_plan_failed")
+
+    def _plan_ready(self, plan: Plan) -> None:
         self.app.push_screen(PlanReview(plan, self.session, parent_view=self))
+
+    def _plan_failed(self, message: str) -> None:
+        self.pending_path = None
+        self.query_one("#system-general-note", Static).update(f"Plan refused: {message}")
 
     def _plan_applied(self, plan: Plan, result: Any) -> None:
         if not isinstance(result, list) or not result or not isinstance(result[0], (list, tuple)) or len(result[0]) != 2:
@@ -277,14 +318,10 @@ class SystemGeneralView(Vertical):
     @work(thread=True, exclusive=True)
     def _download(self, job_id: Any, download_url: Any, path: str) -> None:
         from ..config_export import download_config_export
-        try:
-            saved = download_config_export(self.session.profile, self.session.insecure_tls, job_id, download_url, path)
-        except Exception as exc:
-            self.app.call_from_thread(self._download_failed, str(exc))
-        else:
-            self.app.call_from_thread(self._downloaded, saved)
-        finally:
-            download_url = None
+        run_session_work(
+            self,
+            lambda session: download_config_export(session.profile, session.insecure_tls, job_id, download_url, path),
+            "_downloaded", "_download_failed")
 
     def _download_failed(self, message: str) -> None:
         self.query_one("#system-general-note", Static).update(f"Configuration download failed: {message}")

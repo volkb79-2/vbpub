@@ -56,6 +56,18 @@ def test_guarded_rpc_reveals_secret_only_to_transport_and_scrubs_failures():
     assert PASSWORD not in repr(rpc.calls)
 
 
+def test_cancelled_session_aborts_before_the_first_mutating_rpc():
+    inner = Inner()
+    rpc = GuardedRpc(inner, read_only=False)
+    action = Action("U-2", Kind.MUTATE, "Set password",
+                    (RpcCall("user.set_password", ({"username": "alice", "new_password": Secret(PASSWORD)},)),),
+                    (RpcCall("user.query", ([['username', '=', 'alice']], {})), RpcCall("auth.me")))
+    plan = make_plan(action, rpc)
+    with pytest.raises(Refused, match="cancelled"):
+        apply_plan(plan, rpc, allow_write=True, cancelled=lambda: True)
+    assert not any(method == "user.set_password" for method, _params in rpc.calls)
+
+
 def test_single_use_plan_forwards_sensitive_rpc_fields_without_displaying_them():
     inner = Inner()
     rpc = GuardedRpc(inner, read_only=False)

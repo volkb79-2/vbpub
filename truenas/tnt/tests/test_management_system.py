@@ -152,14 +152,16 @@ def test_system_cli_covers_review_refusals_and_job_flows(config, capsys):
 
     def cli_for(server):
         def open_fake(profile, **kwargs):
-            return open_session(server.profile(profile.name), secret=server.secret(), allow_loopback_ws=True, **kwargs)
+            credential = kwargs.pop("secret", server.secret())
+            return open_session(server.profile(profile.name), secret=credential, allow_loopback_ws=True, **kwargs)
         return build_cli(opener=open_fake)
 
     with FakeServer() as server:
         cli = cli_for(server)
         code = cli.run(argv=["system", "reboot", "--config", str(config), "--dry-run"])
-        output = capsys.readouterr().out
-        assert code == 0 and "system.reboot" in output
+        captured = capsys.readouterr()
+        output = captured.out
+        assert code == 0 and "system.reboot" in output, captured
         assert "system.reboot" not in server.called()
 
         code = cli.run(argv=["system", "shutdown", "--config", str(config), "--confirm", "test"])
@@ -254,7 +256,8 @@ def test_system_update_tui_uses_reviewed_plan_and_shows_job_progress():
         session = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True, allow_write=True)
 
         def reconnect(profile, **kwargs):
-            return open_session(server.profile(profile.name), secret=server.secret(), allow_loopback_ws=True, **kwargs)
+            credential = kwargs.pop("secret", server.secret())
+            return open_session(server.profile(profile.name), secret=credential, allow_loopback_ws=True, **kwargs)
 
         async def go():
             app = TntApp(session, session_opener=reconnect, reconnect_delays=(0, 0))
@@ -296,7 +299,8 @@ def test_reboot_tui_reconnects_after_fake_disconnect_with_bounded_attempts():
         session = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True, allow_write=True)
 
         def reconnect(profile, **kwargs):
-            return open_session(server.profile(profile.name), secret=server.secret(), allow_loopback_ws=True, **kwargs)
+            credential = kwargs.pop("secret", server.secret())
+            return open_session(server.profile(profile.name), secret=credential, allow_loopback_ws=True, **kwargs)
 
         async def go():
             app = TntApp(session, session_opener=reconnect, reconnect_delays=(0, 0))
@@ -348,6 +352,7 @@ def test_system_power_tui_rejects_bad_delay_cancels_plan_and_confirms_shutdown()
                 assert "Plan refused" in str(app.screen.query_one("#system-power-note", Static).render())
                 app.screen.query_one("#system-power-delay", Input).value = ""
                 view.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="system-power-plan")))
+                await _wait_for(pilot, lambda: isinstance(app.screen, PlanReview), count=300)
                 assert isinstance(app.screen, PlanReview), str(app.screen.query_one("#system-power-note", Static).render())
                 await pilot.pause(0.1)
                 await pilot.click("#plan-cancel")
@@ -358,6 +363,7 @@ def test_system_power_tui_rejects_bad_delay_cancels_plan_and_confirms_shutdown()
                 view = app.query_one(SystemPowerView)
                 view.query_one("#system-power-delay", Input).value = "0"
                 view.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="system-power-plan")))
+                await _wait_for(pilot, lambda: isinstance(app.screen, PlanReview), count=300)
                 assert isinstance(app.screen, PlanReview)
                 await pilot.pause(0.1)
                 app.screen.query_one("#plan-confirm", Input).value = "test"
@@ -488,7 +494,8 @@ def test_reboot_tui_bounds_reconnect_and_stops_on_non_connection_failures(mode, 
                     server.fail["system.state"] = "synthetic state endpoint failure"
                 else:
                     server.fail.pop("system.state", None)
-            return open_session(server.profile(profile.name), secret=server.secret(), allow_loopback_ws=True, **kwargs)
+            credential = kwargs.pop("secret", server.secret())
+            return open_session(server.profile(profile.name), secret=credential, allow_loopback_ws=True, **kwargs)
 
         async def go():
             app = TntApp(session, session_opener=reconnect, reconnect_delays=(0, 0, 0, 0))
@@ -506,6 +513,7 @@ def test_reboot_tui_bounds_reconnect_and_stops_on_non_connection_failures(mode, 
                     SimpleNamespace(button=SimpleNamespace(id="system-power-plan")))
                 await _wait_for(pilot, lambda: isinstance(app.screen, PlanReview), count=300)
                 app.screen.query_one("#plan-confirm", Input).value = "test"
+                await pilot.pause(0.1)
                 app.screen.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="plan-apply")))
 
                 def power_result_visible():
@@ -516,7 +524,16 @@ def test_reboot_tui_bounds_reconnect_and_stops_on_non_connection_failures(mode, 
                     except Exception:
                         return False
 
-                await _wait_for(pilot, power_result_visible, count=300)
+                for _ in range(300):
+                    await pilot.pause(0.05)
+                    if power_result_visible():
+                        break
+                try:
+                    current_note = str(app.screen.query_one("#system-power-note", Static).render())
+                except Exception:
+                    current_note = f"screen={type(app.screen).__name__}"
+                assert expected in current_note, f"{current_note}; reconnect_calls={reconnect_calls}; " \
+                    f"server_calls={server.called()}"
                 assert reconnect_calls == calls
                 assert server.called().count("system.reboot") == 1
 
@@ -553,7 +570,8 @@ def test_power_action_call_error_is_uncertain_and_never_resubmitted(operation, r
         def reconnect(profile, **kwargs):
             nonlocal reconnect_count
             reconnect_count += 1
-            return open_session(server.profile(profile.name), secret=server.secret(), allow_loopback_ws=True, **kwargs)
+            credential = kwargs.pop("secret", server.secret())
+            return open_session(server.profile(profile.name), secret=credential, allow_loopback_ws=True, **kwargs)
 
         async def go():
             app = TntApp(session, session_opener=reconnect, reconnect_delays=(0,))
@@ -566,6 +584,7 @@ def test_power_action_call_error_is_uncertain_and_never_resubmitted(operation, r
                     SimpleNamespace(button=SimpleNamespace(id="system-power-plan")))
                 await _wait_for(pilot, lambda: isinstance(app.screen, PlanReview), count=300)
                 app.screen.query_one("#plan-confirm", Input).value = "test"
+                await pilot.pause(0.1)
                 app.screen.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="plan-apply")))
                 def final_note_visible():
                     if isinstance(app.screen, PlanReview):
@@ -575,7 +594,19 @@ def test_power_action_call_error_is_uncertain_and_never_resubmitted(operation, r
                         return "Host is reachable and READY" in note or "automatic reconnect stopped" in note
                     return "outcome is uncertain" in note
 
-                await _wait_for(pilot, final_note_visible, count=300)
+                for _ in range(300):
+                    await pilot.pause(0.05)
+                    if final_note_visible():
+                        break
+                if isinstance(app.screen, PlanReview):
+                    current_note = str(app.screen.query_one("#plan-progress", Static).render())
+                else:
+                    try:
+                        current_note = str(app.screen.query_one("#system-power-note", Static).render())
+                    except Exception:
+                        current_note = f"screen={type(app.screen).__name__}"
+                expected_note = "outcome is uncertain" if operation == "shutdown" else "automatic reconnect stopped"
+                assert expected_note in current_note or (operation == "reboot" and "Host is reachable and READY" in current_note), current_note
                 assert reconnect_count == reconnect_calls
                 assert server.called().count(f"system.{operation}") == 1
 

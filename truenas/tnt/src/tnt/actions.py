@@ -163,8 +163,17 @@ def validate_action(action: Action) -> None:
             raise Refused("unknown-write", f"{action.id}: {method} is not in a supported adapter manifest for v27")
 
 
-def fingerprint_of(rpc: GuardedRpc, action: Action, nonce: str) -> str:
-    probe_results = [rpc.call(c.method, *c.params) for c in action.probe]
+def _check_cancelled(cancelled: Callable[[], bool] | None) -> None:
+    if cancelled is not None and cancelled():
+        raise Refused("cancelled", "the selected host session changed; this operation was cancelled")
+
+
+def fingerprint_of(rpc: GuardedRpc, action: Action, nonce: str,
+                   cancelled: Callable[[], bool] | None = None) -> str:
+    probe_results = []
+    for call in action.probe:
+        _check_cancelled(cancelled)
+        probe_results.append(rpc.call(call.method, *call.params))
     from .workflows import validate_plan_preconditions
     validate_plan_preconditions(action, probe_results)
     material = {
@@ -179,22 +188,26 @@ def fingerprint_of(rpc: GuardedRpc, action: Action, nonce: str) -> str:
     return hashlib.sha256(json.dumps(material, sort_keys=True, default=str).encode()).hexdigest()
 
 
-def make_plan(action: Action, rpc: GuardedRpc) -> Plan:
+def make_plan(action: Action, rpc: GuardedRpc, *, cancelled: Callable[[], bool] | None = None) -> Plan:
     """Planning only ever reads; the probe calls are checked to be read methods before any of them runs."""
     if not isinstance(rpc, GuardedRpc):
         raise Refused("unguarded", "plans are made only through a GuardedRpc session")
     validate_action(action)
     nonce = uuid.uuid4().hex
-    fingerprint = fingerprint_of(rpc, action, nonce)
+    _check_cancelled(cancelled)
+    fingerprint = fingerprint_of(rpc, action, nonce, cancelled)
+    _check_cancelled(cancelled)
     rpc._issue_plan(nonce, fingerprint)
     return Plan(action, fingerprint, rpc.session_id, nonce)
 
 
 def apply_plan(plan: Plan, rpc: GuardedRpc, *, allow_write: bool, typed_confirmation: str | None = None,
-               job_progress: Callable[[Mapping[str, Any]], None] | None = None) -> list[Any]:
+               job_progress: Callable[[Mapping[str, Any]], None] | None = None,
+               cancelled: Callable[[], bool] | None = None) -> list[Any]:
     if not isinstance(rpc, GuardedRpc):
         raise Refused("unguarded", "plans run only through a GuardedRpc session")
     action = plan.action
+    _check_cancelled(cancelled)
     validate_action(action)
     if plan.session_id != rpc.session_id:
         raise Refused("foreign-session", "this plan was made on another session; plan again on this one")
@@ -210,11 +223,13 @@ def apply_plan(plan: Plan, rpc: GuardedRpc, *, allow_write: bool, typed_confirma
         raise Refused("read-only", f"{action.id} changes the host; rerun with --allow-write")
     if action.kind is Kind.DESTRUCTIVE and (action.confirm_target is None or typed_confirmation != action.confirm_target):
         raise Refused("typed-confirmation", f"{action.id} is destructive: type {action.confirm_target!r} exactly to confirm")
-    if fingerprint_of(rpc, action, plan.nonce) != plan.fingerprint:
+    if fingerprint_of(rpc, action, plan.nonce, cancelled) != plan.fingerprint:
         raise Refused("state-drift", f"the host or the action changed since {action.id} was planned; plan again")
+    _check_cancelled(cancelled)
     grant = rpc.spend(plan.nonce, plan.fingerprint, [c.key() for c in action.calls], state,
                       authority=_APPLY_AUTHORITY, require_grant=action.kind is not Kind.READ)
     def execute(call: RpcCall) -> Any:
+        _check_cancelled(cancelled)
         if call.job:
             return rpc.call(call.method, *call.params, job=True, job_callback=job_progress)
         return rpc.call(call.method, *call.params)

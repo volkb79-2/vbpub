@@ -11,6 +11,7 @@ from textual.widgets import Static
 
 from ..session import Session
 from ..workflows import _safe_value
+from .session_work import run as run_session_work
 
 
 class NetworkView(Vertical):
@@ -37,12 +38,7 @@ class NetworkView(Vertical):
 
     @work(thread=True, exclusive=True)
     def _load(self) -> None:
-        try:
-            result = self.session.workflows.network_show()
-        except Exception as exc:
-            self.app.call_from_thread(self._failed, str(exc))
-        else:
-            self.app.call_from_thread(self._loaded, result)
+        run_session_work(self, lambda session: session.workflows.network_show(), "_loaded", "_failed")
 
     def _failed(self, message: str) -> None:
         self.query_one("#network-note", Static).update(f"Failed to load network status: {message}")

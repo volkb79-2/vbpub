@@ -5,6 +5,7 @@ import asyncio
 import base64
 import json
 import struct
+from types import SimpleNamespace
 
 import pytest
 from textual.widgets import Button, Checkbox, DataTable, Input, Select, Static, TextArea, Tree
@@ -394,7 +395,7 @@ def test_plan_review_success_passes_typed_confirmation_and_supports_no_parent(co
     plan = make_plan(action, session.rpc)
     applied = []
 
-    def fake_apply(received_plan, rpc, *, allow_write, typed_confirmation=None):
+    def fake_apply(received_plan, rpc, *, allow_write, typed_confirmation=None, job_progress=None, cancelled=None):
         applied.append((received_plan, rpc, allow_write, typed_confirmation))
         return [True]
 
@@ -407,8 +408,11 @@ def test_plan_review_success_passes_typed_confirmation_and_supports_no_parent(co
             app.push_screen(review)
             await pilot.pause(0.05)
             review.query_one("#plan-confirm", Input).value = "web"
-            await pilot.click("#plan-apply")
-            await pilot.pause(0.05)
+            review.on_button_pressed(SimpleNamespace(button=review.query_one("#plan-apply", Button)))
+            for _ in range(100):
+                await pilot.pause(0.05)
+                if applied:
+                    break
             assert len(applied) == 1 and applied[0][2:] == (True, "web")
             assert app.screen.__class__.__name__ != "PlanReview"
     asyncio.run(go())

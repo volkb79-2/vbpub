@@ -10,6 +10,7 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, DataTable, Input, Select, Static
 
 from ..session import Session
+from .session_work import run as run_session_work
 
 
 _SERVICES = tuple((name, name) for name in ("MIDDLEWARE", "S3", "SMB", "SUDO", "SYSTEM"))
@@ -63,13 +64,16 @@ class AuditView(Vertical):
     @work(thread=True, exclusive=True)
     def _load(self, service: Any, since: str | None, until: str | None, user: str | None,
               event: str | None, offset: int) -> None:
-        try:
-            rows = self.session.workflows.audit_entries(service=service, since=since, until=until, user=user,
-                                                       event=event, limit=_PAGE_SIZE, offset=offset)
-        except Exception as exc:
-            self.app.call_from_thread(self._failed, str(exc))
-        else:
-            self.app.call_from_thread(self._loaded, rows, offset)
+        run_session_work(
+            self,
+            lambda session: (session.workflows.audit_entries(service=service, since=since, until=until,
+                                                              user=user, event=event, limit=_PAGE_SIZE,
+                                                              offset=offset), offset),
+            "_loaded_page", "_failed")
+
+    def _loaded_page(self, result: tuple[list[dict[str, Any]], int]) -> None:
+        rows, offset = result
+        self._loaded(rows, offset)
 
     def _failed(self, message: str) -> None:
         self.query_one("#audit-note", Static).update(f"Audit query failed: {message}")

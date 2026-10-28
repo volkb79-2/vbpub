@@ -13,7 +13,7 @@ from tnt.errors import Refused
 from tnt.policy import is_destructive_method
 from tnt.session import open_session
 from tnt.testing import FakeServer
-from tnt.tui.apikeys import ApiKeyReveal, ApiKeysView
+from tnt.tui.apikeys import ApiKeysView
 from tnt.tui.app import TntApp
 from tnt.tui.workflows import PlanReview
 
@@ -243,7 +243,7 @@ def test_api_key_file_cleanup_failure_does_not_hide_short_write(monkeypatch, tmp
     target.unlink()
 
 
-def test_api_key_tui_has_one_time_reveal_dialog_and_clears_it_on_close(tmp_path):
+def test_api_key_tui_writes_the_one_time_key_without_displaying_it(tmp_path):
     with FakeServer() as server:
         session = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True, allow_write=True)
 
@@ -274,6 +274,8 @@ def test_api_key_tui_has_one_time_reveal_dialog_and_clears_it_on_close(tmp_path)
                 app.query_one("#apikey-operation", Select).value = "create"
                 app.query_one("#apikey-name", Input).value = "temporary"
                 app.query_one("#apikey-username", Input).value = "operator"
+                target = tmp_path / "tui-api.key"
+                app.query_one("#apikey-file", Input).value = str(target)
                 plan_button = app.query_one("#apikey-plan", Button)
                 assert plan_button.visible and plan_button.region.height > 0, str(plan_button.region)
                 clicked = await pilot.click(plan_button)
@@ -287,26 +289,15 @@ def test_api_key_tui_has_one_time_reveal_dialog_and_clears_it_on_close(tmp_path)
                     [type(screen).__name__ for screen in app.screen_stack],
                 )
                 await pilot.click("#plan-apply")
-                for _ in range(60):
-                    await pilot.pause(0.05)
-                    if isinstance(app.screen, ApiKeyReveal):
-                        break
-                dialog = app.screen
-                assert isinstance(dialog, ApiKeyReveal)
-                raw_key = dialog.key
-                secret_widget = dialog.query_one("#apikey-secret", Static)
-                assert raw_key and raw_key in str(secret_widget.render())
-                assert "synthetic-client-material" not in str(dialog.render())
-                dialog.query_one("#apikey-save-path", Input).value = "relative.key"
-                await pilot.click("#apikey-save")
-                assert "File was not written" in str(dialog.query_one("#apikey-reveal-note", Static).render())
-                target = tmp_path / "tui-api.key"
-                dialog.query_one("#apikey-save-path", Input).value = str(target)
-                dialog.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="apikey-save")))
-                assert target.read_text("utf-8").strip() == raw_key
-                dialog.action_close()
-                assert dialog.key == ""
-                assert raw_key not in str(secret_widget.render())
+                await _wait_for(pilot, lambda: target.exists(), count=300)
+                raw_key = target.read_text("utf-8").strip()
+                assert raw_key
+                await _wait_for(pilot, lambda: "never shown in the TUI" in str(
+                    app.query_one("#apikey-note", Static).render()) or "wrote it to" in str(
+                    app.query_one("#apikey-note", Static).render()), count=300)
+                assert "synthetic-client-material" not in str(app.screen.render())
+                assert len(app.screen.query("#apikey-secret")) == 0
+                assert raw_key not in str(app.query_one("#apikey-note", Static).render())
                 assert stat.S_IMODE(target.stat().st_mode) == 0o600
 
         try:
@@ -315,7 +306,7 @@ def test_api_key_tui_has_one_time_reveal_dialog_and_clears_it_on_close(tmp_path)
             session.close()
 
 
-def test_api_key_tui_handles_empty_selection_bad_create_result_and_revoke():
+def test_api_key_tui_handles_empty_selection_bad_create_result_and_revoke(tmp_path):
     import asyncio
 
     with FakeServer() as server:
@@ -346,10 +337,11 @@ def test_api_key_tui_handles_empty_selection_bad_create_result_and_revoke():
                 app.query_one("#apikey-operation", Select).value = "create"
                 app.query_one("#apikey-name", Input).value = "one-time"
                 app.query_one("#apikey-username", Input).value = "operator"
+                app.query_one("#apikey-file", Input).value = str(tmp_path / "created.key")
                 await pilot.click("#apikey-plan")
                 await _wait_for(pilot, lambda: isinstance(app.screen, PlanReview), count=300)
                 await pilot.click("#plan-apply")
-                await _wait_for(pilot, lambda: "returned no one-time key" in str(
+                await _wait_for(pilot, lambda: "did not contain its one-time value" in str(
                     app.query_one("#apikey-note", Static).render()))
 
                 server.api_keys[1] = _row()

@@ -15,6 +15,8 @@ from ..errors import TntError
 from ..profile import Secret
 from ..session import Session
 from ..workflows import _safe_value, validate_ssh_public_keys
+from .session_work import (begin as begin_session_work, error_message, post as post_session_callback,
+                           run as run_session_work, run_cancellable as run_cancellable_session_work)
 
 
 SCREEN_TITLES = {
@@ -141,7 +143,8 @@ class WorkflowView(Vertical):
                 yield Checkbox("Built-in user", id="workflow-builtin")
                 yield Checkbox("Confirm current user", id="workflow-confirm-self")
             yield Button("Plan action", id="workflow-plan", variant="primary")
-        yield TextArea("{}", language="json", id="workflow-data")
+        # Keep the JSON editor usable without Textual's optional tree-sitter grammar extras.
+        yield TextArea("{}", id="workflow-data")
 
     def on_mount(self) -> None:
         self.action_refresh()
@@ -152,12 +155,8 @@ class WorkflowView(Vertical):
 
     @work(thread=True, exclusive=True)
     def _load(self) -> None:
-        try:
-            rows = _flat(_READERS[self.key](self.session.workflows))
-        except Exception as exc:
-            self.app.call_from_thread(self._load_failed, str(exc))
-        else:
-            self.app.call_from_thread(self._loaded, rows)
+        run_session_work(self, lambda session: _flat(_READERS[self.key](session.workflows)),
+                         "_loaded", "_load_failed")
 
     def _load_failed(self, message: str) -> None:
         self.query_one("#workflow-note", Static).update(f"Failed to load {SCREEN_TITLES[self.key]}: {message}")
@@ -219,11 +218,23 @@ class WorkflowView(Vertical):
             return
         try:
             action = self._build_action(operation)
-            plan = make_plan(action, self.session.rpc)
         except Exception as exc:
             self.query_one("#workflow-note", Static).update(f"Plan refused: {exc}")
             return
+        self.query_one("#workflow-note", Static).update("Checking current host state and preparing the plan…")
+        self._make_plan(action)
+
+    @work(thread=True, exclusive=True)
+    def _make_plan(self, action) -> None:
+        run_cancellable_session_work(
+            self, lambda session, lease: make_plan(action, session.rpc, cancelled=lease.cancelled.is_set),
+            "_plan_ready", "_plan_failed")
+
+    def _plan_ready(self, plan: Plan) -> None:
         self.app.push_screen(PlanReview(plan, self.session, parent_view=self))
+
+    def _plan_failed(self, message: str) -> None:
+        self.query_one("#workflow-note", Static).update(f"Plan refused: {message}")
 
     def _build_action(self, operation: str):
         self.pending_vm_name = None
@@ -376,13 +387,18 @@ class WorkflowView(Vertical):
         attributes = self.pending_vm_devices.pop(0)
         try:
             action = self.session.workflows.vm_device_create_action(self.pending_vm_name, attributes)
-            plan = make_plan(action, self.session.rpc)
         except Exception as exc:
             self.pending_vm_devices = []
             self.pending_vm_name = None
             self.query_one("#workflow-note", Static).update(f"VM was created, but its next device plan was refused: {exc}")
             return
-        self.app.push_screen(PlanReview(plan, self.session, parent_view=self))
+        self._make_vm_device_plan(action)
+
+    @work(thread=True, exclusive=True)
+    def _make_vm_device_plan(self, action) -> None:
+        run_cancellable_session_work(
+            self, lambda session, lease: make_plan(action, session.rpc, cancelled=lease.cancelled.is_set),
+            "_plan_ready", "_plan_failed")
 
     def _plan_applied(self, plan: Plan, result: Any) -> None:
         methods = {call.method for call in plan.action.calls}
@@ -421,10 +437,28 @@ class PlanReview(ModalScreen[None]):
         self.plan = plan
         self.session = session
         self.parent_view = parent_view
+        self.generation: int | None = None
+        self._invalidated = False
+
+    def on_mount(self) -> None:
+        self.generation, active = self.app.session_controller.capture()
+        if active is not self.session:
+            self.invalidate_for_host_change()
+
+    def invalidate_for_host_change(self) -> None:
+        if self._invalidated:
+            return
+        self._invalidated = True
+        if self.parent_view is not None:
+            self.parent_view._plan_cancelled(self.plan)
+        self.dismiss()
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Static(self.plan.render(), id="plan-render")
+            mode = "WRITE ENABLED" if not self.session.rpc.read_only else "read-only"
+            generation = self.app.session_controller.generation if getattr(self, "is_mounted", False) else "pending"
+            yield Static(f"Host: {self.session.profile.name}  mode: {mode}  generation: {generation}\n\n"
+                         + self.plan.render(), id="plan-render")
             yield Static("", id="plan-progress")
             if self.plan.action.confirm_target:
                 yield Input(placeholder=f"Type {self.plan.action.confirm_target} exactly", id="plan-confirm")
@@ -440,46 +474,45 @@ class PlanReview(ModalScreen[None]):
             return
         if event.button.id != "plan-apply":
             return
+        if self._invalidated or self.generation is None or not self.app.session_controller.is_current(
+                self.generation, self.session):
+            self.invalidate_for_host_change()
+            return
         confirmation = None
         if self.plan.action.confirm_target:
             confirmation = self.query_one("#plan-confirm", Input).value
         methods = {call.method for call in self.plan.action.calls}
-        if methods & {"system.reboot", "system.shutdown", "update.run"}:
-            self.query_one("#plan-apply", Button).disabled = True
-            self.query_one("#plan-progress", Static).update("Applying system job…")
-            self._apply_system_plan(confirmation)
-            return
-        try:
-            result = apply_plan(self.plan, self.session.rpc, allow_write=True, typed_confirmation=confirmation)
-        except TntError as exc:
-            self.query_one("#plan-render", Static).update(f"Plan refused: {exc}\n\n{self.plan.render()}")
-            return
-        self.dismiss()
-        if self.parent_view is not None:
-            self.parent_view._plan_applied(self.plan, result)
+        self.query_one("#plan-apply", Button).disabled = True
+        self.query_one("#plan-progress", Static).update("Applying reviewed plan…")
+        self._apply_plan(confirmation, bool(methods & {"system.reboot", "system.shutdown", "update.run"}))
 
     @work(thread=True, exclusive=True)
-    def _apply_system_plan(self, confirmation: str | None) -> None:
+    def _apply_plan(self, confirmation: str | None, system_action: bool) -> None:
+        lease = begin_session_work(self)
+        if lease is None or lease.session is None:
+            return
         methods = {call.method for call in self.plan.action.calls}
         calls_before = len(self.session.rpc.calls)
         try:
-            if "update.run" in methods:
-                result = apply_plan(
-                    self.plan, self.session.rpc, allow_write=True, typed_confirmation=confirmation,
-                    job_progress=lambda job: self.app.call_from_thread(self._show_job_progress, job))
-            else:
-                result = apply_plan(self.plan, self.session.rpc, allow_write=True, typed_confirmation=confirmation)
+            result = apply_plan(
+                self.plan, lease.session.rpc, allow_write=True, typed_confirmation=confirmation,
+                job_progress=lambda job: post_session_callback(self, lease, "_show_job_progress", job),
+                cancelled=lease.cancelled.is_set)
         except Exception as exc:
             # Power actions can close the websocket after TrueNAS accepts the request. The request result is
             # then unknown: never submit it again, but dismiss the plan and let the power view check the host.
             power_methods = methods & {"system.reboot", "system.shutdown"}
             power_was_called = any(method in power_methods for method, _params in self.session.rpc.calls[calls_before:])
-            if power_was_called:
-                self.app.call_from_thread(self._system_apply_uncertain)
-            else:
-                self.app.call_from_thread(self._system_apply_failed, str(exc))
+            if not lease.cancelled.is_set():
+                if system_action and power_was_called:
+                    post_session_callback(self, lease, "_system_apply_uncertain")
+                else:
+                    post_session_callback(self, lease, "_apply_failed", error_message(lease.session, exc))
         else:
-            self.app.call_from_thread(self._system_apply_succeeded, result)
+            if not lease.cancelled.is_set():
+                post_session_callback(self, lease, "_apply_succeeded", result)
+        finally:
+            self.app.finish_session_work(lease)
 
     def _show_job_progress(self, job: Any) -> None:
         progress = job.get("progress") if isinstance(job, dict) else None
@@ -489,7 +522,7 @@ class PlanReview(ModalScreen[None]):
         else:
             self.query_one("#plan-progress", Static).update("Update job is running…")
 
-    def _system_apply_failed(self, message: str) -> None:
+    def _apply_failed(self, message: str) -> None:
         self.query_one("#plan-apply", Button).disabled = False
         self.query_one("#plan-progress", Static).update("")
         self.query_one("#plan-render", Static).update(f"Plan refused: {message}\n\n{self.plan.render()}")
@@ -499,7 +532,7 @@ class PlanReview(ModalScreen[None]):
         if self.parent_view is not None:
             self.parent_view._plan_apply_uncertain(self.plan)
 
-    def _system_apply_succeeded(self, result: Any) -> None:
+    def _apply_succeeded(self, result: Any) -> None:
         self.dismiss()
         if self.parent_view is not None:
             self.parent_view._plan_applied(self.plan, result)

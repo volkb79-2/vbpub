@@ -9,6 +9,7 @@ from textual.widgets import DataTable, Static
 from ..domain import Disk
 from ..query import HEADERS, disk_row
 from ..session import Session
+from .session_work import run as run_session_work
 
 
 class DisksView(Vertical):
@@ -36,12 +37,7 @@ class DisksView(Vertical):
 
     @work(thread=True, exclusive=True)
     def _load(self) -> None:
-        try:
-            disks = self.session.disks()
-        except Exception as exc:  # shown in the view; the CLI path reports the same failure as one [ERROR] line
-            self.app.call_from_thread(self._failed, str(exc))
-        else:
-            self.app.call_from_thread(self._loaded, disks)
+        run_session_work(self, lambda session: session.disks(), "_loaded", "_failed")
 
     def _failed(self, message: str) -> None:
         self.query_one("#disks-note", Static).update(f"Failed: {message}")
