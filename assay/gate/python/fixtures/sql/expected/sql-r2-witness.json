@@ -60,15 +60,24 @@
             "mutated_file_sha256": "191a1c116573d583fbc3fb4395e9fe0f5c870f66c4b54383205e66484985657a",
             "operator": "sql:drop-check",
             "path": "db/schema/01-schema.sql",
+            "process_tree_evidence": {
+              "clean": true,
+              "cleanup_seconds": 0.0,
+              "descendants_signalled": 0,
+              "group_signalled_before_reap": false,
+              "leader_status": "exited",
+              "outliving_descendants": 0,
+              "protocol": "assay-process-tree/1"
+            },
             "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
             "resource_limit_evidence": {
               "cgroup_version": 2,
               "memory_events": {
-               "max": {
-                "after": 0,
-                "before": 0,
-                "delta": 0
-               },
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
                 "oom": {
                   "after": 0,
                   "before": 0,
@@ -111,15 +120,24 @@
             "mutated_file_sha256": "6d8e502629c8bc704e599aa8889ad75d54bb9b2a5ed35e0f22d6d272e1e948a4",
             "operator": "sql:drop-not-null",
             "path": "db/schema/01-schema.sql",
+            "process_tree_evidence": {
+              "clean": true,
+              "cleanup_seconds": 0.0,
+              "descendants_signalled": 0,
+              "group_signalled_before_reap": false,
+              "leader_status": "exited",
+              "outliving_descendants": 0,
+              "protocol": "assay-process-tree/1"
+            },
             "replacement_sha256": "fb329000228cc5a24c264c57139de8bf854fc86fc18bf1c04ab61a2b5cb4b921",
             "resource_limit_evidence": {
               "cgroup_version": 2,
               "memory_events": {
-               "max": {
-                "after": 0,
-                "before": 0,
-                "delta": 0
-               },
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
                 "oom": {
                   "after": 0,
                   "before": 0,
@@ -159,15 +177,24 @@
             "mutated_file_sha256": "b791c08bb2e1e5c36f9a7a11c0f6c89b793e9315de87d9d863a35a54268a6687",
             "operator": "sql:drop-check",
             "path": "db/schema/01-schema.sql",
+            "process_tree_evidence": {
+              "clean": true,
+              "cleanup_seconds": 0.0,
+              "descendants_signalled": 0,
+              "group_signalled_before_reap": false,
+              "leader_status": "exited",
+              "outliving_descendants": 0,
+              "protocol": "assay-process-tree/1"
+            },
             "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
             "resource_limit_evidence": {
               "cgroup_version": 2,
               "memory_events": {
-               "max": {
-                "after": 0,
-                "before": 0,
-                "delta": 0
-               },
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
                 "oom": {
                   "after": 0,
                   "before": 0,
@@ -207,15 +234,24 @@
             "mutated_file_sha256": "f16e5b4251880c773d9d09dfb2d2338db42ceeaaa9f78604b9bcdb9b470f0ddb",
             "operator": "sql:drop-not-null",
             "path": "db/schema/01-schema.sql",
+            "process_tree_evidence": {
+              "clean": true,
+              "cleanup_seconds": 0.0,
+              "descendants_signalled": 0,
+              "group_signalled_before_reap": false,
+              "leader_status": "exited",
+              "outliving_descendants": 0,
+              "protocol": "assay-process-tree/1"
+            },
             "replacement_sha256": "fb329000228cc5a24c264c57139de8bf854fc86fc18bf1c04ab61a2b5cb4b921",
             "resource_limit_evidence": {
               "cgroup_version": 2,
               "memory_events": {
-               "max": {
-                "after": 0,
-                "before": 0,
-                "delta": 0
-               },
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
                 "oom": {
                   "after": 0,
                   "before": 0,
@@ -255,15 +291,24 @@
             "mutated_file_sha256": "695805a27b1dc349eafbdf89b2666bacdc72e31d4c0d8646730f8211f23018db",
             "operator": "sql:drop-check",
             "path": "db/schema/01-schema.sql",
+            "process_tree_evidence": {
+              "clean": true,
+              "cleanup_seconds": 0.0,
+              "descendants_signalled": 0,
+              "group_signalled_before_reap": false,
+              "leader_status": "exited",
+              "outliving_descendants": 0,
+              "protocol": "assay-process-tree/1"
+            },
             "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
             "resource_limit_evidence": {
               "cgroup_version": 2,
               "memory_events": {
-               "max": {
-                "after": 0,
-                "before": 0,
-                "delta": 0
-               },
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
                 "oom": {
                   "after": 0,
                   "before": 0,
@@ -303,15 +348,24 @@
             "mutated_file_sha256": "c99deb460108322e244b1ce92c8aabaf3ce0966643cc55bffa1a3259832aabfd",
             "operator": "sql:drop-check",
             "path": "db/schema/01-schema.sql",
+            "process_tree_evidence": {
+              "clean": true,
+              "cleanup_seconds": 0.0,
+              "descendants_signalled": 0,
+              "group_signalled_before_reap": false,
+              "leader_status": "exited",
+              "outliving_descendants": 0,
+              "protocol": "assay-process-tree/1"
+            },
             "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
             "resource_limit_evidence": {
               "cgroup_version": 2,
               "memory_events": {
-               "max": {
-                "after": 0,
-                "before": 0,
-                "delta": 0
-               },
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
                 "oom": {
                   "after": 0,
                   "before": 0,
@@ -351,15 +405,24 @@
             "mutated_file_sha256": "0e246594e3788138bf07284d00b2eba50e6ecc58feb54c4501f7ddf4ddeaff30",
             "operator": "sql:widen-check-in",
             "path": "db/schema/01-schema.sql",
+            "process_tree_evidence": {
+              "clean": true,
+              "cleanup_seconds": 0.0,
+              "descendants_signalled": 0,
+              "group_signalled_before_reap": false,
+              "leader_status": "exited",
+              "outliving_descendants": 0,
+              "protocol": "assay-process-tree/1"
+            },
             "replacement_sha256": "a90e5f2d959b0d1202dbc2277b970fbd43cffbbbf01c476d2ef925af2bb5cd30",
             "resource_limit_evidence": {
               "cgroup_version": 2,
               "memory_events": {
-               "max": {
-                "after": 0,
-                "before": 0,
-                "delta": 0
-               },
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
                 "oom": {
                   "after": 0,
                   "before": 0,
@@ -399,15 +462,24 @@
             "mutated_file_sha256": "a4094c21ccf5bfbdccd04d7eccc2f8a78db65ddb3f48052728df5bbda7e04bd3",
             "operator": "sql:drop-unique",
             "path": "db/schema/01-schema.sql",
+            "process_tree_evidence": {
+              "clean": true,
+              "cleanup_seconds": 0.0,
+              "descendants_signalled": 0,
+              "group_signalled_before_reap": false,
+              "leader_status": "exited",
+              "outliving_descendants": 0,
+              "protocol": "assay-process-tree/1"
+            },
             "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
             "resource_limit_evidence": {
               "cgroup_version": 2,
               "memory_events": {
-               "max": {
-                "after": 0,
-                "before": 0,
-                "delta": 0
-               },
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
                 "oom": {
                   "after": 0,
                   "before": 0,
@@ -447,15 +519,24 @@
             "mutated_file_sha256": "e46acfa7970d65f67363e19889976e4fcd9e6aaa9f0f069d7c93803009b85497",
             "operator": "sql:drop-foreign-key",
             "path": "db/schema/01-schema.sql",
+            "process_tree_evidence": {
+              "clean": true,
+              "cleanup_seconds": 0.0,
+              "descendants_signalled": 0,
+              "group_signalled_before_reap": false,
+              "leader_status": "exited",
+              "outliving_descendants": 0,
+              "protocol": "assay-process-tree/1"
+            },
             "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
             "resource_limit_evidence": {
               "cgroup_version": 2,
               "memory_events": {
-               "max": {
-                "after": 0,
-                "before": 0,
-                "delta": 0
-               },
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
                 "oom": {
                   "after": 0,
                   "before": 0,
@@ -495,15 +576,24 @@
             "mutated_file_sha256": "964c7b79d12b44595742945aeb72da82e769f52eb37e57820ccfb2dd20ba7aab",
             "operator": "sql:weaken-delete-action",
             "path": "db/schema/01-schema.sql",
+            "process_tree_evidence": {
+              "clean": true,
+              "cleanup_seconds": 0.0,
+              "descendants_signalled": 0,
+              "group_signalled_before_reap": false,
+              "leader_status": "exited",
+              "outliving_descendants": 0,
+              "protocol": "assay-process-tree/1"
+            },
             "replacement_sha256": "86844e57581da987ba9d3344a79c61edc611f445f38bfa8d640262d7df841a13",
             "resource_limit_evidence": {
               "cgroup_version": 2,
               "memory_events": {
-               "max": {
-                "after": 0,
-                "before": 0,
-                "delta": 0
-               },
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
                 "oom": {
                   "after": 0,
                   "before": 0,
@@ -543,15 +633,24 @@
             "mutated_file_sha256": "08cef318732140a6c85d72bd666583575f7c9b266ef1e82b13c4ac23d1e7de18",
             "operator": "sql:drop-unique",
             "path": "db/schema/01-schema.sql",
+            "process_tree_evidence": {
+              "clean": true,
+              "cleanup_seconds": 0.0,
+              "descendants_signalled": 0,
+              "group_signalled_before_reap": false,
+              "leader_status": "exited",
+              "outliving_descendants": 0,
+              "protocol": "assay-process-tree/1"
+            },
             "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
             "resource_limit_evidence": {
               "cgroup_version": 2,
               "memory_events": {
-               "max": {
-                "after": 0,
-                "before": 0,
-                "delta": 0
-               },
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
                 "oom": {
                   "after": 0,
                   "before": 0,
@@ -591,15 +690,24 @@
             "mutated_file_sha256": "32e58c0c21212874909949ed62112175aeff5fb8a6cf39041bc27845c754a436",
             "operator": "sql:drop-foreign-key",
             "path": "db/schema/01-schema.sql",
+            "process_tree_evidence": {
+              "clean": true,
+              "cleanup_seconds": 0.0,
+              "descendants_signalled": 0,
+              "group_signalled_before_reap": false,
+              "leader_status": "exited",
+              "outliving_descendants": 0,
+              "protocol": "assay-process-tree/1"
+            },
             "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
             "resource_limit_evidence": {
               "cgroup_version": 2,
               "memory_events": {
-               "max": {
-                "after": 0,
-                "before": 0,
-                "delta": 0
-               },
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
                 "oom": {
                   "after": 0,
                   "before": 0,
@@ -639,15 +747,24 @@
             "mutated_file_sha256": "24ae235c1406cadb2ddde38c6d5ca5c7b4b867d51a02978101df711af48ac1f8",
             "operator": "sql:weaken-delete-action",
             "path": "db/schema/01-schema.sql",
+            "process_tree_evidence": {
+              "clean": true,
+              "cleanup_seconds": 0.0,
+              "descendants_signalled": 0,
+              "group_signalled_before_reap": false,
+              "leader_status": "exited",
+              "outliving_descendants": 0,
+              "protocol": "assay-process-tree/1"
+            },
             "replacement_sha256": "86844e57581da987ba9d3344a79c61edc611f445f38bfa8d640262d7df841a13",
             "resource_limit_evidence": {
               "cgroup_version": 2,
               "memory_events": {
-               "max": {
-                "after": 0,
-                "before": 0,
-                "delta": 0
-               },
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
                 "oom": {
                   "after": 0,
                   "before": 0,
@@ -687,15 +804,24 @@
             "mutated_file_sha256": "21b1572bc83088512ea14f491e129029cb4279118f6d61209f5e67d76285e71f",
             "operator": "sql:drop-not-null",
             "path": "db/schema/01-schema.sql",
+            "process_tree_evidence": {
+              "clean": true,
+              "cleanup_seconds": 0.0,
+              "descendants_signalled": 0,
+              "group_signalled_before_reap": false,
+              "leader_status": "exited",
+              "outliving_descendants": 0,
+              "protocol": "assay-process-tree/1"
+            },
             "replacement_sha256": "c0bfc598cb20360c87dbb3bbf888cfd41d6eca2d2c1003e06871bc328ad71b14",
             "resource_limit_evidence": {
               "cgroup_version": 2,
               "memory_events": {
-               "max": {
-                "after": 0,
-                "before": 0,
-                "delta": 0
-               },
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
                 "oom": {
                   "after": 0,
                   "before": 0,
@@ -735,15 +861,24 @@
             "mutated_file_sha256": "8c4324db35c5b5934c9d81a5e88d6b03551c92882e3a5eb742b1ae45e612e9ec",
             "operator": "sql:drop-check",
             "path": "db/schema/01-schema.sql",
+            "process_tree_evidence": {
+              "clean": true,
+              "cleanup_seconds": 0.0,
+              "descendants_signalled": 0,
+              "group_signalled_before_reap": false,
+              "leader_status": "exited",
+              "outliving_descendants": 0,
+              "protocol": "assay-process-tree/1"
+            },
             "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
             "resource_limit_evidence": {
               "cgroup_version": 2,
               "memory_events": {
-               "max": {
-                "after": 0,
-                "before": 0,
-                "delta": 0
-               },
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
                 "oom": {
                   "after": 0,
                   "before": 0,
@@ -783,15 +918,24 @@
             "mutated_file_sha256": "e6db3f550589a5342e6331a86f8bfffe5143491f8a79637d5ed8cf3ca73f2141",
             "operator": "sql:drop-unique",
             "path": "db/schema/01-schema.sql",
+            "process_tree_evidence": {
+              "clean": true,
+              "cleanup_seconds": 0.0,
+              "descendants_signalled": 0,
+              "group_signalled_before_reap": false,
+              "leader_status": "exited",
+              "outliving_descendants": 0,
+              "protocol": "assay-process-tree/1"
+            },
             "replacement_sha256": "f72c69d56240d662918da2a012e6420655b21fccd4e21ab7931ddc0d4bbe5376",
             "resource_limit_evidence": {
               "cgroup_version": 2,
               "memory_events": {
-               "max": {
-                "after": 0,
-                "before": 0,
-                "delta": 0
-               },
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
                 "oom": {
                   "after": 0,
                   "before": 0,
@@ -831,15 +975,24 @@
             "mutated_file_sha256": "cf5a45478a763ac0af668c3d97df561a432b4427da3ef27bdea413f0e02d05c1",
             "operator": "sql:drop-unique",
             "path": "db/schema/01-schema.sql",
+            "process_tree_evidence": {
+              "clean": true,
+              "cleanup_seconds": 0.0,
+              "descendants_signalled": 0,
+              "group_signalled_before_reap": false,
+              "leader_status": "exited",
+              "outliving_descendants": 0,
+              "protocol": "assay-process-tree/1"
+            },
             "replacement_sha256": "f72c69d56240d662918da2a012e6420655b21fccd4e21ab7931ddc0d4bbe5376",
             "resource_limit_evidence": {
               "cgroup_version": 2,
               "memory_events": {
-               "max": {
-                "after": 0,
-                "before": 0,
-                "delta": 0
-               },
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
                 "oom": {
                   "after": 0,
                   "before": 0,
@@ -879,15 +1032,24 @@
             "mutated_file_sha256": "21aacfd29e94dfbfec218ec420bd7aab392244bd0026121e97690bed39084135",
             "operator": "sql:drop-foreign-key",
             "path": "db/schema/01-schema.sql",
+            "process_tree_evidence": {
+              "clean": true,
+              "cleanup_seconds": 0.0,
+              "descendants_signalled": 0,
+              "group_signalled_before_reap": false,
+              "leader_status": "exited",
+              "outliving_descendants": 0,
+              "protocol": "assay-process-tree/1"
+            },
             "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
             "resource_limit_evidence": {
               "cgroup_version": 2,
               "memory_events": {
-               "max": {
-                "after": 0,
-                "before": 0,
-                "delta": 0
-               },
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
                 "oom": {
                   "after": 0,
                   "before": 0,
@@ -927,15 +1089,24 @@
             "mutated_file_sha256": "75f6ae6f99009192464efb8b4c24449dac684ec0b4491274ebdc38e6dd4ae917",
             "operator": "sql:weaken-delete-action",
             "path": "db/schema/01-schema.sql",
+            "process_tree_evidence": {
+              "clean": true,
+              "cleanup_seconds": 0.0,
+              "descendants_signalled": 0,
+              "group_signalled_before_reap": false,
+              "leader_status": "exited",
+              "outliving_descendants": 0,
+              "protocol": "assay-process-tree/1"
+            },
             "replacement_sha256": "86844e57581da987ba9d3344a79c61edc611f445f38bfa8d640262d7df841a13",
             "resource_limit_evidence": {
               "cgroup_version": 2,
               "memory_events": {
-               "max": {
-                "after": 0,
-                "before": 0,
-                "delta": 0
-               },
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
                 "oom": {
                   "after": 0,
                   "before": 0,
@@ -975,15 +1146,24 @@
             "mutated_file_sha256": "7187fd28579b7fae247734e8dd9032a6e09d11ee05a8b165c4df7c553e8ee689",
             "operator": "sql:drop-trigger",
             "path": "db/schema/01-schema.sql",
+            "process_tree_evidence": {
+              "clean": true,
+              "cleanup_seconds": 0.0,
+              "descendants_signalled": 0,
+              "group_signalled_before_reap": false,
+              "leader_status": "exited",
+              "outliving_descendants": 0,
+              "protocol": "assay-process-tree/1"
+            },
             "replacement_sha256": "17db4fd369edb9244b9f91d9aeed145c3d04ad8ba6e95d06247f07a63527d11a",
             "resource_limit_evidence": {
               "cgroup_version": 2,
               "memory_events": {
-               "max": {
-                "after": 0,
-                "before": 0,
-                "delta": 0
-               },
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
                 "oom": {
                   "after": 0,
                   "before": 0,
@@ -1023,15 +1203,24 @@
             "mutated_file_sha256": "b55d7e4cf5a9fc877f19a775ab354646f8d6f303a1896de326b009a5470c77ad",
             "operator": "sql:drop-trigger",
             "path": "db/schema/01-schema.sql",
+            "process_tree_evidence": {
+              "clean": true,
+              "cleanup_seconds": 0.0,
+              "descendants_signalled": 0,
+              "group_signalled_before_reap": false,
+              "leader_status": "exited",
+              "outliving_descendants": 0,
+              "protocol": "assay-process-tree/1"
+            },
             "replacement_sha256": "17db4fd369edb9244b9f91d9aeed145c3d04ad8ba6e95d06247f07a63527d11a",
             "resource_limit_evidence": {
               "cgroup_version": 2,
               "memory_events": {
-               "max": {
-                "after": 0,
-                "before": 0,
-                "delta": 0
-               },
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
                 "oom": {
                   "after": 0,
                   "before": 0,
@@ -1071,15 +1260,24 @@
             "mutated_file_sha256": "f993bf871bb01b6ecca288b3ee78c716188add265cee7f4ecaecbd0f4d2fe9b6",
             "operator": "sql:drop-trigger",
             "path": "db/schema/01-schema.sql",
+            "process_tree_evidence": {
+              "clean": true,
+              "cleanup_seconds": 0.0,
+              "descendants_signalled": 0,
+              "group_signalled_before_reap": false,
+              "leader_status": "exited",
+              "outliving_descendants": 0,
+              "protocol": "assay-process-tree/1"
+            },
             "replacement_sha256": "17db4fd369edb9244b9f91d9aeed145c3d04ad8ba6e95d06247f07a63527d11a",
             "resource_limit_evidence": {
               "cgroup_version": 2,
               "memory_events": {
-               "max": {
-                "after": 0,
-                "before": 0,
-                "delta": 0
-               },
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
                 "oom": {
                   "after": 0,
                   "before": 0,
@@ -1120,15 +1318,24 @@
             "mutated_file_sha256": "b2ab8d325905cf0b33ce409718edded474218325a5529e2888731a0a14780474",
             "operator": "sql:drop-not-null",
             "path": "db/schema/01-schema.sql",
+            "process_tree_evidence": {
+              "clean": true,
+              "cleanup_seconds": 0.0,
+              "descendants_signalled": 0,
+              "group_signalled_before_reap": false,
+              "leader_status": "exited",
+              "outliving_descendants": 0,
+              "protocol": "assay-process-tree/1"
+            },
             "replacement_sha256": "fb329000228cc5a24c264c57139de8bf854fc86fc18bf1c04ab61a2b5cb4b921",
             "resource_limit_evidence": {
               "cgroup_version": 2,
               "memory_events": {
-               "max": {
-                "after": 0,
-                "before": 0,
-                "delta": 0
-               },
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
                 "oom": {
                   "after": 0,
                   "before": 0,
@@ -1167,15 +1374,24 @@
             "mutated_file_sha256": "e5e0bf3bc5afd17aaf8952c0f1da22680a0df176a6cc7ba366801fc39aa48260",
             "operator": "sql:widen-check-in",
             "path": "db/schema/01-schema.sql",
+            "process_tree_evidence": {
+              "clean": true,
+              "cleanup_seconds": 0.0,
+              "descendants_signalled": 0,
+              "group_signalled_before_reap": false,
+              "leader_status": "exited",
+              "outliving_descendants": 0,
+              "protocol": "assay-process-tree/1"
+            },
             "replacement_sha256": "80e15b3d3b954f7f0fec09f006b5e69aa0a2954b7bbdeaac1a818f4a05df9912",
             "resource_limit_evidence": {
               "cgroup_version": 2,
               "memory_events": {
-               "max": {
-                "after": 0,
-                "before": 0,
-                "delta": 0
-               },
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
                 "oom": {
                   "after": 0,
                   "before": 0,
@@ -1233,12 +1449,11 @@
   "exit_code": 1,
   "judgment": {
     "r2": {
+      "cold_witness_kills": false,
       "equivalence_artifact": ".assay/schema-dump.sql",
+      "equivalence_ledger": null,
       "jobs": 1,
       "kill_attribution": "declared",
-      "cold_witness_kills": false,
-      "r2_command": null,
-      "equivalence_ledger": null,
       "kill_signal_artifact": ".assay/kill-signal.txt",
       "liveness": {
         "active": false,
@@ -1258,7 +1473,8 @@
         "sql:drop-trigger",
         "sql:widen-check-in"
       ],
-      "producer": "native"
+      "producer": "native",
+      "r2_command": null
     },
     "resolved": {
       "base": "@BASE_OID@",

@@ -1015,6 +1015,11 @@ def normalize_verdict(document: Mapping[str, Any], *, assay_version: str, head_o
     for mutation in mutation_claims:
         for bucket in ("killed", "survived", "equivalent", "crashed", "hung", "budget_exceeded"):
             for candidate in mutation.get(bucket, []):
+                tree = candidate.get("process_tree_evidence")
+                if tree is not None:
+                    # The cleanup wall time is measured, not a stable witness
+                    # value; every other process-tree fact stays exact.
+                    tree["cleanup_seconds"] = 0.0
                 evidence = candidate.get("resource_limit_evidence")
                 if evidence is None:
                     continue
