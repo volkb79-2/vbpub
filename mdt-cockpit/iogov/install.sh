@@ -46,10 +46,24 @@ while (($#)); do
   esac
   shift
 done
-[[ -n $STAGE ]] && STAGE=${STAGE%/}
+[[ -z $STAGE ]] || STAGE=${STAGE%/}
+# Every value that reaches a path, a sed expression or a unit file is checked here, once; nothing below escapes anything.
+abs_dir() { # name value: absolute, no empty/. /.. components, a conservative character set
+  [[ $2 =~ ^/[A-Za-z0-9._+/-]*$ ]] || die "$1 must be an absolute path of [A-Za-z0-9._+/-]: $2"
+  local q=${2%/}/
+  [[ $q != *//* && $q != */../* && $q != */./* ]] || die "$1 must not contain '..', '.' or empty components: $2"
+}
+[[ -z $STAGE ]] || abs_dir --destdir "$STAGE"
+abs_dir --lib-dir "$LIB_DIR"; LIB_DIR=${LIB_DIR%/}
+[[ $IO_WEIGHT =~ ^[0-9]{1,5}$ ]] || die "invalid --io-weight: $IO_WEIGHT"
+[[ $TICK_INTERVAL =~ ^[0-9]+[a-z]*$ ]] || die "invalid --tick-interval: $TICK_INTERVAL"
 [[ $USER_NAME =~ ^[a-z_][a-z0-9_-]*$ ]] || die "invalid user name: $USER_NAME"
 if ((!DRY)) && [[ -z $STAGE ]] && [[ $EUID -ne 0 ]]; then die "run as root (or use --dry-run, or --destdir for a staging tree)"; fi
 [[ -n $PYBIN ]] || PYBIN=$(readlink -f "$(command -v python3)") || die "python3 not found (apt-get install python3)"
+abs_dir --python "$PYBIN"
+[[ -z $DISK_NODE || $DISK_NODE =~ ^/dev/[A-Za-z0-9/:._-]+$ ]] || die "invalid --disk-node (want /dev/ plus [A-Za-z0-9/:._-]): $DISK_NODE"
+[[ -z $ID_PATH || $ID_PATH =~ ^[A-Za-z0-9:._-]+$ ]] || die "invalid --id-path (want [A-Za-z0-9:._-]): $ID_PATH"
+SYSFS=${IOGOV_SYSFS_ROOT:-/sys}   # test hook: where the partition check looks
 
 say() { printf '%s\n' "$*"; }
 run() { if ((DRY)); then say "WOULD: $*"; else say "DO:    $*"; "$@"; fi; }
@@ -70,7 +84,14 @@ put_file() { # source mode dest-path   (root-owned, replaced only if the content
 }
 
 TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
+NEW="" OLD="" DEST=""
+cleanup() {
+  rm -rf "$TMP"
+  [[ -n $NEW ]] && rm -rf "$NEW"
+  if [[ -n $OLD && -e $OLD && ! -e $DEST/iogov ]]; then mv "$OLD" "$DEST/iogov"; fi   # a swap that died midway: put the old package back
+  return 0
+}
+trap cleanup EXIT
 ((DRY)) && say "DRY RUN: nothing below is executed; WOULD lines are the actions a real run performs."
 
 say "== 1. preflight"
@@ -96,10 +117,15 @@ if [[ -d $DEST/iogov ]] && diff -r -q "$TMP/pkg/iogov" "$DEST/iogov" >/dev/null 
   say "unchanged: $DEST/iogov"
 else
   ensure_dir 755 root:root "$LIB_DIR"
-  if [[ -e $DEST/iogov ]]; then run mv "$DEST/iogov" "$DEST/iogov.old.$$"; fi
-  run cp -r "$TMP/pkg/iogov" "$DEST/iogov"
-  chown_to root:root "$DEST/iogov"; [[ -z $STAGE ]] && run chown -R root:root "$DEST/iogov"
-  if ((!DRY)) && [[ -e $DEST/iogov.old.$$ ]]; then run rm -rf "$DEST/iogov.old.$$"; elif ((DRY)) && [[ -e $DEST/iogov ]]; then say "WOULD: rm -rf $DEST/iogov.old.$$"; fi
+  # copy to a sibling first, then swap: a failed copy leaves the installed package untouched (cleanup removes the sibling)
+  NEW=$DEST/iogov.new.$$
+  run cp -r "$TMP/pkg/iogov" "$NEW"
+  run chmod 755 "$NEW"
+  chown_to root:root "$NEW"; [[ -n $STAGE ]] || run chown -R root:root "$NEW"
+  if [[ -e $DEST/iogov ]]; then OLD=$DEST/iogov.old.$$; run mv "$DEST/iogov" "$OLD"; fi
+  run mv "$NEW" "$DEST/iogov"
+  if ((DRY)); then [[ -z $OLD ]] || say "WOULD: rm -rf $OLD"; else NEW=""; [[ -z $OLD ]] || run rm -rf "$OLD"; fi
+  OLD=""
 fi
 
 say "== 4. configuration skeleton (an existing config is never touched)"
@@ -121,11 +147,20 @@ if [[ -z $DISK_NODE ]]; then
   fi
   DISK_NODE=${DISKS[0]}
 fi
-[[ $DISK_NODE == /dev/* ]] || die "disk node must be a /dev path: $DISK_NODE"
-if [[ -z $ID_PATH ]]; then
-  ID_PATH=$(udevadm info -q property -n "$DISK_NODE" 2>/dev/null | sed -n 's/^ID_PATH=//p' | head -n1) || true
-  [[ -n $ID_PATH ]] || die "no udev ID_PATH for $DISK_NODE (udevadm info -q property -n $DISK_NODE); pass --id-path"
+[[ $DISK_NODE =~ ^/dev/[A-Za-z0-9/:._-]+$ ]] || die "disk node must be a /dev path of [A-Za-z0-9/:._-]: $DISK_NODE"
+KNAME_NODE=$(basename "$(readlink -f "$DISK_NODE")")
+[[ ! -e $SYSFS/class/block/$KNAME_NODE/partition ]] || die "disk node $DISK_NODE is a partition ($KNAME_NODE); the ACL rule needs the WHOLE disk"
+UDEV_ID_PATH=""
+if [[ -z $STAGE ]]; then
+  UDEV_ID_PATH=$(udevadm info -q property -n "$DISK_NODE" 2>/dev/null | sed -n 's/^ID_PATH=//p' | head -n1) || true
 fi
+if [[ -z $ID_PATH ]]; then
+  ID_PATH=$UDEV_ID_PATH
+  [[ -n $ID_PATH ]] || die "no udev ID_PATH for $DISK_NODE (udevadm info -q property -n $DISK_NODE); pass --id-path"
+elif [[ -n $UDEV_ID_PATH && $UDEV_ID_PATH != "$ID_PATH" ]]; then
+  die "--id-path $ID_PATH does not match udev's ID_PATH $UDEV_ID_PATH for $DISK_NODE"
+fi
+[[ $ID_PATH =~ ^[A-Za-z0-9:._-]+$ ]] || die "udev ID_PATH has characters outside [A-Za-z0-9:._-]: $ID_PATH"
 say "disk node $DISK_NODE   udev ID_PATH $ID_PATH   python $PYBIN"
 
 say "== 6. render units and the udev rule"

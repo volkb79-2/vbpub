@@ -225,6 +225,33 @@ def test_slave_without_a_sysfs_entry_is_unresolved(tmp_path):
     assert f.resolve()[0] == set()  # a dm device with no slaves is not a disk
 
 
+def test_stacked_device_with_one_unresolvable_branch_is_unresolved_not_partial(tmp_path):
+    from iogov.devices import whole_disks_of
+
+    f = fs(tmp_path)
+    f.disk("vda")
+    f.mapped("dm-0", [], "vg-zero")  # e.g. an error/zero target: no slaves
+    f.mapped("dm-1", ["vda", "dm-0"], "vg-striped")
+    f.link_stdev("dm-1")
+    assert whole_disks_of(str(f.sys), "dm-1") == set()
+    found, seen = f.resolve()
+    assert found == set()
+    text = "; ".join(seen)
+    assert "not guessed" in text and "dm-0" in text and "vda" in text
+
+
+def test_anonymous_st_dev_prefers_the_mount_with_that_major_minor(tmp_path):
+    from iogov.devices import _mount_for
+
+    mounts = [
+        {"majmin": "0:48", "mnt": "/data", "fstype": "btrfs", "source": "/dev/a"},
+        {"majmin": "0:99", "mnt": "/data/sub/deep", "fstype": "tmpfs", "source": "tmpfs"},
+    ]
+    assert _mount_for(mounts, "/data/sub/deep/x", "0:48")["source"] == "/dev/a"
+    assert _mount_for(mounts, "/data/sub/deep/x", "0:77")["source"] == "tmpfs"  # no major:minor match: longest prefix
+    assert _mount_for(mounts, "/data/sub/deep/x")["source"] == "tmpfs"
+
+
 def test_ordinary_fs_with_a_mount_source_but_anonymous_st_dev(tmp_path):
     f = fs(tmp_path)
     f.disk("vda")

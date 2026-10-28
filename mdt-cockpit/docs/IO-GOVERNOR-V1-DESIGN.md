@@ -333,8 +333,8 @@ Facts that decide it:
 
 Recommendation: **keep v1 as a host install** (root-owned package, systemd units, one ACL rule), made self-checking by `iogov preflight` and
 `install.sh --dry-run`. The only requirement a container would not absorb is the host's `acl`, and the container would add dockerd as a runtime
-dependency, host cgroup-namespace exposure, uid/bind-mount bookkeeping and a weaker hung-read backstop on the host that carries a production
-game server. Use a container only for the part that needs no privilege: the offline `analyze`/`report` tools (read-only bind of the journal, no
+dependency, host cgroup-namespace exposure, uid/bind-mount bookkeeping and a weaker hung-read backstop on a host that carries latency-sensitive
+production workloads. Use a container only for the part that needs no privilege: the offline `analyze`/`report` tools (read-only bind of the journal, no
 device, no cgroup access), which is where a pinned minimal image removes real environment drift. Revisit a full container only for a fleet of
 hosts, and then as a `.deb` (declaring `Depends: acl, udev, systemd, python3 (>= 3.11)`) rather than an image, because the privileged pieces
 are host objects either way.

@@ -130,6 +130,11 @@ and verifies the units, installs the read-only ACL rule for exactly one disk (`-
 It never enables the bench timer or the watch service, never runs docker or touches any container, and `--destdir DIR` stages the files under DIR
 without useradd/chown/systemctl/udevadm. The manual steps below remain the reference.
 
+Two properties to know: `ID_PATH` is a bus-path identity, so a different disk placed in the same port inherits the read grant (re-check the rule
+after any hardware swap); and `--dry-run` still runs the real preflight, so it requires the preflight to pass before it prints the plan (use
+`--skip-preflight` only to see the plan on a host that is missing packages). All paths and values are validated (`--destdir`/`--lib-dir`
+absolute without `..`; `--disk-node` a whole disk, cross-checked against udev's `ID_PATH`).
+
 Deployment as a host install versus a container: design note section 12.
 
 ## Install steps (the installer helper above does these; the list is the reference)

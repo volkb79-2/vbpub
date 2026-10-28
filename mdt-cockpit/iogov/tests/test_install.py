@@ -118,3 +118,91 @@ def test_non_root_without_dry_run_or_destdir_is_refused():
         pytest.skip("running as root")
     p = run(*BASE)
     assert p.returncode == 1 and "run as root" in p.stderr
+
+
+# --- argument validation ---------------------------------------------------------------------------------------------------
+
+
+def _stage(tmp_path):
+    d = tmp_path / "stage"
+    d.mkdir()
+    return d
+
+
+@pytest.mark.parametrize("extra", [
+    ["--lib-dir", "../../escape"], ["--lib-dir", "/opt/../escape"], ["--lib-dir", "relative"], ["--lib-dir", "/opt//x"],
+])
+def test_lib_dir_must_be_absolute_without_dotdot(tmp_path, extra):
+    stage = _stage(tmp_path)
+    p = run("--destdir", str(stage), *extra, *BASE)
+    assert p.returncode == 1 and "--lib-dir" in p.stderr and tree(stage) == []
+
+
+def test_destdir_must_be_absolute_without_dotdot(tmp_path):
+    for bad in ("relative/stage", str(tmp_path) + "/../escape"):
+        p = run("--destdir", bad, *BASE)
+        assert p.returncode == 1 and "--destdir" in p.stderr
+
+
+def test_trailing_slash_lib_dir_stays_inside_the_staging_tree(tmp_path):
+    stage = _stage(tmp_path)
+    p = run("--destdir", str(stage), "--lib-dir", "/opt/iogov/", *BASE)
+    assert p.returncode == 0, p.stderr
+    assert (stage / "opt/iogov/iogov/devices.py").is_file()
+
+
+@pytest.mark.parametrize("flag,value", [
+    ("--id-path", 'a"b'), ("--id-path", "a&b"), ("--id-path", "a|b"), ("--id-path", "a\nb"), ("--id-path", "a b"),
+    ("--disk-node", '/dev/a"b'), ("--disk-node", "/dev/a&b"), ("--disk-node", "/dev/a|b"), ("--disk-node", "/dev/a\nb"),
+    ("--disk-node", "/devx/null"), ("--io-weight", "5|0"), ("--tick-interval", "5min&x"), ("--python", "/usr/bin/py&x"),
+])
+def test_hostile_values_are_refused_before_anything_is_written(tmp_path, flag, value):
+    stage = _stage(tmp_path)
+    argv = ["--skip-preflight", "--disk-node", "/dev/null", "--id-path", "pci-0000:00:10.0"]
+    if flag in ("--id-path", "--disk-node"):
+        argv[argv.index(flag) + 1] = value
+    else:
+        argv += [flag, value]
+    p = run("--destdir", str(stage), *argv)
+    assert p.returncode == 1 and "iogov install:" in p.stderr, p.stderr
+    assert tree(stage) == []
+
+
+def test_partition_disk_node_is_refused(tmp_path):
+    sysfs = tmp_path / "sys"
+    (sysfs / "class/block/null").mkdir(parents=True)
+    (sysfs / "class/block/null/partition").write_text("1\n")  # /dev/null stands in for a node whose kname is `null`
+    stage = _stage(tmp_path)
+    p = run("--destdir", str(stage), *BASE, env={"IOGOV_SYSFS_ROOT": str(sysfs)})
+    assert p.returncode == 1 and "partition" in p.stderr
+    assert not (stage / "etc/systemd").exists()
+
+
+def test_id_path_that_disagrees_with_udev_is_refused(tmp_path):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    udev = bindir / "udevadm"
+    udev.write_text("#!/bin/sh\necho ID_PATH=pci-0000:99:99.0\n")
+    udev.chmod(0o755)
+    p = run("--dry-run", "--lib-dir", str(tmp_path / "lib"), *BASE, env={"PATH": f"{bindir}:{os.environ['PATH']}"})
+    assert p.returncode == 1 and "does not match" in p.stderr
+    ok = run("--dry-run", "--lib-dir", str(tmp_path / "lib"), "--skip-preflight", "--disk-node", "/dev/null", "--id-path", "pci-0000:99:99.0",
+             env={"PATH": f"{bindir}:{os.environ['PATH']}"})
+    assert ok.returncode == 0, ok.stderr
+
+
+def test_failed_package_copy_keeps_the_installed_package_and_leaves_no_sibling(tmp_path):
+    stage = _stage(tmp_path)
+    assert run("--destdir", str(stage), *BASE).returncode == 0
+    lib = stage / "usr/local/lib/iogov-pkg"
+    target = lib / "iogov/cli.py"
+    target.write_text("# installed\n")
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    cp = bindir / "cp"
+    cp.write_text('#!/bin/sh\ncase "$*" in *iogov.new*) exit 1;; esac\nexec /bin/cp "$@"\n')
+    cp.chmod(0o755)
+    p = run("--destdir", str(stage), *BASE, env={"PATH": f"{bindir}:{os.environ['PATH']}"})
+    assert p.returncode != 0
+    assert target.read_text() == "# installed\n" and (lib / "iogov/devices.py").is_file()
+    assert not list(lib.glob("iogov.new.*")) and not list(lib.glob("iogov.old.*"))
