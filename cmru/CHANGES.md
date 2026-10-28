@@ -31,12 +31,26 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      volume); it skips it with a stderr WARN. The release-notes generator picks this up from
      the `fix(cmru): ...` commit subject. -->
 
+<!-- cmru: release history -->
+
+## [7.1.1] - 2026-10-28
+<!-- cmru: generated -->
+<!-- cmru: source-end=21db65aec4aa8b38b372d0e4bfc131bd1cd2afc5 -->
+
+### Fixed
+- fix(cmru): allowlist Assay campaign closeout evidence (39506e9b9)
+- fix(assay): forward CMRU release binding to gate container (74f98777e)
+- fix(assay): bind provisional waiver to release transaction (beb4128fd)
+
+### Changed
+- Merge assay 10.0.0 candidate: R2-free provisional lane, CMRU release-version binding, review fixes (reasonix-reviewed) (f6ad91128)
+
+<!-- cmru: pending release notes begin -->
 - docs(cmru): refresh the zero-release bootstrap guide for the current Run-Gate
   24.1.0 release and include iobench in the L1 dependency table.
 - fix(cmru): retain Run-Gate's exact Assay campaign closeout artifacts in
   release-gate snapshots while continuing to reject unlisted lane output.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [7.1.0] - 2026-10-28
 <!-- cmru: generated -->
