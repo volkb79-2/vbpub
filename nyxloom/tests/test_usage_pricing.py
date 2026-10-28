@@ -1494,7 +1494,7 @@ def test_windows_report_spacing_unverified_and_unknown_pricing_without_weights()
     }
     unpriced = _call(
         call_id="unknown-model", model="not-priced", input_tokens=5,
-        timestamp=datetime(2026, 10, 28, 11, 59, tzinfo=UTC),
+        timestamp=datetime(2026, 10, 28, 17, 59, tzinfo=UTC),
     )
     event = UsageEvent(
         event_id="outside-window", kind="api_rejection",
