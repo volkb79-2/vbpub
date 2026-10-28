@@ -111,6 +111,17 @@ class ReleasePlanRefused(RuntimeError):
     genuine mid-release failure, which must be retained for inspection."""
 
 
+def _require_origin_remote(repo_root: Path, *, purpose: str) -> None:
+    """Refuse an absent origin before Git can reinterpret its name as a path."""
+    result = run_local_git(
+        repo_root, "remote", "get-url", "--all", "origin",
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        detail = result.stderr.strip() or result.stdout.strip() or "origin has no configured URL"
+        raise ReleasePlanRefused(f"cannot {purpose}: origin remote is not configured ({detail})")
+
+
 def _tag_pushed_to_origin(
     repo_root: Path, tag: str, *, git_auth: GitHubGitAuth | None = None,
 ) -> bool:
@@ -134,6 +145,9 @@ def _tag_pushed_to_origin(
     naming both SHAs -- that is not "absent", so it must not be reported
     with the "push it" remedy that implies nothing exists there yet.
     """
+    _require_origin_remote(
+        repo_root, purpose=f"verify tag {tag!r} against origin's tags",
+    )
     result = run_remote_git(
         repo_root, "ls-remote", "--exit-code", "--tags", "origin",
         f"refs/tags/{tag}", f"refs/tags/{tag}^{{}}",
@@ -190,6 +204,9 @@ def _highest_remote_tag_for_prefix(
     ``tag_key`` is the caller's own ``_semver_key``-based ordering (over the
     same ``prefix``), so remote and local candidates are compared identically.
     """
+    _require_origin_remote(
+        repo_root, purpose=f"list origin's tags for prefix {prefix!r}",
+    )
     result = run_remote_git(
         repo_root, "ls-remote", "--tags", "origin", f"refs/tags/{prefix}*",
         auth=git_auth, capture_output=True, text=True,

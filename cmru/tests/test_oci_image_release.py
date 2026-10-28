@@ -385,7 +385,11 @@ def test_release_body_retry_refuses_an_origin_without_the_tag_as_absent(retry_re
 
 def test_release_body_retry_never_reads_an_inaccessible_origin_as_absent(retry_repo):
     repo = retry_repo.build()
-    _git(repo.root, "remote", "set-url", "origin", str(repo.origin.parent / "missing.git"))
+    _git(repo.root, "config", "protocol.file.allow", "never")
+    _git(
+        repo.root, "remote", "set-url", "origin",
+        "file:///tmp/cmru-unreachable-origin.git",
+    )
 
     with pytest.raises(RuntimeError, match="could not verify") as caught:
         _retry(repo)

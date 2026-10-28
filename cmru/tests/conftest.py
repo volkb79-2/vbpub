@@ -15,10 +15,87 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from cmru.process_guard import (
+    DescendantGuard,
+    DescendantLeakError,
+    enable_child_subreaper,
+    restore_child_subreaper,
+)
+
 pytest_plugins = ["cli_extended.pytest_plugin"]
 
 #: The process environment when the session started (before any test ran).
 SESSION_START_ENVIRON = dict(os.environ)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _pytest_adopts_orphaned_test_children():
+    previous = enable_child_subreaper()
+    try:
+        yield
+    finally:
+        restore_child_subreaper(previous)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _pytest_disables_detached_git_maintenance():
+    """Keep every test Git child inside its subprocess lifetime.
+
+    Run-Gate may disable system config for its container copy. Append explicit
+    settings to that environment rather than relying on tester-unified's
+    system config to keep automatic maintenance foreground-only.
+    """
+    raw_count = os.environ.get("GIT_CONFIG_COUNT", "0")
+    if not raw_count.isdecimal():
+        raise RuntimeError("GIT_CONFIG_COUNT is malformed; refusing test Git children")
+    count = int(raw_count)
+    additions = {
+        "GIT_CONFIG_COUNT": str(count + 4),
+        f"GIT_CONFIG_KEY_{count}": "maintenance.auto",
+        f"GIT_CONFIG_VALUE_{count}": "false",
+        f"GIT_CONFIG_KEY_{count + 1}": "maintenance.autoDetach",
+        f"GIT_CONFIG_VALUE_{count + 1}": "false",
+        f"GIT_CONFIG_KEY_{count + 2}": "gc.auto",
+        f"GIT_CONFIG_VALUE_{count + 2}": "0",
+        f"GIT_CONFIG_KEY_{count + 3}": "gc.autoDetach",
+        f"GIT_CONFIG_VALUE_{count + 3}": "false",
+    }
+    with preserved_environ():
+        os.environ.update(additions)
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _each_test_reaps_its_process_descendants(request):
+    """Fail a test if new process descendants outlive its boundary.
+
+    Release and shell integration tests can start helpers below pytest that
+    outlive their immediate parent. The guard kills and reaps detected leaks
+    to protect later tests, but still fails the creating test even when cleanup
+    succeeds. Captured stdout/stderr are restored too: release logging redirects
+    those process-wide descriptors in in-process CLI tests.
+    """
+    guard = DescendantGuard(root_pid=os.getpid())
+    saved_stdout = os.dup(1)
+    saved_stderr = os.dup(2)
+    leak_error: DescendantLeakError | None = None
+    try:
+        yield
+    finally:
+        try:
+            guard.check()
+        except DescendantLeakError as exc:
+            leak_error = exc
+        finally:
+            os.dup2(saved_stdout, 1)
+            os.dup2(saved_stderr, 2)
+            os.close(saved_stdout)
+            os.close(saved_stderr)
+        if leak_error is not None:
+            pytest.fail(
+                f"{request.node.nodeid} leaked process descendants: {leak_error}",
+                pytrace=False,
+            )
 
 
 @contextlib.contextmanager

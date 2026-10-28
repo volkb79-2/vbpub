@@ -4,6 +4,23 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Fixed
+- Reject release-baseline checks without a configured `origin` before Git can
+  reinterpret the remote name as a local path.
+- Flush buffered Python output into the native release log and preserve the
+  release exception if tee cleanup times out.
+- Require the bootstrap guide's released wheel digest to be a lowercase
+  64-character SHA-256 value, and collect retained Run-Gate wheels without
+  process substitution.
+- Probe the configured process-guard root when checking `/proc` children
+  availability.
+
+### Testing
+- Close and wait for the native release log tee at the end of each in-process
+  release command; fail the creating test if any new descendant needed cleanup.
+- Scan every pytest worker thread's `/proc` children and refuse when that
+  process-tree evidence is unavailable.
+
 <!-- KI-30 originally refused a tagged release while this body was non-empty. KI-78 now
      folds pending notes into the version section in the disposable release candidate.
      KI-23 still refuses a hand-authored `## [6.0.0] - UNRELEASED` heading, so this file

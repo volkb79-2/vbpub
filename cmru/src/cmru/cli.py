@@ -13,10 +13,12 @@ import stat
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from pathlib import Path, PurePosixPath
-from typing import Callable, List, Mapping, NoReturn, Optional, Sequence
+from typing import Callable, Iterator, List, Mapping, NoReturn, Optional, Sequence
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -2655,16 +2657,92 @@ def _configure_native_release_logging(repo_root: Path, *, append: bool) -> None:
     """Provide the former wrapper's aggregate log and live tee for release.
 
     The real CLI uses an OS pipe so child processes inherit the same tee. Tests
-    that call ``main(argv=...)`` stay in-process and therefore do not mutate
-    their capture descriptors.
+    that call ``main(argv=...)`` stay in-process, so the release scope owns the
+    tee, restores these descriptors, closes the pipe, and waits for that child.
     """
+    global _ACTIVE_NATIVE_RELEASE_LOGGING
     if os.environ.get("CMRU_NATIVE_RELEASE_LOGGING") == "0":
         return
+    if _ACTIVE_NATIVE_RELEASE_LOGGING is not None:
+        raise RuntimeError("native release logging is already active")
     log_path = _prepare_native_release_log(repo_root, append=append)
-    tee = subprocess.Popen(["tee", "-a", str(log_path)], stdin=subprocess.PIPE)
-    assert tee.stdin is not None
-    os.dup2(tee.stdin.fileno(), 1)
-    os.dup2(1, 2)
+    saved_stdout = os.dup(1)
+    saved_stderr = os.dup(2)
+    tee = None
+    try:
+        tee = subprocess.Popen(["tee", "-a", str(log_path)], stdin=subprocess.PIPE)
+        assert tee.stdin is not None
+        os.dup2(tee.stdin.fileno(), 1)
+        os.dup2(1, 2)
+        tee.stdin.close()
+    except BaseException:
+        os.dup2(saved_stdout, 1)
+        os.dup2(saved_stderr, 2)
+        os.close(saved_stdout)
+        os.close(saved_stderr)
+        if tee is not None:
+            if tee.poll() is None:
+                tee.kill()
+            tee.wait()
+        raise
+    _ACTIVE_NATIVE_RELEASE_LOGGING = _NativeReleaseLogging(
+        process=tee,
+        saved_stdout=saved_stdout,
+        saved_stderr=saved_stderr,
+    )
+
+
+@dataclass
+class _NativeReleaseLogging:
+    process: subprocess.Popen
+    saved_stdout: int
+    saved_stderr: int
+
+
+_ACTIVE_NATIVE_RELEASE_LOGGING: _NativeReleaseLogging | None = None
+
+
+@contextmanager
+def _native_release_logging_scope() -> Iterator[None]:
+    """Own and close any tee started while one release command is running."""
+    global _ACTIVE_NATIVE_RELEASE_LOGGING
+    previous = _ACTIVE_NATIVE_RELEASE_LOGGING
+    try:
+        yield
+    finally:
+        current = _ACTIVE_NATIVE_RELEASE_LOGGING
+        if current is not None and current is not previous:
+            active_exception = sys.exc_info()[1]
+            _ACTIVE_NATIVE_RELEASE_LOGGING = previous
+            # TextIOWrapper may be block-buffered when stdout is a pipe. Flush
+            # while fd 1/2 still point at tee or buffered release output would
+            # land on the restored descriptors after this scope exits.
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os.dup2(current.saved_stdout, 1)
+            os.dup2(current.saved_stderr, 2)
+            os.close(current.saved_stdout)
+            os.close(current.saved_stderr)
+            try:
+                current.process.wait(timeout=5)
+            except subprocess.TimeoutExpired as exc:
+                current.process.kill()
+                current.process.wait()
+                error = RuntimeError(
+                    "native release log tee did not exit after stdout and stderr were restored"
+                )
+                if active_exception is None:
+                    raise error from exc
+                active_exception.add_note(f"{error}; cleanup timeout: {exc}")
+
+
+def _release_logging_scoped(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        with _native_release_logging_scope():
+            return function(*args, **kwargs)
+
+    return wrapped
 
 
 def _prepare_native_release_log(repo_root: Path, *, append: bool) -> Path:
@@ -6371,6 +6449,7 @@ def _resolve_ahead_check_ref(vargs) -> None:
     vargs.ahead_check_ref = legacy
 
 
+@_release_logging_scoped
 def _release_or_status(verb: str, args, rest: List[str], runtime=None) -> None:
     """Shared prefix of ``release`` and ``status``, then route to the right role.
 
