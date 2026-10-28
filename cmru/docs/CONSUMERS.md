@@ -935,6 +935,13 @@ prepare origin facts for mutation; those facts contain tag names and commit
 IDs, not credentials. Nested runner calls have publisher-token and
 extra-mount variables removed. See the
 [gate credential design](DESIGN-GUIDE.md#keeping-release-credentials-out-of-gate-containers).
+Run-Gate's Assay closeout files are retained beside the verdict when produced:
+`.assay/campaign-cmru.exit`, `.assay/campaign-cmru.json`,
+`.assay/campaign-cmru.txt` and `.assay/campaign-cmru.err`. A first-release run
+uses the same four suffixes with the `campaign-cmru-first-release` basename.
+The JSON and text files are the analysis reports; the exit file records both
+analysis statuses, and the error file records diagnostics or a skipped
+closeout.
 Running an individual tester component lane bypasses this boundary and should
 use a secret-free checkout. `run-gate installed-wheel` stays runnable that
 way; `installed-wheel-live` is the aggregate gate's own variant and refuses unless

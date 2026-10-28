@@ -957,6 +957,13 @@ copied to the caller. The attached sidecar and its branch remain available for
 resume; successful release-candidate cleanup removes the sidecar through the
 same worktree lifecycle.
 
+Run-Gate's Assay lane closeout writes four files beside the verdict and
+progress stream. CMRU retains the exact `.assay/campaign-cmru.{exit,json,txt,err}`
+set and the corresponding four `campaign-cmru-first-release` files because
+those are the two Assay lanes the aggregate gate can select. Each path is named
+in the evidence set; any other `.assay` output remains subject to lane-output
+validation.
+
 Run-Gate RG-NARROW mounts the judged worktree plus selected Git metadata. The
 shared Git directory must remain read-write for in-lane Git operations, so
 Run-Gate overlays its common `hooks/` directory with a private empty read-only
