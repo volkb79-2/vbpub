@@ -15,7 +15,7 @@ from cli_extended import (ArgumentSpec, CheckResult, CliFailure, CliIdentity, Cl
                           VerbGroup, VerbSpec, register_doctor)
 
 from . import profile as prof
-from .errors import TntError
+from .errors import PlanExecutionError, TntError
 from .host_store import HostStore, load_host_store
 from .query import disk_table
 from .session import SessionOpener, open_session
@@ -327,6 +327,29 @@ def _workflow_read(args: Any, runtime: CliRuntime, opener: SessionOpener, call: 
     return 0
 
 
+def _core_view_read(args: Any, runtime: CliRuntime, opener: SessionOpener, view: str, **params: Any) -> int:
+    session = _open(args, opener)
+    try:
+        result = getattr(session.read_views, view)(**params)
+    finally:
+        session.close()
+    from .workflows import _safe_value
+    result = _safe_value(result)
+    text = json.dumps(result, indent=2, sort_keys=True, default=str)
+    _emit(runtime, result, text)
+    return 0
+
+
+def _call_records(result: Any, session: Any) -> list[dict[str, Any]]:
+    calls = getattr(result, "calls", ())
+    records = [call.as_dict() for call in calls]
+    if session.credential is not None:
+        for record in records:
+            if isinstance(record.get("error"), str):
+                record["error"] = session.credential.scrub(record["error"])
+    return records
+
+
 def _workflow_action(args: Any, runtime: CliRuntime, opener: SessionOpener, action_factory: Any) -> int:
     session = _open(args, opener, allow_write=args.allow_write)
     try:
@@ -337,12 +360,23 @@ def _workflow_action(args: Any, runtime: CliRuntime, opener: SessionOpener, acti
             return 0
         if not args.allow_write:
             raise CliFailure(f"plan was not applied; pass --allow-write to apply it\n{plan.render()}")
-        result = apply_plan(plan, session.rpc, allow_write=args.allow_write, typed_confirmation=args.confirm)
+        try:
+            result = apply_plan(plan, session.rpc, allow_write=args.allow_write, typed_confirmation=args.confirm)
+        except PlanExecutionError as exc:
+            from .workflows import _safe_value
+            partial = exc.partial
+            payload = {"plan": plan.render(), "completed": False,
+                       "result": _safe_value(list(partial)), "calls": _call_records(partial, session),
+                       "error": session.credential.scrub(str(exc)) if session.credential else str(exc)}
+            _emit(runtime, payload, f"{plan.render()}\nPartial result; inspect every call before recovery:\n"
+                                   f"{json.dumps(payload, indent=2, sort_keys=True, default=str)}")
+            return 1
     finally:
         session.close()
     from .workflows import _safe_value
     safe_result = _safe_value(result)
-    payload = {"plan": plan.render(), "result": safe_result}
+    payload = {"plan": plan.render(), "result": safe_result, "calls": _call_records(result, session),
+               "completed": True}
     _emit(runtime, payload, f"{plan.render()}\nResult: {json.dumps(safe_result, indent=2, sort_keys=True, default=str)}")
     return 0
 
@@ -365,11 +399,21 @@ def _system_action(args: Any, runtime: CliRuntime, opener: SessionOpener, action
             if isinstance(percent, (int, float)) and not isinstance(percent, bool):
                 print(f"\rUpdate job progress: {percent:.0f}%", file=sys.stderr, end="", flush=True)
 
-        result = apply_plan(plan, session.rpc, allow_write=True, typed_confirmation=args.confirm,
-                            job_progress=progress if "update.run" in methods else None)
+        try:
+            result = apply_plan(plan, session.rpc, allow_write=True, typed_confirmation=args.confirm,
+                                job_progress=progress if "update.run" in methods else None)
+        except PlanExecutionError as exc:
+            partial = exc.partial
+            payload = {"plan": plan.render(), "completed": False, "result": list(partial),
+                       "calls": _call_records(partial, session),
+                       "error": session.credential.scrub(str(exc)) if session.credential else str(exc)}
+            _emit(runtime, payload, f"{plan.render()}\nSystem action outcome is partial or uncertain:\n"
+                                   f"{json.dumps(payload, indent=2, sort_keys=True, default=str)}")
+            return 1
         if "update.run" in methods:
             print(file=sys.stderr, flush=True)
-        payload = {"plan": plan.render(), "result": result, "completed": True}
+        payload = {"plan": plan.render(), "result": list(result), "calls": _call_records(result, session),
+                   "completed": True}
         text = f"{plan.render()}\nSystem action completed."
         if "system.reboot" in methods:
             text += " The host is rebooting; the CLI session will close."
@@ -1286,6 +1330,35 @@ def build_cli(cli_identity: CliIdentity | None = None, opener: SessionOpener = o
     registry.register(VerbSpec("disks", None, "List disks with their partitions and free space (Storage > Disks).",
                                group=VerbGroup.EXPLORATION.value, examples=("tnt disks --profile lab --json",),
                                options=HOST_OPTIONS, handler=lambda args, runtime: _disks(args, runtime, opener)))
+    registry.register(VerbSpec("dashboard", None, "Show host facts and bounded CPU/memory history (read-only).",
+                               group=VerbGroup.EXPLORATION.value, examples=("tnt dashboard --host lab --json",),
+                               options=HOST_OPTIONS,
+                               handler=lambda args, runtime: _core_view_read(args, runtime, opener, "dashboard")))
+    _workflow_group(registry, ident, "alerts", "Read active and dismissed v27 alerts.", [
+        VerbSpec("list", None, "List current active and dismissed alerts; RBAC errors are preserved.",
+                 group=VerbGroup.EXPLORATION.value, options=HOST_OPTIONS,
+                 handler=lambda args, runtime: _core_view_read(args, runtime, opener, "alerts")),
+    ])
+    job_limit = _value(("--limit",), "Job rows per page (1–10000; default 200).", "COUNT", "FILTER",
+                       type=int, default=200)
+    job_offset = _value(("--offset",), "Zero-based job row offset (default 0).", "COUNT", "FILTER",
+                        type=int, default=0)
+    _workflow_group(registry, ident, "jobs", "Read remote and locally tracked v27 jobs.", [
+        VerbSpec("list", None, "List up to 200 jobs with the authenticated session's visible scope.",
+                 group=VerbGroup.EXPLORATION.value, options=HOST_OPTIONS + (job_limit, job_offset),
+                 handler=lambda args, runtime: _core_view_read(args, runtime, opener, "jobs",
+                                                                limit=args.limit, offset=args.offset)),
+    ])
+    registry.register(VerbSpec("services", None, "Show service state without lifecycle controls (read-only).",
+                               group=VerbGroup.EXPLORATION.value, examples=("tnt services --host lab --json",),
+                               options=HOST_OPTIONS,
+                               handler=lambda args, runtime: _core_view_read(args, runtime, opener, "services")))
+    _workflow_group(registry, ident, "storage", "Read pool and disk health.", [
+        VerbSpec("health", None, "Show pool health and disk inventory without write actions.",
+                 group=VerbGroup.EXPLORATION.value, examples=("tnt storage health --host lab --json",),
+                 options=HOST_OPTIONS,
+                 handler=lambda args, runtime: _core_view_read(args, runtime, opener, "storage_health")),
+    ])
     registry.register(VerbSpec("tui", None, "Open the interactive terminal UI (needs the tui extra).", group=VerbGroup.EXPLORATION.value,
                                examples=("tnt tui --profile lab",),
                                options=HOST_OPTIONS + (_flag(("--allow-write",), "Open a write-capable session; every change is still planned and confirmed.", "SAFETY"),),

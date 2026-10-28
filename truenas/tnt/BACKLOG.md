@@ -2,7 +2,7 @@
 
 Seeded 2026-10-28 from `docs/ACTION-MATRIX.snapshot.md` (rows whose verdict is `API-TUI` or `pending decision`; a
 test keeps every such row id mentioned here) and from the M0 scaffold's known gaps. Milestones are defined in
-`docs/DESIGN.md` section 10. M1 and M2 are complete; It1–It4 are the active forward sequence. `Later` means no
+`docs/DESIGN.md` section 10. M1, M2, It1, and It2 are complete; It3–It4 are the active forward sequence. `Later` means no
 iteration is assigned. Sizes: S < 1 day, M 1-3 days, L > 3 days of focused work. `[DONE M1]` and `[DONE M2]` mark
 implemented work. `[AUTHORED, NOT RUN]` is intentional for the live lane per its non-execution requirement.
 
@@ -23,7 +23,7 @@ implemented work. `[AUTHORED, NOT RUN]` is intentional for the live lane per its
 
 | id | screen | milestone | size |
 |---|---|---|---|
-| TNT-10 | Dashboard (`system.info`, alerts, pool and disk health) | It2 | M |
+| TNT-10 | [DONE It2] Dashboard (`system.info`, CPU/memory history, alerts, pool and disk health) | It2 | M |
 | TNT-11 | Storage > Pools (`pool.query`, vdev tree, scrub status; scrub as the first MUTATE action) | Later | M |
 | TNT-12 | [DONE M1] Datasets (`pool.dataset.query`, tree, usage; create/update/delete behind gates; matrix A-01..A-03) | M1 | L |
 | TNT-13 | System > Boot (`boot.get_state`, `boot.environment.*`; clone/activate/keep) | Later | M |
@@ -42,7 +42,7 @@ implemented work. `[AUTHORED, NOT RUN]` is intentional for the live lane per its
 | TNT-45 | [DONE M2] Audit viewer: filtered, paginated v27 `audit.query` with secret scrubbing; general middleware/syslog tail deferred because v27 exposes no such method | M2 | M |
 | TNT-46 | [DONE M2] API key list/create/rename/revoke with one-time key display, explicit mode-0600 file option, safe verifier projection and typed revoke | M2 | M |
 | TNT-47 | [DONE M2] System update/reboot/shutdown destructive plans, complete preflight, update job progress, bounded TUI reconnect, and private config export; a lost power-action reply is never retried and is reported as uncertain unless reboot is observed | M2 | L |
-| TNT-48 | System > Services read/status; service lifecycle actions remain separate future work | It2 | M |
+| TNT-48 | [DONE It2] System > Services read/status; service lifecycle actions remain separate future work | It2 | M |
 
 ## Platform and quality
 
@@ -52,7 +52,7 @@ implemented work. `[AUTHORED, NOT RUN]` is intentional for the live lane per its
 | TNT-21 | [DONE M1] SCRAM fake-server handshake and v27 password login (both auth flows are exercised through the real client) | M | M1 |
 | TNT-23 | Manifest drift test: compare each adapter manifest with the fetched `https://api.truenas.com/v27.0` method index (opt-in network test, not in the gate) | S | It4 |
 | TNT-24 | Audit log (no secrets) of every executed action under the XDG state dir | S | Later |
-| TNT-25 | Continuous live updates and the non-blocking job engine: job handles, progress/log/error records, applied job IDs, and reconnect reconciliation | M | It2 |
+| TNT-25 | [DONE It2] Non-blocking job engine: generation-bound handles, progress/log/error records, applied job IDs, partial results, and reconnect reconciliation | M | It2 |
 | TNT-26 | Plan/apply CLI verbs (`tnt plan`, `tnt apply`) once the first action exists, with `--dry-run` / `--yes` from cli-extended | M | Later |
 | TNT-27 | [DONE It1] TUI plan review and write-session control, including host-generation invalidation and the It1 host switcher | M | It1 |
 | TNT-28 | [DONE It1] Paired multi-host and secrets file support, safe host-edit verbs, and session controller before the host picker | L | It1 |
@@ -64,6 +64,6 @@ implemented work. `[AUTHORED, NOT RUN]` is intentional for the live lane per its
 | TNT-35 | Detect per host which remaining conditional menu entries (Apps, KMIP, Enclosure) the web UI would show, and hide unsupported entries | S | Later |
 | TNT-36 | Revisit container memory controls if a future v27 schema exposes a supported memory resource field; current `ContainerCreate`/`ContainerUpdate` schema exposes `cpuset` but no memory limit (deferred by verified v27 schema) | S | Later |
 | TNT-37 | Expose a current container image identity if a future v27 API supplies it; `ContainerEntry` has no image field and create consumes image metadata without retaining it in the returned record (deferred by the verified schema; see `docs/API-METHODS-V27.md`) | S | Later |
-| TNT-49 | It2 read-only core views: Dashboard, Alerts, Jobs, Services, Storage health, exact v27 contracts, and unavailable-state behavior | L | It2 |
+| TNT-49 | [DONE It2] Read-only core views: Dashboard, Alerts, Jobs, Services, Storage health, exact v27 contracts, and unavailable-state behavior | L | It2 |
 | TNT-50 | Hardened interactive SSH hand-off with pinned host-key sources, suspend/restore, and no arbitrary remote command mode | M | It3 |
 | TNT-51 | Vanilla-v27 acceptance, review hardening, project docs/CLI consistency, estate registration, and release readiness | L | It4 |

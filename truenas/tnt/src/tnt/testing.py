@@ -68,6 +68,9 @@ class FakeServer:
         std_disks, std_parts = standard_disks()
         self.version, self.username, self.api_key, self.password = version, username, api_key, password
         self.system_hostname = "test"
+        self.system_info = {"version": self.version, "hostname": self.system_hostname, "physmem": 17179869184,
+                            "model": "Synthetic CPU", "cores": 8, "physical_cores": 4,
+                            "loadavg": [0.1, 0.2, 0.3], "uptime": "1 day", "uptime_seconds": 86400}
         self.system_state = "READY"
         self._system_state_checks = 0
         self.active_jobs: list[dict[str, Any]] = []
@@ -84,7 +87,12 @@ class FakeServer:
         self.parts = std_parts if parts is None else parts
         self.methods = sorted(V27.supported_methods()) if methods is None else methods
         self.fail = dict(fail or {})
-        self.pools: Any = [{"id": 1, "name": "tank", "topology": {"data": [{"type": "DISK", "disk": "sdb", "path": "/dev/sdb1"}]}}]
+        self.pools: Any = [{"id": 1, "name": "tank", "healthy": True, "warning": False,
+                            "status": "ONLINE", "status_code": "ONLINE", "scan": None, "expand": None,
+                            "topology": {"data": [{"type": "DISK", "disk": "sdb", "path": "/dev/sdb1"}]}}]
+        self.reporting_graphs = {"cpu": [], "memory": []}
+        self.alerts: list[dict[str, Any]] = []
+        self.services = [{"id": 3, "service": "cifs", "enable": True, "state": "RUNNING", "pids": [12]}]
         self.boot_state: Any = {"name": "boot-pool", "topology": {"data": [{"type": "DISK", "disk": "sda3", "path": "/dev/sda3"}]}}
         self.details_as_flat_list = details_as_flat_list
         self.requests: list[dict[str, Any]] = []
@@ -363,7 +371,7 @@ class FakeServer:
     def _dispatch(self, method: str, params: list[Any]) -> Any:
         handlers: dict[str, Callable[[list[Any]], Any]] = {
             "system.version": lambda p: self.version,
-            "system.info": lambda p: {"version": self.version, "hostname": self.system_hostname},
+            "system.info": lambda p: dict(self.system_info),
             "system.state": self._system_state,
             "system.boot_id": lambda p: "fake-boot-id",
             "system.reboot": self._system_reboot,
@@ -372,6 +380,9 @@ class FakeServer:
             "update.available_versions": self._update_available_versions,
             "update.run": lambda p: True,
             "core.get_jobs": self._get_jobs,
+            "reporting.get_data": self._reporting_get_data,
+            "alert.list": lambda p: list(self.alerts),
+            "service.query": self._service_query,
             "core.download": self._core_download,
             "smb.status": lambda p: self.active_smb_sessions,
             "core.get_methods": lambda p: {m: {} for m in self.methods},
@@ -575,6 +586,18 @@ class FakeServer:
 
     def _get_jobs(self, params: list[Any]) -> list[dict[str, Any]]:
         return self._query({row.get("id"): row for row in self.active_jobs}, params)
+
+    def _reporting_get_data(self, params: list[Any]) -> list[dict[str, Any]]:
+        graphs = params[0] if params and isinstance(params[0], list) else []
+        return [{"name": graph.get("name"), "identifier": graph.get("identifier"),
+                 "data": list(self.reporting_graphs.get(graph.get("name"), [])),
+                 "aggregations": {"min": {"value": 0.0}, "mean": {"value": 0.0}, "max": {"value": 0.0}},
+                 "start": 1, "end": 1, "legend": ["value"]}
+                for graph in graphs if isinstance(graph, dict) and graph.get("name") in {"cpu", "memory"}]
+
+    def _service_query(self, params: list[Any]) -> list[dict[str, Any]]:
+        rows = {row.get("id"): row for row in self.services}
+        return self._query(rows, params)
 
     def _core_download(self, params: list[Any]) -> list[Any]:
         if len(params) != 4 or params[0] != "config.save":

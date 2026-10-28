@@ -99,6 +99,34 @@ those methods are unavailable on that host; check the role requirements separate
 grant the authenticated user permission to call it. See the [capability-check design](DESIGN.md#23-version-adapters-and-the-method-manifest)
 and the [verified v27 contract](API-METHODS-V27.md#v27-adapter-contract).
 
+## Read-only overview and jobs
+
+Use these commands to collect the current v27 overview as JSON. Jobs pages default to 200 rows; `--limit` accepts
+1–10000 and `--offset` is zero-based. A full page is marked possibly-more because the API pages are volatile and do not
+form an atomic snapshot. In JSON, `rows` and `possibly_more` cover the remote page only. The first page also includes up
+to 200 recent process-local job records in `local_jobs`; `local_jobs_possibly_more` marks a truncated local ledger. Later
+pages return an empty `local_jobs` list. A remote row with a matching local record includes it in `local`.
+
+```sh
+tnt dashboard --host lab --json
+tnt alerts list --host lab --json
+tnt jobs list --host lab --limit 200 --offset 0 --json
+tnt jobs list --host lab --limit 200 --offset 200 --json
+tnt services --host lab --json
+tnt storage health --host lab --json
+tnt tui --host lab
+```
+
+Dashboard CPU and memory are one bounded hour of historical graph data, not live percentages. A missing reporting role
+or graph is represented as unavailable; missing pool/disk values stay `null` or Unknown. Jobs shows host-wide scope
+only after `auth.me` confirms `FULL_ADMIN`; otherwise TrueNAS limits the list to jobs visible to the authenticated
+session. The TUI Jobs screen has Previous/Next page controls. Use `/` to focus search, `r` to refresh, `c` to copy
+visible rows, and `?` for view help. Dashboard polls every 30 seconds, Jobs every 5 seconds, and Alerts, Services, and
+Storage every 60 seconds. Refreshes do not overlap; on failure the TUI retains the last successful sample and shows a
+credential-scrubbed error. Services has no start/stop controls. The full v27 methods, role requirements, schemas, and
+unknown states are in [API method evidence](API-METHODS-V27.md#iteration-2-read-view-contract-implemented-against-the-verified-v27-reference);
+the job and view design is in [DESIGN.md](DESIGN.md#non-blocking-jobs-and-core-read-views).
+
 ## Run the core workflows
 
 Every command accepts `--host NAME`, `--config PATH`, and `--json` where it returns data. Add `--allow-write` to

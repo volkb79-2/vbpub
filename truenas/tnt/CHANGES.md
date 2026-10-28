@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+- Completed It2. Job calls now return generation-bound handles so TUI workers can wait outside the guarded RPC call lock;
+  callbacks capture sanitized progress, logs and errors, applied call results include remote job IDs, and reconnect
+  reconciliation leaves invisible outcomes UNKNOWN. Partial multi-call applies preserve completed results and per-call
+  states; CLI output carries the partial record with a nonzero exit, and TUI review directs the operator to inspect
+  before recovery. Added schema-checked, bounded read-only Dashboard, Alerts, Jobs, Services, and Storage health views
+  plus `tnt dashboard`, `tnt alerts list`, `tnt jobs list`, `tnt services`, and `tnt storage health` (`--json` on each).
+  Job pages keep remote rows separate from a bounded first-page local ledger supplement. Job visibility is labelled
+  host-wide only after `FULL_ADMIN` is verified; service lifecycle writes and remote job abort are not offered from
+  these views. See the [It2 consumer examples](docs/CONSUMERS.md#read-only-overview-and-jobs),
+  [job/view decisions](docs/DESIGN.md#non-blocking-jobs-and-core-read-views), and
+  [v27 contracts](docs/API-METHODS-V27.md#iteration-2-read-view-contract-implemented-against-the-verified-v27-reference).
 - Completed It1 multi-host support. `tnt.toml` now contains host facts only; per-host credentials are resolved from the
   paired mode-0600 `tnt.secrets.toml`. Host files are securely opened, validated, edited under serialized locks, and
   replaced with rollback on caught transaction failures. Added `tnt hosts` list/show/add/edit/rename/remove/test/default
@@ -66,7 +77,7 @@
 - Re-review hardening: lazy membership with real topologies (disk key, partuuid, nvme, nested/aux vdevs), thread/task-bound grant and call lock, kind tied to destructive methods, normalised paths and strict pool-id forms, default-deny boot family, single-use session-bound plans.
 - Guard review round 3: normalise boot-pool paths before prefix removal; refuse unmanifested writes and require destructive kind for additional data-changing methods; resolve boot-pool ids in nested references; block disk wipes when pool topology is unknown or disks report `exported_zpool`; union vdev references; register issued plan nonces against their fingerprints; document concurrent-read locking and the same-process trust boundary.
 - Enforced the v27 manifest as the exact read/write allow-list, check the live WebSocket method list on session open, reject unsupported pool method assumptions, and require a target probe for every MUTATE action. Plan execution now needs a one-use internal grant bound to the exact call list; the former public authorization path refuses.
-- Recorded v27 method/result/role evidence for the planned It2 overview views and updated the capability-check guidance. The roadmap is M1, M2, and It1 implemented, followed by It2 jobs and read-only views, It3 hardened SSH, and It4 acceptance.
+- Recorded v27 method/result/role evidence for the It2 overview views and updated the capability-check guidance. The roadmap is M1, M2, It1, and It2 implemented, followed by It3 hardened SSH and It4 acceptance.
 - Free space is an upper bound (`free_upper_bound_bytes`, `<= x` in the CLI/TUI) and unknown whenever a size or the partition data is missing.
 - Plan/apply action model with confirm gates and a refusal list.
 - Fake JSON-RPC websocket server (`tnt.testing`) used by the tests.

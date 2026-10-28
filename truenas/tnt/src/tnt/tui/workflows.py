@@ -11,7 +11,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, DataTable, Input, Select, Static, TextArea
 
 from ..actions import Plan, apply_plan, make_plan
-from ..errors import TntError
+from ..errors import PlanExecutionError, TntError
 from ..profile import Secret
 from ..session import Session
 from ..workflows import _safe_value, validate_ssh_public_keys
@@ -410,7 +410,9 @@ class WorkflowView(Vertical):
             self._open_next_vm_device()
             return
         self.action_refresh()
-        self.query_one("#workflow-note", Static).update(f"Applied plan; result: {_display(result)}")
+        records = [call.as_dict() for call in getattr(result, "calls", ())]
+        detail = {"result": list(result) if isinstance(result, list) else result, "calls": records}
+        self.query_one("#workflow-note", Static).update(f"Applied plan; result: {_display(detail)}")
 
     def _plan_cancelled(self, plan: Plan) -> None:
         if self.pending_vm_name is not None:
@@ -505,7 +507,11 @@ class PlanReview(ModalScreen[None]):
             power_was_called = any(method in power_methods for method, _params in self.session.rpc.calls[calls_before:])
             if not lease.cancelled.is_set():
                 if system_action and power_was_called:
-                    post_session_callback(self, lease, "_system_apply_uncertain")
+                    calls = [call.as_dict() for call in getattr(getattr(exc, "partial", None), "calls", ())]
+                    post_session_callback(self, lease, "_system_apply_uncertain", calls)
+                elif isinstance(exc, PlanExecutionError):
+                    post_session_callback(self, lease, "_apply_partial_failed", error_message(lease.session, exc),
+                                          [call.as_dict() for call in exc.partial.calls])
                 else:
                     post_session_callback(self, lease, "_apply_failed", error_message(lease.session, exc))
         else:
@@ -527,10 +533,17 @@ class PlanReview(ModalScreen[None]):
         self.query_one("#plan-progress", Static).update("")
         self.query_one("#plan-render", Static).update(f"Plan refused: {message}\n\n{self.plan.render()}")
 
-    def _system_apply_uncertain(self) -> None:
+    def _apply_partial_failed(self, message: str, calls: list[dict[str, Any]]) -> None:
+        self.query_one("#plan-apply", Button).disabled = False
+        self.query_one("#plan-progress", Static).update("Partial or uncertain result; do not retry blindly.")
+        self.query_one("#plan-render", Static).update(
+            f"{message}\n\nPer-call outcomes (including job IDs):\n{json.dumps(calls, indent=2, sort_keys=True)}\n\n"
+            "Review the Jobs view and current host state before planning recovery.\n\n" + self.plan.render())
+
+    def _system_apply_uncertain(self, calls: list[dict[str, Any]]) -> None:
         self.dismiss()
         if self.parent_view is not None:
-            self.parent_view._plan_apply_uncertain(self.plan)
+            self.parent_view._plan_apply_uncertain(self.plan, calls)
 
     def _apply_succeeded(self, result: Any) -> None:
         self.dismiss()

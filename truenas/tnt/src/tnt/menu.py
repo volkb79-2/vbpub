@@ -33,8 +33,9 @@ def _p(key: str, label: str, milestone: str = "Later", **kw) -> MenuItem:
 
 
 MENU: tuple[MenuItem, ...] = (
-    _p("dashboard", "Dashboard", "It2"),
+    MenuItem("dashboard", "Dashboard", "implemented", "It2"),
     MenuItem("storage", "Storage", "implemented", "M0", children=(
+        MenuItem("storage/health", "Health", "implemented", "It2"),
         _p("storage/pools", "Pools", "Later", matrix=("A-09", "B-03", "B-06")),
         MenuItem("storage/disks", "Disks", "implemented", "M0", matrix=("B-01",)),
         _p("storage/free-space", "Free space and partitions", "Later", tnt_only=True, matrix=("B-01", "B-02", "B-03")),
@@ -58,14 +59,17 @@ MENU: tuple[MenuItem, ...] = (
     MenuItem("containers", "Containers", "implemented", "M1", matrix=("A-04", "A-06", "B-04")),
     MenuItem("vm", "Virtual Machines", "implemented", "M1", matrix=("A-05", "A-06", "B-04")),
     MenuItem("apps", "Apps", "implemented", "M2", conditional=True),
-    _p("reportsdashboard/cpu", "Reporting", "It2"),
+    _p("reportsdashboard/cpu", "Reporting"),
     MenuItem("system", "System", "implemented", "M2", children=(
         MenuItem("update", "Update", "implemented", "M2"),
         MenuItem("reboot", "Reboot", "implemented", "M2", tnt_only=True),
         MenuItem("shutdown", "Shutdown", "implemented", "M2", tnt_only=True),
         MenuItem("general", "General Settings", "implemented", "M2"), _p("advanced", "Advanced Settings"),
         MenuItem("network", "Network", "implemented", "M2"),
-        _p("boot", "Boot", "Later"), _p("services", "Services", "It2"), _p("alert-settings", "Alert Settings"),
+        MenuItem("jobs", "Jobs", "implemented", "It2"),
+        MenuItem("alerts", "Alerts", "implemented", "It2"),
+        _p("boot", "Boot", "Later"), MenuItem("services", "Services", "implemented", "It2"),
+        _p("alert-settings", "Alert Settings"),
         MenuItem("audit", "Audit", "implemented", "M2"),
         _p("viewenclosure", "Enclosure", conditional=True))),
 )

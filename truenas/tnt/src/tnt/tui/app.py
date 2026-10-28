@@ -23,8 +23,10 @@ from .hosts import HostPicker
 from .network import NetworkView
 from .workflows import WorkflowView
 from .system import SystemGeneralView, SystemPowerView, SystemUpdateView
+from .core_views import VIEWS as CORE_READ_VIEWS
 
 VIEWS = {
+    **CORE_READ_VIEWS,
     "storage/disks": DisksView,
     "datasets": lambda session: WorkflowView(session, "datasets"),
     "snapshots": lambda session: WorkflowView(session, "snapshots"),

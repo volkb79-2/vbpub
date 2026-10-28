@@ -2,8 +2,9 @@
 
 `tnt` is a keyboard driven TUI and scriptable CLI for the vanilla TrueNAS v27 JSON-RPC API. Workflows cover Datasets
 and Snapshots, SMB/NFS Shares, snapshot/replication/cloud-sync tasks, Network status, Apps, Containers, Virtual
-Machines, local Users, Audit, API Keys, and guarded System actions. Containers and Virtual Machines are separate top
-level menu entries. Pool creation and boot-pool changes remain outside scope.
+Machines, local Users, Audit, API Keys, guarded System actions, and the read-only Dashboard, Alerts, Jobs, Services,
+and Storage health views. Containers and Virtual Machines are separate top-level menu entries. Pool creation and
+boot-pool changes remain outside scope.
 
 The CLI and TUI share one query and action layer. Every write is planned first, displays the exact API calls, and is
 applied through the default deny guard. Destructive actions require typing the target name. See the
@@ -13,9 +14,9 @@ for the verified method signatures. The original storage action matrix remains a
 Scope and safety choices are explained in the [design guide](docs/DESIGN.md#1-goals-and-non-goals); copyable setup and
 workflow examples are in the [consumer guide](docs/CONSUMERS.md#configure-multiple-hosts).
 
-M1 core workflows, M2 management workflows, and It1 multi-host configuration and session control are implemented.
-The planned work after them is It2 the non-blocking job engine and read-only overview views, It3 hardened SSH hand-off,
-and It4 vanilla-v27 acceptance. See the [milestone plan](docs/DESIGN.md#10-milestones).
+M1 core workflows, M2 management workflows, It1 multi-host configuration and session control, and It2 job tracking and
+read-only core views are implemented. The remaining work is It3 hardened SSH hand-off and It4 vanilla-v27 acceptance.
+See the [milestone plan](docs/DESIGN.md#10-milestones).
 
 At connection time tnt checks the v27 WebSocket method list. Methods missing from a host are reported by
 `doctor --online` and refused if a workflow needs them; a method-name match does not grant an RBAC role. See the
@@ -112,6 +113,33 @@ typed confirmation. See the [API key design](docs/DESIGN.md#api-keys), [consumer
 and [v27 method evidence](docs/API-METHODS-V27.md#api-keys).
 
 ## Use
+
+### Read-only overview and jobs
+
+The Dashboard shows v27 host facts plus one bounded hour of CPU and memory history; those graphs are historical samples,
+not live utilization. Alerts, Jobs, Services, and Storage health are read-only. Jobs labels its TrueNAS visibility as
+host-wide only when `auth.me` confirms `FULL_ADMIN`; other sessions see only jobs TrueNAS exposes to that session. The
+TUI refreshes these screens in the background, keeps the last successful sample after a failed refresh, and provides
+search, copy, help, and a sanitized error panel. Service lifecycle writes are not available from Services. See the
+[job/view design](docs/DESIGN.md#non-blocking-jobs-and-core-read-views) and
+[verified v27 contracts](docs/API-METHODS-V27.md#iteration-2-read-view-contract-implemented-against-the-verified-v27-reference).
+
+```sh
+tnt dashboard --host lab --json
+tnt alerts list --host lab --json
+tnt jobs list --host lab --limit 200 --offset 0 --json
+tnt services --host lab --json
+tnt storage health --host lab --json
+tnt tui --host lab  # Dashboard; System > Alerts / Jobs / Services; Storage > Health
+```
+
+The `jobs list` JSON `rows` field contains only the requested remote page. On the first page, tnt also returns up to 200
+recent process-local records in `local_jobs`; `local_jobs_possibly_more` reports when that ledger was truncated.
+
+Applied jobs run through worker threads. Their remote IDs, progress, logs, errors, and generation are recorded; reconnect
+reconciliation can leave an invisible or unqueryable job as UNKNOWN. If a multi-call plan stops partway, CLI JSON and
+TUI review show each call's outcome and job ID, and the CLI exits nonzero. Stopping local waiting does not abort a remote
+job. The Jobs view exposes no remote-abort action.
 
 ```bash
 tnt --version

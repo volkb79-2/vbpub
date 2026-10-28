@@ -1,6 +1,6 @@
 # tnt design
 
-Status: M1, M2, and It1 are implemented, 2026-10-28. It2–It4 are planned in section 10.
+Status: M1, M2, It1, and It2 are implemented, 2026-10-28. It3–It4 are planned in section 10.
 Container image identity, configured CPU count and memory limits
 are unavailable in the verified v27 container record; VM creation uses separately reviewed device plans because v27
 does not accept devices in `vm.create`. Inputs: the prior-art research (`truenas-tui-research.md`, release-program brief),
@@ -11,7 +11,8 @@ Everything marked UNVERIFIED has not been confirmed against a running host; BACK
 ## 1. Goals and non-goals
 
 Goals: run operator workflows against a vanilla TrueNAS v27 host: Datasets and Snapshots, SMB/NFS shares, data
-protection tasks, network status, Apps, Containers, Virtual Machines, local Users, Audit, API Keys, and System actions.
+protection tasks, network status, Apps, Containers, Virtual Machines, local Users, Audit, API Keys, System actions,
+and read-only Dashboard, Alerts, Jobs, Services, and Storage health views.
 Containers and Virtual Machines are separate menu items, matching the v27 web UI; users live under Credentials > Local
 Users. The TUI and scriptable CLI share one query/action layer. Every write uses
 plan/apply, displays the exact API calls, re-reads state before apply, and uses typed confirmation for destructive work.
@@ -30,10 +31,12 @@ transport.py RpcClient protocol, connect(), GuardedRpc   (the only module that t
 adapters/    Backend per API generation + method manifest
 domain.py    Plain domain records and formatting
 actions.py   Action, Plan, apply_plan, refusal list      (plan/apply model)
-session.py   Session = host profile + guarded rpc + backend; shared workflow query entry point
+jobs.py      host-scoped job records, callbacks, handles, and reconnect reconciliation
+readviews.py schema-checked read-only Dashboard/Alerts/Jobs/Services/Storage models
+session.py   Session = host profile + guarded rpc + backend; shared workflow/read-view entry points
 session_controller.py host generation, active session, per-host write mode, worker cancellation/drain
-cli.py       cli-extended registry: hosts, doctor, datasets, snapshots, shares, users, containers, VMs, TUI
-tui/         Textual app: host picker, session-bound workers, workflow views, palette and plan dialogs
+cli.py       cli-extended registry: hosts, overview reads, workflows, TUI
+tui/         Textual app: host picker, session-bound workers, overview/workflow views, palette and plan dialogs
 ```
 
 The CLI and the TUI both call `Session` methods; the TUI holds no query logic. `build_cli(opener=...)` takes the
@@ -144,6 +147,44 @@ plan and require `--confirm TARGET` for destructive work. The TUI action dialog 
 target. Every mutation has a probe that re-reads its target before apply. Name-based updates and lifecycle calls probe
 one exact query result and bind the write ID or username to that result; a broad or mismatched lookup is refused.
 
+### Non-blocking jobs and core read views
+
+The pinned `truenas_api_client` is synchronous for the RPC call but returns a v27 job handle when called with
+`job="RETURN"`. The handle carries the remote ID, completion event, callback updates, and final result. `GuardedRpc`
+holds its call lock only until the handle is returned; `apply_plan` then waits outside that lock in the TUI worker
+thread. This lets independent reads proceed while a remote job runs. The private apply grant remains bound to its
+original thread and exact ordered calls, so another caller still cannot consume or create a write.
+
+`JobRegistry` belongs to a host, not a socket. It records each applied job's ID, method, session generation, state,
+progress, bounded log/error excerpts, timestamps, and bounded event history. Callback fields and display strings are
+sanitized before they reach CLI/TUI output. When a connection ends, nonterminal records become UNKNOWN and pending.
+After reconnect, tnt queries at most 10,000 `core.get_jobs` rows and matches an integer remote ID plus method. A
+matching row updates the record. A query error is unavailable; a missing row remains UNKNOWN because the current
+session may not be allowed to see the old job. No absence is treated as completion.
+
+An apply result contains one per-call outcome record, including job IDs and generations. If a later call fails, the
+completed results and every planned call state remain attached to `PlanExecutionError.partial`; the CLI returns that
+partial JSON with a nonzero status and the TUI keeps the plan review visible. It tells the operator to inspect current
+host state before recovery, avoiding blind replay of work that may already have succeeded. Stopping a local wait only
+detaches the waiter; it does not abort the TrueNAS job. Although v27 has `core.job_abort`, the Jobs screen is read-only
+and does not expose remote abort.
+
+Remote job rows stay in the caller-requested page. The first page separately includes up to 200 recent local ledger
+records, with a truncation flag; subsequent pages do not repeat that process-local supplement. A remote row matched to
+the local ledger carries its local record as an annotation. Thus the remote page's count and `possibly_more` flag retain
+their meaning even when local and remote job visibility differs.
+
+`ReadViews` is shared by CLI and TUI and validates the selected v27 response fields before formatting. The Dashboard
+uses `system.info` plus one bounded hour/page of CPU and memory history; that history is not live utilization. Alerts,
+Jobs, Services, and Storage health preserve permission errors as errors, and nullable/absent facts stay Unknown. The
+Jobs screen labels host-wide results only after `auth.me` confirms `FULL_ADMIN`; otherwise it states the result is
+current-session-only. Services has no lifecycle writes. Jobs pages in 200-row TUI slices and CLI accepts bounded
+`--limit`/`--offset`; Services and each Storage query stop at 10,000 rows and disclose possible truncation. Polls are
+single-flight: Dashboard every 30 seconds, Jobs every 5 seconds, and Alerts, Services, and Storage every 60 seconds.
+Each view also offers status, search, refresh, help, copy, last-success retention, and a credential-scrubbed error
+panel. See the exact method, schema, role, paging and unavailable-state contract in
+[`docs/API-METHODS-V27.md`](API-METHODS-V27.md#iteration-2-read-view-contract-implemented-against-the-verified-v27-reference).
+
 ### User account updates
 
 The official v27 [`user.update` schema](https://api.truenas.com/v27.0/api_methods_user.update.html) accepts more fields
@@ -191,9 +232,10 @@ Import Pool, pool management) are reached from the Storage page, not from the me
 `tnt/menu.py` holds the tree. TrueNAS places “My API Keys” in the top-right account menu; tnt nests it under Credentials
 as a `tnt_only` tree leaf because the TUI has no account menu. Datasets, Shares, Data Protection tasks and Snapshots,
 Credentials > Local Users/API Keys, Containers, Virtual Machines, Apps, Network, Audit, Update, Reboot, Shutdown, and
-General Settings have workflow views. Dashboard, Reporting, and Services are It2 work; multi-host/session controls are
-It1; interactive SSH hand-off is It3. Other entries remain Later placeholders. Containers and Virtual Machines are
-separate top-level entries and are always shown. The TUI omits Shell because it is already a terminal.
+General Settings have workflow views. It2 adds Dashboard, Alerts, Jobs, Services, and Storage > Health. Reporting
+beyond the Dashboard's bounded CPU/memory history and other unassigned entries remain Later placeholders. Multi-host/
+session controls are It1; interactive SSH hand-off is It3. Containers and Virtual Machines are separate top-level
+entries and are always shown. The TUI omits Shell because it is already a terminal.
 
 ### Shares
 
@@ -302,7 +344,8 @@ must be stored as a credential. See [v27 method evidence](API-METHODS-V27.md#sys
 - The picker shows host name, URL, description, and last connection status. Password and API-key inputs are hidden;
   a newly created API key is written directly to a mode-0600 file and is never shown in the TUI. SSH key paths are not
   displayed. Container reads subscribe once to v27 `container.metrics`, wait up to 2.5 seconds, then unsubscribe.
-  Missing metrics remain an explicit status, never a zero value; continuous refreshes are still deferred (TNT-25).
+  Missing metrics remain an explicit status, never a zero value. Core read views poll on bounded, single-flight timers
+  and retain their last successful sample after an error.
 
 ## 6. Version policy
 
@@ -383,7 +426,9 @@ Default-deny, enforced in the client object itself, not only in the action layer
   process, it is not a sandbox against hostile code that can import private implementation details.
 - The grant is bound to the executing thread and asyncio task, so another thread or task cannot consume a plan call
   (`foreign-caller`). RPC calls share a lock: a concurrent read waits while an RPC is in flight, then can run between
-  plan calls. Plans are session-bound and single-use (section 2.5).
+  plan calls. Job calls release the lock after TrueNAS returns a handle; the plan worker waits on that handle outside
+  the lock. Another thread may read during the wait, but cannot consume the plan grant or make a write. Plans are
+  session-bound and single-use (section 2.5).
 - `--allow-write` therefore changes nothing by itself: every change goes through plan/apply with its gates.
 - DESTRUCTIVE actions need the typed target name; the kind is tied to the methods (section 2.5).
 - `refusal_for` (second wall, for calls an action declares by mistake):
@@ -463,7 +508,7 @@ B-01 is a backlog item (TNT-03); no storage SSH fallback exists in the current p
 | M1 | Core workflows: configuration and credentials, v27 default-deny manifest, datasets, snapshots, users, containers, and VMs in CLI/TUI | implemented; container metadata is limited to v27 fields and VM creation is staged |
 | M2 | Management workflows: SMB/NFS shares, data protection tasks, Network, Apps, Audit, API Keys, and guarded System actions | implemented; generic middleware/syslog tail and scrub/SMART task management are absent from v27 or deferred |
 | It1 | Paired multi-host configuration/secrets and the session controller: host generation, plan invalidation, worker draining, stale-callback rejection, connection testing, and per-host write mode | implemented |
-| It2 | Non-blocking job engine and read-only core views: Dashboard, Alerts, Jobs, Services, Storage health, and global view UX | planned; job engine first, then views |
+| It2 | Non-blocking job engine and read-only core views: Dashboard, Alerts, Jobs, Services, Storage health, and global view UX | implemented |
 | It3 | Hardened interactive SSH hand-off with pinned host-key sources and no arbitrary remote command mode | planned |
 | It4 | Vanilla-v27 live acceptance, remaining hardening and consistency review, estate registration, and release readiness | planned; live run is controller-operated |
 | Later | Storage partitioning, pool creation, boot-pool management, and other TrueNAS screens not assigned above | deferred |

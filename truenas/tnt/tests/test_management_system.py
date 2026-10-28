@@ -6,7 +6,7 @@ import ssl
 import urllib.error
 
 import pytest
-from textual.widgets import Checkbox, Input, Static, Tree
+from textual.widgets import Button, Checkbox, Input, Static, Tree
 
 from dataclasses import replace
 
@@ -282,6 +282,7 @@ def test_system_update_tui_uses_reviewed_plan_and_shows_job_progress():
                     if not isinstance(app.screen, PlanReview):
                         break
                 assert "Update job completed" in str(app.query_one("#system-update-note", Static).render())
+                assert '"job_id": "1"' in str(app.query_one("#system-update-note", Static).render())
                 assert "update.run" in server.called()
 
         try:
@@ -306,14 +307,16 @@ def test_reboot_tui_reconnects_after_fake_disconnect_with_bounded_attempts():
             app = TntApp(session, session_opener=reconnect, reconnect_delays=(0, 0))
             async with app.run_test(size=(160, 50)) as pilot:
                 _select_key(app, "reboot")
-                await pilot.pause(0.1)
+                await _wait_for(pilot, lambda: app.current == "reboot"
+                                and app.query_one("#system-power-plan", Button).is_attached, count=40)
                 app.screen.query_one("#system-power-delay", Input).value = "0"
+                await pilot.pause(0.05)
                 await pilot.click("#system-power-plan")
-                for _ in range(40):
+                for _ in range(120):
                     await pilot.pause(0.05)
                     if isinstance(app.screen, PlanReview):
                         break
-                assert isinstance(app.screen, PlanReview)
+                assert isinstance(app.screen, PlanReview), f"plan review did not open; current screen: {type(app.screen).__name__}"
                 app.screen.query_one("#plan-confirm", Input).value = "test"
                 await pilot.click("#plan-apply")
                 for _ in range(120):
@@ -322,6 +325,8 @@ def test_reboot_tui_reconnects_after_fake_disconnect_with_bounded_attempts():
                     if "returned to READY" in note or "reconnect stopped" in note:
                         break
                 assert "returned to READY" in note, note
+                outcome = str(app.screen.query_one("#system-power-job", Static).render())
+                assert '"method": "system.reboot"' in outcome and '"job_id": "1"' in outcome
                 assert [request["method"] for request in server.requests].count("system.state") == 2
                 assert server.logins == 3
 
@@ -344,8 +349,9 @@ def test_system_power_tui_rejects_bad_delay_cancels_plan_and_confirms_shutdown()
             app = TntApp(session, reconnect_delays=(0, 0))
             async with app.run_test(size=(160, 50)) as pilot:
                 _select_key(app, "reboot")
-                await pilot.pause(0.1)
-                view = app.query_one(SystemPowerView)
+                await _wait_for(pilot, lambda: app.current == "reboot"
+                                and app.query("#view-system-reboot").first() is not None, count=40)
+                view = app.query_one("#view-system-reboot", SystemPowerView)
                 view.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="unrelated")))
                 app.screen.query_one("#system-power-delay", Input).value = "not-a-number"
                 await pilot.click("#system-power-plan")
@@ -359,8 +365,9 @@ def test_system_power_tui_rejects_bad_delay_cancels_plan_and_confirms_shutdown()
                 assert "cancelled" in str(app.screen.query_one("#system-power-note", Static).render())
 
                 _select_key(app, "shutdown")
-                await _wait_for(pilot, lambda: app.query("#view-system-shutdown").first() is not None, count=300)
-                view = app.query_one(SystemPowerView)
+                await _wait_for(pilot, lambda: app.current == "shutdown"
+                                and app.query("#view-system-shutdown").first() is not None, count=300)
+                view = app.query_one("#view-system-shutdown", SystemPowerView)
                 view.query_one("#system-power-delay", Input).value = "0"
                 view.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="system-power-plan")))
                 await _wait_for(pilot, lambda: isinstance(app.screen, PlanReview), count=300)
@@ -370,6 +377,8 @@ def test_system_power_tui_rejects_bad_delay_cancels_plan_and_confirms_shutdown()
                 app.screen.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="plan-apply")))
                 await _wait_for(pilot, lambda: "Host shutting down" in str(
                     app.query_one("#system-power-note", Static).render()), count=300)
+                outcome = str(app.query_one("#system-power-job", Static).render())
+                assert '"method": "system.shutdown"' in outcome and '"job_id": "1"' in outcome
                 assert "system.shutdown" in server.called()
 
         try:
@@ -607,6 +616,9 @@ def test_power_action_call_error_is_uncertain_and_never_resubmitted(operation, r
                         current_note = f"screen={type(app.screen).__name__}"
                 expected_note = "outcome is uncertain" if operation == "shutdown" else "automatic reconnect stopped"
                 assert expected_note in current_note or (operation == "reboot" and "Host is reachable and READY" in current_note), current_note
+                outcomes = str(app.screen.query_one("#system-power-job", Static).render())
+                assert f'"method": "system.{operation}"' in outcomes
+                assert '"status": "unknown"' in outcomes and '"job_id": null' in outcomes
                 assert reconnect_count == reconnect_calls
                 assert server.called().count(f"system.{operation}") == 1
 

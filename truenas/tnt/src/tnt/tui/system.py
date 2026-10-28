@@ -17,10 +17,15 @@ from .session_work import (begin as begin_session_work, error_message, post as p
                            run as run_session_work, run_cancellable as run_cancellable_session_work)
 
 
+def _call_outcomes(result: Any) -> list[dict[str, Any]]:
+    return [call.as_dict() for call in getattr(result, "calls", ())]
+
+
 class SystemPowerView(Vertical):
     DEFAULT_CSS = """
     SystemPowerView { height: 1fr; }
     SystemPowerView #system-power-note { height: auto; color: $text-muted; padding: 0 1; }
+    SystemPowerView #system-power-job { height: auto; max-height: 8; overflow-y: auto; padding: 0 1; }
     SystemPowerView #system-power-form { height: auto; padding: 1; }
     SystemPowerView Input { width: 1fr; }
     """
@@ -33,6 +38,7 @@ class SystemPowerView(Vertical):
     def compose(self) -> ComposeResult:
         yield Static(f"System {self.operation}: every action is destructive and requires typing the host name.",
                      id="system-power-note")
+        yield Static("", id="system-power-job")
         with Vertical(id="system-power-form"):
             yield Input(placeholder="Delay in seconds (blank for immediate)", id="system-power-delay")
             yield Checkbox("Force only when running jobs are listed; typed host confirmation is still required",
@@ -66,13 +72,20 @@ class SystemPowerView(Vertical):
         self.query_one("#system-power-note", Static).update(f"Plan refused: {message}")
 
     def _plan_applied(self, plan: Plan, result: Any) -> None:
+        outcomes = _call_outcomes(result)
+        if outcomes:
+            self.query_one("#system-power-job", Static).update(
+                "Applied call outcomes:\n" + json.dumps(outcomes, indent=2, sort_keys=True))
         if self.operation == "shutdown":
             self.query_one("#system-power-note", Static).update("Host shutting down. The session will end.")
             return
         self.query_one("#system-power-note", Static).update("Host rebooting. Waiting before reconnecting…")
         self._reconnect_after_reboot()
 
-    def _plan_apply_uncertain(self, plan: Plan) -> None:
+    def _plan_apply_uncertain(self, plan: Plan, calls: list[dict[str, Any]]) -> None:
+        if calls:
+            self.query_one("#system-power-job", Static).update(
+                "Uncertain applied call outcomes:\n" + json.dumps(calls, indent=2, sort_keys=True))
         if self.operation == "shutdown":
             self.query_one("#system-power-note", Static).update(
                 "Shutdown request outcome is uncertain after the connection closed. Verify host state before retrying.")
@@ -241,8 +254,10 @@ class SystemUpdateView(Vertical):
         self.query_one("#system-update-note", Static).update(f"Plan refused: {message}")
 
     def _plan_applied(self, plan: Plan, result: Any) -> None:
+        outcomes = _call_outcomes(result)
         self.query_one("#system-update-note", Static).update(
-            f"Update job completed for {plan.action.confirm_target}. Reboot is separate; check for updates again after installation.")
+            f"Update job completed for {plan.action.confirm_target}. Reboot is separate; check for updates again after installation.\n"
+            f"Applied call outcomes:\n{json.dumps(outcomes, indent=2, sort_keys=True)}")
 
     def _plan_cancelled(self, plan: Plan) -> None:
         self.query_one("#system-update-note", Static).update("Update apply cancelled.")
