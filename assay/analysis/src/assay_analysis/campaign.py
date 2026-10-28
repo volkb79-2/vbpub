@@ -1544,14 +1544,22 @@ def _fixed_components(latest: dict) -> dict[str, float | None]:
     return {"coverage_baseline": coverage, "r2_baseline": r2, "other": other}
 
 
-def _native_r2(lane, r2_policy: dict) -> bool:
-    return bool(
+def _native_r2(lane, r2_policy: dict | None) -> bool:
+    declared_native = bool(
         "R2" in lane.rigor
         and lane.judge is not None
         and lane.judge.mutation is not None
         and lane.judge.mutation.format is None
-        and r2_policy.get("producer", "native") == "native"
     )
+    if not declared_native:
+        return False
+    # ``None`` means no verdict was supplied, so planning may use the lane's
+    # declared native policy. An empty policy means a verdict exists but did
+    # not reach an R2 judgment (for example, its R0 baseline failed); do not
+    # infer a native producer from the absence of ``judgment.r2``.
+    if r2_policy is None:
+        return True
+    return bool(r2_policy) and r2_policy.get("producer", "native") == "native"
 
 
 def _check_verdict_against_lane(verdict: dict, *, lane_name: str, lane) -> dict:
@@ -1738,7 +1746,9 @@ def campaign(
         verdict_result = _read_verified_verdict(verdict_path, expected=head)
         verdict = verdict_result["verdict"]
         r2_policy = _check_verdict_against_lane(verdict, lane_name=lane_name, lane=lane)
-    native_r2 = _native_r2(lane, r2_policy)
+    native_r2 = _native_r2(
+        lane, r2_policy if verdict is not None else None
+    )
     if project_jobs is not None and native_r2 \
             and project_jobs != lane.judge.mutation.jobs:
         raise ValueError(
