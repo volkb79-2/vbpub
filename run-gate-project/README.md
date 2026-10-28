@@ -1,8 +1,8 @@
 # run-gate — the per-project gate entrypoint
 
-**Status:** BUILT (P01, 2026-08-22). First consumer: **nyxloom** (controller
-amendment A1 — ciu was under parallel development and is DEFERRED; its assay
-lane ships construction-tested with live proof at its adoption). This README describes the current user-facing surface; **`SPEC.md` is the
+**Status:** released as a wheel (`run-gate-vX.Y.Z` tags; see `CHANGES.md`),
+adopted by every internal project's gate (cmru's release gate, assay, ciu,
+nyxloom, cgroup-profiler, ...). This README describes the current user-facing surface; **`SPEC.md` is the
 normative implementation contract**. The installed wheel's SemVer is the
 public tool identity. Build-and-adopt handoff: `HANDOFF-P01-build-and-adopt-ciu.md`;
 chronological build log incl. every failure:
@@ -355,7 +355,10 @@ This project's own `run-gate.toml` declares five lanes (dogfooding — see
    `/opt/tester-venv/bin/python -m pytest tests -q -rs --cov=. --cov-branch` (`-rs`:
    every skip is named in the gate log; a missing optional test dependency FAILS
    rather than skips — `tests/_testdeps.py`, opt out with
-   `RUN_GATE_ALLOW_MISSING_TEST_DEPS=1` on a checkout that really lacks it), followed by
+   `RUN_GATE_ALLOW_MISSING_TEST_DEPS=1` on a checkout that really lacks it; the
+   one structural skip, the real-container smoke test, needs a Docker socket
+   the lane container does not have and fails instead where
+   `RUN_GATE_REQUIRE_CONTAINER_SMOKE=1` is set), followed by
    the vendored `tools/coverage_gate.py`, scoped to `--source run_gate.py`
    alone — a diff-coverage floor at 100% on every executable line changed
    since the newest reachable stable `run-gate-vX.Y.Z` release tag. On the

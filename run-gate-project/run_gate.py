@@ -14669,7 +14669,7 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "  stall_timeout  optional lane key (the `budget` grammar) — stops the",
         "              lane ONLY while the container is still running AND its",
         "              liveness signal (progress file or log stream) has been",
-        "              silent that long: exit 3, evidence saved, the last",
+        "              silent that long: ERROR (exit 2), evidence saved, the last",
         "              event/line named. NEVER on total elapsed time; `budget`",
         "              is a hard elapsed-time bound. Legal on both assay and command",
         "              lanes; only meaningful where a container is actually",

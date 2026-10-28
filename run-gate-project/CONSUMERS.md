@@ -159,7 +159,10 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
 
 `run-gate.root.toml` at the REPO ROOT holds environment facts once for all
 internal projects (`[environments.<name>]`: `image`, optional ephemeral-only `image_env`,
-`cgroup_slice` or `cgroup_slice_env`) and, since RG-16, SHARED LANES too: every package can use
+`cgroup_slice` or `cgroup_slice_env`, optional ephemeral-only `user` — `"invoker"` for the
+invoking process's `uid:gid` or a numeric `uid[:gid]`, passed as `--user` so files the
+container writes into the bind-mounted worktree are owned by its owner, RG-106) and, since
+RG-16, SHARED LANES too: every package can use
 the identical lane without copying definitions. Discovery: nearest STRICT
 ancestor of the project dir; project entries shadow a central name entirely
 (whole table, no field merging — same rule for environments and lanes).
@@ -200,6 +203,7 @@ image = "tester-unified:local"
 image_env = "RUN_GATE_TESTER_UNIFIED_IMAGE" # optional per-invocation image override
 cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
 forward_env = ["SCHEMA_GATE_PW", "CGROUP_PARENT_DEV_BACKGROUND"]
+# user = "invoker"                           # optional (ephemeral only): run as the invoker's uid:gid (RG-106)
 
 [lanes.suite]
 kind = "command"
@@ -859,7 +863,9 @@ The two files sit beside the lane log, owner-only, named by the run id. The run
 record (`run-gate history`) carries `closeout` with the status, the analysis
 exit, both paths and both SHA-256 digests. Statuses: `complete`, `incomplete`,
 `evidence_error` (Assay's own), `unavailable` (no analysis output: a pinned
-judge older than `analyze campaign`, a crash, a 15-minute timeout),
+judge older than `analyze campaign`, a crash, the per-call cap — a quarter of
+the lane budget left, 900 s at most — hit, or the lane budget nearly spent so
+the closeout was skipped; the reason names which),
 `invalid` (not this lane's or commit's, or it disagrees with the lane result),
 `retention_error` (the evidence directory is not writable) and
 `not_applicable` (the verdict's verified claim set carries no R2 claim; nothing
@@ -1685,7 +1691,7 @@ store: /workspaces/vbpub/.worktrees/feat-x/run-gate-project/.run-gate/history.js
 
 In `--json` that tree appears as `worktree_scope` (`null` when the flag is
 absent). A `--worktree` that is not a directory refuses (exit 2), and one
-that is not a git work tree refuses (exit 3) — never a quiet fallback to the
+that is not a git work tree refuses (ERROR, exit 2) — never a quiet fallback to the
 invoking checkout's store, which would hand you tree A's medians under tree
 B's name.
 

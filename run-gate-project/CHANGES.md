@@ -60,9 +60,22 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   README "Interrupting a run"; remainder RG-114. Backlog: RG-112..RG-118
   filed (RG-116/117 are the 2026-10-27 audit's unverified candidates),
   ciu CIU-152 (the schema-v6 producer contract the v6 reader expects).
+- Fix (RG-116 items 1 and 5, `tools/coverage_gate.py`): a `\ No newline at
+  end of file` marker was counted as a context line, so every `+` line after
+  an old side without a trailing newline was attributed one line too far and
+  a changed last line could leave the diff-coverage denominator; and the
+  `git diff` the gate parses is now requested as plain text (`--no-color
+  --no-ext-diff --no-textconv`), so a colouring or external-diff user config
+  can no longer turn the gate into "0 changed lines, SKIPPED".
+- Docs: every "exit 3" that the code answers with ERROR 2 (stall, not a git
+  work tree, ambiguous inspect — SPEC, CONSUMERS, `--help`); SPEC's flat
+  `timeout 900` closeout claim; SPEC R-33 calling the selftest lane
+  `bare-host`; the `user` key in CONSUMERS; the README status header; the
+  backlog index (RG-106/RG-109 statuses, RG-110..RG-119 rows). Remainder
+  RG-119.
 - Fix (tests): missing optional test dependencies FAIL by default
   (`tests/_testdeps.py`, opt out with `RUN_GATE_ALLOW_MISSING_TEST_DEPS=1`);
-  the selftest lane runs pytest with `-rs`. The 24.0.2 candidate gate's two
+  the selftest lane runs pytest with `-rs`. The pre-24.1.0 candidate gate's two
   unexplained skips were a not-applicable parametrization (ciu8 has no
   run-gate.toml; now filtered at collection) and the real-container smoke
   test, the one documented structural exception (no Docker socket inside the

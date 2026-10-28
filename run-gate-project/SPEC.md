@@ -1410,11 +1410,12 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   after that resolves normally. The release gate IS the project's own
   dogfooded lane (`cmru.toml [steps.run-tests]` runs `run-gate selftest` —
   SSOT, D-110/D-111: one parser, no duplicated pytest
-  invocation), run in `bare-host` mode deliberately (R-42; not `host`'s
-  now-default container, and not tester-unified either: this suite is
+  invocation), run in the `tester-unified` environment (an ephemeral
+  container the lane owns, `run-gate.toml [lanes.selftest]`; the suite is
   self-referential — it exercises `physical_path()`'s real
-  `/proc/self/mountinfo` lookup against its own pytest fixtures, which
-  breaks under any container layer) which chains `pytest` with
+  `/proc/self/mountinfo` lookup against its own pytest fixtures — so pytest's
+  basetemp is kept under the bind-mounted checkout, where the real mountinfo
+  comparison still resolves) which chains `pytest` with
   `tools/coverage_gate.py` (vendored from `topos/tools/`, the estate's
   thinnest copy — MIGRATION PENDING per its header, do not fork further;
   its own `--source` default is scoped to `run_gate.py` alone, not the
@@ -1537,7 +1538,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     line; a `worktree_scope` key, `null` when unflagged). Resolution is
     opt-in: an unflagged query stays git-free and keeps answering where git
     cannot. An override that is not a directory refuses (exit 2) and one that
-    is not a git work tree refuses (exit 3, carrying git's own line) -- a read
+    is not a git work tree refuses (ERROR, exit 2, carrying git's own line) -- a read
     has no downstream to fail in, so falling back to the invoking checkout
     here would reintroduce the same substitution through the error path.
     `--json` is honored by this verb AND `footprint` (`R-44`, rev 10); every
@@ -1632,7 +1633,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     invoking checkout's. Unlike `doctor`, `--check-env` has no per-check
     ledger for a bad override to land in gracefully, so resolution happens
     upfront and a bad `--worktree` refuses the whole command (exit 2 not a
-    directory, exit 3 not a git work tree, carrying git's own line) rather
+    directory, ERROR exit 2 not a git work tree, carrying git's own line) rather
     than silently scanning nothing under a nonexistent tree's name — the
     same refuse-loud shape `R-36i` uses for `history`'s read side.
 
@@ -1730,8 +1731,13 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     to `.assay/campaign-<assay_lane>.{json,txt}` (stderr to `.err`, both exit
     statuses to `.exit`), and exits with the captured lane status. `--verdict`
     and `--command-exit` are passed only when the verdict file exists. The
-    stale files are deleted at script start, and the analysis is bounded by
-    `timeout 900` when `timeout` exists. No argument is derived or guessed;
+    stale files are deleted at script start, and the analysis is bounded, when
+    `timeout` exists, by the budget the lane did not need: each of the two
+    calls (json, then text) gets at most a quarter of what remains of the lane
+    `budget` (the pair never more than half), 900 s at most; the closeout is
+    skipped under 40 s remaining, a json call that times out skips the text
+    call, and a skip or timeout is written to the `.err` file so the host's
+    `unavailable` reason names it. No argument is derived or guessed;
     the judged commit is the one Run-Gate already resolved. After the lane's
     result is final, the host reads those four files from beside the verdict,
     checks them, retains the JSON and text as
@@ -1835,11 +1841,11 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     exit 2, naming both commits, the container, and `--fresh`; **`--fresh`**
     → remove the named container (by name, disclosed), clear the record, run
     anew. An `inspect` answer that parses as NEITHER a state nor a gone
-    signal refuses (exit 3) rather than guessing — guessing "gone" would
+    signal refuses (ERROR, exit 2) rather than guessing — guessing "gone" would
     start the duplicate this requirement exists to prevent.
     - **What "gone" is, exactly.** ONLY `No such object` / `No such
       container` on `docker inspect`'s stderr. Every other inspect failure —
-      an unreachable daemon above all — is INFRASTRUCTURE: exit 3, the
+      an unreachable daemon above all — is INFRASTRUCTURE: ERROR exit 2, the
       record UNTOUCHED, no history write. Reading a daemon outage as gone
       (rev 34's first cut did) writes a false `aborted` entry and deletes
       the only thing on disk that can find the still-running container once
@@ -2068,7 +2074,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   - **`R-40c` `stall_timeout`, an optional lane key with the `budget`
     grammar.** The lane is stopped ONLY when the container is STILL RUNNING
     and its liveness signal has not advanced for that long — `docker rm -f`,
-    evidence saved (`R-26`), exit 3, naming the stall, the last event seen
+    evidence saved (`R-26`), ERROR exit 2, naming the stall, the last event seen
     and the age. **NEVER on total elapsed time**: the hard `budget` separately bounds total wall-clock
     duration and returns BUDGET_EXCEEDED when it expires. The "still running" half is structural, not
     asserted: the check only ever runs in the poll of a `docker logs -f` that
@@ -2310,7 +2316,13 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     host-PSI line (`| profiler <daemon> (cgprofile <ver>, damon <on|off|
     unavailable>)` appended only when a `version` call already answered
     it), the profile-session line (daemon path only), the ONE warning line
-    (`R-43e`), and the footprint line (`R-44`). `--dry-run` prints the plan
+    (`R-43e`), and the footprint line (`R-44`). cgprofile 1.1.0: `ctl stop`
+    is retried while the daemon answers the error code `stop-incomplete`
+    (four attempts 2 s apart; the daemon finalizes anyway after the third
+    consecutive incomplete attempt); a summary carrying `stop_forced` or
+    `damon_cleanup.confirmed == false` is recorded verbatim in `resources`
+    and disclosed as the one warning line suffixed "profile recorded with
+    this caveat" — never a verdict change (`R-36h`). `--dry-run` prints the plan
     (daemon name, scope, damon, token env) and starts nothing — UNCONDITIONAL
     on whether profiling is enabled, so a disabled lane's dry run still
     names WHY (a fix in the same commit that shipped this: gating the print
