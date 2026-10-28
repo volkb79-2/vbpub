@@ -103,6 +103,7 @@ python3 -m py_compile \
     middlewared/plugins/container/lifecycle.py \
     middlewared/plugins/pool_/import_pool.py \
     middlewared/plugins/pool_/pool.py \
+    middlewared/plugins/pool_/export.py \
     middlewared/plugins/zfs/utils.py \
     middlewared/plugins/vm/vm_devices.py \
     middlewared/utils/libvirt/storage_devices.py \

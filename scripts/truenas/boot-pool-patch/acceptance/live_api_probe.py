@@ -22,8 +22,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 
+from path_b_ui_setup import reserved_partition_four_name
 from remote import RemoteError, Target
 
 POOL = "apiprobepool"
@@ -55,9 +57,42 @@ def boot_pool_state(target: Target) -> str:
     ])
 
 
-def refused(ok: bool, text: str) -> bool:
-    lowered = text.lower()
-    return (not ok) and any(word in lowered for word in ("does not exist", "not found", "einval", "enoent", "invalid"))
+def synthetic_row_refused(ok: bool, text: str) -> bool:
+    return not ok and "pool 0 does not exist" in text.lower()
+
+
+def partition_table_state(target: Target, disk: str) -> str:
+    raw = target.run([
+        "lsblk", "-J", "--tree", "-b", "-p", "-o",
+        "PATH,PKNAME,PARTN,PARTLABEL,PARTTYPE,PARTUUID,SIZE,TYPE,FSTYPE,MOUNTPOINT", disk,
+    ], timeout=45)
+    tree = json.loads(raw)
+    partitions = []
+
+    def visit(node):
+        if node.get("type") == "part":
+            partitions.append({
+                key: node.get(key)
+                for key in ("path", "pkname", "partn", "partlabel", "parttype", "partuuid", "size")
+            })
+        for child in node.get("children") or []:
+            visit(child)
+
+    for node in tree.get("blockdevices", []):
+        visit(node)
+    partitions.sort(key=lambda row: (int(row["partn"] or 0), row["path"] or ""))
+    gpt = target.run(["sgdisk", "-p", disk], timeout=45)
+    return json.dumps(partitions, sort_keys=True) + "\n" + gpt
+
+
+def destroy_source_evidence(target: Target) -> str:
+    command = (
+        "cd /usr/lib/python3/dist-packages/middlewared && "
+        "grep -nE 'pool.get_disks|disk.wipe|labelclear' plugins/pool_/export.py || true; "
+        "grep -nE '_get_whole_disk|partition' plugins/zpool/get_zpool_disks_impl.py; "
+        "grep -nE 'disk_path|size - \\(CHUNK|wipe first 32MB|wipe last 32MB' plugins/disk_/wipe.py"
+    )
+    return target.shell(command, timeout=60)
 
 
 def run_path_a(target: Target) -> None:
@@ -75,23 +110,34 @@ def run_path_a(target: Target) -> None:
     # pool.scrub.run takes a pool NAME and, in stock v27, is accepted for boot-pool as well
     # (a scrub is non-destructive and boot.scrub offers the same); it is deliberately not
     # part of the refusal set, see ACTION-MATRIX.md.
+    job_methods = {"pool.export", "pool.update", "pool.expand", "pool.replace", "pool.attach", "pool.remove"}
     for method, params in mutations:
-        ok, text = attempt(target, method, *params, job=method != "pool.upgrade")
-        check(f"refused-{method}", refused(ok, text), text)
+        ok, text = attempt(target, method, *params, job=method in job_methods)
+        check(f"refused-{method}", synthetic_row_refused(ok, text), text)
     check("boot-pool-unchanged", boot_pool_state(target) == before, "zpool guid/health/status identical")
 
 
 def reserved_partition(target: Target) -> tuple[str, str]:
     disk = os.environ.get("TRUENAS_DISK_DEVICE", "")
     boot_partition = os.environ.get("TRUENAS_BOOT_POOL_PARTITION", "")
-    if not disk.startswith("/dev/") or not boot_partition.startswith("/dev/"):
+    if (re.fullmatch(r"/dev/[A-Za-z0-9_.+-]+", disk) is None
+            or re.fullmatch(r"/dev/[A-Za-z0-9_.+-]+", boot_partition) is None):
         raise RemoteError("TRUENAS_DISK_DEVICE and TRUENAS_BOOT_POOL_PARTITION must name /dev paths")
-    partition = target.shell(f"readlink -f /dev/disk/by-partlabel/{MARKER}", timeout=30)
-    expected = disk + "4" if not disk[-1].isdigit() else disk + "p4"
+    try:
+        expected_name = reserved_partition_four_name(disk)
+    except ValueError as exc:
+        raise RemoteError(str(exc)) from exc
+    expected = f"/dev/{expected_name}"
+    boot_name = os.path.basename(disk)
+    boot_suffix = "p3" if boot_name.startswith(("nvme", "pmem")) else "3"
+    if boot_partition != f"/dev/{boot_name}{boot_suffix}":
+        raise RemoteError(f"configured boot-pool partition is not partition 3 of {disk!r}")
+    partition = target.run(["readlink", "-f", f"/dev/disk/by-partlabel/{MARKER}"], timeout=30)
     if partition != expected or partition == boot_partition:
         raise RemoteError(f"the reserved partition is {partition!r}, expected {expected!r}")
-    info = json.loads(target.shell(
-        f"lsblk -J -b -p -o PATH,PARTLABEL,PARTTYPE,FSTYPE,MOUNTPOINT {partition}", timeout=30))["blockdevices"][0]
+    info = json.loads(target.run([
+        "lsblk", "-J", "-b", "-p", "-o", "PATH,PARTLABEL,PARTTYPE,FSTYPE,MOUNTPOINT", partition,
+    ], timeout=30))["blockdevices"][0]
     if info["partlabel"] != MARKER or str(info["parttype"]).lower() != ZFS_TYPE_GUID \
             or info["fstype"] or info["mountpoint"]:
         raise RemoteError(f"partition {partition} is not an empty reserved partition: {info!r}")
@@ -117,17 +163,56 @@ def run_path_b(target: Target) -> None:
     disk, partition = reserved_partition(target)
     name = partition.rsplit("/", 1)[1]
     before = boot_pool_state(target)
+    table_before = partition_table_state(target, disk)
     try:
+        evidence = destroy_source_evidence(target)
+        check(
+            "destroy-source-parent-disk-wipe",
+            "pool.get_disks" in evidence and "disk.wipe" in evidence
+            and "_get_whole_disk" in evidence and "size - (CHUNK" in evidence,
+            evidence,
+        )
+        check("boot-pool-online-before", "ONLINE" in before, before)
         ok, text = attempt(target, "disk.details", {"type": "UNUSED", "join_partitions": False})
         names = [row["name"] for row in json.loads(text)] if ok else []
         check("details-lists-reserved-partition", names == [name], text[:300])
 
         ok, text = attempt(target, "pool.create", {"name": "probemix", "topology": {"data": [
             {"type": "MIRROR", "disks": [name, disk.rsplit("/", 1)[1]]}]}}, job=True)
-        check("create-mixed-refused", refused(ok, text) or (not ok and "reserved" in text.lower()), text)
+        check(
+            "create-mixed-refused",
+            not ok and "reserved boot-disk partition can only be the single disk of a one-disk data vdev" in text,
+            text,
+        )
         ok, text = attempt(target, "pool.create", {"name": "probemirror", "topology": {"data": [
             {"type": "MIRROR", "disks": [name]}]}}, job=True)
-        check("create-mirror-refused", not ok, text)
+        check(
+            "create-mirror-refused",
+            not ok and "reserved boot-disk partition can only be used as a single-disk stripe data vdev" in text.lower(),
+            text,
+        )
+
+        unsupported_options = (
+            ("encryption", {"encryption": True}),
+            ("encryption_options", {"encryption_options": {"generate_key": True}}),
+            ("deduplication", {"deduplication": "ON"}),
+            ("dedup_table_quota", {"dedup_table_quota": "CUSTOM"}),
+            ("dedup_table_quota_value", {"dedup_table_quota_value": 1048576}),
+            ("checksum", {"checksum": "SHA256"}),
+            ("allow_duplicate_serials", {"allow_duplicate_serials": True}),
+            ("all_sed", {"all_sed": True}),
+            ("force_topology", {"force_topology": True}),
+        )
+        for index, (option, value) in enumerate(unsupported_options):
+            payload = {
+                "name": f"probeopt{index}",
+                "topology": {"data": [{"type": "STRIPE", "disks": [name]}]},
+                **value,
+            }
+            ok, text = attempt(target, "pool.create", payload, job=True)
+            expected_refusal = f"{option} is not supported for reserved boot-disk partitions"
+            check(f"create-option-refused-{option}", not ok and expected_refusal in text, text)
+
         ok, text = attempt(target, "boot.attach", name, {}, job=True)
         check("boot-attach-refused-unchanged", (not ok) and boot_pool_state(target) == before, text)
 
@@ -140,6 +225,61 @@ def run_path_b(target: Target) -> None:
         check("shim-pool-registered", ok and POOL in rows and "ONLINE" in rows, rows)
         ok, text = attempt(target, "disk.details", {"type": "UNUSED", "join_partitions": False})
         check("details-no-longer-offers-used-partition", ok and name not in text, text[:200])
+
+        pool = target.query("pool.query", [["name", "=", POOL]], {"get": True}, timeout=90)
+        pool_id = pool["id"]
+        vdev_guid = str(pool["topology"]["data"][0]["guid"])
+
+        ok, text = attempt(target, "pool.export", pool_id, {"destroy": True}, job=True)
+        check(
+            "shim-destroy-refused",
+            not ok and "refusing destructive export of pool" in text.lower()
+            and "destroy=false" in text.lower(),
+            text,
+        )
+        pool_status = target.shell(f"zpool status -P -L {POOL}", timeout=45)
+        check(
+            "shim-destroy-partitions-unchanged",
+            boot_pool_state(target) == before and "ONLINE" in before
+            and partition_table_state(target, disk) == table_before
+            and partition in pool_status.split() and "ONLINE" in pool_status,
+            f"pool={pool_status[:240]}; boot-pool ONLINE GUID/status and GPT/lsblk layout unchanged",
+        )
+
+        ok, text = attempt(
+            target, "pool.replace", pool_id,
+            {"label": vdev_guid, "disk": "{serial}missing-review-probe"}, job=True,
+        )
+        check("shim-replace-does-not-touch-other-partitions",
+              boot_pool_state(target) == before and partition_table_state(target, disk) == table_before,
+              f"ok={ok}; {text}")
+
+        ok, text = attempt(
+            target, "pool.offline", pool_id, {"label": vdev_guid}, job=False,
+        )
+        check("shim-offline-does-not-touch-other-partitions",
+              boot_pool_state(target) == before and partition_table_state(target, disk) == table_before,
+              f"ok={ok}; {text}")
+        online_ok, online_text = attempt(
+            target, "pool.online", pool_id, {"label": vdev_guid}, job=False,
+        )
+        check("shim-offline-restored", online_ok and "ONLINE" in target.shell(
+            f"zpool status -P -L {POOL}", timeout=45), online_text)
+
+        ok, text = attempt(
+            target, "pool.detach", pool_id, {"label": vdev_guid, "wipe": False}, job=False,
+        )
+        check("shim-detach-does-not-touch-other-partitions",
+              boot_pool_state(target) == before and partition_table_state(target, disk) == table_before,
+              f"ok={ok}; {text}")
+
+        ok, text = attempt(
+            target, "pool.remove", pool_id, {"label": vdev_guid}, job=True,
+        )
+        check("shim-remove-does-not-touch-other-partitions",
+              boot_pool_state(target) == before and partition_table_state(target, disk) == table_before,
+              f"ok={ok}; {text}")
+
         cleanup(target, partition)
 
         target.shell(f"zpool create -o cachefile=none -O mountpoint=none {POOL} {partition} && zpool export {POOL}",
@@ -158,7 +298,11 @@ def run_path_b(target: Target) -> None:
     gone = POOL not in target.shell("zpool list -H -o name", timeout=30).split()
     labels = target.shell(f"zdb -l {partition} 2>/dev/null | grep -c 'version:' || true", timeout=30).strip()
     check("cleanup-complete", gone and labels in ("", "0"), f"pool gone={gone} labels={labels!r}")
-    check("boot-pool-unchanged", boot_pool_state(target) == before, "zpool guid/health/status identical")
+    check(
+        "boot-pool-unchanged",
+        boot_pool_state(target) == before and partition_table_state(target, disk) == table_before,
+        "zpool guid/health/status and GPT/lsblk partition layout identical",
+    )
 
 
 def main() -> int:

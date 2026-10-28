@@ -411,13 +411,60 @@ python3 boot-pool-patch/run-live-gate.py live-vdev-topology \
 ```
 
 
-The registered `live-api-probe` lane records the exact middleware limits for
-Path B actions on the partition-only state left by `live-path-b-partition`:
-`disk.query`/`disk.details` visibility of the partition, the refusal text of
-`pool.create` and `boot.attach` given a partition name, and whether
-`pool.import_find`/`pool.import_pool` adopt a hand-made pool on the partition.
-Its only mutation is a throwaway pool that it removes. Results feed
+The registered `live-api-probe` lane checks Path B actions on the partition-only
+state left by `live-path-b-partition`: reserved-partition visibility, exact
+refusal messages for unsupported topology and create options, create/adoption,
+the destroy guard, replace/offline/detach/remove isolation, and adoption of a
+hand-made pool. It checks `boot-pool` GUID, health, status, and the disk's
+`lsblk`/`sgdisk` partition table around destructive-path probes. Results feed
 [`ACTION-MATRIX`](../ACTION-MATRIX.md).
+
+### Path B v27 pool-wizard safety
+
+Run these registered lanes in order against one disposable v27 target. The
+partition lane reserves only the free tail. `live-api-probe` creates and cleans
+throwaway pools on that partition. The final `live-ui` run creates the pool in
+the wizard and verifies the observed `pool.create` request uses exactly the
+reserved partition. Keep the SSH/UI values from the external-host setup above;
+the example below sets the selected disk facts and lane guards.
+
+```bash
+cd scripts/truenas
+source /home/vscode/.venv/bin/activate
+export DOCKER_HOST=unix:///var/run/docker.sock
+: "${TRUENAS_TEST_HOST:?set to the disposable TrueNAS host}"
+: "${TRUENAS_TEST_PORT:?set its SSH port}"
+: "${TRUENAS_TEST_KEY:?set the pinned SSH key}"
+: "${TRUENAS_TEST_KNOWN_HOSTS:?set the pinned known_hosts file}"
+: "${TRUENAS_DOCKER_NETWORK:?set the existing custom bridge containing pwmcp}"
+export TRUENAS_STORAGE_PROFILE=path-b
+export TRUENAS_EXPECTED_VERSION=27.0.0-RC.1
+export TRUENAS_TEST_ALLOW_MUTATIONS=1
+export TRUENAS_TEST_ALLOW_DISK_PROVISION=1
+: "${TRUENAS_DISK_DEVICE:?set from read-only inventory to the boot-pool disk}"
+: "${TRUENAS_BOOT_POOL_PARTITION:?set from read-only inventory to its boot-pool partition}"
+
+nice -n 10 /home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py \
+  live-path-b-partition --docker-network "$TRUENAS_DOCKER_NETWORK" \
+  --allow-high-psi --allow-dirty
+nice -n 10 /home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py \
+  live-api-probe --docker-network "$TRUENAS_DOCKER_NETWORK" \
+  --allow-high-psi --allow-dirty
+
+export TRUENAS_PATH_B_SETUP=ui-wizard
+nice -n 10 /home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py \
+  live-ui --docker-network "$TRUENAS_DOCKER_NETWORK" \
+  --allow-high-psi --allow-dirty
+```
+
+`live-api-probe` requires both `TRUENAS_DISK_DEVICE` and
+`TRUENAS_BOOT_POOL_PARTITION` so it can compare the boot-pool disk before and
+after each check. The wizard shim accepts one Stripe data vdev on the reserved
+partition. It refuses encryption, non-default encryption options, dedup,
+dedup-table quota changes, checksum overrides, duplicate-serial allowance,
+SED mode, forced topology, and destructive export with option-specific
+messages. See the [design rationale](DESIGN-GUIDE.md#path-b-pool-wizard-safety)
+and current [action evidence](../ACTION-MATRIX.md).
 
 Path B has two explicit setup modes for the registered `live-ui` lane. Both
 start from a fresh disposable managed guest with the v27 relaxation patch
@@ -437,9 +484,9 @@ whether a pool happens to exist.
   fresh live UI acceptance remains open. See the
   [unit-gate log](../artifacts/unit-boot-pool-patch-path-b-ui-preprovision-mode-20261021.log).
 
-On the current fresh patched guest `truenas-v27-ui-b-fresh-r1-20261018`, the
-guarded partition lane passed and reserved a 4 GiB `/dev/vda4`. The later
-registered PWMCP UI run opened the Disks screen and the pool wizard. The Disks
+In the 2026-10-18 pre-shim diagnostic guest, the guarded partition lane passed
+and reserved a 4 GiB `/dev/vda4`. The later registered PWMCP UI run opened the
+Disks screen and the pool wizard. The Disks
 screen showed only the whole `vda` boot-pool disk, with no partition creation
 controls; middleware and browser `disk.query` omitted `vda4`. The wizard
 reported zero raw capacity and no disks, then stopped before submitting
@@ -448,14 +495,13 @@ reported zero raw capacity and no disks, then stopped before submitting
 [UI run](../artifacts/live-ui-v27-path-b-r1-after-cleanup-with-disks-screen-20261018.log)
 and [post-attempt inventory](../artifacts/live-inspect-v27-path-b-r1-after-disks-screen-20261018.log).
 
-Creation of `/dev/vda4` and `boot-disk-data` through the UI remain open. The
-existing `ui-wizard` result is a safe refusal: this build's middleware and
-browser `disk.query` omit `/dev/vda4`, and the wizard has no partition controls.
-Do not repeat that wizard on the same guest unless the supported inventory
-path changes. Downstream Path B UI checks can instead use `preprovisioned`.
-Its registered unit gate passed on 2026-10-21; a fresh live run is still
-required before downstream UI behavior counts as evidence. Rerun the unit
-gate after changing the implementation or its contract tests.
+That diagnostic's `ui-wizard` result was a safe refusal: that build's
+middleware and browser `disk.query` omitted `/dev/vda4`, and the wizard had no
+partition controls. The current v27 shim supplies the reserved partition to
+the pool wizard; use the guarded sequence above to check it. The separate
+`preprovisioned` route remains for downstream Path B UI checks. Its registered
+unit gate passed on 2026-10-21; rerun the unit gate after changing the
+implementation or its contract tests.
 
 For a disposable managed v27 guest, the preprovisioned sequence is:
 
@@ -657,10 +703,14 @@ and owned by the same non-root UID as the SSH key. The `playwright` dependency
 is installed in the ephemeral tester from the pinned
 [`requirements-live-ui.txt`](../acceptance/requirements-live-ui.txt); set its
 version to the `playwright_version` reported by `pwmcp contract`.
-The lane is registered. The fresh Path A run passed; the Path B `ui-wizard`
-route stopped safely because the wizard could not see `/dev/vda4`. The new
-`preprovisioned` route covers downstream forms after registered pool setup,
-but remains unverified until its unit and live gates pass.
+The earlier 2026-10-18 Path B `ui-wizard` diagnostic stopped safely because
+the unmodified middleware did not offer its reserved partition. On
+2026-10-28, the v27 shim passed the stricter registered API and UI reruns: the
+wizard evidence was a newly created middleware job, and its vdev named only
+the reserved PARTUUID. The API probe also confirmed the exact option refusals,
+destroy protection, and unchanged boot-pool and partition state. The
+`preprovisioned` route covers downstream forms after registered pool setup
+and remains a separate workflow.
 
 Run Path A and Path B on separate fresh COW guests. Use the matching SSH port
 and `known_hosts` from each runner manifest. The Path A commands below are an
@@ -686,7 +736,8 @@ export TRUENAS_STORAGE_PROFILE=path-a
 
 The current fresh Path B guest `truenas-v27-ui-b-fresh-r1-20261018` passed the
 registered patch, post-patch read-only inventory, and guarded partition-only
-lanes. After the partition lane, its Disks screen showed only the whole
+lanes. This 2026-10-18 diagnostic predates the current shim. After the
+partition lane, its Disks screen showed only the whole
 boot-pool disk and no partition controls. Kernel `lsblk` sees the 4 GiB
 `/dev/vda4`, but middleware and browser `disk.query` omit it. The pool wizard
 reported no available disks and stopped before submitting `pool.create`. A
@@ -695,11 +746,10 @@ registered post-attempt inventory passed and confirmed there is no
 [partition result](../artifacts/live-path-b-partition-v27-path-b-fresh-r1-20261018.log),
 [latest UI diagnostic](../artifacts/live-ui-v27-path-b-r1-after-cleanup-with-disks-screen-20261018.log),
 and [post-attempt inventory](../artifacts/live-inspect-v27-path-b-r1-after-disks-screen-20261018.log).
-Preserve this diagnostic guest; do not replay the patch, partition, or wizard
-lanes on it. Creation of `/dev/vda4` and `boot-disk-data` through the UI is
-still open. Do not select the whole disk or use this guest for the new
-preprovisioned route; use a fresh disposable managed guest for that separate
-downstream UI test.
+Preserve this historical diagnostic guest; do not replay the patch,
+partition, or wizard lanes on it. The current v27 shim handles the partition
+that the earlier build omitted. Never select the whole boot-pool disk. Use the
+registered safety sequence above on the explicitly selected disposable target.
 
 Keep each guest on `$CGROUP_PARENT_DEV_BACKGROUND` and the network tester on
 `$CGROUP_PARENT_DEV_GATES` through the supported `tcg_vm.py` and

@@ -54,6 +54,27 @@ def step_exists(source: str, step: str) -> bool:
     )
 
 
+def lane_fails_on_assertion_errors(lane: str) -> bool:
+    source_path = lane_source(lane)
+    if source_path is None or not source_path.is_file():
+        return False
+    source = source_path.read_text()
+    if lane == "live-api-probe":
+        return (
+            "if not ok:" in source
+            and "FAILURES.append(key)" in source
+            and "if FAILURES:" in source
+            and "raise RemoteError(f\"failed checks:" in source
+        )
+    if lane == "live-ui":
+        return (
+            "def require(condition: bool, message: str) -> None:" in source
+            and "raise RemoteError(message)" in source
+            and "except (RemoteError, KeyError, TypeError, ValueError)" in source
+        )
+    return False
+
+
 def method_has_call_site(method: str) -> bool:
     quoted = rf'["\']{re.escape(method)}["\']'
     return bool(re.search(
@@ -118,6 +139,19 @@ def test_every_pass_cell_names_an_asserting_lane_and_step() -> None:
                     f"{row['id']} {column}: PASS needs `lane : step` evidence")
 
 
+def test_pass_patch_ui_rows_cite_asserting_lane_steps() -> None:
+    for row in ACTIONS:
+        if row["verdict"] != "patch-UI":
+            continue
+        if not any(row[column].startswith("PASS") for column in ("v27", "v28")):
+            continue
+        assert any(
+            step and step_exists(lane_source(lane).read_text(), step)
+            and lane_fails_on_assertion_errors(lane)
+            for lane, step in pairs(row["lane"])
+        ), f"{row['id']}: PASS patch-UI evidence must name an asserting lane step"
+
+
 def test_every_ui_patch_is_used_by_an_action_row() -> None:
     used = {patch for row in ACTIONS for patch in names(row["patch"])}
     for row in INVENTORY:
@@ -151,3 +185,8 @@ def test_every_ui_acceptance_step_that_exercises_an_action_has_a_row() -> None:
 def test_readme_and_consumer_guide_link_the_matrix() -> None:
     assert "ACTION-MATRIX.md" in (PATCH_ROOT / "README.md").read_text()
     assert "ACTION-MATRIX" in (PATCH_ROOT / "docs" / "CONSUMERS.md").read_text()
+
+
+def test_live_api_probe_requires_the_selected_disk_and_boot_partition() -> None:
+    required = set(RUN_GATE["live-api-probe"].get("required_env", []))
+    assert {"TRUENAS_DISK_DEVICE", "TRUENAS_BOOT_POOL_PARTITION"} <= required

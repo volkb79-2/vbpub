@@ -12,7 +12,10 @@ ACCEPTANCE = TRUENAS_ROOT / "boot-pool-patch" / "acceptance"
 sys.path.insert(0, str(ACCEPTANCE))
 from path_b_ui_setup import (  # noqa: E402
     contains_pool_create_request,
+    pool_create_request_evidence,
+    reserved_partition_four_name,
     resolve_path_b_setup_mode,
+    validate_pool_create_topology,
 )
 
 
@@ -62,6 +65,56 @@ def test_pool_create_guard_ignores_other_methods_and_malformed_rows() -> None:
     ])
 
 
+def test_ui_wizard_derives_partition_name_from_the_selected_disk() -> None:
+    assert reserved_partition_four_name("/dev/vda") == "vda4"
+    assert reserved_partition_four_name("/dev/nvme0n1") == "nvme0n1p4"
+    with pytest.raises(ValueError):
+        reserved_partition_four_name("vda")
+
+
+def test_pool_create_evidence_prefers_this_browser_request() -> None:
+    browser = [{
+        "method": "pool.create",
+        "params": [{"name": "boot-disk-data", "topology": {"data": [
+            {"type": "STRIPE", "disks": ["vda4"]},
+        ]}}],
+    }]
+    old_jobs = [{"id": 9, "method": "pool.create", "arguments": [{"name": "boot-disk-data"}]}]
+    new_jobs = [{"id": 10, "method": "pool.create", "arguments": [{"name": "boot-disk-data"}]}]
+    data, evidence = pool_create_request_evidence(browser, old_jobs, new_jobs, "boot-disk-data")
+    assert data["topology"]["data"][0]["disks"] == ["vda4"]
+    assert evidence == "browser WebSocket request"
+
+
+def test_pool_create_evidence_ignores_old_job_and_requires_one_new_job() -> None:
+    old = [{"id": 9, "method": "pool.create", "arguments": [{"name": "boot-disk-data"}]}]
+    data = {"name": "boot-disk-data", "topology": {"data": [
+        {"type": "STRIPE", "disks": ["vda4"]},
+    ]}}
+    new = [{"id": 9, "method": "pool.create", "arguments": [data]}]
+    with pytest.raises(ValueError, match="found 0"):
+        pool_create_request_evidence([], old, new, "boot-disk-data")
+    data, evidence = pool_create_request_evidence(
+        [], old, [{"id": 10, "method": "pool.create", "arguments": [data]}], "boot-disk-data",
+    )
+    assert data["name"] == "boot-disk-data"
+    assert evidence == "new middleware pool.create job id=10"
+
+
+def test_pool_create_topology_must_use_only_the_expected_reserved_partition() -> None:
+    valid = {"data": [{"type": "STRIPE", "disks": ["vda4"]}], "cache": []}
+    validate_pool_create_topology(valid, "vda4")
+    for invalid in (
+        {"data": [{"type": "MIRROR", "disks": ["vda4"]}]},
+        {"data": [{"type": "STRIPE", "disks": ["vda4", "vda"]}]},
+        {"data": [{"type": "STRIPE", "disks": ["vda4"]}], "log": [
+            {"type": "STRIPE", "disks": ["vdb"]},
+        ]},
+    ):
+        with pytest.raises(ValueError):
+            validate_pool_create_topology(invalid, "vda4")
+
+
 def test_path_b_inspects_partition_controls_without_mutating_disk_state() -> None:
     source = LIVE_UI.read_text()
     start = source.index("def inspect_path_b_partition_ui")
@@ -84,7 +137,7 @@ def test_path_b_inspects_partition_controls_without_mutating_disk_state() -> Non
     assert "midclt" not in helper
 
     assert source.index("inspect_path_b_partition_ui(page, base_url)") < source.index(
-        "pool = create_path_b_pool_in_ui(page, base_url, target, pool_create_requests)",
+        "pool = create_path_b_pool_in_ui(\n                        page, base_url, target, pool_create_requests, expected_partition,",
     )
 
 
@@ -95,11 +148,20 @@ def test_path_b_pool_ui_requires_browser_create_request_for_reserved_partition()
     helper = source[start:end]
 
     assert "pool_create_requests: list[dict]" in helper
-    assert '"pool.create", "boot-disk-data"' in helper
-    assert '"vda4" in selected_devices and "vda" not in selected_devices' in helper
-    assert "browser pool.create submitted boot-disk-data with vda4 only" in helper
+    assert "pool_create_request_evidence(" in helper
+    assert 'disk.details", {"type": "UNUSED", "join_partitions": False}' in helper
+    assert "unused_names == [expected_partition]" in helper
+    assert '"boot-disk-data"' in helper
+    assert "validate_pool_create_topology(request.get(\"topology\"), expected_partition)" in helper
+    assert "selected = True" not in helper
+    assert "jobs_before" in helper and "jobs_after" in helper
+    assert "newest job" not in helper
+    assert "evidence={evidence_source}" in helper
     assert 'target.query("pool.query"' in helper
     assert 'target.call("pool.create"' not in helper
+    assert 'target.run(["lsblk", "-no", "PARTUUID", f"/dev/{expected_partition}"])' in helper
+    assert 'expected_vdev = f"/dev/disk/by-partuuid/{partuuid}"' in helper
+    assert "require(expected_vdev in vdev" in helper
     assert 'observe_rpc_method(page, "pool.create", log_response=True)' in source
 
 

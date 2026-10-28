@@ -20,7 +20,13 @@ from playwright.sync_api import expect
 from pwmcp_client import BrowserLease, PwmcpError
 
 from path_b_provisioner import provision_path_b
-from path_b_ui_setup import contains_pool_create_request, resolve_path_b_setup_mode
+from path_b_ui_setup import (
+    contains_pool_create_request,
+    pool_create_request_evidence,
+    reserved_partition_four_name,
+    resolve_path_b_setup_mode,
+    validate_pool_create_topology,
+)
 from path_a_ui_provisioner import PathARootProvisionError, provision_path_a_ui_root
 from observed_patch_manifest import (
     ObservedPatchManifestError,
@@ -884,8 +890,10 @@ def create_path_b_pool_in_ui(
     base_url: str,
     target: Target,
     pool_create_requests: list[dict],
+    expected_partition: str,
 ) -> str:
     """Try the supported pool wizard, accepting only the reserved free-tail partition."""
+    jobs_before = target.call("core.get_jobs", [["method", "=", "pool.create"]], timeout=120)
     body = page.locator("body")
     create = page.get_by_role("button", name=re.compile(r"^create pool$", re.IGNORECASE))
     if create.count() == 0:
@@ -923,14 +931,12 @@ def create_path_b_pool_in_ui(
     if name.count() == 1 and name.is_visible():
         name.fill("boot-disk-data")
 
-    # The patched middleware offers the reserved free-tail partition as a
-    # pseudo-disk. Never offer or select vda: it contains the running boot-pool.
-    # The only unused disk must therefore be vda4, and the automated Data-step
-    # selection (Stripe, one disk, one VDEV) can pick nothing else.
+    # The patched middleware offers only the reserved free-tail partition as a
+    # pseudo-disk. The boot disk itself must never be offered to this wizard.
     unused = target.call("disk.details", {"type": "UNUSED", "join_partitions": False}, timeout=120)
     unused_names = sorted(row.get("name") for row in unused)
-    require(unused_names == ["vda4"],
-            f"the wizard must be offered exactly the reserved partition vda4: {unused_names!r}")
+    require(unused_names == [expected_partition],
+            f"the wizard must be offered exactly the reserved partition {expected_partition!r}: {unused_names!r}")
     next_wizard = page.get_by_role("button", name=re.compile(r"^next$", re.IGNORECASE))
     next_wizard.first.click()
     page.wait_for_timeout(1000)
@@ -957,7 +963,6 @@ def create_path_b_pool_in_ui(
     preview = " ".join(body.inner_text(timeout=30_000).split())
     require("1 \u00d7 STRIPE" in preview and "No disks available" in preview,
             f"Data step preview does not show one Stripe VDEV using the only disk: {preview[-600:]!r}")
-    selected = True
 
     for _ in range(8):
         create_final = page.get_by_role("button", name=re.compile(r"^(create pool|create)$", re.IGNORECASE))
@@ -969,7 +974,9 @@ def create_path_b_pool_in_ui(
         )
         if next_button.count() != 1 or not next_button.is_enabled():
             snapshot = dialog.aria_snapshot()
-            raise RemoteError(f"pool wizard cannot advance with vda4 selected: {snapshot[:2600]!r}")
+            raise RemoteError(
+                f"pool wizard cannot advance with {expected_partition} selected: {snapshot[:2600]!r}"
+            )
         next_button.click()
         page.wait_for_timeout(500)
         dialog = page.get_by_role("dialog")
@@ -995,56 +1002,31 @@ def create_path_b_pool_in_ui(
         pools = target.query("pool.query", timeout=120)
         match = next((row for row in pools if row.get("name") == "boot-disk-data"), None)
         if match is not None and match.get("status") == "ONLINE":
-            request = rpc_object_for_name(
-                pool_create_requests, "pool.create", "boot-disk-data",
+            jobs_after = target.call(
+                "core.get_jobs", [["method", "=", "pool.create"]], timeout=120,
             )
-            if request is None:
-                # The browser frame observer can miss the wizard's job call. This lane never
-                # calls pool.create itself, so the middleware job record of the UI-created
-                # pool is the authority: a pool.create job for this name.
-                jobs = target.call(
-                    "core.get_jobs", [["method", "=", "pool.create"]], timeout=120,
+            try:
+                request, evidence_source = pool_create_request_evidence(
+                    pool_create_requests, jobs_before, jobs_after, "boot-disk-data",
                 )
-                named = [
-                    job["arguments"][0] for job in jobs
-                    if job.get("arguments") and isinstance(job["arguments"][0], dict)
-                    and job["arguments"][0].get("name") == "boot-disk-data"
-                ]
-                require(named,
-                        "boot-disk-data is ONLINE but neither the browser observer nor the middleware "
-                        "job record shows a pool.create for it")
-                request = named[-1]  # the newest job; earlier runs on this host may have left older ones
-                report("path-b-pool-ui", "browser frame not observed; using the middleware pool.create job record")
-            topology = request.get("topology")
-            require(isinstance(topology, dict),
-                    f"UI pool.create request has no topology object: {request!r}")
-            selected_devices: set[str] = set()
-
-            def collect_topology_devices(value) -> None:
-                if isinstance(value, dict):
-                    for key, child in value.items():
-                        if key == "disks" and isinstance(child, list):
-                            for device in child:
-                                if isinstance(device, str):
-                                    selected_devices.add(device.rstrip("/").rsplit("/", 1)[-1])
-                        collect_topology_devices(child)
-                elif isinstance(value, list):
-                    for child in value:
-                        collect_topology_devices(child)
-
-            collect_topology_devices(topology)
-            require("vda4" in selected_devices and "vda" not in selected_devices,
-                    "UI pool.create must submit the reserved vda4 partition and must not submit "
-                    f"the whole boot disk: devices={sorted(selected_devices)!r}; request={request!r}")
+                validate_pool_create_topology(request.get("topology"), expected_partition)
+            except ValueError as exc:
+                raise RemoteError(f"Path B pool-create evidence failed: {exc}") from exc
+            report("path-b-pool-ui-evidence", evidence_source)
             choices = target.call("container.pool_choices", timeout=120)
             require("boot-disk-data" in choices,
                     f"container pool choices omit UI-created Path B pool: {choices!r}")
             vdev = target.shell("zpool status -P boot-disk-data", timeout=90)
-            require("/dev/vda4" in vdev or "vda4" in vdev,
-                    f"UI-created boot-disk-data is not backed by vda4: {vdev!r}")
+            partuuid = target.run(["lsblk", "-no", "PARTUUID", f"/dev/{expected_partition}"])
+            require(bool(re.fullmatch(r"[0-9a-fA-F-]{36}", partuuid)),
+                    f"reserved partition {expected_partition} has no valid PARTUUID: {partuuid!r}")
+            expected_vdev = f"/dev/disk/by-partuuid/{partuuid}"
+            require(expected_vdev in vdev,
+                    f"UI-created boot-disk-data is not backed by reserved PARTUUID {partuuid}: {vdev!r}")
             report(
                 "path-b-pool-ui",
-                "browser pool.create submitted boot-disk-data with vda4 only; "
+                f"evidence={evidence_source}; pool.create used {expected_partition} "
+                f"(PARTUUID {partuuid}) only; "
                 "middleware registered it ONLINE and container.pool_choices includes it",
             )
             return "boot-disk-data"
@@ -1964,7 +1946,14 @@ def main() -> int:
             else:
                 inspect_path_b_partition_ui(page, base_url)
                 if path_b_setup == "ui-wizard":
-                    pool = create_path_b_pool_in_ui(page, base_url, target, pool_create_requests)
+                    disk = required_env("TRUENAS_DISK_DEVICE")
+                    try:
+                        expected_partition = reserved_partition_four_name(disk)
+                    except ValueError as exc:
+                        raise RemoteError(str(exc)) from exc
+                    pool = create_path_b_pool_in_ui(
+                        page, base_url, target, pool_create_requests, expected_partition,
+                    )
                 else:
                     disk = required_env("TRUENAS_DISK_DEVICE")
                     boot_partition = required_env("TRUENAS_BOOT_POOL_PARTITION")

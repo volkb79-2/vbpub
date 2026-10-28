@@ -157,8 +157,8 @@ kind = "command"
 environment = "networked-tester"
 argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && \"$TESTER_VENV/bin/python\" live_api_probe.py"]
 budget = "20m"
-required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS"]
-description = "Assert the middleware API limits and pool-patch safety: Path A synthetic boot-pool row refusals; Path B partition pool shim, boot.attach refusal and hand-made pool adoption (path-b also needs TRUENAS_DISK_DEVICE and TRUENAS_BOOT_POOL_PARTITION)"
+required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_DISK_DEVICE", "TRUENAS_BOOT_POOL_PARTITION"]
+description = "Assert middleware refusal messages, reserved-partition pool creation/adoption, destruction and vdev-operation isolation, and boot-pool/partition integrity"
 
 [lanes.live-ui]
 kind = "command"

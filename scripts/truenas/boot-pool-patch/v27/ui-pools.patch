@@ -71,7 +71,7 @@
      async def __convert_topology_to_vdevs(self, topology):
          # Gather all disks transversing the topology so we can
          # format all disks in one pass, allowing it to be performed
-@@ -549,6 +596,20 @@
+@@ -549,6 +596,27 @@
          elif not validate_pool_name(data['name']):
              verrors.add('pool_create.name', 'Invalid pool name', errno.EINVAL)
  
@@ -83,6 +83,13 @@
 +        if partition_error:
 +            verrors.add('pool_create.topology', partition_error, errno.EINVAL)
 +        if partition is not None:
++            for option in await self.middleware.call(
++                'boot_disk_partition.unsupported_create_options', data,
++            ):
++                verrors.add(
++                    f'pool_create.{option}',
++                    f'{option} is not supported for reserved boot-disk partitions', errno.EINVAL,
++                )
 +            verrors.check()
 +            job.set_progress(10, f'Creating the pool on reserved partition {partition["path"]}')
 +            await self.middleware.call('boot_disk_partition.create_pool', data['name'], partition)
@@ -105,3 +112,16 @@
          return {'used': used, 'unused': unused}
  
      @private
+--- a/middlewared/plugins/pool_/export.py
++++ b/middlewared/plugins/pool_/export.py
+@@ -105,2 +105,10 @@
+         pool = await self.middleware.call('pool.get_instance', oid)
++        if options['destroy'] and await self.middleware.call(
++            'boot_disk_partition.pool_uses_reserved_partition', pool['topology'],
++        ):
++            raise CallError(
++                f"Refusing destructive export of pool {pool['name']!r}: "
++                "its partition shares a parent disk with boot-pool; "
++                "use destroy=false to disconnect without wiping data."
++            )
+         audit_callback(pool['name'])

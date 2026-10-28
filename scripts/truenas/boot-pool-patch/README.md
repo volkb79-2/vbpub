@@ -13,7 +13,7 @@ available.
 | Release | Evidence | Open acceptance |
 |---|---|---|
 | 25.10.4 / 25.10.7 | The retained 25.10.4 patch proposal dry-runs on 25.10.7. | Its reported UI flow failed; PWMCP reproduction remains pending. It does not apply to v27+. |
-| 27.0.0-RC.1 | Registered gates pass existing-container destroy/snapshot refusal and survival on Path A and B. Fresh Path A UI acceptance created/wrote a filesystem, created zvols, selected `boot-pool` for a container, and submitted a VM wizard using an existing boot-pool zvol. A separate UI workload gate started/stopped the container and blank VM; after a controlled v27 reboot it verified the root remounted, hashes persisted, the VM autostarted, and UI Start/Stop worked again. After the 2026-10-21 host restart, the resumed guest passed a second read-only inventory and another UI lifecycle cycle with the same filesystem/zvol hashes; the blank VM required its Power Off control to stop. Session Timeout was visible in the signed-in account menu → Preferences (300 seconds). Path B reserved `/dev/vda4`, but middleware and the UI omit it; the pool wizard submitted no creation. The candidate `preprovisioned` UI mode passed the registered unit gate (170 tests and 45 subtests); fresh live UI acceptance remains open. The topology diagnostic showed Cache/Log/Special UI steps, omitted the boot-pool zvols, and safely refused their API paths before ZFS attachment. | Retention and natural post-update accessibility of these pre-existing Path A workloads through v27→v28 and v28 patch/reboot remain untested. The current container test does not prove a user filesystem mounted inside the container, and the VM has no guest OS. Path B UI partition/pool creation, downstream UI acceptance in the new preprovisioned mode, accepted auxiliary-vdev roles through middleware/UI, existing-pool expansion, a disk-backed cache target, share-client access, VM guest boot, and actual live KVM selection remain open. |
+| 27.0.0-RC.1 | Registered gates pass existing-container destroy/snapshot refusal and survival on Path A and B. Fresh Path A UI acceptance created/wrote a filesystem, created zvols, selected `boot-pool` for a container, and submitted a VM wizard using an existing boot-pool zvol. A separate UI workload gate started/stopped the container and blank VM; after a controlled v27 reboot it verified the root remounted, hashes persisted, the VM autostarted, and UI Start/Stop worked again. After the 2026-10-21 host restart, the resumed guest passed a second read-only inventory and another UI lifecycle cycle with the same filesystem/zvol hashes; the blank VM required its Power Off control to stop. Session Timeout was visible in the signed-in account menu → Preferences (300 seconds). The 2026-10-18 Path B UI refusal predates the current shim. On 2026-10-28, the registered `live-api-probe` and Path B `live-ui` review reruns passed: unsupported create options and destructive export were explicitly refused, partition and boot-pool state remained unchanged, and the wizard's fresh create job used only the reserved partition. The unit lane passed with 230 tests and 45 subtests. The topology diagnostic showed Cache/Log/Special UI steps, omitted the boot-pool zvols, and safely refused their API paths before ZFS attachment. | Retention and natural post-update accessibility of these pre-existing Path A workloads through v27→v28 and v28 patch/reboot remain untested. The current container test does not prove a user filesystem mounted inside the container, and the VM has no guest OS. Downstream UI acceptance in the `preprovisioned` mode, accepted auxiliary-vdev roles through middleware/UI, existing-pool expansion, a disk-backed cache target, share-client access, VM guest boot, and actual live KVM selection remain open. |
 | 28.0.0-MASTER+20261014-230204 | Exact target checks and guarded replacement passed. Path A and Path B provision/storage gates refuse destroy/snapshot against existing managed container data and verify survival. Path B provision passed on a reserved tail; Path A reboot/remount passed. A marker survived the v27-to-v28 update after manual mounting. A fresh post-restart Path B COW guest booted, but admission refused its registered inventory; it was then cleanly stopped with its overlay preserved. | Path B reboot/import, automatic remount and retention of pre-existing data/container/VM records through update and v28 patch reapplication, full UI, share-client access, guest OS boot, actual KVM selection, and a real second-disk cache/import-order check remain open. |
 
 The prior v28 Path B `live-storage` attempt did not survive the host restart;
@@ -73,24 +73,27 @@ direct existence checks after destroy and snapshot refusal.
 The latest registered Path B UI diagnostic is recorded at
 [`live-ui-v27-path-b-r1-after-cleanup-with-disks-screen-20261018.log`](artifacts/live-ui-v27-path-b-r1-after-cleanup-with-disks-screen-20261018.log): kernel `lsblk` sees the 4 GiB `/dev/vda4`, while middleware and browser `disk.query` return only `/dev/vda`, assigned to `boot-pool`. The Disks screen has no partition creation controls. The wizard reports zero raw capacity and no disks; it stops before submitting `pool.create`. A registered post-attempt inventory confirms no `boot-disk-data` pool or test data was created:
 [`live-inspect-v27-path-b-r1-after-disks-screen-20261018.log`](artifacts/live-inspect-v27-path-b-r1-after-disks-screen-20261018.log).
-This remains the result for the `ui-wizard` route: the UI cannot create
-`/dev/vda4` or `boot-disk-data` on this build. The working tree now adds an
-explicit `preprovisioned` route for downstream UI checks: the registered
+That 2026-10-18 diagnostic predates the v27 partition shim. The current shim
+offers the eligible reserved partition to `pool.create` and adopts the new
+pool. The 2026-10-28 review reruns passed: the API probe verified option
+refusals and destroy protection, and the UI wizard created `boot-disk-data`
+using only the reserved partition. The separate
+`preprovisioned` route is for downstream UI checks: the registered
 Path B provisioner creates and registers the pool first, then `live-ui` checks
 user dataset, zvol, container, and VM operations through the UI. That route
 passed its registered unit gate (170 tests and 45 subtests; see the
 [unit log](artifacts/unit-boot-pool-patch-path-b-ui-preprovision-mode-20261021.log)).
-Fresh live UI acceptance remains open, and this route does not prove UI pool
-creation.
+That route does not prove UI pool creation.
+See the [Path B pool-wizard safety design](docs/DESIGN-GUIDE.md#path-b-pool-wizard-safety)
+for the rationale behind the reserved-partition limits and destroy guard.
 Do not select the whole boot disk. Use only a disposable managed guest for
 either route. See the [consumer workflow](docs/CONSUMERS.md#run-pwmcp-ui-storage-acceptance)
 for the two explicit setup modes.
 
 The required Path B baseline remains: run the guarded partition-only lane
 first, then have the TrueNAS pool wizard create and register
-`boot-disk-data`. The additional question of creating `/dev/vda4` itself in
-the UI remains open. The registered Disks-screen probe found no partition
-controls, and the wizard cannot currently see the partition.
+`boot-disk-data`. The Disks screen does not create `/dev/vda4`; partition
+reservation remains a separate guarded setup step.
 
 Do not treat these adapters as ready for general installation. A successful
 API operation does not prove that every UI path, reboot, update, share client,

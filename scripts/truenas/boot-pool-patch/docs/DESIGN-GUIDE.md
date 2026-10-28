@@ -746,6 +746,51 @@ Path B partition/pool setup in the earlier acceptance was manual. The later
 registered idempotent provisioner passed on both v27 and v28; v27 Path B
 provisioning and storage used the same COW guest after its Path A run.
 
+### Path B pool-wizard safety
+
+The v27 adapter models a reserved partition as an available pool-create target
+only when it is an unused ZFS GPT partition labeled `boot-disk-data`, numbered
+4 or later, and its parent disk contains a `boot-pool` leaf. The create path
+accepts exactly one Stripe data vdev and opens the partition by PARTUUID. This
+keeps selection bound to the GPT identity that was inspected and limits the
+adapter to the topology it can prove safe. Mirror, mixed-disk, and auxiliary
+vdev requests receive a validation refusal.
+
+The shim also refuses every non-default create option it does not implement,
+including encryption, encryption parameters, deduplication, dedup-table quota,
+checksum, duplicate-serial allowance, SED mode, and forced topology. Returning
+before stock validation would silently discard those settings. An
+option-specific refusal makes that boundary visible to the wizard caller.
+
+Creation follows the installed v27 `pool.create` properties: ZFS options
+`feature@lz4_compress=enabled`, `altroot=/mnt`, the middleware cachefile,
+`failmode=continue`, `autoexpand=on`, and `ashift=12`; root filesystem options
+`atime=off`, `acltype=posix`, `aclinherit=discard`, `aclmode=discard`,
+`compression=lz4`, `xattr=sa`, and `mountpoint=/<pool>`. Keeping this property
+set avoids a fixed-sector-size mismatch and makes datasets inherit the same
+root properties as a stock pool.
+
+Destructive export needs a separate guard. Installed v27 `pool_/export.py`
+calls `pool.get_disks`, then invokes `disk.wipe(..., 'QUICK', False)` for the
+resolved devices. `pool.get_disks` returns whole disks; the installed
+`plugins/zpool/get_zpool_disks_impl.py` resolves a partition leaf to its parent
+device through `/sys/class/block/<partition>/partition`. The quick wipe writes
+the first and last 32 MiB of that parent, which includes the boot disk's GPT
+and boot area. The adapter refuses `pool.export` with `destroy=true` for a
+reserved-partition pool and leaves ordinary non-destructive export available.
+The live API probe checks the exact refusal, `boot-pool` GUID/health/status,
+the unchanged `lsblk`/`sgdisk` partition table, and the adopted pool's ONLINE
+state. It also exercises replace, offline/online, detach, and remove while
+checking the other partitions remain unchanged.
+
+After `zpool create`, adoption can fail at export, import discovery, or import.
+Rollback re-reads the partition's PARTUUID, label, ZFS type, parent, and boot
+pool leaves before destructive steps. It destroys only a pool whose status
+shows the exact reserved partition, or clears labels only on the verified
+PARTUUID after confirming the pool is neither imported nor exported there.
+Ambiguous state or failed cleanup raises a `CallError` that reports the
+remaining state instead of presenting a successful creation.
+
 The Web UI gates the VM page on `vm.virtualization_details.supported`, so the
 middleware capability update exposes the existing page without a UI source
 change. PWMCP checks passed for the VM page and the wizard through its CPU and

@@ -1056,7 +1056,7 @@ def test_live_ui_script_inventories_before_mutating_and_checks_zfs_backing() -> 
     assert 'get_by_text("Storage", exact=True)' in path_b_pool_ui_source
     assert 'page.goto(base_url + "/ui/storage"' not in path_b_pool_ui_source
     assert 'create.wait_for(state="visible", timeout=60_000)' in path_b_pool_ui_source
-    assert 'require(unused_names == ["vda4"],' in path_b_pool_ui_source
+    assert 'require(unused_names == [expected_partition],' in path_b_pool_ui_source
     assert 'choose("Layout", "^Stripe$")' in path_b_pool_ui_source
     assert '"No disks available" in preview' in path_b_pool_ui_source
     assert 'observe_rpc_method(page, "disk.query", log_response=True)' in source

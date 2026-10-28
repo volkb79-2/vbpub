@@ -369,3 +369,27 @@ provisioning is logged at
 The guest was stopped through `tcg_vm.py` after a read-only post-pass
 inspection. Its COW overlay remains available under
 `scripts/truenas/.vm/v27-path-a-20261016-r3`.
+
+## Path B pool-wizard shim safety
+
+`ui-pools.patch` also adapts the v27 pool wizard for one reserved partition.
+The helper offers only an unused `boot-disk-data` ZFS GPT partition numbered
+4 or later on a disk that contains a `boot-pool` leaf. Pool creation is limited
+to one Stripe data vdev, uses `/dev/disk/by-partuuid/<PARTUUID>`, and copies
+the stock v27 pool properties. Encryption, non-default encryption options,
+deduplication, dedup-table quota, checksum, duplicate-serial allowance, SED
+mode, and forced topology are refused with option-specific errors.
+
+Stock v27 destructive export resolves a partition vdev to its whole parent
+disk before calling `disk.wipe` with `QUICK`; that path overwrites the first
+and last 32 MiB. The adapter therefore refuses `pool.export` with
+`destroy=true` for a pool on the reserved boot-disk partition. The API probe
+checks that refusal alongside unchanged boot-pool status and GPT layout, and
+exercises replace, offline/online, detach, and remove against the adopted pool.
+Creation and adoption failures also run a guarded rollback that re-verifies
+the partition before destroying the exact pool or clearing labels on the
+verified PARTUUID.
+
+See the rationale in the [design guide](../docs/DESIGN-GUIDE.md#path-b-pool-wizard-safety)
+and the exact registered live sequence in the
+[consumer guide](../docs/CONSUMERS.md#path-b-v27-pool-wizard-safety).
