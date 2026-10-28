@@ -52,13 +52,16 @@ resync and refuses unresolved drift unless --force is supplied.
 
 ## Report Claude Code usage
 
-`nyxloom usage report` scans the configured local Claude Code project
-transcripts and attributes de-duplicated API request tokens to each session
-and nested subagent. It is read-only unless `--out FILE` is supplied, which
-writes the selected rendering to that file. The JSON format is schema version
-1 and carries the same session tree used by the table and CSV renderers,
-including metadata-only per-request rows for later timeline charts. Message,
-thinking, and tool content are excluded.
+`nyxloom usage report` scans local Claude Code transcripts and attributes
+deduplicated API request tokens to each session and nested subagent. D-022
+chooses this additive command spelling; the command uses the pure
+`session_extract.usage` service without project registration, daemon state or
+persistent storage. It is read-only unless `--out FILE` is supplied, which
+writes the selected rendering to that file. JSON uses the frozen
+`usage-report-v1` schema and contains an exact call ledger, nodes with self and
+subtree totals, typed events, lineage edges, conflicts, provenance and coverage
+warnings. It excludes message, thinking and tool content and does not serialize
+filesystem paths.
 
 ```sh
 # Last 24 hours, expanded tree and raw-token totals.
@@ -68,21 +71,24 @@ nyxloom usage report --since 24h
 nyxloom usage report --since 7d --project /path/to/project \
   --format json --out usage-7d.json
 
-# Write flat CSV rows, rank by request count, and fold rows below 1% share.
+# Write the exact call ledger as CSV, ordered by time; rank the table by count.
 nyxloom usage report --since 24h --format csv --out usage.csv \
-  --flat --sort calls --min-share 1%
+  --sort calls
 
 # Hide session titles and agent topic labels in a table report.
 nyxloom usage report --since 24h --no-labels
 ```
 
 `--since` accepts an ISO-8601 timestamp with a timezone or a positive duration
-using seconds, minutes, hours, days, or weeks (`s`, `m`, `h`, `d`, `w`). A
-relative start counts backward from `--until` when it is present, otherwise
-from invocation time. `--until` is inclusive; all timestamps are reported in
-UTC. `--project` matches the recorded `cwd` exactly or by a unique basename;
-it includes a session if any loaded request in that session has that `cwd`.
-`--session` selects one exact session ID.
+using seconds, minutes, hours, days, or weeks (`s`, `m`, `h`, `d`, `w`). The
+report interval is half-open `[since, until)` in UTC: `--since` is included and
+`--until` is excluded. A relative start counts backward from `--until` when
+present, otherwise from invocation time. Each request uses its own
+timezone-aware record timestamp; missing or invalid times are skipped and
+reported as coverage diagnostics. The table marks coverage `partial` when
+records or attribution are missing; successful stream and copied-prefix merges
+remain visible counts without making coverage partial by themselves. `--project` matches recorded `cwd` exactly or
+by a unique basename; `--session` selects one exact loaded session ID.
 
 U1–U2 intentionally report raw tokens only. Raw token units are input plus
 cache-read, cache-write 5-minute, cache-write 1-hour, unclassified cache-write,
@@ -93,13 +99,18 @@ percentage. The later weights and limit-calibration work will verify prices
 against Anthropic's pricing page and transcript `cost-state` records before
 reporting those figures.
 
-The tree has one session row per selected session, followed by attributed
+The table has one session row per selected session, followed by attributed
 subagents and nested subagents. Each row includes self totals and a subtree
 subtotal; `--depth N` shows levels 0 through N. `--min-share PCT` folds smaller
 subtrees or session roots into explicit “other” rows. Use `--flat` for a global
-ranked list; it cannot be combined with `--depth`. JSON retains the full tree
-unless one of those presentation controls folds or hides rows. CSV contains
-one row per visible tree node.
+ranked list; it cannot be combined with `--depth`. JSON's `calls` array remains
+the exact ledger even when tree presentation is folded or clipped. CSV has one
+report metadata row followed by one row per deduplicated call, ordered by
+timestamp/session/source/line/call ID; events and tree rollups are available in
+JSON and the table, respectively. When copied sources had different request
+IDs, `request_ids` retains every distinct alias. `--no-labels` strips
+title/topic labels before JSON, CSV or table rendering. Raw token shares are
+local report shares, not account limit percentages.
 
 See the [usage report design](DESIGN-GUIDE.md#local-usage-report) for the
 deduplication, attribution, and privacy choices, and the

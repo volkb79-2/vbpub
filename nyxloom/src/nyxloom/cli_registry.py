@@ -601,7 +601,7 @@ def _usage_report_group() -> VerbSpec:
             cli.cmd_usage_report,
             options=(
                 _opt("--since", "Start at a duration before --until or now, or an ISO-8601 timestamp", required=True),
-                _opt("--until", "Inclusive ISO-8601 end timestamp; omitted means now", default=None),
+                _opt("--until", "Exclusive ISO-8601 end timestamp; omitted means the invocation time", default=None),
                 _opt("--project", "Select sessions with this recorded cwd or unique cwd basename", default=None),
                 _opt("--session", "Select one exact Claude Code session id", default=None),
                 _opt("--format", "Report encoding", dest="usage_format", choices=("table", "json", "csv"), default="table"),

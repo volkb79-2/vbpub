@@ -1,7 +1,9 @@
-"""Pure UTC window selection, tree roll-up, sorting, and report shaping."""
+"""UTC window selection, tree roll-up, and the frozen usage-report-v1 shape."""
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 from collections import Counter
@@ -10,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .model import Aggregate, Call, Compaction, Corpus, Node, Session, Window
+from .model import Aggregate, Call, Corpus, Node, Session, UsageEvent, Window
 
 
 class UsageQueryError(ValueError):
@@ -19,7 +21,15 @@ class UsageQueryError(ValueError):
 
 _DURATION_RE = re.compile(r"^([1-9][0-9]*)([smhdw])$")
 _DURATION_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+_BURST_GAP_SECONDS = 3600
 SORT_COLUMNS = ("cost", "start", "dur", "calls", "peak", "out")
+_INFORMATIONAL_COVERAGE_COUNTERS = frozenset({
+    "duplicate_requests",
+    "copied_prefixes",
+    "parent_conflicts",
+    "unclassified_rejections",
+    "symlink_aliases",
+})
 
 
 def _parse_iso_timestamp(value: str) -> datetime:
@@ -46,19 +56,20 @@ def resolve_window(
     *,
     now: datetime | None = None,
 ) -> Window:
-    """Resolve relative or explicit bounds to an inclusive UTC interval.
+    """Resolve a half-open UTC interval ``[since, until)``.
 
-    A relative ``since`` is measured backwards from ``until`` when an explicit
-    end is supplied, otherwise from ``now``. Both bounds are normalized to UTC.
+    Relative starts count backward from an explicit end when supplied,
+    otherwise from the injectable invocation time. Record timestamps and
+    explicit bounds are normalized from their supplied offsets to UTC.
     """
     if not isinstance(since, str) or not since.strip():
         raise ValueError("--since must be a duration such as 24h or a timezone-aware timestamp")
-    reference = now or datetime.now(timezone.utc)
+    reference = now if now is not None else datetime.now(timezone.utc)
     if reference.tzinfo is None or reference.utcoffset() is None:
         raise ValueError("now must include a timezone")
     reference = reference.astimezone(timezone.utc)
-    end = _parse_iso_timestamp(until) if until else reference
-    start = _parse_since(since.strip(), end if until else reference)
+    end = _parse_iso_timestamp(until) if until is not None else reference
+    start = _parse_since(since.strip(), end if until is not None else reference)
     if end < start:
         raise ValueError("--until must not be before --since")
     return Window(start, end, since.strip(), until)
@@ -82,6 +93,15 @@ def _walk(node: Node):
     yield node
     for child in node.children:
         yield from _walk(child)
+
+
+def _project_key(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = str(Path(value).expanduser().resolve(strict=False))
+    material = json.dumps((normalized,), ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
+    return f"project_{digest}"
 
 
 def _normalise_project(value: str) -> str:
@@ -110,22 +130,22 @@ def _select_project_sessions(sessions: list[Session], selector: str) -> set[str]
     return set(next(iter(basename_matches.values())))
 
 
-def _copy_windowed(
-    node: Node,
-    *,
-    window: Window,
-    no_labels: bool,
-) -> Node | None:
+def _copy_windowed(node: Node, *, window: Window, no_labels: bool) -> Node | None:
     calls = [
         replace(call, topic=None if no_labels else call.topic)
         for call in node.calls
-        if window.since <= call.timestamp <= window.until
+        if window.since <= call.timestamp < window.until
+    ]
+    events = [
+        replace(event)
+        for event in node.events
+        if window.since <= event.timestamp < window.until
     ]
     children = [
         copied for child in node.children
         if (copied := _copy_windowed(child, window=window, no_labels=no_labels)) is not None
     ]
-    if not calls and not children:
+    if not calls and not events and not children:
         return None
     copied_node = Node(
         node_id=node.node_id,
@@ -136,11 +156,17 @@ def _copy_windowed(
         topic=None if no_labels else node.topic,
         kind=node.kind,
         project=node.project,
+        spawn_depth=node.spawn_depth,
+        is_fork=node.is_fork,
+        source_ids=list(node.source_ids),
+        lineage_status=node.lineage_status,
+        lineage_candidates=list(node.lineage_candidates),
+        claimed_parent_agent_id=node.claimed_parent_agent_id,
+        lineage_tool_use_id=node.lineage_tool_use_id,
+        clipped_before=node.clipped_before,
+        clipped_after=node.clipped_after,
         calls=calls,
-        compactions=[
-            event for event in node.compactions
-            if window.since <= event.timestamp <= window.until
-        ],
+        events=events,
         children=children,
         omitted_descendants=node.omitted_descendants,
     )
@@ -161,7 +187,10 @@ def _combine(aggregates: list[Aggregate]) -> Aggregate:
     starts = [aggregate.start for aggregate in nonempty if aggregate.start is not None]
     ends = [aggregate.end for aggregate in nonempty if aggregate.end is not None]
     peaks = [aggregate for aggregate in nonempty if aggregate.peak_context_at is not None]
-    peak = max(peaks, key=lambda aggregate: (aggregate.peak_context, -aggregate.peak_context_at.timestamp())) if peaks else None
+    peak = max(
+        peaks,
+        key=lambda aggregate: (aggregate.peak_context, -aggregate.peak_context_at.timestamp()),
+    ) if peaks else None
     start = min(starts) if starts else None
     end = max(ends) if ends else None
     return Aggregate(
@@ -180,7 +209,8 @@ def _combine(aggregates: list[Aggregate]) -> Aggregate:
         peak_context_at=peak.peak_context_at if peak is not None else None,
         start=start,
         end=end,
-        duration_seconds=int((end - start).total_seconds()) if start and end else 0,
+        wall_duration_seconds=int((end - start).total_seconds()) if start and end else 0,
+        active_span_seconds=sum(aggregate.active_span_seconds for aggregate in nonempty),
         models=dict(sorted(models.items())),
         efforts=dict(sorted(efforts.items())),
     )
@@ -196,9 +226,13 @@ def _roll_up(node: Node) -> Aggregate:
 def _sort_key(node: Node, column: str) -> tuple[Any, ...]:
     aggregate = node.subtree_aggregate
     if column == "start":
-        return (aggregate.start is None, aggregate.start or datetime.max.replace(tzinfo=timezone.utc), node.node_id)
+        return (
+            aggregate.start is None,
+            aggregate.start or datetime.max.replace(tzinfo=timezone.utc),
+            node.node_id,
+        )
     if column == "dur":
-        return (-aggregate.duration_seconds, node.node_id)
+        return (-aggregate.wall_duration_seconds, node.node_id)
     if column == "calls":
         return (-aggregate.calls, node.node_id)
     if column == "peak":
@@ -247,14 +281,17 @@ def _fold_small_children(node: Node, *, minimum: float, total_raw: int, sort: st
             topic=f"other ({count} agents)",
             kind="other",
             project=node.project,
+            source_ids=sorted({source_id for child in small for source_id in child.source_ids}),
+            lineage_status="folded",
+            clipped_before=any(child.clipped_before for child in small),
+            clipped_after=any(child.clipped_after for child in small),
             calls=sorted(
                 [call for child in small for descendant in _walk(child) for call in descendant.calls],
-                key=lambda call: (call.timestamp, call.source_order),
+                key=lambda call: (call.timestamp, call.source_id, call.source_line, call.call_id),
             ),
-            compactions=sorted(
-                [event for child in small for descendant in _walk(child)
-                 for event in descendant.compactions],
-                key=lambda event: event.timestamp,
+            events=sorted(
+                [event for child in small for descendant in _walk(child) for event in descendant.events],
+                key=lambda event: (event.timestamp, event.session_id, event.source_id, event.source_line),
             ),
             self_aggregate=aggregate,
             subtree_aggregate=aggregate,
@@ -291,21 +328,68 @@ def _tokens(aggregate: Aggregate) -> dict[str, int]:
     }
 
 
+def _aggregate_dict(aggregate: Aggregate, *, share: float | None = None) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "calls": aggregate.calls,
+        "start": _iso(aggregate.start),
+        "end": _iso(aggregate.end),
+        "duration_seconds": aggregate.wall_duration_seconds,
+        "wall_duration_seconds": aggregate.wall_duration_seconds,
+        "active_span_seconds": aggregate.active_span_seconds,
+        "models": dict(aggregate.models),
+        "efforts": dict(aggregate.efforts),
+        "tokens": _tokens(aggregate),
+        "raw_token_units": aggregate.raw_token_units,
+        "peak_context": aggregate.peak_context,
+        "peak_context_at": _iso(aggregate.peak_context_at),
+        "weighted_units": aggregate.weighted_units,
+        "api_equivalent_usd": aggregate.usd,
+        "usd": aggregate.usd,
+    }
+    if share is not None:
+        result["share_of_total"] = round(share, 8)
+    return result
+
+
+def _activity_bursts(calls: list[Call]) -> list[dict[str, Any]]:
+    ordered = sorted(
+        calls,
+        key=lambda call: (call.timestamp, call.source_id, call.source_line, call.call_id),
+    )
+    if not ordered:
+        return []
+    bursts: list[dict[str, Any]] = []
+    start = end = ordered[0].timestamp
+    count = 1
+    for call in ordered[1:]:
+        if (call.timestamp - end).total_seconds() > _BURST_GAP_SECONDS:
+            bursts.append({"start": _iso(start), "end": _iso(end), "calls": count})
+            start = call.timestamp
+            count = 0
+        end = call.timestamp
+        count += 1
+    bursts.append({"start": _iso(start), "end": _iso(end), "calls": count})
+    return bursts
+
+
 def _call_dict(call: Call) -> dict[str, Any]:
-    """Serialize only request metadata needed by later timeline renderers."""
+    """Serialize one complete, deduplicated call without text or paths."""
     return {
+        "call_id": call.call_id,
         "request_id": call.request_id,
+        "request_ids": list(call.request_ids),
+        "message_id": call.message_id,
         "timestamp": _iso(call.timestamp),
-        "source_order": call.source_order,
         "session_id": call.session_id,
         "agent_id": call.agent_id,
         "topic": call.topic,
         "agent_type": call.agent_type,
-        "project": call.project,
+        "project_id": _project_key(call.project),
         "model": call.model,
         "effort": call.effort,
         "service_tier": call.service_tier,
         "speed": call.speed,
+        "inference_geo": call.inference_geo,
         "tokens": {
             "input": call.input_tokens,
             "output": call.output_tokens,
@@ -317,40 +401,48 @@ def _call_dict(call: Call) -> dict[str, Any]:
         },
         "raw_token_units": call.raw_token_units,
         "context_size": call.context_size,
-        "kind": call.kind,
-        "compaction_before": call.compaction_before,
         "sidechain": call.sidechain,
-        "compaction_pre_tokens": call.compact_pre,
-        "compaction_post_tokens": call.compact_post,
+        "source_id": call.source_id,
+        "source_ids": list(call.source_ids),
+        "source_line": call.source_line,
+        "provenance": [asdict(ref) for ref in call.provenance],
+        "stream_block_count": call.stream_block_count,
+        "copied_source_count": call.copied_source_count,
+        "has_fork_source": call.has_fork_source,
         "weighted_units": call.weighted_cost,
-        "usd": call.usd_cost,
+        "api_equivalent_usd": call.usd_cost,
     }
 
 
-def _aggregate_dict(aggregate: Aggregate, *, share: float | None = None) -> dict[str, Any]:
-    result = {
-        "calls": aggregate.calls,
-        "start": _iso(aggregate.start),
-        "end": _iso(aggregate.end),
-        "duration_seconds": aggregate.duration_seconds,
-        "models": dict(aggregate.models),
-        "efforts": dict(aggregate.efforts),
-        "tokens": _tokens(aggregate),
-        "raw_token_units": aggregate.raw_token_units,
-        "peak_context": aggregate.peak_context,
-        "peak_context_at": _iso(aggregate.peak_context_at),
-        "weighted_units": aggregate.weighted_units,
-        "usd": aggregate.usd,
+def _event_dict(event: UsageEvent) -> dict[str, Any]:
+    return {
+        "event_id": event.event_id,
+        "kind": event.kind,
+        "timestamp": _iso(event.timestamp),
+        "session_id": event.session_id,
+        "agent_id": event.agent_id,
+        "source_record_id": event.source_record_id,
+        "source_id": event.source_id,
+        "source_ids": list(event.source_ids),
+        "source_line": event.source_line,
+        "provenance": [asdict(ref) for ref in event.provenance],
+        "pre_tokens": event.pre_tokens,
+        "post_tokens": event.post_tokens,
+        "duration_ms": event.duration_ms,
+        "trigger": event.trigger,
+        "summary_present": event.summary_present,
+        "summary_timestamp": _iso(event.summary_timestamp),
+        "limit_kind": event.limit_kind,
+        "error_code": event.error_code,
+        "status_code": event.status_code,
+        "reset_at": _iso(event.reset_at),
+        "previous_call_id": event.previous_call_id,
+        "current_call_id": event.current_call_id,
     }
-    if share is not None:
-        result["share_of_total"] = round(share, 8)
-    return result
 
 
 def _node_dict(node: Node, *, total_raw: int, depth: int) -> dict[str, Any]:
-    subtree_share = (
-        node.subtree_aggregate.raw_token_units / total_raw if total_raw else 0.0
-    )
+    subtree_share = node.subtree_aggregate.raw_token_units / total_raw if total_raw else 0.0
     self_share = node.self_aggregate.raw_token_units / total_raw if total_raw else 0.0
     return {
         "node_id": node.node_id,
@@ -360,11 +452,20 @@ def _node_dict(node: Node, *, total_raw: int, depth: int) -> dict[str, Any]:
         "kind": node.kind,
         "agent_type": node.agent_type,
         "topic": node.topic,
-        "project": node.project,
+        "project_id": _project_key(node.project),
         "depth": depth,
+        "spawn_depth": node.spawn_depth,
+        "is_fork": node.is_fork,
+        "source_ids": list(node.source_ids),
+        "lineage_status": node.lineage_status,
+        "lineage_candidates": list(node.lineage_candidates),
+        "claimed_parent_agent_id": node.claimed_parent_agent_id,
+        "lineage_tool_use_id": node.lineage_tool_use_id,
+        "clipped_before": node.clipped_before,
+        "clipped_after": node.clipped_after,
         "start": _iso(node.subtree_aggregate.start),
         "end": _iso(node.subtree_aggregate.end),
-        "duration_seconds": node.subtree_aggregate.duration_seconds,
+        "duration_seconds": node.subtree_aggregate.wall_duration_seconds,
         "calls": node.subtree_aggregate.calls,
         "models": dict(node.subtree_aggregate.models),
         "efforts": dict(node.subtree_aggregate.efforts),
@@ -373,23 +474,16 @@ def _node_dict(node: Node, *, total_raw: int, depth: int) -> dict[str, Any]:
         "peak_context": node.subtree_aggregate.peak_context,
         "peak_context_at": _iso(node.subtree_aggregate.peak_context_at),
         "weighted_units": node.subtree_aggregate.weighted_units,
+        "api_equivalent_usd": node.subtree_aggregate.usd,
         "usd": node.subtree_aggregate.usd,
         "share_basis": "raw_token_units",
         "share_of_total": round(subtree_share, 8),
         "share_of_window": None,
         "self": _aggregate_dict(node.self_aggregate, share=self_share),
         "subtree": _aggregate_dict(node.subtree_aggregate, share=subtree_share),
-        "call_details": [_call_dict(call) for call in node.calls],
-        "compactions": [
-            {
-                "timestamp": _iso(event.timestamp),
-                "kind": "compaction",
-                "pre_tokens": event.pre_tokens,
-                "post_tokens": event.post_tokens,
-                "trigger": event.trigger,
-            }
-            for event in node.compactions
-        ],
+        "call_ids": [call.call_id for call in node.calls],
+        "event_ids": [event.event_id for event in node.events],
+        "active_bursts": _activity_bursts(node.calls),
         "omitted_descendants": node.omitted_descendants,
         "children": [
             _node_dict(child, total_raw=total_raw, depth=depth + 1)
@@ -400,13 +494,40 @@ def _node_dict(node: Node, *, total_raw: int, depth: int) -> dict[str, Any]:
 
 def _coverage(corpus: Corpus) -> dict[str, Any]:
     warnings = asdict(corpus.warnings)
+    # Unknown future warning fields fail conservatively as incomplete.
+    incomplete = any(
+        count for key, count in warnings.items()
+        if key not in _INFORMATIONAL_COVERAGE_COUNTERS
+    )
     return {
         "scanned_files": corpus.scanned_files,
-        "pruned_files": corpus.pruned_files,
-        "pruned_sessions": corpus.pruned_sessions,
         "warnings": warnings,
         "has_warnings": any(warnings.values()),
+        # Successful stream and copied-prefix deduplication is reported for
+        # auditability, but does not mean source coverage is incomplete.
+        "partial": incomplete,
     }
+
+
+def _lineage_edges(nodes: list[Node]) -> list[dict[str, Any]]:
+    edges = []
+    for root in nodes:
+        for node in _walk(root):
+            if node.agent_id is None:
+                continue
+            edges.append({
+                "session_id": node.session_id,
+                "agent_id": node.agent_id,
+                "node_id": node.node_id,
+                "parent_node_id": node.parent_id if node.lineage_status.startswith("resolved_") else None,
+                "status": node.lineage_status,
+                "candidate_parent_ids": list(node.lineage_candidates),
+                "claimed_parent_agent_id": node.claimed_parent_agent_id,
+                "tool_use_id": node.lineage_tool_use_id,
+                "spawn_depth": node.spawn_depth,
+                "is_fork": node.is_fork,
+            })
+    return sorted(edges, key=lambda edge: (edge["session_id"], edge["agent_id"]))
 
 
 def build_report(
@@ -422,7 +543,7 @@ def build_report(
     no_labels: bool = False,
     generated_at: datetime | None = None,
 ) -> dict[str, Any]:
-    """Build a JSON-serializable tree report from a loaded corpus."""
+    """Build a JSON-serializable, versioned report from the loaded corpus."""
     if sort not in SORT_COLUMNS:
         raise UsageQueryError(f"--sort must be one of: {', '.join(SORT_COLUMNS)}")
     if depth is not None and depth < 0:
@@ -434,10 +555,8 @@ def build_report(
     known_sessions = {item.session_id for item in corpus.sessions}
     if session is not None and session not in known_sessions:
         raise UsageQueryError("--session did not match a loaded transcript session")
-    project_sessions = (
-        _select_project_sessions(corpus.sessions, project) if project is not None else None
-    )
-    selected: list[Node] = []
+    project_sessions = _select_project_sessions(corpus.sessions, project) if project is not None else None
+    full_roots: list[Node] = []
     for item in corpus.sessions:
         if session is not None and item.session_id != session:
             continue
@@ -447,18 +566,28 @@ def build_report(
         if copied is not None:
             _roll_up(copied)
             _sort_tree(copied, sort)
-            selected.append(copied)
-    selected.sort(key=lambda node: _sort_key(node, sort))
-    total = _combine([node.subtree_aggregate for node in selected])
-    for node in selected:
-        _fold_small_children(
-            node, minimum=min_share, total_raw=total.raw_token_units, sort=sort,
-        )
+            full_roots.append(copied)
+    full_roots.sort(key=lambda node: _sort_key(node, sort))
+
+    total = _combine([node.subtree_aggregate for node in full_roots])
+    all_calls = sorted(
+        [call for root in full_roots for node in _walk(root) for call in node.calls],
+        key=lambda call: (call.timestamp, call.session_id, call.source_id, call.source_line, call.call_id),
+    )
+    all_events = sorted(
+        [event for root in full_roots for node in _walk(root) for event in node.events],
+        key=lambda event: (event.timestamp, event.session_id, event.source_id, event.source_line, event.event_id),
+    )
+    lineage_edges = _lineage_edges(full_roots)
+
+    displayed_roots = full_roots
+    for node in displayed_roots:
+        _fold_small_children(node, minimum=min_share, total_raw=total.raw_token_units, sort=sort)
         if depth is not None:
             _prune_depth(node, current=0, maximum=depth)
-    if min_share > 0 and total.raw_token_units > 0 and len(selected) > 1:
+    if min_share > 0 and total.raw_token_units > 0 and len(displayed_roots) > 1:
         small = [
-            node for node in selected
+            node for node in displayed_roots
             if node.subtree_aggregate.raw_token_units / total.raw_token_units < min_share
         ]
         if small:
@@ -473,39 +602,56 @@ def build_report(
                 agent_type="other",
                 topic=f"other ({count} sessions)",
                 kind="other",
+                source_ids=sorted({source_id for node in small for source_id in node.source_ids}),
+                lineage_status="folded",
+                clipped_before=any(node.clipped_before for node in small),
+                clipped_after=any(node.clipped_after for node in small),
                 calls=sorted(
                     [call for root in small for descendant in _walk(root) for call in descendant.calls],
-                    key=lambda call: (call.timestamp, call.source_order),
+                    key=lambda call: (call.timestamp, call.source_id, call.source_line, call.call_id),
                 ),
-                compactions=sorted(
-                    [event for root in small for descendant in _walk(root)
-                     for event in descendant.compactions],
-                    key=lambda event: event.timestamp,
+                events=sorted(
+                    [event for root in small for descendant in _walk(root) for event in descendant.events],
+                    key=lambda event: (event.timestamp, event.session_id, event.source_id, event.source_line),
                 ),
                 self_aggregate=aggregate,
                 subtree_aggregate=aggregate,
                 omitted_descendants=count,
             )
-            selected = [node for node in selected if node.node_id not in small_ids]
-            selected.append(other)
-            selected.sort(key=lambda node: _sort_key(node, sort))
-    generated = generated_at or datetime.now(timezone.utc)
+            displayed_roots = [node for node in displayed_roots if node.node_id not in small_ids]
+            displayed_roots.append(other)
+            displayed_roots.sort(key=lambda node: _sort_key(node, sort))
+
+    generated = generated_at if generated_at is not None else datetime.now(timezone.utc)
     if generated.tzinfo is None or generated.utcoffset() is None:
         raise ValueError("generated_at must include a timezone")
     generated = generated.astimezone(timezone.utc)
     return {
-        "schema_version": 1,
-        "report": "nyxloom-usage-tree",
+        "schema_version": "usage-report-v1",
+        "report": "nyxloom-usage-report",
         "generated_at": _iso(generated),
+        "contract": {
+            "window": "[since, until), UTC",
+            "call_timestamp": "record.timestamp; timezone-aware ISO-8601 required",
+            "stream_deduplication": "canonical source plus requestId, message.id fallback",
+            "copied_prefix_identity": "sessionId, message.id, UTC timestamp, model, complete usage tuple",
+            "csv_rows": "one report metadata row followed by one row per deduplicated call",
+            "share_rounding_decimal_places": 8,
+            "active_burst_gap_seconds": _BURST_GAP_SECONDS,
+            "call_order": "timestamp, session_id, source_id, source_line, call_id",
+            "event_order": "timestamp, session_id, source_id, source_line, event_id",
+            "opaque_id": "truncated SHA-256 over canonical source and record identity",
+            "json_key_order": "lexicographic",
+        },
         "window": {
             "since": _iso(window.since),
             "until": _iso(window.until),
-            "inclusive": True,
+            "semantics": "[since, until)",
             "timezone": "UTC",
         },
         "filters": {
-            "project": project,
-            "session": session,
+            "project_selected": project is not None,
+            "session_selected": session is not None,
             "no_labels": no_labels,
         },
         "presentation": {
@@ -519,14 +665,25 @@ def build_report(
             "mode": "raw",
             "definition": "input + cache_read + cache_write_5m + cache_write_1h + cache_write_unclassified + output",
             "weighted_units": None,
+            "api_equivalent_usd": None,
             "usd": None,
-            "limit_share": None,
+            "estimated_limit_pct": None,
         },
         "totals": _aggregate_dict(total, share=1.0 if total.raw_token_units else 0.0),
+        "calls": [_call_dict(call) for call in all_calls],
+        "events": [_event_dict(event) for event in all_events],
+        "lineage_edges": lineage_edges,
+        "conflicts": list(corpus.conflicts),
         "coverage": _coverage(corpus),
-        "privacy": {"message_content": "excluded", "tool_content": "excluded"},
+        "privacy": {
+            "message_content": "excluded",
+            "thinking_content": "excluded; token count is an output subset",
+            "tool_content": "excluded",
+            "filesystem_paths": "excluded; project and source identifiers are opaque",
+        },
+        "extensions": {"prices": None, "limit_anchors": None, "chart_data": None},
         "nodes": [
             _node_dict(node, total_raw=total.raw_token_units, depth=0)
-            for node in selected
+            for node in displayed_roots
         ],
     }

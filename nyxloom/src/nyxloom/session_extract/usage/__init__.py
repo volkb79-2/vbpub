@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .loader import UsageLoadError, default_projects_root, load_corpus
-from .model import Call, Compaction, Corpus, Node, Session, Window
+from .model import Call, Corpus, Node, Session, UsageEvent, Window
 from .query import (
     SORT_COLUMNS,
     UsageQueryError,
@@ -28,7 +28,7 @@ def render_report(report: dict[str, Any], format: str) -> str:
 
 
 __all__ = [
-    "CSV_COLUMNS", "SORT_COLUMNS", "Call", "Compaction", "Corpus", "Node",
+    "CSV_COLUMNS", "SORT_COLUMNS", "Call", "Corpus", "Node", "UsageEvent",
     "Session", "UsageLoadError", "UsageQueryError", "Window", "build_report",
     "default_projects_root", "load_corpus", "parse_share_percent", "render_csv",
     "render_json", "render_report", "render_table", "resolve_window",

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import csv
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -202,6 +203,25 @@ def _build(corpus, **kwargs):
     return build_report(corpus, window=window, **kwargs)
 
 
+def _normalise_opaque_ids(value, maps=None):
+    maps = maps if maps is not None else {}
+    if isinstance(value, dict):
+        return {key: _normalise_opaque_ids(item, maps) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_normalise_opaque_ids(item, maps) for item in value]
+    if isinstance(value, str):
+        for prefix, label in (
+            ("src_", "source"), ("project_", "project"), ("call_", "call"),
+            ("event_", "event"), ("conflict_", "conflict"),
+        ):
+            if value.startswith(prefix):
+                mapping = maps.setdefault(label, {})
+                if value not in mapping:
+                    mapping[value] = f"{label}-fixture-{len(mapping) + 1}"
+                return mapping[value]
+    return value
+
+
 def test_deduplicates_streaming_rows_and_preserves_raw_usage_fields(tmp_path):
     _write_tree_fixture(tmp_path)
     corpus = load_corpus(tmp_path)
@@ -225,6 +245,9 @@ def test_deduplicates_streaming_rows_and_preserves_raw_usage_fields(tmp_path):
     assert call.weighted_cost is None
     assert call.usd_cost is None
     assert corpus.warnings.duplicate_requests == 1
+    coverage = _build(corpus)["coverage"]
+    assert coverage["has_warnings"] is True
+    assert coverage["partial"] is False
 
 
 def test_duplicate_after_explicit_window_end_does_not_replace_in_window_call(tmp_path):
@@ -238,11 +261,11 @@ def test_duplicate_after_explicit_window_end_does_not_replace_in_window_call(tmp
             ),
             _assistant(
                 "bounded-request", "2026-10-28T10:50:00Z",
-                usage=_usage(output_tokens=3),
+                usage=_usage(output_tokens=7),
             ),
             _assistant(
                 "bounded-request", "2026-10-28T12:10:00Z",
-                usage=_usage(output_tokens=70),
+                usage=_usage(output_tokens=7),
             ),
         ],
     )
@@ -260,7 +283,7 @@ def test_duplicate_after_explicit_window_end_does_not_replace_in_window_call(tmp
 
     assert report["totals"]["calls"] == 1
     assert report["totals"]["tokens"]["output"] == 7
-    assert corpus.warnings.duplicate_requests == 0
+    assert corpus.warnings.duplicate_requests == 2
 
 
 def test_nested_subagents_resume_in_one_node_and_roll_up_once(tmp_path):
@@ -282,12 +305,12 @@ def test_nested_subagents_resume_in_one_node_and_roll_up_once(tmp_path):
     assert root["subtree"]["calls"] == 4
     assert report["totals"]["calls"] == 4
     assert report["totals"]["tokens"]["output"] == 38
-    outer_call = outer["call_details"][0]
+    outer_call = next(call for call in report["calls"] if call["agent_id"] == "outer")
     assert outer_call["sidechain"] is True
     assert outer_call["context_size"] == 29
     assert outer_call["service_tier"] == "standard"
     assert outer_call["speed"] == "standard"
-    assert outer_call["usd"] is None
+    assert outer_call["api_equivalent_usd"] is None
 
 
 def test_agent_name_record_is_a_fallback_topic_and_fork_kind_is_retained(tmp_path):
@@ -314,30 +337,330 @@ def test_agent_name_record_is_a_fallback_topic_and_fork_kind_is_retained(tmp_pat
     fork = report["nodes"][0]["children"][0]
     assert fork["kind"] == "fork"
     assert fork["topic"] == "named agent"
-    assert fork["call_details"][0]["topic"] == "named agent"
+    assert next(call for call in report["calls"] if call["agent_id"] == "forked")["topic"] == "named agent"
 
 
-def test_request_id_dedup_spans_session_and_agent_files(tmp_path):
+def test_request_id_is_file_local_but_exact_copied_prefix_deduplicates(tmp_path):
     project_dir = tmp_path / "project-key"
     session_dir = project_dir / SESSION
     _write_jsonl(
         project_dir / f"{SESSION}.jsonl",
-        [_assistant("shared-request", "2026-10-28T11:00:00Z", agent_tool_ids=("spawn",))],
+        [_assistant(
+            "shared-request", "2026-10-28T11:00:00Z", message_id="msg-root",
+            agent_tool_ids=("spawn",),
+        )],
     )
     _write_jsonl(
         session_dir / "subagents" / "agent-child.jsonl",
-        [_assistant("shared-request", "2026-10-28T11:00:00Z", agent_id="child", sidechain=True)],
+        [_assistant(
+            "shared-request", "2026-10-28T11:00:00Z", message_id="msg-child",
+            agent_id="child", sidechain=True,
+        )],
     )
     _write_meta(session_dir, "child", tool_use_id="spawn", depth=1, description="child")
 
     corpus = load_corpus(tmp_path)
     report = _build(corpus)
-    assert report["totals"]["calls"] == 1
-    assert report["nodes"][0]["calls"] == 1
-    assert report["nodes"][0]["self"]["calls"] == 0
+    assert report["totals"]["calls"] == 2
+    assert len(report["calls"]) == 2
+    assert report["nodes"][0]["self"]["calls"] == 1
     assert report["nodes"][0]["children"][0]["self"]["calls"] == 1
-    assert corpus.warnings.duplicate_requests == 1
+    assert corpus.warnings.duplicate_requests == 0
+
+    # An exact copied prefix is the separate cross-file identity: same
+    # session, message, UTC timestamp, model, and complete usage tuple.
+    copy_path = session_dir / "subagents" / "agent-copy.jsonl"
+    copied = _assistant(
+        "different-request-id", "2026-10-28T11:00:00+00:00",
+        message_id="msg-root", agent_id="copy", sidechain=True,
+    )
+    _write_jsonl(copy_path, [copied])
+    _write_meta(session_dir, "copy", tool_use_id="spawn", depth=1, description="copy", is_fork=True)
+    copied_report = _build(load_corpus(tmp_path))
+    assert copied_report["totals"]["calls"] == 2
+    assert copied_report["coverage"]["partial"] is False
+    root_call = next(call for call in copied_report["calls"] if call["message_id"] == "msg-root")
+    assert root_call["copied_source_count"] == 2
+    assert root_call["request_ids"] == ["different-request-id", "shared-request"]
+    assert len(root_call["provenance"]) == 2
+    assert root_call["has_fork_source"] is True
+
+
+def test_request_id_is_not_a_global_key_across_unrelated_sessions(tmp_path):
+    first = _assistant("shared-request", "2026-10-28T11:00:00Z", message_id="message-one")
+    second = _assistant("shared-request", "2026-10-28T11:00:00Z", message_id="message-two")
+    first["sessionId"] = "session-one"
+    second["sessionId"] = "session-two"
+    _write_jsonl(tmp_path / "project-key" / "session-one.jsonl", [first])
+    _write_jsonl(tmp_path / "project-key" / "session-two.jsonl", [second])
+
+    corpus = load_corpus(tmp_path)
+    report = _build(corpus)
+
+    assert report["totals"]["calls"] == 2
+    assert {call["request_id"] for call in report["calls"]} == {"shared-request"}
+    assert {call["message_id"] for call in report["calls"]} == {"message-one", "message-two"}
+    assert corpus.warnings.duplicate_requests == 0
+
+
+def test_conflicting_stream_duplicates_are_excluded_and_disclosed(tmp_path):
+    root_file = tmp_path / "project-key" / f"{SESSION}.jsonl"
+    _write_jsonl(root_file, [
+        _assistant("conflict", "2026-10-28T11:00:00Z", usage=_usage(output_tokens=7)),
+        _assistant("conflict", "2026-10-28T11:00:01Z", usage=_usage(output_tokens=70)),
+    ])
+    corpus = load_corpus(tmp_path)
+    report = _build(corpus)
+
+    assert report["totals"]["calls"] == 0
+    assert report["conflicts"][0]["kind"] == "duplicate_conflict"
+    assert report["conflicts"][0]["candidate_count"] == 2
     assert corpus.warnings.duplicate_conflicts == 1
+    assert report["coverage"]["partial"] is True
+
+
+def test_usage_report_v1_has_exact_call_ledger_and_versioned_csv(tmp_path):
+    _write_tree_fixture(tmp_path)
+    corpus = load_corpus(tmp_path)
+    window = resolve_window("24h", None, now=NOW)
+    report = build_report(corpus, window=window, generated_at=NOW)
+    root = report["nodes"][0]
+
+    assert report["schema_version"] == "usage-report-v1"
+    assert report["basis"]["mode"] == "raw"
+    assert report["extensions"] == {
+        "prices": None, "limit_anchors": None, "chart_data": None,
+    }
+    assert len(report["calls"]) == report["totals"]["calls"] == 4
+    assert sum(call["raw_token_units"] for call in report["calls"]) == report["totals"]["raw_token_units"]
+    assert root["call_ids"]
+    assert root["self"]["calls"] == 1
+    assert root["subtree"]["calls"] == 4
+    assert all("source_id" in call and call["provenance"] for call in report["calls"])
+    assert all("/" not in call["source_id"] for call in report["calls"])
+    assert str(tmp_path) not in render_json(report)
+    assert str(tmp_path) not in render_csv(report)
+    repeated_corpus = load_corpus(tmp_path)
+    repeated = build_report(
+        repeated_corpus,
+        window=window,
+        generated_at=NOW,
+    )
+    assert render_json(report) == render_json(repeated)
+    csv_rows = list(csv.DictReader(render_csv(report).splitlines()))
+    assert csv_rows[0]["record_type"] == "report"
+    assert csv_rows[0]["schema_version"] == "usage-report-v1"
+    assert sum(row["record_type"] == "call" for row in csv_rows) == 4
+    assert "Schema: usage-report-v1" in render_table(report)
+
+
+def test_utc_half_open_window_clipping_and_disjoint_active_bursts(tmp_path):
+    root_file = tmp_path / "project-key" / f"{SESSION}.jsonl"
+    _write_jsonl(root_file, [
+        _assistant("before", "2026-10-28T09:00:00Z"),
+        _assistant("start", "2026-10-28T12:00:00+02:00"),
+        _assistant("near", "2026-10-28T10:30:00Z"),
+        _assistant("burst", "2026-10-28T12:00:00Z"),
+        _assistant("at-until", "2026-10-28T13:00:00Z"),
+    ])
+    os.utime(root_file, (NOW.timestamp(), NOW.timestamp()))
+    window = resolve_window(
+        "2026-10-28T12:00:00+02:00", "2026-10-28T13:00:00Z", now=NOW,
+    )
+    report = build_report(load_corpus(tmp_path, since=window.since, until=window.until), window=window)
+    root = report["nodes"][0]
+
+    assert report["window"]["semantics"] == "[since, until)"
+    assert [call["request_id"] for call in report["calls"]] == ["start", "near", "burst"]
+    assert root["clipped_before"] is True
+    assert root["clipped_after"] is True
+    assert root["self"]["wall_duration_seconds"] == 7200
+    assert root["self"]["active_span_seconds"] == 1800
+    assert root["active_bursts"] == [
+        {"start": "2026-10-28T10:00:00Z", "end": "2026-10-28T10:30:00Z", "calls": 2},
+        {"start": "2026-10-28T12:00:00Z", "end": "2026-10-28T12:00:00Z", "calls": 1},
+    ]
+
+
+def test_structural_compaction_summary_and_unexplained_drops_are_distinct(tmp_path):
+    root_file = tmp_path / "project-key" / f"{SESSION}.jsonl"
+    before = _assistant("before", "2026-10-28T09:00:00Z", usage=_usage(input_tokens=900))
+    after_compact = _assistant("after-compact", "2026-10-28T09:10:00Z", usage=_usage(input_tokens=400))
+    after_clear = _assistant("after-clear", "2026-10-28T09:20:00Z", usage=_usage(input_tokens=100))
+    retry_a = _assistant("retry", "2026-10-28T09:24:00Z", usage=_usage(input_tokens=100))
+    retry_b = _assistant("retry", "2026-10-28T09:25:00Z", usage=_usage(input_tokens=100))
+    after_model_switch = _assistant(
+        "after-switch", "2026-10-28T09:30:00Z", model="claude-haiku-5-5",
+        usage=_usage(input_tokens=40),
+    )
+    _write_jsonl(root_file, [
+        before,
+        {"type": "system", "subtype": "compact_boundary", "uuid": "compact-1",
+         "timestamp": "2026-10-28T09:00:00Z", "compactMetadata": {
+             "trigger": "auto", "preTokens": 1200, "postTokens": 500, "durationMs": 1234,
+         }},
+        {"type": "user", "uuid": "summary-1", "parentUuid": "compact-1",
+         "timestamp": "2026-10-28T09:06:00Z", "isCompactSummary": True,
+         "message": {"content": MESSAGE_SENTINEL}},
+        after_compact,
+        {"type": "assistant", "isApiErrorMessage": True, "apiErrorStatus": 429,
+         "error": "rate_limit", "uuid": "reject-1", "timestamp": "2026-10-28T09:08:00Z",
+         "message": {"content": TOOL_SENTINEL}},
+        {"type": "user", "uuid": "clear-1", "timestamp": "2026-10-28T09:15:00Z",
+         "message": {"content": "<command-name>/clear</command-name>"}},
+        after_clear,
+        retry_a,
+        retry_b,
+        after_model_switch,
+    ])
+    report = _build(load_corpus(tmp_path))
+
+    assert [event["kind"] for event in report["events"]] == [
+        "compaction", "api_rejection", "unexplained_drop", "unexplained_drop",
+    ]
+    compact = report["events"][0]
+    assert compact["summary_present"] is True
+    assert compact["summary_timestamp"] == "2026-10-28T09:06:00Z"
+    assert compact["duration_ms"] == 1234
+    rejection = report["events"][1]
+    assert rejection["source_record_id"] == "reject-1"
+    assert rejection["limit_kind"] == "rate_limit"
+    assert rejection["status_code"] == 429
+    assert sum(call["request_id"] == "retry" for call in report["calls"]) == 1
+    assert load_corpus(tmp_path).warnings.duplicate_requests == 1
+    assert all(event["kind"] != "compaction" for event in report["events"][1:])
+    assert MESSAGE_SENTINEL not in render_json(report)
+    assert TOOL_SENTINEL not in render_json(report)
+
+
+def test_cross_file_copied_prefix_conflict_is_excluded(tmp_path):
+    project_dir = tmp_path / "project-key"
+    session_dir = project_dir / SESSION
+    first = _assistant("copy-a", "2026-10-28T11:00:00Z", message_id="same-message")
+    conflicting = _assistant(
+        "copy-b", "2026-10-28T11:00:00Z", message_id="same-message",
+        agent_id="fork", usage=_usage(output_tokens=99),
+    )
+    _write_jsonl(project_dir / f"{SESSION}.jsonl", [first])
+    _write_jsonl(session_dir / "subagents" / "agent-fork.jsonl", [conflicting])
+    _write_meta(session_dir, "fork", tool_use_id="missing", depth=1, description="fork", is_fork=True)
+
+    corpus = load_corpus(tmp_path)
+    report = _build(corpus)
+
+    assert report["calls"] == []
+    assert report["conflicts"][0]["kind"] == "cross_file_conflict"
+    assert report["conflicts"][0]["candidate_count"] == 2
+    assert corpus.warnings.cross_file_conflicts == 1
+    assert corpus.warnings.conflicted_calls_excluded == 2
+
+
+def test_record_timestamps_control_window_not_mtime_and_truncated_tail_is_visible(tmp_path):
+    root_file = tmp_path / "project-key" / f"{SESSION}.jsonl"
+    _write_jsonl(root_file, [_assistant("in-window", "2026-10-28T11:00:00Z")])
+    with root_file.open("ab") as handle:
+        handle.write(b'{"type":"assistant"')
+    os.utime(root_file, (1, 1))
+
+    corpus = load_corpus(
+        tmp_path,
+        since=datetime(2026, 10, 28, 10, 0, tzinfo=timezone.utc),
+        until=NOW,
+    )
+    report = build_report(
+        corpus,
+        window=resolve_window("2026-10-28T10:00:00Z", None, now=NOW),
+        generated_at=NOW,
+    )
+
+    assert [call["request_id"] for call in report["calls"]] == ["in-window"]
+    assert report["coverage"]["warnings"]["truncated_lines"] == 1
+    assert report["nodes"][0]["clipped_before"] is False
+    assert report["nodes"][0]["clipped_after"] is False
+
+
+def test_naive_or_missing_record_timestamps_never_enter_timed_report(tmp_path):
+    first = _assistant("missing-time", "2026-10-28T11:00:00Z")
+    first.pop("timestamp")
+    second = _assistant("naive-time", "2026-10-28T11:00:00Z")
+    second["timestamp"] = "2026-10-28T11:00:00"
+    _write_jsonl(tmp_path / "project-key" / f"{SESSION}.jsonl", [first, second])
+
+    corpus = load_corpus(tmp_path)
+    report = _build(corpus)
+
+    assert report["calls"] == []
+    assert report["coverage"]["warnings"]["missing_timestamps"] == 2
+    assert report["coverage"]["partial"] is True
+
+
+def test_ambiguous_lineage_is_visible_and_shared_with_session_discovery(tmp_path):
+    project_dir = tmp_path / "project-key"
+    session_dir = project_dir / SESSION
+    _write_jsonl(project_dir / f"{SESSION}.jsonl", [_assistant("root", "2026-10-28T09:00:00Z")])
+    _write_jsonl(session_dir / "subagents" / "agent-parent-a.jsonl", [
+        _assistant("parent-a", "2026-10-28T09:10:00Z", agent_id="parent-a", sidechain=True,
+                   agent_tool_ids=("ambiguous-spawn",)),
+    ])
+    _write_jsonl(session_dir / "subagents" / "agent-parent-b.jsonl", [
+        _assistant("parent-b", "2026-10-28T09:11:00Z", agent_id="parent-b", sidechain=True,
+                   agent_tool_ids=("ambiguous-spawn",)),
+    ])
+    _write_jsonl(session_dir / "subagents" / "agent-child.jsonl", [
+        _assistant("child", "2026-10-28T09:12:00Z", agent_id="child", sidechain=True),
+    ])
+    _write_meta(session_dir, "parent-a", tool_use_id="none-a", depth=1, description="parent a")
+    _write_meta(session_dir, "parent-b", tool_use_id="none-b", depth=1, description="parent b")
+    _write_meta(session_dir, "child", tool_use_id="ambiguous-spawn", depth=2, description="child")
+
+    corpus = load_corpus(tmp_path)
+    report = _build(corpus)
+    edge = next(edge for edge in report["lineage_edges"] if edge["agent_id"] == "child")
+    assert edge["status"] == "unresolved_ambiguous_tool_use"
+    assert edge["candidate_parent_ids"] == sorted([
+        f"{SESSION}:agent:parent-a", f"{SESSION}:agent:parent-b",
+    ])
+    assert corpus.warnings.ambiguous_parent_edges == 1
+
+    from nyxloom.session_extract.adapters.claude_code import list_agents
+
+    discovered = list_agents(project_dir / f"{SESSION}.jsonl")
+    discovered_by_name = {Path(node.id).stem: node for node in discovered if "agent-" in Path(node.id).name}
+    assert discovered_by_name["agent-child"].parent_id is None
+
+
+def test_inconsistent_parent_metadata_falls_back_to_unique_tool_owner(tmp_path):
+    project_dir = tmp_path / "project-key"
+    session_dir = project_dir / SESSION
+    _write_jsonl(project_dir / f"{SESSION}.jsonl", [
+        _assistant("root", "2026-10-28T09:00:00Z", agent_tool_ids=("spawn-parent",)),
+    ])
+    _write_jsonl(session_dir / "subagents" / "agent-parent.jsonl", [
+        _assistant("parent", "2026-10-28T09:10:00Z", agent_id="parent", sidechain=True,
+                   agent_tool_ids=("spawn-child",)),
+    ])
+    _write_jsonl(session_dir / "subagents" / "agent-child.jsonl", [
+        _assistant("child", "2026-10-28T09:12:00Z", agent_id="child", sidechain=True),
+    ])
+    _write_meta(session_dir, "parent", tool_use_id="spawn-parent", depth=1, description="parent")
+    _write_meta(session_dir, "wrong", tool_use_id="missing", depth=1, description="wrong")
+    _write_meta(
+        session_dir, "child", tool_use_id="spawn-child", depth=2,
+        description="child", parent_agent_id="wrong",
+    )
+
+    corpus = load_corpus(tmp_path)
+    report = _build(corpus)
+    child_edge = next(edge for edge in report["lineage_edges"] if edge["agent_id"] == "child")
+    assert child_edge["parent_node_id"] == f"{SESSION}:agent:parent"
+    assert child_edge["status"] == "resolved_tool_use_id_parent_metadata_conflict"
+    assert corpus.warnings.parent_conflicts == 1
+
+    from nyxloom.session_extract.adapters.claude_code import list_agents
+
+    discovered = list_agents(project_dir / f"{SESSION}.jsonl")
+    child = next(node for node in discovered if node.id.endswith("agent-child.jsonl"))
+    assert child.parent_id.endswith("agent-parent.jsonl")
 
 
 def test_missing_meta_and_unmatched_nested_parent_are_explicitly_unattributed(tmp_path):
@@ -452,13 +775,14 @@ def test_unclassified_cache_write_and_message_id_dedup_fallback(tmp_path):
     corpus = load_corpus(tmp_path)
     call = corpus.sessions[0].root.calls[0]
     assert len(corpus.sessions[0].root.calls) == 1
-    assert call.request_id == "fallback-id"
+    assert call.request_id is None
+    assert call.message_id == "fallback-id"
     assert call.cache_write_unclassified_tokens == 17
     assert call.raw_token_units == 27
     assert corpus.warnings.duplicate_requests == 1
 
 
-def test_compaction_boundary_marks_next_call_without_summary_content(tmp_path):
+def test_compaction_boundary_is_a_structural_event_without_summary_content(tmp_path):
     root_file = tmp_path / "project-key" / f"{SESSION}.jsonl"
     _write_jsonl(
         root_file,
@@ -479,16 +803,13 @@ def test_compaction_boundary_marks_next_call_without_summary_content(tmp_path):
     )
     report = _build(load_corpus(tmp_path))
     node = report["nodes"][0]
-    assert node["compactions"] == [{
-        "timestamp": "2026-10-28T10:59:00Z",
-        "kind": "compaction",
-        "pre_tokens": 1200,
-        "post_tokens": 500,
-        "trigger": "auto",
-    }]
-    assert node["call_details"][0]["kind"] == "normal"
-    assert node["call_details"][0]["compaction_before"] is True
-    assert node["call_details"][0]["compaction_pre_tokens"] == 1200
+    assert report["events"][0]["kind"] == "compaction"
+    assert report["events"][0]["timestamp"] == "2026-10-28T10:59:00Z"
+    assert report["events"][0]["pre_tokens"] == 1200
+    assert report["events"][0]["post_tokens"] == 500
+    assert report["events"][0]["trigger"] == "auto"
+    assert report["events"][0]["summary_present"] is False
+    assert node["event_ids"] == [report["events"][0]["event_id"]]
     assert MESSAGE_SENTINEL not in render_json(report)
 
 
@@ -551,9 +872,10 @@ def test_min_share_folds_small_agent_children_and_flat_csv_is_globally_sorted(tm
     )
     root = next(node for node in report["nodes"] if node["kind"] == "main")
     assert [child["topic"] for child in root["children"]] == ["large", "other (1 agents)"]
-    csv_rows = render_csv(report).splitlines()[1:]
-    assert [row.split(",", 1)[0] for row in csv_rows] == [
-        SESSION, f"{SESSION}:agent:big", f"{SESSION}:other",
+    csv_rows = list(csv.DictReader(render_csv(report).splitlines()))
+    assert [row["record_type"] for row in csv_rows] == ["report", "call", "call", "call"]
+    assert [row["call_id"] for row in csv_rows[1:]] == [
+        call["call_id"] for call in report["calls"]
     ]
 
 
@@ -574,6 +896,8 @@ def test_absolute_window_normalizes_to_utc_and_rejects_reverse_range():
     assert window.since == NOW.replace(hour=11)
     with pytest.raises(ValueError, match="before"):
         resolve_window("2026-10-28T12:00:00Z", "2026-10-28T11:00:00Z", now=NOW)
+    with pytest.raises(ValueError, match="invalid timestamp"):
+        resolve_window("1h", "", now=NOW)
 
 
 def test_golden_json_for_synthetic_report(tmp_path):
@@ -585,22 +909,15 @@ def test_golden_json_for_synthetic_report(tmp_path):
         generated_at=NOW,
     )
     actual = json.loads(render_json(report))
-    root = actual["nodes"][0]
-    actual_projection = {
-        "basis": actual["basis"],
-        "schema_version": actual["schema_version"],
-        "report": actual["report"],
-        "totals": actual["totals"],
-        "node": {
-            "kind": root["kind"],
-            "calls": root["calls"],
-            "tokens": root["tokens"],
-            "raw_token_units": root["raw_token_units"],
-            "call_details": root["call_details"],
-        },
-    }
+    actual_projection = _normalise_opaque_ids(actual)
     expected_path = Path(__file__).parent / "fixtures" / "usage_report" / "golden.json"
     assert actual_projection == json.loads(expected_path.read_text(encoding="utf-8"))
+    repeated = build_report(
+        load_corpus(tmp_path),
+        window=resolve_window("1h", "2026-10-28T12:00:00Z", now=NOW),
+        generated_at=NOW,
+    )
+    assert render_json(report) == render_json(repeated)
 
 
 def test_table_json_and_csv_never_serialize_message_or_tool_content(tmp_path):
@@ -615,8 +932,29 @@ def test_table_json_and_csv_never_serialize_message_or_tool_content(tmp_path):
     assert all(TOOL_SENTINEL not in output for output in outputs)
     assert "outer topic" in render_json(report)
     assert "outer topic" not in render_json(no_labels)
-    assert no_labels["nodes"][0]["children"][0]["call_details"][0]["topic"] is None
+    child_id = no_labels["nodes"][0]["children"][0]["agent_id"]
+    assert next(call for call in no_labels["calls"] if call["agent_id"] == child_id)["topic"] is None
     assert root_file.exists()
+
+
+def test_report_does_not_serialize_paths_from_free_text_labels(tmp_path):
+    project_dir = tmp_path / "project-key"
+    session_dir = project_dir / SESSION
+    _write_jsonl(project_dir / f"{SESSION}.jsonl", [
+        _assistant("root", "2026-10-28T11:00:00Z", agent_tool_ids=("spawn",)),
+    ])
+    _write_jsonl(session_dir / "subagents" / "agent-child.jsonl", [
+        _assistant("child", "2026-10-28T11:10:00Z", agent_id="child", sidechain=True),
+    ])
+    private_path = str(tmp_path / "private" / "worktree")
+    _write_meta(session_dir, "child", tool_use_id="spawn", depth=1, description=f"task {private_path}")
+
+    report = _build(load_corpus(tmp_path))
+
+    assert private_path not in render_json(report)
+    assert private_path not in render_csv(report)
+    child = report["nodes"][0]["children"][0]
+    assert child["topic"] is None
 
 
 def test_primary_cli_registers_usage_report_options(monkeypatch, capsys):
@@ -643,3 +981,16 @@ def test_primary_cli_registers_usage_report_options(monkeypatch, capsys):
     assert captured["min_share"] == pytest.approx(0.01)
     assert captured["no_labels"] is True
     assert capsys.readouterr().out == ""
+
+
+def test_primary_cli_usage_spelling_has_help_and_required_since_error(capsys):
+    cli = primary_cli()
+
+    assert cli.run(argv=["usage", "report", "--help"]) == 0
+    help_output = capsys.readouterr().out
+    assert "nyxloom usage report" in help_output
+    assert "Exclusive ISO-8601 end timestamp" in help_output
+    assert "--format {table,json,csv}" in help_output
+
+    assert cli.run(argv=["usage", "report"]) == 2
+    assert "required: --since" in capsys.readouterr().err

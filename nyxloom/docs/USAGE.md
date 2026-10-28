@@ -20,9 +20,10 @@ entrypoint inside the daemon container. See the
 [CLI reference](CLI-REFERENCE.md#current-command-and-option-contract) for the
 complete current grammar.
 
-`nyxloom usage report` is a read-only analytics command on the primary CLI. It
-reads Claude Code transcript metadata across the selected time window without
-requiring project registration or daemon state. See
+`nyxloom usage report` is the additive command spelling selected by D-022. It
+uses the pure `session_extract.usage` service to read Claude Code transcript
+metadata over a UTC half-open window and needs no project registration, daemon
+state or persistent store. See
 [Report Claude Code usage](CONSUMERS.md#report-claude-code-usage) for examples.
 
 ---

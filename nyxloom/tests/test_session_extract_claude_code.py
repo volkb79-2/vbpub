@@ -260,7 +260,7 @@ def test_sniff_skips_blank_lines(tmp_path):
     assert claude_code.sniff(fp)
 
 
-def test_list_agents_keeps_malformed_metadata_and_resolves_an_unowned_depth_one_agent(tmp_path):
+def test_list_agents_keeps_malformed_metadata_and_does_not_infer_parent_from_depth(tmp_path):
     root = tmp_path / "root.jsonl"
     root.write_text("{}\n", encoding="utf-8")
     subagents = tmp_path / "root" / "subagents"
@@ -281,8 +281,21 @@ def test_list_agents_keeps_malformed_metadata_and_resolves_an_unowned_depth_one_
     orphan = next(node for node in nodes if node.id.endswith("agent-orphan.jsonl"))
     assert bad.label == "(sub-agent)"
     assert bad.parent_id is None
-    assert orphan.parent_id == str(root)
+    assert orphan.parent_id is None
     assert "orphan (spawnDepth 1)" == orphan.label
+
+
+def test_list_agents_includes_transcript_without_meta_as_unresolved(tmp_path):
+    root = tmp_path / "root.jsonl"
+    root.write_text("{}\n", encoding="utf-8")
+    child = tmp_path / "root" / "subagents" / "agent-no-meta.jsonl"
+    child.parent.mkdir(parents=True)
+    child.write_text("{}\n", encoding="utf-8")
+
+    nodes = claude_code.list_agents(root)
+
+    no_meta = next(node for node in nodes if node.id == str(child))
+    assert no_meta.parent_id is None
 
 
 def test_sniff_gives_up_past_the_scan_window(tmp_path):

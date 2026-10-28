@@ -5,7 +5,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Added
-- Add `nyxloom usage report` for metadata-only, de-duplicated Claude Code token usage across sessions and nested subagents, with table/JSON/CSV output.
+- Add `nyxloom usage report` for metadata-only Claude Code usage across sessions and nested subagents. Freeze `usage-report-v1` with a deduplicated call ledger, provenance, lineage edges, typed lifecycle/rejection events, self/subtree totals, coverage warnings, UTC half-open windows, and table/JSON/call-ledger CSV renderers.
+
+### Changed
+- Reconcile usage reporting with the plan review: file-local stream deduplication and exact copied-prefix identity, explicit conflict handling, structural compaction events, shared lineage resolution, deterministic IDs/order, and timestamp-based clipping.
+- Keep successful deduplication counts visible without mislabeling a complete merged ledger as partial coverage.
 
 <!-- cmru: release history -->
 

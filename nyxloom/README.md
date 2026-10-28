@@ -229,11 +229,13 @@ and the [session extraction guide](src/nyxloom/session_extract/README.md) for
 the complete flag behavior and adoption examples.
 
 `nyxloom usage report --since 24h` summarizes Claude Code API request usage
-across the local transcript store, including nested subagents. Its table,
-JSON, and CSV formats share one tree with de-duplicated per-request token
-metadata; message and tool content are excluded. U1–U2 report raw token units
-only, so `--sort cost` and `--min-share` use raw token units until the later
-weights work ships. See the [usage report guide](docs/CONSUMERS.md#report-claude-code-usage)
+across local transcripts, including nested subagents. JSON is the frozen
+`usage-report-v1` contract with an exact deduplicated call ledger and typed
+events; CSV has one report row followed by one row per call. The table shows
+the same raw totals. Message, thinking, tool content, and filesystem paths are
+excluded. Coverage distinguishes omitted or unresolved data from successfully
+deduplicated stream records. U1–U2 report raw token units only, so `--sort cost` and `--min-share`
+use raw token units. See the [usage report guide](docs/CONSUMERS.md#report-claude-code-usage)
 and [design rationale](docs/DESIGN-GUIDE.md#local-usage-report).
 
 For file-backed sessions, `--follow` reads the appended payload plus only

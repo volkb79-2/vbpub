@@ -1,4 +1,4 @@
-"""Stdlib table, JSON, and CSV renderers for the shared usage tree report."""
+"""Stdlib renderers for the shared usage-report-v1 result."""
 
 from __future__ import annotations
 
@@ -9,17 +9,15 @@ from typing import Any
 
 
 CSV_COLUMNS = (
-    "node_id", "parent_id", "depth", "kind", "session_id", "agent_id",
-    "topic", "agent_type", "project", "models", "efforts", "start", "end",
-    "duration_seconds", "calls", "peak_context", "peak_context_at", "input_tokens",
-    "cache_read_tokens", "output_tokens", "cache_write_5m_tokens",
-    "cache_write_1h_tokens", "cache_write_unclassified_tokens",
-    "thinking_tokens", "raw_token_units", "share_of_total", "weighted_units",
-    "usd", "self_start", "self_end", "self_duration_seconds", "self_calls",
-    "self_peak_context", "self_peak_context_at", "self_input_tokens",
-    "self_cache_read_tokens", "self_output_tokens", "self_cache_write_5m_tokens",
-    "self_cache_write_1h_tokens", "self_cache_write_unclassified_tokens",
-    "self_thinking_tokens", "self_raw_token_units", "self_share_of_total",
+    "record_type", "schema_version", "report", "window_since", "window_until",
+    "call_id", "node_id", "parent_id", "depth", "lineage_status", "session_id",
+    "agent_id", "topic", "agent_type", "project_id", "request_id", "request_ids", "message_id",
+    "timestamp", "model", "effort", "service_tier", "speed", "inference_geo",
+    "context_size", "sidechain", "has_fork_source", "source_id", "source_ids",
+    "source_line", "provenance", "stream_block_count", "copied_source_count",
+    "input_tokens", "cache_read_tokens", "cache_write_5m_tokens",
+    "cache_write_1h_tokens", "cache_write_unclassified_tokens", "output_tokens",
+    "thinking_tokens", "raw_token_units", "weighted_units", "api_equivalent_usd",
 )
 
 
@@ -48,10 +46,12 @@ def _sorted_flat_nodes(report: dict[str, Any]) -> list[dict[str, Any]]:
     }.get(column)
     if metric is None:
         return nodes
+
     def value(node: dict[str, Any]) -> int:
         if metric == "output_tokens":
             return int(node["tokens"]["output"])
         return int(node[metric])
+
     return sorted(nodes, key=lambda node: (-value(node), node["node_id"]))
 
 
@@ -125,7 +125,8 @@ def _table_values(label: str, aggregate: dict[str, Any], share: float) -> list[s
         _effort_text(aggregate),
         _short_time(aggregate["start"]),
         _short_time(aggregate["end"]),
-        _compact_duration(aggregate["duration_seconds"]),
+        _compact_duration(aggregate["wall_duration_seconds"]),
+        _compact_duration(aggregate["active_span_seconds"]),
         f"{aggregate['calls']:,}",
         f"{aggregate['peak_context']:,}",
         f"{tokens['input']:,}",
@@ -140,18 +141,20 @@ def _table_values(label: str, aggregate: dict[str, Any], share: float) -> list[s
 
 
 _HEADERS = (
-    "NODE / TOPIC", "MODEL(S)", "EFFORT", "START UTC", "END UTC", "DUR",
-    "CALLS", "PEAK CTX", "IN", "CACHE READ", "OUT", "WRITE 5M",
-    "WRITE 1H", "WRITE ?", "RAW TOKENS", "SHARE",
+    "NODE / TOPIC", "MODEL(S)", "EFFORT", "START UTC", "END UTC", "WALL DUR",
+    "ACTIVE SPAN", "CALLS", "PEAK CTX", "IN", "CACHE READ", "OUT", "WRITE 5M",
+    "WRITE 1H", "WRITE ?", "RAW TOKENS", "RAW SHARE",
 )
 
 
 def render_table(report: dict[str, Any]) -> str:
-    """Render an expanded text tree, with self and subtree rows."""
+    """Render the expanded tree, with self and subtree rows."""
     lines = [
         "nyxloom usage report",
-        f"Window: {report['window']['since']} through {report['window']['until']} (inclusive, UTC)",
-        "Basis: raw tokens; share and cost sort use raw token units, not weighted cost.",
+        f"Schema: {report['schema_version']}",
+        f"Window: [{report['window']['since']}, {report['window']['until']}) UTC",
+        "Basis: raw token units; shares are local report fractions, not account-limit percentages.",
+        "Wall duration spans first-to-last call; active span sums within-node bursts separated by gaps over one hour.",
         "",
     ]
     rows: list[list[str]] = []
@@ -171,9 +174,7 @@ def render_table(report: dict[str, Any]) -> str:
                 or subtree["raw_token_units"] != self_aggregate["raw_token_units"]
                 or node["omitted_descendants"]
             ):
-                rows.append(_table_values(
-                    prefix + "  (subtree)", subtree, subtree["share_of_total"],
-                ))
+                rows.append(_table_values(prefix + "  (subtree)", subtree, subtree["share_of_total"]))
             for child in node["children"]:
                 append_node(child, depth + 1)
 
@@ -191,81 +192,92 @@ def render_table(report: dict[str, Any]) -> str:
         f"out={total['tokens']['output']:,}, cache-write-5m={total['tokens']['cache_write_5m']:,}, "
         f"cache-write-1h={total['tokens']['cache_write_1h']:,}, "
         f"unclassified-cache-write={total['tokens']['cache_write_unclassified']:,}.",
-        "Weighted cost and USD are not computed in U1–U2.",
+        "Weighted cost, API-equivalent USD, and limit percentages are unavailable in usage-report-v1.",
     ))
     coverage = report["coverage"]
     lines.append(
-        f"Coverage: {coverage['scanned_files']} files scanned; "
-        f"{coverage['pruned_files']} files omitted by mtime; "
-        f"{coverage['pruned_sessions']} session families fully pruned."
+        f"Coverage: {coverage['scanned_files']} transcript files scanned; "
+        f"{'partial' if coverage['partial'] else 'complete within the scanned snapshot'}."
     )
     nonzero = [f"{key}={value}" for key, value in coverage["warnings"].items() if value]
     if nonzero:
-        lines.append("Coverage warnings: " + ", ".join(nonzero))
+        lines.append("Coverage diagnostics: " + ", ".join(nonzero))
     return "\n".join(lines) + "\n"
 
 
-def _csv_node(node: dict[str, Any]) -> dict[str, Any]:
-    tokens = node["tokens"]
-    self_value = node["self"]
-    self_tokens = self_value["tokens"]
-    return {
-        "node_id": node["node_id"],
-        "parent_id": node["parent_id"] or "",
-        "depth": node["depth"],
-        "kind": node["kind"],
-        "session_id": node["session_id"],
-        "agent_id": node["agent_id"] or "",
-        "topic": node["topic"] or "",
-        "agent_type": node["agent_type"] or "",
-        "project": node["project"] or "",
-        "models": json.dumps(node["models"], ensure_ascii=False, sort_keys=True),
-        "efforts": json.dumps(node["efforts"], ensure_ascii=False, sort_keys=True),
-        "start": node["start"] or "",
-        "end": node["end"] or "",
-        "duration_seconds": node["duration_seconds"],
-        "calls": node["calls"],
-        "peak_context": node["peak_context"],
-        "peak_context_at": node["peak_context_at"] or "",
+def _call_row(call: dict[str, Any], report: dict[str, Any], edges: dict[tuple[str, str], dict[str, Any]]) -> dict[str, Any]:
+    tokens = call["tokens"]
+    agent_id = call["agent_id"]
+    edge = edges.get((call["session_id"], agent_id)) if agent_id is not None else None
+    node_id = edge["node_id"] if edge else call["session_id"]
+    parent_id = edge["parent_node_id"] if edge else ""
+    depth = edge["spawn_depth"] if edge else 0
+    lineage_status = edge["status"] if edge else "root"
+    result = {column: "" for column in CSV_COLUMNS}
+    result.update({
+        "record_type": "call",
+        "schema_version": report["schema_version"],
+        "report": report["report"],
+        "call_id": call["call_id"],
+        "node_id": node_id,
+        "parent_id": parent_id or "",
+        "depth": depth if depth is not None else "",
+        "lineage_status": lineage_status,
+        "session_id": call["session_id"],
+        "agent_id": agent_id or "",
+        "topic": call["topic"] or "",
+        "agent_type": call["agent_type"] or "",
+        "project_id": call["project_id"] or "",
+        "request_id": call["request_id"] or "",
+        "request_ids": json.dumps(call["request_ids"], separators=(",", ":")),
+        "message_id": call["message_id"] or "",
+        "timestamp": call["timestamp"],
+        "model": call["model"],
+        "effort": call["effort"] or "",
+        "service_tier": call["service_tier"] or "",
+        "speed": call["speed"] or "",
+        "inference_geo": call["inference_geo"] or "",
+        "context_size": call["context_size"],
+        "sidechain": call["sidechain"],
+        "has_fork_source": call["has_fork_source"],
+        "source_id": call["source_id"],
+        "source_ids": json.dumps(call["source_ids"], separators=(",", ":")),
+        "source_line": call["source_line"],
+        "provenance": json.dumps(call["provenance"], separators=(",", ":"), sort_keys=True),
+        "stream_block_count": call["stream_block_count"],
+        "copied_source_count": call["copied_source_count"],
         "input_tokens": tokens["input"],
         "cache_read_tokens": tokens["cache_read"],
-        "output_tokens": tokens["output"],
         "cache_write_5m_tokens": tokens["cache_write_5m"],
         "cache_write_1h_tokens": tokens["cache_write_1h"],
         "cache_write_unclassified_tokens": tokens["cache_write_unclassified"],
+        "output_tokens": tokens["output"],
         "thinking_tokens": tokens["thinking"],
-        "raw_token_units": node["raw_token_units"],
-        "share_of_total": node["share_of_total"],
-        "weighted_units": "",
-        "usd": "",
-        "self_start": self_value["start"] or "",
-        "self_end": self_value["end"] or "",
-        "self_duration_seconds": self_value["duration_seconds"],
-        "self_calls": self_value["calls"],
-        "self_peak_context": self_value["peak_context"],
-        "self_peak_context_at": self_value["peak_context_at"] or "",
-        "self_input_tokens": self_tokens["input"],
-        "self_cache_read_tokens": self_tokens["cache_read"],
-        "self_output_tokens": self_tokens["output"],
-        "self_cache_write_5m_tokens": self_tokens["cache_write_5m"],
-        "self_cache_write_1h_tokens": self_tokens["cache_write_1h"],
-        "self_cache_write_unclassified_tokens": self_tokens["cache_write_unclassified"],
-        "self_thinking_tokens": self_tokens["thinking"],
-        "self_raw_token_units": self_value["raw_token_units"],
-        "self_share_of_total": self_value["share_of_total"],
-    }
+        "raw_token_units": call["raw_token_units"],
+        "weighted_units": call["weighted_units"] if call["weighted_units"] is not None else "",
+        "api_equivalent_usd": call["api_equivalent_usd"] if call["api_equivalent_usd"] is not None else "",
+    })
+    return result
 
 
 def render_csv(report: dict[str, Any]) -> str:
-    """Render one flat row per visible tree node."""
+    """Render a flat exact call ledger with one leading report metadata row."""
     output = io.StringIO(newline="")
     writer = csv.DictWriter(output, fieldnames=CSV_COLUMNS, lineterminator="\n")
     writer.writeheader()
-    nodes = (
-        _sorted_flat_nodes(report)
-        if report["presentation"]["flat"]
-        else list(_walk(report["nodes"]))
-    )
-    for node in nodes:
-        writer.writerow(_csv_node(node))
+    report_row = {column: "" for column in CSV_COLUMNS}
+    report_row.update({
+        "record_type": "report",
+        "schema_version": report["schema_version"],
+        "report": report["report"],
+        "window_since": report["window"]["since"],
+        "window_until": report["window"]["until"],
+    })
+    writer.writerow(report_row)
+    edges = {
+        (edge["session_id"], edge["agent_id"]): edge
+        for edge in report["lineage_edges"]
+    }
+    for call in report["calls"]:
+        writer.writerow(_call_row(call, report, edges))
     return output.getvalue()

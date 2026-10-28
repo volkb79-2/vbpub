@@ -104,21 +104,74 @@ with a local daemon host just to validate a handoff.
 project transcripts. It is a separate workflow from `nyxloom-harness
 extract-report`: that command summarizes one selected source file, while this
 command selects a UTC time window across session files and attributes requests
-to sessions and nested subagents. Parent edges join `.meta.json` `toolUseId`
-values to `Agent` tool-use IDs in the dispatching transcript; `parentAgentId`
-and `spawnDepth` supply the available recovery information when a join is
-missing. Repeated transcript rows use the session-scoped `requestId`, falling
-back to message ID, and the last row wins so streaming copies do not inflate
-usage.
+to sessions and nested subagents. D-022 deliberately selects the additive
+`nyxloom usage report` spelling. Its handler calls the pure
+`session_extract.usage` query service; it does not initialize project or daemon
+state and does not add a persistent store.
 
-The JSON tree is the shared query result for table, JSON, and CSV renderers.
-Each node carries self and subtree totals plus metadata-only per-request rows
-for future timeline charts. The loader inspects transcript content in memory
-only to identify `Agent` calls and then drops it; neither messages, thinking,
-tool input, nor tool results are fields in the usage model or serialized
-report. Optional title/topic labels come only from title and agent metadata;
-`--no-labels` removes them. This boundary makes the result useful for analysis
-without turning it into another transcript export.
+File-local stream blocks are grouped by request ID, falling back to message ID
+only when request ID is absent. The loader verifies model, effort, usage and
+other request metadata before choosing the final stream row. A conflict
+excludes the group and appears in `conflicts` and coverage warnings. Request
+IDs are never global: copied prefixes are merged across files only when
+session ID, message ID, normalized UTC timestamp, model and the complete usage
+tuple all match. The call retains opaque source IDs, line provenance, stream
+block count, all distinct request-ID aliases, copied-source count and whether
+any copy came from a fork.
+
+Parent edges use the shared resolver also used by `list_agents`: a consistent
+`parentAgentId` wins, then a unique `toolUseId` owner. Missing and ambiguous
+edges remain in `lineage_edges` and in an explicit unattributed tree branch;
+`spawnDepth` describes a node but never invents its parent. `isFork` and
+sidechain calls are retained.
+
+The frozen JSON `usage-report-v1` contract is the renderer source. Its top-level
+`calls` array is the exact deduplicated ledger, including every token class,
+model, effort, speed, service tier, inference geo, context size, timestamp,
+opaque provenance and stable call ID. `nodes` reference those call IDs and
+carry exact self and subtree totals. `lineage_edges`, `events`, conflicts,
+coverage warnings, labels and null extension slots for future prices, anchors
+and chart data are also part of the versioned shape. CSV is intentionally a
+flat call ledger: one report metadata row followed by one row per call; it does
+not substitute overlapping subtree rows for calls. Table output shows the
+hierarchy and self/subtree totals.
+
+Coverage diagnostics retain both lost-data warnings and successful merge
+counters. `partial` is true when malformed, unavailable, incomplete, or
+unattributed source data prevents a complete report. Ordinary stream-block and
+copied-prefix deduplication remain visible diagnostics but do not make an exact
+merged call ledger partial by themselves.
+
+The v1 event-kind vocabulary is `compaction`, `api_rejection`, and
+`unexplained_drop`. A compaction event comes only from a structural
+`system.compact_boundary` record; a `user.isCompactSummary` record is paired by
+`parentUuid`, with only its timestamp retained. An API rejection comes from an
+`isApiErrorMessage` record; `limit_kind` is `rate_limit` only for the explicit
+`rate_limit` error code or HTTP status 429, and other rejection classes remain
+unknown. A context-size drop of at least 30% between consecutive calls is an
+`unexplained_drop` unless a structural compaction boundary lies between them
+by timestamp and source-line tie order. It never becomes a confirmed
+compaction by heuristic.
+
+Node kinds are `main`, `subagent`, `fork`, `unattributed`, and `other`.
+Lineage statuses distinguish `resolved_parent_agent_id`,
+`resolved_tool_use_id`, `resolved_tool_use_id_parent_metadata_conflict`,
+`unresolved_ambiguous_tool_use`, `unresolved_missing_lineage_metadata`,
+`unresolved_missing_tool_use_owner`, `unresolved_missing_parent_source`,
+`unresolved_parent_conflict`, `unresolved_unknown_parent`, and
+`unresolved_cycle`; roots use `root` and the grouping node uses
+`unresolved_group`. Conflict kinds are `duplicate_conflict` and
+`cross_file_conflict`. Conflicts exclude all candidate calls and include
+opaque source/line provenance.
+
+The loader parses each transcript once, only through its initial byte-size
+snapshot, and keeps usage metadata rather than transcript records. It never
+uses file modification time to decide which requests fall in a time window.
+Source and project paths are represented by opaque identifiers. Path-bearing
+free-text labels and path-valued identity metadata are omitted. Message,
+thinking, tool input and tool results are not fields in the report. Optional
+title/topic labels come from title and agent metadata; `--no-labels` removes
+them before serialization.
 
 U1–U2 intentionally stop at raw token totals. “Raw token units” sum input,
 cache-read, cache-write 5-minute, cache-write 1-hour, unclassified cache-write,
@@ -128,14 +181,25 @@ land in U3, USD and weighted units stay null, `--sort cost` means raw token
 units, and `--min-share` folds rows by their share of those raw units. This
 avoids making an unverified price or limit formula look authoritative.
 
-Relative `--since` values are measured backwards from `--until` when supplied,
-otherwise from invocation time. Both inclusive bounds and all call timestamps
-are normalized to UTC. Filesystem modification time only prunes inactive
-session families; each retained request is still selected by its transcript
-timestamp. Project selection uses the recorded `cwd` (exact normalized path
-or an unambiguous basename) and includes the complete matching session tree.
-The report exposes scan/prune counts and parsing/attribution warnings so a
-partial local store cannot look silently complete.
+The interval is half-open `[since, until)` in UTC. Relative `--since` values
+are measured backwards from `--until` when supplied, otherwise from the single
+invocation-time sample. Each API call is timed by its own timezone-aware
+record timestamp; missing or invalid timestamps are excluded and counted as a
+coverage warning. Output timestamps are normalized to UTC. Nodes expose
+`clipped_before` and `clipped_after` when calls from their source lie outside
+the selected interval. Project selection uses the recorded `cwd` (exact
+normalized path or an unambiguous basename) and includes the matching session
+tree. The report discloses scanned files, malformed or truncated lines,
+missing fields, conflicts, lineage gaps, and concurrent changes.
+
+Wall duration is the first-to-last call span. Active span adds only the spans
+within activity bursts; a gap strictly greater than 3,600 seconds starts a
+new burst. Both values and every tie use deterministic timestamp, session,
+opaque source, line and call-ID ordering. IDs use truncated SHA-256 over
+canonical source and record identity; JSON keys are sorted and share fractions
+are rounded to eight decimal places. Tests inject the clock and compare the
+complete versioned output. The invocation samples `now` once and reuses it for
+window resolution and `generated_at`.
 
 The hierarchy is shown directly in the table: session rows contain their own
 calls, child-agent rows, and subtree totals. `--depth` limits visible levels;

@@ -852,16 +852,31 @@ empty because the source records do not contain timestamps.
 
 `nyxloom usage report --since 24h` is the cross-session metadata query built
 alongside this extraction package. It reads Claude Code session JSONL,
-subagent JSONL, and agent metadata to report de-duplicated request tokens in a
-session → subagent → nested-subagent tree. The table, JSON, and CSV outputs use
-the same versioned query result. The JSON includes per-request time, model,
-effort, tier/speed, token classes, context size, and compaction/sidechain flags
-for later timeline renderers.
+subagent JSONL, and agent metadata to report requests in a session → subagent →
+nested-subagent tree. File-local request IDs merge stream blocks only after
+their usage/model/effort metadata agrees. A copied prefix across files merges
+only when session ID, message ID, UTC timestamp, model and full usage tuple
+match; conflicts are excluded and disclosed. Parent resolution is shared with
+`list_agents`: consistent `parentAgentId`, then one unique `toolUseId` owner;
+missing or ambiguous edges remain visible instead of being inferred from
+`spawnDepth`.
 
-This report deliberately does not reuse the extract's content selection or
-rendering: its model has no message, thinking, tool-input, or tool-result
-fields. U1–U2 are raw-token-only; weighted cost, usage-limit estimates, joined
-charts, interactive HTML, PDF, and the TUI are later work. The consumer-facing
+The frozen `usage-report-v1` JSON has an exact deduplicated call ledger,
+typed compaction/rejection/unexplained-drop events, lineage edges, provenance,
+coverage warnings and nodes with self/subtree totals. CSV has one report
+metadata row followed by one row per call; the table presents the hierarchy.
+Successful stream and copied-prefix merges remain visible diagnostics but do
+not make coverage partial by themselves; excluded, unreadable or unattributed
+records do.
+The loader reads each file once through its initial-size snapshot and uses
+record timestamps, never file modification time, for the UTC half-open
+`[since, until)` window. The report has no message, thinking, tool-input or
+tool-result fields, and source/project paths are opaque. The command spelling
+is the deliberate D-022 choice; it calls this pure query service without
+project registration or daemon state.
+
+U1–U2 report raw token units only; weighted cost, usage-limit estimates, joined
+charts, interactive HTML, PDF and the TUI are later work. The consumer-facing
 examples live in
 [CONSUMERS.md](../../../docs/CONSUMERS.md#report-claude-code-usage), and design
 choices in [DESIGN-GUIDE.md](../../../docs/DESIGN-GUIDE.md#local-usage-report).

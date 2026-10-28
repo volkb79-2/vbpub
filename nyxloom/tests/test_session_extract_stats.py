@@ -61,6 +61,28 @@ def _write_fixture(tmp_path: Path) -> Path:
     return fp
 
 
+def test_extract_compaction_metadata_requires_a_nonempty_structural_record():
+    assert stats.extract_compaction_metadata({
+        "type": "system",
+        "subtype": "compact_boundary",
+        "compactMetadata": {},
+    }) is None
+    assert stats.extract_compaction_metadata({
+        "type": "user",
+        "subtype": "compact_boundary",
+        "compactMetadata": {"trigger": "auto"},
+    }) is None
+    assert stats.extract_compaction_metadata({
+        "type": "system",
+        "subtype": "compact_boundary",
+        "compactMetadata": {
+            "trigger": "auto", "preTokens": 10, "postTokens": -1, "durationMs": True,
+        },
+    }) == {
+        "trigger": "auto", "pre_tokens": 10, "post_tokens": None, "duration_ms": None,
+    }
+
+
 def test_build_call_rows_pulls_real_usage_fields(tmp_path):
     fp = _write_fixture(tmp_path)
     rows = stats.build_call_rows(fp)

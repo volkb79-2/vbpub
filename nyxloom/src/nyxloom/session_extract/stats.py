@@ -119,6 +119,7 @@ Known gaps, left honest rather than guessed:
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -176,6 +177,35 @@ class CallRow:
     @property
     def context_size(self) -> int:
         return self.input_tokens + self.cache_creation_tokens + self.cache_read_tokens
+
+
+def extract_compaction_metadata(record: dict) -> dict[str, int | str | None] | None:
+    """Return validated fields from Claude's structural compact boundary.
+
+    Usage reporting and extract-report share this boundary parser so a
+    summary marker or arbitrary record carrying a similarly named field
+    cannot become a second, incompatible compaction detector.
+    """
+    if record.get("type") != "system" or record.get("subtype") != "compact_boundary":
+        return None
+    metadata = record.get("compactMetadata")
+    if not isinstance(metadata, dict) or not metadata:
+        return None
+    trigger = metadata.get("trigger")
+    if not isinstance(trigger, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", trigger):
+        trigger = None
+    result: dict[str, int | str | None] = {"trigger": trigger}
+    for source_key, result_key in (
+        ("preTokens", "pre_tokens"),
+        ("postTokens", "post_tokens"),
+        ("durationMs", "duration_ms"),
+    ):
+        value = metadata.get(source_key)
+        result[result_key] = (
+            value if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            else None
+        )
+    return result
 
 
 @dataclass
@@ -408,7 +438,7 @@ def _build_call_rows_claude_code(path: Path, session_id: str | None) -> list[Cal
         if ts:
             prev_ts = ts
 
-        compact_meta = rec.get("compactMetadata") or {}
+        compact_meta = extract_compaction_metadata(rec) or {}
 
         row = CallRow(
             marker=ev.marker,
@@ -430,9 +460,9 @@ def _build_call_rows_claude_code(path: Path, session_id: str | None) -> list[Cal
             checkpoint_score=ev.checkpoint_score,
             is_real_lifecycle=ev.kind is EventKind.LIFECYCLE_MARKER and bool(compact_meta),
             compact_trigger=compact_meta.get("trigger"),
-            compact_pre_tokens=compact_meta.get("preTokens"),
-            compact_post_tokens=compact_meta.get("postTokens"),
-            compact_duration_ms=compact_meta.get("durationMs"),
+            compact_pre_tokens=compact_meta.get("pre_tokens"),
+            compact_post_tokens=compact_meta.get("post_tokens"),
+            compact_duration_ms=compact_meta.get("duration_ms"),
             profile_running_words={name: profile_running[name].get(ev.marker) for name in PROFILES},
         )
         rows.append(row)
