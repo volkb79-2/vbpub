@@ -128,7 +128,7 @@ how these choices stay in sync with their owning schemas and registries.
 | --- | --- | --- |
 | `nyxloom lint` | Frontmatter schema + carve-quality rules (SPEC §6); gates the carve commit. Also validates the managed per-entry backlog: entry frontmatter (BLG2) and the generated `backlog/INDEX.md` freshness (BLG3), when a project adopts `[backlog_entries]` | No |
 | `nyxloom backlog` | Managed per-entry issue tracker (`nyxloom-trove/backlog/`, one file per entry): `new`/`promote`/`note`/`set-status`/`list`/`show`/`index`; merge auto-ticks linked entries to `merged`. Design authority: [docs/backlog-entries-spec.md](docs/backlog-entries-spec.md); adoption: [docs/CONSUMERS.md](docs/CONSUMERS.md) | No |
-| `nyxloom usage` | Metadata-only Claude Code usage tree, dated API-equivalent USD estimates, experimental weighted units, observed reset windows, and private operator anchors/calibration across sessions and nested subagents. Report table/JSON/CSV use the frozen `usage-report-v1` contract. Adoption: [docs/CONSUMERS.md#report-claude-code-usage](docs/CONSUMERS.md#report-claude-code-usage); rationale: [design guide](docs/DESIGN-GUIDE.md#local-usage-report). | No |
+| `nyxloom usage` | Metadata-only Claude Code usage tree and chart-data JSON, dated API-equivalent USD estimates, experimental weighted units, observed reset windows, and private operator anchors/calibration across sessions and nested subagents. Report JSON extends the frozen `usage-report-v1` contract with `usage-charts-v1`. Adoption: [docs/CONSUMERS.md#report-claude-code-usage](docs/CONSUMERS.md#report-claude-code-usage); rationale: [design guide](docs/DESIGN-GUIDE.md#usage-chart-data). | No |
 | `nyxloom-harness` session tools | Search session words and return ranked session IDs; mechanically extract from Claude Code, Codex, OpenCode, and Reasonix logs; discover/report sessions; resolve bare IDs; render or highlight Markdown; and follow live streams with optional attention delivery. User guide: [`session_extract/README.md`](src/nyxloom/session_extract/README.md); search rationale: [design guide](docs/DESIGN-GUIDE.md#local-session-search). | No |
 | `nyxloomctl tick` | One operator reconcile pass: scan → dispatch/detect/collect → events → render → notify → exit | No |
 | Attempt wrapper | Runs one CLI leg detached; tees log; writes typed receipt with exit code; holds/releases flock leases | Only the launched agent |
@@ -240,6 +240,18 @@ billed amount; weighted units do not measure subscription consumption. The
 expose price diagnostics, observed reset intervals, and explicitly qualified
 UI readings. See the [usage report guide](docs/CONSUMERS.md#report-claude-code-usage)
 and [design rationale](docs/DESIGN-GUIDE.md#local-usage-report).
+
+`nyxloom usage charts --since 24h --out usage-charts.json` writes the same
+metadata-only chart section included in `nyxloom usage report --format json`.
+Its `usage-charts-v1` datasets contain packed agent context lanes, joined
+per-session context lines, weighted self-cost buckets, and top-agent cost
+composition. Cost stacks partition deduplicated call self-cost; subtree totals
+are never stacked with their children. Context lines are decimated for display
+while retaining exact call data in the report ledger. Weighted units are an
+experimental local score, not subscription usage. Reports with labels are
+sensitive local artifacts; use `--no-labels` to remove titles and topics before
+writing them. See the [chart guide](docs/CONSUMERS.md#export-usage-chart-data)
+and [design rationale](docs/DESIGN-GUIDE.md#usage-chart-data).
 
 For file-backed sessions, `--follow` reads the appended payload plus only
 bounded prefix/tail fingerprints as needed for rewrite detection; it never

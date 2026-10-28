@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .model import Aggregate, Call, Corpus, Node, Session, UsageEvent, Window
+from .charts import ChartOptions, build_chart_data
 
 
 class UsageQueryError(ValueError):
@@ -550,6 +551,7 @@ def build_report(
     sort: str = "cost",
     no_labels: bool = False,
     generated_at: datetime | None = None,
+    chart_options: ChartOptions | None = None,
 ) -> dict[str, Any]:
     """Build a JSON-serializable, versioned report from the loaded corpus."""
     if sort not in SORT_COLUMNS:
@@ -634,7 +636,7 @@ def build_report(
     if generated.tzinfo is None or generated.utcoffset() is None:
         raise ValueError("generated_at must include a timezone")
     generated = generated.astimezone(timezone.utc)
-    return {
+    report = {
         "schema_version": "usage-report-v1",
         "report": "nyxloom-usage-report",
         "generated_at": _iso(generated),
@@ -695,3 +697,17 @@ def build_report(
             for node in displayed_roots
         ],
     }
+    if chart_options is not None:
+        report["extensions"]["chart_data"] = build_chart_data(
+            full_roots,
+            window,
+            weights=chart_options.weights,
+            top_n=chart_options.top_n,
+            group_by=chart_options.group_by,
+            anchors=chart_options.anchors,
+            calibration=chart_options.calibration,
+            coverage_complete=not report["coverage"]["partial"],
+            scope_is_full=project is None and session is None,
+            context_point_limit=chart_options.context_point_limit,
+        )
+    return report

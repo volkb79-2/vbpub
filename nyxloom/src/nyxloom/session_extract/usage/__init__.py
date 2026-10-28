@@ -12,6 +12,17 @@ from .anchors import (
     read_anchor_store,
 )
 from .calibration import calibrate_anchors
+from .charts import (
+    CHART_SCHEMA_VERSION,
+    DEFAULT_CONTEXT_POINT_LIMIT,
+    DEFAULT_TOP_N,
+    GROUP_BY_VALUES,
+    ChartOptions,
+    UsageChartError,
+    build_chart_data,
+    decimate_context_points,
+    pack_lane_intervals,
+)
 from .loader import UsageLoadError, default_projects_root, load_corpus
 from .model import Call, Corpus, Node, Session, UsageEvent, Window
 from .pricing import (
@@ -47,7 +58,10 @@ def render_report(report: dict[str, Any], format: str) -> str:
 
 __all__ = [
     "CSV_COLUMNS", "SORT_COLUMNS", "AnchorError", "Call", "Corpus", "Node", "UsageEvent",
-    "Session", "UsageLoadError", "UsageQueryError", "Window", "build_report",
+    "Session", "UsageLoadError", "UsageQueryError", "Window", "ChartOptions",
+    "CHART_SCHEMA_VERSION", "DEFAULT_CONTEXT_POINT_LIMIT", "DEFAULT_TOP_N",
+    "GROUP_BY_VALUES", "UsageChartError", "build_chart_data", "decimate_context_points",
+    "pack_lane_intervals", "build_report",
     "UsagePricingError", "add_anchor", "apply_valuation", "attach_price_extension",
     "build_usage_windows", "calibrate_anchors", "default_anchor_path", "fit_cost_state",
     "list_anchors", "load_weights", "prices_summary", "read_anchor_store", "value_call",

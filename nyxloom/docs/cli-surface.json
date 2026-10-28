@@ -1366,6 +1366,1293 @@
         "spelling": "--traceback"
       },
       "signature": "sha256:bceffd9326bdaad4b17c648a15178995f2b82c63fda46bad78869210866c91b3"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/anchor/add/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/anchor/add/--kind",
+        "option:route:entrypoint:nyxloom/usage/anchor/add/--at",
+        "option:route:entrypoint:nyxloom/usage/anchor/add/--percent",
+        "option:route:entrypoint:nyxloom/usage/anchor/add/--reset-at",
+        "option:route:entrypoint:nyxloom/usage/anchor/add/--source",
+        "option:route:entrypoint:nyxloom/usage/anchor/add/--coverage-assumption"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/anchor/add",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": [
+          "option:route:entrypoint:nyxloom/usage/anchor/add/--kind",
+          "option:route:entrypoint:nyxloom/usage/anchor/add/--at",
+          "option:route:entrypoint:nyxloom/usage/anchor/add/--percent",
+          "option:route:entrypoint:nyxloom/usage/anchor/add/--reset-at",
+          "option:route:entrypoint:nyxloom/usage/anchor/add/--source",
+          "option:route:entrypoint:nyxloom/usage/anchor/add/--coverage-assumption"
+        ]
+      },
+      "signature": "sha256:358a4e61419b2f3cfb64dbf199931f0af75d859c919f440b03113857a94620d4"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/anchor/add/option-choice/option:route:entrypoint:nyxloom/usage/anchor/add/--coverage-assumption/4accb7e70d",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/anchor/add/--coverage-assumption"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/anchor/add",
+      "shape": {
+        "choice": "local-only-lower-bound",
+        "option_id": "option:route:entrypoint:nyxloom/usage/anchor/add/--coverage-assumption"
+      },
+      "signature": "sha256:c7153ee0978ef58a226fdd086bc455cf1cbb100242bc54ae961c9561be36696a"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/anchor/add/option-choice/option:route:entrypoint:nyxloom/usage/anchor/add/--coverage-assumption/bf52f2ec67",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/anchor/add/--coverage-assumption"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/anchor/add",
+      "shape": {
+        "choice": "all-account-usage-observed",
+        "option_id": "option:route:entrypoint:nyxloom/usage/anchor/add/--coverage-assumption"
+      },
+      "signature": "sha256:42b36271d1027ec0548568dea02cbc9a2c20be14da7323989915d372ae7df161"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/anchor/add/option-choice/option:route:entrypoint:nyxloom/usage/anchor/add/--kind/abc95b719e",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/anchor/add/--kind"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/anchor/add",
+      "shape": {
+        "choice": "weekly",
+        "option_id": "option:route:entrypoint:nyxloom/usage/anchor/add/--kind"
+      },
+      "signature": "sha256:89475dde67f1a40fc8dce295fcc93ee9d1788fcf2d87cbdb248d43f2ad5af306"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/anchor/add/option-choice/option:route:entrypoint:nyxloom/usage/anchor/add/--kind/f36ea950e1",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/anchor/add/--kind"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/anchor/add",
+      "shape": {
+        "choice": "five_hour",
+        "option_id": "option:route:entrypoint:nyxloom/usage/anchor/add/--kind"
+      },
+      "signature": "sha256:d6417fac9b9f1c86a152ab742a41814fdf7d69e9211970ab032896d6b0f5f521"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/anchor/add/option-choice/option:route:entrypoint:nyxloom/usage/anchor/add/--source/297b9c503d",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/anchor/add/--source"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/anchor/add",
+      "shape": {
+        "choice": "account-usage-page",
+        "option_id": "option:route:entrypoint:nyxloom/usage/anchor/add/--source"
+      },
+      "signature": "sha256:af76d0ba1b6b3d6b7468ee7e64d43bd6e1544517f547733c28de960225ab9a22"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/anchor/add/option-choice/option:route:entrypoint:nyxloom/usage/anchor/add/--source/7a6e012a98",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/anchor/add/--source"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/anchor/add",
+      "shape": {
+        "choice": "settings-usage",
+        "option_id": "option:route:entrypoint:nyxloom/usage/anchor/add/--source"
+      },
+      "signature": "sha256:ecd50dcc766b2bc4c6ad4e1ea4ef1dfe16f1bce8657814c60a8506c7702901fc"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/anchor/add/option-spelling/option:route:entrypoint:nyxloom/usage/anchor/add/--anchor-file/--anchor-file",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/anchor/add/--anchor-file"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/anchor/add",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/anchor/add/--anchor-file",
+        "spelling": "--anchor-file"
+      },
+      "signature": "sha256:709978498b44c6678582df8ff4fddb54d0050ec794ff4b36a1a95d8906db0662"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/anchor/add/option-spelling/option:route:entrypoint:nyxloom/usage/anchor/add/--at/--at",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/anchor/add/--at"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/anchor/add",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/anchor/add/--at",
+        "spelling": "--at"
+      },
+      "signature": "sha256:bcf1fb23fcfece6c87d858e6a9ab98238a8b82fb5598ae991e01a7815b3550a3"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/anchor/add/option-spelling/option:route:entrypoint:nyxloom/usage/anchor/add/--coverage-assumption/--coverage-assumption",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/anchor/add/--coverage-assumption"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/anchor/add",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/anchor/add/--coverage-assumption",
+        "spelling": "--coverage-assumption"
+      },
+      "signature": "sha256:a879280082c5e12a690a017e1a5b956c093dbd481239487409ebaf43e8390ac4"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/anchor/add/option-spelling/option:route:entrypoint:nyxloom/usage/anchor/add/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/anchor/add/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/anchor/add",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/anchor/add/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:67d852481ff35b0bc612ca41b893ba247b0cdae2e17f0455fea570d652847d1c"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/anchor/add/option-spelling/option:route:entrypoint:nyxloom/usage/anchor/add/--kind/--kind",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/anchor/add/--kind"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/anchor/add",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/anchor/add/--kind",
+        "spelling": "--kind"
+      },
+      "signature": "sha256:3984f1fa5dd37657bbbd66df121558e471cc15f6653371a91393f318baa4155f"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/anchor/add/option-spelling/option:route:entrypoint:nyxloom/usage/anchor/add/--percent/--percent",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/anchor/add/--percent"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/anchor/add",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/anchor/add/--percent",
+        "spelling": "--percent"
+      },
+      "signature": "sha256:6dc647999e37f5e7483de35a0250bd100b24b3553e5146c23b3c8e6af878509b"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/anchor/add/option-spelling/option:route:entrypoint:nyxloom/usage/anchor/add/--reset-at/--reset-at",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/anchor/add/--reset-at"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/anchor/add",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/anchor/add/--reset-at",
+        "spelling": "--reset-at"
+      },
+      "signature": "sha256:58d3b8b3308807844f56d5ebcce39db015ad30518abc7ff3d6bcdf9702300e5a"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/anchor/add/option-spelling/option:route:entrypoint:nyxloom/usage/anchor/add/--source/--source",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/anchor/add/--source"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/anchor/add",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/anchor/add/--source",
+        "spelling": "--source"
+      },
+      "signature": "sha256:38328e0c26580c8179164d9ec27f675df5981706aff9337e425943c0612d1a96"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/anchor/add/option-spelling/option:route:entrypoint:nyxloom/usage/anchor/add/--traceback/--traceback",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/anchor/add/--traceback"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/anchor/add",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/anchor/add/--traceback",
+        "spelling": "--traceback"
+      },
+      "signature": "sha256:7bf9e294060c6f85c71cab68c9f15c648c6651b984b3d6071a6d96e930d3f35e"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/anchor/list/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:nyxloom/usage/anchor/list",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:e04161445a72510791d234866c011740c9e9ff18513b24af8e1d9df7e26e4b5b"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/anchor/list/option-spelling/option:route:entrypoint:nyxloom/usage/anchor/list/--anchor-file/--anchor-file",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/anchor/list/--anchor-file"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/anchor/list",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/anchor/list/--anchor-file",
+        "spelling": "--anchor-file"
+      },
+      "signature": "sha256:befaafa23062f55435b95b58bf5413d17f94e0fac38fce19ae0035a6ff7404c7"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/anchor/list/option-spelling/option:route:entrypoint:nyxloom/usage/anchor/list/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/anchor/list/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/anchor/list",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/anchor/list/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:91e3efda4e5d92e1b7b91e8dd975e3d87c3a9130e8316a90dacb2c1f5dc3d10c"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/anchor/list/option-spelling/option:route:entrypoint:nyxloom/usage/anchor/list/--traceback/--traceback",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/anchor/list/--traceback"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/anchor/list",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/anchor/list/--traceback",
+        "spelling": "--traceback"
+      },
+      "signature": "sha256:3a7d283631dd397dbd5f7090a2c6c132c5a2cd401a8e968b21529637b0a4e920"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/calibrate/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/calibrate/--format"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/calibrate",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:nyxloom/usage/calibrate/--format"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:e81765a081dfe29c1baecd840ceca3011d1808f69b2f260e005efc818d3ae1c4"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/calibrate/option-choice/option:route:entrypoint:nyxloom/usage/calibrate/--format/1e1d0f251d",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/calibrate/--format"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/calibrate",
+      "shape": {
+        "choice": "text",
+        "option_id": "option:route:entrypoint:nyxloom/usage/calibrate/--format"
+      },
+      "signature": "sha256:14c4ce8edd2d216262b26f8530bc544cdd9eb2bf484a7ea577a9452752d5004d"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/calibrate/option-choice/option:route:entrypoint:nyxloom/usage/calibrate/--format/4e23b39204",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/calibrate/--format"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/calibrate",
+      "shape": {
+        "choice": "json",
+        "option_id": "option:route:entrypoint:nyxloom/usage/calibrate/--format"
+      },
+      "signature": "sha256:9e09bbaa252853e941ca7253aba0184f0d74f13440e6867e1d93eccab4152a8f"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/calibrate/option-spelling/option:route:entrypoint:nyxloom/usage/calibrate/--anchor-file/--anchor-file",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/calibrate/--anchor-file"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/calibrate",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/calibrate/--anchor-file",
+        "spelling": "--anchor-file"
+      },
+      "signature": "sha256:25d2f370b09f5ba19ec175277d78c622a005f3ab72b6be22f2675aa57001b54b"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/calibrate/option-spelling/option:route:entrypoint:nyxloom/usage/calibrate/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/calibrate/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/calibrate",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/calibrate/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:61a4fc66f36a6aac060b53fc778defd72729d8442e95289afa35cf3631e55a0f"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/calibrate/option-spelling/option:route:entrypoint:nyxloom/usage/calibrate/--format/--format",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/calibrate/--format"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/calibrate",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/calibrate/--format",
+        "spelling": "--format"
+      },
+      "signature": "sha256:015f8cc0abdfc7d862c3c99dc9fec2004cbfe12d5cc52a9578fba7f2b7b51e47"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/calibrate/option-spelling/option:route:entrypoint:nyxloom/usage/calibrate/--traceback/--traceback",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/calibrate/--traceback"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/calibrate",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/calibrate/--traceback",
+        "spelling": "--traceback"
+      },
+      "signature": "sha256:b07dd4514e54ff9c9fff3f12646a65ac413e43166cf462039bf342fa45abfbcc"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/calibrate/option-spelling/option:route:entrypoint:nyxloom/usage/calibrate/--weights/--weights",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/calibrate/--weights"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/calibrate",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/calibrate/--weights",
+        "spelling": "--weights"
+      },
+      "signature": "sha256:7bccabb0805483400ef4e69a388fbbd803e0a4d3f5507c5aab07a2217f9a4715"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/charts/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/charts/--since",
+        "option:route:entrypoint:nyxloom/usage/charts/--top",
+        "option:route:entrypoint:nyxloom/usage/charts/--group-by",
+        "option:route:entrypoint:nyxloom/usage/charts/--no-labels",
+        "option:route:entrypoint:nyxloom/usage/charts/--out"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/charts",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:nyxloom/usage/charts/--top",
+          "option:route:entrypoint:nyxloom/usage/charts/--group-by",
+          "option:route:entrypoint:nyxloom/usage/charts/--no-labels"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": [
+          "option:route:entrypoint:nyxloom/usage/charts/--since",
+          "option:route:entrypoint:nyxloom/usage/charts/--out"
+        ]
+      },
+      "signature": "sha256:eb18cbabccedfed2af359edcad336082b02f2604e4f2b7ca2c3c1b841d5effe7"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/charts/option-choice/option:route:entrypoint:nyxloom/usage/charts/--group-by/18fb9fa0b9",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/charts/--group-by"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/charts",
+      "shape": {
+        "choice": "model",
+        "option_id": "option:route:entrypoint:nyxloom/usage/charts/--group-by"
+      },
+      "signature": "sha256:431dace984915699c365df4004aa875e9f3f7fed4174db10b390e013ce644a23"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/charts/option-choice/option:route:entrypoint:nyxloom/usage/charts/--group-by/7649b444a3",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/charts/--group-by"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/charts",
+      "shape": {
+        "choice": "agent",
+        "option_id": "option:route:entrypoint:nyxloom/usage/charts/--group-by"
+      },
+      "signature": "sha256:5c366b491bd84cb21a1a4efd86a002b21989c13990026a63f3fe6b9e57c6b9b0"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/charts/option-choice/option:route:entrypoint:nyxloom/usage/charts/--group-by/9fb875820e",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/charts/--group-by"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/charts",
+      "shape": {
+        "choice": "effort",
+        "option_id": "option:route:entrypoint:nyxloom/usage/charts/--group-by"
+      },
+      "signature": "sha256:8881355f54ea029ff8e76cfc5f7bbd067057939f8fe0f76c608b1f8516306e77"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/charts/option-choice/option:route:entrypoint:nyxloom/usage/charts/--group-by/b03b225027",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/charts/--group-by"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/charts",
+      "shape": {
+        "choice": "topic",
+        "option_id": "option:route:entrypoint:nyxloom/usage/charts/--group-by"
+      },
+      "signature": "sha256:c9f5cda31dad8e706a5a3f178c02dca21f64e7b579ef6f024a3adfa77db29a76"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/charts/option-choice/option:route:entrypoint:nyxloom/usage/charts/--group-by/d4cd9053a1",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/charts/--group-by"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/charts",
+      "shape": {
+        "choice": "session",
+        "option_id": "option:route:entrypoint:nyxloom/usage/charts/--group-by"
+      },
+      "signature": "sha256:c3ec4034cd5cd225d90f4d7f43c82e477bf07899f780179b76e6043d350063e9"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/charts/option-spelling/option:route:entrypoint:nyxloom/usage/charts/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/charts/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/charts",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/charts/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:05e79084735d19cc30b0de0dd83b8a92f749037979187c68b523e0b5dd571fed"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/charts/option-spelling/option:route:entrypoint:nyxloom/usage/charts/--group-by/--group-by",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/charts/--group-by"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/charts",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/charts/--group-by",
+        "spelling": "--group-by"
+      },
+      "signature": "sha256:aefaaafddcc3a765394c83212eec454daf8258e3b4a6a436c130742f5ddc47ac"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/charts/option-spelling/option:route:entrypoint:nyxloom/usage/charts/--no-labels/--no-labels",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/charts/--no-labels"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/charts",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/charts/--no-labels",
+        "spelling": "--no-labels"
+      },
+      "signature": "sha256:78adce77bec43536a62ae98851b7fdc204d7d9cd4d02c870ed444d42af0b7034"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/charts/option-spelling/option:route:entrypoint:nyxloom/usage/charts/--out/--out",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/charts/--out"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/charts",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/charts/--out",
+        "spelling": "--out"
+      },
+      "signature": "sha256:50b15826d9c73d3b87127490a332a2906df64468391b20c2df1b538ca715a927"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/charts/option-spelling/option:route:entrypoint:nyxloom/usage/charts/--project/--project",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/charts/--project"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/charts",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/charts/--project",
+        "spelling": "--project"
+      },
+      "signature": "sha256:be7ee17e3ce13b9b6895f30eabe7a6ab09651c5e324844acb34876e44185a571"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/charts/option-spelling/option:route:entrypoint:nyxloom/usage/charts/--session/--session",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/charts/--session"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/charts",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/charts/--session",
+        "spelling": "--session"
+      },
+      "signature": "sha256:1ffbaa1414852e3fc5719765b31a5ece8ef2b4889dc60b82ee21f3825be7701c"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/charts/option-spelling/option:route:entrypoint:nyxloom/usage/charts/--since/--since",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/charts/--since"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/charts",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/charts/--since",
+        "spelling": "--since"
+      },
+      "signature": "sha256:707250925cdaf025d230370ddb106344332c5d0b6b4e25847a01553bb9626d82"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/charts/option-spelling/option:route:entrypoint:nyxloom/usage/charts/--top/--top",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/charts/--top"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/charts",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/charts/--top",
+        "spelling": "--top"
+      },
+      "signature": "sha256:d601aca10aa5b3dba826c72a3c093e07f692360ecc55ad0d44c181a06ae2e598"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/charts/option-spelling/option:route:entrypoint:nyxloom/usage/charts/--traceback/--traceback",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/charts/--traceback"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/charts",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/charts/--traceback",
+        "spelling": "--traceback"
+      },
+      "signature": "sha256:7a269cc293515f45ac9dc11bd788c506fd461f8b780f01bc24712d61fa51c73f"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/charts/option-spelling/option:route:entrypoint:nyxloom/usage/charts/--until/--until",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/charts/--until"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/charts",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/charts/--until",
+        "spelling": "--until"
+      },
+      "signature": "sha256:7e4652b25a231a77696627a7f829aa632966209a58eae2a78196770240265eb8"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/charts/option-spelling/option:route:entrypoint:nyxloom/usage/charts/--weights/--weights",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/charts/--weights"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/charts",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/charts/--weights",
+        "spelling": "--weights"
+      },
+      "signature": "sha256:9b767f620e9d98aaa62845a065a3c59b502ec0d00a1b2f7aff9352ac24477b06"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/prices/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/prices/--fit",
+        "option:route:entrypoint:nyxloom/usage/prices/--format"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/prices",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:nyxloom/usage/prices/--fit",
+          "option:route:entrypoint:nyxloom/usage/prices/--format"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:98e5ca77728c0ebb493d34a8281883a469862ead326e5e5abce0779b38e67fb2"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/prices/option-choice/option:route:entrypoint:nyxloom/usage/prices/--format/1e1d0f251d",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/prices/--format"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/prices",
+      "shape": {
+        "choice": "text",
+        "option_id": "option:route:entrypoint:nyxloom/usage/prices/--format"
+      },
+      "signature": "sha256:073897bf90f0161330274cf112ec936061e444858a12f340f75b588c130613aa"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/prices/option-choice/option:route:entrypoint:nyxloom/usage/prices/--format/4e23b39204",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/prices/--format"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/prices",
+      "shape": {
+        "choice": "json",
+        "option_id": "option:route:entrypoint:nyxloom/usage/prices/--format"
+      },
+      "signature": "sha256:de657dc0ebd2f93c2493f2b204efe370952bc1e2e15ee8998e91067dd4874b1f"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/prices/option-spelling/option:route:entrypoint:nyxloom/usage/prices/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/prices/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/prices",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/prices/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:737e3ab1d8ab7261fb63326d7a7e9dc167d5320bdcc514f130959d96919d01b0"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/prices/option-spelling/option:route:entrypoint:nyxloom/usage/prices/--fit/--fit",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/prices/--fit"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/prices",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/prices/--fit",
+        "spelling": "--fit"
+      },
+      "signature": "sha256:82d59b15ed82d1509fa55a404d7a62f3554218cd3628eba4b077a44b9ff9ae91"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/prices/option-spelling/option:route:entrypoint:nyxloom/usage/prices/--format/--format",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/prices/--format"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/prices",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/prices/--format",
+        "spelling": "--format"
+      },
+      "signature": "sha256:ae3cf6e48eb4e1def19b913d265fbb350ded7655be45872e4b859be1f6120688"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/prices/option-spelling/option:route:entrypoint:nyxloom/usage/prices/--traceback/--traceback",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/prices/--traceback"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/prices",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/prices/--traceback",
+        "spelling": "--traceback"
+      },
+      "signature": "sha256:3cff41050eea3c63c0cf9ee461693e581d30a97cac4943da6b8e5a44e082828c"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/prices/option-spelling/option:route:entrypoint:nyxloom/usage/prices/--weights/--weights",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/prices/--weights"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/prices",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/prices/--weights",
+        "spelling": "--weights"
+      },
+      "signature": "sha256:c8f1dcdb3311bb38c38c94cf649a4a0100498f62892e3f277aa57a4d1502661c"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/report/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/report/--since",
+        "option:route:entrypoint:nyxloom/usage/report/--format",
+        "option:route:entrypoint:nyxloom/usage/report/--min-share",
+        "option:route:entrypoint:nyxloom/usage/report/--flat",
+        "option:route:entrypoint:nyxloom/usage/report/--sort",
+        "option:route:entrypoint:nyxloom/usage/report/--no-labels"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/report",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:nyxloom/usage/report/--format",
+          "option:route:entrypoint:nyxloom/usage/report/--min-share",
+          "option:route:entrypoint:nyxloom/usage/report/--flat",
+          "option:route:entrypoint:nyxloom/usage/report/--sort",
+          "option:route:entrypoint:nyxloom/usage/report/--no-labels"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": [
+          "option:route:entrypoint:nyxloom/usage/report/--since"
+        ]
+      },
+      "signature": "sha256:49c65fbd6e408376dbe4720f586f64c49179ee811f99ad6a2bfc4659e60c8936"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/report/option-choice/option:route:entrypoint:nyxloom/usage/report/--format/3eb9810d90",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/report/--format"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/report",
+      "shape": {
+        "choice": "table",
+        "option_id": "option:route:entrypoint:nyxloom/usage/report/--format"
+      },
+      "signature": "sha256:97c51636c73875d2238a5a960bba7150c44271a6708c037c1eb2cd9a4542914c"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/report/option-choice/option:route:entrypoint:nyxloom/usage/report/--format/4e23b39204",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/report/--format"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/report",
+      "shape": {
+        "choice": "json",
+        "option_id": "option:route:entrypoint:nyxloom/usage/report/--format"
+      },
+      "signature": "sha256:cfc8947be748f15ae69290da055bd8f8ef3326e0907c2885f05c25b8a419c651"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/report/option-choice/option:route:entrypoint:nyxloom/usage/report/--format/82cacb7d32",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/report/--format"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/report",
+      "shape": {
+        "choice": "csv",
+        "option_id": "option:route:entrypoint:nyxloom/usage/report/--format"
+      },
+      "signature": "sha256:9cf1527f25cda4f85ffd0d644c6afaeb0df66ba4a625666bb88a1793882be02b"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/report/option-choice/option:route:entrypoint:nyxloom/usage/report/--group-by/18fb9fa0b9",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/report/--group-by"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/report",
+      "shape": {
+        "choice": "model",
+        "option_id": "option:route:entrypoint:nyxloom/usage/report/--group-by"
+      },
+      "signature": "sha256:5595c660772c6538d282d5ef113a10ab596088c97b4a79a96362b21c8e285fe4"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/report/option-choice/option:route:entrypoint:nyxloom/usage/report/--group-by/7649b444a3",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/report/--group-by"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/report",
+      "shape": {
+        "choice": "agent",
+        "option_id": "option:route:entrypoint:nyxloom/usage/report/--group-by"
+      },
+      "signature": "sha256:af8040e510f3b78d8a52cf5eeabf892d615afeab3360d1783bb7c6955a30a034"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/report/option-choice/option:route:entrypoint:nyxloom/usage/report/--group-by/9fb875820e",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/report/--group-by"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/report",
+      "shape": {
+        "choice": "effort",
+        "option_id": "option:route:entrypoint:nyxloom/usage/report/--group-by"
+      },
+      "signature": "sha256:73554111b5aa35978ca3afe3a7be75fcf29b8a00128d171327aeed07cbc5d701"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/report/option-choice/option:route:entrypoint:nyxloom/usage/report/--group-by/b03b225027",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/report/--group-by"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/report",
+      "shape": {
+        "choice": "topic",
+        "option_id": "option:route:entrypoint:nyxloom/usage/report/--group-by"
+      },
+      "signature": "sha256:c9074535be41322417c507b3a1cba836857111eb54aca39267f65ca9534b2be7"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/report/option-choice/option:route:entrypoint:nyxloom/usage/report/--group-by/d4cd9053a1",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/report/--group-by"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/report",
+      "shape": {
+        "choice": "session",
+        "option_id": "option:route:entrypoint:nyxloom/usage/report/--group-by"
+      },
+      "signature": "sha256:310c5c9350e1cc2e72d5ca34e94a2bed223a33be7cbeda80c63c8305c6aed2e6"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/report/option-choice/option:route:entrypoint:nyxloom/usage/report/--sort/1f3055ba62",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/report/--sort"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/report",
+      "shape": {
+        "choice": "out",
+        "option_id": "option:route:entrypoint:nyxloom/usage/report/--sort"
+      },
+      "signature": "sha256:2d7fb9aa543d65937a8a62b0d96f872cbce780e0a686bba010afeb8292b9a311"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/report/option-choice/option:route:entrypoint:nyxloom/usage/report/--sort/2c08c6dca8",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/report/--sort"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/report",
+      "shape": {
+        "choice": "peak",
+        "option_id": "option:route:entrypoint:nyxloom/usage/report/--sort"
+      },
+      "signature": "sha256:555521372c224a7a9aec5d8ffd9f70312deaa7ba969846c6abae0154735095b7"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/report/option-choice/option:route:entrypoint:nyxloom/usage/report/--sort/34cf7648ae",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/report/--sort"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/report",
+      "shape": {
+        "choice": "dur",
+        "option_id": "option:route:entrypoint:nyxloom/usage/report/--sort"
+      },
+      "signature": "sha256:87d6e63f62ffe54880462ac30b0dc4c808d5c4d198bb4ddf3532198cb58c22ce"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/report/option-choice/option:route:entrypoint:nyxloom/usage/report/--sort/a03c02bec8",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/report/--sort"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/report",
+      "shape": {
+        "choice": "cost",
+        "option_id": "option:route:entrypoint:nyxloom/usage/report/--sort"
+      },
+      "signature": "sha256:a1e7ccc724b02336bbf00d56197f717cc9082d81d910a73f53f018d142563d22"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/report/option-choice/option:route:entrypoint:nyxloom/usage/report/--sort/a92ae96156",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/report/--sort"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/report",
+      "shape": {
+        "choice": "start",
+        "option_id": "option:route:entrypoint:nyxloom/usage/report/--sort"
+      },
+      "signature": "sha256:535c1e551df8051ff4eff93c526784a49b3b8e1c31311e47909c04a72206e9f3"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/report/option-choice/option:route:entrypoint:nyxloom/usage/report/--sort/fc12e09e9f",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/report/--sort"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/report",
+      "shape": {
+        "choice": "calls",
+        "option_id": "option:route:entrypoint:nyxloom/usage/report/--sort"
+      },
+      "signature": "sha256:5117a794ae03df33a1ff98322181d4c4121de3194288489f6b5cc68ede24d710"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/report/option-spelling/option:route:entrypoint:nyxloom/usage/report/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/report/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/report",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/report/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:adedf75f2a96492f9249a240ce94b707e93ce1e0fbb8aeeabe4062dd689e1ccd"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/report/option-spelling/option:route:entrypoint:nyxloom/usage/report/--depth/--depth",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/report/--depth"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/report",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/report/--depth",
+        "spelling": "--depth"
+      },
+      "signature": "sha256:2ebad34e4809987ebdb0aab5f53516c198bbd5d6aecade3579cdf89740a8bf01"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/report/option-spelling/option:route:entrypoint:nyxloom/usage/report/--flat/--flat",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/report/--flat"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/report",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/report/--flat",
+        "spelling": "--flat"
+      },
+      "signature": "sha256:6fd6df34165adc58464eb692dc94e2a20119aa15893886f9189c375d71ce6b37"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/report/option-spelling/option:route:entrypoint:nyxloom/usage/report/--format/--format",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/report/--format"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/report",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/report/--format",
+        "spelling": "--format"
+      },
+      "signature": "sha256:351d49b229d77ea1ba5174edeb07f7ba948dbd1cab469be75e52ff2b07a89b05"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/report/option-spelling/option:route:entrypoint:nyxloom/usage/report/--group-by/--group-by",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/report/--group-by"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/report",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/report/--group-by",
+        "spelling": "--group-by"
+      },
+      "signature": "sha256:2864ab3e9913ac034a4b93a9c759f544043e20de41ae92a30bc4233692581ce2"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/report/option-spelling/option:route:entrypoint:nyxloom/usage/report/--min-share/--min-share",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/report/--min-share"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/report",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/report/--min-share",
+        "spelling": "--min-share"
+      },
+      "signature": "sha256:ee4354e8f18049bfcbe6ff74408d13b2003a708494485b505a16f6d7c64bc4d3"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/report/option-spelling/option:route:entrypoint:nyxloom/usage/report/--no-labels/--no-labels",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/report/--no-labels"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/report",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/report/--no-labels",
+        "spelling": "--no-labels"
+      },
+      "signature": "sha256:5e6e7b0df3a235a0dee4614954cfaf4ec579e83d71d8f53c5b1a54a4687c04bb"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/report/option-spelling/option:route:entrypoint:nyxloom/usage/report/--out/--out",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/report/--out"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/report",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/report/--out",
+        "spelling": "--out"
+      },
+      "signature": "sha256:42bb2a294d2f984c8da48ef8e98bbb7e5675ed497f54beb58bf29e94b8305d80"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/report/option-spelling/option:route:entrypoint:nyxloom/usage/report/--project/--project",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/report/--project"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/report",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/report/--project",
+        "spelling": "--project"
+      },
+      "signature": "sha256:f4623d51c8fa098cab411112c05ed14057c09f58a54755f28e76c0fe39fa038c"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/report/option-spelling/option:route:entrypoint:nyxloom/usage/report/--session/--session",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/report/--session"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/report",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/report/--session",
+        "spelling": "--session"
+      },
+      "signature": "sha256:7a484d2beed6355817a4c03e0bc86553362e8540435ca87d8aced5a5d9211675"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/report/option-spelling/option:route:entrypoint:nyxloom/usage/report/--since/--since",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/report/--since"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/report",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/report/--since",
+        "spelling": "--since"
+      },
+      "signature": "sha256:1c398c7903dfc196fb5c9425744f876f39b99d036229df34812c39fa13441657"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/report/option-spelling/option:route:entrypoint:nyxloom/usage/report/--sort/--sort",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/report/--sort"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/report",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/report/--sort",
+        "spelling": "--sort"
+      },
+      "signature": "sha256:11bef12914aee4c080b409a81732372a4b436caccf90667ba3a9c03610405e7b"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/report/option-spelling/option:route:entrypoint:nyxloom/usage/report/--top/--top",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/report/--top"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/report",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/report/--top",
+        "spelling": "--top"
+      },
+      "signature": "sha256:455e77a8a62d90fd018100e4c2fe658bd777d93b39c84f3d12f942f2d4902c83"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/report/option-spelling/option:route:entrypoint:nyxloom/usage/report/--traceback/--traceback",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/report/--traceback"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/report",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/report/--traceback",
+        "spelling": "--traceback"
+      },
+      "signature": "sha256:71f978949f63d600d7182cede936f07912738fbb55f3679961a4ca5a31c83f91"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/report/option-spelling/option:route:entrypoint:nyxloom/usage/report/--until/--until",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/report/--until"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/report",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/report/--until",
+        "spelling": "--until"
+      },
+      "signature": "sha256:929aa0df3c4854755619176646e7e9956436dd82634c105c591a89490f4ca93c"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/report/option-spelling/option:route:entrypoint:nyxloom/usage/report/--weights/--weights",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/report/--weights"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/report",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/report/--weights",
+        "spelling": "--weights"
+      },
+      "signature": "sha256:ee9da5c2fda2cb54c93feea6ba5fa580735e63e85dd04245b547b3e8c0fdff4b"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/windows/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/windows/--since",
+        "option:route:entrypoint:nyxloom/usage/windows/--format"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/windows",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:nyxloom/usage/windows/--since",
+          "option:route:entrypoint:nyxloom/usage/windows/--format"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:ab10d2aeeed011b462359a5527f02facaab403b9a378aa47fdb0fb9b1089d2b1"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/windows/option-choice/option:route:entrypoint:nyxloom/usage/windows/--format/1e1d0f251d",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/windows/--format"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/windows",
+      "shape": {
+        "choice": "text",
+        "option_id": "option:route:entrypoint:nyxloom/usage/windows/--format"
+      },
+      "signature": "sha256:b9b25210700166ea645947cc5b821a05f7ce469eee6dc0d4b18174cb3e3914d2"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/windows/option-choice/option:route:entrypoint:nyxloom/usage/windows/--format/4e23b39204",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/windows/--format"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/windows",
+      "shape": {
+        "choice": "json",
+        "option_id": "option:route:entrypoint:nyxloom/usage/windows/--format"
+      },
+      "signature": "sha256:1b980f0208ce8d2b9187a52b75a909af2a0ea83b4413ef073ccc70087a1643b8"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/windows/option-spelling/option:route:entrypoint:nyxloom/usage/windows/--anchor-file/--anchor-file",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/windows/--anchor-file"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/windows",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/windows/--anchor-file",
+        "spelling": "--anchor-file"
+      },
+      "signature": "sha256:46f00bdcea0a2c552a71d605748e6d6398ee9661e943ca2779159f89d43e73e4"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/windows/option-spelling/option:route:entrypoint:nyxloom/usage/windows/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/windows/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/windows",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/windows/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:1ee27c894faa50afa698e09c848414c228e93eae3f40e989416a62d4cb01f963"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/windows/option-spelling/option:route:entrypoint:nyxloom/usage/windows/--format/--format",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/windows/--format"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/windows",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/windows/--format",
+        "spelling": "--format"
+      },
+      "signature": "sha256:cc07aa802b1cd45b56af7a0d6ffe7c38c60bdc144fbccf5388b582fee3d9558b"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/windows/option-spelling/option:route:entrypoint:nyxloom/usage/windows/--since/--since",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/windows/--since"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/windows",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/windows/--since",
+        "spelling": "--since"
+      },
+      "signature": "sha256:bd6dac2e980f38b1621ebfdaec17c90d74d6aa212cc75c2bf34db81b08e25b19"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/windows/option-spelling/option:route:entrypoint:nyxloom/usage/windows/--traceback/--traceback",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/windows/--traceback"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/windows",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/windows/--traceback",
+        "spelling": "--traceback"
+      },
+      "signature": "sha256:6eb15b6c48d01389f8c762008e9a34780a750e58da60ab4648739ff3fcaefa84"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/windows/option-spelling/option:route:entrypoint:nyxloom/usage/windows/--until/--until",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/windows/--until"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/windows",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/windows/--until",
+        "spelling": "--until"
+      },
+      "signature": "sha256:d85a09b826cb0b23b4961d3896acc6ba38ee5a9e8d5e65a37e86f1322b9b1e8c"
+    },
+    {
+      "id": "case:route:entrypoint:nyxloom/usage/windows/option-spelling/option:route:entrypoint:nyxloom/usage/windows/--weights/--weights",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:nyxloom/usage/windows/--weights"
+      ],
+      "route_id": "route:entrypoint:nyxloom/usage/windows",
+      "shape": {
+        "option_id": "option:route:entrypoint:nyxloom/usage/windows/--weights",
+        "spelling": "--weights"
+      },
+      "signature": "sha256:e2842402bc2f77ff34e0cd0f324f6a8b421bcba513c32c17b39c87213da02f3b"
     }
   ],
   "entrypoint": {
@@ -4330,6 +5617,2888 @@
       "subcommands": [],
       "subcommands_required": false,
       "summary": "Run the local project onboarding flow. [mutating]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Analyze local Claude Code usage metadata.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:nyxloom/usage",
+      "kind": "delegate-group",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "usage"
+      ],
+      "single_command": false,
+      "subcommands": [
+        "route:entrypoint:nyxloom/usage/report",
+        "route:entrypoint:nyxloom/usage/charts",
+        "route:entrypoint:nyxloom/usage/prices",
+        "route:entrypoint:nyxloom/usage/windows",
+        "route:entrypoint:nyxloom/usage/anchor",
+        "route:entrypoint:nyxloom/usage/calibrate"
+      ],
+      "summary": "Analyze local Claude Code usage metadata.",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Record or list private account-usage display readings.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:nyxloom/usage/anchor",
+      "kind": "delegate-group",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "usage"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "usage",
+        "anchor"
+      ],
+      "single_command": false,
+      "subcommands": [
+        "route:entrypoint:nyxloom/usage/anchor/add",
+        "route:entrypoint:nyxloom/usage/anchor/list"
+      ],
+      "summary": "Record or list private account-usage display readings.",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--traceback",
+          "choices": null,
+          "const": true,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "show a traceback for an unexpected command failure",
+          "dest": "traceback",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--traceback"
+          ],
+          "help_group": "DEBUGGING",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/anchor/add/--traceback",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "usage",
+            "anchor",
+            "add"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--kind",
+          "choices": [
+            "five_hour",
+            "weekly"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Account limit shown by the UI",
+          "dest": "kind",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--kind"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/anchor/add/--kind",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "five_hour",
+              "weekly"
+            ],
+            "required": true
+          },
+          "parser_path": [
+            "usage",
+            "anchor",
+            "add"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--at",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "When the displayed percentage was observed (timezone-aware ISO-8601)",
+          "dest": "at",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--at"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/anchor/add/--at",
+          "kind": "option",
+          "metavar": "TIMESTAMP",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "metavar": "TIMESTAMP",
+            "required": true
+          },
+          "parser_path": [
+            "usage",
+            "anchor",
+            "add"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--percent",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Displayed percentage from 0 through 100",
+          "dest": "percent",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--percent"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/anchor/add/--percent",
+          "kind": "option",
+          "metavar": "PERCENT",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "metavar": "PERCENT",
+            "required": true,
+            "type": {
+              "callable": "builtins.float"
+            }
+          },
+          "parser_path": [
+            "usage",
+            "anchor",
+            "add"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.float"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--reset-at",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Displayed next reset time (timezone-aware ISO-8601)",
+          "dest": "reset_at",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--reset-at"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/anchor/add/--reset-at",
+          "kind": "option",
+          "metavar": "TIMESTAMP",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "metavar": "TIMESTAMP",
+            "required": true
+          },
+          "parser_path": [
+            "usage",
+            "anchor",
+            "add"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--source",
+          "choices": [
+            "settings-usage",
+            "account-usage-page"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "UI source for the reading",
+          "dest": "source",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--source"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/anchor/add/--source",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "settings-usage",
+              "account-usage-page"
+            ],
+            "required": true
+          },
+          "parser_path": [
+            "usage",
+            "anchor",
+            "add"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--coverage-assumption",
+          "choices": [
+            "local-only-lower-bound",
+            "all-account-usage-observed"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Whether the reading covers only this machine or all account usage",
+          "dest": "coverage_assumption",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--coverage-assumption"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/anchor/add/--coverage-assumption",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "local-only-lower-bound",
+              "all-account-usage-observed"
+            ],
+            "required": true
+          },
+          "parser_path": [
+            "usage",
+            "anchor",
+            "add"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--anchor-file",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Private state file override",
+          "dest": "anchor_file",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--anchor-file"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/anchor/add/--anchor-file",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "metavar": "FILE"
+          },
+          "parser_path": [
+            "usage",
+            "anchor",
+            "add"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "Analyze local Claude Code usage metadata.",
+          "group": "EXPLORATION",
+          "id": null,
+          "name": "usage",
+          "summary": "Analyze local Claude Code usage metadata.",
+          "synopsis": null
+        },
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "Record or list private account-usage display readings.",
+          "group": "EXPLORATION",
+          "id": null,
+          "name": "anchor",
+          "summary": "Record or list private account-usage display readings.",
+          "synopsis": null
+        }
+      ],
+      "description": "Store one explicitly observed usage percentage and reset time.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:nyxloom/usage/anchor/add",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "usage"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "usage",
+            "anchor"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "usage",
+            "anchor",
+            "add"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "usage",
+        "anchor",
+        "add"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Store one explicitly observed usage percentage and reset time. [mutating]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--traceback",
+          "choices": null,
+          "const": true,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "show a traceback for an unexpected command failure",
+          "dest": "traceback",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--traceback"
+          ],
+          "help_group": "DEBUGGING",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/anchor/list/--traceback",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "usage",
+            "anchor",
+            "list"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--anchor-file",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Private state file override",
+          "dest": "anchor_file",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--anchor-file"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/anchor/list/--anchor-file",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "metavar": "FILE"
+          },
+          "parser_path": [
+            "usage",
+            "anchor",
+            "list"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "Analyze local Claude Code usage metadata.",
+          "group": "EXPLORATION",
+          "id": null,
+          "name": "usage",
+          "summary": "Analyze local Claude Code usage metadata.",
+          "synopsis": null
+        },
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "Record or list private account-usage display readings.",
+          "group": "EXPLORATION",
+          "id": null,
+          "name": "anchor",
+          "summary": "Record or list private account-usage display readings.",
+          "synopsis": null
+        }
+      ],
+      "description": "List stored account-usage display readings.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:nyxloom/usage/anchor/list",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "usage"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "usage",
+            "anchor"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "usage",
+            "anchor",
+            "list"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "usage",
+        "anchor",
+        "list"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "List stored account-usage display readings.",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--traceback",
+          "choices": null,
+          "const": true,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "show a traceback for an unexpected command failure",
+          "dest": "traceback",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--traceback"
+          ],
+          "help_group": "DEBUGGING",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/calibrate/--traceback",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "usage",
+            "calibrate"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--weights",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "TOML prices and experimental weights override",
+          "dest": "weights",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--weights"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/calibrate/--weights",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "metavar": "FILE"
+          },
+          "parser_path": [
+            "usage",
+            "calibrate"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--anchor-file",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Private state file override",
+          "dest": "anchor_file",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--anchor-file"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/calibrate/--anchor-file",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "metavar": "FILE"
+          },
+          "parser_path": [
+            "usage",
+            "calibrate"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--format",
+          "choices": [
+            "text",
+            "json"
+          ],
+          "const": null,
+          "default": "text",
+          "default_present": true,
+          "description": "Output encoding",
+          "dest": "usage_calibrate_format",
+          "effective_default": "text",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--format"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/calibrate/--format",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "text",
+              "json"
+            ],
+            "default": "text",
+            "dest": "usage_calibrate_format"
+          },
+          "parser_path": [
+            "usage",
+            "calibrate"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "Analyze local Claude Code usage metadata.",
+          "group": "EXPLORATION",
+          "id": null,
+          "name": "usage",
+          "summary": "Analyze local Claude Code usage metadata.",
+          "synopsis": null
+        }
+      ],
+      "description": "Fit local weighted usage to explicit UI readings under stated coverage assumptions.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:nyxloom/usage/calibrate",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "usage"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "usage",
+            "calibrate"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "usage",
+        "calibrate"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Fit local weighted usage to explicit UI readings under stated coverage assumptions.",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--traceback",
+          "choices": null,
+          "const": true,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "show a traceback for an unexpected command failure",
+          "dest": "traceback",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--traceback"
+          ],
+          "help_group": "DEBUGGING",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/charts/--traceback",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "usage",
+            "charts"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--since",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Start at a duration before --until or now, or an ISO-8601 timestamp",
+          "dest": "since",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--since"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/charts/--since",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "required": true
+          },
+          "parser_path": [
+            "usage",
+            "charts"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--until",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Exclusive ISO-8601 end timestamp; omitted means the invocation time",
+          "dest": "until",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--until"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/charts/--until",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "usage",
+            "charts"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--project",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Select sessions with this recorded cwd or unique cwd basename",
+          "dest": "project",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--project"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/charts/--project",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "usage",
+            "charts"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--session",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Select one exact Claude Code session id",
+          "dest": "session",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--session"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/charts/--session",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "usage",
+            "charts"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--top",
+          "choices": null,
+          "const": null,
+          "default": 12,
+          "default_present": true,
+          "description": "Number of chart groups and agents before the residual other group",
+          "dest": "top",
+          "effective_default": 12,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--top"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/charts/--top",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 12,
+            "type": {
+              "callable": "nyxloom.cli_registry._usage_top"
+            }
+          },
+          "parser_path": [
+            "usage",
+            "charts"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "nyxloom.cli_registry._usage_top"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--group-by",
+          "choices": [
+            "agent",
+            "topic",
+            "model",
+            "effort",
+            "session"
+          ],
+          "const": null,
+          "default": "agent",
+          "default_present": true,
+          "description": "Cost bucket grouping",
+          "dest": "group_by",
+          "effective_default": "agent",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--group-by"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/charts/--group-by",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "agent",
+              "topic",
+              "model",
+              "effort",
+              "session"
+            ],
+            "default": "agent"
+          },
+          "parser_path": [
+            "usage",
+            "charts"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--no-labels",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Omit session titles and subagent topic labels",
+          "dest": "no_labels",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--no-labels"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/charts/--no-labels",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "default": false
+          },
+          "parser_path": [
+            "usage",
+            "charts"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--weights",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "TOML prices and experimental weights override",
+          "dest": "weights",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--weights"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/charts/--weights",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "metavar": "FILE"
+          },
+          "parser_path": [
+            "usage",
+            "charts"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--out",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Write private usage-charts-v1 JSON to this file",
+          "dest": "out",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--out"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/charts/--out",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "metavar": "FILE",
+            "required": true
+          },
+          "parser_path": [
+            "usage",
+            "charts"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "Analyze local Claude Code usage metadata.",
+          "group": "EXPLORATION",
+          "id": null,
+          "name": "usage",
+          "summary": "Analyze local Claude Code usage metadata.",
+          "synopsis": null
+        }
+      ],
+      "description": "Write joined context, swim-lane, weighted-cost and composition chart data as JSON.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:nyxloom/usage/charts",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "option:route:entrypoint:nyxloom/usage/charts/--top.type"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "usage"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "usage",
+            "charts"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "usage",
+        "charts"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Write joined context, swim-lane, weighted-cost and composition chart data as JSON.",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--traceback",
+          "choices": null,
+          "const": true,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "show a traceback for an unexpected command failure",
+          "dest": "traceback",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--traceback"
+          ],
+          "help_group": "DEBUGGING",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/prices/--traceback",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "usage",
+            "prices"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--fit",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Attempt a guarded diagnostic fit against cost-state snapshots",
+          "dest": "fit",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--fit"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/prices/--fit",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "default": false
+          },
+          "parser_path": [
+            "usage",
+            "prices"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--weights",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "TOML prices and experimental weights override",
+          "dest": "weights",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--weights"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/prices/--weights",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "metavar": "FILE"
+          },
+          "parser_path": [
+            "usage",
+            "prices"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--format",
+          "choices": [
+            "text",
+            "json"
+          ],
+          "const": null,
+          "default": "text",
+          "default_present": true,
+          "description": "Output encoding",
+          "dest": "usage_prices_format",
+          "effective_default": "text",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--format"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/prices/--format",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "text",
+              "json"
+            ],
+            "default": "text",
+            "dest": "usage_prices_format"
+          },
+          "parser_path": [
+            "usage",
+            "prices"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "Analyze local Claude Code usage metadata.",
+          "group": "EXPLORATION",
+          "id": null,
+          "name": "usage",
+          "summary": "Analyze local Claude Code usage metadata.",
+          "synopsis": null
+        }
+      ],
+      "description": "Show dated API-equivalent prices and diagnose cost-state fit.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:nyxloom/usage/prices",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "usage"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "usage",
+            "prices"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "usage",
+        "prices"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Show dated API-equivalent prices and diagnose cost-state fit.",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--traceback",
+          "choices": null,
+          "const": true,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "show a traceback for an unexpected command failure",
+          "dest": "traceback",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--traceback"
+          ],
+          "help_group": "DEBUGGING",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/report/--traceback",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "usage",
+            "report"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--since",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Start at a duration before --until or now, or an ISO-8601 timestamp",
+          "dest": "since",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--since"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/report/--since",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "required": true
+          },
+          "parser_path": [
+            "usage",
+            "report"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--until",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Exclusive ISO-8601 end timestamp; omitted means the invocation time",
+          "dest": "until",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--until"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/report/--until",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "usage",
+            "report"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--project",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Select sessions with this recorded cwd or unique cwd basename",
+          "dest": "project",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--project"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/report/--project",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "usage",
+            "report"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--session",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Select one exact Claude Code session id",
+          "dest": "session",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--session"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/report/--session",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "usage",
+            "report"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--format",
+          "choices": [
+            "table",
+            "json",
+            "csv"
+          ],
+          "const": null,
+          "default": "table",
+          "default_present": true,
+          "description": "Report encoding",
+          "dest": "usage_format",
+          "effective_default": "table",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--format"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/report/--format",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "table",
+              "json",
+              "csv"
+            ],
+            "default": "table",
+            "dest": "usage_format"
+          },
+          "parser_path": [
+            "usage",
+            "report"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--out",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Write the report to this file instead of stdout",
+          "dest": "out",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--out"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/report/--out",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "metavar": "FILE"
+          },
+          "parser_path": [
+            "usage",
+            "report"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--depth",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Maximum visible tree depth (root is depth 0)",
+          "dest": "depth",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--depth"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/report/--depth",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "builtins.int"
+            }
+          },
+          "parser_path": [
+            "usage",
+            "report"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--min-share",
+          "choices": null,
+          "const": null,
+          "default": 0.0,
+          "default_present": true,
+          "description": "Fold smaller subtrees below this raw-token percentage",
+          "dest": "min_share",
+          "effective_default": 0.0,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--min-share"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/report/--min-share",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 0.0,
+            "type": {
+              "callable": "nyxloom.cli_registry._usage_share"
+            }
+          },
+          "parser_path": [
+            "usage",
+            "report"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "nyxloom.cli_registry._usage_share"
+          }
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--flat",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Rank visible nodes as a flat list (cannot combine with --depth)",
+          "dest": "flat",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--flat"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/report/--flat",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "default": false
+          },
+          "parser_path": [
+            "usage",
+            "report"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--sort",
+          "choices": [
+            "cost",
+            "start",
+            "dur",
+            "calls",
+            "peak",
+            "out"
+          ],
+          "const": null,
+          "default": "cost",
+          "default_present": true,
+          "description": "Sibling sort key; cost means raw token units in this iteration",
+          "dest": "sort",
+          "effective_default": "cost",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--sort"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/report/--sort",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "cost",
+              "start",
+              "dur",
+              "calls",
+              "peak",
+              "out"
+            ],
+            "default": "cost"
+          },
+          "parser_path": [
+            "usage",
+            "report"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--no-labels",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Omit session titles and subagent topic labels",
+          "dest": "no_labels",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--no-labels"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/report/--no-labels",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "default": false
+          },
+          "parser_path": [
+            "usage",
+            "report"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--weights",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "TOML prices and experimental weights override",
+          "dest": "weights",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--weights"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/report/--weights",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "metavar": "FILE"
+          },
+          "parser_path": [
+            "usage",
+            "report"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--top",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Number of chart groups and agents before the residual other group (JSON only)",
+          "dest": "top",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--top"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/report/--top",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "nyxloom.cli_registry._usage_top"
+            }
+          },
+          "parser_path": [
+            "usage",
+            "report"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "nyxloom.cli_registry._usage_top"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--group-by",
+          "choices": [
+            "agent",
+            "topic",
+            "model",
+            "effort",
+            "session"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Cost bucket grouping in chart JSON",
+          "dest": "group_by",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--group-by"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/report/--group-by",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "agent",
+              "topic",
+              "model",
+              "effort",
+              "session"
+            ],
+            "default": null
+          },
+          "parser_path": [
+            "usage",
+            "report"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "Analyze local Claude Code usage metadata.",
+          "group": "EXPLORATION",
+          "id": null,
+          "name": "usage",
+          "summary": "Analyze local Claude Code usage metadata.",
+          "synopsis": null
+        }
+      ],
+      "description": "Attribute raw tokens, experimental weights and API-equivalent USD to sessions and nested subagents.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:nyxloom/usage/report",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "option:route:entrypoint:nyxloom/usage/report/--min-share.type",
+        "option:route:entrypoint:nyxloom/usage/report/--top.type"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "usage"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "usage",
+            "report"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "usage",
+        "report"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Attribute raw tokens, experimental weights and API-equivalent USD to sessions and nested subagents.",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--traceback",
+          "choices": null,
+          "const": true,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "show a traceback for an unexpected command failure",
+          "dest": "traceback",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--traceback"
+          ],
+          "help_group": "DEBUGGING",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/windows/--traceback",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "usage",
+            "windows"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--since",
+          "choices": null,
+          "const": null,
+          "default": "24h",
+          "default_present": true,
+          "description": "Start of history for observed resets and threshold events; duration or ISO-8601 timestamp",
+          "dest": "since",
+          "effective_default": "24h",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--since"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/windows/--since",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": "24h"
+          },
+          "parser_path": [
+            "usage",
+            "windows"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--until",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Exclusive history end; the rolling view is the trailing five hours ending here",
+          "dest": "until",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--until"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/windows/--until",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "usage",
+            "windows"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--weights",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "TOML prices and experimental weights override",
+          "dest": "weights",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--weights"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/windows/--weights",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "metavar": "FILE"
+          },
+          "parser_path": [
+            "usage",
+            "windows"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--anchor-file",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Private state file override",
+          "dest": "anchor_file",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--anchor-file"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/windows/--anchor-file",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "metavar": "FILE"
+          },
+          "parser_path": [
+            "usage",
+            "windows"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--format",
+          "choices": [
+            "text",
+            "json"
+          ],
+          "const": null,
+          "default": "text",
+          "default_present": true,
+          "description": "Output encoding",
+          "dest": "usage_windows_format",
+          "effective_default": "text",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--format"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:nyxloom/usage/windows/--format",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "text",
+              "json"
+            ],
+            "default": "text",
+            "dest": "usage_windows_format"
+          },
+          "parser_path": [
+            "usage",
+            "windows"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "Analyze local Claude Code usage metadata.",
+          "group": "EXPLORATION",
+          "id": null,
+          "name": "usage",
+          "summary": "Analyze local Claude Code usage metadata.",
+          "synopsis": null
+        }
+      ],
+      "description": "Show observed-reset sessions, fixed weekly resets and a separate rolling analysis window.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:nyxloom/usage/windows",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "usage"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "usage",
+            "windows"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "usage",
+        "windows"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Show observed-reset sessions, fixed weekly resets and a separate rolling analysis window.",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null

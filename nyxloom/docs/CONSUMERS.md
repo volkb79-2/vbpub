@@ -80,6 +80,13 @@ nyxloom usage report --since 24h --format csv --out usage.csv \
 # Hide session titles and agent topic labels in a table report.
 nyxloom usage report --since 24h --no-labels
 
+# Export standalone chart data from the same exact ledger.
+nyxloom usage charts --since 24h --out usage-charts.json
+
+# Group weighted buckets by model and remove free-text labels before writing.
+nyxloom usage charts --since 7d --group-by model --top 12 \
+  --no-labels --out anonymous-model-charts.json
+
 # Inspect the dated official API prices and guarded cost-state reconciliation.
 nyxloom usage prices --fit --format json
 
@@ -148,6 +155,44 @@ allowance. Calibration then reports only a local lower bound on capacity and
 leaves estimated limit percentage unknown. An all-account fit is conditional
 on the operator's explicit `all-account-usage-observed` assumption. API prices
 and weighted local shares do not establish subscription usage.
+
+### Export usage chart data
+
+`nyxloom usage charts` writes a private `usage-charts-v1` JSON document. The
+same object appears at `extensions.chart_data` in
+`nyxloom usage report --format json`; the report's `calls` and `nodes` remain
+the exact shared ledger and tree. `--out` is required and creates a mode-0600
+file. Use `--no-labels` when chart labels should omit session titles and
+subagent topics; the transformation happens before serialization. Labeled
+reports can contain sensitive sidecar descriptions and should stay local.
+
+The chart section includes four datasets: context swim lanes, joined context
+lines for the three highest weighted sessions, weighted cost buckets, and
+weighted token-class composition for the highest weighted agents. `--top`
+defaults to 12. Ranking uses self weighted units and stable ID tie breaks;
+remaining stacked groups are combined in one exact `other` group. Supported
+`--group-by` values are `agent`, `topic`, `model`, `effort`, and `session`.
+Buckets partition each deduplicated call exactly once and never stack a
+parent's subtree with its children. Context decimation affects only chart
+points; the report ledger is untouched. Endpoints, peaks, compaction/drop
+neighbors, and model/effort switches remain represented.
+
+Weighted units are experimental local scores. They do not report account
+usage. The chart includes observed reset boundaries without inferring a window
+start from one rejection. Its cumulative percentage line stays unknown unless
+the existing calibration identifies a complete interval. Under
+`local-only-lower-bound` coverage, the line is labeled as local contribution;
+it becomes an account estimate only under an explicit all-account coverage
+assumption.
+
+```sh
+nyxloom usage report --since 24h --format json --out usage-report.json
+nyxloom usage charts --since 24h --top 12 --group-by agent --out usage-charts.json
+nyxloom usage charts --since 24h --no-labels --out anonymous-charts.json
+```
+
+See the [chart-data design](DESIGN-GUIDE.md#usage-chart-data) for ranking,
+partition, decimation, and window semantics.
 
 The shipped price table is retrieved 2026-10-28 from
 [Anthropic's official pricing documentation](https://platform.claude.com/docs/en/about-claude/pricing).
@@ -224,6 +269,7 @@ catalog for the installed version.
 | `nyxloom onboard --docs` | `present`, `absent` |
 | `nyxloom onboard --mode` | `derive-from-code`, `code-good-docs-absent`, `greenfield-define-it` |
 | `nyxloom usage report --format` | `table`, `json`, `csv` |
+| `nyxloom usage charts --group-by` | `agent`, `topic`, `model`, `effort`, `session` |
 | `nyxloom usage report --sort` | `cost`, `start`, `dur`, `calls`, `peak`, `out` |
 | `nyxloom usage report --since` relative duration suffixes | `s`, `m`, `h`, `d`, `w` |
 | `nyxloom usage prices --format` | `text`, `json` |

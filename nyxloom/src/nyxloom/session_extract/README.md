@@ -893,10 +893,44 @@ assumption in a private versioned local file. Calibration reports only a
 capacity lower bound when web, other devices or other shared account surfaces
 may contribute; an estimated limit percentage remains unknown unless the
 coverage fit is identifiable. `usage-report-v1` remains the shared report
-contract; joined charts, interactive HTML, PDF and the TUI are later work.
+contract. The C1 chart-data extension is available; interactive HTML, PDF and
+the TUI remain later work.
 The consumer-facing examples live in
 [CONSUMERS.md](../../../docs/CONSUMERS.md#report-claude-code-usage), and design
 choices in [DESIGN-GUIDE.md](../../../docs/DESIGN-GUIDE.md#local-usage-report).
+
+### Chart data and `usage-charts-v1`
+
+`nyxloom usage report --format json` fills the reserved
+`extensions.chart_data` field with the same `usage-charts-v1` object written by
+`nyxloom usage charts --since 24h --out FILE.json`. The chart builder uses the
+windowed full node tree before presentation folding. It never modifies the
+exact `calls` ledger or uses subtree totals as stacked values.
+
+The four datasets are `swim_lanes`, `context_over_time`,
+`weighted_cost_buckets`, and `cost_composition`. Context points reference
+stable `call_id` and `node_id` values and include model, effort, timestamp,
+context size, token classes, weighted units, and API-equivalent USD. Context
+time decimation uses per-bucket minima and maxima and retains endpoints, each
+node's global peak, calls adjacent to structural compactions or inferred drops,
+and switch ticks. The target of 500 points per line may be exceeded to keep
+those points.
+
+Weighted-cost buckets begin at `window.since`, use five-minute intervals for
+short spans and grow in deterministic five-minute steps to fifteen minutes.
+Each deduplicated call belongs to one self-cost group. Top N is ranked by
+self weighted units and stable IDs break ties; one exact `other` bucket holds
+the remaining groups. A bucket point keeps its source call IDs. Model colors
+derive deterministically from exact model IDs; effort uses fixed dash and
+lightness keys.
+
+Reset markers use observed rejection or operator anchor timestamps. Matched
+reset pairs are shown only at the documented five-hour or weekly spacing. A
+percentage line requires a complete, identifiable calibration; the output
+distinguishes an all-account estimate from a local contribution lower bound.
+Without that evidence, percentage status is `unknown`. Chart outputs contain
+metadata and numbers only. Labels are sensitive local metadata, and
+`--no-labels` removes them before serialization.
 
 ## Relationship to `jsonl-metrics.py` and the context-lifecycle experiments
 

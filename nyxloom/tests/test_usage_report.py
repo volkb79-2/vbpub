@@ -17,6 +17,7 @@ import pytest
 
 from nyxloom.cli_registry import primary_cli
 from nyxloom.session_extract.usage import (
+    ChartOptions,
     build_report,
     load_corpus,
     render_csv,
@@ -923,8 +924,19 @@ def test_golden_json_for_synthetic_report(tmp_path):
 
 def test_table_json_and_csv_never_serialize_message_or_tool_content(tmp_path):
     root_file = _write_tree_fixture(tmp_path)
-    report = _build(load_corpus(tmp_path), no_labels=False)
-    no_labels = _build(load_corpus(tmp_path), no_labels=True)
+    from nyxloom.session_extract.usage.pricing import apply_valuation, load_weights
+
+    weights = load_weights()
+    corpus = load_corpus(tmp_path)
+    apply_valuation(corpus, weights)
+    report = _build(
+        corpus, no_labels=False, chart_options=ChartOptions(weights=weights),
+    )
+    no_label_corpus = load_corpus(tmp_path)
+    apply_valuation(no_label_corpus, weights)
+    no_labels = _build(
+        no_label_corpus, no_labels=True, chart_options=ChartOptions(weights=weights),
+    )
     outputs = (
         render_table(report), render_json(report), render_csv(report),
         render_json(no_labels),
@@ -933,6 +945,10 @@ def test_table_json_and_csv_never_serialize_message_or_tool_content(tmp_path):
     assert all(TOOL_SENTINEL not in output for output in outputs)
     assert "outer topic" in render_json(report)
     assert "outer topic" not in render_json(no_labels)
+    assert report["extensions"]["chart_data"]["schema_version"] == "usage-charts-v1"
+    assert "PRIVATE_MESSAGE_SENTINEL" not in render_json(report)
+    assert "PRIVATE_TOOL_SENTINEL" not in render_json(report)
+    assert "outer topic" not in render_json(no_labels["extensions"]["chart_data"])
     child_id = no_labels["nodes"][0]["children"][0]["agent_id"]
     assert next(call for call in no_labels["calls"] if call["agent_id"] == child_id)["topic"] is None
     assert root_file.exists()

@@ -1419,45 +1419,49 @@ def cmd_extract_report(args) -> int:
     return 0
 
 
-def cmd_usage_report(args) -> int:
-    """usage report --since 24h [metadata filters and table/json/csv output]
-
-    Read Claude Code session and subagent transcripts, retain only token and
-    attribution metadata, and report a de-duplicated UTC window. Message text,
-    thinking text, tool inputs, and tool results are never report fields.
-    """
+def _build_usage_report_data(args, *, now=None):
+    """Build the shared ledger and chart contract for usage report commands."""
     from datetime import datetime, timezone
-    from pathlib import Path
 
     from .session_extract.usage import (
+        ChartOptions,
         build_report,
         load_corpus,
-        render_report,
         resolve_window,
     )
     from .session_extract.usage.anchors import list_anchors
+    from .session_extract.usage.calibration import calibrate_anchors
     from .session_extract.usage.pricing import (
         apply_valuation,
         attach_price_extension,
         load_weights,
     )
 
-    now = datetime.now(timezone.utc)
+    now = now or datetime.now(timezone.utc)
     window = resolve_window(args.since, args.until, now=now)
     weights = load_weights(getattr(args, "weights", None))
     corpus = load_corpus(since=window.since, until=window.until)
     valuation = apply_valuation(corpus, weights)
+    anchors = list_anchors()
+    calibration = calibrate_anchors(corpus, anchors, [], weights) if anchors else None
     report = build_report(
         corpus,
         window=window,
-        project=args.project,
-        session=args.session,
-        depth=args.depth,
-        min_share=args.min_share,
-        flat=args.flat,
-        sort=args.sort,
-        no_labels=args.no_labels,
+        project=getattr(args, "project", None),
+        session=getattr(args, "session", None),
+        depth=getattr(args, "depth", None),
+        min_share=getattr(args, "min_share", 0.0),
+        flat=getattr(args, "flat", False),
+        sort=getattr(args, "sort", "cost"),
+        no_labels=getattr(args, "no_labels", False),
         generated_at=now,
+        chart_options=ChartOptions(
+            weights=weights,
+            top_n=getattr(args, "top", None) or 12,
+            group_by=getattr(args, "group_by", None) or "agent",
+            anchors=tuple(anchors),
+            calibration=calibration,
+        ),
     )
     valuation.update({
         "retrieved_on": weights.provenance["retrieved_on"],
@@ -1465,19 +1469,44 @@ def cmd_usage_report(args) -> int:
         "weights_sha256": weights.source_sha256,
     })
     attach_price_extension(report, valuation)
-    anchors = list_anchors()
     report["extensions"]["limit_anchors"] = {
         "schema_version": "usage-anchors-v1",
         "anchor_count": len(anchors),
         "anchors": anchors,
         "estimated_limit_pct": None,
-        "status": "observations available; calibration requires usage calibrate",
+        "status": "observations available; chart estimates require an identifiable, complete interval",
     }
+    return report
+
+
+def cmd_usage_report(args) -> int:
+    """Read Claude Code metadata and render a de-duplicated usage report."""
+    from pathlib import Path
+
+    from .session_extract.usage import render_report
+
+    report = _build_usage_report_data(args)
     rendered = render_report(report, args.usage_format)
     if args.out:
         _write_private_usage_output(Path(args.out), rendered)
     else:
         print(rendered, end="")
+    return 0
+
+
+def cmd_usage_charts(args) -> int:
+    """Write the usage-charts-v1 datasets derived from the shared ledger."""
+    from pathlib import Path
+
+    from .session_extract.usage import render_json
+
+    report = _build_usage_report_data(args)
+    chart_data = report["extensions"]["chart_data"]
+    if chart_data is None:
+        raise ValueError("usage chart data was not produced")
+    if not args.out:
+        raise ValueError("usage charts requires --out FILE.json")
+    _write_private_usage_output(Path(args.out), render_json(chart_data))
     return 0
 
 

@@ -23,10 +23,11 @@ complete current grammar.
 `nyxloom usage report` is the additive command spelling selected by D-022. It
 uses the pure `session_extract.usage` service to read Claude Code transcript
 metadata over a UTC half-open window and needs no project registration or
-daemon state. The separate `usage prices`, `usage windows`, `usage anchor`, and
-`usage calibrate` verbs expose dated list-price estimates, observed reset
-intervals, and private operator readings; only explicit `usage anchor add`
-writes local usage state. See
+daemon state. `usage charts` writes the shared `usage-charts-v1` chart data
+from the same exact ledger. The separate `usage prices`, `usage windows`,
+`usage anchor`, and `usage calibrate` verbs expose dated list-price estimates,
+observed reset intervals, and private operator readings; only explicit
+`usage anchor add` writes local usage state. See
 [Report Claude Code usage](CONSUMERS.md#report-claude-code-usage) for examples.
 
 ---
@@ -200,6 +201,7 @@ nyxloom backlog new "describe the issue" --type bugfix
 nyxloom backlog new --interactive
 nyxloom backlog edit CIU-1
 nyxloom usage report --since 24h
+nyxloom usage charts --since 24h --out usage-charts.json
 nyxloom usage prices --fit
 nyxloom usage windows --since 7d
 nyxloom usage anchor list

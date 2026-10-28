@@ -15,7 +15,7 @@ filed_date: "2026-10-28"
 
 ## Observed mechanism and reproduction
 
-`nyxloom usage report` currently emits the frozen `usage-report-v1` ledger as a tree table, JSON, or a flat call-ledger CSV. It has no joined chart datasets, offline interactive HTML renderer, or PDF export. The implementation and adoption guide explicitly defer these renderers after the weights, pricing, reset-window, and anchor-calibration work in the 2026-10-28 usage-analysis iteration.
+`nyxloom usage report` emits the frozen `usage-report-v1` ledger as a tree table, JSON, or a flat call-ledger CSV. C1 adds the versioned `usage-charts-v1` data extension and `nyxloom usage charts`; offline interactive HTML, PDF export, and the optional TUI remain open. Chart data derives from the same exact call ledger and uses self-cost partitions rather than overlapping subtree totals.
 
 ## Why Nyxloom owns it
 
@@ -23,7 +23,7 @@ The report's calls, source provenance, lineage, typed events, and self/subtree t
 
 ## Proposed contract
 
-Add chart data as a derived view over `usage-report-v1`. Stacked chart buckets partition deduplicated call self-cost; subtree totals remain display-only. Top-N selection and `other` membership are deterministic, and every plotted point retains its call or event identity. Brushing and filtering use the exact ledger for table arithmetic; visual decimation cannot change totals.
+The C1 chart-data contract is shipped as `usage-charts-v1`, derived from `usage-report-v1`. Stacked chart buckets partition deduplicated call self-cost; subtree totals remain display-only. Top-N selection and `other` membership are deterministic, and every plotted point retains its call or event identity. Future renderers must use the exact ledger for table arithmetic; visual decimation cannot change totals.
 
 Render the report as one offline HTML artifact. `--no-labels` removes free-text labels before serialization, embedded JSON is escaped, tooltip labels use text nodes, and a browser test verifies that the page makes no network requests. Treat labeled reports as sensitive local files and create outputs with private permissions.
 
@@ -41,3 +41,6 @@ Before adding `--format pdf`, test the existing pwmcp Python `BrowserLease` rout
 `nyxloom/docs/DESIGN-GUIDE.md` owns the chart-data and rendering rationale. `nyxloom/docs/CONSUMERS.md` owns the copyable HTML/PDF usage examples. The report renderer contract remains in `nyxloom/src/nyxloom/session_extract/README.md`; CLI grammar belongs in `nyxloom/docs/CLI-REFERENCE.md` after the verbs and options are selected.
 
 ## Updates
+
+- 2026-10-28: C1 implements four chart datasets, deterministic top-N/other selection, self-cost conservation, packed swim lanes, stable call/node chart IDs, model/effort style keys, and context decimation that retains peaks and event neighbors. `usage-report-v1` continues to carry the exact call ledger and reserves chart output under `extensions.chart_data`. Synthetic tests and consumer/design docs were added. The controller owns the registered gate and final CLI semantic-case activation; no gate result is claimed here.
+- Remaining work: browser-tested offline HTML and interaction behavior, the BrowserLease/page.pdf feasibility spike and a CLI PDF route, plus reconsideration of the optional TUI.

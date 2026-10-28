@@ -220,6 +220,44 @@ consistent readings and an identifiable coverage assumption, the limit
 percentage remains unknown. D-023 records this minimal persistence exception;
 the call ledger and report remain transient query products.
 
+## Usage chart data
+
+`usage-report-v1` remains the single exact ledger and tree contract. Its
+reserved `extensions.chart_data` slot can carry `usage-charts-v1`; the
+standalone `nyxloom usage charts` command writes that same section. Chart data
+is derived from the windowed full node model before `--depth` or `--min-share`
+folds the displayed tree, so presentation choices cannot remove cost from a
+chart. The exact call ledger remains available for arithmetic and hover lookup.
+
+Cost groups partition deduplicated call self-cost. Nodes rank by their own
+experimental weighted units, and a report group with descendants never enters
+the same stacked bucket as those descendants. Top-N selection breaks ties by
+stable group ID; one exact `other` group collects the residual for each
+grouping. Cost buckets start at the report window and use deterministic
+five-to-fifteen-minute intervals. They retain call IDs for drill-down.
+
+Context datasets are visual views only. A global swim lane selects up to the
+top N nodes by self weighted units and uses greedy inclusive-interval packing;
+each node's line keeps its own absolute context values. Joined context panels
+select the three busiest sessions and up to top N self-cost nodes per session
+on one shared y scale. Time-bucket min/max decimation retains each line's
+endpoints, global peak, compaction/drop neighbors, and switch points. Explicit
+structural compaction events stay distinct from `unexplained_drop` events.
+
+Model hues derive from the exact model ID, and effort selects a fixed
+dash/lightness style, so renderer choices are stable. Every plotted call point
+keeps its stable call and node IDs. Rejection `resetsAt` values and operator
+reset readings are emitted as observed boundary markers; a lone marker never
+creates a start time, percentage, or capacity. The cumulative line is omitted
+unless calibration covers the complete report interval. It is labeled either
+as a conditional account estimate under explicit all-account coverage or as a
+local contribution lower bound.
+
+The chart contract is data-only and introduces no runtime library. Weighted
+cost remains the named experimental profile; API-equivalent USD and raw token
+classes remain separate fields. Chart totals use self calls only, while table
+subtree totals remain display rollups. See [how to export chart data](CONSUMERS.md#export-usage-chart-data).
+
 The public `nyxloom` grammar is registered once in `cli_registry.py`. Its
 generated surface inventory and semantic decisions are maintained through
 `cli-extended` in `docs/cli-surface.json`, the marked section of `docs/SPEC.md`,

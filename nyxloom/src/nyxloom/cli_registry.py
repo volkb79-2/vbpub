@@ -280,6 +280,16 @@ def _usage_share(value: str) -> float:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
+def _usage_top(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("top N must be a positive integer") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("top N must be a positive integer")
+    return parsed
+
+
 def _usage_report_guard(args: Any) -> None:
     if getattr(args, "flat", False) and getattr(args, "depth", None) is not None:
         raise CliFailure(
@@ -290,6 +300,12 @@ def _usage_report_guard(args: Any) -> None:
     depth = getattr(args, "depth", None)
     if depth is not None and depth < 0:
         raise CliFailure("--depth must be zero or greater", exit_code=2, show_help=True)
+    if (getattr(args, "top", None) is not None or getattr(args, "group_by", None) is not None) and getattr(args, "usage_format", "table") != "json":
+        raise CliFailure(
+            "--top and --group-by configure JSON chart data; use --format json or `nyxloom usage charts`",
+            exit_code=2,
+            show_help=True,
+        )
 
 
 def _resync_guard(args: Any) -> None:
@@ -593,7 +609,7 @@ def _local_backlog_group() -> VerbSpec:
 
 def _usage_report_group() -> VerbSpec:
     prog = "nyxloom"
-    anchor_group = _group(prog, "anchor", "Record or list private account-usage display readings.", (
+    anchor_group = _group(f"{prog} usage", "anchor", "Record or list private account-usage display readings.", (
         _leaf(
             prog, "add", "Store one explicitly observed usage percentage and reset time.",
             cli.cmd_usage_anchor_add,
@@ -634,12 +650,37 @@ def _usage_report_group() -> VerbSpec:
                 _opt("--sort", "Sibling sort key; cost means raw token units in this iteration", choices=("cost", "start", "dur", "calls", "peak", "out"), default="cost"),
                 _opt("--no-labels", "Omit session titles and subagent topic labels", action="store_true"),
                 _opt("--weights", "TOML prices and experimental weights override", metavar="FILE", default=None),
+                _opt("--top", "Number of chart groups and agents before the residual other group (JSON only)", type=_usage_top, default=None),
+                _opt("--group-by", "Cost bucket grouping in chart JSON", choices=("agent", "topic", "model", "effort", "session"), default=None),
             ),
             validate=_usage_report_guard,
             examples=(
                 "nyxloom usage report --since 24h",
                 "nyxloom usage report --since 2026-10-27T00:00:00Z --format json --out usage.json",
+                "nyxloom usage report --since 24h --format json --top 12 --group-by agent",
                 "nyxloom usage report --since 24h --project /path/to/project --flat --sort calls",
+            ),
+        ),
+        _leaf(
+            prog,
+            "charts",
+            "Write joined context, swim-lane, weighted-cost and composition chart data as JSON.",
+            cli.cmd_usage_charts,
+            options=(
+                _opt("--since", "Start at a duration before --until or now, or an ISO-8601 timestamp", required=True),
+                _opt("--until", "Exclusive ISO-8601 end timestamp; omitted means the invocation time", default=None),
+                _opt("--project", "Select sessions with this recorded cwd or unique cwd basename", default=None),
+                _opt("--session", "Select one exact Claude Code session id", default=None),
+                _opt("--top", "Number of chart groups and agents before the residual other group", type=_usage_top, default=12),
+                _opt("--group-by", "Cost bucket grouping", choices=("agent", "topic", "model", "effort", "session"), default="agent"),
+                _opt("--no-labels", "Omit session titles and subagent topic labels", action="store_true"),
+                _opt("--weights", "TOML prices and experimental weights override", metavar="FILE", default=None),
+                _opt("--out", "Write private usage-charts-v1 JSON to this file", metavar="FILE", required=True),
+            ),
+            examples=(
+                "nyxloom usage charts --since 24h --out usage-charts.json",
+                "nyxloom usage charts --since 7d --group-by model --top 12 --out model-charts.json",
+                "nyxloom usage charts --since 24h --no-labels --out anonymous-charts.json",
             ),
         ),
         _leaf(
