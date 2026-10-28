@@ -133,13 +133,6 @@ def unregister_live_group(pgid: int) -> None:
                     _killpg_group(live_pgid, signal.SIGKILL)
 
 
-def _unregister_started_group(proc: Any) -> None:
-    """Unregister *proc*'s process group when it was started; a spawn that never
-    produced a process has nothing to unregister."""
-    if proc is not None:
-        unregister_live_group(proc.pid)
-
-
 def terminate_live_process_groups(sig: int = signal.SIGKILL) -> int:
     """Signal registered groups without blocking a signal handler.
 
@@ -2085,3 +2078,10 @@ class LivenessRunner:
                 except Exception:
                     pass
             self._sleep(self._poll_interval_s)
+
+
+def _unregister_started_group(proc: Any) -> None:
+    """Unregister *proc*'s process group when it was started; a spawn that never
+    produced a process has nothing to unregister."""
+    if proc is not None:
+        unregister_live_group(proc.pid)
