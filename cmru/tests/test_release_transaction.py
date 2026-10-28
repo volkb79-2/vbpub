@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -2983,7 +2984,17 @@ def test_sync_local_main_classifies_real_interrupted_rebase_abort(
             if hook_pids.exists():
                 for raw_pid in hook_pids.read_text(encoding="ascii").splitlines():
                     try:
-                        os.waitpid(int(raw_pid), 0)
+                        hook_pid = int(raw_pid)
+                        deadline = time.monotonic() + 5
+                        while True:
+                            waited_pid, _status = os.waitpid(hook_pid, os.WNOHANG)
+                            if waited_pid == hook_pid:
+                                break
+                            if time.monotonic() >= deadline:
+                                raise TimeoutError(
+                                    f"test Git hook pid {hook_pid} was not reaped within 5 seconds"
+                                )
+                            time.sleep(0.01)
                     except ChildProcessError:
                         # Git may have collected a hook before it was signalled.
                         pass

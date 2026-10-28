@@ -161,9 +161,10 @@ def descendants(root_pid: int, *, proc_root: Path = _PROC_ROOT) -> dict[int, Pro
     """Return every live descendant, inspecting children of every process thread."""
     _require_linux()
     proc_root = Path(proc_root)
-    # Probe the caller's main-thread children file on every scan.  A Linux
-    # kernel without CONFIG_PROC_CHILDREN, or a missing /proc mount, refuses.
-    _read_children(os.getpid(), os.getpid(), proc_root)
+    # Probe the guarded process's main-thread children file on every scan. A
+    # Linux kernel without CONFIG_PROC_CHILDREN, or a missing /proc mount,
+    # refuses.
+    _read_children(root_pid, root_pid, proc_root)
 
     result: dict[int, ProcessRecord] = {}
     pending = [root_pid]

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import types
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -60,6 +63,38 @@ def test_native_release_logging_scope_restores_output_and_flushes_log(monkeypatc
     assert tee.poll() == 0
     assert os.fstat(1).st_ino == original_stdout.st_ino
     assert "release-log-lifecycle-probe" in log_path.read_text(encoding="utf-8")
+
+
+def test_native_release_logging_scope_flushes_buffered_python_streams_to_log(tmp_path):
+    log_path = tmp_path / "release.log"
+    source = """
+import sys
+from pathlib import Path
+from cmru import cli
+
+assert not sys.stdout.isatty()
+assert not sys.stderr.isatty()
+with cli._native_release_logging_scope():
+    cli._configure_native_release_logging(Path.cwd(), append=False)
+    print("bare-buffered-release-stdout")
+    sys.stderr.write("bare-buffered-release-stderr")
+"""
+    env = os.environ.copy()
+    env.pop("CMRU_NATIVE_RELEASE_LOGGING", None)
+    env["CMRU_RELEASE_LOG"] = str(log_path)
+    completed = subprocess.run(
+        [sys.executable, "-c", source],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    log = log_path.read_text(encoding="utf-8")
+    assert "bare-buffered-release-stdout" in log
+    assert "bare-buffered-release-stderr" in log
+    assert "bare-buffered-release-stdout" in completed.stdout
 
 
 def test_native_release_logging_scope_is_empty_when_logging_is_disabled(monkeypatch, tmp_path):
@@ -170,3 +205,33 @@ def test_native_release_logging_timeout_kills_and_waits_for_tee(monkeypatch):
         )
     assert tee.killed and tee.wait_calls == 2
     assert cli._ACTIVE_NATIVE_RELEASE_LOGGING is None
+
+
+def test_native_release_logging_timeout_preserves_an_in_flight_exception():
+    class TimedOutTee:
+        def __init__(self):
+            self.wait_calls = 0
+            self.killed = False
+
+        def wait(self, timeout=None):
+            self.wait_calls += 1
+            if self.wait_calls == 1:
+                raise cli.subprocess.TimeoutExpired("tee", timeout)
+            return 0
+
+        def kill(self):
+            self.killed = True
+
+    tee = TimedOutTee()
+    previous_stdout = os.dup(1)
+    previous_stderr = os.dup(2)
+    with pytest.raises(ValueError, match="release refused") as raised:
+        with cli._native_release_logging_scope():
+            cli._ACTIVE_NATIVE_RELEASE_LOGGING = cli._NativeReleaseLogging(
+                tee, previous_stdout, previous_stderr,
+            )
+            raise ValueError("release refused")
+
+    assert tee.killed and tee.wait_calls == 2
+    assert cli._ACTIVE_NATIVE_RELEASE_LOGGING is None
+    assert any("native release log tee did not exit" in note for note in raised.value.__notes__)

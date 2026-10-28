@@ -178,23 +178,16 @@ def test_branch_absent_from_origin_keeps_the_exact_selection_refusal(repo):
     assert refusal.value.exit_code == 2
 
 
-def test_remote_inspection_failure_is_a_config_class_failure(repo, monkeypatch):
-    calls = []
+def test_unreachable_origin_is_a_config_class_failure(repo):
+    _git(repo, "config", "protocol.file.allow", "never")
+    _git(
+        repo, "remote", "set-url", "origin",
+        "file:///tmp/cmru-unreachable-retire-origin.git",
+    )
 
-    def failed_remote_inspection(repo_root, *args, **kwargs):
-        calls.append((repo_root, args, kwargs))
-        return subprocess.CompletedProcess(
-            ["git", *args], 128, stdout="", stderr="origin unavailable",
-        )
-
-    monkeypatch.setattr(transaction, "run_remote_git", failed_remote_inspection)
     with pytest.raises(CliFailure, match="cannot inspect origin candidate") as refusal:
         cli._abandon(_args(), _Runtime())
     assert refusal.value.exit_code == 2
-    assert len(calls) == 1
-    assert calls[0][1] == (
-        "ls-remote", "--heads", "origin", f"refs/heads/{BRANCH}", "refs/heads/main",
-    )
 
 
 def test_missing_local_objects_are_reported_not_treated_as_merged(repo, tmp_path):

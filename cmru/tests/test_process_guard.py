@@ -145,6 +145,27 @@ def test_process_tree_refuses_missing_or_malformed_children_files(tmp_path):
         descendants(root_pid, proc_root=proc_root)
 
 
+def test_process_tree_availability_probe_uses_the_requested_root_pid(monkeypatch, tmp_path):
+    from cmru import process_guard
+
+    root_pid = os.getpid() + 1000
+    proc_root = tmp_path / "proc"
+    children_path = proc_root / str(root_pid) / "task" / str(root_pid) / "children"
+    children_path.parent.mkdir(parents=True)
+    children_path.write_text("", encoding="ascii")
+
+    calls = []
+    read_children = process_guard._read_children
+
+    def recording_read_children(pid, tid, selected_proc_root):
+        calls.append((pid, tid))
+        return read_children(pid, tid, selected_proc_root)
+
+    monkeypatch.setattr(process_guard, "_read_children", recording_read_children)
+    assert descendants(root_pid, proc_root=proc_root) == {}
+    assert calls[0] == (root_pid, root_pid)
+
+
 def test_process_tree_wraps_proc_permission_errors(monkeypatch, tmp_path):
     from cmru import process_guard
 

@@ -2712,7 +2712,13 @@ def _native_release_logging_scope() -> Iterator[None]:
     finally:
         current = _ACTIVE_NATIVE_RELEASE_LOGGING
         if current is not None and current is not previous:
+            active_exception = sys.exc_info()[1]
             _ACTIVE_NATIVE_RELEASE_LOGGING = previous
+            # TextIOWrapper may be block-buffered when stdout is a pipe. Flush
+            # while fd 1/2 still point at tee or buffered release output would
+            # land on the restored descriptors after this scope exits.
+            sys.stdout.flush()
+            sys.stderr.flush()
             os.dup2(current.saved_stdout, 1)
             os.dup2(current.saved_stderr, 2)
             os.close(current.saved_stdout)
@@ -2722,9 +2728,12 @@ def _native_release_logging_scope() -> Iterator[None]:
             except subprocess.TimeoutExpired as exc:
                 current.process.kill()
                 current.process.wait()
-                raise RuntimeError(
+                error = RuntimeError(
                     "native release log tee did not exit after stdout and stderr were restored"
-                ) from exc
+                )
+                if active_exception is None:
+                    raise error from exc
+                active_exception.add_note(f"{error}; cleanup timeout: {exc}")
 
 
 def _release_logging_scoped(function):

@@ -7,6 +7,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Fixed
 - Reject release-baseline checks without a configured `origin` before Git can
   reinterpret the remote name as a local path.
+- Flush buffered Python output into the native release log and preserve the
+  release exception if tee cleanup times out.
+- Require the bootstrap guide's released wheel digest to be a lowercase
+  64-character SHA-256 value, and collect retained Run-Gate wheels without
+  process substitution.
+- Probe the configured process-guard root when checking `/proc` children
+  availability.
 
 ### Testing
 - Close and wait for the native release log tee at the end of each in-process

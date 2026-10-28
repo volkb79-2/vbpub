@@ -239,6 +239,10 @@ supplies the whole-source line-and-branch qualification.
      exit 2
    fi
    CLI_EXTENDED_RELEASED_SHA256="${released_digests[0]}"
+   if [[ ! "$CLI_EXTENDED_RELEASED_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+     echo "Expected the CLI-EXTENDED_WHEEL_SHA256 value to be a 64-character lowercase SHA-256 digest" >&2
+     exit 2
+   fi
    unset CLI_EXTENDED_RESOLVE
    identity="$(python3 cmru/tools/cli_extended_release_identity.py \
      --released-sha256 "$CLI_EXTENDED_RELEASED_SHA256" \
@@ -321,10 +325,11 @@ supplies the whole-source line-and-branch qualification.
    runtime wheel:
 
    ```bash
-   mapfile -t run_gate_wheels < <(
-     find run-gate-project/artifacts -type f \
-       -path '*/dist/run_gate-24.1.0-*.whl' -print
-   )
+   run_gate_wheels_file="$(mktemp)"
+   trap 'rm -f "$run_gate_wheels_file"' EXIT
+   find run-gate-project/artifacts -type f \
+     -path '*/dist/run_gate-24.1.0-*.whl' -print > "$run_gate_wheels_file"
+   mapfile -t run_gate_wheels < "$run_gate_wheels_file"
    if [ "${#run_gate_wheels[@]}" -ne 1 ]; then
      echo "Expected exactly one retained Run-Gate 24.1.0 wheel" >&2
      exit 2

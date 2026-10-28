@@ -523,6 +523,40 @@ def test_the_guide_names_the_log_interface_and_the_exact_cgroup_inputs():
     assert "RUN_GATE_TESTER_CLI_EXTENDED_SHA256=" in cgprofile
 
 
+@_needs_repo
+def test_guide_rejects_empty_and_garbage_release_digests(tmp_path):
+    step_three = next(
+        block for block in _step_blocks(3) if "released_digests=()" in block
+    )
+    start = step_three.index("released_digests=()")
+    end = step_three.index("unset CLI_EXTENDED_RESOLVE", start)
+    validation = step_three[start:end] + '\necho "digest accepted"\n'
+
+    cases = (
+        ("a" * 64, 0),
+        ("", 2),
+        ("z" * 64, 2),
+    )
+    for digest, expected_status in cases:
+        (tmp_path / "cmru.release.log").write_text(
+            f"[INFO] CLI-EXTENDED_WHEEL_SHA256={digest}\n", encoding="utf-8",
+        )
+        result = subprocess.run(
+            ["bash", "-c", validation],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == expected_status, result.stderr
+        if expected_status:
+            assert "64-character lowercase SHA-256 digest" in result.stderr
+
+
+@_needs_repo
+def test_guide_wheel_lookup_does_not_use_process_substitution():
+    assert all("< <(" not in block for block in _step_blocks(4))
+
+
 # --- step 4: the guide's tester inputs are exactly what Run-Gate's release tooling accepts ---
 
 UPSTREAM_BASE = "mcr.microsoft.com/devcontainers/python:3.14-trixie"

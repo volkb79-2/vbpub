@@ -205,11 +205,20 @@ def test_cli_native_logging_and_candidate_integrity_edges(tmp_path, monkeypatch)
     monkeypatch.setenv("CMRU_NATIVE_RELEASE_LOGGING", "0")
     cli._configure_native_release_logging(tmp_path, append=False)
     monkeypatch.delenv("CMRU_NATIVE_RELEASE_LOGGING", raising=False)
+    real_popen = cli.subprocess.Popen
+    tee_argv = []
+
+    def recording_popen(*args, **kwargs):
+        tee_argv.append(args[0])
+        return real_popen(*args, **kwargs)
+
+    monkeypatch.setattr(cli.subprocess, "Popen", recording_popen)
     with cli._native_release_logging_scope():
         cli._configure_native_release_logging(tmp_path, append=True)
         tee = cli._ACTIVE_NATIVE_RELEASE_LOGGING.process
         assert tee.poll() is None
     assert tee.returncode == 0
+    assert tee_argv == [["tee", "-a", str(tmp_path / "cmru.release.log")]]
     assert (tmp_path / "cmru.release.log").read_text(encoding="utf-8") == "\n---\n"
 
     monkeypatch.setattr(cli, "_git", lambda *_args: "actual")
