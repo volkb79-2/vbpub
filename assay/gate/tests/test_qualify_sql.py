@@ -2135,9 +2135,10 @@ def test_a_green_tester_then_a_green_harness_marks_the_phase_once_between_tester
         if value == "--group-add"
     ]
     assert group_ids and all(group_id.isdigit() for group_id in group_ids)
-    # The launcher adds the Docker socket's group; the fixture socket is created
-    # by this process, so its group is our effective gid (not a host-specific 994).
-    assert str(os.getegid()) in group_ids
+    # The runner joins the host Docker group the host launcher verified (994 in
+    # this harness), not whatever group the locally visible socket carries (the
+    # fixture socket's group would be this process's effective gid).
+    assert group_ids == ["994"]
     assert "--cidfile" in launch
     mounts = [launch[i + 1] for i, value in enumerate(launch[:-1]) if value == "--mount"]
     assert "type=bind,src=/host/vbpub,dst=/host/vbpub" in mounts
@@ -2687,6 +2688,24 @@ def test_a_clone_that_is_not_the_gated_commit_is_refused_before_any_harness_or_c
     assert f"SQL clone is not the gated commit {HEX40}" in proc.stderr
     assert not harness_log.exists()
     assert not docker_log.exists()  # no container name existed yet, so the trap removed nothing
+
+
+def test_the_runner_joins_the_verified_host_docker_group_not_the_visible_sockets(
+    tmp_path: Path, gate_functions: Path
+) -> None:
+    """A devcontainer's proxy socket can carry another group than the host socket."""
+    worktree, commit, _tree = _sql_worktree(tmp_path)
+    env, docker_log, _harness_log = _sql_env(tmp_path, out=_MARKER, rc=0)
+    proc = run_bash(
+        f'worktree="{worktree}"\nhost_repo_root="/host/vbpub"\ntrap cleanup_assay_gate_container EXIT\nrun_sql_qualification "{commit}" "dev-gates.slice" "994" "4242"',
+        gate_functions=gate_functions,
+        env=env,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    launch = next(call for call in _docker_calls(docker_log) if call[:2] == ["run", "-d"])
+    group_ids = [launch[i + 1] for i, value in enumerate(launch[:-1]) if value == "--group-add"]
+    assert group_ids == ["4242"]
 
 
 def _run_sql_phase(tmp_path: Path, gate_functions: Path, allow: str | None):
