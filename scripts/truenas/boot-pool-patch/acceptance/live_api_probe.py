@@ -24,6 +24,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import sys
 
 from path_b_ui_setup import reserved_partition_four_name
@@ -118,6 +119,10 @@ def synthetic_row_refused(ok: bool, text: str) -> bool:
     return not ok and "pool 0 does not exist" in text.lower()
 
 
+def status_leaf_paths(output: str) -> set[str]:
+    return {token for token in output.split() if token.startswith("/dev/")}
+
+
 def partition_table_state(target: Target, disk: str) -> str:
     raw = target.run([
         "lsblk", "-J", "--tree", "-b", "-p", "-o",
@@ -207,13 +212,189 @@ def reserved_partition(target: Target) -> tuple[str, str]:
     return disk, partition
 
 
-def cleanup(target: Target, partition: str) -> None:
-    target.shell(
-        f"id=$(midclt call pool.query '[[\"name\",\"=\",\"{POOL}\"]]' | python3 -c "
-        f"'import json,sys; r=json.load(sys.stdin); print(r[0][\"id\"] if r else \"\")'); "
-        f"[ -z \"$id\" ] || midclt call -j pool.export \"$id\" '{{\"destroy\":false}}' >/dev/null 2>&1; "
-        f"zpool list -H -o name | grep -Fxq {POOL} && zpool export {POOL}; "
-        f"zpool labelclear -f {partition}; true", timeout=240, check=False)
+def _partition_mount_clear(target: Target, device: str) -> None:
+    script = (
+        f"findmnt -rn -S {shlex.quote(device)} >/dev/null 2>&1; result=$?; "
+        '[ "$result" -eq 1 ]'
+    )
+    target.run(["bash", "-lc", script], timeout=30)
+
+
+def _verify_probe_partition(
+    target: Target, partition: str, partition_uuid: str, boot_disk: str,
+) -> str:
+    if re.fullmatch(r"[0-9a-fA-F-]{36}", partition_uuid) is None:
+        raise RemoteError("cleanup requires the captured partition PARTUUID")
+    device = f"/dev/disk/by-partuuid/{partition_uuid}"
+    resolved = target.run(["readlink", "-f", device], timeout=30)
+    expected_path = target.run(["readlink", "-f", partition], timeout=30)
+    if resolved != expected_path:
+        raise RemoteError(
+            f"PARTUUID {partition_uuid} now resolves to {resolved!r}, expected {expected_path!r}"
+        )
+    if target.run(["lsblk", "-dnro", "PARTUUID", device], timeout=30).lower() != partition_uuid.lower():
+        raise RemoteError(f"{device} no longer has captured PARTUUID {partition_uuid}")
+    if target.run(["lsblk", "-dnro", "PARTLABEL", device], timeout=30) != MARKER:
+        raise RemoteError(f"{device} no longer carries reserved GPT label {MARKER!r}")
+    if target.run(["lsblk", "-dnro", "PARTTYPE", device], timeout=30).lower() != ZFS_TYPE_GUID:
+        raise RemoteError(f"{device} no longer has the reserved ZFS GPT type")
+    part_number = target.run(["lsblk", "-dnro", "PARTN", device], timeout=30)
+    if not part_number.isdecimal() or int(part_number) < 4:
+        raise RemoteError(f"{device} is no longer a reserved partition number 4 or later")
+    fstype = target.run(["lsblk", "-dnro", "FSTYPE", device], timeout=30)
+    if fstype not in {"", "zfs_member"}:
+        raise RemoteError(f"refusing cleanup of {device} with unexpected filesystem {fstype!r}")
+    if target.run(["lsblk", "-dnro", "MOUNTPOINT", device], timeout=30):
+        raise RemoteError(f"refusing cleanup of mounted partition {device}")
+    _partition_mount_clear(target, device)
+
+    parent = target.run(["lsblk", "-dnro", "PKNAME", device], timeout=30)
+    expected_parent = target.run(["readlink", "-f", boot_disk], timeout=30)
+    if not parent or f"/dev/{parent}" != expected_parent:
+        raise RemoteError(f"{device} is no longer on the captured boot-pool disk {boot_disk!r}")
+    boot_status = target.run(["zpool", "status", "-P", "-L", "boot-pool"], timeout=45)
+    boot_leaf_parents = {
+        target.run(["lsblk", "-dnro", "PKNAME", leaf], timeout=30)
+        for leaf in status_leaf_paths(boot_status)
+    }
+    if parent not in boot_leaf_parents:
+        raise RemoteError(f"{device} is no longer on a disk containing a boot-pool leaf")
+    return device
+
+
+def _import_scan(target: Target, device: str) -> list[dict]:
+    output = target.run(["zpool", "import", "-d", device], timeout=45)
+    starts = list(re.finditer(r"(?m)^\s*pool:\s*(\S+)\s*$", output))
+    records = []
+    for index, start in enumerate(starts):
+        end = starts[index + 1].start() if index + 1 < len(starts) else len(output)
+        section = output[start.start():end]
+        guid = re.search(r"(?m)^\s*id:\s*(\d+)\s*$", section)
+        config = re.search(r"(?ms)^\s*config:\s*$(.*)", section)
+        leaves = re.findall(
+            r"(?m)^\s+(/dev/\S+)\s+(?:ONLINE|DEGRADED|FAULTED|UNAVAIL|OFFLINE)\b",
+            config.group(1) if config else "",
+        )
+        records.append({
+            "name": start.group(1),
+            "guid": guid.group(1) if guid else None,
+            "leaves": leaves,
+        })
+    return records
+
+
+def _assert_exported_probe_pool(
+    target: Target, device: str, partition: str, expected_guid: str,
+) -> None:
+    records = _import_scan(target, device)
+    if len(records) != 1 or records[0].get("name") != POOL \
+            or str(records[0].get("guid")) != expected_guid:
+        raise RemoteError(
+            f"export scan on {device} does not identify only pool {POOL!r} with GUID {expected_guid}: "
+            f"{records!r}"
+        )
+    leaves = {target.run(["readlink", "-f", leaf], timeout=30) for leaf in records[0]["leaves"]}
+    expected_leaf = target.run(["readlink", "-f", partition], timeout=30)
+    if leaves != {expected_leaf}:
+        raise RemoteError(
+            f"exported pool GUID {expected_guid} is not a single-leaf pool on {partition}: {leaves!r}"
+        )
+
+
+def _assert_probe_partition_offered(target: Target, partition: str, partition_uuid: str) -> None:
+    rows = target.call("disk.details", {"type": "UNUSED", "join_partitions": False}, timeout=120)
+    name = os.path.basename(partition)
+    offered = [
+        row for row in rows
+        if row.get("name") == name
+        and row.get("identifier") == "{partuuid}" + partition_uuid.lower()
+    ]
+    if len(offered) != 1:
+        raise RemoteError(f"disk.details did not offer captured PARTUUID {partition_uuid}: {rows!r}")
+
+
+def cleanup(
+    target: Target, partition: str, partition_uuid: str, expected_pool_guid: str, boot_disk: str,
+) -> None:
+    """Export and clear only the captured pool GUID on the captured PARTUUID."""
+    if re.fullmatch(r"\d+", str(expected_pool_guid)) is None:
+        raise RemoteError("cleanup requires the captured numeric pool GUID; manual recovery is required")
+    device = _verify_probe_partition(target, partition, partition_uuid, boot_disk)
+    rows = target.query(
+        "pool.query", [["name", "=", POOL]], {"select": ["id", "name", "guid"]}, timeout=90,
+    )
+    if not isinstance(rows, list):
+        raise RemoteError(f"pool.query returned {type(rows).__name__} during cleanup")
+    if rows:
+        if (
+            len(rows) != 1
+            or rows[0].get("name") != POOL
+            or str(rows[0].get("guid")) != expected_pool_guid
+            or not isinstance(rows[0].get("id"), int)
+        ):
+            raise RemoteError(
+                f"middleware row does not identify captured pool GUID {expected_pool_guid}; "
+                "cleanup stopped for manual recovery"
+            )
+        imported = target.run(["zpool", "list", "-H", "-o", "name"], timeout=30).splitlines()
+        if POOL not in imported:
+            raise RemoteError("middleware row exists for an exported pool; cleanup stopped for manual recovery")
+        actual_guid = target.run(["zpool", "get", "-H", "-o", "value", "guid", POOL], timeout=30)
+        if actual_guid != expected_pool_guid:
+            raise RemoteError(f"imported pool GUID changed from {expected_pool_guid} to {actual_guid!r}")
+        status = target.run(["zpool", "status", "-P", "-L", POOL], timeout=45)
+        leaves = status_leaf_paths(status)
+        expected_leaf = target.run(["readlink", "-f", partition], timeout=30)
+        resolved_leaves = {target.run(["readlink", "-f", leaf], timeout=30) for leaf in leaves}
+        if resolved_leaves != {expected_leaf}:
+            raise RemoteError(f"pool GUID {expected_pool_guid} is not solely on {partition}: {leaves!r}")
+        target.run([
+            "midclt", "call", "-j", "pool.export", str(rows[0]["id"]),
+            '{"destroy":false}',
+        ], timeout=240)
+        rows = target.query(
+            "pool.query", [["name", "=", POOL]], {"select": ["id", "name", "guid"]}, timeout=90,
+        )
+        if rows:
+            raise RemoteError("pool.export destroy=false left a middleware pool row; labels were not cleared")
+    else:
+        imported = target.run(["zpool", "list", "-H", "-o", "name"], timeout=30).splitlines()
+        if POOL in imported:
+            raise RemoteError("pool is imported without its middleware row; cleanup stopped for manual recovery")
+
+    global_status = target.run(["zpool", "status", "-P", "-L"], timeout=45)
+    expected_leaf = target.run(["readlink", "-f", partition], timeout=30)
+    imported_leaves = {
+        target.run(["readlink", "-f", leaf], timeout=30)
+        for leaf in status_leaf_paths(global_status)
+    }
+    if expected_leaf in imported_leaves:
+        raise RemoteError(f"an imported pool still uses {partition}; labels were left untouched")
+
+    records = _import_scan(target, device)
+    if not records:
+        fstype = target.run(["lsblk", "-dnro", "FSTYPE", device], timeout=30)
+        if fstype:
+            raise RemoteError(
+                f"no exported pool was found but {device} still reports {fstype!r}; "
+                "cleanup stopped for manual recovery"
+            )
+        _assert_probe_partition_offered(target, partition, partition_uuid)
+        return
+
+    _assert_exported_probe_pool(target, device, partition, expected_pool_guid)
+    # Recheck all write-boundary facts after export/import discovery.
+    device = _verify_probe_partition(target, partition, partition_uuid, boot_disk)
+    global_status = target.run(["zpool", "status", "-P", "-L"], timeout=45)
+    imported_leaves = {
+        target.run(["readlink", "-f", leaf], timeout=30)
+        for leaf in status_leaf_paths(global_status)
+    }
+    if expected_leaf in imported_leaves:
+        raise RemoteError(f"an imported pool began using {partition}; labels were left untouched")
+    _assert_exported_probe_pool(target, device, partition, expected_pool_guid)
+    target.run(["zpool", "labelclear", "-f", device], timeout=45)
+    _assert_probe_partition_offered(target, partition, partition_uuid)
 
 
 def run_path_b(target: Target) -> None:
@@ -224,6 +405,8 @@ def run_path_b(target: Target) -> None:
         raise RemoteError(f"reserved partition {partition} has no valid PARTUUID")
     before = boot_pool_state(target)
     table_before = partition_table_state(target, disk)
+    pool_guid: str | None = None
+    pool_create_attempted = False
     try:
         evidence = destroy_source_evidence(target)
         check(
@@ -276,17 +459,27 @@ def run_path_b(target: Target) -> None:
         ok, text = attempt(target, "boot.attach", name, {}, job=True)
         check("boot-attach-refused-unchanged", (not ok) and boot_pool_state(target) == before, text)
 
+        pool_create_attempted = True
         ok, text = attempt(target, "pool.create", {"name": POOL, "topology": {"data": [
             {"type": "STRIPE", "disks": [name]}]}}, job=True)
         leaves = target.shell(f"zpool status -P -L {POOL} 2>&1", timeout=45)
         check("shim-create-on-partition", ok and partition in leaves.split() and "ONLINE" in leaves,
               f"create ok={ok}: {leaves[:200]}")
+        if not ok:
+            raise RemoteError("pool.create did not return success; its outcome is ambiguous, so cleanup needs manual recovery")
+        pool_guid = target.run(["zpool", "get", "-H", "-o", "value", "guid", POOL], timeout=30)
+        if re.fullmatch(r"\d+", pool_guid) is None:
+            raise RemoteError("pool.create succeeded but its pool GUID could not be captured; manual recovery is required")
         ok, rows = attempt(target, "pool.query", [["name", "=", POOL]], {"select": ["name", "status"]})
         check("shim-pool-registered", ok and POOL in rows and "ONLINE" in rows, rows)
         ok, text = attempt(target, "disk.details", {"type": "UNUSED", "join_partitions": False})
         check("details-no-longer-offers-used-partition", ok and name not in text, text[:200])
 
         pool = target.query("pool.query", [["name", "=", POOL]], {"get": True}, timeout=90)
+        if str(pool.get("guid")) != pool_guid:
+            raise RemoteError(
+                f"middleware row GUID {pool.get('guid')!r} differs from captured ZFS GUID {pool_guid}"
+            )
         pool_id = pool["id"]
         vdev_guid = str(pool["topology"]["data"][0]["guid"])
 
@@ -340,24 +533,45 @@ def run_path_b(target: Target) -> None:
               boot_pool_state(target) == before and partition_table_state(target, disk) == table_before,
               f"ok={ok}; {text}")
 
-        cleanup(target, partition)
+        cleanup(target, partition, partition_uuid, pool_guid, disk)
+        pool_guid = None
+        pool_create_attempted = False
 
-        target.shell(f"zpool create -o cachefile=none -O mountpoint=none {POOL} {partition} && zpool export {POOL}",
-                     timeout=120)
+        pool_create_attempted = True
+        target.run(["zpool", "create", "-o", "cachefile=none", "-O", "mountpoint=none", POOL,
+                    f"/dev/disk/by-partuuid/{partition_uuid}"], timeout=120)
+        pool_guid = target.run(["zpool", "get", "-H", "-o", "value", "guid", POOL], timeout=30)
+        if re.fullmatch(r"\d+", pool_guid) is None:
+            raise RemoteError("hand-made pool was created but its pool GUID could not be captured; manual recovery is required")
+        target.run(["zpool", "export", POOL], timeout=120)
         ok, found = attempt(target, "pool.import_find", job=True)
-        guid = ""
-        try:
-            guid = next(str(r["guid"]) for r in json.loads(found) if r.get("name") == POOL)
-        except (json.JSONDecodeError, StopIteration, TypeError, KeyError):
-            pass
-        ok2, imported = attempt(target, "pool.import_pool", {"guid": guid, "name": POOL}, job=True) if guid else (False, "no guid")
+        matches = [
+            row for row in json.loads(found)
+            if row.get("name") == POOL and str(row.get("guid")) == pool_guid
+        ] if ok else []
+        if len(matches) != 1:
+            raise RemoteError(
+                f"pool.import_find did not return captured pool GUID {pool_guid}: {found[:300]}"
+            )
+        ok2, imported = attempt(
+            target, "pool.import_pool", {"guid": pool_guid, "name": POOL}, job=True,
+        )
         ok3, rows = attempt(target, "pool.query", [["name", "=", POOL]], {"select": ["name", "status"]})
         check("import-hand-made-pool", ok and ok2 and ok3 and "ONLINE" in rows, f"{found[:150]} / {imported} / {rows}")
     finally:
-        cleanup(target, partition)
+        if pool_guid is not None:
+            cleanup(target, partition, partition_uuid, pool_guid, disk)
+        elif pool_create_attempted:
+            raise RemoteError(
+                "probe pool creation was attempted but no GUID was captured; cleanup stopped and manual recovery is required"
+            )
     gone = POOL not in target.shell("zpool list -H -o name", timeout=30).split()
-    labels = target.shell(f"zdb -l {partition} 2>/dev/null | grep -c 'version:' || true", timeout=30).strip()
-    check("cleanup-complete", gone and labels in ("", "0"), f"pool gone={gone} labels={labels!r}")
+    fstype = target.run(["lsblk", "-dnro", "FSTYPE", f"/dev/disk/by-partuuid/{partition_uuid}"], timeout=30)
+    remaining_exports = _import_scan(target, f"/dev/disk/by-partuuid/{partition_uuid}")
+    check(
+        "cleanup-complete", gone and not fstype and not remaining_exports,
+        f"pool gone={gone} filesystem={fstype!r} exported pools={remaining_exports!r}",
+    )
     ok, text = attempt(target, "disk.details", {"type": "UNUSED", "join_partitions": False})
     details = json.loads(text) if ok else []
     offered = [
