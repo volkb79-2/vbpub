@@ -15,6 +15,8 @@ mdt-cockpit/iogov/
   rawread.py            read-only raw-disk reads (O_DIRECT), coprime whole-device walk, witness blocks
   scratch.py bench.py   adaptive scratch region (the only thing ever written), probe lanes
   collectors.py         PSI (io and memory), /proc/vmstat swap counters, /sys/block stat+inflight, cgroup io.stat/io.pressure, settings epoch, "who else writes"
+  devices.py hostcheck.py  whole-disk resolution (sysfs/mountinfo only), `preflight` host-tool check
+  install.sh            idempotent installer helper (--dry-run prints every action)
   covariates.py         fill, fstrim, discard, provider signal, queue/prio facts + the report-only prevention checker
   episodes.py           `watch`: protected-side distress episodes from io.pressure AND memory.pressure (stopping-distance data), no probe IO
   recognizer.py         robust baseline + two-sided CUSUM + hysteresis -> recommendations; demand-limited labels
@@ -34,7 +36,8 @@ From `mdt-cockpit/` (so that `import iogov` resolves), or with `PYTHONPATH=<dir 
 ```
 python3 -m iogov plan                  # DRY RUN: devices, region, lanes, budget numbers, gates. Opens no device, writes nothing.
 python3 -m iogov tick --dry-run        # same output; `bench --dry-run` too
-python3 -m iogov devices               # the disks that would be probed (sysfs lookups only)
+python3 -m iogov preflight             # BEFORE installing: every missing host tool/package with its apt name; exit 1 if any is missing
+python3 -m iogov devices               # the disks that would be probed (sysfs lookups only); unresolvable paths are explained, never guessed
 python3 -m iogov tick                  # raw 4 KiB reads + passive snapshot (timer: every 5 min); a gated tick still journals the passive snapshot (<= 1 per 15 min)
 python3 -m iogov bench [--force]       # the ~6 h mini write bench (a no-op unless due; --force still honours gates and kill switches)
 python3 -m iogov watch                 # optional resident sampler of protected-side distress episodes
@@ -93,7 +96,43 @@ daemon's `config.v2.json` files, which also contain container environment variab
 Run the tests: `cd mdt-cockpit && python3 -m pytest iogov/tests -q`. A missing optional dependency fails the test (see
 `tests/_testdeps.py`); `IOGOV_ALLOW_MISSING_TEST_DEPS=1` turns that into a skip on a developer machine.
 
-## Install steps (documentation only; do them by hand, nothing here does)
+## Prerequisites (checked by `python3 -m iogov preflight`, which names the apt package of every missing item and exits 1)
+
+| Item | Debian package | Needed for |
+| --- | --- | --- |
+| `python3` >= 3.11 | `python3` | `tomllib`; no third-party Python package is used |
+| `setfacl` | **`acl`** | the udev rule's read-only ACL on the disk node (step 3); NOT present on a minimal host |
+| `udevadm` | `udev` | `ID_PATH` lookup, `udevadm test`/`trigger` (step 3) |
+| `systemctl`, `systemd-analyze` | `systemd` | installing the units, `systemd-analyze verify` of the rendered units |
+| `useradd` | `passwd` | the service user (step 1) |
+| `install`, `dd` | `coreutils` | directories/files with owner and mode, the O_DIRECT read check |
+| cgroup v2 with the `io` controller, PSI (`/proc/pressure/io`), sysfs | kernel | harm observations, load gates, device detection |
+| `docker` (only to look up container cgroup paths by hand) | `docker.io` | optional, reported as `absent`, never required |
+
+Run `apt-get install acl` (or whatever `preflight` prints) first. The preflight reads files and executes nothing.
+
+Device detection (`data_paths`) reads sysfs and `/proc/self/mountinfo` only (no root, no `btrfs-progs`, no `lsblk`): `st_dev` -> `/sys/dev/block`,
+then partitions, device-mapper (LVM, dm-crypt), md and multipath slaves recursively to the whole disk(s). A filesystem with an anonymous device
+number (btrfs) is resolved through its mount (`mountinfo`: source device) and all member devices in `/sys/fs/btrfs/<uuid>/devices`. When
+anything cannot be resolved the note lists what was seen (st_dev, mount, fs type, source) and detection reports no disk: it never guesses; set
+`devices = [...]` explicitly. An explicit `devices` entry must exist as seen by the process (a missing path or dangling symlink is a clear note,
+with a hint when the same name exists under the other of `/dev/disk/by-id` and `/dev/disk/by-path`); a partition or mapper node is replaced by
+its whole disk(s).
+
+## Installer helper
+
+`iogov/install.sh` performs steps 1-4 below for the report-only tick, idempotently: `./install.sh --dry-run` prints every action and changes
+nothing; `sudo ./install.sh` does it (preflight first, stops on any missing package); `--enable-tick` additionally enables `iogov-tick.timer`
+(step 5, only after a manual `plan` and one `tick`). It installs a root-owned copy of the package (default `/usr/local/lib/iogov-pkg`,
+`--lib-dir` to change; Debian's `/usr/local/lib` is root:staff 2775, so `--lib-dir /opt/iogov` is stricter), creates the user and 0700 state/scratch
+directories, a config skeleton (an existing config is never overwritten; with the example `data_paths` it stops with exit 3 so you edit it), renders
+and verifies the units, installs the read-only ACL rule for exactly one disk (`--disk-node`/`--id-path`, else taken from the config and `udevadm`).
+It never enables the bench timer or the watch service, never runs docker or touches any container, and `--destdir DIR` stages the files under DIR
+without useradd/chown/systemctl/udevadm. The manual steps below remain the reference.
+
+Deployment as a host install versus a container: design note section 12.
+
+## Install steps (the installer helper above does these; the list is the reference)
 
 1. Create the user and directories: `useradd --system iogov`; `install -d -o iogov -g iogov -m 700 /var/lib/iogov /var/lib/iogov/scratch`
    (the scratch directory is refused unless it is 0700; `StateDirectory=iogov` in the units would create the state dir 0700 anyway);
