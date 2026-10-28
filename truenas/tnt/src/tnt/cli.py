@@ -885,6 +885,12 @@ def build_cli(cli_identity: CliIdentity | None = None, opener: SessionOpener = o
     _workflow_group(registry, ident, "vm", "Manage virtual machines and their devices.", _vm_verbs(ident, opener))
     _workflow_group(registry, ident, "share", "Manage SMB and NFS shares.", _share_verbs(ident, opener))
     _workflow_group(registry, ident, "task", "Inspect and operate data-protection tasks.", _task_verbs(ident, opener))
+    _workflow_group(registry, ident, "network", "Read network interfaces, addresses, routes, DNS, and gateways.", [
+        VerbSpec("show", None, "Show live network status (read-only).", group=VerbGroup.EXPLORATION.value,
+                 options=HOST_OPTIONS,
+                 handler=lambda args, runtime: _workflow_read(args, runtime, opener,
+                                                              lambda session: session.workflows.network_show())),
+    ])
     return registry.build()
 
 

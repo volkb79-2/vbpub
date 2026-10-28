@@ -12,6 +12,7 @@ from textual.widgets import Select
 from ..menu import MENU, MenuItem, walk
 from ..session import Session
 from .disks import DisksView
+from .network import NetworkView
 from .workflows import WorkflowView
 
 VIEWS = {
@@ -25,6 +26,7 @@ VIEWS = {
     "vm": lambda session: WorkflowView(session, "vm"),
     "users": lambda session: WorkflowView(session, "users"),
     "sharing": lambda session: WorkflowView(session, "sharing"),
+    "network": NetworkView,
 }
 
 

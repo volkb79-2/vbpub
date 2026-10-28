@@ -6,6 +6,8 @@
   refuses missing and boot-pool paths, and share deletion requires the typed target while retaining data.
 - Added periodic snapshot task create/list/show/run/enable/disable/delete and replication/cloud-sync list/show/run/enable/disable.
   Runs use job plans with source/target context and typed confirmation; cloud-sync credentials and encryption values are masked.
+- Added read-only `tnt network show` and System > Network views for v27 interfaces, active IPs, installed routes,
+  DNS nameservers, and default gateways, with explicit schema-shape refusal for incomplete summaries.
 - Added schema-versioned `tnt.toml` profiles with explicit config search order, current-user ownership and exact mode-0600 checks,
   inline API-key or password credentials, optional API-key files, and masked profile inspection.
 - Added v27 password login through the pinned client's `PASSWORD_PLAIN` mechanism; API keys continue to use SCRAM.

@@ -173,6 +173,13 @@ are destructive and typed: replication shows source dataset(s), target, and whet
 destination snapshots; cloud sync warns when `MOVE` deletes source files after transfer. Cloud-sync credentials and
 encryption fields are masked before they reach CLI or TUI presentation.
 
+### Network status
+
+System > Network calls only the v27 reads `interface.query`, `route.system_routes`, and `network.general.summary`. The
+summary supplies active interface addresses, DNS nameservers, and default gateways; the detailed reads add configured
+interface state and installed IPv4/IPv6 routes. The display is read-only, and missing required summary fields are a
+schema failure instead of an empty network state. See [API method evidence](API-METHODS-V27.md#network-status).
+
 ## 5. UX
 
 - Left navigation is a Textual `Tree` (arrows, enter, expand/collapse), content pane on the right, a banner line with

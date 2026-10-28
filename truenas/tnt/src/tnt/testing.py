@@ -82,6 +82,25 @@ class FakeServer:
         self.smb_shares: dict[int, dict[str, Any]] = {}
         self.nfs_shares: dict[int, dict[str, Any]] = {}
         self.share_paths = {"/mnt/tank/share", "/mnt/tank/export"}
+        self.interfaces: list[dict[str, Any]] = [{
+            "id": "enp1s0", "name": "enp1s0", "fake": False, "type": "PHYSICAL",
+            "state": {"name": "enp1s0", "orig_name": "enp1s0", "description": "Primary interface", "mtu": 1500,
+                      "cloned": False, "flags": ["UP", "RUNNING"], "nd6_flags": [], "capabilities": [],
+                      "link_state": "UP", "media_type": "Ethernet", "media_subtype": "1000baseT",
+                      "active_media_type": "Ethernet", "active_media_subtype": "1000baseT", "supported_media": [],
+                      "media_options": [], "link_address": "02:00:00:00:00:01", "hardware_link_address": "02:00:00:00:00:01",
+                      "aliases": [{"type": "INET", "address": "192.0.2.10", "netmask": 24}]},
+            "aliases": [{"type": "INET", "address": "192.0.2.10", "netmask": 24}],
+            "ipv4_dhcp": False, "ipv6_auto": False, "description": "Primary interface", "mtu": 1500,
+        }]
+        self.routes: list[dict[str, Any]] = [
+            {"network": "0.0.0.0", "netmask": "0.0.0.0", "gateway": "192.0.2.1", "interface": "enp1s0",
+             "flags": [], "table_id": 254, "scope": 0, "preferred_source": "192.0.2.10"},
+            {"network": "192.0.2.0", "netmask": "255.255.255.0", "gateway": None, "interface": "enp1s0",
+             "flags": [], "table_id": 254, "scope": 253, "preferred_source": "192.0.2.10"},
+        ]
+        self.network_summary: dict[str, Any] = {"ips": {"enp1s0": {"IPV4": ["192.0.2.10/24"]}},
+                                                "default_routes": ["192.0.2.1"], "nameservers": ["192.0.2.53"]}
         self._next_share_id = 1
         self._next_snapshot_task_id = 1
         self.users: dict[int, dict[str, Any]] = {
@@ -258,6 +277,9 @@ class FakeServer:
             "system.version": lambda p: self.version,
             "system.info": lambda p: {"version": self.version, "hostname": "fake"},
             "core.get_methods": lambda p: {m: {} for m in self.methods},
+            "interface.query": lambda p: self.interfaces,
+            "route.system_routes": lambda p: self.routes,
+            "network.general.summary": lambda p: self.network_summary,
             "core.subscribe": lambda p: self._subscribe(p),
             "core.unsubscribe": lambda p: True,
             "auth.me": lambda p: {"pw_name": self.username, "pw_uid": 1000, "pw_gid": 1},

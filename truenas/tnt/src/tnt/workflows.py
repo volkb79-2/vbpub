@@ -38,6 +38,24 @@ class Workflows:
     def shares_nfs(self) -> list[dict[str, Any]]:
         return _rows(self.rpc.call("sharing.nfs.query", [], {}), "sharing.nfs.query")
 
+    # -- network status ----------------------------------------------------------------------------------
+    def network_show(self) -> dict[str, Any]:
+        """Read the configured interfaces and the live IP, route, gateway, and DNS state."""
+        interfaces = _rows(self.rpc.call("interface.query", [], {}), "interface.query")
+        routes = _rows(self.rpc.call("route.system_routes", [], {}), "route.system_routes")
+        summary = self.rpc.call("network.general.summary")
+        if (not isinstance(summary, Mapping) or not isinstance(summary.get("ips"), Mapping)
+                or not isinstance(summary.get("nameservers"), list)
+                or not isinstance(summary.get("default_routes"), list)):
+            raise Refused("network-shape", "network.general.summary omitted required v27 IP, DNS, or default-route data")
+        return {
+            "interfaces": interfaces,
+            "addresses": dict(summary["ips"]),
+            "routes": routes,
+            "dns": list(summary["nameservers"]),
+            "default_gateways": list(summary["default_routes"]),
+        }
+
     def share_nfs(self, path: str) -> dict[str, Any]:
         if not isinstance(path, str) or not path.strip():
             raise Refused("workflow-input", "NFS share path is required")

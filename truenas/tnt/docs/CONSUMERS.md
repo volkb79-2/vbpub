@@ -145,6 +145,21 @@ run-now is typed-confirmed because a configured `allow_from_scratch` task may re
 the confirmation plan. Replication `direction` is `PUSH` or `PULL`, and `transport` is `SSH`, `SSH+NETCAT`, or `LOCAL`.
 See the [task safety decisions](DESIGN.md#data-protection-tasks) and [v27 API schemas](API-METHODS-V27.md#workflows).
 
+### Network status
+
+Inspect active addresses, interface configuration, installed routes, DNS nameservers, and default gateways with the
+read-only network view:
+
+```sh
+tnt network show --profile lab
+tnt network show --profile lab --json > network-status.json
+tnt tui --profile lab  # choose System > Network
+```
+
+This screen does not edit interface or resolver configuration. The JSON includes `interfaces`, `addresses`, `routes`,
+`dns`, and `default_gateways`; a response that omits required summary fields is an error, not an empty status. See the
+[network view design](DESIGN.md#network-status) and [v27 read signatures](API-METHODS-V27.md#network-status).
+
 Use `--file spec.json` for fields beyond a workflow's minimal create options. Passwords are entered through a no-echo
 prompt or `--password-file`, never a command-line argument. User SSH keys are loaded from a public-key file or
 validated public-key text; private keys are not accepted or printed.

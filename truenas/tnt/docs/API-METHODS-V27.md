@@ -52,6 +52,14 @@ middleware CRUD reads for the relevant service.
 | NFS shares | `sharing.nfs.create(data: NfsShareCreate)`; `sharing.nfs.update(id: int, data: NfsShareUpdate)` | write | [create](https://api.truenas.com/v27.0/api_methods_sharing.nfs.create.html), [update](https://api.truenas.com/v27.0/api_methods_sharing.nfs.update.html), [v27 NFS model](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/api/v27_0_0/nfs.py) |
 | NFS shares | `sharing.nfs.delete(id: int)` | destructive | [delete](https://api.truenas.com/v27.0/api_methods_sharing.nfs.delete.html), [v27 NFS model and sharing service](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/api/v27_0_0/nfs.py) |
 
+## Network status
+
+| Workflow | Method and verified signature | Classification | Evidence |
+|---|---|---|---|
+| Network | `interface.query(filters=[], options={}) -> list[InterfaceEntry]`; entries include configured aliases and live `state.aliases` | read | [v27 reference](https://api.truenas.com/v27.0/api_methods_interface.query.html), [v27 model](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/api/v27_0_0/interface.py), [service](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/plugins/network.py) |
+| Network | `route.system_routes(filters=[], options={}) -> list[RouteSystemRoutesItem]`; returns installed IPv4/IPv6 routes including default routes | read | [v27 reference](https://api.truenas.com/v27.0/api_methods_route.system_routes.html), [v27 model](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/api/v27_0_0/route.py), [service](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/plugins/network_/route.py) |
+| Network | `network.general.summary() -> {ips: object, default_routes: list[IPvAnyAddress], nameservers: list[IPvAnyAddress]}` | read | [v27 reference](https://api.truenas.com/v27.0/api_methods_network.general.summary.html), [v27 model](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/api/v27_0_0/network_general.py), [service](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/plugins/network_/general.py) |
+
 `vm.get_console(id)` returns a non-empty console connection string or command (the VM ID/name form in middleware),
 not a host/port object. VNC/SPICE endpoints come from `vm.get_display_devices(id)`: display attributes include
 `bind`, `port` (VNC/SPICE, `null` for auto-assignment), and `web_port` (`null` for auto-assignment). The result also

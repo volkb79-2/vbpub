@@ -51,8 +51,9 @@ created for that check.
   run it once, disable it, then delete only the task using its typed dataset/ID target. Inspect replication source and
   target in the plan; do not run a task with `allow_from_scratch` unless destination snapshot removal is intended.
   Run only a disposable cloud-sync task; verify credential fields stay masked and treat `MOVE` as source deletion.
-- Network: compare interfaces, DNS, routes, IPs, and default gateway with the web UI; verify the screen has no write
-  controls.
+- Network: run `tnt network show --json`; compare `interfaces`, `addresses`, `routes`, `dns`, and
+  `default_gateways` with System > Network in the web UI, then confirm the TUI screen exposes no write controls. This
+  check is authored only and has not been run.
 - Apps: list installed apps and upgrade-available state; start/stop/restart only a disposable app; uninstall only an
   app with disposable data and keep the delete-data-volumes choice at NO unless data deletion is explicitly intended.
 - Audit and API Keys: page through audit results with time/user/event filters; create a temporary API key, copy it from

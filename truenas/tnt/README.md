@@ -88,6 +88,7 @@ tnt user ssh-key set deploy --profile lab --file ~/.ssh/id_ed25519.pub --add --a
 tnt user password deploy --profile lab --password-file /home/me/.config/tnt/new-password --allow-write
 tnt user ssh-key remove deploy --profile lab --allow-write
 tnt user delete deploy --profile lab --allow-write --confirm deploy
+tnt network show --profile lab --json
 tnt tui --profile lab
 tnt tui --profile lab --allow-write
 ```
@@ -109,6 +110,10 @@ produces no event within the bounded read window, output says so explicitly. The
 no current image field, CPU-count setting, or configured memory limit; list output and the TUI label those fields as unavailable. Dataset
 properties include used/available space, quota/refquota, compression, readonly, mount state, and mountpoint. User list
 output masks SSH keys and password hashes. The user SSH-key commands accept OpenSSH public keys only.
+
+`tnt network show --json` and System > Network are read-only views of configured interfaces, live IP addresses, installed
+routes, DNS nameservers, and default gateways. See the [network adoption example](docs/CONSUMERS.md#network-status) and
+the [v27 read signatures](docs/API-METHODS-V27.md#network-status).
 
 v27 has no container restart RPC, so `container restart` plans a stop followed by a start and requires the container
 name as destructive confirmation.

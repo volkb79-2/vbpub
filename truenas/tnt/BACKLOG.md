@@ -38,6 +38,7 @@ non-execution requirement.
 | TNT-40 | [DONE M1] Virtual machines: list/show/create/update/lifecycle/device/console workflows through CLI and TUI; create and device plans are staged because v27 excludes devices from `vm.create` | M1 | L |
 | TNT-41 | [DONE M1] Local users: list/create/update/delete, SSH public-key management and password changes through CLI and TUI | M1 | L |
 | TNT-42 | VM create recovery: compensate or guide recovery when a separately reviewed `vm.device.create` plan fails after `vm.create` | M2 | M |
+| TNT-43 | [DONE M2] System > Network: read-only interface/address/route/DNS/default-gateway view through verified v27 methods | M2 | S |
 
 ## Platform and quality
 
