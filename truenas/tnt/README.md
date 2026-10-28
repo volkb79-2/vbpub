@@ -14,9 +14,9 @@ for the verified method signatures. The original storage action matrix remains a
 Scope and safety choices are explained in the [design guide](docs/DESIGN.md#1-goals-and-non-goals); copyable setup and
 workflow examples are in the [consumer guide](docs/CONSUMERS.md#configure-multiple-hosts).
 
-M1 core workflows, M2 management workflows, It1 multi-host configuration and session control, and It2 job tracking and
-read-only core views are implemented. The remaining work is It3 hardened SSH hand-off and It4 vanilla-v27 acceptance.
-See the [milestone plan](docs/DESIGN.md#10-milestones).
+M1 core workflows, M2 management workflows, It1 multi-host configuration and session control, It2 job tracking and
+read-only core views, and It3 hardened interactive SSH hand-off are implemented. It4 vanilla-v27 acceptance and release
+readiness remain. See the [milestone plan](docs/DESIGN.md#10-milestones).
 
 At connection time tnt checks the v27 WebSocket method list. Methods missing from a host are reported by
 `doctor --online` and refused if a workflow needs them; a method-name match does not grant an RBAC role. See the
@@ -59,7 +59,8 @@ host picker and CLI commands require `--host NAME`, showing the available names 
 selected automatically. Use `tnt hosts list|show|add|edit|remove|test|set-default` to manage the pair. The TUI shows
 host name, URL, description, and last connection status; `h` or the command palette opens the picker, and `w` changes
 that host's read-only/write-enabled session. Switching hosts invalidates old plans, drains host-bound work, closes
-the old session, then connects the new one. SSH connection settings may be recorded now; the SSH hand-off is It3.
+the old session, then connects the new one. SSH connection settings are used by the interactive hand-off described
+below; the configured SSH paths are never shown by host listing or JSON output.
 
 Credentials never appear in argv, logs, exceptions, `hosts show`, JSON, or TUI output. Password and API-key fields in
 the TUI are hidden while editing. API-key creation writes the one-time key directly to a new mode-0600 file in the
@@ -100,9 +101,25 @@ password = "REPLACE_WITH_PASSWORD"
 
 The first example is `tnt.toml`; the second is `tnt.secrets.toml`. `schema_version` is required and currently `1`.
 The examples contain placeholders only. API keys use the pinned client's SCRAM flow. Password authentication uses its
-supported `PASSWORD_PLAIN` login flow. Authentication failures are fatal and never retried. SSH private-key and
-known-host paths are recorded for the later SSH hand-off. M1 user-key edits read an explicit OpenSSH `.pub` file or
-validated public-key text; private key material is never accepted or printed.
+supported `PASSWORD_PLAIN` login flow. Authentication failures are fatal and never retried. M1 user-key edits read an
+explicit OpenSSH `.pub` file or validated public-key text; private key material is never accepted or printed.
+
+## Interactive SSH hand-off
+
+Run `tnt ssh [HOST]` to open an interactive shell on the selected host, or press `s` in the TUI (also available from
+the command palette). If no host is named, tnt uses `default_host` or selects the only configured host. This command
+uses host configuration only; it does not open a TrueNAS API session or load API credentials. See the
+[copyable SSH setup and commands](docs/CONSUMERS.md#interactive-ssh-hand-off) and the
+[security design](docs/DESIGN.md#82-interactive-ssh-hand-off).
+
+The hand-off requires an SSH user, at least one user-owned identity file with mode `0600` or stricter, and an existing
+user-owned known-hosts file that the current user can read but other users cannot modify. OpenSSH ignores user and
+system SSH config, clears its built-in identity defaults, uses only those identity files and that known-hosts file,
+disables agent and password authentication, and requires an already trusted host key. Populate `ssh_known_hosts` from
+an independently verified host key; tnt never runs `ssh-keyscan` or adds keys automatically. Only an interactive
+session is supported; tnt does not accept a remote command after the host name. The TUI restores its screen when SSH
+exits. The CLI returns the SSH process status. Session content is passed directly between OpenSSH and the terminal,
+not captured or logged by tnt.
 
 `tnt apikey list` masks TrueNAS key verifier fields. CLI `create` shows the raw value once in non-JSON terminal output;
 use `--write-key` to create a new mode-0600 file without overwriting an existing file. TUI `create` requires an output

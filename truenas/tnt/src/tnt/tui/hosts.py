@@ -139,7 +139,8 @@ class HostForm(ModalScreen[None]):
                 yield Input(value=current.description if current else "", placeholder="Description", id="host-description")
                 yield Input(value=", ".join(current.tags) if current else "", placeholder="Tags (comma separated)", id="host-tags")
             with Horizontal(classes="host-form-row"):
-                yield Input(value=current.ssh_user or "" if current else "", placeholder="SSH user (optional)", id="host-ssh-user")
+                yield Input(value=current.ssh_user or "" if current else "",
+                            placeholder="SSH user (optional; letters, numbers, . _ -)", id="host-ssh-user")
                 yield Input(value=current.ssh_known_hosts or "" if current else "", placeholder="SSH known-hosts file",
                             id="host-known-hosts", password=True)
             yield Input(placeholder="SSH key path(s), comma separated; hidden, blank keeps current", id="host-ssh-keys", password=True)

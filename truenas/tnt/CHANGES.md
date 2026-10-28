@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+- Completed It3 interactive SSH hand-off. Added `tnt ssh [HOST]` and TUI `s`/command-palette actions with direct argv
+  execution, no remote-command mode, no user/system SSH config, and a pinned known-hosts file with strict checking.
+  Identity paths are checked before use; only configured identities are offered, agent/password authentication is
+  disabled, and SSH session streams are not captured by tnt. TUI suspension restores the screen on exit and the CLI
+  preserves the child exit status. Added stub-executable tests for hostile arguments, refusal paths, and suspend/restore.
+  Reconciled It4 live-test guidance to cover interactive SSH only. See the
+  [SSH consumer examples](docs/CONSUMERS.md#interactive-ssh-hand-off) and
+  [SSH design](docs/DESIGN.md#82-interactive-ssh-hand-off).
 - Completed It2. Job calls now return generation-bound handles so TUI workers can wait outside the guarded RPC call lock;
   callbacks capture sanitized progress, logs and errors, applied call results include remote job IDs, and reconnect
   reconciliation leaves invisible outcomes UNKNOWN. Partial multi-call applies preserve completed results and per-call
@@ -77,7 +85,7 @@
 - Re-review hardening: lazy membership with real topologies (disk key, partuuid, nvme, nested/aux vdevs), thread/task-bound grant and call lock, kind tied to destructive methods, normalised paths and strict pool-id forms, default-deny boot family, single-use session-bound plans.
 - Guard review round 3: normalise boot-pool paths before prefix removal; refuse unmanifested writes and require destructive kind for additional data-changing methods; resolve boot-pool ids in nested references; block disk wipes when pool topology is unknown or disks report `exported_zpool`; union vdev references; register issued plan nonces against their fingerprints; document concurrent-read locking and the same-process trust boundary.
 - Enforced the v27 manifest as the exact read/write allow-list, check the live WebSocket method list on session open, reject unsupported pool method assumptions, and require a target probe for every MUTATE action. Plan execution now needs a one-use internal grant bound to the exact call list; the former public authorization path refuses.
-- Recorded v27 method/result/role evidence for the It2 overview views and updated the capability-check guidance. The roadmap is M1, M2, It1, and It2 implemented, followed by It3 hardened SSH and It4 acceptance.
+- Recorded v27 method/result/role evidence for the It2 overview views and updated the capability-check guidance. The roadmap is M1, M2, It1, It2, and It3 implemented, followed by It4 acceptance.
 - Free space is an upper bound (`free_upper_bound_bytes`, `<= x` in the CLI/TUI) and unknown whenever a size or the partition data is missing.
 - Plan/apply action model with confirm gates and a refusal list.
 - Fake JSON-RPC websocket server (`tnt.testing`) used by the tests.

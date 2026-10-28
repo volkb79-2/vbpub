@@ -82,8 +82,51 @@ tnt hosts remove staging --confirm staging
 
 The TUI picker shows host name, URL, description, and last status. Press `h` or use the command palette to switch
 hosts; `w` reopens the selected host in the other write mode. A switch invalidates its plans, cancels and drains host
-work, closes the old session, then connects the new one. SSH user, key-file, and known-host settings may be stored now
-for the It3 hand-off; those paths are not shown.
+work, closes the old session, then connects the new one. SSH user, key-file, and known-host settings are private local
+paths and are not shown.
+
+## Interactive SSH hand-off
+
+Configure an SSH user, one or more private identity files, and a known-hosts file in the selected `[hosts.NAME]` table.
+Use absolute local paths. Identity files must be regular files owned by your user with no group/other permissions
+(normally mode `0600`, or `0400`). The known-hosts file must be non-empty, regular, owned by your user, readable by you,
+and not writable by group or others. Its path must use ordinary absolute path characters without spaces or SSH option
+syntax characters.
+
+Add the target's host key to that file from an independently trusted source before connecting. Do not use an
+unverified key or rely on automatic key discovery. tnt never runs `ssh-keyscan` and never disables host-key checking.
+For example, after verifying the fingerprint through your approved channel, configure:
+
+```toml
+schema_version = 1
+default_host = "lab"
+
+[hosts.lab]
+url = "wss://nas.example.invalid/api/current"
+username = "admin"
+auth = "api_key"
+tls = "verify"
+ssh_user = "admin"
+ssh_key_files = ["/home/me/.ssh/id_ed25519"]
+ssh_known_hosts = "/home/me/.ssh/known_hosts"
+```
+
+Then start an interactive session from the CLI or TUI:
+
+```sh
+tnt ssh lab
+tnt ssh --host lab
+tnt tui --host lab  # press s, or choose “Open interactive SSH session” in the command palette
+```
+
+The CLI reads only `tnt.toml`; it does not need the paired API credential file. OpenSSH runs with `/dev/null` as its
+configuration file, clears the built-in identity defaults, uses only the configured identity files and known-hosts
+file, and disables global known-hosts, DNS host-key checks, agent use, and password authentication. The target hostname
+comes from the host URL. The TUI is suspended around SSH and returns to its previous screen when the child process
+exits; CLI exit status follows the SSH process. Only an interactive session is supported: `tnt ssh lab -- whoami` is
+rejected and no remote-command mode is available. Paths are passed as argv values and are never displayed by tnt.
+
+See the [SSH hand-off design](DESIGN.md#82-interactive-ssh-hand-off) for the pinned OpenSSH options and refusal rules.
 
 ## Check a host's v27 methods
 

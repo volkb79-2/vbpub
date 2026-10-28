@@ -1,6 +1,6 @@
 # tnt design
 
-Status: M1, M2, It1, and It2 are implemented, 2026-10-28. It3–It4 are planned in section 10.
+Status: M1, M2, It1, It2, and It3 are implemented, 2026-10-28. It4 remains planned in section 10.
 Container image identity, configured CPU count and memory limits
 are unavailable in the verified v27 container record; VM creation uses separately reviewed device plans because v27
 does not accept devices in `vm.create`. Inputs: the prior-art research (`truenas-tui-research.md`, release-program brief),
@@ -27,6 +27,7 @@ One-way layers; each only imports the ones above it in this list.
 ```
 profile.py   Profile, Secret, paired versioned host/secrets files and descriptor checks
 host_store.py serialized paired-file edits, rename, defaults, and atomic replacement
+ssh.py       interactive-only OpenSSH argv construction and pinned local file checks
 transport.py RpcClient protocol, connect(), GuardedRpc   (the only module that touches truenas_api_client)
 adapters/    Backend per API generation + method manifest
 domain.py    Plain domain records and formatting
@@ -481,6 +482,34 @@ forwarding); the target disk must pass the same `compute_state` checks as `disk.
 disk) and the plan is DESTRUCTIVE (typed disk name, probe = the partition table read just before). Until implemented,
 B-01 is a backlog item (TNT-03); no storage SSH fallback exists in the current product.
 
+### 8.2 Interactive SSH hand-off
+
+`tnt ssh [HOST]` and the TUI's `s` action hand the terminal to OpenSSH for an interactive session on the configured
+host. The host is derived from the `wss://` URL, the login must be explicitly configured, and at least one identity
+file plus one known-hosts file are required. The CLI reads only the non-secret host file and does not open an API
+session. The TUI wraps the child process in Textual's `App.suspend()` context so the terminal is restored when the
+process returns, including non-zero exits.
+
+The subprocess receives a list of arguments with `shell=False` and no remote command. `-F /dev/null` excludes both
+user and system SSH configuration. `UserKnownHostsFile` names only the configured file; `GlobalKnownHostsFile` is
+`/dev/null`, `StrictHostKeyChecking=yes`, `VerifyHostKeyDNS=no`, and `UpdateHostKeys=no`. `IdentityFile=none` clears
+OpenSSH's built-in identity filenames, while `IdentitiesOnly=yes`, `IdentityAgent=none`, and explicit `-i` values limit
+authentication to the configured identities. This follows the documented `IdentityFile none` behavior in the
+[OpenSSH client configuration reference](https://man.openbsd.org/ssh_config#IdentityFile). Password,
+keyboard-interactive, and host-based authentication are disabled. `-tt` requests a terminal. No `ssh-keyscan` runs and
+the application never rewrites the host-key file.
+
+Before launch, the identity files are opened with no-follow semantics and checked as regular, current-user-owned
+files with owner-only read permissions (mode `0600` or stricter). The configured known-hosts file must be a non-empty
+regular file owned by the current user, owner-readable, and not writable by group or others. Its absolute path is
+limited to unambiguous path characters because OpenSSH parses `-o` values as configuration syntax. Failure messages
+do not include local key paths. OpenSSH owns the terminal streams directly; tnt does not capture or log the session.
+The CLI preserves the child status, and the TUI reports a non-zero status after restoring its screen.
+
+Arbitrary remote commands are deferred. OpenSSH sends command strings through the remote user's shell; a future
+command mode needs a separately reviewed remote quoting contract and hostile-argument acceptance tests. Passing
+additional arguments after `HOST` is not supported.
+
 ## 9. Test strategy
 
 - Unit: pure modules (profile, domain, actions, matrix, menu) with direct tests; the refusal list, gate order and
@@ -490,8 +519,9 @@ B-01 is a backlog item (TNT-03); no storage SSH fallback exists in the current p
   `core.get_methods`, and the workflow methods. It records requests and has error injection (`fail=`). Tests drive the
   pinned `truenas_api_client` over a real socket; job-returning methods use realistic job replies.
 - TUI: Textual `Pilot` (`run_test`) against a session on the fake: navigation, palette entries, load, failure, refresh,
-  insecure banner.
+  insecure banner, and an SSH hand-off whose stub executable proves suspend/restore and process-status handling.
 - CLI: cli-extended `build_cli(opener=...)`, assertions on `--json` output and exit codes; `doctor` checks both ways.
+  SSH tests use a stub executable and assert exact argv, no shell, refusal paths, and no accepted remote command.
 - Live lane (TNT-20, It4 acceptance, not in the gate): explicit `TNT_LIVE=1` and `TNT_LIVE_PROFILE` select a protected profile;
   operator-supplied pool, group, image and VM sizing prerequisites are mandatory. The written acceptance test creates
   only `tnt-live-`-prefixed test resources and cleans each up through plans. It is reserved for It4 acceptance.
@@ -509,7 +539,7 @@ B-01 is a backlog item (TNT-03); no storage SSH fallback exists in the current p
 | M2 | Management workflows: SMB/NFS shares, data protection tasks, Network, Apps, Audit, API Keys, and guarded System actions | implemented; generic middleware/syslog tail and scrub/SMART task management are absent from v27 or deferred |
 | It1 | Paired multi-host configuration/secrets and the session controller: host generation, plan invalidation, worker draining, stale-callback rejection, connection testing, and per-host write mode | implemented |
 | It2 | Non-blocking job engine and read-only core views: Dashboard, Alerts, Jobs, Services, Storage health, and global view UX | implemented |
-| It3 | Hardened interactive SSH hand-off with pinned host-key sources and no arbitrary remote command mode | planned |
+| It3 | Hardened interactive SSH hand-off with pinned host-key sources and no arbitrary remote command mode | implemented |
 | It4 | Vanilla-v27 live acceptance, remaining hardening and consistency review, estate registration, and release readiness | planned; live run is controller-operated |
 | Later | Storage partitioning, pool creation, boot-pool management, and other TrueNAS screens not assigned above | deferred |
 

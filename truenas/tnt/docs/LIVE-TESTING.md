@@ -66,8 +66,10 @@ created for that check.
   display directly into an approved private file (never a shell argument or transcript), rename it, then revoke it
   using its current name. Confirm the optional file has mode `0600` and the config is not changed automatically.
   This check is authored only and has not been run.
-- SSH hand-off: use a host profile with a configured known_hosts file and verify both interactive and one-command
-  sessions return to the TUI/CLI. Never bypass host-key verification.
+- SSH hand-off (It4 controller acceptance): use a host profile with a configured identity file and pinned known_hosts
+  entry; verify `tnt ssh HOST` and the TUI `s` action open an interactive session, preserve the SSH exit status, and
+  return to the CLI/TUI afterward. Do not append a remote command; arbitrary remote-command mode is deferred. Never
+  bypass host-key verification or add host keys automatically.
 - System actions have a separate manual acceptance gate. Before any live reboot, shutdown, or update apply command,
   require the operator to set `TNT_LIVE_ALLOW_SYSTEM=1` in that shell and make sure a maintenance window is approved;
   a suggested guard is `test "${TNT_LIVE_ALLOW_SYSTEM:-}" = 1 || exit 1`. Then inspect the running-job, VM, container,

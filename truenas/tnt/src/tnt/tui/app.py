@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Iterable
 
 from textual import work
-from textual.app import App, ComposeResult, SystemCommand
+from textual.app import App, ComposeResult, SuspendNotSupported, SystemCommand
 from textual.containers import Horizontal
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Footer, Header, Select, Static, Tree
@@ -63,7 +63,8 @@ class TntApp(App):
     """
     BINDINGS = [
         ("q", "quit", "Quit"), ("ctrl+n", "focus_nav", "Menu"), ("r", "refresh", "Refresh"),
-        ("h", "select_host", "Host"), ("w", "toggle_write_mode", "Write mode"), ("question_mark", "help", "Help"),
+        ("h", "select_host", "Host"), ("w", "toggle_write_mode", "Write mode"), ("s", "ssh", "SSH"),
+        ("question_mark", "help", "Help"),
     ]
 
     def __init__(self, session: Session | None = None, *, session_controller: SessionController | None = None,
@@ -221,7 +222,27 @@ class TntApp(App):
 
     def action_help(self) -> None:
         self.notify("arrows/enter: navigate, ctrl+p: command palette, h: switch host, w: toggle write mode, "
-                    "r: refresh, q: quit", title="Keys")
+                    "s: interactive SSH, r: refresh, q: quit", title="Keys")
+
+    def action_ssh(self) -> None:
+        """Temporarily return the terminal to OpenSSH for the selected host."""
+        session = self.session
+        if session is None:
+            self.notify("Choose a host before opening SSH.", title="No host selected")
+            return
+        from ..ssh import SshHandoffError, run_interactive_ssh
+
+        try:
+            with self.suspend():
+                status = run_interactive_ssh(session.profile)
+        except SuspendNotSupported:
+            self.notify("This terminal cannot suspend safely for an SSH session.", title="SSH hand-off unavailable")
+            return
+        except SshHandoffError as exc:
+            self.notify(str(exc), title="SSH hand-off refused")
+            return
+        if status:
+            self.notify(f"SSH exited with status {status}.", title="SSH session ended")
 
     def _dismiss_top_modal(self) -> None:
         screen = self.screen
@@ -339,6 +360,8 @@ class TntApp(App):
         yield from super().get_system_commands(screen)
         yield SystemCommand("Select or switch TrueNAS host", "Show configured hosts and connection status", self.action_select_host)
         if self.session is not None:
+            yield SystemCommand("Open interactive SSH session", "Use this host's configured SSH user and pinned keys",
+                                self.action_ssh)
             mode = "read-only" if self.session.rpc.read_only else "write enabled"
             yield SystemCommand(f"Toggle host write mode (currently {mode})", "Reconnect this host with the other mode",
                                 self.action_toggle_write_mode)

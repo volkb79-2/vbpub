@@ -2,7 +2,7 @@
 
 Seeded 2026-10-28 from `docs/ACTION-MATRIX.snapshot.md` (rows whose verdict is `API-TUI` or `pending decision`; a
 test keeps every such row id mentioned here) and from the M0 scaffold's known gaps. Milestones are defined in
-`docs/DESIGN.md` section 10. M1, M2, It1, and It2 are complete; It3–It4 are the active forward sequence. `Later` means no
+`docs/DESIGN.md` section 10. M1, M2, It1, It2, and It3 are complete; It4 is the active forward sequence. `Later` means no
 iteration is assigned. Sizes: S < 1 day, M 1-3 days, L > 3 days of focused work. `[DONE M1]` and `[DONE M2]` mark
 implemented work. `[AUTHORED, NOT RUN]` is intentional for the live lane per its non-execution requirement.
 
@@ -65,5 +65,5 @@ implemented work. `[AUTHORED, NOT RUN]` is intentional for the live lane per its
 | TNT-36 | Revisit container memory controls if a future v27 schema exposes a supported memory resource field; current `ContainerCreate`/`ContainerUpdate` schema exposes `cpuset` but no memory limit (deferred by verified v27 schema) | S | Later |
 | TNT-37 | Expose a current container image identity if a future v27 API supplies it; `ContainerEntry` has no image field and create consumes image metadata without retaining it in the returned record (deferred by the verified schema; see `docs/API-METHODS-V27.md`) | S | Later |
 | TNT-49 | [DONE It2] Read-only core views: Dashboard, Alerts, Jobs, Services, Storage health, exact v27 contracts, and unavailable-state behavior | L | It2 |
-| TNT-50 | Hardened interactive SSH hand-off with pinned host-key sources, suspend/restore, and no arbitrary remote command mode | M | It3 |
+| TNT-50 | [DONE It3] Hardened interactive SSH hand-off with pinned host-key sources, suspend/restore, and no arbitrary remote command mode | M | It3 |
 | TNT-51 | Vanilla-v27 acceptance, review hardening, project docs/CLI consistency, estate registration, and release readiness | L | It4 |

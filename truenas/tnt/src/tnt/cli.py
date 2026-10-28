@@ -280,6 +280,20 @@ def _disks(args: Any, runtime: CliRuntime, opener: SessionOpener) -> int:
     return 0
 
 
+def _ssh(args: Any, runtime: CliRuntime) -> int:
+    """Hand off directly to OpenSSH without opening an API session or loading secrets."""
+    paths = prof.resolve_paths(getattr(args, "config", None), None)
+    hosts, default = prof.load_profiles(paths.config)
+    positional = getattr(args, "name", None)
+    option_host = getattr(args, "host", None)
+    if positional and option_host and positional != option_host:
+        raise CliFailure("the positional host and --host must name the same configured host")
+    host = prof.pick(hosts, default, positional or option_host)
+    from .ssh import run_interactive_ssh
+
+    return run_interactive_ssh(host)
+
+
 def _tui(args: Any, runtime: CliRuntime, opener: SessionOpener) -> int:
     try:
         from .tui.app import TntApp
@@ -1251,7 +1265,8 @@ def build_cli(cli_identity: CliIdentity | None = None, opener: SessionOpener = o
     ident = cli_identity or identity()
     expected = (TntError,)
     registry = CliRegistry(ident, prog="tnt", description="TrueNAS terminal UI and CLI over the JSON-RPC API; the CLI mirrors the TUI.",
-                           getting_started=("tnt hosts list", "tnt doctor --online --host NAME", "tnt disks --host NAME --json", "tnt tui --host NAME"),
+                           getting_started=("tnt hosts list", "tnt doctor --online --host NAME", "tnt disks --host NAME --json",
+                                            "tnt ssh HOST", "tnt tui --host NAME"),
                            logging_logger="tnt", unexpected_exceptions="report", expected_exceptions=expected)
 
     register_doctor(registry, [
@@ -1284,10 +1299,12 @@ def build_cli(cli_identity: CliIdentity | None = None, opener: SessionOpener = o
                        choices=prof.AUTH_MODES)
     host_tls = _value(("--tls",), "TLS mode; insecure requires typed warning acknowledgement and --insecure per connection.",
                       "MODE", "HOST", choices=prof.TLS_MODES)
-    host_ssh_user = _value(("--ssh-user",), "SSH account recorded for the later It3 hand-off.", "USER", "HOST")
-    host_ssh_key = _value(("--ssh-key-file",), "SSH private-key path; repeat to record more than one key (paths are never shown).",
+    host_ssh_user = _value(("--ssh-user",), "SSH login for interactive hand-off; use letters, numbers, underscore, dot, or hyphen.",
+                           "USER", "HOST")
+    host_ssh_key = _value(("--ssh-key-file",), "SSH private identity path; repeat to configure more than one (paths are never shown).",
                           "FILE", "HOST", action="append", default=None)
-    host_ssh_known = _value(("--ssh-known-hosts",), "SSH known-hosts path for the later It3 hand-off.", "FILE", "HOST")
+    host_ssh_known = _value(("--ssh-known-hosts",), "Pinned SSH known-hosts file for interactive hand-off (path is never shown).",
+                            "FILE", "HOST")
     host_description = _value(("--description",), "Optional picker description.", "TEXT", "HOST")
     host_tag = _value(("--tag",), "Optional host tag; repeat for multiple tags.", "TAG", "HOST", action="append", default=None)
     host_api_key_file = _value(("--api-key-file",), "Existing absolute mode-0600 API-key file; its path is stored privately.",
@@ -1359,6 +1376,11 @@ def build_cli(cli_identity: CliIdentity | None = None, opener: SessionOpener = o
                  options=HOST_OPTIONS,
                  handler=lambda args, runtime: _core_view_read(args, runtime, opener, "storage_health")),
     ])
+    registry.register(VerbSpec("ssh", None, "Open an interactive SSH session using only the host's pinned SSH settings.",
+                               group=VerbGroup.EXPLORATION.value,
+                               arguments=(ArgumentSpec("name", "Configured host name (defaults to default_host or the only host).",
+                                                       metavar="HOST", parser_kwargs={"nargs": "?"}),),
+                               options=(HOST, CONFIG), examples=("tnt ssh lab",), handler=_ssh))
     registry.register(VerbSpec("tui", None, "Open the interactive terminal UI (needs the tui extra).", group=VerbGroup.EXPLORATION.value,
                                examples=("tnt tui --profile lab",),
                                options=HOST_OPTIONS + (_flag(("--allow-write",), "Open a write-capable session; every change is still planned and confirmed.", "SAFETY"),),

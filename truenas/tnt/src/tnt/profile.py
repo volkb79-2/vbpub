@@ -22,6 +22,7 @@ from urllib.parse import quote, urlsplit
 from .errors import ProfileError
 
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+SSH_USER_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$")
 TLS_MODES = ("verify", "insecure")
 AUTH_MODES = ("api_key", "password")
 CONFIG_SCHEMA_VERSION = 1
@@ -258,13 +259,16 @@ def _validate_host(name: str, raw: Mapping[str, object]) -> Profile:
     if not isinstance(auth, str) or auth not in AUTH_MODES:
         raise ProfileError(f"host {name}: auth must be one of {AUTH_MODES}")
     ssh_user = raw.get("ssh_user")
-    if ssh_user is not None and (not isinstance(ssh_user, str) or not ssh_user):
-        raise ProfileError(f"host {name}: ssh_user must be a non-empty string")
+    if ssh_user is not None and (not isinstance(ssh_user, str) or not SSH_USER_RE.fullmatch(ssh_user)):
+        raise ProfileError(f"host {name}: ssh_user must contain only letters, numbers, underscore, dot, or hyphen")
     ssh_keys = raw.get("ssh_key_files", [])
-    if not isinstance(ssh_keys, list) or any(not isinstance(value, str) or not value for value in ssh_keys):
+    if not isinstance(ssh_keys, list) or any(not isinstance(value, str) or not value or
+                                              any(ord(char) < 32 or ord(char) == 127 for char in value)
+                                              for value in ssh_keys):
         raise ProfileError(f"host {name}: ssh_key_files must be an array of paths")
     known_hosts = raw.get("ssh_known_hosts")
-    if known_hosts is not None and (not isinstance(known_hosts, str) or not known_hosts):
+    if known_hosts is not None and (not isinstance(known_hosts, str) or not known_hosts or
+                                    any(ord(char) < 32 or ord(char) == 127 for char in known_hosts)):
         raise ProfileError(f"host {name}: ssh_known_hosts must be a non-empty path")
     description = raw.get("description", "")
     if not isinstance(description, str):
