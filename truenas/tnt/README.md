@@ -92,6 +92,7 @@ tnt app list --profile lab --json
 tnt app restart demo --profile lab --allow-write
 tnt app uninstall demo --profile lab --allow-write --confirm demo
 tnt network show --profile lab --json
+tnt audit --profile lab --user admin --event USER_LOGIN --limit 100 --json
 tnt tui --profile lab
 tnt tui --profile lab --allow-write
 ```
@@ -122,6 +123,10 @@ the [v27 read signatures](docs/API-METHODS-V27.md#network-status).
 in sequence; uninstall requires typing the app ID and preserves TrueNAS-managed data volumes unless
 `--delete-data-volumes` is explicitly supplied. See the [Apps guide](docs/CONSUMERS.md#apps) and
 [v27 method evidence](docs/API-METHODS-V27.md#apps).
+
+`tnt audit` reads filtered, paginated audit entries and scrubs known secret fields and inline secret patterns before
+display. The v27 API does not expose a general middleware/syslog tail method. See the
+[Audit guide](docs/CONSUMERS.md#audit) and [v27 audit signature](docs/API-METHODS-V27.md#audit).
 
 v27 has no container restart RPC, so `container restart` plans a stop followed by a start and requires the container
 name as destructive confirmation.

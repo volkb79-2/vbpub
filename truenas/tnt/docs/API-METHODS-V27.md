@@ -72,6 +72,19 @@ There is no `app.restart` RPC in the v27 method index. tnt's restart workflow us
 `app.start(app_name)` jobs. It does not use `app.redeploy(app_name)`, which the v27 schema describes as stopping the
 app, pulling latest images, and restarting it.
 
+## Audit
+
+| Workflow | Method and verified signature | Classification | Evidence |
+|---|---|---|---|
+| Audit | `audit.query(data: AuditQuery) -> list[AuditQueryResultItem]`; `data.services` is one service per request; `data.query-filters` are standard filters; `data.query-options.limit` is bounded to 1–10000 for tnt's paginated reads | read | [v27 reference](https://api.truenas.com/v27.0/api_methods_audit.query.html), [v27 models](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/api/v27_0_0/audit.py), [query service](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/plugins/audit/audit.py), [filter validation](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/plugins/audit/utils.py) |
+
+Filters use `message_timestamp` for Unix-second time bounds, `username` for the actor, and `event` for the event name.
+`audit.query` requires a nonzero `limit`, `count`, or `get`; tnt always sends a limit and offset. Middleware source
+allows top-level audit filters only on the documented SQL-safe fields (including `message_timestamp`, `username`, and
+`event`) plus supported nested JSON paths. The v27 [API method index](https://api.truenas.com/v27.0/api_methods.html)
+contains no general middleware/syslog tail method; `core.job_download_logs` is job-specific and is not a system log
+viewer. tnt therefore exposes only audit entries.
+
 `vm.get_console(id)` returns a non-empty console connection string or command (the VM ID/name form in middleware),
 not a host/port object. VNC/SPICE endpoints come from `vm.get_display_devices(id)`: display attributes include
 `bind`, `port` (VNC/SPICE, `null` for auto-assignment), and `web_port` (`null` for auto-assignment). The result also

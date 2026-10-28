@@ -86,6 +86,15 @@ class FakeServer:
                             "notes": None, "action_required": False, "portals": {}}
         }
         self.app_delete_options: dict[str, Any] | None = None
+        self.audit_entries: list[dict[str, Any]] = [
+            {"audit_id": "audit-1", "message_timestamp": 1793181600, "timestamp": "2026-10-28T10:00:00Z",
+             "address": "192.0.2.44", "username": "operator", "session": None, "service": "MIDDLEWARE",
+             "service_data": {"note": "password=synthetic-audit-secret"}, "event": "USER_LOGIN",
+             "event_data": {"access_token": "synthetic-audit-token", "status": "ok"}, "success": True},
+            {"audit_id": "audit-2", "message_timestamp": 1793178000, "timestamp": "2026-10-28T09:00:00Z",
+             "address": "192.0.2.44", "username": "operator", "session": None, "service": "MIDDLEWARE",
+             "service_data": {}, "event": "USER_LOGOUT", "event_data": {"status": "ok"}, "success": True},
+        ]
         self.containers: dict[int, dict[str, Any]] = {}
         self.vms: dict[int, dict[str, Any]] = {}
         self.vm_devices: dict[int, dict[str, Any]] = {}
@@ -295,6 +304,7 @@ class FakeServer:
             "app.start": lambda p: self._app_state(p, "RUNNING"),
             "app.stop": lambda p: self._app_state(p, "STOPPED"),
             "app.delete": self._app_delete,
+            "audit.query": self._audit_query,
             "core.subscribe": lambda p: self._subscribe(p),
             "core.unsubscribe": lambda p: True,
             "auth.me": lambda p: {"pw_name": self.username, "pw_uid": 1000, "pw_gid": 1},
@@ -441,6 +451,31 @@ class FakeServer:
         self.app_delete_options = dict(params[1]) if len(params) > 1 else {}
         del self.apps[row["id"]]
         return True
+
+    def _audit_query(self, params: list[Any]) -> list[dict[str, Any]]:
+        data = params[0] if params and isinstance(params[0], dict) else {}
+        services = data.get("services", ["MIDDLEWARE"])
+        filters = data.get("query-filters", [])
+        options = data.get("query-options", {})
+        rows = [dict(row) for row in self.audit_entries if row.get("service") in services]
+        for filter_ in filters:
+            if not isinstance(filter_, (list, tuple)) or len(filter_) != 3:
+                continue
+            key, operator, expected = filter_
+            if operator == "=":
+                rows = [row for row in rows if row.get(key) == expected]
+            elif operator == ">=":
+                rows = [row for row in rows if row.get(key) is not None and row[key] >= expected]
+            elif operator == "<":
+                rows = [row for row in rows if row.get(key) is not None and row[key] < expected]
+        order_by = options.get("order_by", [])
+        if order_by:
+            field = order_by[0]
+            reverse = isinstance(field, str) and field.startswith("-")
+            key = field.lstrip("-") if isinstance(field, str) else "message_timestamp"
+            rows.sort(key=lambda row: row.get(key), reverse=reverse)
+        offset, limit = options.get("offset", 0), options.get("limit", 100)
+        return rows[offset:offset + limit]
 
     def _filesystem_stat(self, params: list[Any]) -> dict[str, Any]:
         path = params[0] if params else ""

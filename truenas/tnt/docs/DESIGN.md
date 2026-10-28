@@ -188,6 +188,15 @@ method; tnt implements restart as those two ordered jobs. It does not use `app.r
 pulls images. Uninstall is `app.delete`, requires the typed app ID, keeps images and TrueNAS-managed data volumes by
 default, and exposes an explicit opt-in for `remove_ix_volumes`. See [API method evidence](API-METHODS-V27.md#apps).
 
+### Audit
+
+The Audit screen and `tnt audit` send one service per v27 `audit.query` call, always set a bounded limit, and sort by
+descending `message_timestamp`. The filters cover an ISO-8601 time range (converted to Unix seconds), username, and
+event. Event data is treated as untrusted: secret-named keys, inline credential assignments, bearer values, API-key
+shapes, and PEM private-key blocks are scrubbed before CLI/TUI display. The v27 method index has no general middleware
+or syslog tail API, so tnt does not read logs through shell commands or filesystem paths. See
+[API method evidence](API-METHODS-V27.md#audit).
+
 ## 5. UX
 
 - Left navigation is a Textual `Tree` (arrows, enter, expand/collapse), content pane on the right, a banner line with

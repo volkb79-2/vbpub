@@ -58,8 +58,10 @@ created for that check.
   Dry-run uninstall and verify `remove_ix_volumes=false`; uninstall only an app with disposable data, keeping the
   delete-data-volumes choice at NO unless data deletion is explicitly intended. This check is authored only and has
   not been run.
-- Audit and API Keys: page through audit results with time/user/event filters; create a temporary API key, copy it from
-  the one-time display, then revoke it after the acceptance check.
+- Audit and API Keys: run `tnt audit --service MIDDLEWARE --limit 100 --offset 0 --json`, page through results, and
+  compare time/user/event filters with the v27 UI; verify synthetic credential-like event values are scrubbed. No
+  general middleware/syslog tail RPC exists in v27. Create a temporary API key, copy it from the one-time display,
+  then revoke it after the acceptance check. This check is authored only and has not been run.
 - SSH hand-off: use a host profile with a configured known_hosts file and verify both interactive and one-command
   sessions return to the TUI/CLI. Never bypass host-key verification.
 - System actions require the additional explicit gate `TNT_LIVE_ALLOW_SYSTEM=1`. Only on a maintenance host with an

@@ -916,6 +916,23 @@ def build_cli(cli_identity: CliIdentity | None = None, opener: SessionOpener = o
                  handler=lambda args, runtime: _workflow_read(args, runtime, opener,
                                                               lambda session: session.workflows.network_show())),
     ])
+    audit_filters = (
+        _value(("--service",), "Audit database: MIDDLEWARE, S3, SMB, SUDO, or SYSTEM.", "SERVICE", "FILTER",
+               choices=("MIDDLEWARE", "S3", "SMB", "SUDO", "SYSTEM"), default="MIDDLEWARE"),
+        _value(("--since",), "Inclusive ISO-8601 lower time bound with UTC offset.", "TIMESTAMP", "FILTER"),
+        _value(("--until",), "Exclusive ISO-8601 upper time bound with UTC offset.", "TIMESTAMP", "FILTER"),
+        _value(("--user",), "Filter by audit username.", "USER", "FILTER"),
+        _value(("--event",), "Filter by event name.", "EVENT", "FILTER"),
+        _value(("--limit",), "Page size (1–10000).", "COUNT", "FILTER", type=int, default=100),
+        _value(("--offset",), "Zero-based result offset.", "COUNT", "FILTER", type=int, default=0),
+    )
+    registry.register(VerbSpec("audit", None, "Query scrubbed, paginated audit entries (no general syslog-tail API exists in v27).",
+                               group=VerbGroup.EXPLORATION.value, options=HOST_OPTIONS + audit_filters,
+                               handler=lambda args, runtime: _workflow_read(
+                                   args, runtime, opener,
+                                   lambda session: session.workflows.audit_entries(
+                                       service=args.service, since=args.since, until=args.until, user=args.user,
+                                       event=args.event, limit=args.limit, offset=args.offset))))
     return registry.build()
 
 

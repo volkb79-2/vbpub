@@ -179,6 +179,22 @@ Restart is an ordered `app.stop` then `app.start` pair. Uninstall is destructive
 it preserves data volumes by default. The final example explicitly opts into deleting TrueNAS-managed app volumes.
 See the [Apps design decisions](DESIGN.md#apps) and [v27 app schemas](API-METHODS-V27.md#apps).
 
+### Audit
+
+Audit results are read-only and paginated. `--since` is inclusive, `--until` is exclusive, and both accept
+ISO-8601 timestamps with an explicit UTC offset. Use `--offset` to request the next page:
+
+```sh
+tnt audit --profile lab --service MIDDLEWARE --since 2026-10-27T00:00:00Z \
+  --until 2026-10-29T00:00:00Z --user admin --event USER_LOGIN --limit 100 --offset 0 --json
+tnt audit --profile lab --service MIDDLEWARE --limit 100 --offset 100 --json
+tnt tui --profile lab  # choose System > Audit, set filters, then Refresh/Older/Newer
+```
+
+`--service` is one of `MIDDLEWARE`, `S3`, `SMB`, `SUDO`, or `SYSTEM`; one service is queried per request. The viewer
+scrubs known secret keys and inline secret patterns from event data before output. v27 does not expose a generic
+middleware or syslog tail method. See the [Audit design](DESIGN.md#audit) and [v27 audit schema](API-METHODS-V27.md#audit).
+
 Use `--file spec.json` for fields beyond a workflow's minimal create options. Passwords are entered through a no-echo
 prompt or `--password-file`, never a command-line argument. User SSH keys are loaded from a public-key file or
 validated public-key text; private keys are not accepted or printed.

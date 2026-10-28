@@ -58,7 +58,8 @@ MENU: tuple[MenuItem, ...] = (
     _p("system", "System", "M1", children=(
         _p("update", "Update"), _p("general", "General Settings"), _p("advanced", "Advanced Settings"),
         MenuItem("network", "Network", "implemented", "M2"),
-        _p("boot", "Boot", "M1"), _p("services", "Services"), _p("alert-settings", "Alert Settings"), _p("audit", "Audit"),
+        _p("boot", "Boot", "M1"), _p("services", "Services"), _p("alert-settings", "Alert Settings"),
+        MenuItem("audit", "Audit", "implemented", "M2"),
         _p("viewenclosure", "Enclosure", conditional=True))),
 )
 

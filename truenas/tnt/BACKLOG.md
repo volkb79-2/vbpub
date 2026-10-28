@@ -39,6 +39,7 @@ non-execution requirement.
 | TNT-41 | [DONE M1] Local users: list/create/update/delete, SSH public-key management and password changes through CLI and TUI | M1 | L |
 | TNT-42 | VM create recovery: compensate or guide recovery when a separately reviewed `vm.device.create` plan fails after `vm.create` | M2 | M |
 | TNT-43 | [DONE M2] System > Network: read-only interface/address/route/DNS/default-gateway view through verified v27 methods | M2 | S |
+| TNT-45 | [DONE M2] Audit viewer: filtered, paginated v27 `audit.query` with secret scrubbing; general middleware/syslog tail deferred because v27 exposes no such method | M2 | M |
 
 ## Platform and quality
 

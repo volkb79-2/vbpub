@@ -10,6 +10,8 @@
   DNS nameservers, and default gateways, with explicit schema-shape refusal for incomplete summaries.
 - Added Apps list/show/start/stop/restart/uninstall workflows. Restart is an ordered stop/start job pair; uninstall is
   destructive, requires the typed app ID, and preserves TrueNAS-managed data volumes unless explicitly enabled.
+- Added filtered and paginated audit CLI/TUI queries with time, user, event, and service filters; audit fields and
+  known inline secret patterns are scrubbed before display. Generic middleware/syslog tailing is unavailable in v27.
 - Added schema-versioned `tnt.toml` profiles with explicit config search order, current-user ownership and exact mode-0600 checks,
   inline API-key or password credentials, optional API-key files, and masked profile inspection.
 - Added v27 password login through the pinned client's `PASSWORD_PLAIN` mechanism; API keys continue to use SCRAM.

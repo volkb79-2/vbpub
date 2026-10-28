@@ -96,6 +96,7 @@ class V27(Backend):
             "route.system_routes": MethodSpec("read"),
             "network.general.summary": MethodSpec("read"),
         },
+        "audit": {"audit.query": MethodSpec("read")},
         "system": {"system.info": MethodSpec("read"), "system.version": MethodSpec("read"),
                    "core.get_methods": MethodSpec("read")},
         # These names are known to be absent from the v27 method index. They remain classified so an accidental

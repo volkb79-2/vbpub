@@ -6,6 +6,7 @@ import binascii
 import re
 import struct
 import threading
+from datetime import datetime
 from typing import Any, Mapping
 
 from .actions import Action, Kind, RpcCall
@@ -91,6 +92,49 @@ class Workflows:
                       f"Uninstall app {row['name']} ({app_id}); delete TrueNAS-managed data volumes: {choice}",
                       (RpcCall("app.delete", (app_id, options), job=True),),
                       (RpcCall("app.query", ([["id", "=", app_id]], {}),),), app_id)
+
+    # -- Audit ------------------------------------------------------------------------------------------
+    def audit_entries(self, *, service: str = "MIDDLEWARE", since: str | None = None, until: str | None = None,
+                      user: str | None = None, event: str | None = None, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+        services = {"MIDDLEWARE", "S3", "SMB", "SUDO", "SYSTEM"}
+        if service not in services:
+            raise Refused("audit-service", "service must be one of MIDDLEWARE, S3, SMB, SUDO, or SYSTEM")
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 10000:
+            raise Refused("audit-pagination", "limit must be an integer from 1 through 10000")
+        if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+            raise Refused("audit-pagination", "offset must be a non-negative integer")
+
+        def epoch(value: str | None, label: str) -> int | None:
+            if value is None:
+                return None
+            if not isinstance(value, str) or not value.strip():
+                raise Refused("audit-time", f"{label} must be an ISO-8601 timestamp with an explicit UTC offset")
+            try:
+                parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+            except ValueError:
+                raise Refused("audit-time", f"{label} must be an ISO-8601 timestamp with an explicit UTC offset") from None
+            if parsed.tzinfo is None or parsed.utcoffset() is None:
+                raise Refused("audit-time", f"{label} must include an explicit UTC offset, such as Z")
+            return int(parsed.timestamp())
+
+        start, end = epoch(since, "since"), epoch(until, "until")
+        if start is not None and end is not None and start >= end:
+            raise Refused("audit-time", "since must be earlier than until")
+        filters: list[list[Any]] = []
+        if start is not None:
+            filters.append(["message_timestamp", ">=", start])
+        if end is not None:
+            filters.append(["message_timestamp", "<", end])
+        for key, value in (("username", user), ("event", event)):
+            if value is not None:
+                if not isinstance(value, str) or not value.strip():
+                    raise Refused("audit-filter", f"{key} filter must be a non-empty string")
+                filters.append([key, "=", value.strip()])
+        data = {"services": [service], "query-filters": filters,
+                "query-options": {"limit": limit, "offset": offset, "order_by": ["-message_timestamp"]},
+                "remote_controller": False}
+        rows = _rows(self.rpc.call("audit.query", data), "audit.query")
+        return [_scrub_audit(row) for row in rows]
 
     def share_nfs(self, path: str) -> dict[str, Any]:
         if not isinstance(path, str) or not path.strip():
@@ -861,6 +905,31 @@ def validate_ssh_public_keys(text: str) -> list[str]:
     if not keys:
         raise Refused("ssh-key", "at least one SSH public key is required")
     return keys
+
+
+_AUDIT_PRIVATE_KEY = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----", re.DOTALL)
+_AUDIT_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)(\b(?:pass(?:word|wd)?|api[_-]?key|secret(?:[_-]?(?:access[_-]?key|key))?|"
+    r"access[_-]?(?:key|token)|client[_-]?secret|authorization)\b\s*[:=]\s*)"
+    r"(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
+)
+_AUDIT_BEARER = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
+_AUDIT_KEY_MATERIAL = re.compile(r"\b\d+-[A-Za-z0-9]{40,}\b")
+
+
+def _scrub_audit(value: Any) -> Any:
+    """Mask key-valued secrets and common inline secret formats in untrusted audit event data."""
+    safe = _safe_value(value)
+    if isinstance(safe, Mapping):
+        return {key: _scrub_audit(child) for key, child in safe.items()}
+    if isinstance(safe, list):
+        return [_scrub_audit(child) for child in safe]
+    if isinstance(safe, str):
+        text = _AUDIT_PRIVATE_KEY.sub("***", safe)
+        text = _AUDIT_SECRET_ASSIGNMENT.sub(lambda match: match.group(1) + "***", text)
+        text = _AUDIT_BEARER.sub("Bearer ***", text)
+        return _AUDIT_KEY_MATERIAL.sub("***", text)
+    return safe
 
 
 def _safe_value(value: Any, key: Any = None) -> Any:
