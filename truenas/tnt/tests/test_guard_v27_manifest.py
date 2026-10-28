@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 
 from tnt.actions import Action, Kind, RpcCall, validate_action
@@ -127,4 +129,37 @@ def test_unknown_write_stays_default_deny():
     with pytest.raises(Refused, match="not in a supported adapter manifest"):
         validate_action(Action("T-UNKNOWN", Kind.MUTATE, "unknown", (RpcCall("user.magic", ({},)),),
                                (RpcCall("user.query"),)))
+
+
+@pytest.mark.parametrize(("pool_ref", "message"), [
+    (1, "cannot be resolved to a name"),
+    ("tank", "cannot be resolved without live pool state"),
+    (True, "boolean and is ambiguous"),
+])
+def test_pool_mapping_references_fail_closed_without_live_state(pool_ref, message):
+    reason = refusal_for("vm.create", ({"pool": pool_ref},), None)
+    assert message in reason
+
+
+def test_core_download_allows_only_the_exact_private_config_archive_shape():
+    valid = ("config.save", [{"secretseed": True, "root_authorized_keys": False}], "config.tar", False)
+    assert refusal_for("core.download", valid) is None
+    assert "limited to an explicit" in refusal_for("core.download", ("config.export", valid[1], "config.tar", False))
+    assert "limited to an explicit" in refusal_for("core.download", ("config.save", valid[1], "../config.tar", False))
+
+
+def test_action_safety_metadata_rejects_malformed_self_confirmation_and_unpreflighted_force():
+    action = Action("T-METADATA", Kind.MUTATE, "update user", (RpcCall("user.update", (8, {"full_name": "Alice"})),),
+                    (RpcCall("user.query", ([], {})),))
+    with pytest.raises(Refused, match="safety metadata is malformed"):
+        validate_action(replace(action, confirm_self=1))
+    with pytest.raises(Refused, match="preflighted system action"):
+        validate_action(replace(action, force_with_jobs=True))
+
+
+def test_method_spec_rejects_unknown_classifications():
+    from tnt.adapters.base import MethodSpec
+
+    with pytest.raises(ValueError, match="invalid method classification"):
+        MethodSpec("unknown")
 

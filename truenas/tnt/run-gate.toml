@@ -1,4 +1,4 @@
-# tnt's executable gate matrix. M0 ships r0-r1 only (unit tests, no mutation lane yet: BACKLOG TNT-30).
+# tnt's executable gate matrix. M1/M2 and pre-It1 work use r0-r1 (unit tests; the mutation lane is It4: TNT-30).
 # No test touches a real host: the live lane is a separate, operator-run lane (docs/DESIGN.md section 9).
 schema_version = 1
 
@@ -7,7 +7,7 @@ kind = "command"
 environment = "tester-unified"
 argv = [
   "bash", "-c",
-  "cd {worktree}/truenas/tnt && PYTHONPATH=src:{worktree}/libraries/cli-extended/src PYTHONDONTWRITEBYTECODE=1 /opt/tester-venv/bin/python3 -m pytest tests -q --cov=tnt --cov-branch --cov-fail-under=97 --cov-report=term-missing --cov-report=json:coverage.json",
+  "cd {worktree}/truenas/tnt && /opt/tester-venv/bin/python3 -m pip install --no-deps setuptools==82.0.1 wheel==0.47.0 websocket-client==1.8.0 && /opt/tester-venv/bin/python3 -m pip install --no-deps --no-build-isolation 'truenas_api_client @ git+https://github.com/truenas/api_client.git@2a04491953d38c13f13f40729d2a4966a77c6297' && PYTHONPATH=src:{worktree}/libraries/cli-extended/src PYTHONDONTWRITEBYTECODE=1 nice /opt/tester-venv/bin/python3 -m pytest tests -q -p no:xdist --cov=tnt --cov-branch --cov-fail-under=97 --cov-report=term-missing --cov-report=json:coverage.json",
 ]
 clean_tree = false
 budget = "20m"
