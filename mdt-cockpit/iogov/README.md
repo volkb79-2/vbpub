@@ -133,7 +133,11 @@ without useradd/chown/systemctl/udevadm. The manual steps below remain the refer
 Two properties to know: `ID_PATH` is a bus-path identity, so a different disk placed in the same port inherits the read grant (re-check the rule
 after any hardware swap); and `--dry-run` still runs the real preflight, so it requires the preflight to pass before it prints the plan (use
 `--skip-preflight` only to see the plan on a host that is missing packages). All paths and values are validated (`--destdir`/`--lib-dir`
-absolute without `..`; `--disk-node` a whole disk, cross-checked against udev's `ID_PATH`).
+absolute without `..`; `--disk-node` a whole disk, cross-checked against udev's `ID_PATH`: a real install refuses unless `udevadm` reports an `ID_PATH` equal to `--id-path`; `--dry-run` refuses a
+mismatch and prints an UNVERIFIED warning when udev reports nothing; the check is not done with `--destdir`). Mapped/raid (`dm-*`, `md*`) and
+partition nodes are refused as "not a whole disk". The package is swapped in with two renames (old aside, new in), so a SIGKILL between them
+leaves `iogov.old.<pid>`; the next run restores it when `iogov` is missing and removes stale `iogov.old.*`/`iogov.new.*` otherwise.
+`IOGOV_SYSFS_ROOT` is a test hook for the partition check and is honoured only together with `--destdir`.
 
 Deployment as a host install versus a container: design note section 12.
 

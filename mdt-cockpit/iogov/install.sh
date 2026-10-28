@@ -12,6 +12,7 @@
 # setting, run docker or touch any container, overwrite an existing config, or use the `disk` group.
 # Exit: 0 installed, 1 error (nothing half-done that a rerun cannot finish), 3 installed up to the config: edit it, rerun.
 set -euo pipefail
+export LC_ALL=C   # ASCII-only regex classes below, whatever the caller's locale
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 SRC_PARENT=$(dirname "$HERE")
@@ -55,15 +56,18 @@ abs_dir() { # name value: absolute, no empty/. /.. components, a conservative ch
 }
 [[ -z $STAGE ]] || abs_dir --destdir "$STAGE"
 abs_dir --lib-dir "$LIB_DIR"; LIB_DIR=${LIB_DIR%/}
+[[ -n $LIB_DIR ]] || die "--lib-dir must not be / (it would replace the root directory's iogov package slot)"
 [[ $IO_WEIGHT =~ ^[0-9]{1,5}$ ]] || die "invalid --io-weight: $IO_WEIGHT"
 [[ $TICK_INTERVAL =~ ^[0-9]+[a-z]*$ ]] || die "invalid --tick-interval: $TICK_INTERVAL"
 [[ $USER_NAME =~ ^[a-z_][a-z0-9_-]*$ ]] || die "invalid user name: $USER_NAME"
 if ((!DRY)) && [[ -z $STAGE ]] && [[ $EUID -ne 0 ]]; then die "run as root (or use --dry-run, or --destdir for a staging tree)"; fi
 [[ -n $PYBIN ]] || PYBIN=$(readlink -f "$(command -v python3)") || die "python3 not found (apt-get install python3)"
 abs_dir --python "$PYBIN"
+[[ $DISK_NODE != *..* ]] || die "--disk-node must not contain '..': $DISK_NODE"
 [[ -z $DISK_NODE || $DISK_NODE =~ ^/dev/[A-Za-z0-9/:._-]+$ ]] || die "invalid --disk-node (want /dev/ plus [A-Za-z0-9/:._-]): $DISK_NODE"
 [[ -z $ID_PATH || $ID_PATH =~ ^[A-Za-z0-9:._-]+$ ]] || die "invalid --id-path (want [A-Za-z0-9:._-]): $ID_PATH"
-SYSFS=${IOGOV_SYSFS_ROOT:-/sys}   # test hook: where the partition check looks
+SYSFS=/sys
+[[ -z $STAGE ]] || SYSFS=${IOGOV_SYSFS_ROOT:-/sys}   # test hook, honoured ONLY with --destdir: a real install always reads /sys
 
 say() { printf '%s\n' "$*"; }
 run() { if ((DRY)); then say "WOULD: $*"; else say "DO:    $*"; "$@"; fi; }
@@ -113,6 +117,13 @@ mkdir -p "$TMP/pkg/iogov"
 cp "$HERE"/*.py "$HERE/iogov.toml.example" "$HERE/README.md" "$TMP/pkg/iogov/"
 chmod 644 "$TMP/pkg/iogov"/* ; chmod 755 "$TMP/pkg" "$TMP/pkg/iogov"
 DEST=$(t "$LIB_DIR")
+# recover from an interrupted earlier swap: a stale iogov.old.* is the previous package (restored if iogov is missing, else removed)
+shopt -s nullglob
+for stale in "$DEST"/iogov.new.*; do run rm -rf "$stale"; done
+for stale in "$DEST"/iogov.old.*; do
+  if [[ ! -e $DEST/iogov ]]; then run mv "$stale" "$DEST/iogov"; else run rm -rf "$stale"; fi
+done
+shopt -u nullglob
 if [[ -d $DEST/iogov ]] && diff -r -q "$TMP/pkg/iogov" "$DEST/iogov" >/dev/null 2>&1 && [[ $(stat -c %a "$DEST/iogov") == 755 ]]; then
   say "unchanged: $DEST/iogov"
 else
@@ -149,6 +160,7 @@ if [[ -z $DISK_NODE ]]; then
 fi
 [[ $DISK_NODE =~ ^/dev/[A-Za-z0-9/:._-]+$ ]] || die "disk node must be a /dev path of [A-Za-z0-9/:._-]: $DISK_NODE"
 KNAME_NODE=$(basename "$(readlink -f "$DISK_NODE")")
+[[ $KNAME_NODE != dm-* && $KNAME_NODE != md* ]] || die "disk node $DISK_NODE is a mapped/raid device ($KNAME_NODE), not a whole disk; pass the underlying physical disk"
 [[ ! -e $SYSFS/class/block/$KNAME_NODE/partition ]] || die "disk node $DISK_NODE is a partition ($KNAME_NODE); the ACL rule needs the WHOLE disk"
 UDEV_ID_PATH=""
 if [[ -z $STAGE ]]; then
@@ -159,6 +171,9 @@ if [[ -z $ID_PATH ]]; then
   [[ -n $ID_PATH ]] || die "no udev ID_PATH for $DISK_NODE (udevadm info -q property -n $DISK_NODE); pass --id-path"
 elif [[ -n $UDEV_ID_PATH && $UDEV_ID_PATH != "$ID_PATH" ]]; then
   die "--id-path $ID_PATH does not match udev's ID_PATH $UDEV_ID_PATH for $DISK_NODE"
+elif [[ -z $STAGE && -z $UDEV_ID_PATH ]]; then
+  if ((DRY)); then say "WARNING: --id-path $ID_PATH is UNVERIFIED: udev reported no ID_PATH for $DISK_NODE (a real install refuses this)"
+  else die "udev cannot confirm --id-path $ID_PATH for $DISK_NODE (udevadm missing or no ID_PATH property); refusing"; fi
 fi
 [[ $ID_PATH =~ ^[A-Za-z0-9:._-]+$ ]] || die "udev ID_PATH has characters outside [A-Za-z0-9:._-]: $ID_PATH"
 say "disk node $DISK_NODE   udev ID_PATH $ID_PATH   python $PYBIN"

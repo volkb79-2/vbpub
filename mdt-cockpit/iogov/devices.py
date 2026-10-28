@@ -105,13 +105,18 @@ def _covers(m: dict, real: str) -> bool:
 
 
 def _mount_for(mounts: list[dict], real: str, majmin: str | None = None) -> dict | None:
-    """The mount holding `real`. A mount whose major:minor equals the path's st_dev is preferred (the last such entry on a tie);
+    """The mount holding `real`. A mount whose major:minor equals the path's st_dev is preferred (the longest mount point among them, the last entry on a tie);
     otherwise the longest mount point that is a path prefix, the LAST entry winning a tie (a mount stacked on another)."""
 
     if majmin is not None:
-        same = [m for m in mounts if m["majmin"] == majmin and _covers(m, real)]
-        if same:
-            return same[-1]
+        best_same = None
+        for m in mounts:
+            if m["majmin"] == majmin and _covers(m, real):
+                mnt = m["mnt"].rstrip("/") or "/"
+                if best_same is None or len(mnt) >= len(best_same[0]):
+                    best_same = (mnt, m)
+        if best_same:
+            return best_same[1]
     best = None
     for m in mounts:
         mnt = m["mnt"].rstrip("/") or "/"
@@ -250,7 +255,11 @@ def detect(cfg) -> tuple[list[Disk], list[str]]:
         real = os.path.realpath(explicit)
         kname = os.path.basename(real)
         if _sys_has(cfg.sysfs_root, kname):
-            whole = whole_disks_of(cfg.sysfs_root, kname)
+            whole, unresolved = whole_disks_status(cfg.sysfs_root, kname)
+            if unresolved:
+                notes.append(f"device {explicit} ({kname}) is a stacked device that is not fully resolved (no underlying disk for "
+                             f"{sorted(unresolved)}; partial whole disks seen {sorted(whole)}); not guessed: name the underlying disk(s) in `devices`")
+                continue
             if whole != {kname}:
                 notes.append(f"device {explicit} is not a whole disk ({kname}); using its whole disk(s) {sorted(whole)}")
                 for w in sorted(whole):

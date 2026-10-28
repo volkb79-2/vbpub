@@ -240,6 +240,17 @@ def test_stacked_device_with_one_unresolvable_branch_is_unresolved_not_partial(t
     assert "not guessed" in text and "dm-0" in text and "vda" in text
 
 
+def test_detect_explicit_unresolved_stacked_device_reports_the_unresolved_names(tmp_path):
+    f = fs(tmp_path)
+    f.disk("vda")
+    f.mapped("dm-0", [], "vg-zero")
+    f.mapped("dm-1", ["vda", "dm-0"], "vg-striped")
+    write_file(f.dev / "dm-1", "")
+    disks, notes = detect(f.cfg(devices=[str(f.dev / "dm-1")]))
+    assert disks == [] and len(notes) == 1
+    assert "dm-0" in notes[0] and "not guessed" in notes[0] and "[]" not in notes[0]
+
+
 def test_anonymous_st_dev_prefers_the_mount_with_that_major_minor(tmp_path):
     from iogov.devices import _mount_for
 
@@ -248,6 +259,13 @@ def test_anonymous_st_dev_prefers_the_mount_with_that_major_minor(tmp_path):
         {"majmin": "0:99", "mnt": "/data/sub/deep", "fstype": "tmpfs", "source": "tmpfs"},
     ]
     assert _mount_for(mounts, "/data/sub/deep/x", "0:48")["source"] == "/dev/a"
+    stacked = [
+        {"majmin": "0:48", "mnt": "/data", "fstype": "btrfs", "source": "/dev/a"},
+        {"majmin": "0:48", "mnt": "/data/sub", "fstype": "btrfs", "source": "/dev/b"},
+        {"majmin": "0:48", "mnt": "/data", "fstype": "btrfs", "source": "/dev/c"},
+    ]
+    assert _mount_for(stacked, "/data/sub/x", "0:48")["source"] == "/dev/b"  # longest same-majmin mount point wins
+    assert _mount_for(stacked, "/data/x", "0:48")["source"] == "/dev/c"  # tie: the last entry
     assert _mount_for(mounts, "/data/sub/deep/x", "0:77")["source"] == "tmpfs"  # no major:minor match: longest prefix
     assert _mount_for(mounts, "/data/sub/deep/x")["source"] == "tmpfs"
 

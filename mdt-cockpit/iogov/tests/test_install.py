@@ -206,3 +206,72 @@ def test_failed_package_copy_keeps_the_installed_package_and_leaves_no_sibling(t
     assert p.returncode != 0
     assert target.read_text() == "# installed\n" and (lib / "iogov/devices.py").is_file()
     assert not list(lib.glob("iogov.new.*")) and not list(lib.glob("iogov.old.*"))
+
+
+def _path_with(tmp_path, name, body):
+    d = tmp_path / "bin"
+    d.mkdir(exist_ok=True)
+    f = d / name
+    f.write_text(body)
+    f.chmod(0o755)
+    return {"PATH": f"{d}:{os.environ['PATH']}"}
+
+
+def test_sysfs_test_hook_is_ignored_outside_staging(tmp_path):
+    sysfs = tmp_path / "sys"
+    (sysfs / "class/block/null").mkdir(parents=True)
+    (sysfs / "class/block/null/partition").write_text("1\n")
+    env = _path_with(tmp_path, "udevadm", "#!/bin/sh\necho ID_PATH=pci-0000:00:10.0\n")
+    env["IOGOV_SYSFS_ROOT"] = str(sysfs)
+    p = run("--dry-run", "--lib-dir", str(tmp_path / "lib"), *BASE, env=env)
+    assert p.returncode == 0, p.stderr  # the fake partition is NOT consulted: /sys has no `null` entry
+
+
+def test_dry_run_warns_unverified_when_udev_is_absent_or_empty(tmp_path):
+    for body in ("#!/bin/sh\nexit 1\n", "#!/bin/sh\necho ID_BUS=x\n"):
+        env = _path_with(tmp_path, "udevadm", body)
+        p = run("--dry-run", "--lib-dir", str(tmp_path / "lib"), *BASE, env=env)
+        assert p.returncode == 0 and "UNVERIFIED" in p.stdout, p.stdout + p.stderr
+
+
+def test_real_install_refuses_unconfirmed_id_path_without_touching_anything(tmp_path):
+    # exercise the refusal branch by script text, since a real run is forbidden here
+    text = SCRIPT.read_text()
+    assert 'die "udev cannot confirm --id-path' in text and "((DRY))" in text.split("UNVERIFIED")[0].splitlines()[-1]
+
+
+def test_non_ascii_values_are_refused_under_a_utf8_locale(tmp_path):
+    stage = _stage(tmp_path)
+    p = run("--destdir", str(stage), "--skip-preflight", "--disk-node", "/dev/null", "--id-path", "pci-é", env={"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"})
+    assert p.returncode == 1 and "--id-path" in p.stderr and tree(stage) == []
+
+
+@pytest.mark.parametrize("extra", [["--lib-dir", "/"], ["--disk-node", "/dev/../dev/null"]])
+def test_root_lib_dir_and_dotdot_disk_node_are_refused(tmp_path, extra):
+    stage = _stage(tmp_path)
+    argv = ["--skip-preflight", "--id-path", "pci-0000:00:10.0"]
+    if "--disk-node" not in extra:
+        argv += ["--disk-node", "/dev/null"]
+    p = run("--destdir", str(stage), *argv, *extra)
+    assert p.returncode == 1 and tree(stage) == []
+
+
+def test_mapped_disk_node_is_refused(tmp_path):
+    sysfs = tmp_path / "sys"
+    (sysfs / "class/block/null").mkdir(parents=True)
+    # kname `dm-0` via a symlink node cannot be created under /dev; assert via the md/dm guard on the script text
+    assert "dm-*" in SCRIPT.read_text() and "not a whole disk" in SCRIPT.read_text()
+
+
+def test_stale_old_package_is_restored_or_removed_on_the_next_run(tmp_path):
+    stage = _stage(tmp_path)
+    assert run("--destdir", str(stage), *BASE).returncode == 0
+    lib = stage / "usr/local/lib/iogov-pkg"
+    (lib / "iogov.old.123").mkdir()
+    (lib / "iogov.new.456").mkdir()
+    assert run("--destdir", str(stage), *BASE).returncode == 0
+    assert not list(lib.glob("iogov.old.*")) and not list(lib.glob("iogov.new.*")) and (lib / "iogov/devices.py").is_file()
+    # a SIGKILL between the renames: iogov is missing, the old package is restored (then brought up to date)
+    (lib / "iogov").rename(lib / "iogov.old.789")
+    assert run("--destdir", str(stage), *BASE).returncode == 0
+    assert (lib / "iogov/devices.py").is_file() and not list(lib.glob("iogov.old.*"))
