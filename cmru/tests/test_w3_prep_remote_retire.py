@@ -34,6 +34,17 @@ def _git(cwd: Path, *args: str) -> str:
         env={
             "PATH": "/usr/bin:/bin", "HOME": str(cwd), "GIT_CONFIG_GLOBAL": "/dev/null",
             "GIT_CONFIG_SYSTEM": "/dev/null",
+            # This fixture deliberately blanks both system and global Git
+            # configuration, so disable automatic maintenance explicitly too.
+            "GIT_CONFIG_COUNT": "4",
+            "GIT_CONFIG_KEY_0": "maintenance.auto",
+            "GIT_CONFIG_VALUE_0": "false",
+            "GIT_CONFIG_KEY_1": "maintenance.autoDetach",
+            "GIT_CONFIG_VALUE_1": "false",
+            "GIT_CONFIG_KEY_2": "gc.auto",
+            "GIT_CONFIG_VALUE_2": "0",
+            "GIT_CONFIG_KEY_3": "gc.autoDetach",
+            "GIT_CONFIG_VALUE_3": "false",
             "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.test",
             "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.test",
         },
@@ -53,6 +64,9 @@ def repo(tmp_path, monkeypatch):
     origin = tmp_path / "origin.git"
     work = tmp_path / "work"
     _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    # Local receive-pack does not inherit the test process's environment Git
+    # config. Keep the remote's automatic maintenance in the push lifetime.
+    _git(origin, "config", "receive.autogc", "false")
     _git(tmp_path, "init", "-q", "-b", "main", str(work))
     _git(work, "remote", "add", "origin", str(origin))
     _commit(work, "base")
@@ -164,11 +178,23 @@ def test_branch_absent_from_origin_keeps_the_exact_selection_refusal(repo):
     assert refusal.value.exit_code == 2
 
 
-def test_unreachable_origin_is_a_config_class_failure(repo):
-    _git(repo, "remote", "set-url", "origin", str(repo / "nowhere.git"))
+def test_remote_inspection_failure_is_a_config_class_failure(repo, monkeypatch):
+    calls = []
+
+    def failed_remote_inspection(repo_root, *args, **kwargs):
+        calls.append((repo_root, args, kwargs))
+        return subprocess.CompletedProcess(
+            ["git", *args], 128, stdout="", stderr="origin unavailable",
+        )
+
+    monkeypatch.setattr(transaction, "run_remote_git", failed_remote_inspection)
     with pytest.raises(CliFailure, match="cannot inspect origin candidate") as refusal:
         cli._abandon(_args(), _Runtime())
     assert refusal.value.exit_code == 2
+    assert len(calls) == 1
+    assert calls[0][1] == (
+        "ls-remote", "--heads", "origin", f"refs/heads/{BRANCH}", "refs/heads/main",
+    )
 
 
 def test_missing_local_objects_are_reported_not_treated_as_merged(repo, tmp_path):

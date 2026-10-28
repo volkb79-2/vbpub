@@ -695,10 +695,11 @@ def test_rel05_failed_publish_keeps_the_tag_and_prints_recovery(e2e):
 
 
 def test_rel06_sync_fetch_failure_still_reports_the_retained_candidate(e2e):
-    # The gate fails AND leaves the caller's origin unreachable, so the
+    # The gate fails AND leaves the caller's origin inaccessible, so the
     # best-effort local-main sync after the failure cannot fetch.
     e2e.hook("break", f"""\
-git -C "{e2e.repo}" remote set-url origin "{e2e.root}/does-not-exist.git"
+git -C "{e2e.repo}" config protocol.file.allow never
+git -C "{e2e.repo}" remote set-url origin "file:///tmp/cmru-does-not-exist.git"
 exit 1
 """)
 
@@ -738,9 +739,13 @@ def test_rel04_unknown_project_paths_stop_the_merge(e2e):
         transaction.promote_workspace(workspace, release_label="demo-v9")
 
 
-def test_rel04_an_unreachable_origin_stops_before_any_merge(e2e):
+def test_rel04_an_inaccessible_origin_stops_before_any_merge(e2e):
     workspace = _real_candidate(e2e, "cmru/release/offline")
-    e2e.git("remote", "set-url", "origin", str(e2e.root / "missing.git"), cwd=workspace.path)
+    e2e.git("config", "protocol.file.allow", "never", cwd=workspace.path)
+    e2e.git(
+        "remote", "set-url", "origin", "file:///tmp/cmru-missing-origin.git",
+        cwd=workspace.path,
+    )
 
     with pytest.raises(RuntimeError, match="fetching origin/main failed"):
         transaction._merge_origin_main_into_candidate(

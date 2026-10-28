@@ -226,9 +226,14 @@ supplies the whole-source line-and-branch qualification.
    Dockerfile's current pin:
 
    ```bash
-   mapfile -t released_digests < <(
-     sed -nE 's/^\[INFO\] CLI-EXTENDED_WHEEL_SHA256=([0-9a-f]{64})$/\1/p' cmru.release.log
-   )
+   released_digests=()
+   while IFS= read -r release_log_line; do
+     case "$release_log_line" in
+       "[INFO] CLI-EXTENDED_WHEEL_SHA256="*)
+         released_digests+=("${release_log_line#*=}")
+         ;;
+     esac
+   done < cmru.release.log
    if [ "${#released_digests[@]}" -ne 1 ]; then
      echo "Expected exactly one CLI-EXTENDED_WHEEL_SHA256 in cmru.release.log" >&2
      exit 2

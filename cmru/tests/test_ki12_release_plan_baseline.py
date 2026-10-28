@@ -226,6 +226,21 @@ def test_highest_remote_tag_for_prefix_skips_ls_remote_lines_outside_refs_tags(m
     assert result == "demo-v1.0.0"
 
 
+def test_highest_remote_tag_for_prefix_refuses_a_failed_remote_query(tmp_path, monkeypatch):
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "remote", "add", "origin", "https://example.invalid/cmru.git")
+    monkeypatch.setattr(
+        version,
+        "run_remote_git",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            ["git", "ls-remote"], 128, stdout="", stderr="origin unavailable",
+        ),
+    )
+
+    with pytest.raises(ReleasePlanRefused, match="cannot list origin's tags"):
+        version._highest_remote_tag_for_prefix(tmp_path, "demo-v", lambda tag: tag)
+
+
 # ---------------------------------------------------------------------------
 # _latest_tag_for_prefix(require_pushed=...)
 # ---------------------------------------------------------------------------

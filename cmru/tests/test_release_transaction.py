@@ -2946,10 +2946,12 @@ def test_sync_local_main_classifies_real_interrupted_rebase_abort(
             str(hook_dir),
             cwd=h.repo_root,
         )
+        hook_pids = h.repo_root / ".git" / "cmru-test-hook-pids"
         hook_script = (
             "#!/bin/sh\n"
             "set -eu\n"
             'git_dir=$(git rev-parse --git-dir)\n'
+            'printf "%s\\n" "$$" >> "$git_dir/cmru-test-hook-pids"\n'
             'if test -d "$git_dir/rebase-merge" || test -d "$git_dir/rebase-apply"; then\n'
             '    printf "active\\n" > "$git_dir/post-rewrite-state"\n'
             'else\n'
@@ -2978,6 +2980,13 @@ def test_sync_local_main_classifies_real_interrupted_rebase_abort(
         try:
             result = transaction._sync_local_main_result(h.repo_root)
         finally:
+            if hook_pids.exists():
+                for raw_pid in hook_pids.read_text(encoding="ascii").splitlines():
+                    try:
+                        os.waitpid(int(raw_pid), 0)
+                    except ChildProcessError:
+                        # Git may have collected a hook before it was signalled.
+                        pass
             # The failed-abort fixture deliberately leaves a real lock behind;
             # remove it after the shipped function has observed the failure so
             # the temporary repository can be discarded normally.

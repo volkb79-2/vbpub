@@ -7,16 +7,20 @@ the session unless every active reviewed case links a collected test through
 ``--cli-case-partial`` (the full gate and the full suite need no flag).
 """
 import contextlib
-import ctypes
 import os
-import signal
 import sys
-import time
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from cmru.process_guard import (
+    DescendantGuard,
+    DescendantLeakError,
+    enable_child_subreaper,
+    restore_child_subreaper,
+)
 
 pytest_plugins = ["cli_extended.pytest_plugin"]
 
@@ -24,134 +28,72 @@ pytest_plugins = ["cli_extended.pytest_plugin"]
 SESSION_START_ENVIRON = dict(os.environ)
 
 
-_PR_SET_CHILD_SUBREAPER = 36
-_PR_GET_CHILD_SUBREAPER = 37
-_LIBC = ctypes.CDLL(None, use_errno=True)
-_LIBC_PRCTL = _LIBC.prctl
-_LIBC_PRCTL.restype = ctypes.c_int
-_ORIGINAL_DUP = os.dup
-_ORIGINAL_DUP2 = os.dup2
-_ORIGINAL_CLOSE = os.close
-_ORIGINAL_KILL = os.kill
-_ORIGINAL_WAITPID = os.waitpid
-_ORIGINAL_SLEEP = time.sleep
-_ORIGINAL_MONOTONIC = time.monotonic
-
-
-def _descendant_records(root_pid: int) -> dict[int, tuple[int, str, str]]:
-    result: dict[int, tuple[int, str, str]] = {}
-    pending = [root_pid]
-    while pending:
-        parent_pid = pending.pop()
-        try:
-            children = Path(
-                f"/proc/{parent_pid}/task/{parent_pid}/children"
-            ).read_text(encoding="ascii").split()
-        except OSError:
-            # A process can exit between its parent's children list and this read.
-            continue
-        for child_text in children:
-            try:
-                pid = int(child_text)
-                stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
-                close = stat.rfind(")")
-                fields = stat[close + 2 :].split()
-                result[pid] = (int(fields[1]), fields[0], stat[stat.find("(") + 1 : close])
-                pending.append(pid)
-            except (OSError, ValueError, IndexError):
-                # Processes can exit between listing /proc and reading stat.
-                continue
-    return result
-
-
-def _enable_child_subreaper() -> int:
-    """Make pytest adopt orphaned test grandchildren and return the prior setting."""
-    previous = ctypes.c_int()
-    if _LIBC_PRCTL(
-        _PR_GET_CHILD_SUBREAPER, ctypes.byref(previous), 0, 0, 0,
-    ) != 0:
-        error = ctypes.get_errno()
-        raise OSError(error, os.strerror(error), "prctl(PR_GET_CHILD_SUBREAPER)")
-    if _LIBC_PRCTL(_PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
-        error = ctypes.get_errno()
-        raise OSError(error, os.strerror(error), "prctl(PR_SET_CHILD_SUBREAPER)")
-    return previous.value
-
-
-def _restore_child_subreaper(previous: int) -> None:
-    if _LIBC_PRCTL(_PR_SET_CHILD_SUBREAPER, previous, 0, 0, 0) != 0:
-        error = ctypes.get_errno()
-        raise OSError(error, os.strerror(error), "prctl(PR_SET_CHILD_SUBREAPER)")
-
-
 @pytest.fixture(scope="session", autouse=True)
 def _pytest_adopts_orphaned_test_children():
-    if not Path("/proc/self/stat").exists():
-        yield
-        return
-    previous = _enable_child_subreaper()
+    previous = enable_child_subreaper()
     try:
         yield
     finally:
-        _restore_child_subreaper(previous)
+        restore_child_subreaper(previous)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _pytest_disables_detached_git_maintenance():
+    """Keep every test Git child inside its subprocess lifetime.
+
+    Run-Gate may disable system config for its container copy. Append explicit
+    settings to that environment rather than relying on tester-unified's
+    system config to keep automatic maintenance foreground-only.
+    """
+    raw_count = os.environ.get("GIT_CONFIG_COUNT", "0")
+    if not raw_count.isdecimal():
+        raise RuntimeError("GIT_CONFIG_COUNT is malformed; refusing test Git children")
+    count = int(raw_count)
+    additions = {
+        "GIT_CONFIG_COUNT": str(count + 4),
+        f"GIT_CONFIG_KEY_{count}": "maintenance.auto",
+        f"GIT_CONFIG_VALUE_{count}": "false",
+        f"GIT_CONFIG_KEY_{count + 1}": "maintenance.autoDetach",
+        f"GIT_CONFIG_VALUE_{count + 1}": "false",
+        f"GIT_CONFIG_KEY_{count + 2}": "gc.auto",
+        f"GIT_CONFIG_VALUE_{count + 2}": "0",
+        f"GIT_CONFIG_KEY_{count + 3}": "gc.autoDetach",
+        f"GIT_CONFIG_VALUE_{count + 3}": "false",
+    }
+    with preserved_environ():
+        os.environ.update(additions)
+        yield
 
 
 @pytest.fixture(autouse=True)
 def _each_test_reaps_its_process_descendants(request):
-    """Clean subprocess descendants at each test boundary.
+    """Fail a test if new process descendants outlive its boundary.
 
     Release and shell integration tests can start helpers below pytest that
-    outlive their immediate parent. Adopt and reap those helpers before the
-    next test so Assay sees only descendants that escaped the test scope.
-    Captured stdout/stderr are restored too: release logging redirects those
-    process-wide descriptors in in-process CLI tests.
+    outlive their immediate parent. The guard kills and reaps detected leaks
+    to protect later tests, but still fails the creating test even when cleanup
+    succeeds. Captured stdout/stderr are restored too: release logging redirects
+    those process-wide descriptors in in-process CLI tests.
     """
-    root_pid = os.getpid()
-    before = set(_descendant_records(root_pid))
-    saved_stdout = _ORIGINAL_DUP(1)
-    saved_stderr = _ORIGINAL_DUP(2)
-    leaks: dict[int, tuple[int, str, str]] = {}
-    cleanup_survivors: dict[int, tuple[int, str, str]] = {}
+    guard = DescendantGuard(root_pid=os.getpid())
+    saved_stdout = os.dup(1)
+    saved_stderr = os.dup(2)
+    leak_error: DescendantLeakError | None = None
     try:
         yield
     finally:
         try:
-            leaks = {
-                pid: record for pid, record in _descendant_records(root_pid).items()
-                if pid not in before
-            }
-            deadline = _ORIGINAL_MONOTONIC() + 2.0
-            while leaks and _ORIGINAL_MONOTONIC() < deadline:
-                current = _descendant_records(root_pid)
-                pids = set(current) - before
-                for pid in pids:
-                    try:
-                        _ORIGINAL_KILL(pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                for pid in pids:
-                    try:
-                        _ORIGINAL_WAITPID(pid, os.WNOHANG)
-                    except ChildProcessError:
-                        pass
-                _ORIGINAL_SLEEP(0.01)
-                leaks = {
-                    pid: record for pid, record in _descendant_records(root_pid).items()
-                    if pid not in before
-                }
-            cleanup_survivors = leaks
+            guard.check()
+        except DescendantLeakError as exc:
+            leak_error = exc
         finally:
-            _ORIGINAL_DUP2(saved_stdout, 1)
-            _ORIGINAL_DUP2(saved_stderr, 2)
-            _ORIGINAL_CLOSE(saved_stdout)
-            _ORIGINAL_CLOSE(saved_stderr)
-        if cleanup_survivors:
-            details = "; ".join(
-                f"pid={pid} ppid={ppid} state={state} command={command!r}"
-                for pid, (ppid, state, command) in sorted(cleanup_survivors.items())
-            )
+            os.dup2(saved_stdout, 1)
+            os.dup2(saved_stderr, 2)
+            os.close(saved_stdout)
+            os.close(saved_stderr)
+        if leak_error is not None:
             pytest.fail(
-                f"{request.node.nodeid} could not clean up process descendants: {details}",
+                f"{request.node.nodeid} leaked process descendants: {leak_error}",
                 pytrace=False,
             )
 

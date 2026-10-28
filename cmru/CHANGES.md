@@ -4,9 +4,15 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Fixed
+- Reject release-baseline checks without a configured `origin` before Git can
+  reinterpret the remote name as a local path.
+
 ### Testing
-- Reap subprocess descendants between CMRU tests so release and shell helpers
-  cannot contaminate Assay's process-tree verdict.
+- Close and wait for the native release log tee at the end of each in-process
+  release command; fail the creating test if any new descendant needed cleanup.
+- Scan every pytest worker thread's `/proc` children and refuse when that
+  process-tree evidence is unavailable.
 
 <!-- KI-30 originally refused a tagged release while this body was non-empty. KI-78 now
      folds pending notes into the version section in the disposable release candidate.

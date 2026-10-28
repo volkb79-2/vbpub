@@ -416,11 +416,15 @@ def test_direct_publish_refuses_a_tag_origin_does_not_have(publisher, monkeypatc
     assert "origin has no 'demo-v2.0.0' tag" in capsys.readouterr().err
 
 
-def test_direct_publish_treats_an_unreachable_origin_as_a_refusal_not_no_release(
+def test_direct_publish_treats_an_inaccessible_origin_as_a_refusal_not_no_release(
     publisher, monkeypatch, capsys,
 ):
     project, gh = publisher
-    _git(project.parent, "remote", "set-url", "origin", str(project.parent / "no-such-origin.git"))
+    _git(project.parent, "config", "protocol.file.allow", "never")
+    _git(
+        project.parent, "remote", "set-url", "origin",
+        "file:///tmp/cmru-no-such-origin.git",
+    )
     monkeypatch.setenv("CMRU_RELEASE_NOTES_SOURCE", "changelog:CHANGES.md")
 
     assert _wheel_publish(project) == exit_codes.REFUSED

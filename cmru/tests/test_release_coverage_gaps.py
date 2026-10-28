@@ -204,18 +204,12 @@ def test_context_helpers_cover_standalone_and_invalid_selection(monkeypatch, tmp
 def test_cli_native_logging_and_candidate_integrity_edges(tmp_path, monkeypatch):
     monkeypatch.setenv("CMRU_NATIVE_RELEASE_LOGGING", "0")
     cli._configure_native_release_logging(tmp_path, append=False)
-
-    class Stdin:
-        def fileno(self):
-            return 17
-
     monkeypatch.delenv("CMRU_NATIVE_RELEASE_LOGGING", raising=False)
-    proc = SimpleNamespace(stdin=Stdin())
-    calls = []
-    monkeypatch.setattr(cli.subprocess, "Popen", lambda *args, **kwargs: (calls.append((args, kwargs)) or proc))
-    monkeypatch.setattr(cli.os, "dup2", lambda *args: calls.append(("dup2", args)))
-    cli._configure_native_release_logging(tmp_path, append=True)
-    assert calls[0][0][0] == ["tee", "-a", str(tmp_path / "cmru.release.log")]
+    with cli._native_release_logging_scope():
+        cli._configure_native_release_logging(tmp_path, append=True)
+        tee = cli._ACTIVE_NATIVE_RELEASE_LOGGING.process
+        assert tee.poll() is None
+    assert tee.returncode == 0
     assert (tmp_path / "cmru.release.log").read_text(encoding="utf-8") == "\n---\n"
 
     monkeypatch.setattr(cli, "_git", lambda *_args: "actual")

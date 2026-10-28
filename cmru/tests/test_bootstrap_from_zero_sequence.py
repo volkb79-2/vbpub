@@ -510,6 +510,7 @@ def test_the_guide_names_the_log_interface_and_the_exact_cgroup_inputs():
     flat = " ".join(text.split())
     # step 3 reads the published identity from the release log, not the terminal
     assert "cmru.release.log" in text and "grep -E 'CLI-EXTENDED_WHEEL_(SHA256|ASSET_URL)=' cmru.release.log" in text
+    assert 'while IFS= read -r release_log_line' in text
     assert "`quiet = true`" in text
     # wheel-build does not read the bootstrap-only variable
     assert "does **not** read `CMRU_BOOTSTRAP_CGROUP_PARENT`" in flat
