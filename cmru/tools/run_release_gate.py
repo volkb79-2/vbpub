@@ -1124,6 +1124,12 @@ def _prepared_release_version(project_root: Path) -> str | None:
         )
         if match is not None:
             return match.group(1)
+        # Fail closed: the newest dated heading decides. A prepared heading that is not
+        # strict X.Y.Z (``7.2.0rc1``) must not fall through to an older, authorized one.
+        if re.match(r"## \[(?!Unreleased\])[^\]]*\] - \d{4}-\d{2}-\d{2}", heading.text):
+            raise RuntimeError(
+                f"prepared CMRU release heading is not a strict X.Y.Z version: {heading.text!r}"
+            )
     return None
 
 

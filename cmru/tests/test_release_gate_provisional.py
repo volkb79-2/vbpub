@@ -314,6 +314,23 @@ def _prepare_release_heading(repo, version):
     _git(repo, "commit", "--quiet", "-m", f"prepare {version}")
 
 
+def test_ki79_refuses_a_non_strict_prepared_heading_instead_of_reading_an_older_one(tmp_path, monkeypatch):
+    repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
+    _prepare_release_heading(repo, "7.0.0")
+    changes = repo / "cmru" / "CHANGES.md"
+    changes.write_text(
+        changes.read_text(encoding="utf-8").replace("## [7.0.0]", "## [7.2.0rc1] - 2026-10-28\n\n- rc\n\n## [7.0.0]", 1),
+        encoding="utf-8",
+    )
+    _git(repo, "add", "cmru/CHANGES.md")
+    _git(repo, "commit", "--quiet", "-m", "prepare 7.2.0rc1")
+
+    with pytest.raises(RuntimeError, match=r"not a strict X\.Y\.Z version.*7\.2\.0rc1"):
+        _gate(repo, private_root, postpone=POSTPONE)
+
+    assert calls == []
+
+
 def test_the_ki79_windows_are_the_6_2_7_0_and_7_1_patch_lines_and_nothing_wider():
     assert run_release_gate.POSTPONEMENT_RELEASE_VERSIONS == {
         "KI-79": (((6, 2, 0), (6, 3, 0)), ((7, 0, 0), (7, 1, 0)), ((7, 1, 0), (7, 2, 0)))
