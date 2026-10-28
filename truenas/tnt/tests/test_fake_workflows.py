@@ -2,7 +2,10 @@
 import base64
 import struct
 
+import pytest
+
 from tnt.actions import apply_plan, make_plan
+from tnt.errors import Refused
 from tnt.profile import Secret
 from tnt.session import open_session
 from tnt.testing import FakeServer
@@ -53,6 +56,17 @@ def test_user_workflows_use_real_client_and_keep_keys_and_passwords_out_of_publi
             apply(session, workflows.user_update_action("alice", {"full_name": "Alice Updated"}))
             apply(session, workflows.user_password_action("alice", Secret("fake-next-password")), confirm="alice")
             apply(session, workflows.user_ssh_key_action("alice", [public_key]))
+            access = workflows.user_access_action("alice", {"locked": True, "ssh_password_enabled": False})
+            apply(session, access, confirm="alice")
+            assert workflows.user("alice")["locked"] is True
+            assert workflows.user("alice")["ssh_password_enabled"] is False
+
+            with pytest.raises(Refused, match="extra confirmation"):
+                workflows.user_access_action(server.username, {"locked": True})
+            self_access = workflows.user_access_action(server.username, {"locked": True}, confirm_self=True)
+            apply(session, self_access, confirm=server.username)
+            unlock = workflows.user_access_action(server.username, {"locked": False}, confirm_self=True)
+            apply(session, unlock, confirm=server.username)
             public_user = workflows.user("alice")
             assert public_user["sshpubkey"] == "***"
             assert "fake-workflow-password" not in repr(public_user)

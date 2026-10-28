@@ -121,6 +121,21 @@ plan and require `--confirm TARGET` for destructive work. The TUI action dialog 
 target. Every mutation has a probe that re-reads its target before apply. Name-based updates and lifecycle calls probe
 one exact query result and bind the write ID or username to that result; a broad or mismatched lookup is refused.
 
+### User account updates
+
+The official v27 [`user.update` schema](https://api.truenas.com/v27.0/api_methods_user.update.html) accepts more fields
+than this client exposes and its result includes the password when one was specified or generated. tnt does not pass
+arbitrary JSON through it. The basic `user update` workflow
+allows only `full_name`, `shell`, and `home`; username rename and `random_password` are refused. Group membership
+(`group`, `groups`) and authentication access (`password_disabled`, `locked`, `ssh_password_enabled`) use the separate
+`user access` workflow. It accepts only those fields with validated values, rejects built-in, immutable, root, and
+admin accounts, and always creates a DESTRUCTIVE plan with the exact username as its confirmation target. Its probe
+contains both the named `user.query` row and `auth.me`; the row ID, mutable-local status, login identity, action kind,
+and typed target are rechecked against fresh results at apply. The explicit `--confirm-self` value is included in the
+plan fingerprint. If `auth.me` identifies the target at either planning or apply, that flag must be present. This keeps
+account access changes inside the same fingerprinted review as the identity check. SSH-key updates remain on their protected-secret path; a
+current-login SSH-key change is also destructive, asks for typed username confirmation, and fingerprints `auth.me`.
+
 ## 3. Action backlog from the matrix
 
 The action matrix still tracks the separate storage work. M1 focuses on the core workflows in the user brief:

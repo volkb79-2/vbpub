@@ -696,8 +696,6 @@ def _user_verbs(ident: CliIdentity, opener: SessionOpener) -> list[VerbSpec]:
             data["shell"] = args.shell
         if args.home is not None:
             data["home"] = args.home
-        if args.groups is not None:
-            data["groups"] = args.groups
         if not data:
             raise CliFailure("provide at least one user property option or --file spec.json")
         return session.workflows.user_update_action(args.username, data, builtin=args.builtin)
@@ -709,6 +707,24 @@ def _user_verbs(ident: CliIdentity, opener: SessionOpener) -> list[VerbSpec]:
         secret = _secret_file(args.password_file)
         return session.workflows.user_password_action(args.username, secret, confirm_self=args.confirm_self,
                                                       builtin=args.builtin)
+
+    def set_access(args: Any, session: Any):
+        data: dict[str, Any] = {}
+        for field, enable, disable in (
+                ("password_disabled", args.password_disabled, args.password_enabled),
+                ("locked", args.locked, args.unlocked),
+                ("ssh_password_enabled", args.ssh_password_enabled, args.ssh_password_disabled)):
+            if enable and disable:
+                raise CliFailure(f"choose only one of the paired {field} options")
+            if enable:
+                data[field] = True
+            elif disable:
+                data[field] = False
+        if args.primary_group is not None:
+            data["group"] = args.primary_group
+        if args.groups is not None:
+            data["groups"] = args.groups
+        return session.workflows.user_access_action(args.username, data, confirm_self=args.confirm_self)
 
     def set_key(args: Any, session: Any):
         if bool(args.file) == bool(args.key):
@@ -771,15 +787,28 @@ def _user_verbs(ident: CliIdentity, opener: SessionOpener) -> list[VerbSpec]:
                                 _value(("--password-file",), "Read password from a file; otherwise prompt without echo.", "FILE", "WORKFLOW"),
                                 SPEC_FILE),
                  handler=lambda args, runtime: _workflow_action(args, runtime, opener, lambda session: create(args, session))),
-        VerbSpec("update", None, "Update basic properties and group membership through a reviewed plan.",
+        VerbSpec("update", None, "Update basic account properties through a reviewed plan.",
                  group=VerbGroup.MODIFICATION.value,
                  arguments=(ArgumentSpec("username", "Local account name.", metavar="USER"),),
                  options=writes(_value(("--full-name",), "New full name.", "TEXT", "WORKFLOW"),
                                 _value(("--shell",), "New login shell.", "PATH", "WORKFLOW"),
                                 _value(("--home",), "New home directory path.", "PATH", "WORKFLOW"),
-                                _value(("--groups",), "Replace supplementary group IDs.", "IDS", "WORKFLOW", type=_group_ids),
                                 _flag(("--builtin",), "Allow editing a built-in user account.", "WORKFLOW"), SPEC_FILE),
                  handler=lambda args, runtime: _workflow_action(args, runtime, opener, lambda session: update(args, session))),
+        VerbSpec("access", None, "Change group membership or authentication access through a typed guarded plan.",
+                 group=VerbGroup.MODIFICATION.value,
+                 arguments=(ArgumentSpec("username", "Mutable local account name.", metavar="USER"),),
+                 options=writes(_value(("--primary-group",), "New primary group entry ID.", "ID", "WORKFLOW", type=int),
+                                _value(("--groups",), "Replace supplementary group entry IDs.", "IDS", "WORKFLOW", type=_group_ids),
+                                _flag(("--password-disabled",), "Disable password authentication.", "WORKFLOW"),
+                                _flag(("--password-enabled",), "Enable password authentication.", "WORKFLOW"),
+                                _flag(("--locked",), "Lock the account.", "WORKFLOW"),
+                                _flag(("--unlocked",), "Unlock the account.", "WORKFLOW"),
+                                _flag(("--ssh-password-enabled",), "Enable SSH password authentication.", "WORKFLOW"),
+                                _flag(("--ssh-password-disabled",), "Disable SSH password authentication.", "WORKFLOW"),
+                                _flag(("--confirm-self",), "Explicitly allow changing the current login user's access.", "SAFETY")),
+                 handler=lambda args, runtime: _workflow_action(args, runtime, opener,
+                                                                lambda session: set_access(args, session))),
         VerbSpec("delete", None, "Delete a local non-built-in user; requires exact typed confirmation.", group=VerbGroup.MODIFICATION.value,
                  arguments=(ArgumentSpec("username", "Account name; type this exact name to confirm.", metavar="USER"),),
                  options=writes(), handler=lambda args, runtime: _workflow_action(args, runtime, opener, lambda session: delete(args, session))),

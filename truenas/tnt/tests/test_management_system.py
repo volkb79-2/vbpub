@@ -507,8 +507,16 @@ def test_reboot_tui_bounds_reconnect_and_stops_on_non_connection_failures(mode, 
                 await _wait_for(pilot, lambda: isinstance(app.screen, PlanReview), count=300)
                 app.screen.query_one("#plan-confirm", Input).value = "test"
                 app.screen.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="plan-apply")))
-                await _wait_for(pilot, lambda: expected in str(
-                    app.screen.query_one("#system-power-note", Static).render()), count=300)
+
+                def power_result_visible():
+                    if isinstance(app.screen, PlanReview):
+                        return False
+                    try:
+                        return expected in str(app.screen.query_one("#system-power-note", Static).render())
+                    except Exception:
+                        return False
+
+                await _wait_for(pilot, power_result_visible, count=300)
                 assert reconnect_calls == calls
                 assert server.called().count("system.reboot") == 1
 

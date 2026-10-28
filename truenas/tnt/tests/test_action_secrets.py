@@ -99,3 +99,65 @@ def test_replacing_a_secret_after_planning_invalidates_the_plan():
         apply_plan(Plan(changed, plan.fingerprint, plan.session_id, plan.nonce), rpc,
                    allow_write=True)
     assert host.writes == 0
+
+
+def test_account_access_plan_binds_current_login_at_apply_time():
+    from tnt.workflows import Workflows
+
+    class ChangingIdentity:
+        def __init__(self):
+            self.auth_reads = 0
+            self.writes = 0
+
+        def call(self, method, *params, job=False):
+            if method == "user.query":
+                return [{"id": 8, "username": "alice", "local": True, "builtin": False}]
+            if method == "auth.me":
+                self.auth_reads += 1
+                return {"pw_name": "operator" if self.auth_reads < 3 else "alice"}
+            if method == "user.update":
+                self.writes += 1
+            return None
+
+        def close(self):
+            pass
+
+    from tnt.transport import GuardedRpc
+
+    host = ChangingIdentity()
+    rpc = GuardedRpc(host, read_only=False)
+    action = Workflows(rpc).user_access_action("alice", {"locked": True}, confirm_self=True)
+    plan = make_plan(action, rpc)
+    with pytest.raises(Refused, match="changed since"):
+        apply_plan(plan, rpc, allow_write=True, typed_confirmation="alice")
+    assert host.writes == 0
+
+
+def test_account_access_plan_refuses_if_login_becomes_target_before_planning():
+    from tnt.workflows import Workflows
+    from tnt.transport import GuardedRpc
+
+    class ChangingIdentity:
+        def __init__(self):
+            self.auth_reads = 0
+            self.writes = 0
+
+        def call(self, method, *params, job=False):
+            if method == "user.query":
+                return [{"id": 8, "username": "alice", "local": True, "builtin": False}]
+            if method == "auth.me":
+                self.auth_reads += 1
+                return {"pw_name": "operator" if self.auth_reads == 1 else "alice"}
+            if method == "user.update":
+                self.writes += 1
+            return None
+
+        def close(self):
+            pass
+
+    host = ChangingIdentity()
+    rpc = GuardedRpc(host, read_only=False)
+    action = Workflows(rpc).user_access_action("alice", {"locked": True})
+    with pytest.raises(Refused, match="extra confirmation flag"):
+        make_plan(action, rpc)
+    assert host.writes == 0

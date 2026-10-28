@@ -115,8 +115,8 @@ def test_user_read_update_delete_password_and_ssh_key_commands(config, capsys, t
     commands = [
         (["user", "create", "bob", "Bob", "--group-create", "--groups", "10, 11", "--shell", "/bin/sh",
           "--home", "/mnt/tank/bob", "--home-create", "--password-disabled"], "user.create"),
-        (["user", "update", "alice", "--full-name", "Alice Example", "--shell", "/bin/sh", "--home", "/mnt/tank/alice",
-          "--groups", "10,11"], "user.update"),
+        (["user", "update", "alice", "--full-name", "Alice Example", "--shell", "/bin/sh", "--home", "/mnt/tank/alice"], "user.update"),
+        (["user", "access", "alice", "--groups", "10,11", "--locked"], "user.update"),
         (["user", "delete", "alice"], "user.delete"),
         (["user", "password", "alice", "--password-file", str(password)], "user.set_password"),
         (["user", "ssh-key", "set", "alice", "--file", str(key_file), "--add"], "user.update"),
@@ -128,6 +128,54 @@ def test_user_read_update_delete_password_and_ssh_key_commands(config, capsys, t
         assert method in payload["plan"]
         assert "fake-password" not in json.dumps(payload)
         assert key not in json.dumps(payload)
+
+
+def test_user_access_cli_requires_current_user_and_typed_confirmation(config, capsys):
+    user = {"id": 7, "username": "operator", "builtin": False, "local": True}
+    host = Host({"user.query": [user], "auth.me": {"pw_name": "operator"}, "user.update": user})
+    cli = build_cli(opener=opener_for(config, host))
+    code = cli.run(argv=["user", "access", "operator", "--locked", "--config", str(config),
+                         "--allow-write", "--confirm", "operator", "--json"])
+    output = capsys.readouterr()
+    assert code != 0 and "extra confirmation" in output.err + output.out
+    assert not any(call[0] == "user.update" for call in host.calls)
+
+    host.calls.clear()
+    code = build_cli(opener=opener_for(config, host)).run(
+        argv=["user", "access", "operator", "--locked", "--confirm-self", "--config", str(config),
+              "--allow-write", "--confirm", "operator", "--json"])
+    output = capsys.readouterr()
+    assert code == 0, output.err
+    assert any(call[0] == "user.update" and call[1][1] == {"locked": True} for call in host.calls)
+    assert "[destructive]" in output.out and "operator" in output.out
+
+
+@pytest.mark.parametrize(("option", "field", "value"), [
+    ("--password-disabled", "password_disabled", True),
+    ("--password-enabled", "password_disabled", False),
+    ("--locked", "locked", True),
+    ("--unlocked", "locked", False),
+    ("--ssh-password-enabled", "ssh_password_enabled", True),
+    ("--ssh-password-disabled", "ssh_password_enabled", False),
+])
+def test_user_access_cli_maps_auth_toggles_to_explicit_v27_values(config, capsys, option, field, value):
+    host = user_host()
+    code = build_cli(opener=opener_for(config, host)).run(
+        argv=["user", "access", "alice", option, "--config", str(config), "--allow-write",
+              "--confirm", "alice", "--json"])
+    output = capsys.readouterr()
+    assert code == 0, output.err
+    call = next(call for call in host.calls if call[0] == "user.update")
+    assert call[1][1] == {field: value}
+
+
+def test_user_access_cli_refuses_conflicting_toggle_pairs(config, capsys):
+    host = user_host()
+    code = build_cli(opener=opener_for(config, host)).run(
+        argv=["user", "access", "alice", "--locked", "--unlocked", "--config", str(config), "--dry-run"])
+    output = capsys.readouterr()
+    assert code != 0 and "choose only one of the paired locked options" in output.err + output.out
+    assert not any(call[0] == "user.update" for call in host.calls)
 
 
 def test_container_read_create_update_and_all_lifecycle_verbs(config, capsys, tmp_path):

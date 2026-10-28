@@ -18,6 +18,11 @@ from .profile import Secret
 from .transport import GuardedRpc
 
 
+_USER_BASIC_UPDATE_FIELDS = frozenset({"full_name", "shell", "home"})
+_USER_ACCESS_UPDATE_FIELDS = frozenset({"group", "groups", "password_disabled", "locked", "ssh_password_enabled"})
+_USER_ACCESS_BOOL_FIELDS = frozenset({"password_disabled", "locked", "ssh_password_enabled"})
+
+
 class Workflows:
     """Domain queries and plan descriptions built only from a session's guarded RPC object."""
 
@@ -504,14 +509,56 @@ class Workflows:
 
     def user_update_action(self, username: str, data: Mapping[str, Any], *, builtin: bool = False) -> Action:
         row, current = self._editable_user(username, builtin=builtin)
-        if not data:
+        if not isinstance(data, Mapping) or not data:
             raise Refused("user-update", "at least one user property is required")
-        if "password" in data or "sshpubkey" in data:
+        payload = dict(data)
+        if "password" in payload or "sshpubkey" in payload:
             raise Refused("user-update", "use the dedicated password or SSH-key workflow for credential changes")
+        unsupported = set(payload) - _USER_BASIC_UPDATE_FIELDS
+        if unsupported:
+            fields = ", ".join(sorted(str(field) for field in unsupported))
+            raise Refused("user-update-fields", f"user.update basic-field allow-list is {', '.join(sorted(_USER_BASIC_UPDATE_FIELDS))}; refused: {fields}; use user access for account access changes")
+        for field, value in payload.items():
+            if not isinstance(value, str) or not value.strip():
+                raise Refused("user-update-value", f"{field} must be a non-empty string")
         return Action(
             "TNT-41", Kind.MUTATE, f"Update user {username}",
-            (RpcCall("user.update", (row["id"], dict(data))),),
+            (RpcCall("user.update", (row["id"], payload)),),
             (RpcCall("user.query", ([["username", "=", username]], {})),),
+        )
+
+    def user_access_action(self, username: str, data: Mapping[str, Any], *, confirm_self: bool = False) -> Action:
+        row, current = self._editable_user(username, builtin=False)
+        if (row.get("builtin") is True or row.get("immutable") is True
+                or username.casefold() in {"root", "admin"}):
+            raise Refused("builtin-user", "built-in, immutable, and root/admin accounts cannot use the account-access workflow")
+        if not isinstance(data, Mapping) or not data:
+            raise Refused("user-access", "provide at least one account-access property")
+        payload = dict(data)
+        unsupported = set(payload) - _USER_ACCESS_UPDATE_FIELDS
+        if unsupported:
+            fields = ", ".join(sorted(str(field) for field in unsupported))
+            raise Refused("user-access-fields", f"account access allow-list is {', '.join(sorted(_USER_ACCESS_UPDATE_FIELDS))}; refused: {fields}")
+        for field in _USER_ACCESS_BOOL_FIELDS & payload.keys():
+            if not isinstance(payload[field], bool):
+                raise Refused("user-access-value", f"{field} must be a boolean")
+        if "group" in payload and (not isinstance(payload["group"], int) or isinstance(payload["group"], bool)
+                                   or payload["group"] <= 0):
+            raise Refused("user-access-value", "group must be a positive primary group ID")
+        if "groups" in payload and (not isinstance(payload["groups"], list)
+                                    or any(not isinstance(group, int) or isinstance(group, bool) or group <= 0
+                                           for group in payload["groups"])):
+            raise Refused("user-access-value", "groups must be a list of positive supplementary group IDs")
+        if not isinstance(confirm_self, bool):
+            raise Refused("current-user", "confirm_self must be true or false")
+        is_current = username.casefold() == current.casefold()
+        if is_current and not confirm_self:
+            raise Refused("current-user", "changing the current login account's access needs the extra confirmation flag")
+        return Action(
+            "TNT-41", Kind.DESTRUCTIVE, f"Update account access for user {username}",
+            (RpcCall("user.update", (row["id"], payload)),),
+            (RpcCall("user.query", ([["username", "=", username]], {})), RpcCall("auth.me")), username,
+            confirm_self=confirm_self,
         )
 
     def user_delete_action(self, username: str) -> Action:
@@ -540,7 +587,7 @@ class Workflows:
             "TNT-41", kind, f"Set password for user {username}",
             (RpcCall("user.set_password", (data,)),),
             (RpcCall("user.query", ([["username", "=", username]], {})), RpcCall("auth.me")),
-            username if is_current else None,
+            username if is_current else None, confirm_self=confirm_self,
         )
 
     def user_ssh_key_action(self, username: str, keys: list[str], *, replace: bool = True,
@@ -557,10 +604,13 @@ class Workflows:
                 value = "\n".join(validated)
             else:
                 value = "\n".join(dict.fromkeys([*existing.splitlines(), *validated]))
+        is_current = username.casefold() == current.casefold()
         return Action(
-            "TNT-41", Kind.MUTATE, f"{'Remove' if remove else 'Set'} SSH public key for user {username}",
+            "TNT-41", Kind.DESTRUCTIVE if is_current else Kind.MUTATE,
+            f"{'Remove' if remove else 'Set'} SSH public key for user {username}",
             (RpcCall("user.update", (row["id"], {"sshpubkey": Secret(value)})),),
-            (RpcCall("user.query", ([["username", "=", username]], {})),),
+            (RpcCall("user.query", ([["username", "=", username]], {})), RpcCall("auth.me")),
+            username if is_current else None, confirm_self=confirm_self,
         )
 
     def _editable_user(self, username: str, *, builtin: bool) -> tuple[dict[str, Any], str]:
@@ -1071,7 +1121,8 @@ def _safe_value(value: Any, key: Any = None) -> Any:
                  "credentials", "credential", "token", "secret", "secret_access_key", "access_key", "client_secret",
                  "encryption_password", "encryption_salt", "key", "client_key", "salt", "stored_key", "server_key"}
     key_text = key.casefold() if isinstance(key, str) else ""
-    if isinstance(value, Secret) or key_text in sensitive or any(marker in key_text for marker in ("password", "secret", "credential", "token")):
+    key_sensitive = key_text in sensitive or any(marker in key_text for marker in ("password", "secret", "credential", "token"))
+    if isinstance(value, Secret) or key_sensitive and not isinstance(value, bool):
         return "***"
     if isinstance(value, Mapping):
         return {name: _safe_value(child, name) for name, child in value.items()}
@@ -1386,16 +1437,51 @@ def validate_plan_preconditions(action: Action, probe_results: Any) -> None:
         "vm.resume": ("vm.query", "name", 0),
         "vm.delete": ("vm.query", "name", 0),
     }
+    user_updates = [call for call in action.calls if call.method == "user.update"]
+    user_update_mode: str | None = None
+    if user_updates:
+        if len(user_updates) != 1:
+            raise Refused("user-update-shape", "one action may contain only one user.update call")
+        update = user_updates[0]
+        if len(update.params) != 2 or not isinstance(update.params[1], Mapping) or not update.params[1]:
+            raise Refused("user-update-shape", "user.update requires a target ID and a non-empty field mapping")
+        fields = set(update.params[1])
+        if fields <= _USER_BASIC_UPDATE_FIELDS:
+            user_update_mode = "basic"
+            if any(not isinstance(value, str) or not value.strip() for value in update.params[1].values()):
+                raise Refused("user-update-value", "basic user.update values must be non-empty strings")
+        elif fields == {"sshpubkey"} and isinstance(update.params[1]["sshpubkey"], Secret):
+            user_update_mode = "ssh-key"
+        elif fields <= _USER_ACCESS_UPDATE_FIELDS:
+            user_update_mode = "access"
+            payload = update.params[1]
+            if any(not isinstance(payload[field], bool) for field in _USER_ACCESS_BOOL_FIELDS & fields):
+                raise Refused("user-access-value", "account authentication fields must be boolean")
+            if "group" in payload and (not isinstance(payload["group"], int) or isinstance(payload["group"], bool)
+                                       or payload["group"] <= 0):
+                raise Refused("user-access-value", "group must be a positive primary group ID")
+            if "groups" in payload and (not isinstance(payload["groups"], list)
+                                        or any(not isinstance(group, int) or isinstance(group, bool) or group <= 0
+                                               for group in payload["groups"])):
+                raise Refused("user-access-value", "groups must be a list of positive supplementary group IDs")
+        else:
+            refused = ", ".join(sorted(str(field) for field in fields - _USER_BASIC_UPDATE_FIELDS))
+            raise Refused("user-update-fields", f"user.update payload is outside the positive field allow-list: {refused}")
     targeted = [call for call in action.calls if call.method in target_calls]
     if targeted:
         password_targeted = any(call.method == "user.set_password" for call in targeted)
-        expected_probe_count = 2 if password_targeted else 1
+        account_access_targeted = user_update_mode == "access"
+        ssh_key_targeted = user_update_mode == "ssh-key"
+        if sum((password_targeted, account_access_targeted, ssh_key_targeted)) > 1:
+            raise Refused("target-probe", "one action cannot combine different user credential or access changes")
+        current_user_probe = password_targeted or account_access_targeted or ssh_key_targeted
+        expected_probe_count = 2 if current_user_probe else 1
         if len(action.probe) != expected_probe_count or not isinstance(probe_results, (list, tuple)) or len(probe_results) != expected_probe_count:
             raise Refused("target-probe", "an update or lifecycle action requires one named-object probe")
         probe = action.probe[0]
         query_method, key, _ = target_calls[targeted[0].method]
         if (probe.method != query_method or len(probe.params) != 2 or probe.params[1] != {} or
-                password_targeted and action.probe[1].method != "auth.me"):
+                current_user_probe and action.probe[1].method != "auth.me"):
             raise Refused("target-probe", "the named-object probe does not match the action family")
         filters = probe.params[0]
         if not isinstance(filters, list) or len(filters) != 1 or not isinstance(filters[0], list) or len(filters[0]) != 3:
@@ -1428,12 +1514,34 @@ def validate_plan_preconditions(action: Action, probe_results: Any) -> None:
                     is_current = login_name.casefold() == target_name.casefold()
                     expected_kind = Kind.DESTRUCTIVE if is_current else Kind.MUTATE
                     expected_confirmation = target_name if is_current else None
-                    if action.kind is not expected_kind or action.confirm_target != expected_confirmation:
+                    if (action.kind is not expected_kind or action.confirm_target != expected_confirmation
+                            or is_current and not action.confirm_self):
                         raise Refused("password-classification", "password change confirmation does not match whether the target is the current login user")
                 if call.method == "vm.device.create" and payload.get("vm") != current_id:
                     raise Refused("target-probe", "the VM device target does not match its lookup")
             elif not call.params or call.params[id_index] != current_id:
                 raise Refused("target-probe", "the action ID does not match the current named object")
+            elif call.method == "user.update" and (account_access_targeted or ssh_key_targeted):
+                login = probe_results[1]
+                login_name = login.get("pw_name") if isinstance(login, Mapping) else None
+                if not isinstance(login_name, str) or not login_name:
+                    raise Refused("login-identity", "the current login user could not be determined safely")
+                is_current = login_name.casefold() == target_name.casefold()
+                if account_access_targeted:
+                    row = matches[0]
+                    if (row.get("local") is not True or row.get("builtin") is True or row.get("immutable") is True
+                            or target_name.casefold() in {"root", "admin"}):
+                        raise Refused("builtin-user", "account access changes require a mutable local non-built-in account")
+                    if (action.kind is not Kind.DESTRUCTIVE or action.confirm_target != target_name):
+                        raise Refused("user-access-confirmation", "account access changes require destructive classification and typed username confirmation")
+                    if is_current and not action.confirm_self:
+                        raise Refused("current-user", "account access changes to the current login need the extra confirmation flag")
+                else:
+                    expected_kind = Kind.DESTRUCTIVE if is_current else Kind.MUTATE
+                    expected_confirmation = target_name if is_current else None
+                    if (action.kind is not expected_kind or action.confirm_target != expected_confirmation
+                            or is_current and not action.confirm_self):
+                        raise Refused("ssh-key-classification", "SSH-key confirmation does not match whether the target is the current login user")
 
     api_key_targeted = [call for call in action.calls if call.method in {"api_key.update", "api_key.delete"}]
     if api_key_targeted:

@@ -93,6 +93,8 @@ tnt vm create guest --profile lab --memory 2048 --vcpus 2 --disk-zvol tank/vms/g
 tnt vm console guest --profile lab --json
 tnt user list --profile lab --json
 tnt user create deploy "Deploy user" --profile lab --group 1001 --password-disabled --allow-write
+tnt user update deploy --profile lab --full-name "Deployment service" --allow-write
+tnt user access deploy --profile lab --groups 1001,1002 --allow-write --confirm deploy
 tnt user ssh-key set deploy --profile lab --file ~/.ssh/id_ed25519.pub --add --allow-write
 tnt user password deploy --profile lab --password-file /home/me/.config/tnt/new-password --allow-write
 tnt user ssh-key remove deploy --profile lab --allow-write
@@ -111,10 +113,15 @@ tnt tui --profile lab --allow-write
 ```
 
 Each write command requires `--allow-write`; destructive commands also require `--confirm TARGET`. Use `--dry-run` to
-render the plan without applying it. Changing the current login user's password additionally requires
-`--confirm-self`; it remains destructive and needs `--confirm USER`. Other users' password changes are planned writes.
-Password entry uses a no-echo prompt or `--password-file`; tnt does not accept a password argument. API payloads not
-covered by a minimal create wizard can be supplied as a JSON `--file`.
+render the plan without applying it. Changing the current login user's password additionally requires `--confirm-self`;
+other users' password changes are planned writes. Password entry uses a no-echo prompt or `--password-file`; tnt does
+not accept a password argument. API payloads not covered by a minimal create wizard can be supplied as a JSON `--file`.
+User updates accept only `full_name`, `shell`, and `home`. Group membership and `password_disabled`, `locked`, and
+`ssh_password_enabled` changes use the separate `user access` workflow. Every access change is destructive and needs
+`--confirm USER`; the current login account additionally needs `--confirm-self`, and tnt checks `auth.me` again at
+apply. Built-in, immutable, root, and admin accounts are refused by this workflow. Current-login SSH-key changes also
+require `--confirm-self` and typed confirmation. `user.update` refuses `random_password` and username rename. See the
+[user update design](docs/DESIGN.md#user-account-updates).
 
 VM creation uses a `vm.create` plan followed by separately reviewed `vm.device.create` plans for its required disk
 and any optional ISO or NIC. The v27 schema excludes devices from `vm.create`, so a later device-plan failure can

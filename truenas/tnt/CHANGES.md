@@ -32,6 +32,12 @@
 - Added shared query/action workflows for datasets, snapshots, local users, containers, and virtual machines to the
   CLI and Textual screens. Mutations use exact API plans, target re-reads, drift checks, and typed confirmation for
   destructive actions; dataset deletion also checks children, mount state, and running workload attachments.
+- Restricted basic `user.update` to `full_name`, `shell`, and `home`; group membership and password/lock/SSH-password
+  access changes now use a separate typed-confirmation workflow that binds and rechecks `auth.me`, including the
+  explicit current-user confirmation bit in each plan. `random_password`,
+  username rename, and built-in/immutable account access changes are refused. Current-user SSH-key changes also require
+  typed confirmation and an apply-time identity probe; password/authentication flags remain visible while secret values
+  stay masked.
 - Added guarded local-user create/update/delete, SSH public-key set/add/remove, and password changes. Current-login
   password changes require the extra self-confirmation and typed username; other-account password changes remain
   ordinary planned writes. Secrets stay masked in plans and returned JSON.

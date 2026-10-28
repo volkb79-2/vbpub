@@ -69,6 +69,14 @@ def test_user_input_and_editability_refusals_are_specific():
     for field in ("password", "sshpubkey"):
         with pytest.raises(Refused, match="dedicated"):
             workflows.user_update_action("alice", {field: "unsafe"})
+    with pytest.raises(Refused, match="allow-list"):
+        workflows.user_update_action("alice", {"username": "renamed"})
+    for payload in ({"random_password": True}, {"password_disabled": True}, {"locked": True},
+                    {"ssh_password_enabled": False}):
+        with pytest.raises(Refused, match="allow-list"):
+            workflows.user_update_action("alice", payload)
+    with pytest.raises(Refused, match="non-empty string"):
+        workflows.user_update_action("alice", {"full_name": ""})
     with pytest.raises(Refused, match="directory-service"):
         Workflows(rpc_user(USER | {"local": False})).user_update_action("alice", {"shell": "/bin/sh"})
     with pytest.raises(Refused, match="pass --builtin"):
@@ -77,6 +85,43 @@ def test_user_input_and_editability_refusals_are_specific():
         Workflows(Rpc(**{"user.query": [USER], "auth.me": {}})).user_update_action("alice", {"shell": "/bin/sh"})
     with pytest.raises(Refused, match="builtin and root/admin"):
         Workflows(rpc_user(USER | {"username": "root"})).user_delete_action("root")
+
+
+def test_user_access_changes_are_separate_typed_and_current_user_guarded():
+    workflows = Workflows(rpc_user())
+    for values in ({"password_disabled": True}, {"locked": True}, {"ssh_password_enabled": False}):
+        action = workflows.user_access_action("alice", values)
+        assert action.kind is Kind.DESTRUCTIVE and action.confirm_target == "alice"
+        assert action.calls[0].method == "user.update"
+        assert action.calls[0].params[1] == values
+        assert [call.method for call in action.probe] == ["user.query", "auth.me"]
+
+    with pytest.raises(Refused, match="allow-list"):
+        workflows.user_access_action("alice", {"random_password": True})
+    with pytest.raises(Refused, match="allow-list"):
+        workflows.user_access_action("alice", {"username": "renamed"})
+    with pytest.raises(Refused, match="boolean"):
+        workflows.user_access_action("alice", {"locked": "true"})
+    with pytest.raises(Refused, match="at least one account-access"):
+        workflows.user_access_action("alice", {})
+    with pytest.raises(Refused, match="primary group ID"):
+        workflows.user_access_action("alice", {"group": True})
+    with pytest.raises(Refused, match="supplementary group IDs"):
+        workflows.user_access_action("alice", {"groups": [10, True]})
+    with pytest.raises(Refused, match="confirm_self must be true or false"):
+        workflows.user_access_action("alice", {"locked": True}, confirm_self=1)
+    with pytest.raises(Refused, match="extra confirmation"):
+        Workflows(rpc_user(USER, login="alice")).user_access_action("alice", {"locked": True})
+    self_action = Workflows(rpc_user(USER, login="alice")).user_access_action(
+        "alice", {"locked": False}, confirm_self=True)
+    assert self_action.kind is Kind.DESTRUCTIVE and self_action.confirm_target == "alice"
+    self_key = Workflows(rpc_user(USER, login="alice")).user_ssh_key_action("alice", [], remove=True, confirm_self=True)
+    assert self_key.kind is Kind.DESTRUCTIVE and self_key.confirm_target == "alice"
+    assert [call.method for call in self_key.probe] == ["user.query", "auth.me"]
+    with pytest.raises(Refused, match="built in"):
+        Workflows(rpc_user(USER | {"builtin": True})).user_access_action("alice", {"locked": True})
+    with pytest.raises(Refused, match="immutable"):
+        Workflows(rpc_user(USER | {"immutable": True})).user_access_action("alice", {"locked": True})
 
 
 def test_user_password_and_key_modes_cover_self_add_replace_and_remove():
@@ -232,6 +277,9 @@ def test_dataset_delete_probe_helpers_require_shape_and_match_only_live_attachme
     assert _safe_value({"password": "x", "nested": [{"sshpubkey": "y"}]}) == {
         "password": "***", "nested": [{"sshpubkey": "***"}],
     }
+    assert _safe_value({"password_disabled": True, "ssh_password_enabled": False, "password": "secret"}) == {
+        "password_disabled": True, "ssh_password_enabled": False, "password": "***",
+    }
 
 
 def test_target_probe_shapes_and_password_identity_are_rechecked():
@@ -241,7 +289,8 @@ def test_target_probe_shapes_and_password_identity_are_rechecked():
     current_write = Action("TNT-41", Kind.MUTATE, "bad classification", (call,), (query, auth))
     with pytest.raises(Refused, match="confirmation does not match"):
         validate_plan_preconditions(current_write, [[USER], {"pw_name": "alice"}])
-    correct_write = Action("TNT-41", Kind.DESTRUCTIVE, "correct classification", (call,), (query, auth), "alice")
+    correct_write = Action("TNT-41", Kind.DESTRUCTIVE, "correct classification", (call,), (query, auth), "alice",
+                           confirm_self=True)
     validate_plan_preconditions(correct_write, [[USER], {"pw_name": "alice"}])
     with pytest.raises(Refused, match="login user could not"):
         validate_plan_preconditions(correct_write, [[USER], {}])

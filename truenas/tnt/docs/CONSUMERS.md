@@ -76,7 +76,8 @@ tnt vm console guest --profile lab --json
 tnt vm delete guest --profile lab --allow-write --confirm guest
 tnt user list --profile lab --json
 tnt user create deploy "Deployment account" --profile lab --group 1001 --password-disabled --allow-write
-tnt user update deploy --profile lab --full-name "Deployment service" --groups 1001,1002 --allow-write
+tnt user update deploy --profile lab --full-name "Deployment service" --allow-write
+tnt user access deploy --profile lab --groups 1001,1002 --allow-write --confirm deploy
 tnt user ssh-key set deploy --profile lab --file ~/.ssh/id_ed25519.pub --add --allow-write
 tnt user ssh-key set deploy --profile lab --file ~/.ssh/id_ed25519.pub --allow-write
 tnt user ssh-key remove deploy --profile lab --allow-write
@@ -271,6 +272,13 @@ device option accepts `disk`, `iso`, or `nic`; a schema-complete device JSON fil
 full target via `--confirm`. Password changes to another account are planned writes; changing the current login
 account also needs `--confirm-self` and typed confirmation. Built-in users cannot be deleted. Add `--builtin` only
 when intentionally editing a built-in user; it never enables deletion.
+
+User `update` accepts only basic `full_name`, `shell`, and `home` fields. Use `user access` for primary or supplementary
+groups and for `--password-disabled` / `--password-enabled`, `--locked` / `--unlocked`, or `--ssh-password-enabled` /
+`--ssh-password-disabled`. It always asks you to type the target username. Changing the current login account also
+requires `--confirm-self`; tnt binds `auth.me` into the plan and checks it again before apply. Built-in, immutable,
+root, and admin accounts are refused. `random_password` and username rename are refused by both user update paths.
+Current-user password and SSH-key changes also require `--confirm-self` and typed username confirmation.
 
 For VM creation, v27 requires two stages: tnt first reviews `vm.create`, then resolves the new VM ID and displays a
 separate exact `vm.device.create` plan for each disk, ISO, or NIC before applying that call. A later device failure

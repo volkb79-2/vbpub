@@ -87,6 +87,7 @@ class Action:
     confirm_target: str | None = None  # the name the operator types for a destructive action
     force_with_jobs: bool = False
     system_preflight: tuple[Any, ...] = ()
+    confirm_self: bool = False  # explicit confirmation when an account action can change the current login
 
 
 @dataclass(frozen=True)
@@ -103,6 +104,8 @@ class Plan:
         lines += [f"  {i}. {c.render()}" for i, c in enumerate(self.action.calls, 1)]
         if self.action.confirm_target:
             lines.append(f"Destructive: type {self.action.confirm_target!r} to confirm.")
+        if self.action.confirm_self:
+            lines.append("Explicit current-account confirmation: supplied.")
         if self.action.system_preflight:
             host, jobs, vms, containers, sessions, full_admin = self.action.system_preflight
             lines.append(f"System preflight for {host}:")
@@ -133,8 +136,9 @@ def validate_action(action: Action) -> None:
         raise Refused("empty-probe", f"{action.id} is destructive but has no probe: the drift check would be vacuous")
     if action.kind is Kind.DESTRUCTIVE and not (action.confirm_target and action.confirm_target.strip()):
         raise Refused("empty-confirm", f"{action.id} is destructive but names no confirmation target to type")
-    if not isinstance(action.force_with_jobs, bool) or not isinstance(action.system_preflight, tuple):
-        raise Refused("action-policy", "system action safety metadata is malformed")
+    if (not isinstance(action.force_with_jobs, bool) or not isinstance(action.system_preflight, tuple)
+            or not isinstance(action.confirm_self, bool)):
+        raise Refused("action-policy", "action safety metadata is malformed")
     if action.force_with_jobs and not action.system_preflight:
         raise Refused("action-policy", "force_with_jobs is available only for a preflighted system action")
     if action.kind is not Kind.DESTRUCTIVE:
@@ -167,6 +171,7 @@ def fingerprint_of(rpc: GuardedRpc, action: Action, nonce: str) -> str:
     material = {
         "id": action.id, "kind": str(action.kind), "title": action.title, "confirm": action.confirm_target,
         "force_with_jobs": action.force_with_jobs, "system_preflight": action.system_preflight,
+        "confirm_self": action.confirm_self,
         "session": rpc.session_id, "nonce": nonce,
         "calls": [[c.method, _fingerprint_value(c.params, nonce), c.job] for c in action.calls],
         "probe": [[c.method, _fingerprint_value(c.params, nonce), _fingerprint_value(result, nonce)]

@@ -148,6 +148,7 @@ def test_workflow_action_builders_cover_all_core_screen_operations(config):
                 ("Local Users", "users", [
                     ("create", {"full_name": "New User", "group": 10, "password_disabled": True}, "bob", "user.create"),
                     ("update", {"full_name": "Alice Example"}, "alice", "user.update"),
+                    ("access", {"locked": True}, "alice", "user.update"),
                     ("password", {}, "alice", "user.set_password"),
                     ("ssh-key-add", {}, "alice", "user.update"),
                     ("ssh-key-replace", {}, "alice", "user.update"),
@@ -450,6 +451,7 @@ def test_workflow_button_validation_and_vm_cancel_distinguishes_stage(config):
             await pilot.click("#workflow-plan")
             assert "Choose an action first" in str(app.query_one("#workflow-note", Static).render())
             view.query_one("#workflow-operation", Select).value = "start"
+            await pilot.pause(0.1)
             view.query_one("#workflow-data", TextArea).text = "{"
             await pilot.pause(0.1)
             await pilot.click("#workflow-plan")

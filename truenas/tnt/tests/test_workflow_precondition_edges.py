@@ -112,6 +112,83 @@ def test_password_preconditions_bind_username_and_current_login_classification()
         validate_plan_preconditions(mismatch, [[{"id": 2, "username": "alice"}], {"pw_name": "operator"}])
 
 
+def test_account_access_update_preconditions_bind_target_identity_and_confirmation():
+    query = RpcCall("user.query", ([["username", "=", "alice"]], {}))
+    auth = RpcCall("auth.me")
+    call = RpcCall("user.update", (8, {"locked": True}))
+    action = Action("TNT-41", Kind.DESTRUCTIVE, "Update account access for user alice", (call,), (query, auth), "alice")
+    probes = [[{"id": 8, "username": "alice", "local": True, "builtin": False}], {"pw_name": "operator"}]
+    validate_plan_preconditions(action, probes)
+
+    with pytest.raises(Refused, match="typed username confirmation"):
+        validate_plan_preconditions(replace(action, confirm_target="stale"), probes)
+    with pytest.raises(Refused, match="mutable local non-built-in"):
+        validate_plan_preconditions(action, [[probes[0][0] | {"builtin": True}], probes[1]])
+    with pytest.raises(Refused, match="current login user could not be determined"):
+        validate_plan_preconditions(action, [probes[0], {}])
+    with pytest.raises(Refused, match="extra confirmation flag"):
+        validate_plan_preconditions(action, [probes[0], {"pw_name": "alice"}])
+    validate_plan_preconditions(replace(action, confirm_self=True), [probes[0], {"pw_name": "alice"}])
+    with pytest.raises(Refused, match="positive field allow-list"):
+        validate_plan_preconditions(
+            replace(action, calls=(RpcCall("user.update", (8, {"username": "renamed"})),)), probes)
+
+
+@pytest.mark.parametrize("payload", [{"username": "renamed"}, {"random_password": True},
+                                      {"sudo_commands_nopasswd": ["/bin/sh"]}])
+def test_user_update_preconditions_refuse_fields_outside_the_positive_allowlist(payload):
+    query = RpcCall("user.query", ([["username", "=", "alice"]], {}))
+    action = Action("TNT-41", Kind.MUTATE, "Update user alice",
+                    (RpcCall("user.update", (8, payload)),), (query,))
+    with pytest.raises(Refused, match="positive field allow-list"):
+        validate_plan_preconditions(action, [[{"id": 8, "username": "alice", "local": True, "builtin": False}]])
+
+
+def test_user_update_preconditions_reject_malformed_payloads_and_mixed_access_actions():
+    query = RpcCall("user.query", ([["username", "=", "alice"]], {}))
+    auth = RpcCall("auth.me")
+    user_row = {"id": 8, "username": "alice", "local": True, "builtin": False}
+    with pytest.raises(Refused, match="one action may contain only one user.update"):
+        validate_plan_preconditions(
+            Action("TNT-41", Kind.MUTATE, "duplicate", (
+                RpcCall("user.update", (8, {"full_name": "A"})),
+                RpcCall("user.update", (8, {"shell": "/bin/sh"}))), (query,)), [[user_row]])
+    with pytest.raises(Refused, match="target ID and a non-empty field mapping"):
+        validate_plan_preconditions(
+            Action("TNT-41", Kind.MUTATE, "malformed", (RpcCall("user.update", (8, {})),), (query,)), [[user_row]])
+    with pytest.raises(Refused, match="non-empty strings"):
+        validate_plan_preconditions(
+            Action("TNT-41", Kind.MUTATE, "empty name", (RpcCall("user.update", (8, {"full_name": " "})),), (query,)),
+            [[user_row]])
+    with pytest.raises(Refused, match="must be boolean"):
+        validate_plan_preconditions(
+            Action("TNT-41", Kind.DESTRUCTIVE, "bad lock", (RpcCall("user.update", (8, {"locked": 1})),),
+                   (query, auth), "alice", confirm_self=True), [[user_row], {"pw_name": "operator"}])
+    with pytest.raises(Refused, match="primary group ID"):
+        validate_plan_preconditions(
+            Action("TNT-41", Kind.DESTRUCTIVE, "bad group", (RpcCall("user.update", (8, {"group": 0})),),
+                   (query, auth), "alice"), [[user_row], {"pw_name": "operator"}])
+    with pytest.raises(Refused, match="supplementary group IDs"):
+        validate_plan_preconditions(
+            Action("TNT-41", Kind.DESTRUCTIVE, "bad groups", (RpcCall("user.update", (8, {"groups": [0]})),),
+                   (query, auth), "alice"), [[user_row], {"pw_name": "operator"}])
+    with pytest.raises(Refused, match="cannot combine different user credential"):
+        validate_plan_preconditions(
+            Action("TNT-41", Kind.DESTRUCTIVE, "mixed", (
+                RpcCall("user.update", (8, {"locked": True})),
+                RpcCall("user.set_password", ({"username": "alice", "new_password": Secret("x")},))),
+                   (query, auth), "alice", confirm_self=True), [[user_row], {"pw_name": "operator"}])
+
+
+def test_ssh_key_preconditions_require_self_classification():
+    query = RpcCall("user.query", ([["username", "=", "alice"]], {}))
+    auth = RpcCall("auth.me")
+    action = Action("TNT-41", Kind.MUTATE, "Set SSH key", (RpcCall("user.update", (8, {"sshpubkey": Secret("key")})),),
+                    (query, auth))
+    with pytest.raises(Refused, match="SSH-key confirmation does not match"):
+        validate_plan_preconditions(action, [[{"id": 8, "username": "alice"}], {"pw_name": "alice"}])
+
+
 def test_share_create_preconditions_bind_canonical_path_and_unique_name():
     path = "/mnt/tank/share"
     call = RpcCall("sharing.smb.create", ({"name": "team", "path": path},))

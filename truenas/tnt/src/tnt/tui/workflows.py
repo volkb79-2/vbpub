@@ -40,7 +40,8 @@ OPERATIONS = {
            ("Stop selected", "stop"), ("Restart selected", "restart"), ("Power off selected", "poweroff"),
            ("Suspend selected", "suspend"), ("Resume selected", "resume"), ("Console/VNC info", "console"),
            ("Delete selected", "delete")),
-    "users": (("Create user", "create"), ("Update selected", "update"), ("Set password", "password"),
+    "users": (("Create user", "create"), ("Update selected basics", "update"), ("Update account access", "access"),
+              ("Set password", "password"),
               ("Add SSH public key", "ssh-key-add"), ("Replace SSH public keys", "ssh-key-replace"),
               ("Remove SSH public keys", "ssh-key-remove"), ("Delete selected", "delete")),
     "sharing": (("Create SMB share", "create-smb"), ("Create NFS share", "create-nfs"),
@@ -307,6 +308,8 @@ class WorkflowView(Vertical):
                 return workflows.user_create_action(data)
             if operation == "update":
                 return workflows.user_update_action(str(name), data, builtin=builtin)
+            if operation == "access":
+                return workflows.user_access_action(str(name), data, confirm_self=confirm_self)
             if operation == "password":
                 if not secret_text:
                     raise ValueError("enter a password in the hidden secret field")
