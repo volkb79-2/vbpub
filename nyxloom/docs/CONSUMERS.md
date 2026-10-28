@@ -57,8 +57,8 @@ deduplicated API request tokens to each session and nested subagent. D-022
 chooses this additive command spelling; the command uses the pure
 `session_extract.usage` service without project registration or daemon state.
 Reports are read-only unless `--out FILE` is supplied, which writes the
-selected rendering to that file with mode `0600`. The writer creates missing
-parent directories with mode `0700` and reports invalid parents clearly.
+selected rendering to that file with mode `0600`. The writer creates missing parent directories
+with mode `0700` and reports invalid parents clearly.
 Operator UI anchors are the narrow local-state exception: they are written
 only by the explicit `usage anchor add` command. JSON uses the frozen
 `usage-report-v1` schema and contains an exact call ledger, nodes with self and

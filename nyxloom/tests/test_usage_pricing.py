@@ -644,11 +644,13 @@ def test_windows_separate_observed_resets_weekly_reset_and_rolling_analysis(tmp_
     weekly = next(item for item in report["observed_intervals"] if item["kind"] == "weekly")
     assert five_hour["start"] == "2026-10-28T10:00:00Z"
     assert five_hour["end"] == "2026-10-28T15:00:00Z"
-    assert five_hour["raw_token_units"] == 10
+    assert five_hour["raw_token_units"] == 30
     assert weekly["start"] == "2026-10-21T12:00:00Z"
     assert weekly["end"] == "2026-10-28T12:00:00Z"
     assert report["rolling_analysis"]["kind"] == "rolling_analysis_not_account_session"
-    assert report["rolling_analysis"]["start"] == "2026-10-28T07:00:00Z"
+    assert report["rolling_analysis"]["start"] == "2026-10-28T10:01:00Z"
+    assert report["rolling_analysis"]["calls"] == 1
+    assert report["rolling_analysis"]["raw_token_units"] == 20
     assert report["estimated_limit_pct"] is None
     assert report["threshold_events"][0]["percentage"] is None
     assert report["window_semantics"]["verified_plan_scope"] == "Max plans only"
@@ -667,7 +669,8 @@ def test_windows_preserve_one_observed_reset_without_inventing_interval_start():
     }
 
     report = build_usage_windows(
-        _corpus([]), [anchor], resolve_window("24h", None, now=NOW), load_weights(),
+        _corpus([]), [anchor],
+        resolve_window("24h", "2026-10-28T16:00:00Z", now=NOW), load_weights(),
     )
 
     assert report["observed_intervals"] == []
@@ -745,7 +748,7 @@ def test_windows_clip_calls_boundaries_events_and_interval_metrics_to_half_open_
 
     assert report["query_window"] == {
         "start": "2026-10-28T10:00:00Z",
-        "end": "2026-10-28T12:00:00Z",
+        "end": "2026-10-28T16:00:00Z",
         "semantics": "[since, until)",
     }
     assert [item["reset_at"] for item in report["observed_reset_boundaries"]
@@ -766,9 +769,9 @@ def test_windows_clip_calls_boundaries_events_and_interval_metrics_to_half_open_
     }
     assert interval["calls"] == 2
     assert interval["raw_token_units"] == 30
-    assert report["rolling_analysis"]["start"] == "2026-10-28T10:01:00Z"
-    assert report["rolling_analysis"]["calls"] == 2
-    assert report["rolling_analysis"]["raw_token_units"] == 30
+    assert report["rolling_analysis"]["start"] == "2026-10-28T11:00:00Z"
+    assert report["rolling_analysis"]["calls"] == 1
+    assert report["rolling_analysis"]["raw_token_units"] == 20
 
     past_query = resolve_window(
         "2026-10-28T10:00:00Z", "2026-10-28T12:00:00Z", now=NOW,
@@ -1500,7 +1503,8 @@ def test_windows_report_spacing_unverified_and_unknown_pricing_without_weights()
         source_line=1, limit_kind="five_hour", reset_at=None,
     )
     report = build_usage_windows(
-        _corpus([unpriced], [event]), [first, second], resolve_window("12h", None, now=NOW), None,
+        _corpus([unpriced], [event]), [first, second],
+        resolve_window("12h", "2026-10-28T18:00:00Z", now=NOW), None,
     )
     assert report["reset_boundary_status"]["five_hour"]["interval_status"] == "spacing_unverified"
     assert report["rolling_analysis"]["api_equivalent_usd"] is None
@@ -1628,7 +1632,7 @@ def test_anchor_path_with_parent_component_and_duplicate_window_evidence(tmp_pat
     invalid_kind = {**anchor, "anchor_id": "unknown-kind", "kind": "monthly"}
     report = build_usage_windows(
         _corpus([]), [anchor, anchor, invalid_kind],
-        resolve_window("24h", None, now=NOW), load_weights(),
+        resolve_window("24h", "2026-10-28T16:00:00Z", now=NOW), load_weights(),
     )
     assert len(report["observed_reset_boundaries"]) == 1
     assert len(report["observed_reset_boundaries"][0]["evidence"]) == 1
