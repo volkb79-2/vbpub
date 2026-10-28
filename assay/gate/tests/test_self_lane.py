@@ -47,6 +47,7 @@ def _load_b105_checker():
 NYXLOOM_TOML = PROJECT_ROOT / "nyxloom-trove" / "nyxloom.toml"
 GATE_ID = "tester-unified"
 QUALIFICATION_ID = "self-qualification"
+PROVISIONAL_ID = "self-qualification-provisional"
 PREFLIGHT_ID = "self-qualification-preflight"
 B110_PILOT_ID = "b110-pilot"
 B110_SCREEN_ID = "b110-screen"
@@ -83,6 +84,7 @@ def test_assays_own_lane_file_loads():
         GATE_ID,
         QUALIFICATION_ID,
         PREFLIGHT_ID,
+        PROVISIONAL_ID,
         "analysis",
         "analysis-r2",
     ]
@@ -1988,3 +1990,88 @@ def test_b105_coverage_export_refuses_a_symlinked_source(tmp_path, monkeypatch):
     monkeypatch.setenv("ASSAY_B105_SOURCE_TREE", "b" * 40)
     with pytest.raises(RuntimeError, match="not a regular file"):
         archive_b105_coverage(session=None, exitstatus=0)
+
+
+# --- the R2-free provisional qualification lane (B169/B170) -------------------
+
+
+def test_the_provisional_lane_is_the_full_qualification_minus_only_r2():
+    lanes = load_lane_file(SELF_LANE_FILE).lanes
+    full, provisional = lanes[QUALIFICATION_ID], lanes[PROVISIONAL_ID]
+
+    assert tuple(provisional.rigor) == ("R0", "R1", "R3")
+    assert tuple(full.rigor) == ("R0", "R1", "R2", "R3")
+    assert provisional.argv[:5] == full.argv[:5]
+    assert provisional.judge.mutation is None
+    # same source, same whole-target 100% line and branch bar, same canary
+    assert provisional.judge.targets == full.judge.targets
+    assert provisional.judge.fail_under == full.judge.fail_under == 100.0
+    assert provisional.judge.require_branch is True
+    assert provisional.judge.canary == full.judge.canary
+
+
+def test_the_provisional_lane_is_registered_with_its_own_wrapper_mode_and_artifacts():
+    lane = tomllib.loads(RUN_GATE_TOML.read_text(encoding="utf-8"))["lanes"][PROVISIONAL_ID]
+    wrapper = (PROJECT_ROOT / "tools" / "self-qualification-container.sh").read_text(encoding="utf-8")
+
+    assert lane["kind"] == "command" and lane["environment"] == "bare-host"
+    assert lane["argv"][-1] == PROVISIONAL_ID
+    assert lane["resources"] == {"shared": ["assay-self-qualification"]}
+    assert ".assay/mutation-postponed-assay.json" in lane["artifacts"]
+    assert "ASSAY_SELF_QUALIFICATION_PROVISIONAL_VERIFIED=1" in wrapper
+
+
+def test_the_postponement_marker_is_keyed_windowed_and_cleared_by_the_full_lane():
+    gate = (PROJECT_ROOT / "tools" / "self-qualification-gate.sh").read_text(encoding="utf-8")
+    body = gate.split("record_r2_postponement() {", 1)[1].split("run_and_verify_lane() {", 1)[0]
+
+    assert 'TRACKING_ID = "B169"' in body
+    assert "operator decision 2026-10-27" in body
+    assert "WINDOW = ((10, 0, 0), (10, 1, 0))" in body
+    assert '"result": "provisional"' in body and '"rigor_postponed": "R2"' in body
+    assert "not an R2 pass" in body
+    # the marker is written after the lane was verified, never before
+    flow = gate.split('\nif [[ "$requested_lane" == "self-qualification-provisional" ]]; then\n', 1)[1].split("exit 0", 1)[0]
+    assert flow.index("run_and_verify_lane") < flow.index("record_r2_postponement")
+    # the full lane and a fresh provisional run both delete a stale marker
+    assert gate.count('rm -f -- "$postponed_marker"') == 1
+    assert 'rm -f -- "$r2_manifest_path" "$postponed_marker"' in gate
+
+
+def _run_postponement(tmp_path, tags):
+    gate = (PROJECT_ROOT / "tools" / "self-qualification-gate.sh").read_text(encoding="utf-8")
+    body = gate.split("record_r2_postponement() {", 1)[1].split("run_and_verify_lane() {", 1)[0]
+    script = body.split("<<'PYEOF'\n", 1)[1].split("\nPYEOF", 1)[0]
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git = lambda *a: subprocess.run(["git", "-C", str(repo), *a], check=True, capture_output=True)  # noqa: E731
+    git("init", "-q")
+    git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "--allow-empty", "-qm", "x")
+    for tag in tags:
+        git("tag", tag)
+    marker = tmp_path / "marker.json"
+    proc = subprocess.run(
+        [sys.executable, "-c", script, str(marker), "c" * 40, "t" * 40, "10.0.0"],
+        cwd=repo, capture_output=True, text=True, check=False,
+    )
+    return proc, marker
+
+
+def test_the_postponement_marker_records_a_provisional_result_inside_its_window(tmp_path):
+    import json
+
+    proc, marker = _run_postponement(tmp_path, ["assay-v9.0.0"])
+
+    assert proc.returncode == 0, proc.stderr
+    assert "not an R2 pass" in proc.stderr
+    document = json.loads(marker.read_text(encoding="utf-8"))
+    assert document["result"] == "provisional" and document["rigor_postponed"] == "R2"
+    assert document["tracking_id"] == "B169" and document["commit"] == "c" * 40
+
+
+def test_the_postponement_is_refused_once_the_window_has_closed(tmp_path):
+    proc, marker = _run_postponement(tmp_path, ["assay-v10.0.0", "assay-v10.1.0"])
+
+    assert proc.returncode != 0
+    assert "valid only below assay 10.1.0" in proc.stderr
+    assert not marker.exists()
