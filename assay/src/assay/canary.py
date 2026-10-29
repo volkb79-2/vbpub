@@ -79,14 +79,18 @@ runs against comes from *prepared*.
 
 from __future__ import annotations
 
+import difflib
 import os
+import re
+import secrets
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import MappingProxyType
 from typing import Iterable, Mapping, Sequence
+from urllib.parse import unquote, urlparse
 
 from . import contention, git
-from .adapters.base import LanguageAdapter, _IMPORT_BREAK_MARKER
+from .adapters.base import _IMPORT_BREAK_MARKER, LanguageAdapter
 from .config import Lane
 from .coverage_parsers.model import CoverageProfile
 from .diff import AddedLines
@@ -100,13 +104,13 @@ from .runner import (
     LaneDeadline,
     ProcessRunner,
     SnapshotUnitResult,
+    _execute_snapshot_unit,
+    _plan_passthrough_values,
+    _relocate_source_roots,
     build_r0_claim,
     default_process_runner,
     evaluate_r1,
     execute_command,
-    _execute_snapshot_unit,
-    _plan_passthrough_values,
-    _relocate_source_roots,
 )
 from .verdict import (
     CANARY_AGGREGATIONS,
@@ -166,14 +170,21 @@ def _single_target_result(*, mechanism: str, **attempt: object) -> CanaryResult:
 
 
 def _contention_note(phase: str, observation: contention.ContentionObservation) -> str:
-    details = (
-        f" ({', '.join(observation.reasons)})"
-        if observation.status == "affected" and observation.reasons
-        else ""
-    )
+    details = f" ({', '.join(observation.reasons)})" if observation.reasons else ""
     return (
         f"{phase} result withheld by cgroup resource window "
         f"{observation.status}{details}"
+    )
+
+
+def _contention_telemetry_note(
+    phase: str, observation: contention.ContentionObservation
+) -> str | None:
+    if not observation.reasons:
+        return None
+    return (
+        f"{phase} cgroup resource telemetry ({observation.status}): "
+        f"{', '.join(observation.reasons)}"
     )
 
 
@@ -213,16 +224,180 @@ def _utc_now() -> datetime:
 
 
 def _apply_mechanism(
-    adapter: LanguageAdapter, mechanism: str, text: str
+    adapter: LanguageAdapter,
+    mechanism: str,
+    text: str,
+    *,
+    import_break_nonce: str | None = None,
 ) -> tuple[str, str] | None:
     """Apply *mechanism* to *text* via *adapter*'s own injector method, or
     ``None`` for an unrecognised mechanism name — O3's "malformed transform"
     case, caught here BEFORE anything is run."""
     if mechanism == MECHANISM_IMPORT_BREAK:
-        return adapter.inject_import_break(text)
+        transformed, description = adapter.inject_import_break(text)
+        if import_break_nonce is not None:
+            transformed = _bind_import_break_nonce(
+                text, transformed, import_break_nonce
+            )
+            description = (
+                f"{description}; bound to this run's private import-break nonce"
+            )
+        return transformed, description
     if mechanism == MECHANISM_UNCOVERED_LINE:
         return adapter.inject_uncovered_line(text)
     return None
+
+
+def _bind_import_break_nonce(
+    original_text: str, transformed_text: str, nonce: str
+) -> str:
+    """Replace the adapter's newly inserted public template marker with a
+    per-run token, without changing any pre-existing source occurrence.
+
+    Shipped adapters add one marker-bearing line. A custom adapter that does
+    not expose that exact addition still runs, but cannot produce positive
+    import-break cause evidence and therefore cannot pass R3.
+    """
+    original_lines = original_text.splitlines(keepends=True)
+    transformed_lines = transformed_text.splitlines(keepends=True)
+    matcher = difflib.SequenceMatcher(
+        a=original_lines, b=transformed_lines, autojunk=False
+    )
+    inserted_marker_lines: list[int] = []
+    for tag, _i1, _i2, j1, j2 in matcher.get_opcodes():
+        if tag not in {"insert", "replace"}:
+            continue
+        inserted_marker_lines.extend(
+            j for j in range(j1, j2) if _IMPORT_BREAK_MARKER in transformed_lines[j]
+        )
+    if len(inserted_marker_lines) != 1:
+        return transformed_text
+    index = inserted_marker_lines[0]
+    transformed_lines[index] = transformed_lines[index].replace(
+        _IMPORT_BREAK_MARKER,
+        f"{_IMPORT_BREAK_MARKER}:{nonce}",
+        1,
+    )
+    return "".join(transformed_lines)
+
+
+def _import_break_nonce_line(transformed_text: str, nonce: str) -> int | None:
+    token = f"{_IMPORT_BREAK_MARKER}:{nonce}"
+    lines = [
+        index
+        for index, line in enumerate(transformed_text.splitlines(), start=1)
+        if token in line
+    ]
+    return lines[0] if len(lines) == 1 else None
+
+
+def _diagnostic_path_matches(
+    raw_path: str, *, target_path: str, target_file: Path
+) -> bool:
+    value = raw_path.strip()
+    if value.startswith("file://"):
+        parsed = urlparse(value)
+        value = unquote(parsed.path)
+    if not value:
+        return False
+    if Path(value).is_absolute() or PureWindowsPath(value).is_absolute():
+        try:
+            return Path(value).resolve() == target_file.resolve()
+        except OSError:
+            return False
+    parts = PurePosixPath(value.replace("\\", "/")).parts
+    expected_parts = PurePosixPath(target_path).parts
+    return (
+        len(parts) >= len(expected_parts)
+        and parts[-len(expected_parts) :] == expected_parts
+    )
+
+
+def _has_import_break_diagnostic(
+    result: CommandResult,
+    *,
+    nonce: str,
+    target_path: str,
+    target_file: Path,
+    line: int | None,
+    language: str,
+) -> bool:
+    """Prove the failure was raised at the injected import-break statement.
+
+    The nonce alone is not evidence: the diagnostic must also contain a
+    language-native exception/panic header and a stack/source frame naming
+    this exact transformed file and injected line. Echoed markers, test
+    output, and copied nonce-less source text therefore do not count.
+    """
+    if (
+        result.outcome is not Outcome.FAIL
+        or result.reason_code is not ReasonCode.COMMAND_FAILED
+        or line is None
+    ):
+        return False
+    token = f"{_IMPORT_BREAK_MARKER}:{nonce}"
+    expected_python_statement = f'raise AssertionError("{token}")'
+    for output, dropped in (
+        (result.stdout_tail or "", result.stdout_dropped_bytes),
+        (result.stderr_tail or "", result.stderr_dropped_bytes),
+    ):
+        if not output or dropped:
+            continue
+        if language == "python":
+            frame_matches = False
+            for match in re.finditer(
+                r'(?m)^\s*File "(?P<path>.+)", line (?P<line>[0-9]+), in [^\n]+$'
+                r"|^(?P<pytest_path>.+\.py):(?P<pytest_line>[0-9]+): in [^\n]+$",
+                output,
+            ):
+                frame_path = match.group("path") or match.group("pytest_path")
+                frame_line = match.group("line") or match.group("pytest_line")
+                if frame_line == str(line) and _diagnostic_path_matches(
+                    frame_path, target_path=target_path, target_file=target_file
+                ):
+                    frame_matches = True
+                    break
+            source_matches = any(
+                source_line.strip().removeprefix("E   ").strip()
+                == expected_python_statement
+                for source_line in output.splitlines()
+            )
+            exception_matches = (
+                re.search(
+                    rf"(?m)^\s*(?:E\s+)?AssertionError:\s*{re.escape(token)}\s*$",
+                    output,
+                )
+                is not None
+            )
+            if frame_matches and source_matches and exception_matches:
+                return True
+        elif language == "javascript":
+            if re.search(rf"(?m)^Error: {re.escape(token)}\s*$", output) is None:
+                continue
+            for match in re.finditer(
+                rf"(?m)^\s*at .*?(?P<path>[^()\s]+):{line}:[0-9]+\)?$",
+                output,
+            ):
+                if _diagnostic_path_matches(
+                    match.group("path"),
+                    target_path=target_path,
+                    target_file=target_file,
+                ):
+                    return True
+        elif language == "go":
+            if re.search(rf"(?m)^panic: {re.escape(token)}\s*$", output) is None:
+                continue
+            for match in re.finditer(
+                rf"(?m)^\s*(?P<path>[^\n]+):{line} \+0x[0-9a-f]+$",
+                output,
+            ):
+                if _diagnostic_path_matches(
+                    match.group("path"),
+                    target_path=target_path,
+                    target_file=target_file,
+                ):
+                    return True
+    return False
 
 
 def _r1_unreached(r0_claim: Claim, lane: Lane) -> bool:
@@ -241,7 +416,7 @@ def _run_pipeline(
     infrastructure_environment: Mapping[str, str] | None = None,
     process_runner: ProcessRunner,
     clock: Clock,
-) -> tuple[Outcome, ReasonCode | None]:
+) -> tuple[Outcome, ReasonCode | None, CommandResult]:
     """The shared engine BOTH the control and the transformed half of
     :func:`run_python_canary` run through — the real R0 step
     (:func:`~assay.runner.execute_command`), then (only when R0 passed, and
@@ -286,7 +461,7 @@ def _run_pipeline(
     )
     r0_claim = build_r0_claim(result)
     if _r1_unreached(r0_claim, lane):
-        return r0_claim.status, r0_claim.reason_code
+        return r0_claim.status, r0_claim.reason_code, result
     r1_claim = evaluate_r1(
         lane,
         repo=repo,
@@ -295,7 +470,7 @@ def _run_pipeline(
         adapter=adapter,
         sensitive_values=_plan_passthrough_values(result.plan),
     )
-    return r1_claim.status, r1_claim.reason_code
+    return r1_claim.status, r1_claim.reason_code, result
 
 
 def run_python_canary(
@@ -341,7 +516,7 @@ def run_python_canary(
     :func:`judge_canary`/:func:`build_canary_claim` derive the actual
     verdict from it.
     """
-    control_outcome, _ = _run_pipeline(
+    control_outcome, _, _ = _run_pipeline(
         lane,
         repo=repo,
         project_root=project_root,
@@ -357,7 +532,13 @@ def run_python_canary(
     expected_reason = _EXPECTED_REASON_BY_MECHANISM.get(mechanism)
     target = project_root / target_path
     original_text = target.read_text(encoding="utf-8")
-    applied = _apply_mechanism(adapter, mechanism, original_text)
+    nonce = secrets.token_hex(16) if mechanism == MECHANISM_IMPORT_BREAK else None
+    applied = _apply_mechanism(
+        adapter,
+        mechanism,
+        original_text,
+        import_break_nonce=nonce,
+    )
     if applied is None:
         return _single_target_result(
             mechanism=mechanism,
@@ -387,7 +568,7 @@ def run_python_canary(
     git.run(repo, "add", "-A")
     git.run(repo, "commit", "-q", "-m", f"assay canary: {description}")
 
-    transformed_outcome, observed_reason_code = _run_pipeline(
+    transformed_outcome, observed_reason_code, transformed_result = _run_pipeline(
         lane,
         repo=repo,
         project_root=project_root,
@@ -398,6 +579,25 @@ def run_python_canary(
         process_runner=process_runner,
         clock=clock,
     )
+    if mechanism == MECHANISM_IMPORT_BREAK:
+        cause_proven = _has_import_break_diagnostic(
+            transformed_result,
+            nonce=nonce or "",
+            target_path=target_path,
+            target_file=target,
+            line=_import_break_nonce_line(transformed_text, nonce or ""),
+            language=adapter.name,
+        )
+        if (
+            transformed_outcome is Outcome.FAIL
+            and observed_reason_code is ReasonCode.COMMAND_FAILED
+            and not cause_proven
+        ):
+            observed_reason_code = ReasonCode.CANARY_SURVIVED
+            description = (
+                f"{description}; command failure lacked a matching per-run "
+                "import-break stack frame"
+            )
     return _single_target_result(
         mechanism=mechanism,
         target=target_path,
@@ -465,26 +665,6 @@ def _judge_unit(
         sensitive_values=sensitive_values,
     )
     return r1_claim.status, r1_claim.reason_code
-
-
-def _has_import_break_diagnostic(result: CommandResult) -> bool:
-    """Whether the transformed R0 command retained the import-break marker.
-
-    ``COMMAND_FAILED`` is the generic non-zero-exit reason for R0, so it is
-    not by itself positive evidence that an import-break caused the failure.
-    Under PSI, only the transform's own diagnostic can exempt that failure
-    from withholding. If a command suppresses or truncates the marker, the
-    conservative result is inconclusive.
-    """
-    if (
-        result.outcome is not Outcome.FAIL
-        or result.reason_code is not ReasonCode.COMMAND_FAILED
-    ):
-        return False
-    return any(
-        _IMPORT_BREAK_MARKER in output
-        for output in (result.stdout_tail or "", result.stderr_tail or "")
-    )
 
 
 def run_isolated_canary(
@@ -648,6 +828,12 @@ def run_isolated_canary(
             contention_notes.append(
                 _contention_note("control", control_contention.observation)
             )
+        else:
+            telemetry = _contention_telemetry_note(
+                "control", control_contention.observation
+            )
+            if telemetry is not None:
+                contention_notes.append(telemetry)
         original_bytes = prepared.read_regular_file(
             canary_repo_path, timeout=deadline.remaining()
         )
@@ -662,7 +848,13 @@ def run_isolated_canary(
             reason_code=ReasonCode.UNREADABLE_ARTIFACT,
         ) from exc
 
-    applied = _apply_mechanism(adapter, mechanism, original_text)
+    nonce = secrets.token_hex(16) if mechanism == MECHANISM_IMPORT_BREAK else None
+    applied = _apply_mechanism(
+        adapter,
+        mechanism,
+        original_text,
+        import_break_nonce=nonce,
+    )
     if applied is None:
         return _single_target_result(
             mechanism=mechanism,
@@ -676,6 +868,7 @@ def run_isolated_canary(
         )
 
     transformed_text, description = applied
+    nonce_line = _import_break_nonce_line(transformed_text, nonce) if nonce is not None else None
     if transformed_text == original_text:
         return _single_target_result(
             mechanism=mechanism,
@@ -731,16 +924,35 @@ def run_isolated_canary(
             deadline=deadline,
             sensitive_values=_plan_passthrough_values(plan),
         )
+        cause_proven = (
+            mechanism != MECHANISM_IMPORT_BREAK
+            or _has_import_break_diagnostic(
+                transform_unit.result,
+                nonce=nonce or "",
+                target_path=target,
+                target_file=transform_snapshot.project_root / PurePosixPath(target),
+                line=nonce_line,
+                language=adapter.name,
+            )
+        )
+        if (
+            mechanism == MECHANISM_IMPORT_BREAK
+            and transformed_outcome is Outcome.FAIL
+            and observed_reason_code is ReasonCode.COMMAND_FAILED
+            and not cause_proven
+        ):
+            observed_reason_code = ReasonCode.CANARY_SURVIVED
+            description = (
+                f"{description}; command failure lacked a matching per-run "
+                "import-break stack frame"
+            )
         if contention.withhold_canary_result(
             transform_contention.observation,
             outcome=transformed_outcome,
             expected_failure=(
                 transformed_outcome is Outcome.FAIL
                 and observed_reason_code is expected_reason
-                and (
-                    mechanism != MECHANISM_IMPORT_BREAK
-                    or _has_import_break_diagnostic(transform_unit.result)
-                )
+                and cause_proven
             ),
             require_observation=require_contention_observation,
         ):
@@ -749,6 +961,12 @@ def run_isolated_canary(
             contention_notes.append(
                 _contention_note("transform", transform_contention.observation)
             )
+        else:
+            telemetry = _contention_telemetry_note(
+                "transform", transform_contention.observation
+            )
+            if telemetry is not None:
+                contention_notes.append(telemetry)
 
     return _single_target_result(
         mechanism=mechanism,

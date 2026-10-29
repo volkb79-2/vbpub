@@ -106,32 +106,37 @@ its HEAD, so run both lanes in the same worktree with no commit in between: any
 later commit, a docs-only or merge commit included, needs a fresh `tester-unified`
 run. Docker container names do not block this lane. Run-Gate maps exit 3 to
 infrastructure `ERROR`; the wrapper uses it for launch failures, timeouts and
-incomplete resource evidence. A direct OOM/pids limit event withholds R0, R1
-and R3 results even if the command exited zero. An unavailable sample or an
-unassignable ancestor-only pids/OOM event withholds R0, R1 and R3 results; an
-R0/R1 failure in a window with measured cgroup PSI or CPU throttling is also
-retried as infrastructure, since a time-sensitive assertion may have been
-affected. PSI/throttling alone do not overturn a completed R0/R1 PASS. Command-budget
-expiry already produces an incomplete outcome. R1 coverage arithmetic is
-unchanged for the same complete report, and its claim uses the R0 command's
-resource window. R2 keeps its own per-candidate resource event and
-liveness evidence. For R3, an execution error, timeout or missing result is
-`INCONCLUSIVE`. A PSI/throttling-only window withholds a failed control or a
-transformed run that failed for the wrong reason. For `import-break`,
-`COMMAND_FAILED` alone does not prove the canary caused the failure: captured
-stdout or stderr must also contain the injected
-`assay-canary-import-break` diagnostic. Without it, the pressured attempt is
-`INCONCLUSIVE`; with it, the completed result remains eligible for judgment.
-The `uncovered-line` reason comes from the R1 coverage comparison. Direct
-resource-limit events and unavailable samples still withhold either canary
-half. A completed failure for the wrong cause is `CANARY_SURVIVED` when its
-sample is clear. Observer sampling follows the lane's resolved
+incomplete resource evidence. A direct OOM/pids limit event can withhold R0/R1
+and R3 results even when a command exited zero. A completed R0/R1/R3 PASS is
+retained despite PSI, throttling or unavailable cgroup telemetry. For failed
+R0/R1 commands, PSI counts as material pressure only when one cgroup PSI
+counter reaches at least 1% of the measured command window, with a 100 ms
+minimum; any CPU throttling is also pressure evidence. Smaller deltas are
+recorded as telemetry, not used to make a verdict depend on a quiet host. A
+failed R0/R1 result under material pressure or an unavailable required sample
+is retried as infrastructure. Command-budget expiry already produces an
+incomplete outcome. R1 coverage arithmetic is unchanged for the same complete
+report, and its claim uses the R0 command's resource window. R2 keeps its own
+per-candidate resource event and liveness evidence. For R3, an execution
+error, timeout or missing result is `INCONCLUSIVE`; a pressure-affected failed
+control or unproven transformed failure is also `INCONCLUSIVE`. For
+`import-break`, `COMMAND_FAILED` alone does not prove the canary caused the
+failure. Assay injects a per-run nonce and requires the language-native
+exception plus a stack frame for the exact transformed file and injected
+line. An echoed marker, unrelated failure, copied nonce-less text or output
+with dropped bytes cannot prove the cause. A clear-sample failure without
+that proof is `CANARY_SURVIVED`; the `uncovered-line` reason comes from its R1
+coverage comparison. Direct resource-limit events withhold either canary
+half. Observer sampling follows the lane's resolved
 environment, so the tester gate's ambient socket cannot change a nested
 lane's result. The five registered Assay lanes share one run-gate lock,
 and a separate lock
 in the Git common directory serializes full-source qualification, pilot and
 screen callers across container `/tmp`
 namespaces. No host-wide quiet window is required.
+See the [pressure attribution design](DESIGN-GUIDE.md#shared-host-pressure-attribution)
+and [R3 cause proof](DESIGN-GUIDE.md#r3-canary-cause-evidence-under-psi).
+
 `ASSAY_GATE_ALLOW_SHARED_HOST=1` is a compatibility no-op across the
 registered gate and B105 wrappers; other values are refused. The SQL phase
 starts a separate `tester-unified` container with a private

@@ -2707,7 +2707,11 @@ first (`b105_report_check.py --receipt-only`, phase
 report without a matching receipt. The preflight lane needs none. Run
 `run-gate tester-unified` before `run-gate self-qualification`, in the same
 worktree and with no commit in between: any later commit, a docs-only or merge
-commit included, needs a fresh `tester-unified` run first. The old host check
+commit included, needs a fresh `tester-unified` run first.
+
+#### Shared-host pressure attribution
+
+The old host check
 took one `docker ps --no-trunc` name snapshot before the lane. It did not
 identify a container's cgroup, sample CPU or memory pressure, observe later
 starts or hold a lease; it therefore refused legitimate peer gates while
@@ -2717,16 +2721,21 @@ cgroup. The observer compares pids and memory OOM event counters, cgroup PSI
 totals and `cpu.stat` throttling counters immediately before and after the
 command. Resource-limit attribution compares the candidate cgroup's subtree
 counters with visible ancestor-local counters. An ancestor-only pids/OOM event
-cannot be assigned to this run, so it makes the sample unknown and the result
-is retried. `memory.events:max` is retained as telemetry and does not alone
-withhold a result because reclaim can satisfy an allocation. A direct pids/OOM
-limit event withholds the R0 result, even if the command exited zero; an
-unavailable required sample withholds any R0 result.
-A failed assertion in a window with measured cgroup PSI or CPU throttling is
-also withheld because a time-sensitive assertion may have been affected. The
-result becomes `ERROR/EXEC_FAILED`, so the wrapper and Run-Gate retry it rather
-than report product `FAIL`. PSI/throttling alone do not overturn a completed
-PASS. Command-budget expiry,
+cannot be assigned to this run, so a failed assertion cannot be cleared as a
+product failure from that sample. `memory.events:max` is retained as telemetry
+and does not alone withhold a result because reclaim can satisfy an
+allocation. A direct pids/OOM limit event withholds the R0 result, even if the
+command exited zero. PSI is also retained as telemetry, but it marks a failed
+window pressure affected only when one cgroup PSI counter reaches at least 1%
+of the measured command window, with a 100 ms minimum. Any observed CPU
+throttling also counts as pressure evidence. Smaller PSI deltas do not affect
+the verdict; the 5,340,037 µs CPU-some delta from a roughly fifteen-minute
+single-peer run is about 0.6% of its window. These rules make the
+classification independent of a quiet host while still retrying failures that
+could reflect material stalls. An R0 failure under material pressure or an
+unavailable required sample becomes `ERROR/EXEC_FAILED`, so the wrapper and
+Run-Gate retry it rather than report product `FAIL`. PSI/throttling alone do
+not overturn a completed PASS. Command-budget expiry,
 missing coverage artifacts, process-tree failure and incomplete witness
 results already have infrastructure outcomes and must not be folded into a
 product failure.
@@ -2736,9 +2745,11 @@ branch arcs against its declared floor; host load does not change the
 arithmetic for an identical complete artifact. An interrupted runner, absent
 report or unparsable report cannot yield a coverage PASS and is already an
 incomplete/error path. R1 carries the same R0 command's resource window: a
-direct pids/OOM event or unavailable sample withholds either coverage status,
-and a coverage FAIL under measured cgroup pressure becomes infrastructure.
-A coverage PASS under PSI/throttling alone remains usable. R2 samples pids and
+direct pids/OOM event can make the command or coverage artifact incomplete and
+withholds either coverage status. An unavailable required sample or material
+pressure withholds a coverage FAIL as infrastructure; a completed coverage
+PASS is retained under PSI, throttling, or unavailable cgroup telemetry. R2
+samples pids and
 memory OOM events around each
 mutation candidate. A limit event makes that candidate infrastructure/error
 rather than a kill; CPU and PSI pressure pauses the liveness clock, while the
@@ -2747,20 +2758,32 @@ a budget bucket and makes the R2 claim incomplete, never a survivor or kill.
 
 #### R3 canary cause evidence under PSI
 
-R3 previously treated some transformed errors, timeouts or missing results as
-a canary survival. Those outcomes now remain `INCONCLUSIVE`; a direct pids/OOM
-event or unavailable sample in either canary half withholds the R3 result. A
-PSI/throttling-only window withholds a failed control or a transformed run
-whose failure reason differs from the configured canary reason. The
-transformed run's expected reason is not always sufficient evidence. R0 maps
-any nonzero command exit to `FAIL/COMMAND_FAILED`, so an `import-break` result
-is exempt from PSI withholding only when its captured output also contains
-the injected `assay-canary-import-break` diagnostic. A generic pytest or
-harness failure with the same reason remains `INCONCLUSIVE`. The R1
-`uncovered-line` reason is already specific to its coverage comparison. This
-keeps a small observed stall from overturning a positively identified canary
-effect, while direct limits, unavailable samples and unverified failures
-remain unclassifiable. Observer sampling is lane-scoped:
+R3 timeouts, execution errors, missing results and pressure-affected failed
+controls remain `INCONCLUSIVE`; direct pids/OOM limit events withhold either
+canary half even when its command returned. A completed control PASS survives
+PSI, throttling or unavailable cgroup telemetry. PSI/throttling-only pressure
+withholds a failed control or an unproven transformed failure, but it cannot
+overturn a completed import-break failure whose cause is independently
+proved.
+
+`COMMAND_FAILED` is too broad to prove import-break: it covers any nonzero
+command exit, including unrelated pytest and harness failures. For each
+import-break run, the producer creates a cryptographically random nonce and
+places it in the injected exception, panic or throw. It accepts the expected
+failure only when captured output has the language-native error, a stack frame
+for the exact transformed file and injected line, and the same nonce. Python
+also requires the rendered source statement. A public marker echo, a copied
+nonce-less diagnostic, a nonce echoed beside an unrelated failure, or output
+with dropped bytes does not prove the cause. With a clear sample, such a
+completed failure is `FAIL/CANARY_SURVIVED`; under material pressure or an
+unavailable required sample, it is `INCONCLUSIVE`. The verifier re-derives the
+producer's recorded result from the canary payload: only a proven
+`COMMAND_FAILED` remains eligible to pass, while the producer records an
+unproven failure as `CANARY_SURVIVED` or `INCONCLUSIVE` according to its
+resource window.
+
+The R1 `uncovered-line` reason is already specific to its coverage comparison.
+Observer sampling is lane-scoped:
 the observer socket is used only when it appears in the lane's resolved
 environment. A gate's ambient socket cannot alter a nested lane's canary
 verdict. Host PSI is not used for that attribution because unrelated work

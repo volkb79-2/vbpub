@@ -21,13 +21,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from conftest import fixed_clock, make_lane, timeout_expired
+
+from assay import runner
 from assay.contention import ContentionObservation
 from assay.errors import Outcome, ReasonCode
 from assay.mutation_witness import WITNESS_FD_ENV, ReceiptCapture
 from assay.verdict import Claim, Coverage
-from conftest import fixed_clock, make_lane, timeout_expired
-
-from assay import runner
 
 MOMENT_A = datetime(2026, 8, 7, 12, 0, 0, tzinfo=timezone.utc)
 MOMENT_B = datetime(2026, 8, 7, 12, 0, 1, tzinfo=timezone.utc)
@@ -137,10 +137,10 @@ def test_failed_r0_command_with_affected_or_unknown_resources_is_infrastructure(
     [
         ("affected", False, Outcome.PASS),
         ("affected", True, Outcome.ERROR),
-        ("unknown", False, Outcome.ERROR),
+        ("unknown", False, Outcome.PASS),
     ],
 )
-def test_completed_r0_pass_is_withheld_for_direct_limit_or_unknown_window(
+def test_completed_r0_pass_is_withheld_only_for_a_direct_limit_event(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     status: str,
@@ -184,7 +184,7 @@ def test_completed_r0_pass_is_withheld_for_direct_limit_or_unknown_window(
     if expected_outcome is Outcome.ERROR:
         assert "R0 result withheld" in result.stderr_tail
     else:
-        assert result.stderr_tail is None
+        assert "Assay cgroup resource telemetry" in result.stderr_tail
 
 
 @pytest.mark.parametrize(
@@ -258,7 +258,14 @@ def test_r1_claim_is_withheld_only_for_unclassifiable_contention_windows():
         ContentionObservation("unknown"),
         diagnostics=None,
     )
-    assert unknown_pass.status is Outcome.ERROR
+    assert unknown_pass.status is Outcome.PASS
+
+    unknown_direct_limit_pass = adjust(
+        _coverage_claim(Outcome.PASS),
+        ContentionObservation("unknown", resource_limit_hit=True),
+        diagnostics=None,
+    )
+    assert unknown_direct_limit_pass.status is Outcome.ERROR
 
     no_observation = _coverage_claim(Outcome.FAIL)
     assert adjust(no_observation, None, diagnostics=None) is no_observation

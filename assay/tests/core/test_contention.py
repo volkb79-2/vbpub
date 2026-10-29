@@ -5,12 +5,21 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from assay.errors import Outcome
 
 from assay import contention, resource_limits
+from assay.errors import Outcome
 
 
-def _pressure(*, cpu_total: int = 0, host_total: int = 0, status: str = "available"):
+def _pressure(
+    *,
+    cpu_total: int = 0,
+    host_total: int = 0,
+    io_full: int = 0,
+    memory_full: int = 0,
+    nr_throttled: int = 0,
+    throttled_usec: int = 0,
+    status: str = "available",
+):
     return {
         "schema_version": 1,
         "status": status,
@@ -22,20 +31,24 @@ def _pressure(*, cpu_total: int = 0, host_total: int = 0, status: str = "availab
         },
         "cgroup_psi": {
             "cpu": {"some": cpu_total},
-            "memory": {"some": 0, "full": 0},
-            "io": {"some": 0, "full": 0},
+            "memory": {"some": 0, "full": memory_full},
+            "io": {"some": 0, "full": io_full},
         },
-        "cgroup_cpu": {"nr_throttled": 0, "throttled_usec": 0},
+        "cgroup_cpu": {
+            "nr_throttled": nr_throttled,
+            "throttled_usec": throttled_usec,
+        },
     }
 
 
-def _window(monkeypatch, *, limits=None, pressure=None, hit=False):
+def _window(monkeypatch, *, limits=None, pressure=None, hit=False, duration_us=1_000_000):
     if limits is None:
         limits = (object(), object())
     if pressure is None:
         pressure = (_pressure(), _pressure())
     limit_values = iter(limits)
     pressure_values = iter(pressure)
+    time_values = iter((0, duration_us * 1_000))
 
     def limit_evidence(*_args, **_kwargs):
         zero = SimpleNamespace(delta=0)
@@ -59,6 +72,7 @@ def _window(monkeypatch, *, limits=None, pressure=None, hit=False):
         counters_reader=lambda **kwargs: next(limit_values),
         pressure_reader=lambda pid: next(pressure_values),
         pid=41,
+        monotonic_ns=lambda: next(time_values),
     )
 
 
@@ -122,7 +136,7 @@ def test_contention_window_accepts_a_clear_cgroup_window(monkeypatch):
     assert window.observation == contention.ContentionObservation("clear")
 
 
-def test_contention_window_ignores_host_pressure_but_detects_own_cgroup_pressure(monkeypatch):
+def test_contention_window_records_host_pressure_but_uses_material_cgroup_stalls(monkeypatch):
     window = _window(
         monkeypatch,
         pressure=(_pressure(host_total=0), _pressure(host_total=20)),
@@ -131,14 +145,60 @@ def test_contention_window_ignores_host_pressure_but_detects_own_cgroup_pressure
         pass
     assert window.observation == contention.ContentionObservation("clear")
 
+    window = _window(monkeypatch, pressure=(_pressure(), _pressure(cpu_total=1)))
+    with window:
+        pass
+    assert window.observation.status == "clear"
+    assert window.observation.reasons == ("cgroup_psi.cpu.some_us=1",)
+
+    window = _window(monkeypatch, pressure=(_pressure(), _pressure(cpu_total=200_000)))
+    with window:
+        pass
+    assert window.observation.status == "affected"
+    assert window.observation.reasons == ("cgroup_psi.cpu.some_us=200000",)
+
+
+def test_single_peer_psi_seen_in_provisional_run_does_not_withhold_green_claims(
+    monkeypatch,
+):
     window = _window(
         monkeypatch,
-        pressure=(_pressure(), _pressure(cpu_total=1)),
+        duration_us=900_000_000,
+        pressure=(
+            _pressure(),
+            _pressure(
+                cpu_total=5_340_037,
+                io_full=1_578_273,
+                memory_full=637_663,
+            ),
+        ),
+    )
+    with window:
+        pass
+
+    observation = window.observation
+    assert observation.status == "clear"
+    assert observation.reasons == (
+        "cgroup_psi.cpu.some_us=5340037",
+        "cgroup_psi.io.full_us=1578273",
+        "cgroup_psi.memory.full_us=637663",
+    )
+    assert not contention.withhold_r0_result(observation, outcome=Outcome.PASS)
+    assert not contention.withhold_r1_result(observation, outcome=Outcome.PASS)
+
+
+def test_cpu_throttling_is_direct_pressure_evidence(monkeypatch):
+    window = _window(
+        monkeypatch,
+        pressure=(_pressure(), _pressure(nr_throttled=1, throttled_usec=500)),
     )
     with window:
         pass
     assert window.observation.status == "affected"
-    assert window.observation.reasons == ("cgroup_psi.cpu.some_us=1",)
+    assert window.observation.reasons == (
+        "cgroup_cpu.nr_throttled=1",
+        "cgroup_cpu.throttled_usec=500",
+    )
 
 
 def test_contention_window_marks_a_resource_limit_event_as_affected(monkeypatch):
@@ -149,6 +209,36 @@ def test_contention_window_marks_a_resource_limit_event_as_affected(monkeypatch)
         "affected",
         resource_limit_hit=True,
         reasons=("pids_events_max=1",),
+    )
+
+
+def test_direct_limit_event_is_preserved_when_pressure_sample_is_unavailable(
+    monkeypatch,
+):
+    pressure_values = iter(
+        (
+            _pressure(),
+            OSError("pressure snapshot unavailable"),
+        )
+    )
+
+    def pressure_reader(_pid):
+        value = next(pressure_values)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    window = _window(monkeypatch, hit=True)
+    window.pressure_reader = pressure_reader
+    with window:
+        pass
+
+    assert window.observation.status == "affected"
+    assert window.observation.resource_limit_hit
+    assert "pids_events_max=1" in window.observation.reasons
+    assert any(
+        reason.startswith("after-sample-unavailable:cgroup-pressure:")
+        for reason in window.observation.reasons
     )
 
 
@@ -198,13 +288,15 @@ def test_contention_window_fails_closed_when_either_sample_is_unavailable(monkey
         (contention.ContentionObservation("affected"), Outcome.FAIL, False, False, True),
         (contention.ContentionObservation("affected"), Outcome.FAIL, True, False, False),
         (contention.ContentionObservation("affected", resource_limit_hit=True), Outcome.FAIL, True, False, True),
-        (contention.ContentionObservation("unknown"), Outcome.FAIL, True, False, True),
-        (contention.ContentionObservation("unknown"), Outcome.PASS, False, False, True),
+        (contention.ContentionObservation("unknown"), Outcome.FAIL, False, False, True),
+        (contention.ContentionObservation("unknown"), Outcome.FAIL, True, False, False),
+        (contention.ContentionObservation("unknown"), Outcome.PASS, False, False, False),
         (contention.ContentionObservation("affected", resource_limit_hit=True), Outcome.PASS, False, False, True),
         (contention.ContentionObservation("affected"), Outcome.PASS, False, False, False),
         (contention.ContentionObservation("unobserved"), Outcome.PASS, False, False, False),
         (contention.ContentionObservation("unobserved"), Outcome.FAIL, False, False, False),
-        (contention.ContentionObservation("unobserved"), Outcome.PASS, False, True, True),
+        (contention.ContentionObservation("unobserved"), Outcome.PASS, False, True, False),
+        (contention.ContentionObservation("unobserved"), Outcome.FAIL, False, True, True),
     ],
 )
 def test_withhold_canary_result_for_incomplete_or_affected_failures(
@@ -239,15 +331,16 @@ def test_withhold_canary_result_validates_inputs():
         )
 
 
-def test_gate_canary_must_not_certify_without_a_required_resource_sample():
-    assert contention.withhold_canary_result(
+def test_gate_canary_retains_pass_without_a_resource_sample():
+    assert not contention.withhold_canary_result(
         contention.ContentionObservation("unobserved"),
         outcome=Outcome.PASS,
         require_observation=True,
     )
-    assert not contention.withhold_canary_result(
+    assert contention.withhold_canary_result(
         contention.ContentionObservation("unobserved"),
-        outcome=Outcome.PASS,
+        outcome=Outcome.FAIL,
+        require_observation=True,
     )
 
 
@@ -257,9 +350,10 @@ def test_gate_canary_must_not_certify_without_a_required_resource_sample():
         ("clear", Outcome.FAIL, False),
         ("affected", Outcome.FAIL, True),
         ("unknown", Outcome.FAIL, True),
+        ("unobserved", Outcome.FAIL, False),
         ("affected", Outcome.PASS, False),
-        ("unobserved", Outcome.FAIL, True),
-        ("unknown", Outcome.PASS, True),
+        ("unobserved", Outcome.PASS, False),
+        ("unknown", Outcome.PASS, False),
         ("clear", Outcome.PASS, False),
     ],
 )
@@ -277,13 +371,22 @@ def test_r0_resource_limit_event_withholds_the_result():
         contention.ContentionObservation("affected", resource_limit_hit=True),
         outcome=Outcome.FAIL,
     )
-
-
-def test_r0_unobserved_window_withholds_even_a_completed_pass():
     assert contention.withhold_r0_result(
+        contention.ContentionObservation("affected", resource_limit_hit=True),
+        outcome=Outcome.PASS,
+    )
+
+
+def test_r0_unobserved_window_does_not_withhold_a_completed_pass():
+    assert not contention.withhold_r0_result(
         contention.ContentionObservation("unobserved"),
         outcome=Outcome.PASS,
     )
+    assert contention.withhold_r0_result(
+        contention.ContentionObservation("unobserved"),
+        outcome=Outcome.PASS,
+        require_observation=True,
+    ) is False
 
 
 def test_withhold_r0_result_validates_inputs():
@@ -309,7 +412,8 @@ def test_withhold_r0_result_validates_inputs():
             Outcome.PASS,
             True,
         ),
-        (contention.ContentionObservation("unknown"), Outcome.PASS, True),
+        (contention.ContentionObservation("unknown"), Outcome.PASS, False),
+        (contention.ContentionObservation("unknown"), Outcome.FAIL, True),
         (contention.ContentionObservation("unobserved"), Outcome.FAIL, True),
     ],
 )

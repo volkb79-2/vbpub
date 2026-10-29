@@ -43,7 +43,7 @@ baseline_nodes=(
   tests/core/test_canary_p23_isolated_edges.py::test_canary_contention_distinguishes_limits_from_expected_transform_failure
   tests/core/test_canary_result.py::test_an_incomplete_transformed_run_is_inconclusive
   tests/core/test_runner_execute.py::test_failed_r0_command_with_affected_or_unknown_resources_is_infrastructure
-  tests/core/test_runner_execute.py::test_completed_r0_pass_is_withheld_for_direct_limit_or_unknown_window
+  tests/core/test_runner_execute.py::test_completed_r0_pass_is_withheld_only_for_a_direct_limit_event
   gate/tests/test_distribution_gate.py::test_b145_completed_low_pids_failure_is_exit_one
   tests/core/test_runner_execute.py::test_r1_claim_is_withheld_only_for_unclassifiable_contention_windows
   tests/core/test_runner_execute.py::test_r1_contention_adjustment_is_wired_after_coverage_judgement
@@ -74,9 +74,10 @@ import sys
 import xml.etree.ElementTree as ET
 
 expected = {
-    # The merge base's blanket PSI withholding and HEAD's reason-code-only
-    # exemption must both remain distinguishable by this behavior matrix.
+    # The merge base's public-marker proof and missing completed-pass
+    # telemetry must remain distinguishable from this behavior matrix.
     "test_canary_contention_distinguishes_limits_from_expected_transform_failure",
+    "test_completed_r0_pass_is_withheld_only_for_a_direct_limit_event",
 }
 root = ET.parse(sys.argv[1]).getroot()
 from collections import Counter
@@ -109,7 +110,7 @@ current_nodes=(
   tests/core/test_canary_result.py::test_an_incomplete_transformed_run_is_inconclusive
   tests/core/test_canary_p23_isolated_edges.py::test_contention_note_retains_measured_pressure_and_bounds_unknown_details
   tests/core/test_runner_execute.py::test_failed_r0_command_with_affected_or_unknown_resources_is_infrastructure
-  tests/core/test_runner_execute.py::test_completed_r0_pass_is_withheld_for_direct_limit_or_unknown_window
+  tests/core/test_runner_execute.py::test_completed_r0_pass_is_withheld_only_for_a_direct_limit_event
   tests/core/test_runner_execute.py::test_r1_claim_is_withheld_only_for_unclassifiable_contention_windows
   tests/core/test_runner_execute.py::test_r1_contention_adjustment_is_wired_after_coverage_judgement
   tests/core/test_runner_execute.py::test_gate_contention_attribution_requires_the_private_opt_in

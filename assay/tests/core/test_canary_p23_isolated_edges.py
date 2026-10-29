@@ -18,13 +18,14 @@ tested as one.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-from conftest import completed_process
 from conftest import (
     GitRepo,
+    completed_process,
     make_deadline,
     make_lane,
     make_plan,
@@ -32,8 +33,7 @@ from conftest import (
     prepared_snapshot,
 )
 
-from assay import canary, contention
-from assay import runner
+from assay import canary, contention, runner
 from assay.adapters.python import PythonAdapter
 from assay.canary import run_isolated_canary
 from assay.config import CanaryConfig
@@ -227,11 +227,15 @@ def test_an_unrecognised_mechanism_judges_nothing_on_the_public_surface(
         "diagnostic_stream",
     ),
     [
-        ("control", True, "assay-canary-import-break", "stderr"),
-        ("transform", True, "assay-canary-import-break", "stderr"),
-        ("transform", False, "assay-canary-import-break", "stderr"),
-        ("transform", False, "assay-canary-import-break", "stdout"),
-        ("transform", False, "unrelated pytest assertion failure", "stderr"),
+        ("control", True, "cause", "stderr"),
+        ("transform", True, "cause", "stderr"),
+        ("transform", False, "cause", "stderr"),
+        ("transform", False, "cause", "stdout"),
+        ("transform", False, "echoed-marker", "stderr"),
+        ("transform", False, "nonce-less-copy", "stderr"),
+        ("transform", False, "unrelated", "stderr"),
+        ("none", False, "echoed-marker", "stderr"),
+        ("none", False, "nonce-unrelated", "stderr"),
     ],
 )
 @pytest.mark.parametrize("observer_declared", [False, True])
@@ -276,7 +280,11 @@ def test_canary_contention_distinguishes_limits_from_expected_transform_failure(
     )
     clear = contention.ContentionObservation("clear")
     window_observations = iter(
-        (affected, clear) if limited_phase == "control" else (clear, affected)
+        (affected, clear)
+        if limited_phase == "control"
+        else (clear, affected)
+        if limited_phase == "transform"
+        else (clear, clear)
     )
     observer_paths: list[str | None] = []
 
@@ -291,19 +299,47 @@ def test_canary_contention_distinguishes_limits_from_expected_transform_failure(
     )
 
     def process(argv, *, env, cwd, timeout):
-        transformed = "assay-canary-import-break" in (
-            Path(cwd) / "pkg/mod.py"
-        ).read_text()
-        diagnostic_stdout = (
-            transform_diagnostic
-            if transformed and diagnostic_stream == "stdout"
-            else ""
+        source = (Path(cwd) / "pkg/mod.py").read_text()
+        match = re.search(
+            r'raise AssertionError\("(assay-canary-import-break:[0-9a-f]+)"\)',
+            source,
         )
-        diagnostic_stderr = (
-            transform_diagnostic
-            if transformed and diagnostic_stream == "stderr"
-            else ""
-        )
+        transformed = match is not None
+        diagnostic = ""
+        if transformed:
+            token = match.group(1)
+            injected_line = next(
+                index
+                for index, text in enumerate(source.splitlines(), start=1)
+                if token in text
+            )
+            if transform_diagnostic == "cause":
+                diagnostic = (
+                    f"pkg/mod.py:{injected_line}: in <module>\n"
+                    f'    raise AssertionError("{token}")\n'
+                    f"E   AssertionError: {token}\n"
+                )
+            elif transform_diagnostic == "echoed-marker":
+                diagnostic = (
+                    "assay-canary-import-break\n"
+                    "E   AssertionError: unrelated test assertion\n"
+                )
+            elif transform_diagnostic == "nonce-less-copy":
+                diagnostic = (
+                    f"pkg/mod.py:{injected_line}: in <module>\n"
+                    '    raise AssertionError("assay-canary-import-break")\n'
+                    "E   AssertionError: assay-canary-import-break\n"
+                )
+            elif transform_diagnostic == "nonce-unrelated":
+                diagnostic = (
+                    f"{token}\n"
+                    "tests/test_other.py:77: in test_unrelated\n"
+                    "E   AssertionError: unrelated failure\n"
+                )
+            else:
+                diagnostic = "unrelated pytest assertion failure\n"
+        diagnostic_stdout = diagnostic if diagnostic_stream == "stdout" else ""
+        diagnostic_stderr = diagnostic if diagnostic_stream == "stderr" else ""
         return completed_process(
             list(argv),
             1 if transformed else 0,
@@ -362,18 +398,26 @@ def test_canary_contention_distinguishes_limits_from_expected_transform_failure(
             ReasonCode.CANARY_INCONCLUSIVE,
         )
     else:
-        if transform_diagnostic == "assay-canary-import-break":
-            # The transformed command's own diagnostic is positive evidence
-            # that the intended import-break caused COMMAND_FAILED. PSI alone
-            # must not overturn that completed canary signal.
+        if transform_diagnostic == "cause":
+            # The random token, exact injected source line, and native
+            # traceback frame establish the intended import-break cause. PSI
+            # alone must not overturn that completed canary signal.
             assert attempt.transformed_outcome is Outcome.FAIL
             assert attempt.observed_reason_code is ReasonCode.COMMAND_FAILED
-            assert "resource window" not in attempt.description
+            if limited_phase == "transform":
+                assert "resource window" not in attempt.description
             assert canary.judge_attempt(attempt) == (Outcome.PASS, None)
+        elif limited_phase == "none":
+            assert attempt.transformed_outcome is Outcome.FAIL
+            assert attempt.observed_reason_code is ReasonCode.CANARY_SURVIVED
+            assert canary.judge_attempt(attempt) == (
+                Outcome.FAIL,
+                ReasonCode.CANARY_SURVIVED,
+            )
         else:
-            # COMMAND_FAILED also covers unrelated pytest/harness failures.
-            # Under PSI, the broad reason code without the injected marker is
-            # not evidence that the canary caused the failure.
+            # An echoed public marker, nonce-less copied source, a nonce
+            # echoed beside another stack, and an unrelated assertion do not
+            # prove that the transformed source caused COMMAND_FAILED.
             assert attempt.transformed_outcome is Outcome.INCONCLUSIVE
             assert attempt.observed_reason_code is ReasonCode.CANARY_INCONCLUSIVE
             assert (
@@ -404,7 +448,97 @@ def test_contention_note_retains_measured_pressure_and_bounds_unknown_details():
         "control result withheld by cgroup resource window affected "
         "(cgroup_psi.cpu.some_us=27)"
     )
-    assert unknown == "transform result withheld by cgroup resource window unknown"
+    assert unknown == (
+        "transform result withheld by cgroup resource window unknown "
+        "(after-sample-unavailable:/sensitive/path)"
+    )
+
+
+def test_pressure_affected_failing_control_is_inconclusive(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION", "1")
+    monkeypatch.setenv("ASSAY_RESOURCE_OBSERVER_SOCKET", "/observer.sock")
+    head_rev = _seed(git_repo)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    lane = _r3_lane(
+        git_repo,
+        env_passthrough=("ASSAY_RESOURCE_OBSERVER_SOCKET",),
+    )
+
+    class Window:
+        def __init__(self, observation):
+            self.observation = observation
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    observations = iter(
+        (
+            contention.ContentionObservation(
+                "affected", reasons=("cgroup_psi.cpu.some_us=200000",)
+            ),
+            contention.ContentionObservation("clear"),
+        )
+    )
+    monkeypatch.setattr(
+        canary.contention,
+        "ContentionWindow",
+        lambda **kwargs: Window(next(observations)),
+    )
+
+    def process(argv, *, env, cwd, timeout):
+        source = (Path(cwd) / "pkg/mod.py").read_text()
+        match = re.search(
+            r'raise AssertionError\("(assay-canary-import-break:[0-9a-f]+)"\)',
+            source,
+        )
+        if match is None:
+            return completed_process(list(argv), 1, "unrelated control failure", "")
+        token = match.group(1)
+        injected_line = next(
+            index
+            for index, text in enumerate(source.splitlines(), start=1)
+            if token in text
+        )
+        diagnostic = (
+            f"pkg/mod.py:{injected_line}: in <module>\n"
+            f'    raise AssertionError("{token}")\n'
+            f"E   AssertionError: {token}\n"
+        )
+        return completed_process(list(argv), 1, diagnostic, "")
+
+    with prepared_snapshot(git_repo, commit=head_rev, scratch_root=scratch) as prepared:
+        result = run_isolated_canary(
+            lane,
+            prepared=prepared,
+            plan=make_plan(
+                lane,
+                passthrough_source={
+                    "ASSAY_RESOURCE_OBSERVER_SOCKET": "/observer.sock"
+                },
+            ),
+            deadline=make_deadline(),
+            project_root=git_repo.path,
+            resolved_base=None,
+            mechanism="import-break",
+            target="pkg/mod.py",
+            adapter=PythonAdapter(),
+            process_runner=process,
+            clock=_clock,
+        )
+
+    attempt = result.attempts[0]
+    assert attempt.control_outcome is Outcome.INCONCLUSIVE
+    assert attempt.transformed_outcome is Outcome.FAIL
+    assert canary.judge_attempt(attempt) == (
+        Outcome.INCONCLUSIVE,
+        ReasonCode.CANARY_INCONCLUSIVE,
+    )
 
 
 def test_a_test_path_canary_target_is_still_refused_before_any_unit(

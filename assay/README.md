@@ -1506,25 +1506,30 @@ you're changing assay itself:
   `docker wait` status. The five registered
   Assay qualification lanes share a run-gate lock; a Git-common-directory
   lock also serializes B105 callers across container `/tmp` namespaces. Docker
-  names do not decide admission. R0/R1/R3 judgments use the lane cgroup's OOM,
-  pids, PSI and CPU-throttling counters; R2 keeps its per-candidate event
-  windows and pressure-adjusted liveness clock. A completed PASS remains a
-  PASS when its sample is observable and no direct resource limit occurred.
-  A direct pids/OOM event or unavailable sample makes R0/R1 `ERROR` for retry;
-  an R0/R1 failure with measured cgroup stalls is also retried as `ERROR`,
-  while a clear-sample failure remains product `FAIL`. R3 marks direct-limit
-  or unavailable samples `INCONCLUSIVE`. In a PSI/throttling-only window, a
-  failed control or a transformed run with the wrong failure reason is
-  `INCONCLUSIVE`. For `import-break`, the captured command output must contain
-  the injected `assay-canary-import-break` diagnostic as well as
-  `COMMAND_FAILED`; that reason also covers unrelated pytest or harness
-  failures. See the
+  names do not decide admission. R0/R1/R3 judgments record the lane cgroup's
+  OOM, pids, PSI and CPU-throttling counters; R2 keeps its per-candidate event
+  windows and pressure-adjusted liveness clock. PSI alone marks a failed run
+  as pressure affected only when one cgroup PSI counter reaches at least 1%
+  of the command window, with a 100 ms minimum; any CPU throttling is also
+  recorded as pressure evidence. Lower PSI deltas remain telemetry, including
+  the 5.34 seconds of CPU-some pressure measured over a roughly 15-minute peer
+  run. Completed R0/R1/R3 passes are retained despite PSI, throttling, or an
+  unavailable cgroup sample; a direct pids/OOM limit event can still make a
+  command or artifact incomplete and withholds the result. R0/R1 failures
+  under material pressure or an unavailable required sample become
+  infrastructure `ERROR` for retry; a clear-sample failure remains product
+  `FAIL`. See the
+  [pressure attribution design](docs/DESIGN-GUIDE.md#shared-host-pressure-attribution).
+  R3 marks a pressure-affected failed control or an unproven transformed
+  failure `INCONCLUSIVE`; a clear-sample failure for the wrong cause remains
+  `CANARY_SURVIVED`. For `import-break`, `COMMAND_FAILED` alone is not proof:
+  Assay injects a per-run nonce and requires the native exception plus a stack
+  frame at the exact transformed file and injected line. An echoed marker,
+  unrelated failure, or copied nonce-less text cannot prove the canary. See the
   [canary pressure rationale](docs/DESIGN-GUIDE.md#r3-canary-cause-evidence-under-psi).
-  A pressured `uncovered-line` failure is identified by its R1 coverage
-  reason. Timeouts, execution errors and missing results remain
-  `INCONCLUSIVE`; a completed
-  failure for the wrong cause remains `CANARY_SURVIVED` when the sample is
-  clear. Observer sampling is lane-scoped:
+  A completed `uncovered-line` failure is identified by its R1 coverage
+  comparison; direct limit events still withhold either canary half. Timeouts,
+  execution errors and missing results remain `INCONCLUSIVE`. Observer sampling is lane-scoped:
   Assay uses the socket only when it appears in the lane's resolved
   environment; a parent gate's ambient socket cannot change a nested lane's
   verdict.

@@ -80,6 +80,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import tomllib
 from contextlib import ExitStack, contextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -95,8 +96,6 @@ from typing import (
     Sequence,
     TextIO,
 )
-
-import tomllib
 
 from . import (
     contention,
@@ -125,7 +124,6 @@ from .config import (
 from .coverage import derive_branch_capability
 from .coverage_parsers.model import CoverageProfile
 from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
-from .failure_summary import first_failing_test
 from .evaluate import (
     # (B074) `_is_test_filename` is imported rather than reproduced: R2's
     # declared-target gate below must split "test by DIRECTORY" from "test by
@@ -136,6 +134,7 @@ from .evaluate import (
     evaluate_targets,
     resolve_coverage_keys,
 )
+from .failure_summary import first_failing_test
 from .guards import is_finite_positive, is_nonempty_str, is_positive_or_inf, is_real
 from .mutation_witness import (
     MAX_INTERNAL_MANIFEST_BYTES,
@@ -1282,11 +1281,13 @@ def execute_plan(
     different KIND of judgement from "did the wrapped suite pass".
 
     *classify_resource_contention* is a separate, default-off gate option for
-    only the lane's own R0 baseline/direct command. It withholds an R0 result
-    for a direct pids/OOM event or an unavailable sample, and withholds a
-    failed command when its cgroup window records PSI or CPU throttling. A
-    completed pass under PSI/throttling alone remains accepted. R2 candidates
-    and R3 transforms keep their own classification paths.
+    only the lane's own R0 baseline/direct command. A direct pids/OOM event
+    withholds either outcome. PSI reaches the pressure threshold at 1% of the
+    measured window, with a 100 ms minimum; any observed CPU throttling also
+    makes a failed command retryable. A failed command with an unavailable
+    required sample is retryable, while completed passes remain accepted
+    without cgroup telemetry. R2 candidates and R3 transforms keep their own
+    classification paths.
 
     *result_report_create_missing_parents* is B006(b)'s opt-in, threaded to
     :func:`_reserve_result_report`; only the snapshot baseline passes ``True``,
@@ -1352,13 +1353,30 @@ def execute_plan(
                     )
                 observation = contention_window.observation
                 result = replace(result, resource_contention=observation)
+                if observation.reasons:
+                    telemetry = (
+                        "\nAssay cgroup resource telemetry "
+                        f"({observation.status}): {', '.join(observation.reasons)}"
+                    )
+                    stderr_tail, additional_dropped = _bounded_tail(
+                        (result.stderr_tail or "") + telemetry,
+                        sensitive_values=_plan_passthrough_values(plan),
+                    )
+                    result = replace(
+                        result,
+                        stderr_tail=stderr_tail,
+                        stderr_dropped_bytes=(
+                            result.stderr_dropped_bytes + additional_dropped
+                        ),
+                    )
                 if contention.withhold_r0_result(
                     observation,
                     outcome=result.outcome,
+                    require_observation=classify_resource_contention,
                 ):
                     window_details = (
                         f" ({', '.join(observation.reasons)})"
-                        if observation.status == "affected" and observation.reasons
+                        if observation.reasons
                         else ""
                     )
                     diagnostic = (
@@ -1654,7 +1672,7 @@ def _withhold_r1_claim_for_contention(
 
     details = (
         f" ({', '.join(observation.reasons)})"
-        if observation.status == "affected" and observation.reasons
+        if observation.reasons
         else ""
     )
     refusal = AssayError(
@@ -1730,10 +1748,12 @@ def execute_command(
     ``FAIL``/``COMMAND_FAILED`` (A-073 -- an ordinary non-zero exit is a
     judged R0 FAIL, never ``EXEC_FAILED``, and never a universal PASS).
     The registered gate may opt into cgroup attribution for its own R0 call:
-    a direct pids/OOM event or unavailable resource sample withholds the R0
-    result, while a failed command in a window with measured cgroup PSI or
-    throttling is ``ERROR``/``EXEC_FAILED`` for retry. A completed pass under
-    PSI/throttling alone remains accepted.
+    a direct pids/OOM event withholds either result. A failed command becomes
+    ``ERROR``/``EXEC_FAILED`` for retry when one cgroup PSI counter reaches 1%
+    of the measured window (100 ms minimum), when CPU throttling is observed,
+    or when a required sample is unavailable. Completed passes remain usable
+    without cgroup telemetry; available pressure deltas are retained in the
+    result as telemetry.
 
     **(B078) *result_report*** defaults to the sentinel
     :data:`_LANE_DECLARED_REPORT`, meaning "use ``lane.result_report``" --
