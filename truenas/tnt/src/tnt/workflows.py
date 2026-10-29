@@ -21,6 +21,7 @@ from .transport import GuardedRpc
 _USER_BASIC_UPDATE_FIELDS = frozenset({"full_name", "shell", "home"})
 _USER_ACCESS_UPDATE_FIELDS = frozenset({"group", "groups", "password_disabled", "locked", "ssh_password_enabled"})
 _USER_ACCESS_BOOL_FIELDS = frozenset({"password_disabled", "locked", "ssh_password_enabled"})
+_API_KEY_SAFE_FIELDS = ("id", "name", "username", "created_at", "expires_at", "local", "revoked", "revoked_reason")
 
 
 class Workflows:
@@ -205,8 +206,9 @@ class Workflows:
             raise Refused("api-key-name", "the API key already has that name")
         return Action("TNT-46", Kind.MUTATE, f"Rename API key {row['name']!r} to {new_name!r}",
                       (RpcCall("api_key.update", (key_id, {"name": new_name, "reset": False})),),
-                      (RpcCall("api_key.query", ([["id", "=", key_id]], {})),
-                       RpcCall("api_key.query", ([["name", "=", new_name]], {}))))
+                      (RpcCall("api_key.get_instance", (key_id, {"select": list(_API_KEY_SAFE_FIELDS)})),
+                       RpcCall("api_key.query", ([["name", "=", new_name]],
+                                                  {"select": list(_API_KEY_SAFE_FIELDS)}))))
 
     def api_key_revoke_action(self, key_id: int) -> Action:
         key_id = self._api_key_id(key_id)
@@ -214,14 +216,13 @@ class Workflows:
         return Action("TNT-46", Kind.DESTRUCTIVE,
                       f"Revoke API key {row['name']!r}; v27 implements revocation by deleting the key record",
                       (RpcCall("api_key.delete", (key_id,)),),
-                      (RpcCall("api_key.query", ([["id", "=", key_id]], {})),), row["name"])
+                      (RpcCall("api_key.get_instance", (key_id, {"select": list(_API_KEY_SAFE_FIELDS)})),), row["name"])
 
     def _api_key_by_id(self, key_id: int) -> dict[str, Any]:
-        rows = _rows(self.rpc.call("api_key.query", ([["id", "=", key_id]], {})), "api_key.query")
-        matches = [row for row in rows if row.get("id") == key_id]
-        if len(matches) != 1 or not isinstance(matches[0].get("name"), str):
-            raise Refused("api-key-lookup", f"expected exactly one API key with ID {key_id}; found {len(matches)}")
-        return matches[0]
+        row = self.rpc.call("api_key.get_instance", key_id, {"select": list(_API_KEY_SAFE_FIELDS)})
+        if not isinstance(row, Mapping) or row.get("id") != key_id or not isinstance(row.get("name"), str):
+            raise Refused("api-key-lookup", f"expected API key ID {key_id} with a valid name")
+        return dict(row)
 
     @staticmethod
     def _api_key_id(key_id: int) -> int:
@@ -297,6 +298,8 @@ class Workflows:
         self._validate_share_path(path)
         options = dict(payload.pop("options", {}) or {})
         guest = payload.pop("guest", None)
+        if "guestok" in options and purpose != "LEGACY_SHARE":
+            raise Refused("smb-guest", "v27 exposes the guestok option only for LEGACY_SHARE purpose")
         if guest is not None:
             if not isinstance(guest, bool):
                 raise Refused("smb-guest", "guest must be true or false")
@@ -393,7 +396,7 @@ class Workflows:
     def snapshot_task_run_action(self, task_id: int) -> Action:
         row = self.snapshot_task(task_id)
         return Action("TNT-43", Kind.MUTATE, f"Run snapshot task for {row['dataset']} now",
-                      (RpcCall("pool.snapshottask.run", (task_id,), job=True),),
+                      (RpcCall("pool.snapshottask.run", (task_id,)),),
                       (RpcCall("pool.snapshottask.get_instance", (task_id,)),))
 
     def snapshot_task_delete_action(self, task_id: int) -> Action:
@@ -734,14 +737,15 @@ class Workflows:
         row = self._named("container.query", name, "container")
         if operation == "restart":
             return Action("TNT-39", Kind.DESTRUCTIVE, f"Restart container {name}",
-                          (RpcCall("container.stop", (row["id"], {}), job=True), RpcCall("container.start", (row["id"],))),
+                          (RpcCall("container.stop", (row["id"], {"force_after_timeout": True}), job=True),
+                           RpcCall("container.start", (row["id"],))),
                           (RpcCall("container.query", ([["name", "=", name]], {})),), name)
         if operation not in {"start", "stop"}:
             raise Refused("container-operation", f"unsupported container operation {operation!r}")
         destructive = operation == "stop"
         return Action("TNT-39", Kind.DESTRUCTIVE if destructive else Kind.MUTATE,
                       f"{operation.title()} container {name}",
-                      (RpcCall(f"container.{operation}", (row["id"], {}), job=True) if destructive else
+                      (RpcCall(f"container.{operation}", (row["id"], {"force_after_timeout": True}), job=True) if destructive else
                        RpcCall(f"container.{operation}", (row["id"],)),),
                       (RpcCall("container.query", ([["name", "=", name]], {})),), name if destructive else None)
 
@@ -797,6 +801,8 @@ class Workflows:
     def vm_create_action(self, data: Mapping[str, Any]) -> Action:
         payload = dict(data)
         name = self._required_string(payload, "name", "VM name")
+        if not name.isascii() or not name.isalnum():
+            raise Refused("vm-create", "v27 VM names must contain ASCII letters and digits only")
         if "devices" in payload:
             raise Refused("vm-create", "v27 excludes device lists from vm.create; add disks, ISO media, or NICs with vm.device.create")
         if not isinstance(payload.get("memory"), int) or isinstance(payload["memory"], bool) or payload["memory"] < 20:
@@ -1124,6 +1130,8 @@ def _scrub_audit(value: Any) -> Any:
         return {key: _scrub_audit(child) for key, child in safe.items()}
     if isinstance(safe, list):
         return [_scrub_audit(child) for child in safe]
+    if isinstance(safe, datetime):
+        return safe.isoformat()
     if isinstance(safe, str):
         text = _AUDIT_PRIVATE_KEY.sub("***", safe)
         text = _AUDIT_SECRET_ASSIGNMENT.sub(lambda match: match.group(1) + "***", text)
@@ -1144,6 +1152,8 @@ def _safe_value(value: Any, key: Any = None) -> Any:
         return {name: _safe_value(child, name) for name, child in value.items()}
     if isinstance(value, (list, tuple)):
         return [_safe_value(child) for child in value]
+    if isinstance(value, datetime):
+        return value.isoformat()
     return value
 
 
@@ -1570,35 +1580,33 @@ def validate_plan_preconditions(action: Action, probe_results: Any) -> None:
 
     api_key_targeted = [call for call in action.calls if call.method in {"api_key.update", "api_key.delete"}]
     if api_key_targeted:
-        if (len(api_key_targeted) != 1 or not action.probe or action.probe[0].method != "api_key.query"
-                or len(action.probe[0].params) != 2 or action.probe[0].params[1] != {}
-                or not isinstance(action.probe[0].params[0], list) or len(action.probe[0].params[0]) != 1
-                or not isinstance(action.probe[0].params[0][0], list) or len(action.probe[0].params[0][0]) != 3):
+        if (len(api_key_targeted) != 1 or not action.probe or action.probe[0].method != "api_key.get_instance"
+                or len(action.probe[0].params) != 2 or not isinstance(action.probe[0].params[0], int)
+                or isinstance(action.probe[0].params[0], bool)
+                or action.probe[0].params[1] != {"select": list(_API_KEY_SAFE_FIELDS)}):
             raise Refused("api-key-probe", "API key changes require an exact ID lookup probe")
         call = api_key_targeted[0]
-        probe_filter = action.probe[0].params[0][0]
-        if (probe_filter[0] != "id" or probe_filter[1] != "=" or not isinstance(probe_filter[2], int)
-                or isinstance(probe_filter[2], bool) or len(call.params) < 1 or call.params[0] != probe_filter[2]
+        probe_id = action.probe[0].params[0]
+        if (len(call.params) < 1 or call.params[0] != probe_id
                 or not isinstance(probe_results, (list, tuple)) or len(probe_results) != len(action.probe)):
             raise Refused("api-key-probe", "the API key ID probe does not match the planned change")
-        rows = probe_results[0]
-        matches = [row for row in rows if isinstance(row, Mapping) and row.get("id") == probe_filter[2]] if isinstance(rows, list) else []
-        if len(matches) != 1 or not isinstance(matches[0].get("name"), str):
+        row = probe_results[0]
+        if not isinstance(row, Mapping) or row.get("id") != probe_id or not isinstance(row.get("name"), str):
             raise Refused("api-key-probe", "the API key lookup did not resolve exactly one current key")
         if call.method == "api_key.delete":
             if (len(call.params) != 1 or len(action.probe) != 1 or action.kind is not Kind.DESTRUCTIVE
-                    or action.confirm_target != matches[0]["name"]):
+                    or action.confirm_target != row["name"]):
                 raise Refused("api-key-revoke", "revoking an API key requires typed confirmation of its current name")
         else:
             if len(call.params) != 2 or not isinstance(call.params[1], Mapping):
                 raise Refused("api-key-rename", "API key rename has an invalid update payload")
             payload = call.params[1]
-            expected_name_probe = ([["name", "=", payload.get("name")]], {})
+            expected_name_probe = ([["name", "=", payload.get("name")]], {"select": list(_API_KEY_SAFE_FIELDS)})
             if (len(action.probe) != 2 or action.probe[1].method != "api_key.query"
                     or action.probe[1].params != expected_name_probe or payload.get("reset") is not False
                     or action.kind is not Kind.MUTATE or action.confirm_target is not None):
                 raise Refused("api-key-rename", "API key rename must use a name uniqueness probe and must not reset the key")
             conflicts = probe_results[1]
             if (not isinstance(conflicts, list)
-                    or any(isinstance(row, Mapping) and row.get("id") != probe_filter[2] for row in conflicts)):
+                    or any(isinstance(row, Mapping) and row.get("id") != probe_id for row in conflicts)):
                 raise Refused("api-key-rename", "the requested API key name is already in use")

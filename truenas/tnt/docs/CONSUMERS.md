@@ -175,14 +175,17 @@ tnt tui --host lab
 ```
 
 Dashboard CPU and memory are one bounded hour of historical graph data, not live percentages. A missing reporting role
-or graph is represented as unavailable; missing pool/disk values stay `null` or Unknown. Jobs shows host-wide scope
+or graph is represented as unavailable; missing pool/disk values stay `null` or Unknown. The v27 RC.1 host returned
+reporting samples as ordered numeric arrays (`[timestamp, series…]`); TnT preserves those rows in JSON and the TUI.
+Dashboard uptime seconds remain a finite non-negative number and may be fractional. Jobs shows host-wide scope
 only after `auth.me` confirms `FULL_ADMIN`; otherwise TrueNAS limits the list to jobs visible to the authenticated
 session. The TUI Jobs screen has Previous/Next page controls. Use `/` to focus search, `r` to refresh, `c` to copy
 visible rows, and `?` for view help. Dashboard polls every 30 seconds, Jobs every 5 seconds, and Alerts, Services, and
 Storage every 60 seconds. Refreshes do not overlap; on failure the TUI retains the last successful sample and shows a
 credential-scrubbed error. Services has no start/stop controls. The full v27 methods, role requirements, schemas, and
 unknown states are in [API method evidence](API-METHODS-V27.md#iteration-2-read-view-contract-implemented-against-the-verified-v27-reference);
-the job and view design is in [DESIGN.md](DESIGN.md#non-blocking-jobs-and-core-read-views).
+Dashboard JSON preserves v27 `system.info.uptime_seconds` as a finite, non-negative number; fractional seconds are
+valid. The job and view design is in [DESIGN.md](DESIGN.md#non-blocking-jobs-and-core-read-views).
 
 ## Run the core workflows
 
@@ -205,7 +208,7 @@ tnt snapshot clone tank/home@before-maintenance tank/recovered --host lab --allo
 tnt snapshot delete tank/home@before-maintenance --host lab --allow-write --confirm tank/home@before-maintenance
 tnt container list --host lab --json
 tnt container show web --host lab --json
-tnt container create web --host lab --image nginx --image-version latest --pool tank --no-autostart --allow-write
+tnt container create web --host lab --image alpine:3.24:amd64:default --image-version 20261016_13:00 --pool tank --no-autostart --allow-write
 tnt container update web --host lab --cpuset 0-1 --autostart --allow-write
 tnt container start web --host lab --allow-write
 tnt container stop web --host lab --allow-write --confirm web
@@ -236,6 +239,11 @@ tnt user delete deploy --host lab --allow-write --confirm deploy
 tnt tui --host lab
 tnt tui --host lab --allow-write
 ```
+
+Vanilla v27 accepts VM names made only of ASCII letters and digits. TnT refuses other names before sending a create
+request. Containers have no v27 restart RPC: restart is a typed, destructive stop/start plan. Stop enables the
+`force_after_timeout` fallback and verifies `container.get_instance` reports `STOPPED` before a restart continues; see
+the [lifecycle design](DESIGN.md#vm-and-container-lifecycle-contracts).
 
 ### Shares
 
@@ -268,7 +276,9 @@ flow as other writes. See [share safety decisions](DESIGN.md#shares) and the [v2
 ### Data Protection tasks
 
 Periodic snapshot tasks require a dataset, cron schedule, retention, and a v27 naming schema. Snapshot runs add
-snapshots; deletion removes only the scheduled task. Replication run plans identify source and target before apply.
+snapshots; deletion removes only the scheduled task. The v27 reference labels `pool.snapshottask.run` as a job, but
+vanilla 27.0.0-RC.1 returned `null` through the pinned client and created the snapshot before the call returned; verify
+the result with the snapshot list. Replication run plans identify source and target before apply.
 Cloud-sync credential records and encryption values are masked in both clients. The task name is the replication
 `name` or cloud-sync `description`; snapshot task actions use its numeric ID.
 
@@ -401,7 +411,8 @@ approved maintenance window.
 
 Configuration export writes a new local `.tar` file with mode `0600`. It includes the TrueNAS secret seed. The
 destination directory must already exist and an existing file is never overwritten. The optional root authorized-keys
-file is sensitive too:
+file is sensitive too. The export plan stays bound to the selected host while ignoring changing uptime/load readings;
+the design guide explains the [plan drift comparison](DESIGN.md#system-actions).
 
 ```sh
 tnt system config-export /home/me/truenas-config.tar --host lab --allow-write
@@ -460,25 +471,38 @@ The default pytest config deselects tests marked `live`; `tests/test_live_lane_c
 default exclusion remain in place. The live test never skips. If selected, it fails unless `TNT_LIVE=1`, the host named
 by `TNT_LIVE_PROFILE` exists in the selected protected config file with a matching credential in the paired secrets
 file, and all pool/group/image/VM sizing variables below are present. Run it only against an operator-designated v27
-test host with a disposable data pool and image available. Config and secrets resolve independently; set `TNT_CONFIG`
-and/or `TNT_SECRETS` when the corresponding file is outside its explicit, environment, current-directory, and XDG search paths.
-The test creates a dataset, snapshot/clone, user, container, and VM with names prefixed `tnt-live-`, then removes each
-through the same plan/apply guard. It is reserved for It4 acceptance and is intentionally not run during M1, M2, or It1–It3.
+test host with a disposable data pool and an image name/version listed by that host's container image registry. Use the
+exact registry name and version; the v27 RC.1 catalog returned `alpine:3.24:amd64:default` and `20261016_13:00` as one
+available pair during the 2026-10-29 acceptance run. Config and secrets resolve independently; set `TNT_CONFIG` and/or
+`TNT_SECRETS` when the corresponding file is outside its explicit, environment, current-directory, and XDG search paths.
+The registered `run-gate live-v27` lane runs the selected tests in `tester-unified`. It checks datasets, snapshots,
+users, containers, and VM lifecycle when `vm.supports_virtualization` is true. The M2 probe also checks read-only views,
+CLI and TUI reads, same-host alias switching, SMB/NFS share lifecycle, a periodic snapshot task, API-key file handling,
+and interactive SSH. Created resources are removed through the same plan/apply guard. See the dated
+[live acceptance record](LIVE-TESTING.md#live-acceptance-run-2026-10-29) and the [ACTION-MATRIX B-06 import workflow](ACTION-MATRIX.snapshot.md#actions).
+Set `RUN_GATE_EXTRA_MOUNTS` to a `host=container` pair for the private scratch directory. The left side is the
+physical path visible to the Docker host; the right side is the tester-visible path and must match `TNT_CONFIG`,
+`TNT_SECRETS`, and any configured SSH paths. Keep that directory outside the repository and
+mode `0700`, with `tnt.toml`, `tnt.secrets.toml`, and any SSH identity/known-hosts files at mode `0600`. Run it only
+against an operator-designated disposable v27 host with a data pool and container image available.
 
 ```sh
 export TNT_CONFIG="$PWD/tnt.toml"
+export TNT_SECRETS="$PWD/tnt.secrets.toml"
 export TNT_LIVE=1
 export TNT_LIVE_PROFILE=lab
 export TNT_LIVE_POOL=tank
 export TNT_LIVE_GROUP_ID=1001
-export TNT_LIVE_CONTAINER_IMAGE_NAME=nginx
-export TNT_LIVE_CONTAINER_IMAGE_VERSION=latest
+export TNT_LIVE_CONTAINER_IMAGE_NAME=alpine:3.24:amd64:default
+export TNT_LIVE_CONTAINER_IMAGE_VERSION=20261016_13:00
 export TNT_LIVE_VM_MEMORY_MIB=2048
 export TNT_LIVE_VM_DISK_BYTES=10737418240
-PYTHONPATH=src nice python -m pytest -q -p no:xdist -m live tests/live
+export RUN_GATE_EXTRA_MOUNTS="/private/scratch/tnt=/private/scratch/tnt"
+run-gate live-v27
 ```
 
 Set `TNT_LIVE_INSECURE=1` only when the selected host has `tls = "insecure"`; TLS verification stays enabled by
-default. The live test is not a replacement for the default FakeServer suite and it must not be pointed at a host with
-production data or workloads.
+default. `run-gate` forwards only the declared variables and mounts the selected scratch directory into the tester.
+Do not run the pytest command directly from the devcontainer cockpit. The live test is not a replacement for the
+default FakeServer suite and it must not be pointed at a host with production data or workloads.
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import math
 from typing import Any
 
 from .errors import Refused, TransportError
@@ -45,7 +46,9 @@ def _is_integer(value: Any) -> bool:
 
 
 def _is_number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return not isinstance(value, float) or math.isfinite(value)
 
 
 def _valid_pool_scan(value: Any) -> bool:
@@ -80,6 +83,19 @@ def _valid_aggregations(value: Any) -> bool:
                for series in value.values())
 
 
+def _valid_reporting_points(value: Any) -> bool:
+    """Accept object samples from the API schema and ordered numeric rows observed on v27 RC.1."""
+    if not isinstance(value, list):
+        return False
+    for point in value:
+        if isinstance(point, Mapping):
+            continue
+        if (not isinstance(point, list) or len(point) < 2
+                or any(not _is_number(sample) for sample in point)):
+            return False
+    return True
+
+
 class ReadViews:
     """Expose bounded v27 reads without turning denied, missing, or malformed data into healthy values."""
 
@@ -101,7 +117,7 @@ class ReadViews:
         physical_cores = _required(raw, method, "physical_cores", lambda v: _is_integer(v) and v >= 0)
         loadavg = raw.get("loadavg")
         uptime = _required(raw, method, "uptime", _is_text)
-        uptime_seconds = _required(raw, method, "uptime_seconds", lambda v: _is_integer(v) and v >= 0)
+        uptime_seconds = _required(raw, method, "uptime_seconds", lambda v: _is_number(v) and v >= 0)
         if (not isinstance(loadavg, list) or len(loadavg) != 3
                 or any(not _is_number(value) or value < 0 for value in loadavg)):
             raise Refused("schema", f"{method} returned an invalid 'loadavg' field")
@@ -136,7 +152,7 @@ class ReadViews:
             if name in by_name:
                 raise Refused("schema", f"reporting.get_data returned duplicate {name!r} graphs")
             _required(row, "reporting.get_data", "data",
-                      lambda v: isinstance(v, list) and all(isinstance(point, Mapping) for point in v))
+                      _valid_reporting_points)
             _required(row, "reporting.get_data", "aggregations", _valid_aggregations)
             _required(row, "reporting.get_data", "start", lambda v: _is_integer(v) and v > 0)
             _required(row, "reporting.get_data", "end", lambda v: _is_integer(v) and v > 0)

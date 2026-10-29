@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 import uuid
 from dataclasses import dataclass
 from enum import StrEnum
@@ -19,6 +20,10 @@ from .policy import (ALWAYS_REFUSED, BOOT_POOL, Caller, SafetyState, compute_sta
                      is_destructive_method, is_read_method, needs_membership, normalise_method, refusal_for)  # noqa: F401
 from .profile import Secret
 from .transport import GuardedRpc, _APPLY_AUTHORITY
+
+
+_CONTAINER_STOP_TIMEOUT = 30.0
+_CONTAINER_STOP_POLL_INTERVAL = 0.25
 
 
 class Kind(StrEnum):
@@ -77,6 +82,13 @@ def _fingerprint_value(value: Any, nonce: str, key: Any = None) -> Any:
     return value
 
 
+def _fingerprint_probe_result(call: RpcCall, result: Any, nonce: str) -> Any:
+    """Bind stable host identity from system.info, not its changing uptime and load metrics."""
+    if normalise_method(call.method) == "system.info" and isinstance(result, Mapping):
+        result = {"hostname": result.get("hostname")}
+    return _fingerprint_value(result, nonce)
+
+
 @dataclass(frozen=True)
 class Action:
     id: str  # an ACTION-MATRIX row id (A-09, B-01, ...) or a TNT-xx id for actions with no matrix row
@@ -102,6 +114,8 @@ class Plan:
     def render(self) -> str:
         lines = [f"{self.action.id} [{self.action.kind}] {self.action.title}", "Exact calls, in order:"]
         lines += [f"  {i}. {c.render()}" for i, c in enumerate(self.action.calls, 1)]
+        if any(call.method == "container.stop" for call in self.action.calls):
+            lines.append("Completion check: poll container.get_instance until status.state is STOPPED (up to 30 seconds) before continuing.")
         if self.action.confirm_target:
             lines.append(f"Destructive: type {self.action.confirm_target!r} to confirm.")
         if self.action.confirm_self:
@@ -192,6 +206,29 @@ def _check_cancelled(cancelled: Callable[[], bool] | None) -> None:
         raise Refused("cancelled", "the selected host session changed; this operation was cancelled")
 
 
+def _wait_for_container_stopped(rpc: GuardedRpc, container_id: Any,
+                                cancelled: Callable[[], bool] | None = None) -> None:
+    deadline = time.monotonic() + _CONTAINER_STOP_TIMEOUT
+    last_state: str | None = None
+    while True:
+        _check_cancelled(cancelled)
+        last_state = None
+        row = rpc.call("container.get_instance", container_id)
+        if isinstance(row, Mapping):
+            status = row.get("status")
+            if isinstance(status, Mapping):
+                state = status.get("state")
+                last_state = state.upper() if isinstance(state, str) else None
+                if last_state == "STOPPED":
+                    return
+        if time.monotonic() >= deadline:
+            observed = last_state or "unknown"
+            raise Refused("container-stop-state",
+                          f"container id {container_id} did not report STOPPED within "
+                          f"{_CONTAINER_STOP_TIMEOUT:g} seconds (last state: {observed})")
+        time.sleep(_CONTAINER_STOP_POLL_INTERVAL)
+
+
 def fingerprint_of(rpc: GuardedRpc, action: Action, nonce: str,
                    cancelled: Callable[[], bool] | None = None) -> str:
     probe_results = []
@@ -206,7 +243,7 @@ def fingerprint_of(rpc: GuardedRpc, action: Action, nonce: str,
         "confirm_self": action.confirm_self,
         "session": rpc.session_id, "nonce": nonce,
         "calls": [[c.method, _fingerprint_value(c.params, nonce), c.job] for c in action.calls],
-        "probe": [[c.method, _fingerprint_value(c.params, nonce), _fingerprint_value(result, nonce)]
+        "probe": [[c.method, _fingerprint_value(c.params, nonce), _fingerprint_probe_result(c, result, nonce)]
                   for c, result in zip(action.probe, probe_results)],
     }
     return hashlib.sha256(json.dumps(material, sort_keys=True, default=str).encode()).hexdigest()
@@ -282,6 +319,8 @@ def apply_plan(plan: Plan, rpc: GuardedRpc, *, allow_write: bool, typed_confirma
                                                None if job_id is None else str(job_id),
                                                getattr(handle, "state", "WAITING"), generation)
                 value = handle.wait(cancelled=cancelled)
+                if call.method == "container.stop":
+                    _wait_for_container_stopped(rpc, call.params[0], cancelled)
                 records[index] = CallExecution(index + 1, call.method, "completed", str(job_id),
                                                getattr(handle, "state", "SUCCESS"), generation)
             else:

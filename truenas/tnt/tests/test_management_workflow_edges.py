@@ -69,7 +69,7 @@ def test_api_key_queries_refuse_malformed_rows_and_ambiguous_id_lookup(workflows
     with pytest.raises(Refused, match="valid ID and name"):
         workflows.api_keys()
     server.api_keys[1] = {"id": 1, "name": "valid"}
-    with pytest.raises(Refused, match="exactly one API key"):
+    with pytest.raises(TransportError, match="API key 2 not found"):
         workflows._api_key_by_id(2)
 
 

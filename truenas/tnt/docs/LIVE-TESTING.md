@@ -7,27 +7,37 @@ requested VM zvol. Do not point it at a production system or a pool that cannot 
 
 The default test command excludes the `live` marker through `pytest.ini`; `tests/test_live_lane_config.py` checks that
 the exclusion remains configured. The live test is not skipped when selected: missing variables, an absent host,
-or a host that cannot connect make the test fail. This implementation task wrote the live lane but did not run it.
+or a host that cannot connect make the test fail.
 
 Before running it, configure paired `tnt.toml` and `tnt.secrets.toml` files with a host allowed to create and delete
 temporary resources on the chosen host. Copy the committed examples and keep both files mode `0600`; credentials
 belong only in `tnt.secrets.toml`. The test uses the same host loader, credential checks, and TLS rules as the CLI.
 Supply all required environment values explicitly:
 
+Run the registered lane from `truenas/tnt`; it starts `tester-unified` through Run-Gate and selects only the `live`
+marker. Put both configuration files and any SSH identity material in a private directory outside the repository.
+The left side of `RUN_GATE_EXTRA_MOUNTS` must be the physical path visible to the Docker host; the right side is the
+tester-visible path and must match the paths in the environment and tnt configuration.
+
 ```sh
-TNT_LIVE=1 \
-TNT_LIVE_PROFILE=lab \
-TNT_LIVE_POOL=tank \
-TNT_LIVE_GROUP_ID=1000 \
-TNT_LIVE_CONTAINER_IMAGE_NAME=alpine \
-TNT_LIVE_CONTAINER_IMAGE_VERSION=latest \
-TNT_LIVE_VM_MEMORY_MIB=2048 \
-TNT_LIVE_VM_DISK_BYTES=10737418240 \
-PYTHONPATH=src nice python -m pytest -q -p no:xdist -m live tests/live
+export TNT_CONFIG=/private/scratch/tnt/tnt.toml
+export TNT_SECRETS=/private/scratch/tnt/tnt.secrets.toml
+export RUN_GATE_EXTRA_MOUNTS=/private/scratch/tnt=/private/scratch/tnt
+export TNT_LIVE=1
+export TNT_LIVE_PROFILE=lab
+export TNT_LIVE_POOL=tank
+export TNT_LIVE_GROUP_ID=1000
+export TNT_LIVE_CONTAINER_IMAGE_NAME=alpine:3.24:amd64:default
+export TNT_LIVE_CONTAINER_IMAGE_VERSION=20261016_13:00
+export TNT_LIVE_VM_MEMORY_MIB=2048
+export TNT_LIVE_VM_DISK_BYTES=10737418240
+run-gate live-v27
 ```
 
-Replace the sample values with values that exist on the selected host. `TNT_LIVE_GROUP_ID` is the TrueNAS group entry
-ID, not the Unix GID. `TNT_LIVE_VM_MEMORY_MIB` must be at least 20, and the zvol size must be positive. The selected
+The image name and version must match a pair listed by the selected host's container image registry; the v27 RC.1
+catalog returned this Alpine pair during the 2026-10-29 acceptance run. Replace the other sample values with values
+that exist on the selected host. `TNT_LIVE_GROUP_ID` is the TrueNAS group entry ID, not the Unix GID.
+`TNT_LIVE_VM_MEMORY_MIB` must be at least 20, and the zvol size must be positive. The selected
 pool and group are checked before any resource is created, and all generated test resource names begin with
 `tnt-live-`.
 
@@ -38,41 +48,70 @@ required. Never place credentials in this command line. Keep them in the mode-06
 
 Cleanup is attempted for every resource even if an earlier cleanup action fails. A cleanup failure fails the test and
 names the resource class, so inspect the host for any remaining resource whose name starts with `tnt-live-` before
-using that namespace again.
+using that namespace again. The lane is a tester-unified gate; do not execute the pytest command directly from the
+devcontainer cockpit. The out-of-repository mount keeps credentials out of the judged worktree and the gate forwards
+only the declared live-test variables.
 
-## M2 management live checks (authored, not run)
+The live acceptance record below names the appliance class and software version only. The corresponding storage
+import check follows the [ACTION-MATRIX B-06 workflow](ACTION-MATRIX.snapshot.md#actions).
 
-The M2 acceptance checks below are manual review steps; this implementation does not contact a TrueNAS host. Use a
-disposable v27 host and data pool, inspect every dry-run plan first, and remove only the test share/task/app/API key
-created for that check.
+## Live acceptance run: 2026-10-29
 
-- Shares: create a disposable existing directory under the data pool; dry-run SMB and NFS create payloads; confirm
-  ACL data appears for SMB; delete each export with the exact typed share name/path and verify the directory remains.
-- Data Protection: create a periodic snapshot task for a disposable dataset, verify its cron/retention/naming fields,
-  run it once, disable it, then delete only the task using its typed dataset/ID target. Inspect replication source and
-  target in the plan; do not run a task with `allow_from_scratch` unless destination snapshot removal is intended.
-  Run only a disposable cloud-sync task; verify credential fields stay masked and treat `MOVE` as source deletion.
-- Network: run `tnt network show --json`; compare `interfaces`, `addresses`, `routes`, `dns`, and
-  `default_gateways` with System > Network in the web UI, then confirm the TUI screen exposes no write controls. This
-  check is authored only and has not been run.
-- Apps: run `tnt app list --json` and verify state and `upgrade_available`; start/stop/restart only a disposable app.
-  Dry-run uninstall and verify `remove_ix_volumes=false`; uninstall only an app with disposable data, keeping the
-  delete-data-volumes choice at NO unless data deletion is explicitly intended. This check is authored only and has
-  not been run.
-- Audit: run `tnt audit --service MIDDLEWARE --limit 100 --offset 0 --json`, page through results, and compare
-  time/user/event filters with the v27 UI; verify credential-like event values are scrubbed. No general
-  middleware/syslog tail RPC exists in v27. This check is authored only and has not been run.
-- API Keys: list keys and confirm verifier fields are absent; create a temporary key and capture its one-time warning
-  display directly into an approved private file (never a shell argument or transcript), rename it, then revoke it
-  using its current name. Confirm the optional file has mode `0600` and the config is not changed automatically.
-  This check is authored only and has not been run.
-- SSH hand-off (It4 controller acceptance): use a host profile with a configured identity file and pinned known_hosts
-  entry; verify `tnt ssh HOST` and the TUI `s` action open an interactive session, preserve the SSH exit status, and
-  return to the CLI/TUI afterward. Do not append a remote command; arbitrary remote-command mode is deferred. Never
-  bypass host-key verification or add host keys automatically.
-- System actions have a separate manual acceptance gate. Before any live reboot, shutdown, or update apply command,
-  require the operator to set `TNT_LIVE_ALLOW_SYSTEM=1` in that shell and make sure a maintenance window is approved;
-  a suggested guard is `test "${TNT_LIVE_ALLOW_SYSTEM:-}" = 1 || exit 1`. Then inspect the running-job, VM, container,
-  and SMB session preflight and separately verify reboot, shutdown, and update check/apply/reconnect. This environment variable
-  gates these written live-check instructions; it is not a runtime CLI option. Never perform these checks as part of
-  this implementation task. Config export should be written to a new local file and verified as mode `0600`.
+The live lane ran through registered Run-Gate in `tester-unified` against a disposable, vanilla TrueNAS 27.0.0-RC.1
+appliance restored from the pristine provider snapshot. The final `live-v27` verdict was PASS (`2 passed` in
+314.94 seconds). This report records the host class and version only; it contains no host name or address. The
+appliance presented a self-signed TLS certificate, so the host profile used
+`tls = "insecure"` together with the explicit `TNT_LIVE_INSECURE=1` acknowledgement. The six relaxation-patch markers
+from the earlier acceptance session were absent after restore. A temporary pool was created on a free tail partition
+and imported through tnt; final restore removes that test state.
+
+| Area | Result | Evidence / limit |
+|---|---|---|
+| Registered live lane | PASS | `live-v27` completed with both live tests passing; namespaced resources were cleaned up. |
+| Datasets, SMB/NFS shares, snapshots | PASS | Created and removed only temporary resources. Share deletion retained the backing dataset. A periodic snapshot task ran and produced a snapshot, then was disabled and removed. |
+| Users and SSH credentials | PASS | Temporary user CRUD, public-key changes, and password workflow completed; cleanup succeeded. |
+| Containers and job progress | PASS | Temporary container lifecycle completed; job state, progress events, and callbacks were observed. |
+| Pool import, ACTION-MATRIX B-06 | PASS | Created a pool on a free partition with `zpool create`, exported it, then used `pool.import_find` and `pool.import_pool` on vanilla v27; the imported pool reported ONLINE and appeared in `pool.query`. See the [B-06 workflow](ACTION-MATRIX.snapshot.md#actions). |
+| Dashboard, alerts, jobs, services, storage | PASS | CLI readers and Textual Pilot views loaded against the live host. |
+| Network, Apps, audit, API keys | PASS | Read views loaded through CLI and TUI. A temporary API key was created, saved only to a private mode-0600 scratch file, renamed, revoked, and removed. No verifier fields appeared in listings. |
+| Multi-host switch | PASS | Added a second alias for the same host and switched to it and back in the TUI. |
+| Interactive SSH hand-off | PASS | The TUI suspend/restore path passed with Pilot. The real interactive PTY hand-off enforced the pinned host key and ignored a hostile user SSH config marker. No remote command was supplied. |
+| Configuration export | PASS | Export created a valid tar archive with mode `0600`; the probe removed it without reading its contents. |
+| VM lifecycle | DEFERRED | The appliance did not expose `/dev/kvm`, so virtualization capability was false and VM create/lifecycle was not attempted. |
+| Apps lifecycle | DEFERRED | No disposable app candidate was available; only the read/list path was exercised. |
+| Replication/cloud-sync execution | DEFERRED | Read/list paths passed. No disposable source/target or cloud endpoint was available for a safe task run. |
+| Reboot, shutdown, update apply | DEFERRED | Not run. The live acceptance did not need a power or update action. |
+
+The system configuration export is a harmless read/download action; reboot, shutdown, and update apply remain outside
+this acceptance. A snapshot task run returned `null` on this RC.1 build even though the generated snapshot appeared;
+the workflow and live probe now treat the call as an ordinary action and verify the resulting snapshot. The registered
+lane cleanup succeeded. After testing, the provider snapshot revert task finished, the powered-off instance was
+powered on, and the registered read-only `live-inspect` gate passed. It confirmed TrueNAS 27.0.0-RC.1, an empty v27
+patch install record, no Path B pool, and no guest mutation calls.
+
+### Findings fixed during acceptance
+
+- Container stop job completion could precede the instance's `STOPPED` state; the workflow now waits for the bounded
+  state postcondition. Container and API query methods that reject exact-ID filters now use their instance lookup.
+- VM names now follow the v27 ASCII-alphanumeric constraint, and VM acceptance is capability-gated when `/dev/kvm` is
+  absent. The live environment had no virtualization support, so no VM mutation was attempted.
+- The v27 dashboard returns fractional uptime and numeric arrays for reporting; readers now accept finite numeric
+  values and arrays. Audit and API-key CLI JSON paths also serialize native datetimes safely.
+- RC.1 rejected `guestok` in the SMB `DEFAULT_SHARE` fixture, so the fixture omits that unsupported field. The
+  snapshot-task `run` response and API-key exact-ID query behavior are documented above and covered by regressions;
+  the API-key rename collision check compares against the ID returned by `api_key.get_instance`.
+- The configuration-export plan fingerprint previously included volatile uptime/load fields from `system.info`,
+  causing false drift. Its stable host identity probe now fingerprints the hostname while retaining the separate
+  version, state, and boot-ID probes. A FakeServer regression verifies both volatile-field tolerance and hostname
+  drift refusal.
+- Two Textual Pilot races were test synchronization defects: one checked before the refreshed view mounted, and one
+  observed the new session before its dashboard remounted. The pilot now waits for a new loaded view and both the
+  target session and dashboard before continuing.
+
+### Remaining manual checks
+
+Before running any reboot, shutdown, or update-apply acceptance on a disposable host, require an approved maintenance
+window and set `TNT_LIVE_ALLOW_SYSTEM=1` in that shell; this variable gates the written procedure and is not a runtime
+CLI option. Check job, VM, container, and SMB-session preconditions, then verify the relevant action and reconnect.
+Never bypass host-key checking or add keys automatically. Generic middleware/syslog tailing and arbitrary remote SSH
+command mode remain unsupported by the v27 contract.

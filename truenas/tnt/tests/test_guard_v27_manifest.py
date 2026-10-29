@@ -68,6 +68,7 @@ def test_pool_scrub_task_id_is_not_treated_as_a_pool_id():
     ("containers", "container.create", "write"),
     ("containers", "container.delete", "destructive"),
     ("vms", "vm.restart", "write"),
+    ("vms", "vm.supports_virtualization", "read"),
     ("vms", "vm.poweroff", "destructive"),
     ("datasets", "pool.dataset.update", "write"),
     ("snapshots", "pool.snapshot.rollback", "destructive"),

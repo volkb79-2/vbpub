@@ -76,6 +76,7 @@ class FakeServer:
         self.active_jobs: list[dict[str, Any]] = []
         self.active_smb_sessions = 0
         self.system_roles = ["FULL_ADMIN"]
+        self.virtualization_supported = True
         self.update_train = "TrueNAS-SCALE-27-STABLE"
         self.update_target_train = self.update_train
         self.update_new_version = "TrueNAS-27.0.0-RC.2"
@@ -241,7 +242,7 @@ class FakeServer:
                 else:
                     result = self._dispatch(method, params)
                     if method in {"container.create", "container.stop", "container.delete", "vm.stop", "vm.restart",
-                                  "pool.snapshottask.run", "replication.run", "cloudsync.sync",
+                                  "replication.run", "cloudsync.sync",
                                   "app.start", "app.stop", "app.delete", "system.reboot", "system.shutdown", "update.run"}:
                         self._send_job(ws, msg["id"], result)
                         if method == "system.reboot":
@@ -394,6 +395,7 @@ class FakeServer:
             "app.stop": lambda p: self._app_state(p, "STOPPED"),
             "app.delete": self._app_delete,
             "api_key.query": self._api_key_query,
+            "api_key.get_instance": self._api_key_get_instance,
             "api_key.create": self._api_key_create,
             "api_key.update": self._api_key_update,
             "api_key.delete": self._api_key_delete,
@@ -444,6 +446,7 @@ class FakeServer:
             "vm.query": lambda p: self._query(self.vms, p),
             "vm.get_instance": lambda p: self._get(self.vms, p[0], "VM"),
             "vm.status": lambda p: self._get(self.vms, p[0], "VM").get("status"),
+            "vm.supports_virtualization": lambda p: self.virtualization_supported,
             "vm.create": self._vm_create,
             "vm.update": self._vm_update,
             "vm.start": lambda p: self._vm_state(p, "RUNNING"),
@@ -624,6 +627,9 @@ class FakeServer:
     def _api_key_query(self, params: list[Any]) -> list[dict[str, Any]]:
         filters = params[0] if params and isinstance(params[0], list) else []
         options = params[1] if len(params) > 1 and isinstance(params[1], dict) else {}
+        if any(isinstance(filter_, (list, tuple)) and len(filter_) == 3 and filter_[0] == "id"
+               for filter_ in filters):
+            raise _RpcError(CALL_ERROR, "filters: Value error, Invalid filter on id")
         rows = [dict(row) for row in self.api_keys.values()]
         for filter_ in filters:
             if isinstance(filter_, (list, tuple)) and len(filter_) == 3 and filter_[1] == "=":
@@ -641,6 +647,14 @@ class FakeServer:
         if isinstance(selected, list):
             rows = [{key: row[key] for key in selected if key in row} for row in rows]
         return rows
+
+    def _api_key_get_instance(self, params: list[Any]) -> dict[str, Any]:
+        row = dict(self._get(self.api_keys, params[0], "API key"))
+        options = params[1] if len(params) > 1 and isinstance(params[1], dict) else {}
+        selected = options.get("select")
+        if isinstance(selected, list):
+            row = {key: row[key] for key in selected if key in row}
+        return row
 
     def _api_key_create(self, params: list[Any]) -> dict[str, Any]:
         payload = params[0] if params and isinstance(params[0], dict) else {}

@@ -106,6 +106,19 @@ def test_reporting_allows_a_null_aggregate_object_as_unavailable():
     assert result["cpu"]["aggregations"] is None
 
 
+def test_reporting_accepts_numeric_rows_and_rejects_malformed_rows():
+    numeric_rows = [{**REPORTING[0], "data": [[100, 1.5, 2]]}, REPORTING[1]]
+    result = ReadViews(Rpc(**{"system.info": INFO, "reporting.get_data": numeric_rows}),
+                       "lab", JobRegistry("lab")).dashboard()
+    assert result["cpu"]["data"] == [[100, 1.5, 2]]
+
+    for malformed in ([[]], [[100]], [[100, True]], [[100, "cpu"]], ["bad"]):
+        rows = [{**REPORTING[0], "data": malformed}, REPORTING[1]]
+        with pytest.raises(Refused, match="invalid 'data'"):
+            ReadViews(Rpc(**{"system.info": INFO, "reporting.get_data": rows}),
+                      "lab", JobRegistry("lab")).dashboard()
+
+
 def test_reporting_rejects_wrong_aggregate_series_and_invalid_time_window():
     wrong_aggregate = [{**REPORTING[0],
                         "aggregations": {"min": "10", "mean": {"value": 20}, "max": {"value": 30}}}, REPORTING[1]]

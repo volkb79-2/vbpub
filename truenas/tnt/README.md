@@ -15,8 +15,9 @@ Scope and safety choices are explained in the [design guide](docs/DESIGN.md#1-go
 workflow examples are in the [consumer guide](docs/CONSUMERS.md#configure-multiple-hosts).
 
 M1 core workflows, M2 management workflows, It1 multi-host configuration and session control, It2 job tracking and
-read-only core views, and It3 hardened interactive SSH hand-off are implemented. It4 vanilla-v27 acceptance and release
-readiness remain. See the [milestone plan](docs/DESIGN.md#10-milestones).
+read-only core views, and It3 hardened interactive SSH hand-off are implemented. It4 vanilla-v27 acceptance is recorded
+in the [live acceptance record](docs/LIVE-TESTING.md#live-acceptance-run-2026-10-29); release readiness remains. See the
+[milestone plan](docs/DESIGN.md#10-milestones).
 
 At connection time tnt checks the v27 WebSocket method list. Methods missing from a host are reported by
 `doctor --online` and refused if a workflow needs them; a method-name match does not grant an RBAC role. See the
@@ -160,6 +161,10 @@ tnt tui --host lab  # Dashboard; System > Alerts / Jobs / Services; Storage > He
 
 The `jobs list` JSON `rows` field contains only the requested remote page. On the first page, tnt also returns up to 200
 recent process-local records in `local_jobs`; `local_jobs_possibly_more` reports when that ledger was truncated.
+Dashboard JSON keeps v27 `system.info.uptime_seconds` as a finite, non-negative number; v27 may return fractional
+seconds. It also preserves reporting samples in the shape returned by the host; v27 RC.1 returned ordered numeric rows.
+See the [read-view contract](docs/DESIGN.md#non-blocking-jobs-and-core-read-views) and
+[Dashboard adoption notes](docs/CONSUMERS.md#read-only-overview-and-jobs).
 
 Applied jobs run through worker threads. Their remote IDs, progress, logs, errors, and generation are recorded; reconnect
 reconciliation can leave an invisible or unqueryable job as UNKNOWN. If a multi-call plan stops partway, CLI JSON and
@@ -176,7 +181,7 @@ tnt dataset create tank/home --host lab --type filesystem --compression LZ4 --al
 tnt snapshot create tank/home nightly --host lab --allow-write
 tnt snapshot rollback tank/home@nightly --host lab --allow-write --confirm tank/home@nightly
 tnt container list --host lab --json
-tnt container create web --host lab --image nginx --image-version latest --pool tank --no-autostart --allow-write
+tnt container create web --host lab --image alpine:3.24:amd64:default --image-version 20261016_13:00 --pool tank --no-autostart --allow-write
 tnt container restart web --host lab --allow-write --confirm web
 tnt vm list --host lab --json
 tnt vm create guest --host lab --memory 2048 --vcpus 2 --disk-zvol tank/vms/guest --disk-size 10737418240 --allow-write
@@ -216,10 +221,12 @@ apply. Built-in, immutable, root, and admin accounts are refused by this workflo
 require `--confirm-self` and typed confirmation. `user.update` refuses `random_password` and username rename. See the
 [user update design](docs/DESIGN.md#user-account-updates).
 
-VM creation uses a `vm.create` plan followed by separately reviewed `vm.device.create` plans for its required disk
-and any optional ISO or NIC. The v27 schema excludes devices from `vm.create`, so a later device-plan failure can
-leave the VM record in place; inspect it before retrying. VM console output includes the v27 console command, display
-bind/port endpoints (or `auto-assigned`), and web display URI when configured; tnt does not embed a VNC client.
+VM names must contain ASCII letters and digits only; tnt refuses other names before contacting TrueNAS. VM creation
+uses a `vm.create` plan followed by separately reviewed `vm.device.create` plans for its required disk and any optional
+ISO or NIC. The v27 schema excludes devices from `vm.create`, so a later device-plan failure can leave the VM record in
+place; inspect it before retrying. VM console output includes the v27 console command, display bind/port endpoints (or
+`auto-assigned`), and web display URI when configured; tnt does not embed a VNC client. See the
+[VM and container lifecycle design](docs/DESIGN.md#vm-and-container-lifecycle-contracts).
 
 `container list` reports name, state, autostart, CPU affinity (`cpuset`), and current CPU/memory usage from the
 `container.metrics` event source; `container update` changes autostart and CPU affinity. If a running container
@@ -242,7 +249,9 @@ display. The v27 API does not expose a general middleware/syslog tail method. Se
 [Audit guide](docs/CONSUMERS.md#audit) and [v27 audit signature](docs/API-METHODS-V27.md#audit).
 
 v27 has no container restart RPC, so `container restart` plans a stop followed by a start and requires the container
-name as destructive confirmation.
+name as destructive confirmation. Stop and restart request TrueNAS's `force_after_timeout` fallback, then confirm
+`status.state == STOPPED` through `container.get_instance` before continuing; a successful middleware job alone does
+not prove the container stopped. See the [lifecycle design](docs/DESIGN.md#vm-and-container-lifecycle-contracts).
 
 SMB/NFS shares can be listed, inspected, created from a v27 JSON payload, and deleted through the CLI and TUI. Share
 creation checks the path on the TrueNAS host and refuses missing paths and boot-pool paths; deleting a share removes
@@ -271,7 +280,9 @@ the file as a credential. See the [system action decisions](docs/DESIGN.md#syste
 Data Protection includes periodic snapshot task create/list/show/run/enable/disable/delete, plus replication and
 cloud-sync task list/show/run/enable/disable. Run plans show replication source and target and require the typed task
 name; cloud-sync credential fields are always masked. Snapshot task creation validates its dataset, cron schedule,
-retention, and naming schema. See [task commands](docs/CONSUMERS.md#data-protection-tasks).
+retention, and naming schema. Snapshot-task run behavior on RC.1 and copyable task commands are in the
+[consumer guide](docs/CONSUMERS.md#data-protection-tasks); the compatibility reason is in the
+[design guide](docs/DESIGN.md#data-protection-tasks).
 
 tnt scans every non-read API payload for boot-pool names and paths, including nested container, VM, sharing, app, and
 user fields, and resolves pool references against the connected host before allowing a plan to apply. Dataset deletion
@@ -285,11 +296,14 @@ five seconds offers Keep waiting or Cancel quit.
 
 ## Tests
 
-Tests use the in-memory `tnt.testing.FakeServer` over loopback with the real `truenas_api_client`. No test contacts a
-TrueNAS host. The optional Textual, websockets, and test dependencies are required by the test suite; missing
-dependencies fail the suite. A host integration lane is available only with the explicit `live` marker and the
-`TNT_LIVE=1` opt-in; it creates and cleans up resources under a `tnt-live-` prefix. It is not part of the normal suite.
-See the [live testing guide](docs/LIVE-TESTING.md) for required variables, host restrictions, and cleanup behavior.
+The default suite uses the in-memory `tnt.testing.FakeServer` over loopback with the real `truenas_api_client`; it does
+not contact a TrueNAS host. The optional Textual, websockets, and test dependencies are required by the suite; missing
+dependencies fail the suite. The separate `run-gate live-v27` lane is an explicit host integration run: it selects only
+tests marked `live`, requires `TNT_LIVE=1`, and creates and cleans up resources under a `tnt-live-` prefix. It runs in
+`tester-unified`; keep `tnt.toml` and `tnt.secrets.toml` in a private scratch directory outside the repository and pass
+that directory through `RUN_GATE_EXTRA_MOUNTS`. See the [live testing guide](docs/LIVE-TESTING.md) for the complete
+invocation, host restrictions, and cleanup behavior, and the [test strategy](docs/DESIGN.md#9-test-strategy) for why
+the live lane runs in `tester-unified`.
 
 ```bash
 PYTHONPATH=src nice python -m pytest -q -p no:xdist

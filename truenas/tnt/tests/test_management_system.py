@@ -148,6 +148,25 @@ def test_config_export_downloads_tar_to_new_private_local_file(config, opener, c
     assert code != 0 and "overwrite" in (captured.out + captured.err)
 
 
+def test_config_export_fingerprint_ignores_volatile_system_info_but_binds_hostname(tmp_path):
+    with FakeServer() as server:
+        session = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True, allow_write=True)
+        try:
+            action = session.workflows.config_export_action(str(tmp_path / "config.tar"))
+            plan = make_plan(action, session.rpc)
+            server.system_info["uptime_seconds"] += 1.5
+            server.system_info["loadavg"] = [0.4, 0.5, 0.6]
+            result = apply_plan(plan, session.rpc, allow_write=True)
+            assert result[0][0] == 1
+
+            hostname_plan = make_plan(action, session.rpc)
+            server.system_info["hostname"] = "renamed-host"
+            with pytest.raises(Refused, match="changed since TNT-47 was planned"):
+                apply_plan(hostname_plan, session.rpc, allow_write=True)
+        finally:
+            session.close()
+
+
 def test_system_cli_covers_review_refusals_and_job_flows(config, capsys):
     from tnt.session import open_session
 

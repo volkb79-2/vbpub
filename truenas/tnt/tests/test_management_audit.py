@@ -1,5 +1,6 @@
 import asyncio
 import json
+from datetime import datetime, timezone
 
 import pytest
 from textual.widgets import Button, DataTable, Input, Select, Static, Tree
@@ -67,6 +68,30 @@ def test_audit_cli_is_json_filtered_and_scrubs_secret_material(config, opener, c
     result = json.loads(output)
     assert code == 0 and result[0]["event"] == "USER_LOGIN"
     assert "synthetic-audit-secret" not in output and "synthetic-audit-token" not in output
+
+
+def test_audit_cli_json_normalizes_native_datetime_values(config, opener, capsys):
+    native_timestamp = datetime(2026, 10, 29, 8, 17, 42, tzinfo=timezone.utc)
+
+    def opener_with_native_datetime(profile, **kwargs):
+        session = opener(profile, **kwargs)
+        rpc_call = session.rpc.call
+
+        def call(method, *params, **call_kwargs):
+            result = rpc_call(method, *params, **call_kwargs)
+            if method == "audit.query" and result:
+                result[0]["timestamp"] = native_timestamp
+            return result
+
+        session.rpc.call = call
+        return session
+
+    cli = build_cli(opener=opener_with_native_datetime)
+    code = cli.run(argv=["audit", "--config", str(config), "--json"])
+    captured = capsys.readouterr()
+    assert code == 0, captured.err
+    result = json.loads(captured.out)
+    assert result[0]["timestamp"] == "2026-10-29T08:17:42+00:00"
 
 
 def test_audit_tui_filters_and_displays_only_scrubbed_events():

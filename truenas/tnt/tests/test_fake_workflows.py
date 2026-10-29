@@ -1,9 +1,11 @@
 """End-to-end workflow calls through the pinned JSON-RPC client and the in-memory v27 fake."""
 import base64
 import struct
+from types import SimpleNamespace
 
 import pytest
 
+from tnt import actions as actions_module
 from tnt.actions import apply_plan, make_plan
 from tnt.errors import Refused
 from tnt.profile import Secret
@@ -124,5 +126,76 @@ def test_container_and_vm_workflows_execute_v27_jobs_and_device_calls():
             apply(session, workflows.vm_lifecycle_action("guest", "stop"), confirm="guest")
             apply(session, workflows.vm_lifecycle_action("guest", "poweroff"), confirm="guest")
             apply(session, workflows.vm_delete_action("guest"), confirm="guest")
+        finally:
+            session.close()
+
+
+def test_container_restart_waits_until_the_stop_job_reaches_stopped_state():
+    with FakeServer() as server:
+        session = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True, allow_write=True)
+        workflows = session.workflows
+        try:
+            apply(session, workflows.container_create_action({
+                "name": "restart-lag", "image": {"name": "nginx", "version": "latest"},
+                "pool": "tank", "autostart": False,
+            }))
+            apply(session, workflows.container_lifecycle_action("restart-lag", "start"))
+
+            container_id = next(iter(server.containers))
+            state = {"pending_queries": 0, "start_before_stopped": False}
+            original_dispatch = server._dispatch
+
+            def delayed_stop_dispatch(method, params):
+                if method == "container.query" and params and params[0] == [["id", "=", container_id]]:
+                    raise AssertionError("container.query does not accept id filters on v27")
+                if method == "container.get_instance" and state["pending_queries"]:
+                    state["pending_queries"] -= 1
+                    if state["pending_queries"] == 0:
+                        server.containers[container_id]["status"]["state"] = "STOPPED"
+                if method == "container.start" and state["pending_queries"]:
+                    state["start_before_stopped"] = True
+                result = original_dispatch(method, params)
+                if method == "container.stop":
+                    server.containers[container_id]["status"]["state"] = "RUNNING"
+                    state["pending_queries"] = 2
+                return result
+
+            server._dispatch = delayed_stop_dispatch
+            apply(session, workflows.container_lifecycle_action("restart-lag", "restart"), confirm="restart-lag")
+            assert state["pending_queries"] == 0
+            assert not state["start_before_stopped"]
+        finally:
+            session.close()
+
+
+@pytest.mark.parametrize("row", [
+    None,
+    {},
+    {"status": "RUNNING"},
+    {"status": {"state": None}},
+    {"status": {"state": "RUNNING"}},
+], ids=["non-mapping-row", "missing-status", "non-mapping-status", "non-string-state", "still-running"])
+def test_container_stop_requires_a_verified_stopped_state(row, monkeypatch):
+    monkeypatch.setattr(actions_module, "time", SimpleNamespace(monotonic=lambda: 0.0, sleep=lambda _delay: None))
+    monkeypatch.setattr(actions_module, "_CONTAINER_STOP_TIMEOUT", 0.0)
+
+    class Rpc:
+        def call(self, method, *params):
+            assert method == "container.get_instance"
+            assert params == (7,)
+            return row
+
+    with pytest.raises(Refused, match="did not report STOPPED"):
+        actions_module._wait_for_container_stopped(Rpc(), 7)
+
+
+def test_v27_rejects_vm_names_with_non_alphanumeric_characters_before_write():
+    with FakeServer() as server:
+        session = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True, allow_write=True)
+        try:
+            assert session.rpc.call("vm.supports_virtualization") is True
+            with pytest.raises(Refused, match="ASCII letters and digits"):
+                session.workflows.vm_create_action({"name": "tnt-live-invalid", "memory": 256})
+            assert not any(request.get("method") == "vm.create" for request in server.requests)
         finally:
             session.close()

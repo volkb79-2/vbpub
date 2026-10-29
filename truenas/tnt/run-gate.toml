@@ -15,3 +15,59 @@ artifacts = ["coverage.json"]
 
 [lanes.r0-r1.resources]
 memory = "1g"
+
+# The opt-in live lane runs inside tester-unified as well. Keep these host
+# inputs explicit and forward only the private file paths and test parameters
+# needed by the test process. The caller supplies RUN_GATE_EXTRA_MOUNTS for
+# the out-of-repository scratch directory containing tnt.toml and
+# tnt.secrets.toml. The left side must be the Docker host's physical path; the
+# right side is where the tester sees it and must match the forwarded paths.
+[environments.tnt-live]
+mode = "ephemeral"
+image = "tester-unified:local"
+image_env = "RUN_GATE_TESTER_UNIFIED_IMAGE"
+cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
+forward_env = [
+  "CGROUP_PARENT_DEV_BACKGROUND",
+  "RUN_GATE_RELEASE_WHEEL_RECEIPT",
+  "TNT_CONFIG",
+  "TNT_SECRETS",
+  "TNT_LIVE",
+  "TNT_LIVE_PROFILE",
+  "TNT_LIVE_POOL",
+  "TNT_LIVE_GROUP_ID",
+  "TNT_LIVE_CONTAINER_IMAGE_NAME",
+  "TNT_LIVE_CONTAINER_IMAGE_VERSION",
+  "TNT_LIVE_VM_MEMORY_MIB",
+  "TNT_LIVE_VM_DISK_BYTES",
+  "TNT_LIVE_INSECURE",
+]
+
+[environments.tnt-live.resources]
+cpus = "3"
+
+[lanes.live-v27]
+kind = "command"
+environment = "tnt-live"
+argv = [
+  "bash", "-c",
+  "cd {worktree}/truenas/tnt && /opt/tester-venv/bin/python3 -m pip install --no-deps setuptools==82.0.1 wheel==0.47.0 websocket-client==1.8.0 && /opt/tester-venv/bin/python3 -m pip install --no-deps --no-build-isolation 'truenas_api_client @ git+https://github.com/truenas/api_client.git@2a04491953d38c13f13f40729d2a4966a77c6297' && PYTHONPATH=src:{worktree}/libraries/cli-extended/src PYTHONDONTWRITEBYTECODE=1 nice /opt/tester-venv/bin/python3 -m pytest -q -p no:xdist -m live tests/live",
+]
+required_env = [
+  "TNT_CONFIG",
+  "TNT_SECRETS",
+  "TNT_LIVE",
+  "TNT_LIVE_PROFILE",
+  "TNT_LIVE_POOL",
+  "TNT_LIVE_GROUP_ID",
+  "TNT_LIVE_CONTAINER_IMAGE_NAME",
+  "TNT_LIVE_CONTAINER_IMAGE_VERSION",
+  "TNT_LIVE_VM_MEMORY_MIB",
+  "TNT_LIVE_VM_DISK_BYTES",
+]
+clean_tree = false
+budget = "60m"
+stall_timeout = "15m"
+
+[lanes.live-v27.resources]
+memory = "1g"

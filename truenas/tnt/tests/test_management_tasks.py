@@ -31,8 +31,10 @@ def test_data_protection_tasks_use_v27_methods_and_mask_cloud_credentials():
             tasks = workflows.snapshot_tasks()
             assert len(tasks) == 1 and tasks[0]["dataset"] == "tank"
             run_snapshot = workflows.snapshot_task_run_action(tasks[0]["id"])
+            assert run_snapshot.calls[0].job is False
             assert "pool.snapshottask.run" in make_plan(run_snapshot, session.rpc).render()
             _apply(session, run_snapshot)
+            assert workflows.snapshot_task(tasks[0]["id"])["last_run"] == "2026-10-28T00:00:00Z"
             _apply(session, workflows.snapshot_task_enable_action(tasks[0]["id"], False))
             assert workflows.snapshot_tasks()[0]["enabled"] is False
             delete = workflows.snapshot_task_delete_action(tasks[0]["id"])

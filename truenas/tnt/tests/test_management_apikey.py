@@ -1,6 +1,7 @@
 import asyncio
 import json
 import stat
+from datetime import datetime, timezone
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -88,6 +89,26 @@ def test_api_key_rename_and_revoke_are_reviewed_and_revoke_is_typed():
             session.close()
 
 
+def test_api_key_id_actions_do_not_depend_on_unsupported_query_filter():
+    with FakeServer() as server:
+        server.api_keys[1] = _row()
+        session = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True, allow_write=True)
+        try:
+            rename = session.workflows.api_key_rename_action(1, "renamed")
+            rename_plan = make_plan(rename, session.rpc)
+            apply_plan(rename_plan, session.rpc, allow_write=True)
+            revoke = session.workflows.api_key_revoke_action(1)
+            revoke_plan = make_plan(revoke, session.rpc)
+            apply_plan(revoke_plan, session.rpc, allow_write=True, typed_confirmation="renamed")
+            id_filters = [request for request in server.requests if request["method"] == "api_key.query"
+                          and any(isinstance(row, (list, tuple)) and row and row[0] == "id"
+                                  for row in request.get("params", [[]])[0])]
+            assert id_filters == []
+            assert server.api_keys == {}
+        finally:
+            session.close()
+
+
 def test_api_key_cli_lists_scrubbed_and_create_shows_once_and_writes_private_file(
         config, opener, capsys, server, tmp_path):
     server.api_keys[1] = _row()
@@ -114,6 +135,32 @@ def test_api_key_cli_lists_scrubbed_and_create_shows_once_and_writes_private_fil
     captured = capsys.readouterr()
     assert code != 0 and "omit --json" in (captured.out + captured.err)
     assert len([row for row in server.requests if row["method"] == "api_key.create"]) == creates_before
+
+
+def test_api_key_cli_json_normalizes_native_datetime_values(config, opener, capsys, server):
+    server.api_keys[1] = _row()
+    native_created_at = datetime(2026, 10, 29, 8, 17, 42, tzinfo=timezone.utc)
+
+    def opener_with_native_datetime(profile, **kwargs):
+        session = opener(profile, **kwargs)
+        rpc_call = session.rpc.call
+
+        def call(method, *params, **call_kwargs):
+            result = rpc_call(method, *params, **call_kwargs)
+            if method == "api_key.query":
+                for row in result:
+                    row["created_at"] = native_created_at
+            return result
+
+        session.rpc.call = call
+        return session
+
+    cli = build_cli(opener=opener_with_native_datetime)
+    code = cli.run(argv=["apikey", "list", "--config", str(config), "--json"])
+    captured = capsys.readouterr()
+    assert code == 0, captured.err
+    result = json.loads(captured.out)
+    assert result[0]["created_at"] == "2026-10-29T08:17:42+00:00"
 
 
 def test_api_key_cli_dry_run_refusal_and_optional_save_failure_preserve_the_one_time_key(

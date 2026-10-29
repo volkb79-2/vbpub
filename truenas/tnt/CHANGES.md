@@ -2,12 +2,24 @@
 
 ## [Unreleased]
 
+- Completed vanilla TrueNAS v27.0.0-RC.1 live acceptance through the registered `live-v27` Run-Gate lane. Datasets,
+  shares, snapshot tasks, user credentials, containers, pool import, read views, API keys, multi-host switching,
+  interactive SSH hand-off, and private configuration export passed. VM, Apps lifecycle, replication/cloud-sync
+  execution, reboot, shutdown, and update apply were deferred for the reasons recorded in the
+  [live acceptance report](docs/LIVE-TESTING.md#live-acceptance-run-2026-10-29). Live findings and their regression
+  fixes are listed in that report.
+- The final allowed `r0-r1` run reported 884 passed and 4 failures at 96.64% combined coverage. The four failures were
+  stale API-key fixtures/precondition expectations and a test VM name invalid under v27; their tests were corrected
+  afterward. Re-enabling the rename precondition regression also exposed and fixed a stale variable in the API-key
+  collision check. No run remained under the two-run cap, so final unit-suite status and coverage are unverified.
 - Closed the It4 milestone-review fixes for the vanilla v27 UI and guard paths. TUI lookup/action-construction and system
   preflight RPCs now run in cancellable workers with visible progress; host switching and quit bound the drain wait and
   offer Keep waiting or Cancel. Credentials are bound to their saved host URL, so independently resolved config and
   secrets cannot pair the same alias with another appliance; unbound legacy credentials must be replaced before use.
   App stop/restart and current-login shell/home changes now use destructive typed confirmation, and the boot-pool guard
-  test asserts the actual refusal. The registered FakeServer gate remains the acceptance path; no live host was contacted.
+  test asserts the actual refusal. The registered FakeServer gate remains the repeatable code gate. At that stage no
+  live host had been contacted; the later vanilla-v27 acceptance is recorded in the
+  [live acceptance report](docs/LIVE-TESTING.md#live-acceptance-run-2026-10-29).
   See the [worker/session design](docs/DESIGN.md#5-ux), [secret binding rules](docs/DESIGN.md#7-secrets),
   [user update design](docs/DESIGN.md#user-account-updates), and [Apps guide](docs/CONSUMERS.md#apps).
 - Completed It3 interactive SSH hand-off. Added `tnt ssh [HOST]` and TUI `s`/command-palette actions with direct argv
@@ -55,7 +67,8 @@
   A lost power-action reply now triggers bounded state checks without resubmitting the action; unconfirmed outcomes
   remain explicit.
   Added configuration tar export to a new local mode-0600 file; the export contains the secret seed and its download
-  URL is never displayed. System and config-export live checks are documented but were not run.
+  URL is never displayed. Live export passed with a valid mode-0600 tar; reboot, shutdown, and update apply were
+  deferred. See the [live acceptance report](docs/LIVE-TESTING.md#live-acceptance-run-2026-10-29).
 - Added the initial schema-versioned host and credential handling; It1 replaces inline credentials with paired
   secrets storage and multi-host records.
 - Added v27 password login through the pinned client's `PASSWORD_PLAIN` mechanism; API keys continue to use SCRAM.
@@ -82,11 +95,12 @@
 - Added one bounded `container.metrics` subscription per container read. Missing samples are reported explicitly;
   current image identity, configured CPU count, and memory limit are unavailable in the v27 container CRUD schema.
 - Extended `FakeServer` and end-to-end workflow tests through the pinned `truenas_api_client`; added a default-deselected
-  `live` test marker and a namespaced `tnt-live-` acceptance lane that is authored but not run.
+  `live` test marker and a namespaced `tnt-live-` acceptance lane, exercised against vanilla v27. See the
+  [live acceptance report](docs/LIVE-TESTING.md#live-acceptance-run-2026-10-29) for its passes and deferrals.
 - M0 scaffold remains: `tnt --version`, `tnt doctor`, `tnt hosts list|show`, `tnt disks`, `tnt tui` (Storage > Disks).
 - Fixed the registered `r0-r1` coverage suite environment and added focused safety-branch cases without lowering the
-  97% combined coverage floor. The final gate reported 97.18% combined line/branch coverage and 95.30% branch-only
-  coverage.
+  97% combined coverage floor. At that earlier checkpoint, the gate reported 97.18% combined line/branch coverage
+  and 95.30% branch-only coverage; see the current run status above for It4.
 - Transport over `truenas_api_client` (pinned by sha of tag TS-27.0.0-RC.1): wss only and TLS verification on by
   default. Authentication failures are fatal and not retried.
 - Default-deny `GuardedRpc`: write sessions run only the exact calls of the plan being applied; refusal list with live pool/disk state; disk.wipe protection computed from live membership.

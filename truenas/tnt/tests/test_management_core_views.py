@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
+
 from tnt.actions import ApplyResult, CallExecution
-from tnt.errors import PlanExecutionError
+from tnt.errors import PlanExecutionError, Refused
 from textual.widgets import Button, DataTable, Input, Static, Tree
 
 from tnt.cli import build_cli
@@ -61,6 +63,45 @@ def test_overview_cli_commands_return_json_for_all_five_views(config, opener, ca
     assert results[2]["local_jobs"] == []
     assert results[3]["rows"][0]["service"] == "cifs"
     assert results[4]["pools"][0]["healthy"] is True
+
+
+def test_dashboard_accepts_fractional_uptime_seconds_from_v27_fake_server():
+    with FakeServer() as server:
+        server.system_info["uptime_seconds"] = 86400.5
+        session = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True)
+        try:
+            result = session.read_views.dashboard()
+            assert result["uptime_seconds"] == 86400.5
+        finally:
+            session.close()
+
+
+def test_dashboard_rejects_invalid_uptime_numbers_from_v27_fake_server():
+    for value in (True, -0.5, float("inf"), float("nan")):
+        with FakeServer() as server:
+            server.system_info["uptime_seconds"] = value
+            session = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True)
+            try:
+                with pytest.raises(Refused, match="uptime_seconds"):
+                    session.read_views.dashboard()
+            finally:
+                session.close()
+
+
+def test_dashboard_accepts_array_samples_from_v27_reporting_fake_server():
+    with FakeServer() as server:
+        server.reporting_graphs = {
+            "cpu": [[1793242030, 0, 0, 1, 0, 0]],
+            "memory": [[1793242030, 123, 456]],
+        }
+        session = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True)
+        try:
+            result = session.read_views.dashboard()
+            assert result["cpu"]["status"] == "available"
+            assert result["cpu"]["data"] == [[1793242030, 0, 0, 1, 0, 0]]
+            assert result["memory"]["data"] == [[1793242030, 123, 456]]
+        finally:
+            session.close()
 
 
 def test_overview_cli_keeps_reporting_unavailable_and_alert_denials_as_errors(config, opener, server, capsys):

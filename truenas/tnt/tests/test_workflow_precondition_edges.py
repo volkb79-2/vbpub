@@ -238,29 +238,34 @@ def test_config_export_preconditions_bind_host_state_and_exact_tar_call(tmp_path
 
 
 def test_api_key_preconditions_bind_id_name_and_revoke_confirmation():
-    id_probe = RpcCall("api_key.query", ([['id', '=', 5]], {}))
-    rename_probe = RpcCall("api_key.query", ([['name', '=', "renamed"]], {}))
+    id_probe = RpcCall("api_key.get_instance", (5, {"select": ["id", "name", "username", "created_at", "expires_at",
+                                                                 "local", "revoked", "revoked_reason"]}))
+    rename_probe = RpcCall("api_key.query", ([['name', '=', "renamed"]],
+                                              {"select": ["id", "name", "username", "created_at", "expires_at",
+                                                          "local", "revoked", "revoked_reason"]}))
     rename = Action("T", Kind.MUTATE, "rename", (RpcCall("api_key.update", (5, {"name": "renamed", "reset": False})),),
                     (id_probe, rename_probe))
-    validate_plan_preconditions(rename, [[{"id": 5, "name": "old"}], []])
+    current = {"id": 5, "name": "old"}
+    validate_plan_preconditions(rename, [current, []])
+    validate_plan_preconditions(rename, [current, [{"id": 5, "name": "renamed"}]])
 
     with pytest.raises(Refused, match="exact ID lookup"):
         validate_plan_preconditions(replace(rename, probe=(RpcCall("api_key.query", ([], {})), rename_probe)),
-                                    [[{"id": 5, "name": "old"}], []])
+                                    [current, []])
     wrong_id = replace(rename, calls=(RpcCall("api_key.update", (6, {"name": "renamed", "reset": False})),))
     with pytest.raises(Refused, match="ID probe does not match"):
-        validate_plan_preconditions(wrong_id, [[{"id": 5, "name": "old"}], []])
+        validate_plan_preconditions(wrong_id, [current, []])
     with pytest.raises(Refused, match="did not resolve exactly one"):
-        validate_plan_preconditions(rename, [[], []])
+        validate_plan_preconditions(rename, [None, []])
     malformed = replace(rename, calls=(RpcCall("api_key.update", (5, "unsafe")),))
     with pytest.raises(Refused, match="invalid update payload"):
-        validate_plan_preconditions(malformed, [[{"id": 5, "name": "old"}], []])
+        validate_plan_preconditions(malformed, [current, []])
     conflict = replace(rename, probe=(id_probe, rename_probe))
     with pytest.raises(Refused, match="already in use"):
-        validate_plan_preconditions(conflict, [[{"id": 5, "name": "old"}], [{"id": 9, "name": "renamed"}]])
+        validate_plan_preconditions(conflict, [current, [{"id": 9, "name": "renamed"}]])
 
     revoke = Action("T", Kind.DESTRUCTIVE, "revoke", (RpcCall("api_key.delete", (5,)),), (id_probe,), "old")
-    validate_plan_preconditions(revoke, [[{"id": 5, "name": "old"}]])
+    validate_plan_preconditions(revoke, [current])
     with pytest.raises(Refused, match="typed confirmation"):
-        validate_plan_preconditions(replace(revoke, confirm_target="stale"), [[{"id": 5, "name": "old"}]])
+        validate_plan_preconditions(replace(revoke, confirm_target="stale"), [current])
 

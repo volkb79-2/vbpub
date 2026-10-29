@@ -1,6 +1,6 @@
 import pytest
 
-from tnt.actions import Action, Kind, RpcCall, apply_plan, make_plan
+from tnt.actions import Action, Kind, Plan, RpcCall, apply_plan, make_plan
 from tnt.errors import Refused
 from tnt.policy import SafetyState
 from tnt.transport import GuardedRpc
@@ -261,11 +261,15 @@ def test_container_actions_resolve_names_to_ids_and_stop_needs_typed_confirmatio
     delete = workflows.container_delete_action("web")
 
     assert update.calls[0].params == (5, {"autostart": False})
+    assert stop.calls[0].params == (5, {"force_after_timeout": True})
+    assert restart.calls[0].params == (5, {"force_after_timeout": True})
     assert stop.kind is Kind.DESTRUCTIVE and stop.confirm_target == "web"
     assert [call.method for call in restart.calls] == ["container.stop", "container.start"]
     assert create.calls[0].job is True and restart.calls[0].job is True and delete.calls[0].job is True
     assert create.calls[0].method == "container.create"
     assert delete.kind is Kind.DESTRUCTIVE
+    assert "container.get_instance" in Plan(restart, "fingerprint").render()
+    assert "status.state is STOPPED" in Plan(stop, "fingerprint").render()
 
 
 def test_container_metrics_timeout_and_unmatched_samples_are_not_reported_as_zero_or_available():

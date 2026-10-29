@@ -1,12 +1,12 @@
 # tnt design
 
-Status: M1, M2, It1, It2, and It3 are implemented, 2026-10-28. It4 remains planned in section 10.
+Status: M1, M2, It1, It2, and It3 are implemented. Vanilla-v27 live acceptance is recorded for 2026-10-29; remaining It4 work is listed in section 10.
 Container image identity, configured CPU count and memory limits
 are unavailable in the verified v27 container record; VM creation uses separately reviewed device plans because v27
 does not accept devices in `vm.create`. Inputs: the prior-art research (`truenas-tui-research.md`, release-program brief),
 the canonical action matrix (`docs/ACTION-MATRIX.snapshot.md`, from branch `truenas-restore-iso`), the TrueNAS web UI
 source (`truenas/webui` `navigation.service.ts`, read on master 2026-10-28) and the estate's cli-extended conventions.
-Everything marked UNVERIFIED has not been confirmed against a running host; BACKLOG TNT-01 is the first spike.
+Remaining UNVERIFIED entries have not been confirmed against a running host; BACKLOG TNT-01 remains a deferred partition-inventory spike.
 
 ## 1. Goals and non-goals
 
@@ -90,8 +90,25 @@ without admitting them to plans.
   the host does not list. `tnt doctor --online` reports these gaps; a missing method stays unavailable for that
   session. Review the exact v27 method and schema evidence in [`docs/API-METHODS-V27.md`](API-METHODS-V27.md).
 - v27 has no `container.restart` RPC. tnt composes the user-facing restart action as `container.stop` followed by
-  `container.start`, so its plan is destructive and requires typing the container name.
+  `container.start`, so its plan is destructive and requires typing the container name. A successful stop job is not a
+  stopped-state guarantee: stop uses v27 `force_after_timeout` and then polls `container.get_instance` until
+  `status.state == STOPPED` or a bounded 30-second postcondition check fails. The rendered plan states this check.
+- VM names are restricted by vanilla v27 to ASCII letters and digits; tnt validates this before planning a create.
+  The live lane reads `vm.supports_virtualization` and defers VM lifecycle checks when the disposable host lacks
+  hardware virtualization.
 - Planned: a drift test that diffs manifests against the fetched reference index (TNT-23, opt-in, outside the gate).
+
+### VM and container lifecycle contracts
+
+TrueNAS v27 may complete a `container.stop` job before the container leaves `RUNNING`. TnT requests the documented
+`force_after_timeout` behavior, then polls `container.get_instance(id)` for `status.state == STOPPED` for up to 30
+seconds. Restart does not submit `container.start` until that postcondition is observed. A malformed response, missing
+instance, or timeout fails the plan instead of treating job completion as proof of a stopped container. This matters
+because the lifecycle job and the container state are separate observations.
+
+The v27 VM name validator accepts ASCII letters and digits only. TnT applies that same constraint before planning
+`vm.create`; punctuation and non-ASCII names fail locally. The optional live VM lifecycle probe reads
+`vm.supports_virtualization()` first and reports a hardware-based deferral when the host returns `false`.
 
 ### 2.4 Domain and the partition-data question
 
@@ -159,6 +176,12 @@ sanitized before they reach CLI/TUI output. When a connection ends, nonterminal 
 After reconnect, tnt queries at most 10,000 `core.get_jobs` rows and matches an integer remote ID plus method. A
 matching row updates the record. A query error is unavailable; a missing row remains UNKNOWN because the current
 session may not be allowed to see the old job. No absence is treated as completion.
+
+The Dashboard validates `system.info.uptime_seconds` as a finite, non-negative JSON number. The v27 schema allows a
+fractional value, so the read model preserves it instead of narrowing the contract to integer seconds. The published
+`reporting.get_data` schema describes object samples, while vanilla 27.0.0-RC.1 returned ordered numeric arrays whose
+first value is the sample timestamp. TnT accepts either documented object samples or non-empty numeric arrays with at
+least two values, preserving the host data without inventing a mapping from positional series to labels.
 
 An apply result contains one per-call outcome record, including job IDs and generations. If a later call fails, the
 completed results and every planned call state remain attached to `PlanExecutionError.partial`; the CLI returns that
@@ -256,7 +279,10 @@ Periodic snapshot tasks use the v27 `pool.snapshottask.*` methods. Creation requ
 dataset plus task ID. Replication and cloud-sync task writes are limited to enable/disable and run-now. Run-now plans
 are destructive and typed: replication shows source dataset(s), target, and whether `allow_from_scratch` can remove
 destination snapshots; cloud sync warns when `MOVE` deletes source files after transfer. Cloud-sync credentials and
-encryption fields are masked before they reach CLI or TUI presentation.
+encryption fields are masked before they reach CLI or TUI presentation. Although the published reference marks
+`pool.snapshottask.run` as a job, the pinned client on vanilla 27.0.0-RC.1 returned `null` from tnt's ordinary call and
+the generated snapshot appeared. The workflow therefore checks the snapshot list instead of requiring a job handle;
+see the [live acceptance record](LIVE-TESTING.md#live-acceptance-run-2026-10-29).
 
 ### Network status
 
@@ -326,7 +352,8 @@ General Settings offers configuration export through `core.download("config.save
 filename, false)`. The one-time download URL is not displayed. tnt requires a READY host, validates that the URL is
 same-origin and names the returned job, disables redirects and proxies, and creates a new local `.tar` file
 exclusively with mode `0600`. It validates the tar before keeping it. The archive includes TrueNAS's secret seed and
-must be stored as a credential. See [v27 method evidence](API-METHODS-V27.md#system-actions) and the
+must be stored as a credential. The drift fingerprint binds the hostname from `system.info` while ignoring its
+volatile uptime and load metrics; version, state, and boot ID remain separate probes. See [v27 method evidence](API-METHODS-V27.md#system-actions) and the
 [system action examples](CONSUMERS.md#system-actions).
 
 ## 5. UX
@@ -533,13 +560,20 @@ additional arguments after `HOST` is not supported.
   insecure banner, and an SSH hand-off whose stub executable proves suspend/restore and process-status handling.
 - CLI: cli-extended `build_cli(opener=...)`, assertions on `--json` output and exit codes; `doctor` checks both ways.
   SSH tests use a stub executable and assert exact argv, no shell, refusal paths, and no accepted remote command.
-- Live lane (TNT-20, It4 acceptance, not in the gate): explicit `TNT_LIVE=1` and `TNT_LIVE_PROFILE` select a protected profile;
-  operator-supplied pool, group, image and VM sizing prerequisites are mandatory. The written acceptance test creates
-  only `tnt-live-`-prefixed test resources and cleans each up through plans. It is reserved for It4 acceptance.
+- Live lane (TNT-20, It4 acceptance): the registered `live-v27` Run-Gate lane runs in `tester-unified`; explicit
+  `TNT_LIVE=1` and `TNT_LIVE_PROFILE` select the host, while pool, group, image and VM sizing prerequisites are
+  mandatory. The image name and version must match a pair listed by the selected host's container image registry. The
+  caller mounts private configuration and credential files from an out-of-repository scratch directory
+  through Run-Gate's declared extra-mount input. The acceptance test creates only `tnt-live-`-prefixed test resources
+  and cleans each up through plans. The M2 portion also checks read-only views, SMB/NFS share lifecycle, a periodic
+  snapshot task, API-key file handling, TUI Pilot navigation and host switching, CLI readers, and an interactive SSH
+  hand-off. VM lifecycle is conditional on the host capability read. Acceptance results are recorded in
+  [`docs/LIVE-TESTING.md`](LIVE-TESTING.md), including the [ACTION-MATRIX B-06 import check](ACTION-MATRIX.snapshot.md#actions).
+  The live lane is separate from the ordinary FakeServer gate.
 - Drift lane (TNT-23, It4): manifests vs the fetched API reference. Optional dependencies required by the suite fail, never skip.
-- Gate: `run-gate.toml` lane `r0-r1` (pytest with branch coverage). The registered unit lane retains its 97% floor;
-  the separate mutation lane is It4 work (TNT-30). Tests are deterministic under host load: no timing assertions
-  beyond bounded waits for a worker.
+- Gate: `run-gate.toml` lane `r0-r1` (pytest with branch coverage); `live-v27` is the opt-in host acceptance lane.
+  The registered unit lane retains its 97% floor; the separate mutation lane is It4 work (TNT-30). Tests are
+  deterministic under host load: no timing assertions beyond bounded waits for a worker.
 
 ## 10. Milestones
 
@@ -551,7 +585,7 @@ additional arguments after `HOST` is not supported.
 | It1 | Paired multi-host configuration/secrets and the session controller: host generation, plan invalidation, worker draining, stale-callback rejection, connection testing, and per-host write mode | implemented |
 | It2 | Non-blocking job engine and read-only core views: Dashboard, Alerts, Jobs, Services, Storage health, and global view UX | implemented |
 | It3 | Hardened interactive SSH hand-off with pinned host-key sources and no arbitrary remote command mode | implemented |
-| It4 | Vanilla-v27 live acceptance, remaining hardening and consistency review, estate registration, and release readiness | planned; live run is controller-operated |
+| It4 | Vanilla-v27 live acceptance, remaining hardening and consistency review, estate registration, and release readiness | live acceptance recorded 2026-10-29; consistency, registration, and release-readiness work remains |
 | Later | Storage partitioning, pool creation, boot-pool management, and other TrueNAS screens not assigned above | deferred |
 
 ## 11. Supported host

@@ -26,7 +26,7 @@ def test_smb_and_nfs_share_workflows_use_remote_paths_acl_and_typed_delete():
             workflows = session.workflows
             smb = workflows.share_smb_create_action({
                 "name": "team", "path": "/mnt/tank/share", "purpose": "DEFAULT_SHARE",
-                "options": {"guestok": False, "hostsallow": ["10.0.0.0/8"], "hostsdeny": []},
+                "options": {"hostsallow": ["10.0.0.0/8"], "hostsdeny": []},
                 "enabled": True, "readonly": True, "comment": "team files",
             })
             assert any(call.method == "filesystem.stat" for call in smb.probe)
@@ -53,6 +53,20 @@ def test_smb_and_nfs_share_workflows_use_remote_paths_acl_and_typed_delete():
             assert "sharing.smb.getacl" in server.called()
             acl_request = next(request for request in server.requests if request["method"] == "sharing.smb.getacl")
             assert acl_request["params"] == [{"share_name": "team"}]
+        finally:
+            session.close()
+
+
+def test_smb_default_share_refuses_legacy_guest_option_before_create():
+    with FakeServer() as server:
+        session = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True, allow_write=True)
+        try:
+            with pytest.raises(Refused, match="guestok.*LEGACY_SHARE"):
+                session.workflows.share_smb_create_action({
+                    "name": "team", "path": "/mnt/tank/share", "purpose": "DEFAULT_SHARE",
+                    "options": {"guestok": False},
+                })
+            assert "sharing.smb.create" not in server.called()
         finally:
             session.close()
 

@@ -61,6 +61,7 @@ class V27(Backend):
             "container.stop": MethodSpec("destructive"), "container.delete": MethodSpec("destructive"),
         },
         "vms": {
+            "vm.supports_virtualization": MethodSpec("read"),
             "vm.query": MethodSpec("read"), "vm.get_instance": MethodSpec("read"),
             "vm.status": MethodSpec("read"), "vm.get_display_devices": MethodSpec("read"),
             "vm.get_display_web_uri": MethodSpec("read"), "vm.get_console": MethodSpec("read"),

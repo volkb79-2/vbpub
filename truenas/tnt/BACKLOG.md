@@ -2,9 +2,9 @@
 
 Seeded 2026-10-28 from `docs/ACTION-MATRIX.snapshot.md` (rows whose verdict is `API-TUI` or `pending decision`; a
 test keeps every such row id mentioned here) and from the M0 scaffold's known gaps. Milestones are defined in
-`docs/DESIGN.md` section 10. M1, M2, It1, It2, and It3 are complete; It4 is the active forward sequence. `Later` means no
-iteration is assigned. Sizes: S < 1 day, M 1-3 days, L > 3 days of focused work. `[DONE M1]` and `[DONE M2]` mark
-implemented work. `[AUTHORED, NOT RUN]` is intentional for the live lane per its non-execution requirement.
+`docs/DESIGN.md` section 10. M1, M2, It1, It2, and It3 are complete; It4 remains active, with vanilla-v27 live
+acceptance recorded on 2026-10-29. `Later` means no iteration is assigned. Sizes: S < 1 day, M 1-3 days, L > 3 days
+of focused work. `[DONE M1]`, `[DONE M2]`, and `[DONE It4]` mark implemented or accepted work.
 
 ## Matrix rows: the TUI is the product path (API-TUI first, as the operator asked)
 
@@ -48,7 +48,7 @@ implemented work. `[AUTHORED, NOT RUN]` is intentional for the live lane per its
 
 | id | what | size | milestone |
 |---|---|---|---|
-| TNT-20 | [AUTHORED, NOT RUN] Namespaced v27 live acceptance lane, requiring explicit profile/pool/group/image/VM-size inputs and cleaning up only `tnt-live-` resources | M | It4 |
+| TNT-20 | [DONE It4] Namespaced v27 live acceptance lane, requiring explicit profile/pool/group/image/VM-size inputs and cleaning up only `tnt-live-` resources | M | It4 |
 | TNT-21 | [DONE M1] SCRAM fake-server handshake and v27 password login (both auth flows are exercised through the real client) | M | M1 |
 | TNT-23 | Manifest drift test: compare each adapter manifest with the fetched `https://api.truenas.com/v27.0` method index (opt-in network test, not in the gate) | S | It4 |
 | TNT-24 | Audit log (no secrets) of every executed action under the XDG state dir | S | Later |
@@ -66,5 +66,5 @@ implemented work. `[AUTHORED, NOT RUN]` is intentional for the live lane per its
 | TNT-37 | Expose a current container image identity if a future v27 API supplies it; `ContainerEntry` has no image field and create consumes image metadata without retaining it in the returned record (deferred by the verified schema; see `docs/API-METHODS-V27.md`) | S | Later |
 | TNT-49 | [DONE It2] Read-only core views: Dashboard, Alerts, Jobs, Services, Storage health, exact v27 contracts, and unavailable-state behavior | L | It2 |
 | TNT-50 | [DONE It3] Hardened interactive SSH hand-off with pinned host-key sources, suspend/restore, and no arbitrary remote command mode | M | It3 |
-| TNT-51 | Vanilla-v27 acceptance, review hardening, project docs/CLI consistency, estate registration, and release readiness | L | It4 |
+| TNT-51 | [IN PROGRESS It4] Vanilla-v27 acceptance, review hardening, project docs/CLI consistency, estate registration, and release readiness; live acceptance recorded 2026-10-29. The final `r0-r1` run found four stale test expectations at 96.64% coverage; follow-up test fixes are unverified because the two-run cap was reached. Consistency, registration, and release-readiness work remains | L | It4 |
 | TNT-52 | [DONE It4] Close milestone-review findings: worker-bound lookups/preflight, endpoint-bound credentials, bounded transition drain, load-bearing boot-pool assertion, lockout-shaped confirmations, and whitespace cleanup | M | It4 |

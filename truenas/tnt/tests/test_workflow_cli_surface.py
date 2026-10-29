@@ -222,7 +222,7 @@ def test_vm_read_create_update_lifecycle_console_and_device_verbs(config, capsys
     commands = [
         (["vm", "create", "new", "--memory", "2048", "--vcpus", "2", "--disk-zvol", "tank/new", "--disk-size",
           "10737418240", "--iso", "/mnt/tank/install.iso", "--nic-attach", "br0", "--autostart"], "vm.create"),
-        (["vm", "create", "new-defaults", "--memory", "2048", "--disk-zvol", "tank/default", "--disk-size",
+        (["vm", "create", "newdefaults", "--memory", "2048", "--disk-zvol", "tank/default", "--disk-size",
           "1073741824", "--no-autostart"], "vm.create"),
         (["vm", "update", "guest", "--memory", "4096", "--vcpus", "4", "--autostart"], "vm.update"),
         (["vm", "start", "guest"], "vm.start"), (["vm", "stop", "guest"], "vm.stop"),
