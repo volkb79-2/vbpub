@@ -101,15 +101,20 @@ def _validate_anchor(value: object) -> dict[str, Any]:
     }
 
 
-def read_anchor_store(path: str | Path | None = None) -> dict[str, Any]:
-    state_path = Path(path) if path is not None else default_anchor_path()
+def _read_anchor_store(state_path: Path, *, missing_ok: bool) -> dict[str, Any]:
     if _has_symlink_component(state_path):
         raise AnchorError("anchor state path must not contain symlink components")
-    if not state_path.exists():
-        return {"schema_version": SCHEMA_VERSION, "anchors": []}
     try:
-        raw = json.loads(state_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        content = state_path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        if missing_ok:
+            return {"schema_version": SCHEMA_VERSION, "anchors": []}
+        raise AnchorError("selected anchor state file does not exist") from exc
+    except (OSError, UnicodeDecodeError) as exc:
+        raise AnchorError(f"cannot read anchor state: {exc}") from exc
+    try:
+        raw = json.loads(content)
+    except json.JSONDecodeError as exc:
         raise AnchorError(f"cannot read anchor state: {exc}") from exc
     if not isinstance(raw, dict) or raw.get("schema_version") != SCHEMA_VERSION:
         raise AnchorError("unsupported schema_version in anchor state")
@@ -124,6 +129,12 @@ def read_anchor_store(path: str | Path | None = None) -> dict[str, Any]:
     if stat.S_IMODE(state_path.parent.stat().st_mode) & 0o077:
         raise AnchorError("anchor state directory must be private (mode 0700)")
     return {"schema_version": SCHEMA_VERSION, "anchors": sorted(validated, key=lambda item: (item["observed_at"], item["kind"], item["anchor_id"]))}
+
+
+def read_anchor_store(path: str | Path | None = None) -> dict[str, Any]:
+    """Read anchors: absent defaults are empty, missing selected files are errors."""
+    state_path = Path(path) if path is not None else default_anchor_path()
+    return _read_anchor_store(state_path, missing_ok=path is None)
 
 
 def list_anchors(path: str | Path | None = None) -> list[dict[str, Any]]:
@@ -182,7 +193,7 @@ def add_anchor(
         "source": source,
         "coverage_assumption": coverage_assumption,
     })
-    store = read_anchor_store(state_path)
+    store = _read_anchor_store(state_path, missing_ok=True)
     for existing in store["anchors"]:
         if existing["kind"] == kind and existing["observed_at"] == new_anchor["observed_at"]:
             if existing == new_anchor:

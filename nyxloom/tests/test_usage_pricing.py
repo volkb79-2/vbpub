@@ -550,6 +550,19 @@ def test_anchor_store_is_private_versioned_deterministic_and_refuses_conflicts(t
         add_anchor(state, **{**values, "percent": 97})
 
 
+def test_missing_default_anchor_store_is_empty_but_missing_explicit_store_is_an_error(
+    tmp_path, monkeypatch,
+):
+    from nyxloom.session_extract.usage.anchors import default_anchor_path
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    assert not default_anchor_path().exists()
+    assert list_anchors() == []
+
+    with pytest.raises(AnchorError, match="selected anchor state file does not exist"):
+        read_anchor_store(tmp_path / "misspelled-anchors.json")
+
+
 @pytest.mark.parametrize(
     "overrides",
     [
@@ -1857,6 +1870,49 @@ def test_usage_report_continues_without_corrupt_optional_anchor_state(tmp_path, 
     assert report["extensions"]["chart_data"]["datasets"]["weighted_cost_buckets"][
         "cumulative_percentage_line"
     ]["status"] == "unknown"
+    assert "continuing without anchors" in captured.err
+
+
+@pytest.mark.parametrize("command", ["report", "charts", "windows"])
+def test_usage_read_only_commands_warn_for_missing_explicit_anchor_file(
+    command, tmp_path, monkeypatch, capsys,
+):
+    from nyxloom import cli
+    from nyxloom.session_extract import usage
+    from nyxloom.session_extract.usage import loader
+
+    corpus = _corpus([])
+    monkeypatch.setattr(usage, "load_corpus", lambda **_kwargs: corpus)
+    monkeypatch.setattr(loader, "load_corpus", lambda **_kwargs: corpus)
+    missing_anchor_file = tmp_path / "misspelled-anchors.json"
+    output_path = tmp_path / "usage-charts.json"
+    args = _usage_cli_args(
+        anchor_file=str(missing_anchor_file),
+        out=str(output_path) if command == "charts" else None,
+    )
+
+    if command == "report":
+        assert cli.cmd_usage_report(args) == 0
+        captured = capsys.readouterr()
+        report = json.loads(captured.out)
+        assert report["extensions"]["limit_anchors"]["status"] == "unreadable"
+        assert report["extensions"]["limit_anchors"]["warnings"][0]["code"] == (
+            "usage_anchors_unreadable"
+        )
+    elif command == "charts":
+        assert cli.cmd_usage_charts(args) == 0
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert json.loads(output_path.read_text(encoding="utf-8"))["schema_version"] == (
+            "usage-charts-v1"
+        )
+    else:
+        assert cli.cmd_usage_windows(args) == 0
+        captured = capsys.readouterr()
+        result = json.loads(captured.out)
+        assert result["anchor_status"] == "unreadable"
+        assert result["warnings"][0]["code"] == "usage_anchors_unreadable"
+
     assert "continuing without anchors" in captured.err
 
 

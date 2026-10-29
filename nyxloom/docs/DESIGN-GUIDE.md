@@ -239,7 +239,11 @@ Report, chart and windows commands may select that store with
 `--anchor-file FILE` and otherwise read the default XDG path. Invalid anchor state produces
 a structured `usage_anchors_unreadable` warning and the command continues
 without anchors. JSON status is `unreadable`, so a damaged optional store
-cannot look like an available empty store or block a read-only query.
+cannot look like an available empty store or block a read-only query. An absent
+default anchor store is normal; a missing explicitly selected anchor file is
+unreadable. This keeps first use of the default store quiet while making a
+misspelled selected path visible. `usage anchor add` can create an alternate
+store from an observed UI reading.
 
 ## Usage chart data
 

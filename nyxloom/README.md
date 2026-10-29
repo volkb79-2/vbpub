@@ -258,6 +258,10 @@ Output files use mode `0600`; missing parent directories use mode `0700`.
 Reports and chart exports accept `--anchor-file FILE`; absent that option they
 read the default XDG anchor store. An invalid anchor store produces a warning
 and the command continues without anchor data, with JSON status `unreadable`.
+An absent default anchor store is normal; a missing explicitly selected anchor
+file produces the same warning and status. Create an alternate store with
+`nyxloom usage anchor add` using an observed UI reading before using it in a
+report, chart, or windows query.
 Report JSON exposes this at `extensions.limit_anchors.status`; windows JSON
 uses `anchor_status`. Both include a structured warning.
 The table labels the measure

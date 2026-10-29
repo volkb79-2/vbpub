@@ -171,7 +171,11 @@ unreadable store produces a warning; the read-only command continues without
 anchor data. Report JSON sets
 `extensions.limit_anchors.status: "unreadable"`; windows JSON sets
 `anchor_status: "unreadable"`. Both include a structured
-`usage_anchors_unreadable` warning when the store cannot be read.
+`usage_anchors_unreadable` warning when the store cannot be read. An absent
+default anchor store is normal; a missing explicitly selected anchor file
+produces the same warning and status. Create an alternate store with
+`nyxloom usage anchor add` using an observed UI reading before selecting it
+for a read-only query.
 
 The table's `ACTIVE SPAN SUM` adds node-local burst spans separated by gaps
 over one hour. Subtree rows sum across nodes; with concurrent subagents,
