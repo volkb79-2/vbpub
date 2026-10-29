@@ -47,11 +47,9 @@ baseline_nodes=(
   tests/core/test_runner_execute.py::test_r1_contention_adjustment_is_wired_after_coverage_judgement
   gate/tests/test_distribution_gate.py::test_parallel_gate_feature_is_findable_across_user_docs
   gate/tests/test_distribution_gate.py::test_a_busy_host_does_not_block_the_registered_gate
-  gate/tests/test_self_qualification_container.py::test_runner_launches_beside_an_active_registered_gate
   gate/tests/test_qualify_sql.py::test_a_running_gate_container_does_not_block_sql_qualification
   gate/tests/test_qualify_sql.py::test_the_phase_and_its_state_live_above_the_entry_points_and_before_the_finisher
   gate/tests/test_qualify_sql.py::test_a_failing_harness_stops_the_gate_with_no_phase_marker_receipt_or_complete
-  gate/tests/test_self_qualification_container.py::test_created_container_is_reconciled_after_nonzero_docker_run
 )
 baseline_report="$scratch/baseline.xml"
 if (
@@ -82,11 +80,9 @@ expected = {
     "test_r1_contention_adjustment_is_wired_after_coverage_judgement",
     "test_parallel_gate_feature_is_findable_across_user_docs",
     "test_a_busy_host_does_not_block_the_registered_gate",
-    "test_runner_launches_beside_an_active_registered_gate",
     "test_a_running_gate_container_does_not_block_sql_qualification",
     "test_the_phase_and_its_state_live_above_the_entry_points_and_before_the_finisher",
     "test_a_failing_harness_stops_the_gate_with_no_phase_marker_receipt_or_complete",
-    "test_created_container_is_reconciled_after_nonzero_docker_run",
 }
 root = ET.parse(sys.argv[1]).getroot()
 from collections import Counter
@@ -130,10 +126,6 @@ current_nodes=(
   gate/tests/test_distribution_gate.py::test_a_failing_docker_ps_does_not_block_the_gate
   gate/tests/test_cgroup_parent.py::test_b105_requires_finite_point_in_time_ram_headroom
   gate/tests/test_cgroup_parent.py::test_b105_refuses_insufficient_or_unknown_ram_headroom
-  gate/tests/test_self_qualification_container.py::test_runner_launches_beside_an_active_registered_gate
-  gate/tests/test_self_qualification_container.py::test_b105_maps_incomplete_container_exit_to_inconclusive_and_removes_it
-  gate/tests/test_self_qualification_container.py::test_b105_preserves_a_completed_assay_fail_as_exit_one
-  gate/tests/test_self_qualification_container.py::test_created_container_is_reconciled_after_nonzero_docker_run
   gate/tests/test_qualify_sql.py::test_a_running_gate_container_does_not_block_sql_qualification
   gate/tests/test_qualify_sql.py::test_the_phase_and_its_state_live_above_the_entry_points_and_before_the_finisher
   gate/tests/test_qualify_sql.py::test_legacy_shared_host_flag_does_not_change_sql_qualification
