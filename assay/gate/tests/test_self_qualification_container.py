@@ -3873,7 +3873,9 @@ def test_b110_pilot_clears_stale_attempt_outputs_and_runs_beside_an_active_gate(
     progress.write_text('{"event":"resume evidence"}\n', encoding="utf-8")
     deadline = state / "campaign-deadline-b110-pilot-test.json"
     deadline.write_text('{"expires_at_utc":"2030-01-01T00:00:00Z"}\n', encoding="utf-8")
-    mutation_state = state / "b110-pilot-state" / "PILOT-STATE"
+    # The Docker fake writes the selected a... record; keep a different record
+    # to verify launcher cleanup preserves existing resumable state.
+    mutation_state = state / "b110-pilot-state" / f"{'b' * 64}.json"
     mutation_state.parent.mkdir()
     mutation_state.write_text("state identity\n", encoding="utf-8")
 
