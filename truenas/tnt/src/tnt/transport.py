@@ -94,6 +94,7 @@ class GuardedRpc:
         self._execution_grants: dict[str, _ExecutionGrant] = {}
         self._live_capabilities: frozenset[str] | None = None
         self._event_subscriptions: set[str] = set()
+        self._worker_state = threading.local()
         self.session_id = uuid.uuid4().hex
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
         from .jobs import JobRegistry
@@ -179,6 +180,19 @@ class GuardedRpc:
         """Reject the former public grant API; writes must pass through ``actions.apply_plan``."""
         raise Refused("apply-capability", "direct authorization is disabled; use actions.apply_plan")
 
+    @contextmanager
+    def cancel_when(self, cancelled: threading.Event) -> Iterator[None]:
+        """Stop a worker's next RPC after its session lease is cancelled."""
+        previous = getattr(self._worker_state, "cancelled", None)
+        self._worker_state.cancelled = cancelled
+        try:
+            yield
+        finally:
+            if previous is None:
+                del self._worker_state.cancelled
+            else:
+                self._worker_state.cancelled = previous
+
     def _set_live_capabilities(self, available: Mapping[str, Any]) -> None:
         """Install the method names returned by core.get_methods at session open."""
         if not isinstance(available, Mapping):
@@ -229,6 +243,9 @@ class GuardedRpc:
 
     def _call(self, method: str, params: tuple[Any, ...], job: bool,
               job_callback: Callable[[Mapping[str, Any]], None] | None = None) -> Any:
+        cancelled = getattr(self._worker_state, "cancelled", None)
+        if cancelled is not None and cancelled.is_set():
+            raise Refused("cancelled", "the selected host session changed; this operation was cancelled")
         name = normalise_method(method)
         if self._live_capabilities is not None and name not in self._live_capabilities:
             raise Refused("method-unavailable", f"{name} is not reported by the live v27 capability list; this method is unavailable on this host")

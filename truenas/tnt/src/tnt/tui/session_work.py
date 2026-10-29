@@ -1,6 +1,7 @@
 """Helpers for host-bound Textual workers and generation-checked callbacks."""
 from __future__ import annotations
 
+from contextlib import nullcontext
 from typing import Any, Callable
 
 from ..session import Session
@@ -39,7 +40,10 @@ def run_cancellable(view: Any, operation: Callable[[Session, WorkerLease], Any],
         return
     try:
         try:
-            result = operation(lease.session, lease)
+            cancel_when = getattr(lease.session.rpc, "cancel_when", None)
+            scope = cancel_when(lease.cancelled) if callable(cancel_when) else nullcontext()
+            with scope:
+                result = operation(lease.session, lease)
         except Exception as exc:
             post(view, lease, on_failure, error_message(lease.session, exc))
         else:

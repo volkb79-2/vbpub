@@ -10,7 +10,7 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, Checkbox, Input, Static
 
 from ..actions import Plan, make_plan
-from ..errors import Refused, TntError, TransportError
+from ..errors import TntError, TransportError
 from ..session import Session
 from .workflows import PlanReview
 from .session_work import (begin as begin_session_work, error_message, post as post_session_callback,
@@ -51,24 +51,30 @@ class SystemPowerView(Vertical):
         raw_delay = self.query_one("#system-power-delay", Input).value.strip()
         try:
             delay = None if not raw_delay else int(raw_delay)
-            action = self.session.workflows.system_power_action(
-                self.operation, delay=delay, force_with_jobs=self.query_one("#system-power-force", Checkbox).value)
-        except (TntError, ValueError) as exc:
+        except ValueError as exc:
             self.query_one("#system-power-note", Static).update(f"Plan refused: {exc}")
             return
+        force = self.query_one("#system-power-force", Checkbox).value
         self.query_one("#system-power-note", Static).update("Checking current host state and preparing the plan…")
-        self._make_plan(action)
+        self.query_one("#system-power-plan", Button).disabled = True
+        self._make_plan(delay, force)
 
     @work(thread=True, exclusive=True)
-    def _make_plan(self, action) -> None:
+    def _make_plan(self, delay: int | None, force: bool) -> None:
+        def build_and_plan(session, lease):
+            action = session.workflows.system_power_action(
+                self.operation, delay=delay, force_with_jobs=force)
+            return make_plan(action, session.rpc, cancelled=lease.cancelled.is_set)
+
         run_cancellable_session_work(
-            self, lambda session, lease: make_plan(action, session.rpc, cancelled=lease.cancelled.is_set),
-            "_plan_ready", "_plan_failed")
+            self, build_and_plan, "_plan_ready", "_plan_failed")
 
     def _plan_ready(self, plan: Plan) -> None:
+        self.query_one("#system-power-plan", Button).disabled = False
         self.app.push_screen(PlanReview(plan, self.session, parent_view=self))
 
     def _plan_failed(self, message: str) -> None:
+        self.query_one("#system-power-plan", Button).disabled = False
         self.query_one("#system-power-note", Static).update(f"Plan refused: {message}")
 
     def _plan_applied(self, plan: Plan, result: Any) -> None:
@@ -232,25 +238,26 @@ class SystemUpdateView(Vertical):
         if event.button.id != "system-update-plan":
             return
         target = self.query_one("#system-update-target", Input).value.strip()
-        try:
-            action = self.session.workflows.update_apply_action(
-                target, force_with_jobs=self.query_one("#system-update-force", Checkbox).value)
-        except (TntError, ValueError) as exc:
-            self.query_one("#system-update-note", Static).update(f"Plan refused: {exc}")
-            return
+        force = self.query_one("#system-update-force", Checkbox).value
         self.query_one("#system-update-note", Static).update("Checking current host state and preparing the plan…")
-        self._make_plan(action)
+        self.query_one("#system-update-plan", Button).disabled = True
+        self._make_plan(target, force)
 
     @work(thread=True, exclusive=True)
-    def _make_plan(self, action) -> None:
+    def _make_plan(self, target: str, force: bool) -> None:
+        def build_and_plan(session, lease):
+            action = session.workflows.update_apply_action(target, force_with_jobs=force)
+            return make_plan(action, session.rpc, cancelled=lease.cancelled.is_set)
+
         run_cancellable_session_work(
-            self, lambda session, lease: make_plan(action, session.rpc, cancelled=lease.cancelled.is_set),
-            "_plan_ready", "_plan_failed")
+            self, build_and_plan, "_plan_ready", "_plan_failed")
 
     def _plan_ready(self, plan: Plan) -> None:
+        self.query_one("#system-update-plan", Button).disabled = False
         self.app.push_screen(PlanReview(plan, self.session, parent_view=self))
 
     def _plan_failed(self, message: str) -> None:
+        self.query_one("#system-update-plan", Button).disabled = False
         self.query_one("#system-update-note", Static).update(f"Plan refused: {message}")
 
     def _plan_applied(self, plan: Plan, result: Any) -> None:
@@ -288,27 +295,28 @@ class SystemGeneralView(Vertical):
         if event.button.id != "system-general-plan":
             return
         path = self.query_one("#system-general-path", Input).value.strip()
-        try:
-            action = self.session.workflows.config_export_action(
-                path, root_authorized_keys=self.query_one("#system-general-root-keys", Checkbox).value)
-        except (TntError, ValueError) as exc:
-            self.query_one("#system-general-note", Static).update(f"Plan refused: {exc}")
-            return
+        root_authorized_keys = self.query_one("#system-general-root-keys", Checkbox).value
         self.pending_path = path
         self.query_one("#system-general-note", Static).update("Checking current host state and preparing the plan…")
-        self._make_plan(action)
+        self.query_one("#system-general-plan", Button).disabled = True
+        self._make_plan(path, root_authorized_keys)
 
     @work(thread=True, exclusive=True)
-    def _make_plan(self, action) -> None:
+    def _make_plan(self, path: str, root_authorized_keys: bool) -> None:
+        def build_and_plan(session, lease):
+            action = session.workflows.config_export_action(path, root_authorized_keys=root_authorized_keys)
+            return make_plan(action, session.rpc, cancelled=lease.cancelled.is_set)
+
         run_cancellable_session_work(
-            self, lambda session, lease: make_plan(action, session.rpc, cancelled=lease.cancelled.is_set),
-            "_plan_ready", "_plan_failed")
+            self, build_and_plan, "_plan_ready", "_plan_failed")
 
     def _plan_ready(self, plan: Plan) -> None:
+        self.query_one("#system-general-plan", Button).disabled = False
         self.app.push_screen(PlanReview(plan, self.session, parent_view=self))
 
     def _plan_failed(self, message: str) -> None:
         self.pending_path = None
+        self.query_one("#system-general-plan", Button).disabled = False
         self.query_one("#system-general-note", Static).update(f"Plan refused: {message}")
 
     def _plan_applied(self, plan: Plan, result: Any) -> None:

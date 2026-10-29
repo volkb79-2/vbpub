@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import Any
 
 from textual import work
@@ -10,7 +11,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, DataTable, Input, Select, Static, TextArea
 
-from ..actions import Plan, apply_plan, make_plan
+from ..actions import Action, Plan, apply_plan, make_plan
 from ..errors import PlanExecutionError, TntError
 from ..profile import Secret
 from ..session import Session
@@ -70,6 +71,17 @@ _READERS = {
     "cloud-sync": lambda w: w.cloudsync_tasks(),
     "apps": lambda w: w.apps(),
 }
+
+
+@dataclass(frozen=True)
+class _WorkflowActionInput:
+    data_text: str
+    selected: dict[str, Any]
+    name_input: str
+    secret_text: str
+    recursive: bool
+    builtin: bool
+    confirm_self: bool
 
 
 def _flat(rows: Any) -> list[dict[str, Any]]:
@@ -216,46 +228,77 @@ class WorkflowView(Vertical):
         if not isinstance(operation, str):
             self.query_one("#workflow-note", Static).update("Choose an action first.")
             return
-        try:
-            action = self._build_action(operation)
-        except Exception as exc:
-            self.query_one("#workflow-note", Static).update(f"Plan refused: {exc}")
-            return
+        form = self._capture_action_input()
         self.query_one("#workflow-note", Static).update("Checking current host state and preparing the plan…")
-        self._make_plan(action)
+        self.query_one("#workflow-plan", Button).disabled = True
+        self._make_plan(operation, form)
 
     @work(thread=True, exclusive=True)
-    def _make_plan(self, action) -> None:
+    def _make_plan(self, operation: str, form: _WorkflowActionInput) -> None:
+        def build_and_plan(session, lease):
+            vm_state: dict[str, Any] = {}
+            action = self._build_action_from_input(operation, form, session.workflows, vm_state)
+            plan = make_plan(action, session.rpc, cancelled=lease.cancelled.is_set)
+            return plan, vm_state
+
         run_cancellable_session_work(
-            self, lambda session, lease: make_plan(action, session.rpc, cancelled=lease.cancelled.is_set),
-            "_plan_ready", "_plan_failed")
+            self, build_and_plan, "_plan_prepared", "_plan_failed")
+
+    def _capture_action_input(self) -> _WorkflowActionInput:
+        return _WorkflowActionInput(
+            self.query_one("#workflow-data", TextArea).text,
+            dict(self._selected() or {}),
+            self.query_one("#workflow-name", Input).value.strip(),
+            self.query_one("#workflow-secret", Input).value,
+            self.query_one("#workflow-recursive", Checkbox).value,
+            self.query_one("#workflow-builtin", Checkbox).value,
+            self.query_one("#workflow-confirm-self", Checkbox).value,
+        )
+
+    def _plan_prepared(self, result: tuple[Plan, dict[str, Any]]) -> None:
+        plan, vm_state = result
+        self.pending_vm_name = vm_state.get("name")
+        self.pending_vm_devices = vm_state.get("devices", [])
+        self.pending_vm_create = vm_state.get("create", False)
+        self.query_one("#workflow-plan", Button).disabled = False
+        self._plan_ready(plan)
 
     def _plan_ready(self, plan: Plan) -> None:
         self.app.push_screen(PlanReview(plan, self.session, parent_view=self))
 
     def _plan_failed(self, message: str) -> None:
-        self.query_one("#workflow-note", Static).update(f"Plan refused: {message}")
-
-    def _build_action(self, operation: str):
         self.pending_vm_name = None
         self.pending_vm_devices = []
         self.pending_vm_create = False
+        self.query_one("#workflow-plan", Button).disabled = False
+        self.query_one("#workflow-note", Static).update(f"Plan refused: {message}")
+
+    def _build_action(self, operation: str):
+        vm_state: dict[str, Any] = {}
+        action = self._build_action_from_input(operation, self._capture_action_input(), self.session.workflows,
+                                               vm_state)
+        self.pending_vm_name = vm_state.get("name")
+        self.pending_vm_devices = vm_state.get("devices", [])
+        self.pending_vm_create = vm_state.get("create", False)
+        return action
+
+    def _build_action_from_input(self, operation: str, form: _WorkflowActionInput, workflows: Any,
+                                 vm_state: dict[str, Any]) -> Action:
         try:
-            data = json.loads(self.query_one("#workflow-data", TextArea).text)
+            data = json.loads(form.data_text)
         except json.JSONDecodeError as exc:
             raise ValueError(f"JSON input is invalid at line {exc.lineno}, column {exc.colno}") from None
         if not isinstance(data, dict):
             raise ValueError("action data must be a JSON object")
         if self.key == "users" and _contains_sensitive_field(data):
             raise ValueError("put passwords or SSH keys in the hidden secret field, not in JSON")
-        selected = self._selected() or {}
-        name_input = self.query_one("#workflow-name", Input).value.strip()
+        selected = form.selected
+        name_input = form.name_input
         name = name_input or selected.get("username", selected.get("name", selected.get("id")))
-        secret_text = self.query_one("#workflow-secret", Input).value
-        recursive = self.query_one("#workflow-recursive", Checkbox).value
-        builtin = self.query_one("#workflow-builtin", Checkbox).value
-        confirm_self = self.query_one("#workflow-confirm-self", Checkbox).value
-        workflows = self.session.workflows
+        secret_text = form.secret_text
+        recursive = form.recursive
+        builtin = form.builtin
+        confirm_self = form.confirm_self
 
         if self.key == "datasets":
             if operation == "create":
@@ -300,9 +343,7 @@ class WorkflowView(Vertical):
                     devices.append({"dtype": "NIC", "nic_attach": nic_attach})
                 for attributes in devices:
                     workflows.validate_vm_device_attributes(attributes)
-                self.pending_vm_name = str(name)
-                self.pending_vm_devices = devices
-                self.pending_vm_create = True
+                vm_state.update({"name": str(name), "devices": devices, "create": True})
                 return workflows.vm_create_action(data)
             if operation == "update":
                 return workflows.vm_update_action(str(name), data)
@@ -318,7 +359,7 @@ class WorkflowView(Vertical):
                     data["password"] = Secret(secret_text)
                 return workflows.user_create_action(data)
             if operation == "update":
-                return workflows.user_update_action(str(name), data, builtin=builtin)
+                return workflows.user_update_action(str(name), data, builtin=builtin, confirm_self=confirm_self)
             if operation == "access":
                 return workflows.user_access_action(str(name), data, confirm_self=confirm_self)
             if operation == "password":
@@ -385,20 +426,24 @@ class WorkflowView(Vertical):
             self.pending_vm_name = None
             return
         attributes = self.pending_vm_devices.pop(0)
-        try:
-            action = self.session.workflows.vm_device_create_action(self.pending_vm_name, attributes)
-        except Exception as exc:
-            self.pending_vm_devices = []
-            self.pending_vm_name = None
-            self.query_one("#workflow-note", Static).update(f"VM was created, but its next device plan was refused: {exc}")
-            return
-        self._make_vm_device_plan(action)
+        self.query_one("#workflow-note", Static).update("Checking the created VM and preparing its next device plan…")
+        self._make_vm_device_plan(self.pending_vm_name, attributes)
 
     @work(thread=True, exclusive=True)
-    def _make_vm_device_plan(self, action) -> None:
+    def _make_vm_device_plan(self, vm_name: str, attributes: dict[str, Any]) -> None:
+        def build_and_plan(session, lease):
+            action = session.workflows.vm_device_create_action(vm_name, attributes)
+            return make_plan(action, session.rpc, cancelled=lease.cancelled.is_set)
+
         run_cancellable_session_work(
-            self, lambda session, lease: make_plan(action, session.rpc, cancelled=lease.cancelled.is_set),
-            "_plan_ready", "_plan_failed")
+            self, build_and_plan, "_plan_ready", "_vm_device_plan_failed")
+
+    def _vm_device_plan_failed(self, message: str) -> None:
+        self.pending_vm_devices = []
+        self.pending_vm_name = None
+        self.pending_vm_create = False
+        self.query_one("#workflow-note", Static).update(
+            f"VM was created, but its next device plan was refused: {message}")
 
     def _plan_applied(self, plan: Plan, result: Any) -> None:
         methods = {call.method for call in plan.action.calls}

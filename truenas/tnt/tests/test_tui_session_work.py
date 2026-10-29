@@ -28,7 +28,7 @@ class FakeApp:
 
 
 def test_session_work_posts_results_and_scrubs_errors():
-    session = SimpleNamespace(credential=Secret("1-placeholder-secret"))
+    session = SimpleNamespace(credential=Secret("1-placeholder-secret"), rpc=SimpleNamespace())
     lease = WorkerLease(7, session)
     app = FakeApp(lease)
     view = SimpleNamespace(app=app, session=session)

@@ -213,6 +213,10 @@ def test_workflow_view_input_refusals_loading_and_vm_recovery_messages(config):
             view.pending_vm_name = "missing"
             view.pending_vm_devices = [{"dtype": "NIC"}]
             view._open_next_vm_device()
+            for _ in range(100):
+                await pilot.pause(0.05)
+                if "next device plan was refused" in str(app.query_one("#workflow-note", Static).render()):
+                    break
             assert "next device plan was refused" in str(app.query_one("#workflow-note", Static).render())
             assert view.pending_vm_name is None and view.pending_vm_devices == []
 
@@ -329,6 +333,13 @@ def test_workflow_action_builders_cover_management_screens(config):
                         assert method in methods, (key, operation, methods)
                         if key == "apps" and operation == "delete":
                             assert action.calls[0].params[1]["remove_ix_volumes"] is False
+                    if key == "vm":
+                        view.query_one("#workflow-data", TextArea).text = json.dumps(
+                            {"memory": 2048, "disk_zvol": "tank/guest-basic", "disk_size": 1073741824})
+                        view.query_one("#workflow-name", Input).value = "guest-basic"
+                        action = view._build_action("create")
+                        assert [device["dtype"] for device in view.pending_vm_devices] == ["DISK"]
+                        assert action.calls[0].method == "vm.create"
                     if key == "snapshot-tasks":
                         view.query_one("#workflow-name", Input).value = "not-an-id"
                         with pytest.raises(ValueError, match="task ID"):

@@ -1,4 +1,5 @@
 import json
+import threading
 import stat
 import tarfile
 import io
@@ -6,7 +7,7 @@ import ssl
 import urllib.error
 
 import pytest
-from textual.widgets import Button, Checkbox, Input, Static, Tree
+from textual.widgets import Button, Checkbox, Input, Select, Static, TextArea, Tree
 
 from dataclasses import replace
 
@@ -353,16 +354,16 @@ def test_system_power_tui_rejects_bad_delay_cancels_plan_and_confirms_shutdown()
                                 and app.query("#view-system-reboot").first() is not None, count=40)
                 view = app.query_one("#view-system-reboot", SystemPowerView)
                 view.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="unrelated")))
-                app.screen.query_one("#system-power-delay", Input).value = "not-a-number"
-                await pilot.click("#system-power-plan")
-                assert "Plan refused" in str(app.screen.query_one("#system-power-note", Static).render())
-                app.screen.query_one("#system-power-delay", Input).value = ""
+                view.query_one("#system-power-delay", Input).value = "not-a-number"
+                view.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="system-power-plan")))
+                assert "Plan refused" in str(view.query_one("#system-power-note", Static).render())
+                view.query_one("#system-power-delay", Input).value = ""
                 view.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="system-power-plan")))
                 await _wait_for(pilot, lambda: isinstance(app.screen, PlanReview), count=300)
-                assert isinstance(app.screen, PlanReview), str(app.screen.query_one("#system-power-note", Static).render())
+                assert isinstance(app.screen, PlanReview), str(view.query_one("#system-power-note", Static).render())
                 await pilot.pause(0.1)
                 await pilot.click("#plan-cancel")
-                assert "cancelled" in str(app.screen.query_one("#system-power-note", Static).render())
+                assert "cancelled" in str(view.query_one("#system-power-note", Static).render())
 
                 _select_key(app, "shutdown")
                 await _wait_for(pilot, lambda: app.current == "shutdown"
@@ -380,6 +381,349 @@ def test_system_power_tui_rejects_bad_delay_cancels_plan_and_confirms_shutdown()
                 outcome = str(app.query_one("#system-power-job", Static).render())
                 assert '"method": "system.shutdown"' in outcome and '"job_id": "1"' in outcome
                 assert "system.shutdown" in server.called()
+
+        try:
+            asyncio.run(go())
+        finally:
+            session.close()
+
+
+def test_hung_system_preflight_rpc_does_not_block_tui_event_loop():
+    import asyncio
+    from types import SimpleNamespace
+
+    from tnt.tui.system import SystemPowerView
+
+    with FakeServer() as server:
+        session = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True, allow_write=True)
+        entered = threading.Event()
+        released = threading.Event()
+        returned = threading.Event()
+        original_call = session.rpc.call
+
+        def blocked_call(method, *params, **kwargs):
+            if method == "system.info" and not entered.is_set():
+                entered.set()
+                released.wait(2)
+                value = original_call(method, *params, **kwargs)
+                returned.set()
+                return value
+            return original_call(method, *params, **kwargs)
+
+        session.rpc.call = blocked_call
+
+        async def go():
+            app = TntApp(session)
+            async with app.run_test(size=(160, 50)) as pilot:
+                _select_key(app, "reboot")
+                await _wait_for(pilot, lambda: app.current == "reboot"
+                                and app.query_one("#system-power-plan", Button).is_attached, count=40)
+                ticked = asyncio.Event()
+                asyncio.get_running_loop().call_later(0.05, ticked.set)
+                watchdog = threading.Timer(1.5, released.set)
+                watchdog.start()
+                try:
+                    view = app.query_one("#view-system-reboot", SystemPowerView)
+                    view.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="system-power-plan")))
+                    await asyncio.wait_for(ticked.wait(), timeout=0.5)
+                    for _ in range(20):
+                        if entered.is_set():
+                            break
+                        await pilot.pause(0.025)
+                    assert entered.is_set(), "system preflight should start after the click"
+                    assert not returned.is_set(), "the UI event loop must run while the RPC is still hung"
+                    assert "Checking current host state" in str(
+                        app.query_one("#system-power-note", Static).render())
+                finally:
+                    released.set()
+                    watchdog.cancel()
+                await _wait_for(pilot, lambda: isinstance(app.screen, PlanReview), count=100)
+
+        try:
+            asyncio.run(go())
+        finally:
+            released.set()
+            session.close()
+
+
+def test_system_power_callbacks_report_refusal_success_and_uncertain_results(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    from tnt.tui.system import SystemPowerView
+
+    reconnects = []
+    monkeypatch.setattr(SystemPowerView, "_reconnect_after_reboot",
+                        lambda self, *, uncertain=False: reconnects.append(uncertain))
+    with FakeServer() as server:
+        session = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True, allow_write=True)
+        plan = SimpleNamespace(action=SimpleNamespace(confirm_target="test"))
+
+        async def go():
+            app = TntApp(session)
+            async with app.run_test(size=(160, 50)) as pilot:
+                _select_key(app, "reboot")
+                await _wait_for(pilot, lambda: app.query_one("#view-system-reboot").is_attached, count=40)
+                reboot = app.query_one("#view-system-reboot", SystemPowerView)
+                reboot._plan_failed("preflight refused")
+                assert "Plan refused: preflight refused" in str(reboot.query_one("#system-power-note", Static).render())
+                reboot._plan_cancelled(plan)
+                assert "System action cancelled" in str(reboot.query_one("#system-power-note", Static).render())
+                reboot._plan_applied(plan, [])
+                assert reconnects == [False]
+                assert "Host rebooting" in str(reboot.query_one("#system-power-note", Static).render())
+                reboot._plan_apply_uncertain(plan, [])
+                assert reconnects == [False, True]
+                assert "without resubmitting" in str(reboot.query_one("#system-power-note", Static).render())
+                reboot._reconnect_progress(1, 3, 2)
+                assert "attempt 1/3" in str(reboot.query_one("#system-power-note", Static).render())
+                reboot._reconnect_failed("synthetic reconnect failure", uncertain=True)
+                assert "outcome is uncertain" in str(reboot.query_one("#system-power-note", Static).render())
+                reboot._reconnect_failed("synthetic reconnect failure")
+                assert "Exit tnt" in str(reboot.query_one("#system-power-note", Static).render())
+                reboot._reconnected(uncertain=True)
+                assert "outcome remains uncertain" in str(reboot.query_one("#system-power-note", Static).render())
+                reboot._reconnected()
+                assert "returned to READY" in str(reboot.query_one("#system-power-note", Static).render())
+
+                _select_key(app, "shutdown")
+                await _wait_for(pilot, lambda: app.query_one("#view-system-shutdown").is_attached, count=40)
+                shutdown = app.query_one("#view-system-shutdown", SystemPowerView)
+                shutdown._plan_applied(plan, [])
+                assert "Host shutting down" in str(shutdown.query_one("#system-power-note", Static).render())
+                shutdown._plan_apply_uncertain(plan, [])
+                assert "Shutdown request outcome is uncertain" in str(
+                    shutdown.query_one("#system-power-note", Static).render())
+
+        try:
+            asyncio.run(go())
+        finally:
+            session.close()
+
+
+@pytest.mark.parametrize("view_key, rpc_method, operation, target, data", [
+    ("datasets", "pool.dataset.details", "delete", "tank", "{}"),
+    ("users", "auth.me", "update", "tnt", '{"shell":"/bin/sh"}'),
+    ("vm", "vm.query", "device", "guest", '{"dtype":"NIC","nic_attach":"br0"}'),
+])
+def test_hung_workflow_lookup_does_not_block_tui_event_loop(view_key, rpc_method, operation, target, data):
+    import asyncio
+    from types import SimpleNamespace
+
+    with FakeServer() as server:
+        if view_key == "vm":
+            server.vms[21] = {"id": 21, "name": "guest", "status": {"state": "STOPPED"}, "devices": []}
+        session = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True, allow_write=True)
+        entered = threading.Event()
+        released = threading.Event()
+        returned = threading.Event()
+        original_call = session.rpc.call
+
+        def blocked_call(method, *params, **kwargs):
+            if method == rpc_method and not entered.is_set():
+                entered.set()
+                released.wait(2)
+                returned.set()
+            return original_call(method, *params, **kwargs)
+
+        async def go():
+            app = TntApp(session)
+            async with app.run_test(size=(160, 50)) as pilot:
+                _select_key(app, view_key)
+                await _wait_for(pilot, lambda: " loaded." in str(app.query_one("#workflow-note", Static).render()),
+                                count=100)
+                view = app.query_one(f"#view-{view_key}")
+                view.query_one("#workflow-operation", Select).value = operation
+                view.query_one("#workflow-name", Input).value = target
+                view.query_one("#workflow-data", TextArea).text = data
+                if view_key == "users":
+                    view.query_one("#workflow-confirm-self", Checkbox).value = True
+                session.rpc.call = blocked_call
+                ticked = asyncio.Event()
+                asyncio.get_running_loop().call_later(0.05, ticked.set)
+                watchdog = threading.Timer(1.5, released.set)
+                watchdog.start()
+                try:
+                    view.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="workflow-plan")))
+                    await asyncio.wait_for(ticked.wait(), timeout=0.5)
+                    for _ in range(20):
+                        if entered.is_set():
+                            break
+                        await pilot.pause(0.025)
+                    assert entered.is_set(), f"{rpc_method} should start after the plan click"
+                    assert not returned.is_set(), "the UI event loop must run while the lookup RPC is still hung"
+                    assert view.query_one("#workflow-plan", Button).disabled
+                    assert "Checking current host state" in str(view.query_one("#workflow-note", Static).render())
+                finally:
+                    released.set()
+                    watchdog.cancel()
+                await _wait_for(pilot, lambda: isinstance(app.screen, PlanReview), count=100)
+                app.screen.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="plan-cancel")))
+
+        try:
+            asyncio.run(go())
+        finally:
+            released.set()
+            session.close()
+
+
+def test_hung_api_key_plan_lookup_does_not_block_tui_event_loop():
+    import asyncio
+    from types import SimpleNamespace
+
+    from tnt.tui.apikeys import ApiKeysView
+
+    with FakeServer() as server:
+        session = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True, allow_write=True)
+        entered = threading.Event()
+        released = threading.Event()
+        returned = threading.Event()
+        original_call = session.rpc.call
+
+        def blocked_call(method, *params, **kwargs):
+            if method == "api_key.query" and not entered.is_set():
+                entered.set()
+                released.wait(2)
+                returned.set()
+            return original_call(method, *params, **kwargs)
+
+        async def go():
+            app = TntApp(session)
+            async with app.run_test(size=(160, 50)) as pilot:
+                _select_key(app, "api-keys")
+                await _wait_for(pilot, lambda: "API key(s)" in str(app.query_one("#apikey-note", Static).render()),
+                                count=100)
+                view = app.query_one("#view-api-keys", ApiKeysView)
+                view.query_one("#apikey-operation", Select).value = "create"
+                view.query_one("#apikey-name", Input).value = "review-key"
+                view.query_one("#apikey-username", Input).value = "tnt"
+                view.query_one("#apikey-file", Input).value = "/tmp/tnt-review-key"
+                session.rpc.call = blocked_call
+                ticked = asyncio.Event()
+                asyncio.get_running_loop().call_later(0.05, ticked.set)
+                watchdog = threading.Timer(1.5, released.set)
+                watchdog.start()
+                try:
+                    view.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="apikey-plan")))
+                    await asyncio.wait_for(ticked.wait(), timeout=0.5)
+                    for _ in range(20):
+                        if entered.is_set():
+                            break
+                        await pilot.pause(0.025)
+                    assert entered.is_set(), "api_key.query should start after the plan click"
+                    assert not returned.is_set(), "the UI event loop must run while the lookup RPC is still hung"
+                    assert view.query_one("#apikey-plan", Button).disabled
+                    assert "Checking current host state" in str(view.query_one("#apikey-note", Static).render())
+                finally:
+                    released.set()
+                    watchdog.cancel()
+                await _wait_for(pilot, lambda: isinstance(app.screen, PlanReview), count=100)
+                app.screen.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="plan-cancel")))
+
+        try:
+            asyncio.run(go())
+        finally:
+            released.set()
+            session.close()
+
+
+def test_tui_switch_timeout_can_keep_waiting_then_open_requested_host():
+    import asyncio
+    from types import SimpleNamespace
+
+    from tnt.profile import SecretEntry
+
+    with FakeServer(username="primary-user") as primary, FakeServer(username="backup-user") as backup:
+        primary_session = open_session(primary.profile("primary"), secret=primary.secret(),
+                                       allow_loopback_ws=True)
+        backup_profile = backup.profile("backup")
+        backup_credential = backup.secret()
+
+        def open_fake_host(profile, **kwargs):
+            return open_session(profile, allow_loopback_ws=True, **kwargs)
+
+        async def go():
+            app = TntApp(
+                primary_session, hosts={"backup": backup_profile},
+                secret_entries={"backup": SecretEntry(api_key=backup_credential, host_url=backup_profile.url)},
+                session_opener=open_fake_host, worker_drain_timeout=0.02)
+            async with app.run_test(size=(160, 50)) as pilot:
+                _select_key(app, "datasets")
+                await _wait_for(pilot, lambda: " loaded." in str(app.query_one("#workflow-note", Static).render()),
+                                count=100)
+                lease = app.begin_session_work(primary_session)
+                assert lease is not None
+                app.switch_host("backup")
+                await _wait_for(pilot, lambda: len(app.screen.query("#worker-drain-wait")) > 0, count=100)
+                assert "still waiting" in str(app.screen.query_one("#worker-drain-message", Static).render())
+                app.screen.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="worker-drain-cancel")))
+                await _wait_for(pilot, lambda: app.session is primary_session and app.current == "datasets", count=40)
+                app.finish_session_work(lease)
+                await pilot.pause(0.1)
+
+                lease = app.begin_session_work(primary_session)
+                assert lease is not None
+                app.switch_host("backup")
+                await _wait_for(pilot, lambda: len(app.screen.query("#worker-drain-wait")) > 0, count=100)
+                app.screen.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="worker-drain-wait")))
+                app.finish_session_work(lease)
+                await _wait_for(pilot, lambda: app.session is not None and app.session.profile.name == "backup"
+                                and app.current == "datasets", count=120)
+                assert app.session is not primary_session
+                app.session.close()
+
+        try:
+            asyncio.run(go())
+        finally:
+            primary_session.close()
+
+
+def test_reboot_reconnect_worker_stops_when_host_transition_cancels_backoff():
+    import asyncio
+
+    with FakeServer() as server:
+        session = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True)
+
+        async def go():
+            app = TntApp(session, reconnect_delays=(10,))
+            async with app.run_test(size=(160, 50)) as pilot:
+                _select_key(app, "reboot")
+                await _wait_for(pilot, lambda: app.query_one("#view-system-reboot").is_attached, count=40)
+                app.query_one("#view-system-reboot")._reconnect_after_reboot()
+                await _wait_for(pilot, lambda: "Reconnect attempt 1/1" in str(
+                    app.query_one("#system-power-note", Static).render()), count=40)
+                transition = app.session_controller.begin_disconnect()
+                assert len(transition.workers) == 1
+                lease = transition.workers[0]
+                drained = await asyncio.wait_for(asyncio.to_thread(lease.finished.wait, 1), timeout=1.5)
+                assert drained and lease.cancelled.is_set()
+                app.session_controller.finish_switch(transition, timeout=1)
+
+        try:
+            asyncio.run(go())
+        finally:
+            session.close()
+
+
+def test_tui_quit_drain_timeout_shows_cancel_path_and_restores_session():
+    import asyncio
+    from types import SimpleNamespace
+
+    with FakeServer() as server:
+        session = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True)
+
+        async def go():
+            app = TntApp(session, worker_drain_timeout=0.02)
+            async with app.run_test(size=(120, 36)) as pilot:
+                lease = app.begin_session_work(session)
+                assert lease is not None
+                app.action_quit()
+                await _wait_for(pilot, lambda: len(app.screen.query("#worker-drain-cancel")) > 0, count=100)
+                assert "still waiting" in str(app.screen.query_one("#worker-drain-message", Static).render())
+                app.screen.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="worker-drain-cancel")))
+                await _wait_for(pilot, lambda: not app._quitting and app.session is session, count=40)
+                assert app.session_controller.active_host == session.profile.name
+                app.finish_session_work(lease)
 
         try:
             asyncio.run(go())
@@ -431,6 +775,7 @@ def test_system_update_tui_handles_check_failure_no_update_bad_target_and_cancel
 
 def test_system_general_tui_exports_config_and_handles_invalid_result_and_lost_path(tmp_path):
     import asyncio
+    from types import SimpleNamespace
 
     from tnt.tui.system import SystemGeneralView
 
@@ -443,6 +788,10 @@ def test_system_general_tui_exports_config_and_handles_invalid_result_and_lost_p
                 _select_key(app, "general")
                 await pilot.pause(0.1)
                 view = app.query_one(SystemGeneralView)
+                view.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="unrelated")))
+                view._plan_failed("synthetic export preflight refusal")
+                assert "Plan refused: synthetic export preflight refusal" in str(
+                    app.query_one("#system-general-note", Static).render())
                 view._plan_cancelled(None)
                 assert "cancelled" in str(app.query_one("#system-general-note", Static).render())
                 view._plan_applied(None, [])
@@ -453,9 +802,10 @@ def test_system_general_tui_exports_config_and_handles_invalid_result_and_lost_p
                 target = tmp_path / "tui-config.tar"
                 app.query_one("#system-general-path", Input).value = str(target)
                 app.query_one("#system-general-root-keys", Checkbox).value = True
-                await pilot.click("#system-general-plan")
+                view.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="system-general-plan")))
                 await _wait_for(pilot, lambda: isinstance(app.screen, PlanReview))
-                await pilot.click("#plan-apply")
+                await _wait_for(pilot, lambda: isinstance(app.screen, PlanReview) and app.screen.generation is not None)
+                app.screen.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="plan-apply")))
                 await _wait_for(pilot, lambda: "saved to" in str(app.query_one("#system-general-note", Static).render()))
                 assert stat.S_IMODE(target.stat().st_mode) == 0o600
                 assert "auth_token" not in str(app.query_one("#system-general-note", Static).render())
@@ -474,9 +824,12 @@ def test_system_general_tui_exports_config_and_handles_invalid_result_and_lost_p
 @pytest.mark.parametrize(("mode", "expected", "calls"), [
     ("auth-error", "automatic reconnect stopped", 1),
     ("other-error", "automatic reconnect stopped", 1),
+    ("generic-error", "reconnect failed: RuntimeError", 1),
+    ("state-refused", "synthetic state refusal", 1),
     ("unknown-state", "unexpected state", 1),
     ("connect-then-ready", "returned to READY", 3),
     ("state-error-then-ready", "returned to READY", 3),
+    ("empty-delays", "automatic reconnect stopped", 0),
 ])
 def test_reboot_tui_bounds_reconnect_and_stops_on_non_connection_failures(mode, expected, calls):
     import asyncio
@@ -504,10 +857,29 @@ def test_reboot_tui_bounds_reconnect_and_stops_on_non_connection_failures(mode, 
                 else:
                     server.fail.pop("system.state", None)
             credential = kwargs.pop("secret", server.secret())
-            return open_session(server.profile(profile.name), secret=credential, allow_loopback_ws=True, **kwargs)
+            candidate = open_session(server.profile(profile.name), secret=credential,
+                                     allow_loopback_ws=True, **kwargs)
+            if mode == "state-refused":
+                original_state_call = candidate.rpc.call
+
+                def refuse_state(method, *params, **options):
+                    if method == "system.state":
+                        raise Refused("state", "synthetic state refusal")
+                    return original_state_call(method, *params, **options)
+
+                candidate.rpc.call = refuse_state
+            return candidate
 
         async def go():
-            app = TntApp(session, session_opener=reconnect, reconnect_delays=(0, 0, 0, 0))
+            delays = () if mode == "empty-delays" else (0, 0, 0, 0)
+            app = TntApp(session, session_opener=reconnect, reconnect_delays=delays)
+            if mode == "generic-error":
+                def fail_reconnect(_generation, _session):
+                    nonlocal reconnect_calls
+                    reconnect_calls += 1
+                    raise RuntimeError("synthetic reconnect failure")
+
+                app.session_controller.reconnect_current = fail_reconnect
             async with app.run_test(size=(160, 50)) as pilot:
                 _select_key(app, "reboot")
                 def power_ready():
@@ -520,7 +892,8 @@ def test_reboot_tui_bounds_reconnect_and_stops_on_non_connection_failures(mode, 
                 app.screen.query_one("#system-power-delay", Input).value = "0"
                 app.screen.query_one(SystemPowerView).on_button_pressed(
                     SimpleNamespace(button=SimpleNamespace(id="system-power-plan")))
-                await _wait_for(pilot, lambda: isinstance(app.screen, PlanReview), count=300)
+                await _wait_for(pilot, lambda: isinstance(app.screen, PlanReview)
+                                    and len(app.screen.query("#plan-confirm")) > 0, count=300)
                 app.screen.query_one("#plan-confirm", Input).value = "test"
                 await pilot.pause(0.1)
                 app.screen.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="plan-apply")))

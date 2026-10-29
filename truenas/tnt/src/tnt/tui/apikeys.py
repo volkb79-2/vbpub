@@ -104,10 +104,25 @@ class ApiKeysView(Vertical):
         key_path = self.query_one("#apikey-file", Input).value.strip()
         row = self._selected()
         try:
-            workflows = self.session.workflows
             if operation == "create":
                 if not os.path.isabs(key_path):
                     raise ValueError("creating an API key requires an absolute output path for its private file")
+            elif operation not in {"rename", "revoke"} or row is None:
+                raise ValueError("choose an action and select an API key for rename or revoke")
+        except Exception as exc:
+            self.query_one("#apikey-note", Static).update(f"Plan refused: {exc}")
+            return
+        self.pending_key_path = key_path if operation == "create" else None
+        self.query_one("#apikey-note", Static).update("Checking current host state and preparing the plan…")
+        self.query_one("#apikey-plan", Button).disabled = True
+        self._make_plan(operation, name, username, expires_at, dict(row) if row is not None else None)
+
+    @work(thread=True, exclusive=True)
+    def _make_plan(self, operation: str, name: str, username: str, expires_at: str | None,
+                   row: dict[str, Any] | None) -> None:
+        def build_and_plan(session, lease):
+            workflows = session.workflows
+            if operation == "create":
                 action = workflows.api_key_create_action(name, username, expires_at)
             elif operation == "rename" and row is not None:
                 action = workflows.api_key_rename_action(row["id"], name)
@@ -115,24 +130,18 @@ class ApiKeysView(Vertical):
                 action = workflows.api_key_revoke_action(row["id"])
             else:
                 raise ValueError("choose an action and select an API key for rename or revoke")
-        except Exception as exc:
-            self.query_one("#apikey-note", Static).update(f"Plan refused: {exc}")
-            return
-        self.pending_key_path = key_path if operation == "create" else None
-        self.query_one("#apikey-note", Static).update("Checking current host state and preparing the plan…")
-        self._make_plan(action)
+            return make_plan(action, session.rpc, cancelled=lease.cancelled.is_set)
 
-    @work(thread=True, exclusive=True)
-    def _make_plan(self, action) -> None:
         run_cancellable_session_work(
-            self, lambda session, lease: make_plan(action, session.rpc, cancelled=lease.cancelled.is_set),
-            "_plan_ready", "_plan_failed")
+            self, build_and_plan, "_plan_ready", "_plan_failed")
 
     def _plan_ready(self, plan: Plan) -> None:
+        self.query_one("#apikey-plan", Button).disabled = False
         self.app.push_screen(PlanReview(plan, self.session, parent_view=self))
 
     def _plan_failed(self, message: str) -> None:
         self.pending_key_path = None
+        self.query_one("#apikey-plan", Button).disabled = False
         self.query_one("#apikey-note", Static).update(f"Plan refused: {message}")
 
     def _plan_applied(self, plan: Plan, result: Any) -> None:
