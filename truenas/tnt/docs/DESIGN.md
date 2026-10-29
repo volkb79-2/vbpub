@@ -114,14 +114,11 @@ ACTION-MATRIX row id (A-xx/B-xx) or a TNT id. Structural rules (`validate_action
 action has calls; every probe call is an explicitly classified read method (also in a write session); a READ action's
 calls are all read methods; every MUTATE and DESTRUCTIVE action has a non-empty target probe (else the drift check
 would be vacuous); a DESTRUCTIVE action also has a non-blank
-confirmation target; an action containing a data-destroying method (the explicit manifest classifications, including
+confirmation target; an action containing a method explicitly classified destructive by the v27 manifest (including
 `disk.wipe`, pool and dataset deletion, snapshot rollback/deletion, container stop/deletion, VM stop/poweroff/deletion,
-VM device deletion and user deletion; a `user.set_password` plan is promoted to DESTRUCTIVE only when its target is the
-current login user, and then it also needs `--confirm-self`; plus the conservative suffix fallback for names ending
-`.delete`, `.destroy`, `.wipe`, `.rollback`, `.replace`, `.attach`, `.offline`, `.promote`, `.rename`, `.stop`,
-`.reset`, `.clear`, `.format`, `.recursive_destroy`, `.import_pool`, `.uninstall`, `.destroy_snapshots`, `.rmdir`,
-`.unlink` or `.remove`)
-must be DESTRUCTIVE. Every non-read call must appear as supported in the v27 adapter manifest;
+VM device deletion, app stop, and user deletion) is DESTRUCTIVE. A `user.set_password` plan is promoted only when its
+target is the current login user, and then it also needs `--confirm-self`; shell or home changes to the current login
+user follow the same destructive typed-confirmation rule. Every non-read call must appear as supported in the v27 adapter manifest;
 `validate_action` refuses unlisted writes. `make_plan` runs the probe
 and fingerprints the action id, kind, confirm target, exact calls, probe results, session id and nonce, so swapping the
 calls, target or identity under a plan is detected. A plan carries the id of the session that made it and a nonce: applying it through
@@ -200,6 +197,9 @@ and typed target are rechecked against fresh results at apply. The explicit `--c
 plan fingerprint. If `auth.me` identifies the target at either planning or apply, that flag must be present. This keeps
 account access changes inside the same fingerprinted review as the identity check. SSH-key updates remain on their protected-secret path; a
 current-login SSH-key change is also destructive, asks for typed username confirmation, and fingerprints `auth.me`.
+Changing the current login user's `shell` or `home` is lockout-shaped as well: the plan includes the named user and
+`auth.me` probes, requires `--confirm-self` plus the typed username, and checks current identity again at apply. Changes
+to another account's shell or home remain planned writes but still bind the `auth.me` result into the plan.
 
 ## 3. Action backlog from the matrix
 
@@ -269,9 +269,10 @@ schema failure instead of an empty network state. See [API method evidence](API-
 
 The app list uses `app.query` without the option that retrieves app configuration, and displays the API's
 `upgrade_available` value alongside state and version. v27 has `app.start` and `app.stop` jobs but no `app.restart`
-method; tnt implements restart as those two ordered jobs. It does not use `app.redeploy`, whose v27 behavior also
-pulls images. Uninstall is `app.delete`, requires the typed app ID, keeps images and TrueNAS-managed data volumes by
-default, and exposes an explicit opt-in for `remove_ix_volumes`. See [API method evidence](API-METHODS-V27.md#apps).
+method; `app.stop` is destructive, so stop and the ordered stop/start restart workflow require the typed app ID. tnt
+does not use `app.redeploy`, whose v27 behavior also pulls images. Uninstall is `app.delete`, requires the typed app
+ID, keeps images and TrueNAS-managed data volumes by default, and exposes an explicit opt-in for `remove_ix_volumes`.
+See [API method evidence](API-METHODS-V27.md#apps).
 
 ### Audit
 
@@ -336,10 +337,14 @@ must be stored as a credential. See [v27 method evidence](API-METHODS-V27.md#sys
   an entry for each available workflow action, plus host selection and write-mode switching.
 - Keys: `ctrl+n` menu, `h` host picker, `w` toggle the selected host's write mode, `r` refresh, `?` keys, `q` quit.
 - Per-screen action list (footer plus palette), each action opening the plan modal with the exact calls.
-- Reads, plan probes, and applies run in worker threads. Each captures a session identity and generation. A host switch
-  increments the generation before cancellation, invalidates open plans, asks old-generation workers to stop, waits
-  for them to drain, closes the old session, then opens the new one. Results posted after a switch are rejected on the
-  UI thread by generation and session identity. Apply checks cancellation between its RPC calls.
+- Reads, action construction, plan probes (including system preflight and detail lookups), and applies run in worker
+  threads. Busy messages and disabled plan buttons show progress while the event loop remains available. Each worker
+  captures a session identity and generation. A host switch increments the generation before cancellation and
+  invalidates open plans. It waits up to five seconds for workers to drain before closing the old session; if an RPC is
+  still pending, a dialog offers Keep waiting or Cancel switch. Quit uses the same bounded drain and offers Cancel quit.
+  Canceling a transition restores the current session, and any later transition still drains old leases bound to it.
+  Results posted after a switch are rejected on the UI thread by generation and session identity. Workers stop between
+  RPC calls when cancellation is requested; an RPC already in flight can finish under the client's call timeout.
 - Connection testing opens a temporary read-only session and closes it without replacing the selected session.
   Write mode is stored independently per host; changing it reopens that host session in the chosen mode.
 - The picker shows host name, URL, description, and last connection status. Password and API-key inputs are hidden;
@@ -357,14 +362,18 @@ SystemCommands, Pilot), `websockets>=15` in the test extra, `truenas_api_client`
 
 `tnt.toml` and `tnt.secrets.toml` are schema-versioned independently at version `1`. The former contains only
 `default_host` and `[hosts.NAME]` connection facts; any credential key or credential-bearing nested value is refused.
-The latter contains exactly one of `api_key`, `api_key_file`, or `password` per configured host. `api_key_file` is an
-absolute path stored only in the secrets file. Environment credential fallbacks are not used.
+Each new secrets entry contains exactly one of `api_key`, `api_key_file`, or `password`, plus the exact `host_url` the
+credential was entered for. Before authentication, tnt requires that binding to equal the selected profile URL.
+Unbound legacy entries remain readable for host-file repair but cannot connect until their credential is replaced with
+`tnt hosts edit NAME --set-secret`. `api_key_file` is an absolute path stored only in the secrets file. Environment
+credential fallbacks are not used.
 
 Config and secrets are resolved independently with the same precedence: the explicit `--config`/`--secrets` path,
 the matching `$TNT_CONFIG`/`$TNT_SECRETS`, an existing current-directory file, then
-`$XDG_CONFIG_HOME/tnt/` (or `~/.config/tnt/`). The files may live in different directories and pair by host name; supply
-an explicit path or matching environment variable for whichever file is outside its own search path. This avoids making a credential
-path an accidental consequence of where a non-secret config was found.
+`$XDG_CONFIG_HOME/tnt/` (or `~/.config/tnt/`). The files may live in different directories and resolve independently.
+Matching host names alone do not authorize pairing: the secret's `host_url` must match the profile URL, which prevents
+a cwd config from presenting an XDG credential to a different appliance with the same alias. Supply an explicit path
+or matching environment variable for whichever file is outside its own search path.
 
 Both TOML files and any API-key file must be regular files owned by the current user with exact mode `0600` and are
 opened with no-follow semantics. Ownership, type, and mode are checked with `fstat` on the descriptor that is read.
@@ -403,10 +412,12 @@ tls = "verify"
 schema_version = 1
 
 [hosts.lab]
+host_url = "wss://truenas.example.invalid/api/current"
 api_key = "REPLACE_WITH_API_KEY"
 # Or use api_key_file = "/home/me/.config/tnt/lab.key".
 
 [hosts.password-auth]
+host_url = "wss://nas2.example.invalid/api/current"
 password = "REPLACE_WITH_PASSWORD"
 ```
 

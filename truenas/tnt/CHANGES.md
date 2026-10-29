@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+- Closed the It4 milestone-review fixes for the vanilla v27 UI and guard paths. TUI lookup/action-construction and system
+  preflight RPCs now run in cancellable workers with visible progress; host switching and quit bound the drain wait and
+  offer Keep waiting or Cancel. Credentials are bound to their saved host URL, so independently resolved config and
+  secrets cannot pair the same alias with another appliance; unbound legacy credentials must be replaced before use.
+  App stop/restart and current-login shell/home changes now use destructive typed confirmation, and the boot-pool guard
+  test asserts the actual refusal. The registered FakeServer gate remains the acceptance path; no live host was contacted.
+  See the [worker/session design](docs/DESIGN.md#5-ux), [secret binding rules](docs/DESIGN.md#7-secrets),
+  [user update design](docs/DESIGN.md#user-account-updates), and [Apps guide](docs/CONSUMERS.md#apps).
 - Completed It3 interactive SSH hand-off. Added `tnt ssh [HOST]` and TUI `s`/command-palette actions with direct argv
   execution, no remote-command mode, no user/system SSH config, and a pinned known-hosts file with strict checking.
   Identity paths are checked before use; only configured identities are offered, agent/password authentication is

@@ -46,21 +46,27 @@ The non-secret `tnt.toml` stores `default_host` and one `[hosts.NAME]` table per
 paired `tnt.secrets.toml` under matching `[hosts.NAME]` tables. Both files must be regular files owned by you with
 exact mode `0600`; symlinks are refused. tnt validates the opened descriptors before reading. Credentials in
 `tnt.toml` are refused. An `api_key_file` path belongs in the secrets file, and the referenced key file must also be
-owned by you with exact mode `0600`.
+owned by you with exact mode `0600`. Each saved credential also carries the exact `host_url` it was entered for; tnt
+checks it against the selected host before authentication. If an older secrets entry has no `host_url`, or the host URL
+has changed, replace the credential with `tnt hosts edit NAME --set-secret` before connecting. This prevents a cwd
+config and an independently resolved XDG secrets file from pairing a same-named credential with another appliance.
 
 Config and secrets resolve independently. Each uses its explicit `--config` or `--secrets` path first, then its
 `TNT_CONFIG` or `TNT_SECRETS` environment variable, then an existing file in the current directory, then
-`$XDG_CONFIG_HOME/tnt/` (or `~/.config/tnt/`). The secrets file is paired with config by matching host name and may
-live in a different directory. `ws://` is refused. TLS verification is on by default. A host with `tls = "insecure"`
-also requires `--insecure` for each connection and a prominent warning acknowledgement when saving that mode.
+`$XDG_CONFIG_HOME/tnt/` (or `~/.config/tnt/`). The files may live in different directories; a matching host name is
+accepted only when the secrets entry's `host_url` also matches the configured endpoint. `ws://` is refused. TLS
+verification is on by default. A host with `tls = "insecure"` also requires `--insecure` for each connection and a
+prominent warning acknowledgement when saving that mode.
 
 Set `default_host` to connect automatically. If you leave it unset and configure several hosts, `tnt tui` opens the
 host picker and CLI commands require `--host NAME`, showing the available names on error. A single configured host is
 selected automatically. Use `tnt hosts list|show|add|edit|remove|test|set-default` to manage the pair. The TUI shows
 host name, URL, description, and last connection status; `h` or the command palette opens the picker, and `w` changes
-that host's read-only/write-enabled session. Switching hosts invalidates old plans, drains host-bound work, closes
-the old session, then connects the new one. SSH connection settings are used by the interactive hand-off described
-below; the configured SSH paths are never shown by host listing or JSON output.
+that host's read-only/write-enabled session. Reads, action construction, plan probes, and applies run in workers so
+slow RPCs leave the UI responsive. Switching hosts invalidates old plans and cancels old work before closing the
+session; if an RPC has not drained after five seconds, the TUI offers Keep waiting or Cancel switch. SSH connection
+settings are used by the interactive hand-off described below; the configured SSH paths are never shown by host
+listing or JSON output.
 
 Credentials never appear in argv, logs, exceptions, `hosts show`, JSON, or TUI output. Password and API-key fields in
 the TUI are hidden while editing. API-key creation writes the one-time key directly to a new mode-0600 file in the
@@ -92,10 +98,12 @@ tls = "verify"
 schema_version = 1
 
 [hosts.lab]
+host_url = "wss://nas.example.invalid/api/current"
 api_key = "REPLACE_WITH_API_KEY"
 # Or use api_key_file = "/home/me/.config/tnt/lab.key".
 
 [hosts.password-auth]
+host_url = "wss://nas2.example.invalid/api/current"
 password = "REPLACE_WITH_PASSWORD"
 ```
 
@@ -176,13 +184,15 @@ tnt vm console guest --host lab --json
 tnt user list --host lab --json
 tnt user create deploy "Deploy user" --host lab --group 1001 --password-disabled --allow-write
 tnt user update deploy --host lab --full-name "Deployment service" --allow-write
+tnt user update operator --host lab --shell /bin/sh --allow-write --confirm-self --confirm operator
 tnt user access deploy --host lab --groups 1001,1002 --allow-write --confirm deploy
 tnt user ssh-key set deploy --host lab --file ~/.ssh/id_ed25519.pub --add --allow-write
 tnt user password deploy --host lab --password-file /home/me/.config/tnt/new-password --allow-write
 tnt user ssh-key remove deploy --host lab --allow-write
 tnt user delete deploy --host lab --allow-write --confirm deploy
 tnt app list --host lab --json
-tnt app restart demo --host lab --allow-write
+tnt app stop demo --host lab --allow-write --confirm demo
+tnt app restart demo --host lab --allow-write --confirm demo
 tnt app uninstall demo --host lab --allow-write --confirm demo
 tnt network show --host lab --json
 tnt audit --host lab --user admin --event USER_LOGIN --limit 100 --json
@@ -198,7 +208,8 @@ Each write command requires `--allow-write`; destructive commands also require `
 render the plan without applying it. Changing the current login user's password additionally requires `--confirm-self`;
 other users' password changes are planned writes. Password entry uses a no-echo prompt or `--password-file`; tnt does
 not accept a password argument. API payloads not covered by a minimal create wizard can be supplied as a JSON `--file`.
-User updates accept only `full_name`, `shell`, and `home`. Group membership and `password_disabled`, `locked`, and
+User updates accept only `full_name`, `shell`, and `home`. Changing the current login user's `shell` or `home` needs
+both `--confirm-self` and `--confirm USER`, with `auth.me` checked when planning and again before apply. Group membership and `password_disabled`, `locked`, and
 `ssh_password_enabled` changes use the separate `user access` workflow. Every access change is destructive and needs
 `--confirm USER`; the current login account additionally needs `--confirm-self`, and tnt checks `auth.me` again at
 apply. Built-in, immutable, root, and admin accounts are refused by this workflow. Current-login SSH-key changes also
@@ -221,8 +232,8 @@ output masks SSH keys and password hashes. The user SSH-key commands accept Open
 routes, DNS nameservers, and default gateways. See the [network adoption example](docs/CONSUMERS.md#network-status) and
 the [v27 read signatures](docs/API-METHODS-V27.md#network-status).
 
-`tnt app list` reports installed app state and v27's `upgrade_available` flag. Restart runs the v27 stop and start jobs
-in sequence; uninstall requires typing the app ID and preserves TrueNAS-managed data volumes unless
+`tnt app list` reports installed app state and v27's `upgrade_available` flag. Stop and restart are destructive and
+require `--confirm APP_ID`; restart runs the v27 stop and start jobs in sequence. Uninstall also requires typing the app ID and preserves TrueNAS-managed data volumes unless
 `--delete-data-volumes` is explicitly supplied. See the [Apps guide](docs/CONSUMERS.md#apps) and
 [v27 method evidence](docs/API-METHODS-V27.md#apps).
 
@@ -268,7 +279,9 @@ requires `--recursive` when the target is mounted, has children, or is attached 
 requires typing the full dataset name.
 
 TUI keys: arrows/enter navigate the TrueNAS menu, `ctrl+p` opens the command palette, `r` refreshes, `?` shows keys,
-and `q` quits. Destructive action dialogs display the plan and ask for the exact confirmation target.
+and `q` quits after host-bound work drains. Slow reads and plan preparation show a busy message while the UI remains
+responsive. Destructive action dialogs display the plan and ask for the exact confirmation target; a drain that exceeds
+five seconds offers Keep waiting or Cancel quit.
 
 ## Tests
 

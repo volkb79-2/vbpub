@@ -67,3 +67,4 @@ implemented work. `[AUTHORED, NOT RUN]` is intentional for the live lane per its
 | TNT-49 | [DONE It2] Read-only core views: Dashboard, Alerts, Jobs, Services, Storage health, exact v27 contracts, and unavailable-state behavior | L | It2 |
 | TNT-50 | [DONE It3] Hardened interactive SSH hand-off with pinned host-key sources, suspend/restore, and no arbitrary remote command mode | M | It3 |
 | TNT-51 | Vanilla-v27 acceptance, review hardening, project docs/CLI consistency, estate registration, and release readiness | L | It4 |
+| TNT-52 | [DONE It4] Close milestone-review findings: worker-bound lookups/preflight, endpoint-bound credentials, bounded transition drain, load-bearing boot-pool assertion, lockout-shaped confirmations, and whitespace cleanup | M | It4 |

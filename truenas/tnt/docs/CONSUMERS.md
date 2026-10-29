@@ -17,7 +17,11 @@ chmod 600 tnt.secrets.toml
 
 `tnt.toml` contains connection facts only. `tnt.secrets.toml` contains credentials with the same host names. Both must
 be regular files owned by your user with exact mode `0600`; tnt refuses symlinks and checks the descriptors it reads.
-Credentials in `tnt.toml` are rejected. The paired files use this schema:
+Credentials in `tnt.toml` are rejected. Each secret entry records the exact `host_url` where that credential was
+entered; tnt refuses to authenticate when it differs from the selected config host. This check matters when an
+existing cwd `tnt.toml` falls back to an XDG secrets file with the same alias for another appliance. An older secret
+entry without `host_url` is also refused until you replace the credential with `tnt hosts edit NAME --set-secret`.
+The paired files use this schema:
 
 ```toml
 schema_version = 1
@@ -48,10 +52,12 @@ Save credentials in the separate file:
 schema_version = 1
 
 [hosts.lab]
+host_url = "wss://truenas.example.invalid/api/current"
 api_key = "REPLACE_WITH_API_KEY"
 # Or set api_key_file to an absolute path to a separate mode-0600 key file.
 
 [hosts.backup]
+host_url = "wss://backup.example.invalid/api/current"
 password = "REPLACE_WITH_PASSWORD"
 ```
 
@@ -63,8 +69,15 @@ acknowledgement when saved.
 
 Config and secrets resolve independently: `--config PATH` or `--secrets PATH`, the matching `$TNT_CONFIG` or
 `$TNT_SECRETS`, an existing file in the current directory, then `$XDG_CONFIG_HOME/tnt/` (or `~/.config/tnt/`). They
-may live in different directories and pair by matching host name. Supply an explicit path or matching environment
-variable for whichever file is outside its default search locations. Set `default_host` to connect automatically. If it is unset
+may live in different directories and pair by matching host name plus the exact endpoint binding in each secret entry.
+Supply an explicit path or matching environment variable for whichever file is outside its default search locations.
+If you change a host URL, rotate its credential in the same edit so the saved binding is updated:
+
+```sh
+tnt hosts edit lab --url wss://new-nas.example.invalid/api/current --set-secret
+```
+
+Set `default_host` to connect automatically. If it is unset
 with multiple hosts, `tnt tui` opens the picker and CLI commands list available host names and ask for `--host NAME`.
 A single host is selected automatically.
 
@@ -81,9 +94,10 @@ tnt hosts remove staging --confirm staging
 ```
 
 The TUI picker shows host name, URL, description, and last status. Press `h` or use the command palette to switch
-hosts; `w` reopens the selected host in the other write mode. A switch invalidates its plans, cancels and drains host
-work, closes the old session, then connects the new one. SSH user, key-file, and known-host settings are private local
-paths and are not shown.
+hosts; `w` reopens the selected host in the other write mode. Reads, action construction, plan probes, and applies run
+in workers with a visible busy message. A switch invalidates its plans and cancels host work before closing the old
+session; after five seconds without a drain, choose Keep waiting or Cancel switch. SSH user, key-file, and known-host
+settings are private local paths and are not shown.
 
 ## Interactive SSH hand-off
 
@@ -212,6 +226,7 @@ tnt vm delete guest --host lab --allow-write --confirm guest
 tnt user list --host lab --json
 tnt user create deploy "Deployment account" --host lab --group 1001 --password-disabled --allow-write
 tnt user update deploy --host lab --full-name "Deployment service" --allow-write
+tnt user update operator --host lab --shell /bin/sh --allow-write --confirm-self --confirm operator
 tnt user access deploy --host lab --groups 1001,1002 --allow-write --confirm deploy
 tnt user ssh-key set deploy --host lab --file ~/.ssh/id_ed25519.pub --add --allow-write
 tnt user ssh-key set deploy --host lab --file ~/.ssh/id_ed25519.pub --allow-write
@@ -305,14 +320,15 @@ to v27 app lifecycle methods:
 tnt app list --host lab --json
 tnt app show demo --host lab --json
 tnt app start demo --host lab --allow-write --dry-run
-tnt app stop demo --host lab --allow-write
-tnt app restart demo --host lab --allow-write
+tnt app stop demo --host lab --allow-write --confirm demo
+tnt app restart demo --host lab --allow-write --confirm demo
 tnt app uninstall demo --host lab --allow-write --confirm demo
 tnt app uninstall demo --host lab --allow-write --delete-data-volumes --confirm demo
 ```
 
-Restart is an ordered `app.stop` then `app.start` pair. Uninstall is destructive and requires typing the exact app ID;
-it preserves data volumes by default. The final example explicitly opts into deleting TrueNAS-managed app volumes.
+Stop and restart are destructive and require typing the exact app ID. Restart is an ordered `app.stop` then `app.start`
+pair. Uninstall also requires typing the exact app ID; it preserves data volumes by default. The final example
+explicitly opts into deleting TrueNAS-managed app volumes.
 See the [Apps design decisions](DESIGN.md#apps) and [v27 app schemas](API-METHODS-V27.md#apps).
 
 ### Audit
@@ -409,7 +425,9 @@ full target via `--confirm`. Password changes to another account are planned wri
 account also needs `--confirm-self` and typed confirmation. Built-in users cannot be deleted. Add `--builtin` only
 when intentionally editing a built-in user; it never enables deletion.
 
-User `update` accepts only basic `full_name`, `shell`, and `home` fields. Use `user access` for primary or supplementary
+User `update` accepts only basic `full_name`, `shell`, and `home` fields. Changing the current login user's `shell` or
+`home` requires both `--confirm-self` and typed `--confirm USER`; `auth.me` is bound into the plan and checked again
+before apply. Use `user access` for primary or supplementary
 groups and for `--password-disabled` / `--password-enabled`, `--locked` / `--unlocked`, or `--ssh-password-enabled` /
 `--ssh-password-disabled`. It always asks you to type the target username. Changing the current login account also
 requires `--confirm-self`; tnt binds `auth.me` into the plan and checks it again before apply. Built-in, immutable,
@@ -425,7 +443,7 @@ gets its own plan review.
 Each non-read plan is checked recursively for boot-pool names and paths, wherever they occur in its payload. Pool
 references in mapping fields such as `pool`, `poolId`, `pool_ids`, and `pools` must resolve to a listed pool; unknown,
 null, numeric-string, list, and nested mapping references are refused. VM/container stop, dataset and snapshot removal,
-snapshot rollback, user deletion, and a password reset of the current login account are destructive operations and
+snapshot rollback, app stop/restart, user deletion, current-login shell/home changes, and a password reset of the current login account are destructive operations and
 show their typed confirmation target before apply. Other user password changes are planned writes. v27 has no direct
 container restart RPC; tnt's restart plan calls stop then start and needs the same typed target confirmation as stop.
 Container list adds current
