@@ -2726,11 +2726,12 @@ product failure from that sample. `memory.events:max` is retained as telemetry
 and does not alone withhold a result because reclaim can satisfy an
 allocation. A direct pids/OOM limit event withholds the R0 result, even if the
 command exited zero. PSI is also retained as telemetry, but it marks a failed
-window pressure affected only when one cgroup PSI counter reaches at least 1%
+window pressure affected only when one cgroup PSI counter reaches at least 5%
 of the measured command window, with a 100 ms minimum. Any observed CPU
 throttling also counts as pressure evidence. Smaller PSI deltas do not affect
-the verdict; the 5,340,037 µs CPU-some delta from a roughly fifteen-minute
-single-peer run is about 0.6% of its window. These rules make the
+the verdict: the 5,340,037 µs CPU-some delta over a roughly fifteen-minute
+single-peer run is about 0.6%, and the 6,749,085 µs delta over 459 seconds is
+about 1.5%. These rules make the
 classification independent of a quiet host while still retrying failures that
 could reflect material stalls. An R0 failure under material pressure or an
 unavailable required sample becomes `ERROR/EXEC_FAILED`, so the wrapper and

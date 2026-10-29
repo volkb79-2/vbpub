@@ -2,11 +2,12 @@
 
 PSI and throttling are retained as telemetry. They make a completed failure
 retryable only when they show material pressure: an observed CPU throttle or
-one cgroup PSI counter accumulating at least 1% of the command window, with a
-100 ms minimum. That filters incidental peer activity such as 5.34 seconds of
-CPU-some pressure over a fifteen-minute command. A completed pass is never
-withheld for PSI/throttling alone; direct pids or memory limit events still
-withhold because they can kill or truncate work.
+one cgroup PSI counter accumulating at least 5% of the command window, with a
+100 ms minimum. This filters shared-host stalls measured at 1.5% or less in
+the provisional runs, including 5.34 seconds of CPU-some pressure over a
+fifteen-minute peer run. CPU throttling remains direct pressure evidence. A
+completed pass is never withheld for PSI/throttling alone; direct pids or
+memory OOM events still withhold because they can kill or truncate work.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from . import liveness_resources, resource_limits
 from .errors import Outcome
 from .records import positional_record
 
-_PSI_PRESSURE_FRACTION = 0.01
+_PSI_PRESSURE_FRACTION = 0.05
 _PSI_MINIMUM_STALL_US = 100_000
 
 

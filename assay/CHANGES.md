@@ -8,7 +8,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - fix(assay): allow concurrent gates and attribute pressure-affected R0/R1/R3 outcomes to measured resources
 - fix(assay): make the R3 verifier derive incomplete transformed canary runs as INCONCLUSIVE, matching the producer
 - fix(assay): retain an expected transformed canary failure under PSI-only pressure; direct resource limits and unexpected failures still withhold it
-- fix(assay): classify only material PSI as pressure, retain telemetry, and require per-run import-break cause proof
+- fix(assay): classify PSI as material only at 5% of the command window
+  (100 ms minimum), retain telemetry, and require per-run import-break cause proof
 
 <!-- cmru: release history -->
 

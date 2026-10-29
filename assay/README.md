@@ -1509,12 +1509,13 @@ you're changing assay itself:
   names do not decide admission. R0/R1/R3 judgments record the lane cgroup's
   OOM, pids, PSI and CPU-throttling counters; R2 keeps its per-candidate event
   windows and pressure-adjusted liveness clock. PSI alone marks a failed run
-  as pressure affected only when one cgroup PSI counter reaches at least 1%
+  as pressure affected only when one cgroup PSI counter reaches at least 5%
   of the command window, with a 100 ms minimum; any CPU throttling is also
   recorded as pressure evidence. Lower PSI deltas remain telemetry, including
-  the 5.34 seconds of CPU-some pressure measured over a roughly 15-minute peer
-  run. Completed R0/R1/R3 passes are retained despite PSI, throttling, or an
-  unavailable cgroup sample; a direct pids/OOM limit event can still make a
+  the 5.34 seconds of CPU-some pressure over a roughly 15-minute peer run and
+  the 6.75 seconds over a 7½-minute run. Completed R0/R1/R3 passes are retained
+  despite PSI, throttling, or an unavailable cgroup sample; a direct pids/OOM
+  limit event can still make a
   command or artifact incomplete and withholds the result. R0/R1 failures
   under material pressure or an unavailable required sample become
   infrastructure `ERROR` for retry; a clear-sample failure remains product

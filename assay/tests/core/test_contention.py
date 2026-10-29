@@ -158,6 +158,18 @@ def test_contention_window_records_host_pressure_but_uses_material_cgroup_stalls
     assert window.observation.reasons == ("cgroup_psi.cpu.some_us=200000",)
 
 
+def test_five_percent_psi_delta_is_material(monkeypatch):
+    window = _window(
+        monkeypatch,
+        duration_us=5_000_000,
+        pressure=(_pressure(), _pressure(cpu_total=250_000)),
+    )
+    with window:
+        pass
+    assert window.observation.status == "affected"
+    assert window.observation.reasons == ("cgroup_psi.cpu.some_us=250000",)
+
+
 def test_single_peer_psi_seen_in_provisional_run_does_not_withhold_green_claims(
     monkeypatch,
 ):
@@ -185,6 +197,33 @@ def test_single_peer_psi_seen_in_provisional_run_does_not_withhold_green_claims(
     )
     assert not contention.withhold_r0_result(observation, outcome=Outcome.PASS)
     assert not contention.withhold_r1_result(observation, outcome=Outcome.PASS)
+
+
+def test_provisional_psi_deltas_below_five_percent_remain_telemetry(monkeypatch):
+    window = _window(
+        monkeypatch,
+        duration_us=459_000_000,
+        pressure=(
+            _pressure(),
+            _pressure(
+                cpu_total=6_749_085,
+                io_full=2_890_493,
+                memory_full=1_499_041,
+            ),
+        ),
+    )
+    with window:
+        pass
+
+    observation = window.observation
+    assert observation.status == "clear"
+    assert observation.reasons == (
+        "cgroup_psi.cpu.some_us=6749085",
+        "cgroup_psi.io.full_us=2890493",
+        "cgroup_psi.memory.full_us=1499041",
+    )
+    assert not contention.withhold_r0_result(observation, outcome=Outcome.FAIL)
+    assert not contention.withhold_r1_result(observation, outcome=Outcome.FAIL)
 
 
 def test_cpu_throttling_is_direct_pressure_evidence(monkeypatch):

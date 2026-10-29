@@ -110,11 +110,12 @@ incomplete resource evidence. A direct OOM/pids limit event can withhold R0/R1
 and R3 results even when a command exited zero. A completed R0/R1/R3 PASS is
 retained despite PSI, throttling or unavailable cgroup telemetry. For failed
 R0/R1 commands, PSI counts as material pressure only when one cgroup PSI
-counter reaches at least 1% of the measured command window, with a 100 ms
+counter reaches at least 5% of the measured command window, with a 100 ms
 minimum; any CPU throttling is also pressure evidence. Smaller deltas are
-recorded as telemetry, not used to make a verdict depend on a quiet host. A
-failed R0/R1 result under material pressure or an unavailable required sample
-is retried as infrastructure. Command-budget expiry already produces an
+recorded as telemetry, not used to make a verdict depend on a quiet host. For
+example, 6.75 seconds of CPU-some PSI over a 7½-minute run stays below this
+threshold. A failed R0/R1 result under material pressure or an unavailable
+required sample is retried as infrastructure. Command-budget expiry already produces an
 incomplete outcome. R1 coverage arithmetic is unchanged for the same complete
 report, and its claim uses the R0 command's resource window. R2 keeps its own
 per-candidate resource event and liveness evidence. For R3, an execution
