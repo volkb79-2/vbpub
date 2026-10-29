@@ -98,7 +98,9 @@ def test_tui_host_form_adds_securely_renames_sets_default_and_removes(config, op
                 form._save()
             form.query_one("#host-insecure-ack", Checkbox).value = True
             form._save()
-            await pilot.pause(0.05)
+            await _wait_for(pilot, lambda: bool(app.query(HostPicker)))
+            assert app.session is None
+            assert app.session_controller.active_host is None
             saved_hosts, saved_default, saved_entries = load_host_store(paths)
             assert saved_default == "lab"
             assert saved_hosts["throwaway-ui"].tls == "insecure"

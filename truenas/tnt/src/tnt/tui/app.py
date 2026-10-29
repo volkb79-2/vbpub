@@ -555,7 +555,8 @@ class TntApp(App):
         if old_active == old_name and removed:
             self.disconnect_to_picker()
             return
-        if old_active == old_name and new_name is not None:
+        # An add has old_name=None; None == active_host=None must not auto-select it.
+        if old_name is not None and old_active == old_name and new_name is not None:
             if old_name != new_name:
                 self.session_controller.write_modes[new_name] = old_write
             self.switch_host(new_name, write_mode=old_write)
