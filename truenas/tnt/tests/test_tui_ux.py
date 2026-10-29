@@ -88,6 +88,9 @@ def test_real_major_screens_export_text_at_supported_sizes(size, ux_session, tmp
             assert hosts_table.has_focus
             hosts_before_scroll = _screen_text(app)
             (scratch / "hosts-first-columns.txt").write_text(hosts_before_scroll + "\n", encoding="utf-8")
+            last_status_visible_before_scroll = "Last status" in hosts_before_scroll
+            if size == (200, 60):
+                assert last_status_visible_before_scroll
             assert "Select a TrueNAS host" in hosts_before_scroll
             assert "qa-archive-host" in hosts_before_scroll
             for action in ("Switch to selected", "Test", "Add", "Edit", "Set default", "Remove", "Cancel"):
@@ -98,7 +101,8 @@ def test_real_major_screens_export_text_at_supported_sizes(size, ux_session, tmp
             hosts_after_scroll = _screen_text(app)
             (scratch / "hosts-last-column.txt").write_text(hosts_after_scroll + "\n", encoding="utf-8")
             assert "Last status" in hosts_after_scroll
-            assert hosts_after_scroll != hosts_before_scroll
+            if not last_status_visible_before_scroll:
+                assert hosts_after_scroll != hosts_before_scroll
 
             # A narrow terminal keeps the key legend and long breadcrumb legible.
             if size == (80, 24):
