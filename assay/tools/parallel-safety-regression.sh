@@ -78,6 +78,7 @@ expected = {
     "test_b145_completed_low_pids_failure_is_exit_one",
     "test_r1_claim_is_withheld_only_for_unclassifiable_contention_windows",
     "test_r1_contention_adjustment_is_wired_after_coverage_judgement",
+    "test_parallel_gate_feature_is_findable_across_user_docs",
     "test_a_busy_host_does_not_block_the_registered_gate",
     "test_runner_launches_beside_an_active_registered_gate",
     "test_a_running_gate_container_does_not_block_sql_qualification",
