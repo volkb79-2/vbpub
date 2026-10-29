@@ -159,9 +159,11 @@ def withhold_canary_result(
     support either canary half. Consumers without an observer retain their
     existing behavior unless the registered gate requires attribution. A
     measured PSI/throttling interval with an unexpected failed assertion
-    makes that attempt inconclusive. The transformed half's exact expected
-    failure is the canary's positive oracle, so PSI alone does not withhold
-    it; direct resource-limit events and unavailable samples still do.
+    makes that attempt inconclusive. The caller may exempt a transformed
+    failure only after checking positive evidence for the intended canary
+    effect; an R0 ``COMMAND_FAILED`` reason alone is too broad for
+    import-break. Direct resource-limit events and unavailable samples still
+    withhold the result even when that evidence is present.
     Command timeouts and other incomplete outcomes are already infrastructure.
     """
     if not isinstance(observation, ContentionObservation):

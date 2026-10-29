@@ -1515,9 +1515,14 @@ you're changing assay itself:
   while a clear-sample failure remains product `FAIL`. R3 marks direct-limit
   or unavailable samples `INCONCLUSIVE`. In a PSI/throttling-only window, a
   failed control or a transformed run with the wrong failure reason is
-  `INCONCLUSIVE`; the transformed run's exact expected failure is the
-  canary's positive signal and remains eligible for judgment. Timeouts,
-  execution errors and missing results remain `INCONCLUSIVE`; a completed
+  `INCONCLUSIVE`. For `import-break`, the captured command output must contain
+  the injected `assay-canary-import-break` diagnostic as well as
+  `COMMAND_FAILED`; that reason also covers unrelated pytest or harness
+  failures. See the
+  [canary pressure rationale](docs/DESIGN-GUIDE.md#r3-canary-cause-evidence-under-psi).
+  A pressured `uncovered-line` failure is identified by its R1 coverage
+  reason. Timeouts, execution errors and missing results remain
+  `INCONCLUSIVE`; a completed
   failure for the wrong cause remains `CANARY_SURVIVED` when the sample is
   clear. Observer sampling is lane-scoped:
   Assay uses the socket only when it appears in the lane's resolved

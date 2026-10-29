@@ -86,7 +86,7 @@ from types import MappingProxyType
 from typing import Iterable, Mapping, Sequence
 
 from . import contention, git
-from .adapters.base import LanguageAdapter
+from .adapters.base import LanguageAdapter, _IMPORT_BREAK_MARKER
 from .config import Lane
 from .coverage_parsers.model import CoverageProfile
 from .diff import AddedLines
@@ -96,6 +96,7 @@ from .isolation import SnapshotRepository
 from .runner import (
     Clock,
     CommandPlan,
+    CommandResult,
     LaneDeadline,
     ProcessRunner,
     SnapshotUnitResult,
@@ -466,6 +467,26 @@ def _judge_unit(
     return r1_claim.status, r1_claim.reason_code
 
 
+def _has_import_break_diagnostic(result: CommandResult) -> bool:
+    """Whether the transformed R0 command retained the import-break marker.
+
+    ``COMMAND_FAILED`` is the generic non-zero-exit reason for R0, so it is
+    not by itself positive evidence that an import-break caused the failure.
+    Under PSI, only the transform's own diagnostic can exempt that failure
+    from withholding. If a command suppresses or truncates the marker, the
+    conservative result is inconclusive.
+    """
+    if (
+        result.outcome is not Outcome.FAIL
+        or result.reason_code is not ReasonCode.COMMAND_FAILED
+    ):
+        return False
+    return any(
+        _IMPORT_BREAK_MARKER in output
+        for output in (result.stdout_tail or "", result.stderr_tail or "")
+    )
+
+
 def run_isolated_canary(
     lane: Lane,
     *,
@@ -716,6 +737,10 @@ def run_isolated_canary(
             expected_failure=(
                 transformed_outcome is Outcome.FAIL
                 and observed_reason_code is expected_reason
+                and (
+                    mechanism != MECHANISM_IMPORT_BREAK
+                    or _has_import_break_diagnostic(transform_unit.result)
+                )
             ),
             require_observation=require_contention_observation,
         ):

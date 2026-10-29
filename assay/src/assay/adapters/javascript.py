@@ -178,7 +178,12 @@ from typing import Literal, Sequence
 
 from ..errors import require_advance
 from ..mutation import MutationSite
-from .base import Remaining, StatementBlockReport, StatementSpan
+from .base import (
+    _IMPORT_BREAK_MARKER,
+    Remaining,
+    StatementBlockReport,
+    StatementSpan,
+)
 
 __all__ = ["JavaScriptAdapter"]
 
@@ -206,7 +211,7 @@ _DECLARATION_SUFFIXES = (".d.ts", ".d.mts", ".d.cts")
 #: this module's own docstring for why both are appends and why neither
 #: carries a type annotation).
 _IMPORT_BREAK_SNIPPET = (
-    '\n\nthrow new Error("assay-canary-import-break")\n'
+    f'\n\nthrow new Error("{_IMPORT_BREAK_MARKER}")\n'
 )
 _UNCOVERED_CANARY_SNIPPET = (
     "\n\n;(() => function (value = 0) {\n"

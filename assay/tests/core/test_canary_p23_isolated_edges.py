@@ -220,8 +220,19 @@ def test_an_unrecognised_mechanism_judges_nothing_on_the_public_surface(
 
 
 @pytest.mark.parametrize(
-    ("limited_phase", "resource_limit_hit"),
-    [("control", True), ("transform", True), ("transform", False)],
+    (
+        "limited_phase",
+        "resource_limit_hit",
+        "transform_diagnostic",
+        "diagnostic_stream",
+    ),
+    [
+        ("control", True, "assay-canary-import-break", "stderr"),
+        ("transform", True, "assay-canary-import-break", "stderr"),
+        ("transform", False, "assay-canary-import-break", "stderr"),
+        ("transform", False, "assay-canary-import-break", "stdout"),
+        ("transform", False, "unrelated pytest assertion failure", "stderr"),
+    ],
 )
 @pytest.mark.parametrize("observer_declared", [False, True])
 def test_canary_contention_distinguishes_limits_from_expected_transform_failure(
@@ -230,6 +241,8 @@ def test_canary_contention_distinguishes_limits_from_expected_transform_failure(
     monkeypatch,
     limited_phase: str,
     resource_limit_hit: bool,
+    transform_diagnostic: str,
+    diagnostic_stream: str,
     observer_declared: bool,
 ):
     monkeypatch.setenv("ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION", "1")
@@ -278,12 +291,24 @@ def test_canary_contention_distinguishes_limits_from_expected_transform_failure(
     )
 
     def process(argv, *, env, cwd, timeout):
-        transformed = "assay-canary-import-break" in (Path(cwd) / "pkg/mod.py").read_text()
+        transformed = "assay-canary-import-break" in (
+            Path(cwd) / "pkg/mod.py"
+        ).read_text()
+        diagnostic_stdout = (
+            transform_diagnostic
+            if transformed and diagnostic_stream == "stdout"
+            else ""
+        )
+        diagnostic_stderr = (
+            transform_diagnostic
+            if transformed and diagnostic_stream == "stderr"
+            else ""
+        )
         return completed_process(
             list(argv),
             1 if transformed else 0,
-            "",
-            "resource-limited transform" if transformed else "",
+            diagnostic_stdout,
+            diagnostic_stderr,
         )
 
     with prepared_snapshot(git_repo, commit=head_rev, scratch_root=scratch) as prepared:
@@ -317,7 +342,10 @@ def test_canary_contention_distinguishes_limits_from_expected_transform_failure(
     if limited_phase == "control":
         assert attempt.transformed_outcome is Outcome.FAIL
         assert attempt.observed_reason_code is ReasonCode.COMMAND_FAILED
-        assert "control result withheld by cgroup resource window affected" in attempt.description
+        assert (
+            "control result withheld by cgroup resource window affected"
+            in attempt.description
+        )
         assert canary.judge_attempt(attempt) == (
             Outcome.INCONCLUSIVE,
             ReasonCode.CANARY_INCONCLUSIVE,
@@ -325,20 +353,37 @@ def test_canary_contention_distinguishes_limits_from_expected_transform_failure(
     elif resource_limit_hit:
         assert attempt.transformed_outcome is Outcome.INCONCLUSIVE
         assert attempt.observed_reason_code is ReasonCode.CANARY_INCONCLUSIVE
-        assert "transform result withheld by cgroup resource window affected" in attempt.description
+        assert (
+            "transform result withheld by cgroup resource window affected"
+            in attempt.description
+        )
         assert canary.judge_attempt(attempt) == (
             Outcome.INCONCLUSIVE,
             ReasonCode.CANARY_INCONCLUSIVE,
         )
     else:
-        # The transformed command's expected COMMAND_FAILED is the positive R3
-        # oracle. PSI alone must not turn that completed expected failure into
-        # an inconclusive result; direct limits and unavailable samples still
-        # withhold it above.
-        assert attempt.transformed_outcome is Outcome.FAIL
-        assert attempt.observed_reason_code is ReasonCode.COMMAND_FAILED
-        assert "resource window" not in attempt.description
-        assert canary.judge_attempt(attempt) == (Outcome.PASS, None)
+        if transform_diagnostic == "assay-canary-import-break":
+            # The transformed command's own diagnostic is positive evidence
+            # that the intended import-break caused COMMAND_FAILED. PSI alone
+            # must not overturn that completed canary signal.
+            assert attempt.transformed_outcome is Outcome.FAIL
+            assert attempt.observed_reason_code is ReasonCode.COMMAND_FAILED
+            assert "resource window" not in attempt.description
+            assert canary.judge_attempt(attempt) == (Outcome.PASS, None)
+        else:
+            # COMMAND_FAILED also covers unrelated pytest/harness failures.
+            # Under PSI, the broad reason code without the injected marker is
+            # not evidence that the canary caused the failure.
+            assert attempt.transformed_outcome is Outcome.INCONCLUSIVE
+            assert attempt.observed_reason_code is ReasonCode.CANARY_INCONCLUSIVE
+            assert (
+                "transform result withheld by cgroup resource window affected"
+                in attempt.description
+            )
+            assert canary.judge_attempt(attempt) == (
+                Outcome.INCONCLUSIVE,
+                ReasonCode.CANARY_INCONCLUSIVE,
+            )
 
 
 def test_contention_note_retains_measured_pressure_and_bounds_unknown_details():

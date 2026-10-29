@@ -2744,16 +2744,23 @@ mutation candidate. A limit event makes that candidate infrastructure/error
 rather than a kill; CPU and PSI pressure pauses the liveness clock, while the
 lane's absolute budget still bounds the campaign. A candidate timeout/hang is
 a budget bucket and makes the R2 claim incomplete, never a survivor or kill.
+
+#### R3 canary cause evidence under PSI
+
 R3 previously treated some transformed errors, timeouts or missing results as
 a canary survival. Those outcomes now remain `INCONCLUSIVE`; a direct pids/OOM
 event or unavailable sample in either canary half withholds the R3 result. A
 PSI/throttling-only window withholds a failed control or a transformed run
 whose failure reason differs from the configured canary reason. The
-transformed run's exact expected failure is the positive canary signal, so
-that completed result remains eligible for judgment under PSI alone. This
-keeps a small observed stall from turning the same completed oracle result
-from PASS to INCONCLUSIVE, while direct limits, unavailable samples and
-unexpected failures remain unclassifiable. Observer sampling is lane-scoped:
+transformed run's expected reason is not always sufficient evidence. R0 maps
+any nonzero command exit to `FAIL/COMMAND_FAILED`, so an `import-break` result
+is exempt from PSI withholding only when its captured output also contains
+the injected `assay-canary-import-break` diagnostic. A generic pytest or
+harness failure with the same reason remains `INCONCLUSIVE`. The R1
+`uncovered-line` reason is already specific to its coverage comparison. This
+keeps a small observed stall from overturning a positively identified canary
+effect, while direct limits, unavailable samples and unverified failures
+remain unclassifiable. Observer sampling is lane-scoped:
 the observer socket is used only when it appears in the lane's resolved
 environment. A gate's ambient socket cannot alter a nested lane's canary
 verdict. Host PSI is not used for that attribution because unrelated work

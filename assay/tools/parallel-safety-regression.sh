@@ -25,6 +25,7 @@ git clone --quiet --shared --no-checkout "$repo_root" "$baseline"
 baseline_created=1
 git -C "$baseline" checkout --quiet --detach "$base_commit"
 test_paths=(
+  tests/core/test_canary_p23_isolated_edges.py
   tests/core/test_canary_result.py
   tests/core/test_runner_execute.py
   gate/tests/test_distribution_gate.py
@@ -39,6 +40,7 @@ install -D \
   "$baseline/assay/src/assay/contention.py"
 
 baseline_nodes=(
+  tests/core/test_canary_p23_isolated_edges.py::test_canary_contention_distinguishes_limits_from_expected_transform_failure
   tests/core/test_canary_result.py::test_an_incomplete_transformed_run_is_inconclusive
   tests/core/test_runner_execute.py::test_failed_r0_command_with_affected_or_unknown_resources_is_infrastructure
   tests/core/test_runner_execute.py::test_completed_r0_pass_is_withheld_for_direct_limit_or_unknown_window
@@ -72,17 +74,9 @@ import sys
 import xml.etree.ElementTree as ET
 
 expected = {
-    "test_an_incomplete_transformed_run_is_inconclusive",
-    "test_failed_r0_command_with_affected_or_unknown_resources_is_infrastructure",
-    "test_completed_r0_pass_is_withheld_for_direct_limit_or_unknown_window",
-    "test_b145_completed_low_pids_failure_is_exit_one",
-    "test_r1_claim_is_withheld_only_for_unclassifiable_contention_windows",
-    "test_r1_contention_adjustment_is_wired_after_coverage_judgement",
-    "test_parallel_gate_feature_is_findable_across_user_docs",
-    "test_a_busy_host_does_not_block_the_registered_gate",
-    "test_a_running_gate_container_does_not_block_sql_qualification",
-    "test_the_phase_and_its_state_live_above_the_entry_points_and_before_the_finisher",
-    "test_a_failing_harness_stops_the_gate_with_no_phase_marker_receipt_or_complete",
+    # The merge base's blanket PSI withholding and HEAD's reason-code-only
+    # exemption must both remain distinguishable by this behavior matrix.
+    "test_canary_contention_distinguishes_limits_from_expected_transform_failure",
 }
 root = ET.parse(sys.argv[1]).getroot()
 from collections import Counter
@@ -108,11 +102,11 @@ print(f"parallel-safety-regression: base tests failed as expected ({sum(failures
 PY
 
 current_nodes=(
+  tests/core/test_canary_p23_isolated_edges.py::test_canary_contention_distinguishes_limits_from_expected_transform_failure
   tests/core/test_contention.py
   tests/core/test_liveness_resources.py::test_cgroup_comparison_ignores_host_psi_and_detects_local_pressure
   tests/core/test_liveness_resources.py::test_cgroup_comparison_marks_incomplete_or_reset_samples_unknown
   tests/core/test_canary_result.py::test_an_incomplete_transformed_run_is_inconclusive
-  tests/core/test_canary_p23_isolated_edges.py::test_a_resource_event_in_either_canary_half_withholds_the_verdict
   tests/core/test_canary_p23_isolated_edges.py::test_contention_note_retains_measured_pressure_and_bounds_unknown_details
   tests/core/test_runner_execute.py::test_failed_r0_command_with_affected_or_unknown_resources_is_infrastructure
   tests/core/test_runner_execute.py::test_completed_r0_pass_is_withheld_for_direct_limit_or_unknown_window

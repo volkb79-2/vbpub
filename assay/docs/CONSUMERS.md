@@ -117,11 +117,15 @@ unchanged for the same complete report, and its claim uses the R0 command's
 resource window. R2 keeps its own per-candidate resource event and
 liveness evidence. For R3, an execution error, timeout or missing result is
 `INCONCLUSIVE`. A PSI/throttling-only window withholds a failed control or a
-transformed run that failed for the wrong reason; the transformed run's exact
-expected failure remains eligible for judgment because it is the canary's
-positive signal. Direct resource-limit events and unavailable samples still
-withhold either canary half. A completed failure for the wrong cause is
-`CANARY_SURVIVED` when its sample is clear. Observer sampling follows the lane's resolved
+transformed run that failed for the wrong reason. For `import-break`,
+`COMMAND_FAILED` alone does not prove the canary caused the failure: captured
+stdout or stderr must also contain the injected
+`assay-canary-import-break` diagnostic. Without it, the pressured attempt is
+`INCONCLUSIVE`; with it, the completed result remains eligible for judgment.
+The `uncovered-line` reason comes from the R1 coverage comparison. Direct
+resource-limit events and unavailable samples still withhold either canary
+half. A completed failure for the wrong cause is `CANARY_SURVIVED` when its
+sample is clear. Observer sampling follows the lane's resolved
 environment, so the tester gate's ambient socket cannot change a nested
 lane's result. The five registered Assay lanes share one run-gate lock,
 and a separate lock

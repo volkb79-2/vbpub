@@ -74,6 +74,11 @@ __all__ = [
     "StatementSpan",
 ]
 
+# Shared diagnostic emitted by each import-break transform. The canary runner
+# uses this exact sentinel as positive evidence that a COMMAND_FAILED result
+# came from the intended transformed source.
+_IMPORT_BREAK_MARKER = "assay-canary-import-break"
+
 
 @record
 class StatementSpan:
