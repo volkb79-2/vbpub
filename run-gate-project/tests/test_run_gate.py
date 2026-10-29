@@ -10973,6 +10973,11 @@ class TestRecordedWorktreeBaseSchemaV6:
         write_v6_record(repo, base_branch_ref=value)
         ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
         assert ref is None and why
+        if value == "":
+            # An empty ref is malformed input, even though the later safe-ref
+            # check would also reject it. Keep the more precise diagnosis
+            # observable instead of letting that later guard mask this one.
+            assert "blank or not a plain string" in why
 
     @pytest.mark.parametrize("value", [
         "gone", "refs/heads/main", "heads/main", "origin/main", "v1.0.0",
@@ -28560,7 +28565,8 @@ class TestExecLaneProfilingWiring:
         assert "in-process watch — profiling disabled" in capsys.readouterr().out
 
     def test_exec_progress_fallback_failure_keeps_lane_exit(
-            self, tmp_path, monkeypatch, capsys):
+            self, tmp_path, monkeypatch):
+        streams = _capture_run_gate_prints(monkeypatch)
         class Fallback:
             def poll(self):
                 raise RuntimeError("planted progress reader failure")
@@ -28594,8 +28600,8 @@ class TestExecLaneProfilingWiring:
         assert self._exec_lane_call(
             tmp_path, monkeypatch, ["true"], {},
             popen_factory=lambda *args, **kwargs: Process()) == 0
-        assert "in-process watch failed unexpectedly" \
-            in capsys.readouterr().err
+        assert _has_flushed_print(
+            streams, "stderr", "in-process watch failed unexpectedly")
 
     def test_exec_watch_reattach_failure_keeps_lane_exit(
             self, tmp_path, monkeypatch, capsys):
