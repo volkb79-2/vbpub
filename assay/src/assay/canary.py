@@ -79,12 +79,13 @@ runs against comes from *prepared*.
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Iterable, Mapping, Sequence
 
-from . import git
+from . import contention, git
 from .adapters.base import LanguageAdapter
 from .config import Lane
 from .coverage_parsers.model import CoverageProfile
@@ -161,6 +162,19 @@ def _single_target_result(*, mechanism: str, **attempt: object) -> CanaryResult:
         mechanism=mechanism,
         attempts=(CanaryAttempt(**attempt),),  # type: ignore[arg-type]
     )
+
+
+def _contention_note(phase: str, observation: contention.ContentionObservation) -> str:
+    details = (
+        f" ({', '.join(observation.reasons)})"
+        if observation.status == "affected" and observation.reasons
+        else ""
+    )
+    return (
+        f"{phase} result withheld by cgroup resource window "
+        f"{observation.status}{details}"
+    )
+
 
 #: (P19) the closed vocabulary :mod:`assay.config`'s loader cross-checks
 #: ``judge.canary.mechanism`` against, imported from there via a DEFERRED
@@ -555,23 +569,30 @@ def run_isolated_canary(
     # lane's own format, which is exactly the disagreement A-271's
     # one-grammar rule exists to prevent.
     coverage_producer = lane.judge.coverage.producer if wants_coverage else None
+    contention_notes: list[str] = []
+    require_contention_observation = (
+        os.environ.get("ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION") == "1"
+    )
 
     # B006(b): `control_snapshot` is always an ephemeral, assay-owned P22
     # checkout (never the consumer's real worktree), so this is one of the
     # "snapshot-running call sites" allowed to opt in to parent creation.
     with prepared.materialize(timeout=deadline.remaining()) as control_snapshot:
-        control_unit = _execute_snapshot_unit(
-            plan=plan,
-            snapshot=control_snapshot,
-            deadline=deadline,
-            wants_coverage=wants_coverage,
-            coverage_artifact=coverage_artifact,
-            coverage_format=coverage_format,
-            coverage_producer=coverage_producer,
-            process_runner=process_runner,
-            clock=clock,
-            create_missing_parents=True,
-        )
+        with contention.ContentionWindow(
+            observer_socket_path=os.environ.get("ASSAY_RESOURCE_OBSERVER_SOCKET")
+        ) as control_contention:
+            control_unit = _execute_snapshot_unit(
+                plan=plan,
+                snapshot=control_snapshot,
+                deadline=deadline,
+                wants_coverage=wants_coverage,
+                coverage_artifact=coverage_artifact,
+                coverage_format=coverage_format,
+                coverage_producer=coverage_producer,
+                process_runner=process_runner,
+                clock=clock,
+                create_missing_parents=True,
+            )
         if control_unit.post_reason is not None:
             raise AssayError(
                 "the canary control's own snapshot left Git-visible state "
@@ -591,6 +612,15 @@ def run_isolated_canary(
             deadline=deadline,
             sensitive_values=_plan_passthrough_values(plan),
         )
+        if contention.withhold_canary_result(
+            control_contention.observation,
+            outcome=control_outcome,
+            require_observation=require_contention_observation,
+        ):
+            control_outcome = Outcome.INCONCLUSIVE
+            contention_notes.append(
+                _contention_note("control", control_contention.observation)
+            )
         original_bytes = prepared.read_regular_file(
             canary_repo_path, timeout=deadline.remaining()
         )
@@ -640,18 +670,21 @@ def run_isolated_canary(
     ) as transform_snapshot:
         # B006(b): `transform_snapshot` is likewise an ephemeral, assay-owned
         # checkout -- the other "snapshot-running call site".
-        transform_unit = _execute_snapshot_unit(
-            plan=plan,
-            snapshot=transform_snapshot,
-            deadline=deadline,
-            wants_coverage=wants_coverage,
-            coverage_artifact=coverage_artifact,
-            coverage_format=coverage_format,
-            coverage_producer=coverage_producer,
-            process_runner=process_runner,
-            clock=clock,
-            create_missing_parents=True,
-        )
+        with contention.ContentionWindow(
+            observer_socket_path=os.environ.get("ASSAY_RESOURCE_OBSERVER_SOCKET")
+        ) as transform_contention:
+            transform_unit = _execute_snapshot_unit(
+                plan=plan,
+                snapshot=transform_snapshot,
+                deadline=deadline,
+                wants_coverage=wants_coverage,
+                coverage_artifact=coverage_artifact,
+                coverage_format=coverage_format,
+                coverage_producer=coverage_producer,
+                process_runner=process_runner,
+                clock=clock,
+                create_missing_parents=True,
+            )
         if transform_unit.post_reason is not None:
             raise AssayError(
                 "the canary transform's own snapshot left Git-visible state "
@@ -671,11 +704,25 @@ def run_isolated_canary(
             deadline=deadline,
             sensitive_values=_plan_passthrough_values(plan),
         )
+        if contention.withhold_canary_result(
+            transform_contention.observation,
+            outcome=transformed_outcome,
+            require_observation=require_contention_observation,
+        ):
+            transformed_outcome = Outcome.INCONCLUSIVE
+            observed_reason_code = None
+            contention_notes.append(
+                _contention_note("transform", transform_contention.observation)
+            )
 
     return _single_target_result(
         mechanism=mechanism,
         target=target,
-        description=description,
+        description=(
+            f"{description}; {'; '.join(contention_notes)}"
+            if contention_notes
+            else description
+        ),
         control_outcome=control_outcome,
         transformed_outcome=transformed_outcome,
         expected_reason_code=expected_reason,
@@ -1000,6 +1047,13 @@ def judge_attempt(attempt: CanaryAttempt) -> tuple[Outcome, ReasonCode | None]:
     if attempt.control_outcome is not Outcome.PASS:
         return Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE
     if attempt.transformed_outcome is None:
+        return Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE
+    if attempt.transformed_outcome in {
+        Outcome.ERROR,
+        Outcome.NO_MEASUREMENT,
+        Outcome.BUDGET_EXCEEDED,
+        Outcome.INCONCLUSIVE,
+    }:
         return Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE
     if attempt.transformed_outcome is Outcome.PASS:
         return Outcome.FAIL, ReasonCode.CANARY_SURVIVED

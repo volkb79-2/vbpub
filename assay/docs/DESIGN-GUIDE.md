@@ -2707,9 +2707,60 @@ first (`b105_report_check.py --receipt-only`, phase
 report without a matching receipt. The preflight lane needs none. Run
 `run-gate tester-unified` before `run-gate self-qualification`, in the same
 worktree and with no commit in between: any later commit, a docs-only or merge
-commit included, needs a fresh `tester-unified` run first. A
-gate started while another `run-gate-*` container runs exits 3 with
-`ASSAY_GATE_INCONCLUSIVE=host busy — rerun: <names>` and leaves the receipt as it was. A failing `docker ps` is treated the same way (`ASSAY_GATE_INCONCLUSIVE=host check failed (docker ps) — rerun`). Run-gate maps exit 3 from the registered Assay command lanes to infrastructure `ERROR`, never an Assay test failure. The registered Assay lanes share one run-gate lock, and a Git-common-directory lock also serializes B105 callers across container `/tmp` namespaces. The wrapper's one-time scan is not an atomic lease against another project starting a gate afterward. The coordinator must keep all other registered gates serial until B105 finishes; a concurrent cross-project gate invalidates its resource evidence. `ASSAY_GATE_ALLOW_SHARED_HOST=1` is accepted only by the ordinary `tester-unified` lane; B105 refuses it because B105 requires an exclusive host window. For the ordinary gate, the opt-in (CD50) permits running alongside other projects' `run-gate-*` containers, prints `ASSAY_GATE_SHARED_HOST=<names>` on stdout, and still refuses any other `run-gate-assay-*` container (the standalone harness's `--allow-shared-host` refuses only another `run-gate-assay-sql-*` one). Any other value of the variable is an error, and the receipt is unchanged.
+commit included, needs a fresh `tester-unified` run first. The old host check
+took one `docker ps --no-trunc` name snapshot before the lane. It did not
+identify a container's cgroup, sample CPU or memory pressure, observe later
+starts or hold a lease; it therefore refused legitimate peer gates while
+missing contention that began after its snapshot. The replacement admits
+parallel gates and attributes failed R0 command results to the B105 lane's own
+cgroup. The observer compares pids and memory OOM event counters, cgroup PSI
+totals and `cpu.stat` throttling counters immediately before and after the
+command. Resource-limit attribution compares the candidate cgroup's subtree
+counters with visible ancestor-local counters. An ancestor-only pids/OOM event
+cannot be assigned to this run, so it makes the sample unknown and the result
+is retried. `memory.events:max` is retained as telemetry and does not alone
+withhold a result because reclaim can satisfy an allocation. A direct pids/OOM
+limit event withholds the R0 result, even if the command exited zero; an
+unavailable required sample withholds any R0 result.
+A failed assertion in a window with measured cgroup PSI or CPU throttling is
+also withheld because a time-sensitive assertion may have been affected. The
+result becomes `ERROR/EXEC_FAILED`, so the wrapper and Run-Gate retry it rather
+than report product `FAIL`. PSI/throttling alone do not overturn a completed
+PASS. Command-budget expiry,
+missing coverage artifacts, process-tree failure and incomplete witness
+results already have infrastructure outcomes and must not be folded into a
+product failure.
+
+R1's coverage judge compares the completed report's executable lines and
+branch arcs against its declared floor; host load does not change the
+arithmetic for an identical complete artifact. An interrupted runner, absent
+report or unparsable report cannot yield a coverage PASS and is already an
+incomplete/error path. R1 carries the same R0 command's resource window: a
+direct pids/OOM event or unavailable sample withholds either coverage status,
+and a coverage FAIL under measured cgroup pressure becomes infrastructure.
+A coverage PASS under PSI/throttling alone remains usable. R2 samples pids and
+memory OOM events around each
+mutation candidate. A limit event makes that candidate infrastructure/error
+rather than a kill; CPU and PSI pressure pauses the liveness clock, while the
+lane's absolute budget still bounds the campaign. A candidate timeout/hang is
+a budget bucket and makes the R2 claim incomplete, never a survivor or kill.
+R3 previously treated some transformed errors, timeouts or missing results as
+a canary survival. Those outcomes now remain `INCONCLUSIVE`; a direct pids/OOM event or
+unavailable sample in either canary half withholds the R3 result. A failed
+assertion with measured cgroup PSI or throttling is also `INCONCLUSIVE`; a
+completed PASS is retained without a direct resource-limit event. Host PSI is
+not used for that attribution
+because unrelated work elsewhere does not show that this lane's cgroup stalled.
+
+The B105 launch still verifies the gates cgroup and reserves 2 GiB of
+point-in-time memory headroom. The five qualification lanes retain their shared
+Run-Gate lock and a Git-common-directory lock for B105 callers; those locks
+serialize Assay work only. `ASSAY_GATE_ALLOW_SHARED_HOST=1` is accepted as a
+legacy no-op, and other values are refused. A gate started beside other
+projects can consume shared CPU, storage or parent memory capacity: bounded
+operations may then end as infrastructure/inconclusive, and Run-Gate retries
+them. Docker names and `docker ps` success no longer decide whether evidence
+is valid.
 
 The full B105 R0–R3 Assay invocation has a 5-hour failure-only lane budget
 after a separately bounded 60-minute R0/R1 preflight. B114 persists one
@@ -2786,10 +2837,9 @@ available without presenting it as the result of a refused invocation.
 
 The provisional lane has a 210-minute Run-Gate budget after the ordinary
 self-hosted gate. Run-Gate's `resources.shared` lock serializes Assay lanes;
-the release transaction does not hold a host-wide gate lock. The gate
-coordinator must keep every other registered gate serial for the full
-qualification window. `ASSAY_GATE_ALLOW_SHARED_HOST=1` does not apply to this
-lane.
+the release transaction does not hold a host-wide gate lock. Other projects'
+gates may run concurrently, subject to the verified B105 cgroup and 2 GiB
+launch reserve. `ASSAY_GATE_ALLOW_SHARED_HOST=1` is a compatibility no-op.
 
 Coverage.py's default exclusions are too broad for this claim: they silently
 remove Protocol method bodies and `TYPE_CHECKING` blocks from the denominator.
@@ -2819,6 +2869,18 @@ The [consumer guide](CONSUMERS.md#assays-own-full-source-self-qualification-b105
 shows how to preserve the log and inspect the report. Decision A-462 records
 why this separate lane supersedes A-133's former permanent R0-only limit while
 leaving the ordinary release lane unchanged.
+
+### Parallel gate regression
+
+The registered `parallel-safety-regression` lane makes the base behavior fail
+before checking the fix: it overlays the new focused assertions onto the
+task branch's merge-base with `origin/main`, requires those named assertions
+to fail there, then runs them on the current tree. The baseline proof covers
+the false `host busy` refusal, incomplete R3 classification and R0 failure
+attribution. The current proof uses fixed cgroup samples and synthetic Docker
+responses; it does not infer correctness from elapsed-time slack or require a
+quiet host. Its pasteable invocation is in
+[CONSUMERS.md](CONSUMERS.md#parallel-gate-regression).
 
 ### Registered B110 pilot and survivor-screen lanes (B118 P7b)
 
@@ -3978,9 +4040,10 @@ and the receipt.
 (PostgreSQL 18.6), pinned by digest and **never pulled**: an absent image is an
 inconclusive run. One PostgreSQL container runs at a time, `--network none`, `--cpus 1`,
 `--memory 512m`, on a 256 MiB tmpfs data directory, in the gate's own cgroup
-slice, named `run-gate-assay-sql-<pid>-<epoch>` so a peer's `docker ps` sees
-it. Docker's `--cidfile` records the container ID only when this run creates
-it; all fixture operations and the outer cleanup address that ID, so renaming
+slice. Its `run-gate-assay-sql-<pid>-<epoch>` name and ownership label support
+cleanup and reconciliation. Docker's `--cidfile` records the container ID
+only when this run creates it; all fixture operations and the outer cleanup
+address that ID, so renaming
 the fixture cannot redirect cleanup to a replacement at its old name. The SQL
 scratch directory has sticky write/search permission for the tester UID but
 does not allow listing. A random per-run ownership label binds both SQL
@@ -3993,14 +4056,11 @@ has its own cidfile and is also waited on and removed by ID; a container name
 conflict leaves the existing container untouched. Its host repository and Docker socket use Docker's
 `--mount` bind form, which refuses a missing daemon-side source instead of
 creating a phantom directory. Cleanup is attempted on every
-path, including SIGTERM, and an unconfirmed removal keeps the gate red. Before
-`docker run` the harness looks once at `docker ps`, excluding only the named
-qualification runner that contains it. Any other `run-gate-*` container makes
-the run **inconclusive** (exit 3, `host busy`); it never polls. With
-`--allow-shared-host` (CD50; the gate passes it when
-`ASSAY_GATE_ALLOW_SHARED_HOST=1`) other projects' `run-gate-*` containers are
-tolerated and named on stderr as `ASSAY_SQL_SHARED_HOST=<names>`, but another
-`run-gate-assay-sql-*` container is still `host busy`.
+path, including SIGTERM, and an unconfirmed removal keeps the gate red. Docker
+name snapshots do not determine admission. The SQL runner and fixture have
+bounded container operations and their own cgroup limits; the harness
+classifies command timeout, setup loss and incomplete witness as inconclusive.
+The legacy `--allow-shared-host` option is accepted as a no-op.
 The PostgreSQL fixture and qualification runner are removed with bounded
 Docker calls before the gate writes its receipt or prints its completion
 marker. A failed removal keeps the gate red and triggers the outer cleanup
@@ -4159,8 +4219,7 @@ consumer corpus fall; the class map is
 `__assay_widened__`), and `K09` is equivalent (an inert guard).
 
 **Exit codes.** 0 with `ASSAY_SQL_QUALIFIED=1` on stdout; 1 a failed premise;
-3 inconclusive (docker unavailable, image absent, host busy, a failing
-`docker ps`, readiness failsafe, a timeout, a name in use, docker
+3 inconclusive (docker unavailable, image absent, readiness failsafe, a timeout, a name in use, docker
 environment lost mid-run, an incomplete witness), which the gate
 passes through as its own exit 3 with `ASSAY_GATE_INCONCLUSIVE=sql-qualification
 — rerun` and no receipt.

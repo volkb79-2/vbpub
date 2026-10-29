@@ -117,6 +117,51 @@ def run_bash(
     )
 
 
+@pytest.mark.parametrize(
+    ("function_name", "run_status", "expected_status"),
+    [
+        ("run_self_hosted_lane", 1, 1),
+        ("run_self_hosted_lane", 2, 3),
+        ("run_self_hosted_lane", 3, 3),
+        ("run_self_hosted_lane", 4, 3),
+        ("run_self_hosted_lane", 5, 3),
+        ("run_analysis_lane", 1, 1),
+        ("run_analysis_lane", 2, 3),
+        ("run_analysis_lane", 3, 3),
+        ("run_analysis_lane", 4, 3),
+        ("run_analysis_lane", 5, 3),
+    ],
+)
+def test_incomplete_assay_outcomes_are_infrastructure_not_product_failures(
+    tmp_path: Path,
+    gate_functions: Path,
+    function_name: str,
+    run_status: int,
+    expected_status: int,
+) -> None:
+    worktree = tmp_path / "worktree"
+    (worktree / "assay").mkdir(parents=True)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    env = _host_environ()
+    env["ASSAY_RUN_STATUS"] = str(run_status)
+    snippet = "\n".join(
+        [
+            'assay() { if [[ "$1" == run ]]; then return "$ASSAY_RUN_STATUS"; fi; return 0; }',
+            "assay_git() { printf '0123456789012345678901234567890123456789\\n'; }",
+            f'{function_name} "{worktree}" "{scratch}" 10.0.1 /tmp/unused-wheel',
+        ]
+    )
+
+    proc = run_bash(snippet, gate_functions=gate_functions, env=env)
+
+    assert proc.returncode == expected_status, proc.stdout + proc.stderr
+    if run_status == 1:
+        assert "ASSAY_GATE_INCONCLUSIVE=" not in proc.stderr
+    else:
+        assert "ASSAY_GATE_INCONCLUSIVE=" in proc.stderr
+
+
 def _make_synthetic_untagged_repo(root: Path) -> None:
     """A tiny repo shaped like the real monorepo: a tracked `assay/` subdir
     (pyproject.toml + src/), no tag -- mirrors the real gate's own topology
@@ -371,9 +416,10 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
         env=env,
     )
 
-    assert proc.returncode == 17, proc.stdout + proc.stderr
+    assert proc.returncode == 3, proc.stdout + proc.stderr
     assert "fake nested gate output" in proc.stdout
     assert "ASSAY_GATE_CONTAINER_EXIT=17" in proc.stdout
+    assert "ASSAY_GATE_INCONCLUSIVE=tester-unified container exited with infrastructure status 17" in proc.stderr
     calls = [json.loads(line) for line in calls_path.read_text().splitlines()]
     run = next(argv for argv in calls if argv[:2] == ["run", "-d"])
     assert run[2] == "--cidfile"
@@ -704,6 +750,30 @@ def test_b145_probe_is_capped_placed_and_waited_before_logs(
     assert calls[5][:2] == ["ps", "--all"]
     assert calls[6] == ["rm", "-f", _FAKE_B145_ID]
     assert container_name in run
+
+
+def test_b145_completed_low_pids_failure_is_exit_one(
+    tmp_path: Path, gate_functions: Path
+) -> None:
+    fake_bin = tmp_path / "failed-probe-bin"
+    fake_bin.mkdir()
+    calls_path = tmp_path / "failed-probe-docker-calls.log"
+    _b145_docker(fake_bin)
+    env = _b145_env(fake_bin, tmp_path, calls_path)
+    env["FAKE_B145_WAIT_STATUS"] = "1"
+
+    proc = run_bash(
+        'run_b145_low_pids_probe "/workspaces/vbpub/.worktrees/assay-b145" '
+        '"/host/vbpub" "dev-gates.slice" "994" "994"',
+        gate_functions=gate_functions,
+        env=env,
+    )
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "B145 low-pids acceptance test failed" in proc.stderr
+    assert "ASSAY_GATE_INCONCLUSIVE=" not in proc.stderr
+    calls = [json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()]
+    assert calls[-1] == ["rm", "-f", _FAKE_B145_ID]
 
 
 def test_b145_bounded_wait_acceptance_exercises_timeout_and_force_remove(
@@ -2089,40 +2159,57 @@ def test_a_green_container_yields_the_receipt_and_exactly_one_complete_marker(
     ]
 
 
-def test_a_busy_host_makes_the_gate_inconclusive_before_anything_else_happens(
+def test_a_busy_host_does_not_block_the_registered_gate(
     tmp_path: Path, gate_functions: Path
 ) -> None:
-    """CD32: one `docker ps`, no waiting. The receipt from an earlier green run is
-    untouched (it is cleared only once this run really starts), the tester never
-    launches, and no other docker call is made."""
-    worktree, commit, tree = _receipt_worktree(tmp_path)
+    """Running gates do not control admission; the gate's own evidence does."""
+    worktree, commit, _tree = _receipt_worktree(tmp_path)
     earlier = worktree / RECEIPT_RELATIVE
     earlier.parent.mkdir(parents=True)
     earlier.write_bytes(b'{"an earlier": "receipt"}\n')
-    before = earlier.read_bytes()
     env, log = _docker_stub(tmp_path, "run-gate-x\nrun-gate-y\nsome-other-container\n")
 
     proc = run_bash(
         "run_registered_tester_container() { echo LAUNCHED; }\n"
+        "run_sql_qualification() { :; }\n"
+        "run_b145_bounded_wait_acceptance_probe() { :; }\n"
         "run_b145_low_pids_probe() { :; }\n"
         f'run_registered_gate "{worktree}" "/host/vbpub" "dev-gates.slice"',
         gate_functions=gate_functions,
         env=env,
     )
 
-    assert proc.returncode == 3, proc.stdout + proc.stderr
-    assert "ASSAY_GATE_INCONCLUSIVE=host busy — rerun: run-gate-x,run-gate-y" in proc.stderr
-    assert earlier.read_bytes() == before
-    assert "LAUNCHED" not in proc.stdout
-    assert "ASSAY_REGISTERED_GATE_COMPLETE" not in proc.stdout
-    calls = log.read_text(encoding="utf-8").splitlines()
-    assert len(calls) == 1 and calls[0].startswith("ps "), calls
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "LAUNCHED" in proc.stdout
+    assert "ASSAY_GATE_INCONCLUSIVE=host busy" not in proc.stderr
+    assert json.loads((worktree / RECEIPT_RELATIVE).read_text(encoding="utf-8"))["commit"] == commit
+    assert not log.exists()  # no Docker-name inventory is used for admission
+
+
+def test_parallel_gate_feature_is_findable_across_user_docs() -> None:
+    readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+    design = (PROJECT_ROOT / "docs" / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
+    consumers = (PROJECT_ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    changes = (PROJECT_ROOT / "CHANGES.md").read_text(encoding="utf-8")
+    backlog = (PROJECT_ROOT / "nyxloom-trove" / "4-backlog.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "run-gate parallel-safety-regression" in readme
+    assert "docs/DESIGN-GUIDE.md#parallel-gate-regression" in readme
+    assert "### Parallel gate regression" in design
+    assert "CONSUMERS.md#parallel-gate-regression" in design
+    assert "### Parallel gate regression" in consumers
+    assert "run-gate --worktree .. parallel-safety-regression" in consumers
+    assert "## [Unreleased]" in changes
+    assert "allow concurrent gates" in changes
+    assert "B171" in backlog
 
 
 def test_a_host_running_only_other_containers_proceeds_to_the_tester(
     tmp_path: Path, gate_functions: Path
 ) -> None:
-    worktree, commit, tree = _receipt_worktree(tmp_path)
+    worktree, commit, _tree = _receipt_worktree(tmp_path)
     env, log = _docker_stub(tmp_path, "other-container\nnot-run-gate-x\n")
 
     proc = run_bash(
@@ -2140,11 +2227,10 @@ def test_a_host_running_only_other_containers_proceeds_to_the_tester(
     assert (worktree / RECEIPT_RELATIVE).is_file()
 
 
-def test_the_shared_host_opt_in_lets_other_projects_gates_run_alongside_and_prints_them(
+def test_legacy_shared_host_opt_in_is_a_noop(
     tmp_path: Path, gate_functions: Path
 ) -> None:
-    """CD50 (G1): `ASSAY_GATE_ALLOW_SHARED_HOST=1` tolerates other projects' `run-gate-*`
-    containers, names them on stdout and runs the normal gate; the receipt is unchanged."""
+    """The compatibility spelling does not change gate admission or its verdict."""
     worktree, commit, tree = _receipt_worktree(tmp_path)
     env, log = _docker_stub(tmp_path, "run-gate-x\nrun-gate-y\nother\n")
     env["ASSAY_GATE_ALLOW_SHARED_HOST"] = "1"
@@ -2161,7 +2247,7 @@ def test_the_shared_host_opt_in_lets_other_projects_gates_run_alongside_and_prin
 
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "LAUNCHED" in proc.stdout
-    assert "ASSAY_GATE_SHARED_HOST=run-gate-x,run-gate-y" in proc.stdout.splitlines()
+    assert "ASSAY_GATE_SHARED_HOST=" not in proc.stdout
     receipt = worktree / RECEIPT_RELATIVE
     assert json.loads(receipt.read_text(encoding="utf-8")) == {
         "schema_version": 1,
@@ -2169,36 +2255,34 @@ def test_the_shared_host_opt_in_lets_other_projects_gates_run_alongside_and_prin
         "commit": commit,
         "tree": tree,
     }
-    calls = log.read_text(encoding="utf-8").splitlines()
-    assert len(calls) == 1 and calls[0].startswith("ps "), calls
+    assert not log.exists()
 
 
-def test_the_shared_host_opt_in_still_refuses_another_assay_gate(tmp_path: Path, gate_functions: Path) -> None:
-    """CD50 (G2): one assay gate at a time, opt-in or not."""
-    worktree, commit, tree = _receipt_worktree(tmp_path)
+def test_legacy_shared_host_opt_in_does_not_scan_or_refuse_assay_names(
+    tmp_path: Path, gate_functions: Path
+) -> None:
+    worktree, commit, _tree = _receipt_worktree(tmp_path)
     earlier = worktree / RECEIPT_RELATIVE
     earlier.parent.mkdir(parents=True)
     earlier.write_bytes(b'{"an earlier": "receipt"}\n')
-    before = earlier.read_bytes()
     env, log = _docker_stub(tmp_path, "run-gate-assay-selfhosted-1-2-3\nrun-gate-x\n")
     env["ASSAY_GATE_ALLOW_SHARED_HOST"] = "1"
 
     proc = run_bash(
         "run_registered_tester_container() { echo LAUNCHED; }\n"
+        "run_sql_qualification() { :; }\n"
+        "run_b145_bounded_wait_acceptance_probe() { :; }\n"
         "run_b145_low_pids_probe() { :; }\n"
         f'run_registered_gate "{worktree}" "/host/vbpub" "dev-gates.slice"',
         gate_functions=gate_functions,
         env=env,
     )
 
-    assert proc.returncode == 3, proc.stdout + proc.stderr
-    assert "ASSAY_GATE_INCONCLUSIVE=host busy — rerun: run-gate-assay-selfhosted-1-2-3" in proc.stderr
-    assert "run-gate-x" not in proc.stderr
-    assert earlier.read_bytes() == before
-    assert "LAUNCHED" not in proc.stdout
-    assert "ASSAY_GATE_SHARED_HOST" not in proc.stdout
-    calls = log.read_text(encoding="utf-8").splitlines()
-    assert len(calls) == 1 and calls[0].startswith("ps "), calls
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "LAUNCHED" in proc.stdout
+    assert "ASSAY_GATE_INCONCLUSIVE=host busy" not in proc.stderr
+    assert json.loads(earlier.read_text(encoding="utf-8"))["commit"] == commit
+    assert not log.exists()
 
 
 def test_a_shared_host_opt_in_value_other_than_empty_or_one_is_refused_before_docker(
@@ -2228,7 +2312,7 @@ def test_a_shared_host_opt_in_value_other_than_empty_or_one_is_refused_before_do
     assert not log.exists()  # zero docker calls
 
 
-def test_a_failing_docker_ps_is_inconclusive_and_leaves_the_receipt(
+def test_a_failing_docker_ps_does_not_block_the_gate(
     tmp_path: Path, gate_functions: Path
 ) -> None:
     worktree, commit, tree = _receipt_worktree(tmp_path)
@@ -2244,16 +2328,18 @@ def test_a_failing_docker_ps_is_inconclusive_and_leaves_the_receipt(
 
     proc = run_bash(
         "run_registered_tester_container() { echo LAUNCHED; }\n"
+        "run_sql_qualification() { :; }\n"
+        "run_b145_bounded_wait_acceptance_probe() { :; }\n"
         "run_b145_low_pids_probe() { :; }\n"
         f'run_registered_gate "{worktree}" "/host/vbpub" "dev-gates.slice"',
         gate_functions=gate_functions,
         env=env,
     )
 
-    assert proc.returncode == 3, proc.stdout + proc.stderr
-    assert "ASSAY_GATE_INCONCLUSIVE=host check failed (docker ps) — rerun" in proc.stderr
-    assert "LAUNCHED" not in proc.stdout
-    assert earlier.read_bytes() == b'{"an earlier": "receipt"}\n'
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "LAUNCHED" in proc.stdout
+    assert "ASSAY_GATE_INCONCLUSIVE=host check failed (docker ps)" not in proc.stderr
+    assert (worktree / RECEIPT_RELATIVE).is_file()
 
 
 def test_the_entry_section_ends_with_run_registered_gate_and_only_the_finisher_says_complete() -> None:

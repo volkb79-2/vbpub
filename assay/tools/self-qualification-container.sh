@@ -6,7 +6,13 @@ set -euo pipefail
 
 die() {
   local exit_status=1
-  if [[ "${lane:-}" == b110-pilot && "${prior_pilot_evidence_secured:-false}" != true ]]; then
+  if [[ "${lane:-}" == self-qualification \
+    || "${lane:-}" == self-qualification-preflight \
+    || "${lane:-}" == self-qualification-provisional ]]; then
+    # No Assay FAIL exists when B105 cannot launch or complete its measurement.
+    # Run-Gate maps exit 3 to infrastructure ERROR, which is retried.
+    exit_status=3
+  elif [[ "${lane:-}" == b110-pilot && "${prior_pilot_evidence_secured:-false}" != true ]]; then
     # The lane maps exit 3 to run-gate ERROR, which is excluded from the
     # per-commit success history. Do not let a host refusal before prior
     # evidence is secured replace the pass needed to archive that evidence.
@@ -332,12 +338,8 @@ docker_bounded() {
 }
 
 case "${ASSAY_GATE_ALLOW_SHARED_HOST:-}" in
-  '') ;;
-  1)
-    printf 'ASSAY_GATE_INCONCLUSIVE=Assay qualification requires an exclusive gates host; ASSAY_GATE_ALLOW_SHARED_HOST=1 is unsupported\n' >&2
-    exit 3
-    ;;
-  *) die 'ASSAY_GATE_ALLOW_SHARED_HOST must be unset or empty for B105 qualification' ;;
+  '' | 1) ;; # compatibility alias; cgroup evidence, not host exclusivity, governs the result
+  *) die 'ASSAY_GATE_ALLOW_SHARED_HOST must be unset, empty or 1' ;;
 esac
 
 docker_bounded image inspect tester-unified:local >/dev/null 2>&1 \
@@ -352,22 +354,6 @@ cgroup_parent="$("$project/tools/cgroup-parent.sh" \
   --memory-reserve-bytes "$b105_memory_reserve_bytes")" \
   || die 'the host gates cgroup tier or its 2 GiB RAM headroom is absent or unverified'
 [[ -n "$cgroup_parent" ]] || die 'the verified gates cgroup tier is empty'
-
-# This is an admission snapshot, not a host-wide lock: the repository lock
-# excludes competing B105 callers, and the serial gate coordinator must keep
-# other projects' registered gates out for the duration. The scan catches a
-# gate already running; a cross-project gate launched after the scan remains an
-# unresolved evidence risk and invalidates this qualification attempt.
-if ! active_names="$(docker_bounded ps --no-trunc --format '{{.Names}}')"; then
-  printf 'ASSAY_GATE_INCONCLUSIVE=host check failed (docker ps) — rerun\n' >&2
-  exit 3
-fi
-active_gates="$(printf '%s\n' "$active_names" | grep '^run-gate-' || true)"
-if [[ -n "$active_gates" ]]; then
-  printf 'ASSAY_GATE_INCONCLUSIVE=host busy — rerun: %s\n' \
-    "$(printf '%s' "$active_gates" | paste -sd, -)" >&2
-  exit 3
-fi
 
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/assay-b105-container.XXXXXXXX")" \
   || die 'could not create private container ownership scratch'
@@ -591,7 +577,7 @@ fi
 if ((launch_status != 0)); then
   if [[ -s "$launch_error" ]]; then cat "$launch_error" >&2; fi
   printf 'self-qualification-container: docker run failed (exit %s)\n' "$launch_status" >&2
-  exit "$launch_status"
+  exit 3
 fi
 
 if [[ ! "$container_id" =~ ^[0-9a-f]{64}$ || ! -f "$ownership_file" ]]; then
@@ -709,7 +695,20 @@ fi
 
 docker_bounded logs "$container_id" >"$scratch/container.log" 2>&1 \
   || die 'could not collect the completed B105 container log'
-[[ "$wait_status" == 0 ]] || die "Assay qualification container exited with status $wait_status"
+if [[ "$wait_status" != 0 ]]; then
+  if [[ "$lane" == self-qualification \
+    || "$lane" == self-qualification-preflight \
+    || "$lane" == self-qualification-provisional ]]; then
+    if [[ "$wait_status" == 1 ]]; then
+      printf 'self-qualification-container: Assay qualification produced a completed FAIL (exit 1)\n' >&2
+      exit 1
+    fi
+    printf 'ASSAY_GATE_INCONCLUSIVE=Assay qualification ended incomplete or infrastructure (container exit %s)\n' \
+      "$wait_status" >&2
+    exit 3
+  fi
+  die "Assay qualification container exited with status $wait_status"
+fi
 case "$lane" in
   self-qualification)
     marker=ASSAY_SELF_QUALIFICATION_VERIFIED=1

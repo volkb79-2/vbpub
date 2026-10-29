@@ -30,10 +30,10 @@ frozen normalized verdict. (7) No database is left behind.
 
 **Exit codes.** 0 with stdout exactly ``ASSAY_SQL_QUALIFIED=1``; 1 a
 :class:`QualificationError`; 3 an :class:`InconclusiveError` with stderr
-``ASSAY_SQL_INCONCLUSIVE=<reason>`` (docker unavailable, image absent, host
-busy, a failing ``docker ps``, readiness failsafe, a command timeout, a
-container name in use, the docker environment lost mid-run, an
-incomplete witness): visible and rerunnable, never skipped and never green.
+``ASSAY_SQL_INCONCLUSIVE=<reason>`` (docker unavailable, image absent,
+readiness failsafe, a command timeout, a container name in use, the docker
+environment lost mid-run, an incomplete witness): visible and rerunnable,
+never skipped and never green.
 
 **Environment.** The registered gate runs this harness in a dedicated
 ``tester-unified`` container with a private cgroup namespace and the
@@ -43,15 +43,12 @@ hidden. Only this qualification container receives the Docker socket, because
 it owns the pinned PostgreSQL fixture; the ordinary installed-wheel suite
 never receives it. The qualification container runs ``--network none`` in
 the cgroup slice the caller passes. Its visible name starts
-``run-gate-assay-sql-`` so peer
-gates see it. The harness addresses PostgreSQL by its Docker ID and records
+``run-gate-assay-sql-`` so cleanup can identify it. The harness addresses PostgreSQL by its Docker ID and records
 that ID so the outer gate can retry cleanup without risking a same-name
-container. Before PostgreSQL starts the
-harness checks ``docker ps`` once, excluding only its own runner name; any
-other ``run-gate-*`` name means ``host busy`` (exit 3), never a wait.
-``--allow-shared-host`` (CD50) tolerates other projects' ``run-gate-*``
-containers (printing ``ASSAY_SQL_SHARED_HOST=`` on stderr) but still refuses
-another Assay SQL qualification. The witness lane strips ``DOCKER_HOST`` (its
+container. Docker-name snapshots do not control admission. The runner and
+PostgreSQL fixture use their own cgroup limits and bounded operations; the
+legacy ``--allow-shared-host`` option is accepted as a no-op. The witness lane
+strips ``DOCKER_HOST`` (its
 ``env`` is ``PATH`` only) and uses ``/var/run/docker.sock`` to reach the same
 daemon as the harness. It imports :mod:`assay` from the exact-OID clone's
 ``src/``: it qualifies THIS tree's adapter, so there is no separate wheel
@@ -471,13 +468,11 @@ class ThrowawayPostgres:
         cgroup_parent: str,
         fixture_root: Path,
         *,
-        allow_shared_host: bool = False,
         runner_name: str | None = None,
         ownership_file: Path | None = None,
         ownership_token: str,
     ) -> None:
         self.name = name
-        self.allow_shared_host = allow_shared_host
         self.runner_name = runner_name
         self.ownership_file = ownership_file
         self.ownership_token = ownership_token
@@ -518,23 +513,6 @@ class ThrowawayPostgres:
             raise InconclusiveError("docker unavailable")
         if _run(["docker", "image", "inspect", IMAGE], check=False, timeout=60).returncode != 0:
             raise InconclusiveError(f"image absent: docker pull {IMAGE}")
-        ps = _run(["docker", "ps", "--no-trunc", "--format", "{{.Names}}"], check=False, timeout=60)
-        if ps.returncode != 0:
-            raise InconclusiveError("host check failed (docker ps)")
-        busy = [
-            name
-            for name in ps.stdout.splitlines()
-            if name.startswith("run-gate-") and name != self.runner_name
-        ]
-        if not self.allow_shared_host:
-            if busy:
-                raise InconclusiveError(f"host busy — rerun: {','.join(busy)}")
-            return
-        sql_busy = [name for name in busy if name.startswith("run-gate-assay-sql-")]
-        if sql_busy:
-            raise InconclusiveError(f"host busy — rerun: {','.join(sql_busy)}")
-        if busy:
-            print(f"ASSAY_SQL_SHARED_HOST={','.join(busy)}", file=sys.stderr)
 
     def _docker_run_argv(self) -> list[str]:
         argv = [
@@ -1395,7 +1373,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.container_name,
             args.cgroup_parent,
             args.fixture_root,
-            allow_shared_host=args.allow_shared_host,
             runner_name=args.runner_name,
             ownership_file=ownership_file,
             ownership_token=args.ownership_token,

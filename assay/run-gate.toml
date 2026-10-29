@@ -17,8 +17,9 @@
 # headroom, then enforces 3 CPUs, 2 GiB RAM, and 8 GiB RAM+swap on its child.
 # `resources.shared` serializes these Assay lanes in one run-gate namespace; a
 # separate Git-common-dir flock serializes B105 callers across container /tmp
-# namespaces. Other projects still require the estate's serial gate coordinator:
-# the Docker scan is a preflight, not an atomic cross-project lease.
+# namespaces. Cross-project gates may run concurrently; R0 and R3 attribute
+# failed commands to their own cgroup evidence, while R2 keeps its existing
+# candidate-local counters and pressure-aware liveness.
 #
 # environment = "bare-host", not "host" (run-gate RG-43 estate-wide sweep,
 # 2026-09-03): as of rev 36, plain "host" is a CONTAINER default with no
@@ -45,6 +46,15 @@ clean_tree = false
 # launch/wait/log/removal bounds, and the SQL runner's bounded wait. Keep a
 # further 20m for clone/startup/cleanup; test_self_lane.py derives these bounds.
 budget = "5h"
+
+[lanes.parallel-safety-regression]
+kind = "command"
+environment = "tester-unified"
+argv = ["bash", "{worktree}/assay/tools/parallel-safety-regression.sh", "{worktree}"]
+clean_tree = true
+# This focused red-first lane runs a small synthetic baseline/current test set;
+# it does not invoke the release gate or an R2 campaign.
+budget = "15m"
 
 [lanes.self-qualification]
 kind = "command"

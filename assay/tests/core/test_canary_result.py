@@ -311,6 +311,25 @@ def test_a_transform_that_never_ran_is_inconclusive():
     assert judge_attempt(attempt) == (Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE)
 
 
+@pytest.mark.parametrize(
+    "transformed_outcome",
+    [
+        Outcome.ERROR,
+        Outcome.NO_MEASUREMENT,
+        Outcome.BUDGET_EXCEEDED,
+        Outcome.INCONCLUSIVE,
+    ],
+)
+def test_an_incomplete_transformed_run_is_inconclusive(transformed_outcome):
+    """An incomplete or errored run cannot prove the expected defect survived."""
+    attempt = make(
+        transformed_outcome=transformed_outcome,
+        observed_reason_code=None,
+    )
+
+    assert judge_attempt(attempt) == (Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE)
+
+
 def test_an_unexpectedly_passing_bad_case_survives():
     """O3/O1: 'a universal-PASS evaluator makes the bad half pass' -- this
     is the branch that catches it: transformed_outcome PASS is FAIL/SURVIVED,

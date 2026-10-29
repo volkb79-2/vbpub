@@ -3749,17 +3749,17 @@ def test_b110_container_wait_and_log_follow_include_the_exact_bounds(
     assert follower[follower.index("docker") - 1] == f"{wait_seconds + 90}s"
 
 
-def test_runner_refuses_to_launch_beside_an_active_registered_gate(tmp_path: Path, committed_worktree: Path):
+def test_runner_launches_beside_an_active_registered_gate(tmp_path: Path, committed_worktree: Path):
     proc, calls, _elapsed = run_launcher(
         tmp_path, committed_worktree, lane="self-qualification-preflight", mode="busy"
     )
 
-    assert proc.returncode == 3
-    assert "host busy" in proc.stderr
-    assert not any(call and call[0] == "run" and "-d" in call for call in calls)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert any(call and call[0] == "run" and "-d" in call for call in calls)
+    assert not any(call[:2] == ["ps", "--no-trunc"] for call in calls)
 
 
-def test_b110_screen_removes_stale_verdict_before_host_admission(
+def test_b110_screen_removes_stale_verdict_and_runs_beside_an_active_gate(
     tmp_path: Path, committed_worktree: Path
 ):
     state = committed_worktree / "assay" / ".assay"
@@ -3776,14 +3776,13 @@ def test_b110_screen_removes_stale_verdict_before_host_admission(
         tmp_path, committed_worktree, lane="b110-screen", mode="busy"
     )
 
-    assert proc.returncode == 3
-    assert "host busy" in proc.stderr
+    assert proc.returncode == 0, proc.stdout + proc.stderr
     assert all(not (state / name).exists() for name in stale_outputs)
-    assert any(call[:2] == ["ps", "--no-trunc"] for call in calls)
-    assert not any(call and call[0] == "run" and "-d" in call for call in calls)
+    assert any(call and call[0] == "run" and "-d" in call for call in calls)
+    assert not any(call[:2] == ["ps", "--no-trunc"] for call in calls)
 
 
-def test_b110_screen_removes_stale_verdict_before_shared_host_refusal(
+def test_b110_screen_accepts_legacy_shared_host_opt_in(
     tmp_path: Path, committed_worktree: Path
 ):
     state = committed_worktree / "assay" / ".assay"
@@ -3803,10 +3802,9 @@ def test_b110_screen_removes_stale_verdict_before_shared_host_refusal(
         shared_host_value="1",
     )
 
-    assert proc.returncode == 3
-    assert "ASSAY_GATE_ALLOW_SHARED_HOST=1 is unsupported" in proc.stderr
+    assert proc.returncode == 0, proc.stdout + proc.stderr
     assert all(not (state / name).exists() for name in stale_outputs)
-    assert not any(call and call[0] == "run" and "-d" in call for call in calls)
+    assert any(call and call[0] == "run" and "-d" in call for call in calls)
 
 
 def test_b110_screen_clears_stale_outputs_before_host_bind_refusal(
@@ -3835,7 +3833,7 @@ def test_b110_screen_clears_stale_outputs_before_host_bind_refusal(
     assert not any(call and call[0] == "run" and "-d" in call for call in calls)
 
 
-def test_b110_pilot_clears_stale_attempt_outputs_before_host_admission(
+def test_b110_pilot_clears_stale_attempt_outputs_and_runs_beside_an_active_gate(
     tmp_path: Path, committed_worktree: Path
 ):
     state = committed_worktree / "assay" / ".assay"
@@ -3868,8 +3866,7 @@ def test_b110_pilot_clears_stale_attempt_outputs_before_host_admission(
         mode="busy",
     )
 
-    assert proc.returncode == 3
-    assert "host busy" in proc.stderr
+    assert proc.returncode == 0, proc.stdout + proc.stderr
     assert all(not (state / name).exists() for name in stale_outputs)
     assert progress.read_text(encoding="utf-8") == '{"event":"resume evidence"}\n'
     assert deadline.exists()
@@ -3924,7 +3921,7 @@ def test_b110_attempt_clears_old_artifacts_before_missing_docker_refusal(
     assert calls == []
 
 
-def test_b105_refuses_the_shared_host_opt_in(tmp_path: Path, committed_worktree: Path):
+def test_b105_accepts_the_legacy_shared_host_opt_in(tmp_path: Path, committed_worktree: Path):
     proc, calls, _elapsed = run_launcher(
         tmp_path,
         committed_worktree,
@@ -3932,9 +3929,8 @@ def test_b105_refuses_the_shared_host_opt_in(tmp_path: Path, committed_worktree:
         shared_host_value="1",
     )
 
-    assert proc.returncode == 3
-    assert "ASSAY_GATE_ALLOW_SHARED_HOST=1 is unsupported" in proc.stderr
-    assert not any(call and call[0] == "run" and "-d" in call for call in calls)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert any(call and call[0] == "run" and "-d" in call for call in calls)
 
 
 def test_b105_lock_serializes_callers_across_tmp_namespaces(
@@ -3996,7 +3992,7 @@ def test_b110_screen_lock_refusal_preserves_the_existing_verdict(
     assert not any(call and call[0] in {"ps", "run"} for call in calls)
 
 
-def test_runner_fails_on_nonzero_container_exit_and_removes_its_verified_container(
+def test_b105_maps_incomplete_container_exit_to_inconclusive_and_removes_it(
     tmp_path: Path, committed_worktree: Path
 ):
     proc, calls, _elapsed = run_launcher(
@@ -4006,8 +4002,24 @@ def test_runner_fails_on_nonzero_container_exit_and_removes_its_verified_contain
         wait_status="137",
     )
 
-    assert proc.returncode != 0
-    assert "container exited with status 137" in proc.stderr
+    assert proc.returncode == 3
+    assert "ASSAY_GATE_INCONCLUSIVE=Assay qualification ended incomplete or infrastructure (container exit 137)" in proc.stderr
+    assert any(call[:2] == ["rm", CONTAINER_ID] for call in calls)
+
+
+def test_b105_preserves_a_completed_assay_fail_as_exit_one(
+    tmp_path: Path, committed_worktree: Path
+):
+    proc, calls, _elapsed = run_launcher(
+        tmp_path,
+        committed_worktree,
+        lane="self-qualification-preflight",
+        wait_status="1",
+    )
+
+    assert proc.returncode == 1
+    assert "Assay qualification produced a completed FAIL" in proc.stderr
+    assert "ASSAY_GATE_INCONCLUSIVE=" not in proc.stderr
     assert any(call[:2] == ["rm", CONTAINER_ID] for call in calls)
 
 
@@ -4138,7 +4150,7 @@ def test_created_container_is_reconciled_after_nonzero_docker_run(
         mode="create-then-nonzero",
     )
 
-    assert proc.returncode == 17
+    assert proc.returncode == 3
     assert "docker run failed (exit 17)" in proc.stderr
     assert any(call[0] == "inspect" and "{{.Id}}" in call for call in calls)
     assert any(call[0] == "stop" and CONTAINER_ID in call for call in calls)

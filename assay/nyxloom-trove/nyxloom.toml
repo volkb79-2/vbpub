@@ -156,12 +156,12 @@ series       = "nyxloom-trove/handoffs/README.md"
 # tester-unified.json` and prints `ASSAY_REGISTERED_GATE_RECEIPT=<path>` before
 # the final marker. The receipt is removed at every launch, and the full
 # `self-qualification` lane refuses to start without one for its own commit and
-# tree. A host with another `run-gate-*` container running makes the gate exit 3
-# (`ASSAY_GATE_INCONCLUSIVE=host busy`); run-gate records that as an
-# infrastructure ERROR, which always means "rerun". The registered
-# `tester-unified`, self-qualification, preflight, pilot, and screen lanes share
-# one run-gate lock, so those Assay campaigns cannot race each other's host
-# check or consume the same host capacity concurrently.
+# tree. Cross-project Docker names do not block admission. R0 and R3 failed
+# commands use the lane's cgroup resource events for attribution; R2 keeps its
+# candidate-local resource windows and pressure-adjusted liveness. B105 still
+# checks its own 2 GiB gates-cgroup launch reserve, so concurrent use can make
+# admission unavailable. The registered qualification lanes share a run-gate
+# lock, and B105 callers also hold the Git-common-directory lock.
 #
 # `tools/cgroup-parent.sh` reads CGROUP_PARENT_DEV_GATES and verifies the
 # named unit against the host cgroup tree before Docker sees it. An unset
@@ -183,6 +183,15 @@ argv = ["bash", "-c", "cd {worktree}/assay && exec run-gate --worktree {worktree
 phase = "implementation"
 asserts = ["tests-pass"]
 timeout_seconds = 21600
+environment = "tester-unified"
+
+[gates.parallel-safety-regression]
+# Small synthetic red-first regression for parallel admission and pressure
+# attribution. It runs in tester-unified and never starts the release gate/R2.
+argv = ["bash", "-c", "cd {worktree}/assay && exec run-gate --worktree {worktree} parallel-safety-regression"]
+phase = "implementation"
+asserts = ["tests-pass"]
+timeout_seconds = 1800
 environment = "tester-unified"
 
 [gates.self-qualification]

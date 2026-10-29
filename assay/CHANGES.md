@@ -4,6 +4,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Fixed
+- fix(assay): allow concurrent gates and retry incomplete or pressure-affected R0/R1/R3 results as infrastructure
+
 <!-- cmru: release history -->
 
 ## [10.0.0] - 2026-10-28

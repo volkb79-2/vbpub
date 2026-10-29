@@ -1626,13 +1626,13 @@ def test_a_failing_docker_version_is_inconclusive(tmp_path: Path, stubbed, capsy
     assert not fake.ran()
 
 
-def test_a_running_gate_container_makes_the_host_busy_and_nothing_starts(tmp_path: Path, stubbed, capsys) -> None:
+def test_a_running_gate_container_does_not_block_sql_qualification(tmp_path: Path, stubbed, capsys) -> None:
     fake = stubbed(FakeDocker(ps="edge-traefik\nrun-gate-x\nrun-gate-y\n"))
-    assert _run_main_under_sentinel(_main_argv(tmp_path)) == 3
-    assert "ASSAY_SQL_INCONCLUSIVE=host busy — rerun: run-gate-x,run-gate-y" in capsys.readouterr().err
-    assert not fake.ran() and not any(call[:2] == ["docker", "rm"] for call in fake.calls)
+    assert _run_main_under_sentinel(_main_argv(tmp_path)) == 1  # fake baseline has no SQL dump
+    assert "ASSAY_SQL_INCONCLUSIVE=host busy" not in capsys.readouterr().err
+    assert fake.ran()
     ps = [call for call in fake.calls if call[:2] == ["docker", "ps"]]
-    assert ps == [["docker", "ps", "--no-trunc", "--format", "{{.Names}}"]]
+    assert ps == []
 
 
 def test_the_qualification_runner_excludes_only_its_own_visible_container(
@@ -1645,32 +1645,31 @@ def test_the_qualification_runner_excludes_only_its_own_visible_container(
     assert "ASSAY_SQL_INCONCLUSIVE=host busy" not in capsys.readouterr().err
 
 
-def test_shared_host_lets_other_projects_gates_run_and_names_them_on_stderr(tmp_path: Path, stubbed, capsys) -> None:
-    """CD50 (S1)."""
+def test_legacy_shared_host_flag_does_not_change_sql_qualification(tmp_path: Path, stubbed, capsys) -> None:
     fake = stubbed(FakeDocker(ps="run-gate-x\n"))
     _run_main_under_sentinel([*_main_argv(tmp_path), "--allow-shared-host"])
     assert fake.ran()
     captured = capsys.readouterr()
-    assert "ASSAY_SQL_SHARED_HOST=run-gate-x" in captured.err.splitlines()
     assert "ASSAY_SQL_INCONCLUSIVE" not in captured.err
+    assert "ASSAY_SQL_SHARED_HOST=" not in captured.err
+    assert not any(call[:2] == ["docker", "ps"] for call in fake.calls)
 
 
-def test_shared_host_still_refuses_another_sql_qualification_container(tmp_path: Path, stubbed, capsys) -> None:
-    """CD50 (S2): one W5 container at a time, opt-in or not."""
+def test_sql_name_of_another_gate_does_not_block_qualification(tmp_path: Path, stubbed, capsys) -> None:
     fake = stubbed(FakeDocker(ps="run-gate-x\nrun-gate-assay-sql-9-1\n"))
-    assert _run_main_under_sentinel([*_main_argv(tmp_path), "--allow-shared-host"]) == 3
+    assert _run_main_under_sentinel([*_main_argv(tmp_path), "--allow-shared-host"]) == 1
     err = capsys.readouterr().err
-    assert "ASSAY_SQL_INCONCLUSIVE=host busy — rerun: run-gate-assay-sql-9-1" in err
-    assert "run-gate-x" not in err
-    assert not fake.ran() and not any(call[:2] == ["docker", "rm"] for call in fake.calls)
+    assert "ASSAY_SQL_INCONCLUSIVE=host busy" not in err
+    assert fake.ran()
+    assert not any(call[:2] == ["docker", "ps"] for call in fake.calls)
 
 
-def test_a_failing_docker_ps_is_inconclusive_and_nothing_starts(tmp_path: Path, stubbed, capsys) -> None:
-    """W5C-1: a ``docker ps`` that fails cannot show the host is free (CD32), so it is exit 3, not a product FAIL."""
+def test_a_failing_docker_ps_is_irrelevant_to_sql_admission(tmp_path: Path, stubbed, capsys) -> None:
     fake = stubbed(FakeDocker(ps_rc=1))
-    assert _run_main_under_sentinel(_main_argv(tmp_path)) == 3
-    assert "ASSAY_SQL_INCONCLUSIVE=host check failed (docker ps)" in capsys.readouterr().err
-    assert not fake.ran() and not any(call[:2] == ["docker", "rm"] for call in fake.calls)
+    assert _run_main_under_sentinel(_main_argv(tmp_path)) == 1  # fake baseline has no SQL dump
+    assert "ASSAY_SQL_INCONCLUSIVE=host check failed (docker ps)" not in capsys.readouterr().err
+    assert fake.ran()
+    assert not any(call[:2] == ["docker", "ps"] for call in fake.calls)
 
 
 def test_a_failed_container_removal_is_reported_on_stderr(tmp_path: Path, stubbed, capsys) -> None:
@@ -1928,7 +1927,7 @@ def _sql_env(
         "        runner = args[args.index('--name') + 1]\n"
         "        if os.environ.get('FAKE_RUN_LAUNCH_CIDFILE_ON_FAILURE') == '1':\n"
         "            i = args.index('bash')\n"
-        "            _label, worktree, scratch, commit, cgroup, postgres, runner, shared, owner_token = args[i + 3:]\n"
+        "            _label, worktree, scratch, commit, cgroup, postgres, runner, owner_token = args[i + 3:]\n"
         "            pathlib.Path(os.environ['FAKE_POSTGRES_NAME_FILE']).write_text(postgres, encoding='ascii')\n"
         "            pathlib.Path(os.environ['FAKE_RUNNER_NAME_FILE']).write_text(runner, encoding='ascii')\n"
         "            token = args[args.index('--label') + 1].split('=', 1)[1]\n"
@@ -1946,7 +1945,7 @@ def _sql_env(
         "        print(conflict, file=sys.stderr)\n"
         "        raise SystemExit(launch_rc)\n"
         "    i = args.index('bash')\n"
-        "    _label, worktree, scratch, commit, cgroup, postgres, runner, shared, owner_token = args[i + 3:]\n"
+        "    _label, worktree, scratch, commit, cgroup, postgres, runner, owner_token = args[i + 3:]\n"
         "    pathlib.Path(os.environ['FAKE_POSTGRES_NAME_FILE']).write_text(postgres, encoding='ascii')\n"
         "    pathlib.Path(os.environ['FAKE_RUNNER_NAME_FILE']).write_text(runner, encoding='ascii')\n"
         "    token = args[args.index('--label') + 1].split('=', 1)[1]\n"
@@ -1954,7 +1953,7 @@ def _sql_env(
         "    pathlib.Path(os.environ['FAKE_SCRIPT']).write_text(args[i + 2], encoding='utf-8')\n"
         "    pathlib.Path(args[args.index('--cidfile') + 1]).write_text(os.environ.get('FAKE_RUNNER_CIDFILE', os.environ['FAKE_RUNNER_CID']) + '\\n', encoding='ascii')\n"
         "    with open(os.environ['FAKE_LOG'], 'a', encoding='utf-8') as handle:\n"
-        "        handle.write(' '.join(['--scratch', scratch + '/sql', '--container-name', postgres, '--runner-name', runner, '--ownership-token', token, '--cgroup-parent', cgroup] + (['--allow-shared-host'] if shared == '1' else [])) + '\\n')\n"
+        "        handle.write(' '.join(['--scratch', scratch + '/sql', '--container-name', postgres, '--runner-name', runner, '--ownership-token', token, '--cgroup-parent', cgroup]) + '\\n')\n"
         "    if os.environ.get('FAKE_EXECUTE_RUNNER') == '1':\n"
         "        command = list(args[i:])\n"
         "        command[2] = command[2].replace('/opt/tester-venv/bin/python', os.environ['FAKE_PYTHON'])\n"
@@ -2599,7 +2598,8 @@ def test_a_failing_harness_stops_the_gate_with_no_phase_marker_receipt_or_comple
     stale.write_bytes(b'{"an earlier": "green receipt"}\n')
     proc, docker_log, harness_log = _gate(tmp_path, gate_functions, worktree, out="", rc=1)
     assert proc.returncode == 1, proc.stdout + proc.stderr
-    assert "SQL qualification failed (exit 1)" in proc.stderr
+    assert "ASSAY_GATE_DIAGNOSTIC=sql-qualification-completed-fail" in proc.stderr
+    assert "ASSAY_GATE_INCONCLUSIVE=" not in proc.stderr
     assert "ASSAY_GATE_PHASE" not in proc.stdout and "ASSAY_REGISTERED_GATE_COMPLETE" not in proc.stdout
     assert not stale.exists()
     args = _harness_args(harness_log)
@@ -2758,15 +2758,16 @@ def _run_sql_phase(tmp_path: Path, gate_functions: Path, allow: str | None):
     return harness_log.read_text(encoding="utf-8").split()
 
 
-def test_the_shared_host_flag_reaches_the_harness_only_for_the_exact_value_one(
+def test_the_legacy_shared_host_flag_does_not_reach_the_sql_harness(
     tmp_path: Path, gate_functions: Path
 ) -> None:
-    """CD50 (G4)."""
-    assert "--allow-shared-host" in _run_sql_phase(tmp_path, gate_functions, "1")
+    assert "--allow-shared-host" not in _run_sql_phase(tmp_path, gate_functions, "1")
 
 
 @pytest.mark.parametrize("allow", [None, "", "true", "0"])
-def test_the_shared_host_flag_is_absent_otherwise(tmp_path: Path, gate_functions: Path, allow: str | None) -> None:
+def test_the_legacy_shared_host_flag_is_absent_for_every_other_value(
+    tmp_path: Path, gate_functions: Path, allow: str | None
+) -> None:
     assert "--allow-shared-host" not in _run_sql_phase(tmp_path, gate_functions, allow)
 
 
@@ -2786,5 +2787,6 @@ def test_the_phase_and_its_state_live_above_the_entry_points_and_before_the_fini
     assert '"$inventory" != "$container_id|$expected_name|$ownership_token"' in removal
     assert 'docker rm -f -v "$container_id"' in removal
     sql = source.split("run_sql_qualification() {", 1)[1].split("# --- entry points", 1)[0]
+    assert 'ASSAY_GATE_ATTRIBUTE_R0_CONTENTION=1 nice -n 19 /opt/tester-venv/bin/python -I "$scratch/clone/assay/gate/python/qualify_sql.py"' in source
     assert sql.index('remove_owned_sql_container "$container_id"') < sql.index("echo 'ASSAY_GATE_PHASE=sql-qualified'")
     assert 'wait_for_container_log_follower "$_assay_sql_runner_logs_pid" 30' in sql
