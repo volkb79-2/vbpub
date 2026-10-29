@@ -6634,7 +6634,7 @@ was run in this change.
 
 ## RG-121 — one a245908 R2 candidate exceeded its configured budget
 
-**Status:** OPEN 2026-10-29. Severity Medium.
+**Status:** CLOSED 2026-10-29 (candidate `183c6b7fe3d2` re-judged killed on the current source; see the rejudge note below). Severity Medium.
 
 **Observed.** Candidate `183c6b7fe3d2` (`run_gate.py:14371`,
 `python:compare-swap`, `IsNot->Is`) did not finish within the R2 lane's
