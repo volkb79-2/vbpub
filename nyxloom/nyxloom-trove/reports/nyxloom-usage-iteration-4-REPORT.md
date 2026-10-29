@@ -2,8 +2,9 @@
 
 Date: 2026-10-29
 
-Result: **Usage fixes complete; focused coverage and browser acceptance pass;
-registered lane mutation campaign incomplete.**
+Iteration-4 result: **Usage fixes complete; focused coverage and browser
+acceptance pass; registered lane mutation campaign incomplete.** The later
+`nyx-b3fix` follow-up below is the current status for this branch.
 
 ## Outcome
 
@@ -72,3 +73,52 @@ screenshots were committed.
 
 The HTML anonymize switch only changes visible labels; the report data retains
 labels unless `--no-labels` is used.
+
+## Independent review round nyx-b3fix — 2026-10-29
+
+Current verdict: **FIXES-NEEDED — the full registered lane did not complete.**
+The explicit missing-anchor behavior is implemented, and the review's P2 finding
+is covered by new direct-reader and CLI regression assertions in
+`tests/test_usage_pricing.py`. The first post-fix lane invocation was blocked at
+test collection by a stale `tester-unified:local` image missing the already
+declared `pypdf==6.19.0` test dependency. The image was rebuilt with the
+supported `tester-unified/build-image.sh` workflow under `gate.lock`; its build
+log confirms `pypdf==6.19.0` and Run-Gate `24.1.1.dev53+gc2448ef59`, image ID
+`sha256:fca35f461d8a4098ae229c0883fc029f13b6bc9ad97bd285943e23673a547fe0`.
+
+| `session-extract` attempt | Run-Gate result | Phase evidence |
+| --- | --- | --- |
+| 1 of 2, target `c2448ef59a24c51822484e6a05a16afda44e03f7` | exit 3, `NO_MEASUREMENT/EMPTY_COVERAGE` | R0 failed while collecting `tests/test_usage_pdf.py` (`ModuleNotFoundError: pypdf`); R1 had no artifact; R2 started 0 candidates; R3 was inconclusive. |
+| 2 of 2, same target | exit 1, `FAIL/COMMAND_FAILED` | R0 had 2 failing tests; R1 reported 99.98874254193403%, all 1,580/1,580 branches covered, with only `anchors.py:156` uncovered; R2 started 0 candidates; R3 was inconclusive because R0 did not pass. |
+
+The two R0 failures in attempt 2 were
+`test_anchor_store_rejects_malformed_entries_duplicate_ids_and_parent_errors`
+(the parent security check was reached after the read, changing its refusal to
+“cannot read” and leaving its `cannot secure` branch uncovered) and
+`test_usage_anchor_docs_distinguish_missing_default_and_explicit_stores` (the
+README had a Markdown line break inside a phrase checked as a string). Commit
+`98dd2bbde` now secures the parent before reading and keeps the same private
+directory check before writing; the docs assertion now normalizes layout
+whitespace without relaxing its wording. `git diff --check` and
+`python3 -m py_compile` passed after those corrections; the registered lane was
+not rerun afterward.
+
+The lane's configured R2 cap is 1,203 candidates with a 10-hour budget, but
+neither invocation reached Assay's R2 candidate plan. Both R2 candidate counts
+are therefore 0, not a partial mutation result. The two permitted invocations
+are exhausted; no third attempt was run. The earlier 1,199/1,201 mutation result
+in the iteration-4 evidence table is historical evidence from the earlier tree,
+not a green result for this follow-up. R2 and R3 remain unverified on the
+corrected source tree, so the independent review's P1 remains open.
+
+Attempt 2 final Run-Gate output tail:
+
+```text
+run-gate: footprint session-extract: peak 612 MiB, p90 470 MiB, 1.05 cores avg, 0.1 s stalled on memory (full), hot-set p90 0 MiB; history median peak - (0 runs)
+run-gate: lane 'session-extract' failed with exit 1; full container logs preserved at /tmp/run-gate/run-gate-vbpub-session-extract-2114880-1793289035.log
+run-gate: verdict artifact: /workspaces/vbpub/.worktrees/nyxloom-usage-20261028/nyxloom/.assay/verdict-session-extract.json
+run-gate: state directory: /workspaces/vbpub/.run-gate/assay-state/.worktrees/nyxloom-usage-20261028/nyxloom
+run-gate: assay failure digest: verdict=FAIL
+run-gate: WARNING: assay closeout evidence_error: None (lane verdict FAIL (exit 1) is unchanged); retained json /tmp/run-gate/lanes/session-extract/1c2d7882de6b20ccad0d6df51e9b0244.campaign.json, text /tmp/run-gate/lanes/session-extract/1c2d7882de6b20ccad0d6df51e9b0244.campaign.txt
+run-gate: lane 'session-extract' verdict FAIL; exit_code 1; reason COMMAND_FAILED; log /tmp/run-gate/lanes/session-extract/1c2d7882de6b20ccad0d6df51e9b0244.log
+```
