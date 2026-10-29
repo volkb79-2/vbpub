@@ -1,4 +1,5 @@
 """IOB-GATE-01: the coverage exclusions and the mutation targets stay in step with the shipped modules."""
+import ast
 import configparser
 import pathlib
 import tomllib
@@ -6,6 +7,7 @@ import tomllib
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SRC = ROOT / "src" / "iobench"
 EXEMPT = {"host.py", "__main__.py"}
+NO_EXECUTABLE_TARGETS = {"__init__.py"}
 
 
 def test_gate_01_coverage_exclusions_match():
@@ -22,12 +24,31 @@ def test_gate_01_coverage_exclusions_match():
     assert cp["run"]["branch"] == "True"
 
 
-def test_gate_01_mutation_targets_cover_every_module():
+def test_gate_01_package_initializer_has_no_executable_source():
+    module = ast.parse((SRC / "__init__.py").read_text(encoding="utf-8"))
+    assert len(module.body) == 1
+    assert isinstance(module.body[0], ast.Expr)
+    assert isinstance(module.body[0].value, ast.Constant)
+    assert isinstance(module.body[0].value.value, str)
+
+
+def test_gate_01_mutation_targets_cover_every_executable_module():
     doc = tomllib.loads((ROOT / "assay.toml").read_text())
     targets = set(doc["lanes"]["iobench"]["judge"]["targets"])
-    shipped = {f"src/iobench/{p.name}" for p in SRC.glob("*.py")} - {f"src/iobench/{n}" for n in EXEMPT}
+    excluded = EXEMPT | NO_EXECUTABLE_TARGETS
+    shipped = {f"src/iobench/{p.name}" for p in SRC.glob("*.py")} - {
+        f"src/iobench/{name}" for name in excluded
+    }
     assert targets == shipped, (sorted(shipped - targets), sorted(targets - shipped))
     assert doc["lanes"]["iobench"]["judge"]["fail_under"] == 100.0
+
+
+def test_gate_01_assay_coverage_lane_does_not_stop_after_a_failure():
+    doc = tomllib.loads((ROOT / "assay.toml").read_text())
+    argv = doc["lanes"]["iobench"]["argv"]
+    assert not any(
+        token == "--maxfail" or token.startswith("--maxfail=") for token in argv
+    )
 
 
 def test_gate_01_run_gate_registers_the_lanes():

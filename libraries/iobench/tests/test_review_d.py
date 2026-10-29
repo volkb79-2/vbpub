@@ -1,4 +1,5 @@
 """IOB-BL-06 (review r3 SHOULDs, safety): abort stops the probe unit, bounded reaping, exclusive device writers, tighter fio allowlist."""
+import ctypes
 import os
 import signal
 import subprocess
@@ -13,6 +14,18 @@ from iobench.testing import R1002_PARTUUID, R1002_SIZE
 from test_cov import calibrated
 
 DEV = "/dev/vda7"
+
+
+def _set_child_subreaper(enabled):
+    libc = ctypes.CDLL(None, use_errno=True)
+    previous = ctypes.c_int()
+    if libc.prctl(37, ctypes.byref(previous), 0, 0, 0) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+    if libc.prctl(36, int(enabled), 0, 0, 0) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+    return bool(previous.value)
 
 
 def _abort_when_probe_starts(host, stuck=False):
@@ -78,31 +91,45 @@ def test_bl06_stop_is_allowlisted_only_for_probe_units():
 def test_bl06_n_r3_2_a_survivor_holding_the_pipe_cannot_hang_the_run(tmp_path, monkeypatch):
     from iobench.errors import Aborted
     monkeypatch.setattr(host_mod, "REAP_TIMEOUT_S", 0.5)
-    pidfile = tmp_path / "pid"
+    pidfiles = (tmp_path / "abort.pid", tmp_path / "timeout.pid")
     # the grandchild leaves the process group (setsid), so killpg misses it and it keeps the stdout pipe open
-    script = f"setsid sleep 29 & echo $! > {pidfile}; sleep 28"
     real = RealHost()
     real._escalated = True
     started = time.time()
+    previous_subreaper = _set_child_subreaper(True)
     try:
+        script = f"setsid sleep 29 & echo $! > {pidfiles[0]}; sleep 28"
         with pytest.raises(Aborted, match="second signal"):
             real._run_polled(["sh", "-c", script], None)
         assert time.time() - started < 10
+        assert pidfiles[0].exists()
+
         real._escalated = False
         started = time.time()
+        script = f"setsid sleep 29 & echo $! > {pidfiles[1]}; sleep 28"
         with pytest.raises(subprocess.TimeoutExpired):
             real._run_polled(["sh", "-c", script], 1.0)
         assert time.time() - started < 10
+        assert pidfiles[1].exists()
     finally:
-        for _ in range(20):
-            if pidfile.exists() and pidfile.read_text().strip():
-                break
-            time.sleep(0.1)
-        if pidfile.exists() and pidfile.read_text().strip():
-            try:
-                os.kill(int(pidfile.read_text()), signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+        try:
+            for pidfile in pidfiles:
+                raw_pid = pidfile.read_text().strip() if pidfile.exists() else ""
+                if not raw_pid:
+                    continue
+                pid = int(raw_pid)
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                try:
+                    os.waitpid(pid, 0)
+                except ChildProcessError as exc:
+                    raise AssertionError(
+                        f"detached test child {pid} was not adopted for cleanup"
+                    ) from exc
+        finally:
+            _set_child_subreaper(previous_subreaper)
 
 
 # -- N-r3-3: a device writer must be exclusive -----------------------------------------------------------------------------------

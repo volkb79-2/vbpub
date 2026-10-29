@@ -4,6 +4,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Fixed
+- Sort declared whole-target paths when building R1 and native/ingested R2
+  verdicts; avoid reporting pytest-cov's platform banner as the first failing
+  test or treating R0 execution errors as measured test failures (B171).
+
 <!-- cmru: release history -->
 
 ## [10.0.0] - 2026-10-28

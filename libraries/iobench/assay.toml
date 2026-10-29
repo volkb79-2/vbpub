@@ -7,7 +7,6 @@ rigor = ["R0", "R1", "R2"]
 enforcement = "gate"
 argv = [
   "/opt/tester-venv/bin/python3", "-m", "pytest", "tests", "-q",
-  "--maxfail=1",
   "--cov=iobench", "--cov-branch", "--cov-report=json:coverage.json",
 ]
 env = { PYTHONPATH = "src:../cli-extended/src", PYTHONDONTWRITEBYTECODE = "1" }
@@ -27,12 +26,11 @@ unsafe_symlink_omissions = [
 language = "python"
 source_roots = ["src/iobench"]
 mode = "whole_target"
-# Every shipped module; tests/test_gate.py::test_gate_01_mutation_targets_cover_every_module
-# (IOB-GATE-01) fails when a module under src/iobench is missing here, except the two
-# coverage exclusions host.py and __main__.py (thin real-effect shims, covered by the
-# r1002 acceptance probe IOB-ACC-01 and by FakeHost-parity tests).
+# Every executable shipped module; tests/test_gate.py checks the inventory.
+# The docstring-only __init__.py has no executable lines for whole-target
+# coverage. host.py and __main__.py remain the two coverage-excluded real-effect
+# shims, covered by the r1002 acceptance probe IOB-ACC-01 and FakeHost parity.
 targets = [
-  "src/iobench/__init__.py",
   "src/iobench/cache.py",
   "src/iobench/calibrate.py",
   "src/iobench/ceilings.py",

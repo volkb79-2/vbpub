@@ -13192,3 +13192,33 @@ and was fixed: a dirty tree after the cold-witness R2 baseline raised a bare
 `_classified_bucket` with a non-mapping tree proof that ends in an assertion).
 They keep the floor honest but a reviewer may prefer making those states
 unrepresentable. R2 itself: B169.
+
+## B171 — whole-target start failures in the 2026-10-29 PWMCP and IOBench R2 runs
+
+**Status: IMPLEMENTED; focused registered gates pending.** The two campaign
+worktrees remain read-only evidence. PWMCP's R1 judgment producer forwarded
+the lane's package-grouped target declaration directly, while
+`JudgmentR1.__post_init__` requires Python-lexically sorted targets. The
+campaign log therefore stopped at verdict construction before mutation work.
+IOBench's captured R0 stdout reports 752 passed tests and coverage JSON; its
+`EXEC_FAILED` instead came from an adopted detached `setsid sleep` child in
+`test_bl06_n_r3_2_a_survivor_holding_the_pipe_cannot_hang_the_run` remaining
+alive when Assay checked pytest's process tree. The diagnostic then falsely
+named pytest-cov's `coverage: platform ...` banner as a failing test because
+Assay's pytest-header fallback accepted any underscore-delimited line.
+
+**Fix:** sort whole-target R1 and native/ingested R2 target tuples at Assay's
+producer boundary, preserving configured order for execution; exclude the
+coverage.py platform banner from pytest failure-header parsing, and print an
+R0 failing-test detail only when the R0 claim is actually `FAIL`. IOBench now
+sets pytest as a child subreaper in the survivor test and kills/reaps both
+detached children before restoring the prior setting. Its R0/R1 argv no
+longer stops at the first failure, and its whole-target inventory omits the
+docstring-only `src/iobench/__init__.py`, which has no executable lines.
+
+**Evidence and acceptance:** the captured IOBench artifact reports
+`752 passed in 111.58s`; there is no coverage threshold failure or missing
+dependency. Run the registered `assay` `tester-unified` and
+`libraries/iobench` `r0-r1` lanes after the fix is committed. Then, after this
+branch is merged, retry each R2 campaign from a new worktree based on the
+integrated `origin/main`; keep the failed campaign worktrees untouched.
