@@ -153,6 +153,7 @@ items:
   - {id: B158, title: "cold-witness refusal omits which untrusted pytest hook made the baseline unsupported", type: bugfix, component: mutation, context_estimate: small}
   - {id: B159, title: "the schema migration docs test requires hand-written CMRU release notes in an intentionally empty Unreleased section", type: bugfix, component: tests, context_estimate: small}
   - {id: B160, title: "SQL candidate discovery materializes every mutation site before applying the bounded candidate limit", type: bugfix, component: adapters, context_estimate: medium}
+  - {id: B171, title: "Retain underlying suite result and descendant identity when native R2 cleanup detects outliving descendants; keep the candidate crashed", type: bugfix, component: execution, context_estimate: large}
 ---
 
 # assay — backlog
@@ -13192,3 +13193,62 @@ and was fixed: a dirty tree after the cold-witness R2 baseline raised a bare
 `_classified_bucket` with a non-mapping tree proof that ends in an assertion).
 They keep the floor honest but a reviewer may prefer making those states
 unrepresentable. R2 itself: B169.
+
+## B171 — retain suite verdict and descendant identity when cleanup finds a leak
+
+**Status: OPEN; implementation deferred from the 2026-10-29 Run-Gate harness
+fix.** The registered Assay `tester-unified` lane is the required gate for this
+item. Do not use an R2 campaign as its implementation gate.
+
+**Observed.** In `runner.execute_command`, a completed command whose process
+tree has `outliving_descendants > 0` is returned as `ERROR/EXEC_FAILED` before
+the declared result report is consumed. This correctly keeps the mutation
+bucket `crashed`, but discards whether the suite itself passed or failed and
+its structured report summary. `ProcessTreeEvidence` records only counts, so
+the state and verdict cannot identify a surviving process by `pid`, `ppid`, or
+`comm`.
+
+**Contract.** Process cleanup and functional test outcome are separate facts.
+A cleaned leak remains `ERROR/EXEC_FAILED` and `crashed`; the underlying
+`PASS` or `FAIL`, return code, and any complete declared test summary are
+retained as diagnostic evidence and never promote the candidate to `killed`
+or `survived`. Each observed outliving descendant records its `pid`, `ppid`,
+and `comm` when procfs still exposes it. A process that vanishes between the
+child listing and identity read remains counted as outliving, with the
+identity omission represented explicitly rather than fabricated.
+
+**Implementation plan.**
+
+1. In `src/assay/runner.py`, consume and validate the declared result report
+   before constructing the cleanup-error `CommandResult`; retain a typed
+   underlying command outcome, return code, and complete summary separately
+   from `ERROR/EXEC_FAILED`.
+2. In `src/assay/process_tree.py`, capture immutable descendant identity
+   records at first observation, before signalling. Validate PID and PPID as
+   positive integers and `comm` as a non-empty string; preserve count-only
+   evidence for races where procfs no longer has that PID.
+3. Carry the diagnostic result through `src/assay/mutation.py` into both the
+   resumable candidate state and progress event, then into a dedicated
+   optional field on `verdict.MutantOutcome`. Keep `_classify_mutant_result`
+   and the judge precedence unchanged.
+4. Define the wire change deliberately: bump the verdict schema to v17 and
+   the process-tree protocol to `/2`; bump the mutation-state schema only if
+   the state shape requires it. Make resume either accept the prior shape
+   without inventing evidence or refuse it with a named compatibility error.
+   Update `schemas/verdict.schema.json`, model serialization, raw verifier
+   checks, state readers, and the judge identity label together.
+5. Add runner tests for complete PASS and FAIL summaries with a descendant
+   leak, tests proving both remain `crashed`, process-tree tests for captured
+   identity and the PID-vanished race, and independent schema/verifier tests
+   for valid and malformed diagnostic evidence. Include old v16 / protocol-1
+   inputs to pin the chosen compatibility behavior.
+6. Update README (feature and DESIGN-GUIDE link), DESIGN-GUIDE (why the
+   functional verdict is retained without changing the crash bucket), and
+   CONSUMERS.md (a copyable v17 evidence example and verifier behavior).
+
+**Acceptance.** Run `run-gate tester-unified` from `assay/` through the
+registered Run-Gate lane, at most twice (a red regression run, then a green
+run). Confirm `assay verify` accepts the emitted well-formed v17 example and
+rejects malformed descendant identity or a result whose top-level bucket was
+changed to `killed`/`survived`. Close only after the gate is green and the
+three adopter-facing documents, schema, model, state reader, and verifier agree.
