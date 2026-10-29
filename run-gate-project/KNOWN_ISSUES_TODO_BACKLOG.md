@@ -6592,14 +6592,18 @@ caps the rusage fake at 16 polls with an assertion on exhaustion. The audit
 also found and guarded the same post-spawn exception window in
 `spawn_bare_host_placement_barrier`.
 
-**Status remains OPEN.** The third registered selftest run passed 2,445 tests
-with one expected skip, but its diff-coverage gate failed at 45/50 changed
-executable lines (90%; all 20 branches were taken). The five uncovered lines
-were in the defensive placement-barrier fd-close suppression and follower
-timeout escalation. Targeted coverage was added after that run; the three-run
-selftest limit is exhausted, so those final edits have no green registered
-gate evidence. These fixes do not change the ten old campaign records or turn
-a cleanup failure into a mutation kill. The operator's planned
+**Status remains OPEN.** The third registered selftest attempt passed 2,445
+tests with one expected skip, but its diff-coverage gate failed at 45/50
+changed executable lines (90%; all 20 branches were taken). Targeted coverage
+was added after that attempt. The controller then verified the final tree with
+the registered `selftest` lane on clean commit
+`6650bd3f58f2be4e3ec40ba5315c74fac2e5d805` (2026-10-29; run
+`36c16001a136fad42be6e751e0473ba3`, log
+`/home/vscode/vbpub-release-program-20261027/logs/g-rg.log`): 2,446 passed,
+one skipped in 217.95 seconds, diff coverage 48/48 changed executable lines
+(100.0%) and 20/20 branches, exit 0. The old R2 campaign records remain
+unjudged; these fixes do not turn a cleanup failure into a mutation kill. The
+operator's planned
 `--resume --rejudge` of the eleven affected candidates is still required to
 replace the unjudged evidence. No R2 campaign was run in this change.
 
@@ -6626,7 +6630,8 @@ preserves the real 900 s lane budget and lets a future mutation run report a
 test failure instead of consuming the full candidate window.
 
 **Status remains OPEN.** Candidate `183c6b7fe3d2` still has no final
-judgment. The source and test cause is identified, but the Run-Gate selftest
-did not finish green within the authorized three runs, and the operator's
-planned `--resume --rejudge` is required to replace the old budget-exceeded
-record. Do not score it as a kill until that run produces a valid verdict.
+judgment. The source and test cause is identified, and the registered
+Run-Gate selftest is green on commit `6650bd3f` (full run evidence under
+RG-120). The operator's planned `--resume --rejudge` is still required to
+replace the old budget-exceeded record. Do not score it as a kill until that
+run produces a valid verdict.

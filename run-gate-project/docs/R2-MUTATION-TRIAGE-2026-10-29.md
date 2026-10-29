@@ -142,17 +142,22 @@ records. RG-120 and RG-121 remain open until the operator's planned
 `--resume --rejudge` run replaces the ten crashed records and the one expired
 record. No R2 campaign was run for this change.
 
-The authorized registered selftest runs were:
+The registered selftest evidence is:
 
 1. Red regression run: 3 expected failures, 2,441 passed, one skipped. The
    failures were the follower waiter leak, the log-watch startup leak, and the
    bare-host placement-barrier post-spawn leak.
-2. First green attempt: 2,443 passed, two test-double failures, one skipped.
+2. First follow-up attempt: 2,443 passed, two test-double failures, one skipped.
    The Popen stubs also intercepted `subprocess.run` cleanup; they were
    narrowed to `docker logs`.
-3. Final attempt: 2,445 passed, one skipped in 199.70 seconds. Diff coverage
+3. The next attempt: 2,445 passed, one skipped in 199.70 seconds. Diff coverage
    failed at 45/50 changed executable lines (90%; branches 20/20), identifying
    the placement-barrier close-error handler and follower timeout escalation.
-   Targeted coverage was added after this run, but the three-run limit is
-   exhausted; the final edits therefore have no green registered gate
-   evidence. No fourth selftest was run.
+   Targeted coverage was added after this run.
+4. Controller-verified final tree: registered lane `selftest` passed on clean
+   commit `6650bd3f58f2be4e3ec40ba5315c74fac2e5d805` (2026-10-29; run
+   `36c16001a136fad42be6e751e0473ba3`, log
+   `/home/vscode/vbpub-release-program-20261027/logs/g-rg.log`): 2,446 passed,
+   one skipped in 217.95 seconds; diff coverage 48/48 changed executable lines
+   (100.0%) and 20/20 branches; exit 0. The earlier 45/50 result is superseded
+   by this green run. No R2 campaign was run for this change.
