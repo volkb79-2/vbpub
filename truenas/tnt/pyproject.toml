@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools==82.0.1", "wheel==0.47.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tnt"
+description = "tnt (truenas-tui): a keyboard-driven terminal UI and scriptable CLI for TrueNAS, built on the JSON-RPC API"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{name = "Volker Badziong"}]
+# cli-extended: a real wheel dependency, never vendored (estate rule; published on GitHub Releases only).
+# Floor 0.4.0: CliIdentity.resolve, VerbSpec(dry_run=...), register_doctor and the surface/review workflow.
+#
+# truenas_api_client (LGPL-3.0, official transport: JSON-RPC 2.0 over websocket, SCRAM and API_KEY_PLAIN
+# logins through auth.login_ex). It is NOT on PyPI, so it installs from git. Pinned by commit sha, not by
+# branch: the sha is the commit the tag TS-27.0.0-RC.1 points at (commit date 2026-08-31, 58 days old on
+# 2026-10-28, past the 14-day freshness buffer). Reason for this floor: it is the first tag whose
+# Client.login_with_api_key has the SCRAM default with channel binding and verify_ssl; the 25.10 tags
+# predate SCRAM and the 26 BETA tags predate the 27 RC method set. Re-pin to the TS-27.0.0 GA tag
+# after it is 14 days old (BACKLOG TNT-31). LGPL note: the client is imported unmodified as a separate
+# installed distribution, which satisfies LGPL-3.0 for a MIT-licensed wrapper.
+dependencies = [
+  "cli-extended>=0.4.0",
+  "truenas_api_client @ git+https://github.com/truenas/api_client.git@2a04491953d38c13f13f40729d2a4966a77c6297",
+]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+# The scriptable CLI has no heavy dependencies; the interactive UI is opt-in. Floor 8.0: Tree, DataTable,
+# the command-palette SystemCommands hook and the Pilot test driver used here.
+tui = ["textual>=8.0"]
+# Tests exercise the TUI and a real websocket round trip, so both extras are mandatory for the suite:
+# a missing one must FAIL the tests, never skip them.
+test = ["pytest>=8", "pytest-cov>=6", "textual>=8.0", "websockets>=15"]
+
+[project.scripts]
+tnt = "tnt.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# VERSION is the CMRU-owned version source. CMRU commits its update before
+# tagging, and setuptools reads the same file for wheel metadata.
+[tool.setuptools.dynamic]
+version = {file = "VERSION"}
+
+[tool.cli-extended]
+schema_version = 1
+
+[[tool.cli-extended.clis]]
+id = "tnt"
+factory = "tnt.cli:build_cli"
+review = "docs/cli-review.toml"
+manifest = "docs/cli-surface.json"
+spec = "docs/CLI-SPEC.md"
+findings = "docs/cli-review-findings.toml"
+
+[tool.coverage.report]
+precision = 2

@@ -139,6 +139,7 @@ SPEC §9.
 | RG-119 | docs-vs-code drift remainder from the 2026-10-28 audit (anchors, LANE-AUTHORING TODO table, history example, host paths, versions, `--lock-wait`, `exit_map`, `members`, `load_config`) | Low | OPEN 2026-10-28 |
 | RG-120 | the a245908 R2 campaign has ten candidate runs without valid test verdicts: six outliving children and four cgroup OOM kills | Medium | OPEN 2026-10-29; evidence and candidate IDs in `docs/R2-MUTATION-TRIAGE-2026-10-29.md` |
 | RG-121 | one a245908 R2 candidate exceeded the configured 900 s per-candidate budget without a final judgment | Medium | OPEN 2026-10-29; evidence in `docs/R2-MUTATION-TRIAGE-2026-10-29.md` |
+| RG-122 | `pytest-cov --cov-fail-under` can exit successfully while printing a raw coverage result below the floor because its exit check rounds to configured precision; a `kind = "command"` Run-Gate lane trusts that exit status | Medium | OPEN (filed 2026-10-29 from tnt TNT-53; consumer precision-2 workaround documented there) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -6635,3 +6636,21 @@ Run-Gate selftest is green on commit `6650bd3f` (full run evidence under
 RG-120). The operator's planned `--resume --rejudge` is still required to
 replace the old budget-exceeded record. Do not score it as a kill until that
 run produces a valid verdict.
+
+## RG-122 — pytest-cov can exit green below the displayed coverage floor in a command lane
+
+**Status:** OPEN (filed 2026-10-29 from tnt TNT-53). Severity: medium. The consumer workaround is
+`[tool.coverage.report] precision = 2`, applied in `truenas/tnt/pyproject.toml`.
+
+**Observed.** A tnt `r0-r1` log recorded by TNT-53 showed 96.937% coverage and printed a two-digit failure message
+(`96.94%` against a 97% floor), while pytest-cov exited 0. The lane is `kind = "command"`, so Run-Gate maps that
+process exit to PASS. The mismatch is between pytest-cov's `coverage.results.should_fail_under` exit check
+(`pytest_cov/plugin.py:373-381`, `coverage/results.py:483-502`, `coverage/config.py:232`) and the terminal report
+(`pytest_cov/plugin.py:411-421`): the former uses configured precision, which defaults to 0, while the latter
+compares and displays a more precise total. The tester closure receives pytest-cov 7.1.0 through
+`assay/pyproject.toml:39-42` and `tester-unified/gen-requirements.py:48-56`.
+
+**Expected.** A command lane whose raw coverage report is below `--cov-fail-under` exits nonzero, and Run-Gate records
+FAIL. Add an executable regression at the pytest-cov/coverage/tester image boundary or otherwise align the exit check
+with the reported precision. Consumer configuration can mitigate the mismatch but does not resolve the shared tool
+behavior.
