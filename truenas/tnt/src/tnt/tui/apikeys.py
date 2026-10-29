@@ -7,7 +7,7 @@ from typing import Any
 from textual import work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, DataTable, Input, Select, Static
+from textual.widgets import Button, Input, Select
 
 from ..actions import Plan, make_plan
 from ..errors import TntError
@@ -17,6 +17,7 @@ from ..profile import SecretEntry
 from ..session import Session
 from .workflows import PlanReview
 from .session_work import run as run_session_work, run_cancellable as run_cancellable_session_work
+from .widgets import DataTable, Static
 
 
 _OPERATIONS = (("Create API key", "create"), ("Rename selected", "rename"), ("Revoke selected", "revoke"))

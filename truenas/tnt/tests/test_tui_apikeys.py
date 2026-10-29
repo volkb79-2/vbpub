@@ -27,6 +27,32 @@ def _create_plan():
     return Plan(Action("TNT-99", Kind.MUTATE, "Create API key", (RpcCall("api_key.create"),)), "fingerprint")
 
 
+def test_remote_api_key_names_render_brackets_literally(config, opener):
+    paths = resolve_paths(config, config.with_name("tnt.secrets.toml"))
+    hosts, default, entries = load_host_store(paths)
+    session = opener(hosts["lab"], secret=entries["lab"].api_key)
+    names = ("[red]x[/]", "rack[blue]east[/]", "dataset[slot-1]")
+
+    async def go():
+        app = TntApp(session, hosts=hosts, default_host=default, secret_entries=entries,
+                     host_paths=paths, session_opener=opener)
+        async with app.run_test(size=(180, 55)) as pilot:
+            item = next(item for item in MENU if item.key == "credentials").children[1]
+            app.show(item)
+            await _wait_for(pilot, lambda: "API key(s)" in str(app.query_one("#apikey-note", Static).render()))
+            view = app.query_one(ApiKeysView)
+            view._loaded([{"id": index + 1, "name": name, "username": "operator"}
+                          for index, name in enumerate(names)])
+            await pilot.pause(0.05)
+            table = view.query_one("#apikey-table", DataTable)
+            rendered_cells = [table._get_row_renderables(index)[1][1] for index in range(len(names))]
+            assert [table.get_cell_at((index, 1)) for index in range(len(names))] == list(names)
+            assert [cell.plain for cell in rendered_cells] == list(names)
+            app.session_controller.close()
+
+    asyncio.run(go())
+
+
 def test_api_key_output_is_saved_privately_and_only_the_path_is_shown(config, opener, tmp_path, monkeypatch):
     paths = resolve_paths(config, config.with_name("tnt.secrets.toml"))
     hosts, default, entries = load_host_store(paths)

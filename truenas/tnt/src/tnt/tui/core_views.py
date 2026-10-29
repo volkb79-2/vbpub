@@ -8,10 +8,11 @@ from typing import Any
 from textual import work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, DataTable, Input, Static
+from textual.widgets import Button, Input
 
 from ..session import Session
 from .session_work import run as run_session_work
+from .widgets import DataTable, Static
 
 
 class CoreReadView(Vertical):

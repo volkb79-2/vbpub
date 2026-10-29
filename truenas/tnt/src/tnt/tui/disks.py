@@ -4,12 +4,11 @@ from __future__ import annotations
 from textual import work
 from textual.app import ComposeResult
 from textual.containers import Vertical
-from textual.widgets import DataTable, Static
-
 from ..domain import Disk
 from ..query import HEADERS, disk_row
 from ..session import Session
 from .session_work import run as run_session_work
+from .widgets import DataTable, Static
 
 
 class DisksView(Vertical):

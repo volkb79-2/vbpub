@@ -7,10 +7,11 @@ from typing import Any
 from textual import work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, DataTable, Input, Select, Static
+from textual.widgets import Button, Input, Select
 
 from ..session import Session
 from .session_work import run as run_session_work
+from .widgets import DataTable, Static
 
 
 _SERVICES = tuple((name, name) for name in ("MIDDLEWARE", "S3", "SMB", "SUDO", "SYSTEM"))

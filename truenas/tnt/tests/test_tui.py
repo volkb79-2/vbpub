@@ -6,6 +6,7 @@ import struct
 import pytest
 from textual.widgets import DataTable, Input, Select, Static, TextArea, Tree
 
+from tnt.actions import Action, Kind, Plan, RpcCall
 from tnt.adapters.v27 import V27
 from tnt.profile import load_profiles
 from tnt.session import Session
@@ -221,6 +222,19 @@ def test_destructive_tui_plan_dialog_shows_calls_and_requires_exact_target(confi
             confirmation_target = str(app.screen.query_one("#plan-confirm-target", Static).render())
             assert "Type this exact target to confirm" in confirmation_target and "web" in confirmation_target
             assert app.screen.query_one("#plan-confirm", Input).placeholder == "Type confirmation text exactly"
+            await pilot.click("#plan-cancel")
+
+            markup_target = "[red]x[/]"
+            markup_plan = Plan(
+                Action("TNT-99", Kind.DESTRUCTIVE, "Revoke API key", (RpcCall("api_key.delete"),),
+                       confirm_target=markup_target),
+                "fingerprint",
+            )
+            dialog = PlanReview(markup_plan, session)
+            app.push_screen(dialog)
+            await pilot.pause(0.1)
+            confirmation = dialog.query_one("#plan-confirm-target", Static).render().plain
+            assert confirmation.splitlines()[-1] == markup_target
             await pilot.click("#plan-cancel")
     asyncio.run(go())
     session.close()

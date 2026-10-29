@@ -7,7 +7,7 @@ from typing import Any
 from textual import work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, Checkbox, Input, Static
+from textual.widgets import Button, Checkbox, Input
 
 from ..actions import Plan, make_plan
 from ..errors import TntError, TransportError
@@ -15,6 +15,7 @@ from ..session import Session
 from .workflows import PlanReview
 from .session_work import (begin as begin_session_work, error_message, post as post_session_callback, report_unavailable,
                            run as run_session_work, run_cancellable as run_cancellable_session_work)
+from .widgets import Static
 
 
 def _call_outcomes(result: Any) -> list[dict[str, Any]]:

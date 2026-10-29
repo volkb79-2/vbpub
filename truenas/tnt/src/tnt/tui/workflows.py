@@ -10,7 +10,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Checkbox, DataTable, Input, Select, Static, TextArea
+from textual.widgets import Button, Checkbox, Input, Select, TextArea
 
 from ..actions import Action, Plan, apply_plan, make_plan
 from ..errors import PlanExecutionError, TntError
@@ -20,6 +20,7 @@ from ..workflows import _safe_value, validate_ssh_public_keys
 from .session_work import (begin as begin_session_work, error_message, post as post_session_callback,
                            report_unavailable,
                            run as run_session_work, run_cancellable as run_cancellable_session_work)
+from .widgets import DataTable, Static
 
 
 SCREEN_TITLES = {

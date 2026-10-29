@@ -8,7 +8,7 @@ from textual.app import App, ComposeResult, SuspendNotSupported, SystemCommand
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Button, Footer, Header, Select, Static, Tree
+from textual.widgets import Button, Footer, Header, Select, Tree
 
 from .. import profile as prof
 from ..errors import TntError
@@ -25,6 +25,7 @@ from .network import NetworkView
 from .workflows import WorkflowView
 from .system import SystemGeneralView, SystemPowerView, SystemUpdateView
 from .core_views import VIEWS as CORE_READ_VIEWS
+from .widgets import Static
 
 VIEWS = {
     **CORE_READ_VIEWS,

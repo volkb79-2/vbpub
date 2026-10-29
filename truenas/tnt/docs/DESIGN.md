@@ -616,8 +616,8 @@ generation, but no other generation is accepted or represented in the shipped ma
 Decided by the controller on 2026-10-28: the pinned git-sha dependency on `truenas_api_client` is accepted for now
 (documented in `pyproject.toml`); no relaxation patches; no other API generation; no Shell menu entry.
 
-Still open: Q7 how conditional menu entries (Apps, KMIP, Enclosure; flagged `conditional` in `menu.py`) are detected
-per host (TNT-35). Live-lane profile selection and required variables are documented in
+Still open: Q7 how conditional menu entries (Apps, Containers, Virtual Machines, KMIP, Enclosure; flagged
+`conditional` in `menu.py`) are detected per host (TNT-35). Live-lane profile selection and required variables are documented in
 [`docs/CONSUMERS.md`](CONSUMERS.md#explicit-live-lane); the operator supplies the test host and its disposable pool.
 
 `tnt.testing` ships inside the wheel but imports `websockets` at module level; `websockets` is a test-extra dependency

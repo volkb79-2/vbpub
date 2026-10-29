@@ -8,11 +8,12 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Checkbox, DataTable, Input, Select, Static
+from textual.widgets import Button, Checkbox, Input, Select
 
 from ..errors import TntError
 from ..host_store import HostStore
 from ..profile import AUTH_MODES, TLS_MODES, Profile, Secret, SecretEntry
+from .widgets import DataTable, Static
 
 
 class _FocusedHostTable(DataTable):

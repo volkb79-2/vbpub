@@ -59,9 +59,9 @@ of focused work. `[DONE M1]`, `[DONE M2]`, and `[DONE It4]` mark implemented or 
 | TNT-29 | cli-extended surface review (AC-17): the review catalog `docs/cli-review.toml` is empty; run `surface pack`, review, link `cli_case` tests, then `surface check` must pass | M | It4 |
 | TNT-30 | Mutation lane (assay R2) for `tnt`, `assay.toml` + gate lane; coverage threshold (iobench holds 100%) | M | It4 |
 | TNT-31 | Re-pin `truenas_api_client` from the TS-27.0.0-RC.1 sha to the TS-27.0.0 GA tag once it is 14 days old | S | GA+14d |
-| TNT-32 | Register `tnt` in `cmru.orchestration.toml` and the root run-gate registry (see DESIGN section 12); this checkout currently declares only `r0-r1` and `live-v27`, not `live-inspect` | S | It4 |
+| TNT-32 | Register `tnt` in `cmru.orchestration.toml` and the root run-gate registry (see DESIGN section 12); this checkout declares `r0-r1`, `ux-focused`, and `live-v27`, not `live-inspect` | S | It4 |
 | TNT-33 | [DONE It4] Gate lanes install the editable `tnt` project in the tester venv with an explicit test-only SCM version before cli-extended's installed-version lookup | S | It4 |
-| TNT-35 | Detect per host which remaining conditional menu entries (Apps, KMIP, Enclosure) the web UI would show, and hide unsupported entries | S | Later |
+| TNT-35 | Detect per host which conditional menu entries (Apps, Containers, Virtual Machines, KMIP, Enclosure) the web UI would show, and hide unsupported entries | S | Later |
 | TNT-36 | Revisit container memory controls if a future v27 schema exposes a supported memory resource field; current `ContainerCreate`/`ContainerUpdate` schema exposes `cpuset` but no memory limit (deferred by verified v27 schema) | S | Later |
 | TNT-37 | Expose a current container image identity if a future v27 API supplies it; `ContainerEntry` has no image field and create consumes image metadata without retaining it in the returned record (deferred by the verified schema; see `docs/API-METHODS-V27.md`) | S | Later |
 | TNT-49 | [DONE It2] Read-only core views: Dashboard, Alerts, Jobs, Services, Storage health, exact v27 contracts, and unavailable-state behavior | L | It2 |
