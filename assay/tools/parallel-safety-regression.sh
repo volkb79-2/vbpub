@@ -6,22 +6,22 @@ repo_root="$(git -C "$worktree" rev-parse --show-toplevel)"
 base_commit="$(git -C "$repo_root" merge-base HEAD origin/main)"
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/assay-parallel-regression.XXXXXXXX")"
 baseline="$scratch/baseline"
-baseline_added=0
+baseline_created=0
 
 cleanup() {
   local status=$?
   trap - EXIT
-  if ((baseline_added == 1)); then
-    git -C "$repo_root" worktree remove --force "$baseline" >/dev/null \
-      || status=1
+  if ((baseline_created == 1)); then
+    rm -rf -- "$baseline" || status=1
   fi
   rm -rf -- "$scratch" || status=1
   exit "$status"
 }
 trap cleanup EXIT
 
-git -C "$repo_root" worktree add --detach "$baseline" "$base_commit"
-baseline_added=1
+git clone --quiet --shared --no-checkout "$repo_root" "$baseline"
+baseline_created=1
+git -C "$baseline" checkout --quiet --detach "$base_commit"
 test_paths=(
   tests/core/test_canary_result.py
   tests/core/test_runner_execute.py
