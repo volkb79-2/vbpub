@@ -17057,7 +17057,7 @@ class TestTwoClientsOneLane:
                                 stderr=subprocess.STDOUT, text=True)
 
     def test_the_second_client_follows_and_the_owner_reports_its_own_result(
-            self, tmp_path, monkeypatch):
+            self, tmp_path, monkeypatch, child_process_scope):
         repo, proj = make_history_repo(tmp_path, SIMPLE_LANE)
         log, state = fake_docker_stateful(tmp_path, monkeypatch)
         (state / ".hang").write_text("")      # `docker logs -f` blocks
@@ -17095,6 +17095,83 @@ class TestTwoClientsOneLane:
         assert len(slot["history"]) == 1, slot
         assert slot["latest"]["outcome"] == "pass", slot["latest"]
         assert not record.exists()
+
+    def test_log_spawn_failure_reaps_the_waiter(self, monkeypatch):
+        class Process:
+            def __init__(self):
+                self.terminated = False
+                self.waited = False
+
+            def poll(self):
+                return None if not self.waited else 0
+
+            def terminate(self):
+                self.terminated = True
+
+            def wait(self, timeout=None):
+                self.waited = True
+                return 0
+
+        waiter = Process()
+        calls = []
+
+        def popen(argv, **kwargs):
+            calls.append(argv)
+            if argv[1] == "wait":
+                return waiter
+            raise OSError("planted docker logs spawn failure")
+
+        monkeypatch.setattr(run_gate.subprocess, "Popen", popen)
+        with pytest.raises(OSError, match="planted docker logs spawn failure"):
+            run_gate.follow_container(
+                "docker", "run-gate-test", {"kind": "command"}, "suite",
+                Path("/project"), Path("/repo"), Path("/tree"))
+
+        assert calls == [["docker", "wait", "run-gate-test"],
+                         ["docker", "logs", "-f", "run-gate-test"]]
+        assert waiter.terminated
+        assert waiter.waited
+
+    def test_log_wait_failure_kills_and_reaps_a_slow_follower(self,
+                                                              monkeypatch):
+        class Process:
+            def __init__(self, *, fail_body_wait=False, timeout_cleanup=False):
+                self.fail_body_wait = fail_body_wait
+                self.timeout_cleanup = timeout_cleanup
+                self.terminated = False
+                self.killed = False
+                self.waited = False
+
+            def poll(self):
+                return None if not self.waited else 0
+
+            def terminate(self):
+                self.terminated = True
+
+            def kill(self):
+                self.killed = True
+
+            def wait(self, timeout=None):
+                if self.fail_body_wait and timeout is None and not self.terminated:
+                    raise RuntimeError("planted log follower wait failure")
+                if self.timeout_cleanup and timeout == 1:
+                    raise subprocess.TimeoutExpired("docker logs", timeout)
+                self.waited = True
+                return 0
+
+        waiter = Process()
+        logs = Process(fail_body_wait=True, timeout_cleanup=True)
+        monkeypatch.setattr(
+            run_gate.subprocess, "Popen",
+            lambda argv, **kwargs: waiter if argv[1] == "wait" else logs)
+
+        with pytest.raises(RuntimeError, match="planted log follower wait failure"):
+            run_gate.follow_container(
+                "docker", "run-gate-test", {"kind": "command"}, "suite",
+                Path("/project"), Path("/repo"), Path("/tree"))
+
+        assert logs.terminated and logs.killed and logs.waited
+        assert waiter.terminated and waiter.waited
 
 
 class TestInflightRecordDecisions:
@@ -23954,6 +24031,75 @@ class TestAwaitContainerProfilingWiring:
     def _start_container(self, state: Path, name: str) -> None:
         (state / name).write_text("running 0\n")
 
+    def test_log_watch_setup_failure_reaps_spawned_log_process(
+            self, tmp_path, monkeypatch):
+        fake_docker_stateful(tmp_path, monkeypatch)
+        docker = shutil.which("docker")
+
+        class Process:
+            pid = 4240
+
+            def __init__(self):
+                self.returncode = None
+                self.terminated = False
+                self.waited = False
+
+            def poll(self):
+                return self.returncode
+
+            def terminate(self):
+                self.terminated = True
+                self.returncode = -signal.SIGTERM
+
+            def wait(self, timeout=None):
+                self.waited = True
+                if self.returncode is None:
+                    self.returncode = -signal.SIGTERM
+                return self.returncode
+
+        process = Process()
+        real_popen = run_gate.subprocess.Popen
+
+        def popen(argv, *args, **kwargs):
+            if argv[1:3] == ["logs", "-f"]:
+                return process
+            return real_popen(argv, *args, **kwargs)
+
+        monkeypatch.setattr(run_gate.subprocess, "Popen", popen)
+
+        def fail_watch_setup(*args, **kwargs):
+            raise RuntimeError("planted log-watch startup failure")
+
+        monkeypatch.setattr(run_gate, "LogStreamWatch", fail_watch_setup)
+        with pytest.raises(RuntimeError, match="planted log-watch startup failure"):
+            run_gate.await_container(
+                docker, "run-gate-test-container",
+                {"kind": "command", "stall_timeout": "1s"}, "suite",
+                tmp_path, tmp_path, tmp_path)
+
+        assert process.terminated
+        assert process.waited
+
+    def test_log_spawn_failure_still_removes_the_container(
+            self, tmp_path, monkeypatch):
+        log, _state = fake_docker_stateful(tmp_path, monkeypatch)
+        docker = shutil.which("docker")
+        real_popen = run_gate.subprocess.Popen
+
+        def popen(argv, *args, **kwargs):
+            if argv[1:3] == ["logs", "-f"]:
+                raise OSError("planted docker logs spawn failure")
+            return real_popen(argv, *args, **kwargs)
+
+        monkeypatch.setattr(run_gate.subprocess, "Popen", popen)
+
+        with pytest.raises(OSError, match="planted docker logs spawn failure"):
+            run_gate.await_container(
+                docker, "run-gate-test-container", {"kind": "command"},
+                "suite", tmp_path, tmp_path, tmp_path)
+
+        assert ["rm", "-f", "run-gate-test-container"] in _docker_calls(log)
+
     def test_basic_mode_samples_on_every_timeout(self, tmp_path, monkeypatch):
         monkeypatch.setattr(run_gate, "PROFILE_SAMPLE_SECONDS", 0.05)
         log, state = fake_docker_stateful(tmp_path, monkeypatch)
@@ -25446,6 +25592,10 @@ class TestBareHostProfilingWiring:
             def poll(self):
                 return self.returncode
 
+            def wait(self, timeout=None):
+                self.returncode = -signal.SIGTERM
+                return self.returncode
+
         proc = Process()
         watch = Watch()
         rusage = _FakeRusage(ru_maxrss=123, ru_utime=1.0, ru_stime=0.5)
@@ -25455,6 +25605,9 @@ class TestBareHostProfilingWiring:
         watch_calls = []
 
         def wait4(pid, options):
+            if len(wait_calls) >= 16:
+                raise AssertionError(
+                    "rusage fallback stall loop exceeded 16 wait4 polls")
             wait_calls.append((pid, options))
             if state["killed"]:
                 return pid, 15, rusage
@@ -25629,9 +25782,14 @@ class TestBareHostProfilingWiring:
 
             def __init__(self):
                 self.terminated = False
+                self.wait_calls = 0
 
             def wait(self, timeout=None):
+                self.wait_calls += 1
                 if timeout is not None and not self.terminated:
+                    if self.wait_calls > 8:
+                        raise AssertionError(
+                            "fallback stall loop exceeded 8 process waits")
                     raise subprocess.TimeoutExpired("bare assay", timeout)
                 self.returncode = 0
                 return 0
@@ -25673,9 +25831,14 @@ class TestBareHostProfilingWiring:
 
             def __init__(self):
                 self.terminated = False
+                self.wait_calls = 0
 
             def wait(self, timeout=None):
+                self.wait_calls += 1
                 if timeout is not None and not self.terminated:
+                    if self.wait_calls > 8:
+                        raise AssertionError(
+                            "fallback stall loop exceeded 8 process waits")
                     raise subprocess.TimeoutExpired("bare assay", timeout)
                 self.returncode = 0
                 return 0
@@ -27399,6 +27562,45 @@ class TestPlacementBarrier:
         for fd in opened:
             with pytest.raises(OSError):
                 os.fstat(fd)
+
+    def test_bare_host_spawn_reaps_child_if_parent_fd_close_fails(
+            self, monkeypatch):
+        real_close = os.close
+        close_calls = []
+        leaked_read_fd = []
+
+        def fail_first_close(fd):
+            close_calls.append(fd)
+            if len(close_calls) <= 2:
+                if not leaked_read_fd:
+                    leaked_read_fd.append(fd)
+                raise OSError("planted parent fd close failure")
+            real_close(fd)
+
+        class Process:
+            stdin = None
+
+            def __init__(self):
+                self.wait_calls = 0
+
+            def wait(self, timeout=None):
+                self.wait_calls += 1
+                return 125
+
+        proc = Process()
+        monkeypatch.setattr(run_gate.os, "close", fail_first_close)
+        monkeypatch.setattr(run_gate.subprocess, "Popen",
+                            lambda *args, **kwargs: proc)
+        try:
+            with pytest.raises(OSError, match="planted parent fd close failure"):
+                run_gate.spawn_bare_host_placement_barrier(
+                    ["true"], "90" * 16)
+        finally:
+            if leaked_read_fd:
+                real_close(leaked_read_fd[0])
+
+        assert proc.wait_calls == 1
+        assert len(close_calls) == 3
 
     def test_bare_host_spawn_aborts_if_readiness_handshake_fails(
             self, tmp_path, monkeypatch):

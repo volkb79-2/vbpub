@@ -6762,22 +6762,27 @@ def spawn_bare_host_placement_barrier(command: list[str], nonce: str,
                                       **popen_kwargs) -> subprocess.Popen:
     """Use a private control pipe so the lane still inherits the caller stdin."""
     read_fd, write_fd = os.pipe()
+    proc = None
     try:
         proc = subprocess.Popen(
             placement_barrier_python_argv(command, nonce, read_fd),
             stdin=None, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             bufsize=0, pass_fds=(read_fd,), **popen_kwargs)
-    except BaseException:
         os.close(read_fd)
-        os.close(write_fd)
-        raise
-    os.close(read_fd)
-    proc._run_gate_placement_control_fd = write_fd
-    try:
+        read_fd = None
+        proc._run_gate_placement_control_fd = write_fd
+        write_fd = None
         wait_for_placement_barrier(proc, nonce)
     except BaseException:
-        abort_placement_barrier(proc, nonce)
+        if proc is not None:
+            abort_placement_barrier(proc, nonce)
         raise
+    finally:
+        for fd in (read_fd, write_fd):
+            if fd is not None:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+    assert proc is not None
     return proc
 
 
@@ -12370,8 +12375,8 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
     # AFTER `docker run -d` returned and truncated to whole seconds, so every
     # line the container emitted inside that second was dropped from every
     # future re-attach — a lossy filter defended by a rationale that plain
-    # `logs -f` already satisfied (RW-15). Started BEFORE the try so the
-    # cleanup in `finally` can never reference an unbound process.
+    # `logs -f` already satisfied (RW-15). Start it inside the guarded block
+    # below so every post-spawn failure reaches the same process cleanup.
     # RG-41: a `kind = "command"` lane declaring `stall_timeout` has no
     # progress file to watch (that is `watch`/`ProgressWatch`'s case, assay
     # only) — its only liveness signal is this SAME log stream, timed by
@@ -12379,31 +12384,9 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
     # inherited only when that watch is actually needed; every other lane
     # keeps the zero-overhead inherited-stdout path unchanged.
     log_watch: "LogStreamWatch | None" = None
-    if lane["kind"] == "command" and lane.get("stall_timeout"):
-        # `--timestamps`: `LogStreamWatch._translate` needs docker's OWN
-        # per-line stamp to answer "how old is this line, really" across a
-        # re-attach's instant backlog replay — see its docstring. Stripped
-        # before any line is re-printed, so the operator sees the same text
-        # as a lane declaring no `stall_timeout` at all.
-        # errors="replace" (round-3 review): `text=True`'s STRICT decoding
-        # means a single non-UTF-8 byte anywhere in the container's own
-        # output — binary test fixtures, a stray byte from a subprocess IT
-        # launches — raises UnicodeDecodeError out of `for raw in
-        # proc.stdout`, caught by `_pump`'s broad `except (OSError,
-        # ValueError)` (a `UnicodeDecodeError` IS a `ValueError`) and ending
-        # the pump SILENTLY: a perfectly healthy, still-producing lane then
-        # reads as stalled once the frozen `_last_line_at` ages past
-        # `stall_timeout`, with nothing distinguishing that from a real
-        # stall. Replacing the byte (U+FFFD) instead of raising is the same
-        # "never fatal on something the container did" discipline
-        # `ProgressWatch`'s torn-line handling already uses one signal over.
-        proc = subprocess.Popen([docker, "logs", "-f", "--timestamps", name],
-                                stdout=subprocess.PIPE, text=True, bufsize=1,
-                                errors="replace")
-        log_watch = LogStreamWatch(proc, budget_seconds(lane["stall_timeout"]),
-                                   lane_name)
-    else:
-        proc = subprocess.Popen([docker, "logs", "-f", name])
+    watch_log_stream = (lane["kind"] == "command"
+                        and bool(lane.get("stall_timeout")))
+    proc: subprocess.Popen | None = None
     saved_log: Path | None = None
     stalled: str | None = None
     code: int | None = None
@@ -12461,6 +12444,22 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
             print(f"run-gate: in-process watch — {cause} for lane "
                   f"{lane_name!r}", flush=True)
     try:
+        if watch_log_stream:
+            # `--timestamps`: `LogStreamWatch._translate` needs docker's OWN
+            # per-line stamp to answer "how old is this line, really" across a
+            # re-attach's instant backlog replay — see its docstring. Stripped
+            # before any line is re-printed, so the operator sees the same text
+            # as a lane declaring no `stall_timeout` at all.
+            # `errors="replace"` prevents one non-UTF-8 byte from ending the
+            # pump silently and making a healthy lane look stalled.
+            proc = subprocess.Popen(
+                [docker, "logs", "-f", "--timestamps", name],
+                stdout=subprocess.PIPE, text=True, bufsize=1,
+                errors="replace")
+            log_watch = LogStreamWatch(
+                proc, budget_seconds(lane["stall_timeout"]), lane_name)
+        else:
+            proc = subprocess.Popen([docker, "logs", "-f", name])
         while True:
             try:
                 wait_for = tick
@@ -12642,8 +12641,9 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
                         f"profiling cleanup crashed unexpectedly: {exc}"
                     run_record.setdefault("profile_ref", None)
         subprocess.run([docker, "rm", "-f", name], capture_output=True)
-        proc.terminate()   # no-op once it has exited; ends a stalled stream
-        proc.wait()
+        if proc is not None:
+            proc.terminate()   # no-op once it has exited; ends a stalled stream
+            proc.wait()
         if log_watch is not None:
             # Round-3 review: reached from EVERY exit of the try above,
             # stalled or not — by now `proc.terminate()` + `proc.wait()`
@@ -12789,34 +12789,53 @@ def follow_container(docker: str, name: str, lane: dict, lane_name: str,
     # follower would report exit 3 on a lane it just watched pass. A wait the
     # daemon has already accepted returns the container's real status even
     # when the container is removed while that wait is pending.
-    waiter = subprocess.Popen([docker, "wait", name], stdout=subprocess.PIPE,
-                              stderr=subprocess.DEVNULL, text=True)
-    logs = subprocess.Popen([docker, "logs", "-f", name])
-    logs.wait()
-    out = (waiter.communicate()[0] or "").strip()
-    code = int(out) if waiter.returncode == 0 and re.fullmatch(r"-?\d+", out) \
-        else None
-    if code is None:
-        fail_infra(f"followed container {name} but could not read its exit "
-                   f"status (docker wait failed) — the client that owns the "
-                   f"run reports its result; nothing was removed, cleared or "
-                   f"recorded here")
-    # RW-28: BEFORE the failure disclosure — "the owning client preserves the
-    # evidence" stops being true the moment this client becomes the owner.
-    promoted, saved_log = promote_follower(docker, name, lane_name,
-                                           project_dir, code, run_record)
-    if code != 0 and promoted:
-        where = (f"; full container logs preserved at {saved_log}"
-                 if saved_log else
-                 "; container logs could NOT be captured before removal")
-        print(f"run-gate: lane {lane_name!r} failed with exit {code}{where}",
-              flush=True)
-    elif code != 0:
-        print(f"run-gate: lane {lane_name!r} failed with exit {code} "
-              f"(followed — the owning client preserves the evidence)",
-              flush=True)
-    print_lane_artifacts(lane, lane_name, project_dir, repo, worktree, recorded)
-    return code
+    waiter: subprocess.Popen | None = None
+    logs: subprocess.Popen | None = None
+    try:
+        waiter = subprocess.Popen([docker, "wait", name],
+                                  stdout=subprocess.PIPE,
+                                  stderr=subprocess.DEVNULL, text=True)
+        logs = subprocess.Popen([docker, "logs", "-f", name])
+        logs.wait()
+        out = (waiter.communicate()[0] or "").strip()
+        code = int(out) if waiter.returncode == 0 \
+            and re.fullmatch(r"-?\d+", out) else None
+        if code is None:
+            fail_infra(f"followed container {name} but could not read its exit "
+                       f"status (docker wait failed) — the client that owns the "
+                       f"run reports its result; nothing was removed, cleared or "
+                       f"recorded here")
+        # RW-28: BEFORE the failure disclosure — "the owning client preserves the
+        # evidence" stops being true the moment this client becomes the owner.
+        promoted, saved_log = promote_follower(docker, name, lane_name,
+                                               project_dir, code, run_record)
+        if code != 0 and promoted:
+            where = (f"; full container logs preserved at {saved_log}"
+                     if saved_log else
+                     "; container logs could NOT be captured before removal")
+            print(f"run-gate: lane {lane_name!r} failed with exit {code}{where}",
+                  flush=True)
+        elif code != 0:
+            print(f"run-gate: lane {lane_name!r} failed with exit {code} "
+                  f"(followed — the owning client preserves the evidence)",
+                  flush=True)
+        print_lane_artifacts(lane, lane_name, project_dir, repo, worktree,
+                             recorded)
+        return code
+    finally:
+        # The waiter is started before log streaming so it can read the
+        # container's status before the owner removes it. If either spawn or
+        # any later follower work fails, both helpers still belong to us.
+        for child in (logs, waiter):
+            if child is None:
+                continue
+            if child.poll() is None:
+                child.terminate()
+            try:
+                child.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait()
 
 
 def resolve_inflight(docker: str, lane: dict, lane_name: str,
