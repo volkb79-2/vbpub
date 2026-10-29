@@ -200,7 +200,7 @@ def test_mutation_cancellation_reports_whether_prior_calls_completed(cancel_at, 
         def __init__(self):
             self.jobs = 0
 
-        def call(self, method, *params, job=False):
+        def call(self, method, *params, job=False, callback=None):
             if method == "app.query":
                 return [{"id": "demo", "name": "Demo", "state": "RUNNING", "upgrade_available": False}]
             if job == "RETURN":

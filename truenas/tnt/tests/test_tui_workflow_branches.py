@@ -61,6 +61,16 @@ def make_session(config, host, *, read_only=False):
     return Session(profile, GuardedRpc(host, read_only=read_only), V27("TrueNAS-27.0.0-RC.1"))
 
 
+def build_action(view, operation):
+    """Exercise the same input-to-action function used by WorkflowView._make_plan."""
+    vm_state = {}
+    action = view._build_action_from_input(operation, view._capture_action_input(), view.session.workflows, vm_state)
+    view.pending_vm_name = vm_state.get("name")
+    view.pending_vm_devices = vm_state.get("devices", [])
+    view.pending_vm_create = vm_state.get("create", False)
+    return action
+
+
 def choose(app, label):
     tree = app.query_one("#nav", Tree)
     found = None
@@ -168,7 +178,7 @@ def test_workflow_action_builders_cover_all_core_screen_operations(config):
                     view.query_one("#workflow-secret", Input).value = (
                         key if operation in {"ssh-key-add", "ssh-key-replace"} else "safe-not-a-real-secret")
                     view.query_one("#workflow-recursive", Checkbox).value = operation == "delete"
-                    action = view._build_action(operation)
+                    action = build_action(view, operation)
                     assert action.calls[0].method == method, (label, operation, action.calls)
                     if key_name == "datasets" and operation == "create":
                         assert action.calls[0].params[0]["name"] == "tank/new"
@@ -180,10 +190,10 @@ def test_workflow_action_builders_cover_all_core_screen_operations(config):
                     if key_name == "users" and operation in {"ssh-key-add", "ssh-key-replace"}:
                         assert key in action.calls[0].params[1]["sshpubkey"].reveal()
             users = app.query_one("#view-users", WorkflowView)
-            users.query_one("#workflow-data", TextArea).text = '{"password_disabled": true}'
+            users.query_one("#workflow-data", TextArea).text = '{"full_name": "New User", "group": 10, "password_disabled": true}'
             users.query_one("#workflow-name", Input).value = "new-user"
             users.query_one("#workflow-secret", Input).value = ""
-            passwordless = users._build_action("create")
+            passwordless = build_action(users, "create")
             assert "password" not in passwordless.calls[0].params[0]
             assert host.calls
     asyncio.run(go())
@@ -205,13 +215,13 @@ def test_workflow_view_input_refusals_loading_and_vm_recovery_messages(config):
             assert "Failed to load Virtual Machines" in str(app.query_one("#workflow-note", Static).render())
             with pytest.raises(ValueError, match="JSON input is invalid"):
                 view.query_one("#workflow-data", TextArea).text = "{"
-                view._build_action("start")
+                build_action(view, "start")
             view.query_one("#workflow-data", TextArea).text = "[]"
             with pytest.raises(ValueError, match="JSON object"):
-                view._build_action("start")
+                build_action(view, "start")
             view.query_one("#workflow-data", TextArea).text = "{}"
             with pytest.raises(ValueError, match="disk_zvol and disk_size"):
-                view._build_action("create")
+                build_action(view, "create")
             view.pending_vm_name = "guest"
             view.pending_vm_devices = []
             view._open_next_vm_device()
@@ -232,14 +242,14 @@ def test_workflow_view_input_refusals_loading_and_vm_recovery_messages(config):
             users = app.query_one("#view-users", WorkflowView)
             users.query_one("#workflow-data", TextArea).text = '{"sshpubkey": "never here"}'
             with pytest.raises(ValueError, match="hidden secret field"):
-                users._build_action("update")
+                build_action(users, "update")
             users.query_one("#workflow-data", TextArea).text = "{}"
             users.query_one("#workflow-secret", Input).value = ""
             with pytest.raises(ValueError, match="enter a password"):
-                users._build_action("password")
+                build_action(users, "password")
             users.query_one("#workflow-secret", Input).value = "not-a-key"
             with pytest.raises(Refused, match="supported OpenSSH public-key"):
-                users._build_action("ssh-key-add")
+                build_action(users, "ssh-key-add")
             users._loaded([{"id": 8, "username": "alice", "sshpubkey": ""}])
             table = users.query_one("#workflow-table", DataTable)
             assert table.row_count == 1
@@ -248,7 +258,7 @@ def test_workflow_view_input_refusals_loading_and_vm_recovery_messages(config):
             users.key = "unknown"
             users.query_one("#workflow-data", TextArea).text = "{}"
             with pytest.raises(ValueError, match="unsupported workflow action"):
-                users._build_action("unrecognized")
+                build_action(users, "unrecognized")
 
             choose(app, "Containers")
             await wait_loaded(pilot, app)
@@ -259,7 +269,7 @@ def test_workflow_view_input_refusals_loading_and_vm_recovery_messages(config):
             assert "unavailable" in rendered
             containers.key = "snapshots"
             with pytest.raises(ValueError, match="unsupported workflow action"):
-                containers._build_action("unrecognized")
+                build_action(containers, "unrecognized")
             containers.key = "containers"
             containers._plan_applied(make_plan(session.workflows.snapshot_hold_action("tank/home@nightly"), session.rpc),
                                      {"ok": True})
@@ -335,7 +345,7 @@ def test_workflow_action_builders_cover_management_screens(config):
                         view.query_one("#workflow-data", TextArea).text = json.dumps(data)
                         view.query_one("#workflow-name", Input).value = name
                         view.query_one("#workflow-recursive", Checkbox).value = False
-                        action = view._build_action(operation)
+                        action = build_action(view, operation)
                         methods = [call.method for call in action.calls]
                         assert method in methods, (key, operation, methods)
                         if key == "apps" and operation == "delete":
@@ -344,33 +354,33 @@ def test_workflow_action_builders_cover_management_screens(config):
                         view.query_one("#workflow-data", TextArea).text = json.dumps(
                             {"memory": 2048, "disk_zvol": "tank/guest-basic", "disk_size": 1073741824})
                         view.query_one("#workflow-name", Input).value = "guest-basic"
-                        action = view._build_action("create")
+                        action = build_action(view, "create")
                         assert [device["dtype"] for device in view.pending_vm_devices] == ["DISK"]
                         assert action.calls[0].method == "vm.create"
                     if key == "snapshot-tasks":
                         view.query_one("#workflow-name", Input).value = "not-an-id"
                         with pytest.raises(ValueError, match="task ID"):
-                            view._build_action("run")
+                            build_action(view, "run")
                         view.query_one("#workflow-name", Input).value = "7"
                         with pytest.raises(ValueError, match="unsupported workflow action"):
-                            view._build_action("unsupported")
+                            build_action(view, "unsupported")
                     if key == "apps":
                         view.query_one("#workflow-name", Input).value = ""
                         view._loaded([])
                         with pytest.raises(ValueError, match="exact app ID"):
-                            view._build_action("start")
+                            build_action(view, "start")
                         view.query_one("#workflow-name", Input).value = "example-app"
                         with pytest.raises(ValueError, match="unsupported workflow action"):
-                            view._build_action("unsupported")
+                            build_action(view, "unsupported")
                     if key == "sharing":
                         with pytest.raises(ValueError, match="unsupported workflow action"):
-                            view._build_action("unsupported")
+                            build_action(view, "unsupported")
                     if key == "replication":
                         with pytest.raises(ValueError, match="unsupported workflow action"):
-                            view._build_action("unsupported")
+                            build_action(view, "unsupported")
                     if key == "cloud-sync":
                         with pytest.raises(ValueError, match="unsupported workflow action"):
-                            view._build_action("unsupported")
+                            build_action(view, "unsupported")
 
         try:
             asyncio.run(go())
@@ -501,10 +511,11 @@ def test_plan_review_rejects_stale_sessions_and_workers_without_the_active_lease
             current._apply_plan(None, False)
             for _ in range(100):
                 await pilot.pause(0.05)
-                if worker_started.is_set():
+                if worker_started.is_set() and "No calls were sent" in str(
+                        current.query_one("#plan-progress", Static).render()):
                     break
             assert worker_started.is_set()
-            await pilot.pause(0.05)
+            assert "No calls were sent" in str(current.query_one("#plan-progress", Static).render())
             assert not host.writes
             assert app.session_controller.cancel_transition(transition)
             current.generation = -1

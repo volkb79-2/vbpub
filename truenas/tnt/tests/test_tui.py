@@ -76,6 +76,15 @@ class MemoryHost:
         pass
 
 
+def _build_action(view, operation):
+    vm_state = {}
+    action = view._build_action_from_input(operation, view._capture_action_input(), view.session.workflows, vm_state)
+    view.pending_vm_name = vm_state.get("name")
+    view.pending_vm_devices = vm_state.get("devices", [])
+    view.pending_vm_create = vm_state.get("create", False)
+    return action
+
+
 def workflow_session(config, results=None, *, host=None):
     profiles, default = load_profiles(config)
     profile = profiles[default or next(iter(profiles))]
@@ -234,16 +243,16 @@ def test_user_tui_can_add_replace_and_remove_ssh_public_keys(config):
             secret.value = key
 
             app.query_one("#workflow-operation", Select).value = "ssh-key-add"
-            add = view._build_action("ssh-key-add")
+            add = _build_action(view, "ssh-key-add")
             assert "old-key" in add.calls[0].params[1]["sshpubkey"].reveal()
             assert key in add.calls[0].params[1]["sshpubkey"].reveal()
 
             app.query_one("#workflow-operation", Select).value = "ssh-key-replace"
-            replace = view._build_action("ssh-key-replace")
+            replace = _build_action(view, "ssh-key-replace")
             assert replace.calls[0].params[1]["sshpubkey"].reveal() == key
 
             app.query_one("#workflow-operation", Select).value = "ssh-key-remove"
-            remove = view._build_action("ssh-key-remove")
+            remove = _build_action(view, "ssh-key-remove")
             assert remove.calls[0].params[1]["sshpubkey"].reveal() == ""
             assert "Plan Add SSH public key in Local Users" in [item.title for item in app.get_system_commands(app.screen)]
     asyncio.run(go())

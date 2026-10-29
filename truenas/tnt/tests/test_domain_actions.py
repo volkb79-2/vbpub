@@ -8,7 +8,7 @@ import asyncio
 
 from tnt.actions import Action, Kind, Plan, RpcCall, apply_plan, make_plan, refusal_for
 from tnt.domain import Disk, Partition, human_bytes, human_free
-from tnt.errors import Refused
+from tnt.errors import PlanExecutionError, Refused
 from tnt.policy import SafetyState, is_destructive_method, is_read_method, normalise_method
 from tnt.transport import GuardedRpc
 from tnt.tui.app import TntApp
@@ -224,6 +224,56 @@ def test_a_plan_grants_exactly_its_calls_in_order_and_nothing_else():
         rpc.call("app.start", "example-app")  # the executor grant ends with the plan
     with pytest.raises(Refused, match="no-plan"):
         rpc.call("pool.create", {"name": "x"})
+
+
+def test_apply_plan_records_a_called_write_that_fails_before_returning():
+    class FailSecondUpdate(Stub):
+        updates = 0
+
+        def call(self, method, *params, job=False, callback=None):
+            if method == "pool.update":
+                self.updates += 1
+                if self.updates == 2:
+                    self.log.append((method, params))
+                    raise RuntimeError("write rejected")
+            return super().call(method, *params, job=job, callback=callback)
+
+    stub = FailSecondUpdate()
+    rpc = guarded(stub)
+    action = Action("T-PARTIAL", Kind.MUTATE, "update pool",
+                    (RpcCall("pool.update", (1, {"comments": "first"})),
+                     RpcCall("pool.update", (1, {"comments": "second"}))),
+                    (RpcCall("pool.query"),))
+    plan = make_plan(action, rpc)
+
+    with pytest.raises(PlanExecutionError) as caught:
+        apply_plan(plan, rpc, allow_write=True)
+
+    assert [call.status for call in caught.value.partial.calls] == ["completed", "unknown"]
+    assert "write rejected" in caught.value.partial.calls[1].error
+    assert stub.executed().count("pool.update") == 2
+
+
+def test_apply_plan_cancellation_before_the_next_write_keeps_completed_outcomes():
+    stub = Stub(user_query=[{"id": 8, "username": "operator"}])
+    rpc = guarded(stub)
+    action = Action("T-CANCEL", Kind.MUTATE, "update pool",
+                    (RpcCall("pool.update", (1, {"comments": "first"})),
+                     RpcCall("pool.update", (1, {"comments": "second"}))),
+                    (RpcCall("pool.query"),))
+    plan = make_plan(action, rpc)
+    checks = 0
+
+    def cancelled():
+        nonlocal checks
+        checks += 1
+        return checks >= 5
+
+    with pytest.raises(PlanExecutionError) as caught:
+        apply_plan(plan, rpc, allow_write=True, cancelled=cancelled)
+
+    assert [call.status for call in caught.value.partial.calls] == ["completed", "not-started"]
+    assert stub.executed().count("pool.update") == 1
 
 
 def test_a_granted_call_must_still_pass_the_refusal_list():

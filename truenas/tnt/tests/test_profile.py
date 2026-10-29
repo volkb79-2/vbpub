@@ -65,6 +65,20 @@ def test_load_hosts_and_pick_default(tmp_path):
     assert hosts["lab"].tags == ("storage", "primary")
 
 
+def test_shipped_configuration_examples_load_with_endpoint_bound_credentials(tmp_path):
+    project = Path(__file__).resolve().parents[1]
+    config_path = write_private(tmp_path / "tnt.toml", (project / "tnt.toml.example").read_text())
+    secrets_path = write_private(tmp_path / "tnt.secrets.toml", (project / "tnt.secrets.toml.example").read_text())
+    hosts, default = prof.load_profiles(config_path)
+    entries = prof.load_secrets(secrets_path)
+
+    assert default == "lab"
+    assert set(entries) == set(hosts)
+    for name, host in hosts.items():
+        assert entries[name].host_url == host.url
+        assert prof.read_credential(host, entries).reveal()
+
+
 def test_pick_requires_explicit_host_when_multiple_have_no_default(tmp_path):
     path = write_private(tmp_path / "tnt.toml", config_body(default=None))
     hosts, default = prof.load_profiles(path)

@@ -26,6 +26,10 @@ def _seed(server):
     server.apps = {"demo": _app_row()}
 
 
+def _build_action(view, operation):
+    return view._build_action_from_input(operation, view._capture_action_input(), view.session.workflows, {})
+
+
 def test_apps_read_lifecycle_restart_and_uninstall_use_v27_jobs_and_typed_target():
     with FakeServer() as server:
         _seed(server)
@@ -110,7 +114,7 @@ def test_apps_tui_shows_upgrade_state_and_delete_volumes_defaults_no(config):
                 view.query_one("#workflow-operation").value = "delete"
                 view.query_one("#workflow-name").value = "demo"
                 assert view.query_one("#workflow-recursive", Checkbox).value is False
-                action = view._build_action("delete")
+                action = _build_action(view, "delete")
                 assert action.calls[0].params[1]["remove_ix_volumes"] is False
 
         try:

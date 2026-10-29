@@ -17,6 +17,7 @@ from ..profile import Secret
 from ..session import Session
 from ..workflows import _safe_value, validate_ssh_public_keys
 from .session_work import (begin as begin_session_work, error_message, post as post_session_callback,
+                           report_unavailable,
                            run as run_session_work, run_cancellable as run_cancellable_session_work)
 
 
@@ -273,15 +274,6 @@ class WorkflowView(Vertical):
         self.query_one("#workflow-plan", Button).disabled = False
         self.query_one("#workflow-note", Static).update(f"Plan refused: {message}")
 
-    def _build_action(self, operation: str):
-        vm_state: dict[str, Any] = {}
-        action = self._build_action_from_input(operation, self._capture_action_input(), self.session.workflows,
-                                               vm_state)
-        self.pending_vm_name = vm_state.get("name")
-        self.pending_vm_devices = vm_state.get("devices", [])
-        self.pending_vm_create = vm_state.get("create", False)
-        return action
-
     def _build_action_from_input(self, operation: str, form: _WorkflowActionInput, workflows: Any,
                                  vm_state: dict[str, Any]) -> Action:
         try:
@@ -537,6 +529,10 @@ class PlanReview(ModalScreen[None]):
     def _apply_plan(self, confirmation: str | None, system_action: bool) -> None:
         lease = begin_session_work(self)
         if lease is None or lease.session is None:
+            report_unavailable(
+                self, "_apply_not_started",
+                "No calls were sent because the active host session changed before the apply worker started. "
+                "Reconnect and prepare a new plan.")
             return
         methods = {call.method for call in self.plan.action.calls}
         calls_before = len(self.session.rpc.calls)
@@ -564,6 +560,9 @@ class PlanReview(ModalScreen[None]):
                 post_session_callback(self, lease, "_apply_succeeded", result)
         finally:
             self.app.finish_session_work(lease)
+
+    def _apply_not_started(self, message: str) -> None:
+        self.query_one("#plan-progress", Static).update(message)
 
     def _show_job_progress(self, job: Any) -> None:
         progress = job.get("progress") if isinstance(job, dict) else None

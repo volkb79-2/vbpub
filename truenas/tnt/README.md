@@ -301,9 +301,10 @@ not contact a TrueNAS host. The optional Textual, websockets, and test dependenc
 dependencies fail the suite. The separate `run-gate live-v27` lane is an explicit host integration run: it selects only
 tests marked `live`, requires `TNT_LIVE=1`, and creates and cleans up resources under a `tnt-live-` prefix. It runs in
 `tester-unified`; keep `tnt.toml` and `tnt.secrets.toml` in a private scratch directory outside the repository and pass
-that directory through `RUN_GATE_EXTRA_MOUNTS`. See the [live testing guide](docs/LIVE-TESTING.md) for the complete
-invocation, host restrictions, and cleanup behavior, and the [test strategy](docs/DESIGN.md#9-test-strategy) for why
-the live lane runs in `tester-unified`.
+that directory through `RUN_GATE_EXTRA_MOUNTS`. The live probe also switches between two same-endpoint profile aliases;
+see the [consumer setup example](docs/CONSUMERS.md#explicit-live-lane). The [live testing guide](docs/LIVE-TESTING.md)
+covers the invocation, host restrictions, and cleanup behavior, and the [test strategy](docs/DESIGN.md#9-test-strategy)
+explains why the live lane runs in `tester-unified`.
 
 ```bash
 PYTHONPATH=src nice python -m pytest -q -p no:xdist

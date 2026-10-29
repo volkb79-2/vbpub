@@ -8,10 +8,17 @@
   execution, reboot, shutdown, and update apply were deferred for the reasons recorded in the
   [live acceptance report](docs/LIVE-TESTING.md#live-acceptance-run-2026-10-29). Live findings and their regression
   fixes are listed in that report.
-- The final allowed `r0-r1` run reported 884 passed and 4 failures at 96.64% combined coverage. The four failures were
-  stale API-key fixtures/precondition expectations and a test VM name invalid under v27; their tests were corrected
-  afterward. Re-enabling the rename precondition regression also exposed and fixed a stale variable in the API-key
-  collision check. No run remained under the two-run cap, so final unit-suite status and coverage are unverified.
+- The `r0-r1` lane now reports coverage to two decimal places (`[tool.coverage.report] precision = 2`), aligning
+  pytest-cov's `--cov-fail-under=97` comparison with its two-digit report so a displayed 96.94% fails. The general
+  pytest-cov/Run-Gate command-lane false green is filed as RG-110 in run-gate-project's backlog. The preceding complete gate run reported
+  6 failed, 924 passed, and 2 deselected; combined coverage was 97.65%, but true branch coverage was 96.45%
+  (2471/2562), below the requested branch target. The third and final authorized gate attempt stopped at test
+  collection because of an indentation error in the new core-view test; the syntax was corrected afterward, but no
+  green gate result is available under the three-run limit.
+- Restored the typed `api-key-lookup` refusal for a missing API key, added visible worker-start messages when no host
+  lease is available, and routed TUI action-builder tests through `_build_action_from_input`. Bound the copied
+  password-auth example to its configured endpoint. Live-test docs now list the required `PROFILE-alt` alias and
+  distinguish the local `r0-r1`/`live-v27` lanes from the separate estate `live-inspect` report.
 - Closed the It4 milestone-review fixes for the vanilla v27 UI and guard paths. TUI lookup/action-construction and system
   preflight RPCs now run in cancellable workers with visible progress; host switching and quit bound the drain wait and
   offer Keep waiting or Cancel. Credentials are bound to their saved host URL, so independently resolved config and

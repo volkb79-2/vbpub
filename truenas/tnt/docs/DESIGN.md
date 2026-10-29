@@ -567,7 +567,9 @@ additional arguments after `HOST` is not supported.
   through Run-Gate's declared extra-mount input. The acceptance test creates only `tnt-live-`-prefixed test resources
   and cleans each up through plans. The M2 portion also checks read-only views, SMB/NFS share lifecycle, a periodic
   snapshot task, API-key file handling, TUI Pilot navigation and host switching, CLI readers, and an interactive SSH
-  hand-off. VM lifecycle is conditional on the host capability read. Acceptance results are recorded in
+  hand-off. Host switching requires a second same-endpoint alias; the exact profile and credential setup is in the
+  [consumer guide](CONSUMERS.md#explicit-live-lane). VM lifecycle is conditional on the host capability read.
+  Acceptance results are recorded in
   [`docs/LIVE-TESTING.md`](LIVE-TESTING.md), including the [ACTION-MATRIX B-06 import check](ACTION-MATRIX.snapshot.md#actions).
   The live lane is separate from the ordinary FakeServer gate.
 - Drift lane (TNT-23, It4): manifests vs the fetched API reference. Optional dependencies required by the suite fail, never skip.
@@ -607,4 +609,6 @@ only, so importing `tnt.testing` without the test extra fails, and nothing in th
 
 Estate registration remains It4 work: `cmru.orchestration.toml` and the root run-gate registry need an entry for
 `truenas/tnt` (TNT-32), and the gate environment needs `tnt` installed for the cli-extended version lookup (TNT-33).
-`cmru.toml` and `run-gate.toml` in this directory are ready for that step.
+This checkout's `run-gate.toml` declares only `r0-r1` and `live-v27`; the separately reported read-only `live-inspect`
+lane belongs to estate gate tooling in another checkout and is not registered here. `cmru.toml` and this directory's
+`run-gate.toml` are ready for estate registration.

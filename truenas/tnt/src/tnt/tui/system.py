@@ -13,7 +13,7 @@ from ..actions import Plan, make_plan
 from ..errors import TntError, TransportError
 from ..session import Session
 from .workflows import PlanReview
-from .session_work import (begin as begin_session_work, error_message, post as post_session_callback,
+from .session_work import (begin as begin_session_work, error_message, post as post_session_callback, report_unavailable,
                            run as run_session_work, run_cancellable as run_cancellable_session_work)
 
 
@@ -108,6 +108,10 @@ class SystemPowerView(Vertical):
         app = self.app
         lease = begin_session_work(self)
         if lease is None or lease.session is None:
+            report_unavailable(
+                self, "_reconnect_not_started",
+                "Could not check whether the reboot finished because the active host session changed. "
+                "Verify host state before retrying.")
             return
         delays = app.reconnect_delays
         last_error = "the host did not return to READY"
@@ -154,6 +158,9 @@ class SystemPowerView(Vertical):
             post_session_callback(self, lease, "_reconnect_failed", last_error, uncertain)
         finally:
             app.finish_session_work(lease)
+
+    def _reconnect_not_started(self, message: str) -> None:
+        self.query_one("#system-power-note", Static).update(message)
 
     def _reconnect_progress(self, attempt: int, total: int, delay: int) -> None:
         self.query_one("#system-power-note", Static).update(

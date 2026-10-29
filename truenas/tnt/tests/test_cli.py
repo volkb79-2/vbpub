@@ -276,7 +276,7 @@ def test_cli_rejects_conflicting_ssh_host_selectors_and_preserves_workflow_optio
                                   "--config", str(config)], opener)
     assert code == 0 and "vm.update" in out and '"autostart": false' in out
 
-    code, out, err = run(capsys, ["vm", "create", "new-guest", "--memory", "2048", "--disk-zvol",
+    code, out, err = run(capsys, ["vm", "create", "newguest", "--memory", "2048", "--disk-zvol",
                                   "tank/guests/new-guest", "--disk-size", "1073741824", "--config", str(config)], opener)
     assert code != 0 and "pass --allow-write" in err
 

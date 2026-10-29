@@ -129,6 +129,10 @@ def test_user_read_update_delete_password_and_ssh_key_commands(config, capsys, t
         assert "fake-password" not in json.dumps(payload)
         assert key not in json.dumps(payload)
 
+    explicit_group = invoke(config, host, capsys,
+                            ["user", "create", "carol", "Carol", "--group", "10", "--password-disabled"])
+    assert '"group": 10' in explicit_group["plan"]
+
 
 def test_user_access_cli_requires_current_user_and_typed_confirmation(config, capsys):
     user = {"id": 7, "username": "operator", "builtin": False, "local": True}

@@ -375,6 +375,33 @@ def test_reboot_tui_reconnects_after_fake_disconnect_with_bounded_attempts():
             session.close()
 
 
+def test_reboot_tui_explains_when_no_worker_lease_can_check_the_outcome(monkeypatch):
+    import asyncio
+    import tnt.tui.system as system_view
+
+    with FakeServer() as server:
+        session = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True, allow_write=True)
+        monkeypatch.setattr(system_view, "begin_session_work", lambda _view: None)
+
+        async def go():
+            app = TntApp(session)
+            async with app.run_test(size=(160, 50)) as pilot:
+                _select_key(app, "reboot")
+                view = app.query_one("#view-system-reboot")
+                view._reconnect_after_reboot(uncertain=True)
+                await _wait_for(pilot, lambda: "Verify host state" in
+                                str(app.query_one("#system-power-note", Static).render()))
+                note = str(app.query_one("#system-power-note", Static).render())
+                assert "host session changed" in note
+                assert "before retrying" in note
+                assert "system.reboot" not in server.called()
+
+        try:
+            asyncio.run(go())
+        finally:
+            session.close()
+
+
 def test_system_power_tui_rejects_bad_delay_cancels_plan_and_confirms_shutdown():
     import asyncio
     from types import SimpleNamespace

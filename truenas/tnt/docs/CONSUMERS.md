@@ -480,6 +480,39 @@ users, containers, and VM lifecycle when `vm.supports_virtualization` is true. T
 CLI and TUI reads, same-host alias switching, SMB/NFS share lifecycle, a periodic snapshot task, API-key file handling,
 and interactive SSH. Created resources are removed through the same plan/apply guard. See the dated
 [live acceptance record](LIVE-TESTING.md#live-acceptance-run-2026-10-29) and the [ACTION-MATRIX B-06 import workflow](ACTION-MATRIX.snapshot.md#actions).
+The alias switching check requires a second profile named exactly `<TNT_LIVE_PROFILE>-alt`, targeting the same URL and
+using the same username, auth mode, and TLS mode. Its secret entry must bind to that URL. For `TNT_LIVE_PROFILE=lab`,
+these complete examples show the required pair:
+
+```toml
+schema_version = 1
+default_host = "lab"
+
+[hosts.lab]
+url = "wss://truenas.example.invalid/api/current"
+username = "admin"
+auth = "api_key"
+tls = "verify"
+
+[hosts.lab-alt]
+url = "wss://truenas.example.invalid/api/current"
+username = "admin"
+auth = "api_key"
+tls = "verify"
+```
+
+```toml
+schema_version = 1
+
+[hosts.lab]
+host_url = "wss://truenas.example.invalid/api/current"
+api_key = "REPLACE_WITH_API_KEY"
+
+[hosts.lab-alt]
+host_url = "wss://truenas.example.invalid/api/current"
+api_key = "REPLACE_WITH_API_KEY"
+```
+
 Set `RUN_GATE_EXTRA_MOUNTS` to a `host=container` pair for the private scratch directory. The left side is the
 physical path visible to the Docker host; the right side is the tester-visible path and must match `TNT_CONFIG`,
 `TNT_SECRETS`, and any configured SSH paths. Keep that directory outside the repository and

@@ -69,8 +69,12 @@ def test_api_key_queries_refuse_malformed_rows_and_ambiguous_id_lookup(workflows
     with pytest.raises(Refused, match="valid ID and name"):
         workflows.api_keys()
     server.api_keys[1] = {"id": 1, "name": "valid"}
-    with pytest.raises(TransportError, match="API key 2 not found"):
+    with pytest.raises(Refused, match=r"api-key-lookup: expected API key ID 2"):
         workflows._api_key_by_id(2)
+
+    server.fail["api_key.get_instance"] = "temporary transport failure"
+    with pytest.raises(TransportError, match="temporary transport failure"):
+        workflows._api_key_by_id(1)
 
 
 @pytest.mark.parametrize(("kwargs", "message"), [

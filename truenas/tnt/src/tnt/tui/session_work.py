@@ -20,6 +20,12 @@ def post(view: Any, lease: WorkerLease, callback: str, *args: Any) -> None:
     view.app.call_from_thread(view.app.deliver_session_callback, lease, view, callback, args)
 
 
+def report_unavailable(view: Any, callback: str, message: str) -> None:
+    """Put a worker-start refusal on the attached view through Textual's UI thread."""
+    if getattr(view, "is_attached", False):
+        view.app.call_from_thread(getattr(view, callback), message)
+
+
 def error_message(session: Session, error: BaseException) -> str:
     message = str(error)
     if session.credential is not None:
@@ -37,6 +43,9 @@ def run_cancellable(view: Any, operation: Callable[[Session, WorkerLease], Any],
     """Run an operation that can check its lease between network calls."""
     lease = begin(view)
     if lease is None or lease.session is None:
+        report_unavailable(
+            view, on_failure,
+            "No calls were sent because no active host session is available. Retry after the host switch or reconnect finishes.")
         return
     try:
         try:

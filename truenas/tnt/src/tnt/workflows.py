@@ -219,7 +219,14 @@ class Workflows:
                       (RpcCall("api_key.get_instance", (key_id, {"select": list(_API_KEY_SAFE_FIELDS)})),), row["name"])
 
     def _api_key_by_id(self, key_id: int) -> dict[str, Any]:
-        row = self.rpc.call("api_key.get_instance", key_id, {"select": list(_API_KEY_SAFE_FIELDS)})
+        try:
+            row = self.rpc.call("api_key.get_instance", key_id, {"select": list(_API_KEY_SAFE_FIELDS)})
+        except TransportError as exc:
+            # The v27 get_instance call reports a missing record through its RPC error response. Preserve
+            # transport failures as transport failures; only the exact missing-key detail is domain refusal.
+            if exc.kind == "call" and str(exc).endswith(f"API key {key_id} not found"):
+                raise Refused("api-key-lookup", f"expected API key ID {key_id} with a valid name") from None
+            raise
         if not isinstance(row, Mapping) or row.get("id") != key_id or not isinstance(row.get("name"), str):
             raise Refused("api-key-lookup", f"expected API key ID {key_id} with a valid name")
         return dict(row)

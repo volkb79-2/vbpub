@@ -57,3 +57,6 @@ review = "docs/cli-review.toml"
 manifest = "docs/cli-surface.json"
 spec = "docs/CLI-SPEC.md"
 findings = "docs/cli-review-findings.toml"
+
+[tool.coverage.report]
+precision = 2

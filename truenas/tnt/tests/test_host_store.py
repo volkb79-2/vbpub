@@ -283,8 +283,8 @@ def test_locked_host_files_refuse_symlinked_lock_and_rollback_failure(tmp_path, 
     (tmp_path / ".tnt.toml.lock").symlink_to(target)
     with pytest.raises(ProfileError, match="cannot lock host files"):
         store.add(host("new"), SecretEntry(api_key=Secret("1-new-key")))
-    (tmp_path / ".tnt.toml.lock").unlink()
 
+    (tmp_path / ".tnt.toml.lock").unlink()
     before = paths.config.read_bytes()
     real_replace = os.replace
     config_replacements = 0
@@ -304,6 +304,35 @@ def test_locked_host_files_refuse_symlinked_lock_and_rollback_failure(tmp_path, 
     with pytest.raises(ProfileError, match="rollback also failed"):
         store.add(host("new"), SecretEntry(api_key=Secret("1-new-key")))
     assert paths.config.read_bytes() != before
+
+
+def test_lock_owner_refusal_closes_the_lock_descriptor(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from tnt import host_store
+
+    paths, _ = setup_store(tmp_path)
+    real_open = os.open
+    real_fstat = os.fstat
+    opened = []
+
+    def capture_open(*args, **kwargs):
+        fd = real_open(*args, **kwargs)
+        opened.append(fd)
+        return fd
+
+    def wrong_owner(fd):
+        current = real_fstat(fd)
+        return SimpleNamespace(st_mode=current.st_mode, st_uid=os.geteuid() + 1)
+
+    monkeypatch.setattr(host_store.os, "open", capture_open)
+    monkeypatch.setattr(host_store.os, "fstat", wrong_owner)
+    with pytest.raises(ProfileError, match="unsafe host-file lock"):
+        with host_store._serialized(paths, create_parents=False):
+            pytest.fail("the unsafe lock must be refused before yielding")
+    assert len(opened) == 1
+    with pytest.raises(OSError):
+        real_fstat(opened[0])
 
 
 def test_lock_failure_after_open_closes_descriptor_and_optional_host_removal_keeps_default(tmp_path, monkeypatch):

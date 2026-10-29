@@ -55,6 +55,13 @@ def test_resolved_non_boot_pool_mapping_references_remain_legal(params):
     assert refusal_for("vm.create", params, POOL_STATE) is None
 
 
+def test_nested_pool_references_and_pool_name_calls_check_both_safe_and_boot_targets():
+    assert "boot-pool" in refusal_for("pool.scrub.run", ("boot-pool",), POOL_STATE)
+    assert refusal_for("pool.scrub.run", ("tank",), POOL_STATE) is None
+    assert "boot-pool" in refusal_for("vm.create", ({"devices": [{"config": {"pool": "boot-pool"}}]},), POOL_STATE)
+    assert refusal_for("vm.create", ({"devices": [{"config": {"pool": "tank"}}]},), POOL_STATE) is None
+
+
 def test_pool_scrub_task_id_is_not_treated_as_a_pool_id():
     assert refusal_for("pool.scrub.delete", (1,), POOL_STATE) is None
     assert refusal_for("pool.scrub", (1,), POOL_STATE)
@@ -117,6 +124,17 @@ def test_policy_only_destructive_methods_are_classified_but_not_enabled():
         with pytest.raises(Refused, match="not in a supported adapter manifest"):
             validate_action(Action("T-UNVERIFIED", Kind.DESTRUCTIVE, method, (RpcCall(method, ("tank/x",)),),
                                    (RpcCall("system.info"),), "tank/x"))
+
+
+def test_unlisted_app_install_is_default_denied_by_the_exact_manifest_guard():
+    from tnt.adapters.v27 import V27
+
+    method = "app.install"
+    assert not V27.method_supported(method)
+    action = Action("T-UNVERIFIED", Kind.MUTATE, method, (RpcCall(method, ({"app_name": "example"},)),),
+                    (RpcCall("app.query"),))
+    with pytest.raises(Refused, match="not in a supported adapter manifest"):
+        validate_action(action)
 
 
 def test_container_restart_is_a_workflow_operation_not_an_rpc_method():

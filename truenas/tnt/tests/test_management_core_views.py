@@ -246,6 +246,16 @@ def test_core_read_views_load_with_search_copy_status_and_sanitized_error(config
                 await _settle(pilot, lambda: app.query_one("#core-table", DataTable).row_count > 0)
                 assert "refreshed" in str(app.query_one("#core-status", Static).render())
                 assert {"system.info", "reporting.get_data"} <= set(server.called())
+                await pilot.click("#core-copy")
+                search = app.query_one("#core-search", Input)
+                search.value = "no visible row has this phrase"
+                await pilot.pause(0.05)
+                assert app.query_one("#core-table", DataTable).row_count == 0
+                search.value = ""
+                await pilot.pause(0.05)
+                dashboard = app.query_one("#view-dashboard")
+                dashboard._failed("temporary read failure after a successful sample")
+                assert "last successful sample" in str(app.query_one("#core-status", Static).render())
                 app.query_one("#core-search", Input).parent.parent.action_search()
                 await pilot.pause(0.05)
                 assert app.query_one("#core-search", Input).has_focus

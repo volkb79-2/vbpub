@@ -12,6 +12,11 @@ or a host that cannot connect make the test fail.
 Before running it, configure paired `tnt.toml` and `tnt.secrets.toml` files with a host allowed to create and delete
 temporary resources on the chosen host. Copy the committed examples and keep both files mode `0600`; credentials
 belong only in `tnt.secrets.toml`. The test uses the same host loader, credential checks, and TLS rules as the CLI.
+The M2 probe also switches between the selected profile and a second alias for the same appliance. If
+`TNT_LIVE_PROFILE=lab`, add `lab-alt` to `tnt.toml` with the same URL, username, auth mode, and TLS mode, then add
+`[hosts.lab-alt]` to `tnt.secrets.toml` with a matching `host_url` and a credential for that endpoint. The alias may
+use the same credential value as `lab`; each entry still needs its own endpoint binding. For another primary name,
+use that exact name followed by `-alt`.
 Supply all required environment values explicitly:
 
 Run the registered lane from `truenas/tnt`; it starts `tester-unified` through Run-Gate and selects only the `live`
@@ -85,9 +90,11 @@ and imported through tnt; final restore removes that test state.
 The system configuration export is a harmless read/download action; reboot, shutdown, and update apply remain outside
 this acceptance. A snapshot task run returned `null` on this RC.1 build even though the generated snapshot appeared;
 the workflow and live probe now treat the call as an ordinary action and verify the resulting snapshot. The registered
-lane cleanup succeeded. After testing, the provider snapshot revert task finished, the powered-off instance was
-powered on, and the registered read-only `live-inspect` gate passed. It confirmed TrueNAS 27.0.0-RC.1, an empty v27
-patch install record, no Path B pool, and no guest mutation calls.
+lane cleanup succeeded. After testing, the provider snapshot revert task finished and the powered-off instance was
+powered on. A separate read-only inspection named `live-inspect` was reported as passing from estate gate tooling in
+another checkout; it confirmed TrueNAS 27.0.0-RC.1, an empty v27 patch install record, no Path B pool, and no guest
+mutation calls. `live-inspect` is not declared in this directory's `run-gate.toml`, which registers `r0-r1` and
+`live-v27`; tnt's estate registration remains open under TNT-32.
 
 ### Findings fixed during acceptance
 

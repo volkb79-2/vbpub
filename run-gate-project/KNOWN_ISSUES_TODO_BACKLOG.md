@@ -127,6 +127,7 @@ SPEC §9.
 | RG-107 | `TestPointerLinkageEstate::test_cmru_release_body_uses_the_versioned_changelog` needs a local `run-gate-v*` tag, so the `assay-r1` lane fails in R0 | Minor | FIXED 2026-10-21 (commit `test(run-gate): RG-107 ...` on `rg55-fin-20261021`; found by the INT-01 `assay-r1` run, 2026-10-19; lane-only) |
 | RG-108 | `stop-pending` / `finalization-failed` cgprofile sessions are treated as unavailable, dropping the session id and kill evidence | Medium | OPEN (renumbered 2026-10-21 from the duplicate RG-105 of park/stash@2; must release before a CP-24 daemon is installed) |
 | RG-109 | A SIGTERM to `run-gate` while a detached lane container runs ends the wrapper but leaves the container running: an orphan that keeps load on a production-shared host (found 2026-10-21 on a `gate-provisional` run, 24.0.1) | Medium | OPEN (filed 2026-10-21, BL-01); cause of the survival not determined (see entry) |
+| RG-110 | `pytest-cov --cov-fail-under` can exit successfully while printing a raw coverage result below the floor because its exit check rounds to configured precision; a `kind = "command"` Run-Gate lane trusts that exit status | Medium | OPEN (filed 2026-10-29 from tnt TNT-53; consumer precision-2 workaround documented there) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -6457,3 +6458,21 @@ command names it).
 
 **Observation only (not a defect filed here; controller-reported).** The same run printed `cgprofile ctl version could not reach the daemon at
 /run/cgprofile/ctl.sock` (exit 3) as a profiling WARNING. It degrades profiling, not the verdict.
+
+## RG-110 — pytest-cov can exit green below the displayed coverage floor in a command lane
+
+**Status:** OPEN (filed 2026-10-29 from tnt TNT-53). Severity: medium. The consumer workaround is
+`[tool.coverage.report] precision = 2`, applied in `truenas/tnt/pyproject.toml`.
+
+**Observed.** A tnt `r0-r1` log recorded by TNT-53 showed 96.937% coverage and printed a two-digit failure message
+(`96.94%` against a 97% floor), while pytest-cov exited 0. The lane is `kind = "command"`, so Run-Gate maps that
+process exit to PASS. The mismatch is between pytest-cov's `coverage.results.should_fail_under` exit check
+(`pytest_cov/plugin.py:373-381`, `coverage/results.py:483-502`, `coverage/config.py:232`) and the terminal report
+(`pytest_cov/plugin.py:411-421`): the former uses configured precision, which defaults to 0, while the latter
+compares and displays a more precise total. The tester closure receives pytest-cov 7.1.0 through
+`assay/pyproject.toml:39-42` and `tester-unified/gen-requirements.py:48-56`.
+
+**Expected.** A command lane whose raw coverage report is below `--cov-fail-under` exits nonzero, and Run-Gate records
+FAIL. Add an executable regression at the pytest-cov/coverage/tester image boundary or otherwise align the exit check
+with the reported precision. Consumer configuration can mitigate the mismatch but does not resolve the shared tool
+behavior.

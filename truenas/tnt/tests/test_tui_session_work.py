@@ -64,6 +64,26 @@ def test_session_work_drops_cancelled_callbacks_and_missing_session_leases():
 
     absent_app = FakeApp(lease)
     absent_app.begin_session_work = lambda _session: None
-    absent = SimpleNamespace(app=absent_app, session=session)
+
+    class AttachedView:
+        is_attached = True
+
+        def __init__(self):
+            self.app = absent_app
+            self.session = session
+
+        def failed(self, message):
+            raise AssertionError("the callback is queued on the UI thread, not invoked from the worker")
+
+    absent = AttachedView()
     run(absent, lambda current: called.append(current), "loaded", "failed")
-    assert called == [] and absent_app.callbacks == []
+    assert called == [] and len(absent_app.callbacks) == 1
+    callback, args = absent_app.callbacks[0]
+    assert callback == absent.failed
+    assert "active host session" in args[0].casefold() and "no calls were sent" in args[0].casefold()
+
+    absent_app.callbacks.clear()
+    detached = AttachedView()
+    detached.is_attached = False
+    run(detached, lambda current: called.append(current), "loaded", "failed")
+    assert absent_app.callbacks == []
