@@ -5,7 +5,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Fixed
-- fix(assay): allow concurrent gates and retry incomplete or pressure-affected R0/R1 and unexpected R3 results as infrastructure
+- fix(assay): allow concurrent gates and attribute pressure-affected R0/R1/R3 outcomes to measured resources
 - fix(assay): make the R3 verifier derive incomplete transformed canary runs as INCONCLUSIVE, matching the producer
 - fix(assay): retain an expected transformed canary failure under PSI-only pressure; direct resource limits and unexpected failures still withhold it
 
