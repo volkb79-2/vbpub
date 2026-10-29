@@ -18751,6 +18751,9 @@ class TestProgressWatch:
 
     def test_final_verdict_does_not_arm_the_r2_post_command_bound(self,
                                                                   tmp_path):
+        # A terminal verdict ends both R2-specific and generic command
+        # liveness. The ordinary 300 s bound must not remain armed merely
+        # because this lane expected a plan before the verdict arrived.
         clock = FakeClock()
         path = tmp_path / ".assay" / "progress-r2-verdict-written.jsonl"
         write_progress(path, {"event": "command_started"},
@@ -18759,7 +18762,9 @@ class TestProgressWatch:
         watch = run_gate.ProgressWatch(
             path, "r2", None, clock, auto_bound=True, expects_plan=True)
         assert watch.poll() is None
-        clock.advance(601)
+        clock.advance(300)
+        assert watch.poll() is None
+        clock.advance(301)
         assert watch.poll() is None
 
     def test_legacy_r2_candidate_keeps_the_minimum_auto_bound(self, tmp_path):
@@ -18789,6 +18794,24 @@ class TestProgressWatch:
             path, "r1", None, clock, auto_bound=True)
         assert watch.poll() is None
         clock.advance(10_000)
+        assert watch.poll() is None
+
+    @pytest.mark.parametrize(
+        "contents", ["", '{"event": "command_started"'],
+        ids=["empty", "torn-command-started"])
+    def test_empty_or_torn_progress_does_not_arm_the_command_bound(
+            self, tmp_path, contents):
+        # A readable file with no complete event carries no liveness signal.
+        # In particular, an empty or mid-write file must remain
+        # disclosure-only instead of inheriting a command heartbeat.
+        clock = FakeClock()
+        path = tmp_path / ".assay" / "progress-r2-incomplete.jsonl"
+        path.parent.mkdir(parents=True)
+        path.write_text(contents)
+        watch = run_gate.ProgressWatch(
+            path, "r2", None, clock, auto_bound=True, expects_plan=True)
+        assert watch.poll() is None
+        clock.advance(300)
         assert watch.poll() is None
 
     def test_baseline_bound_is_inert_without_auto_bound(self, tmp_path):
