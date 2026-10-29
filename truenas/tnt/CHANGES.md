@@ -10,11 +10,11 @@
   fixes are listed in that report.
 - The `r0-r1` lane now reports coverage to two decimal places (`[tool.coverage.report] precision = 2`), aligning
   pytest-cov's `--cov-fail-under=97` comparison with its two-digit report so a displayed 96.94% fails. The general
-  pytest-cov/Run-Gate command-lane false green is filed as RG-110 in run-gate-project's backlog. The preceding complete gate run reported
-  6 failed, 924 passed, and 2 deselected; combined coverage was 97.65%, but true branch coverage was 96.45%
-  (2471/2562), below the requested branch target. The third and final authorized gate attempt stopped at test
-  collection because of an indentation error in the new core-view test; the syntax was corrected afterward, but no
-  green gate result is available under the three-run limit.
+  pytest-cov/Run-Gate command-lane false green is filed as RG-110 in run-gate-project's backlog. The latest registered
+  gate run passed 930 tests, with 0 failures and 2 deselected; combined coverage was 98.36% and branch coverage was
+  97.27% (2492/2562), above the 97% branch floor. The two reported failures were test setup errors: the core-view test
+  queried IDs those views do not define, and the reboot refusal test queried its view before Textual attached it. The
+  tests now locate the mounted core view and wait for the reboot view to attach while retaining their behavior checks.
 - Restored the typed `api-key-lookup` refusal for a missing API key, added visible worker-start messages when no host
   lease is available, and routed TUI action-builder tests through `_build_action_from_input`. Bound the copied
   password-auth example to its configured endpoint. Live-test docs now list the required `PROFILE-alt` alias and

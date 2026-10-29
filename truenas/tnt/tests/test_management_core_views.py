@@ -253,7 +253,8 @@ def test_core_read_views_load_with_search_copy_status_and_sanitized_error(config
                 assert app.query_one("#core-table", DataTable).row_count == 0
                 search.value = ""
                 await pilot.pause(0.05)
-                dashboard = app.query_one("#view-dashboard")
+                dashboard = app.query_one("#content").children[0]
+                assert isinstance(dashboard, DashboardView)
                 dashboard._failed("temporary read failure after a successful sample")
                 assert "last successful sample" in str(app.query_one("#core-status", Static).render())
                 app.query_one("#core-search", Input).parent.parent.action_search()
@@ -276,7 +277,8 @@ def test_core_read_views_load_with_search_copy_status_and_sanitized_error(config
                 assert "recent 200 only" in str(app.query_one("#core-status", Static).render())
                 assert app.query_one("#core-table", DataTable).row_count == 400
                 assert not app.query_one("#jobs-next", Button).disabled
-                jobs_view = app.query_one("#view-jobs")
+                jobs_view = app.query_one("#content").children[0]
+                assert isinstance(jobs_view, JobsView)
                 jobs_view.on_button_pressed(Button.Pressed(app.query_one("#jobs-next", Button)))
                 await _settle(pilot, lambda: "page 2, 0 remote row(s), 0 local" in
                               str(app.query_one("#core-status", Static).render()))
