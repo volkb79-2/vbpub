@@ -142,7 +142,7 @@ def list_anchors(path: str | Path | None = None) -> list[dict[str, Any]]:
     return read_anchor_store(path)["anchors"]
 
 
-def _write_private(path: Path, payload: bytes) -> None:
+def _ensure_private_parent(path: Path) -> None:
     try:
         if _has_symlink_component(path.parent):
             raise AnchorError("anchor state directory path must not contain symlink components")
@@ -154,6 +154,10 @@ def _write_private(path: Path, payload: bytes) -> None:
             raise AnchorError("anchor state directory must be private (mode 0700)")
     except OSError as exc:
         raise AnchorError("cannot secure the anchor state directory") from exc
+
+
+def _write_private(path: Path, payload: bytes) -> None:
+    _ensure_private_parent(path)
     fd, temporary = tempfile.mkstemp(prefix=".usage-anchors-", dir=path.parent)
     try:
         os.fchmod(fd, 0o600)
@@ -193,6 +197,7 @@ def add_anchor(
         "source": source,
         "coverage_assumption": coverage_assumption,
     })
+    _ensure_private_parent(state_path)
     store = _read_anchor_store(state_path, missing_ok=True)
     for existing in store["anchors"]:
         if existing["kind"] == kind and existing["observed_at"] == new_anchor["observed_at"]:

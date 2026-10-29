@@ -54,7 +54,7 @@ def test_usage_anchor_choice_values_are_documented():
 
 def test_usage_anchor_docs_distinguish_missing_default_and_explicit_stores():
     for path in DOCS:
-        text = path.read_text(encoding="utf-8")
+        text = " ".join(path.read_text(encoding="utf-8").split())
         assert "absent default anchor store is normal" in text
         assert "missing explicitly selected anchor file" in text
         assert "unreadable" in text
