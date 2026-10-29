@@ -22,6 +22,42 @@ Here **HARNESS** means the campaign did not produce a valid behavioral
 verdict; it does not assert that a mutant could not have contributed to the
 cleanup, resource, or time-limit event.
 
+## Current-source rejudge pilot — 2026-10-29
+
+The 11 current-source equivalents for the ten crashed candidates and the one
+budget-exceeded candidate were run in a completed but **nonqualifying** pilot.
+The candidate map records current main `eb09b59dae80` and the old campaign
+`a24590839fa6`; the Run-Gate summary is for commit `4bff48afc07d`. The pilot
+recorded **8 KILLED, 2 SURVIVED, and 1 CRASHED**. R0 passed, but R2 ended
+`ERROR/EXEC_FAILED`; Assay was imported from the source checkout, so the run
+also has no judge provenance. Do not report this as a qualifying R2 pass.
+
+The two survivors were `3c1b59b5b700` (`Or->And`, empty
+`base_branch_ref`) and `ec9c79b40e7e` (`True->False`, fallback warning flush).
+Commit `f84b1a9b4` adds the specific malformed-input diagnostic and stderr
+flush assertions for those behaviors. It was committed after the pilot, so
+neither candidate has a post-oracle mutation verdict yet.
+
+The crashed candidate was `2e82d927b973` (`IsNot->Is`,
+`run_gate.py:14295`, the `fallback_watch is not None` check). Its intended
+stall test failed, but the mutation disabled fallback-watch polling and the
+candidate run ended with two outliving descendants signalled during cleanup.
+That remains a crash, not a kill. The test lacked a `child_process_scope`
+teardown: without a local reaper, orphaned helpers were adopted only by
+Assay's outer process-tree window and remained until candidate cleanup. The
+test now reaps adopted children at its own boundary and asserts that the
+process group was killed. The pilot record does not identify the descendants'
+original spawn sites. The bounded scratch mutant probe and branch selftest are
+recorded below; they do not replace the missing qualifying Assay candidate
+verdict.
+
+The former budget-exceeded candidate `183c6b7fe3d2` maps to
+`377c0f5a5777` (`IsNot->Is`, `run_gate.py:14390`) and was **KILLED** with a
+clean process tree. This closes RG-121 even though the overall pilot was
+nonqualifying due to the separate RG-120 crash. Candidate map, summary,
+progress, and run log are under
+`.worktrees/r2-rejudge-source-20261029/run-gate-project/.assay/`.
+
 `run-gate-project/assay.toml` has no per-candidate equivalence/exclusion list.
 Its mutation block declares jobs, a time budget, a candidate limit, and the
 operator set only. No exclusion was added; the documented equivalent list is
@@ -137,10 +173,12 @@ failures instead of unbounded memory growth or a 900 s spin. The existing
 crashed bucket remains authoritative for an unclean candidate; no cleanup
 failure is reclassified as a kill.
 
-These are source and test-harness fixes, not new judgments for the old R2
-records. RG-120 and RG-121 remain open until the operator's planned
-`--resume --rejudge` run replaces the ten crashed records and the one expired
-record. No R2 campaign was run for this change.
+The fixes above do not rewrite the historical a245908 campaign records. The
+current-source pilot supplies candidate-level outcomes but is not a qualifying
+R2 result. RG-121 is closed by its clean killed candidate rejudge; RG-120 stays
+open for the two survivors whose new oracles have not been mutation-rejudged
+and the one candidate whose Assay run was crashed by process-tree cleanup. No
+R2 campaign was run in this change.
 
 The registered selftest evidence is:
 
@@ -161,3 +199,17 @@ The registered selftest evidence is:
    one skipped in 217.95 seconds; diff coverage 48/48 changed executable lines
    (100.0%) and 20/20 branches; exit 0. The earlier 45/50 result is superseded
    by this green run. No R2 campaign was run for this change.
+5. Scratch mutant probe: in a detached copy of `f84b1a9b4`, changed the
+   rusage fallback-watch check from `fallback_watch is not None` to
+   `fallback_watch is None`, then ran the registered `run-gate selftest
+   --allow-dirty`. It failed as expected: 4 failed, 2,442 passed, one skipped
+   in 228.63 seconds, exit 1. The stall-termination oracle and the three
+   cadence/watch-failure oracles all failed because the mutant never polled
+   the watcher. The failing stall test's `child_process_scope` teardown
+   completed without error, so no adopted children remained for outer runner
+   cleanup. This is a bounded mutant probe, not an Assay R2 verdict.
+6. Oracle branch verification: `run-gate selftest --allow-dirty` passed once
+   on `rg120-rg121-rejudge-oracles-20261029` (Run-Gate 24.1.2; exit 0): 2,446
+   passed, one skipped in 203.48 seconds. Diff coverage was `SKIPPED` because
+   there were zero changed executable lines under `run_gate.py`; the registered
+   lane passed with that empty source diff.

@@ -137,8 +137,8 @@ SPEC §9.
 | RG-117 | admission / runtime candidates from the 2026-10-27 audit (inspect race, secret values on argv, `save_container_logs` symlink window, slice nesting, uncaught exceptions exit 1, ticket resume by name) | Medium | OPEN, unverified candidates |
 | RG-118 | RG-106 oracle 5: refuse an image with no passwd entry for the resolved `user` uid | Low | OPEN 2026-10-27 (design in entry) |
 | RG-119 | docs-vs-code drift remainder from the 2026-10-28 audit (anchors, LANE-AUTHORING TODO table, history example, host paths, versions, `--lock-wait`, `exit_map`, `members`, `load_config`) | Low | OPEN 2026-10-28 |
-| RG-120 | the a245908 R2 campaign has ten candidate runs without valid test verdicts: six outliving children and four cgroup OOM kills | Medium | OPEN 2026-10-29; evidence and candidate IDs in `docs/R2-MUTATION-TRIAGE-2026-10-29.md` |
-| RG-121 | one a245908 R2 candidate exceeded the configured 900 s per-candidate budget without a final judgment | Medium | OPEN 2026-10-29; evidence in `docs/R2-MUTATION-TRIAGE-2026-10-29.md` |
+| RG-120 | the a245908 R2 follow-up remains nonqualifying: one current-source candidate crashed during process-tree cleanup; two survivors have new oracles but no post-oracle mutation verdict | Medium | OPEN 2026-10-29; current-source pilot and candidate IDs in `docs/R2-MUTATION-TRIAGE-2026-10-29.md` |
+| RG-121 | one a245908 R2 candidate exceeded the configured 900 s per-candidate budget without a final judgment | Medium | CLOSED 2026-10-29; current-source equivalent `377c0f5a5777` was killed with a clean process tree; see `docs/R2-MUTATION-TRIAGE-2026-10-29.md` |
 | RG-122 | `pytest-cov --cov-fail-under` can exit successfully while printing a raw coverage result below the floor because its exit check rounds to configured precision; a `kind = "command"` Run-Gate lane trusts that exit status | Medium | OPEN (filed 2026-10-29 from tnt TNT-53; consumer precision-2 workaround documented there) |
 ---
 
@@ -6560,7 +6560,7 @@ Remaining, each with the auditor's pointer:
 9. SPEC says a non-positive-integer `schema_version` in a ciu record is refused; a JSON `null` falls through to the legacy reading (`usable_recorded_base` gates on `is not None`) — decide, then align.
 10. CONSUMERS pins `run-gate-v24.0.0` in the install lines and names no Assay floor for `analyze campaign` (first in Assay 8.0.0); `cmru.toml`'s header still says the next release is 24.0.0.
 
-## RG-120 — the a245908 R2 campaign has ten unjudged candidate runs
+## RG-120 — ten a245908 crash records still need a qualified rejudge disposition
 
 **Status:** OPEN 2026-10-29. Severity Medium.
 
@@ -6593,6 +6593,28 @@ caps the rusage fake at 16 polls with an assertion on exhaustion. The audit
 also found and guarded the same post-spawn exception window in
 `spawn_bare_host_placement_barrier`.
 
+**Current-source rejudge pilot (2026-10-29).** The 11 current-source
+equivalents for the ten crashed candidates and the one budget-exceeded
+candidate completed as 8 KILLED, 2 SURVIVED, and 1 CRASHED. This was a
+nonqualifying pilot: R0 passed, R2 ended `ERROR/EXEC_FAILED`, and the run had
+no judge provenance because Assay was imported from the source checkout. Nine
+of the ten original crash candidates now have candidate-level outcomes; the
+remaining crashed equivalent is `2e82d927b973` (`IsNot->Is`,
+`run_gate.py:14295`). Its intended test failed, but the runner recorded two
+outliving descendants and signalled them during cleanup, so this remains a
+crash, not a kill.
+
+The two pilot survivors were `3c1b59b5b700` (empty `base_branch_ref`,
+`Or->And`) and `ec9c79b40e7e` (fallback warning flush, `True->False`). Commit
+`f84b1a9b4` adds the specific malformed-input diagnostic assertion and stderr
+flush assertion for those cases. Those tests were committed after the pilot;
+neither survivor has a post-oracle mutation verdict. The crash candidate's
+stall test now uses `child_process_scope` and asserts that the process group was
+killed. Its teardown reaps adopted helper children before Assay's outer
+process-tree audit; the pilot record does not identify the original spawn sites
+of the two descendants. The scratch mutant probe and this branch's registered
+selftest evidence are recorded in the triage doc.
+
 **Status remains OPEN.** The third registered selftest attempt passed 2,445
 tests with one expected skip, but its diff-coverage gate failed at 45/50
 changed executable lines (90%; all 20 branches were taken). Targeted coverage
@@ -6602,15 +6624,17 @@ the registered `selftest` lane on clean commit
 `36c16001a136fad42be6e751e0473ba3`, log
 `/home/vscode/vbpub-release-program-20261027/logs/g-rg.log`): 2,446 passed,
 one skipped in 217.95 seconds, diff coverage 48/48 changed executable lines
-(100.0%) and 20/20 branches, exit 0. The old R2 campaign records remain
-unjudged; these fixes do not turn a cleanup failure into a mutation kill. The
-operator's planned
-`--resume --rejudge` of the eleven affected candidates is still required to
-replace the unjudged evidence. No R2 campaign was run in this change.
+(100.0%) and 20/20 branches, exit 0. The original campaign's ten crash entries
+remain `crashed` in the historical evidence; this pilot does not rewrite them.
+The current-source pilot improves the candidate record but does not
+qualify as a complete R2 result: one run is still crashed, and the two newly
+added survivor oracles have not been mutation-rejudged. Keep this issue open
+until those three candidate outcomes are cleanly established. No R2 campaign
+was run in this change.
 
 ## RG-121 — one a245908 R2 candidate exceeded its configured budget
 
-**Status:** OPEN 2026-10-29. Severity Medium.
+**Status:** CLOSED 2026-10-29 (candidate `183c6b7fe3d2` re-judged killed on the current source; see the rejudge note below). Severity Medium.
 
 **Observed.** Candidate `183c6b7fe3d2` (`run_gate.py:14371`,
 `python:compare-swap`, `IsNot->Is`) did not finish within the R2 lane's
@@ -6630,12 +6654,12 @@ watch tests now cap process waits at eight and assert on exhaustion. This
 preserves the real 900 s lane budget and lets a future mutation run report a
 test failure instead of consuming the full candidate window.
 
-**Status remains OPEN.** Candidate `183c6b7fe3d2` still has no final
-judgment. The source and test cause is identified, and the registered
-Run-Gate selftest is green on commit `6650bd3f` (full run evidence under
-RG-120). The operator's planned `--resume --rejudge` is still required to
-replace the old budget-exceeded record. Do not score it as a kill until that
-run produces a valid verdict.
+**Closed 2026-10-29.** Its current-source equivalent `377c0f5a5777`
+(`run_gate.py:14390`, `IsNot->Is`) was **KILLED** in the current-source pilot;
+the candidate finished with a clean process tree and did not hit the 900 s
+budget. The pilot as a whole was nonqualifying because of the separate RG-120
+crash, but this candidate has a valid candidate-level result. No R2 campaign
+was run in this change.
 
 ## RG-122 — pytest-cov can exit green below the displayed coverage floor in a command lane
 

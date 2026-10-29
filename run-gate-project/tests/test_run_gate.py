@@ -10973,6 +10973,11 @@ class TestRecordedWorktreeBaseSchemaV6:
         write_v6_record(repo, base_branch_ref=value)
         ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
         assert ref is None and why
+        if value == "":
+            # An empty ref is malformed input, even though the later safe-ref
+            # check would also reject it. Keep the more precise diagnosis
+            # observable instead of letting that later guard mask this one.
+            assert "blank or not a plain string" in why
 
     @pytest.mark.parametrize("value", [
         "gone", "refs/heads/main", "heads/main", "origin/main", "v1.0.0",
@@ -25574,7 +25579,7 @@ class TestBareHostProfilingWiring:
                 "sampler": None, "profiler_status": None}
 
     def test_bare_host_rusage_fallback_stall_terminates_group_and_keeps_rusage(
-            self, tmp_path, monkeypatch, capsys):
+            self, tmp_path, monkeypatch, capsys, child_process_scope):
         monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
         streams = _capture_run_gate_prints(monkeypatch)
         class Watch:
@@ -25645,6 +25650,10 @@ class TestBareHostProfilingWiring:
                 {"kind": "assay", "assay_lane": "r2",
                  "environment": "bare-host", "clean_tree": False},
                 "suite", repo, repo, repo, run_record={}, profile_plan=plan)
+        # The bounded fake makes the mutant fail quickly. Reap any adopted
+        # helper descendants at this test boundary before Assay's process-tree
+        # audit observes them.
+        assert state["killed"]
         # The exact child is still reaped by wait4, so its rusage survives,
         # and the watch is consulted once (stall latches; it is not re-polled).
         assert watch.calls == 1
@@ -28560,7 +28569,8 @@ class TestExecLaneProfilingWiring:
         assert "in-process watch — profiling disabled" in capsys.readouterr().out
 
     def test_exec_progress_fallback_failure_keeps_lane_exit(
-            self, tmp_path, monkeypatch, capsys):
+            self, tmp_path, monkeypatch):
+        streams = _capture_run_gate_prints(monkeypatch)
         class Fallback:
             def poll(self):
                 raise RuntimeError("planted progress reader failure")
@@ -28594,8 +28604,8 @@ class TestExecLaneProfilingWiring:
         assert self._exec_lane_call(
             tmp_path, monkeypatch, ["true"], {},
             popen_factory=lambda *args, **kwargs: Process()) == 0
-        assert "in-process watch failed unexpectedly" \
-            in capsys.readouterr().err
+        assert _has_flushed_print(
+            streams, "stderr", "in-process watch failed unexpectedly")
 
     def test_exec_watch_reattach_failure_keeps_lane_exit(
             self, tmp_path, monkeypatch, capsys):
