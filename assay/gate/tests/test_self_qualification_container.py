@@ -177,15 +177,18 @@ def write_b110_pilot_outputs(state):
         ".assay/b110-pilot-state/PILOT-STATE": b"sentinel\n",
         f".assay/b110-pilot-state/{identity}.json": b"state\n",
     }
+    manifest_entries = dict(files)
     for relative, content in files.items():
         target = project / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         if relative == ".assay/progress-b110-pilot.jsonl" and target.exists():
             with target.open("ab") as stream:
                 stream.write(content)
+        elif relative == ".assay/b110-pilot-state/PILOT-STATE" and target.exists():
+            # A resumed pilot validates this identity in place; attest its retained bytes.
+            manifest_entries[relative] = target.read_bytes()
         else:
             target.write_bytes(content)
-    manifest_entries = dict(files)
     # Progress is append-only across pilot retries, so attest the whole
     # retained stream rather than the new line from this simulated run.
     manifest_entries[".assay/progress-b110-pilot.jsonl"] = (
@@ -3873,9 +3876,7 @@ def test_b110_pilot_clears_stale_attempt_outputs_and_runs_beside_an_active_gate(
     progress.write_text('{"event":"resume evidence"}\n', encoding="utf-8")
     deadline = state / "campaign-deadline-b110-pilot-test.json"
     deadline.write_text('{"expires_at_utc":"2030-01-01T00:00:00Z"}\n', encoding="utf-8")
-    # The Docker fake writes the selected a... record; keep a different record
-    # to verify launcher cleanup preserves existing resumable state.
-    mutation_state = state / "b110-pilot-state" / f"{'b' * 64}.json"
+    mutation_state = state / "b110-pilot-state" / "PILOT-STATE"
     mutation_state.parent.mkdir()
     mutation_state.write_text("state identity\n", encoding="utf-8")
 
