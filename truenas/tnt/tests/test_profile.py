@@ -45,9 +45,11 @@ def secrets_body(key_path=None):
     return f'''schema_version = 1
 
 [hosts.lab]
+host_url = "wss://lab.example.invalid/api/current"
 {key_field}
 
 [hosts.throwaway]
+host_url = "wss://test.example.invalid/api/current"
 password = "fake-password-material"
 '''
 
@@ -196,6 +198,42 @@ def test_secrets_are_loaded_only_from_the_paired_file_and_redacted(tmp_path):
     assert "1-fake-key-material" not in str(hosts["lab"].describe())
 
 
+def test_cwd_config_cannot_pair_an_xdg_credential_saved_for_another_endpoint(tmp_path):
+    cwd = tmp_path / "project"
+    xdg = tmp_path / "xdg"
+    config = write_private(cwd / "tnt.toml", '''schema_version = 1
+default_host = "lab"
+
+[hosts.lab]
+url = "wss://appliance-a.example.invalid/api/current"
+username = "operator"
+auth = "api_key"
+''')
+    secrets = write_private(xdg / "tnt" / "tnt.secrets.toml", '''schema_version = 1
+
+[hosts.lab]
+host_url = "wss://appliance-b.example.invalid/api/current"
+api_key = "1-credential-for-b"
+''')
+
+    paths = prof.resolve_paths(env={"XDG_CONFIG_HOME": str(xdg)}, cwd=cwd)
+    assert paths.config == config and paths.secrets == secrets
+    hosts, _ = prof.load_profiles(paths.config)
+    entries = prof.load_secrets(paths.secrets)
+    with pytest.raises(ProfileError, match="bound to a different host URL"):
+        prof.read_credential(hosts["lab"], entries)
+
+
+def test_legacy_unbound_secret_is_refused_until_replaced(tmp_path):
+    path = write_private(tmp_path / "tnt.secrets.toml", '''schema_version = 1
+[hosts.lab]
+api_key = "1-legacy-key"
+''')
+    hosts, _ = prof.load_profiles(write_private(tmp_path / "tnt.toml", config_body()))
+    with pytest.raises(ProfileError, match="no endpoint binding"):
+        prof.read_credential(hosts["lab"], prof.load_secrets(path))
+
+
 def test_config_rejects_any_secret_material_before_host_validation(tmp_path):
     path = write_private(tmp_path / "tnt.toml", '''schema_version=1
 [hosts.lab]
@@ -280,7 +318,7 @@ def test_secret_read_helpers_and_key_file_problem_cover_missing_and_invalid_file
     hosts, _ = prof.load_profiles(config)
     lab = hosts["lab"]
     with pytest.raises(ProfileError, match="API key starts"):
-        prof.read_credential(lab, {"lab": prof.SecretEntry(api_key=prof.Secret("/tmp/path"))})
+        prof.read_credential(lab, {"lab": prof.SecretEntry(api_key=prof.Secret("/tmp/path"), host_url=lab.url)})
     with pytest.raises(ProfileError, match="no API key configured"):
         prof.read_credential(lab, {"lab": prof.SecretEntry()})
     with pytest.raises(ProfileError, match="API-key credentials requested"):
@@ -288,7 +326,8 @@ def test_secret_read_helpers_and_key_file_problem_cover_missing_and_invalid_file
     with pytest.raises(ProfileError, match="password credentials requested"):
         prof.read_password(lab, {})
     with pytest.raises(ProfileError, match="does not match auth"):
-        prof.read_password(hosts["throwaway"], {"throwaway": prof.SecretEntry(api_key=prof.Secret("1-key"))})
+        prof.read_password(hosts["throwaway"], {"throwaway": prof.SecretEntry(
+            api_key=prof.Secret("1-key"), host_url=hosts["throwaway"].url)})
     with pytest.raises(ProfileError, match="no password configured"):
         prof.read_password(hosts["throwaway"], {"throwaway": prof.SecretEntry()})
     empty = write_private(tmp_path / "empty.key", "\n")

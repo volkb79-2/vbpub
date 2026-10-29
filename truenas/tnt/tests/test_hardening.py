@@ -41,7 +41,7 @@ def test_key_file_must_be_owned_by_the_current_user(tmp_path, monkeypatch):
     key.write_text("1-abc")
     key.chmod(0o600)
     profile = prof.Profile("a", "wss://h.example.invalid/api/current", "u")
-    entries = {"a": SecretEntry(api_key_file=str(key))}
+    entries = {"a": SecretEntry(api_key_file=str(key), host_url=profile.url)}
     assert prof.read_secret(profile, entries).reveal() == "1-abc"
     monkeypatch.setattr(os, "geteuid", lambda: os.stat(key).st_uid + 1)
     with pytest.raises(ProfileError, match="owned by uid"):
@@ -54,20 +54,20 @@ def test_key_file_read_errors_are_wrapped(tmp_path):
     bad.chmod(0o600)
     p = prof.Profile("a", "wss://h.example.invalid/api/current", "u")
     with pytest.raises(ProfileError, match="cannot read API key file"):
-        prof.read_secret(p, {"a": SecretEntry(api_key_file=str(bad))})
+        prof.read_secret(p, {"a": SecretEntry(api_key_file=str(bad), host_url=p.url)})
     with pytest.raises(ProfileError, match="no API key file"):
-        prof.read_secret(p, {"a": SecretEntry(api_key_file=str(tmp_path / "missing"))})
+        prof.read_secret(p, {"a": SecretEntry(api_key_file=str(tmp_path / "missing"), host_url=p.url)})
 
 
 def test_a_key_starting_with_slash_is_never_passed_on(tmp_path):
     p = prof.Profile("a", "wss://h.example.invalid/api/current", "u")
     with pytest.raises(ProfileError, match="starts with '/'"):
-        prof.read_secret(p, {"a": SecretEntry(api_key=prof.Secret("/etc/shadow"))})
+        prof.read_secret(p, {"a": SecretEntry(api_key=prof.Secret("/etc/shadow"), host_url=p.url)})
     f = tmp_path / "k"
     f.write_text("/etc/shadow")
     f.chmod(0o600)
     with pytest.raises(ProfileError, match="starts with '/'"):
-        prof.read_secret(p, {"a": SecretEntry(api_key_file=str(f))})
+        prof.read_secret(p, {"a": SecretEntry(api_key_file=str(f), host_url=p.url)})
 
 
 def test_scrub_redacts_encodings_and_the_secret_part_of_the_key():

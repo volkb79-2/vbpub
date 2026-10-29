@@ -7,7 +7,7 @@ from textual import work
 from textual.app import App, ComposeResult, SuspendNotSupported, SystemCommand
 from textual.containers import Horizontal
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Footer, Header, Select, Static, Tree
+from textual.widgets import Button, Footer, Header, Select, Static, Tree
 
 from .. import profile as prof
 from ..errors import TntError
@@ -15,7 +15,7 @@ from ..host_store import HostStore, load_host_store
 from ..menu import MENU, MenuItem, walk
 from ..profile import ConfigPaths, Profile, SecretEntry
 from ..session import Session, SessionOpener, open_session
-from ..session_controller import SessionController, SessionTransition, WorkerLease
+from ..session_controller import SessionController, SessionTransition, WorkerDrainTimeout, WorkerLease
 from .disks import DisksView
 from .audit import AuditView
 from .apikeys import ApiKeysView
@@ -46,6 +46,39 @@ VIEWS = {
 }
 
 
+class WorkerDrainDecision(ModalScreen[str]):
+    """Give the user an explicit choice when cancelled RPC work misses the drain deadline."""
+
+    DEFAULT_CSS = "WorkerDrainDecision { align: center middle; } WorkerDrainDecision > Vertical { width: 72; height: auto; border: round $primary; padding: 1 2; background: $surface; }"
+
+    def __init__(self, pending: int, *, transition_kind: str, on_wait, on_cancel):
+        super().__init__()
+        self.pending = pending
+        self.transition_kind = transition_kind
+        self.on_wait = on_wait
+        self.on_cancel = on_cancel
+
+    def compose(self) -> ComposeResult:
+        from textual.containers import Vertical
+
+        verb = "quit" if self.transition_kind == "quit" else "switch hosts"
+        yield Vertical(
+            Static(f"{self.pending} host-bound worker(s) are still waiting on TrueNAS. The {verb} can wait while those RPCs finish, or return to the current host.", id="worker-drain-message"),
+            Horizontal(
+                Button("Keep waiting", id="worker-drain-wait", variant="primary"),
+                Button("Cancel quit" if self.transition_kind == "quit" else "Cancel switch", id="worker-drain-cancel"),
+            ),
+        )
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "worker-drain-wait":
+            self.dismiss("wait")
+            self.on_wait()
+        elif event.button.id == "worker-drain-cancel":
+            self.dismiss("cancel")
+            self.on_cancel()
+
+
 def placeholder(item: MenuItem) -> Static:
     where = f"milestone {item.milestone}"
     rows = f" Action-matrix rows: {', '.join(item.matrix)}." if item.matrix else ""
@@ -71,11 +104,13 @@ class TntApp(App):
                  hosts: dict[str, Profile] | None = None, default_host: str | None = None,
                  secret_entries: dict[str, SecretEntry] | None = None, host_paths: ConfigPaths | None = None,
                  session_opener: SessionOpener = open_session, insecure_ack: bool = False,
-                 initial_write: bool = False, reconnect_delays: tuple[int, ...] = (2, 4, 8, 16, 32)):
+                 initial_write: bool = False, reconnect_delays: tuple[int, ...] = (2, 4, 8, 16, 32),
+                 worker_drain_timeout: float = 5.0):
         super().__init__()
         self.session_opener = session_opener
         self.insecure_ack = insecure_ack
         self.reconnect_delays = reconnect_delays
+        self.worker_drain_timeout = worker_drain_timeout
         self.host_paths = host_paths or prof.resolve_paths()
         if session_controller is not None:
             self.session_controller = session_controller
@@ -90,6 +125,7 @@ class TntApp(App):
                 insecure_ack=insecure_ack, initial_session=session, initial_write=initial_write)
         self.current: str | None = None
         self._restore_key: str | None = None
+        self._quitting = False
 
     @property
     def session(self) -> Session | None:
@@ -224,6 +260,20 @@ class TntApp(App):
         self.notify("arrows/enter: navigate, ctrl+p: command palette, h: switch host, w: toggle write mode, "
                     "s: interactive SSH, r: refresh, q: quit", title="Keys")
 
+    def action_quit(self) -> None:
+        if self._quitting:
+            return
+        try:
+            transition = self.session_controller.begin_disconnect()
+        except TntError as exc:
+            self.notify(str(exc), title="Quit refused")
+            return
+        self._quitting = True
+        self._dismiss_top_modal()
+        self.query_one("#content").remove_children()
+        self._update_banner("Draining host-bound work before closing tnt…")
+        self._finish_host_switch(transition, self._restore_key)
+
     def action_ssh(self) -> None:
         """Temporarily return the terminal to OpenSSH for the selected host."""
         session = self.session
@@ -270,7 +320,12 @@ class TntApp(App):
     @work(thread=True, exclusive=True)
     def _finish_host_switch(self, transition: SessionTransition, restore_key: str | None) -> None:
         try:
-            session = self.session_controller.finish_switch(transition)
+            session = self.session_controller.finish_switch(transition, timeout=self.worker_drain_timeout)
+        except WorkerDrainTimeout as exc:
+            try:
+                self.app.call_from_thread(self._worker_drain_timed_out, transition, restore_key, exc.pending)
+            except Exception:
+                return
         except Exception as exc:
             try:
                 self.app.call_from_thread(self._host_switch_failed, transition.generation, transition.target_host, str(exc))
@@ -286,6 +341,9 @@ class TntApp(App):
     def _host_switch_finished(self, generation: int, session: Session | None, restore_key: str | None) -> None:
         if not self.session_controller.accepts_generation(generation):
             return
+        if self._quitting:
+            self.exit()
+            return
         self._update_banner()
         self.sub_title = session.profile.name if session else "Select a host"
         item = self._menu_item(restore_key)
@@ -297,10 +355,35 @@ class TntApp(App):
     def _host_switch_failed(self, generation: int, host_name: str | None, message: str) -> None:
         if not self.session_controller.accepts_generation(generation):
             return
+        if self._quitting:
+            self._quitting = False
         self._update_banner(f"{host_name or 'Host'} connection failed  generation {generation}")
         self.sub_title = "Select a host"
         self.show_host_picker()
         self.notify(message, title="Host connection failed")
+
+    def _worker_drain_timed_out(self, transition: SessionTransition, restore_key: str | None, pending: int) -> None:
+        if transition.generation != self.session_controller.generation:
+            return
+        kind = "quit" if self._quitting else "switch"
+        self.push_screen(WorkerDrainDecision(
+            pending, transition_kind=kind,
+            on_wait=lambda: self._finish_host_switch(transition, restore_key),
+            on_cancel=lambda: self._cancel_host_transition(transition, restore_key),
+        ))
+
+    def _cancel_host_transition(self, transition: SessionTransition, restore_key: str | None) -> None:
+        if not self.session_controller.cancel_transition(transition):
+            return
+        self._quitting = False
+        self._update_banner()
+        session = self.session
+        self.sub_title = session.profile.name if session else "Select a host"
+        item = self._menu_item(restore_key)
+        if item is not None and session is not None:
+            self.show(item)
+        else:
+            self.show_host_picker()
 
     def disconnect_to_picker(self) -> None:
         self._dismiss_top_modal()

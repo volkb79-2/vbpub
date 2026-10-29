@@ -21,7 +21,8 @@ _FIELD_RE = re.compile(r"^\s*([A-Za-z0-9_-]+)\s*=")
 _TOP_LEVEL_RE = re.compile(r"^\s*([A-Za-z0-9_-]+)\s*=")
 _HOST_FIELDS = ("url", "tls", "auth", "username", "ssh_user", "ssh_key_files", "ssh_known_hosts",
                 "description", "tags")
-_SECRET_FIELDS = ("api_key", "api_key_file", "password")
+_CREDENTIAL_FIELDS = ("api_key", "api_key_file", "password")
+_SECRET_FIELDS = (*_CREDENTIAL_FIELDS, "host_url")
 
 
 def _toml_string(value: str) -> str:
@@ -176,13 +177,14 @@ def _validate_profile(profile: Profile) -> None:
     _validate_host(profile.name, values)
 
 
-def _secret_values(entry: SecretEntry | None) -> dict[str, object | None]:
+def _secret_values(entry: SecretEntry | None, host_url: str | None = None) -> dict[str, object | None]:
     if entry is None:
         return {key: None for key in _SECRET_FIELDS}
     return {
         "api_key": entry.api_key.reveal() if entry.api_key else None,
         "api_key_file": entry.api_key_file,
         "password": entry.password.reveal() if entry.password else None,
+        "host_url": host_url or entry.host_url,
     }
 
 
@@ -292,11 +294,18 @@ def _validate_pair(config_text: str, secrets_text: str) -> None:
     if default is not None and default not in hosts:
         raise ProfileError(f"default host {default!r} is not defined")
     for name, raw in secret_hosts.items():
-        if name not in hosts or not isinstance(raw, dict) or len(raw) != 1 or set(raw) - set(_SECRET_FIELDS):
+        if name not in hosts or not isinstance(raw, dict) or set(raw) - set(_SECRET_FIELDS):
             raise ProfileError(f"secrets for host {name!r} do not match a configured host")
-        key, value = next(iter(raw.items()))
+        credentials = set(raw) & set(_CREDENTIAL_FIELDS)
+        if len(credentials) != 1:
+            raise ProfileError(f"secrets for host {name!r} must contain exactly one credential source")
+        key = next(iter(credentials))
+        value = raw[key]
         if not isinstance(value, str) or not value:
             raise ProfileError(f"secrets for host {name!r} must contain a non-empty credential")
+        host_url = raw.get("host_url")
+        if host_url is not None and (not isinstance(host_url, str) or not host_url):
+            raise ProfileError(f"secrets for host {name!r}: host_url must be a non-empty endpoint URL")
         if key == "api_key_file" and not os.path.isabs(value):
             raise ProfileError(f"secrets for host {name!r}: api_key_file must be absolute")
         if key == "api_key" and value.startswith("/"):
@@ -365,8 +374,8 @@ class HostStore:
     def add(self, profile: Profile, credential: SecretEntry, *, make_default: bool = False) -> None:
         # Reuse the loader's strict validation before serializing caller-supplied values.
         _validate_profile(profile)
-        secret_values = _secret_values(credential)
-        if sum(value is not None for value in secret_values.values()) != 1:
+        secret_values = _secret_values(credential, profile.url)
+        if sum(secret_values[key] is not None for key in _CREDENTIAL_FIELDS) != 1:
             raise ProfileError("a host must have exactly one secret credential source")
         with _serialized(self.paths, create_parents=True):
             config, secrets = self._read_pair()
@@ -398,7 +407,7 @@ class HostStore:
                 raise ProfileError(f"unknown host {name!r}")
             config = _patch_table(config, name, _profile_values(profile))
             if credential is not None:
-                secrets = _patch_table(secrets, name, _secret_values(credential))
+                secrets = _patch_table(secrets, name, _secret_values(credential, profile.url))
             _validate_pair(config, secrets)
             changed = {self.paths.config: config}
             if credential is not None:
@@ -435,7 +444,9 @@ class HostStore:
             if old_name in secret_data:
                 secrets = _patch_table(secrets, old_name, {}, rename_to=new_name)
             if credential is not None:
-                secrets = _patch_table(secrets, new_name, _secret_values(credential),
+                raw_profile = hosts[old_name]
+                binding_profile = profile or _validate_host(old_name, raw_profile)
+                secrets = _patch_table(secrets, new_name, _secret_values(credential, binding_profile.url),
                                        create=old_name not in secret_data)
             _validate_pair(config, secrets)
             old = self._old_contents((self.paths.config, self.paths.secrets))

@@ -8,6 +8,7 @@ and only then closes the old client and opens the replacement.
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Callable, Mapping
 
@@ -29,9 +30,18 @@ class SessionTransition:
     generation: int
     previous_generation: int
     target_host: str | None
+    previous_active_host: str | None
     previous_session: Session | None
     workers: tuple[WorkerLease, ...]
     allow_write: bool
+
+
+class WorkerDrainTimeout(TimeoutError):
+    """A transition reached its bounded worker wait while cancelled work was still in flight."""
+
+    def __init__(self, pending: int):
+        self.pending = pending
+        super().__init__(f"{pending} host-bound worker(s) are still running")
 
 
 class SessionController:
@@ -52,9 +62,11 @@ class SessionController:
                 and initial_session.profile.name not in self.secret_entries):
             credential = initial_session.credential
             if initial_session.profile.auth == "api_key":
-                self.secret_entries[initial_session.profile.name] = SecretEntry(api_key=credential)
+                self.secret_entries[initial_session.profile.name] = SecretEntry(
+                    api_key=credential, host_url=initial_session.profile.url)
             else:
-                self.secret_entries[initial_session.profile.name] = SecretEntry(password=credential)
+                self.secret_entries[initial_session.profile.name] = SecretEntry(
+                    password=credential, host_url=initial_session.profile.url)
         self.session_opener = session_opener
         self.insecure_ack = insecure_ack
         self.generation = 0
@@ -73,6 +85,7 @@ class SessionController:
         self._workers: dict[int, WorkerLease] = {}
         self._next_worker = 0
         self._switching = False
+        self._transition: SessionTransition | None = None
         self.last_status: dict[str, str] = {name: "not tested" for name in self.hosts}
         if initial_session is not None:
             self.last_status[initial_session.profile.name] = "connected"
@@ -117,8 +130,12 @@ class SessionController:
             if self._switching:
                 raise ProfileError("a host transition is already in progress")
             previous_generation = self.generation
+            previous_active_host = self.active_host
             old_session = self.session
-            workers = tuple(lease for lease in self._workers.values() if lease.generation == previous_generation)
+            workers = tuple(
+                lease for lease in self._workers.values()
+                if lease.generation == previous_generation or (old_session is not None and lease.session is old_session)
+            )
             for lease in workers:
                 lease.cancelled.set()
             self.generation += 1
@@ -130,13 +147,24 @@ class SessionController:
             elif host_name not in self.write_modes:
                 self.write_modes[host_name] = self._initial_write if self._first_selection else False
             self._first_selection = False
-            return SessionTransition(self.generation, previous_generation, host_name, old_session, workers,
-                                     self.write_modes[host_name])
+            transition = SessionTransition(self.generation, previous_generation, host_name, previous_active_host,
+                                           old_session, workers, self.write_modes[host_name])
+            self._transition = transition
+            return transition
 
-    def finish_switch(self, transition: SessionTransition) -> Session | None:
+    def finish_switch(self, transition: SessionTransition, *, timeout: float = 5.0) -> Session | None:
         """Drain old-generation workers, close the old client, then connect to the selected host."""
+        if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0:
+            raise ValueError("worker drain timeout must be a positive number of seconds")
+        deadline = time.monotonic() + timeout
         for lease in transition.workers:
-            lease.finished.wait()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not lease.finished.wait(remaining):
+                pending = sum(not worker.finished.is_set() for worker in transition.workers)
+                raise WorkerDrainTimeout(pending)
+        with self._lock:
+            if transition.generation != self.generation or not self._switching:
+                return None
         if transition.previous_session is not None:
             registry = getattr(transition.previous_session, "job_registry", None)
             if registry is not None:
@@ -148,6 +176,7 @@ class SessionController:
                     self.session = None
                     self.active_host = None
                     self._switching = False
+                    self._transition = None
             return None
         profile = self.hosts[transition.target_host]
         credential = None
@@ -170,6 +199,7 @@ class SessionController:
                 if transition.generation == self.generation:
                     self._switching = False
                     self.session = None
+                    self._transition = None
                     self.last_status[transition.target_host] = f"connection failed: {safe_error}"
             raise ProfileError(f"cannot connect to host {transition.target_host!r}: {safe_error}") from None
         with self._lock:
@@ -179,8 +209,26 @@ class SessionController:
             self.session = session
             self.active_host = transition.target_host
             self._switching = False
+            self._transition = None
             self.last_status[transition.target_host] = "connected"
             return session
+
+    def cancel_transition(self, transition: SessionTransition) -> bool:
+        """Restore the previous session after a user cancels a timed-out transition."""
+        with self._lock:
+            if transition.generation != self.generation or not self._switching:
+                return False
+            self.session = transition.previous_session
+            self.active_host = transition.previous_active_host
+            self._switching = False
+            self._transition = None
+            session = self.session
+            if session is not None:
+                use_registry = getattr(session, "use_job_registry", None)
+                registry = getattr(session, "job_registry", None)
+                if callable(use_registry) and registry is not None:
+                    use_registry(registry, generation=self.generation)
+            return True
 
     def switch(self, host_name: str, *, write_mode: bool | None = None) -> Session | None:
         return self.finish_switch(self.begin_switch(host_name, write_mode=write_mode))
@@ -190,7 +238,11 @@ class SessionController:
             if self._switching:
                 raise ProfileError("a host transition is already in progress")
             previous_generation = self.generation
-            workers = tuple(lease for lease in self._workers.values() if lease.generation == previous_generation)
+            previous_active_host = self.active_host
+            workers = tuple(
+                lease for lease in self._workers.values()
+                if lease.generation == previous_generation or (self.session is not None and lease.session is self.session)
+            )
             for lease in workers:
                 lease.cancelled.set()
             old_session = self.session
@@ -198,7 +250,10 @@ class SessionController:
             self.session = None
             self.active_host = None
             self._switching = True
-            return SessionTransition(self.generation, previous_generation, None, old_session, workers, False)
+            transition = SessionTransition(self.generation, previous_generation, None, previous_active_host,
+                                           old_session, workers, False)
+            self._transition = transition
+            return transition
 
     def set_write_mode(self, enabled: bool) -> Session | None:
         with self._lock:
@@ -309,23 +364,30 @@ class SessionController:
                 if name not in self.hosts:
                     del self.last_status[name]
 
-    def close(self) -> None:
+    def close(self, *, timeout: float = 5.0) -> None:
         with self._lock:
-            previous_generation = self.generation
-            leases = tuple(lease for lease in self._workers.values() if lease.generation == previous_generation)
-            for lease in leases:
-                lease.cancelled.set()
-            session = self.session
-            self.generation += 1
-            self.session = None
-            self.active_host = None
-            self._switching = True
-        for lease in leases:
-            lease.finished.wait()
-        if session is not None:
-            registry = getattr(session, "job_registry", None)
-            if registry is not None:
-                registry.mark_disconnected()
-            session.close()
-        with self._lock:
-            self._switching = False
+            if self._switching:
+                previous = self._transition
+                if previous is None:
+                    previous = SessionTransition(self.generation, self.generation - 1, None, self.active_host,
+                                                 self.session, tuple(self._workers.values()), False)
+                previous_generation = self.generation
+                workers = tuple(self._workers.values())
+                for lease in workers:
+                    lease.cancelled.set()
+                old_session = previous.previous_session or self.session
+                previous_active_host = previous.previous_active_host
+                self.generation += 1
+                self.session = None
+                self.active_host = None
+                self._switching = True
+                transition = SessionTransition(self.generation, previous_generation, None, previous_active_host,
+                                               old_session, workers, False)
+                self._transition = transition
+            else:
+                transition = self.begin_disconnect()
+        try:
+            self.finish_switch(transition, timeout=timeout)
+        except WorkerDrainTimeout:
+            self.cancel_transition(transition)
+            raise

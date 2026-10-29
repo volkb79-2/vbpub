@@ -54,8 +54,8 @@ def controller(opener=None, *, initial=None, initial_write=False):
         return FakeSession(host, read_only=not allow_write)
 
     value = SessionController(hosts(), "lab", {
-        "lab": SecretEntry(api_key=Secret("1-lab-secret")),
-        "backup": SecretEntry(api_key=Secret("1-backup-secret")),
+        "lab": SecretEntry(api_key=Secret("1-lab-secret"), host_url=hosts()["lab"].url),
+        "backup": SecretEntry(api_key=Secret("1-backup-secret"), host_url=hosts()["backup"].url),
     }, opener or default_open, initial_session=initial, initial_write=initial_write)
     return value, calls
 
@@ -88,6 +88,44 @@ def test_generation_changes_before_old_session_closes_and_worker_is_drained():
     assert events[0] == ("close", "lab")
     assert calls == [("backup", "1-backup-secret", False, False)]
     assert controller_.generation > generation
+
+
+def test_worker_drain_timeout_preserves_session_and_next_switch_still_drains_stale_lease():
+    old = FakeSession(hosts()["lab"])
+    controller_, _ = controller(initial=old)
+    generation, session = controller_.capture()
+    lease = controller_.register_worker(generation, session)
+    assert lease is not None
+
+    first = controller_.begin_switch("backup")
+    with pytest.raises(TimeoutError, match="still running"):
+        controller_.finish_switch(first, timeout=0.01)
+    assert not old.closed
+    assert controller_.cancel_transition(first)
+    assert controller_.session is old and controller_.active_host == "lab"
+
+    retry = controller_.begin_switch("backup")
+    assert lease in retry.workers
+    with pytest.raises(TimeoutError):
+        controller_.finish_switch(retry, timeout=0.01)
+    assert not old.closed
+    controller_.finish_worker(lease)
+    assert controller_.finish_switch(retry, timeout=1).profile.name == "backup"
+    assert old.closed
+
+
+def test_controller_close_timeout_restores_session_and_can_finish_after_worker_drains():
+    old = FakeSession(hosts()["lab"])
+    controller_, _ = controller(initial=old)
+    generation, session = controller_.capture()
+    lease = controller_.register_worker(generation, session)
+    assert lease is not None
+    with pytest.raises(TimeoutError, match="still running"):
+        controller_.close(timeout=0.01)
+    assert controller_.session is old and controller_.active_host == "lab" and not old.closed
+    controller_.finish_worker(lease)
+    controller_.close(timeout=1)
+    assert old.closed and controller_.session is None
 
 
 def test_late_callback_is_rejected_after_switch_and_session_is_host_bound():

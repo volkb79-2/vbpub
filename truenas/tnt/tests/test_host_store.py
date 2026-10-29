@@ -366,7 +366,9 @@ def test_toml_patch_escaped_quotes_duplicate_fields_and_newline_edges():
     assert _patch_table("", "plain", {"url": "wss://host"}, create=True) == (
         '[hosts.plain]\nurl = "wss://host"\n')
     assert _patch_table("schema_version=1", "plain", {}, create=True).endswith("\n[hosts.plain]\n")
-    assert _secret_values(None) == {"api_key": None, "api_key_file": None, "password": None}
+    assert _secret_values(None) == {
+        "api_key": None, "api_key_file": None, "password": None, "host_url": None,
+    }
 
 
 def test_store_file_decode_and_serialization_preflight_errors(tmp_path, monkeypatch):

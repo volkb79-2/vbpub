@@ -1,7 +1,7 @@
 """Host configuration and private credential loading.
 
 ``tnt.toml`` contains connection facts only. Credentials are looked up by the
-same host name in its paired ``tnt.secrets.toml`` file. Sensitive files are
+same host name and exact endpoint in its paired ``tnt.secrets.toml`` file. Sensitive files are
 opened with ``O_NOFOLLOW`` and validated with ``fstat`` on the descriptor that
 is actually read, so a path-based permission check cannot race the read.
 """
@@ -30,6 +30,7 @@ SECRETS_SCHEMA_VERSION = 1
 HOST_KEYS = {"url", "tls", "auth", "username", "ssh_user", "ssh_key_files", "ssh_known_hosts", "description", "tags"}
 CONFIG_SECRET_KEYS = {"api_key", "api_key_file", "password", "credential", "credentials", "secret", "token"}
 SECRET_KEYS = {"api_key", "api_key_file", "password"}
+SECRET_FILE_KEYS = SECRET_KEYS | {"host_url"}
 LOOPBACK = ("127.0.0.1", "::1", "localhost")
 
 
@@ -111,6 +112,7 @@ class SecretEntry:
     api_key: Secret | None = None
     api_key_file: str | None = None
     password: Secret | None = None
+    host_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -322,12 +324,15 @@ def load_secrets(path: str | os.PathLike[str]) -> dict[str, SecretEntry]:
             raise ProfileError("secrets host names must use [A-Za-z0-9._-] and be at most 64 characters")
         if not isinstance(raw, dict):
             raise ProfileError(f"secrets for host {name}: expected a TOML table")
-        unknown_keys = set(raw) - SECRET_KEYS
+        unknown_keys = set(raw) - SECRET_FILE_KEYS
         if unknown_keys:
             raise ProfileError(f"secrets for host {name}: unknown key(s) {sorted(unknown_keys)}")
         values = {key: raw.get(key) for key in SECRET_KEYS if key in raw}
         if len(values) != 1:
             raise ProfileError(f"secrets for host {name}: specify exactly one credential source")
+        host_url = raw.get("host_url")
+        if host_url is not None and (not isinstance(host_url, str) or not host_url):
+            raise ProfileError(f"secrets for host {name}: host_url must be a non-empty endpoint URL")
         api_key = raw.get("api_key")
         api_key_file = raw.get("api_key_file")
         password = raw.get("password")
@@ -340,7 +345,8 @@ def load_secrets(path: str | os.PathLike[str]) -> dict[str, SecretEntry]:
             raise ProfileError(f"secrets for host {name}: api_key_file must be an absolute path")
         result[name] = SecretEntry(Secret(api_key) if isinstance(api_key, str) else None,
                                    api_key_file if isinstance(api_key_file, str) else None,
-                                   Secret(password) if isinstance(password, str) else None)
+                                   Secret(password) if isinstance(password, str) else None,
+                                   host_url if isinstance(host_url, str) else None)
     return result
 
 
@@ -386,10 +392,12 @@ def read_secret(profile: Profile, entries: Mapping[str, SecretEntry]) -> Secret:
     if entry.password is not None:
         raise ProfileError(f"host {profile.name}: secrets credential does not match auth = {profile.auth!r}")
     if entry.api_key is not None:
+        _check_credential_endpoint(profile, entry)
         if entry.api_key.reveal().startswith("/"):
             raise ProfileError("the API key starts with '/', which is not API key material")
         return entry.api_key
     if entry.api_key_file is not None:
+        _check_credential_endpoint(profile, entry)
         return _read_key_file(entry.api_key_file)
     raise ProfileError(f"no API key configured for host {profile.name!r}")
 
@@ -404,7 +412,19 @@ def read_password(profile: Profile, entries: Mapping[str, SecretEntry]) -> Secre
         raise ProfileError(f"host {profile.name}: secrets credential does not match auth = {profile.auth!r}")
     if entry.password is None:
         raise ProfileError(f"no password configured for host {profile.name!r}")
+    _check_credential_endpoint(profile, entry)
     return entry.password
+
+
+def _check_credential_endpoint(profile: Profile, entry: SecretEntry) -> None:
+    if entry.host_url is None:
+        raise ProfileError(
+            f"credential for host {profile.name!r} has no endpoint binding; replace it with `tnt hosts edit "
+            f"{profile.name} --set-secret` before connecting")
+    if entry.host_url != profile.url:
+        raise ProfileError(
+            f"credential for host {profile.name!r} is bound to a different host URL; replace it with `tnt hosts edit "
+            f"{profile.name} --set-secret` before connecting")
 
 
 def read_credential(profile: Profile, entries: Mapping[str, SecretEntry]) -> Secret:

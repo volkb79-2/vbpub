@@ -40,9 +40,11 @@ auth = "api_key"
 SECRETS_TOML = """schema_version = 1
 
 [hosts.lab]
+host_url = "wss://lab.example.invalid/api/current"
 api_key = "1-fakefakefakefakefakefakefakefake"
 
 [hosts.throwaway]
+host_url = "wss://vm.example.invalid/api/current"
 api_key = "1-throwaway-placeholder"
 """
 
