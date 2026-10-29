@@ -40,9 +40,12 @@ resource_observer = "cgprofile"
 assay_lane = "session-extract"       # -> assay.toml [lanes.session-extract]
 environment = "tester-unified"       # central [environments.tester-unified]
 # session-extract runs one native candidate at a time for cgroup-event
-# attribution, with one pytest worker inside that candidate. This is the
-# outer/advisory mirror of assay.toml's resumable six-hour invocation bound.
-budget = "6h"
+# attribution, with one pytest worker inside that candidate. The previous
+# campaign processed 293 candidates in 7012 seconds; the current tree has 1203
+# candidates and Assay rejudges all after a tree change, projecting to about
+# 8.1 hours. This hard outer bound mirrors assay.toml and leaves room for R0/R1
+# and R3 while still refusing an unbounded campaign.
+budget = "10h"
 
 [lanes.session-extract.resources]
 memory = "2g"

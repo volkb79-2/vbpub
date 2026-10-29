@@ -165,10 +165,11 @@ argv = ["/opt/tester-venv/bin/python", "-m", "pytest",
 env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }  # cli_extended: the tester-unified image's released wheel (CX-D1), never a source root
 env_passthrough = ["HOME", "PATH", "TERM", "LANG"]
 # Native candidates now run serially so cgroup event deltas remain attributable.
-# This six-hour invocation bound is resumable; it is not a completion promise for
-# the 1202-candidate ceiling. Read the current plan and progress before projecting
-# a full-campaign finish time.
-budget = "6h"
+# Resume state is tied to the judged commit tree, so this fix's tree change
+# correctly rejudges prior candidates. The previous run processed 293
+# candidates in 7012 seconds; 1203 candidates project to about 8.1 hours.
+# Keep a hard ten-hour bound for the full campaign plus R0/R1 and R3.
+budget = "10h"
 allow_argv_append = false
 
 [lanes.session-extract.isolation]
@@ -195,10 +196,10 @@ base = "126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1"
 # budget_per_candidate remains 120s.
 [lanes.session-extract.judge.mutation]
 jobs = 1
-# The source-backed Assay plan for this tree reports 1202 candidates across
+# The source-backed Assay plan for this tree reports 1203 candidates across
 # the session-extract source diff. Keep the cap at that exact count so this
 # branch's full plan is judged and future additions fail loudly for replanning.
-max_mutants = 1202
+max_mutants = 1203
 operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
 budget_per_candidate = "120s"
 
