@@ -130,6 +130,25 @@ def test_update_apply_binds_target_and_emits_job_progress():
             session.close()
 
 
+def test_update_cli_ignores_boolean_progress_percentages(config, opener, capsys, monkeypatch):
+    import tnt.cli as cli_module
+
+    def apply_with_malformed_progress(_plan, _rpc, *, allow_write, typed_confirmation=None, job_progress=None):
+        assert allow_write and typed_confirmation == "TrueNAS-27.0.0-RC.2"
+        job_progress({"progress": {"percent": True}})
+        job_progress({"progress": {"percent": 42.6}})
+        return []
+
+    monkeypatch.setattr(cli_module, "apply_plan", apply_with_malformed_progress)
+    code = build_cli(opener=opener).run(argv=["system", "update", "apply", "TrueNAS-27.0.0-RC.2",
+                                             "--config", str(config), "--allow-write",
+                                             "--confirm", "TrueNAS-27.0.0-RC.2"])
+    captured = capsys.readouterr()
+    assert code == 0 and "System action completed" in captured.out
+    assert captured.err.count("Update job progress:") == 1
+    assert "Update job progress: 43%" in captured.err
+
+
 def test_config_export_downloads_tar_to_new_private_local_file(config, opener, capsys, tmp_path, server):
     target = tmp_path / "truenas-config.tar"
     cli = build_cli(opener=opener)

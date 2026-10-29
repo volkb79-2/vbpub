@@ -294,3 +294,30 @@ def test_job_reconciliation_rejects_malformed_remote_results(rows):
     registry.reconcile(Reconnected())
     record = registry.snapshot()[0]
     assert record["state"] == "UNKNOWN" and record["reconciliation"] == "unavailable"
+
+
+def test_job_wait_polls_until_completion_without_treating_missing_state_as_an_update():
+    registry = JobRegistry("lab")
+    remote = RemoteJob("41", None, wait=True)
+    handle = registry.ticket("app.start", 6).bind(remote)
+    before = registry.get(handle.local_id)
+    registry._apply_update(handle.local_id, {"state": None})
+    assert registry.get(handle.local_id)["state"] == before["state"]
+
+    finisher = threading.Thread(target=lambda: (threading.Event().wait(0.03), remote.finish()))
+    finisher.start()
+    assert handle.wait(cancelled=lambda: False) == "done"
+    finisher.join(timeout=1)
+    assert not finisher.is_alive()
+    assert registry.get(handle.local_id)["state"] == "SUCCESS"
+
+
+def test_repeated_job_log_updates_do_not_duplicate_events():
+    registry = JobRegistry("lab")
+    registry.record_remote(job_id=42, method="app.start", state="RUNNING")
+    record = registry.snapshot()[0]
+    registry._apply_update(record["local_id"], {"logs_excerpt": "same log"})
+    event_count = len(registry.get(record["local_id"])["events"])
+    registry._apply_update(record["local_id"], {"logs_excerpt": "same log"})
+    assert len(registry.get(record["local_id"])["events"]) == event_count
+    assert registry.get(record["local_id"])["logs_excerpt"] == "same log"

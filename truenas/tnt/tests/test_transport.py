@@ -221,6 +221,124 @@ def test_job_flag_is_forwarded_and_close_is_quiet():
     g.close()
 
 
+def test_guarded_rpc_rejects_stale_capabilities_and_restores_nested_worker_cancellation():
+    import threading
+
+    class Inner:
+        def __init__(self):
+            self.calls = []
+
+        def call(self, method, *params, job=False):
+            self.calls.append((method, params))
+            raise RuntimeError(f"middleware echoed {params!r}")
+
+        def close(self):
+            pass
+
+    inner = Inner()
+    rpc = transport.GuardedRpc(inner, secret=Secret("fake-token-value"))
+    with pytest.raises(ValueError, match="non-negative integer"):
+        rpc.attach_job_registry(rpc._job_registry, generation=True)
+    read_only = transport.GuardedRpc(Inner())
+    with pytest.raises(Refused, match="read-only session"):
+        with read_only._authorized((), None):
+            pass
+
+    first = threading.Event()
+    second = threading.Event()
+    with rpc.cancel_when(first):
+        with rpc.cancel_when(second):
+            second.set()
+            with pytest.raises(Refused, match="operation was cancelled"):
+                rpc.call("system.info")
+        first.clear()
+        with pytest.raises(TransportError, match="system.info failed") as caught:
+            rpc.call("system.info")
+        assert "fake-token-value" not in str(caught.value)
+
+    assert not hasattr(rpc._worker_state, "cancelled")
+    assert inner.calls == [("system.info", ())]
+
+
+def test_guarded_rpc_write_grants_are_exact_and_bound_to_the_issuing_thread():
+    import threading
+
+    from tnt.actions import _APPLY_AUTHORITY
+
+    class Inner:
+        def call(self, method, *params, job=False):
+            return "executed"
+
+        def close(self):
+            pass
+
+    rpc = transport.GuardedRpc(Inner(), read_only=False)
+    calls = (("container.start", ("demo",), False),)
+    with pytest.raises(Refused, match="apply-capability"):
+        with rpc._authorized(calls, object()):
+            pass
+
+    rpc._issue_plan("thread-bound", "fingerprint")
+    grant = rpc.spend("thread-bound", "fingerprint", calls, authority=_APPLY_AUTHORITY)
+    errors = []
+    with rpc._authorized(calls, grant):
+        worker = threading.Thread(target=lambda: _capture_rpc_error(errors, rpc, "container.start", "demo"))
+        worker.start()
+        worker.join(timeout=1)
+        assert not worker.is_alive()
+        with pytest.raises(Refused, match="not the next call"):
+            rpc.call("container.stop", "demo")
+        assert rpc.call("container.start", "demo") == "executed"
+    assert len(errors) == 1 and isinstance(errors[0], Refused)
+    assert errors[0].rule == "foreign-caller"
+
+
+def _capture_rpc_error(errors, rpc, method, *params):
+    try:
+        rpc.call(method, *params)
+    except Exception as exc:
+        errors.append(exc)
+
+
+def test_guarded_rpc_rejects_duplicate_spent_and_nested_plan_grants():
+    from tnt.actions import _APPLY_AUTHORITY
+
+    inner = type("Inner", (), {"call": lambda self, *args, **kwargs: None})()
+    rpc = transport.GuardedRpc(inner, read_only=False)
+    with pytest.raises(Refused, match="plan already has an identity"):
+        rpc._issue_plan("", "fingerprint")
+    rpc._issue_plan("one", "fingerprint")
+    with pytest.raises(Refused, match="plan already has an identity"):
+        rpc._issue_plan("one", "fingerprint")
+
+    with pytest.raises(Refused, match="plan execution grants"):
+        rpc.spend("one", "fingerprint", authority=None)
+    with pytest.raises(Refused, match="already applied or has no issued identity"):
+        rpc.spend("one", "different-fingerprint", authority=_APPLY_AUTHORITY)
+
+    calls = (("container.start", ("one",), False),)
+    other_calls = (("container.start", ("two",), False),)
+    first = rpc.spend("one", "fingerprint", calls, authority=_APPLY_AUTHORITY)
+    rpc._issue_plan("two", "fingerprint-2")
+    second = rpc.spend("two", "fingerprint-2", other_calls, authority=_APPLY_AUTHORITY)
+    with rpc._authorized(calls, first):
+        with pytest.raises(Refused, match="already executing"):
+            with rpc._authorized(other_calls, second):
+                pass
+
+
+def test_sensitive_string_fields_are_scrubbed_from_rpc_failures():
+    class Inner:
+        def call(self, method, *params):
+            raise RuntimeError(f"middleware returned {params[0]['token']}")
+
+    rpc = transport.GuardedRpc(Inner())
+    with pytest.raises(TransportError, match="system.info failed") as caught:
+        rpc.call("system.info", {"token": "fake-token-material"})
+    assert "fake-token-material" not in str(caught.value)
+    assert rpc.calls == [("system.info", ({"token": "***"},))]
+
+
 def test_public_authorized_context_cannot_create_a_write_grant():
     g = transport.GuardedRpc(type("Inner", (), {"call": lambda self, *a, **k: "done", "close": lambda self: None})(),
                              read_only=False)

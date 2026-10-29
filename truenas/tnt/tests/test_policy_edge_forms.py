@@ -42,6 +42,20 @@ def test_named_boot_pool_without_topology_is_recorded_as_unresolved():
     assert "boot-pool has no usable topology" in state.unresolved
 
 
+def test_policy_resolves_boot_pool_names_and_boot_topology_from_either_live_source():
+    assert "boot-pool" in refusal_for("vm.create", [{"pool": "boot-pool"}], SafetyState({1: "tank"}))
+    assert "boot-pool" in refusal_for("pool.scrub.run", ["boot-pool"], SafetyState({1: "boot-pool"}))
+
+    state = compute_state(GuardedRpc(Rpc({
+        "pool.query": [{"id": 1, "name": "boot-pool",
+                        "topology": {"data": [{"type": "DISK", "disk": "sda"}]}}],
+        "boot.get_state": {"name": "boot-pool", "topology": {}},
+        "disk.query": [{"name": "sda", "size": 100}],
+    })))
+    assert "boot-pool has no usable topology" not in state.unresolved
+    assert "sda" in state.protected_disks
+
+
 def test_manifest_import_failure_is_a_supported_unknown_classification(monkeypatch):
     real_import = builtins.__import__
 

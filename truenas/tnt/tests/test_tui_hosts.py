@@ -12,7 +12,7 @@ from tnt.host_store import HostStore, load_host_store
 from tnt.menu import MENU, MenuItem
 from tnt.profile import resolve_paths
 from tnt.session_controller import SessionController
-from tnt.tui.app import TntApp
+from tnt.tui.app import TntApp, WorkerDrainDecision
 from tnt.tui.hosts import HostForm, HostPicker, HostRemoveConfirm
 
 
@@ -210,6 +210,35 @@ def test_callback_guard_rejects_stale_or_detached_work_and_commands_show_host_pi
             app.session_controller.close()
 
     asyncio.run(go())
+
+
+def test_worker_drain_cancel_restores_the_current_host_after_a_switch_timeout(config, opener):
+    paths = resolve_paths(config, config.with_name("tnt.secrets.toml"))
+    hosts, default, entries = load_host_store(paths)
+    session = opener(hosts["lab"], secret=entries["lab"].api_key)
+    target = next(name for name in hosts if name != "lab")
+
+    async def go():
+        app = TntApp(session, hosts=hosts, default_host=default, secret_entries=entries,
+                     host_paths=paths, session_opener=opener, worker_drain_timeout=0.01)
+        async with app.run_test(size=(160, 50)) as pilot:
+            lease = app.begin_session_work(session)
+            assert lease is not None
+            app.switch_host(target)
+            await _wait_for(pilot, lambda: isinstance(app.screen, WorkerDrainDecision))
+            decision = app.screen
+            assert decision.pending == 1 and decision.transition_kind == "switch"
+            decision.on_button_pressed(Button.Pressed(decision.query_one("#worker-drain-cancel", Button)))
+            await _wait_for(pilot, lambda: app.session is session and app.session_controller.is_current(
+                app.session_controller.generation, session))
+            assert app.session_controller.active_host == "lab"
+            assert lease.cancelled.is_set()
+            app.finish_session_work(lease)
+
+    try:
+        asyncio.run(go())
+    finally:
+        session.close()
 
 
 def test_empty_host_picker_has_no_selection(config):

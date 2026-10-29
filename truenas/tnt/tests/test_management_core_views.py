@@ -13,7 +13,7 @@ from tnt.cli import build_cli
 from tnt.session import open_session
 from tnt.testing import FakeServer
 from tnt.tui.app import TntApp
-from tnt.tui.core_views import ServicesView, StorageHealthView
+from tnt.tui.core_views import DashboardView, JobsView, ServicesView, StorageHealthView
 
 
 def _select(app, label):
@@ -45,6 +45,53 @@ async def _settle(pilot, predicate):
                          f"offset={getattr(view, 'page_offset', None)!r}, loading={getattr(view, 'loading', None)!r}")
 
 
+def test_core_view_rows_render_available_and_fallback_values():
+    dashboard = DashboardView(None)._rows({
+        "host": {"name": "nas", "hostname": "nas.local", "version": None},
+        "cpu": {"status": "available", "aggregations": {"mean": 12.5}},
+        "memory": {"status": "unavailable", "error": "unsupported"},
+    })
+    assert ("Version", "Unknown") in dashboard
+    assert ("CPU history (min / mean / max)", '{"mean": 12.5}') in dashboard
+    assert ("MEMORY history", "Unavailable: unsupported") in dashboard
+
+    jobs = JobsView(None)._rows({
+        "rows": [
+            {"id": 1, "method": "app.start", "state": "RUNNING", "progress": None},
+            {"id": 2, "method": "app.stop", "state": "SUCCESS",
+             "progress": {"percent": None, "description": ""}},
+            {"id": 3, "method": "app.update", "state": "RUNNING",
+             "progress": {"percent": 42, "description": "pulling"}},
+        ],
+        "local_jobs": [
+            {"job_id": 4, "method": "app.start", "state": "RUNNING",
+             "progress": {"percent": 0, "description": ""}},
+            {"job_id": 5, "method": "app.stop", "state": "SUCCESS", "progress": None},
+        ],
+    })
+    assert [row[3] for row in jobs] == ["Unknown", "Unknown", "42% pulling", "0%", "Unknown"]
+    assert jobs[3][1] == "app.start · local"
+
+    services = ServicesView(None)
+    assert services._rows({"rows": [], "possibly_more": False}) == []
+    assert services._rows({"rows": [], "possibly_more": True})[-1][0] == "Result limit reached"
+
+    health = StorageHealthView(None)
+    rows = health._rows({
+        "pools": [
+            {"name": "tank", "status_code": "ONLINE", "status": "DEGRADED", "warning": None},
+            {"name": "backup", "status_code": None, "status": "OFFLINE"},
+            {"name": "archive", "status_code": None, "status": None, "healthy": False},
+        ],
+        "disks": [{"name": "sda", "pool": "tank", "size": 100}],
+        "pools_possibly_more": False,
+        "disks_possibly_more": False,
+    })
+    assert [row[2] for row in rows] == ["ONLINE", "OFFLINE", "False", "tank"]
+    assert health._rows({"pools": [], "disks": [], "pools_possibly_more": False,
+                         "disks_possibly_more": True})[-1][2] == "Possibly truncated"
+
+
 def test_overview_cli_commands_return_json_for_all_five_views(config, opener, capsys):
     cli = build_cli(opener=opener)
     commands = [
@@ -72,6 +119,33 @@ def test_dashboard_accepts_fractional_uptime_seconds_from_v27_fake_server():
         try:
             result = session.read_views.dashboard()
             assert result["uptime_seconds"] == 86400.5
+        finally:
+            session.close()
+
+
+def test_dashboard_unavailable_graphs_and_job_rows_without_progress_descriptions():
+    with FakeServer() as server:
+        session = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True)
+        try:
+            dashboard = DashboardView(session)
+            payload = {"host": {"name": "lab", "hostname": "nas", "version": None},
+                       "cpu": {"status": "unavailable", "error": "reporting disabled"},
+                       "memory": {"status": "available", "aggregations": {"mean": 4}}}
+            rows = dashboard._rows(payload)
+            assert ("CPU history", "Unavailable: reporting disabled") in rows
+            assert ("MEMORY history (min / mean / max)", '{"mean": 4}') in rows
+            dashboard.on_input_changed(type("Changed", (), {"input": type("Input", (), {"id": "other"})()})())
+
+            jobs = JobsView(session)._rows({
+                "rows": [{"id": 7, "method": "app.start", "state": "RUNNING", "progress": {"percent": 25}},
+                         {"id": 9, "method": "app.stop", "state": "SUCCESS", "progress": None},
+                         {"id": 10, "method": "app.restart", "state": "RUNNING",
+                          "progress": {"percent": 50, "description": "Restarting service"}}],
+                "local_jobs": [{"job_id": "8", "method": "app.stop", "state": "WAITING",
+                                "progress": {"percent": None, "description": "Waiting for lock"}}],
+            })
+            assert jobs[0][3] == "25%" and jobs[1][3] == "Unknown"
+            assert jobs[2][3] == "50% Restarting service" and jobs[3][3] == "Unknown Waiting for lock"
         finally:
             session.close()
 
@@ -192,13 +266,21 @@ def test_core_read_views_load_with_search_copy_status_and_sanitized_error(config
                 assert "recent 200 only" in str(app.query_one("#core-status", Static).render())
                 assert app.query_one("#core-table", DataTable).row_count == 400
                 assert not app.query_one("#jobs-next", Button).disabled
-                await pilot.click("#jobs-next")
+                jobs_view = app.query_one("#view-jobs")
+                jobs_view.on_button_pressed(Button.Pressed(app.query_one("#jobs-next", Button)))
                 await _settle(pilot, lambda: "page 2, 0 remote row(s), 0 local" in
                               str(app.query_one("#core-status", Static).render()))
                 assert app.query_one("#jobs-prev", Button).disabled is False
-                await pilot.click("#jobs-prev")
+                jobs_view.on_button_pressed(Button.Pressed(app.query_one("#jobs-next", Button)))
+                assert jobs_view.page_offset == 200  # no next page is advertised by the host
+                jobs_view.on_button_pressed(Button.Pressed(app.query_one("#jobs-prev", Button)))
                 await _settle(pilot, lambda: "page 1, 200 remote row(s), 200 local" in
                               str(app.query_one("#core-status", Static).render()))
+                jobs_view._loaded({"rows": [], "local_jobs": [], "possibly_more": False,
+                                   "role_status": "limited", "role_error": "missing JOB_READ",
+                                   "local_jobs_possibly_more": False, "local_jobs_limit": 200,
+                                   "scope": "host-wide"})
+                assert "missing JOB_READ" in str(app.query_one("#core-status", Static).render())
 
                 _select(app, "Services")
                 await _settle(pilot, lambda: app.query_one("#core-table", DataTable).row_count == 1)

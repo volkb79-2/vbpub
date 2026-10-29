@@ -143,6 +143,18 @@ def test_ssh_refuses_symlinks_and_unsafe_identity_modes_without_echoing_paths(tm
     assert str(link) not in str(hosts_error.value)
 
 
+def test_ssh_refuses_empty_hostnames_and_non_regular_known_hosts(tmp_path):
+    profile, _, _ = ssh_profile(tmp_path, url="wss:///api/current")
+    with pytest.raises(SshHandoffError, match="safe SSH hostname"):
+        build_ssh_argv(profile)
+
+    directory = tmp_path / "known_hosts-directory"
+    directory.mkdir()
+    profile, _, _ = ssh_profile(tmp_path, ssh_known_hosts=str(directory))
+    with pytest.raises(SshHandoffError, match="regular file owned"):
+        build_ssh_argv(profile)
+
+
 def test_ssh_known_hosts_must_be_readable_and_not_group_or_world_writable(tmp_path):
     profile, _, known_hosts = ssh_profile(tmp_path)
     known_hosts.chmod(0o666)

@@ -134,6 +134,20 @@ def test_audit_tui_filters_and_displays_only_scrubbed_events():
                 assert table.row_count == 1
                 assert "audit.query" in server.called()
 
+                from tnt.tui.audit import AuditView
+
+                view = app.query_one("#view-audit", AuditView)
+                view._loaded([{"timestamp": "t", "username": "u", "event": "e", "service": "MIDDLEWARE",
+                               "success": True, "event_data": {}} for _ in range(100)], 100)
+                refreshed_offsets = []
+                view.action_refresh = lambda: refreshed_offsets.append(view.page_offset)
+                view.on_button_pressed(Button.Pressed(view.query_one("#audit-previous", Button)))
+                assert view.page_offset == 0 and refreshed_offsets[-1] == 0
+                view.on_button_pressed(Button.Pressed(view.query_one("#audit-next", Button)))
+                assert view.page_offset == 100 and refreshed_offsets[-1] == 100
+                view.on_button_pressed(Button.Pressed(view.query_one("#audit-refresh", Button)))
+                assert view.page_offset == 0 and refreshed_offsets[-1] == 0
+
         try:
             asyncio.run(go())
         finally:

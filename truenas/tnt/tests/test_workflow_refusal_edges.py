@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import struct
 from dataclasses import replace
+from datetime import datetime, timezone
 
 import pytest
 
@@ -209,6 +210,61 @@ def test_metrics_ignores_malformed_events_and_unsubscribes_after_callback_failur
     failed.subscribe_event = boom
     row = Workflows(failed).containers()[0]
     assert row["metrics_status"] == "error" and row["metrics_error"] == "event unavailable"
+
+
+def test_workflow_rejects_malformed_lookup_and_remote_share_facts_without_losing_safety():
+    rows_rpc = Rpc(**{"sharing.smb.query": [{"id": 1, "name": None}]})
+    assert Workflows(rows_rpc).shares_smb() == [{"id": 1, "name": None}]
+    assert rows_rpc.calls == [("sharing.smb.query", ([], {}), False)]
+
+    valid_stat = Rpc(**{"filesystem.stat": {"realpath": "/mnt/tank/share"}})
+    action = Workflows(valid_stat).share_smb_create_action({
+        "name": "team", "path": "/mnt/tank/share", "guest": False,
+    })
+    assert action.calls[0].params[0]["options"] == {}
+
+    with pytest.raises(Refused, match="no canonical path"):
+        Workflows(Rpc(**{"filesystem.stat": {"type": "DIRECTORY"}})).share_smb_create_action({
+            "name": "team", "path": "/mnt/tank/share",
+        })
+    with pytest.raises(Refused, match="resolves under boot-pool"):
+        Workflows(Rpc(**{"filesystem.stat": {"realpath": "/mnt/boot-pool/private"}})).share_smb_create_action({
+            "name": "private", "path": "/mnt/tank/share",
+        })
+
+    with pytest.raises(Refused, match=r"path with '\.\.'"):
+        Workflows(Rpc()).container_create_action({
+            "name": "web", "image": {"name": "nginx", "version": "latest"},
+            "pool": "/mnt/tank/../other",
+        })
+
+
+def test_workflow_time_key_task_and_optional_metrics_edges_are_explicit():
+    workflows = Workflows(Rpc())
+    created = workflows.api_key_create_action("nightly", "operator", "2030-01-01T00:00:00Z")
+    assert created.calls[0].params[0]["expires_at"] == "2030-01-01T00:00:00Z"
+    with pytest.raises(Refused, match="UTC offset"):
+        workflows.audit_entries(since="")
+    with pytest.raises(Refused, match="expected exactly one cloud-sync task"):
+        workflows.cloudsync_task("nightly")
+    with pytest.raises(Refused, match="invalid snapshot task"):
+        workflows._task_by_id("pool.snapshottask.get_instance", 7, "snapshot task")
+    with pytest.raises(Refused, match="API key ID 7"):
+        Workflows(Rpc(**{"api_key.get_instance": []}))._api_key_by_id(7)
+    with pytest.raises(Refused, match="container name is required"):
+        workflows.container("")
+    with pytest.raises(Refused, match="confirm_self must be true or false"):
+        Workflows(rpc_user()).user_update_action("alice", {"full_name": "Alice A"}, confirm_self="yes")
+    with pytest.raises(Refused, match="at least one SSH public key"):
+        validate_ssh_public_keys("")
+    assert _safe_value(datetime(2030, 1, 1, tzinfo=timezone.utc)) == "2030-01-01T00:00:00+00:00"
+
+
+def test_empty_container_metrics_event_times_out_and_unsubscribes():
+    rpc = Rpc()
+    rpc.event = lambda callback: callback("ADDED", fields={"4": None})
+    values, status = Workflows(rpc).container_metrics(timeout=0)
+    assert values == {} and status == "timeout" and rpc.unsubscribed == ["event-1"]
 
 
 @pytest.mark.parametrize("attributes", [

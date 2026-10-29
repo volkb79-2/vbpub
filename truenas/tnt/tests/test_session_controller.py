@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from tnt.errors import ProfileError
+from tnt.errors import ProfileError, TransportError
 from tnt.profile import Profile, Secret, SecretEntry
 from tnt.session_controller import SessionController, WorkerLease
 
@@ -564,3 +564,92 @@ def test_cancelled_test_error_does_not_overwrite_status_and_generic_reconnect_fa
     with pytest.raises(ProfileError, match="cannot reconnect.*redacted"):
         reconnect_controller.reconnect_current(reconnect_controller.generation, initial)
     assert "1-lab-secret" not in reconnect_controller.last_status["lab"]
+
+
+def test_transition_edge_cases_preserve_generation_and_host_job_registry():
+    class Registry:
+        def __init__(self):
+            self.reconciled = []
+
+        def reconcile(self, rpc):
+            self.reconciled.append(rpc)
+
+    registry = Registry()
+
+    class RegistrySession(FakeSession):
+        def __init__(self, profile):
+            super().__init__(profile)
+            self.job_registry = registry
+
+    controller_, _ = controller(lambda profile, **_kwargs: RegistrySession(profile))
+    transition = controller_.begin_switch("backup")
+    with pytest.raises(ValueError, match="positive number"):
+        controller_.finish_switch(transition, timeout=0)
+    opened = controller_.finish_switch(transition)
+    assert opened.job_registry is registry and registry.reconciled == [opened.rpc]
+    assert controller_.cancel_transition(transition) is False
+
+    empty = SessionController(hosts(), None, {}, lambda *args, **kwargs: None)
+    no_session_transition = empty.begin_switch("lab")
+    assert empty.cancel_transition(no_session_transition)
+    assert empty.session is None and empty.active_host is None
+
+    switching = empty.begin_switch("backup")
+    empty.close()
+    assert empty.session is None and empty.active_host is None
+    assert empty.finish_switch(switching) is None
+
+
+def test_close_during_an_existing_switch_cancels_workers_and_restores_after_timeout():
+    active = FakeSession(hosts()["lab"])
+    controller_, _ = controller(initial=active)
+    generation, session = controller_.capture()
+    lease = controller_.register_worker(generation, session)
+    assert lease is not None
+    controller_.begin_switch("backup")
+
+    with pytest.raises(TimeoutError, match="still running"):
+        controller_.close(timeout=0.01)
+    assert lease.cancelled.is_set()
+    assert controller_.session is active and controller_.active_host == "lab" and not active.closed
+
+    controller_.finish_worker(lease)
+    controller_.close(timeout=1)
+    assert active.closed and controller_.session is None
+
+
+@pytest.mark.parametrize("error", [TransportError("connect", "offline"), RuntimeError("offline")])
+def test_reconnect_failure_after_a_concurrent_switch_does_not_overwrite_new_status(error):
+    initial = FakeSession(hosts()["lab"])
+    holder = {}
+
+    def opener(*_args, **_kwargs):
+        holder["transition"] = holder["controller"].begin_switch("backup")
+        raise error
+
+    controller_, _ = controller(opener, initial=initial)
+    holder["controller"] = controller_
+    if isinstance(error, TransportError):
+        with pytest.raises(TransportError, match="offline"):
+            controller_.reconnect_current(controller_.generation, initial)
+    else:
+        with pytest.raises(ProfileError, match="cannot reconnect.*offline"):
+            controller_.reconnect_current(controller_.generation, initial)
+    assert controller_.last_status["lab"] == "connected"
+    assert controller_.cancel_transition(holder["transition"])
+
+
+def test_successful_connection_test_does_not_overwrite_status_after_switch_starts():
+    holder = {}
+    controller_ = None
+
+    def opener(profile, **_kwargs):
+        if profile.name == "backup":
+            holder["transition"] = controller_.begin_switch("lab")
+        return FakeSession(profile)
+
+    controller_, _ = controller(opener, initial=FakeSession(hosts()["lab"]))
+    controller_.last_status["backup"] = "operator status"
+    assert controller_.test_host("backup") == "backup connected"
+    assert controller_.last_status["backup"] == "operator status"
+    assert controller_.cancel_transition(holder["transition"])

@@ -440,6 +440,23 @@ def test_pair_validator_rejects_invalid_host_and_secret_tables(config_text, secr
         _validate_pair(config_text, secrets_text)
 
 
+@pytest.mark.parametrize("credentials", ["", 'api_key = "1-key"\npassword = "secret"\n'])
+def test_pair_validator_requires_one_credential_source(credentials):
+    config = ('schema_version = 1\n[hosts.lab]\nurl = "wss://lab.example.invalid/api/current"\n'
+              'username = "operator"\nauth = "api_key"\n')
+    secrets = f"schema_version = 1\n[hosts.lab]\n{credentials}"
+    with pytest.raises(ProfileError, match="exactly one credential source"):
+        _validate_pair(config, secrets)
+
+
+def test_pair_validator_rejects_an_empty_endpoint_binding():
+    config = ('schema_version = 1\n[hosts.lab]\nurl = "wss://lab.example.invalid/api/current"\n'
+              'username = "operator"\nauth = "api_key"\n')
+    secrets = 'schema_version = 1\n[hosts.lab]\napi_key = "1-key"\nhost_url = ""\n'
+    with pytest.raises(ProfileError, match="host_url must be a non-empty endpoint URL"):
+        _validate_pair(config, secrets)
+
+
 @pytest.mark.parametrize("operation,which", [
     ("add", "config"), ("edit", "config"), ("rename", "config"),
     ("rename", "secrets"), ("remove", "config"), ("remove", "secrets"), ("set_default", "config"),

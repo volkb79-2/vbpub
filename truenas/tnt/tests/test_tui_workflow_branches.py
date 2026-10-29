@@ -5,12 +5,13 @@ import asyncio
 import base64
 import json
 import struct
+import threading
 from types import SimpleNamespace
 
 import pytest
 from textual.widgets import Button, Checkbox, DataTable, Input, Select, Static, TextArea, Tree
 
-from tnt.actions import Action, Kind, RpcCall, make_plan
+from tnt.actions import Action, ApplyResult, CallExecution, Kind, RpcCall, make_plan
 from tnt.adapters.v27 import V27
 from tnt.errors import Refused
 from tnt.profile import load_profiles
@@ -178,6 +179,12 @@ def test_workflow_action_builders_cover_all_core_screen_operations(config):
                         assert action.calls[0].params[0]["new_password"].reveal() == "safe-not-a-real-secret"
                     if key_name == "users" and operation in {"ssh-key-add", "ssh-key-replace"}:
                         assert key in action.calls[0].params[1]["sshpubkey"].reveal()
+            users = app.query_one("#view-users", WorkflowView)
+            users.query_one("#workflow-data", TextArea).text = '{"password_disabled": true}'
+            users.query_one("#workflow-name", Input).value = "new-user"
+            users.query_one("#workflow-secret", Input).value = ""
+            passwordless = users._build_action("create")
+            assert "password" not in passwordless.calls[0].params[0]
             assert host.calls
     asyncio.run(go())
     session.close()
@@ -344,11 +351,26 @@ def test_workflow_action_builders_cover_management_screens(config):
                         view.query_one("#workflow-name", Input).value = "not-an-id"
                         with pytest.raises(ValueError, match="task ID"):
                             view._build_action("run")
+                        view.query_one("#workflow-name", Input).value = "7"
+                        with pytest.raises(ValueError, match="unsupported workflow action"):
+                            view._build_action("unsupported")
                     if key == "apps":
                         view.query_one("#workflow-name", Input).value = ""
                         view._loaded([])
                         with pytest.raises(ValueError, match="exact app ID"):
                             view._build_action("start")
+                        view.query_one("#workflow-name", Input).value = "example-app"
+                        with pytest.raises(ValueError, match="unsupported workflow action"):
+                            view._build_action("unsupported")
+                    if key == "sharing":
+                        with pytest.raises(ValueError, match="unsupported workflow action"):
+                            view._build_action("unsupported")
+                    if key == "replication":
+                        with pytest.raises(ValueError, match="unsupported workflow action"):
+                            view._build_action("unsupported")
+                    if key == "cloud-sync":
+                        with pytest.raises(ValueError, match="unsupported workflow action"):
+                            view._build_action("unsupported")
 
         try:
             asyncio.run(go())
@@ -426,8 +448,166 @@ def test_plan_review_success_passes_typed_confirmation_and_supports_no_parent(co
                     break
             assert len(applied) == 1 and applied[0][2:] == (True, "web")
             assert app.screen.__class__.__name__ != "PlanReview"
+
+            uncertain_review = PlanReview(plan, session)
+            app.push_screen(uncertain_review)
+            await pilot.pause(0.05)
+            uncertain_review._system_apply_uncertain([])
+            await pilot.pause(0.05)
+            assert app.screen.__class__.__name__ != "PlanReview"
     asyncio.run(go())
     session.close()
+
+
+def test_plan_review_rejects_stale_sessions_and_workers_without_the_active_lease(config, monkeypatch):
+    from tnt.tui import workflows as tui_workflows
+    host = Host({"container.query": [{"id": 11, "name": "web", "status": {"state": "STOPPED"}}]})
+    session = make_session(config, host, read_only=False)
+    action = session.workflows.container_update_action("web", {"autostart": True})
+    plan = make_plan(action, session.rpc)
+    other = make_session(config, Host(), read_only=False)
+    cancelled = []
+    worker_started = threading.Event()
+    begin = tui_workflows.begin_session_work
+
+    def observe_begin(view):
+        worker_started.set()
+        return begin(view)
+
+    monkeypatch.setattr(tui_workflows, "begin_session_work", observe_begin)
+
+    async def go():
+        profiles, _ = load_profiles(config)
+        app = TntApp(session, hosts=profiles)
+        async with app.run_test(size=(160, 50)) as pilot:
+            review = PlanReview(plan, other, parent_view=SimpleNamespace(_plan_cancelled=cancelled.append))
+            app.push_screen(review)
+            await pilot.pause(0.05)
+            assert cancelled == [plan]
+            review.invalidate_for_host_change()
+            assert cancelled == [plan]
+
+            current = PlanReview(plan, session)
+            app.push_screen(current)
+            await pilot.pause(0.05)
+            current._show_job_progress({"progress": {"percent": 25.4}})
+            assert "25%" in str(current.query_one("#plan-progress", Static).render())
+            current._show_job_progress({"progress": {"percent": True}})
+            assert "running" in str(current.query_one("#plan-progress", Static).render())
+            current.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="irrelevant")))
+            assert app.screen is current
+
+            transition = app.session_controller.begin_switch("throwaway")
+            current._apply_plan(None, False)
+            for _ in range(100):
+                await pilot.pause(0.05)
+                if worker_started.is_set():
+                    break
+            assert worker_started.is_set()
+            await pilot.pause(0.05)
+            assert not host.writes
+            assert app.session_controller.cancel_transition(transition)
+            current.generation = -1
+            current.on_button_pressed(SimpleNamespace(button=current.query_one("#plan-apply", Button)))
+            await pilot.pause(0.05)
+            assert app.screen.__class__.__name__ != "PlanReview"
+    try:
+        asyncio.run(go())
+    finally:
+        session.close()
+        other.close()
+
+
+@pytest.mark.parametrize("fail", [True, False])
+def test_plan_review_drops_callbacks_from_cancelled_apply_workers(config, monkeypatch, fail):
+    from tnt.tui import workflows as tui_workflows
+
+    host = Host({"container.query": [{"id": 11, "name": "web", "status": {"state": "STOPPED"}}]})
+    session = make_session(config, host, read_only=False)
+    action = session.workflows.container_update_action("web", {"autostart": True})
+    plan = make_plan(action, session.rpc)
+    leases = []
+    begin = tui_workflows.begin_session_work
+
+    def capture_lease(view):
+        lease = begin(view)
+        leases.append(lease)
+        return lease
+
+    def cancel_during_apply(*_args, **_kwargs):
+        leases[-1].cancelled.set()
+        if fail:
+            raise RuntimeError("host changed during apply")
+        return ["completed"]
+
+    monkeypatch.setattr(tui_workflows, "begin_session_work", capture_lease)
+    monkeypatch.setattr(tui_workflows, "apply_plan", cancel_during_apply)
+
+    async def go():
+        app = TntApp(session)
+        async with app.run_test(size=(160, 50)) as pilot:
+            choose(app, "Containers")
+            await wait_loaded(pilot, app)
+            for _ in range(2):
+                review = PlanReview(plan, session)
+                app.push_screen(review)
+                await pilot.pause(0.05)
+                previous_leases = len(leases)
+                review._apply_plan(None, False)
+                for _ in range(100):
+                    await pilot.pause(0.05)
+                    if len(leases) > previous_leases and leases[-1].finished.is_set():
+                        break
+                assert len(leases) == previous_leases + 1 and leases[-1].finished.is_set()
+                assert not host.writes
+                if app.screen is review:
+                    review.dismiss()
+                    await pilot.pause(0.05)
+
+    try:
+        asyncio.run(go())
+    finally:
+        session.close()
+
+
+def test_plan_review_displays_partial_apply_outcomes_before_recovery(config, monkeypatch):
+    from tnt.errors import PlanExecutionError
+    from tnt.tui import workflows as tui_workflows
+
+    host = Host({"container.query": [{"id": 11, "name": "web", "status": {"state": "STOPPED"}}]})
+    session = make_session(config, host, read_only=False)
+    action = session.workflows.container_update_action("web", {"autostart": True})
+    plan = make_plan(action, session.rpc)
+    partial = ApplyResult([], [CallExecution(1, "container.update", "unknown", error="reply lost")])
+
+    def failed_apply(*_args, **_kwargs):
+        raise PlanExecutionError("one outcome is uncertain", partial)
+
+    monkeypatch.setattr(tui_workflows, "apply_plan", failed_apply)
+
+    async def go():
+        app = TntApp(session)
+        async with app.run_test(size=(160, 50)) as pilot:
+            review = PlanReview(plan, session)
+            app.push_screen(review)
+            await pilot.pause(0.05)
+            review._apply_plan(None, False)
+            for _ in range(100):
+                await pilot.pause(0.05)
+                progress = str(review.query_one("#plan-progress", Static).render())
+                if "Partial or uncertain result" in progress:
+                    break
+            assert "Partial or uncertain result" in progress
+            rendered = str(review.query_one("#plan-render", Static).render())
+            assert '"status": "unknown"' in rendered
+            assert "Review the Jobs view and current host state" in rendered
+            assert review.query_one("#plan-apply", Button).disabled is False
+            assert not host.writes
+
+    try:
+        asyncio.run(go())
+    finally:
+        session.close()
 
 
 def test_workflow_load_failure_and_unhandled_button_are_reported(config):

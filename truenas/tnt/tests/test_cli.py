@@ -257,6 +257,38 @@ def test_disks_refuses_ws_without_the_test_hook(capsys, tmp_path, server):
     assert code != 0 and "ws://" in err
 
 
+def test_cli_rejects_conflicting_ssh_host_selectors_and_preserves_workflow_options(capsys, config, opener, server):
+    code = build_cli().run(argv=["ssh", "lab", "--host", "throwaway", "--config", str(config)])
+    output = capsys.readouterr()
+    out, err = output.out, output.err
+    assert code != 0 and "must name the same configured host" in err
+
+    code, out, err = run(capsys, ["user", "create", "deploy", "Deployment account", "--group", "1",
+                                  "--password-disabled", "--dry-run", "--config", str(config)], opener)
+    assert code == 0 and "user.create" in out and '"group": 1' in out and '"password_disabled": true' in out
+
+    code, out, err = run(capsys, ["user", "access", "tnt", "--primary-group", "1", "--confirm-self",
+                                  "--dry-run", "--config", str(config)], opener)
+    assert code == 0 and "user.update" in out and '"group": 1' in out
+
+    server.vms[21] = {"id": 21, "name": "guest", "status": {"state": "STOPPED"}, "devices": []}
+    code, out, err = run(capsys, ["vm", "update", "guest", "--no-autostart", "--dry-run",
+                                  "--config", str(config)], opener)
+    assert code == 0 and "vm.update" in out and '"autostart": false' in out
+
+    code, out, err = run(capsys, ["vm", "create", "new-guest", "--memory", "2048", "--disk-zvol",
+                                  "tank/guests/new-guest", "--disk-size", "1073741824", "--config", str(config)], opener)
+    assert code != 0 and "pass --allow-write" in err
+
+
+def test_api_key_cli_shows_one_time_key_when_optional_file_is_not_requested(capsys, config, opener):
+    code, out, err = run(capsys, ["apikey", "create", "coverage-check", "operator", "--allow-write",
+                                  "--config", str(config)], opener)
+    assert code == 0
+    assert "API key (one-time):" in out and "WARNING: This API key is shown only once." in out
+    assert "saved_to" not in out and "1-" in out
+
+
 def test_doctor_offline_and_online(capsys, config, opener, server):
     code, out, _ = run(capsys, ["doctor", "--config", str(config), "--json"], opener)
     checks = {c["name"]: c for c in json.loads(out)["checks"]}
@@ -299,6 +331,15 @@ def test_doctor_connect_failure(capsys, config):
         raise TransportError("auth", "login failed")
     code, out, _ = run(capsys, ["doctor", "--config", str(config), "--online", "--check", "connect", "--json"], failing)
     assert code == 1 and json.loads(out)["checks"][0]["status"] == "fail"
+
+
+def test_doctor_reports_missing_live_capabilities_as_a_warning(capsys, config, opener, server):
+    server.methods = [method for method in server.methods if method != "disk.details"]
+    code, out, err = run(capsys, ["doctor", "--config", str(config), "--online", "--check", "connect", "--json"],
+                         opener)
+    check = json.loads(out)["checks"][0]
+    assert code == 0 and check["status"] == "warn"
+    assert check["details"]["missing_methods"] == {"disks": ["disk.details"]}
 
 
 def test_doctor_without_textual_warns(capsys, config, monkeypatch):
