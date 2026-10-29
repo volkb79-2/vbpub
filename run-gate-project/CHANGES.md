@@ -11,6 +11,23 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 <!-- cmru: release history -->
 
+## [24.1.1] - 2026-10-29
+<!-- cmru: generated -->
+<!-- cmru: source-end=2e62261a1d3450dd0cbbbaa5349fb8d7fe22ffbb -->
+
+### Fixed
+- fix(assay): keep unjudged native R2 incomplete (e6c864502)
+
+### Changed
+- Fix fake Docker child leak in killed-client test (4a6885c5c)
+
+### Testing
+- test(run-gate): scope daemon floor profiling child (08c8330e2)
+- test(run-gate): keep fake child processes in test scope (6bf4566ea)
+- test(run-gate): reap fake docker polling children (02844d364)
+- test(run-gate): reap SIGTERM fake docker sleeper (886452561)
+- test(run-gate): reap killed-client fake docker tree (9119d12ce)
+
 ## [24.1.0] - 2026-10-28
 <!-- cmru: generated -->
 <!-- cmru: source-end=39e502f03145e77dbc2cb07c85997d66c67e378b -->
