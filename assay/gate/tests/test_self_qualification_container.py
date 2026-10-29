@@ -110,6 +110,101 @@ def record():
 def read_state():
     return json.loads(state_path.read_text(encoding="utf-8"))
 
+def write_b110_pilot_outputs(state):
+    project = Path(os.environ["DOCKER_WORKTREE"]) / "assay"
+    artifacts = project / ".assay"
+    state_dir = artifacts / "b110-pilot-state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    identity = "a" * 64
+    commit = subprocess.check_output(
+        [os.environ["REAL_GIT"], "-C", os.environ["DOCKER_WORKTREE"], "rev-parse", "HEAD"],
+        text=True,
+    ).strip()
+    tree = subprocess.check_output(
+        [os.environ["REAL_GIT"], "-C", os.environ["DOCKER_WORKTREE"], "rev-parse", "HEAD^{tree}"],
+        text=True,
+    ).strip()
+    campaign = "b110-pilot-" + commit[:12]
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    if mode == "pilot-campaign-expired":
+        created = now - timedelta(hours=3)
+        expires = created + timedelta(hours=2)
+    else:
+        created = now
+        expires = now + timedelta(hours=2)
+    deadline_name = f"campaign-deadline-b110-pilot-{commit[:12]}.json"
+    deadline = {
+        "schema": "assay-campaign-deadline/1",
+        "campaign": campaign,
+        "commit": commit,
+        "git_tree": tree,
+        "lanes": ["self-qualification"],
+        "assay_version": "8.0.0",
+        "wheel_sha256": "f" * 64,
+        "plan_sha256": {"self-qualification": "e" * 64},
+        "created_at_utc": created.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "expires_at_utc": expires.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    deadline_raw = (json.dumps(deadline, sort_keys=True) + "\n").encode()
+    attempt_started = time.time_ns()
+    if mode == "pilot-attempt-expired":
+        attempt_started -= 91 * 60 * 1_000_000_000
+    elif mode == "pilot-attempt-near-expired":
+        attempt_started -= 90 * 60 * 1_000_000_000 - 5 * 1_000_000_000
+    attempt_window = {
+        "schema": "assay-b110-pilot-attempt-window/1",
+        "campaign": campaign,
+        "commit": commit,
+        "started_at_epoch_ns": attempt_started,
+        "expires_at_epoch_ns": attempt_started + 90 * 60 * 1_000_000_000,
+    }
+    attempt_raw = (
+        json.dumps(attempt_window, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode()
+    files = {
+        ".assay/b110-pilot-plan.json": b"plan\n",
+        ".assay/b110-pilot-candidates.txt": (
+            "# b110 pilot selection seed=b110-pilot-2026 size=64 plan_candidates=1\n"
+            + identity + "\n"
+        ).encode(),
+        ".assay/b110-pilot-selection.json": b"selection\n",
+        ".assay/b110-pilot-summary.json": b"summary\n",
+        ".assay/b110-pilot-run.log": b"run log\n",
+        ".assay/r2-manifest-b110-pilot.txt": b"test_contract::test_example\n",
+        ".assay/b110-pilot-attempt-window.json": attempt_raw,
+        ".assay/progress-b110-pilot.jsonl": b"progress\n",
+        f".assay/{deadline_name}": deadline_raw,
+        ".assay/b110-pilot-state/PILOT-STATE": b"sentinel\n",
+        f".assay/b110-pilot-state/{identity}.json": b"state\n",
+    }
+    for relative, content in files.items():
+        target = project / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if relative == ".assay/progress-b110-pilot.jsonl" and target.exists():
+            with target.open("ab") as stream:
+                stream.write(content)
+        else:
+            target.write_bytes(content)
+    manifest_entries = dict(files)
+    # Progress is append-only across pilot retries, so attest the whole
+    # retained stream rather than the new line from this simulated run.
+    manifest_entries[".assay/progress-b110-pilot.jsonl"] = (
+        artifacts / "progress-b110-pilot.jsonl"
+    ).read_bytes()
+    if mode == "pilot-manifest-omits":
+        manifest_entries.pop(".assay/b110-pilot-run.log")
+    manifest = artifacts / "b110-pilot-artifacts.sha256"
+    manifest_bytes = "".join(
+        f"{hashlib.sha256(content).hexdigest()}  {relative}\n"
+        for relative, content in sorted(manifest_entries.items())
+    ).encode()
+    manifest.write_bytes(manifest_bytes)
+    if mode == "pilot-artifact-tampered":
+        (artifacts / "b110-pilot-summary.json").write_text("changed after attestation\n")
+    state["pilot_outputs_written"] = True
+    state["pilot_attestation_sha256"] = hashlib.sha256(manifest_bytes).hexdigest()
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
 def read_unit_probe_state():
     return json.loads(Path(os.environ["DOCKER_UNIT_PROBE_STATE"]).read_text(encoding="utf-8"))
 
@@ -193,6 +288,11 @@ if args and args[0] == "run" and "-d" in args:
     if mode == "blocked-launch":
         while True:
             time.sleep(0.05)
+    if (
+        state["inner"][-1] == "b110-pilot"
+        and mode not in {"pilot-init-refused", "pilot-timeout", "pilot-incomplete", "pilot-wrong-marker"}
+    ):
+        write_b110_pilot_outputs(state)
     print(state["id"])
     raise SystemExit(0)
 if args and args[0] == "inspect":
@@ -285,94 +385,9 @@ if args and args[0] == "logs":
             print("B110_PILOT_COMPLETED=1")
             print("B110_SCREEN_VERIFIED=1")
         else:
-            project = Path(os.environ["DOCKER_WORKTREE"]) / "assay"
-            artifacts = project / ".assay"
-            state_dir = artifacts / "b110-pilot-state"
-            state_dir.mkdir(parents=True, exist_ok=True)
-            identity = "a" * 64
-            commit = subprocess.check_output(
-                [os.environ["REAL_GIT"], "-C", os.environ["DOCKER_WORKTREE"], "rev-parse", "HEAD"],
-                text=True,
-            ).strip()
-            tree = subprocess.check_output(
-                [os.environ["REAL_GIT"], "-C", os.environ["DOCKER_WORKTREE"], "rev-parse", "HEAD^{tree}"],
-                text=True,
-            ).strip()
-            campaign = "b110-pilot-" + commit[:12]
-            now = datetime.now(timezone.utc).replace(microsecond=0)
-            if mode == "pilot-campaign-expired":
-                created = now - timedelta(hours=3)
-                expires = created + timedelta(hours=2)
-            else:
-                created = now
-                expires = now + timedelta(hours=2)
-            deadline_name = f"campaign-deadline-b110-pilot-{commit[:12]}.json"
-            deadline = {
-                "schema": "assay-campaign-deadline/1",
-                "campaign": campaign,
-                "commit": commit,
-                "git_tree": tree,
-                "lanes": ["self-qualification"],
-                "assay_version": "8.0.0",
-                "wheel_sha256": "f" * 64,
-                "plan_sha256": {"self-qualification": "e" * 64},
-                "created_at_utc": created.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "expires_at_utc": expires.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            }
-            deadline_raw = (json.dumps(deadline, sort_keys=True) + "\n").encode()
-            attempt_started = time.time_ns()
-            if mode == "pilot-attempt-expired":
-                attempt_started -= 91 * 60 * 1_000_000_000
-            elif mode == "pilot-attempt-near-expired":
-                attempt_started -= 90 * 60 * 1_000_000_000 - 5 * 1_000_000_000
-            attempt_window = {
-                "schema": "assay-b110-pilot-attempt-window/1",
-                "campaign": campaign,
-                "commit": commit,
-                "started_at_epoch_ns": attempt_started,
-                "expires_at_epoch_ns": attempt_started + 90 * 60 * 1_000_000_000,
-            }
-            attempt_raw = (
-                json.dumps(attempt_window, sort_keys=True, separators=(",", ":")) + "\n"
-            ).encode()
-            files = {
-                ".assay/b110-pilot-plan.json": b"plan\n",
-                ".assay/b110-pilot-candidates.txt": (
-                    "# b110 pilot selection seed=b110-pilot-2026 size=64 plan_candidates=1\n"
-                    + identity + "\n"
-                ).encode(),
-                ".assay/b110-pilot-selection.json": b"selection\n",
-                ".assay/b110-pilot-summary.json": b"summary\n",
-                ".assay/b110-pilot-run.log": b"run log\n",
-                ".assay/r2-manifest-b110-pilot.txt": b"test_contract::test_example\n",
-                ".assay/b110-pilot-attempt-window.json": attempt_raw,
-                ".assay/progress-b110-pilot.jsonl": b"progress\n",
-                f".assay/{deadline_name}": deadline_raw,
-                ".assay/b110-pilot-state/PILOT-STATE": b"sentinel\n",
-                f".assay/b110-pilot-state/{identity}.json": b"state\n",
-            }
-            for relative, content in files.items():
-                target = project / relative
-                target.parent.mkdir(parents=True, exist_ok=True)
-                if relative == ".assay/progress-b110-pilot.jsonl" and target.exists():
-                    with target.open("ab") as stream:
-                        stream.write(content)
-                else:
-                    target.write_bytes(content)
-            manifest_entries = dict(files)
-            if mode == "pilot-manifest-omits":
-                manifest_entries.pop(".assay/b110-pilot-run.log")
-            manifest = artifacts / "b110-pilot-artifacts.sha256"
-            manifest_bytes = "".join(
-                f"{hashlib.sha256(content).hexdigest()}  {relative}\n"
-                for relative, content in sorted(manifest_entries.items())
-            ).encode()
-            manifest.write_bytes(manifest_bytes)
-            if mode == "pilot-artifact-tampered":
-                (artifacts / "b110-pilot-summary.json").write_text("changed after attestation\n")
             print("B110_PILOT_EXIT=6")
             print("B110_PILOT_VERIFIED=1")
-            print("B110_PILOT_ATTESTATION_SHA256=" + hashlib.sha256(manifest_bytes).hexdigest())
+            print("B110_PILOT_ATTESTATION_SHA256=" + state["pilot_attestation_sha256"])
             print("B110_PILOT_COMPLETED=1")
     elif lane == "b110-screen":
         if mode == "screen-r0-fail":
