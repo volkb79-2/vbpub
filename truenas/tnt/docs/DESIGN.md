@@ -261,6 +261,22 @@ beyond the Dashboard's bounded CPU/memory history and other unassigned entries r
 session controls are It1; interactive SSH hand-off is It3. Containers and Virtual Machines are separate top-level
 entries and are always shown. The TUI omits Shell because it is already a terminal.
 
+### TUI navigation and small terminals
+
+Keep the TrueNAS route order in the tree, then mark entries that are planned, conditional, or tnt-only in plain text.
+These labels remain understandable without color and keep the web UI's names available for implemented pages. The
+breadcrumb names the current page even when Jump opens it without selecting a tree row. `Ctrl+P` uses Textual's command
+palette for screen/action search; `?` opens a persistent key guide, and `Escape` returns focus to navigation or cancels
+the active dialog through that dialog's cancel path.
+
+The sidebar narrows with the terminal so the content keeps usable width. Below 48 columns or 12 rows, tnt hides the
+working layout and shows a resize instruction instead of presenting controls that cannot fit. Destructive dialogs show
+the typed target as wrapped text above a neutral input placeholder; the action guard and exact typed comparison remain
+unchanged. When no host is configured, the picker focuses Add, disables actions that need a selected host, and provides
+Quit as its exit action. Pilot tests render the real screens to text at 80×24, 100×30, 120×40, 160×50, 200×60, and 60×40, then
+exercise a resize to 40×10. Current Textual widgets expose terminal text and keyboard focus but do not provide a
+semantic screen-reader tree; that limitation is tracked in `docs/UX-REVIEW.md`.
+
 ### Shares
 
 `sharing.smb.create` and `sharing.nfs.create` accept only paths that `filesystem.stat(path)` confirms exist on the
@@ -573,9 +589,9 @@ additional arguments after `HOST` is not supported.
   [`docs/LIVE-TESTING.md`](LIVE-TESTING.md), including the [ACTION-MATRIX B-06 import check](ACTION-MATRIX.snapshot.md#actions).
   The live lane is separate from the ordinary FakeServer gate.
 - Drift lane (TNT-23, It4): manifests vs the fetched API reference. Optional dependencies required by the suite fail, never skip.
-- Gate: `run-gate.toml` lane `r0-r1` (pytest with branch coverage); `live-v27` is the opt-in host acceptance lane.
-  The registered unit lane retains its 97% floor; the separate mutation lane is It4 work (TNT-30). Tests are
-  deterministic under host load: no timing assertions beyond bounded waits for a worker.
+- Gate: `run-gate.toml` lanes `r0-r1` (full pytest suite with branch coverage), `ux-focused` (Pilot UX and host-picker
+  checks), and `live-v27` (opt-in host acceptance). The full unit lane retains its 97% floor; the separate mutation
+  lane is It4 work (TNT-30). Tests are deterministic under host load: no timing assertions beyond bounded waits for a worker.
 
 ## 10. Milestones
 
@@ -608,7 +624,9 @@ per host (TNT-35). Live-lane profile selection and required variables are docume
 only, so importing `tnt.testing` without the test extra fails, and nothing in the runtime imports it.
 
 Estate registration remains It4 work: `cmru.orchestration.toml` and the root run-gate registry need an entry for
-`truenas/tnt` (TNT-32), and the gate environment needs `tnt` installed for the cli-extended version lookup (TNT-33).
-This checkout's `run-gate.toml` declares only `r0-r1` and `live-v27`; the separately reported read-only `live-inspect`
+`truenas/tnt` (TNT-32). The local `r0-r1`, `ux-focused`, and `live-v27` lanes install the editable project into `tester-unified`
+before invoking cli-extended's installed-version lookup. Since this checkout has no `tnt-v*` release tag, those
+test-only installs use the explicit `0.0.0+gate.test` SCM version; release builds continue to require a real tnt tag.
+This checkout's `run-gate.toml` declares `r0-r1`, `ux-focused`, and `live-v27`; the separately reported read-only `live-inspect`
 lane belongs to estate gate tooling in another checkout and is not registered here. `cmru.toml` and this directory's
 `run-gate.toml` are ready for estate registration.

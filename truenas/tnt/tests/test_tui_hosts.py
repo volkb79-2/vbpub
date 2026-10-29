@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from textual.screen import ModalScreen
-from textual.widgets import Button, Checkbox, DataTable, Input, Select, Static
+from textual.widgets import Button, Checkbox, DataTable, Input, Select, Static, Tree
 
 from tnt.errors import ProfileError
 from tnt.host_store import HostStore, load_host_store
@@ -120,7 +120,7 @@ def test_tui_host_form_adds_securely_renames_sets_default_and_removes(config, op
             edit.query_one("#host-description", Input).value = "Renamed through TUI"
             edit.query_one("#host-insecure-ack", Checkbox).value = True
             edit._save()
-            await pilot.pause(0.05)
+            await _wait_for(pilot, lambda: bool(app.query(HostPicker)))
             saved_hosts, saved_default, saved_entries = load_host_store(paths)
             assert "throwaway-ui" not in saved_hosts and saved_default == "renamed-ui"
             assert saved_hosts["renamed-ui"].description == "Renamed through TUI"
@@ -248,12 +248,23 @@ def test_empty_host_picker_has_no_selection(config):
         app = TntApp(None, hosts={}, default_host=None, secret_entries={}, host_paths=paths)
         async with app.run_test(size=(160, 50)) as pilot:
             picker = app.query_one(HostPicker)
+            assert not app.query_one("#nav", Tree).display
+            assert picker.query_one("#hosts-add", Button).has_focus
+            assert picker.query_one("#hosts-cancel", Button).label == "Quit"
+            for button_id in ("hosts-switch", "hosts-test", "hosts-edit", "hosts-default", "hosts-remove"):
+                assert picker.query_one(f"#{button_id}", Button).disabled
             assert picker.selected_name() is None
+            picker.refresh_rows()
+            await pilot.press("escape")
+            await pilot.pause(0.05)
+            assert app.current == "__hosts__" and picker.query_one("#hosts-add", Button).has_focus
             for button_id in ("hosts-switch", "hosts-test", "hosts-edit", "hosts-default", "hosts-remove"):
                 picker.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id=button_id)))
+            assert app.session is None
+            app.test_quit_requested = False
+            app.action_quit = lambda: setattr(app, "test_quit_requested", True)
             picker.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="hosts-cancel")))
-            await pilot.pause(0.05)
-            assert app.session is None and picker.selected_name() is None
+            assert app.test_quit_requested
             app.session_controller.close()
 
     asyncio.run(go())

@@ -238,6 +238,7 @@ def test_core_read_views_load_with_search_copy_status_and_sanitized_error(config
                 server.fail["system.info"] = f"credential {server.secret().reveal()}"
                 _select(app, "Dashboard")
                 await _settle(pilot, lambda: "Unavailable:" in str(app.query_one("#core-error", Static).render()))
+                dashboard = app.query_one("#view-dashboard")
                 assert "No successful sample" in str(app.query_one("#core-status", Static).render())
                 assert server.secret().reveal() not in str(app.query_one("#core-error", Static).render())
                 server.fail.pop("system.info")
@@ -246,6 +247,9 @@ def test_core_read_views_load_with_search_copy_status_and_sanitized_error(config
                 await _settle(pilot, lambda: app.query_one("#core-table", DataTable).row_count > 0)
                 assert "refreshed" in str(app.query_one("#core-status", Static).render())
                 assert {"system.info", "reporting.get_data"} <= set(server.called())
+                dashboard = app.query_one("#view-dashboard")
+                dashboard._failed("temporary read failure after a successful sample")
+                assert "last successful sample" in str(app.query_one("#core-status", Static).render())
                 await pilot.click("#core-copy")
                 search = app.query_one("#core-search", Input)
                 search.value = "no visible row has this phrase"

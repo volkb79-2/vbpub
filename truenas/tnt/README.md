@@ -289,16 +289,22 @@ user fields, and resolves pool references against the connected host before allo
 requires `--recursive` when the target is mounted, has children, or is attached to a running workload, and always
 requires typing the full dataset name.
 
-TUI keys: arrows/enter navigate the TrueNAS menu, `ctrl+p` opens the command palette, `r` refreshes, `?` shows keys,
-and `q` quits after host-bound work drains. Slow reads and plan preparation show a busy message while the UI remains
-responsive. Destructive action dialogs display the plan and ask for the exact confirmation target; a drain that exceeds
-five seconds offers Keep waiting or Cancel quit.
+TUI keys: arrows/enter navigate the TrueNAS menu, `ctrl+p` opens Jump, `?` opens the key help, `Esc` returns focus to
+the menu or cancels the open dialog, and `q` quits after host-bound work drains. A breadcrumb shows the current page and
+the host/write-mode banner remains visible. At fewer than 48 columns or 12 rows, tnt shows a terminal-too-small notice.
+With no configured host, the picker focuses Add and disables host-only actions; Quit exits tnt.
+Slow reads and plan preparation show a busy message while the UI remains responsive. Destructive action dialogs display
+the plan and the full exact confirmation target; a drain that exceeds five seconds offers Keep waiting or Cancel quit.
+See the [navigation and small-terminal design](docs/DESIGN.md#tui-navigation-and-small-terminals) and the
+[copyable TUI workflow](docs/CONSUMERS.md#using-the-tui).
 
 ## Tests
 
 The default suite uses the in-memory `tnt.testing.FakeServer` over loopback with the real `truenas_api_client`; it does
 not contact a TrueNAS host. The optional Textual, websockets, and test dependencies are required by the suite; missing
-dependencies fail the suite. The separate `run-gate live-v27` lane is an explicit host integration run: it selects only
+dependencies fail the suite. Run `run-gate r0-r1` for the full suite and its 97% branch coverage floor; use
+`run-gate ux-focused` for the Pilot screen, host-picker, and small-terminal checks. Both use `tester-unified`. The
+separate `run-gate live-v27` lane is an explicit host integration run: it selects only
 tests marked `live`, requires `TNT_LIVE=1`, and creates and cleans up resources under a `tnt-live-` prefix. It runs in
 `tester-unified`; keep `tnt.toml` and `tnt.secrets.toml` in a private scratch directory outside the repository and pass
 that directory through `RUN_GATE_EXTRA_MOUNTS`. The live probe also switches between two same-endpoint profile aliases;
@@ -307,5 +313,5 @@ covers the invocation, host restrictions, and cleanup behavior, and the [test st
 explains why the live lane runs in `tester-unified`.
 
 ```bash
-PYTHONPATH=src nice python -m pytest -q -p no:xdist
+run-gate r0-r1
 ```

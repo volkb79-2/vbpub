@@ -93,11 +93,30 @@ tnt hosts set-default lab
 tnt hosts remove staging --confirm staging
 ```
 
-The TUI picker shows host name, URL, description, and last status. Press `h` or use the command palette to switch
-hosts; `w` reopens the selected host in the other write mode. Reads, action construction, plan probes, and applies run
-in workers with a visible busy message. A switch invalidates its plans and cancels host work before closing the old
+The TUI picker shows host name, URL, description, and last status. Press `h` or use Jump (`Ctrl+P`) to switch hosts;
+`w` reopens the selected host in the other write mode. Reads, action construction, plan probes, and applies run in
+workers with a visible busy message. A switch invalidates its plans and cancels host work before closing the old
 session; after five seconds without a drain, choose Keep waiting or Cancel switch. SSH user, key-file, and known-host
 settings are private local paths and are not shown.
+
+## Using the TUI
+
+Start a session with a configured host:
+
+```sh
+tnt tui --host lab
+```
+
+The TrueNAS menu opens on the left and the current host, mode, and page appear above the content. Use Up/Down and Enter
+to navigate, `Ctrl+N` to focus the menu, or `Ctrl+P` to open Jump and type a screen or action name. Press `?` for the
+keyboard and mouse guide, `h` for the host picker, `r` to refresh, `s` for the configured interactive SSH hand-off,
+and `q` to quit after host work drains. `Escape` returns focus to the menu or cancels the open dialog. In tables,
+Up/Down select rows and Left/Right or Home/End inspect columns; Tab and Shift+Tab move between form fields and buttons.
+
+Planned, conditional, and tnt-only menu entries are marked in text. Destructive plan dialogs show the full target above
+the confirmation input; type it exactly as displayed. Below 48 columns or 12 rows, resize the terminal to continue.
+When no host is configured, the picker focuses Add and disables actions that need a selected host; choose Quit to exit tnt.
+See the [navigation and small-terminal design](DESIGN.md#tui-navigation-and-small-terminals).
 
 ## Interactive SSH hand-off
 
@@ -180,7 +199,7 @@ reporting samples as ordered numeric arrays (`[timestamp, series…]`); TnT pres
 Dashboard uptime seconds remain a finite non-negative number and may be fractional. Jobs shows host-wide scope
 only after `auth.me` confirms `FULL_ADMIN`; otherwise TrueNAS limits the list to jobs visible to the authenticated
 session. The TUI Jobs screen has Previous/Next page controls. Use `/` to focus search, `r` to refresh, `c` to copy
-visible rows, and `?` for view help. Dashboard polls every 30 seconds, Jobs every 5 seconds, and Alerts, Services, and
+visible rows, `?` for the key guide, or its Help button for view controls. Dashboard polls every 30 seconds, Jobs every 5 seconds, and Alerts, Services, and
 Storage every 60 seconds. Refreshes do not overlap; on failure the TUI retains the last successful sample and shows a
 credential-scrubbed error. Services has no start/stop controls. The full v27 methods, role requirements, schemas, and
 unknown states are in [API method evidence](API-METHODS-V27.md#iteration-2-read-view-contract-implemented-against-the-verified-v27-reference);

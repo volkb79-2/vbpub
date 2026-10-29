@@ -218,7 +218,9 @@ def test_destructive_tui_plan_dialog_shows_calls_and_requires_exact_target(confi
             await pilot.pause(0.1)
             assert app.screen.__class__.__name__ == "PlanReview", str(app.query_one("#workflow-note", Static).render())
             assert "container.delete" in str(app.screen.query_one("#plan-render", Static).render())
-            assert app.screen.query_one("#plan-confirm", Input).placeholder.endswith("web exactly")
+            confirmation_target = str(app.screen.query_one("#plan-confirm-target", Static).render())
+            assert "Type this exact target to confirm" in confirmation_target and "web" in confirmation_target
+            assert app.screen.query_one("#plan-confirm", Input).placeholder == "Type confirmation text exactly"
             await pilot.click("#plan-cancel")
     asyncio.run(go())
     session.close()
