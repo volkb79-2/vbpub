@@ -16,8 +16,9 @@ workflow examples are in the [consumer guide](docs/CONSUMERS.md#configure-multip
 
 M1 core workflows, M2 management workflows, It1 multi-host configuration and session control, It2 job tracking and
 read-only core views, and It3 hardened interactive SSH hand-off are implemented. It4 vanilla-v27 acceptance is recorded
-in the [live acceptance record](docs/LIVE-TESTING.md#live-acceptance-run-2026-10-29); release readiness remains. See the
-[milestone plan](docs/DESIGN.md#10-milestones).
+in the [live acceptance record](docs/LIVE-TESTING.md#live-acceptance-run-2026-10-29). CMRU release registration is in
+place; the first release, version 0.1.0, has not been published. See the [milestone plan](docs/DESIGN.md#10-milestones)
+and [release design](docs/DESIGN.md#12-decisions-open-questions-and-estate-registration).
 
 At connection time tnt checks the v27 WebSocket method list. Methods missing from a host are reported by
 `doctor --online` and refused if a workflow needs them; a method-name match does not grant an RBAC role. See the
@@ -26,11 +27,19 @@ At connection time tnt checks the v27 WebSocket method list. Methods missing fro
 
 ## Install
 
+The first release has not been published yet. It is registered as version `0.1.0`, with the wheel and its SHA256
+planned as assets of GitHub Release `tnt-v0.1.0`; CMRU also maintains the moving `tnt-latest` release. After it is
+published, download that wheel and a
+`cli-extended>=0.4.0` wheel from their GitHub Releases into one directory, then install:
+
 ```bash
-pip install 'tnt[tui]'        # the CLI alone: pip install tnt
+python -m pip install --no-index --find-links . 'cli-extended>=0.4.0'
+python -m pip install './tnt-0.1.0-py3-none-any.whl[tui]'
 ```
 
-`truenas_api_client` (LGPL-3.0, official) is installed from a pinned git commit; the pin rationale is in `pyproject.toml`.
+The TUI extra installs `textual>=8.0`; for the scriptable CLI alone, install the same wheel without `[tui]`. Both require
+the official `truenas_api_client` distribution from the pinned Git commit declared in `pyproject.toml`. The install
+command fetches that direct Git dependency; its pin rationale is in the same file. The tnt wheel is not published to PyPI.
 
 ## Configure multiple hosts
 

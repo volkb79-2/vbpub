@@ -400,8 +400,12 @@ volatile uptime and load metrics; version, state, and boot ID remain separate pr
 
 ## 6. Version policy
 
-`cli-extended>=0.4.0` (estate floor reasons as in iobench), `textual>=8.0` in the `tui` extra (Tree, DataTable,
-SystemCommands, Pilot), `websockets>=15` in the test extra, `truenas_api_client` by sha. Python >= 3.11 (tested 3.14).
+CMRU uses the tracked `VERSION` file as the package version source, seeded at `0.1.0`. A release transaction commits the
+next version before tagging `tnt-vX.Y.Z`; the wheel and SHA256 are published to the matching GitHub Release, and CMRU
+maintains the moving `tnt-latest` release. Wheels are not published to PyPI.
+The project metadata declares `cli-extended>=0.4.0` and the official `truenas_api_client` at a pinned Git commit.
+`textual>=8.0` is in the optional `tui` extra; `pytest`, `pytest-cov`, Textual, and `websockets>=15` are test extras.
+Python >= 3.11 (tested 3.14). See the [consumer install steps](CONSUMERS.md#install-from-github-release-assets).
 
 ## 7. Secrets
 
@@ -592,11 +596,11 @@ additional arguments after `HOST` is not supported.
   [`docs/LIVE-TESTING.md`](LIVE-TESTING.md), including the [ACTION-MATRIX B-06 import check](ACTION-MATRIX.snapshot.md#actions).
   The live lane is separate from the ordinary FakeServer gate.
 - Drift lane (TNT-23, It4): manifests vs the fetched API reference. Optional dependencies required by the suite fail, never skip.
-- Gate: `run-gate.toml` lanes `r0-r1` (full pytest suite with branch coverage), `ux-focused` (Pilot, host-picker, and
-  tmux terminal checks), and `live-v27` (opt-in host acceptance). The tmux cases report a clear skip while tester-unified
-  lacks that package. The full unit lane retains its 97% floor; the separate mutation
-  lane is It4 work (TNT-30). Tests are deterministic under host load: they poll for screen and worker conditions until
-  bounded deadlines instead of asserting fixed response times.
+- Gate: CMRU release runs `run-gate.toml` lanes `r0-r1` (full pytest suite with branch coverage) and `ux-focused`
+  (Pilot, host-picker, and tmux terminal checks); `live-v27` is opt-in host acceptance. The tmux cases report a clear
+  skip while tester-unified lacks that package. The full unit lane retains its 97% floor; the separate mutation lane is
+  It4 work (TNT-30). Tests are deterministic under host load: they poll for screen and worker conditions until bounded
+  deadlines instead of asserting fixed response times.
 
 ## 10. Milestones
 
@@ -608,7 +612,7 @@ additional arguments after `HOST` is not supported.
 | It1 | Paired multi-host configuration/secrets and the session controller: host generation, plan invalidation, worker draining, stale-callback rejection, connection testing, and per-host write mode | implemented |
 | It2 | Non-blocking job engine and read-only core views: Dashboard, Alerts, Jobs, Services, Storage health, and global view UX | implemented |
 | It3 | Hardened interactive SSH hand-off with pinned host-key sources and no arbitrary remote command mode | implemented |
-| It4 | Vanilla-v27 live acceptance, remaining hardening and consistency review, estate registration, and release readiness | live acceptance recorded 2026-10-29; consistency, registration, and release-readiness work remains |
+| It4 | Vanilla-v27 live acceptance, remaining hardening and consistency review, estate registration, and release readiness | live acceptance and CMRU registration recorded 2026-10-29; first 0.1.0 release not published |
 | Later | Storage partitioning, pool creation, boot-pool management, and other TrueNAS screens not assigned above | deferred |
 
 ## 11. Supported host
@@ -628,10 +632,10 @@ Still open: Q7 how conditional menu entries (Apps, Containers, Virtual Machines,
 `tnt.testing` ships inside the wheel but imports `websockets` at module level; `websockets` is a test-extra dependency
 only, so importing `tnt.testing` without the test extra fails, and nothing in the runtime imports it.
 
-Estate registration remains It4 work: `cmru.orchestration.toml` and the root run-gate registry need an entry for
-`truenas/tnt` (TNT-32). The local `r0-r1`, `ux-focused`, and `live-v27` lanes install the editable project into `tester-unified`
-before invoking cli-extended's installed-version lookup. Since this checkout has no `tnt-v*` release tag, those
-test-only installs use the explicit `0.0.0+gate.test` SCM version; release builds continue to require a real tnt tag.
-This checkout's `run-gate.toml` declares `r0-r1`, `ux-focused`, and `live-v27`; the separately reported read-only `live-inspect`
-lane belongs to estate gate tooling in another checkout and is not registered here. `cmru.toml` and this directory's
-`run-gate.toml` are ready for estate registration.
+CMRU estate registration is complete (TNT-32): project id `tnt` points to `truenas/tnt/cmru.toml`, declares its
+first-party `cli-extended` dependency, and publishes a wheel plus SHA256 under tag and GitHub Release `tnt-vX.Y.Z`.
+The `VERSION` file is the version source used by both setuptools and CMRU. CMRU's release gate runs the registered
+`r0-r1` and `ux-focused` Run-Gate lanes. The `ux-focused` lane includes real tmux terminal checks, but those cases
+skip while `tester-unified` lacks tmux; TNT-54 tracks that image capability. No tester image was changed for this
+registration. The `live-v27` lane remains opt-in and is not a release gate; the separately reported `live-inspect`
+lane belongs to estate gate tooling elsewhere. The first tnt release remains unpublished.

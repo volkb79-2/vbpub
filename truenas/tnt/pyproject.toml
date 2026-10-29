@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools==82.0.1", "wheel==0.47.0", "setuptools_scm==10.0.5"]
+requires = ["setuptools==82.0.1", "wheel==0.47.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -40,12 +40,10 @@ tnt = "tnt.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
-# Version comes from the git tag `tnt-vX.Y.Z` minted by the cmru release transaction. No fallback_version:
-# a build without git metadata must fail (AGENTS.md "Defaults and fallbacks are hazards").
-[tool.setuptools_scm]
-root = "../.."
-tag_regex = "^tnt-v(?P<version>[0-9].*)$"
-git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "tnt-v*"]
+# VERSION is the CMRU-owned version source. CMRU commits its update before
+# tagging, and setuptools reads the same file for wheel metadata.
+[tool.setuptools.dynamic]
+version = {file = "VERSION"}
 
 [tool.cli-extended]
 schema_version = 1

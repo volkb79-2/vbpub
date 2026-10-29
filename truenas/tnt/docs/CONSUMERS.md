@@ -4,6 +4,23 @@ This guide shows pasteable multi-host config and commands for a vanilla TrueNAS 
 choices, see the [design guide](DESIGN.md#1-goals-and-non-goals). The quick overview is in the [README](../README.md).
 The v27 request shapes and the source revision they were checked against are in [API method evidence](API-METHODS-V27.md).
 
+## Install from GitHub release assets
+
+The first tnt release has not been published yet. When version `0.1.0` is available, download its wheel from the
+versioned GitHub Release `tnt-v0.1.0`, along with a `cli-extended>=0.4.0` wheel from that project's GitHub Releases.
+CMRU also maintains a moving `tnt-latest` release. Keep both wheels in one directory. The pinned
+`truenas_api_client` dependency is fetched from Git when pip installs tnt.
+
+Install the shared CLI wheel first, then tnt with the TUI extra:
+
+```bash
+python -m pip install --no-index --find-links . 'cli-extended>=0.4.0'
+python -m pip install './tnt-0.1.0-py3-none-any.whl[tui]'
+```
+
+For the scriptable CLI without Textual, remove `[tui]` from the wheel path in the second command. The TUI extra installs
+`textual>=8.0`; runtime dependencies are declared in `pyproject.toml`. The release wheel is not published to PyPI.
+
 ## Configure multiple hosts
 
 Copy both committed examples and protect each private file before entering credentials:

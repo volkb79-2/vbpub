@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+- Registered the first CMRU release for this TUI and scriptable CLI for vanilla TrueNAS v27: initial version `0.1.0`,
+  tag `tnt-v0.1.0`, and a wheel plus SHA256 in the matching GitHub Release; CMRU maintains `tnt-latest` as the moving
+  release. No tnt release has been published yet.
+  The release gate runs the existing `r0-r1` and `ux-focused` lanes; real-tmux cases still skip because
+  `tester-unified` does not include tmux (TNT-54). The wheel's dependencies remain those in `pyproject.toml`.
+  See the [release design](docs/DESIGN.md#12-decisions-open-questions-and-estate-registration) and
+  [installation instructions](docs/CONSUMERS.md#install-from-github-release-assets).
 - Completed vanilla TrueNAS v27.0.0-RC.1 live acceptance through the registered `live-v27` Run-Gate lane. Datasets,
   shares, snapshot tasks, user credentials, containers, pool import, read views, API keys, multi-host switching,
   interactive SSH hand-off, and private configuration export passed. VM, Apps lifecycle, replication/cloud-sync
@@ -10,11 +17,9 @@
   fixes are listed in that report.
 - The `r0-r1` lane now reports coverage to two decimal places (`[tool.coverage.report] precision = 2`), aligning
   pytest-cov's `--cov-fail-under=97` comparison with its two-digit report so a displayed 96.94% fails. The general
-  pytest-cov/Run-Gate command-lane false green is filed as RG-110 in run-gate-project's backlog. The latest registered
-  gate run passed 930 tests, with 0 failures and 2 deselected; combined coverage was 98.36% and branch coverage was
-  97.27% (2492/2562), above the 97% branch floor. The two reported failures were test setup errors: the core-view test
-  queried IDs those views do not define, and the reboot refusal test queried its view before Textual attached it. The
-  tests now locate the mounted core view and wait for the reboot view to attach while retaining their behavior checks.
+  pytest-cov/Run-Gate command-lane false green is filed as RG-110 in run-gate-project's backlog. The current registered
+  `r0-r1` run passed 943 tests and reported 98.30% coverage. Earlier setup failures in the core-view and reboot-refusal
+  tests were corrected; the tests locate the mounted view and wait for it to attach while retaining their behavior checks.
 - Restored the typed `api-key-lookup` refusal for a missing API key, added visible worker-start messages when no host
   lease is available, and routed TUI action-builder tests through `_build_action_from_input`. Bound the copied
   password-auth example to its configured endpoint. Live-test docs now list the required `PROFILE-alt` alias and
@@ -118,3 +123,5 @@
 - Free space is an upper bound (`free_upper_bound_bytes`, `<= x` in the CLI/TUI) and unknown whenever a size or the partition data is missing.
 - Plan/apply action model with confirm gates and a refusal list.
 - Fake JSON-RPC websocket server (`tnt.testing`) used by the tests.
+
+<!-- cmru: release history -->

@@ -19,6 +19,7 @@ registry = ["ghcr.io"]
 # CMRU PROJECT DEPENDENCY GRAPH
 #
 #   cli-extended <- none  (declared release order)
+#   tnt <- cli-extended  (declared release order)
 #   cgroup-profiler <- none  (declared release order)
 #   run-gate-project <- cgroup-profiler  (declared release order)
 #   cmru <- cli-extended, run-gate-project  (declared release order)
@@ -36,7 +37,7 @@ registry = ["ghcr.io"]
 #
 # LEVELS (a project releases after every project on a lower level; longest declared chain)
 #   L0: cli-extended, cgroup-profiler, ciu, assay, topos, tls-edge, tester-base
-#   L1: run-gate-project, nyxloom, pwmcp
+#   L1: tnt, run-gate-project, nyxloom, pwmcp
 #   L2: cmru
 #   L3: modern-debian-tools-python-debug, mdt-cockpit
 #
@@ -48,7 +49,7 @@ registry = ["ghcr.io"]
 # CMRU requires cli-extended at runtime and a published Run-Gate release for its gate.
 # Run-Gate's full R2 qualification requires the released CGProfile observer.
 # project_order must be a topological order of every level; the preflight enforces it.
-project_order = ["cli-extended", "cgroup-profiler", "run-gate-project", "cmru", "ciu", "assay", "topos", "nyxloom", "pwmcp", "tls-edge", "modern-debian-tools-python-debug", "mdt-cockpit", "tester-base"]
+project_order = ["cli-extended", "tnt", "cgroup-profiler", "run-gate-project", "cmru", "ciu", "assay", "topos", "nyxloom", "pwmcp", "tls-edge", "modern-debian-tools-python-debug", "mdt-cockpit", "tester-base"]
 default_steps = ["run-tests", "build", "push"]
 execution_mode = "project-first"
 # Repository credentials live in gitignored root cmru.secret.toml. A project may
@@ -159,6 +160,12 @@ CMRU_TESTER_CGROUP_FORWARD_GATES_VAR = "${CGROUP_PARENT_DEV_GATES}"
 [orchestration.project.cli-extended]
 config = "libraries/cli-extended/cmru.toml"
 depends_on = []
+
+# tnt's wheel depends on cli-extended>=0.4.0; its independently pinned
+# truenas_api_client runtime dependency is declared in truenas/tnt/pyproject.toml.
+[orchestration.project.tnt]
+config = "truenas/tnt/cmru.toml"
+depends_on = ["cli-extended"]
 
 # CMRU's release command is bootstrapped from this repository's source; using
 # the controller to release a project does not make the published CMRU wheel a
