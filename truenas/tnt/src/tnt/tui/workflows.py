@@ -7,6 +7,7 @@ from typing import Any
 
 from textual import work
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, DataTable, Input, Select, Static, TextArea
@@ -463,10 +464,12 @@ class WorkflowView(Vertical):
 
 
 class PlanReview(ModalScreen[None]):
+    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False, priority=True)]
     CSS = """
     PlanReview { align: center middle; }
     PlanReview > Vertical { width: 85%; max-height: 85%; border: thick $primary; background: $surface; padding: 1 2; }
     PlanReview #plan-render { height: auto; max-height: 1fr; overflow-y: auto; }
+    PlanReview #plan-confirm-target { height: auto; max-height: 4; overflow-y: auto; }
     PlanReview #plan-confirm { height: 3; }
     PlanReview #plan-progress { height: auto; color: $text-muted; }
     """
@@ -500,16 +503,16 @@ class PlanReview(ModalScreen[None]):
                          + self.plan.render(), id="plan-render")
             yield Static("", id="plan-progress")
             if self.plan.action.confirm_target:
-                yield Input(placeholder=f"Type {self.plan.action.confirm_target} exactly", id="plan-confirm")
+                yield Static(f"Type this exact target to confirm:\n{self.plan.action.confirm_target}",
+                             id="plan-confirm-target")
+                yield Input(placeholder="Type confirmation text exactly", id="plan-confirm")
             with Horizontal():
                 yield Button("Apply plan", id="plan-apply", variant="primary")
                 yield Button("Cancel", id="plan-cancel")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "plan-cancel":
-            self.dismiss()
-            if self.parent_view is not None:
-                self.parent_view._plan_cancelled(self.plan)
+            self.action_cancel()
             return
         if event.button.id != "plan-apply":
             return
@@ -524,6 +527,11 @@ class PlanReview(ModalScreen[None]):
         self.query_one("#plan-apply", Button).disabled = True
         self.query_one("#plan-progress", Static).update("Applying reviewed plan…")
         self._apply_plan(confirmation, bool(methods & {"system.reboot", "system.shutdown", "update.run"}))
+
+    def action_cancel(self) -> None:
+        self.dismiss()
+        if self.parent_view is not None:
+            self.parent_view._plan_cancelled(self.plan)
 
     @work(thread=True, exclusive=True)
     def _apply_plan(self, confirmation: str | None, system_action: bool) -> None:

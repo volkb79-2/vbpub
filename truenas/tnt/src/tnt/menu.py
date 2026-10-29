@@ -7,9 +7,9 @@ entry in the v27 UI: Network lives under System, and Containers/VMs are separate
 TrueNAS puts “My API Keys” in the top-right account settings menu; tnt nests it under Credentials because its tree has
 no account menu.
 Entries the web UI shows only conditionally (entitlement, feature or hardware dependent) carry ``conditional``:
-Apps, KMIP and Enclosure. M1's Containers and Virtual Machines are always shown as separate top-level workflow
-entries. Per-host detection for the remaining conditional entries is tracked in BACKLOG TNT-35. Deviations are
-marked ``tnt_only`` and listed in docs/DESIGN.md section 4.
+Apps, Containers, Virtual Machines, KMIP and Enclosure. tnt keeps the separately implemented Containers and Virtual
+Machines routes visible and marks the TrueNAS entitlement condition in text. Per-host detection for conditional
+entries is tracked in BACKLOG TNT-35. Deviations are marked ``tnt_only`` and listed in docs/DESIGN.md section 4.
 """
 from __future__ import annotations
 
@@ -56,8 +56,8 @@ MENU: tuple[MenuItem, ...] = (
         _p("groups", "Groups"), _p("privileges", "Privileges"), _p("directory-services", "Directory Services"),
         _p("backup-credentials", "Backup Credentials"), _p("certificates", "Certificates"), _p("s3-access-keys", "S3 Access Keys"),
         _p("kmip", "KMIP", conditional=True))),
-    MenuItem("containers", "Containers", "implemented", "M1", matrix=("A-04", "A-06", "B-04")),
-    MenuItem("vm", "Virtual Machines", "implemented", "M1", matrix=("A-05", "A-06", "B-04")),
+    MenuItem("containers", "Containers", "implemented", "M1", conditional=True, matrix=("A-04", "A-06", "B-04")),
+    MenuItem("vm", "Virtual Machines", "implemented", "M1", conditional=True, matrix=("A-05", "A-06", "B-04")),
     MenuItem("apps", "Apps", "implemented", "M2", conditional=True),
     _p("reportsdashboard/cpu", "Reporting"),
     MenuItem("system", "System", "implemented", "M2", children=(

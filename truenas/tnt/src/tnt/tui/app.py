@@ -5,7 +5,8 @@ from typing import Iterable
 
 from textual import work
 from textual.app import App, ComposeResult, SuspendNotSupported, SystemCommand
-from textual.containers import Horizontal
+from textual.binding import Binding
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Button, Footer, Header, Select, Static, Tree
 
@@ -49,7 +50,8 @@ VIEWS = {
 class WorkerDrainDecision(ModalScreen[str]):
     """Give the user an explicit choice when cancelled RPC work misses the drain deadline."""
 
-    DEFAULT_CSS = "WorkerDrainDecision { align: center middle; } WorkerDrainDecision > Vertical { width: 72; height: auto; border: round $primary; padding: 1 2; background: $surface; }"
+    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False, priority=True)]
+    DEFAULT_CSS = "WorkerDrainDecision { align: center middle; } WorkerDrainDecision > Vertical { width: 90%; max-width: 72; max-height: 90%; border: round $primary; padding: 1 2; background: $surface; overflow-y: auto; }"
 
     def __init__(self, pending: int, *, transition_kind: str, on_wait, on_cancel):
         super().__init__()
@@ -75,8 +77,58 @@ class WorkerDrainDecision(ModalScreen[str]):
             self.dismiss("wait")
             self.on_wait()
         elif event.button.id == "worker-drain-cancel":
-            self.dismiss("cancel")
-            self.on_cancel()
+            self.action_cancel()
+
+    def action_cancel(self) -> None:
+        self.dismiss("cancel")
+        self.on_cancel()
+
+
+class KeysHelp(ModalScreen[None]):
+    """Persistent help for navigation, the command palette, and table controls."""
+
+    BINDINGS = [Binding("escape", "cancel", "Close help", show=False, priority=True)]
+    DEFAULT_CSS = """
+    KeysHelp { align: center middle; }
+    KeysHelp > Vertical {
+        width: 85%; max-width: 76; max-height: 90%; height: auto;
+        border: round $primary; padding: 1 2; background: $surface;
+    }
+    KeysHelp #keys-help-copy { height: auto; max-height: 1fr; overflow-y: auto; }
+    KeysHelp #keys-help-close { margin-top: 1; }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static(
+                "Navigation\n"
+                "  Ctrl+N menu; arrows move; Enter opens a page.\n"
+                "  Ctrl+P opens Jump for screens and actions.\n"
+                "  H host; W mode; S SSH; R refresh; Q quits after work drains.\n\n"
+                "Tables\n"
+                "  Up/Down rows; Left/Right or Home/End columns; Page keys scroll.\n"
+                "  Tab/Shift+Tab moves between fields and buttons.\n"
+                "  Click menu items or buttons to use the mouse.\n\n"
+                "Dialogs\n"
+                "  Escape returns to the menu or cancels the open dialog.\n"
+                "  Destructive actions still require the exact target text.",
+                id="keys-help-copy",
+            )
+            yield Button("Close help", id="keys-help-close", variant="primary")
+
+    def action_cancel(self) -> None:
+        self.dismiss()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "keys-help-close":
+            self.dismiss()
+
+
+class AppRoot(Vertical):
+    """Observe terminal resizes while retaining the app's small-screen notice."""
+
+    def on_resize(self, event) -> None:
+        self.app._apply_terminal_size(event.size.width, event.size.height)
 
 
 def placeholder(item: MenuItem) -> Static:
@@ -89,16 +141,29 @@ def placeholder(item: MenuItem) -> Static:
 class TntApp(App):
     TITLE = "tnt"
     CSS = """
+    #app-root { height: 1fr; }
+    #app-main { height: 1fr; }
     #nav { width: 30; border-right: solid $primary; }
     #content { width: 1fr; }
     #banner { height: 1; background: $boost; padding: 0 1; }
     #banner.insecure { background: $error; color: $text; }
+    #location { height: auto; min-height: 1; padding: 0 1; }
+    #key-legend { height: 1; padding: 0 1; }
+    #location { color: $text; background: $surface; }
+    #key-legend { color: $text-muted; background: $surface; }
+    #small-terminal {
+        display: none; height: 1fr; width: 1fr; padding: 1;
+        content-align: center middle; text-align: center;
+        color: $text; background: $surface;
+    }
     """
     BINDINGS = [
         ("q", "quit", "Quit"), ("ctrl+n", "focus_nav", "Menu"), ("r", "refresh", "Refresh"),
         ("h", "select_host", "Host"), ("w", "toggle_write_mode", "Write mode"), ("s", "ssh", "SSH"),
-        ("question_mark", "help", "Help"),
+        ("question_mark", "help", "Help"), Binding("escape", "back", "Back", show=False, priority=True),
     ]
+    MIN_TERMINAL_WIDTH = 48
+    MIN_TERMINAL_HEIGHT = 12
 
     def __init__(self, session: Session | None = None, *, session_controller: SessionController | None = None,
                  hosts: dict[str, Profile] | None = None, default_host: str | None = None,
@@ -126,6 +191,7 @@ class TntApp(App):
         self.current: str | None = None
         self._restore_key: str | None = None
         self._quitting = False
+        self._banner_message: str | None = None
 
     @property
     def session(self) -> Session | None:
@@ -149,18 +215,45 @@ class TntApp(App):
         getattr(widget, callback)(*args)
 
     def compose(self) -> ComposeResult:
-        yield Header()
-        yield Static(self._banner_text(), id="banner", classes="insecure" if self.session and self.session.insecure_tls else "")
-        with Horizontal():
-            tree: Tree[MenuItem] = Tree("TrueNAS", id="nav")
-            tree.show_root = False
-            for item in MENU:
-                self._add(tree.root, item)
-            yield tree
-            yield Horizontal(id="content")
-        yield Footer()
+        with AppRoot(id="app-root"):
+            with Vertical(id="app-main"):
+                yield Header()
+                yield Static(self._banner_text(), id="banner", classes="insecure" if self.session and self.session.insecure_tls else "")
+                yield Static("Location: TrueNAS", id="location")
+                yield Static(self._key_legend(80), id="key-legend")
+                with Horizontal():
+                    tree: Tree[MenuItem] = Tree("TrueNAS navigation", id="nav")
+                    tree.show_root = False
+                    for item in MENU:
+                        self._add(tree.root, item)
+                    yield tree
+                    yield Horizontal(id="content")
+                yield Footer()
+            yield Static("Terminal too small\nResize to at least 48 columns × 12 rows to use tnt.", id="small-terminal")
 
-    def _banner_text(self) -> str:
+    @staticmethod
+    def _key_legend(width: int) -> str:
+        if width < 72:
+            return "Ctrl+N Menu | Ctrl+P Jump | H Host | ? Help | Q Quit"
+        return "Ctrl+N Menu | Ctrl+P Jump | H Host | R Refresh | ? Help | Q Quit"
+
+    def _apply_terminal_size(self, width: int, height: int) -> None:
+        too_small = width < self.MIN_TERMINAL_WIDTH or height < self.MIN_TERMINAL_HEIGHT
+        self.query_one("#app-main").display = not too_small
+        self.query_one("#small-terminal", Static).display = too_small
+        if not too_small:
+            self.query_one("#nav", Tree).styles.width = max(20, min(30, width // 3))
+            self.query_one("#key-legend", Static).update(self._key_legend(width))
+            self.query_one("#banner", Static).update(self._banner_message or self._banner_text(width))
+
+    def on_mount(self) -> None:
+        self._apply_terminal_size(self.size.width, self.size.height)
+        self.sub_title = self.session.profile.name if self.session else "Select a host"
+        self.query_one("#nav", Tree).focus()
+        if self.session is None:
+            self.show_host_picker()
+
+    def _banner_text(self, width: int | None = None) -> str:
         session = self.session
         if session is None:
             active = self.session_controller.active_host
@@ -170,19 +263,26 @@ class TntApp(App):
             return f"No host selected  generation {self.session_controller.generation}"
         write_mode = "WRITE ENABLED" if not session.rpc.read_only else "read-only"
         tls = "  TLS VERIFICATION OFF" if session.insecure_tls else ""
-        return (f"{session.profile.name} {session.profile.host}  {session.backend.generation} ({session.backend.version})  "
-                f"{write_mode}  generation {self.session_controller.generation}{tls}")
+        result = (f"{session.profile.name}  {write_mode}  {session.backend.generation} ({session.backend.version})  "
+                  f"generation {self.session_controller.generation}{tls}")
+        if width is None:
+            width = self.size.width if self.is_mounted else 0
+        if width >= 120:
+            result += f"  {session.profile.host}"
+        return result
 
     def _add(self, parent, item: MenuItem) -> None:
-        node = parent.add(item.label, data=item, expand=item.status == "implemented") if item.children else parent.add_leaf(item.label, data=item)
+        flags = []
+        if item.status != "implemented":
+            flags.append("planned")
+        if item.conditional:
+            flags.append("conditional")
+        if item.tnt_only:
+            flags.append("tnt-only")
+        label = f"{', '.join(flags)}: {item.label}" if flags else item.label
+        node = parent.add(label, data=item, expand=item.status == "implemented") if item.children else parent.add_leaf(label, data=item)
         for child in item.children:
             self._add(node, child)
-
-    def on_mount(self) -> None:
-        self.sub_title = self.session.profile.name if self.session else "Select a host"
-        self.query_one("#nav", Tree).focus()
-        if self.session is None:
-            self.show_host_picker()
 
     def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
         item = event.node.data
@@ -194,6 +294,7 @@ class TntApp(App):
         if session is None:
             self.show_host_picker()
             return
+        self.query_one("#nav", Tree).display = True
         content = self.query_one("#content")
         content.remove_children()
         factory = VIEWS.get(item.key)
@@ -202,12 +303,16 @@ class TntApp(App):
         else:
             content.mount(factory(session) if factory else placeholder(item))
         self.current = item.key
+        path = next((path for path, candidate in walk() if candidate.key == item.key), (item.label,))
+        self.query_one("#location", Static).update(f"Location: TrueNAS > {' > '.join(path)}")
 
     def show_host_picker(self) -> None:
+        self.query_one("#nav", Tree).display = self.session is not None
         content = self.query_one("#content")
         content.remove_children()
         content.mount(HostPicker(self.session_controller))
         self.current = "__hosts__"
+        self.query_one("#location", Static).update("Location: TrueNAS > Hosts")
         self._update_banner()
 
     def close_host_picker(self) -> None:
@@ -227,7 +332,8 @@ class TntApp(App):
 
     def _update_banner(self, message: str | None = None) -> None:
         banner = self.query_one("#banner", Static)
-        banner.update(message or self._banner_text())
+        self._banner_message = message
+        banner.update(message if message is not None else self._banner_text())
         session = self.session
         if session is not None and session.insecure_tls:
             banner.add_class("insecure")
@@ -257,8 +363,25 @@ class TntApp(App):
         self.switch_host(session.profile.name, write_mode=session.rpc.read_only)
 
     def action_help(self) -> None:
-        self.notify("arrows/enter: navigate, ctrl+p: command palette, h: switch host, w: toggle write mode, "
-                    "s: interactive SSH, r: refresh, q: quit", title="Keys")
+        if not isinstance(self.screen, KeysHelp):
+            self.push_screen(KeysHelp())
+
+    def action_back(self) -> None:
+        screen = self.screen
+        if isinstance(screen, ModalScreen):
+            cancel = getattr(screen, "action_cancel", None)
+            if callable(cancel):
+                cancel()
+            else:
+                screen.dismiss()
+            return
+        if self.current == "__hosts__":
+            if self.session is not None:
+                self.close_host_picker()
+            else:
+                self.notify("Add or select a host before continuing, or press Q to quit.", title="Host required")
+            return
+        self.action_focus_nav()
 
     def action_quit(self) -> None:
         if self._quitting:
@@ -450,7 +573,12 @@ class TntApp(App):
                                 self.action_toggle_write_mode)
         for path, item in walk():
             if not item.children:
-                yield SystemCommand(f"Go to {' > '.join(path)}", f"{item.status}, {item.milestone}", lambda i=item: self.show(i))
+                details = [item.status, item.milestone]
+                if item.conditional:
+                    details.append("conditional in TrueNAS")
+                if item.tnt_only:
+                    details.append("tnt-only location")
+                yield SystemCommand(f"Go to {' > '.join(path)}", ", ".join(details), lambda i=item: self.show(i))
                 factory = VIEWS.get(item.key)
                 if factory is not None and item.key != "storage/disks" and self.session is not None:
                     from .workflows import OPERATIONS

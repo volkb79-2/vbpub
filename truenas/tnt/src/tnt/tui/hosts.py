@@ -5,6 +5,7 @@ from typing import Any
 
 from textual import work
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, DataTable, Input, Select, Static
@@ -14,13 +15,19 @@ from ..host_store import HostStore
 from ..profile import AUTH_MODES, TLS_MODES, Profile, Secret, SecretEntry
 
 
+class _FocusedHostTable(DataTable):
+    def on_mount(self) -> None:
+        self.focus()
+
+
 class HostPicker(Vertical):
     DEFAULT_CSS = """
     HostPicker { height: 1fr; padding: 1; }
     HostPicker #hosts-note { height: auto; color: $text-muted; }
     HostPicker #hosts-table { height: 1fr; }
     HostPicker #hosts-buttons { height: auto; }
-    HostPicker #hosts-buttons Button { margin-right: 1; }
+    HostPicker #hosts-buttons > Horizontal { height: 3; }
+    HostPicker #hosts-buttons Button { min-width: 0; margin-right: 1; }
     """
 
     def __init__(self, controller):
@@ -30,22 +37,43 @@ class HostPicker(Vertical):
     def compose(self) -> ComposeResult:
         default_note = (f" Default host: {self.controller.default_host}." if self.controller.default_host
                         else " No default host is set.")
-        yield Static("Select a TrueNAS host. Credentials and SSH key paths are never shown." + default_note,
-                     id="hosts-note")
-        table = DataTable(id="hosts-table", cursor_type="row", zebra_stripes=True)
+        has_hosts = bool(self.controller.hosts)
+        note = ("Select a TrueNAS host.\n"
+                "Credentials and SSH key paths stay hidden.\n"
+                "Up/Down choose rows; Left/Right or Home/End inspect columns." + default_note
+                if has_hosts else "No hosts configured. Add one to continue, or choose Quit.")
+        yield Static(note, id="hosts-note")
+        table = _FocusedHostTable(id="hosts-table", cursor_type="row", zebra_stripes=True)
         table.add_columns("Host", "URL", "Description", "Last status")
         for name, host in sorted(self.controller.hosts.items()):
             table.add_row(name, host.url, host.description, self.controller.last_status.get(name, "not tested"),
                           key=name)
         yield table
-        with Horizontal(id="hosts-buttons"):
-            yield Button("Switch to selected", id="hosts-switch", variant="primary")
-            yield Button("Test", id="hosts-test")
-            yield Button("Add", id="hosts-add")
-            yield Button("Edit", id="hosts-edit")
-            yield Button("Set default", id="hosts-default")
-            yield Button("Remove", id="hosts-remove", variant="error")
-            yield Button("Cancel", id="hosts-cancel")
+        with Vertical(id="hosts-buttons"):
+            with Horizontal():
+                yield Button("Switch to selected", id="hosts-switch", variant="primary", disabled=not has_hosts)
+                yield Button("Test", id="hosts-test", disabled=not has_hosts)
+                yield Button("Add", id="hosts-add")
+            with Horizontal():
+                yield Button("Edit", id="hosts-edit", disabled=not has_hosts)
+                yield Button("Set default", id="hosts-default", disabled=not has_hosts)
+                yield Button("Remove", id="hosts-remove", variant="error", disabled=not has_hosts)
+                yield Button("Cancel" if self.controller.session else "Quit", id="hosts-cancel")
+
+    def on_mount(self) -> None:
+        if self.controller.hosts:
+            self._sync_host_actions()
+        else:
+            self.query_one("#hosts-add", Button).focus()
+
+    def on_data_table_row_highlighted(self, event) -> None:
+        if event.data_table.id == "hosts-table":
+            self._sync_host_actions()
+
+    def _sync_host_actions(self) -> None:
+        enabled = self.selected_name() is not None
+        for button_id in ("hosts-switch", "hosts-test", "hosts-edit", "hosts-default", "hosts-remove"):
+            self.query_one(f"#{button_id}", Button).disabled = not enabled
 
     def refresh_rows(self) -> None:
         table = self.query_one("#hosts-table", DataTable)
@@ -53,9 +81,16 @@ class HostPicker(Vertical):
         controller = self.controller
         for name, host in sorted(controller.hosts.items()):
             table.add_row(name, host.url, host.description, controller.last_status.get(name, "not tested"), key=name)
-        default_note = f" Default host: {controller.default_host}." if controller.default_host else " No default host is set."
-        self.query_one("#hosts-note", Static).update(
-            f"Select a TrueNAS host. Credentials and SSH key paths are never shown.{default_note}")
+        if controller.hosts:
+            default_note = f" Default host: {controller.default_host}." if controller.default_host else " No default host is set."
+            note = ("Select a TrueNAS host.\nCredentials and SSH key paths stay hidden.\n"
+                    f"Use Up/Down to choose a row; Left/Right or Home/End inspect columns.{default_note}")
+        else:
+            note = "No hosts configured. Add one to continue, or choose Quit."
+        self.query_one("#hosts-note", Static).update(note)
+        self._sync_host_actions()
+        if not controller.hosts:
+            self.query_one("#hosts-add", Button).focus()
 
     def selected_name(self) -> str | None:
         table = self.query_one("#hosts-table", DataTable)
@@ -93,7 +128,10 @@ class HostPicker(Vertical):
                 self.app.push_screen(HostRemoveConfirm(host_name))
             return
         if event.button.id == "hosts-cancel":
-            self.app.close_host_picker()
+            if self.app.session is None:
+                self.app.action_quit()
+            else:
+                self.app.close_host_picker()
 
     @work(thread=True, exclusive=True)
     def _test(self, host_name: str, generation: int) -> None:
@@ -107,6 +145,7 @@ class HostPicker(Vertical):
 
 
 class HostForm(ModalScreen[None]):
+    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False, priority=True)]
     CSS = """
     HostForm { align: center middle; }
     HostForm > Vertical { width: 85%; max-height: 95%; border: thick $primary; background: $surface; padding: 1 2; }
@@ -171,7 +210,7 @@ class HostForm(ModalScreen[None]):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "host-cancel":
-            self.dismiss()
+            self.action_cancel()
             return
         if event.button.id != "host-save":
             return
@@ -179,6 +218,9 @@ class HostForm(ModalScreen[None]):
             self._save()
         except Exception as exc:
             self.query_one("#host-form-note", Static).update(f"Host was not saved: {exc}")
+
+    def action_cancel(self) -> None:
+        self.dismiss()
 
     def _save(self) -> None:
         from ..host_store import HostStore
@@ -238,6 +280,7 @@ class HostForm(ModalScreen[None]):
 
 
 class HostRemoveConfirm(ModalScreen[None]):
+    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False, priority=True)]
     CSS = """
     HostRemoveConfirm { align: center middle; }
     HostRemoveConfirm > Vertical { width: 70%; height: auto; border: thick $error; background: $surface; padding: 1 2; }
@@ -250,15 +293,16 @@ class HostRemoveConfirm(ModalScreen[None]):
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Static(f"Remove {self.host_name} and delete its stored credential? Type the host name to confirm.")
-            yield Input(placeholder=self.host_name, id="host-remove-confirm")
+            yield Static(f"Remove this host and delete its stored credential?\n"
+                         f"Type this exact host name to confirm:\n{self.host_name}")
+            yield Input(placeholder="Type host name exactly", id="host-remove-confirm")
             with Horizontal():
                 yield Button("Remove host", id="host-remove-apply", variant="error")
                 yield Button("Cancel", id="host-remove-cancel")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "host-remove-cancel":
-            self.dismiss()
+            self.action_cancel()
         elif event.button.id == "host-remove-apply":
             if self.query_one("#host-remove-confirm", Input).value != self.host_name:
                 self.notify("The host name did not match.", title="Host was not removed")
@@ -270,3 +314,6 @@ class HostRemoveConfirm(ModalScreen[None]):
             except TntError as exc:
                 self.notify(str(exc), title="Host was not removed")
                 return
+
+    def action_cancel(self) -> None:
+        self.dismiss()

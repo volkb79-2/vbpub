@@ -23,19 +23,20 @@ class CoreReadView(Vertical):
     CoreReadView .core-error { height: auto; padding: 0 1; color: $error; }
     CoreReadView .core-help { height: auto; padding: 0 1; display: none; }
     CoreReadView .core-help.visible { display: block; }
+    CoreReadView #core-empty { display: none; height: auto; padding: 0 1; color: $text; }
     CoreReadView #core-controls { height: 3; padding: 0 1; }
     CoreReadView #core-search { width: 1fr; }
         CoreReadView #jobs-prev, CoreReadView #jobs-next { display: none; }
     CoreReadView #core-table { height: 1fr; }
     """
-    BINDINGS = [("/", "search", "Search"), ("c", "copy", "Copy"), ("?", "help", "Help")]
+    BINDINGS = [("/", "search", "Search"), ("c", "copy", "Copy")]
 
     VIEW_KEY = ""
     INTERVAL_SECONDS = 60
     COLUMNS: tuple[str, ...] = ()
 
     def __init__(self, session: Session):
-        super().__init__(classes="core-read-view")
+        super().__init__(id=f"view-{self.VIEW_KEY}", classes="core-read-view")
         self.session = session
         self.loading = False
         self.last_success: datetime | None = None
@@ -53,9 +54,10 @@ class CoreReadView(Vertical):
             yield Button("Refresh", id="core-refresh")
             yield Button("Copy", id="core-copy")
             yield Button("Help", id="core-help-button")
-        yield Static("Refresh runs in the background. Press / to filter; r refreshes; c copies; ? shows help.",
+        yield Static("Refresh runs in the background. Press / to filter; r refreshes; c copies.",
                      classes="core-help", id="core-help")
         yield Static("", classes="core-error", id="core-error")
+        yield Static("", id="core-empty")
         table = DataTable(id="core-table", cursor_type="row", zebra_stripes=True)
         table.add_columns(*self.COLUMNS)
         yield table
@@ -100,8 +102,10 @@ class CoreReadView(Vertical):
         self.query_one("#core-error", Static).update("")
         self._render_payload(payload)
         stamp = self.last_success.astimezone().strftime("%H:%M:%S %Z")
+        visible_rows = self.query_one("#core-table", DataTable).row_count
         self.query_one("#core-status", Static).update(
-            f"{self.VIEW_KEY.title()} · refreshed {stamp} · next poll in {self.INTERVAL_SECONDS}s · read-only")
+            f"{self.VIEW_KEY.title()} · {visible_rows} visible row(s) · refreshed {stamp} · "
+            f"next poll in {self.INTERVAL_SECONDS}s · read-only")
 
     def _rows(self, payload: Any) -> list[tuple[str, ...]]:
         raise NotImplementedError
@@ -129,6 +133,9 @@ class CoreReadView(Vertical):
         table.clear()
         for index, row in enumerate(rows):
             table.add_row(*row, key=str(index))
+        empty = self.query_one("#core-empty", Static)
+        empty.update("No rows match this filter." if query else "No rows are available.")
+        empty.display = not rows
         if self.last_success is not None:
             self.query_one("#core-status", Static).update(
                 f"{self.VIEW_KEY.title()} · {len(rows)} visible row(s) · refreshed "

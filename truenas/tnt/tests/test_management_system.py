@@ -387,6 +387,7 @@ def test_reboot_tui_explains_when_no_worker_lease_can_check_the_outcome(monkeypa
             app = TntApp(session)
             async with app.run_test(size=(160, 50)) as pilot:
                 _select_key(app, "reboot")
+                await pilot.pause(0.05)
                 view = app.query_one("#view-system-reboot")
                 view._reconnect_after_reboot(uncertain=True)
                 await _wait_for(pilot, lambda: "Verify host state" in
