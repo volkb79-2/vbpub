@@ -7,6 +7,7 @@ from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, Input, Select
 
@@ -72,9 +73,18 @@ class HostPicker(Vertical):
             self._sync_host_actions()
 
     def _sync_host_actions(self) -> None:
-        enabled = self.selected_name() is not None
-        for button_id in ("hosts-switch", "hosts-test", "hosts-edit", "hosts-default", "hosts-remove"):
-            self.query_one(f"#{button_id}", Button).disabled = not enabled
+        if not self.is_mounted:
+            return
+        try:
+            enabled = self.selected_name() is not None
+            button_ids = ("hosts-switch", "hosts-test", "hosts-edit", "hosts-default", "hosts-remove")
+            buttons = [self.query_one(f"#{button_id}", Button) for button_id in button_ids]
+        except NoMatches:
+            # Mount and row-highlight events can arrive before sibling widgets
+            # enter the DOM. Compose already sets the initial disabled state.
+            return
+        for button in buttons:
+            button.disabled = not enabled
 
     def refresh_rows(self) -> None:
         table = self.query_one("#hosts-table", DataTable)
