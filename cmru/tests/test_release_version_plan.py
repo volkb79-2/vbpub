@@ -135,6 +135,75 @@ def test_version_plan_reader_refuses_unreadable_nonregular_and_uninspectable_rec
         transaction.read_release_version_plan(tmp_path, workspace)
 
 
+def test_origin_preflight_keeps_git_diagnostics_as_text(tmp_path):
+    repo = tmp_path / "without-origin"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    expected = subprocess.run(
+        ["git", "remote", "get-url", "--all", "origin"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    with pytest.raises(ReleasePlanRefused) as raised:
+        version._require_origin_remote(repo, purpose="build a release plan")
+
+    assert expected.returncode != 0
+    assert str(raised.value).endswith(f"({expected.stderr.strip()})")
+
+
+def test_origin_preflight_refuses_a_failed_lookup_even_with_partial_output(
+    monkeypatch, tmp_path,
+):
+    result = subprocess.CompletedProcess(
+        ["git", "remote", "get-url", "--all", "origin"],
+        1,
+        stdout="partial URL\n",
+        stderr="remote lookup failed\n",
+    )
+    monkeypatch.setattr(version, "run_local_git", lambda *_args, **_kwargs: result)
+
+    with pytest.raises(ReleasePlanRefused, match="origin remote is not configured"):
+        version._require_origin_remote(tmp_path, purpose="build a release plan")
+
+
+def test_origin_preflight_prefers_stderr_when_git_returns_both_streams(
+    monkeypatch, tmp_path,
+):
+    result = subprocess.CompletedProcess(
+        ["git", "remote", "get-url", "--all", "origin"],
+        1,
+        stdout="stdout diagnostic\n",
+        stderr="stderr diagnostic\n",
+    )
+    monkeypatch.setattr(version, "run_local_git", lambda *_args, **_kwargs: result)
+
+    with pytest.raises(ReleasePlanRefused) as raised:
+        version._require_origin_remote(tmp_path, purpose="build a release plan")
+
+    assert "stderr diagnostic" in str(raised.value)
+    assert "stdout diagnostic" not in str(raised.value)
+
+
+def test_origin_preflight_uses_its_fallback_when_git_returns_no_diagnostics(
+    monkeypatch, tmp_path,
+):
+    result = subprocess.CompletedProcess(
+        ["git", "remote", "get-url", "--all", "origin"],
+        1,
+        stdout="",
+        stderr="",
+    )
+    monkeypatch.setattr(version, "run_local_git", lambda *_args, **_kwargs: result)
+
+    with pytest.raises(ReleasePlanRefused) as raised:
+        version._require_origin_remote(tmp_path, purpose="build a release plan")
+
+    assert "origin has no configured URL" in str(raised.value)
+
+
 # --- the plan decision -------------------------------------------------------
 
 
