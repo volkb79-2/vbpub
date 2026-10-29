@@ -417,12 +417,13 @@ def test_scanner_event_summary_refusal_and_window_filter_paths(tmp_path):
     assert build.titles == []
 
 
-def test_scanner_keeps_valid_title_records_and_skips_unknown_record_types(tmp_path):
+def test_scanner_keeps_valid_titles_and_skips_invalid_or_unknown_records(tmp_path):
     root_path = tmp_path / f"{SESSION}.jsonl"
     agent_path = tmp_path / "agent-a.jsonl"
     _write_jsonl(root_path, [
         {"type": "ai-title", "aiTitle": "AI title"},
         {"type": "custom-title", "customTitle": "Custom title"},
+        {"type": "ai-title", "aiTitle": " \t "},
         {"type": "agent-name", "agentName": "Root agent name"},
         {"type": "unknown-record", "private": "ignored"},
         _assistant("root-call", "2026-10-28T11:00:00Z"),
