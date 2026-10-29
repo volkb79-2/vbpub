@@ -88,6 +88,17 @@ if os.environ.get("FAST_DOCKER_TIMEOUT") == "1" and "docker" in args:
 os.execv(os.environ["REAL_TIMEOUT"], [os.environ["REAL_TIMEOUT"], *args])
 '''
 
+FAKE_FINDMNT = r'''#!/usr/bin/env python3
+import os
+import sys
+
+args = sys.argv[1:]
+if len(args) == 5 and args[0] == "--target" and args[2:4] == ["--noheadings", "--output"] and args[4] == "TARGET":
+    print("/workspaces/vbpub")
+    raise SystemExit(0)
+os.execv(os.environ["REAL_FINDMNT"], [os.environ["REAL_FINDMNT"], *args])
+'''
+
 
 FAKE_DOCKER = r'''#!/usr/bin/env python3
 import hashlib
@@ -756,6 +767,9 @@ if '--archive-prior-snapshot' in sys.argv:
         timeout = fake_bin / "timeout"
         timeout.write_text(FAKE_TIMEOUT, encoding="utf-8")
         timeout.chmod(0o755)
+    findmnt = fake_bin / "findmnt"
+    findmnt.write_text(FAKE_FINDMNT, encoding="utf-8")
+    findmnt.chmod(0o755)
     trace = tmp_path / "docker.jsonl"
     state = tmp_path / "docker-state.json"
     env = {
@@ -774,6 +788,7 @@ if '--archive-prior-snapshot' in sys.argv:
         "RUN_GATE_EVIDENCE_DIR": str(gate_evidence_root(worktree)),
         "TMPDIR": str(tmp_path),
         "REAL_GIT": shutil.which("git"),
+        "REAL_FINDMNT": shutil.which("findmnt"),
         "REAL_TIMEOUT": shutil.which("timeout"),
         "GIT_STATUS_COUNTER": str(tmp_path / "git-status-count"),
         "GIT_STATUS_FAIL_AT": str(status_fail_at or 0),

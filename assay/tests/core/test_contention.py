@@ -186,24 +186,25 @@ def test_contention_window_fails_closed_when_either_sample_is_unavailable(monkey
 
 
 @pytest.mark.parametrize(
-    ("observation", "outcome", "withhold"),
+    ("observation", "outcome", "require_observation", "withhold"),
     [
-        (contention.ContentionObservation("clear"), Outcome.FAIL, False),
-        (contention.ContentionObservation("affected"), Outcome.FAIL, True),
-        (contention.ContentionObservation("affected", resource_limit_hit=True), Outcome.FAIL, True),
-        (contention.ContentionObservation("unknown"), Outcome.FAIL, True),
-        (contention.ContentionObservation("unknown"), Outcome.PASS, True),
-        (contention.ContentionObservation("affected", resource_limit_hit=True), Outcome.PASS, True),
-        (contention.ContentionObservation("affected"), Outcome.PASS, False),
-        (contention.ContentionObservation("unobserved"), Outcome.PASS, True),
-        (contention.ContentionObservation("unobserved"), Outcome.FAIL, False),
+        (contention.ContentionObservation("clear"), Outcome.FAIL, False, False),
+        (contention.ContentionObservation("affected"), Outcome.FAIL, False, True),
+        (contention.ContentionObservation("affected", resource_limit_hit=True), Outcome.FAIL, False, True),
+        (contention.ContentionObservation("unknown"), Outcome.FAIL, False, True),
+        (contention.ContentionObservation("unknown"), Outcome.PASS, False, True),
+        (contention.ContentionObservation("affected", resource_limit_hit=True), Outcome.PASS, False, True),
+        (contention.ContentionObservation("affected"), Outcome.PASS, False, False),
+        (contention.ContentionObservation("unobserved"), Outcome.PASS, False, False),
+        (contention.ContentionObservation("unobserved"), Outcome.FAIL, False, False),
+        (contention.ContentionObservation("unobserved"), Outcome.PASS, True, True),
     ],
 )
 def test_withhold_canary_result_for_incomplete_or_affected_failures(
-    observation, outcome, withhold
+    observation, outcome, require_observation, withhold
 ):
     assert contention.withhold_canary_result(
-        observation, outcome=outcome
+        observation, outcome=outcome, require_observation=require_observation
     ) is withhold
 
 

@@ -2787,6 +2787,6 @@ def test_the_phase_and_its_state_live_above_the_entry_points_and_before_the_fini
     assert '"$inventory" != "$container_id|$expected_name|$ownership_token"' in removal
     assert 'docker rm -f -v "$container_id"' in removal
     sql = source.split("run_sql_qualification() {", 1)[1].split("# --- entry points", 1)[0]
-    assert 'ASSAY_GATE_ATTRIBUTE_R0_CONTENTION=1 nice -n 19 /opt/tester-venv/bin/python -I "$scratch/clone/assay/gate/python/qualify_sql.py"' in source
+    assert 'ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION=1 nice -n 19 /opt/tester-venv/bin/python -I "$scratch/clone/assay/gate/python/qualify_sql.py"' in source
     assert sql.index('remove_owned_sql_container "$container_id"') < sql.index("echo 'ASSAY_GATE_PHASE=sql-qualified'")
     assert 'wait_for_container_log_follower "$_assay_sql_runner_logs_pid" 30' in sql

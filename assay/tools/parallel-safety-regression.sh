@@ -4,7 +4,9 @@ set -euo pipefail
 worktree="${1:?usage: parallel-safety-regression.sh WORKTREE}"
 repo_root="$(git -C "$worktree" rev-parse --show-toplevel)"
 base_commit="$(git -C "$repo_root" merge-base HEAD origin/main)"
-scratch="$(mktemp -d "${TMPDIR:-/tmp}/assay-parallel-regression.XXXXXXXX")"
+scratch_root="$repo_root/assay/.assay"
+mkdir -p -- "$scratch_root"
+scratch="$(mktemp -d "$scratch_root/parallel-safety-regression.XXXXXXXX")"
 baseline="$scratch/baseline"
 baseline_created=0
 
@@ -126,6 +128,8 @@ current_nodes=(
   gate/tests/test_distribution_gate.py::test_b145_completed_low_pids_failure_is_exit_one
   gate/tests/test_distribution_gate.py::test_incomplete_assay_outcomes_are_infrastructure_not_product_failures
   gate/tests/test_distribution_gate.py::test_a_failing_docker_ps_does_not_block_the_gate
+  gate/tests/test_cgroup_parent.py::test_b105_requires_finite_point_in_time_ram_headroom
+  gate/tests/test_cgroup_parent.py::test_b105_refuses_insufficient_or_unknown_ram_headroom
   gate/tests/test_self_qualification_container.py::test_runner_launches_beside_an_active_registered_gate
   gate/tests/test_self_qualification_container.py::test_b105_maps_incomplete_container_exit_to_inconclusive_and_removes_it
   gate/tests/test_self_qualification_container.py::test_b105_preserves_a_completed_assay_fail_as_exit_one

@@ -281,7 +281,7 @@ def test_a_resource_event_in_either_canary_half_withholds_the_verdict(
         assert attempt.observed_reason_code is ReasonCode.COMMAND_FAILED
         assert "control result withheld by cgroup resource window affected" in attempt.description
     else:
-        assert attempt.observed_reason_code is None
+        assert attempt.observed_reason_code is ReasonCode.CANARY_INCONCLUSIVE
         assert "transform result withheld by cgroup resource window affected" in attempt.description
     assert canary.judge_attempt(attempt) == (
         Outcome.INCONCLUSIVE,

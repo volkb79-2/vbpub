@@ -312,19 +312,21 @@ def test_a_transform_that_never_ran_is_inconclusive():
 
 
 @pytest.mark.parametrize(
-    "transformed_outcome",
+    ("transformed_outcome", "observed_reason_code"),
     [
-        Outcome.ERROR,
-        Outcome.NO_MEASUREMENT,
-        Outcome.BUDGET_EXCEEDED,
-        Outcome.INCONCLUSIVE,
+        (Outcome.ERROR, ReasonCode.EXEC_FAILED),
+        (Outcome.NO_MEASUREMENT, ReasonCode.CGROUP_OBSERVATION_UNAVAILABLE),
+        (Outcome.BUDGET_EXCEEDED, ReasonCode.LANE_TIMEOUT),
+        (Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE),
     ],
 )
-def test_an_incomplete_transformed_run_is_inconclusive(transformed_outcome):
+def test_an_incomplete_transformed_run_is_inconclusive(
+    transformed_outcome, observed_reason_code
+):
     """An incomplete or errored run cannot prove the expected defect survived."""
     attempt = make(
         transformed_outcome=transformed_outcome,
-        observed_reason_code=None,
+        observed_reason_code=observed_reason_code,
     )
 
     assert judge_attempt(attempt) == (Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE)

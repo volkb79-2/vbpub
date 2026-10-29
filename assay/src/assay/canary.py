@@ -710,7 +710,7 @@ def run_isolated_canary(
             require_observation=require_contention_observation,
         ):
             transformed_outcome = Outcome.INCONCLUSIVE
-            observed_reason_code = None
+            observed_reason_code = ReasonCode.CANARY_INCONCLUSIVE
             contention_notes.append(
                 _contention_note("transform", transform_contention.observation)
             )
