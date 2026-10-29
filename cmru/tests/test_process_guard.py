@@ -7,6 +7,7 @@ import queue
 import subprocess
 import sys
 import threading
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pytest
@@ -337,3 +338,154 @@ def test_prctl_failures_are_reported_without_import_time_resolution(monkeypatch)
     with pytest.raises(OSError) as fallback:
         process_guard._prctl(process_guard._PR_SET_CHILD_SUBREAPER, 1)
     assert fallback.value.errno == errno.EIO
+
+
+def test_process_records_cannot_be_changed_after_a_snapshot_is_created():
+    record = ProcessRecord(pid=10, ppid=1, state="S", command="worker", start_time=20)
+
+    with pytest.raises(FrozenInstanceError):
+        record.start_time = 21
+
+
+def test_read_children_ignores_a_thread_directory_that_disappeared(tmp_path):
+    from cmru import process_guard
+
+    proc_root = tmp_path / "proc"
+    pid = 321
+    process_dir = proc_root / str(pid)
+    process_dir.mkdir(parents=True)
+
+    assert process_guard._read_children(pid, pid + 1, proc_root) == []
+
+
+def test_read_children_returns_an_empty_list_when_the_process_disappeared(tmp_path):
+    from cmru import process_guard
+
+    assert process_guard._read_children(321, 321, tmp_path / "proc") == []
+
+
+def test_task_enumeration_ignores_a_process_removed_after_an_empty_listing(
+    monkeypatch, tmp_path,
+):
+    from cmru import process_guard
+
+    proc_root = tmp_path / "proc"
+    root_pid = os.getpid()
+    child_pid = root_pid + 100005
+    process_dir = proc_root / str(child_pid)
+    task_dir = process_dir / "task"
+    task_dir.mkdir(parents=True)
+    original_iterdir = Path.iterdir
+
+    def list_then_remove(path):
+        if path == task_dir:
+            entries = list(original_iterdir(path))
+            task_dir.rmdir()
+            process_dir.rmdir()
+            return iter(entries)
+        return original_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", list_then_remove)
+
+    assert process_guard._task_ids(child_pid, proc_root, root_pid=root_pid) == []
+
+
+def test_task_enumeration_refuses_an_existing_empty_nonroot_task_directory(tmp_path):
+    from cmru import process_guard
+
+    proc_root = tmp_path / "proc"
+    root_pid = os.getpid()
+    child_pid = root_pid + 100006
+    (proc_root / str(child_pid) / "task").mkdir(parents=True)
+
+    with pytest.raises(ProcessTreeUnavailable, match="no readable children files"):
+        process_guard._task_ids(child_pid, proc_root, root_pid=root_pid)
+
+
+@pytest.mark.parametrize("stat_text", [
+    # A stat record always has an opening parenthesis around its command.
+    "{pid} probe) S 1 {zeros}",
+    # The closing parenthesis cannot precede the opening parenthesis.
+    "{pid} ) S 1 {zeros} (",
+])
+def test_process_record_rejects_missing_or_reversed_command_parentheses(
+    tmp_path, stat_text,
+):
+    from cmru import process_guard
+
+    proc_root = tmp_path / "proc"
+    pid = 654321
+    fields = " ".join(["0"] * 18)
+    record_path = proc_root / str(pid) / "stat"
+    record_path.parent.mkdir(parents=True)
+    record_path.write_text(stat_text.format(pid=pid, zeros=fields), encoding="ascii")
+
+    with pytest.raises(ProcessTreeUnavailable, match="malformed Linux process stat"):
+        process_guard._read_process_record(pid, proc_root)
+
+
+def test_process_record_rejects_a_stat_record_missing_the_start_time_field(tmp_path):
+    from cmru import process_guard
+
+    proc_root = tmp_path / "proc"
+    pid = 654322
+    fields = " ".join(["S", "1", *("0" for _ in range(17))])
+    record_path = proc_root / str(pid) / "stat"
+    record_path.parent.mkdir(parents=True)
+    record_path.write_text(f"{pid} (probe) {fields}\n", encoding="ascii")
+
+    with pytest.raises(ProcessTreeUnavailable, match="malformed Linux process stat"):
+        process_guard._read_process_record(pid, proc_root)
+
+
+def test_descendant_guard_defaults_to_the_current_process_root(tmp_path):
+    from cmru import process_guard
+
+    _proc_root, root_pid, children_path = _fake_proc_root(tmp_path)
+    guard = DescendantGuard(proc_root=children_path.parents[3])
+
+    assert guard.root_pid == root_pid
+    assert guard.snapshot() == {}
+
+
+def test_descendant_cleanup_does_not_start_another_pass_at_the_deadline(monkeypatch):
+    from cmru import process_guard
+
+    guard = DescendantGuard.__new__(DescendantGuard)
+    pid = 876543
+    record = ProcessRecord(pid, 1, "S", "leak", 20)
+    guard.baseline = {}
+    guard.grace_period = 1.0
+    guard.poll_interval = 0.0
+    guard.snapshot = lambda: {pid: record}
+    killed = []
+    monkeypatch.setattr(guard, "_kill", lambda leaked_pid: killed.append(leaked_pid))
+    monkeypatch.setattr(guard, "_reap", lambda _pid: None)
+    clock_values = iter((10.0, 11.0, 12.0))
+    monkeypatch.setattr(process_guard.time, "monotonic", lambda: next(clock_values))
+    monkeypatch.setattr(process_guard.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(DescendantLeakError):
+        guard.check()
+
+    assert killed == []
+
+
+def test_prctl_reports_the_errno_from_the_failed_kernel_call():
+    import ctypes
+    import errno
+    import platform
+
+    from cmru import process_guard
+
+    if platform.system() != "Linux":
+        pytest.skip("prctl errno behavior is Linux-specific")
+
+    previous_errno = ctypes.get_errno()
+    ctypes.set_errno(0)
+    try:
+        with pytest.raises(OSError) as raised:
+            process_guard._prctl(0x7FFFFFFF)
+        assert raised.value.errno == errno.EINVAL
+    finally:
+        ctypes.set_errno(previous_errno)

@@ -104,6 +104,35 @@ def test_native_release_logging_scope_is_empty_when_logging_is_disabled(monkeypa
         assert cli._ACTIVE_NATIVE_RELEASE_LOGGING is None
 
 
+def test_nested_logging_scope_leaves_the_outer_release_tee_open(tmp_path):
+    log_path = tmp_path / "nested-release.log"
+    source = """
+import sys
+from pathlib import Path
+from cmru import cli
+
+with cli._native_release_logging_scope():
+    cli._configure_native_release_logging(Path.cwd(), append=False)
+    with cli._native_release_logging_scope():
+        pass
+    print("release-output-after-inner-scope")
+"""
+    env = os.environ.copy()
+    env.pop("CMRU_NATIVE_RELEASE_LOGGING", None)
+    env["CMRU_RELEASE_LOG"] = str(log_path)
+    completed = subprocess.run(
+        [sys.executable, "-c", source],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert "release-output-after-inner-scope" in completed.stdout
+    assert "release-output-after-inner-scope" in log_path.read_text(encoding="utf-8")
+
+
 def test_native_release_logging_refuses_a_second_active_tee(monkeypatch, tmp_path):
     monkeypatch.delenv("CMRU_NATIVE_RELEASE_LOGGING", raising=False)
     with cli._native_release_logging_scope():

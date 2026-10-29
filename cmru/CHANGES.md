@@ -31,6 +31,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      volume); it skips it with a stderr WARN. The release-notes generator picks this up from
      the `fix(cmru): ...` commit subject. -->
 
+### Testing
+- Add focused process-tree, origin-preflight, and nested release-log tests for
+  the 16 non-equivalent survivors from the 7.1.0-era to 7.1.2 diff-scoped R2
+  triage. Each test fails its mapped mutation in a disposable source copy;
+  KI-79 records the equivalent survivors and remaining whole-source debt.
+
 <!-- cmru: release history -->
 
 ## [7.1.2] - 2026-10-28
