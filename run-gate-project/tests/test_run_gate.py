@@ -25579,7 +25579,7 @@ class TestBareHostProfilingWiring:
                 "sampler": None, "profiler_status": None}
 
     def test_bare_host_rusage_fallback_stall_terminates_group_and_keeps_rusage(
-            self, tmp_path, monkeypatch, capsys):
+            self, tmp_path, monkeypatch, capsys, child_process_scope):
         monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
         streams = _capture_run_gate_prints(monkeypatch)
         class Watch:
@@ -25650,6 +25650,10 @@ class TestBareHostProfilingWiring:
                 {"kind": "assay", "assay_lane": "r2",
                  "environment": "bare-host", "clean_tree": False},
                 "suite", repo, repo, repo, run_record={}, profile_plan=plan)
+        # The bounded fake makes the mutant fail quickly. Reap any adopted
+        # helper descendants at this test boundary before Assay's process-tree
+        # audit observes them.
+        assert state["killed"]
         # The exact child is still reaped by wait4, so its rusage survives,
         # and the watch is consulted once (stall latches; it is not re-polled).
         assert watch.calls == 1
