@@ -236,6 +236,7 @@ def test_an_unrecognised_mechanism_judges_nothing_on_the_public_surface(
         ("transform", False, "unrelated", "stderr"),
         ("none", False, "echoed-marker", "stderr"),
         ("none", False, "nonce-unrelated", "stderr"),
+        ("none", False, "wrong-path", "stderr"),
     ],
 )
 @pytest.mark.parametrize("observer_declared", [False, True])
@@ -316,6 +317,12 @@ def test_canary_contention_distinguishes_limits_from_expected_transform_failure(
             if transform_diagnostic == "cause":
                 diagnostic = (
                     f"pkg/mod.py:{injected_line}: in <module>\n"
+                    f'    raise AssertionError("{token}")\n'
+                    f"E   AssertionError: {token}\n"
+                )
+            elif transform_diagnostic == "wrong-path":
+                diagnostic = (
+                    f"other/pkg/mod.py:{injected_line}: in <module>\n"
                     f'    raise AssertionError("{token}")\n'
                     f"E   AssertionError: {token}\n"
                 )

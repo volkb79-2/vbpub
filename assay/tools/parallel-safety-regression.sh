@@ -103,7 +103,9 @@ print(f"parallel-safety-regression: base tests failed as expected ({sum(failures
 PY
 
 current_nodes=(
+  tests/core/test_canary_multi_target.py
   tests/core/test_canary_p23_isolated_edges.py::test_canary_contention_distinguishes_limits_from_expected_transform_failure
+  tests/core/test_runner_lane_cwd.py::test_both_r3_canary_halves_run_in_the_declared_cwd
   tests/core/test_contention.py
   tests/core/test_liveness_resources.py::test_cgroup_comparison_ignores_host_psi_and_detects_local_pressure
   tests/core/test_liveness_resources.py::test_cgroup_comparison_marks_incomplete_or_reset_samples_unknown

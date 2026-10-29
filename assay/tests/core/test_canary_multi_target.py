@@ -25,13 +25,14 @@ proven to agree about each shape rather than assumed to.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-from conftest import completed_process
 from conftest import (
     GitRepo,
+    completed_process,
     make_deadline,
     make_lane,
     make_plan,
@@ -51,8 +52,6 @@ MOMENT = datetime(2026, 9, 3, 12, 0, 0, tzinfo=timezone.utc)
 #: The marker `PythonAdapter.inject_import_break` writes into a transformed
 #: file. Read from the adapter itself rather than restated, so the "gate"
 #: below cannot drift from the transform it is supposed to catch.
-_MARKER = PythonAdapter().inject_import_break("x = 1\n")[0].splitlines()[0]
-
 TARGETS = ("pkg/greet.py", "pkg/farewell.py")
 
 
@@ -135,12 +134,37 @@ class _Gate:
     def __call__(self, argv, *, env, cwd, timeout):
         self.cwds.append(Path(cwd))
         self.timeouts.append(timeout)
-        broken = self.catches and any(
-            _MARKER in (Path(cwd) / name).read_text()
-            for name in TARGETS
-            if (Path(cwd) / name).exists()
+        diagnostic = ""
+        broken = False
+        if self.catches:
+            for name in TARGETS:
+                source_path = Path(cwd) / name
+                if not source_path.exists():
+                    continue
+                source = source_path.read_text()
+                match = re.search(
+                    r'raise AssertionError\("(assay-canary-import-break:[0-9a-f]+)"\)',
+                    source,
+                )
+                if match is None:
+                    continue
+                token = match.group(1)
+                line = next(
+                    index
+                    for index, source_line in enumerate(source.splitlines(), start=1)
+                    if token in source_line
+                )
+                relative_path = source_path.relative_to(cwd).as_posix()
+                diagnostic = (
+                    f"{relative_path}:{line}: in <module>\n"
+                    f'    raise AssertionError("{token}")\n'
+                    f"E   AssertionError: {token}\n"
+                )
+                broken = True
+                break
+        return completed_process(
+            list(argv), 1 if broken else 0, diagnostic, ""
         )
-        return completed_process(list(argv), 1 if broken else 0, "", "")
 
 
 class _NoOpTransformAdapter(PythonAdapter):

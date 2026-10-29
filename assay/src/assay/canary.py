@@ -81,6 +81,7 @@ from __future__ import annotations
 
 import difflib
 import os
+import posixpath
 import re
 import secrets
 from datetime import datetime, timezone
@@ -239,9 +240,6 @@ def _apply_mechanism(
             transformed = _bind_import_break_nonce(
                 text, transformed, import_break_nonce
             )
-            description = (
-                f"{description}; bound to this run's private import-break nonce"
-            )
         return transformed, description
     if mechanism == MECHANISM_UNCOVERED_LINE:
         return adapter.inject_uncovered_line(text)
@@ -292,7 +290,11 @@ def _import_break_nonce_line(transformed_text: str, nonce: str) -> int | None:
 
 
 def _diagnostic_path_matches(
-    raw_path: str, *, target_path: str, target_file: Path
+    raw_path: str,
+    *,
+    target_path: str,
+    target_file: Path,
+    cwd: str | None,
 ) -> bool:
     value = raw_path.strip()
     if value.startswith("file://"):
@@ -306,11 +308,11 @@ def _diagnostic_path_matches(
         except OSError:
             return False
     parts = PurePosixPath(value.replace("\\", "/")).parts
-    expected_parts = PurePosixPath(target_path).parts
-    return (
-        len(parts) >= len(expected_parts)
-        and parts[-len(expected_parts) :] == expected_parts
-    )
+    expected_paths = {
+        PurePosixPath(target_path).parts,
+        PurePosixPath(posixpath.relpath(target_path, cwd or ".")).parts,
+    }
+    return parts in expected_paths
 
 
 def _has_import_break_diagnostic(
@@ -321,6 +323,7 @@ def _has_import_break_diagnostic(
     target_file: Path,
     line: int | None,
     language: str,
+    cwd: str | None,
 ) -> bool:
     """Prove the failure was raised at the injected import-break statement.
 
@@ -353,7 +356,10 @@ def _has_import_break_diagnostic(
                 frame_path = match.group("path") or match.group("pytest_path")
                 frame_line = match.group("line") or match.group("pytest_line")
                 if frame_line == str(line) and _diagnostic_path_matches(
-                    frame_path, target_path=target_path, target_file=target_file
+                    frame_path,
+                    target_path=target_path,
+                    target_file=target_file,
+                    cwd=cwd,
                 ):
                     frame_matches = True
                     break
@@ -382,6 +388,7 @@ def _has_import_break_diagnostic(
                     match.group("path"),
                     target_path=target_path,
                     target_file=target_file,
+                    cwd=cwd,
                 ):
                     return True
         elif language == "go":
@@ -395,6 +402,7 @@ def _has_import_break_diagnostic(
                     match.group("path"),
                     target_path=target_path,
                     target_file=target_file,
+                    cwd=cwd,
                 ):
                     return True
     return False
@@ -587,6 +595,7 @@ def run_python_canary(
             target_file=target,
             line=_import_break_nonce_line(transformed_text, nonce or ""),
             language=adapter.name,
+            cwd=lane.cwd,
         )
         if (
             transformed_outcome is Outcome.FAIL
@@ -933,6 +942,7 @@ def run_isolated_canary(
                 target_file=transform_snapshot.project_root / PurePosixPath(target),
                 line=nonce_line,
                 language=adapter.name,
+                cwd=lane.cwd,
             )
         )
         if (

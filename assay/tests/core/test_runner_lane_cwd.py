@@ -303,7 +303,7 @@ def test_both_r3_canary_halves_run_in_the_declared_cwd(
         assay_version="0.1.0",
     )
 
-    assert verdict.outcome is Outcome.PASS, verdict.reason_code
+    assert verdict.outcome is Outcome.PASS, verdict.to_dict()
     r3_claim = next(claim for claim in verdict.claims if claim.rigor == "R3")
     assert r3_claim.canary is not None
     assert r3_claim.canary.attempts[0].control_outcome is Outcome.PASS
