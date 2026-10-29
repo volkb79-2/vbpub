@@ -2,6 +2,69 @@
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [0.1.0] - 2026-10-29
+<!-- cmru: generated -->
+<!-- cmru: source-end=c0421e29c4a03b05de49455b4c93f92161cb813d -->
+
+### Added
+- feat(tnt): add generation-safe multi-host TUI sessions (052b192f5)
+- feat(tnt): add secure paired multi-host configuration (2408c32bf)
+- feat(tnt): truenas-tui scaffold (M0): design, transport, v27/v28 adapters, plan/apply model, CLI, Storage > Disks TUI, fake server, tests (accff5e8c)
+
+### Fixed
+- fix(tnt): correct the final two TUI test assumptions (7ae4fa9d2)
+- fix(tnt): close bounded review findings (725313854)
+- fix(tnt): lazy realistic pool membership, thread-bound plan grant, kind tied to destructive methods, strict paths and pool ids, single-use session-bound plans (fa45ad118)
+- fix(tnt): default-deny guarded client, live disk-wipe protection, upper-bound free space, review hardening (730ed56ef)
+
+### Changed
+- Merge tnt 0.1.0 candidate: TrueNAS v27 TUI+CLI and cmru registration (luna-reviewed x3, r0-r1 943 passed 98.30%); pytest-cov backlog entry renumbered RG-110 -> RG-122 against the dev-wheel entry (c0421e29c)
+- Register TNT as a CMRU release project (a4d3f5cd9)
+- Add tmux-based TUI UX checks (c12038cad)
+- Fix host add picker lifecycle (f8adfb940)
+- Handle host picker mount ordering (06c899d65)
+- Fix literal rendering for untrusted TUI text (cdd32193e)
+- Align tnt UX assertions with merged menu and wide layout (80030dd69)
+- Merge tnt UX work (small-terminal handling, discoverability, Pilot UX harness) into the tnt branch (1a75bff5e)
+- Improve TUI discoverability and small-terminal UX (60ae8d13c)
+- tnt: validate vanilla v27 live workflows (bb3359041)
+- fix tnt findings 1 and 3: move TUI RPC planning into workers (860b36d90)
+- fix tnt findings 2 and 3: bind credentials and bound worker drains (a821d21a1)
+- fix tnt findings 4 and 5: lockout action safety (11aa64b7f)
+- Add hardened interactive SSH hand-off (b046947bf)
+- Add read-only core views and CLI commands (0ce219e14)
+- Add non-blocking job registry and read models (9e99b4af6)
+- tnt: reconcile post-M2 milestones (c751edd91)
+- tnt: enforce the verified v27 method contract (c00d157e0)
+- tnt: restore unit coverage gate (24744191b)
+- tnt: guard local user access changes (042c58a77)
+- tnt: handle uncertain system-action replies (d3ab34b71)
+- tnt: add guarded system actions and config export (caee1f18c)
+- tnt: add v27 API key management (704787b6b)
+- tnt: add v27 audit viewer (9f11b961f)
+- tnt: add v27 Apps workflows (0064b51d3)
+- tnt: add read-only v27 network status (d8964f5d9)
+- tnt: add v27 data protection task workflows (e957d4d8b)
+- tnt: add v27 SMB and NFS share workflows (814bcf1ef)
+- tnt: define opt-in live acceptance lane (af530c206)
+- tnt: model v27 workflows in fake server (faa3138a5)
+- tnt: add v27 workflow screens (394e8469c)
+- tnt: add v27 core workflow CLI (9209d24ab)
+- tnt: harden v27 manifest and boot-pool guards (563c00fdb)
+- tnt: version profiles and support v27 password login (797a5bdd6)
+- truenas/tnt: fix round-three guard findings (ee19a8d93)
+
+### Documentation
+- docs: record tnt milestone review fixes (9415769ab)
+- docs(tnt): document multi-host credentials and host switching (93d49ce40)
+
+### Testing
+- test(tnt): synchronize tmux resize waits (0990a89af)
+- test(tnt): cover branch gaps and record pytest-cov false green (bacb3c503)
+
+<!-- cmru: pending release notes begin -->
 - Registered the first CMRU release for this TUI and scriptable CLI for vanilla TrueNAS v27: initial version `0.1.0`,
   tag `tnt-v0.1.0`, and a wheel plus SHA256 in the matching GitHub Release; CMRU maintains `tnt-latest` as the moving
   release. No tnt release has been published yet.
@@ -123,5 +186,4 @@
 - Free space is an upper bound (`free_upper_bound_bytes`, `<= x` in the CLI/TUI) and unknown whenever a size or the partition data is missing.
 - Plan/apply action model with confirm gates and a refusal list.
 - Fake JSON-RPC websocket server (`tnt.testing`) used by the tests.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
