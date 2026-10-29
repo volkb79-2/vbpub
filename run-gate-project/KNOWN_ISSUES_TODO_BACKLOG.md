@@ -137,6 +137,8 @@ SPEC §9.
 | RG-117 | admission / runtime candidates from the 2026-10-27 audit (inspect race, secret values on argv, `save_container_logs` symlink window, slice nesting, uncaught exceptions exit 1, ticket resume by name) | Medium | OPEN, unverified candidates |
 | RG-118 | RG-106 oracle 5: refuse an image with no passwd entry for the resolved `user` uid | Low | OPEN 2026-10-27 (design in entry) |
 | RG-119 | docs-vs-code drift remainder from the 2026-10-28 audit (anchors, LANE-AUTHORING TODO table, history example, host paths, versions, `--lock-wait`, `exit_map`, `members`, `load_config`) | Low | OPEN 2026-10-28 |
+| RG-120 | the a245908 R2 campaign has ten candidate runs without valid test verdicts: six outliving children and four cgroup OOM kills | Medium | OPEN 2026-10-29; evidence and candidate IDs in `docs/R2-MUTATION-TRIAGE-2026-10-29.md` |
+| RG-121 | one a245908 R2 candidate exceeded the configured 900 s per-candidate budget without a final judgment | Medium | OPEN 2026-10-29; evidence in `docs/R2-MUTATION-TRIAGE-2026-10-29.md` |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -6556,3 +6558,47 @@ Remaining, each with the auditor's pointer:
 8. `load_config` (`run_gate.py` "compatibility wrapper") has no call site outside tests; delete it (moving the 51 test callers to `load_config_snapshot`) or label it.
 9. SPEC says a non-positive-integer `schema_version` in a ciu record is refused; a JSON `null` falls through to the legacy reading (`usable_recorded_base` gates on `is not None`) — decide, then align.
 10. CONSUMERS pins `run-gate-v24.0.0` in the install lines and names no Assay floor for `analyze campaign` (first in Assay 8.0.0); `cmru.toml`'s header still says the next release is 24.0.0.
+
+## RG-120 — the a245908 R2 campaign has ten unjudged candidate runs
+
+**Status:** OPEN 2026-10-29. Severity Medium.
+
+**Observed.** The R2 campaign on `a24590839fa6d5e3758bd7f7e9362f56d7ca9fba`
+accounted for ten `crashed` candidates but none has a valid test verdict. The
+read-only evidence is in
+`.worktrees/r2-plan-a245-20261028/run-gate-project/.assay/campaign-r2.json`
+and `progress-r2.jsonl` (campaign checkout; do not edit those files). Six
+progress records have `leader_status=exited`, `descendants_signalled=1`, and
+`outliving_descendants=1`: candidate IDs beginning `682672b18035`,
+`7547a1ceebfb`, `803fcbd66db7`, `9a3474bead1f`, `b573c49b8c39`, and
+`dfec68964a8c`. Four records have `leader_status=signaled`, peak RSS from
+1,815,023,616 to 1,936,281,600 bytes, and a +1 delta in both cgroup-v2
+`memory.events.oom` and `oom_kill`: `d66ca73db681`, `42641e6c6553`,
+`83f25251146d`, and `26100d0e2d15`. The registered R2 lane has a 2 GiB memory
+cap. Assay therefore marks these records `crashed`; they cannot be counted as
+mutation kills or survivals.
+
+**Fix direction.** Reproduce and identify the cause of the child leaks and the
+R2 memory pressure in the tester-unified gate. Preserve the process-tree
+cleanliness check and the R2 distinction between a valid test verdict and an
+incomplete candidate. Reassess lane resources only with evidence from the
+registered gate.
+
+## RG-121 — one a245908 R2 candidate exceeded its configured budget
+
+**Status:** OPEN 2026-10-29. Severity Medium.
+
+**Observed.** Candidate `183c6b7fe3d2` (`run_gate.py:14371`,
+`python:compare-swap`, `IsNot->Is`) did not finish within the R2 lane's
+`budget_per_candidate = "900s"`. Its progress record at line 7504 reports
+905.433 seconds elapsed, 843.05 CPU seconds, `decision =
+configured-budget-expired`, and `candidate_session_finish_seen = false`. It
+has no cgroup OOM delta or outliving-child evidence. No final test judgment
+was written. The full evidence is in the same read-only campaign checkout
+listed under RG-120.
+
+**Fix direction.** Inspect the slow test path and resource trace to determine
+whether the mutation causes a hang or the campaign environment needs a
+different candidate budget. Do not treat `budget_exceeded` as a kill or
+survival; Assay maps it to `BUDGET_EXCEEDED/LANE_TIMEOUT` when no higher
+precedence `crashed` result exists.
