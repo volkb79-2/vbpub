@@ -15,16 +15,17 @@ wall-clock wait: both are exercised here only through the INJECTED
 
 from __future__ import annotations
 
-from conftest import timeout_expired
-
+import inspect
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from assay.contention import ContentionObservation
 from assay.errors import Outcome, ReasonCode
 from assay.mutation_witness import WITNESS_FD_ENV, ReceiptCapture
-from conftest import fixed_clock, make_lane
+from assay.verdict import Claim, Coverage
+from conftest import fixed_clock, make_lane, timeout_expired
 
 from assay import runner
 
@@ -75,6 +76,216 @@ def test_build_r0_claim_reflects_a_fail_result(tmp_path: Path):
     assert claim.reason_code is ReasonCode.COMMAND_FAILED
     assert claim.verified_by_assay is True
     assert claim.coverage is None
+
+
+@pytest.mark.parametrize(
+    ("status", "resource_limit_hit", "expected_outcome"),
+    [
+        ("affected", False, Outcome.ERROR),
+        ("affected", True, Outcome.ERROR),
+        ("unknown", False, Outcome.ERROR),
+    ],
+)
+def test_failed_r0_command_with_affected_or_unknown_resources_is_infrastructure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+    resource_limit_hit: bool,
+    expected_outcome: Outcome,
+):
+    class Window:
+        observation = ContentionObservation(status, resource_limit_hit=resource_limit_hit)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    monkeypatch.setenv("ASSAY_RESOURCE_OBSERVER_SOCKET", "/observer.sock")
+    contention_module = getattr(runner, "contention", None)
+    if contention_module is None:
+        from assay import contention as contention_module
+
+        monkeypatch.setattr(runner, "contention", contention_module, raising=False)
+    monkeypatch.setattr(contention_module, "ContentionWindow", lambda **kwargs: Window())
+    lane = make_lane(argv=("/bin/sh", "-c", "exit 9"))
+
+    contention_kwargs = (
+        {"classify_resource_contention": True}
+        if "classify_resource_contention" in inspect.signature(runner.execute_command).parameters
+        else {}
+    )
+    result = runner.execute_command(lane, cwd=tmp_path, **contention_kwargs)
+
+    assert result.outcome is expected_outcome
+    assert result.reason_code is (
+        ReasonCode.EXEC_FAILED
+        if expected_outcome is Outcome.ERROR
+        else ReasonCode.COMMAND_FAILED
+    )
+    assert result.returncode == 9
+    if expected_outcome is Outcome.ERROR:
+        assert f"cgroup resource window was {status}" in result.stderr_tail
+    else:
+        assert result.stderr_tail == ""
+    assert runner.build_r0_claim(result).status is expected_outcome
+
+
+@pytest.mark.parametrize(
+    ("status", "resource_limit_hit", "expected_outcome"),
+    [
+        ("affected", False, Outcome.PASS),
+        ("affected", True, Outcome.ERROR),
+        ("unknown", False, Outcome.ERROR),
+    ],
+)
+def test_completed_r0_pass_is_withheld_for_direct_limit_or_unknown_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+    resource_limit_hit: bool,
+    expected_outcome: Outcome,
+):
+    class Window:
+        observation = ContentionObservation(
+            status,
+            resource_limit_hit=resource_limit_hit,
+            reasons=("cgroup_cpu.throttled_usec",),
+        )
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    monkeypatch.setenv("ASSAY_RESOURCE_OBSERVER_SOCKET", "/observer.sock")
+    contention_module = getattr(runner, "contention", None)
+    if contention_module is None:
+        from assay import contention as contention_module
+
+        monkeypatch.setattr(runner, "contention", contention_module, raising=False)
+    monkeypatch.setattr(contention_module, "ContentionWindow", lambda **kwargs: Window())
+    lane = make_lane(argv=("/bin/sh", "-c", "exit 0"))
+
+    contention_kwargs = (
+        {"classify_resource_contention": True}
+        if "classify_resource_contention" in inspect.signature(runner.execute_command).parameters
+        else {}
+    )
+    result = runner.execute_command(lane, cwd=tmp_path, **contention_kwargs)
+
+    assert result.outcome is expected_outcome
+    assert result.reason_code is (
+        ReasonCode.EXEC_FAILED if expected_outcome is Outcome.ERROR else None
+    )
+    assert getattr(result, "resource_contention", None) is Window.observation
+    if expected_outcome is Outcome.ERROR:
+        assert "R0 result withheld" in result.stderr_tail
+    else:
+        assert result.stderr_tail is None
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"), [(None, False), ("1", True), ("yes", False)]
+)
+def test_gate_contention_attribution_requires_the_private_opt_in(
+    monkeypatch: pytest.MonkeyPatch, value: str | None, expected: bool
+):
+    if value is None:
+        monkeypatch.delenv("ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION", raising=False)
+    else:
+        monkeypatch.setenv("ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION", value)
+
+    assert runner._gate_contention_attribution_enabled() is expected
+
+
+def _coverage_claim(status: Outcome) -> Claim:
+    coverage = Coverage(
+        covered=1 if status is Outcome.PASS else 0,
+        executable=1,
+        pct=100.0 if status is Outcome.PASS else 0.0,
+        considered=1,
+        exclusion_capability="reported",
+        missing_lines=(
+            {} if status is Outcome.PASS else {"pkg/mod.py": frozenset({1})}
+        ),
+        files_missing_coverage=(),
+    )
+    return Claim(
+        rigor="R1",
+        source="computed",
+        status=status,
+        verified_by_assay=True,
+        reason_code=(
+            None if status is Outcome.PASS else ReasonCode.UNCOVERED_LINES
+        ),
+        coverage=coverage,
+    )
+
+
+def test_r1_claim_is_withheld_only_for_unclassifiable_contention_windows():
+    adjust = getattr(runner, "_withhold_r1_claim_for_contention", None)
+    assert callable(adjust), "R1 must retain the R0 resource window for attribution"
+
+    affected_failure = adjust(
+        _coverage_claim(Outcome.FAIL),
+        ContentionObservation("affected", reasons=("cgroup_cpu.throttled_usec=1",)),
+        diagnostics=None,
+    )
+    assert affected_failure.status is Outcome.ERROR
+    assert affected_failure.reason_code is ReasonCode.EXEC_FAILED
+    assert affected_failure.coverage is None
+    assert "cgroup_cpu.throttled_usec=1" in affected_failure.detail
+
+    affected_pass = _coverage_claim(Outcome.PASS)
+    assert adjust(
+        affected_pass,
+        ContentionObservation("affected", reasons=("cgroup_cpu.throttled_usec=1",)),
+        diagnostics=None,
+    ) is affected_pass
+
+    direct_limit_pass = adjust(
+        _coverage_claim(Outcome.PASS),
+        ContentionObservation("affected", resource_limit_hit=True),
+        diagnostics=None,
+    )
+    assert direct_limit_pass.status is Outcome.ERROR
+
+    unknown_pass = adjust(
+        _coverage_claim(Outcome.PASS),
+        ContentionObservation("unknown"),
+        diagnostics=None,
+    )
+    assert unknown_pass.status is Outcome.ERROR
+
+    no_observation = _coverage_claim(Outcome.FAIL)
+    assert adjust(no_observation, None, diagnostics=None) is no_observation
+
+    already_infrastructure = Claim(
+        rigor="R1",
+        source="computed",
+        status=Outcome.ERROR,
+        verified_by_assay=True,
+        reason_code=ReasonCode.EXEC_FAILED,
+    )
+    assert adjust(
+        already_infrastructure,
+        ContentionObservation("unknown"),
+        diagnostics=None,
+    ) is already_infrastructure
+
+    with pytest.raises(TypeError, match="claim must be an R1 Claim"):
+        adjust(object(), ContentionObservation("clear"), diagnostics=None)
+
+
+def test_r1_contention_adjustment_is_wired_after_coverage_judgement():
+    source = inspect.getsource(runner._run_prepared_lane)
+    assert "_withhold_r1_claim_for_contention(" in source
+    assert source.index("r1_claim = evaluate_r1(") < source.index(
+        "r1_claim = _withhold_r1_claim_for_contention("
+    ) < source.index("claims += (r1_claim,)")
 
 
 # --- a missing executable is ERROR/EXEC_FAILED, via the INJECTED seam only ---

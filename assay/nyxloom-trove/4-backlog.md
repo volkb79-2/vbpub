@@ -154,6 +154,7 @@ items:
   - {id: B159, title: "the schema migration docs test requires hand-written CMRU release notes in an intentionally empty Unreleased section", type: bugfix, component: tests, context_estimate: small}
   - {id: B160, title: "SQL candidate discovery materializes every mutation site before applying the bounded candidate limit", type: bugfix, component: adapters, context_estimate: medium}
   - {id: B171, title: "Retain underlying suite result and descendant identity when native R2 cleanup detects outliving descendants; keep the candidate crashed", type: bugfix, component: execution, context_estimate: large}
+  - {id: B172, title: "the registered Assay gate refuses concurrent gates by Docker name; incomplete or cgroup-limit-affected R0/R1/R3 results can be misreported as product FAIL", type: bugfix, component: gate, context_estimate: medium}
 ---
 
 # assay — backlog
@@ -13252,3 +13253,28 @@ run). Confirm `assay verify` accepts the emitted well-formed v17 example and
 rejects malformed descendant identity or a result whose top-level bucket was
 changed to `killed`/`survived`. Close only after the gate is green and the
 three adopter-facing documents, schema, model, state reader, and verifier agree.
+
+## B172 — concurrent gates and contention attribution
+
+**Status: IMPLEMENTED IN THIS CANDIDATE; the registered focused lane is its oracle.**
+The old admission snapshot treated every running Docker name beginning with
+`run-gate-` as a blocker, without checking cgroup placement or shared counters.
+It was neither a host lock nor a measurement of whether this lane was affected.
+
+**Chosen contract:** registered gates may run concurrently. R0 and R3 record
+their own cgroup resource windows; R1 uses the baseline's R0 window. A direct
+pids/OOM event withholds the measurement, an unavailable window withholds the
+result, and a failed R0/R1/R3 assertion during measured cgroup PSI/throttling
+is retried as infrastructure. A completed PASS is retained when its window
+is observable and no direct resource limit occurred. Timeouts and other
+incomplete results stay infrastructure outcomes. R2 keeps its
+candidate-scoped event evidence and pressure-adjusted liveness clock. Docker
+names and host PSI do not decide the product verdict. Preserve the 100% line
+and branch coverage floor.
+
+**Oracle:** deterministic fixed-counter tests cover cgroup scope, counter
+resets, direct limits, incomplete windows, completed outcomes, and the old
+false name-based refusal. The registered `parallel-safety-regression` first
+requires these assertions to fail against `origin/main`, then passes them on
+the candidate. README, DESIGN-GUIDE, and CONSUMERS document the behavior and
+its capacity limits.

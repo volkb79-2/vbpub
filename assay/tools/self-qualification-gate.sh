@@ -159,7 +159,7 @@ run_b110_pilot_inner() {
     return 124
   fi
   set +e
-  python3 "$project/tools/b110_pilot_safe_output.py" \
+  ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION=1 python3 "$project/tools/b110_pilot_safe_output.py" \
     --assay-fd "$assay_state_fd" \
     --expected-assay-device "$ASSAY_B110_ASSAY_STATE_DEVICE" \
     --expected-assay-inode "$ASSAY_B110_ASSAY_STATE_INODE" \
@@ -361,7 +361,7 @@ run_analysis_r2_pilot() {
   fi
   pilot_run_started_s=$SECONDS
   set +e
-  timeout --verbose --signal=TERM --kill-after=30s "${pilot_run_timeout_s}s" \
+  ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION=1 timeout --verbose --signal=TERM --kill-after=30s "${pilot_run_timeout_s}s" \
     "$assay_bin" run analysis-r2 --file assay.toml \
       --candidates-file "$candidates_path" --cold-witness --resume \
       --state-dir "$state_dir" --progress "$progress_path" \
@@ -457,7 +457,7 @@ run_b110_screen() {
     "$assay_bin" plan self-qualification --json --file assay.toml \
     || { plan_status=$?; echo "B110_SCREEN_PLANNING_FAILED=1" >&2; return "$plan_status"; }
   set +e
-  python3 "$project/tools/b110_pilot_safe_output.py" \
+  ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION=1 python3 "$project/tools/b110_pilot_safe_output.py" \
     --assay-fd "$assay_state_fd" \
     --expected-assay-device "$ASSAY_B110_ASSAY_STATE_DEVICE" \
     --expected-assay-inode "$ASSAY_B110_ASSAY_STATE_INODE" \
@@ -1012,7 +1012,7 @@ remaining = (expires_at - datetime.now(timezone.utc)).total_seconds()
 print(max(0, math.floor(remaining)))
 PYEOF
 )"
-  if timeout --verbose --signal=TERM --kill-after=30s \
+  if ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION=1 timeout --verbose --signal=TERM --kill-after=30s \
       "$((remaining_s + 120))s" "$assay_bin" run "$lane" --file assay.toml \
       --require-judge-provenance \
       --resume \

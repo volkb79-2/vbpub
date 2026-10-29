@@ -88,8 +88,10 @@ configuration; the inner gate checks that its commit and tree equal the
 wrapper's recorded source. Do not run `self-qualification-gate.sh` directly or
 substitute a generic private-cgroup tester container. The invoking environment
 must expose Docker, `$CGROUP_PARENT_DEV_GATES`, and the trusted
-`$CGROUP_PARENT_DEV_INTERACTIVE` probe tier. If another registered gate is
-active, the wrapper refuses and the lane should be retried after it ends.
+`$CGROUP_PARENT_DEV_INTERACTIVE` probe tier. The wrapper does not inspect
+other Docker names for admission. Gates may run concurrently; each gate's own
+cgroup events, bounded operations and verdict decide whether its evidence is
+usable.
 The pytest command resolves `src/` inside each isolated snapshot (through
 pyproject's `pythonpath = ["src", "analysis/src"]`, with no `--override-ini`) so R1
 coverage and R2 mutations apply to the snapshot being judged. It collects the judge
@@ -102,26 +104,33 @@ to proceed without a receipt for the commit and tree being judged (the preflight
 does not need one). The receipt lives in that worktree's ignored `.assay/` and names
 its HEAD, so run both lanes in the same worktree with no commit in between: any
 later commit, a docs-only or merge commit included, needs a fresh `tester-unified`
-run. `tester-unified` exits 3 with `ASSAY_GATE_INCONCLUSIVE=host busy — rerun: <names>`
-when another `run-gate-*` container is running. Run-gate maps this infrastructure
-status to `ERROR`, not to an Assay test failure; retry after the host is clear.
-The five registered Assay lanes share one run-gate lock, and a separate lock
+run. Docker container names do not block this lane. Run-Gate maps exit 3 to
+infrastructure `ERROR`; the wrapper uses it for launch failures, timeouts and
+incomplete resource evidence. A direct OOM/pids limit event withholds R0, R1
+and R3 results even if the command exited zero. An unavailable sample or an
+unassignable ancestor-only pids/OOM event withholds R0, R1 and R3 results; a
+failed R0/R1/R3 assertion in a window with measured cgroup PSI or CPU throttling is also
+retried as infrastructure, since a time-sensitive assertion may have been
+affected. PSI/throttling alone do not overturn a completed PASS. Command-budget
+expiry already produces an incomplete outcome. R1 coverage arithmetic is
+unchanged for the same complete report, and its claim uses the R0 command's
+resource window. R2 keeps its own per-candidate resource event and
+liveness evidence. For R3, an execution error, timeout or missing result is
+`INCONCLUSIVE`; a completed failure for the wrong cause is `CANARY_SURVIVED`
+when its sample is clear. Observer sampling follows the lane's resolved
+environment, so the tester gate's ambient socket cannot change a nested
+lane's result. The five registered Assay lanes share one run-gate lock,
+and a separate lock
 in the Git common directory serializes full-source qualification, pilot and
 screen callers across container `/tmp`
-namespaces. The wrapper's one-time scan is not an atomic lease against another
-project starting a gate afterward. The coordinator must keep all other
-registered gates serial until B105 finishes; a concurrent cross-project gate
-invalidates its resource evidence. `ASSAY_GATE_ALLOW_SHARED_HOST=1` is accepted
-only by the ordinary `tester-unified` lane; B105 refuses it because B105
-requires an exclusive host window. The receipt is left as it was on refusal.
-On a deliberately shared host, `ASSAY_GATE_ALLOW_SHARED_HOST=1`
-runs the ordinary gate alongside other projects' `run-gate-*` containers (printing
-`ASSAY_GATE_SHARED_HOST=<names>`) and still refuses any other `run-gate-assay-*` one; the
-SQL phase starts a separate `tester-unified` container with a private
+namespaces. No host-wide quiet window is required.
+`ASSAY_GATE_ALLOW_SHARED_HOST=1` is a compatibility no-op across the
+registered gate and B105 wrappers; other values are refused. The SQL phase
+starts a separate `tester-unified` container with a private
 cgroup namespace and the read-only resource-observer socket, and mounts the
 Docker socket only there. The observer supplies only the runner's own cgroup
-ancestors required by B145. Its `--allow-shared-host` still refuses
-another `run-gate-assay-sql-*` container after excluding its own runner. No collected judge test
+ancestors required by B145. Its legacy `--allow-shared-host` flag is a no-op.
+No collected judge test
 reads history or tags (A-475), so both lanes use the shallow snapshot default
 (`snapshot_history = "shallow"`, B128; the lanes declare no `judge.base`, so
 the seed holds only the judged commit), and snapshot refs/tags are not copied.
@@ -188,7 +197,7 @@ listable, and its latest version must be below 10.1.0. A release at 9.9.9,
 waiver.
 
 Once the bare-host wrapper starts for the full or provisional lane, it removes
-an old postponement marker before its dirty-tree and host-admission checks. A
+an old postponement marker before its dirty-tree and cgroup-capacity checks. A
 Run-Gate admission refusal can happen before the wrapper starts, so that
 refusal retains the previous marker. Do not use marker presence alone as a
 current result: require a successful Run-Gate result bound to the same source
@@ -196,14 +205,31 @@ tree. A refused or failed current attempt does not make an older marker current.
 
 **Host and time precondition:** reserve the provisional lane's 210-minute
 Run-Gate budget after the ordinary self-hosted release gate, plus startup and
-evidence-collection time. No other registered gate may run on the host until
-the qualification finishes. Run-Gate holds the configured Assay shared
-resource lock while this lane runs; that lock serializes Assay lanes only.
-The gate coordinator must hold the cross-project serial window. The CMRU
-release transaction does not provide host-wide gate exclusivity, and
-`ASSAY_GATE_ALLOW_SHARED_HOST=1` is not supported for this lane. CMRU's
+evidence-collection time. Other gates may run concurrently. The 2 GiB B105
+launch reserve and configured gates cgroup must still be available; CPU or
+storage contention may delay the work until a bounded operation reports an
+incomplete result. Incomplete R0/R1/R3 work is Run-Gate `ERROR` and can be
+retried. Run-Gate holds the configured Assay shared resource lock while this
+lane runs; that lock serializes Assay lanes only.
+`ASSAY_GATE_ALLOW_SHARED_HOST=1` is a compatibility no-op. CMRU's
 `--dry-run` previews a transaction without executing `run-tests`, so it cannot
-prove this host precondition or lane admission.
+prove cgroup capacity or lane admission.
+
+### Parallel gate regression
+
+From the repository root, use this pasteable invocation to exercise the
+shared-host contract in the registered `tester-unified` environment:
+
+```bash
+cd assay
+run-gate --worktree "$(git -C .. rev-parse --show-toplevel)" parallel-safety-regression
+```
+
+It first checks that its regression cases fail against the task branch's
+`origin/main` base, then checks that they pass on the current tree. It uses
+synthetic Docker names, cgroup samples and command results; it does not run the
+release gate or an R2 campaign. Time and resource cases use fixed samples
+rather than wall-clock slack.
 
 ### Cold-witness R2 (B114)
 

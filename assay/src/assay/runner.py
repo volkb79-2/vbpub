@@ -99,6 +99,7 @@ from typing import (
 import tomllib
 
 from . import (
+    contention,
     coverage,
     diff,
     git,
@@ -905,6 +906,10 @@ class CommandResult:
     #: Native R2 process-tree cleanup proof. A command that leaves adopted
     #: descendants is recorded as crashed even when its leader returned 0/1.
     process_tree_evidence: Mapping[str, Any] | None = None
+    #: Private gate-time observation around the R0 command, carried only so an
+    #: R1 coverage failure from that same run can also be withheld. It is not
+    #: serialized into the verdict; the claim remains the public evidence.
+    resource_contention: contention.ContentionObservation | None = None
 
 
 def resolve_command_plan(
@@ -1230,6 +1235,7 @@ def execute_plan(
     clock: Clock = _utc_now,
     result_report: ResultReportConfig | None = None,
     result_report_create_missing_parents: bool = False,
+    classify_resource_contention: bool = False,
 ) -> CommandResult:
     """Execute one already-frozen command plan with a required remainder.
 
@@ -1274,6 +1280,13 @@ def execute_plan(
     re-definition of what "killed" means -- neither of which B078 is about.
     A canary half does not get it either: its control/transform outcome is a
     different KIND of judgement from "did the wrapped suite pass".
+
+    *classify_resource_contention* is a separate, default-off gate option for
+    only the lane's own R0 baseline/direct command. It withholds an R0 result
+    for a direct pids/OOM event or an unavailable sample, and withholds a
+    failed command when its cgroup window records PSI or CPU throttling. A
+    completed pass under PSI/throttling alone remains accepted. R2 candidates
+    and R3 transforms keep their own classification paths.
 
     *result_report_create_missing_parents* is B006(b)'s opt-in, threaded to
     :func:`_reserve_result_report`; only the snapshot baseline passes ``True``,
@@ -1321,16 +1334,62 @@ def execute_plan(
         if termination_requested():
             raise _lane_timeout("Assay termination was requested before child launch")
         try:
-            result = _execute_plan_inner(
-                plan,
-                run_cwd=run_cwd,
-                child_timeout=child_timeout,
-                process_runner=process_runner,
-                clock=clock,
-                started_at=started_at,
-                reservation=reservation,
-                result_report=result_report,
-            )
+            if classify_resource_contention:
+                with contention.ContentionWindow(
+                    observer_socket_path=(
+                        os.environ.get("ASSAY_RESOURCE_OBSERVER_SOCKET") or None
+                    )
+                ) as contention_window:
+                    result = _execute_plan_inner(
+                        plan,
+                        run_cwd=run_cwd,
+                        child_timeout=child_timeout,
+                        process_runner=process_runner,
+                        clock=clock,
+                        started_at=started_at,
+                        reservation=reservation,
+                        result_report=result_report,
+                    )
+                observation = contention_window.observation
+                result = replace(result, resource_contention=observation)
+                if contention.withhold_r0_result(
+                    observation,
+                    outcome=result.outcome,
+                ):
+                    window_details = (
+                        f" ({', '.join(observation.reasons)})"
+                        if observation.status == "affected" and observation.reasons
+                        else ""
+                    )
+                    diagnostic = (
+                        "\nAssay R0 result withheld because its cgroup resource "
+                        f"window was {observation.status}{window_details}; treated "
+                        "as infrastructure for retry."
+                    )
+                    stderr_tail, additional_dropped = _bounded_tail(
+                        (result.stderr_tail or "") + diagnostic,
+                        sensitive_values=_plan_passthrough_values(plan),
+                    )
+                    result = replace(
+                        result,
+                        outcome=Outcome.ERROR,
+                        reason_code=ReasonCode.EXEC_FAILED,
+                        stderr_tail=stderr_tail,
+                        stderr_dropped_bytes=(
+                            result.stderr_dropped_bytes + additional_dropped
+                        ),
+                    )
+            else:
+                result = _execute_plan_inner(
+                    plan,
+                    run_cwd=run_cwd,
+                    child_timeout=child_timeout,
+                    process_runner=process_runner,
+                    clock=clock,
+                    started_at=started_at,
+                    reservation=reservation,
+                    result_report=result_report,
+                )
         except BaseException as exc:
             if termination_requested():
                 raise _lane_timeout("Assay termination interrupted child execution") from exc
@@ -1570,6 +1629,52 @@ def _execute_plan_inner(
 _LANE_DECLARED_REPORT: Any = object()
 
 
+def _gate_contention_attribution_enabled() -> bool:
+    """Whether the registered gate opted in to R0 resource attribution.
+
+    This private variable is not part of any lane's environment allowlist, so
+    the command being judged and its test process cannot inherit the switch.
+    """
+    return os.environ.get("ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION") == "1"
+
+
+def _withhold_r1_claim_for_contention(
+    claim: Claim,
+    observation: contention.ContentionObservation | None,
+    *,
+    diagnostics: "TextIO | None",
+) -> Claim:
+    """Replace an unclassifiable coverage judgement with infrastructure."""
+    if not isinstance(claim, Claim) or claim.rigor != "R1":
+        raise TypeError("claim must be an R1 Claim")
+    if observation is None or claim.status not in {Outcome.PASS, Outcome.FAIL}:
+        return claim
+    if not contention.withhold_r1_result(observation, outcome=claim.status):
+        return claim
+
+    details = (
+        f" ({', '.join(observation.reasons)})"
+        if observation.status == "affected" and observation.reasons
+        else ""
+    )
+    refusal = AssayError(
+        "R1 coverage claim withheld because its R0 cgroup resource window "
+        f"was {observation.status}{details}; treated as infrastructure for retry.",
+        outcome=Outcome.ERROR,
+        reason_code=ReasonCode.EXEC_FAILED,
+    )
+    detail = announce_refusal(refusal, diagnostics=diagnostics)
+    return Claim(
+        rigor="R1",
+        source="computed",
+        status=Outcome.ERROR,
+        verified_by_assay=True,
+        reason_code=ReasonCode.EXEC_FAILED,
+        detail=detail.text if detail else None,
+        detail_dropped_bytes=detail.dropped_bytes if detail else None,
+    )
+
+
 def execute_command(
     lane: Lane,
     *,
@@ -1582,6 +1687,7 @@ def execute_command(
     process_runner: ProcessRunner = default_process_runner,
     clock: Clock = _utc_now,
     result_report: ResultReportConfig | None = _LANE_DECLARED_REPORT,
+    classify_resource_contention: bool = False,
 ) -> CommandResult:
     """The R0 step (A-094): resolve the plan, then run it, and return a
     :class:`CommandResult` on every terminal path.
@@ -1623,6 +1729,11 @@ def execute_command(
     Otherwise the exit code decides: 0 is ``PASS``; anything else is
     ``FAIL``/``COMMAND_FAILED`` (A-073 -- an ordinary non-zero exit is a
     judged R0 FAIL, never ``EXEC_FAILED``, and never a universal PASS).
+    The registered gate may opt into cgroup attribution for its own R0 call:
+    a direct pids/OOM event or unavailable resource sample withholds the R0
+    result, while a failed command in a window with measured cgroup PSI or
+    throttling is ``ERROR``/``EXEC_FAILED`` for retry. A completed pass under
+    PSI/throttling alone remains accepted.
 
     **(B078) *result_report*** defaults to the sentinel
     :data:`_LANE_DECLARED_REPORT`, meaning "use ``lane.result_report``" --
@@ -1635,6 +1746,10 @@ def execute_command(
     (round-1 blocker 3) -- a canary probe's control/transform outcome is not
     "did the wrapped suite pass", and SR-1 scopes the tiebreak to the lane's
     own R0 command.
+
+    *classify_resource_contention* is an internal gate opt-in. Its default is
+    false so library callers and tests do not acquire ambient-host-dependent
+    verdicts; registered gate R0 call sites opt in explicitly.
     """
     plan = resolve_command_plan(
         lane, argv_append=argv_append, passthrough_source=passthrough_source,
@@ -1661,6 +1776,7 @@ def execute_command(
             if result_report is _LANE_DECLARED_REPORT
             else result_report
         ),
+        classify_resource_contention=classify_resource_contention,
     )
 
 
@@ -3130,6 +3246,7 @@ def _execute_snapshot_unit(
     progress: "mutation.ProgressStream | None" = None,
     progress_heartbeat_seconds: float | None = None,
     progress_phase: str = "baseline",
+    classify_resource_contention: bool = False,
 ) -> SnapshotUnitResult:
     """Run *plan* once inside *snapshot* -- the ONE engine the lane's own
     baseline, :mod:`assay.canary`'s control/transform halves, and (with its
@@ -3380,6 +3497,7 @@ def _execute_snapshot_unit(
             # declaring `path = ".assay/report.json"` would fall back to
             # A-073 on every single run rather than only the first.
             result_report_create_missing_parents=True,
+            classify_resource_contention=classify_resource_contention,
         )
     if progress is not None:
         progress.emit(
@@ -4237,6 +4355,7 @@ def _run_prepared_lane(
             mutation_artifact=mutation_artifact,
             progress=progress_stream,
             progress_heartbeat_seconds=progress_heartbeat_seconds,
+            classify_resource_contention=_gate_contention_attribution_enabled(),
         )
         result = unit.result
         if cold_witness:
@@ -4460,6 +4579,11 @@ def _run_prepared_lane(
                     on_helper_invoked=_record_statement_position_helper(
                         helpers_seen
                     ),
+                )
+                r1_claim = _withhold_r1_claim_for_contention(
+                    r1_claim,
+                    result.resource_contention,
+                    diagnostics=diagnostics,
                 )
                 claims += (r1_claim,)
                 if r1_claim.coverage is None:
@@ -7285,6 +7409,7 @@ def run_lane(
                 # lane's R0 command runs in `_run_prepared_lane`'s baseline
                 # unit, which is wired separately (round-1 blocker 1).
                 result_report=lane.result_report,
+                classify_resource_contention=_gate_contention_attribution_enabled(),
             )
         if progress_stream is not None:
             progress_stream.emit(

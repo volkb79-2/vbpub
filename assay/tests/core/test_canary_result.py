@@ -311,6 +311,27 @@ def test_a_transform_that_never_ran_is_inconclusive():
     assert judge_attempt(attempt) == (Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE)
 
 
+@pytest.mark.parametrize(
+    ("transformed_outcome", "observed_reason_code"),
+    [
+        (Outcome.ERROR, ReasonCode.EXEC_FAILED),
+        (Outcome.NO_MEASUREMENT, ReasonCode.CGROUP_OBSERVATION_UNAVAILABLE),
+        (Outcome.BUDGET_EXCEEDED, ReasonCode.LANE_TIMEOUT),
+        (Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE),
+    ],
+)
+def test_an_incomplete_transformed_run_is_inconclusive(
+    transformed_outcome, observed_reason_code
+):
+    """An incomplete or errored run cannot prove the expected defect survived."""
+    attempt = make(
+        transformed_outcome=transformed_outcome,
+        observed_reason_code=observed_reason_code,
+    )
+
+    assert judge_attempt(attempt) == (Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE)
+
+
 def test_an_unexpectedly_passing_bad_case_survives():
     """O3/O1: 'a universal-PASS evaluator makes the bad half pass' -- this
     is the branch that catches it: transformed_outcome PASS is FAIL/SURVIVED,
@@ -332,17 +353,17 @@ def test_a_failure_for_the_wrong_cause_survives():
     assert judge_attempt(attempt) == (Outcome.FAIL, ReasonCode.CANARY_SURVIVED)
 
 
-def test_an_unrelated_error_reason_also_survives_not_merely_a_different_fail_reason():
-    """The observed reason need not even be FAIL-shaped -- an ERROR/EXEC_FAILED
-    for an unrelated cause is exactly as much a 'survived' canary as a wrong
-    FAIL reason (O1's negative names 'an unrelated syntax/config error')."""
+def test_an_unrelated_execution_error_is_inconclusive_not_a_canary_survival():
+    """A child that could not be started supplies no evidence that the suite
+    missed the injected defect. The canary must remain inconclusive rather
+    than turn an execution failure into a product survival."""
     attempt = make(
         transformed_outcome=Outcome.ERROR,
         expected_reason_code=ReasonCode.COMMAND_FAILED,
         observed_reason_code=ReasonCode.EXEC_FAILED,
     )
 
-    assert judge_attempt(attempt) == (Outcome.FAIL, ReasonCode.CANARY_SURVIVED)
+    assert judge_attempt(attempt) == (Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE)
 
 
 # --- judge_canary: B007/A-432's aggregation over the ordered array ------------

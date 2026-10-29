@@ -1472,7 +1472,7 @@ you're changing assay itself:
   with the operator-facing gate sequence in the
   [consumer guide](docs/CONSUMERS.md#assays-own-full-source-self-qualification-b105).
   The separately invoked `run-gate self-qualification` requires that receipt for
-  its own commit and tree (run `run-gate tester-unified` first, in the same worktree and with no commit in between: any later commit, a docs-only or merge commit included, needs a fresh `tester-unified` run; `tester-unified` exits 3 with `ASSAY_GATE_INCONCLUSIVE=` when another `run-gate-*` container is running, which means rerun), then runs full-source
+  its own commit and tree (run `run-gate tester-unified` first, in the same worktree and with no commit in between: any later commit, a docs-only or merge commit included, needs a fresh `tester-unified` run; exit 3 means incomplete or infrastructure evidence and must be retried), then runs full-source
   R0-R3 qualification in `tester-unified`. During the explicitly waived 10.0.x
   release window, CMRU's Assay `run-tests` step also invokes
   `run-gate self-qualification-provisional`, which runs R0, R1 and R3 and records
@@ -1504,16 +1504,28 @@ you're changing assay itself:
   linked-worktree Git paths resolve inside the runner, disables networking,
   and verifies the returned container ID, ownership, launch settings, and
   `docker wait` status. The five registered
-  Assay lanes share a run-gate lock; a Git-common-directory lock also
-  serializes B105 callers across container `/tmp` namespaces. The wrapper
-  refuses to launch beside an already-running registered gate, but that scan
-  does not atomically exclude a different project's gate started afterward.
-  The gate coordinator must keep all other registered gates serial for the
-  full B105 run; a concurrent cross-project gate invalidates its resource
-  evidence. `ASSAY_GATE_ALLOW_SHARED_HOST=1` is unsupported for B105 because it
-  requires that exclusive window; it applies only to the ordinary
-  `tester-unified` gate. Infrastructure refusals are recorded as `ERROR`, not
-  as an Assay test failure. The inner lane writes its verdict, progress, and
+  Assay qualification lanes share a run-gate lock; a Git-common-directory
+  lock also serializes B105 callers across container `/tmp` namespaces. Docker
+  names do not decide admission. R0/R1/R3 judgments use the lane cgroup's OOM,
+  pids, PSI and CPU-throttling counters; R2 keeps its per-candidate event
+  windows and pressure-adjusted liveness clock. A completed PASS remains a
+  PASS when its sample is observable and no direct resource limit occurred.
+  A direct pids/OOM event or unavailable sample makes R0/R1 `ERROR` for retry;
+  an R0/R1 failure with measured cgroup stalls is also retried as `ERROR`,
+  while a clear-sample failure remains product `FAIL`. R3 applies the same
+  rule to failed canary halves and marks direct-limit or unavailable samples
+  `INCONCLUSIVE`. Timeouts, execution errors and missing results remain
+  `INCONCLUSIVE`; a completed failure for the wrong cause remains
+  `CANARY_SURVIVED` when the sample is clear. Observer sampling is lane-scoped:
+  Assay uses the socket only when it appears in the lane's resolved
+  environment; a parent gate's ambient socket cannot change a nested lane's
+  verdict.
+  `ASSAY_GATE_ALLOW_SHARED_HOST=1` is a legacy no-op;
+  other values are refused. B105 still requires the verified gates cgroup and
+  a measured 2 GiB launch reserve, so concurrent work can make admission or a
+  run fail when declared capacity is unavailable. Host load can delay a lane;
+  it does not make another container name a product verdict. The inner lane
+  writes its verdict, progress, and
   raw baseline coverage arcs in
   `.assay/coverage-self-qualification-preflight-snapshots/`, keyed by source
   commit and tree under a separately reserved directory for each attempt, and verifies
@@ -1541,6 +1553,9 @@ you're changing assay itself:
   code imported from each isolated snapshot. See the
   [self-qualification design](docs/DESIGN-GUIDE.md#full-source-self-qualification-b105)
   and [worked invocation](docs/CONSUMERS.md#assays-own-full-source-self-qualification-b105).
+  To check the shared-host admission and pressure-attribution contract with
+  deterministic synthetic inputs, use
+  [`run-gate parallel-safety-regression`](docs/DESIGN-GUIDE.md#parallel-gate-regression).
   A standalone R0/R1 preflight has a 75-minute run-gate budget and a 90-minute
   Nyxloom outer timeout, leaving time for startup and evidence collection.
   The full-source attempt is currently unqualified: the latest run stopped at

@@ -8,6 +8,7 @@ import pytest
 from assay import liveness_resources
 from assay.liveness_resources import (
     RESOURCE_SNAPSHOT_SCHEMA_VERSION,
+    compare_cgroup_resource_snapshots,
     compare_resource_snapshots,
     read_liveness_resources,
 )
@@ -381,3 +382,77 @@ def test_any_positive_counter_delta_marks_interval_stalled(
         current[scope][name][row] += 1
 
     assert compare_resource_snapshots(previous, current) == ("stalled", {key: 1})
+
+
+def test_cgroup_comparison_ignores_host_psi_and_detects_local_pressure() -> None:
+    previous = _available()
+    current = _available()
+    current["host_psi"]["cpu"]["some"] += 1
+
+    assert compare_cgroup_resource_snapshots(previous, current) == ("clear", {})
+
+    current = _available()
+    current["cgroup_psi"]["cpu"]["some"] += 1
+    assert compare_cgroup_resource_snapshots(previous, current) == (
+        "stalled",
+        {"cgroup_psi.cpu.some_us": 1},
+    )
+
+    current = _available()
+    current["cgroup_cpu"]["throttled_usec"] += 1
+    assert compare_cgroup_resource_snapshots(previous, current) == (
+        "stalled",
+        {"cgroup_cpu.throttled_usec": 1},
+    )
+
+
+def test_cgroup_comparison_requires_a_previous_sample() -> None:
+    assert compare_cgroup_resource_snapshots(None, _available()) == ("unknown", {})
+
+
+@pytest.mark.parametrize(
+    ("sample", "change"),
+    [
+        ("previous", lambda sample: sample.update(schema_version=2)),
+        ("current", lambda sample: sample.update(schema_version=2)),
+        ("previous", lambda sample: sample.update(status="unavailable")),
+        ("current", lambda sample: sample.update(status="unavailable")),
+        ("previous", lambda sample: sample.update(cgroup_identity="other")),
+        ("current", lambda sample: sample.update(cgroup_identity="other")),
+        ("previous", lambda sample: sample.update(cgroup_psi=None)),
+        ("current", lambda sample: sample.update(cgroup_psi=None)),
+        ("previous", lambda sample: sample["cgroup_psi"].update(cpu=None)),
+        ("current", lambda sample: sample["cgroup_psi"].update(cpu=None)),
+        ("current", lambda sample: sample["cgroup_psi"]["memory"].update(full=True)),
+        ("previous", lambda sample: sample.update(cgroup_cpu=None)),
+        ("current", lambda sample: sample.update(cgroup_cpu=None)),
+        ("current", lambda sample: sample["cgroup_cpu"].update(nr_throttled=1)),
+    ],
+)
+def test_cgroup_comparison_marks_incomplete_or_reset_samples_unknown(sample, change) -> None:
+    previous = _available()
+    current = _available()
+    change(previous if sample == "previous" else current)
+
+    assert compare_cgroup_resource_snapshots(previous, current) == ("unknown", {})
+
+
+@pytest.mark.parametrize(
+    ("name", "row"),
+    [
+        ("cpu", "some"),
+        ("memory", "some"),
+        ("memory", "full"),
+        ("io", "some"),
+        ("io", "full"),
+    ],
+)
+def test_each_cgroup_psi_counter_contributes_to_pressure(name: str, row: str) -> None:
+    previous = _available()
+    current = _available()
+    current["cgroup_psi"][name][row] += 1
+
+    assert compare_cgroup_resource_snapshots(previous, current) == (
+        "stalled",
+        {f"cgroup_psi.{name}.{row}_us": 1},
+    )

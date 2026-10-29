@@ -32,6 +32,7 @@ from conftest import (
     prepared_snapshot,
 )
 
+from assay import canary, contention
 from assay import runner
 from assay.adapters.python import PythonAdapter
 from assay.canary import run_isolated_canary
@@ -60,7 +61,12 @@ def _pass_everything(argv, *, env, cwd, timeout):
     return completed_process(list(argv), 0, "", "")
 
 
-def _r3_lane(repo: GitRepo, *, mechanism: str = "import-break"):
+def _r3_lane(
+    repo: GitRepo,
+    *,
+    mechanism: str = "import-break",
+    env_passthrough: tuple[str, ...] = (),
+):
     return make_lane(
         rigor=("R0", "R3"),
         judge=make_r3_judge(
@@ -69,6 +75,7 @@ def _r3_lane(repo: GitRepo, *, mechanism: str = "import-break"):
             canary=CanaryConfig(mechanism=mechanism, target="pkg/mod.py"),
         ),
         argv=("check",),
+        env_passthrough=env_passthrough,
     )
 
 
@@ -210,6 +217,127 @@ def test_an_unrecognised_mechanism_judges_nothing_on_the_public_surface(
     assert result.attempts[0].expected_reason_code is None
     assert "not a known canary mechanism" in result.attempts[0].description
     assert "import-break" in result.attempts[0].description and "uncovered-line" in result.attempts[0].description
+
+
+@pytest.mark.parametrize("limited_phase", ["control", "transform"])
+@pytest.mark.parametrize("observer_declared", [False, True])
+def test_a_resource_event_in_either_canary_half_withholds_the_verdict(
+    git_repo: GitRepo,
+    tmp_path: Path,
+    monkeypatch,
+    limited_phase: str,
+    observer_declared: bool,
+):
+    monkeypatch.setenv("ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION", "1")
+    monkeypatch.setenv("ASSAY_RESOURCE_OBSERVER_SOCKET", "/observer.sock")
+    head_rev = _seed(git_repo)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    lane = _r3_lane(
+        git_repo,
+        env_passthrough=("ASSAY_RESOURCE_OBSERVER_SOCKET",) if observer_declared else (),
+    )
+
+    class Window:
+        def __init__(self, observation):
+            self.observation = observation
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    affected = contention.ContentionObservation(
+        "affected", resource_limit_hit=True, reasons=("pids-or-memory-oom-event",)
+    )
+    clear = contention.ContentionObservation("clear")
+    window_observations = iter(
+        (affected, clear) if limited_phase == "control" else (clear, affected)
+    )
+    observer_paths: list[str | None] = []
+
+    def window(**kwargs):
+        observer_paths.append(kwargs["observer_socket_path"])
+        return Window(next(window_observations))
+
+    monkeypatch.setattr(
+        canary.contention,
+        "ContentionWindow",
+        window,
+    )
+
+    def process(argv, *, env, cwd, timeout):
+        transformed = "assay-canary-import-break" in (Path(cwd) / "pkg/mod.py").read_text()
+        return completed_process(
+            list(argv),
+            1 if transformed else 0,
+            "",
+            "resource-limited transform" if transformed else "",
+        )
+
+    with prepared_snapshot(git_repo, commit=head_rev, scratch_root=scratch) as prepared:
+        result = run_isolated_canary(
+            lane,
+            prepared=prepared,
+            plan=make_plan(
+                lane,
+                passthrough_source={
+                    "ASSAY_RESOURCE_OBSERVER_SOCKET": "/observer.sock"
+                },
+            ),
+            deadline=make_deadline(),
+            project_root=git_repo.path,
+            resolved_base=None,
+            mechanism="import-break",
+            target="pkg/mod.py",
+            adapter=PythonAdapter(),
+            process_runner=process,
+            clock=_clock,
+        )
+
+    assert observer_paths == [
+        "/observer.sock" if observer_declared else None,
+        "/observer.sock" if observer_declared else None,
+    ]
+    attempt = result.attempts[0]
+    assert attempt.control_outcome is (
+        Outcome.INCONCLUSIVE if limited_phase == "control" else Outcome.PASS
+    )
+    assert attempt.transformed_outcome is (
+        Outcome.FAIL if limited_phase == "control" else Outcome.INCONCLUSIVE
+    )
+    if limited_phase == "control":
+        assert attempt.observed_reason_code is ReasonCode.COMMAND_FAILED
+        assert "control result withheld by cgroup resource window affected" in attempt.description
+    else:
+        assert attempt.observed_reason_code is ReasonCode.CANARY_INCONCLUSIVE
+        assert "transform result withheld by cgroup resource window affected" in attempt.description
+    assert canary.judge_attempt(attempt) == (
+        Outcome.INCONCLUSIVE,
+        ReasonCode.CANARY_INCONCLUSIVE,
+    )
+
+
+def test_contention_note_retains_measured_pressure_and_bounds_unknown_details():
+    affected = canary._contention_note(
+        "control",
+        contention.ContentionObservation(
+            "affected", reasons=("cgroup_psi.cpu.some_us=27",)
+        ),
+    )
+    unknown = canary._contention_note(
+        "transform",
+        contention.ContentionObservation(
+            "unknown", reasons=("after-sample-unavailable:/sensitive/path",)
+        ),
+    )
+
+    assert affected == (
+        "control result withheld by cgroup resource window affected "
+        "(cgroup_psi.cpu.some_us=27)"
+    )
+    assert unknown == "transform result withheld by cgroup resource window unknown"
 
 
 def test_a_test_path_canary_target_is_still_refused_before_any_unit(
