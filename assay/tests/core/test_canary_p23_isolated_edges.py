@@ -280,7 +280,12 @@ def test_a_resource_event_in_either_canary_half_withholds_the_verdict(
         result = run_isolated_canary(
             lane,
             prepared=prepared,
-            plan=make_plan(lane),
+            plan=make_plan(
+                lane,
+                passthrough_source={
+                    "ASSAY_RESOURCE_OBSERVER_SOCKET": "/observer.sock"
+                },
+            ),
             deadline=make_deadline(),
             project_root=git_repo.path,
             resolved_base=None,
