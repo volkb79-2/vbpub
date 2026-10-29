@@ -11,14 +11,14 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
 from typing import Any, Self
 
 from . import liveness_resources, resource_limits
 from .errors import Outcome
+from .records import positional_record
 
 
-@dataclass(frozen=True)
+@positional_record
 class ContentionObservation:
     status: str
     resource_limit_hit: bool = False

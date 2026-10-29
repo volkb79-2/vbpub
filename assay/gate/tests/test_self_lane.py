@@ -862,7 +862,9 @@ def test_self_qualification_run_gate_uses_cgroup_visible_wrapper_and_verifies_re
     assert "B105_CAMPAIGN_DEADLINE=$deadline" in script
     assert "B105_CAMPAIGN_INIT_REFUSED=1" in script
     assert "B105_TIMEOUT_FAILSAFE=1" in script
-    run_start = script.index('if timeout --verbose --signal=TERM --kill-after=30s')
+    run_start = script.index(
+        'if ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION=1 timeout --verbose --signal=TERM --kill-after=30s'
+    )
     verify_start = script.index('echo "B105_PHASE=assay-verify-$lane"', run_start)
     wrapped_run = script[run_start:verify_start]
     assert '"$assay_bin" run "$lane"' in wrapped_run

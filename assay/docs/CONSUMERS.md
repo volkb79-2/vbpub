@@ -115,7 +115,11 @@ affected. PSI/throttling alone do not overturn a completed PASS. Command-budget
 expiry already produces an incomplete outcome. R1 coverage arithmetic is
 unchanged for the same complete report, and its claim uses the R0 command's
 resource window. R2 keeps its own per-candidate resource event and
-liveness evidence. The five registered Assay lanes share one run-gate lock,
+liveness evidence. For R3, an execution error, timeout or missing result is
+`INCONCLUSIVE`; a completed failure for the wrong cause is `CANARY_SURVIVED`
+when its sample is clear. Observer sampling follows the lane's resolved
+environment, so the tester gate's ambient socket cannot change a nested
+lane's result. The five registered Assay lanes share one run-gate lock,
 and a separate lock
 in the Git common directory serializes full-source qualification, pilot and
 screen callers across container `/tmp`

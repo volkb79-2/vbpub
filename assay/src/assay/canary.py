@@ -570,8 +570,14 @@ def run_isolated_canary(
     # one-grammar rule exists to prevent.
     coverage_producer = lane.judge.coverage.producer if wants_coverage else None
     contention_notes: list[str] = []
+    observer_is_declared = (
+        "ASSAY_RESOURCE_OBSERVER_SOCKET" in plan.env_effective
+        or "ASSAY_RESOURCE_OBSERVER_SOCKET" in plan.env_passthrough
+    )
+    observer_socket_path = plan.env_effective.get("ASSAY_RESOURCE_OBSERVER_SOCKET")
     require_contention_observation = (
-        os.environ.get("ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION") == "1"
+        observer_is_declared
+        and os.environ.get("ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION") == "1"
     )
 
     # B006(b): `control_snapshot` is always an ephemeral, assay-owned P22
@@ -579,7 +585,7 @@ def run_isolated_canary(
     # "snapshot-running call sites" allowed to opt in to parent creation.
     with prepared.materialize(timeout=deadline.remaining()) as control_snapshot:
         with contention.ContentionWindow(
-            observer_socket_path=os.environ.get("ASSAY_RESOURCE_OBSERVER_SOCKET")
+            observer_socket_path=observer_socket_path
         ) as control_contention:
             control_unit = _execute_snapshot_unit(
                 plan=plan,
@@ -671,7 +677,7 @@ def run_isolated_canary(
         # B006(b): `transform_snapshot` is likewise an ephemeral, assay-owned
         # checkout -- the other "snapshot-running call site".
         with contention.ContentionWindow(
-            observer_socket_path=os.environ.get("ASSAY_RESOURCE_OBSERVER_SOCKET")
+            observer_socket_path=observer_socket_path
         ) as transform_contention:
             transform_unit = _execute_snapshot_unit(
                 plan=plan,

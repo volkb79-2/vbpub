@@ -353,17 +353,17 @@ def test_a_failure_for_the_wrong_cause_survives():
     assert judge_attempt(attempt) == (Outcome.FAIL, ReasonCode.CANARY_SURVIVED)
 
 
-def test_an_unrelated_error_reason_also_survives_not_merely_a_different_fail_reason():
-    """The observed reason need not even be FAIL-shaped -- an ERROR/EXEC_FAILED
-    for an unrelated cause is exactly as much a 'survived' canary as a wrong
-    FAIL reason (O1's negative names 'an unrelated syntax/config error')."""
+def test_an_unrelated_execution_error_is_inconclusive_not_a_canary_survival():
+    """A child that could not be started supplies no evidence that the suite
+    missed the injected defect. The canary must remain inconclusive rather
+    than turn an execution failure into a product survival."""
     attempt = make(
         transformed_outcome=Outcome.ERROR,
         expected_reason_code=ReasonCode.COMMAND_FAILED,
         observed_reason_code=ReasonCode.EXEC_FAILED,
     )
 
-    assert judge_attempt(attempt) == (Outcome.FAIL, ReasonCode.CANARY_SURVIVED)
+    assert judge_attempt(attempt) == (Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE)
 
 
 # --- judge_canary: B007/A-432's aggregation over the ordered array ------------

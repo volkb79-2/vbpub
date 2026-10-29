@@ -2144,7 +2144,7 @@ def test_a_green_tester_then_a_green_harness_marks_the_phase_once_between_tester
     assert re.fullmatch(r"run-gate-assay-sql-runner-[0-9]+-[0-9]+", args["--runner-name"])
     assert not Path(args["--scratch"]).parent.exists()  # the scratch clone was removed
     calls = _docker_calls(docker_log)
-    assert calls[0] == ["ps", "--no-trunc", "--format", "{{.Names}}"]
+    assert not any(call[:2] == ["ps", "--no-trunc"] for call in calls)
     launch = next(call for call in calls if call[:2] == ["run", "-d"])
     launch_index = calls.index(launch)
     update = ["update", "--cpus=3", args["--runner-name"]]
@@ -2214,7 +2214,7 @@ def test_runner_id_cidfile_mismatch_preserves_scratch_after_verified_id_cleanup(
         run_cidfile_id=planted_cidfile_id,
     )
 
-    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert proc.returncode == 3, proc.stdout + proc.stderr
     assert "SQL qualification runner cidfile does not match its returned ID" in proc.stderr
     assert "preserving SQL scratch" in proc.stderr
     assert "ASSAY_REGISTERED_GATE_COMPLETE=1" not in proc.stdout
@@ -2274,7 +2274,7 @@ def test_an_ambiguous_runner_conflict_preserves_the_sql_recovery_scratch(
         run_launch_error=launch_error,
     )
 
-    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert proc.returncode == 3, proc.stdout + proc.stderr
     assert "could not start the observer-enabled SQL qualification container" in proc.stderr
     calls = _docker_calls(docker_log)
     assert not any(call[:2] == ["rm", "-f"] for call in calls)
@@ -2325,7 +2325,7 @@ def test_accepted_runner_launch_failure_removes_postgres_created_during_runner_s
         timeout=120,
     )
 
-    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert proc.returncode == 3, proc.stdout + proc.stderr
     assert "ASSAY_REGISTERED_GATE_COMPLETE=1" not in proc.stdout
     assert "ASSAY_REGISTERED_GATE_RECEIPT=" not in proc.stdout
     calls = _docker_calls(docker_log)
@@ -2383,7 +2383,7 @@ def test_sql_runner_removal_failure_prevents_receipt_and_completion_marker(
         timeout=120,
     )
 
-    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert proc.returncode == 3, proc.stdout + proc.stderr
     assert "could not remove SQL qualification container" in proc.stderr
     assert "ASSAY_REGISTERED_GATE_COMPLETE=1" not in proc.stdout
     assert "ASSAY_REGISTERED_GATE_RECEIPT=" not in proc.stdout
@@ -2418,7 +2418,7 @@ def test_a_hung_sql_log_stream_is_bounded_and_exit_cleanup_still_removes_the_run
         timeout=120,
     )
 
-    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert proc.returncode == 3, proc.stdout + proc.stderr
     assert "could not collect SQL qualification logs (exit 124)" in proc.stderr
     assert "ASSAY_REGISTERED_GATE_COMPLETE=1" not in proc.stdout
     assert "ASSAY_REGISTERED_GATE_RECEIPT=" not in proc.stdout
@@ -2619,7 +2619,7 @@ def test_the_marker_with_a_non_zero_exit_is_still_a_failure(tmp_path: Path, gate
 def test_the_marker_plus_an_extra_line_is_not_the_exact_marker(tmp_path: Path, gate_functions: Path) -> None:
     worktree, _commit, _tree = _sql_worktree(tmp_path)
     proc, _docker_log, _harness_log = _gate(tmp_path, gate_functions, worktree, out=_MARKER + "extra\n", rc=0)
-    assert proc.returncode == 1
+    assert proc.returncode == 3
     assert "SQL qualification printed no exact marker" in proc.stderr
     assert "ASSAY_GATE_PHASE" not in proc.stdout and not (worktree / RECEIPT_RELATIVE).exists()
 
@@ -2627,7 +2627,7 @@ def test_the_marker_plus_an_extra_line_is_not_the_exact_marker(tmp_path: Path, g
 def test_no_marker_at_all_is_a_failure(tmp_path: Path, gate_functions: Path) -> None:
     worktree, _commit, _tree = _sql_worktree(tmp_path)
     proc, _docker_log, _harness_log = _gate(tmp_path, gate_functions, worktree, out="", rc=0)
-    assert proc.returncode == 1
+    assert proc.returncode == 3
     assert "SQL qualification printed no exact marker" in proc.stderr
 
 
@@ -2718,7 +2718,7 @@ def test_a_clone_that_is_not_the_gated_commit_is_refused_before_any_harness_or_c
         env=env,
         timeout=120,
     )
-    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert proc.returncode == 3, proc.stdout + proc.stderr
     assert f"SQL clone is not the gated commit {HEX40}" in proc.stderr
     assert not harness_log.exists()
     assert not docker_log.exists()  # no container name existed yet, so the trap removed nothing

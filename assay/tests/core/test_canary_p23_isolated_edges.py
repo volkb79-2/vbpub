@@ -61,7 +61,12 @@ def _pass_everything(argv, *, env, cwd, timeout):
     return completed_process(list(argv), 0, "", "")
 
 
-def _r3_lane(repo: GitRepo, *, mechanism: str = "import-break"):
+def _r3_lane(
+    repo: GitRepo,
+    *,
+    mechanism: str = "import-break",
+    env_passthrough: tuple[str, ...] = (),
+):
     return make_lane(
         rigor=("R0", "R3"),
         judge=make_r3_judge(
@@ -70,6 +75,7 @@ def _r3_lane(repo: GitRepo, *, mechanism: str = "import-break"):
             canary=CanaryConfig(mechanism=mechanism, target="pkg/mod.py"),
         ),
         argv=("check",),
+        env_passthrough=env_passthrough,
     )
 
 
@@ -214,14 +220,23 @@ def test_an_unrecognised_mechanism_judges_nothing_on_the_public_surface(
 
 
 @pytest.mark.parametrize("limited_phase", ["control", "transform"])
+@pytest.mark.parametrize("observer_declared", [False, True])
 def test_a_resource_event_in_either_canary_half_withholds_the_verdict(
-    git_repo: GitRepo, tmp_path: Path, monkeypatch, limited_phase: str
+    git_repo: GitRepo,
+    tmp_path: Path,
+    monkeypatch,
+    limited_phase: str,
+    observer_declared: bool,
 ):
     monkeypatch.setenv("ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION", "1")
+    monkeypatch.setenv("ASSAY_RESOURCE_OBSERVER_SOCKET", "/observer.sock")
     head_rev = _seed(git_repo)
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    lane = _r3_lane(git_repo)
+    lane = _r3_lane(
+        git_repo,
+        env_passthrough=("ASSAY_RESOURCE_OBSERVER_SOCKET",) if observer_declared else (),
+    )
 
     class Window:
         def __init__(self, observation):
@@ -240,10 +255,16 @@ def test_a_resource_event_in_either_canary_half_withholds_the_verdict(
     window_observations = iter(
         (affected, clear) if limited_phase == "control" else (clear, affected)
     )
+    observer_paths: list[str | None] = []
+
+    def window(**kwargs):
+        observer_paths.append(kwargs["observer_socket_path"])
+        return Window(next(window_observations))
+
     monkeypatch.setattr(
         canary.contention,
         "ContentionWindow",
-        lambda **_kwargs: Window(next(window_observations)),
+        window,
     )
 
     def process(argv, *, env, cwd, timeout):
@@ -270,6 +291,10 @@ def test_a_resource_event_in_either_canary_half_withholds_the_verdict(
             clock=_clock,
         )
 
+    assert observer_paths == [
+        "/observer.sock" if observer_declared else None,
+        "/observer.sock" if observer_declared else None,
+    ]
     attempt = result.attempts[0]
     assert attempt.control_outcome is (
         Outcome.INCONCLUSIVE if limited_phase == "control" else Outcome.PASS

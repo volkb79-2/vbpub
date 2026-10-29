@@ -457,12 +457,12 @@ run_b110_screen() {
     "$assay_bin" plan self-qualification --json --file assay.toml \
     || { plan_status=$?; echo "B110_SCREEN_PLANNING_FAILED=1" >&2; return "$plan_status"; }
   set +e
-  python3 "$project/tools/b110_pilot_safe_output.py" \
+  ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION=1 python3 "$project/tools/b110_pilot_safe_output.py" \
     --assay-fd "$assay_state_fd" \
     --expected-assay-device "$ASSAY_B110_ASSAY_STATE_DEVICE" \
     --expected-assay-inode "$ASSAY_B110_ASSAY_STATE_INODE" \
     --output b110-screen-run.log --stderr-to-stdout -- \
-    ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION=1 timeout --verbose --signal=TERM --kill-after=30s 25800s \
+    timeout --verbose --signal=TERM --kill-after=30s 25800s \
       "$assay_bin" run self-qualification --file assay.toml --cold-witness --resume \
       "${reuse_args[@]}" \
       --state-dir "$assay_state_root/b110-screen-state" \

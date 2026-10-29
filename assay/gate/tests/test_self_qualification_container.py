@@ -354,7 +354,11 @@ if args and args[0] == "logs":
             for relative, content in files.items():
                 target = project / relative
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(content)
+                if relative == ".assay/progress-b110-pilot.jsonl" and target.exists():
+                    with target.open("ab") as stream:
+                        stream.write(content)
+                else:
+                    target.write_bytes(content)
             manifest_entries = dict(files)
             if mode == "pilot-manifest-omits":
                 manifest_entries.pop(".assay/b110-pilot-run.log")
@@ -3866,8 +3870,31 @@ def test_b110_pilot_clears_stale_attempt_outputs_and_runs_beside_an_active_gate(
     )
 
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert all(not (state / name).exists() for name in stale_outputs)
-    assert progress.read_text(encoding="utf-8") == '{"event":"resume evidence"}\n'
+    fresh_outputs = {
+        "b110-pilot-plan.json": b"plan\n",
+        "b110-pilot-candidates.txt": (
+            b"# b110 pilot selection seed=b110-pilot-2026 size=64 plan_candidates=1\n"
+            + b"a" * 64
+            + b"\n"
+        ),
+        "b110-pilot-selection.json": b"selection\n",
+        "b110-pilot-summary.json": b"summary\n",
+        "b110-pilot-run.log": b"run log\n",
+        "r2-manifest-b110-pilot.txt": b"test_contract::test_example\n",
+    }
+    for name, expected in fresh_outputs.items():
+        assert (state / name).read_bytes() == expected
+    assert not (state / "b110-pilot-attempt.log").exists()
+    attempt_window = json.loads(
+        (state / "b110-pilot-attempt-window.json").read_text(encoding="utf-8")
+    )
+    assert attempt_window["schema"] == "assay-b110-pilot-attempt-window/1"
+    assert "b110-pilot-summary.json" in (state / "b110-pilot-artifacts.sha256").read_text(
+        encoding="ascii"
+    )
+    assert progress.read_text(encoding="utf-8") == (
+        '{"event":"resume evidence"}\nprogress\n'
+    )
     assert deadline.exists()
     assert mutation_state.read_text(encoding="utf-8") == "state identity\n"
 

@@ -1514,8 +1514,12 @@ you're changing assay itself:
   an R0/R1 failure with measured cgroup stalls is also retried as `ERROR`,
   while a clear-sample failure remains product `FAIL`. R3 applies the same
   rule to failed canary halves and marks direct-limit or unavailable samples
-  `INCONCLUSIVE`. Timeouts and other incomplete results remain infrastructure
-  outcomes.
+  `INCONCLUSIVE`. Timeouts, execution errors and missing results remain
+  `INCONCLUSIVE`; a completed failure for the wrong cause remains
+  `CANARY_SURVIVED` when the sample is clear. Observer sampling is lane-scoped:
+  Assay uses the socket only when it appears in the lane's resolved
+  environment; a parent gate's ambient socket cannot change a nested lane's
+  verdict.
   `ASSAY_GATE_ALLOW_SHARED_HOST=1` is a legacy no-op;
   other values are refused. B105 still requires the verified gates cgroup and
   a measured 2 GiB launch reserve, so concurrent work can make admission or a
