@@ -29,7 +29,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Create private mode-0700 usage-output parent directories, retain mode-0600 files, and translate preparation/write failures into clean CLI errors.
 
 ### Testing
-- Verify the full Nyxloom suite (5,756 passed; two documented opt-in skips), 100% usage-package line and branch coverage, and a live BrowserLease acceptance with zero network requests. The registered tester-unified gate remains controller-owned.
+- The registered `session-extract` selection includes all usage test files; R0 and R1 passed with 100% changed-line coverage (7,295/7,295 statements; 1,580/1,580 branches). The detached tester-unified BrowserLease acceptance passed for full/folded ledger totals and joined chart points with zero network requests. The overall registered lane remains incomplete: R2 hit its lane time limit with 1,199/1,201 candidates complete, two per-candidate timeouts, and R3 unstarted. See the [iteration 4 report](nyxloom-trove/reports/nyxloom-usage-iteration-4-REPORT.md) for the exact evidence and limits.
 
 <!-- cmru: release history -->
 

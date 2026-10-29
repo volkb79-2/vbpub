@@ -194,8 +194,11 @@ def run_browser_check() -> None:
             for expected in ("Session:", "Agent:", "Topic:", "Model:", "Effort:", "Time:", "Tokens:"):
                 assert expected in grouped_tooltip
             page.locator("[data-measure='weighted']").click()
+            cost_column = page.locator("th button[data-sort='cost']").evaluate(
+                "button => button.closest('th').cellIndex + 1"
+            )
             cost_cell = page.locator(
-                "tr.usage-node-row[data-node-id='session-001:agent-a'] td:nth-child(12)"
+                f"tr.usage-node-row[data-node-id='session-001:agent-a'] td:nth-child({cost_column})"
             )
             assert "7.00 weighted" in (cost_cell.text_content() or "")
             page.locator("[data-measure='usd']").click()
