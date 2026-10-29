@@ -108,16 +108,20 @@ run. Docker container names do not block this lane. Run-Gate maps exit 3 to
 infrastructure `ERROR`; the wrapper uses it for launch failures, timeouts and
 incomplete resource evidence. A direct OOM/pids limit event withholds R0, R1
 and R3 results even if the command exited zero. An unavailable sample or an
-unassignable ancestor-only pids/OOM event withholds R0, R1 and R3 results; a
-failed R0/R1/R3 assertion in a window with measured cgroup PSI or CPU throttling is also
+unassignable ancestor-only pids/OOM event withholds R0, R1 and R3 results; an
+R0/R1 failure in a window with measured cgroup PSI or CPU throttling is also
 retried as infrastructure, since a time-sensitive assertion may have been
-affected. PSI/throttling alone do not overturn a completed PASS. Command-budget
+affected. PSI/throttling alone do not overturn a completed R0/R1 PASS. Command-budget
 expiry already produces an incomplete outcome. R1 coverage arithmetic is
 unchanged for the same complete report, and its claim uses the R0 command's
 resource window. R2 keeps its own per-candidate resource event and
 liveness evidence. For R3, an execution error, timeout or missing result is
-`INCONCLUSIVE`; a completed failure for the wrong cause is `CANARY_SURVIVED`
-when its sample is clear. Observer sampling follows the lane's resolved
+`INCONCLUSIVE`. A PSI/throttling-only window withholds a failed control or a
+transformed run that failed for the wrong reason; the transformed run's exact
+expected failure remains eligible for judgment because it is the canary's
+positive signal. Direct resource-limit events and unavailable samples still
+withhold either canary half. A completed failure for the wrong cause is
+`CANARY_SURVIVED` when its sample is clear. Observer sampling follows the lane's resolved
 environment, so the tester gate's ambient socket cannot change a nested
 lane's result. The five registered Assay lanes share one run-gate lock,
 and a separate lock

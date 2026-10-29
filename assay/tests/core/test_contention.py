@@ -186,25 +186,35 @@ def test_contention_window_fails_closed_when_either_sample_is_unavailable(monkey
 
 
 @pytest.mark.parametrize(
-    ("observation", "outcome", "require_observation", "withhold"),
+    (
+        "observation",
+        "outcome",
+        "expected_failure",
+        "require_observation",
+        "withhold",
+    ),
     [
-        (contention.ContentionObservation("clear"), Outcome.FAIL, False, False),
-        (contention.ContentionObservation("affected"), Outcome.FAIL, False, True),
-        (contention.ContentionObservation("affected", resource_limit_hit=True), Outcome.FAIL, False, True),
-        (contention.ContentionObservation("unknown"), Outcome.FAIL, False, True),
-        (contention.ContentionObservation("unknown"), Outcome.PASS, False, True),
-        (contention.ContentionObservation("affected", resource_limit_hit=True), Outcome.PASS, False, True),
-        (contention.ContentionObservation("affected"), Outcome.PASS, False, False),
-        (contention.ContentionObservation("unobserved"), Outcome.PASS, False, False),
-        (contention.ContentionObservation("unobserved"), Outcome.FAIL, False, False),
-        (contention.ContentionObservation("unobserved"), Outcome.PASS, True, True),
+        (contention.ContentionObservation("clear"), Outcome.FAIL, False, False, False),
+        (contention.ContentionObservation("affected"), Outcome.FAIL, False, False, True),
+        (contention.ContentionObservation("affected"), Outcome.FAIL, True, False, False),
+        (contention.ContentionObservation("affected", resource_limit_hit=True), Outcome.FAIL, True, False, True),
+        (contention.ContentionObservation("unknown"), Outcome.FAIL, True, False, True),
+        (contention.ContentionObservation("unknown"), Outcome.PASS, False, False, True),
+        (contention.ContentionObservation("affected", resource_limit_hit=True), Outcome.PASS, False, False, True),
+        (contention.ContentionObservation("affected"), Outcome.PASS, False, False, False),
+        (contention.ContentionObservation("unobserved"), Outcome.PASS, False, False, False),
+        (contention.ContentionObservation("unobserved"), Outcome.FAIL, False, False, False),
+        (contention.ContentionObservation("unobserved"), Outcome.PASS, False, True, True),
     ],
 )
 def test_withhold_canary_result_for_incomplete_or_affected_failures(
-    observation, outcome, require_observation, withhold
+    observation, outcome, expected_failure, require_observation, withhold
 ):
     assert contention.withhold_canary_result(
-        observation, outcome=outcome, require_observation=require_observation
+        observation,
+        outcome=outcome,
+        expected_failure=expected_failure,
+        require_observation=require_observation,
     ) is withhold
 
 
@@ -220,6 +230,12 @@ def test_withhold_canary_result_validates_inputs():
             contention.ContentionObservation("unobserved"),
             outcome=Outcome.PASS,
             require_observation=1,
+        )
+    with pytest.raises(TypeError, match="expected_failure must be a bool"):
+        contention.withhold_canary_result(
+            contention.ContentionObservation("affected"),
+            outcome=Outcome.FAIL,
+            expected_failure=1,
         )
 
 

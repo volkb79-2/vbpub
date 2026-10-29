@@ -219,13 +219,17 @@ def test_an_unrecognised_mechanism_judges_nothing_on_the_public_surface(
     assert "import-break" in result.attempts[0].description and "uncovered-line" in result.attempts[0].description
 
 
-@pytest.mark.parametrize("limited_phase", ["control", "transform"])
+@pytest.mark.parametrize(
+    ("limited_phase", "resource_limit_hit"),
+    [("control", True), ("transform", True), ("transform", False)],
+)
 @pytest.mark.parametrize("observer_declared", [False, True])
-def test_a_resource_event_in_either_canary_half_withholds_the_verdict(
+def test_canary_contention_distinguishes_limits_from_expected_transform_failure(
     git_repo: GitRepo,
     tmp_path: Path,
     monkeypatch,
     limited_phase: str,
+    resource_limit_hit: bool,
     observer_declared: bool,
 ):
     monkeypatch.setenv("ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION", "1")
@@ -249,7 +253,13 @@ def test_a_resource_event_in_either_canary_half_withholds_the_verdict(
             return False
 
     affected = contention.ContentionObservation(
-        "affected", resource_limit_hit=True, reasons=("pids-or-memory-oom-event",)
+        "affected",
+        resource_limit_hit=resource_limit_hit,
+        reasons=(
+            "pids-or-memory-oom-event"
+            if resource_limit_hit
+            else "cgroup_psi.cpu.some_us=1",
+        ),
     )
     clear = contention.ContentionObservation("clear")
     window_observations = iter(
@@ -304,19 +314,31 @@ def test_a_resource_event_in_either_canary_half_withholds_the_verdict(
     assert attempt.control_outcome is (
         Outcome.INCONCLUSIVE if limited_phase == "control" else Outcome.PASS
     )
-    assert attempt.transformed_outcome is (
-        Outcome.FAIL if limited_phase == "control" else Outcome.INCONCLUSIVE
-    )
     if limited_phase == "control":
+        assert attempt.transformed_outcome is Outcome.FAIL
         assert attempt.observed_reason_code is ReasonCode.COMMAND_FAILED
         assert "control result withheld by cgroup resource window affected" in attempt.description
-    else:
+        assert canary.judge_attempt(attempt) == (
+            Outcome.INCONCLUSIVE,
+            ReasonCode.CANARY_INCONCLUSIVE,
+        )
+    elif resource_limit_hit:
+        assert attempt.transformed_outcome is Outcome.INCONCLUSIVE
         assert attempt.observed_reason_code is ReasonCode.CANARY_INCONCLUSIVE
         assert "transform result withheld by cgroup resource window affected" in attempt.description
-    assert canary.judge_attempt(attempt) == (
-        Outcome.INCONCLUSIVE,
-        ReasonCode.CANARY_INCONCLUSIVE,
-    )
+        assert canary.judge_attempt(attempt) == (
+            Outcome.INCONCLUSIVE,
+            ReasonCode.CANARY_INCONCLUSIVE,
+        )
+    else:
+        # The transformed command's expected COMMAND_FAILED is the positive R3
+        # oracle. PSI alone must not turn that completed expected failure into
+        # an inconclusive result; direct limits and unavailable samples still
+        # withhold it above.
+        assert attempt.transformed_outcome is Outcome.FAIL
+        assert attempt.observed_reason_code is ReasonCode.COMMAND_FAILED
+        assert "resource window" not in attempt.description
+        assert canary.judge_attempt(attempt) == (Outcome.PASS, None)
 
 
 def test_contention_note_retains_measured_pressure_and_bounds_unknown_details():

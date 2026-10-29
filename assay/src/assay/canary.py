@@ -713,6 +713,10 @@ def run_isolated_canary(
         if contention.withhold_canary_result(
             transform_contention.observation,
             outcome=transformed_outcome,
+            expected_failure=(
+                transformed_outcome is Outcome.FAIL
+                and observed_reason_code is expected_reason
+            ),
             require_observation=require_contention_observation,
         ):
             transformed_outcome = Outcome.INCONCLUSIVE

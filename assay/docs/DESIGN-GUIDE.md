@@ -2747,13 +2747,17 @@ a budget bucket and makes the R2 claim incomplete, never a survivor or kill.
 R3 previously treated some transformed errors, timeouts or missing results as
 a canary survival. Those outcomes now remain `INCONCLUSIVE`; a direct pids/OOM
 event or unavailable sample in either canary half withholds the R3 result. A
-failed assertion with measured cgroup PSI or throttling is also `INCONCLUSIVE`;
-a completed PASS is retained without a direct resource-limit event. Observer
-sampling is lane-scoped: the observer socket is used only when it appears in
-the lane's resolved environment. A gate's ambient socket cannot alter a
-nested lane's canary verdict. Host PSI is not used for that attribution
-because unrelated work elsewhere does not show that this lane's cgroup
-stalled.
+PSI/throttling-only window withholds a failed control or a transformed run
+whose failure reason differs from the configured canary reason. The
+transformed run's exact expected failure is the positive canary signal, so
+that completed result remains eligible for judgment under PSI alone. This
+keeps a small observed stall from turning the same completed oracle result
+from PASS to INCONCLUSIVE, while direct limits, unavailable samples and
+unexpected failures remain unclassifiable. Observer sampling is lane-scoped:
+the observer socket is used only when it appears in the lane's resolved
+environment. A gate's ambient socket cannot alter a nested lane's canary
+verdict. Host PSI is not used for that attribution because unrelated work
+elsewhere does not show that this lane's cgroup stalled.
 
 The B105 launch still verifies the gates cgroup and reserves 2 GiB of
 point-in-time memory headroom. The five qualification lanes retain their shared

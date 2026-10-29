@@ -149,6 +149,7 @@ def withhold_canary_result(
     observation: ContentionObservation,
     *,
     outcome: Outcome,
+    expected_failure: bool = False,
     require_observation: bool = False,
 ) -> bool:
     """Whether a canary result is unclassifiable from its resource window.
@@ -157,22 +158,29 @@ def withhold_canary_result(
     completing its assertion. A configured but unavailable window cannot
     support either canary half. Consumers without an observer retain their
     existing behavior unless the registered gate requires attribution. A
-    measured PSI/throttling interval with a failed assertion makes that
-    attempt inconclusive; an observed stall can affect a time-sensitive
-    assertion, but does not overturn a completed pass by itself.
+    measured PSI/throttling interval with an unexpected failed assertion
+    makes that attempt inconclusive. The transformed half's exact expected
+    failure is the canary's positive oracle, so PSI alone does not withhold
+    it; direct resource-limit events and unavailable samples still do.
     Command timeouts and other incomplete outcomes are already infrastructure.
     """
     if not isinstance(observation, ContentionObservation):
         raise TypeError("observation must be a ContentionObservation")
     if not isinstance(outcome, Outcome):
         raise TypeError("outcome must be an Outcome")
+    if type(expected_failure) is not bool:
+        raise TypeError("expected_failure must be a bool")
     if type(require_observation) is not bool:
         raise TypeError("require_observation must be a bool")
     if observation.status == "unobserved":
         return require_observation
     if observation.resource_limit_hit or observation.status == "unknown":
         return True
-    return outcome is Outcome.FAIL and observation.status == "affected"
+    return (
+        outcome is Outcome.FAIL
+        and not expected_failure
+        and observation.status == "affected"
+    )
 
 
 def withhold_r0_result(

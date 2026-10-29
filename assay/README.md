@@ -1512,11 +1512,14 @@ you're changing assay itself:
   PASS when its sample is observable and no direct resource limit occurred.
   A direct pids/OOM event or unavailable sample makes R0/R1 `ERROR` for retry;
   an R0/R1 failure with measured cgroup stalls is also retried as `ERROR`,
-  while a clear-sample failure remains product `FAIL`. R3 applies the same
-  rule to failed canary halves and marks direct-limit or unavailable samples
-  `INCONCLUSIVE`. Timeouts, execution errors and missing results remain
-  `INCONCLUSIVE`; a completed failure for the wrong cause remains
-  `CANARY_SURVIVED` when the sample is clear. Observer sampling is lane-scoped:
+  while a clear-sample failure remains product `FAIL`. R3 marks direct-limit
+  or unavailable samples `INCONCLUSIVE`. In a PSI/throttling-only window, a
+  failed control or a transformed run with the wrong failure reason is
+  `INCONCLUSIVE`; the transformed run's exact expected failure is the
+  canary's positive signal and remains eligible for judgment. Timeouts,
+  execution errors and missing results remain `INCONCLUSIVE`; a completed
+  failure for the wrong cause remains `CANARY_SURVIVED` when the sample is
+  clear. Observer sampling is lane-scoped:
   Assay uses the socket only when it appears in the lane's resolved
   environment; a parent gate's ambient socket cannot change a nested lane's
   verdict.
