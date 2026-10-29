@@ -2200,7 +2200,10 @@ def test_parallel_gate_feature_is_findable_across_user_docs() -> None:
     assert "### Parallel gate regression" in design
     assert "CONSUMERS.md#parallel-gate-regression" in design
     assert "### Parallel gate regression" in consumers
-    assert "run-gate --worktree .. parallel-safety-regression" in consumers
+    assert (
+        'run-gate --worktree "$(git -C .. rev-parse --show-toplevel)" '
+        "parallel-safety-regression"
+    ) in consumers
     assert "## [Unreleased]" in changes
     assert "allow concurrent gates" in changes
     assert "B171" in backlog
