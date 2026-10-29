@@ -7,6 +7,7 @@ Every argv assertion compares the LIST, never a joined string.
 
 import atexit
 import ast
+import builtins
 import calendar
 import contextlib
 import concurrent.futures
@@ -63,6 +64,36 @@ _spec = importlib.util.spec_from_file_location("run_gate", _TOOL)
 run_gate = importlib.util.module_from_spec(_spec)
 sys.modules["run_gate"] = run_gate
 _spec.loader.exec_module(run_gate)
+
+
+def _capture_run_gate_prints(monkeypatch):
+    streams = {"stdout": io.StringIO(), "stderr": io.StringIO()}
+    streams["calls"] = []
+
+    def recording_print(*args, **kwargs):
+        target = kwargs.get("file")
+        if target is None or target is sys.stdout:
+            stream_name = "stdout"
+            kwargs["file"] = streams["stdout"]
+        elif target is sys.stderr:
+            stream_name = "stderr"
+            kwargs["file"] = streams["stderr"]
+        else:
+            return builtins.print(*args, **kwargs)
+        rendered = io.StringIO()
+        builtins.print(*args, sep=kwargs.get("sep", " "),
+                       end=kwargs.get("end", "\n"), file=rendered)
+        streams["calls"].append((stream_name, rendered.getvalue(),
+                                 kwargs.get("flush", False)))
+        return builtins.print(*args, **kwargs)
+
+    monkeypatch.setattr(run_gate, "print", recording_print, raising=False)
+    return streams
+
+
+def _has_flushed_print(streams, stream_name, text):
+    return any(name == stream_name and flushed and text in rendered
+               for name, rendered, flushed in streams["calls"])
 
 CGROUP_VAR = "CGROUP_PARENT_DEV_GATES"
 
@@ -4511,6 +4542,74 @@ exit 64
         small = tmp_path / "small.json"
         small.write_bytes(b"{}")
         assert read(small, 10) == (b"{}", None)
+
+    def test_read_closeout_artifact_accepts_a_file_at_the_size_limit(
+            self, tmp_path):
+        exact = tmp_path / "exact.json"
+        exact.write_bytes(b"x" * 10)
+        assert run_gate._read_closeout_artifact(exact, 10) == (b"x" * 10, None)
+
+    def test_read_closeout_artifact_accepts_exact_limit_after_short_fstat(
+            self, tmp_path, monkeypatch):
+        exact = tmp_path / "exact-after-stat.json"
+        exact.write_bytes(b"x" * 10)
+        real_fstat = os.fstat
+
+        class _Underreported:
+            def __init__(self, info):
+                self.st_mode, self.st_size = info.st_mode, 0
+
+        monkeypatch.setattr(
+            run_gate.os, "fstat", lambda fd: _Underreported(real_fstat(fd)))
+        assert run_gate._read_closeout_artifact(exact, 10) == (b"x" * 10, None)
+
+    @pytest.mark.parametrize("empty_suffix", ["json", "txt"])
+    def test_an_empty_closeout_artifact_is_unavailable_independently(
+            self, tmp_path, monkeypatch, empty_suffix):
+        verdict = self._seed(tmp_path)
+        (verdict.parent / f"campaign-unit.{empty_suffix}").write_bytes(b"")
+        closeout = self._collect(tmp_path, monkeypatch, verdict)
+        assert closeout["status"] == "unavailable"
+        label = "JSON" if empty_suffix == "json" else "text"
+        assert f"no {label} closeout" in closeout["reason"]
+
+    def test_complete_closeout_disclosure_flushes_its_stdout_line(
+            self, monkeypatch):
+        streams = _capture_run_gate_prints(monkeypatch)
+        run_gate.report_assay_closeout(
+            {"status": "complete", "json_path": "/e/campaign.json",
+             "text_path": "/e/campaign.txt"},
+            run_gate.LaneResult("PASS"))
+        assert _has_flushed_print(streams, "stdout",
+                                  "assay closeout: campaign complete")
+
+    def test_closeout_warning_disclosure_flushes_its_stderr_line(
+            self, monkeypatch):
+        streams = _capture_run_gate_prints(monkeypatch)
+        run_gate.report_assay_closeout(
+            {"status": "invalid", "reason": "bad evidence",
+             "json_path": None}, run_gate.LaneResult("FAIL", 1))
+        assert _has_flushed_print(streams, "stderr",
+                                  "WARNING: assay closeout invalid")
+
+    def test_closeout_reporter_crash_warning_flushes_its_stderr_line(
+            self, monkeypatch):
+        streams = _capture_run_gate_prints(monkeypatch)
+        closeout = {"status": "unavailable", "reason": "not present",
+                    "json_path": None}
+        monkeypatch.setattr(run_gate, "collect_assay_closeout",
+                            lambda *args, **kwargs: closeout)
+
+        def broken_report(*args, **kwargs):
+            raise RuntimeError("planted reporter failure")
+
+        monkeypatch.setattr(run_gate, "report_assay_closeout", broken_report)
+        result = run_gate.finish_assay_closeout(
+            {"assay_lane": "unit"}, "unit", {}, "commit",
+            Path("verdict.json"), run_gate.LaneResult("FAIL", 1), None)
+        assert result is closeout
+        assert _has_flushed_print(streams, "stderr",
+                                  "closeout could not be reported")
 
     def test_read_closeout_artifact_survives_a_file_that_grows_or_fails_to_read(
             self, tmp_path, monkeypatch):
@@ -16699,6 +16798,7 @@ class TestRg109InterruptedClient:
 
     def test_an_interruption_before_the_wait_keeps_the_container_and_says_so(
             self, tmp_path, monkeypatch, capsys):
+        streams = _capture_run_gate_prints(monkeypatch)
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
         repo, proj = make_history_repo(tmp_path)
         monkeypatch.chdir(proj)
@@ -16716,9 +16816,12 @@ class TestRg109InterruptedClient:
         assert run_gate.main(["suite"]) == 2
         assert len(called) == 1, "the profiling start (the window) never ran"
         name = called[0]
-        err = capsys.readouterr().err
+        err = streams["stderr"].getvalue()
         assert (f"interrupted before lane 'suite' was awaited: container {name} "
                 f"keeps running and its in-flight record is kept") in err
+        assert _has_flushed_print(
+            streams, "stderr",
+            f"interrupted before lane 'suite' was awaited: container {name}")
         assert f"`docker rm -f {name}` to discard it" in err
         assert "budget is not enforced while no client is attached" in err
         assert f"rm\x1f-f\x1f{name}" not in log.read_text()   # kept, by design
@@ -18646,6 +18749,35 @@ class TestProgressWatch:
         clock.advance(10_000)
         assert watch.poll() is None
 
+    def test_final_verdict_does_not_arm_the_r2_post_command_bound(self,
+                                                                  tmp_path):
+        clock = FakeClock()
+        path = tmp_path / ".assay" / "progress-r2-verdict-written.jsonl"
+        write_progress(path, {"event": "command_started"},
+                       {"event": "command_finished"},
+                       {"event": "verdict_written"})
+        watch = run_gate.ProgressWatch(
+            path, "r2", None, clock, auto_bound=True, expects_plan=True)
+        assert watch.poll() is None
+        clock.advance(601)
+        assert watch.poll() is None
+
+    def test_legacy_r2_candidate_keeps_the_minimum_auto_bound(self, tmp_path):
+        # Pre-header progress files are still read as whole-file streams. If
+        # they contain no baseline-completion signal, R2 must use the ordinary
+        # 300 s minimum bound rather than waiting 600 s for a plan that has no
+        # observed baseline transition to follow.
+        clock = FakeClock()
+        path = tmp_path / ".assay" / "progress-legacy-r2.jsonl"
+        write_progress(path, candidate(1), header=False)
+        watch = run_gate.ProgressWatch(
+            path, "r2", None, clock, auto_bound=True, expects_plan=True)
+        assert watch.poll() is None
+        clock.advance(300)
+        stalled = watch.poll()
+        assert stalled is not None
+        assert "idle_bound auto 300s" in stalled
+
     def test_header_only_stream_stays_disclosure_only_when_auto_bound(
             self, tmp_path):
         # Verdict invariance: a run header alone (no heartbeat, no plan) is
@@ -18746,17 +18878,24 @@ class TestProgressWatch:
         clock.advance(100)
         assert watch.poll() is None      # the post-plan bound takes over
 
-    def test_unproven_rigor_prints_one_disclosure_line(self, tmp_path, capsys):
+    def test_unproven_rigor_prints_one_flushed_disclosure_line(
+            self, tmp_path, monkeypatch):
+        streams = _capture_run_gate_prints(monkeypatch)
         run_gate._POST_COMMAND_UNPROVEN_ANNOUNCED.clear()
         lane = {"kind": "assay", "assay_lane": "x"}
         for _ in range(2):
             run_gate.make_progress_watch(lane, "x", tmp_path, auto_bound=True)
-        out = capsys.readouterr().out
+        out = streams["stdout"].getvalue()
         assert out.count("no post-command liveness bound is armed") == 1
+        assert _has_flushed_print(
+            streams, "stdout", "no post-command liveness bound is armed")
+        streams["stdout"].seek(0)
+        streams["stdout"].truncate(0)
+        streams["calls"].clear()
         run_gate._POST_COMMAND_UNPROVEN_ANNOUNCED.clear()
         proven = dict(lane, _assay_inventory={"entry": {"rigor": ["R1"]}})
         run_gate.make_progress_watch(proven, "y", tmp_path, auto_bound=True)
-        assert "no post-command" not in capsys.readouterr().out
+        assert "no post-command" not in streams["stdout"].getvalue()
 
     def test_expects_plan_comes_from_the_proven_inventory_only(self):
         r2 = {"_assay_inventory": {"entry": {"rigor": ["R0", "R1", "R2"]}}}
@@ -25268,6 +25407,7 @@ class TestBareHostProfilingWiring:
     def test_bare_host_rusage_fallback_stall_terminates_group_and_keeps_rusage(
             self, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
+        streams = _capture_run_gate_prints(monkeypatch)
         class Watch:
             def __init__(self):
                 self.calls = 0
@@ -25289,6 +25429,7 @@ class TestBareHostProfilingWiring:
         state = {"killed": False}
         wait_calls = []
         finish_calls = []
+        watch_calls = []
 
         def wait4(pid, options):
             wait_calls.append((pid, options))
@@ -25307,8 +25448,11 @@ class TestBareHostProfilingWiring:
         fake_docker(tmp_path, monkeypatch)
         monkeypatch.setattr(run_gate, "start_bare_host_profiling",
                             lambda *a, **k: self._rusage_state())
-        monkeypatch.setattr(run_gate, "make_progress_watch",
-                            lambda *a, **k: watch)
+        def progress_watch(*args, **kwargs):
+            watch_calls.append(kwargs)
+            return watch
+
+        monkeypatch.setattr(run_gate, "make_progress_watch", progress_watch)
         monkeypatch.setattr(run_gate.subprocess, "Popen",
                             lambda *a, **k: proc)
         monkeypatch.setattr(run_gate, "finish_bare_host_profiling",
@@ -25328,10 +25472,11 @@ class TestBareHostProfilingWiring:
         # The exact child is still reaped by wait4, so its rusage survives,
         # and the watch is consulted once (stall latches; it is not re-polled).
         assert watch.calls == 1
+        assert watch_calls and watch_calls[0]["auto_bound"] is True
         assert finish_calls == [rusage]
         assert all(pid == proc.pid for pid, _ in wait_calls)
-        assert "in-process watch — daemon unavailable" \
-            in capsys.readouterr().out
+        assert _has_flushed_print(streams, "stdout",
+                                  "in-process watch — daemon unavailable")
 
     def test_bare_host_rusage_fallback_is_polled_at_the_progress_cadence(
             self, tmp_path, monkeypatch):
@@ -25375,9 +25520,47 @@ class TestBareHostProfilingWiring:
         # later: never once per 50 ms spin.
         assert watch.calls == 2
 
+    def test_bare_host_rusage_polls_at_the_exact_next_poll_deadline(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)
+        monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.05)
+        clock = [1000.0]
+        poll_times = []
+
+        class Watch:
+            def poll(self):
+                poll_times.append(clock[0])
+                return None
+
+        class Process:
+            pid = 4251
+            returncode = 0
+
+            def poll(self):
+                return self.returncode
+
+        rusage = _FakeRusage(ru_maxrss=1, ru_utime=0.1, ru_stime=0.1)
+        wait4_calls = [0]
+
+        def wait4(pid, options):
+            wait4_calls[0] += 1
+            return ((pid, 0, rusage) if wait4_calls[0] == 3
+                    else (0, 0, None))
+
+        monkeypatch.setattr(run_gate.os, "wait4", wait4)
+        monkeypatch.setattr(run_gate.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(run_gate.time, "sleep",
+                            lambda seconds: clock.__setitem__(
+                                0, clock[0] + seconds))
+        assert self._bare_assay_call(
+            tmp_path, monkeypatch, self._rusage_state(), watch=Watch(),
+            process=Process()) == 0
+        assert poll_times == [1000.0, 1000.05]
+
     def test_bare_host_watch_failure_degrades_to_unwatched_rusage_wait(
             self, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
+        streams = _capture_run_gate_prints(monkeypatch)
         class Watch:
             def __init__(self):
                 self.calls = 0
@@ -25407,8 +25590,8 @@ class TestBareHostProfilingWiring:
             tmp_path, monkeypatch, self._rusage_state(),
             watch=watch, process=Process()) == 0
         assert watch.calls == 1                 # dropped after the failure
-        assert "in-process watch failed unexpectedly" \
-            in capsys.readouterr().err
+        assert _has_flushed_print(
+            streams, "stderr", "in-process watch failed unexpectedly")
 
     def test_bare_host_profiling_disabled_assay_lane_keeps_progress_liveness(
             self, tmp_path, monkeypatch, capsys):
@@ -25493,6 +25676,7 @@ class TestBareHostProfilingWiring:
     def test_bare_host_reattach_failure_keeps_lane_exit_via_fallback(
             self, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
+        streams = _capture_run_gate_prints(monkeypatch)
         class DaemonWatch:
             def drain(self):
                 return []
@@ -25545,12 +25729,15 @@ class TestBareHostProfilingWiring:
         watch = Watch()
         state = {"mode": "daemon", "client": client, "daemon": "d",
                  "session": "s-bare-reattach", "session_line": None,
-                 "warning": None, "sampler": None, "profiler_status": None}
+                 "warning": "earlier profiling warning",
+                 "sampler": None, "profiler_status": None}
         assert self._bare_assay_call(tmp_path, monkeypatch, state,
                                      watch=watch, process=Process()) == 0
         assert client.calls == 2
         assert watch.calls == 1
-        assert "watch reattach failed" in capsys.readouterr().err
+        assert state["warning"] == "earlier profiling warning"
+        assert _has_flushed_print(streams, "stderr",
+                                  "watch reattach failed for lane")
 
     def test_bare_host_idle_twice_announces_in_process_watch_exactly_once(
             self, tmp_path, monkeypatch, capsys):
@@ -25560,6 +25747,7 @@ class TestBareHostProfilingWiring:
         idle polls served by the fallback, and the profiler warning names the
         second idle."""
         monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
+        streams = _capture_run_gate_prints(monkeypatch)
         class DaemonWatch:
             def drain(self):
                 return []
@@ -25617,13 +25805,20 @@ class TestBareHostProfilingWiring:
         # Timeouts 1-2 consume the two idle daemon watches; 3-5 are served by
         # the fallback alone, none of which may re-announce.
         assert watch.calls >= 3
-        out, err = capsys.readouterr()
+        out = streams["stdout"].getvalue()
+        err = streams["stderr"].getvalue()
         assert out.count("in-process watch") == 1
         assert "in-process watch \u2014 daemon unavailable for lane" in out
+        assert _has_flushed_print(
+            streams, "stdout", "in-process watch \u2014 daemon unavailable for lane")
         assert state["warning"] == \
             "daemon watch remained idle after one reattach"
         assert "went idle; reattaching once" in err
+        assert _has_flushed_print(streams, "stderr",
+                                  "went idle; reattaching once")
         assert "using in-process liveness fallback" in err
+        assert _has_flushed_print(
+            streams, "stderr", "unavailable; using in-process liveness fallback")
 
     def test_bare_host_idle_twice_without_fallback_stays_silent_and_keeps_exit(
             self, tmp_path, monkeypatch, capsys):
@@ -28179,6 +28374,7 @@ class TestExecLaneProfilingWiring:
 
     def test_exec_watch_reattach_failure_keeps_lane_exit(
             self, tmp_path, monkeypatch, capsys):
+        streams = _capture_run_gate_prints(monkeypatch)
         class Watch:
             def drain(self):
                 return []
@@ -28228,13 +28424,13 @@ class TestExecLaneProfilingWiring:
 
         client = Client()
         fallback = Fallback()
+        state = {"mode": "daemon", "client": client,
+                 "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                 "session": "s-reattach-fail", "session_line": None,
+                 "warning": "earlier profiling warning", "sampler": None,
+                 "profiler_status": None}
         monkeypatch.setattr(run_gate, "start_lane_profiling",
-                            lambda *args, **kwargs: {
-                                "mode": "daemon", "client": client,
-                                "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
-                                "session": "s-reattach-fail",
-                                "session_line": None, "warning": None,
-                                "sampler": None, "profiler_status": None})
+                            lambda *args, **kwargs: state)
         monkeypatch.setattr(run_gate, "make_progress_watch",
                             lambda *args, **kwargs: fallback)
         monkeypatch.setattr(run_gate, "finish_lane_profiling",
@@ -28246,7 +28442,9 @@ class TestExecLaneProfilingWiring:
             popen_factory=lambda *args, **kwargs: Process()) == 0
         assert client.calls == 2
         assert fallback.poll_calls == 1
-        assert "watch reattach failed" in capsys.readouterr().err
+        assert state["warning"] == "earlier profiling warning"
+        assert _has_flushed_print(streams, "stderr",
+                                  "watch reattach failed for lane")
 
     def test_exec_second_ended_watch_can_kill_via_progress_fallback(
             self, tmp_path, monkeypatch):
@@ -31370,16 +31568,21 @@ class TestLaneDeadlineEnforcement:
     def test_main_converts_dependency_system_exit_to_closed_error(self,
                                                                  monkeypatch,
                                                                  capsys):
+        streams = _capture_run_gate_prints(monkeypatch)
         monkeypatch.setattr(run_gate, "_dispatch",
                             lambda _argv: (_ for _ in ()).throw(SystemExit(255)))
         assert run_gate.main(["unit"]) == 2
-        err = capsys.readouterr().err
+        err = streams["stderr"].getvalue()
         assert ("interrupted before a closed result (exit status 255); "
                 "verdict ERROR, exit 2") in err   # RG-109: never silent
         monkeypatch.setattr(run_gate, "_dispatch",
                             lambda _argv: (_ for _ in ()).throw(KeyboardInterrupt()))
         assert run_gate.main(["unit"]) == 2
-        assert "(exit status SIGINT); verdict ERROR, exit 2" in capsys.readouterr().err
+        err = streams["stderr"].getvalue()
+        assert "(exit status SIGINT); verdict ERROR, exit 2" in err
+        assert _has_flushed_print(
+            streams, "stderr",
+            "interrupted before a closed result (exit status SIGINT)")
         with pytest.raises(SystemExit) as caught:
             run_gate._sigterm_as_exit(signal.SIGTERM, None)
         assert caught.value.code == 128 + signal.SIGTERM

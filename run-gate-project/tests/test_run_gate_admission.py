@@ -791,6 +791,20 @@ def test_containers_are_empty_when_every_listed_id_vanished():
     assert manager._containers() == []
 
 
+def test_containers_return_an_empty_list_when_inspect_race_has_no_json():
+    fake, clock = FakeDocker(), Clock()
+    fake._add("ciu-res-gates-1", {})
+
+    def empty_race(argv, **kwargs):
+        if list(argv[1:2]) == ["inspect"]:
+            return subprocess.CompletedProcess(
+                argv, 1, "", "Error: No such object: fake-1\n")
+        return fake(argv, **kwargs)
+
+    manager = make_manager(empty_race, clock)
+    assert manager._containers() == []
+
+
 def test_containers_still_refuse_any_other_inspect_failure():
     fake, clock = FakeDocker(), Clock()
     fake._add("ciu-res-gates-1", {})
