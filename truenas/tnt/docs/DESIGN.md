@@ -274,8 +274,10 @@ working layout and shows a resize instruction instead of presenting controls tha
 the typed target as wrapped text above a neutral input placeholder; the action guard and exact typed comparison remain
 unchanged. When no host is configured, the picker focuses Add, disables actions that need a selected host, and provides
 Quit as its exit action. Pilot tests render the real screens to text at 80×24, 100×30, 120×40, 160×50, 200×60, and 60×40, then
-exercise a resize to 40×10. Current Textual widgets expose terminal text and keyboard focus but do not provide a
-semantic screen-reader tree; that limitation is tracked in `docs/UX-REVIEW.md`.
+exercise a resize to 40×10. The tmux UX checks complement those structural Pilot checks by driving the real app on a
+pseudo-terminal, including color attributes and terminal resize behavior. Current Textual widgets expose terminal text
+and keyboard focus but do not provide a semantic screen-reader tree; that limitation is tracked in `docs/UX-REVIEW.md`.
+See [UX testing](UX-TESTING.md) for commands and coverage limits.
 
 ### Shares
 
@@ -573,7 +575,8 @@ additional arguments after `HOST` is not supported.
   `core.get_methods`, and the workflow methods. It records requests and has error injection (`fail=`). Tests drive the
   pinned `truenas_api_client` over a real socket; job-returning methods use realistic job replies.
 - TUI: Textual `Pilot` (`run_test`) against a session on the fake: navigation, palette entries, load, failure, refresh,
-  insecure banner, and an SSH hand-off whose stub executable proves suspend/restore and process-status handling.
+  insecure banner, and an SSH hand-off whose stub executable proves suspend/restore and process-status handling. The
+  tmux UX test starts the same `TntApp` in a real pseudo-terminal to inspect rendered attributes, dimensions, and quit.
 - CLI: cli-extended `build_cli(opener=...)`, assertions on `--json` output and exit codes; `doctor` checks both ways.
   SSH tests use a stub executable and assert exact argv, no shell, refusal paths, and no accepted remote command.
 - Live lane (TNT-20, It4 acceptance): the registered `live-v27` Run-Gate lane runs in `tester-unified`; explicit
@@ -589,9 +592,11 @@ additional arguments after `HOST` is not supported.
   [`docs/LIVE-TESTING.md`](LIVE-TESTING.md), including the [ACTION-MATRIX B-06 import check](ACTION-MATRIX.snapshot.md#actions).
   The live lane is separate from the ordinary FakeServer gate.
 - Drift lane (TNT-23, It4): manifests vs the fetched API reference. Optional dependencies required by the suite fail, never skip.
-- Gate: `run-gate.toml` lanes `r0-r1` (full pytest suite with branch coverage), `ux-focused` (Pilot UX and host-picker
-  checks), and `live-v27` (opt-in host acceptance). The full unit lane retains its 97% floor; the separate mutation
-  lane is It4 work (TNT-30). Tests are deterministic under host load: no timing assertions beyond bounded waits for a worker.
+- Gate: `run-gate.toml` lanes `r0-r1` (full pytest suite with branch coverage), `ux-focused` (Pilot, host-picker, and
+  tmux terminal checks), and `live-v27` (opt-in host acceptance). The tmux cases report a clear skip while tester-unified
+  lacks that package. The full unit lane retains its 97% floor; the separate mutation
+  lane is It4 work (TNT-30). Tests are deterministic under host load: they poll for screen and worker conditions until
+  bounded deadlines instead of asserting fixed response times.
 
 ## 10. Milestones
 

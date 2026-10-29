@@ -303,7 +303,8 @@ See the [navigation and small-terminal design](docs/DESIGN.md#tui-navigation-and
 The default suite uses the in-memory `tnt.testing.FakeServer` over loopback with the real `truenas_api_client`; it does
 not contact a TrueNAS host. The optional Textual, websockets, and test dependencies are required by the suite; missing
 dependencies fail the suite. Run `run-gate r0-r1` for the full suite and its 97% branch coverage floor; use
-`run-gate ux-focused` for the Pilot screen, host-picker, and small-terminal checks. Both use `tester-unified`. The
+`run-gate ux-focused` for Pilot screen, host-picker, and small-terminal checks plus real-terminal tmux checks when the
+tester image includes tmux. See [UX testing](docs/UX-TESTING.md) for coverage and limits. Both use `tester-unified`. The
 separate `run-gate live-v27` lane is an explicit host integration run: it selects only
 tests marked `live`, requires `TNT_LIVE=1`, and creates and cleans up resources under a `tnt-live-` prefix. It runs in
 `tester-unified`; keep `tnt.toml` and `tnt.secrets.toml` in a private scratch directory outside the repository and pass
