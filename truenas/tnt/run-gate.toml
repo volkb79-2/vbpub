@@ -21,7 +21,7 @@ kind = "command"
 environment = "tester-unified"
 argv = [
   "bash", "-c",
-  "cd {worktree}/truenas/tnt && /opt/tester-venv/bin/python3 -m pip install --no-deps setuptools==82.0.1 wheel==0.47.0 websocket-client==1.8.0 setuptools_scm==10.0.5 && SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0+gate.test /opt/tester-venv/bin/python3 -m pip install --no-deps --no-build-isolation -e . && /opt/tester-venv/bin/python3 -m pip install --no-deps --no-build-isolation 'truenas_api_client @ git+https://github.com/truenas/api_client.git@2a04491953d38c13f13f40729d2a4966a77c6297' && PYTHONPATH=src:{worktree}/libraries/cli-extended/src PYTHONDONTWRITEBYTECODE=1 nice /opt/tester-venv/bin/python3 -m pytest -q -p no:xdist tests/test_management_core_views.py tests/test_tui.py tests/test_tui_hosts.py tests/test_tui_ux.py",
+  "cd {worktree}/truenas/tnt && /opt/tester-venv/bin/python3 -m pip install --no-deps setuptools==82.0.1 wheel==0.47.0 websocket-client==1.8.0 setuptools_scm==10.0.5 && SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0+gate.test /opt/tester-venv/bin/python3 -m pip install --no-deps --no-build-isolation -e . && /opt/tester-venv/bin/python3 -m pip install --no-deps --no-build-isolation 'truenas_api_client @ git+https://github.com/truenas/api_client.git@2a04491953d38c13f13f40729d2a4966a77c6297' && PYTHONPATH=src:{worktree}/libraries/cli-extended/src PYTHONDONTWRITEBYTECODE=1 nice /opt/tester-venv/bin/python3 -m pytest -q -p no:xdist tests/test_management_core_views.py tests/test_tui.py tests/test_tui_hosts.py tests/test_tui_ux.py tests/test_tui_tmux.py",
 ]
 clean_tree = false
 budget = "10m"
