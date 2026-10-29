@@ -120,3 +120,44 @@ runs take precedence over the one budget expiry and 34 survivors, so Assay
 correctly reports `ERROR/EXEC_FAILED` (exit 2). “Campaign analysis complete”
 means the analysis accounted for all candidate records; it does not mean every
 candidate produced a valid test judgment or that the lane passed.
+
+## Follow-up fixes on `rg-r2-harness-fix-20261029`
+
+Code inspection confirmed the `docker logs -f` spawn in `await_container` was
+outside its cleanup guard, and `follow_container` did not clean up its waiter
+if starting the log follower failed. Both paths now reap their helper
+processes on exceptional exits. The audit also found the same narrow window in
+`spawn_bare_host_placement_barrier` between `Popen` and its readiness guard;
+that path now aborts and reaps the wrapper if post-spawn setup fails.
+
+The two-client test now uses `child_process_scope`. The rusage fake fails after
+16 `wait4` polls, and the two fallback-watch fakes fail after eight process
+waits, so inverted termination conditions surface as bounded assertion
+failures instead of unbounded memory growth or a 900 s spin. The existing
+crashed bucket remains authoritative for an unclean candidate; no cleanup
+failure is reclassified as a kill.
+
+These are source and test-harness fixes, not new judgments for the old R2
+records. RG-120 and RG-121 remain open until the operator's planned
+`--resume --rejudge` run replaces the ten crashed records and the one expired
+record. No R2 campaign was run for this change.
+
+The registered selftest evidence is:
+
+1. Red regression run: 3 expected failures, 2,441 passed, one skipped. The
+   failures were the follower waiter leak, the log-watch startup leak, and the
+   bare-host placement-barrier post-spawn leak.
+2. First follow-up attempt: 2,443 passed, two test-double failures, one skipped.
+   The Popen stubs also intercepted `subprocess.run` cleanup; they were
+   narrowed to `docker logs`.
+3. The next attempt: 2,445 passed, one skipped in 199.70 seconds. Diff coverage
+   failed at 45/50 changed executable lines (90%; branches 20/20), identifying
+   the placement-barrier close-error handler and follower timeout escalation.
+   Targeted coverage was added after this run.
+4. Controller-verified final tree: registered lane `selftest` passed on clean
+   commit `6650bd3f58f2be4e3ec40ba5315c74fac2e5d805` (2026-10-29; run
+   `36c16001a136fad42be6e751e0473ba3`, log
+   `/home/vscode/vbpub-release-program-20261027/logs/g-rg.log`): 2,446 passed,
+   one skipped in 217.95 seconds; diff coverage 48/48 changed executable lines
+   (100.0%) and 20/20 branches; exit 0. The earlier 45/50 result is superseded
+   by this green run. No R2 campaign was run for this change.

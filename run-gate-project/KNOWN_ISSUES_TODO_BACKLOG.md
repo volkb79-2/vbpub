@@ -6578,11 +6578,34 @@ progress records have `leader_status=exited`, `descendants_signalled=1`, and
 cap. Assay therefore marks these records `crashed`; they cannot be counted as
 mutation kills or survivals.
 
-**Fix direction.** Reproduce and identify the cause of the child leaks and the
-R2 memory pressure in the tester-unified gate. Preserve the process-tree
-cleanliness check and the R2 distinction between a valid test verdict and an
-incomplete candidate. Reassess lane resources only with evidence from the
-registered gate.
+**Verified cause and branch fix.** The `docker logs -f` processes in
+`await_container` were spawned before its cleanup `try/finally`; in
+`follow_container`, `docker wait` and `docker logs -f` had no shared cleanup
+guard. An exception during watch setup or the second spawn could leave a
+helper process behind. The two-client subprocess test also omitted the
+`child_process_scope` fixture used to kill and reap adopted children. The
+rusage stall fake accumulated every `wait4` poll without a ceiling, so
+mutations that skipped termination could grow the list until the gate's 2 GiB
+limit killed pytest. The branch moves both log-stream launches under cleanup,
+reaps both follower helpers on every exit, scopes the two-client test, and
+caps the rusage fake at 16 polls with an assertion on exhaustion. The audit
+also found and guarded the same post-spawn exception window in
+`spawn_bare_host_placement_barrier`.
+
+**Status remains OPEN.** The third registered selftest attempt passed 2,445
+tests with one expected skip, but its diff-coverage gate failed at 45/50
+changed executable lines (90%; all 20 branches were taken). Targeted coverage
+was added after that attempt. The controller then verified the final tree with
+the registered `selftest` lane on clean commit
+`6650bd3f58f2be4e3ec40ba5315c74fac2e5d805` (2026-10-29; run
+`36c16001a136fad42be6e751e0473ba3`, log
+`/home/vscode/vbpub-release-program-20261027/logs/g-rg.log`): 2,446 passed,
+one skipped in 217.95 seconds, diff coverage 48/48 changed executable lines
+(100.0%) and 20/20 branches, exit 0. The old R2 campaign records remain
+unjudged; these fixes do not turn a cleanup failure into a mutation kill. The
+operator's planned
+`--resume --rejudge` of the eleven affected candidates is still required to
+replace the unjudged evidence. No R2 campaign was run in this change.
 
 ## RG-121 — one a245908 R2 candidate exceeded its configured budget
 
@@ -6597,8 +6620,18 @@ has no cgroup OOM delta or outliving-child evidence. No final test judgment
 was written. The full evidence is in the same read-only campaign checkout
 listed under RG-120.
 
-**Fix direction.** Inspect the slow test path and resource trace to determine
-whether the mutation causes a hang or the campaign environment needs a
-different candidate budget. Do not treat `budget_exceeded` as a kill or
-survival; Assay maps it to `BUDGET_EXCEEDED/LANE_TIMEOUT` when no higher
-precedence `crashed` result exists.
+**Verified cause and branch fix.** The candidate changes the fallback stall
+guard from `stalled is not None` to `stalled is None`. The affected fake
+processes repeatedly raise `TimeoutExpired` while the fake watcher reports a
+stall; with the mutated guard, the termination and loop break are skipped, so
+the loop can spin until the 900 s candidate limit. The two affected fallback
+watch tests now cap process waits at eight and assert on exhaustion. This
+preserves the real 900 s lane budget and lets a future mutation run report a
+test failure instead of consuming the full candidate window.
+
+**Status remains OPEN.** Candidate `183c6b7fe3d2` still has no final
+judgment. The source and test cause is identified, and the registered
+Run-Gate selftest is green on commit `6650bd3f` (full run evidence under
+RG-120). The operator's planned `--resume --rejudge` is still required to
+replace the old budget-exceeded record. Do not score it as a kill until that
+run produces a valid verdict.
