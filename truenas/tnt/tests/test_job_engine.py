@@ -109,11 +109,13 @@ def test_failed_second_job_reports_completed_first_call_and_failed_job_id():
     client = JobClient(fail_second=True)
     rpc = GuardedRpc(client, read_only=False)
     rpc.attach_job_registry(JobRegistry("lab"), generation=2)
-    plan = make_plan(_action(RpcCall("app.stop", ("demo",), job=True),
-                             RpcCall("app.start", ("demo",), job=True)), rpc)
+    action = Action("T-JOB", Kind.DESTRUCTIVE, "Restart demo app",
+                    (RpcCall("app.stop", ("demo",), job=True), RpcCall("app.start", ("demo",), job=True)),
+                    (RpcCall("app.query", ([], {})),), "demo")
+    plan = make_plan(action, rpc)
 
     with pytest.raises(PlanExecutionError) as caught:
-        apply_plan(plan, rpc, allow_write=True)
+        apply_plan(plan, rpc, allow_write=True, typed_confirmation="demo")
 
     partial = caught.value.partial
     assert partial == ["done"]

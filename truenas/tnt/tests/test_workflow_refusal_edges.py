@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import struct
+from dataclasses import replace
 
 import pytest
 
@@ -85,6 +86,29 @@ def test_user_input_and_editability_refusals_are_specific():
         Workflows(Rpc(**{"user.query": [USER], "auth.me": {}})).user_update_action("alice", {"shell": "/bin/sh"})
     with pytest.raises(Refused, match="builtin and root/admin"):
         Workflows(rpc_user(USER | {"username": "root"})).user_delete_action("root")
+
+
+def test_user_shell_and_home_updates_use_current_login_probe_and_lockout_confirmation():
+    current = Workflows(rpc_user(USER, login="alice"))
+    for field, value in (("shell", "/bin/sh"), ("home", "/home/alice")):
+        with pytest.raises(Refused, match="shell or home needs the extra confirmation"):
+            current.user_update_action("alice", {field: value})
+        action = current.user_update_action("alice", {field: value}, confirm_self=True)
+        assert action.kind is Kind.DESTRUCTIVE and action.confirm_target == "alice" and action.confirm_self
+        assert [call.method for call in action.probe] == ["user.query", "auth.me"]
+        validate_plan_preconditions(action, [[USER], {"pw_name": "alice"}])
+        with pytest.raises(Refused, match="confirmation does not match"):
+            validate_plan_preconditions(replace(action, kind=Kind.MUTATE, confirm_target=None),
+                                        [[USER], {"pw_name": "alice"}])
+        with pytest.raises(Refused, match="one named-object probe"):
+            validate_plan_preconditions(replace(action, probe=action.probe[:1]), [[USER]])
+
+    other = Workflows(rpc_user(USER, login="operator")).user_update_action("alice", {"home": "/home/alice"})
+    assert other.kind is Kind.MUTATE and other.confirm_target is None
+    assert [call.method for call in other.probe] == ["user.query", "auth.me"]
+    validate_plan_preconditions(other, [[USER], {"pw_name": "operator"}])
+    basic_name_only = current.user_update_action("alice", {"full_name": "Updated"})
+    assert basic_name_only.kind is Kind.MUTATE and [call.method for call in basic_name_only.probe] == ["user.query"]
 
 
 def test_user_access_changes_are_separate_typed_and_current_user_guarded():

@@ -148,8 +148,11 @@ class Workflows:
         methods = {"start": ("app.start",), "stop": ("app.stop",), "restart": ("app.stop", "app.start")}[operation]
         calls = tuple(RpcCall(method, (app_id,), job=True) for method in methods)
         label = row["name"]
-        return Action("TNT-44", Kind.MUTATE, f"{operation.title()} app {label} ({app_id})", calls,
-                      (RpcCall("app.query", ([ ["id", "=", app_id] ], {})),))
+        destructive = operation in {"stop", "restart"}
+        return Action("TNT-44", Kind.DESTRUCTIVE if destructive else Kind.MUTATE,
+                      f"{operation.title()} app {label} ({app_id})", calls,
+                      (RpcCall("app.query", ([["id", "=", app_id]], {})),),
+                      app_id if destructive else None)
 
     def app_delete_action(self, app_id: str, *, delete_data_volumes: bool = False) -> Action:
         row = self._app_by_id(app_id)
@@ -507,7 +510,8 @@ class Workflows:
             (RpcCall("user.query", ([["username", "=", username]], {})),),
         )
 
-    def user_update_action(self, username: str, data: Mapping[str, Any], *, builtin: bool = False) -> Action:
+    def user_update_action(self, username: str, data: Mapping[str, Any], *, builtin: bool = False,
+                           confirm_self: bool = False) -> Action:
         row, current = self._editable_user(username, builtin=builtin)
         if not isinstance(data, Mapping) or not data:
             raise Refused("user-update", "at least one user property is required")
@@ -521,10 +525,22 @@ class Workflows:
         for field, value in payload.items():
             if not isinstance(value, str) or not value.strip():
                 raise Refused("user-update-value", f"{field} must be a non-empty string")
+        if not isinstance(confirm_self, bool):
+            raise Refused("current-user", "confirm_self must be true or false")
+        self_affecting = bool(set(payload) & {"shell", "home"})
+        is_current = username.casefold() == current.casefold()
+        if self_affecting and is_current and not confirm_self:
+            raise Refused("current-user", "changing the current login account's shell or home needs the extra confirmation flag")
+        probes = (RpcCall("user.query", ([["username", "=", username]], {})),)
+        if self_affecting:
+            probes += (RpcCall("auth.me"),)
         return Action(
-            "TNT-41", Kind.MUTATE, f"Update user {username}",
+            "TNT-41", Kind.DESTRUCTIVE if self_affecting and is_current else Kind.MUTATE,
+            f"Update user {username}",
             (RpcCall("user.update", (row["id"], payload)),),
-            (RpcCall("user.query", ([["username", "=", username]], {})),),
+            probes,
+            username if self_affecting and is_current else None,
+            confirm_self=self_affecting and is_current and confirm_self,
         )
 
     def user_access_action(self, username: str, data: Mapping[str, Any], *, confirm_self: bool = False) -> Action:
@@ -1472,9 +1488,11 @@ def validate_plan_preconditions(action: Action, probe_results: Any) -> None:
         password_targeted = any(call.method == "user.set_password" for call in targeted)
         account_access_targeted = user_update_mode == "access"
         ssh_key_targeted = user_update_mode == "ssh-key"
+        basic_lockout_targeted = (user_update_mode == "basic" and bool(
+            set(user_updates[0].params[1]) & {"shell", "home"}))
         if sum((password_targeted, account_access_targeted, ssh_key_targeted)) > 1:
             raise Refused("target-probe", "one action cannot combine different user credential or access changes")
-        current_user_probe = password_targeted or account_access_targeted or ssh_key_targeted
+        current_user_probe = password_targeted or account_access_targeted or ssh_key_targeted or basic_lockout_targeted
         expected_probe_count = 2 if current_user_probe else 1
         if len(action.probe) != expected_probe_count or not isinstance(probe_results, (list, tuple)) or len(probe_results) != expected_probe_count:
             raise Refused("target-probe", "an update or lifecycle action requires one named-object probe")
@@ -1521,7 +1539,8 @@ def validate_plan_preconditions(action: Action, probe_results: Any) -> None:
                     raise Refused("target-probe", "the VM device target does not match its lookup")
             elif not call.params or call.params[id_index] != current_id:
                 raise Refused("target-probe", "the action ID does not match the current named object")
-            elif call.method == "user.update" and (account_access_targeted or ssh_key_targeted):
+            elif call.method == "user.update" and (account_access_targeted or ssh_key_targeted
+                                                     or basic_lockout_targeted):
                 login = probe_results[1]
                 login_name = login.get("pw_name") if isinstance(login, Mapping) else None
                 if not isinstance(login_name, str) or not login_name:
@@ -1536,12 +1555,18 @@ def validate_plan_preconditions(action: Action, probe_results: Any) -> None:
                         raise Refused("user-access-confirmation", "account access changes require destructive classification and typed username confirmation")
                     if is_current and not action.confirm_self:
                         raise Refused("current-user", "account access changes to the current login need the extra confirmation flag")
-                else:
+                elif ssh_key_targeted:
                     expected_kind = Kind.DESTRUCTIVE if is_current else Kind.MUTATE
                     expected_confirmation = target_name if is_current else None
                     if (action.kind is not expected_kind or action.confirm_target != expected_confirmation
                             or is_current and not action.confirm_self):
                         raise Refused("ssh-key-classification", "SSH-key confirmation does not match whether the target is the current login user")
+                else:
+                    expected_kind = Kind.DESTRUCTIVE if is_current else Kind.MUTATE
+                    expected_confirmation = target_name if is_current else None
+                    if (action.kind is not expected_kind or action.confirm_target != expected_confirmation
+                            or action.confirm_self is not is_current):
+                        raise Refused("user-update-classification", "shell or home change confirmation does not match whether the target is the current login user")
 
     api_key_targeted = [call for call in action.calls if call.method in {"api_key.update", "api_key.delete"}]
     if api_key_targeted:

@@ -80,7 +80,7 @@ class V27(Backend):
         },
         "apps": {
             "app.query": MethodSpec("read"),
-            "app.start": MethodSpec("write"), "app.stop": MethodSpec("write"),
+            "app.start": MethodSpec("write"), "app.stop": MethodSpec("destructive"),
             "app.delete": MethodSpec("destructive"),
         },
         "shares": {

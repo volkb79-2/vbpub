@@ -39,10 +39,15 @@ def test_apps_read_lifecycle_restart_and_uninstall_use_v27_jobs_and_typed_target
             apply_plan(make_plan(start, session.rpc), session.rpc, allow_write=True)
             stop = workflows.app_lifecycle_action("demo", "stop")
             assert [(call.method, call.job) for call in stop.calls] == [("app.stop", True)]
-            apply_plan(make_plan(stop, session.rpc), session.rpc, allow_write=True)
+            assert stop.kind.value == "destructive" and stop.confirm_target == "demo"
+            stop_plan = make_plan(stop, session.rpc)
+            with pytest.raises(Refused, match="type 'demo' exactly"):
+                apply_plan(stop_plan, session.rpc, allow_write=True, typed_confirmation="stop")
+            apply_plan(stop_plan, session.rpc, allow_write=True, typed_confirmation="demo")
             restart = workflows.app_lifecycle_action("demo", "restart")
             assert [(call.method, call.job) for call in restart.calls] == [("app.stop", True), ("app.start", True)]
-            apply_plan(make_plan(restart, session.rpc), session.rpc, allow_write=True)
+            assert restart.kind.value == "destructive" and restart.confirm_target == "demo"
+            apply_plan(make_plan(restart, session.rpc), session.rpc, allow_write=True, typed_confirmation="demo")
 
             uninstall = workflows.app_delete_action("demo")
             assert uninstall.confirm_target == "demo"

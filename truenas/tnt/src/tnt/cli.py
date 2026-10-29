@@ -907,7 +907,8 @@ def _user_verbs(ident: CliIdentity, opener: SessionOpener) -> list[VerbSpec]:
             data["home"] = args.home
         if not data:
             raise CliFailure("provide at least one user property option or --file spec.json")
-        return session.workflows.user_update_action(args.username, data, builtin=args.builtin)
+        return session.workflows.user_update_action(args.username, data, builtin=args.builtin,
+                                                    confirm_self=args.confirm_self)
 
     def delete(args: Any, session: Any):
         return session.workflows.user_delete_action(args.username)
@@ -1002,7 +1003,9 @@ def _user_verbs(ident: CliIdentity, opener: SessionOpener) -> list[VerbSpec]:
                  options=writes(_value(("--full-name",), "New full name.", "TEXT", "WORKFLOW"),
                                 _value(("--shell",), "New login shell.", "PATH", "WORKFLOW"),
                                 _value(("--home",), "New home directory path.", "PATH", "WORKFLOW"),
-                                _flag(("--builtin",), "Allow editing a built-in user account.", "WORKFLOW"), SPEC_FILE),
+                                _flag(("--builtin",), "Allow editing a built-in user account.", "WORKFLOW"),
+                                _flag(("--confirm-self",), "Explicitly allow changing the current login user's shell or home.", "SAFETY"),
+                                SPEC_FILE),
                  handler=lambda args, runtime: _workflow_action(args, runtime, opener, lambda session: update(args, session))),
         VerbSpec("access", None, "Change group membership or authentication access through a typed guarded plan.",
                  group=VerbGroup.MODIFICATION.value,

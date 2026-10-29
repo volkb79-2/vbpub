@@ -16,11 +16,13 @@ POOL_STATE = SafetyState({1: "boot-pool", 2: "tank"}, frozenset(), frozenset())
     ("vm.create", ({"name": "guest", "devices": [{"path": "/mnt/boot-pool/vms/guest"}]},)),
     ("vm.device.create", ({"vm": 1, "attributes": {"path": "/dev/zvol/boot-pool/vms/guest"}},)),
     ("sharing.nfs.create", ({"path": "/mnt/boot-pool/shares/export"},)),
-    ("app.install", ({"pool": "boot-pool"},)),
     ("user.create", ({"username": "operator", "home": "/mnt/boot-pool/home/operator"},)),
 ])
 def test_boot_pool_path_refusal_covers_every_non_read_family(method, params):
-    assert refusal_for(method, params, POOL_STATE)
+    from tnt.adapters.v27 import V27
+
+    assert V27.method_supported(method)
+    assert "boot-pool and its datasets are never changed" in refusal_for(method, params, POOL_STATE)
 
 
 @pytest.mark.parametrize(("method", "params"), [
@@ -70,6 +72,7 @@ def test_pool_scrub_task_id_is_not_treated_as_a_pool_id():
     ("datasets", "pool.dataset.update", "write"),
     ("snapshots", "pool.snapshot.rollback", "destructive"),
     ("users", "user.set_password", "write"),
+    ("apps", "app.stop", "destructive"),
 ])
 def test_v27_manifest_classifies_supported_methods_explicitly(feature, method, classification):
     from tnt.adapters.v27 import V27
@@ -83,7 +86,7 @@ def test_v27_manifest_classifies_supported_methods_explicitly(feature, method, c
     "vm.create", "vm.update", "vm.delete", "vm.start", "vm.stop", "vm.restart", "vm.poweroff",
     "vm.suspend", "vm.resume", "pool.dataset.create", "pool.dataset.update", "pool.dataset.delete",
     "pool.snapshot.create", "pool.snapshot.clone", "pool.snapshot.hold", "pool.snapshot.release",
-    "pool.snapshot.rollback", "pool.snapshot.delete", "user.create", "user.update", "user.delete",
+    "pool.snapshot.rollback", "pool.snapshot.delete", "user.create", "user.update", "user.delete", "app.stop",
     "user.set_password",
 ])
 def test_new_v27_writes_are_validated_against_the_manifest(method):
@@ -97,7 +100,7 @@ def test_new_v27_writes_are_validated_against_the_manifest(method):
 
 @pytest.mark.parametrize("method", [
     "container.delete", "container.stop", "vm.delete", "vm.stop", "vm.poweroff", "pool.dataset.delete",
-    "pool.snapshot.delete", "pool.snapshot.rollback", "user.delete",
+    "pool.snapshot.delete", "pool.snapshot.rollback", "user.delete", "app.stop",
     "app.uninstall", "pool.dataset.destroy_snapshots", "filesystem.rmdir", "filesystem.unlink", "filesystem.remove",
 ])
 def test_destructive_classification_is_explicit_or_conservative(method):
