@@ -11,6 +11,20 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 <!-- cmru: release history -->
 
+## [24.1.2] - 2026-10-29
+<!-- cmru: generated -->
+<!-- cmru: source-end=4b69df9deb100f9a3f64b72c221d6e8bf9ca0fa3 -->
+
+### Fixed
+- fix(run-gate): reap helpers on exceptional exits (e55e1e9d5)
+
+### Documentation
+- docs(run-gate): reconcile final selftest evidence (b40c5f137)
+
+### Testing
+- test(run-gate): fix R2 survivor triage (a74394da0)
+- test(run-gate): kill R2 mutation survivors (1e065b152)
+
 ## [24.1.1] - 2026-10-29
 <!-- cmru: generated -->
 <!-- cmru: source-end=2e62261a1d3450dd0cbbbaa5349fb8d7fe22ffbb -->
