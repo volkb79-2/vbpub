@@ -1282,12 +1282,10 @@ def execute_plan(
 
     *classify_resource_contention* is a separate, default-off gate option for
     only the lane's own R0 baseline/direct command. A direct pids/OOM event
-    withholds either outcome. PSI reaches the pressure threshold at 1% of the
-    measured window, with a 100 ms minimum; any observed CPU throttling also
-    makes a failed command retryable. A failed command with an unavailable
-    required sample is retryable, while completed passes remain accepted
-    without cgroup telemetry. R2 candidates and R3 transforms keep their own
-    classification paths.
+    withholds either outcome. PSI and CPU throttling do not change the result.
+    A failed command with an unavailable required sample is incomplete, while
+    completed passes remain accepted without a sample. R2 candidates and R3
+    transforms keep their own classification paths.
 
     *result_report_create_missing_parents* is B006(b)'s opt-in, threaded to
     :func:`_reserve_result_report`; only the snapshot baseline passes ``True``,
@@ -1353,22 +1351,6 @@ def execute_plan(
                     )
                 observation = contention_window.observation
                 result = replace(result, resource_contention=observation)
-                if observation.reasons:
-                    telemetry = (
-                        "\nAssay cgroup resource telemetry "
-                        f"({observation.status}): {', '.join(observation.reasons)}"
-                    )
-                    stderr_tail, additional_dropped = _bounded_tail(
-                        (result.stderr_tail or "") + telemetry,
-                        sensitive_values=_plan_passthrough_values(plan),
-                    )
-                    result = replace(
-                        result,
-                        stderr_tail=stderr_tail,
-                        stderr_dropped_bytes=(
-                            result.stderr_dropped_bytes + additional_dropped
-                        ),
-                    )
                 if contention.withhold_r0_result(
                     observation,
                     outcome=result.outcome,
@@ -1382,7 +1364,7 @@ def execute_plan(
                     diagnostic = (
                         "\nAssay R0 result withheld because its cgroup resource "
                         f"window was {observation.status}{window_details}; treated "
-                        "as infrastructure for retry."
+                        "as an infrastructure result."
                     )
                     stderr_tail, additional_dropped = _bounded_tail(
                         (result.stderr_tail or "") + diagnostic,
@@ -1749,11 +1731,8 @@ def execute_command(
     judged R0 FAIL, never ``EXEC_FAILED``, and never a universal PASS).
     The registered gate may opt into cgroup attribution for its own R0 call:
     a direct pids/OOM event withholds either result. A failed command becomes
-    ``ERROR``/``EXEC_FAILED`` for retry when one cgroup PSI counter reaches 1%
-    of the measured window (100 ms minimum), when CPU throttling is observed,
-    or when a required sample is unavailable. Completed passes remain usable
-    without cgroup telemetry; available pressure deltas are retained in the
-    result as telemetry.
+    incomplete when a required sample is unavailable. PSI and CPU throttling
+    do not change the result; completed passes remain usable without a sample.
 
     **(B078) *result_report*** defaults to the sentinel
     :data:`_LANE_DECLARED_REPORT`, meaning "use ``lane.result_report``" --

@@ -1,29 +1,19 @@
-"""Attribute cgroup pressure to one completed Assay command window.
+"""Sample cgroup resource events around one completed Assay command window.
 
-PSI and throttling are retained as telemetry. They make a completed failure
-retryable only when they show material pressure: an observed CPU throttle or
-one cgroup PSI counter accumulating at least 5% of the command window, with a
-100 ms minimum. This filters shared-host stalls measured at 1.5% or less in
-the provisional runs, including 5.34 seconds of CPU-some pressure over a
-fifteen-minute peer run. CPU throttling remains direct pressure evidence. A
-completed pass is never withheld for PSI/throttling alone; direct pids or
-memory OOM events still withhold because they can kill or truncate work.
+PSI and CPU throttling remain observations, but they do not make a window
+``affected`` or change a verdict. ``affected`` means a direct pids or memory
+OOM limit event was observed in the command's cgroup subtree.
 """
 
 from __future__ import annotations
 
 import os
-import time
 from collections.abc import Callable, Mapping
 from typing import Any, Self
 
 from . import liveness_resources, resource_limits
 from .errors import Outcome
 from .records import positional_record
-
-_PSI_PRESSURE_FRACTION = 0.05
-_PSI_MINIMUM_STALL_US = 100_000
-
 
 @positional_record
 class ContentionObservation:
@@ -36,6 +26,8 @@ class ContentionObservation:
             raise ValueError("contention status is invalid")
         if type(self.resource_limit_hit) is not bool:
             raise ValueError("resource_limit_hit must be a bool")
+        if (self.status == "affected") != self.resource_limit_hit:
+            raise ValueError("affected status must match resource_limit_hit")
         if type(self.reasons) is not tuple or any(
             not isinstance(reason, str) or not reason for reason in self.reasons
         ):
@@ -61,7 +53,6 @@ class ContentionWindow:
             liveness_resources.read_liveness_resources
         ),
         pid: int | None = None,
-        monotonic_ns: Callable[[], int] = time.monotonic_ns,
     ) -> None:
         if observer_socket_path is not None and (
             not isinstance(observer_socket_path, str) or not observer_socket_path
@@ -69,26 +60,21 @@ class ContentionWindow:
             raise ValueError("observer_socket_path must be None or a non-empty string")
         if not callable(counters_reader) or not callable(pressure_reader):
             raise TypeError("contention readers must be callable")
-        if not callable(monotonic_ns):
-            raise TypeError("monotonic_ns must be callable")
         if pid is not None and (type(pid) is not int or pid < 1):
             raise ValueError("pid must be a positive integer or None")
         self.observer_socket_path = observer_socket_path
         self.counters_reader = counters_reader
         self.pressure_reader = pressure_reader
-        self.monotonic_ns = monotonic_ns
         self.pid = os.getpid() if pid is None else pid
         self.observation = ContentionObservation("unobserved")
         self._before_counters: resource_limits.ResourceLimitCounters | None = None
         self._before_pressure: Mapping[str, Any] | None = None
         self._before_counter_error: str | None = None
         self._before_pressure_error: str | None = None
-        self._started_ns: int | None = None
 
     def __enter__(self) -> Self:
         if self.observer_socket_path is None:
             return self
-        self._started_ns = self.monotonic_ns()
         try:
             self._before_counters = self.counters_reader(
                 observer_socket_path=self.observer_socket_path
@@ -137,8 +123,6 @@ class ContentionWindow:
                 if pressure_error is not None
                 else after_error
             )
-        ended_ns = self.monotonic_ns()
-
         limit_evidence = None
         if counter_error is not None:
             reasons.append(counter_error)
@@ -193,24 +177,10 @@ class ContentionWindow:
                 f"{name}={value}" for name, value in sorted(pressure_deltas.items())
             )
 
-        throttled = any(
-            pressure_deltas.get(name, 0) > 0
-            for name in ("cgroup_cpu.nr_throttled", "cgroup_cpu.throttled_usec")
-        )
-        started_ns = ended_ns if self._started_ns is None else self._started_ns
-        duration_us = max(0, ended_ns - started_ns) // 1_000
-        psi_threshold_us = max(
-            _PSI_MINIMUM_STALL_US,
-            int(duration_us * _PSI_PRESSURE_FRACTION),
-        )
-        material_psi = any(
-            name.startswith("cgroup_psi.") and value >= psi_threshold_us
-            for name, value in pressure_deltas.items()
-        )
-        if resource_limit_hit or throttled or material_psi:
+        if resource_limit_hit:
             self.observation = ContentionObservation(
                 "affected",
-                resource_limit_hit=resource_limit_hit,
+                resource_limit_hit=True,
                 reasons=tuple(reasons),
             )
         elif limit_evidence is not None and pressure_status in {"clear", "stalled"}:
@@ -224,35 +194,25 @@ def withhold_canary_result(
     observation: ContentionObservation,
     *,
     outcome: Outcome,
-    expected_failure: bool = False,
     require_observation: bool = False,
 ) -> bool:
     """Whether a canary result is unclassifiable from its resource window.
 
     A cgroup OOM or pids-limit event can directly prevent a command from
-    completing its assertion. An unavailable observation does not overturn a
-    completed pass or a cause-proven transformed failure, but a required
-    unavailable sample prevents classifying a failed control or unproven
-    failure. Consumers without an observer retain their existing behavior
-    unless the registered gate requires attribution. Material PSI/throttling
-    with an unexpected failed assertion makes that attempt inconclusive. The
-    caller may exempt a transformed failure only after checking positive
-    evidence for the intended canary effect; an R0 ``COMMAND_FAILED`` reason
-    alone is too broad for import-break. Direct resource-limit events always
-    withhold the result, even when that evidence is present.
-    Command timeouts and other incomplete outcomes are already infrastructure.
+    completing. A required unavailable sample prevents classifying a failed
+    control or transform, while completed passes remain usable without a
+    sample. PSI and CPU throttling do not change the result. Command timeouts
+    and other incomplete outcomes are already infrastructure.
     """
     if not isinstance(observation, ContentionObservation):
         raise TypeError("observation must be a ContentionObservation")
     if not isinstance(outcome, Outcome):
         raise TypeError("outcome must be an Outcome")
-    if type(expected_failure) is not bool:
-        raise TypeError("expected_failure must be a bool")
     if type(require_observation) is not bool:
         raise TypeError("require_observation must be a bool")
     if observation.resource_limit_hit:
         return True
-    if outcome is not Outcome.FAIL or expected_failure:
+    if outcome is not Outcome.FAIL:
         return False
     if observation.status == "unobserved":
         return require_observation
@@ -268,10 +228,9 @@ def withhold_r0_result(
     """Whether an R0 result is unclassifiable from its resource window.
 
     A direct pids/OOM event makes the R0 measurement incomplete even if its
-    command exited successfully. A failed command under material pressure or
-    an incomplete required observation is retried as infrastructure. PSI and
-    throttling alone never withhold a completed pass. Command-budget expiry is
-    already an incomplete outcome.
+    command exited successfully. A failed command with an unavailable
+    required observation is incomplete. PSI and throttling do not affect the
+    result. Command-budget expiry is already an incomplete outcome.
     """
     if not isinstance(observation, ContentionObservation):
         raise TypeError("observation must be a ContentionObservation")
@@ -296,9 +255,8 @@ def withhold_r1_result(
     """Whether an R1 coverage claim is incomplete under its R0 window.
 
     A direct pids/OOM event can truncate R0 or its coverage artifact and
-    withholds either outcome. PSI/throttling retain a completed coverage
-    claim; a failed claim under material pressure or an unavailable required
-    observation is retried as infrastructure.
+    withholds either outcome. PSI and throttling do not affect a completed
+    coverage claim; an unavailable required observation withholds a failure.
     """
     if not isinstance(observation, ContentionObservation):
         raise TypeError("observation must be a ContentionObservation")

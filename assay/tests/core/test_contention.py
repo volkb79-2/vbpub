@@ -41,16 +41,13 @@ def _pressure(
     }
 
 
-def _window(
-    monkeypatch, *, limits=None, pressure=None, hit=False, duration_us=1_000_000
-):
+def _window(monkeypatch, *, limits=None, pressure=None, hit=False):
     if limits is None:
         limits = (object(), object())
     if pressure is None:
         pressure = (_pressure(), _pressure())
     limit_values = iter(limits)
     pressure_values = iter(pressure)
-    time_values = iter((0, duration_us * 1_000))
 
     def limit_evidence(*_args, **_kwargs):
         zero = SimpleNamespace(delta=0)
@@ -74,7 +71,6 @@ def _window(
         counters_reader=lambda **kwargs: next(limit_values),
         pressure_reader=lambda pid: next(pressure_values),
         pid=41,
-        monotonic_ns=lambda: next(time_values),
     )
 
 
@@ -83,6 +79,10 @@ def test_contention_observation_rejects_malformed_values():
         contention.ContentionObservation("busy")
     with pytest.raises(ValueError, match="must be a bool"):
         contention.ContentionObservation("clear", resource_limit_hit=1)
+    with pytest.raises(ValueError, match="affected status must match"):
+        contention.ContentionObservation("affected")
+    with pytest.raises(ValueError, match="affected status must match"):
+        contention.ContentionObservation("clear", resource_limit_hit=True)
     with pytest.raises(ValueError, match="non-empty strings"):
         contention.ContentionObservation("clear", reasons=("",))
     with pytest.raises(ValueError, match="non-empty strings"):
@@ -117,14 +117,6 @@ def test_contention_window_rejects_non_callable_readers(kwargs):
         contention.ContentionWindow(**kwargs)
 
 
-def test_contention_window_rejects_a_non_callable_clock():
-    with pytest.raises(TypeError, match="monotonic_ns must be callable"):
-        contention.ContentionWindow(
-            observer_socket_path=None,
-            monotonic_ns=3,
-        )
-
-
 def test_contention_window_without_observer_is_explicitly_unobserved(monkeypatch):
     def must_not_read(*args, **kwargs):
         pytest.fail("unconfigured observation must not read host cgroups")
@@ -146,109 +138,36 @@ def test_contention_window_accepts_a_clear_cgroup_window(monkeypatch):
     assert window.observation == contention.ContentionObservation("clear")
 
 
-def test_contention_window_records_host_pressure_but_uses_material_cgroup_stalls(
-    monkeypatch,
+@pytest.mark.parametrize(
+    "pressure_kwargs",
+    [
+        pytest.param({"host_total": 20}, id="host-psi"),
+        pytest.param(
+            {
+                "cpu_total": 5_340_037,
+                "io_full": 1_578_273,
+                "memory_full": 637_663,
+            },
+            id="cgroup-psi",
+        ),
+        pytest.param(
+            {"nr_throttled": 1, "throttled_usec": 500},
+            id="cpu-throttling",
+        ),
+    ],
+)
+def test_psi_and_throttling_never_withhold_a_failed_r0(
+    monkeypatch, pressure_kwargs
 ):
     window = _window(
         monkeypatch,
-        pressure=(_pressure(host_total=0), _pressure(host_total=20)),
+        pressure=(_pressure(), _pressure(**pressure_kwargs)),
     )
-    with window:
-        pass
-    assert window.observation == contention.ContentionObservation("clear")
-
-    window = _window(monkeypatch, pressure=(_pressure(), _pressure(cpu_total=1)))
     with window:
         pass
     assert window.observation.status == "clear"
-    assert window.observation.reasons == ("cgroup_psi.cpu.some_us=1",)
-
-    window = _window(monkeypatch, pressure=(_pressure(), _pressure(cpu_total=200_000)))
-    with window:
-        pass
-    assert window.observation.status == "affected"
-    assert window.observation.reasons == ("cgroup_psi.cpu.some_us=200000",)
-
-
-def test_five_percent_psi_delta_is_material(monkeypatch):
-    window = _window(
-        monkeypatch,
-        duration_us=5_000_000,
-        pressure=(_pressure(), _pressure(cpu_total=250_000)),
-    )
-    with window:
-        pass
-    assert window.observation.status == "affected"
-    assert window.observation.reasons == ("cgroup_psi.cpu.some_us=250000",)
-
-
-def test_single_peer_psi_seen_in_provisional_run_does_not_withhold_green_claims(
-    monkeypatch,
-):
-    window = _window(
-        monkeypatch,
-        duration_us=900_000_000,
-        pressure=(
-            _pressure(),
-            _pressure(
-                cpu_total=5_340_037,
-                io_full=1_578_273,
-                memory_full=637_663,
-            ),
-        ),
-    )
-    with window:
-        pass
-
-    observation = window.observation
-    assert observation.status == "clear"
-    assert observation.reasons == (
-        "cgroup_psi.cpu.some_us=5340037",
-        "cgroup_psi.io.full_us=1578273",
-        "cgroup_psi.memory.full_us=637663",
-    )
-    assert not contention.withhold_r0_result(observation, outcome=Outcome.PASS)
-    assert not contention.withhold_r1_result(observation, outcome=Outcome.PASS)
-
-
-def test_provisional_psi_deltas_below_five_percent_remain_telemetry(monkeypatch):
-    window = _window(
-        monkeypatch,
-        duration_us=459_000_000,
-        pressure=(
-            _pressure(),
-            _pressure(
-                cpu_total=6_749_085,
-                io_full=2_890_493,
-                memory_full=1_499_041,
-            ),
-        ),
-    )
-    with window:
-        pass
-
-    observation = window.observation
-    assert observation.status == "clear"
-    assert observation.reasons == (
-        "cgroup_psi.cpu.some_us=6749085",
-        "cgroup_psi.io.full_us=2890493",
-        "cgroup_psi.memory.full_us=1499041",
-    )
-    assert not contention.withhold_r0_result(observation, outcome=Outcome.FAIL)
-    assert not contention.withhold_r1_result(observation, outcome=Outcome.FAIL)
-
-
-def test_cpu_throttling_is_direct_pressure_evidence(monkeypatch):
-    window = _window(
-        monkeypatch,
-        pressure=(_pressure(), _pressure(nr_throttled=1, throttled_usec=500)),
-    )
-    with window:
-        pass
-    assert window.observation.status == "affected"
-    assert window.observation.reasons == (
-        "cgroup_cpu.nr_throttled=1",
-        "cgroup_cpu.throttled_usec=500",
+    assert not contention.withhold_r0_result(
+        window.observation, outcome=Outcome.FAIL
     )
 
 
@@ -395,97 +314,35 @@ def test_contention_window_reports_missing_snapshots_without_inventing_clear(
 
 
 @pytest.mark.parametrize(
-    (
-        "observation",
-        "outcome",
-        "expected_failure",
-        "require_observation",
-        "withhold",
-    ),
+    ("observation", "outcome", "require_observation", "withhold"),
     [
-        (contention.ContentionObservation("clear"), Outcome.FAIL, False, False, False),
-        (
-            contention.ContentionObservation("affected"),
-            Outcome.FAIL,
-            False,
-            False,
-            True,
-        ),
-        (
-            contention.ContentionObservation("affected"),
-            Outcome.FAIL,
-            True,
-            False,
-            False,
-        ),
+        (contention.ContentionObservation("clear"), Outcome.FAIL, False, False),
         (
             contention.ContentionObservation("affected", resource_limit_hit=True),
             Outcome.FAIL,
-            True,
             False,
             True,
-        ),
-        (contention.ContentionObservation("unknown"), Outcome.FAIL, False, False, True),
-        (contention.ContentionObservation("unknown"), Outcome.FAIL, True, False, False),
-        (
-            contention.ContentionObservation("unknown"),
-            Outcome.PASS,
-            False,
-            False,
-            False,
         ),
         (
             contention.ContentionObservation("affected", resource_limit_hit=True),
             Outcome.PASS,
             False,
-            False,
             True,
         ),
-        (
-            contention.ContentionObservation("affected"),
-            Outcome.PASS,
-            False,
-            False,
-            False,
-        ),
-        (
-            contention.ContentionObservation("unobserved"),
-            Outcome.PASS,
-            False,
-            False,
-            False,
-        ),
-        (
-            contention.ContentionObservation("unobserved"),
-            Outcome.FAIL,
-            False,
-            False,
-            False,
-        ),
-        (
-            contention.ContentionObservation("unobserved"),
-            Outcome.PASS,
-            False,
-            True,
-            False,
-        ),
-        (
-            contention.ContentionObservation("unobserved"),
-            Outcome.FAIL,
-            False,
-            True,
-            True,
-        ),
+        (contention.ContentionObservation("unknown"), Outcome.FAIL, False, True),
+        (contention.ContentionObservation("unknown"), Outcome.PASS, False, False),
+        (contention.ContentionObservation("unobserved"), Outcome.FAIL, False, False),
+        (contention.ContentionObservation("unobserved"), Outcome.PASS, True, False),
+        (contention.ContentionObservation("unobserved"), Outcome.FAIL, True, True),
     ],
 )
-def test_withhold_canary_result_for_incomplete_or_affected_failures(
-    observation, outcome, expected_failure, require_observation, withhold
+def test_withhold_canary_result_for_incomplete_or_resource_limited_results(
+    observation, outcome, require_observation, withhold
 ):
     assert (
         contention.withhold_canary_result(
             observation,
             outcome=outcome,
-            expected_failure=expected_failure,
             require_observation=require_observation,
         )
         is withhold
@@ -505,12 +362,6 @@ def test_withhold_canary_result_validates_inputs():
             outcome=Outcome.PASS,
             require_observation=1,
         )
-    with pytest.raises(TypeError, match="expected_failure must be a bool"):
-        contention.withhold_canary_result(
-            contention.ContentionObservation("affected"),
-            outcome=Outcome.FAIL,
-            expected_failure=1,
-        )
 
 
 def test_gate_canary_retains_pass_without_a_resource_sample():
@@ -527,36 +378,45 @@ def test_gate_canary_retains_pass_without_a_resource_sample():
 
 
 @pytest.mark.parametrize(
-    ("status", "outcome", "withhold"),
+    ("status", "resource_limit_hit", "outcome", "withhold"),
     [
-        ("clear", Outcome.FAIL, False),
-        ("affected", Outcome.FAIL, True),
-        ("unknown", Outcome.FAIL, True),
-        ("unobserved", Outcome.FAIL, False),
-        ("affected", Outcome.PASS, False),
-        ("unobserved", Outcome.PASS, False),
-        ("unknown", Outcome.PASS, False),
-        ("clear", Outcome.PASS, False),
+        ("clear", False, Outcome.FAIL, False),
+        ("affected", True, Outcome.FAIL, True),
+        ("unknown", False, Outcome.FAIL, True),
+        ("unobserved", False, Outcome.FAIL, False),
+        ("affected", True, Outcome.PASS, True),
+        ("unobserved", False, Outcome.PASS, False),
+        ("unknown", False, Outcome.PASS, False),
+        ("clear", False, Outcome.PASS, False),
     ],
 )
-def test_withhold_r0_result_only_for_unclassifiable_shapes(status, outcome, withhold):
+def test_withhold_r0_result_only_for_direct_limits_or_unclassifiable_failures(
+    status, resource_limit_hit, outcome, withhold
+):
     assert (
         contention.withhold_r0_result(
-            contention.ContentionObservation(status),
+            contention.ContentionObservation(
+                status, resource_limit_hit=resource_limit_hit
+            ),
             outcome=outcome,
         )
         is withhold
     )
 
-
-def test_r0_resource_limit_event_withholds_the_result():
+def test_limit_event_withholds_failed_r0():
     assert contention.withhold_r0_result(
         contention.ContentionObservation("affected", resource_limit_hit=True),
         outcome=Outcome.FAIL,
     )
+
+
+def test_unavailable_required_sample_withholds_failed_r0():
     assert contention.withhold_r0_result(
-        contention.ContentionObservation("affected", resource_limit_hit=True),
-        outcome=Outcome.PASS,
+        contention.ContentionObservation(
+            "unknown", reasons=("after-sample-unavailable:resource-counters",)
+        ),
+        outcome=Outcome.FAIL,
+        require_observation=True,
     )
 
 
@@ -595,8 +455,11 @@ def test_withhold_r0_result_validates_inputs():
     ("observation", "outcome", "withhold"),
     [
         (contention.ContentionObservation("clear"), Outcome.FAIL, False),
-        (contention.ContentionObservation("affected"), Outcome.FAIL, True),
-        (contention.ContentionObservation("affected"), Outcome.PASS, False),
+        (
+            contention.ContentionObservation("affected", resource_limit_hit=True),
+            Outcome.FAIL,
+            True,
+        ),
         (
             contention.ContentionObservation("affected", resource_limit_hit=True),
             Outcome.PASS,
@@ -607,7 +470,7 @@ def test_withhold_r0_result_validates_inputs():
         (contention.ContentionObservation("unobserved"), Outcome.FAIL, True),
     ],
 )
-def test_withhold_r1_result_for_unclassifiable_or_pressure_affected_claims(
+def test_withhold_r1_result_for_direct_limits_or_unavailable_failures(
     observation, outcome, withhold
 ):
     assert contention.withhold_r1_result(observation, outcome=outcome) is withhold

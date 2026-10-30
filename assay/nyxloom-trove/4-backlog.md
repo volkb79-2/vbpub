@@ -154,7 +154,15 @@ items:
   - {id: B159, title: "the schema migration docs test requires hand-written CMRU release notes in an intentionally empty Unreleased section", type: bugfix, component: tests, context_estimate: small}
   - {id: B160, title: "SQL candidate discovery materializes every mutation site before applying the bounded candidate limit", type: bugfix, component: adapters, context_estimate: medium}
   - {id: B171, title: "Retain underlying suite result and descendant identity when native R2 cleanup detects outliving descendants; keep the candidate crashed", type: bugfix, component: execution, context_estimate: large}
-  - {id: B172, title: "the registered Assay gate refuses concurrent gates by Docker name; incomplete or cgroup-limit-affected R0/R1/R3 results can be misreported as product FAIL", type: bugfix, component: gate, context_estimate: medium}
+  - {id: B172, title: "Concurrent gate admission and direct resource-limit attribution; PSI/throttling do not decide R0/R1/R3 verdicts", type: bugfix, component: gate, context_estimate: medium}
+  - {id: B173, title: "One termination classifier for R0, R1, R2 and R3", type: refactor, component: execution, context_estimate: medium}
+  - {id: B174, title: "Wire load-independent termination and progress telemetry through R0/R1", type: feature, component: execution, context_estimate: medium}
+  - {id: B175, title: "Use execution receipts to attribute import-break R3 canaries", type: feature, component: canary, context_estimate: medium}
+  - {id: B176, title: "Align R2 mutation buckets and resume validation with termination evidence", type: bugfix, component: mutation, context_estimate: medium}
+  - {id: B177, title: "Consolidate load-verdict documentation and retire the merged-baseline regression lane", type: refactor, component: docs, context_estimate: small}
+  - {id: B178, title: "Reuse a passing lane baseline for the R3 canary control", type: feature, component: canary, context_estimate: medium}
+  - {id: B179, title: "Retry unresolved R2 infrastructure candidates serially at sweep end", type: feature, component: mutation, context_estimate: medium}
+  - {id: B180, title: "Move remaining host-varying process evidence out of verdict v16", type: feature, component: evidence, context_estimate: medium}
 ---
 
 # assay — backlog
@@ -13254,27 +13262,106 @@ rejects malformed descendant identity or a result whose top-level bucket was
 changed to `killed`/`survived`. Close only after the gate is green and the
 three adopter-facing documents, schema, model, state reader, and verifier agree.
 
-## B172 — concurrent gates and contention attribution
+## B172 — concurrent gate admission and direct resource-limit attribution
 
-**Status: IMPLEMENTED IN THIS CANDIDATE; the registered focused lane is its oracle.**
-The old admission snapshot treated every running Docker name beginning with
-`run-gate-` as a blocker, without checking cgroup placement or shared counters.
-It was neither a host lock nor a measurement of whether this lane was affected.
+**Status: 10.0.1 branch candidate; implementation and adopter-facing docs are updated for the forward edit.**
 
-**Chosen contract:** registered gates may run concurrently. R0 and R3 record
-their own cgroup resource windows; R1 uses the baseline's R0 window. A direct
-pids/OOM event withholds the measurement, an unavailable window withholds the
-result, and a failed R0/R1/R3 assertion during measured cgroup PSI/throttling
-is retried as infrastructure. A completed PASS is retained when its window
-is observable and no direct resource limit occurred. Timeouts and other
-incomplete results stay infrastructure outcomes. R2 keeps its
-candidate-scoped event evidence and pressure-adjusted liveness clock. Docker
-names and host PSI do not decide the product verdict. Preserve the 100% line
-and branch coverage floor.
+Registered Assay gates no longer use Docker-name snapshots as admission
+blockers. A cgroup window is `affected` only when it observes a direct pids
+limit or memory OOM event in the measured command's subtree. PSI and CPU
+throttling do not make it affected and do not change R0, R1 or R3 verdicts.
+A direct resource-limit event can withhold either result; an unavailable
+observation can withhold a failure. Completed PASS results are retained when
+there is no direct limit event. R2 keeps its candidate-scoped resource events
+and pressure-adjusted liveness clock. The PASS stderr tail and canary
+`description` no longer carry host measurements, so the SQL witness compares
+stderr exactly without a telemetry exception.
 
-**Oracle:** deterministic fixed-counter tests cover cgroup scope, counter
-resets, direct limits, incomplete windows, completed outcomes, and the old
-false name-based refusal. The registered `parallel-safety-regression` first
-requires these assertions to fail against `origin/main`, then passes them on
-the candidate. README, DESIGN-GUIDE, and CONSUMERS document the behavior and
-its capacity limits.
+`import-break` keeps the 10.0.0 reason-code contract: a clean
+`COMMAND_FAILED` is the expected transformed result. Assay does not bind a
+nonce into source or require a language-specific traceback proof. The retained
+verifier correction for incomplete transformed outcomes and the SQL witness
+mismatch-path diagnostic are outside this rollback and remain in place.
+
+**Acceptance:** registered `tester-unified`, `self-qualification-preflight`
+and `self-qualification-provisional` must all pass on the final tree, including
+R3. The implementation session reports the Run-Gate run IDs. See the
+[Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md) for the candidate
+contract and follow-on WP1–WP8 backlog entries.
+
+## B173 — one termination classifier for R0, R1, R2 and R3
+
+**Status: OPEN; WP1 follow-up.** Add the pure classifier and shared table from
+the Opus design so producer paths can classify process outcomes from exit,
+report, process-tree and resource-limit evidence. Preserve independent SQL
+qualification and verifier derivations. Acceptance requires a table row for
+every precedence case and 100% line and branch coverage for the classifier and
+contention sampler. See the [Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md),
+§§2, 6.1–6.2 and 7/WP1.
+
+## B174 — wire load-independent termination and progress telemetry through R0/R1
+
+**Status: OPEN; WP2 follow-up.** Apply the classifier to the R0 result and
+R1's inherited baseline, place resource observations in progress, and print a
+single advisory line for a failed run with pressure measurements. Keep host
+measurements out of the verdict and command tails. Acceptance includes R0
+signal/limit rows, R1 inheritance, progress resources and full-source
+preflight. See the [Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md),
+§§2, 4, 6.3 and 7/WP2.
+
+## B175 — use execution receipts to attribute import-break R3 canaries
+
+**Status: OPEN; WP3 follow-up.** Replace the temporary 10.0.0 reason-code
+contract with a per-attempt receipt written by the injected import-break
+statement. Pass only a clean expected failure with the matching receipt;
+classify accepted transforms and unrelated failures using the design's table.
+Do not parse stdout or stderr. Acceptance covers Python subprocess behavior
+and a JavaScript canary in the available gate environment. See the
+[Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md), §§3, 6.4 and 7/WP3.
+
+## B176 — align R2 mutation buckets and resume validation with termination evidence
+
+**Status: OPEN; WP4 follow-up.** Derive candidate buckets and state-record
+revalidation from the shared classifier, applying existing equivalence and
+kill-signal refinements only to judgeable results. Re-run old records whose
+bucket no longer matches. Keep SQL qualification's independent derivation.
+Acceptance compares producer buckets, revalidation and verifier results over
+the shared outcome table. See the [Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md),
+§§2, 6.5–6.6 and 7/WP4.
+
+## B177 — consolidate load-verdict documentation and retire the merged-baseline regression lane
+
+**Status: OPEN; WP5 follow-up.** After WP2–WP4 land, remove the
+parallel-safety regression lane whose `origin/main` red-first premise is stale
+after merge. Keep one canonical design-guide section and synchronize the
+README, CONSUMERS, changelog and backlog with the resulting behavior. Acceptance
+runs the integrated tester and provisional qualification gates and checks all
+cross-document anchors. See the [Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md),
+§§6.7–6.8 and 7/WP5.
+
+## B178 — reuse a passing lane baseline for the R3 canary control
+
+**Status: OPEN; optional WP6 follow-up.** When the same commit and plan already
+passed R0 and R1, provide that baseline result to the isolated canary and skip
+the duplicate control execution. Re-run the control when the baseline is not a
+pass. Acceptance compares command counts and outcomes for both paths. See the
+[Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md), §§6.3, 7/WP6.
+
+## B179 — retry unresolved R2 infrastructure candidates serially at sweep end
+
+**Status: OPEN; optional WP7 follow-up.** Re-run each infrastructure, exceeded
+budget or uncertified candidate once, serially, after the main sweep. Classify
+the retry with the same rules and never retry already judged buckets.
+Acceptance verifies one retry per eligible candidate and no parallel retry
+execution. See the [Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md),
+§§6.5, 7/WP7.
+
+## B180 — move remaining host-varying process evidence out of verdict v16
+
+**Status: OPEN; WP8 follow-up with B171.** In a deliberate v17 schema change,
+remove `process_tree_evidence.cleanup_seconds`, add the process-tree signal
+evidence needed by verification, and expose the canary receipt cause so the
+verifier can re-derive it. Keep `budget_per_candidate_derived_s`, because it is
+a judge input. Acceptance includes new-schema checks and old-v16 compatibility
+cases. See the [Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md), §§4,
+6.9 and 7/WP8.

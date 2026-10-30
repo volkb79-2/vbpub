@@ -106,37 +106,20 @@ its HEAD, so run both lanes in the same worktree with no commit in between: any
 later commit, a docs-only or merge commit included, needs a fresh `tester-unified`
 run. Docker container names do not block this lane. Run-Gate maps exit 3 to
 infrastructure `ERROR`; the wrapper uses it for launch failures, timeouts and
-incomplete resource evidence. A direct OOM/pids limit event can withhold R0/R1
-and R3 results even when a command exited zero. A completed R0/R1/R3 PASS is
-retained despite PSI, throttling or unavailable cgroup telemetry. For failed
-R0/R1 commands, PSI counts as material pressure only when one cgroup PSI
-counter reaches at least 5% of the measured command window, with a 100 ms
-minimum; any CPU throttling is also pressure evidence. Smaller deltas are
-recorded as telemetry, not used to make a verdict depend on a quiet host. For
-example, 6.75 seconds of CPU-some PSI over a 7½-minute run stays below this
-threshold. A failed R0/R1 result under material pressure or an unavailable
-required sample is retried as infrastructure. Command-budget expiry already produces an
-incomplete outcome. R1 coverage arithmetic is unchanged for the same complete
-report, and its claim uses the R0 command's resource window. R2 keeps its own
-per-candidate resource event and liveness evidence. For R3, an execution
-error, timeout or missing result is `INCONCLUSIVE`; a pressure-affected failed
-control or unproven transformed failure is also `INCONCLUSIVE`. For
-`import-break`, `COMMAND_FAILED` alone does not prove the canary caused the
-failure. Assay injects a per-run nonce and requires the language-native
-exception plus a stack frame for the exact transformed file and injected
-line. An echoed marker, unrelated failure, copied nonce-less text or output
-with dropped bytes cannot prove the cause. A clear-sample failure without
-that proof is `CANARY_SURVIVED`; the `uncovered-line` reason comes from its R1
-coverage comparison. Direct resource-limit events withhold either canary
-half. Observer sampling follows the lane's resolved
-environment, so the tester gate's ambient socket cannot change a nested
-lane's result. The five registered Assay lanes share one run-gate lock,
-and a separate lock
-in the Git common directory serializes full-source qualification, pilot and
-screen callers across container `/tmp`
-namespaces. No host-wide quiet window is required.
-See the [pressure attribution design](DESIGN-GUIDE.md#shared-host-pressure-attribution)
-and [R3 cause proof](DESIGN-GUIDE.md#r3-canary-cause-evidence-under-psi).
+incomplete resource evidence. For R0/R1/R3, `affected` means a direct pids or
+memory OOM event in the measured cgroup. PSI and CPU throttling do not change
+verdicts. A direct event may withhold either outcome; an unavailable
+observation may withhold a failure, while completed PASS results are retained
+when no direct event occurred. R1 coverage arithmetic is unchanged for the
+same complete report, and its claim uses the R0 command's resource window. R2
+keeps per-candidate resource events and its pressure-adjusted liveness clock.
+Import-break canaries use the expected `COMMAND_FAILED` reason from 10.0.0;
+Assay does not inspect output for a separate cause proof. Timeouts, execution
+errors and missing R3 results remain `INCONCLUSIVE`. Observer sampling follows
+the lane's resolved environment, so the tester gate's ambient socket cannot
+change a nested lane's result. The five registered lanes share a Run-Gate lock
+and a Git-common-directory lock; no host-wide quiet window is required. See
+[host load and verdicts](DESIGN-GUIDE.md#host-load-and-verdicts).
 
 `ASSAY_GATE_ALLOW_SHARED_HOST=1` is a compatibility no-op across the
 registered gate and B105 wrappers; other values are refused. The SQL phase
@@ -2213,7 +2196,7 @@ bounded integer columns. Fixed-length
 **R1** (coverage), **R2 by evidence ingestion** — your own argv runs StrykerJS
 inside the snapshot and assay judges the report
 ([below](#r2-for-javascript-by-ingesting-strykers-report-b046)) — and **R3**
-by the existing cause-sensitive canary runner. Assay still ships no JS/TS
+by the existing canary runner. Assay still ships no JS/TS
 mutation engine, so a *native* R2 lane is still refused. B087 registers R3
 and local real-Vitest tests exercise both mechanisms. Both dstdns canaries
 were qualified under Assay 9.0.0/schema v15; their retained verdicts and
@@ -2261,7 +2244,7 @@ point at `lcov.info`).
 
 ### Add an R3 canary to a JavaScript lane
 
-R3 checks that the lane's command catches a deliberately injected cause. Use
+R3 checks that the lane's command rejects a deliberately transformed target. Use
 `import-break` when the test suite imports the target file; it must make the
 command fail with `COMMAND_FAILED`. Use `uncovered-line` when the lane also
 declares R1 coverage; the appended function body must make R1 fail with

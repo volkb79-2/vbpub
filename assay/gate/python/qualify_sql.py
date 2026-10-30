@@ -982,25 +982,6 @@ def normalize_verdict(document: Mapping[str, Any], *, assay_version: str, head_o
     normalized["started"] = "@STARTED@"
     normalized["ended"] = "@ENDED@"
     normalized["judgment"]["resolved"]["base"] = "@BASE_OID@"
-    # The registered qualification runner adds this line to a completed R0
-    # result when its cgroup observer has telemetry. PSI/throttling deltas and
-    # sample status vary with the host window; they do not alter the SQL R2
-    # judgement. The witness command is otherwise silent, so discard only a
-    # telemetry-only, untruncated tail. A command-output prefix or truncation
-    # remains exact evidence and must still compare with the frozen witness.
-    telemetry_tail = normalized.get("result_stderr_tail")
-    telemetry_dropped = normalized.get("result_stderr_dropped_bytes")
-    if (
-        isinstance(telemetry_tail, str)
-        and re.fullmatch(
-            r"\nAssay cgroup resource telemetry \((?:clear|affected|unknown)\): [^\r\n]+",
-            telemetry_tail,
-        )
-        and type(telemetry_dropped) is int
-        and telemetry_dropped == 0
-    ):
-        normalized.pop("result_stderr_tail")
-        normalized.pop("result_stderr_dropped_bytes")
     # The auto budget is derived from this run's measured baseline wall time:
     # real, but not a stable witness value.
     normalized.get("judgment", {}).get("r2", {}).pop("budget_per_candidate_derived_s", None)

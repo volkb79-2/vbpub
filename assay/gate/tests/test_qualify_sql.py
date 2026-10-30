@@ -711,43 +711,6 @@ def test_normalize_verdict_replaces_the_four_placeholder_fields() -> None:
     assert normalized["judgment"]["resolved"]["base"] == "@BASE_OID@"
 
 
-@pytest.mark.parametrize("status", ["clear", "affected", "unknown"])
-def test_compare_with_witness_ignores_a_telemetry_only_r0_stderr_tail(status: str) -> None:
-    actual = _witness_as_actual()
-    actual["result_stderr_tail"] = (
-        f"\nAssay cgroup resource telemetry ({status}): cgroup_psi.cpu.some_us=5340037"
-    )
-    actual["result_stderr_dropped_bytes"] = 0
-    q.compare_with_witness(
-        actual, _WITNESS_PATH, assay_version="9.9.9", head_oid="1" * 40, base_oid="2" * 40
-    )
-
-
-def test_compare_with_witness_keeps_command_output_before_telemetry_exact() -> None:
-    actual = _witness_as_actual()
-    actual["result_stderr_tail"] = (
-        "command warning\n"
-        "\nAssay cgroup resource telemetry (clear): cgroup_psi.cpu.some_us=5340037"
-    )
-    actual["result_stderr_dropped_bytes"] = 0
-    with pytest.raises(q.QualificationError, match=r"\$\.result_stderr_tail"):
-        q.compare_with_witness(
-            actual, _WITNESS_PATH, assay_version="9.9.9", head_oid="1" * 40, base_oid="2" * 40
-        )
-
-
-def test_compare_with_witness_keeps_truncated_telemetry_exact() -> None:
-    actual = _witness_as_actual()
-    actual["result_stderr_tail"] = (
-        "\nAssay cgroup resource telemetry (clear): cgroup_psi.cpu.some_us=5340037"
-    )
-    actual["result_stderr_dropped_bytes"] = 1
-    with pytest.raises(q.QualificationError, match=r"\$\.result_stderr_dropped_bytes"):
-        q.compare_with_witness(
-            actual, _WITNESS_PATH, assay_version="9.9.9", head_oid="1" * 40, base_oid="2" * 40
-        )
-
-
 def test_normalize_verdict_discards_the_run_derived_candidate_budget() -> None:
     document = _minimal_verdict(
         judgment={"resolved": {"base": "2" * 40}, "r2": {"budget_per_candidate_derived_s": 63.089135}}

@@ -81,12 +81,12 @@ def test_build_r0_claim_reflects_a_fail_result(tmp_path: Path):
 @pytest.mark.parametrize(
     ("status", "resource_limit_hit", "expected_outcome"),
     [
-        ("affected", False, Outcome.ERROR),
+        ("clear", False, Outcome.FAIL),
         ("affected", True, Outcome.ERROR),
         ("unknown", False, Outcome.ERROR),
     ],
 )
-def test_failed_r0_command_with_affected_or_unknown_resources_is_infrastructure(
+def test_gate_mode_failed_r0_is_not_withheld_for_psi_or_throttling(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     status: str,
@@ -94,7 +94,14 @@ def test_failed_r0_command_with_affected_or_unknown_resources_is_infrastructure(
     expected_outcome: Outcome,
 ):
     class Window:
-        observation = ContentionObservation(status, resource_limit_hit=resource_limit_hit)
+        observation = ContentionObservation(
+            status,
+            resource_limit_hit=resource_limit_hit,
+            reasons=(
+                "cgroup_psi.cpu.some_us=5340037",
+                "cgroup_cpu.throttled_usec=500",
+            ),
+        )
 
         def __enter__(self):
             return self
@@ -135,12 +142,12 @@ def test_failed_r0_command_with_affected_or_unknown_resources_is_infrastructure(
 @pytest.mark.parametrize(
     ("status", "resource_limit_hit", "expected_outcome"),
     [
-        ("affected", False, Outcome.PASS),
+        ("clear", False, Outcome.PASS),
         ("affected", True, Outcome.ERROR),
         ("unknown", False, Outcome.PASS),
     ],
 )
-def test_completed_r0_pass_is_withheld_only_for_a_direct_limit_event(
+def test_gate_mode_pass_verdict_has_no_stderr_tail(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     status: str,
@@ -151,7 +158,10 @@ def test_completed_r0_pass_is_withheld_only_for_a_direct_limit_event(
         observation = ContentionObservation(
             status,
             resource_limit_hit=resource_limit_hit,
-            reasons=("cgroup_cpu.throttled_usec",),
+            reasons=(
+                "cgroup_psi.cpu.some_us=5340037",
+                "cgroup_cpu.throttled_usec=500",
+            ),
         )
 
         def __enter__(self):
@@ -184,7 +194,7 @@ def test_completed_r0_pass_is_withheld_only_for_a_direct_limit_event(
     if expected_outcome is Outcome.ERROR:
         assert "R0 result withheld" in result.stderr_tail
     else:
-        assert "Assay cgroup resource telemetry" in result.stderr_tail
+        assert result.stderr_tail == ""
 
 
 @pytest.mark.parametrize(
@@ -225,24 +235,23 @@ def _coverage_claim(status: Outcome) -> Claim:
     )
 
 
-def test_r1_claim_is_withheld_only_for_unclassifiable_contention_windows():
+def test_r1_claim_ignores_psi_and_throttling_but_retains_direct_limits():
     adjust = getattr(runner, "_withhold_r1_claim_for_contention", None)
     assert callable(adjust), "R1 must retain the R0 resource window for attribution"
 
-    affected_failure = adjust(
+    pressured_failure = adjust(
         _coverage_claim(Outcome.FAIL),
-        ContentionObservation("affected", reasons=("cgroup_cpu.throttled_usec=1",)),
+        ContentionObservation("clear", reasons=("cgroup_cpu.throttled_usec=1",)),
         diagnostics=None,
     )
-    assert affected_failure.status is Outcome.ERROR
-    assert affected_failure.reason_code is ReasonCode.EXEC_FAILED
-    assert affected_failure.coverage is None
-    assert "cgroup_cpu.throttled_usec=1" in affected_failure.detail
+    assert pressured_failure.status is Outcome.FAIL
+    assert pressured_failure.reason_code is ReasonCode.UNCOVERED_LINES
+    assert pressured_failure.coverage is not None
 
     affected_pass = _coverage_claim(Outcome.PASS)
     assert adjust(
         affected_pass,
-        ContentionObservation("affected", reasons=("cgroup_cpu.throttled_usec=1",)),
+        ContentionObservation("clear", reasons=("cgroup_cpu.throttled_usec=1",)),
         diagnostics=None,
     ) is affected_pass
 
@@ -259,13 +268,6 @@ def test_r1_claim_is_withheld_only_for_unclassifiable_contention_windows():
         diagnostics=None,
     )
     assert unknown_pass.status is Outcome.PASS
-
-    unknown_direct_limit_pass = adjust(
-        _coverage_claim(Outcome.PASS),
-        ContentionObservation("unknown", resource_limit_hit=True),
-        diagnostics=None,
-    )
-    assert unknown_direct_limit_pass.status is Outcome.ERROR
 
     no_observation = _coverage_claim(Outcome.FAIL)
     assert adjust(no_observation, None, diagnostics=None) is no_observation
