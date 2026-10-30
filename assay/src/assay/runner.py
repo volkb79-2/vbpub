@@ -5870,14 +5870,12 @@ def _build_judgment_r2(
     #: duration or the `"none"` opt-out. See `JudgmentR2.
     #: budget_per_candidate_derived_s`'s own docstring.
     budget_per_candidate_derived_s: float | None = None,
-    #: (B091/RW-36) The SAME three-field record the `plan` progress event
-    #: carries, straight from `assay.liveness.LivenessInjection` -- `False`/
-    #: `None`/`None` for every lane liveness never touched (non-python,
-    #: ingested, or no R2 at all), so a reader sees a real `{active: false,
-    #: reason: ..., plugin: null}` object rather than an absent key even on
-    #: those lanes (RW-36's own "a reader sees what ran").
+    #: (B091/RW-36) The same liveness fact the `plan` progress event carries.
+    #: The runner supplies a nonempty reason even when inactive, and this
+    #: required argument prevents a direct producer call from emitting an
+    #: uninformative `{active: false, reason: null, plugin: null}` record.
     liveness_active: bool = False,
-    liveness_reason: str | None = None,
+    liveness_reason: str,
     liveness_plugin: str | None = None,
     liveness_cpu_window_s: float | None = None,
     liveness_idle_floor_s: float | None = None,

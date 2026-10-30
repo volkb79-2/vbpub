@@ -185,7 +185,7 @@ def test_r0_summary_requires_a_measured_failure_claim():
     from types import SimpleNamespace
 
     from assay.cli import _print_run_summary
-    from assay.errors import Outcome
+    from assay.errors import Outcome, ReasonCode
 
     verdict = SimpleNamespace(
         lane="package",
@@ -210,6 +210,27 @@ def test_r0_summary_requires_a_measured_failure_claim():
     verdict.claims = (
         SimpleNamespace(rigor="R0", status=Outcome.FAIL),
         SimpleNamespace(rigor="R1", status=Outcome.FAIL),
+    )
+    out = io.StringIO()
+    _print_run_summary(verdict, out)
+    assert f"R0: FAIL (first failing test: {FIRST})" in out.getvalue()
+
+    # A direct R0 command can fail and then dirty its checkout. The verdict
+    # correctly changes that claim to NO_MEASUREMENT, while retaining the
+    # command failure and test name in its bounded detail.
+    verdict.outcome = Outcome.NO_MEASUREMENT
+    verdict.reason_code = ReasonCode.DIRTY_TREE
+    verdict.exit_code = 3
+    verdict.claims = (
+        SimpleNamespace(
+            rigor="R0",
+            status=Outcome.NO_MEASUREMENT,
+            reason_code=ReasonCode.DIRTY_TREE,
+            detail=(
+                f"R0 command failed; first failing test: {FIRST}; "
+                "run refusal: command dirtied the tree"
+            ),
+        ),
     )
     out = io.StringIO()
     _print_run_summary(verdict, out)

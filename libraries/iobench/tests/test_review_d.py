@@ -1,6 +1,7 @@
 """IOB-BL-06 (review r3 SHOULDs, safety): abort stops the probe unit, bounded reaping, exclusive device writers, tighter fio allowlist."""
 import ctypes
 import os
+import shlex
 import signal
 import subprocess
 import time
@@ -26,6 +27,14 @@ def _set_child_subreaper(enabled):
         error = ctypes.get_errno()
         raise OSError(error, os.strerror(error))
     return bool(previous.value)
+
+
+def _detached_sleep_script(pidfile, seconds):
+    # Record the PID from inside the process that entered the new session.
+    # `$!` names the outer `setsid` command, which may fork before exec when
+    # its caller is already a process-group leader.
+    child = f"echo $$ > {shlex.quote(str(pidfile))}; exec sleep {seconds}"
+    return f"setsid sh -c {shlex.quote(child)} & sleep 28"
 
 
 def _abort_when_probe_starts(host, stuck=False):
@@ -98,19 +107,23 @@ def test_bl06_n_r3_2_a_survivor_holding_the_pipe_cannot_hang_the_run(tmp_path, m
     started = time.time()
     previous_subreaper = _set_child_subreaper(True)
     try:
-        script = f"setsid sleep 29 & echo $! > {pidfiles[0]}; sleep 28"
+        script = _detached_sleep_script(pidfiles[0], 29)
         with pytest.raises(Aborted, match="second signal"):
             real._run_polled(["sh", "-c", script], None)
         assert time.time() - started < 10
         assert pidfiles[0].exists()
+        pid = int(pidfiles[0].read_text().strip())
+        assert os.getsid(pid) == pid
 
         real._escalated = False
         started = time.time()
-        script = f"setsid sleep 29 & echo $! > {pidfiles[1]}; sleep 28"
+        script = _detached_sleep_script(pidfiles[1], 29)
         with pytest.raises(subprocess.TimeoutExpired):
             real._run_polled(["sh", "-c", script], 1.0)
         assert time.time() - started < 10
         assert pidfiles[1].exists()
+        pid = int(pidfiles[1].read_text().strip())
+        assert os.getsid(pid) == pid
     finally:
         try:
             for pidfile in pidfiles:
