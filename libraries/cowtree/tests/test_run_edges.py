@@ -12,7 +12,7 @@ from cowtree.detect import detect
 from cowtree.errors import BackendFailed, PathRefused, RootInvalid
 from cowtree.gc import make_shared
 
-from .fakes import FakeOps
+from .fakes import FakeOps, StatResultProxy
 
 
 def test_owner_and_plain_filesystem_detection_errors_are_typed(monkeypatch, tmp_path):
@@ -42,6 +42,28 @@ def test_failed_identity_adoption_cleans_backend_created_path(tmp_path, monkeypa
     run.close()
 
 
+def test_run_record_identity_rejects_unavailable_and_nonowned_shapes(tmp_path, monkeypatch):
+    run = open_run("identity-record", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path)
+    tree = Path(run.path) / "trees" / "candidate"
+    tree.symlink_to(tmp_path, target_is_directory=True)
+    info = os.lstat(tree)
+    with pytest.raises(PathRefused, match="real directory or regular file"):
+        run._record_identity(str(tree), expected_identity=(info.st_dev, info.st_ino))
+    tree.unlink()
+    original_lstat = run_module.os.lstat
+
+    def fail_candidate_lstat(value, *args, **kwargs):
+        if os.fspath(value) == str(tree):
+            raise PermissionError(errno.EACCES, "candidate stat denied")
+        return original_lstat(value, *args, **kwargs)
+
+    monkeypatch.setattr(run_module.os, "lstat", fail_candidate_lstat)
+    with pytest.raises(PathRefused, match="run-owned path is unavailable"):
+        run._record_identity(str(tree), expected_identity=(1, 2))
+    monkeypatch.setattr(run_module.os, "lstat", original_lstat)
+    run.close()
+
+
 def test_run_identity_registry_is_idempotent_and_refuses_unknown_paths(tmp_path):
     run = open_run("identity-registry", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path)
     tree = run.make_tree("tree")
@@ -51,6 +73,128 @@ def test_run_identity_registry_is_idempotent_and_refuses_unknown_paths(tmp_path)
     with pytest.raises(PathRefused, match="no recorded identity"):
         run._require_owned_identity(str(Path(run.path) / "trees" / "foreign"))
     run.close()
+
+
+def test_run_refuses_non_directory_and_unavailable_owned_paths(tmp_path, monkeypatch):
+    run = open_run("path-shape", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path)
+    tree = run.make_tree("tree")
+    original_lstat = run_module.os.lstat
+
+    def non_directory_run(value, *args, **kwargs):
+        info = original_lstat(value, *args, **kwargs)
+        if os.fspath(value) == run.path:
+            return StatResultProxy(info, st_mode=0o100600)
+        return info
+
+    monkeypatch.setattr(run_module.os, "lstat", non_directory_run)
+    with pytest.raises(PathRefused, match="run path must be a real directory"):
+        run._require_trees_directory()
+    monkeypatch.setattr(run_module.os, "lstat", original_lstat)
+
+    def fail_owned_lstat(value, *args, **kwargs):
+        if os.fspath(value) == str(tree):
+            raise PermissionError(errno.EACCES, "owned path unavailable")
+        return original_lstat(value, *args, **kwargs)
+
+    monkeypatch.setattr(run_module.os, "lstat", fail_owned_lstat)
+    with pytest.raises(PathRefused, match="run-owned path is unavailable"):
+        run._require_owned_identity(str(tree))
+    monkeypatch.setattr(run_module.os, "lstat", original_lstat)
+
+    saved = Path(run.path) / "trees" / "saved"
+    tree.rename(saved)
+    tree.mkdir()
+    with pytest.raises(PathRefused, match="identity changed"):
+        run._require_owned_identity(str(tree))
+    tree.rmdir()
+    saved.rename(tree)
+    run.close()
+
+
+def test_run_rejects_invalid_ingest_and_allowed_symlink_clone_sources(tmp_path):
+    run = open_run("source-shapes", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path)
+    with pytest.raises(PathRefused, match="ingest source"):
+        run.ingest_tree(tmp_path / "missing", "missing")
+    target = run.make_tree("target")
+    link = Path(run.path) / "trees" / "link"
+    link.symlink_to(target, target_is_directory=True)
+    with pytest.raises(PathRefused, match="clone source must be a real directory"):
+        run.clone_tree(link, "clone")
+    link.unlink()
+    run.close()
+
+
+def test_run_clone_backend_failure_cleans_receipt_and_reopens(tmp_path, monkeypatch):
+    run = open_run("clone-failure", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path)
+    source = run.make_tree("source")
+
+    def fail_clone(_source, _destination):
+        raise BackendFailed("clone", errno.EIO, str(source), "copy failed")
+
+    monkeypatch.setattr(run._backend, "clone_tree", fail_clone)
+    with pytest.raises(BackendFailed, match="copy failed"):
+        run.clone_tree(source, "target")
+    assert str(Path(run.path) / "trees" / "target") not in run._owned
+    run.close()
+
+
+def test_run_seal_delete_and_file_receipt_errors_are_typed(tmp_path, monkeypatch):
+    run = open_run("typed-operations", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path)
+    tree = run.make_tree("tree")
+
+    monkeypatch.setattr(run._backend, "seal", lambda _path: (_ for _ in ()).throw(OSError(errno.EIO, "seal denied")))
+    with pytest.raises(BackendFailed, match="seal"):
+        run.seal(tree)
+    monkeypatch.setattr(run._backend, "seal", lambda _path: None)
+
+    monkeypatch.setattr(run._backend, "delete_tree", lambda _path: (_ for _ in ()).throw(OSError(errno.EIO, "delete denied")))
+    with pytest.raises(BackendFailed, match="delete-tree"):
+        run.delete_tree(tree)
+    monkeypatch.setattr(run._backend, "delete_tree", lambda path: run_module.CopyBackend().delete_tree(path))
+    run.delete_tree(tree)
+    run.close()
+
+
+def test_nested_clone_file_requires_backend_receipt_and_cleans_failed_output(tmp_path, monkeypatch):
+    run = open_run("file-receipt", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path)
+    tree = run.make_tree("tree")
+    source = tree / "source"
+    source.write_text("input")
+    real_created_identity = run._backend.created_identity
+    monkeypatch.setattr(run._backend, "created_identity", lambda _path: None)
+    destination = tree / "copy"
+    with pytest.raises(PathRefused, match="did not record the created file identity"):
+        run.clone_file(source, destination)
+    assert not destination.exists() and source.read_text() == "input"
+    monkeypatch.setattr(run._backend, "created_identity", real_created_identity)
+    run.close()
+
+
+def test_open_run_allocation_and_lock_failures_clean_partial_runs(tmp_path, monkeypatch):
+    root = tmp_path / "area"
+    root.mkdir()
+    ops = FakeOps(filesystem="xfs")
+    monkeypatch.setattr(run_module, "_utc_now", lambda: ("stamp", "created"))
+    monkeypatch.setattr(run_module.secrets, "token_hex", lambda _n: "a" * 16)
+    detect(environ={"MDT_COW_ROOT": str(root)}, ops=ops, log=lambda _message: None)
+    runs_dir = root / ".cowtree" / "runs"
+    expected = runs_dir / "collision-stamp-aaaaaaaaaaaaaaaa"
+    expected.mkdir(parents=True)
+    with pytest.raises(BackendFailed, match="run id collision"):
+        open_run("collision", estimate=SpaceEstimate(0, 0, 0), environ={"MDT_COW_ROOT": str(root)}, ops=ops)
+    expected.rmdir()
+
+    real_open = run_module.os.open
+
+    def fail_lock_open(path, *args, **kwargs):
+        if os.fspath(path).endswith("/owner.lock"):
+            raise PermissionError(errno.EACCES, "lock create denied")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(run_module.os, "open", fail_lock_open)
+    with pytest.raises(PermissionError, match="lock create denied"):
+        open_run("lock-open", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path)
+
 
 
 def test_shared_source_is_authorized_for_tree_and_file_clones(tmp_path):

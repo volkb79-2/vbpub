@@ -194,6 +194,9 @@ def test_owner_status_uses_boot_pid_namespace_and_pid_starttime(monkeypatch):
     monkeypatch.setattr(Path, "read_text", lambda *_args, **_kwargs: "\n")
     assert gc_module._owner_status(owner) == "unknown"
 
+    monkeypatch.setattr(gc_module.socket, "gethostname", lambda: (_ for _ in ()).throw(OSError("hostname denied")))
+    assert gc_module._owner_status(owner) == "unknown"
+
 
 def test_gc_retains_run_when_owner_namespace_cannot_be_compared(tmp_path):
     run = open_run("unknown-owner", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path)
@@ -394,6 +397,54 @@ def test_dead_flock_inventory_filters_holder_and_lease_outcomes(tmp_path, monkey
     assert dead_flock_runs(tmp_path) == []
     monkeypatch.setattr(gc_module.fcntl, "flock", real_flock)
     shutil.rmtree(managed_path)
+
+
+def test_gc_and_dead_inventory_handle_lock_inspection_and_scan_failures(tmp_path, monkeypatch):
+    assert dead_flock_runs(tmp_path / "missing") == []
+    regular = tmp_path / "regular"
+    regular.write_text("not a directory")
+    assert dead_flock_runs(regular) == []
+    link = tmp_path / "linked"
+    link.symlink_to(regular)
+    assert dead_flock_runs(link) == []
+
+    run = open_run("fstat-lock", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path)
+    path = Path(run.path)
+    _abandon(run)
+    real_fstat = gc_module.os.fstat
+
+    def fail_lock_fstat(fd):
+        target = os.readlink(f"/proc/self/fd/{fd}")
+        if target.endswith("/owner.lock"):
+            raise PermissionError(13, "lock fstat denied")
+        return real_fstat(fd)
+
+    monkeypatch.setattr(gc_module.os, "fstat", fail_lock_fstat)
+    assert {item.name: item.status for item in gc(tmp_path)}[path.name] == "lock-unavailable"
+    assert dead_flock_runs(tmp_path) == []
+
+    def nonregular_lock_fstat(fd):
+        target = os.readlink(f"/proc/self/fd/{fd}")
+        if target.endswith("/owner.lock"):
+            return StatResultProxy(real_fstat(fd), st_mode=0o040700)
+        return real_fstat(fd)
+
+    monkeypatch.setattr(gc_module.os, "fstat", nonregular_lock_fstat)
+    assert dead_flock_runs(tmp_path) == []
+    monkeypatch.setattr(gc_module.os, "fstat", real_fstat)
+
+    real_lstat = gc_module.os.lstat
+
+    def fail_run_lstat(value, *args, **kwargs):
+        if os.fspath(value) == str(path):
+            raise PermissionError(13, "run stat denied")
+        return real_lstat(value, *args, **kwargs)
+
+    monkeypatch.setattr(gc_module.os, "lstat", fail_run_lstat)
+    assert dead_flock_runs(tmp_path) == []
+    monkeypatch.setattr(gc_module.os, "lstat", real_lstat)
+    import shutil
+    shutil.rmtree(path)
 
 
 def test_gc_retains_missing_or_invalid_lock_and_non_directory(tmp_path):

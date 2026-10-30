@@ -28,5 +28,8 @@ internal library, not a separately published release target.
   failed or short writes while initializing the private metadata version as a
   typed invalid-root error. Expand fake-ops coverage for backend cleanup,
   identity races, shared-tree leases, and metadata initialization failures.
+- Preserve typed btrfs deletion inspection failures and use the module cleanup
+  helper when btrfs ingest or walk-clone population fails. Close the lock fd if
+  dead-run inventory cannot inspect its file type.
 
 <!-- cmru: release history -->

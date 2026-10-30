@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import errno
+import importlib
 import logging
 import os
 from pathlib import Path
 
-import cowtree.detect as detect_module
 import pytest
 from cowtree.backends import LinuxOps
 from cowtree.detect import _read_mountinfo, _reset_info_for_tests, detect
@@ -13,6 +13,8 @@ from cowtree.errors import RootInvalid
 from cowtree.paths import mount_fstype, parse_mountinfo
 
 from .fakes import FakeOps
+
+detect_module = importlib.import_module("cowtree.detect")
 
 
 class MountOps(FakeOps):
@@ -368,3 +370,78 @@ def test_private_layout_reports_probe_write_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(detect_module.os, "write", short_write)
     with pytest.raises(RootInvalid, match="cannot initialize"):
         detect_module._ensure_private_layout(str(root))
+
+
+@pytest.mark.parametrize("failure_stage", ["private-stat", "version-open", "runs-mkdir", "runs-chmod"])
+def test_private_layout_wraps_existing_metadata_syscall_failures(tmp_path, monkeypatch, failure_stage):
+    root = tmp_path / "area"
+    root.mkdir()
+    private = root / ".cowtree"
+    if failure_stage == "private-stat":
+        real_lstat = detect_module.os.lstat
+
+        def fail_private_lstat(value, *args, **kwargs):
+            if value == str(private):
+                raise OSError(errno.EACCES, "private stat denied")
+            return real_lstat(value, *args, **kwargs)
+
+        monkeypatch.setattr(detect_module.os, "lstat", fail_private_lstat)
+        expected = "cannot inspect cowtree metadata"
+    elif failure_stage == "version-open":
+        real_open = detect_module.os.open
+
+        def fail_version_open(value, *args, **kwargs):
+            if value == str(private / "VERSION"):
+                raise PermissionError(errno.EACCES, "version create denied")
+            return real_open(value, *args, **kwargs)
+
+        monkeypatch.setattr(detect_module.os, "open", fail_version_open)
+        expected = "cannot initialize .cowtree/VERSION"
+    elif failure_stage == "runs-mkdir":
+        real_mkdir = detect_module.os.mkdir
+
+        def fail_runs_mkdir(value, *args, **kwargs):
+            if value == str(private / "runs"):
+                raise PermissionError(errno.EACCES, "runs create denied")
+            return real_mkdir(value, *args, **kwargs)
+
+        monkeypatch.setattr(detect_module.os, "mkdir", fail_runs_mkdir)
+        expected = "cannot create cowtree directory"
+    else:
+        real_chmod = detect_module.os.chmod
+
+        def fail_runs_chmod(value, *args, **kwargs):
+            if value == str(private / "runs"):
+                raise PermissionError(errno.EACCES, "runs chmod denied")
+            return real_chmod(value, *args, **kwargs)
+
+        monkeypatch.setattr(detect_module.os, "chmod", fail_runs_chmod)
+        expected = "cannot secure cowtree directory"
+
+    with pytest.raises(RootInvalid, match=expected):
+        detect_module._ensure_private_layout(str(root))
+
+
+def test_btrfs_probe_swallows_fallback_cleanup_error_and_probe_cleanup_missing(tmp_path, monkeypatch):
+    root = tmp_path / "area"
+    root.mkdir()
+    real_rmtree = detect_module.shutil.rmtree
+
+    def fail_source_cleanup(path, *args, **kwargs):
+        if os.path.basename(path) == "source":
+            raise OSError(errno.EIO, "source cleanup failed")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(detect_module.shutil, "rmtree", fail_source_cleanup)
+    ops = FakeOps(filesystem="btrfs", snapshot_error=errno.EIO, destroy_error=errno.EIO)
+    area = detect_module.detect(
+        environ={"MDT_COW_ROOT": str(root)}, ops=ops, log=lambda _message: None
+    )
+    assert area is not None and area.caps.backend == "reflink"
+    monkeypatch.setattr(detect_module.shutil, "rmtree", lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError()))
+    root2 = tmp_path / "area2"
+    root2.mkdir()
+    area = detect_module.detect(
+        environ={"MDT_COW_ROOT": str(root2)}, ops=FakeOps(), log=lambda _message: None
+    )
+    assert area is not None

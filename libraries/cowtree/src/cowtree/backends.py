@@ -895,11 +895,11 @@ class BtrfsBackend(ReflinkBackend):
             )
             self._mark_created(dst, identity, entries)
         except (PathRefused, BackendFailed):
-            self._cleanup_empty_created_directory(dst, identity, self._delete_empty_created_tree, self.log)
+            _cleanup_empty_created_directory(dst, identity, self._delete_empty_created_tree, self.log)
             self.forget_created_identity(dst)
             raise
         except OSError as exc:
-            self._cleanup_empty_created_directory(dst, identity, self._delete_empty_created_tree, self.log)
+            _cleanup_empty_created_directory(dst, identity, self._delete_empty_created_tree, self.log)
             self.forget_created_identity(dst)
             raise _raise_backend("ingest-tree", dst, exc) from exc
         return dst
@@ -978,11 +978,11 @@ class BtrfsBackend(ReflinkBackend):
             )
             self._mark_created(dst, identity, entries)
         except (PathRefused, BackendFailed):
-            self._cleanup_empty_created_directory(dst, identity, self._delete_empty_created_tree, self.log)
+            _cleanup_empty_created_directory(dst, identity, self._delete_empty_created_tree, self.log)
             self.forget_created_identity(dst)
             raise
         except OSError as exc:
-            self._cleanup_empty_created_directory(dst, identity, self._delete_empty_created_tree, self.log)
+            _cleanup_empty_created_directory(dst, identity, self._delete_empty_created_tree, self.log)
             self.forget_created_identity(dst)
             raise _raise_backend("clone-tree", src, exc) from exc
         return dst
@@ -1003,9 +1003,13 @@ class BtrfsBackend(ReflinkBackend):
 
     def delete_tree(self, path: str) -> None:
         try:
-            is_subvolume = os.path.lexists(path) and os.path.isdir(path) and os.stat(path, follow_symlinks=False).st_ino == 256
+            target_info = os.lstat(path)
+        except FileNotFoundError:
+            is_subvolume = False
         except OSError as exc:
             raise _raise_backend("stat-delete-target", path, exc) from exc
+        else:
+            is_subvolume = stat.S_ISDIR(target_info.st_mode) and target_info.st_ino == 256
         if is_subvolume:
             parent, name = os.path.split(path)
             parent_fd = -1

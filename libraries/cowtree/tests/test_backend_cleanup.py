@@ -13,6 +13,7 @@ from cowtree.backends import (
     LinuxOps,
     _cleanup_created,
     _cleanup_empty_created_directory,
+    _cleanup_partial_created_tree,
     _clone_contents,
     _copy_bytes,
     _copy_tree_contents,
@@ -220,6 +221,18 @@ def test_quarantine_created_logs_inspection_and_rename_failures(tmp_path, monkey
     monkeypatch.setattr(backend_module, "_rename_noreplace", real_rename)
 
 
+def test_quarantine_created_handles_path_disappearing_before_rename(tmp_path, monkeypatch):
+    path = tmp_path / "partial"
+    path.mkdir()
+
+    def vanished(_source, _destination):
+        raise FileNotFoundError(errno.ENOENT, "path disappeared")
+
+    monkeypatch.setattr(backend_module, "_rename_noreplace", vanished)
+    assert _quarantine_created(str(path), _identity(path), lambda _message: None) is None
+    assert path.is_dir()
+
+
 def test_quarantine_created_restores_when_isolated_path_changes(tmp_path, monkeypatch):
     path = tmp_path / "partial"
     path.mkdir()
@@ -294,6 +307,35 @@ def test_cleanup_empty_directory_preserves_existing_entries_and_missing_path(tmp
     assert any("unowned entries" in item for item in logs)
 
 
+def test_cleanup_empty_directory_logs_scan_error_and_partial_tree_removes_owned_children(tmp_path, monkeypatch):
+    path = tmp_path / "partial"
+    path.mkdir()
+    logs = []
+    real_scandir = backend_module.os.scandir
+
+    def fail_scan(value):
+        if os.fspath(value) == str(path):
+            raise PermissionError(errno.EACCES, "scan denied")
+        return real_scandir(value)
+
+    monkeypatch.setattr(backend_module.os, "scandir", fail_scan)
+    _cleanup_empty_created_directory(str(path), _identity(path), os.rmdir, logs.append)
+    assert path.is_dir()
+    assert any("cannot inspect partial directory" in item for item in logs)
+    monkeypatch.setattr(backend_module.os, "scandir", real_scandir)
+
+    child_dir = path / "child"
+    child_dir.mkdir()
+    child_file = path / "file"
+    child_file.write_text("owned")
+    entries = [
+        (str(child_dir), _identity(child_dir), True),
+        (str(child_file), _identity(child_file), False),
+    ]
+    _cleanup_partial_created_tree(str(path), _identity(path), entries, os.rmdir, logs.append)
+    assert not path.exists()
+
+
 def test_make_created_directory_writable_handles_missing_replaced_and_oserror(tmp_path, monkeypatch):
     path = tmp_path / "directory"
     path.mkdir()
@@ -301,6 +343,9 @@ def test_make_created_directory_writable_handles_missing_replaced_and_oserror(tm
     logs = []
     _make_created_directory_writable(str(path), (0, 0), logs.append)
     assert any("preserving replaced partial directory" in item for item in logs)
+    path.chmod(0o500)
+    _make_created_directory_writable(str(path), identity, logs.append)
+    assert stat.S_IMODE(path.stat().st_mode) & stat.S_IWUSR
     _make_created_directory_writable(str(tmp_path / "missing"), identity, logs.append)
 
     real_open = os.open
@@ -341,6 +386,44 @@ def test_restore_quarantined_preserves_preexisting_destination(tmp_path):
     assert any("was recreated" in item for item in logs)
 
 
+def test_copy_backend_records_seal_stat_errors_and_refuses_existing_tree(tmp_path, monkeypatch):
+    backend = CopyBackend(FakeOps())
+    tree = tmp_path / "tree"
+    backend.make_tree(str(tree))
+    with pytest.raises(DestinationExists):
+        backend.make_tree(str(tree))
+    missing = tmp_path / "missing"
+    real_lstat = backend_module.os.lstat
+
+    def fail_lstat(value, *args, **kwargs):
+        if value == str(missing):
+            raise OSError(errno.EACCES, "stat denied")
+        return real_lstat(value, *args, **kwargs)
+
+    monkeypatch.setattr(backend_module.os, "lstat", fail_lstat)
+    with pytest.raises(BackendFailed, match="record-sealed-tree"):
+        backend._mark_sealed(str(missing))
+
+
+def test_reflink_tree_ingest_preserves_typed_collision(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    destination = tmp_path / "destination"
+    destination.mkdir()
+    with pytest.raises(DestinationExists):
+        backend_module.ReflinkBackend(FakeOps()).ingest_tree(str(source), str(destination))
+
+
+def test_copy_backend_file_copy_uses_bytes_and_preserves_metadata(tmp_path):
+    source = tmp_path / "source"
+    source.write_bytes(b"payload")
+    destination = tmp_path / "destination"
+    backend = CopyBackend(FakeOps())
+    backend.clone_file(str(source), str(destination))
+    assert destination.read_bytes() == b"payload"
+    assert backend.created_identity(str(destination)) == _identity(destination)
+
+
 def test_btrfs_empty_created_tree_uses_subvolume_destroy_and_eperm_rmdir(tmp_path, monkeypatch):
     path = tmp_path / "tree"
     path.mkdir()
@@ -357,6 +440,23 @@ def test_btrfs_empty_created_tree_uses_subvolume_destroy_and_eperm_rmdir(tmp_pat
     BtrfsBackend(ops)._delete_empty_created_tree(str(path))
     assert not path.exists()
     assert ops.destroy_calls == ["tree"]
+
+
+def test_btrfs_empty_created_tree_refuses_non_eperm_destroy_error(tmp_path, monkeypatch):
+    path = tmp_path / "tree"
+    path.mkdir()
+    real_lstat = os.lstat
+
+    def magic_lstat(value, *args, **kwargs):
+        result = real_lstat(value, *args, **kwargs)
+        if os.fspath(value) == str(path):
+            return StatResultProxy(result, st_ino=256)
+        return result
+
+    monkeypatch.setattr(backend_module.os, "lstat", magic_lstat)
+    backend = BtrfsBackend(FakeOps(destroy_error=errno.EIO))
+    with pytest.raises(OSError):
+        backend._delete_empty_created_tree(str(path))
 
 
 def test_btrfs_make_tree_wraps_creation_and_compression_failures(tmp_path):
@@ -528,6 +628,10 @@ def test_copy_and_reflink_backends_wrap_source_and_parent_errors(tmp_path, monke
     missing = tmp_path / "missing-source"
     with pytest.raises(BackendFailed, match="open-parent"):
         CopyBackend(FakeOps()).make_tree(str(tmp_path / "absent-parent" / "tree"))
+    source = tmp_path / "source"
+    source.mkdir()
+    with pytest.raises(BackendFailed, match="open-parent"):
+        CopyBackend(FakeOps()).ingest_tree(str(source), str(tmp_path / "absent-parent" / "ingested"))
     with pytest.raises(BackendFailed, match="ingest-tree"):
         CopyBackend(FakeOps()).ingest_tree(str(missing), str(tmp_path / "ingest"))
     with pytest.raises(BackendFailed, match="clone-tree"):
@@ -750,21 +854,38 @@ def test_btrfs_ingest_tree_falls_back_across_devices_and_requires_identity(tmp_p
         backend.ingest_tree(str(source), str(tmp_path / "missing-identity"))
 
 
+def test_btrfs_ingest_tree_cleans_after_source_stat_failure(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    destination = tmp_path / "destination"
+    real_stat = backend_module.os.stat
+
+    def fail_source(path, *args, **kwargs):
+        if path == str(source):
+            raise OSError(errno.EIO, "source stat denied")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(backend_module.os, "stat", fail_source)
+    with pytest.raises(BackendFailed, match="ingest-tree"):
+        BtrfsBackend(FakeOps()).ingest_tree(str(source), str(destination))
+    assert not destination.exists()
+
+
 def test_btrfs_delete_reports_inspection_and_destroy_errors(tmp_path, monkeypatch):
     backend = BtrfsBackend(FakeOps())
     path = tmp_path / "tree"
     path.mkdir()
-    real_stat = backend_module.os.stat
+    real_lstat = backend_module.os.lstat
 
     def fail_stat(value, *args, **kwargs):
         if value == str(path):
             raise OSError(errno.EIO, "stat denied")
-        return real_stat(value, *args, **kwargs)
+        return real_lstat(value, *args, **kwargs)
 
-    monkeypatch.setattr(backend_module.os, "stat", fail_stat)
+    monkeypatch.setattr(backend_module.os, "lstat", fail_stat)
     with pytest.raises(BackendFailed, match="stat-delete-target"):
         backend.delete_tree(str(path))
-    monkeypatch.setattr(backend_module.os, "stat", real_stat)
+    monkeypatch.setattr(backend_module.os, "lstat", real_lstat)
 
     ops = FakeOps(destroy_error=errno.EIO)
     backend = BtrfsBackend(ops)

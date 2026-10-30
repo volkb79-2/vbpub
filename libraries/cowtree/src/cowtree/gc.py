@@ -256,12 +256,19 @@ def dead_flock_runs(scan_dir: str | os.PathLike[str]) -> list[str]:
         manifest = _manifest(run_dir)
         if manifest is None or manifest["holder"] != "flock":
             continue
+        descriptor = -1
         try:
             descriptor = os.open(os.path.join(run_dir, "owner.lock"), _LOCK_FLAGS)
             if not stat.S_ISREG(os.fstat(descriptor).st_mode):
                 os.close(descriptor)
+                descriptor = -1
                 continue
         except OSError:
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
             continue
         try:
             try:

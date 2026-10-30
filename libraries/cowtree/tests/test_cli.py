@@ -102,3 +102,13 @@ def test_module_entrypoint_runs_cli(monkeypatch, capsys):
     except SystemExit as exc:
         assert exc.code == 0
     assert json.loads(capsys.readouterr().out) == {"backend": "off", "root": None}
+
+
+def test_main_returns_unknown_command_status_if_parser_is_extended(monkeypatch):
+    class Parser:
+        @staticmethod
+        def parse_args(_argv):
+            return type("Args", (), {"command": "unrecognized", "json": False})()
+
+    monkeypatch.setattr(cli, "_parser", lambda: Parser())
+    assert cli.main([]) == 2
