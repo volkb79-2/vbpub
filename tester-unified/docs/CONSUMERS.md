@@ -52,6 +52,21 @@ docker image inspect --format '{{index .Config.Labels "org.vbpub.tester-unified.
   tester-unified:bootstrap
 ```
 
+The image also installs `libeatmydata1` and labels the readable library path
+as `org.vbpub.tester.eatmydata-lib`. Inspect it with:
+
+```bash
+docker image inspect --format '{{index .Config.Labels "org.vbpub.tester.eatmydata-lib"}}' \
+  tester-unified:bootstrap
+```
+
+Run-Gate uses that label only when an ephemeral lane opts into
+`io_sync = "relaxed"` (or the lane is invoked with `--io-sync relaxed`). The
+builder refuses an unsupported architecture or a library path that is not
+readable in the image. Strict is the default; durable lanes cannot be
+relaxed. The generated `/etc/ld.so.preload` mount is lane-scoped and
+read-only. See [Run-Gate's resource settings](../../run-gate-project/CONSUMERS.md#combined-resource-settings).
+
 After a real `cli-extended` release, rebuild with
 `--cli-extended-resolve latest --cli-extended-wheel-sha256 "$PUBLISHED_SHA256" --no-cache`
 (`latest` is refused without the published digest) or with `pinned` once the Dockerfile's

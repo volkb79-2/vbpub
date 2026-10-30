@@ -2419,12 +2419,12 @@ class TestArgvConstruction:
             "docker", "run", "--rm", "--init", "--cgroup-parent",
         ]
         assert argv[argv.index("--user") + 1] == "1001:1002"
-        assert ["-v", "/host/cache:/cache"] == argv[
-            argv.index("/host/cache:/cache") - 1:
-            argv.index("/host/cache:/cache") + 1]
-        assert ["-v", "/host/data:/data"] == argv[
-            argv.index("/host/data:/data") - 1:
-            argv.index("/host/data:/data") + 1]
+        cache_mount = "type=bind,source=/host/cache,target=/cache"
+        data_mount = "type=bind,source=/host/data,target=/data"
+        assert ["--mount", cache_mount] == argv[
+            argv.index(cache_mount) - 1:argv.index(cache_mount) + 1]
+        assert ["--mount", data_mount] == argv[
+            argv.index(data_mount) - 1:argv.index(data_mount) + 1]
 
     def test_assay_lane_inner_shape_and_verdict_line(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
@@ -3472,8 +3472,10 @@ class TestExtraMounts:
         proc = run_tool(proj, "s")
         assert proc.returncode == 0, proc.stderr
         run_call = docker_runs(log)[0]
-        mounts = sorted(run_call[i + 1] for i, p in enumerate(run_call) if p == "-v")
-        assert "/var/run/docker.sock:/var/run/docker.sock" in mounts
+        mounts = [run_call[i + 1] for i, p in enumerate(run_call)
+                  if p == "--mount"]
+        assert ("type=bind,source=/var/run/docker.sock,target="
+                "/var/run/docker.sock") in mounts
 
     def test_extra_mounts_malformed_entry_rejected(self, tmp_path, monkeypatch):
         repo, proj = self._simple_ephemeral(tmp_path)
@@ -3496,6 +3498,14 @@ class TestExtraMounts:
         monkeypatch.setenv(run_gate.EXTRA_MOUNT_ENV_VAR, value)
         with pytest.raises(run_gate.GateError, match=re.escape(message)):
             run_gate.extra_mount_flags()
+
+    def test_extra_mount_flags_use_mount_form_for_missing_source_refusal(
+            self, monkeypatch):
+        monkeypatch.setenv(run_gate.EXTRA_MOUNT_ENV_VAR,
+                           "/missing/source=/container/source")
+        assert run_gate.extra_mount_flags() == [
+            "--mount",
+            "type=bind,source=/missing/source,target=/container/source"]
 
 
 class TestRG99LockFreeSafeDirectory:
@@ -16242,8 +16252,9 @@ class TestResumeAndProgressAlways:
             "runner", tmp_path / "repo", tmp_path / "worktree",
             "[environments.runner]", "dev-gates.slice", "test -w /durable")
         assert argv[argv.index("-v") + 1] == "/host/repo:/repo"
-        mount_index = argv.index("/host/state:/durable")
-        assert argv[mount_index - 1] == "-v"
+        mount = "type=bind,source=/host/state,target=/durable"
+        mount_index = argv.index(mount)
+        assert argv[mount_index - 1] == "--mount"
         user_index = argv.index("--user")
         assert argv[user_index + 1] == "1000:1000"
         assert argv.index("runner:local") > user_index
@@ -25262,7 +25273,9 @@ class TestBareHostProfilingWiring:
         monkeypatch.setattr(run_gate.subprocess, "Popen", spy)
         assert run_gate.main(["suite"]) == 0
         assert "env" in captured_env
-        assert captured_env["env"] is None
+        assert captured_env["env"]["RUN_GATE_IO_SYNC"] == "strict"
+        assert captured_env["env"]["COWTREE_MODE"] == "auto"
+        assert run_gate.PROFILE_TOKEN_ENV not in captured_env["env"]
 
     def test_resolve_self_container_id_raising_never_aborts_the_lane(
             self, tmp_path, monkeypatch, capsys):
@@ -30114,6 +30127,7 @@ class TestRG74SequenceDispatchEdges:
         values = {"worktree": None, "base": None, "fresh": False,
                   "dry_run": False, "allow_dirty": False,
                   "lock_wait": None, "json": False,
+                  "io_sync": None, "cow": None,
                   "admission_wait": None, "override_admission": False}
         values.update(overrides)
         return SimpleNamespace(**values)
@@ -30141,7 +30155,8 @@ class TestRG74SequenceDispatchEdges:
                                                  or run_gate.LaneResult("PASS")))
         args = self._dispatch_args(
             worktree=str(worktree), base="trunk", fresh=True, dry_run=True,
-            allow_dirty=True, lock_wait="5s", json=True)
+            allow_dirty=True, lock_wait="5s", json=True,
+            io_sync="relaxed", cow="off")
         lanes = {"gate": {"kind": "sequence", "lanes": ["unit"]},
                  "unit": {"kind": "command", "environment": "ephemeral",
                           "budget": "1m"}}
@@ -30154,10 +30169,55 @@ class TestRG74SequenceDispatchEdges:
         assert result.verdict == "PASS"
         assert seen == [[
             "unit", "--worktree", str(worktree), "--allow-dirty",
-            "--dry-run", "--lock-wait", "5s", "--fresh", "--base",
+            "--dry-run", "--io-sync", "relaxed", "--cow", "off",
+            "--lock-wait", "5s", "--fresh", "--base",
             "base-commit"]]
         assert "sequence 'gate' comparison base base-commit" in \
             capsys.readouterr().out
+
+    def test_mixed_sequence_io_sync_is_kept_per_member_not_in_aggregate_history(
+            self, tmp_path, monkeypatch):
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        self._patch_sequence_paths(monkeypatch, project_dir, project_dir)
+        monkeypatch.setattr(run_gate, "_sequence_delegates",
+                            lambda *_a: set())
+        monkeypatch.setattr(run_gate, "start_run_record",
+                            lambda *_a, **kw: {"io_sync": kw["io_sync"]})
+        monkeypatch.setattr(run_gate, "resolve_history_keep",
+                            lambda *_a: (10, None))
+        monkeypatch.setattr(run_gate, "_admit_lane",
+                            lambda *_a, **_kw: (None, None, None,
+                                               None, None, False))
+        monkeypatch.setattr(run_gate, "finish", lambda *_a: None)
+        monkeypatch.setattr(run_gate, "_dispatch",
+                            lambda *_a, **_kw: run_gate.LaneResult("PASS"))
+        cfg = {
+            "environments": {
+                "host": {"mode": "host"},
+                "runner": {"mode": "ephemeral", "image": "runner:v1"},
+            },
+            "lanes": {
+                "host-check": {"kind": "command", "environment": "host",
+                                "argv": ["true"],
+                                "resources": {"io_sync": "strict"}},
+                "perf": {"kind": "command", "environment": "runner",
+                         "argv": ["true"],
+                         "resources": {"io_sync": "relaxed"}},
+            },
+        }
+        args = self._dispatch_args()
+
+        result = run_gate._dispatch_sequence(
+            "gate", {"lanes": ["host-check", "perf"]}, args,
+            {"gate": {"kind": "sequence", "lanes": ["host-check", "perf"]},
+             **cfg["lanes"]}, cfg, Path("run-gate.toml"), {}, None,
+            "cfg-sha", None, project_dir)
+
+        assert result._record["io_sync"] is None
+        assert result._record["resource_settings"]["io_sync_by_member"] == {
+            "host-check": "strict", "perf": "relaxed"}
+        assert "different io_sync modes" in result._record["excluded_reason"]
 
     def test_sequence_rejects_unused_base_and_fresh_without_ephemeral_member(
             self, tmp_path, monkeypatch):
@@ -30215,7 +30275,8 @@ class TestRG74SequenceDispatchEdges:
             self._dispatch_args(),
             {"gate": {"kind": "sequence", "lanes": ["unit"]},
              "unit": {"kind": "command", "environment": "host"}},
-            {}, Path("run-gate.toml"), {}, None, "cfg", None,
+            {"environments": {"host": {"mode": "host"}}},
+            Path("run-gate.toml"), {}, None, "cfg", None,
             project_dir)
         assert result.verdict == "ERROR"
         assert "admission-ticket-release" in result.reason
@@ -30279,7 +30340,8 @@ class TestRG74SequenceDispatchEdges:
                 "gate", {"lanes": ["unit"]}, self._dispatch_args(),
                 {"gate": {"kind": "sequence", "lanes": ["unit"]},
                  "unit": {"kind": "command", "environment": "host"}},
-                {}, Path("run-gate.toml"), {}, None, "cfg", None, project_dir)
+                {"environments": {"host": {"mode": "host"}}},
+                Path("run-gate.toml"), {}, None, "cfg", None, project_dir)
         assert "could not be released while unwinding" in \
             capsys.readouterr().err
 
@@ -34851,6 +34913,7 @@ class TestRunGateR1DirectCoverage:
         monkeypatch.setenv("FORWARDED", "secret-value")
         monkeypatch.setenv("EMPTY_FORWARD", "")
         monkeypatch.delenv("ABSENT_FORWARD", raising=False)
+        monkeypatch.setenv("MDT_COW_ROOT", "/mnt/cow/fixture")
         lane = {"kind": "command", "environment": "tester-unified", "argv": ["true"],
                 "resources": {"memory_swap": "2g"}}
         env = {"mode": "ephemeral", "image": "runner:local",
@@ -34863,7 +34926,9 @@ class TestRunGateR1DirectCoverage:
             "fixture environment", "dev-gates.slice", "fixture",
             dry_run=True,
             profile_plan={"enabled": False, "disabled_reason": "test",
-                          "source": "fixture"}) == 0
+                          "source": "fixture"},
+            resource_settings={"io_sync": "strict",
+                               "cowtree": {"mode": "auto"}}) == 0
 
         output = capsys.readouterr().out
         argv = next(line for line in output.splitlines()
@@ -34872,6 +34937,10 @@ class TestRunGateR1DirectCoverage:
         assert "FORWARDED=<redacted>" in argv and "secret-value" not in argv
         assert "EMPTY_FORWARD" not in argv and "ABSENT_FORWARD" not in argv
         assert "--memory-swap 2g" in argv
+        assert ("type=bind,source=/mnt/cow/fixture,target=/mnt/cow/fixture"
+                in argv)
+        assert "COWTREE_MODE=<redacted>" in argv
+        assert "MDT_COW_ROOT=<redacted>" in argv
 
     @pytest.mark.parametrize("failure", ["missing-docker", "docker-ps"])
     def test_exec_lane_refuses_missing_docker_or_failed_ps(
@@ -35162,6 +35231,541 @@ class TestRunGateReleaseCoverageEdges:
         with pytest.raises(run_gate.GateInfraError,
                            match="GIT_CONFIG_COUNT is malformed"):
             run_gate.host_git_environment()
+
+
+class TestCowtreeAndIoSyncResources:
+    def test_cow_auto_unset_root_adds_nothing(self, monkeypatch):
+        monkeypatch.delenv("MDT_COW_ROOT", raising=False)
+        settings = {"io_sync": "strict", "cowtree": {"mode": "auto"}}
+
+        assert run_gate.cowtree_mount_flags(settings, "ephemeral") == []
+        assert run_gate.resource_forwarded_env(settings, "ephemeral") == {
+            "COWTREE_MODE": "auto", "RUN_GATE_IO_SYNC": "strict"}
+
+    def test_cow_auto_same_path_mount_and_env(self, monkeypatch):
+        root = "/mnt/cow/rg"
+        monkeypatch.setenv("MDT_COW_ROOT", root)
+        settings = {"io_sync": "strict", "cowtree": {"mode": "auto"}}
+
+        assert run_gate.cowtree_mount_flags(settings, "ephemeral") == [
+            "--mount", f"type=bind,source={root},target={root}"]
+        assert run_gate.resource_forwarded_env(settings, "ephemeral") == {
+            "COWTREE_MODE": "auto", "MDT_COW_ROOT": root,
+            "RUN_GATE_IO_SYNC": "strict"}
+
+    def test_cow_off_sets_disable_no_bind(self, monkeypatch):
+        monkeypatch.setenv("MDT_COW_ROOT", "/mnt/cow/rg")
+        settings = {"io_sync": "strict", "cowtree": {"mode": "off"}}
+
+        assert run_gate.cowtree_mount_flags(settings, "ephemeral") == []
+        assert run_gate.resource_forwarded_env(settings, "ephemeral") == {
+            "COWTREE_MODE": "off", "RUN_GATE_IO_SYNC": "strict"}
+
+    def test_cow_refuses_bad_root_value(self, monkeypatch):
+        for value in ("", "relative/path", "/", "/mnt/cow/../elsewhere"):
+            monkeypatch.setenv("MDT_COW_ROOT", value)
+            with pytest.raises(
+                    run_gate.GateError,
+                    match="MDT_COW_ROOT.*absolute.*normalized"):
+                run_gate.cowtree_mount_flags(
+                    {"cowtree": {"mode": "auto"}}, "ephemeral")
+
+    def test_cow_no_stat_no_translate(self, monkeypatch):
+        monkeypatch.setenv("MDT_COW_ROOT", "/mnt/cow/rg")
+
+        def forbidden(*_args, **_kwargs):
+            raise AssertionError("CoW root must not be statted or translated")
+
+        monkeypatch.setattr(run_gate, "physical_path", forbidden)
+        monkeypatch.setattr(Path, "stat", forbidden)
+        assert run_gate.cowtree_mount_flags(
+            {"cowtree": {"mode": "auto"}}, "ephemeral") == [
+                "--mount", "type=bind,source=/mnt/cow/rg,target=/mnt/cow/rg"]
+
+    def test_probe_containers_same_binds(self, tmp_path, monkeypatch):
+        root = "/mnt/cow/probe"
+        monkeypatch.setenv("MDT_COW_ROOT", root)
+        monkeypatch.setattr(run_gate, "container_mount_flags",
+                            lambda *_a, **_k: [])
+        monkeypatch.setattr(run_gate, "extra_mount_flags", lambda: [])
+        lane_settings = {"cowtree": {"mode": "auto"}, "io_sync": "strict"}
+
+        argv = run_gate.build_env_probe_argv(
+            "docker", {"mode": "ephemeral", "image": "tester:local"},
+            "tester", tmp_path, tmp_path, "fixture", "dev-gates.slice",
+            "true", resource_settings=lane_settings)
+
+        assert "--mount" in argv
+        assert f"type=bind,source={root},target={root}" in argv
+        assert f"COWTREE_MODE=auto" in argv
+        assert f"MDT_COW_ROOT={root}" in argv
+
+    def test_cow_precedence_table(self):
+        central = {"resources": {"cowtree": {"mode": "auto"}}}
+        project = {"resources": {"cowtree": {"mode": "off"}}}
+        environment = {"resources": {"cowtree": {"mode": "auto"}}}
+        lane = {"resources": {"cowtree": {"mode": "off"}}}
+
+        effective, sources = run_gate.resolve_resource_settings(
+            lane, project, central, environment, mode="ephemeral")
+
+        assert effective["cowtree"]["mode"] == "off"
+        assert sources["cowtree.mode"] == "lane"
+
+    def test_resources_scopes_and_precedence_table(self):
+        project = {"resources": {"io_sync": "relaxed",
+                                  "ram_target": "75%",
+                                  "cowtree": {"mode": "auto"}}}
+        central = {"resources": {"io_sync": "strict",
+                                 "cowtree": {"mode": "off"}}}
+        environment = {"resources": {"io_sync": "strict",
+                                      "cowtree": {"mode": "off"}}}
+        lane = {"resources": {"io_sync": "strict",
+                               "cowtree": {"mode": "auto"}}}
+
+        effective, sources = run_gate.resolve_resource_settings(
+            lane, project, central, environment, mode="ephemeral")
+
+        assert effective["io_sync"] == "strict"
+        assert sources["io_sync"] == "lane"
+        assert effective["ram_target"] == "75%"
+        assert effective["cowtree"]["mode"] == "auto"
+        assert sources["cowtree.mode"] == "lane"
+
+    def test_unknown_consumer_subtable_refused(self):
+        with pytest.raises(run_gate.GateError, match="unknown consumer"):
+            run_gate._validate_config(
+                {"schema_version": 1,
+                 "resources": {"assay": {"jobs": 2}}},
+                Path("run-gate.toml"), central=False)
+
+    def test_subtable_forwarded_only_as_own_prefix(self):
+        settings = {"io_sync": "strict", "cowtree": {"mode": "off"},
+                    "vm": {"disk_cache": "unsafe"}}
+
+        cowtree = run_gate.resource_forwarded_env(settings, "host",
+                                                  consumer="cowtree")
+        vm = run_gate.resource_forwarded_env(settings, "host", consumer="vm")
+
+        assert cowtree == {"COWTREE_MODE": "off",
+                           "RUN_GATE_IO_SYNC": "strict"}
+        assert vm == {"VM_DISK_CACHE": "unsafe",
+                      "RUN_GATE_IO_SYNC": "strict"}
+        assert "VM_DISK_CACHE" not in cowtree
+        assert "COWTREE_MODE" not in vm
+
+    def test_no_consumer_receives_another_subtable(self):
+        settings = {"cowtree": {"mode": "off"},
+                    "vm": {"disk_cache": "writeback"}}
+        assert run_gate.resource_forwarded_env(
+            settings, "host", consumer="cowtree") == {"COWTREE_MODE": "off"}
+        assert run_gate.resource_forwarded_env(
+            settings, "host", consumer="vm") == {"VM_DISK_CACHE": "writeback"}
+
+    def test_cross_cutting_ram_target_never_forwarded_raw(self):
+        settings = {"io_sync": "strict", "ram_target": "12g",
+                    "candidate_ram": "300m",
+                    "cowtree": {"mode": "auto"}}
+        forwarded = run_gate.resource_forwarded_env(settings, "ephemeral")
+        assert "RAM_TARGET" not in forwarded
+        assert "CANDIDATE_RAM" not in forwarded
+        assert all("ram_target" not in value for value in forwarded.values())
+
+    def test_unknown_key_and_bad_value_refused_per_scope(self):
+        for resources in ({"io_sync": "maybe"},
+                          {"ram_target": "0%"},
+                          {"cowtree": {"mode": "copy"}}):
+            with pytest.raises(run_gate.GateError):
+                run_gate._validate_config(
+                    {"schema_version": 1, "resources": resources},
+                    Path("run-gate.toml"), central=False)
+
+    def test_strict_default_no_bind_fact_set(self, monkeypatch):
+        monkeypatch.delenv("MDT_COW_ROOT", raising=False)
+        effective, _sources = run_gate.resolve_resource_settings(
+            {}, {}, {}, {}, mode="ephemeral")
+
+        assert effective["io_sync"] == "strict"
+        assert run_gate.cowtree_mount_flags(effective, "ephemeral") == []
+        assert run_gate.resource_forwarded_env(effective, "ephemeral")[
+            "RUN_GATE_IO_SYNC"] == "strict"
+
+    def test_relaxed_binds_generated_preload_readonly(self, tmp_path,
+                                                      monkeypatch):
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda *_a, **_k: SimpleNamespace(
+                returncode=0,
+                stdout="/usr/lib/x86_64-linux-gnu/libeatmydata.so.1\n",
+                stderr=""))
+        monkeypatch.setattr(run_gate, "physical_path", lambda path, **_k: path)
+
+        flags, preload_file = run_gate.relaxed_io_sync_mount_flags(
+            "docker", "tester:local", tmp_path)
+        try:
+            assert flags[0] == "--mount"
+            assert "target=/etc/ld.so.preload" in flags[1]
+            assert "readonly" in flags[1]
+            assert Path(preload_file.name).read_text() == (
+                "/usr/lib/x86_64-linux-gnu/libeatmydata.so.1\n")
+            assert stat.S_IMODE(Path(preload_file.name).stat().st_mode) == 0o444
+        finally:
+            preload_path = Path(preload_file.name)
+            preload_file.close()
+        assert not preload_path.exists()
+
+    def test_relaxed_refused_without_label(self, monkeypatch):
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda *_a, **_k: SimpleNamespace(
+                returncode=0, stdout="<no value>\n", stderr=""))
+        with pytest.raises(run_gate.GateError, match="eatmydata-lib"):
+            run_gate.inspect_eatmydata_library("docker", "tester:unlabelled")
+
+    def test_durable_refuses_override_and_scope_relaxation(self):
+        for override in ("strict", "relaxed"):
+            with pytest.raises(run_gate.GateError,
+                               match="durable.*cannot be overridden"):
+                run_gate.resolve_resource_settings(
+                    {"resources": {"io_sync": "durable"}},
+                    {"resources": {"io_sync": "relaxed"}}, {}, {},
+                    mode="ephemeral", io_sync_override=override)
+
+        effective, _sources = run_gate.resolve_resource_settings(
+            {"resources": {"io_sync": "durable"}},
+            {"resources": {"io_sync": "relaxed"}}, {}, {},
+            mode="ephemeral")
+        assert effective["io_sync"] == "durable"
+
+    def test_relaxed_refused_for_exec_mode(self):
+        with pytest.raises(run_gate.GateError, match="ephemeral"):
+            run_gate.resolve_resource_settings(
+                {"resources": {"io_sync": "relaxed"}}, {}, {}, {},
+                mode="exec")
+        effective, sources = run_gate.resolve_resource_settings(
+            {}, {}, {}, {}, mode="ephemeral",
+            io_sync_override="relaxed", cow_override="off")
+        assert effective["io_sync"] == "relaxed"
+        assert effective["cowtree"]["mode"] == "off"
+        assert sources["io_sync"] == sources["cowtree.mode"] == "command line"
+
+    def test_cli_resource_overrides_are_lane_scoped_and_reach_runner(
+            self, tmp_path, monkeypatch, capsys):
+        assert run_gate.main(["--io-sync", "relaxed", "--list"]) == 2
+        assert "apply to a lane run only" in capsys.readouterr().err
+
+        repo = make_repo(tmp_path)
+        project = repo / "run-gate-project"
+        project.mkdir()
+        (project / "run-gate.toml").write_text(textwrap.dedent("""\
+            schema_version = 1
+
+            [environments.runner]
+            mode = "ephemeral"
+            image = "tester:local"
+            cgroup_slice = "dev-gates.slice"
+
+            [lanes.suite]
+            kind = "command"
+            environment = "runner"
+            argv = ["true"]
+            clean_tree = false
+            profile = false
+            """))
+        monkeypatch.chdir(project)
+        monkeypatch.setattr(run_gate, "run_lane_with_cgroup_event_guard",
+                            lambda _name, run, **_kw: run())
+        seen = []
+        monkeypatch.setattr(
+            run_gate, "run_container_lane",
+            lambda *_args, **kwargs: seen.append(kwargs["resource_settings"]) or 0)
+        assert run_gate.main(["suite", "--dry-run", "--io-sync", "relaxed",
+                              "--cow", "off"]) == 0
+        assert seen[0]["io_sync"] == "relaxed"
+        assert seen[0]["cowtree"]["mode"] == "off"
+
+    def test_override_marked_not_history_eligible(self):
+        record = {
+            "_started_monotonic": time.monotonic(), "duration_seconds": None,
+            "dirty": False, "git_operation": None, "commit": "abc123",
+            "verdict": "PASS", "io_sync": "relaxed",
+            "io_sync_override": True,
+        }
+
+        finished = run_gate.finish_run_record(record, exit_code=0)
+
+        assert finished["history_eligible"] is False
+        assert "override" in finished["excluded_reason"]
+
+    def test_start_record_persists_effective_io_sync_override(self, tmp_path):
+        repo = make_repo(tmp_path)
+        record = run_gate.start_run_record(
+            "unit", repo, repo, io_sync="relaxed", io_sync_override=True)
+        assert record["io_sync"] == "relaxed"
+        assert record["io_sync_override"] is True
+
+    def test_history_split_by_io_sync(self):
+        store = run_gate._empty_history_store()
+        for record in (
+                {"lane": "unit", "commit": "abc", "outcome": "pass",
+                 "duration_seconds": 10.0, "history_eligible": True,
+                 "io_sync": "strict"},
+                {"lane": "unit", "commit": "abc", "outcome": "pass",
+                 "duration_seconds": 4.0, "history_eligible": True,
+                 "io_sync": "relaxed"}):
+            run_gate._apply_record(store, record, keep=10)
+
+        report = run_gate.lane_history_report(store, "unit")
+
+        assert len(report["history"]) == 2
+        assert report["stats"]["by_io_sync"]["strict"]["completed"][
+            "median_seconds"] == 10.0
+        assert report["stats"]["by_io_sync"]["relaxed"]["completed"][
+            "median_seconds"] == 4.0
+
+    def test_config_resources_parse_at_project_environment_and_lane_scopes(self):
+        config = {
+            "schema_version": 1,
+            "resources": {"io_sync": "relaxed", "ram_target": "75%",
+                          "cowtree": {"mode": "auto"}},
+            "environments": {"runner": {
+                "mode": "ephemeral", "image": "tester:local",
+                "resources": {"io_sync": "strict",
+                              "cowtree": {"mode": "off"}}}},
+            "lanes": {"r2": {
+                "kind": "assay", "environment": "runner",
+                "assay_lane": "r2",
+                "resources": {"candidate_ram": "300m",
+                              "ram_target": "12g",
+                              "io_sync": "durable"}}},
+        }
+        assert run_gate._validate_config(
+            config, Path("run-gate.toml"), central=False) is config
+
+    def test_lane_only_resource_keys_refuse_default_scopes(self):
+        for resources in ({"io_sync": "durable"},
+                          {"candidate_ram": "300m"}):
+            with pytest.raises(run_gate.GateError):
+                run_gate._validate_config(
+                    {"schema_version": 1, "environments": {}, "lanes": {},
+                     "resources": resources},
+                    Path("run-gate.toml"), central=False)
+
+    def test_vm_disk_cache_refuses_ephemeral_lane(self):
+        with pytest.raises(run_gate.GateError, match="host or bare-host"):
+            run_gate.resolve_resource_settings(
+                {"resources": {"vm": {"disk_cache": "unsafe"}}},
+                {}, {}, {}, mode="ephemeral")
+        effective, _sources = run_gate.resolve_resource_settings(
+            {"resources": {"vm": {"disk_cache": "writeback"}}},
+            {}, {}, {}, mode="host")
+        assert effective["vm"]["disk_cache"] == "writeback"
+
+    def test_vm_consumer_scope_and_project_default_validation(self):
+        project = {"schema_version": 1,
+                   "resources": {"vm": {"disk_cache": "unsafe"}}}
+        assert run_gate._validate_config(
+            project, Path("run-gate.toml"), central=False) is project
+        with pytest.raises(run_gate.GateError, match="project/lane-only"):
+            run_gate._validate_config(
+                {"schema_version": 1,
+                 "resources": {"vm": {"disk_cache": "unsafe"}}},
+                Path("central.toml"), central=True)
+        with pytest.raises(run_gate.GateError, match="project/lane-only"):
+            run_gate._validate_config(
+                {"schema_version": 1,
+                 "environments": {"runner": {
+                     "mode": "host",
+                     "resources": {"vm": {"disk_cache": "unsafe"}}}}},
+                Path("run-gate.toml"), central=False)
+        effective, sources = run_gate.resolve_resource_settings(
+            {}, {"resources": {"vm": {"disk_cache": "unsafe"}}}, {}, {},
+            mode="ephemeral")
+        assert "vm" not in effective
+        assert "vm.disk_cache" not in sources
+
+    def test_ram_metadata_rejects_zero_size(self):
+        for resources in ({"candidate_ram": "0m"}, {"ram_target": "0g"}):
+            with pytest.raises(run_gate.GateError, match="positive"):
+                run_gate._validate_resource_table(
+                    resources, "run-gate.toml [resources]", "lane")
+
+    def test_cow_empty_root_is_invalid_and_non_ephemeral_skips_bind(
+            self, monkeypatch):
+        settings = {"cowtree": {"mode": "auto"}}
+        monkeypatch.setenv("MDT_COW_ROOT", "")
+        with pytest.raises(run_gate.GateError, match="MDT_COW_ROOT"):
+            run_gate.cowtree_mount_flags(settings, "ephemeral")
+        monkeypatch.setenv("MDT_COW_ROOT", "/mnt/cow/rg")
+        assert run_gate.cowtree_mount_flags(settings, "host") == []
+
+    def test_image_label_errors_stay_distinct(self, monkeypatch):
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda *_a, **_k: SimpleNamespace(
+                returncode=0, stdout="relative/libeatmydata.so\n", stderr=""))
+        with pytest.raises(run_gate.GateError, match="invalid.*eatmydata-lib"):
+            run_gate.inspect_eatmydata_library("docker", "tester:bad-label")
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda *_a, **_k: SimpleNamespace(
+                returncode=1, stdout="", stderr="daemon unavailable"))
+        with pytest.raises(run_gate.GateInfraError,
+                           match="cannot inspect image.*daemon unavailable"):
+            run_gate.inspect_eatmydata_library("docker", "tester:missing")
+
+    def test_preload_mount_cleanup_on_physical_path_failure(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda *_a, **_k: SimpleNamespace(
+                returncode=0,
+                stdout="/usr/lib/x86_64-linux-gnu/libeatmydata.so.1\n",
+                stderr=""))
+        monkeypatch.setattr(
+            run_gate, "physical_path",
+            lambda *_a, **_k: (_ for _ in ()).throw(
+                run_gate.GateError("planned path failure")))
+        with pytest.raises(run_gate.GateError, match="planned path failure"):
+            run_gate.relaxed_io_sync_mount_flags(
+                "docker", "tester:local", tmp_path)
+        assert list((tmp_path / ".run-gate").iterdir()) == []
+
+    def test_relaxed_container_dry_run_constructs_readonly_preload_bind(
+            self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/bin/docker")
+        monkeypatch.setattr(run_gate, "resolve_inflight", lambda *_a, **_k: None)
+        monkeypatch.setattr(run_gate, "container_mount_flags",
+                            lambda *_a, **_k: [])
+        monkeypatch.setattr(run_gate, "extra_mount_flags", lambda: [])
+        monkeypatch.setattr(run_gate, "resource_observer_docker_flags",
+                            lambda *_a: [])
+        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda *_a: None)
+        monkeypatch.setattr(run_gate, "build_command_inner", lambda *_a: "true")
+        monkeypatch.setattr(run_gate, "physical_path", lambda path, **_k: path)
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda *_a, **_k: SimpleNamespace(
+                returncode=0,
+                stdout="/usr/lib/x86_64-linux-gnu/libeatmydata.so.1\n",
+                stderr=""))
+        assert run_gate.run_container_lane(
+            {"kind": "command", "environment": "runner", "argv": ["true"]},
+            "unit", tmp_path, tmp_path, tmp_path,
+            {"mode": "ephemeral", "image": "tester:local"}, "fixture",
+            "dev-gates.slice", "fixture", dry_run=True,
+            profile_plan={"enabled": False, "disabled_reason": "test",
+                          "source": "test fixture"},
+            resource_settings={"io_sync": "relaxed",
+                               "cowtree": {"mode": "off"}}) == 0
+        output = capsys.readouterr().out
+        argv = next(line for line in output.splitlines()
+                    if "run-gate: docker argv:" in line)
+        assert "target=/etc/ld.so.preload,readonly" in argv
+        assert "RUN_GATE_IO_SYNC=<redacted>" in argv
+        assert list((tmp_path / ".run-gate").glob("ld.so.preload.*")) == []
+
+    def test_exec_lane_forwards_resource_environment(self, tmp_path,
+                                                    monkeypatch, capsys):
+        monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/bin/docker")
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda argv, **_kwargs: subprocess.CompletedProcess(
+                argv, 0, "runner\n", ""))
+        assert run_gate.run_exec_lane(
+            {"kind": "command", "environment": "runner", "argv": ["true"]},
+            "unit", tmp_path, tmp_path, tmp_path,
+            {"mode": "exec", "forward_env": []}, "fixture", "runner",
+            "fixture", "start", None, "no slice", dry_run=True,
+            profile_plan={"enabled": False, "disabled_reason": "test",
+                          "source": "test fixture"},
+            resource_settings={"io_sync": "strict",
+                               "cowtree": {"mode": "off"}}) == 0
+        output = capsys.readouterr().out
+        argv = next(line for line in output.splitlines()
+                    if "run-gate: docker argv:" in line)
+        assert "RUN_GATE_IO_SYNC=<redacted>" in argv
+        assert "COWTREE_MODE=<redacted>" in argv
+
+    def test_host_lane_passes_resource_environment_to_child(
+            self, tmp_path, monkeypatch):
+        real_popen = subprocess.Popen
+        captured = {}
+
+        def capture(argv, **kwargs):
+            captured.update(kwargs)
+            return real_popen(argv, **kwargs)
+
+        monkeypatch.setattr(run_gate.subprocess, "Popen", capture)
+        assert run_gate.run_bare_host_lane(
+            {"kind": "command", "argv": ["true"]}, "unit",
+            tmp_path, tmp_path, tmp_path,
+            profile_plan={"enabled": False, "disabled_reason": "test"},
+            resource_settings={"io_sync": "strict",
+                               "cowtree": {"mode": "off"}}) == 0
+        assert captured["env"]["RUN_GATE_IO_SYNC"] == "strict"
+        assert captured["env"]["COWTREE_MODE"] == "off"
+
+    def test_resource_env_logging_discloses_names_not_values(self, capsys):
+        run_gate.log_resource_forwarded_env(
+            {"COWTREE_MODE": "auto", "MDT_COW_ROOT": "/private/root"})
+        output = capsys.readouterr().out
+        assert "COWTREE_MODE" in output and "MDT_COW_ROOT" in output
+        assert "/private/root" not in output
+        run_gate.log_resource_forwarded_env({})
+        assert capsys.readouterr().out == ""
+
+    def test_assay_probe_dry_run_redacts_resource_values(
+            self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv(run_gate.MDT_COW_ROOT_ENV_VAR,
+                           "/private/cow/root")
+        monkeypatch.setattr(
+            run_gate, "build_env_probe_argv",
+            lambda *_a, **_k: ["docker", "run", "-e",
+                               "MDT_COW_ROOT=/private/cow/root"])
+        run_gate.assure_assay_state_root(
+            "/bin/docker", {"kind": "assay", "assay_lane": "unit"},
+            {"mode": "ephemeral", "state_root": "/tmp/assay-state"},
+            "runner", "fixture", tmp_path, tmp_path, tmp_path,
+            "dev-gates.slice", dry_run=True,
+            resource_settings={"cowtree": {"mode": "auto"}})
+        output = capsys.readouterr().out
+        assert "MDT_COW_ROOT=<redacted>" in output
+        assert "/private/cow/root" not in output
+
+    def test_exec_probe_forwards_consumer_environment(self, tmp_path,
+                                                      monkeypatch):
+        monkeypatch.setattr(run_gate, "resolve_container_name",
+                            lambda *_a, **_k: ("runner", "fixture", "start"))
+        argv = run_gate.build_env_probe_argv(
+            "docker", {"mode": "exec"}, "runner", tmp_path, tmp_path,
+            "fixture", "", "true",
+            resource_settings={"io_sync": "strict",
+                               "cowtree": {"mode": "off"}})
+        assert argv[:5] == ["docker", "exec", "-e", "RUN_GATE_IO_SYNC=strict",
+                            "-e"]
+        assert "COWTREE_MODE=off" in argv
+        assert "--mount" not in argv
+
+    def test_history_human_report_separates_io_sync_modes(self, capsys):
+        store = run_gate._empty_history_store()
+        for mode, seconds in (("strict", 10.0), ("relaxed", 4.0)):
+            run_gate._apply_record(store, {
+                "lane": "unit", "commit": "abc", "outcome": "pass",
+                "duration_seconds": seconds, "history_eligible": True,
+                "io_sync": mode}, keep=10)
+        report = run_gate.lane_history_report(store, "unit")
+        run_gate._print_lane_history("unit", report, 10)
+        output = capsys.readouterr().out
+        assert "io_sync=strict" in output and "io_sync=relaxed" in output
+        assert "10.0s" in output and "4.0s" in output
+        assert "IO_SYNC" in output and "strict" in output and "relaxed" in output
+
+    def test_relaxed_preload_is_mapped_in_test_process(self):
+        if os.environ.get("RUN_GATE_IO_SYNC") != "relaxed":
+            return
+        maps = Path("/proc/self/maps").read_text(encoding="utf-8")
+        assert "libeatmydata" in maps
 
     def test_slice_resolution_and_cgroupfs_path_derivation(self, monkeypatch):
         assert run_gate.resolve_slice(

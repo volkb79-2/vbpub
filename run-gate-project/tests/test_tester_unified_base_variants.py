@@ -168,9 +168,14 @@ exit "$SHIM_SHA_RC"
     # PATH is ONLY the shim directory, so a real /usr/bin/docker on the
     # machine running this test cannot make the "upstream" variant look
     # like the MDT one.
+    eatmydata_lib = {
+        "amd64": "/usr/lib/x86_64-linux-gnu/libeatmydata.so.1",
+        "arm64": "/usr/lib/aarch64-linux-gnu/libeatmydata.so.1",
+    }[arch]
     env = {"PATH": str(bin_dir), "SHIM_STATE": str(state),
            "SHIM_LOG": str(log), "SHIM_BIN": str(bin_dir),
-           "SHIM_ARCH": arch, "SHIM_SHA_RC": str(sha_rc), **compose_pins()}
+           "SHIM_ARCH": arch, "SHIM_SHA_RC": str(sha_rc),
+           "TESTER_EATMYDATA_LIB": eatmydata_lib, **compose_pins()}
     result = subprocess.run(["/bin/sh", "-c", step], env=env,
                             capture_output=True, text=True)
     installs = [line.split() for line in log.read_text().splitlines()

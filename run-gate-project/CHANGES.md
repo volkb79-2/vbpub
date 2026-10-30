@@ -9,6 +9,18 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+- **CW4/IO1:** add combined `[resources]` settings with closed consumer
+  subtables, CoW root pass-through, strict/durable/relaxed `io_sync`, and
+  history separated by I/O mode. Relaxed ephemeral lanes receive a generated,
+  read-only `/etc/ld.so.preload` from the tester image's eatmydata label;
+  durable lanes cannot be relaxed. `ram_target` and `candidate_ram` are
+  parsed and recorded as metadata only.
+- **CW4:** switch `RUN_GATE_EXTRA_MOUNTS` to Docker `--mount type=bind`, which
+  refuses missing host sources instead of creating empty directories.
+- **IO1:** install `libeatmydata1` in tester-unified and publish its
+  architecture-specific library path as an image label; mark IOBench R0–R1
+  and R2 lanes `io_sync = "durable"`.
+
 <!-- cmru: release history -->
 
 ## [24.1.3] - 2026-10-30

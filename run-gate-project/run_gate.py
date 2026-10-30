@@ -958,6 +958,70 @@ def _check_keys(table: dict, allowed: set, where: str) -> None:
              f"(allowed: {', '.join(sorted(allowed))})")
 
 
+RESOURCE_CONSUMER_KEYS = {
+    "cowtree": {"mode": {"auto", "off"}},
+    "vm": {"disk_cache": {"unsafe", "writeback"}},
+}
+RESOURCE_SETTING_KEYS = {"io_sync", "ram_target", "candidate_ram", *RESOURCE_CONSUMER_KEYS}
+MDT_COW_ROOT_ENV_VAR = "MDT_COW_ROOT"
+EATMYDATA_LABEL = "org.vbpub.tester.eatmydata-lib"
+
+
+def _validate_resource_table(table: object, where: str, scope: str,
+                             *, run_gate_keys: set | None = None) -> None:
+    """Validate the combined run-gate settings and closed consumer subtables."""
+    if not isinstance(table, dict):
+        fail(f"{where}: 'resources' must be a table")
+    allowed = set(run_gate_keys or ()) | RESOURCE_SETTING_KEYS
+    for consumer, keys in RESOURCE_CONSUMER_KEYS.items():
+        if consumer not in table:
+            continue
+        subtable = table[consumer]
+        if not isinstance(subtable, dict):
+            fail(f"{where} [resources.{consumer}]: must be a table")
+        _check_keys(subtable, set(keys), f"{where} [resources.{consumer}]")
+        for key, choices in keys.items():
+            if key in subtable and (not isinstance(subtable[key], str)
+                                    or subtable[key] not in choices):
+                fail(f"{where} [resources.{consumer}]: '{key}' must be one of "
+                     f"{', '.join(sorted(choices))} (got {subtable[key]!r})")
+        if consumer == "vm" and scope not in ("project", "lane"):
+            fail(f"{where} [resources.vm]: disk_cache is project/lane-only")
+    unknown_consumers = sorted(
+        key for key, value in table.items()
+        if isinstance(value, dict) and key not in RESOURCE_CONSUMER_KEYS)
+    if unknown_consumers:
+        fail(f"{where}: unknown consumer resource subtable(s): "
+             f"{', '.join(unknown_consumers)}")
+    _check_keys(table, allowed, where)
+    if "io_sync" in table:
+        value = table["io_sync"]
+        choices = {"durable", "strict", "relaxed"}
+        if not isinstance(value, str) or value not in choices:
+            fail(f"{where}: 'io_sync' must be one of durable, strict, relaxed "
+                 f"(got {value!r})")
+        if value == "durable" and scope != "lane":
+            fail(f"{where}: io_sync = 'durable' is lane-only")
+    if "candidate_ram" in table:
+        value = table["candidate_ram"]
+        if scope != "lane":
+            fail(f"{where}: 'candidate_ram' is lane-only")
+        if not isinstance(value, str) or not _SIZE_RE.fullmatch(value):
+            fail(f"{where}: 'candidate_ram' must be a size like '300m' or '4g'")
+        if int(re.match(r"[0-9]+", value).group()) == 0:
+            fail(f"{where}: 'candidate_ram' must be positive")
+    if "ram_target" in table:
+        value = table["ram_target"]
+        if isinstance(value, str) and re.fullmatch(r"[1-9][0-9]?%|100%", value):
+            pass
+        else:
+            if not isinstance(value, str) or not _SIZE_RE.fullmatch(value):
+                fail(f"{where}: 'ram_target' must be a size like '12g' or a "
+                     "percentage from 1% through 100%")
+            if int(re.match(r"[0-9]+", value).group()) == 0:
+                fail(f"{where}: 'ram_target' must be positive")
+
+
 def _validate_environment(name: str, table: dict, where: str) -> None:
     _check_keys(table, {"image", "image_env", "cgroup_slice", "cgroup_slice_env", "mode", "container_name",
                         "forward_env", "resources", "state_root", "user"},
@@ -1044,7 +1108,9 @@ def _validate_environment(name: str, table: dict, where: str) -> None:
         res = table["resources"]
         if not isinstance(res, dict):
             fail(f"{where} [environments.{name}]: 'resources' must be a table")
-        _check_keys(res, {"cpus"}, f"{where} [environments.{name}.resources]")
+        _validate_resource_table(
+            res, f"{where} [environments.{name}.resources]", "environment",
+            run_gate_keys={"cpus"})
         if "cpus" in res:
             _validate_cpus(res["cpus"], f"{where} [environments.{name}.resources]")
 
@@ -1238,9 +1304,11 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
         res = table["resources"]
         if not isinstance(res, dict):
             fail(f"{where} [lanes.{name}]: 'resources' must be a table")
-        _check_keys(res, {"memory", "memory_max", "memory_swap", "cpu_weight",
-                          "io_weight", "shared", "cpus", "pids"},
-                    f"{where} [lanes.{name}.resources]")
+        _validate_resource_table(
+            res, f"{where} [lanes.{name}.resources]", "lane",
+            run_gate_keys={"memory", "memory_max", "memory_swap",
+                           "cpu_weight", "io_weight", "shared", "cpus",
+                           "pids"})
         if "cpus" in res:
             _validate_cpus(res["cpus"], f"{where} [lanes.{name}.resources]")
         if "pids" in res:
@@ -1625,8 +1693,12 @@ def resolve_profile_settings(lane: dict, cfg: dict, cfg_path: Path,
 def _validate_config(cfg: dict, path: Path, *, central: bool) -> dict:
     where = str(path)
     _check_keys(cfg, {"schema_version", "environments", "lanes", "history",
-                      "profile", "footprint", "project", "assay", "admission"},
+                      "profile", "footprint", "project", "assay", "admission",
+                      "resources"},
                 where)
+    if "resources" in cfg:
+        _validate_resource_table(cfg["resources"], f"{where} [resources]",
+                                 "central" if central else "project")
     if "project" in cfg:
         project = cfg["project"]
         if not isinstance(project, dict):
@@ -1679,6 +1751,148 @@ def _validate_config(cfg: dict, path: Path, *, central: bool) -> dict:
                          "is not declared in this config")
     _validate_sequence_cycles(lanes, where)
     return cfg
+
+
+def _resource_table(scope: dict) -> dict:
+    value = scope.get("resources", {})
+    return value if isinstance(value, dict) else {}
+
+
+def resolve_resource_settings(lane: dict, project: dict, central: dict,
+                              environment: dict, *, mode: str,
+                              io_sync_override: str | None = None,
+                              cow_override: str | None = None
+                              ) -> tuple[dict, dict]:
+    """Resolve resources by CLI > lane > project > environment > central > defaults."""
+    effective = {"io_sync": "strict", "ram_target": "75%",
+                 "cowtree": {"mode": "auto"}}
+    sources = {"io_sync": "default", "ram_target": "default",
+               "cowtree.mode": "default"}
+    scopes = (("central", central), ("environment", environment),
+              ("project", project), ("lane", lane))
+    for source, scope in scopes:
+        table = _resource_table(scope)
+        for key in ("io_sync", "ram_target", "candidate_ram"):
+            if key in table:
+                effective[key] = table[key]
+                sources[key] = source
+        for consumer in RESOURCE_CONSUMER_KEYS:
+            subtable = table.get(consumer)
+            if not isinstance(subtable, dict):
+                continue
+            target = effective.setdefault(consumer, {})
+            for key, value in subtable.items():
+                target[key] = value
+                sources[f"{consumer}.{key}"] = source
+    lane_io_sync = _resource_table(lane).get("io_sync")
+    if io_sync_override is not None:
+        if lane_io_sync == "durable":
+            fail("durable lane cannot be overridden by --io-sync")
+        effective["io_sync"] = io_sync_override
+        sources["io_sync"] = "command line"
+    if cow_override is not None:
+        effective.setdefault("cowtree", {})["mode"] = cow_override
+        sources["cowtree.mode"] = "command line"
+    if effective.get("io_sync") == "relaxed" and mode != "ephemeral":
+        fail("io_sync = 'relaxed' requires an ephemeral environment so the "
+             "read-only preload bind is scoped to the lane")
+    if effective.get("vm", {}).get("disk_cache") is not None \
+            and mode not in ("host", "bare-host"):
+        if "vm" in _resource_table(lane):
+            fail("resources.vm.disk_cache requires a host or bare-host lane")
+        effective.pop("vm", None)
+        sources.pop("vm.disk_cache", None)
+    return effective, sources
+
+
+def _validate_cow_root(root: str) -> None:
+    if (not isinstance(root, str) or not root or not root.startswith("/")
+            or "\x00" in root or os.path.normpath(root) != root
+            or root == "/"):
+        fail("MDT_COW_ROOT must be an absolute normalized path other than '/'")
+
+
+def cowtree_mount_flags(settings: dict, mode: str) -> list[str]:
+    """Bind MDT_COW_ROOT at the identical path, without translating or statting it."""
+    cowtree = settings.get("cowtree", {})
+    if not isinstance(cowtree, dict) or cowtree.get("mode", "auto") != "auto" \
+            or mode != "ephemeral":
+        return []
+    root = os.environ.get(MDT_COW_ROOT_ENV_VAR)
+    if root is None:
+        return []
+    _validate_cow_root(root)
+    return ["--mount", f"type=bind,source={root},target={root}"]
+
+
+def resource_forwarded_env(settings: dict, mode: str,
+                           consumer: str | None = None) -> dict[str, str]:
+    """Translate effective settings to run-gate facts and consumer-owned env keys."""
+    forwarded = {}
+    if "io_sync" in settings:
+        forwarded["RUN_GATE_IO_SYNC"] = settings["io_sync"]
+    if consumer is None or consumer == "cowtree":
+        cowtree = settings.get("cowtree", {})
+        if isinstance(cowtree, dict) and "mode" in cowtree:
+            forwarded["COWTREE_MODE"] = cowtree["mode"]
+            root = os.environ.get(MDT_COW_ROOT_ENV_VAR)
+            if cowtree["mode"] == "auto" and root is not None:
+                _validate_cow_root(root)
+                forwarded[MDT_COW_ROOT_ENV_VAR] = root
+    if consumer is None or consumer == "vm":
+        vm = settings.get("vm", {})
+        if isinstance(vm, dict) and "disk_cache" in vm:
+            forwarded["VM_DISK_CACHE"] = vm["disk_cache"]
+    return forwarded
+
+
+def log_resource_forwarded_env(forwarded: dict[str, str]) -> None:
+    """Disclose resource env names only; values can contain operator data."""
+    if forwarded:
+        print(f"run-gate: resource env (forwarded: "
+              f"{', '.join(sorted(forwarded))})", flush=True)
+
+
+def inspect_eatmydata_library(docker: str, image: str) -> str:
+    """Read the image's explicit preload library label, preserving inspect failures."""
+    result = subprocess.run(
+        [docker, "image", "inspect", "--format",
+         f'{{{{index .Config.Labels "{EATMYDATA_LABEL}"}}}}', image],
+        capture_output=True, text=True)
+    if result.returncode != 0:
+        detail = result.stderr.strip() or f"exit {result.returncode}"
+        fail_infra(f"cannot inspect image {image!r} for {EATMYDATA_LABEL}: {detail}")
+    library = result.stdout.strip()
+    if not library or library == "<no value>":
+        fail(f"image {image!r} has no {EATMYDATA_LABEL} label")
+    if not library.startswith("/") or "\n" in library or "\x00" in library:
+        fail(f"image {image!r} has an invalid {EATMYDATA_LABEL} label value "
+             f"{library!r}")
+    return library
+
+
+def relaxed_io_sync_mount_flags(docker: str, image: str,
+                                repo: Path) -> tuple[list[str], object]:
+    """Create the read-only preload file run-gate owns for one relaxed lane."""
+    library = inspect_eatmydata_library(docker, image)
+    state_dir = repo / HISTORY_DIR_NAME
+    state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    preload = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=state_dir,
+        prefix="ld.so.preload.")
+    try:
+        preload.write(library + "\n")
+        preload.flush()
+        os.fchmod(preload.fileno(), 0o444)
+        os.fsync(preload.fileno())
+        source = physical_path(Path(preload.name))
+        flags = ["--mount", f"type=bind,source={source},"
+                 "target=/etc/ld.so.preload,readonly"]
+        return flags, preload
+    except BaseException:
+        preload.close()
+        Path(preload.name).unlink(missing_ok=True)
+        raise
 
 
 def _validate_admission_policy(table: object, where: str) -> None:
@@ -2137,6 +2351,14 @@ def resolve_environment(lane: dict, lane_name: str, project: dict, central: dict
                     "name and insert its mode in the config that declares "
                     "this lane.")
     fail(message)
+
+
+def declared_environment(lane: dict, project: dict, central: dict) -> dict:
+    """Return the winning environment declaration, including host-mode defaults."""
+    name = lane.get("environment")
+    if name in project.get("environments", {}):
+        return project["environments"][name]
+    return central.get("environments", {}).get(name, {})
 
 
 def image_selection_record(env: dict, env_name: str,
@@ -4703,7 +4925,9 @@ def start_run_record(lane_name: str, worktree: Path, repo: Path, *,
                      config_path: Path | None = None,
                      config_sha256: str | None = None,
                      central_config_path: Path | None = None,
-                     central_config_sha256: str | None = None) -> dict:
+                     central_config_sha256: str | None = None,
+                     io_sync: str | None = "strict",
+                     io_sync_override: bool = False) -> dict:
     """Sample the state that is ABOUT to be judged, BEFORE the lane runs.
 
     Sampling afterwards would be a different tree: a lane may commit, stash,
@@ -4724,6 +4948,8 @@ def start_run_record(lane_name: str, worktree: Path, repo: Path, *,
         "git_operation": git_operation_in_progress(worktree),
         "history_eligible": False,
         "excluded_reason": None,
+        "io_sync": io_sync,
+        "io_sync_override": io_sync_override,
         # RG-55/C8: these are nullable telemetry facts, not verdict inputs.
         # Keeping the keys on every invocation makes history JSON shape
         # stable even when profiling is disabled or unavailable.
@@ -4765,6 +4991,7 @@ def finish_run_record(record: dict, *, exit_code: int | None = None,
     record.pop("_verdict_path", None)
     record.pop("_progress_path", None)
     record.pop("_assay_identity_mode", None)
+    record.setdefault("history_eligible", False)
     # RG-35 (RW-3): a re-attached or collected run is ONE run, and its
     # duration belongs to the CONTAINER, not to the client that happened to
     # attach to it — `adopt_inflight_start` swaps this invocation's monotonic
@@ -4784,6 +5011,7 @@ def finish_run_record(record: dict, *, exit_code: int | None = None,
     else:
         record["duration_seconds"] = None if started is None \
             else round(time.monotonic() - started, 3)
+    record.setdefault("excluded_reason", None)
     if error is not None:
         record["outcome"] = "aborted" if not isinstance(error, Exception) \
             else "error"
@@ -4824,6 +5052,8 @@ def finish_run_record(record: dict, *, exit_code: int | None = None,
         reasons.append("HEAD did not resolve to a commit")
     if record.get("selective"):
         reasons.append("selective lane arguments do not certify the whole lane")
+    if record.get("io_sync_override"):
+        reasons.append("io_sync override is not history-eligible")
     if reasons:
         record["excluded_reason"] = (record["excluded_reason"] or
                                      "; ".join(reasons))
@@ -5156,11 +5386,12 @@ def _apply_record(store: dict, record: dict, keep: int) -> dict:
     if not entry["history_eligible"]:
         return store
     hist = [e for e in slot.get("history", []) if isinstance(e, dict)]
-    # Keyed by (lane, commit): a re-run of the same commit REPLACES its entry
-    # rather than adding a second — otherwise ten re-runs of one commit fill
-    # the whole window and "the last N commits" stops being true. It moves to
-    # the tail, so eviction means "least recently measured".
-    hist = [e for e in hist if e.get("commit") != entry["commit"]]
+    # A mode changes the work performed, so one commit can have one distinct
+    # measurement per io_sync value. Legacy records used strict behavior.
+    io_sync = entry.get("io_sync", "strict")
+    hist = [e for e in hist if not (
+        e.get("commit") == entry["commit"]
+        and e.get("io_sync", "strict") == io_sync)]
     hist.append(entry)
     slot["history"] = hist[-keep:]
     return store
@@ -6082,11 +6313,24 @@ def lane_history_report(store: dict, lane_name: str) -> dict:
     slot = store.get("lanes", {}).get(lane_name) or {}
     hist = [e for e in slot.get("history", []) if isinstance(e, dict)]
     passes = [e for e in hist if e.get("outcome") == "pass"]
+    def history_io_sync(entry: dict) -> str:
+        mode = entry.get("io_sync", "strict")
+        return mode if isinstance(mode, str) else "unknown"
+
+    by_io_sync = {}
+    for io_sync in sorted({history_io_sync(e) for e in hist}):
+        matching = [e for e in hist if history_io_sync(e) == io_sync]
+        by_io_sync[io_sync] = {
+            "passes": _lane_stats([e for e in matching
+                                   if e.get("outcome") == "pass"]),
+            "completed": _lane_stats(matching),
+        }
     return {
         "latest": slot.get("latest"),
         "history": hist,
         "stats": {"passes": _lane_stats(passes),
-                  "completed": _lane_stats(hist)},
+                  "completed": _lane_stats(hist),
+                  "by_io_sync": by_io_sync},
     }
 
 
@@ -6165,17 +6409,31 @@ def _print_lane_history(lane_name: str, report: dict, keep: int) -> None:
     else:
         print(f"  history: {len(hist)} of at most {keep} commit(s), "
               f"oldest first")
-        print(f"    {'COMMIT':<14}{'OUTCOME':<9}{'DURATION':>9}  STARTED")
+        print(f"    {'COMMIT':<14}{'IO_SYNC':<9}{'OUTCOME':<9}"
+              f"{'DURATION':>9}  STARTED")
         for entry in hist:
             print(f"    {(entry.get('commit') or '')[:12]:<14}"
+                  f"{entry.get('io_sync', 'strict'):<9}"
                   f"{str(entry.get('outcome')):<9}"
                   f"{_fmt_seconds(entry.get('duration_seconds')):>9}  "
                   f"{entry.get('started_at')}")
-        print("    " + _fmt_stats("passes", report["stats"]["passes"]))
-        print("      " + _fmt_resource_stats(report["stats"]["passes"]))
-        print("    " + _fmt_stats("completed (passes + fails)",
-                                  report["stats"]["completed"]))
-        print("      " + _fmt_resource_stats(report["stats"]["completed"]))
+        by_io_sync = report["stats"].get("by_io_sync", {})
+        if len(by_io_sync) <= 1:
+            print("    " + _fmt_stats("passes", report["stats"]["passes"]))
+            print("      " + _fmt_resource_stats(report["stats"]["passes"]))
+        else:
+            for io_sync, mode_stats in sorted(by_io_sync.items()):
+                print(f"    io_sync={io_sync} "
+                      + _fmt_stats("passes", mode_stats["passes"]))
+                print("      " + _fmt_resource_stats(mode_stats["passes"]))
+                print(f"    io_sync={io_sync} "
+                      + _fmt_stats("completed (passes + fails)",
+                                   mode_stats["completed"]))
+                print("      " + _fmt_resource_stats(mode_stats["completed"]))
+        if len(by_io_sync) <= 1:
+            print("    " + _fmt_stats("completed (passes + fails)",
+                                      report["stats"]["completed"]))
+            print("      " + _fmt_resource_stats(report["stats"]["completed"]))
 
 
 def cmd_history(lanes: dict, project_dir: Path, cfg: dict, cfg_path: Path,
@@ -7472,7 +7730,7 @@ def extra_mount_flags() -> list[str]:
         source, target = spec.split("=", 1)
         if not source or not target:
             fail(f"invalid ${EXTRA_MOUNT_ENV_VAR} entry {spec!r}: empty path")
-        flags += ["-v", f"{source}:{target}"]
+        flags += ["--mount", f"type=bind,source={source},target={target}"]
     return flags
 
 
@@ -7585,7 +7843,8 @@ def resource_observer_version_preflight(docker: str, daemon: str) -> None:
 def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
                          worktree: Path, env_source: str, slice_name: str,
                          script: str,
-                         resolved_container_name: str | None = None
+                         resolved_container_name: str | None = None,
+                         resource_settings: dict | None = None
                          ) -> list[str]:
     """The ONE way run-gate runs a short, synchronous, read-only command
     INSIDE a lane's environment (RG-25's `assay lanes --json` inventory and
@@ -7614,14 +7873,23 @@ def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
         if name is None:
             name, _src, _remedy = resolve_container_name(env_name, env, repo,
                                                          worktree, env_source)
-        return [docker, "exec", "--workdir", str(repo), name, "bash", "-c", script]
+        forwarded = resource_forwarded_env(resource_settings or {}, "exec")
+        env_flags = [arg for key, value in forwarded.items()
+                     for arg in ("-e", f"{key}={value}")]
+        return [docker, "exec", *env_flags, "--workdir", str(repo), name,
+                "bash", "-c", script]
     argv = [docker, "run", "--rm", "--init", "--cgroup-parent", slice_name,
             *container_mount_flags(repo, worktree, env, with_state=True),
-            *extra_mount_flags()]
+            *extra_mount_flags(),
+            *cowtree_mount_flags(resource_settings or {}, env.get("mode", "host"))]
     if env.get("user"):
         # A path probe must run as the same user as the real lane: image root
         # can write a root-owned synthetic parent that the app user cannot.
         argv += ["--user", env["user"]]
+    forwarded = resource_forwarded_env(resource_settings or {},
+                                       env.get("mode", "host"))
+    for key, value in forwarded.items():
+        argv += ["-e", f"{key}={value}"]
     argv += [env["image"], "bash", "-c", script]
     return argv
 
@@ -10538,7 +10806,8 @@ def probe_assay_state_root(docker: str | None, env: dict, env_name: str,
                            repo: Path, worktree: Path, env_source: str,
                            slice_name: str, state_root: Path,
                            state_dir: Path,
-                           resolved_container_name: str | None = None
+                           resolved_container_name: str | None = None,
+                           resource_settings: dict | None = None
                            ) -> tuple[bool | None, str | None]:
     """Return (writable, reason); None means the probe itself was unknown."""
     if not env or env.get("mode") == "host":
@@ -10560,7 +10829,8 @@ def probe_assay_state_root(docker: str | None, env: dict, env_name: str,
     argv = build_env_probe_argv(
         docker, env, env_name, repo, worktree, env_source, slice_name,
         assay_state_probe_script(state_root, state_dir),
-        resolved_container_name=resolved_container_name)
+        resolved_container_name=resolved_container_name,
+        resource_settings=resource_settings)
     try:
         result = subprocess.run(argv, capture_output=True, text=True)
     except OSError as exc:
@@ -10582,7 +10852,8 @@ def assure_assay_state_root(docker: str | None, lane: dict, env: dict,
                             project_dir: Path, worktree: Path,
                             slice_name: str,
                             resolved_container_name: str | None = None,
-                            dry_run: bool = False) -> None:
+                            dry_run: bool = False,
+                            resource_settings: dict | None = None) -> None:
     """Refuse assay execution unless its durable state mount is writable."""
     if lane.get("kind") != "assay":
         return
@@ -10609,14 +10880,19 @@ def assure_assay_state_root(docker: str | None, lane: dict, env: dict,
         probe_argv = build_env_probe_argv(
             docker or "docker", env, env_name, repo, worktree, env_source,
             slice_name, assay_state_probe_script(state_root, state_dir),
-            resolved_container_name=resolved_container_name)
+            resolved_container_name=resolved_container_name,
+            resource_settings=resource_settings)
         if dry_run:
+            probe_resource_env = resource_forwarded_env(
+                resource_settings or {}, env.get("mode", "host"))
             print(f"run-gate: assay state root preflight: "
-                  f"{shlex.join(probe_argv)}", flush=True)
+                  f"{shlex.join(redact_forwarded_values(
+                      probe_argv, probe_resource_env))}", flush=True)
             return
     ready, why = probe_assay_state_root(
         docker, env, env_name, repo, worktree, env_source, slice_name,
-        state_root, state_dir, resolved_container_name=resolved_container_name)
+        state_root, state_dir, resolved_container_name=resolved_container_name,
+        resource_settings=resource_settings)
     if ready is None:
         fail_infra(f"could not determine whether Assay state root "
                    f"'{state_root}' and state path '{state_dir}' are usable "
@@ -13183,7 +13459,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                        profile_plan: dict | None = None,
                        budget_deadline: float | None = None,
                        budget_started_epoch: float | None = None,
-                       admission_group: str | None = None) -> int:
+                       admission_group: str | None = None,
+                       resource_settings: dict | None = None) -> int:
     # project_dir arrives already relocated into the judged worktree (RG-15):
     # pin verification, assay config, and artifacts all resolve there.
     docker = shutil.which("docker")
@@ -13200,6 +13477,13 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             run_record.get("image_selection") if run_record else None,
         )
         return attached
+    resource_settings = resource_settings or {}
+    resource_env = resource_forwarded_env(resource_settings, "ephemeral")
+    preload_file = None
+    preload_flags = []
+    if resource_settings.get("io_sync") == "relaxed":
+        preload_flags, preload_file = relaxed_io_sync_mount_flags(
+            docker, env["image"], repo)
     if not dry_run and lane.get("resource_observer") is not None:
         resource_observer_version_preflight(
             docker,
@@ -13213,6 +13497,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         create_state=lane["kind"] == "assay" and not dry_run,
         plan_missing_state=lane["kind"] == "assay" and dry_run),
         *extra_mount_flags(),
+        *cowtree_mount_flags(resource_settings, "ephemeral"),
+        *preload_flags,
         *resource_observer_docker_flags(lane, env)]
     verify_slice_loaded(slice_name)
     inner = build_assay_inner(lane, project_dir, repo, request_base,
@@ -13243,6 +13529,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         value = os.environ.get(key)
         if value:  # empty string counts as ABSENT — matches log_forwarded_env
             argv += ["-e", f"{key}={value}"]
+    for key, value in resource_env.items():
+        argv += ["-e", f"{key}={value}"]
     # RG-55/contract Sec 4.1: the token is appended in the SAME position as
     # `forward_env` values, immediately after that loop — `enabled = false`
     # (or the test-only kill switch) means no token at all, not an empty one.
@@ -13276,14 +13564,17 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                  else image_selection_record(env, lane_environment_name(lane), env_source))
     disclose_image_selection(selection)
     log_forwarded_env(env, "ephemeral")  # names only, never values (RG-19)
+    log_resource_forwarded_env(resource_env)
     print_lane_bounds(lane)
     print(f"run-gate: docker argv: "
-          f"{shlex.join(redact_forwarded_values(argv, env.get('forward_env', [])))}",
+          f"{shlex.join(redact_forwarded_values(
+              argv, [*env.get('forward_env', []), *resource_env]))}",
           flush=True)
     if lane.get("kind") == "assay":
         assure_assay_state_root(
             docker, lane, env, lane_environment_name(lane), env_source,
-            repo, project_dir, worktree, slice_name, dry_run=dry_run)
+            repo, project_dir, worktree, slice_name, dry_run=dry_run,
+            resource_settings=resource_settings)
     if not dry_run:
         clear_previous_assay_verdict(lane, project_dir, repo, run_record)
     if dry_run:
@@ -13302,6 +13593,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         # `--dry-run` never named WHY (e.g. `RUN_GATE_PROFILE=off`).
         print_profile_plan_dry_run(profile_plan, "container")
         print("run-gate: DRY RUN — no container was started", flush=True)
+        if preload_file is not None:
+            preload_file.close()
         return 0
     # RG-55/R-45: admission is a pre-start headroom check. The daemon host
     # read and any wait therefore happen before Docker creates the lane,
@@ -13309,7 +13602,11 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     profile_preflight = (prepare_profile_start(
         lane, lane_name, project_dir, worktree, docker, profile_plan,
         "container") if profiling else None)
-    started = subprocess.run(argv, capture_output=True, text=True)
+    try:
+        started = subprocess.run(argv, capture_output=True, text=True)
+    finally:
+        if preload_file is not None:
+            preload_file.close()
     if started.returncode != 0:
         # RG-12: a failed `docker run` may still have created the container
         # (pull/entrypoint failures) — preserve its logs, then show a REAL
@@ -13536,7 +13833,8 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                   run_record: dict | None = None,
                   profile_plan: dict | None = None,
                   budget_deadline: float | None = None,
-                  budget_started_epoch: float | None = None) -> int:
+                  budget_started_epoch: float | None = None,
+                  resource_settings: dict | None = None) -> int:
     """Exec into a PERSISTENT runner (started externally by CIU).
 
     project_dir arrives already relocated into the judged worktree (RG-15).
@@ -13583,6 +13881,9 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         value = os.environ.get(key)
         if value:
             argv += ["-e", f"{key}={value}"]
+    resource_env = resource_forwarded_env(resource_settings or {}, "exec")
+    for key, value in resource_env.items():
+        argv += ["-e", f"{key}={value}"]
     # RG-55/contract Sec 4.1: same position, same rule as the ephemeral path.
     profiling = bool(profile_plan and profile_plan["enabled"])
     if profiling:
@@ -13602,6 +13903,7 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
           f"slice {slice_name or '(none)'} ({slice_src})",
           flush=True)
     log_forwarded_env(env, "exec")  # names only, never values (RG-19)
+    log_resource_forwarded_env(resource_env)
     if lane.get("budget"):
         print(f"run-gate: budget {lane['budget']} (hard limit; clock starts "
               f"after admission and lock waits)", flush=True)
@@ -13610,13 +13912,15 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     # (RG-19). The slice name itself stays visible: it is mechanics, not a
     # credential.
     print(f"run-gate: docker argv: "
-          f"{shlex.join(redact_forwarded_values(argv, env.get('forward_env', [])))}",
+          f"{shlex.join(redact_forwarded_values(
+              argv, [*env.get('forward_env', []), *resource_env]))}",
           flush=True)
     if lane.get("kind") == "assay":
         assure_assay_state_root(
             docker, lane, env, lane_environment_name(lane), env_source,
             repo, project_dir, worktree, slice_name or "",
-            resolved_container_name=name, dry_run=dry_run)
+            resolved_container_name=name, dry_run=dry_run,
+            resource_settings=resource_settings)
     if not dry_run:
         clear_previous_assay_verdict(lane, project_dir, repo, run_record)
     if dry_run:
@@ -14039,7 +14343,8 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                   run_record: dict | None = None,
                   profile_plan: dict | None = None,
                   budget_deadline: float | None = None,
-                  env_source: str = "host (mode host)") -> int:
+                  env_source: str = "host (mode host)",
+                  resource_settings: dict | None = None) -> int:
     # cwd is the project dir RELOCATED into the judged worktree (RG-15) — a
     # bare-host lane must not quietly operate on the invocation checkout
     # either.
@@ -14057,6 +14362,8 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             else lane_command_argv(lane, worktree, request_base))
     print(f"run-gate: {installed_version()} | lane {lane_name} | env {env_source}",
           flush=True)
+    resource_env = resource_forwarded_env(resource_settings or {}, "host")
+    log_resource_forwarded_env(resource_env)
     if lane.get("kind") == "assay":
         assure_assay_state_root(
             None, lane, {}, lane_environment_name(lane), env_source,
@@ -14125,7 +14432,9 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             "lane body was not started")
     proc = None
     barrier_nonce = None
-    run_env = None
+    run_env = dict(os.environ) if resource_env else None
+    if run_env is not None:
+        run_env.update(resource_env)
     if not profiling:
         # RG-55/contract Sec 4 obligation 8: disabled means NO token, NO
         # daemon call and NO sampler -- same shape run_container_lane/
@@ -14138,7 +14447,7 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                               "disabled_reason", "disabled")}
     else:
         if placement_requested:
-            run_env = dict(os.environ)
+            run_env = run_env or dict(os.environ)
             run_env[PROFILE_TOKEN_ENV] = profile_plan["token"]
             barrier_nonce = secrets.token_hex(16)
             proc = spawn_bare_host_placement_barrier(
@@ -14205,7 +14514,7 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     if profiler_state["mode"] == "daemon":
         if run_env is None:
             run_env = dict(os.environ)
-            run_env[PROFILE_TOKEN_ENV] = profile_plan["token"]
+        run_env[PROFILE_TOKEN_ENV] = profile_plan["token"]
     # R-36h/RW-43 (round-1 review B1): the rusage path now launches its OWN
     # child via `Popen` + `os.wait4(pid, 0)` rather than bracketing a
     # historical rejected `getrusage(RUSAGE_CHILDREN)` snapshot around a
@@ -14820,6 +15129,25 @@ def sequence_leaf_names(name: str, lanes: dict) -> list[str]:
             for leaf in sequence_leaf_names(member, lanes)]
 
 
+def sequence_io_sync_modes(name: str, lanes: dict, cfg: dict,
+                           cfg_path: Path, central: dict,
+                           central_path: Path | None,
+                           args: argparse.Namespace) -> dict[str, str]:
+    """Resolve leaf modes so a sequence aggregate cannot mislabel history."""
+    modes = {}
+    for leaf_name in sequence_leaf_names(name, lanes):
+        leaf = lanes[leaf_name]
+        env, _source = resolve_environment(
+            leaf, leaf_name, cfg, central, cfg_path, central_path)
+        env_declaration = declared_environment(leaf, cfg, central)
+        settings, _sources = resolve_resource_settings(
+            leaf, cfg, central, env_declaration,
+            mode=env.get("mode", env_declaration.get("mode", "host")),
+            io_sync_override=args.io_sync, cow_override=args.cow)
+        modes[leaf_name] = settings["io_sync"]
+    return modes
+
+
 def _sequence_delegates(name: str, lanes: dict, cfg: dict, central: dict,
                         cfg_path: Path, central_path: Path | None,
                         repo: Path, worktree: Path, project_dir: Path,
@@ -15056,16 +15384,30 @@ def _dispatch_sequence(name: str, lane: dict, args: argparse.Namespace,
             fail(f"--fresh on sequence {name!r} has no ephemeral member "
                  "container to replace")
 
+    io_sync_by_member = sequence_io_sync_modes(
+        name, lanes, cfg, cfg_path, central, central_path, args)
+    io_sync_modes = set(io_sync_by_member.values())
+    sequence_io_sync = next(iter(io_sync_modes)) if len(io_sync_modes) == 1 \
+        else None
+
     record = None
     if not args.dry_run:
         record = start_run_record(
             name, worktree, repo, config_path=cfg_path,
             config_sha256=cfg_sha256,
             central_config_path=central_path,
-            central_config_sha256=central_cfg_sha256)
+            central_config_sha256=central_cfg_sha256,
+            io_sync=sequence_io_sync,
+            io_sync_override=args.io_sync is not None)
         record["_project_dir"] = effective_project
         record["_keep"] = resolve_history_keep(
             cfg, cfg_path, central, central_path)[0]
+        record["resource_settings"] = {
+            "io_sync_by_member": io_sync_by_member}
+        if sequence_io_sync is None:
+            record["excluded_reason"] = (
+                "sequence members use different io_sync modes; history is "
+                "recorded per member")
         record["sequence"] = {"stop_on": lane.get("stop_on", "FAIL"),
                               "request_base": request_base,
                               "base_source": base_source}
@@ -15104,6 +15446,10 @@ def _dispatch_sequence(name: str, lane: dict, args: argparse.Namespace,
                 member_argv.append("--allow-dirty")
             if args.dry_run:
                 member_argv.append("--dry-run")
+            if args.io_sync is not None:
+                member_argv += ["--io-sync", args.io_sync]
+            if args.cow is not None:
+                member_argv += ["--cow", args.cow]
             if args.lock_wait is not None:
                 member_argv += ["--lock-wait", args.lock_wait]
             if args.fresh:
@@ -15197,6 +15543,11 @@ def _dispatch(argv: list[str] | None = None, *,
                         "that delegates it (assay judge.base_source = "
                         "\"request\"), and for conjunction lanes carrying a "
                         "{base} token")
+    parser.add_argument("--io-sync", choices=("strict", "relaxed"),
+                        help="per-invocation fsync policy override; relaxed runs "
+                             "are excluded from history")
+    parser.add_argument("--cow", choices=("off",),
+                        help="per-invocation CoW mode override")
     parser.add_argument("--lock-wait", metavar="D", default=None,
                         help="maximum time to wait for a lane lock (default: 10m)")
     parser.add_argument("--admission-wait", metavar="D", default=None,
@@ -15261,6 +15612,12 @@ def _dispatch(argv: list[str] | None = None, *,
             lane_args = []
         args = parser.parse_args(parse_argv)
         args.lane_args = lane_args
+        if args.io_sync is not None or args.cow is not None:
+            if (args.lane is None or args.lane in _NO_LANE_FACT_VERBS
+                    or args.lane in {"doctor", "history", "footprint",
+                                     "validate-pointers"}
+                    or args.list or args.check_env):
+                fail("--io-sync and --cow apply to a lane run only")
         if args.allow_main_checkout:
             # Env, not a parameter: sequence members, probes and re-attached
             # lanes all reach container_mount_flags() and inherit it.
@@ -15597,6 +15954,11 @@ def _dispatch(argv: list[str] | None = None, *,
             }
         env, env_source = resolve_environment(lane, args.lane, cfg, central,
                                               cfg_path, central_path)
+        env_declaration = declared_environment(lane, cfg, central)
+        resource_settings, resource_sources = resolve_resource_settings(
+            lane, cfg, central, env_declaration,
+            mode=env.get("mode", env_declaration.get("mode", "host")),
+            io_sync_override=args.io_sync, cow_override=args.cow)
         # RG-17/19: declared inputs verified BEFORE anything runs — presence
         # in the invoking environment for every kind; for container lanes
         # also that the names are on the forward_env allowlist at all.
@@ -15667,8 +16029,12 @@ def _dispatch(argv: list[str] | None = None, *,
                 args.lane, worktree, repo, config_path=cfg_path,
                 config_sha256=cfg_sha256,
                 central_config_path=central_path,
-                central_config_sha256=central_cfg_sha256)
+                central_config_sha256=central_cfg_sha256,
+                io_sync=resource_settings["io_sync"],
+                io_sync_override=args.io_sync is not None)
             record["_project_dir"] = eff_proj
+            record["resource_settings"] = resource_settings
+            record["resource_sources"] = resource_sources
             image_selection = image_selection_record(
                 env, lane_environment_name(lane), env_source,
             )
@@ -15840,7 +16206,8 @@ def _dispatch(argv: list[str] | None = None, *,
                         run_record=record,
                         profile_plan=profile_plan,
                         budget_deadline=budget_deadline,
-                        env_source=f"{env_source} (mode host)"),
+                        env_source=f"{env_source} (mode host)",
+                        resource_settings=resource_settings),
                     enabled=not args.dry_run)
             elif env.get("mode") == "exec":
                 # Resolved HERE, not inside run_exec_lane: the lock key and
@@ -15873,7 +16240,8 @@ def _dispatch(argv: list[str] | None = None, *,
                         run_record=record,
                         profile_plan=profile_plan,
                         budget_deadline=budget_deadline,
-                        budget_started_epoch=budget_started_epoch),
+                        budget_started_epoch=budget_started_epoch,
+                        resource_settings=resource_settings),
                     enabled=not args.dry_run)
             else:
                 budget_started_epoch, budget_started_monotonic = admit_now()
@@ -15897,7 +16265,8 @@ def _dispatch(argv: list[str] | None = None, *,
                         budget_deadline=budget_deadline,
                         budget_started_epoch=budget_started_epoch,
                         admission_group=(admission_ticket.name
-                                         if admission_ticket else None)),
+                                         if admission_ticket else None),
+                        resource_settings=resource_settings),
                     enabled=not args.dry_run)
         finally:
             active_exception = sys.exc_info()[0] is not None

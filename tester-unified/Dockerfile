@@ -49,6 +49,12 @@ LABEL org.vbpub.tester-unified.base-image="${TESTER_UNIFIED_BASE_IMAGE}"
 # re-reads it): the reference above can be a mutable local tag, the id says which content it was.
 ARG TESTER_UNIFIED_BASE_IMAGE_ID
 LABEL org.vbpub.tester-unified.base-image-id="${TESTER_UNIFIED_BASE_IMAGE_ID}"
+# Run-Gate uses this explicit label to bind the image's eatmydata library at
+# /etc/ld.so.preload for an opted-in relaxed lane. The path is derived from
+# the selected base image architecture by build-image.sh, never guessed by
+# the consumer.
+ARG TESTER_EATMYDATA_LIB
+LABEL org.vbpub.tester.eatmydata-lib="${TESTER_EATMYDATA_LIB}"
 
 USER root
 
@@ -62,14 +68,15 @@ USER root
 # therefore installed only when `docker` is absent from PATH (the upstream Python base), decided by the
 # capability it provides, not by a package name. Compose is a separate step below.
 RUN set -eu \
- && packages="ca-certificates curl git jq openssh-client util-linux" \
+ && packages="ca-certificates curl git jq libeatmydata1 openssh-client util-linux" \
  && if ! command -v docker >/dev/null 2>&1; then packages="$packages docker-cli"; fi \
  && apt-get update \
  && apt-get install -y --no-install-recommends $packages \
  && rm -rf /var/lib/apt/lists/* \
  && docker --version \
  && git --version \
- && nsenter --version
+ && nsenter --version \
+ && test -r "${TESTER_EATMYDATA_LIB}"
 
 # Docker Compose (INT-01 D-006): real `docker compose` is needed by the suites (ciu has 16 test files that
 # drive it, plus topos, nyxloom, cmru and run-gate-project). tester-base keeps the plugin out (T2), so on it

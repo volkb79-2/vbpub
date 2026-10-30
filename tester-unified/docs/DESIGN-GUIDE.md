@@ -138,6 +138,20 @@ lock. These are infrastructure outcomes, not functional test verdicts.
 See [the user-facing overview](../README.md) and
 [consumer commands](CONSUMERS.md#running-a-project-gate).
 
+## Run-Gate's opt-in fsync shim
+
+The image installs `libeatmydata1` but never enables it globally. It labels the
+architecture-specific shared-library path as
+`org.vbpub.tester.eatmydata-lib`; Run-Gate reads this image fact before it
+creates a relaxed ephemeral lane, writes that value to a generated preload
+file, and bind-mounts the file read-only at `/etc/ld.so.preload`. This keeps
+fsync policy owned by Run-Gate from selection through delivery, avoids a
+consumer-provided library path, and leaves strict and durable lanes on the
+image's ordinary behavior. `build-image.sh` derives the path from the selected
+base architecture, checks that the file is readable in the image, and
+rechecks the label after build. See the Run-Gate
+[resource settings design](../../run-gate-project/docs/DESIGN-GUIDE.md#combined-resource-settings).
+
 ## Offline gates
 
 `--network none` lets exact-OID wheel/self-hosting gates reuse this launcher

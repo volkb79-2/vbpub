@@ -140,6 +140,7 @@ SPEC §9.
 | RG-120 | the a245908 R2 follow-up remains nonqualifying: one current-source candidate crashed during process-tree cleanup; two survivors have new oracles but no post-oracle mutation verdict | Medium | OPEN 2026-10-29; current-source pilot and candidate IDs in `docs/R2-MUTATION-TRIAGE-2026-10-29.md` |
 | RG-121 | one a245908 R2 candidate exceeded the configured 900 s per-candidate budget without a final judgment | Medium | CLOSED 2026-10-29; current-source equivalent `377c0f5a5777` was killed with a clean process tree; see `docs/R2-MUTATION-TRIAGE-2026-10-29.md` |
 | RG-122 | `pytest-cov --cov-fail-under` can exit successfully while printing a raw coverage result below the floor because its exit check rounds to configured precision; a `kind = "command"` Run-Gate lane trusts that exit status | Medium | OPEN (filed 2026-10-29 from tnt TNT-53; consumer precision-2 workaround documented there) |
+| RG-123 | Assay's merged-baseline parallel-safety regression lane has a stale red-first premise after merge; consolidate the load-verdict docs and retire the lane | Low | OPEN; Assay B177 WP5 follow-up after WP2–WP4 |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -6678,3 +6679,21 @@ compares and displays a more precise total. The tester closure receives pytest-c
 FAIL. Add an executable regression at the pytest-cov/coverage/tester image boundary or otherwise align the exit check
 with the reported precision. Consumer configuration can mitigate the mismatch but does not resolve the shared tool
 behavior.
+
+## RG-123 — retire the stale merged-baseline parallel-safety regression lane
+
+**Status:** OPEN; follow Assay B177 after WP2–WP4 land. Severity Low.
+
+**Observed.** The regression lane's red-first premise compares against
+`origin/main` and becomes stale after the implementation merges. Keeping that
+lane then tests an obsolete baseline instead of the parallel-safety behavior
+it was meant to protect. Assay tracks the owning change as B177 in
+`assay/nyxloom-trove/4-backlog.md`.
+
+**Follow-up.** After B177's WP2–WP4 are integrated, remove the merged-baseline
+regression lane, keep one canonical load-verdict design-guide section, and
+synchronize the Run-Gate-facing README, CONSUMERS, changelog, and backlog
+references. Acceptance runs the integrated tester and provisional
+qualification gates and checks every cross-document anchor. Do not change
+Assay files as part of this Run-Gate implementation; the lane remains until
+the stated trigger is met.
