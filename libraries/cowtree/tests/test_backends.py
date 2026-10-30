@@ -275,6 +275,20 @@ def test_clone_of_sealed_tree_is_writable(backend_type, tmp_path):
     assert source_file.read_text() == "original"
 
 
+def test_reflink_clone_tree_uses_ficlone_for_regular_files(tmp_path):
+    ops = FakeOps()
+    backend = ReflinkBackend(ops)
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "payload").write_bytes(b"clone through fake FICLONE")
+    destination = tmp_path / "clone"
+
+    backend.clone_tree(str(source), str(destination))
+
+    assert ops.clone_calls == 1
+    assert (destination / "payload").read_bytes() == b"clone through fake FICLONE"
+
+
 @pytest.mark.parametrize("backend_type", [CopyBackend, ReflinkBackend])
 def test_clone_of_unsealed_readonly_tree_preserves_modes(backend_type, tmp_path):
     backend = backend_type(FakeOps())

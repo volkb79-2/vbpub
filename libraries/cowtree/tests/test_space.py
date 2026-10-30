@@ -88,3 +88,30 @@ def test_pending_delete_default_clock_is_used():
     _pending_deletes.clear()
     record_pending_delete(19, 5)
     assert pending_delete_bytes(19) == 5
+
+
+def test_pending_delete_allowance_is_shared_by_btrfs_roots_on_one_device(tmp_path):
+    _pending_deletes.clear()
+    first_root = tmp_path / "first-area"
+    second_root = tmp_path / "second-area"
+    first_root.mkdir()
+    second_root.mkdir()
+    first_device = os.stat(first_root).st_dev
+    second_device = os.stat(second_root).st_dev
+    assert first_device == second_device
+
+    record_pending_delete(first_device, 4096, now=10.0)
+    pending = pending_delete_bytes(second_device, now=11.0)
+    estimate = SpaceEstimate(1024, 0, 0)
+    caps = SimpleNamespace(backend="btrfs", cheap_clone=True)
+    available = SimpleNamespace(f_bavail=1, f_frsize=10_000)
+    needed, _ = admit(
+        estimate,
+        caps,
+        str(second_root),
+        statvfs=lambda _path: available,
+        pending_bytes=pending,
+    )
+
+    assert pending == 4096
+    assert needed == 5120

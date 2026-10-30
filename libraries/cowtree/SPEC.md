@@ -34,7 +34,9 @@ clones, `needed = ingest_bytes + max_live_clones * per_clone_bytes`. For copy,
 `needed = (1 + max_live_clones) * max(ingest_bytes, per_clone_bytes)`.
 Admission compares that amount with `statvfs.f_bavail * f_frsize` at the run
 allocation directory; btrfs also reserves
-bytes from runs deleted by this process in the preceding 60 seconds.
+bytes from btrfs runs deleted by this process on the same filesystem device in
+the preceding 60 seconds. This pending-delete ledger is shared by all btrfs
+roots on that device in the process.
 `SpaceRefused` carries the byte counts and estimate. No fixed floor, percentage,
 fallback root, or auto-eviction is used. `Run.reserve(extra)` checks the
 current reservation plus the additional estimate before growing.
@@ -54,6 +56,8 @@ Before any tree is created, cowtree creates `owner.lock`, takes a nonblocking
 exclusive flock, and atomically writes and fsyncs `owner.json` with format
 `cowtree-run/1`, run/tool/labels/backend/API/time, holder/external reference,
 the input estimate, and owner uid/pid/starttime/boot id/pid namespace/hostname.
+The serialized manifest is capped at 64 KiB; `open_run()` refuses labels that
+would exceed this cap, and GC retains larger manifests as malformed.
 Names are unique and not reused. `holder="external"` requires an explicit
 `external_ref`; external holders are never collected by `gc`.
 `open_run()` logs once when it finds dead flock-owned runs; it does not collect
@@ -109,9 +113,16 @@ retained. `shared/` is never scanned. `make_shared()`
 serializes creation under `.cowtree/shared.lock`.
 
 The CLI is `python -m cowtree {detect,survey,gc,make-shared}`. `detect --json`
-reports `off`, `btrfs`, or `reflink`; a broken configured root exits 2.
-`gc --scan DIR` supports plain-mode run directories. `make-shared NAME
---compression VALUE` accepts `zstd`, `zstd:N` (1..15), `lzo`, and `none`.
+reports `off`, `btrfs`, or `reflink`; a broken configured root exits 3.
+`gc --scan DIR` supports plain-mode run directories; default `gc` only scans
+the configured CoW area and logs that plain runs need an explicit scan.
+`owner.json` is read with a 64 KiB cap; larger manifests are retained as
+malformed. `make-shared NAME --compression VALUE` accepts `zstd`, `zstd:N`
+(1..15), `lzo`, and `none`.
+
+Argparse usage errors exit `2`. Typed `CowError` statuses are `cow` → `1`,
+`root-invalid` → `3`, `space` → `4`, `path` → `5`, `backend` → `6`, and
+`lease` → `7`; an unknown subclass code uses `1`.
 
 ## Live qualification
 

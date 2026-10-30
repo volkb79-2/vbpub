@@ -29,6 +29,7 @@ from .paths import mount_fstype, validate_name, within
 from .space import SpaceEstimate, admit, available_bytes, pending_delete_bytes
 
 _FORMAT = "cowtree-run/1"
+_MAX_OWNER_MANIFEST_BYTES = 64 * 1024
 _LOCK_FLAGS = os.O_RDWR | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
 
 
@@ -84,12 +85,15 @@ def _write_all(fd: int, payload: bytes) -> None:
 
 
 def _write_manifest(run_dir: str, document: dict[str, object], *, create: bool) -> None:
+    payload = _json_bytes(document)
+    if len(payload) > _MAX_OWNER_MANIFEST_BYTES:
+        raise PathRefused("owner manifest exceeds 64 KiB")
     temporary = os.path.join(run_dir, f".owner.json.{secrets.token_hex(8)}.tmp")
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
     descriptor = -1
     try:
         descriptor = os.open(temporary, flags, 0o600)
-        _write_all(descriptor, _json_bytes(document))
+        _write_all(descriptor, payload)
         os.fsync(descriptor)
         os.close(descriptor)
         descriptor = -1

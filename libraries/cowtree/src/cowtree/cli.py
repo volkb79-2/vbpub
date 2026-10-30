@@ -12,6 +12,15 @@ from .detect import detect
 from .errors import CowError
 from .gc import gc, gc_json, make_shared, survey
 
+_ERROR_EXIT_CODES = {
+    "cow": 1,
+    "root-invalid": 3,
+    "space": 4,
+    "path": 5,
+    "backend": 6,
+    "lease": 7,
+}
+
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="cowtree")
@@ -66,8 +75,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 area = detect()
                 if area is None:
+                    print(
+                        "cowtree: INFO: plain-mode runs are not included in default gc; "
+                        "use cowtree gc --scan DIR with the directory that contains them",
+                        file=sys.stderr,
+                    )
                     document = []
-                    _output(document, args.json)
+                    if args.json:
+                        _output(document, True)
                     return 0
                 scan_dir = area.runs_dir
             items = gc(scan_dir)
@@ -89,5 +104,5 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps({"error": exc.code, "message": str(exc)}, sort_keys=True), file=sys.stderr)
         else:
             print(f"cowtree: {exc}", file=sys.stderr)
-        return 2 if exc.code == "root-invalid" else 1
+        return _ERROR_EXIT_CODES.get(exc.code, _ERROR_EXIT_CODES["cow"])
     return 2

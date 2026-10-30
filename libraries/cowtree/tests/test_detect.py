@@ -183,7 +183,7 @@ def test_btrfs_probe_removes_source_when_destroy_fails(tmp_path):
     assert not list((root / ".cowtree").glob("probe-*"))
 
 
-def test_reflink_probe_short_write_and_probe_cleanup_failure(tmp_path, monkeypatch):
+def test_reflink_probe_short_write_and_probe_cleanup_failure(tmp_path, monkeypatch, caplog):
     root = tmp_path / "area"
     root.mkdir()
 
@@ -205,8 +205,14 @@ def test_reflink_probe_short_write_and_probe_cleanup_failure(tmp_path, monkeypat
         return real_rmtree(path, *args, **kwargs)
 
     monkeypatch.setattr(detect_module.shutil, "rmtree", fail_probe_remove)
-    with pytest.raises(RootInvalid, match="cannot remove cowtree capability probe"):
-        detect(environ={"MDT_COW_ROOT": str(root2)}, ops=FakeOps(), log=lambda _message: None)
+    with caplog.at_level(logging.WARNING, logger="cowtree"):
+        area = detect(environ={"MDT_COW_ROOT": str(root2)}, ops=FakeOps(), log=lambda _message: None)
+    assert area is not None and area.caps.backend == "reflink"
+    assert [record.getMessage() for record in caplog.records] == [
+        "cowtree: cannot remove capability probe directory "
+        f"{next((root2 / '.cowtree').glob('probe-*'))}: [Errno 5] probe cleanup denied"
+    ]
+    real_rmtree(next((root2 / ".cowtree").glob("probe-*")))
 
 
 def test_private_layout_accepts_existing_version_and_directories(tmp_path):

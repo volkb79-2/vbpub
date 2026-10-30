@@ -15,7 +15,7 @@ from .backends import BtrfsBackend, LinuxOps, _validate_compression
 from .detect import Area
 from .errors import BackendFailed, CowError, PathRefused
 from .paths import validate_name
-from .run import _pid_starttime
+from .run import _MAX_OWNER_MANIFEST_BYTES, _pid_starttime
 from .space import record_pending_delete
 
 _MANIFEST_FORMAT = "cowtree-run/1"
@@ -37,10 +37,13 @@ def _manifest(run_dir: str) -> dict[str, Any] | None:
             manifest_path,
             os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0),
         )
-        with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+        with os.fdopen(descriptor, "rb") as handle:
             if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
                 return None
-            document = json.load(handle)
+            payload = handle.read(_MAX_OWNER_MANIFEST_BYTES + 1)
+            if len(payload) > _MAX_OWNER_MANIFEST_BYTES:
+                return None
+            document = json.loads(payload)
     except (OSError, ValueError, UnicodeError):
         return None
     if not isinstance(document, dict) or document.get("format") != _MANIFEST_FORMAT:

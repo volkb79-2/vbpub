@@ -685,6 +685,18 @@ def test_open_run_validates_holder_labels_and_plain_dir(tmp_path):
         open_run("ordinary", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path / "missing")
 
 
+def test_open_run_refuses_owner_manifest_larger_than_gc_read_limit(tmp_path):
+    with pytest.raises(PathRefused, match="64 KiB"):
+        open_run(
+            "large-labels",
+            estimate=SpaceEstimate(0, 0, 0),
+            labels={"payload": "x" * (64 * 1024)},
+            environ={},
+            plain_dir=tmp_path,
+        )
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_external_manifest_and_close(tmp_path):
     run = open_run(
         "vmctl",

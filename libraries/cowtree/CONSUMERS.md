@@ -78,6 +78,13 @@ python -m cowtree gc --scan /tmp/cowtree-runs --json
 python -m cowtree make-shared template-cache --compression zstd:3
 ```
 
+Default `gc` scans only the configured CoW area. Plain-mode runs need the
+explicit scan directory shown above; `gc` logs this reminder when no CoW area
+is configured. Cowtree rejects labels that would produce an `owner.json` larger
+than 64 KiB; GC retains oversized manifests from other sources as invalid.
+Btrfs pending-delete accounting is local to the process and shared by all
+roots on the same filesystem device for 60 seconds.
+
 `gc` deletes a flock-owned run only after it acquires the lease and verifies
 the recorded owner process is dead. It keeps runs whose owner identity cannot
 be compared from the current host, boot, or PID namespace, along with external
@@ -91,6 +98,30 @@ The backend values are `btrfs`, `reflink`, and `copy`; CLI detection reports
 with an INFO message. On ZFS, configure a root with block cloning available;
 cowtree selects `reflink` there and has no native ZFS backend. Shared trees are
 retained by `gc`.
+
+Scripts can handle the CLI's stable exit statuses while preserving the
+original failure status:
+
+```sh
+if python -m cowtree detect --json; then
+  :
+else
+  status=$?
+  case "$status" in
+    1) echo "cowtree reported a generic failure" >&2 ;;
+    2) echo "check the cowtree command syntax" >&2 ;;
+    3) echo "repair the configured MDT_COW_ROOT" >&2 ;;
+    4) echo "reduce the space estimate or free space" >&2 ;;
+    5) echo "check the requested path or destination" >&2 ;;
+    6) echo "check the filesystem backend operation" >&2 ;;
+    7) echo "resolve the run lease conflict" >&2 ;;
+    *) echo "unknown cowtree status: $status" >&2 ;;
+  esac
+  exit "$status"
+fi
+```
+
+The full status-to-error-code table is in the [README](README.md#cli-exit-statuses).
 
 An external owner can make its reference explicit:
 

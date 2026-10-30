@@ -4,9 +4,10 @@ import json
 import runpy
 import sys
 
+import pytest
 from cowtree import cli
 from cowtree.detect import Area, Capabilities
-from cowtree.errors import PathRefused, RootInvalid
+from cowtree.errors import BackendFailed, CowError, LeaseHeld, PathRefused, RootInvalid, SpaceRefused
 from cowtree.gc import GcItem
 
 from .fakes import FakeOps
@@ -35,13 +36,28 @@ def test_detect_cli_off_and_valid_area(monkeypatch, tmp_path, capsys):
     assert json.loads(capsys.readouterr().out) == {"backend": "copy", "fs_type": "ext4", "root": area.root}
 
 
-def test_detect_cli_error_codes_and_output(monkeypatch, capsys):
-    monkeypatch.setattr(cli, "detect", lambda: (_ for _ in ()).throw(RootInvalid("broken")))
-    assert cli.main(["detect", "--json"]) == 2
-    assert json.loads(capsys.readouterr().err)["error"] == "root-invalid"
-    monkeypatch.setattr(cli, "detect", lambda: (_ for _ in ()).throw(PathRefused("name")))
-    assert cli.main(["detect"]) == 1
-    assert "cowtree: name" in capsys.readouterr().err
+@pytest.mark.parametrize(
+    ("error", "status"),
+    [
+        (CowError("generic"), 1),
+        (RootInvalid("broken"), 3),
+        (SpaceRefused(3, 2, {}), 4),
+        (PathRefused("name"), 5),
+        (BackendFailed("clone", 5), 6),
+        (LeaseHeld("held"), 7),
+    ],
+)
+def test_detect_cli_maps_typed_errors_to_distinct_statuses(monkeypatch, capsys, error, status):
+    monkeypatch.setattr(cli, "detect", lambda: (_ for _ in ()).throw(error))
+    assert cli.main(["detect", "--json"]) == status
+    assert json.loads(capsys.readouterr().err)["error"] == error.code
+
+
+def test_cli_usage_error_keeps_argparse_status_two(capsys):
+    with pytest.raises(SystemExit) as caught:
+        cli.main(["unknown-command"])
+    assert caught.value.code == 2
+    assert "usage:" in capsys.readouterr().err
 
 
 def test_survey_cli_off_and_area(monkeypatch, tmp_path, capsys):
@@ -74,6 +90,19 @@ def test_gc_cli_uses_area_runs(monkeypatch, tmp_path, capsys):
     assert cli.main(["gc"]) == 0
     assert seen == [area.runs_dir]
     assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_gc_cli_plain_mode_prints_scan_instruction(monkeypatch, capsys, as_json):
+    monkeypatch.setattr(cli, "detect", lambda: None)
+    argv = ["gc"] + (["--json"] if as_json else [])
+    assert cli.main(argv) == 0
+    output, error = capsys.readouterr()
+    assert output == ("[]\n" if as_json else "")
+    assert error == (
+        "cowtree: INFO: plain-mode runs are not included in default gc; "
+        "use cowtree gc --scan DIR with the directory that contains them\n"
+    )
 
 
 def test_make_shared_cli_off_and_success(monkeypatch, tmp_path, capsys):
