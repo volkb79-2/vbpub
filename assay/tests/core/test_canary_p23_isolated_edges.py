@@ -224,6 +224,7 @@ def _run_import_break_with_resource_observations(
     monkeypatch,
     observations: tuple[contention.ContentionObservation, ...],
     *,
+    control_returncode: int | None = None,
     transformed_returncode: int | None = None,
 ):
     monkeypatch.setenv("ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION", "1")
@@ -258,11 +259,14 @@ def _run_import_break_with_resource_observations(
     def process(argv, *, env, cwd, timeout):
         source = (Path(cwd) / "pkg/mod.py").read_text()
         broken = "assay-canary-import-break" in source
-        returncode = (
-            transformed_returncode
-            if broken and transformed_returncode is not None
-            else 1 if broken else 0
-        )
+        if broken:
+            returncode = (
+                transformed_returncode
+                if transformed_returncode is not None
+                else 1
+            )
+        else:
+            returncode = control_returncode if control_returncode is not None else 0
         return completed_process(list(argv), returncode, "", "")
 
     with prepared_snapshot(git_repo, commit=head_rev, scratch_root=scratch) as prepared:
@@ -313,6 +317,29 @@ def test_limit_event_only_withholds_a_failed_canary_result(
         (Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE)
         if limited_phase == "transform"
         else (Outcome.PASS, None)
+    )
+
+
+def test_limit_event_makes_a_failed_control_inconclusive(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch
+):
+    affected = contention.ContentionObservation(
+        "affected", resource_limit_hit=True, reasons=("pids_events_max=1",)
+    )
+    clear = contention.ContentionObservation("clear")
+    attempt = _run_import_break_with_resource_observations(
+        git_repo,
+        tmp_path,
+        monkeypatch,
+        (affected, clear),
+        control_returncode=1,
+    )
+
+    assert attempt.control_outcome is Outcome.INCONCLUSIVE
+    assert attempt.transformed_outcome is Outcome.FAIL
+    assert canary.judge_attempt(attempt) == (
+        Outcome.INCONCLUSIVE,
+        ReasonCode.CANARY_INCONCLUSIVE,
     )
 
 
