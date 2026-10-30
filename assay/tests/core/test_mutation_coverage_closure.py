@@ -515,6 +515,9 @@ _GOOD_WITNESS = {
     "session_exit_status": 1,
     "process_exit_status": 1,
 }
+_OBSERVED_LIMITS = mutation.ResourceLimitEvidence.from_dict(
+    zero_resource_limit_evidence_dict()
+)
 
 
 @pytest.mark.parametrize(
@@ -579,7 +582,7 @@ _KILL_OK = {"artifact": "k", "present": True}
             {"kill_signal_artifact": "k"},
             True,
         ),
-        (_terminal(kill_signal_evidence=_KILL_OK), {"kill_signal_artifact": "k"}, False),
+        (_terminal(kill_signal_evidence=_KILL_OK), {"kill_signal_artifact": "k"}, True),
         (_terminal(kill_signal_evidence=_KILL_OK), {}, False),
         (_terminal(), {"cold_witness": True}, False),
         (_terminal(execution={"witness": {**_GOOD_WITNESS, "when": "setup"}}), {"cold_witness": True}, False),
@@ -588,7 +591,11 @@ _KILL_OK = {"artifact": "k", "present": True}
     ],
 )
 def test_terminal_matcher_cache_decisions(payload, kwargs, expected):
-    kwargs = {"process_tree_evidence": _tree(), **kwargs}
+    kwargs = {
+        "process_tree_evidence": _tree(),
+        "resource_limit_evidence": _OBSERVED_LIMITS,
+        **kwargs,
+    }
     assert mutation._terminal_result_matches_bucket(payload, **kwargs) is expected
 
 
@@ -1533,6 +1540,29 @@ def test_witness_prefix_replay_attaches_cold_evidence_only_from_clean_receipts(t
     assert _bucket_of(result) == "killed"
     assert killed.execution.mode == "witness-prefix"
     assert (killed.evidence is not None) is (facts == "good")
+
+
+def test_witness_prefix_replay_without_a_clean_process_tree_falls_back(
+    tmp_path, monkeypatch
+):
+    receipts = _Receipts(monkeypatch)
+    receipts.replay_witness = dict(_GOOD)
+    receipts.survivor = True
+    reuse = {mutation.candidate_id(_job()): ("a" * 64, "t::n")}
+
+    result, _ = _cold_run(
+        tmp_path,
+        monkeypatch,
+        receipts,
+        [
+            _result(_PYTEST_PLAN, tree="outliving"),
+            _result(_PYTEST_PLAN, outcome="PASS", returncode=0, reason=None),
+        ],
+        reuse_witnesses=reuse,
+    )
+
+    assert _bucket_of(result) == "survived"
+    assert _only(result).execution.mode == "full"
 
 
 # --------------------------------------------------------------------------
