@@ -1177,9 +1177,10 @@ def test_zero_window_observer_loss_is_returned_as_unobserved(monkeypatch):
 
 
 def test_process_tree_converter_preserves_an_already_typed_proof():
-    result = _result(_ECHO_PLAN)
     proof = _tree("signaled")
-    result.process_tree_evidence = proof
+    result = mutation._dataclass_replace(
+        _result(_ECHO_PLAN), process_tree_evidence=proof
+    )
     assert mutation._process_tree_evidence_from_result(result) is proof
 
 
@@ -1264,11 +1265,13 @@ def test_surviving_descendants_make_a_completed_candidate_crashed(tmp_path, monk
 def test_judgeable_pass_with_a_signaled_leader_is_classified_as_crashed(
     tmp_path, monkeypatch
 ):
-    result = _result(_ECHO_PLAN, outcome="PASS", returncode=0, reason=None)
-    result.process_tree_evidence = {
-        **result.process_tree_evidence,
-        "leader_status": "signaled",
-    }
+    result = mutation._dataclass_replace(
+        _result(_ECHO_PLAN, outcome="PASS", returncode=0, reason=None),
+        process_tree_evidence={
+            **process_tree_evidence_dict(),
+            "leader_status": "signaled",
+        },
+    )
     mutation_result, complete = _execute(tmp_path, monkeypatch, [result])
     assert complete
     assert len(mutation_result.crashed) == 1
