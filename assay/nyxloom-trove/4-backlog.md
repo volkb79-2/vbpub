@@ -13293,7 +13293,7 @@ contract and follow-on WP1–WP8 backlog entries.
 
 ## B173 — one termination classifier for R0, R1, R2 and R3
 
-**Status: WP1 classifier and table implemented; OPEN for WP2–WP4 wiring.** Add
+**Status: WP1 and WP3 implemented; OPEN for WP2 and WP4 wiring.** Add
 the pure classifier and shared table from the
 Opus design so producer paths can classify process outcomes from exit, report,
 process-tree and resource-limit evidence. WP1 adds the decision table and
@@ -13302,12 +13302,11 @@ The table includes an explicit non-judgeable `INCONCLUSIVE` termination and a
 self-inflicted-signal-plus-limit row, where `LIMIT_EVENT` wins per §2.
 Self-inflicted means any signal outside `EXTERNAL_SIGNALS`, matching the
 classifier predicate rather than limiting the rule to five common fatal signals.
-The existing R0/R1/R3 callers still use compatibility helpers until their
-classifier integrations land in WP2 and WP3; deleting those helpers in WP1
-alone would leave live callers broken. Preserve independent SQL qualification
-and verifier derivations. Acceptance requires a table row for every precedence
-case and 100% line and branch coverage for the classifier and contention
-sampler. The test-only preflight at `3faa7878` (Run-Gate ID
+R0/R1 classifier integration remains WP2; the R3 canary now classifies both
+control and transform halves through the shared table. Preserve independent
+SQL qualification and verifier derivations. Acceptance requires a table row
+for every precedence case and 100% line and branch coverage for the classifier
+and contention sampler. The test-only preflight at `3faa7878` (Run-Gate ID
 `94b8cf0b64d974e31994c19b9a2169b2`) failed before coverage because the
 classifier had not yet been added. The implementation preflight at
 `aa3adbcf` (Run-Gate ID `c03fd9a1f89010d4e48076cd91bbdaf2`) stopped during
@@ -13331,9 +13330,10 @@ at 64/64 lines and 36/36 branches, and `contention.py` at 129/129 lines and
 58/58 branches. See the
 [Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md), §§2, 6.1–6.2 and 7/WP1.
 
-WP1 implementation notes: the `withhold_*` helpers and their type guards stay
-because live callers in `canary.py` and `runner.py` still depend on them until
-WP2/WP3 wiring; their planned deletion is not complete. `contention.py` filters
+WP1 implementation notes: `withhold_r0_result` and `withhold_r1_result` remain
+for live runner callers until WP2. WP3 removed the canary's call to
+`withhold_canary_result`; that helper remains unused pending a separate cleanup
+decision. `contention.py` filters
 `cgroup_cpu.nr_throttled` out of `pressure_us` while retaining duration
 telemetry such as `throttled_usec`. `termination.detail()` takes a fourth,
 optional `returncode` argument to render signal numbers. `termination.py` is
@@ -13354,12 +13354,18 @@ preflight. See the [Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md),
 
 ## B175 — use execution receipts to attribute import-break R3 canaries
 
-**Status: OPEN; WP3 follow-up.** Replace the temporary 10.0.0 reason-code
-contract with a per-attempt receipt written by the injected import-break
-statement. Pass only a clean expected failure with the matching receipt;
-classify accepted transforms and unrelated failures using the design's table.
-Do not parse stdout or stderr. Acceptance covers Python subprocess behavior
-and a JavaScript canary in the available gate environment. See the
+**Status: IMPLEMENTED on `assay-wp3-20261030`; registered acceptance pending.**
+Replace the temporary 10.0.0 reason-code contract with a per-attempt receipt
+written by the injected import-break statement. Pass only a clean expected
+failure with the matching receipt; classify accepted transforms and unrelated
+failures using the design's table. Do not parse stdout or stderr. Behavioural
+coverage includes the shared termination table, Python's real subprocess
+pipeline, a real Node ESM import canary, transform-only environment injection,
+receipt bounds/errors, and adapter protocol parity. Vitest is not installed in
+the available tester image, so the acceptance witness is Node ESM as allowed
+by WP3. The pre-change tester run was red on the new receipt contract; record
+the final preflight/tester Run-Gate IDs and source-tree SHA here after they
+complete. See the
 [Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md), §§3, 6.4 and 7/WP3.
 
 ## B176 — align R2 mutation buckets and resume validation with termination evidence

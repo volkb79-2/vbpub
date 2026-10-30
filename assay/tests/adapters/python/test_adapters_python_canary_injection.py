@@ -19,6 +19,14 @@ import ast
 from assay.adapters.python import PythonAdapter
 
 ADAPTER = PythonAdapter()
+NONCE = "0123456789abcdef0123456789abcdef"
+RECEIPT_STATEMENT = (
+    '_assay_canary_receipt = __import__("os").environ.get("ASSAY_CANARY_RECEIPT")\n'
+    "if _assay_canary_receipt:\n"
+    "    __import__(\"pathlib\").Path(_assay_canary_receipt).write_text("
+    '"0123456789abcdef0123456789abcdef", encoding="ascii")\n'
+    'raise AssertionError("assay-canary-import-break")\n'
+)
 
 
 # --- inject_import_break: insertion point -------------------------------------
@@ -27,20 +35,16 @@ ADAPTER = PythonAdapter()
 def test_import_break_is_inserted_at_the_top_of_a_bare_module():
     source = "def f():\n    return 1\n"
 
-    new_text, description = ADAPTER.inject_import_break(source)
+    new_text, description = ADAPTER.inject_import_break(source, nonce=NONCE)
 
-    assert new_text == (
-        'raise AssertionError("assay-canary-import-break")\n'
-        "def f():\n"
-        "    return 1\n"
-    )
+    assert new_text == RECEIPT_STATEMENT + "def f():\n    return 1\n"
     assert "line 1" in description
 
 
 def test_import_break_is_returned_as_a_pair_and_never_touches_a_filesystem(tmp_path):
     """Pure: calling this on text alone must not create any file — proven by
     asserting the (otherwise empty) tmp_path stays empty."""
-    ADAPTER.inject_import_break("def f():\n    return 1\n")
+    ADAPTER.inject_import_break("def f():\n    return 1\n", nonce=NONCE)
 
     assert list(tmp_path.iterdir()) == []
 
@@ -48,13 +52,10 @@ def test_import_break_is_returned_as_a_pair_and_never_touches_a_filesystem(tmp_p
 def test_import_break_is_inserted_after_a_leading_docstring():
     source = '"""A module docstring."""\ndef f():\n    return 1\n'
 
-    new_text, description = ADAPTER.inject_import_break(source)
+    new_text, description = ADAPTER.inject_import_break(source, nonce=NONCE)
 
     assert new_text == (
-        '"""A module docstring."""\n'
-        'raise AssertionError("assay-canary-import-break")\n'
-        "def f():\n"
-        "    return 1\n"
+        '"""A module docstring."""\n' + RECEIPT_STATEMENT + "def f():\n    return 1\n"
     )
     assert "line 2" in description
 
@@ -62,13 +63,12 @@ def test_import_break_is_inserted_after_a_leading_docstring():
 def test_import_break_is_inserted_after_a_future_import():
     source = "from __future__ import annotations\ndef f():\n    return 1\n"
 
-    new_text, description = ADAPTER.inject_import_break(source)
+    new_text, description = ADAPTER.inject_import_break(source, nonce=NONCE)
 
     assert new_text == (
         "from __future__ import annotations\n"
-        'raise AssertionError("assay-canary-import-break")\n'
-        "def f():\n"
-        "    return 1\n"
+        + RECEIPT_STATEMENT
+        + "def f():\n    return 1\n"
     )
     assert "line 2" in description
 
@@ -84,14 +84,13 @@ def test_import_break_is_inserted_after_both_a_docstring_and_a_future_import():
         "    return 1\n"
     )
 
-    new_text, description = ADAPTER.inject_import_break(source)
+    new_text, description = ADAPTER.inject_import_break(source, nonce=NONCE)
 
     assert new_text == (
         '"""doc"""\n'
         "from __future__ import annotations\n"
-        'raise AssertionError("assay-canary-import-break")\n'
-        "def f():\n"
-        "    return 1\n"
+        + RECEIPT_STATEMENT
+        + "def f():\n    return 1\n"
     )
     assert "line 3" in description
     # The negative, made concrete: the inserted line must not land before the
@@ -107,12 +106,9 @@ def test_import_break_appends_after_a_module_that_is_only_a_docstring():
     exercised by a module that has a statement after the prefix."""
     source = '"""only a docstring, nothing else"""\n'
 
-    new_text, description = ADAPTER.inject_import_break(source)
+    new_text, description = ADAPTER.inject_import_break(source, nonce=NONCE)
 
-    assert new_text == (
-        '"""only a docstring, nothing else"""\n'
-        'raise AssertionError("assay-canary-import-break")\n'
-    )
+    assert new_text == '"""only a docstring, nothing else"""\n' + RECEIPT_STATEMENT
     assert "line 2" in description
 
 
@@ -122,9 +118,9 @@ def test_import_break_prepends_on_unparseable_source():
     guessing at structure it cannot parse."""
     source = "def f(:\n"
 
-    new_text, description = ADAPTER.inject_import_break(source)
+    new_text, description = ADAPTER.inject_import_break(source, nonce=NONCE)
 
-    assert new_text.startswith('raise AssertionError("assay-canary-import-break")\n')
+    assert new_text.startswith(RECEIPT_STATEMENT)
     assert "line 1" in description
 
 
@@ -134,7 +130,7 @@ def test_import_break_produces_a_real_import_error_on_a_real_module():
     statement is reachable at module-import time (not, say, inside a
     function body it would never trip)."""
     source = "def f():\n    return 1\n"
-    new_text, _ = ADAPTER.inject_import_break(source)
+    new_text, _ = ADAPTER.inject_import_break(source, nonce=NONCE)
 
     module = ast.parse(new_text)
     compiled = compile(module, "<canary>", "exec")

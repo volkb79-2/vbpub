@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import stat
 from datetime import datetime
 from inspect import signature
 from pathlib import Path
@@ -31,7 +32,7 @@ from assay.process_tree import ProcessTreeEvidence
 from assay.runner import CommandResult, default_process_runner
 from assay.termination import Termination
 from assay.verdict import CanaryAttempt
-from termination_table import LIMITS_CLEAR, TERMINATION_CASES
+from termination_table import LIMITS_CLEAR, PRECEDENCE_CASES, TERMINATION_CASES
 
 MOMENT_TEXT = "2026-08-10T12:00:00+00:00"
 NONCE = "0123456789abcdef0123456789abcdef"
@@ -91,12 +92,13 @@ def test_import_break_adapter_receipt_protocol_is_in_parity(
     adapter, source: str, receipt_markers: tuple[str, ...]
 ):
     method = adapter.inject_import_break
-    assert "nonce" in signature(method).parameters
+    assert signature(method).parameters["nonce"].kind.name == "KEYWORD_ONLY"
 
-    transformed, _ = method(source, nonce=NONCE)
+    transformed, description = method(source, nonce=NONCE)
 
     for marker in receipt_markers:
         assert marker in transformed
+    assert NONCE not in description
 
 
 def test_sql_adapter_keeps_import_break_unreachable_with_the_new_signature():
@@ -141,22 +143,26 @@ def _command_result(
     )
 
 
-@pytest.mark.parametrize("case", TERMINATION_CASES, ids=lambda case: case.name)
+@pytest.mark.parametrize(
+    "case",
+    TERMINATION_CASES
+    + tuple(case for case in PRECEDENCE_CASES if not case.inputs["decided_by_report"]),
+    ids=lambda case: case.name,
+)
 def test_canary_command_classification_matches_the_shared_termination_table(case):
     process_tree = case.inputs["process_tree"]
     observation_status = case.inputs["observation"]
     limits = case.inputs["limits"]
-    observation = (
-        None
-        if observation_status == "not_requested"
-        else ContentionObservation(
-            observation_status,
-            limits=(limits or LIMITS_CLEAR) if observation_status == "clear" else None,
-            reasons=("observer-unavailable",)
-            if observation_status == "unavailable"
-            else (),
+    if observation_status == "unavailable":
+        observation = ContentionObservation(
+            "unavailable", reasons=("observer-unavailable",)
         )
-    )
+    elif observation_status == "clear" or limits is not None:
+        observation = ContentionObservation("clear", limits=limits or LIMITS_CLEAR)
+    elif observation_status == "not_requested":
+        observation = None
+    else:
+        observation = ContentionObservation(observation_status)
     result = _command_result(
         outcome=case.inputs["outcome"],
         reason_code=case.inputs["reason_code"],
@@ -179,12 +185,72 @@ def test_canary_command_classification_matches_the_shared_termination_table(case
 
 
 @pytest.mark.parametrize(
+    ("observation", "required", "expected"),
+    (
+        (None, False, Termination.FAILED),
+        (ContentionObservation("unobserved"), False, Termination.FAILED),
+        (ContentionObservation("unobserved"), True, Termination.UNOBSERVED),
+    ),
+    ids=("not-requested", "optional-unobserved", "required-unobserved"),
+)
+def test_canary_classifier_maps_unobserved_contention_to_the_shared_vocabulary(
+    observation, required: bool, expected: Termination
+):
+    result = _command_result(
+        outcome=Outcome.FAIL,
+        reason_code=ReasonCode.COMMAND_FAILED,
+        returncode=1,
+        process_tree=None,
+    )
+
+    assert canary._classify_result(
+        outcome=Outcome.FAIL,
+        reason_code=ReasonCode.COMMAND_FAILED,
+        result=result,
+        observation=observation,
+        observation_required=required,
+    ) is expected
+
+
+@pytest.mark.parametrize(
+    "case",
+    tuple(
+        case
+        for case in TERMINATION_CASES
+        if case.termination not in {Termination.PASSED, Termination.FAILED}
+    ),
+    ids=lambda case: case.name,
+)
+@pytest.mark.parametrize("mechanism", ("import-break", "uncovered-line"))
+def test_nonjudgeable_termination_stays_inconclusive_even_with_a_receipt(
+    case, mechanism: str, tmp_path: Path
+):
+    receipt_path = tmp_path / f"{case.name}-{mechanism}.receipt"
+    receipt_path.write_bytes(NONCE.encode("ascii"))
+
+    transformed, observed_reason, _description = canary._attribute_transform(
+        mechanism=mechanism,
+        description="transformed source",
+        termination=case.termination,
+        observed_reason_code=case.inputs["reason_code"],
+        receipt_path=receipt_path,
+        nonce=NONCE,
+    )
+
+    assert (transformed, observed_reason) == (
+        Outcome.INCONCLUSIVE,
+        ReasonCode.CANARY_INCONCLUSIVE,
+    )
+
+
+@pytest.mark.parametrize(
     (
         "name",
         "mechanism",
         "termination",
         "observed_reason",
         "receipt_bytes",
+        "receipt_unreadable",
         "expected_transform",
         "expected_observed",
         "description_fragment",
@@ -198,6 +264,7 @@ def test_canary_command_classification_matches_the_shared_termination_table(case
             Termination.FAILED,
             ReasonCode.COMMAND_FAILED,
             NONCE.encode(),
+            False,
             Outcome.FAIL,
             ReasonCode.COMMAND_FAILED,
             "receipt matched",
@@ -210,6 +277,7 @@ def test_canary_command_classification_matches_the_shared_termination_table(case
             Termination.FAILED,
             ReasonCode.COMMAND_FAILED,
             None,
+            False,
             Outcome.INCONCLUSIVE,
             ReasonCode.CANARY_INCONCLUSIVE,
             "no receipt",
@@ -222,6 +290,7 @@ def test_canary_command_classification_matches_the_shared_termination_table(case
             Termination.FAILED,
             ReasonCode.UNCOVERED_LINES,
             NONCE.encode(),
+            False,
             Outcome.INCONCLUSIVE,
             ReasonCode.CANARY_INCONCLUSIVE,
             "receipt matched",
@@ -234,6 +303,7 @@ def test_canary_command_classification_matches_the_shared_termination_table(case
             Termination.PASSED,
             None,
             NONCE.encode(),
+            False,
             Outcome.PASS,
             None,
             "defect executed, suite passed",
@@ -246,6 +316,7 @@ def test_canary_command_classification_matches_the_shared_termination_table(case
             Termination.PASSED,
             None,
             None,
+            False,
             Outcome.PASS,
             None,
             "no receipt",
@@ -258,6 +329,20 @@ def test_canary_command_classification_matches_the_shared_termination_table(case
             Termination.FAILED,
             ReasonCode.COMMAND_FAILED,
             NONCE.encode() + b"x",
+            False,
+            Outcome.INCONCLUSIVE,
+            ReasonCode.CANARY_INCONCLUSIVE,
+            "no receipt",
+            Outcome.INCONCLUSIVE,
+            ReasonCode.CANARY_INCONCLUSIVE,
+        ),
+        (
+            "wrong nonce is not a match",
+            "import-break",
+            Termination.FAILED,
+            ReasonCode.COMMAND_FAILED,
+            b"f" * len(NONCE),
+            False,
             Outcome.INCONCLUSIVE,
             ReasonCode.CANARY_INCONCLUSIVE,
             "no receipt",
@@ -270,6 +355,7 @@ def test_canary_command_classification_matches_the_shared_termination_table(case
             Termination.FAILED,
             ReasonCode.UNCOVERED_LINES,
             None,
+            False,
             Outcome.FAIL,
             ReasonCode.UNCOVERED_LINES,
             "appended uncovered lines",
@@ -282,6 +368,7 @@ def test_canary_command_classification_matches_the_shared_termination_table(case
             Termination.FAILED,
             ReasonCode.COMMAND_FAILED,
             None,
+            False,
             Outcome.INCONCLUSIVE,
             ReasonCode.CANARY_INCONCLUSIVE,
             "appended uncovered lines",
@@ -294,6 +381,7 @@ def test_canary_command_classification_matches_the_shared_termination_table(case
             Termination.PASSED,
             None,
             None,
+            False,
             Outcome.PASS,
             None,
             "appended uncovered lines",
@@ -301,27 +389,56 @@ def test_canary_command_classification_matches_the_shared_termination_table(case
             ReasonCode.CANARY_SURVIVED,
         ),
         (
+            "uncovered-line timeout is inconclusive",
+            "uncovered-line",
+            Termination.TIMED_OUT,
+            ReasonCode.LANE_TIMEOUT,
+            None,
+            False,
+            Outcome.INCONCLUSIVE,
+            ReasonCode.CANARY_INCONCLUSIVE,
+            "appended uncovered lines",
+            Outcome.INCONCLUSIVE,
+            ReasonCode.CANARY_INCONCLUSIVE,
+        ),
+        (
             "infrastructure failure remains inconclusive",
             "import-break",
             Termination.LIMIT_EVENT,
             ReasonCode.COMMAND_FAILED,
             NONCE.encode(),
+            False,
             Outcome.INCONCLUSIVE,
             ReasonCode.CANARY_INCONCLUSIVE,
             "receipt matched",
             Outcome.INCONCLUSIVE,
             ReasonCode.CANARY_INCONCLUSIVE,
         ),
+        (
+            "unreadable receipt is absent",
+            "import-break",
+            Termination.FAILED,
+            ReasonCode.COMMAND_FAILED,
+            NONCE.encode(),
+            True,
+            Outcome.INCONCLUSIVE,
+            ReasonCode.CANARY_INCONCLUSIVE,
+            "no receipt",
+            Outcome.INCONCLUSIVE,
+            ReasonCode.CANARY_INCONCLUSIVE,
+        ),
     ),
-    ids=lambda row: row if isinstance(row, str) else None,
+    ids=lambda row: row if isinstance(row, str) and " " in row else None,
 )
 def test_transform_attribution_table(
     tmp_path: Path,
+    monkeypatch,
     name: str,
     mechanism: str,
     termination: Termination,
     observed_reason: ReasonCode | None,
     receipt_bytes: bytes | None,
+    receipt_unreadable: bool,
     expected_transform: Outcome,
     expected_observed: ReasonCode | None,
     description_fragment: str,
@@ -331,7 +448,17 @@ def test_transform_attribution_table(
     receipt_path = tmp_path / "receipt"
     if receipt_bytes is not None:
         receipt_path.write_bytes(receipt_bytes)
-    description = "appended uncovered lines" if mechanism == "uncovered-line" else "inserted import break"
+    description = (
+        "appended uncovered lines"
+        if mechanism == "uncovered-line"
+        else "inserted import break"
+    )
+    if receipt_unreadable:
+
+        def denied_open(self, *args, **kwargs):
+            raise PermissionError("receipt is unreadable")
+
+        monkeypatch.setattr(Path, "open", denied_open)
 
     transformed, transformed_reason, final_description = canary._attribute_transform(
         mechanism=mechanism,
@@ -357,28 +484,6 @@ def test_transform_attribution_table(
     ) == (expected_attempt, expected_attempt_reason), name
 
 
-def test_unreadable_receipt_is_treated_as_absent(tmp_path: Path, monkeypatch):
-    receipt_path = tmp_path / "receipt"
-    receipt_path.write_bytes(NONCE.encode())
-
-    def denied_open(self, *args, **kwargs):
-        raise PermissionError("receipt is unreadable")
-
-    monkeypatch.setattr(Path, "open", denied_open)
-    transformed, reason, description = canary._attribute_transform(
-        mechanism="import-break",
-        description="inserted import break",
-        termination=Termination.FAILED,
-        observed_reason_code=ReasonCode.COMMAND_FAILED,
-        receipt_path=receipt_path,
-        nonce=NONCE,
-    )
-
-    assert transformed is Outcome.INCONCLUSIVE
-    assert reason is ReasonCode.CANARY_INCONCLUSIVE
-    assert "no receipt" in description
-
-
 def test_receipt_env_is_transform_only_and_receipt_dir_is_external_and_removed(
     git_repo: GitRepo, tmp_path: Path, monkeypatch
 ):
@@ -388,13 +493,18 @@ def test_receipt_env_is_transform_only_and_receipt_dir_is_external_and_removed(
     monkeypatch.setattr(
         canary, "secrets", SimpleNamespace(token_hex=lambda size: NONCE), raising=False
     )
-    calls: list[tuple[dict[str, str], Path, bool]] = []
+    calls: list[tuple[dict[str, str], Path, bool, int | None]] = []
 
     def process(argv, *, env, cwd, timeout):
         source = (Path(cwd) / "pkg/mod.py").read_text(encoding="utf-8")
         transformed = "assay-canary-import-break" in source
-        calls.append((dict(env), Path(cwd), transformed))
         receipt_path = env.get(RECEIPT_ENV)
+        receipt_mode = (
+            stat.S_IMODE(Path(receipt_path).parent.stat().st_mode)
+            if transformed and receipt_path is not None
+            else None
+        )
+        calls.append((dict(env), Path(cwd), transformed, receipt_mode))
         if transformed and receipt_path is not None:
             Path(receipt_path).write_text(NONCE, encoding="ascii")
         return completed_process(
@@ -405,11 +515,12 @@ def test_receipt_env_is_transform_only_and_receipt_dir_is_external_and_removed(
         )
 
     lane = _lane(git_repo)
+    plan = make_plan(lane)
     with prepared_snapshot(git_repo, commit=head, scratch_root=scratch) as prepared:
         result = canary.run_isolated_canary(
             lane,
             prepared=prepared,
-            plan=make_plan(lane),
+            plan=plan,
             deadline=make_deadline(),
             project_root=git_repo.path,
             resolved_base=None,
@@ -423,6 +534,9 @@ def test_receipt_env_is_transform_only_and_receipt_dir_is_external_and_removed(
     assert len(calls) == 2
     assert RECEIPT_ENV not in calls[0][0]
     assert calls[1][0][RECEIPT_ENV]
+    assert calls[0][3] is None
+    assert calls[1][3] == 0o700
+    assert RECEIPT_ENV not in plan.env_effective
     receipt_path = Path(calls[1][0][RECEIPT_ENV])
     assert not receipt_path.is_relative_to(calls[1][1])
     assert not receipt_path.exists()
@@ -432,6 +546,7 @@ def test_receipt_env_is_transform_only_and_receipt_dir_is_external_and_removed(
     assert attempt.transformed_outcome is Outcome.FAIL
     assert attempt.observed_reason_code is ReasonCode.COMMAND_FAILED
     assert "receipt matched" in attempt.description
+    assert NONCE not in attempt.description
     assert canary.judge_attempt(attempt) == (Outcome.PASS, None)
 
 
@@ -517,4 +632,5 @@ def test_node_esm_import_break_canary_writes_a_receipt(
     assert attempt.transformed_outcome is Outcome.FAIL
     assert attempt.observed_reason_code is ReasonCode.COMMAND_FAILED
     assert "receipt matched" in attempt.description
+    assert NONCE not in attempt.description
     assert canary.judge_attempt(attempt) == (Outcome.PASS, None)

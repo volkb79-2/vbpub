@@ -1,5 +1,6 @@
-"""B036 — the two canary injection mechanisms (A-345). Both are PURE
-``(text) -> (text, description)`` transforms that never touch a filesystem
+"""B036 — the two canary injection mechanisms (A-345). Both are pure text
+transforms that never touch a filesystem; import-break receives a nonce and
+writes its execution receipt immediately before throwing.
 (A-010), and both are plain trailing appends
 (:mod:`assay.adapters.go`'s own shape) rather than Python's
 insert-after-the-prologue shape.
@@ -34,6 +35,11 @@ import pytest
 from assay.adapters.javascript import JavaScriptAdapter
 
 ADAPTER = JavaScriptAdapter()
+NONCE = "0123456789abcdef0123456789abcdef"
+
+
+def _inject_import_break(text: str) -> tuple[str, str]:
+    return ADAPTER.inject_import_break(text, nonce=NONCE)
 
 MODULE = """\
 import { useState } from 'react'
@@ -47,7 +53,7 @@ export function counter(start: number): number {
 
 @pytest.mark.parametrize(
     "inject",
-    [ADAPTER.inject_import_break, ADAPTER.inject_uncovered_line],
+    [_inject_import_break, ADAPTER.inject_uncovered_line],
 )
 def test_the_original_text_survives_byte_for_byte_as_a_prefix(inject):
     """MINIMAL and ADDITIVE, proven as a byte fact rather than by eye: every
@@ -60,7 +66,7 @@ def test_the_original_text_survives_byte_for_byte_as_a_prefix(inject):
 
 @pytest.mark.parametrize(
     "inject",
-    [ADAPTER.inject_import_break, ADAPTER.inject_uncovered_line],
+    [_inject_import_break, ADAPTER.inject_uncovered_line],
 )
 def test_a_file_with_no_trailing_newline_gets_a_clean_append_boundary(inject):
     """The one shape where "append" could fuse the injected snippet onto the
@@ -73,7 +79,7 @@ def test_a_file_with_no_trailing_newline_gets_a_clean_append_boundary(inject):
 
 @pytest.mark.parametrize(
     "inject",
-    [ADAPTER.inject_import_break, ADAPTER.inject_uncovered_line],
+    [_inject_import_break, ADAPTER.inject_uncovered_line],
 )
 def test_injection_is_pure_and_total_even_for_degenerate_input(inject):
     """Pure ``(text) -> (text, description)``: no filesystem, no raise, and a
@@ -87,15 +93,18 @@ def test_injection_is_pure_and_total_even_for_degenerate_input(inject):
 
 
 def test_import_break_appends_a_top_level_throw():
-    transformed, description = ADAPTER.inject_import_break(MODULE)
+    transformed, description = _inject_import_break(MODULE)
 
     assert 'throw new Error("assay-canary-import-break")' in transformed
+    assert "ASSAY_CANARY_RECEIPT" in transformed
+    assert "writeFileSync" in transformed
     assert "throw" in description
     # The throw sits at the module's own top level (column zero), not nested
     # inside the function above it -- a nested throw would only fire if that
     # function were called, which is a different claim entirely.
     added = transformed[len(MODULE) :]
-    assert added.strip().startswith("throw ")
+    assert added.strip().startswith(";(() => {\n  const _assayCanaryProcess")
+    assert added.rstrip().endswith('throw new Error("assay-canary-import-break")')
     assert "\n  throw" not in added
 
 
@@ -119,7 +128,7 @@ def test_neither_snippet_uses_syntax_that_is_typescript_only():
     there. The canary parameter therefore carries a DEFAULT (``value = 0``),
     which is valid JavaScript and lets TypeScript infer ``number`` so
     ``noImplicitAny`` has nothing to complain about either."""
-    for inject in (ADAPTER.inject_import_break, ADAPTER.inject_uncovered_line):
+    for inject in (_inject_import_break, ADAPTER.inject_uncovered_line):
         added = inject(MODULE)[0][len(MODULE) :]
         assert ": number" not in added
         assert ": string" not in added
@@ -142,7 +151,7 @@ def test_the_uncovered_line_expression_has_no_target_bindings_or_module_syntax()
 def test_the_two_transforms_are_different_and_independent():
     """They isolate two different axes (R0-level rejection vs. an R1
     changed-line-coverage floor), so neither may be the other."""
-    broken, _ = ADAPTER.inject_import_break(MODULE)
+    broken, _ = _inject_import_break(MODULE)
     uncovered, _ = ADAPTER.inject_uncovered_line(MODULE)
 
     assert broken != uncovered
