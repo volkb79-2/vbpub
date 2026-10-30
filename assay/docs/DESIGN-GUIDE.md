@@ -2711,12 +2711,14 @@ commit included, needs a fresh `tester-unified` run first.
 
 #### Host load and verdicts
 
-The command's own cgroup resource window reports `affected` only when it
-observes a direct pids-limit or memory OOM event in that cgroup's subtree.
-Ancestor-only counters are not attributed to the command, and
-`memory.events:max` alone does not count because reclaim can satisfy an
-allocation. PSI and CPU throttling do not make a window `affected` and do not
-change R0, R1 or R3 verdicts. There is no PSI percentage cutoff.
+The command's own cgroup resource window stores direct pids-limit and memory
+OOM evidence separately from pressure telemetry. Ancestor-only counters are
+not attributed to the command, and `memory.events:max` alone does not count
+because reclaim can satisfy an allocation. `ContentionObservation.status ==
+"clear"` means the direct counters were sampled successfully; it does not say
+that no limit event occurred. Callers inspect `limits.limit_hit` for that.
+PSI and CPU throttling do not change R0, R1 or R3 verdicts. There is no PSI
+percentage cutoff.
 
 A direct resource-limit event never changes a completed PASS. It makes a
 failed R0 command or R1 coverage claim an infrastructure error. An unavailable
@@ -2737,6 +2739,25 @@ R2 retains its candidate-scoped pids/OOM events and its pressure-adjusted
 liveness clock: PSI and CPU throttling pause that clock, while the lane's
 absolute budget still bounds the campaign. Candidate timeouts and hangs remain
 incomplete results.
+
+WP1's shared classifier applies the design precedence table to recorded
+outcomes. A direct limit event takes precedence over a self-inflicted fatal
+signal; without a limit event, SIGSEGV/SIGABRT/SIGBUS/SIGFPE/SIGILL remain
+functional failures. An already `INCONCLUSIVE` command outcome maps to a
+non-judgeable termination: R0/R1 refuse it as `ERROR/EXEC_FAILED`, R2 places it
+in `crashed`, and R3 keeps the attempt `INCONCLUSIVE`.
+
+The WP1 implementation retains the three `withhold_*` compatibility helpers
+and their type guards because the live R0/R1/R3 call sites still depend on
+them until WP2/WP3 wiring. The planned deletions are therefore not complete.
+The sampler filters `cgroup_cpu.nr_throttled` from `pressure_us`; that count is
+not telemetry, while duration fields such as `throttled_usec` remain. This
+filter is recorded as current behavior, not a verdict rule. `detail()` also
+takes an optional fourth `returncode` argument so an external signal detail
+can include its number. The classifier module is 132 lines, compared with the
+design's initial ~90-line estimate. `ContentionObservation` is unhashable
+because its `pressure_us` mapping is read-only, and its status alone cannot
+certify that the command had no direct limit event.
 
 B105 admission verifies the gates cgroup and reserves 2 GiB of point-in-time
 memory headroom. The five qualification lanes share a Run-Gate lock and a

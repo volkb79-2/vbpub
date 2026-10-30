@@ -365,11 +365,7 @@
       }
     },
     "assay.contention.ContentionObservation": {
-      "fields": {
-        "resource_limit_hit": {
-          "default": false
-        }
-      },
+      "fields": {},
       "params": {
         "eq": true,
         "frozen": true,

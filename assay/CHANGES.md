@@ -9,6 +9,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   verdicts; avoid reporting pytest-cov's platform banner as the first failing
   test or treating R0 execution errors as measured test failures (B181).
 
+### Changed
+- Add the pure termination classifier and separate resource-limit evidence,
+  pressure telemetry, and observation availability in the internal command
+  model. R0/R1/R3 verdict paths keep their 10.0.1 behavior in this WP1 step;
+  classifier wiring follows in WP2–WP4 (B173).
+
 <!-- cmru: release history -->
 
 ## [10.0.1] - 2026-10-30

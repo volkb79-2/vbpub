@@ -1842,18 +1842,21 @@ def test_self_qualification_gate_budget_matches_nyxloom_timeout():
     assert preflight_run_gate["budget"] == "75m"
 
 
-def test_preflight_measures_the_same_complete_source_inventory_before_r2():
+def test_self_qualification_judges_share_the_complete_source_inventory():
     lane_file = load_lane_file(SELF_LANE_FILE)
     qualification = lane_file.lane(QUALIFICATION_ID)
     preflight = lane_file.lane(PREFLIGHT_ID)
 
     assert preflight.rigor == ("R0", "R1")
-    assert preflight.judge is not None
     assert qualification.judge is not None
+    for lane_id in (QUALIFICATION_ID, PREFLIGHT_ID, PROVISIONAL_ID):
+        lane = lane_file.lane(lane_id)
+        assert lane.judge is not None
+        assert lane.judge.targets == qualification.judge.targets
+
     assert preflight.judge.mode == "whole_target"
     assert preflight.judge.fail_under == qualification.judge.fail_under == 100.0
     assert preflight.judge.require_branch is True
-    assert preflight.judge.targets == qualification.judge.targets
     assert tuple(
         argument.replace(
             "self-qualification-preflight", "self-qualification"

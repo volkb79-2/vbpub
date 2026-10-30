@@ -106,8 +106,8 @@ its HEAD, so run both lanes in the same worktree with no commit in between: any
 later commit, a docs-only or merge commit included, needs a fresh `tester-unified`
 run. Docker container names do not block this lane. Run-Gate maps exit 3 to
 infrastructure `ERROR`; the wrapper uses it for launch failures, timeouts and
-incomplete resource evidence. For R0/R1/R3, `affected` means a direct pids or
-memory OOM event in the measured cgroup. PSI and CPU throttling do not change
+incomplete resource evidence. For R0/R1/R3, a direct pids or memory OOM event
+in the measured cgroup is a limit event. PSI and CPU throttling do not change
 verdicts. A direct event never changes a completed PASS. It can turn a failed
 R0 command or R1 coverage claim into an infrastructure error; an unavailable
 direct-counter observation can do the same when the gate requires it. PSI or

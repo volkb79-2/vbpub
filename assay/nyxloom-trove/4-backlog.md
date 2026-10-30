@@ -13293,13 +13293,54 @@ contract and follow-on WP1–WP8 backlog entries.
 
 ## B173 — one termination classifier for R0, R1, R2 and R3
 
-**Status: OPEN; WP1 follow-up.** Add the pure classifier and shared table from
-the Opus design so producer paths can classify process outcomes from exit,
-report, process-tree and resource-limit evidence. Preserve independent SQL
-qualification and verifier derivations. Acceptance requires a table row for
-every precedence case and 100% line and branch coverage for the classifier and
-contention sampler. See the [Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md),
-§§2, 6.1–6.2 and 7/WP1.
+**Status: WP1 classifier and table implemented; OPEN for WP2–WP4 wiring.** Add
+the pure classifier and shared table from the
+Opus design so producer paths can classify process outcomes from exit, report,
+process-tree and resource-limit evidence. WP1 adds the decision table and
+separates observation availability, limit evidence, and pressure telemetry.
+The table includes an explicit non-judgeable `INCONCLUSIVE` termination and a
+self-inflicted-signal-plus-limit row, where `LIMIT_EVENT` wins per §2.
+Self-inflicted means any signal outside `EXTERNAL_SIGNALS`, matching the
+classifier predicate rather than limiting the rule to five common fatal signals.
+The existing R0/R1/R3 callers still use compatibility helpers until their
+classifier integrations land in WP2 and WP3; deleting those helpers in WP1
+alone would leave live callers broken. Preserve independent SQL qualification
+and verifier derivations. Acceptance requires a table row for every precedence
+case and 100% line and branch coverage for the classifier and contention
+sampler. The test-only preflight at `3faa7878` (Run-Gate ID
+`94b8cf0b64d974e31994c19b9a2169b2`) failed before coverage because the
+classifier had not yet been added. The implementation preflight at
+`aa3adbcf` (Run-Gate ID `c03fd9a1f89010d4e48076cd91bbdaf2`) stopped during
+collection and produced no coverage artifact; `tests/conftest.py` then raised
+while trying to archive that missing artifact. The registered
+`tester-unified` diagnostic at `6d828e37` (Run-Gate ID
+`c4a9176839db955e9e6fa67e5aa69839`) exposed the collection error: a contention
+test passed positional arguments to keyword-only `CounterDelta`, corrected in
+`b6137aed`. The next preflight at `b6137aed` completed all tests and reported
+100% R1 coverage for its configured targets, but the self-qualification target
+inventories were not all in sync and the reviewed dataclass fixture still
+pinned the previous observation shape. The correction added the module to the
+qualification and preflight inventories, but the provisional inventory
+remained short by one path. This fix round reconciles all three target lists
+and asserts equality for every self-qualification judge lane. The
+corrected-tree preflight passed on
+`3524c7a9` (Run-Gate ID `c7a4745c29ebfaadc36d8612357fccfa`, source tree
+`b5eb5777a5d8dbb453d891689c7bfeb00cfa0cbd`): R0 and R1 passed with 100% line
+and branch coverage across all 60 targets. The report measured `termination.py`
+at 64/64 lines and 36/36 branches, and `contention.py` at 129/129 lines and
+58/58 branches. See the
+[Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md), §§2, 6.1–6.2 and 7/WP1.
+
+WP1 implementation notes: the `withhold_*` helpers and their type guards stay
+because live callers in `canary.py` and `runner.py` still depend on them until
+WP2/WP3 wiring; their planned deletion is not complete. `contention.py` filters
+`cgroup_cpu.nr_throttled` out of `pressure_us` while retaining duration
+telemetry such as `throttled_usec`. `termination.detail()` takes a fourth,
+optional `returncode` argument to render signal numbers. `termination.py` is
+132 lines, above the design's initial ~90-line estimate. `ContentionObservation`
+is unhashable because `pressure_us` is a mapping proxy; its `clear` status means
+the direct counters were sampled, so consumers must still inspect
+`limits.limit_hit` to determine whether a limit event occurred.
 
 ## B174 — wire load-independent termination and progress telemetry through R0/R1
 
