@@ -1296,7 +1296,7 @@ def test_a_current_judge_record_without_b145_evidence_is_rejected(tmp_path: Path
     )
 
 
-@pytest.mark.parametrize("bucket", ["survived", "killed"])
+@pytest.mark.parametrize("bucket", ["survived", "crashed"])
 def test_unobserved_resource_record_is_reused_with_explicit_state_marker(
     tmp_path: Path, bucket: str,
 ):
@@ -1313,6 +1313,52 @@ def test_unobserved_resource_record_is_reused_with_explicit_state_marker(
 
     assert isinstance(loaded, dict)
     assert loaded["outcome_bucket"] == bucket
+    assert loaded["resource_observation"]["status"] == "unobserved"
+
+
+def test_unobserved_kill_record_without_clean_report_is_rejected(tmp_path: Path):
+    job = _job()
+    payload = _record(job, judge="j" * 64, outcome_bucket="killed")
+    del payload["resource_limit_evidence"]
+    payload["resource_observation"] = {
+        "status": "unobserved",
+        "reason": "memory.max changed: 4096 -> 8192",
+    }
+    root = _store(tmp_path, job, payload)
+
+    assert mutation._load_validated_state_record(
+        root, job, judge="j" * 64
+    ) is mutation._RECORD_REJECTED
+
+
+def test_unobserved_kill_record_with_clean_report_is_reused(tmp_path: Path):
+    job = _job()
+    payload = _record(
+        job,
+        judge="j" * 64,
+        outcome_bucket="killed",
+        execution={
+            "mode": "full",
+            "witness": {
+                "node_id": "tests/test_flags.py::test_case",
+                "when": "call",
+                "outcome": "failed",
+                "session_exit_status": 1,
+                "process_exit_status": 1,
+            },
+        },
+    )
+    del payload["resource_limit_evidence"]
+    payload["resource_observation"] = {
+        "status": "unobserved",
+        "reason": "memory.max changed: 4096 -> 8192",
+    }
+    root = _store(tmp_path, job, payload)
+
+    loaded = mutation._load_validated_state_record(root, job, judge="j" * 64)
+
+    assert isinstance(loaded, dict)
+    assert loaded["outcome_bucket"] == "killed"
     assert loaded["resource_observation"]["status"] == "unobserved"
 
 
