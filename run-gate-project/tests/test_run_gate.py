@@ -35236,6 +35236,34 @@ class TestRunGateReleaseCoverageEdges:
 
 
 class TestCowtreeAndIoSyncResources:
+    def test_resource_table_and_consumer_subtables_require_tables(self):
+        with pytest.raises(run_gate.GateError, match="resources.*must be a table"):
+            run_gate._validate_resource_table(
+                None, "run-gate.toml [resources]", "project")
+        with pytest.raises(run_gate.GateError,
+                           match="resources.*cowtree.*must be a table"):
+            run_gate._validate_resource_table(
+                {"cowtree": "auto"}, "run-gate.toml [resources]", "project")
+
+    def test_candidate_ram_rejects_non_size_value(self):
+        with pytest.raises(run_gate.GateError, match="candidate_ram.*size"):
+            run_gate._validate_resource_table(
+                {"candidate_ram": "unlimited"},
+                "run-gate.toml [lanes.r2.resources]", "lane")
+
+    def test_declared_environment_prefers_project_then_uses_central(self):
+        project_environment = {"mode": "host", "source": "project"}
+        central_environment = {"mode": "ephemeral", "source": "central"}
+        project = {"environments": {"project-runner": project_environment}}
+        central = {"environments": {"central-runner": central_environment}}
+
+        assert run_gate.declared_environment(
+            {"environment": "project-runner"}, project, central
+        ) is project_environment
+        assert run_gate.declared_environment(
+            {"environment": "central-runner"}, project, central
+        ) is central_environment
+
     def test_cow_auto_unset_root_adds_nothing(self, monkeypatch):
         monkeypatch.delenv("MDT_COW_ROOT", raising=False)
         settings = {"io_sync": "strict", "cowtree": {"mode": "auto"}}
@@ -35666,6 +35694,55 @@ class TestCowtreeAndIoSyncResources:
         assert "target=/etc/ld.so.preload,readonly" in argv
         assert "RUN_GATE_IO_SYNC=<redacted>" in argv
         assert list((tmp_path / ".run-gate").glob("ld.so.preload.*")) == []
+
+    def test_relaxed_preload_file_closes_when_docker_run_fails(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/bin/docker")
+        monkeypatch.setattr(run_gate, "resolve_inflight", lambda *_a, **_k: None)
+        monkeypatch.setattr(run_gate, "container_mount_flags",
+                            lambda *_a, **_k: [])
+        monkeypatch.setattr(run_gate, "extra_mount_flags", lambda: [])
+        monkeypatch.setattr(run_gate, "resource_observer_docker_flags",
+                            lambda *_a: [])
+        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda *_a: None)
+        monkeypatch.setattr(run_gate, "build_command_inner", lambda *_a: "true")
+        monkeypatch.setattr(run_gate, "save_container_logs", lambda *_a: None)
+
+        real_mount_flags = run_gate.relaxed_io_sync_mount_flags
+        preload_files = []
+
+        def capture_preload_file(*args, **kwargs):
+            flags, preload_file = real_mount_flags(*args, **kwargs)
+            preload_files.append(preload_file)
+            return flags, preload_file
+
+        monkeypatch.setattr(run_gate, "relaxed_io_sync_mount_flags",
+                            capture_preload_file)
+
+        def docker_run(argv, **_kwargs):
+            if argv[1:3] == ["image", "inspect"]:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="/usr/lib/x86_64-linux-gnu/libeatmydata.so.1\n",
+                    stderr="")
+            if argv[1] == "run":
+                return SimpleNamespace(returncode=125, stdout="",
+                                       stderr="docker run failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(run_gate.subprocess, "run", docker_run)
+        with pytest.raises(run_gate.GateInfraError, match="docker run failed"):
+            run_gate.run_container_lane(
+                {"kind": "command", "environment": "runner", "argv": ["true"]},
+                "unit", tmp_path, tmp_path, tmp_path,
+                {"mode": "ephemeral", "image": "tester:local"}, "fixture",
+                "dev-gates.slice", "fixture", profile_plan={"enabled": False},
+                resource_settings={"io_sync": "relaxed"})
+
+        assert len(preload_files) == 1
+        preload_path = Path(preload_files[0].name)
+        assert preload_files[0].closed
+        assert not preload_path.exists()
 
     def test_exec_lane_forwards_resource_environment(self, tmp_path,
                                                     monkeypatch, capsys):
