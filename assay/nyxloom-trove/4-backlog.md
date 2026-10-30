@@ -13293,8 +13293,8 @@ contract and follow-on WP1–WP8 backlog entries.
 
 ## B173 — one termination classifier for R0, R1, R2 and R3
 
-**Status: WP1 implementation committed on this branch; gate acceptance pending;
-OPEN for WP2–WP4 wiring.** Add the pure classifier and shared table from the
+**Status: WP1 implementation and preflight accepted on this branch; OPEN for
+WP2–WP4 wiring.** Add the pure classifier and shared table from the
 Opus design so producer paths can classify process outcomes from exit, report,
 process-tree and resource-limit evidence. WP1 adds the decision table and
 separates observation availability, limit evidence, and pressure telemetry.
@@ -13315,8 +13315,12 @@ test passed positional arguments to keyword-only `CounterDelta`, corrected in
 `b6137aed`. The next preflight at `b6137aed` completed all tests and reported
 100% R1 coverage for its configured targets, but R0 found that the two target
 lists omitted the new module and the reviewed dataclass fixture still pinned
-the previous observation shape. This commit updates both contracts; acceptance
-remains pending a green preflight on the corrected tree. See the
+the previous observation shape. The corrected-tree preflight passed on
+`3524c7a9` (Run-Gate ID `c7a4745c29ebfaadc36d8612357fccfa`, source tree
+`b5eb5777a5d8dbb453d891689c7bfeb00cfa0cbd`): R0 and R1 passed with 100% line
+and branch coverage across all 60 targets. The report measured `termination.py`
+at 64/64 lines and 36/36 branches, and `contention.py` at 129/129 lines and
+58/58 branches. See the
 [Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md), §§2, 6.1–6.2 and 7/WP1.
 
 ## B174 — wire load-independent termination and progress telemetry through R0/R1
