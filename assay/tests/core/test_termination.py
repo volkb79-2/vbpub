@@ -6,6 +6,7 @@ import signal
 
 import pytest
 
+from assay.errors import Outcome, ReasonCode
 from assay.termination import (
     EXTERNAL_SIGNALS,
     JUDGEABLE,
@@ -32,8 +33,67 @@ def test_each_termination_has_a_shared_decision_row(case):
     assert (classified in JUDGEABLE) is (
         classified in {Termination.PASSED, Termination.FAILED}
     )
-    assert case.r0_outcome is not None
-    assert case.r3_attempt_outcome is not None
+
+
+def test_shared_table_r0_and_r3_columns_match_the_contract():
+    expected_r0 = {
+        Termination.PASSED: (Outcome.PASS, None),
+        Termination.FAILED: (Outcome.FAIL, ReasonCode.COMMAND_FAILED),
+        Termination.TIMED_OUT: (Outcome.BUDGET_EXCEEDED, ReasonCode.LANE_TIMEOUT),
+        Termination.HUNG: (Outcome.BUDGET_EXCEEDED, ReasonCode.CANDIDATE_HUNG),
+        Termination.NOT_RUN: (Outcome.ERROR, ReasonCode.EXEC_FAILED),
+        Termination.KILLED_EXTERNALLY: (Outcome.ERROR, ReasonCode.EXEC_FAILED),
+        Termination.LEAKED: (Outcome.ERROR, ReasonCode.EXEC_FAILED),
+        Termination.LIMIT_EVENT: (Outcome.ERROR, ReasonCode.EXEC_FAILED),
+        Termination.UNOBSERVED: (Outcome.ERROR, ReasonCode.EXEC_FAILED),
+        Termination.INCONCLUSIVE: (Outcome.ERROR, ReasonCode.EXEC_FAILED),
+    }
+    expected_r3 = {
+        Termination.PASSED: (Outcome.FAIL, ReasonCode.CANARY_SURVIVED),
+        Termination.FAILED: (Outcome.PASS, None),
+        Termination.TIMED_OUT: (Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE),
+        Termination.HUNG: (Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE),
+        Termination.NOT_RUN: (Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE),
+        Termination.KILLED_EXTERNALLY: (
+            Outcome.INCONCLUSIVE,
+            ReasonCode.CANARY_INCONCLUSIVE,
+        ),
+        Termination.LEAKED: (Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE),
+        Termination.LIMIT_EVENT: (
+            Outcome.INCONCLUSIVE,
+            ReasonCode.CANARY_INCONCLUSIVE,
+        ),
+        Termination.UNOBSERVED: (
+            Outcome.INCONCLUSIVE,
+            ReasonCode.CANARY_INCONCLUSIVE,
+        ),
+        Termination.INCONCLUSIVE: (
+            Outcome.INCONCLUSIVE,
+            ReasonCode.CANARY_INCONCLUSIVE,
+        ),
+    }
+
+    for case in ALL_CASES:
+        assert (case.r0_outcome, case.r0_reason_code) == expected_r0[case.termination]
+        assert (case.r3_attempt_outcome, case.r3_attempt_reason_code) == expected_r3[
+            case.termination
+        ]
+
+
+def test_inconclusive_outcome_is_not_judgeable():
+    classified = classify(
+        outcome=Outcome.INCONCLUSIVE,
+        reason_code=None,
+        returncode=1,
+        decided_by_report=False,
+        process_tree=None,
+        limits=None,
+        observation="not_requested",
+        observation_required=False,
+    )
+
+    assert classified is Termination.INCONCLUSIVE
+    assert classified not in JUDGEABLE
 
 
 @pytest.mark.parametrize("case", ALL_CASES, ids=lambda case: case.name)

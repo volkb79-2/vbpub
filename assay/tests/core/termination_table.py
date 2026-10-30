@@ -49,6 +49,7 @@ _R2_BUCKET = {
     Termination.LEAKED: "crashed",
     Termination.LIMIT_EVENT: "crashed",
     Termination.UNOBSERVED: "crashed",
+    Termination.INCONCLUSIVE: "crashed",
 }
 
 _R3_ATTEMPT = {
@@ -66,6 +67,10 @@ _R3_ATTEMPT = {
     Termination.LEAKED: (Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE),
     Termination.LIMIT_EVENT: (Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE),
     Termination.UNOBSERVED: (Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE),
+    Termination.INCONCLUSIVE: (
+        Outcome.INCONCLUSIVE,
+        ReasonCode.CANARY_INCONCLUSIVE,
+    ),
 }
 
 
@@ -218,6 +223,17 @@ TERMINATION_CASES = (
         Outcome.ERROR,
         ReasonCode.EXEC_FAILED,
     ),
+    _case(
+        "inconclusive",
+        _inputs(
+            outcome=Outcome.INCONCLUSIVE,
+            reason_code=None,
+            returncode=1,
+        ),
+        Termination.INCONCLUSIVE,
+        Outcome.ERROR,
+        ReasonCode.EXEC_FAILED,
+    ),
 )
 
 
@@ -345,6 +361,19 @@ PRECEDENCE_CASES = (
         Termination.FAILED,
         Outcome.FAIL,
         ReasonCode.COMMAND_FAILED,
+    ),
+    _case(
+        "self-signal-with-limit-event-is-infrastructure",
+        _inputs(
+            outcome=Outcome.FAIL,
+            reason_code=ReasonCode.COMMAND_FAILED,
+            returncode=-signal.SIGSEGV,
+            process_tree=_tree(leader_status="signaled"),
+            limits=LIMITS_HIT,
+        ),
+        Termination.LIMIT_EVENT,
+        Outcome.ERROR,
+        ReasonCode.EXEC_FAILED,
     ),
     _case(
         "report-pass-stays-pass",

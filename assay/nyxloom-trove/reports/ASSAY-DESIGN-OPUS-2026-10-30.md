@@ -42,7 +42,7 @@ All `file:line` refer to the tip unless marked `main:` or `v10.0.0:`. Paths are 
 | R-2 | R0 normal non-zero exit, no limit event, observation clear or not requested | **FAIL/COMMAND_FAILED** (unchanged meaning) | exit status. If the window shows PSI/throttle, Assay prints an advisory hint on stderr; the verdict is unaffected |
 | R-3 | R0 non-zero with a limit event in the own subtree (pids.events max, memory.events oom/oom_kill/oom_group_kill delta > 0) | **ERROR/EXEC_FAILED**, `Claim.detail` names the event | ContentionWindow limit deltas (`contention.py:142-190`); ancestor-only events are not attributed (`DESIGN-GUIDE.md:2722-2725`) |
 | R-4 | R0 leader killed by an external signal (rc ∈ {-9,-15,-2,-1}, or tree `leader_status == "signaled"`) | **ERROR/EXEC_FAILED**, detail `killed-by-signal:N` | `CommandResult.returncode` / `ProcessTreeEvidence.leader_status` (`process_tree.py:91-94`) |
-| R-5 | R0 leader died of SIGSEGV/SIGABRT/SIGBUS/SIGFPE/SIGILL (self-inflicted) | **FAIL/COMMAND_FAILED** | rc < 0 with that signal; the product crashed itself |
+| R-5 | R0 leader died of SIGSEGV/SIGABRT/SIGBUS/SIGFPE/SIGILL (self-inflicted), with no higher-precedence evidence | **FAIL/COMMAND_FAILED** | rc < 0 with that signal; the product crashed itself |
 | R-6 | R0 non-zero in gate mode (`ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION=1`) with the observation unavailable | **ERROR/EXEC_FAILED**, detail names the missing sample | ContentionWindow availability. Applies only to non-PASS |
 | R-7 | R0 PASS with a limit event or unavailable sample | **PASS** (change vs tip `contention.py:282-283`) | rule 1. Event goes to progress `resources` |
 | R-8 | R0 Assay wall budget expires | **BUDGET_EXCEEDED/LANE_TIMEOUT** (unchanged) | `runner.py:1451-1497` |
@@ -61,10 +61,16 @@ All `file:line` refer to the tip unless marked `main:` or `v10.0.0:`. Paths are 
 | R-21 | R3 transform clean FAIL, otherwise (no receipt, or a different reason such as R0 FAIL on uncovered-line) | attempt **INCONCLUSIVE** (was CANARY_SURVIVED at tip `canary.py:946-958`) | the injected defect cannot have caused it, so this says nothing about gate sensitivity |
 | R-22 | Host PSI, load average, peer containers, Docker names | **never consulted** | — |
 | R-23 | B105 admission refusal (2 GiB headroom, observer gid) | no verdict; wrapper exit 3 → Run-Gate ERROR (unchanged) | `tools/cgroup-parent.sh:392`, `tools/self-qualification-container.sh:353` |
+| R-24 | The command outcome is already `INCONCLUSIVE`, with no higher-precedence death or observation evidence | R0/R1 **ERROR/EXEC_FAILED**; R2 **crashed**; R3 attempt **INCONCLUSIVE** | the recorded `Outcome.INCONCLUSIVE` |
 
-Precedence inside `classify()` (top wins): NOT_RUN (ERROR/NO_MEASUREMENT without a leak) → LEAKED → TIMED_OUT/HUNG → **PASSED** → FAILED decided by a complete structured report → KILLED_EXTERNALLY → LIMIT_EVENT → UNOBSERVED → FAILED.
+Precedence inside `classify()` (top wins): NOT_RUN (ERROR/NO_MEASUREMENT without a leak) → LEAKED → TIMED_OUT/HUNG → **PASSED** → FAILED decided by a complete structured report → KILLED_EXTERNALLY → LIMIT_EVENT → UNOBSERVED → INCONCLUSIVE → FAILED.
 
 Why a FAIL decided by a complete report beats a later signal or limit event: the assertions already failed and were recorded, and that is stronger evidence than the death mode.
+
+A self-inflicted fatal signal is a functional failure only after higher-precedence
+infrastructure evidence is excluded. In particular, a direct limit event wins
+when it accompanies SIGSEGV/SIGABRT/SIGBUS/SIGFPE/SIGILL; without that event,
+the signal remains R-5's `FAIL/COMMAND_FAILED`.
 
 Known limit, documented and not engineered: a shell wrapper that turns a child's death into `128+N` is indistinguishable from a normal exit unless the observer sees the limit event.
 
@@ -169,11 +175,11 @@ Registry today: python {R1,R2,R3}, sql {R2}, javascript {R1,R2,R3}, go {R1} (`cl
 
 ## 6. Concrete change list (per file/function), data model, compatibility
 
-### 6.1 New: `src/assay/termination.py` (~90 LOC, no I/O, no type-guard branches)
+### 6.1 New: `src/assay/termination.py` (initial estimate ~90 LOC; current implementation 132 LOC)
 
 ```python
 class Termination(enum.Enum):
-    PASSED, FAILED, TIMED_OUT, HUNG, NOT_RUN, KILLED_EXTERNALLY, LEAKED, LIMIT_EVENT, UNOBSERVED
+    PASSED, FAILED, TIMED_OUT, HUNG, NOT_RUN, KILLED_EXTERNALLY, LEAKED, LIMIT_EVENT, UNOBSERVED, INCONCLUSIVE
 JUDGEABLE = frozenset({Termination.PASSED, Termination.FAILED})
 EXTERNAL_SIGNALS = frozenset({signal.SIGKILL, signal.SIGTERM, signal.SIGINT, signal.SIGHUP})
 
@@ -184,7 +190,7 @@ def classify(*, outcome: Outcome, reason_code: ReasonCode | None, returncode: in
              observation_required: bool) -> Termination        # precedence as in §2
 
 def r2_bucket(t: Termination) -> str   # PASSED→survived, FAILED→killed, TIMED_OUT→budget_exceeded, HUNG→hung, else crashed
-def detail(t: Termination, limits, observation_reasons) -> str | None   # deterministic Claim.detail text
+def detail(t: Termination, limits, observation_reasons, returncode=None) -> str | None  # deterministic Claim.detail text; returncode renders a signal number
 ```
 
 Tests import one shared table, `tests/core/termination_table.py` (rows: inputs → Termination, R0 status, R2 bucket, R3 attempt). The same table drives:
@@ -208,6 +214,13 @@ That gives DRY behaviour across producer, state revalidation, verifier and canar
   - **Delete** the throttle / PSI-threshold logic (`:196-219`) and the constants (`:24-25`).
   - Delete `monotonic_ns` (`:64,72-73,79,86,91,200-201`); the window duration comes from `CommandResult.started/ended`.
 - **Delete** `withhold_canary_result` (`:223-259`), `withhold_r0_result` (`:262-288`) and `withhold_r1_result` (`:291-313`), with their type-guard branches.
+
+WP1 retained those three compatibility helpers and their type guards because
+live R0/R1/R3 callers still use them until the WP2 and WP3 wiring lands. The
+current sampler also filters `cgroup_cpu.nr_throttled` from `pressure_us`; the
+throttle count is not exported, while duration telemetry such as
+`throttled_usec` remains. These are implementation deviations from the list
+above, not completed deletions.
 
 ### 6.3 `src/assay/runner.py`
 
@@ -296,7 +309,7 @@ Gate rules for every WP:
 | WP | Scope | Tests that must fail first (behaviours) | Acceptance | Size | Parallel? |
 |---|---|---|---|---|---|
 | **WP0 — 10.0.1 cut** (on the in-flight branch, forward edit) | (1) PSI/throttle no longer set `affected`: `contention.py:196-215` → `affected ⇔ resource_limit_hit`; delete `:24-25` and `monotonic_ns`. (2) Delete stderr-tail telemetry `runner.py:1356-1371` and canary description telemetry `canary.py:181-190,840-846,974-980`. (3) Delete the import-break cause proof (`canary.py:249-408` + call sites `:543,:589-607,:860,:880,:936-967`) and the `expected_failure` exemption; import-break goes back to 10.0.0 semantics (clean `COMMAND_FAILED` = expected). (4) Delete `qualify_sql.py:985-1003` + `test_qualify_sql.py:715-750`. (5) Delete `tests/core/test_canary_import_break_proof.py`; prune proof/PSI cases in `test_contention.py:149-254`, `test_canary_p23_isolated_edges.py`, `test_canary_multi_target.py`; invert `test_runner_execute.py:187`. (6) Docstrings `runner.py:1283-1290,1750-1756`; docs README `:1505-1530`, CONSUMERS `:105-139`, DESIGN-GUIDE `:2712-2795,:4122-4127`; CHANGES [Unreleased]; B172 text. Keep `verify.py:3444-3450` and `qualify_sql._differing_json_paths`. | `test_psi_and_throttling_never_withhold_a_failed_r0`; `test_gate_mode_pass_verdict_has_no_stderr_tail` (CONSUMERS:1047 contract); `test_canary_description_has_no_host_telemetry`; `test_import_break_command_failed_is_expected_under_psi`; kept: `test_limit_event_withholds_failed_r0`, `test_unavailable_required_sample_withholds_failed_r0` | focused tests green; `run-gate tester-unified` PASS (SQL witness compares with no special case); `run-gate self-qualification-provisional` PASS (R0, R1 100 %, R3) — under whatever peer load exists; one independent review | S (src ≈ −350/+20; tests ≈ −550/+80); 1 implementer-day | alone (release blocker) |
-| **WP1 — termination classifier** | new `termination.py` + `tests/core/termination_table.py` + `test_termination.py`; reshape `ContentionObservation` (§6.2); delete `withhold_*` | one row per `Termination`; precedence rows: leak beats PASS, report-FAIL beats signal, PASS beats limit, PASS beats unavailable, SIGSEGV→FAILED, SIGKILL→KILLED_EXTERNALLY | 100 % line+branch on `termination.py`/`contention.py` in a focused run; preflight green | S (+110/−130) | first in 10.1 |
+| **WP1 — termination classifier** | new `termination.py` + `tests/core/termination_table.py` + `test_termination.py`; reshape `ContentionObservation`; delete `withhold_*` | one row per `Termination`, including `INCONCLUSIVE`; precedence rows: leak beats PASS, report-FAIL beats signal, PASS beats limit, PASS beats unavailable, self-signal plus limit→LIMIT_EVENT, SIGSEGV→FAILED without limit, SIGKILL→KILLED_EXTERNALLY | assert R0 and R3 table projections; 100 % line+branch on `termination.py`/`contention.py` in a focused run; preflight green | S (+110/−130) | first in 10.1 |
 | **WP2 — R0/R1 wiring + telemetry** | §6.3 | `test_r0_external_sigkill_is_exec_failed_with_detail`; `test_r0_sigsegv_is_fail`; `test_r0_pass_with_limit_event_is_pass`; `test_r1_inherits_r0_infrastructure`; `test_command_finished_carries_resources_when_observed`; `test_fail_under_pressure_prints_one_advisory_line_and_stays_fail`; `test_command_tail_is_never_appended_by_assay` | tester-unified PASS; preflight green | M (+90/−120) | parallel with WP3, WP4 after WP1 (`runner.py` only) |
 | **WP3 — receipt canary** | §3, §6.4 | `test_import_break_fail_with_receipt_is_pass`; `test_import_break_fail_without_receipt_is_inconclusive`; `test_import_break_pass_with_receipt_is_survived_with_note`; `test_uncovered_line_transform_r0_fail_is_inconclusive`; `test_receipt_env_only_on_transform_half`; `test_receipt_dir_is_outside_snapshot_and_removed`; `test_echoed_nonce_in_output_is_irrelevant`; real end-to-end: pytest subprocess (python) and `node` + a minimal Vitest fixture if Vitest is in the tester image (else node-only, recorded as a gap) | provisional PASS (R3 on `src/assay/cli.py`); preflight green | M (+100/−270 src; −399/+150 tests) | parallel (`canary.py` + adapters) |
 | **WP4 — R2 alignment** | §6.5 | `test_survived_with_limit_event_stays_survived`; `test_killed_with_limit_event_is_crashed`; `test_bucket_and_state_revalidation_agree_on_table`; `test_old_state_record_crashed_pass_under_limit_is_rerun`; verifier table test | tester-unified PASS (SQL witness unchanged); preflight green | S-M (+40/−90) | parallel (`mutation.py`) |

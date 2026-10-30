@@ -19,6 +19,13 @@ from .records import positional_record
 
 @positional_record
 class ContentionObservation:
+    """Captured resource evidence and pressure telemetry for one command.
+
+    ``clear`` means the direct counters were sampled successfully; it does not
+    mean they recorded no limit event. Check ``limits.limit_hit`` for that.
+    The read-only ``pressure_us`` mapping makes instances unhashable.
+    """
+
     status: Literal["unobserved", "clear", "unavailable"]
     limits: resource_limits.ResourceLimitEvidence | None = None
     pressure_us: Mapping[str, int] = field(default_factory=dict)

@@ -21,6 +21,7 @@ class Termination(enum.Enum):
     LEAKED = "leaked"
     LIMIT_EVENT = "limit_event"
     UNOBSERVED = "unobserved"
+    INCONCLUSIVE = "inconclusive"
 
 
 JUDGEABLE = frozenset({Termination.PASSED, Termination.FAILED})
@@ -38,6 +39,7 @@ _R2_BUCKETS = {
     Termination.LEAKED: "crashed",
     Termination.LIMIT_EVENT: "crashed",
     Termination.UNOBSERVED: "crashed",
+    Termination.INCONCLUSIVE: "crashed",
 }
 
 
@@ -66,16 +68,25 @@ def classify(
         return Termination.PASSED
     if decided_by_report and outcome is Outcome.FAIL:
         return Termination.FAILED
-    if returncode is not None and returncode < 0:
-        if -returncode in EXTERNAL_SIGNALS:
-            return Termination.KILLED_EXTERNALLY
-        return Termination.FAILED
-    if process_tree is not None and process_tree.leader_status == "signaled":
+    self_inflicted_signal = (
+        returncode is not None
+        and returncode < 0
+        and -returncode not in EXTERNAL_SIGNALS
+    )
+    if returncode is not None and returncode < 0 and not self_inflicted_signal:
+        return Termination.KILLED_EXTERNALLY
+    if (
+        process_tree is not None
+        and process_tree.leader_status == "signaled"
+        and not self_inflicted_signal
+    ):
         return Termination.KILLED_EXTERNALLY
     if limits is not None and limits.limit_hit:
         return Termination.LIMIT_EVENT
     if observation_required and observation != "clear":
         return Termination.UNOBSERVED
+    if outcome is Outcome.INCONCLUSIVE:
+        return Termination.INCONCLUSIVE
     return Termination.FAILED
 
 
