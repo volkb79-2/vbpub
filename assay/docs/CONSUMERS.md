@@ -5014,8 +5014,9 @@ status: NO_MEASUREMENT
 reason_code: MISSING_EXTERNAL_TOOL
 ```
 
-If your gate container builds Go elsewhere and judges in a slim image, that
-slim image needs `go` too. Why assay cannot just parse the profile harder:
+The standard vbpub `tester-unified` image includes Go. A custom slim gate
+image must include its own Go toolchain; a host install does not satisfy a
+container judge. Why assay cannot just parse the profile harder:
 [DESIGN-GUIDE §11, "Go statement positions"](DESIGN-GUIDE.md#go-statement-positions-come-from-the-source-never-from-the-profile-a-217a-239a-397).
 
 **2. The coverage artifact and the working tree must be the same revision.**

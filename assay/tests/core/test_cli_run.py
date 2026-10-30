@@ -1358,7 +1358,10 @@ def test_run_refuses_sql_at_r1_the_language_is_registered_r2_only(
 
 
 def test_a_go_r1_lane_now_resolves_and_is_refused_for_the_TOOLCHAIN_not_the_registry(
-    git_repo: GitRepo, tmp_path: Path, validator: Draft202012Validator
+    git_repo: GitRepo,
+    tmp_path: Path,
+    validator: Draft202012Validator,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     """**This test INVERTED in Wave C (A-394), and the inversion is the
     point.** It used to assert ``ERROR``/``BAD_LANE_CONFIG`` -- "go is not in
@@ -1370,8 +1373,9 @@ def test_a_go_r1_lane_now_resolves_and_is_refused_for_the_TOOLCHAIN_not_the_regi
     ``NO_MEASUREMENT``/``MISSING_EXTERNAL_TOOL`` (exit 3, not 2) is A-253's
     preflight over ``GoAdapter.external_tools == ("go",)``, and it is the
     property that makes A-394's registration safe in an environment with no
-    Go toolchain -- this devcontainer, and the registered gate's own
-    ``tester-unified`` image, are both such environments. The distinction the
+    Go toolchain. The standard ``tester-unified`` image now includes Go for
+    downstream consumers, so this test explicitly simulates the absent-tool
+    environment. The distinction the
     two reason codes draw is real and worth keeping sharp:
     ``BAD_LANE_CONFIG`` says *assay cannot judge this language*, which is a
     statement about the build and is answered by shipping an adapter;
@@ -1410,6 +1414,22 @@ def test_a_go_r1_lane_now_resolves_and_is_refused_for_the_TOOLCHAIN_not_the_regi
     path = _write_and_commit_lane(git_repo, lane)
     for name in ("src", "scripts"):
         (git_repo.path / name).mkdir(exist_ok=True)
+
+    # Keep this missing-tool case independent of toolchains provided by the
+    # tester-unified image. The real CLI still runs; only the Go prerequisite
+    # lookup sees Go as absent.
+    import shutil
+
+    from assay import runner as runner_module
+
+    real_which = shutil.which
+    monkeypatch.setattr(
+        runner_module.shutil,
+        "which",
+        lambda tool, *args, **kwargs: (
+            None if tool == "go" else real_which(tool, *args, **kwargs)
+        ),
+    )
 
     code, out, err = run(["run", "package", "--file", str(path), "--verdict-json", "-"])
 
