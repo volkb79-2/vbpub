@@ -1011,10 +1011,12 @@ class BtrfsBackend(ReflinkBackend):
             is_subvolume = stat.S_ISDIR(target_info.st_mode) and target_info.st_ino == 256
         if is_subvolume:
             parent, name = os.path.split(path)
-            parent_fd = -1
-            tree_fd = -1
             try:
                 parent_fd = _open_dir(parent, self.ops)
+            except OSError as exc:
+                raise _raise_backend("subvol-delete", path, exc) from exc
+            tree_fd = -1
+            try:
                 tree_fd = _open_dir(path, self.ops)
                 flags = self.ops.subvol_getflags(tree_fd)
                 if flags & BTRFS_SUBVOL_RDONLY:
@@ -1035,8 +1037,7 @@ class BtrfsBackend(ReflinkBackend):
             finally:
                 if tree_fd >= 0:
                     self.ops.close(tree_fd)
-                if parent_fd >= 0:
-                    self.ops.close(parent_fd)
+                self.ops.close(parent_fd)
             return
         super().delete_tree(path)
 
