@@ -2151,14 +2151,15 @@ def test_usage_windows_cli_text_handles_interval_boundary_warning_and_missing_pr
     assert cli.cmd_usage_windows(_usage_cli_args(
         usage_windows_format="text",
     )) == 0
-    output = capsys.readouterr().out
+    captured = capsys.readouterr()
+    output = captured.out
     assert "Weight profile: unavailable" in output
     assert "Observed-reset intervals:" in output
     assert "five_hour [2026-10-28T05:00:00Z, 2026-10-28T10:00:00Z)" in output
     assert "Observed five_hour reset at 2026-10-28T10:00:00Z (1 evidence record(s))." in output
     assert "Warning: Usage anchor state could not be read; no anchors were used." in output
     assert "weekly interval status: start_unknown" in output
-    assert "continuing without anchors" in capsys.readouterr().err
+    assert "continuing without anchors" in captured.err
 
     result["weight_profile"] = {"name": "synthetic-profile"}
     assert cli.cmd_usage_windows(_usage_cli_args(
