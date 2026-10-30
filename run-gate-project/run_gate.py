@@ -14432,9 +14432,13 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             "lane body was not started")
     proc = None
     barrier_nonce = None
-    run_env = dict(os.environ) if resource_env else None
-    if run_env is not None:
-        run_env.update(resource_env)
+    # A bare-host lane may itself be running inside another profiled lane.
+    # Do not let that outer invocation's private session token leak into this
+    # child; the current lane adds its own token below only when its profiler
+    # actually starts a daemon session.
+    run_env = dict(os.environ)
+    run_env.pop(PROFILE_TOKEN_ENV, None)
+    run_env.update(resource_env)
     if not profiling:
         # RG-55/contract Sec 4 obligation 8: disabled means NO token, NO
         # daemon call and NO sampler -- same shape run_container_lane/

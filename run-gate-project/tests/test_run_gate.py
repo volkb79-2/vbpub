@@ -25252,13 +25252,15 @@ class TestBareHostProfilingWiring:
 
     def test_rusage_mode_never_injects_a_token(self, tmp_path, monkeypatch):
         # The rusage path starts no daemon session for a token to identify
-        # -- nothing would ever read it -- so, unlike the daemon path, the
-        # child's environment must be unchanged from the ambient one.
+        # -- nothing would ever read it. An inherited token may belong to an
+        # outer gate, so this child must not retain it; the current lane adds
+        # its own token only on the daemon path.
         # RW-43/B1: the rusage path launches via `Popen`, not
         # `subprocess.run` -- spy on `Popen` (the daemon path's own spy in
         # `test_daemon_path_targets_self_id_scope_and_injects_token` above
         # is unaffected: it still goes through `subprocess.run`).
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+        monkeypatch.setenv(run_gate.PROFILE_TOKEN_ENV, "outer-profile-session")
         repo, proj = make_history_repo(tmp_path, self._config())
         monkeypatch.chdir(proj)
         monkeypatch.setattr(sys, "argv", ['run-gate'])
