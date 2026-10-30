@@ -4119,6 +4119,13 @@ the committed `expected/sql-r2-witness.json`. An incomplete witness (hung or
 budget-exceeded entries, `LANE_TIMEOUT`) is inconclusive and is checked before
 the FAIL requirement.
 
+The registered qualification runner also records cgroup telemetry on its
+completed R0 result. Those PSI/throttling deltas depend on the runner's host
+window, so the SQL witness normalizer discards a telemetry-only
+`result_stderr_tail` together with its zero dropped-byte count. The SQL witness
+command is otherwise silent. Any command-output prefix or truncation remains
+part of the exact comparison; the live verdict still carries the telemetry.
+
 **Hazard constructs are measured separately from the matrix (B132).** Candidate
 scope may be changed-lines or whole-target, but safety context scans every
 tracked, recognized, non-test SQL source under `judge.source_roots`, including

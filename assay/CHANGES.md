@@ -10,6 +10,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - fix(assay): retain an expected transformed canary failure under PSI-only pressure; direct resource limits and unexpected failures still withhold it
 - fix(assay): classify PSI as material only at 5% of the command window
   (100 ms minimum), retain telemetry, and require per-run import-break cause proof
+- fix(assay): keep host-varying R0 telemetry out of the frozen SQL witness comparison
 
 <!-- cmru: release history -->
 
