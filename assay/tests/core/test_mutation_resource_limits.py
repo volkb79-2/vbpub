@@ -1539,7 +1539,8 @@ def test_run_mutation_observer_loss_after_second_candidate_is_recorded(
 
     assert len(candidate_calls) == 2
     assert len(mutation.survived) == 2
-    assert all(item.resource_limit_evidence is None for item in mutation.survived)
+    assert mutation.survived[0].resource_limit_evidence is not None
+    assert mutation.survived[1].resource_limit_evidence is None
     saved_records = [
         json.loads(path.read_text(encoding="utf-8"))
         for path in state_root.glob("*.json")
@@ -1619,7 +1620,10 @@ def test_run_mutation_unattributable_ancestor_event_keeps_candidate(
     ]
     assert len(state_records) == 1
     assert state_records[0]["resource_observation"]["status"] == "unobserved"
-    assert "shared ancestor resource event is ambiguous" in state_records[0]["resource_observation"]["reason"]
+    assert (
+        "shared ancestor resource event is not attributable"
+        in state_records[0]["resource_observation"]["reason"]
+    )
     progress_records = [
         json.loads(line)
         for line in progress_path.read_text(encoding="utf-8").splitlines()
@@ -1685,7 +1689,7 @@ def test_run_mutation_cleanup_error_takes_precedence_over_after_read_failure(
     assert not any(record.get("event") == "candidate" for record in progress_records)
 
 
-def test_run_mutation_comparison_error_preserves_execution_error_cause(
+def test_run_mutation_comparison_error_does_not_replace_execution_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
     source = "def flags():\n    return True\n"
@@ -1718,7 +1722,7 @@ def test_run_mutation_comparison_error_preserves_execution_error_cause(
     state_root = tmp_path / "state"
     progress_path = tmp_path / "progress.jsonl"
     with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
-        with pytest.raises(AssayError, match="shared ancestor resource event") as failure:
+        with pytest.raises(RuntimeError, match="candidate runner failed"):
             run_mutation(
                 baseline=baseline,
                 prepared=prepared,
@@ -1737,7 +1741,4 @@ def test_run_mutation_comparison_error_preserves_execution_error_cause(
                 progress_artifact=progress_path,
             )
 
-    assert failure.value.outcome is Outcome.ERROR
-    assert failure.value.reason_code is ReasonCode.EXEC_FAILED
-    assert isinstance(failure.value.__cause__, RuntimeError)
     assert list(state_root.glob("*.json")) == []

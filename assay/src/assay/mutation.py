@@ -2156,6 +2156,10 @@ def _terminal_result_matches_bucket(
     except (TypeError, ValueError) as exc:
         raise ValueError(f"terminal_result contains an unknown outcome or reason: {exc}") from exc
     returncode = terminal["returncode"]
+    # NO_MEASUREMENT belongs to a preflight or observer boundary; a campaign
+    # candidate record must preserve the command's real terminal outcome.
+    if outcome is Outcome.NO_MEASUREMENT:
+        return False
     if outcome is Outcome.BUDGET_EXCEEDED and process_tree_evidence is not None:
         allowed_leader_statuses = (
             {"timeout-killed"}
@@ -4738,6 +4742,15 @@ def _execute_mutation_jobs(
         cold_receipt = attempt_receipts.pop((index, "cold"), None)
         cold_evidence = evidence_for(cold_receipt, command="r2")
         if cold.result.outcome is Outcome.FAIL:
+            # A signalled or limit-affected R2 command is infrastructure
+            # evidence, not a test failure to retry against the declared
+            # plan. WP1's classifier already marks that candidate crashed.
+            if _classified_bucket(cold) == "crashed":
+                return _dataclass_replace(
+                    cold,
+                    evidence=cold_evidence,
+                    elapsed_seconds=max(0.0, time.monotonic() - started_total),
+                )
             proof = cold_witness_from_receipt(
                 cold_receipt,
                 process_exit_status=cold.result.returncode,
