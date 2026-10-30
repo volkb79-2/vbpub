@@ -23,6 +23,7 @@ class FakeSystem:
         self.partuuid = PARTUUID
         self.pool_guid = GUID
         self.pool_leaf = "/dev/vda4"
+        self.export_pool_leaf = None
         self.parent = "vda"
         self.mountpoint = ""
         self.fail_export = False
@@ -33,8 +34,13 @@ class FakeSystem:
         argv = tuple(argv)
         self.commands.append(argv)
         if argv[:2] == ("readlink", "-f"):
-            return reclaim.CommandResult(0, "/dev/vda" if argv[-1] == "/dev/vda" else argv[-1]
-                                         if argv[-1].startswith("/dev/vda") else "/dev/vda4")
+            path = argv[-1]
+            if path == "/dev/vda":
+                return reclaim.CommandResult(0, "/dev/vda")
+            if path.startswith("/dev/disk/by-partuuid/"):
+                token = path.rsplit("/", 1)[-1]
+                return reclaim.CommandResult(0, "/dev/vda4" if token == self.partuuid else "/dev/vda5")
+            return reclaim.CommandResult(0, path if path.startswith("/dev/vda") else "/dev/vda4")
         if argv[:2] == ("lsblk", "-dnro"):
             field = argv[2]
             value = {
@@ -73,7 +79,7 @@ class FakeSystem:
                 f"  pool: {POOL}\n    id: {self.pool_guid}\n state: ONLINE\nconfig:\n\n"
                 f"        NAME        STATE     READ WRITE CKSUM\n"
                 f"        {POOL} ONLINE       0     0     0\n"
-                f"          {self.pool_leaf} ONLINE       0     0     0\n",
+                f"          {self.export_pool_leaf or self.pool_leaf} ONLINE       0     0     0\n",
             )
         if argv[:4] == ("midclt", "call", "pool.query", "[[\"name\",\"=\",\"chosen-data-pool\"]]"):
             rows = ([{"id": 7, "name": POOL, "guid": self.pool_guid}] if self.registered else [])
@@ -110,6 +116,27 @@ def test_reclaim_resumes_when_middleware_export_already_completed() -> None:
     assert result == "reclaimed"
     assert not system.labels
     assert ("zpool", "labelclear", "-f", DEVICE) in system.commands
+
+
+def test_reclaim_resolves_partuuid_leaf_tokens_from_zpool_import() -> None:
+    system = FakeSystem(imported=False, registered=False)
+    system.export_pool_leaf = PARTUUID
+
+    result = run(system)
+
+    assert result == "reclaimed"
+    assert ("readlink", "-f", DEVICE) in system.commands
+    assert ("zpool", "labelclear", "-f", DEVICE) in system.commands
+
+
+def test_reclaim_refuses_a_different_partuuid_leaf_token() -> None:
+    system = FakeSystem(imported=False, registered=False)
+    system.export_pool_leaf = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+    with pytest.raises(reclaim.ReclaimError, match="not a single-leaf pool"):
+        run(system)
+
+    assert not any(command[:2] == ("zpool", "labelclear") for command in system.commands)
 
 
 def test_reclaim_exports_registered_pool_through_middleware_before_clearing() -> None:

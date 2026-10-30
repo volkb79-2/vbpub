@@ -13,10 +13,13 @@ from typing import Callable, Sequence
 
 MARKER = "boot-disk-data"
 ZFS_TYPE_GUID = "6a898cc3-1dd2-11b2-99a6-080020736631"
-PARTUUID_RE = re.compile(r"^[0-9a-fA-F-]{36}$")
+PARTUUID_RE = re.compile(r"^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")
 POOL_GUID_RE = re.compile(r"^\d+$")
 POOL_NAME_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
-_LEAF_LINE = re.compile(r"(?m)^\s+(/dev/\S+)\s+(?:ONLINE|DEGRADED|FAULTED|UNAVAIL|OFFLINE)\b")
+_LEAF_LINE = re.compile(
+    r"(?m)^\s+((?:/dev/\S+)|(?:[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}))\s+"
+    r"(?:ONLINE|DEGRADED|FAULTED|UNAVAIL|OFFLINE)\b"
+)
 
 
 class ReclaimError(RuntimeError):
@@ -154,7 +157,13 @@ class PathBReclaimer:
             raise ReclaimError(
                 f"export scan does not identify only pool {pool!r} with GUID {guid}: {records!r}"
             )
-        leaves = {self._run("readlink", "-f", leaf) for leaf in records[0]["leaves"]}
+        leaves = set()
+        for leaf in records[0]["leaves"]:
+            if PARTUUID_RE.fullmatch(leaf):
+                leaf = f"/dev/disk/by-partuuid/{leaf}"
+            elif not leaf.startswith("/dev/"):
+                raise ReclaimError(f"zpool import returned an unsupported leaf token: {leaf!r}")
+            leaves.add(self._run("readlink", "-f", leaf))
         if leaves != {resolved}:
             raise ReclaimError(
                 f"exported pool GUID {guid} is not a single-leaf pool on its captured PARTUUID: {leaves!r}"
