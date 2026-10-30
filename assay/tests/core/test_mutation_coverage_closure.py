@@ -579,7 +579,7 @@ _KILL_OK = {"artifact": "k", "present": True}
             {"kill_signal_artifact": "k"},
             True,
         ),
-        (_terminal(kill_signal_evidence=_KILL_OK), {"kill_signal_artifact": "k"}, True),
+        (_terminal(kill_signal_evidence=_KILL_OK), {"kill_signal_artifact": "k"}, False),
         (_terminal(kill_signal_evidence=_KILL_OK), {}, False),
         (_terminal(), {"cold_witness": True}, False),
         (_terminal(execution={"witness": {**_GOOD_WITNESS, "when": "setup"}}), {"cold_witness": True}, False),
@@ -598,6 +598,33 @@ def test_terminal_matcher_maps_a_judgeable_nonexited_leader_to_crashed():
     )
     assert mutation._terminal_result_matches_bucket(
         payload, process_tree_evidence=_tree("signaled")
+    )
+
+
+def test_terminal_matcher_rejects_unobserved_bare_failure_credit():
+    payload = _terminal(execution={"mode": "full"})
+
+    assert not mutation._terminal_result_matches_bucket(
+        payload, process_tree_evidence=_tree()
+    )
+
+
+def test_terminal_matcher_accepts_unobserved_failure_with_clean_report_receipt():
+    payload = _terminal(execution={"mode": "full", "witness": _GOOD_WITNESS})
+
+    assert mutation._terminal_result_matches_bucket(
+        payload, process_tree_evidence=_tree()
+    )
+
+
+def test_terminal_matcher_rejects_shell_wrapped_signal_even_with_stale_receipt():
+    payload = _terminal(
+        returncode=137,
+        execution={"mode": "full", "witness": _GOOD_WITNESS},
+    )
+
+    assert not mutation._terminal_result_matches_bucket(
+        payload, process_tree_evidence=_tree()
     )
 
 

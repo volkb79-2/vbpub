@@ -13463,14 +13463,22 @@ then promoted comparison failure or post-preflight observer loss to
 After that probe, a missing sample or uncomparable window is unobserved
 telemetry for that candidate: omit `resource_limit_evidence`, preserve the
 reason in state/progress, print one advisory line, and continue using
-`termination.classify()` without limit-event evidence. PASS remains survived;
-a clean test failure remains killed; crash and infrastructure outcomes follow
-the classifier. An observed failure-relevant event only affects the candidate
-where classifier precedence says it does. A positive event during saved-witness
-replay remains lane-fatal. Keep verdict schema v16; v17 remains WP8.
+`termination.classify()` without limit-event evidence. PASS remains survived.
+Without resource evidence, a FAIL is `killed` only when the current run has a
+pytest failed-call witness (session and process status 1) and the process-tree
+proof shows a clean leader exit; this is the complete-report precedence in the
+design. A bare nonzero exit, a signal, or a shell-wrapped status such as 137
+has no kill credit and is `crashed`. State revalidation and `assay verify`
+apply the same rule. With observed evidence, a complete report retains its
+classifier precedence over a failure-relevant event; other clean failures and
+limit events follow the shared classifier. A positive event during
+saved-witness replay remains lane-fatal. Keep verdict schema v16; v17 remains
+WP8.
 
 **Acceptance:** Real comparison-error text names each changed cgroup field and
 its old/new value. Tests cover signature drift, observer loss, campaign
-continuation, PASS with a positive event, state revalidation, and verifier
-acceptance of omitted optional evidence. Run the registered
+continuation, PASS with a positive event, unobserved bare exit-1 and shell-137
+classification, report-backed kill credit, state revalidation, and verifier
+acceptance of omitted optional evidence only for PASS or a clean failed-call
+witness. Run the registered
 `self-qualification-preflight` and `tester-unified` gates before push.

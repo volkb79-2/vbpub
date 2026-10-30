@@ -281,8 +281,11 @@ assay exists to close that gap mechanically, not by policy:
   A post-preflight sample loss or an unstable window omits that candidate's
   resource evidence, records `resource_observation.status = "unobserved"` with
   its reason in progress and resume state, prints one advisory line, and lets
-  the campaign continue. A positive replay delta still stops the lane with
-  payload-free `ERROR/EXEC_FAILED`.
+  the campaign continue. An unobserved window gives no kill credit to a bare
+  nonzero exit, including a shell-wrapped signal status such as 137: that
+  candidate is `crashed`. A normal exit 1 with a current-run failed-call
+  witness may still be `killed`; PASS remains `survived`. A positive replay
+  delta still stops the lane with payload-free `ERROR/EXEC_FAILED`.
   Assay requires
   read-only cgroup mounts and verifies that the candidate cannot write
   `cgroup.procs` on its cgroup or ancestors; incomplete or writable cgroup
@@ -339,8 +342,10 @@ assay exists to close that gap mechanically, not by policy:
   and [consumer guidance](docs/CONSUMERS.md#native-r2-cgroup-observation-b148a-494).
   If observation is lost or becomes ambiguous after the pre-candidate check,
   Assay records that candidate's limits as unobserved and classifies the
-  candidate from its termination. The v16 verdict omits its optional
-  `resource_limit_evidence`; progress and resume state retain the reason.
+  candidate from its termination. PASS remains `survived`; without a
+  current-run failed-call witness, an unobserved FAIL is `crashed`. The v16 verdict
+  omits its optional `resource_limit_evidence`; progress and resume state retain
+  the reason.
   Run-Gate reports the pre-candidate
   `CGROUP_OBSERVATION_UNAVAILABLE` refusal as infrastructure `ERROR` when all
   other claims and evidence pass; it preserves any independent budget or
@@ -468,7 +473,7 @@ on this module" is `mode = "whole_target"` + `require_branch = true` +
 
 | Capability | Current support | Limit |
 |---|---|---|
-| Native R2 resource-event attribution | Assay checks candidate-local counters and relevant enforcing ancestors. When a private cgroup namespace hides ancestors, Run-Gate can opt an ephemeral native R2 lane into cgprofile's read-only observer contract 2. | If required observation is unavailable before candidate execution, R2 is `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`. After preflight, a lost or unstable candidate window is recorded as unobserved telemetry and the campaign continues; a clean PASS remains `survived`, and observed events follow the shared termination classifier. A positive witness-replay event remains `ERROR/EXEC_FAILED`. R0/R1 evidence remains valid. The observer does not expose the daemon control socket. |
+| Native R2 resource-event attribution | Assay checks candidate-local counters and relevant enforcing ancestors. When a private cgroup namespace hides ancestors, Run-Gate can opt an ephemeral native R2 lane into cgprofile's read-only observer contract 2. | If required observation is unavailable before candidate execution, R2 is `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`. After preflight, a lost or unstable candidate window is recorded as unobserved telemetry and the campaign continues. PASS remains `survived`; an unobserved FAIL needs a current-run failed-call witness to count as `killed`, while a bare nonzero exit is `crashed`. Observed events follow the shared termination classifier. A positive witness-replay event remains `ERROR/EXEC_FAILED`. R0/R1 evidence remains valid. The observer does not expose the daemon control socket. |
 | Per-test liveness and process measurements | Native R2 only, when the declared command activates a supported liveness monitor. Pytest test events and `tests_completed` are command-shape-specific; otherwise candidate progress remains available but those fields can be `null`. | These are execution features, not language-wide guarantees; see the [campaign lifecycle comparison](docs/DESIGN-GUIDE.md#native-and-ingested-r2-campaign-features) and [consumer guidance](docs/CONSUMERS.md#r2-for-javascript-by-ingesting-strykers-report-b046). |
 | Bounded native R2 pilots | B118 provides a plan-bound candidate selector and report checks. | A bounded pilot measures a selected subset; it does not qualify the full lane. |
 | Analysis-package R2 | B131 has a dedicated whole-target lane and bounded pilot path. | The analysis package is not qualified for a full R2 campaign until the full plan is completed and reviewed. |

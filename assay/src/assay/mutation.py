@@ -2232,17 +2232,24 @@ def _terminal_result_matches_bucket(
             raise ValueError("kill_signal_evidence has invalid field types")
 
     bucket = payload.get("outcome_bucket")
+    execution = payload.get("execution")
+    witness = execution.get("witness") if isinstance(execution, Mapping) else None
     termination = _termination.classify(
         outcome=outcome,
         reason_code=reason,
         returncode=returncode,
-        decided_by_report=False,
+        decided_by_report=_has_clean_failure_report(
+            outcome=outcome,
+            returncode=returncode,
+            witness=witness,
+            process_tree=process_tree_evidence,
+        ),
         process_tree=process_tree_evidence,
         limits=resource_limit_evidence,
         observation=(
             "clear" if resource_limit_evidence is not None else "unavailable"
         ),
-        observation_required=False,
+        observation_required=True,
     )
     expected_bucket = _termination.r2_bucket(termination)
     if _non_exited_judgeable_terminal(
@@ -3030,6 +3037,49 @@ def _classify_mutant_result(result: CommandResult) -> str:
         observation_required=False,
     )
     return _termination.r2_bucket(terminal)
+
+
+def _has_clean_failure_report(
+    *,
+    outcome: Outcome,
+    returncode: int | None,
+    witness: MutationWitnessReceipt | Mapping[str, Any] | None,
+    process_tree: ProcessTreeEvidence | None,
+) -> bool:
+    """Whether a normal pytest failed-call receipt independently proves FAIL."""
+    if (
+        outcome is not Outcome.FAIL
+        or returncode != 1
+        or process_tree is None
+        or process_tree.leader_status != "exited"
+        or process_tree.outliving_descendants != 0
+        or not process_tree.clean
+    ):
+        return False
+    if isinstance(witness, MutationWitnessReceipt):
+        report = witness.to_dict()
+    elif isinstance(witness, Mapping):
+        report = witness
+    else:
+        return False
+    return (
+        set(report)
+        == {
+            "node_id",
+            "when",
+            "outcome",
+            "session_exit_status",
+            "process_exit_status",
+        }
+        and isinstance(report.get("node_id"), str)
+        and bool(report.get("node_id"))
+        and report.get("when") == "call"
+        and report.get("outcome") == "failed"
+        and type(report.get("session_exit_status")) is int
+        and report.get("session_exit_status") == 1
+        and type(report.get("process_exit_status")) is int
+        and report.get("process_exit_status") == returncode
+    )
 
 
 def _process_tree_evidence_from_result(
@@ -4289,19 +4339,25 @@ def _execute_mutation_jobs(
     attempt_receipts: dict[tuple[int, str], Mapping[str, Any] | None] = {}
 
     def _classified_bucket(run: _MutantRun) -> str:
+        process_tree = run.process_tree_evidence
         terminal = _termination.classify(
             outcome=run.result.outcome,
             reason_code=run.result.reason_code,
             returncode=run.result.returncode,
-            decided_by_report=False,
-            process_tree=run.process_tree_evidence,
+            decided_by_report=_has_clean_failure_report(
+                outcome=run.result.outcome,
+                returncode=run.result.returncode,
+                witness=run.execution.witness,
+                process_tree=process_tree,
+            ),
+            process_tree=process_tree,
             limits=run.resource_limit_evidence,
             observation=(
                 "clear"
                 if run.resource_limit_evidence is not None
                 else "unavailable"
             ),
-            observation_required=False,
+            observation_required=True,
         )
         if _non_exited_judgeable_terminal(run.process_tree_evidence, terminal):
             return "crashed"
@@ -4635,11 +4691,7 @@ def _execute_mutation_jobs(
                 target_node_id=target_node_id,
                 expected_facts=r2_facts if cold_witness else None,
             )
-            if (
-                witness is None
-                or prior_verdict_sha256 is None
-                or _classified_bucket(run) != "killed"
-            ):
+            if witness is None or prior_verdict_sha256 is None:
                 return None
             execution = MutationExecution(
                 mode="witness-prefix",
@@ -4648,6 +4700,9 @@ def _execute_mutation_jobs(
                 prior_node_id=target_node_id,
                 current_node_id=target_node_id,
             )
+            report_run = _dataclass_replace(run, execution=execution)
+            if _classified_bucket(report_run) != "killed":
+                return None
         else:
             witness = (
                 _witness_from_receipt(
@@ -4657,9 +4712,17 @@ def _execute_mutation_jobs(
                 if result.outcome is Outcome.FAIL
                 else None
             )
+            report_witness = (
+                MutationWitnessReceipt(**witness) if witness is not None else None
+            )
+            report_run = _dataclass_replace(
+                run,
+                execution=MutationExecution(mode="full", witness=report_witness),
+            )
             full_witness = (
-                MutationWitnessReceipt(**witness)
-                if witness is not None and _classified_bucket(run) == "killed"
+                report_witness
+                if report_witness is not None
+                and _classified_bucket(report_run) == "killed"
                 else None
             )
             execution = MutationExecution(mode="full", witness=full_witness)

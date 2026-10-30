@@ -713,8 +713,10 @@ candidate-local event files, then the ancestors' local event files. A positive
 candidate `pids.events:max`, `memory.events:oom`, `oom_kill`, or
 `oom_group_kill` delta is evidence for the shared termination classifier; a
 clean PASS remains final, while a non-clean test failure with the event becomes
-infrastructure-affected. A `memory.events:max` delta remains telemetry because
-the kernel can satisfy the allocation through reclaim. The local sample also
+infrastructure-affected. A complete failed-call report has the classifier's
+declared precedence over a later event. A `memory.events:max` delta remains
+telemetry because the kernel can satisfy the allocation through reclaim. The
+local sample also
 covers an increment between sequential reads of the regular and local files.
 A sibling can change a shared ancestor's hierarchical count without changing
 that ancestor's local count, so that
@@ -770,12 +772,17 @@ verdict entry, and continues the campaign. A changed signature reports the
 specific cgroup index, path or mount, controller file, and before/after value
 so a later occurrence is diagnosable. The candidate is classified with
 `termination.classify()` and no limit-event evidence: a surviving PASS remains
-`survived`, and a clean test failure remains `killed`; process, timeout, and
-other infrastructure outcomes follow the same classifier. An observed
-failure-relevant event only changes a candidate when the classifier gives it
-precedence over the command result. A clean PASS remains final, while a
-non-clean command failure with a direct event is `crashed`. A positive
-`memory.events:max` delta alone stays telemetry.
+`survived`. A bare nonzero exit without resource evidence is `crashed`, because
+the missing window cannot rule out a limit-caused failure. The report exception
+is narrow: only a current-run pytest failed-call witness with session and
+process exit status 1, paired with a clean process-tree leader exit, counts as
+`killed` without resource evidence. This is the complete structured report
+precedence from §2; a shell-wrapped signal status such as 137 is not such a
+report. Process, timeout, and other infrastructure outcomes keep their
+classifier buckets. An observed failure-relevant event changes a candidate
+only where classifier precedence places it above the command result. A clean
+PASS remains final, while a non-clean command failure with a direct event is
+`crashed`. A positive `memory.events:max` delta alone stays telemetry.
 
 A positive event during witness-prefix replay still stops the lane with
 payload-free `ERROR/EXEC_FAILED` before retry, so that event cannot be hidden by
@@ -790,11 +797,14 @@ cannot escape the verdict path. This contract observes cgroup v2 events; it
 does not detect per-process limits such as `RLIMIT_NPROC` or `RLIMIT_AS`.
 
 `assay verify` independently checks the evidence shape, subtraction, and
-bucket; an omitted candidate resource field is valid because sampling can be
-unobserved after preflight. Resume state carries an explicit unobserved marker
-and reason, while records with no evidence form or with contradictory terminal
-evidence are refused for reuse. In particular, an old `crashed` record for a
-PASS under a limit event fails revalidation and the candidate is rerun. The
+bucket. An omitted candidate resource field is valid after preflight for a
+PASS, and for a `killed` result only when its current-run failed-call witness
+proves the normal test failure. Resume state carries an explicit unobserved
+marker and reason; a cached bare nonzero FAIL without the witness is rejected
+and rerun as `crashed`. Records with no evidence form or with contradictory
+terminal evidence are also refused for reuse. In particular, an old `crashed`
+record for a PASS under a limit event fails revalidation and the candidate is
+rerun. The
 B145 worker guard advanced the judge identity to `/7`, B114 cold-witness
 identity inputs advanced it to `/8`, the RG-89 observer policy advanced it to
 `/9`, and B155's event-scope attribution advances it to `/10`; older records

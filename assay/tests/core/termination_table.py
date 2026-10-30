@@ -470,6 +470,49 @@ PRECEDENCE_CASES = (
         Outcome.FAIL,
         ReasonCode.COMMAND_FAILED,
     ),
+    _case(
+        "unobserved-bare-nonzero-fail-is-not-a-kill",
+        _inputs(
+            outcome=Outcome.FAIL,
+            reason_code=ReasonCode.COMMAND_FAILED,
+            returncode=1,
+            process_tree=_tree(),
+            observation="unavailable",
+            observation_required=True,
+        ),
+        Termination.UNOBSERVED,
+        Outcome.ERROR,
+        ReasonCode.EXEC_FAILED,
+    ),
+    _case(
+        "clean-report-fail-beats-unobserved-window",
+        _inputs(
+            outcome=Outcome.FAIL,
+            reason_code=ReasonCode.COMMAND_FAILED,
+            returncode=1,
+            decided_by_report=True,
+            process_tree=_tree(),
+            observation="unavailable",
+            observation_required=True,
+        ),
+        Termination.FAILED,
+        Outcome.FAIL,
+        ReasonCode.COMMAND_FAILED,
+    ),
+    _case(
+        "unobserved-shell-wrapped-signal-is-not-a-kill",
+        _inputs(
+            outcome=Outcome.FAIL,
+            reason_code=ReasonCode.COMMAND_FAILED,
+            returncode=137,
+            process_tree=_tree(),
+            observation="unavailable",
+            observation_required=True,
+        ),
+        Termination.UNOBSERVED,
+        Outcome.ERROR,
+        ReasonCode.EXEC_FAILED,
+    ),
 )
 
 

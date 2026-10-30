@@ -466,12 +466,16 @@ preflight. After it succeeds, a later observer loss or unstable before/after
 window is candidate telemetry: Assay emits one advisory line, records
 `resource_observation.status = "unobserved"` and the reason in progress and
 resume state, omits that candidate's optional `resource_limit_evidence` from
-the v16 verdict, and continues the campaign. Assay does not turn that missing
-telemetry into `crashed`, `ERROR`, or a product failure. A positive resource
-event during a clean PASS remains `survived`; a non-clean result follows the
-shared termination classifier. A positive delta during a saved-witness replay
-still stops the lane with payload-free `ERROR/EXEC_FAILED` before Assay can
-retry the candidate. Every visible
+the v16 verdict, and continues the campaign. PASS remains `survived`. A FAIL
+without resource evidence counts as `killed` only when a current-run pytest
+failed-call witness records a normal exit status of 1 and process-tree evidence
+proves a clean leader exit; otherwise it is `crashed`, including a bare
+nonzero exit or a shell-wrapped signal status such as 137. This complete
+failed-call report follows the termination design's report precedence. A
+positive resource event during a clean PASS remains `survived`; observed
+failures follow the shared termination classifier. A positive delta during a
+saved-witness replay still stops the lane with payload-free `ERROR/EXEC_FAILED`
+before Assay can retry the candidate. Every visible
 cgroup2 mount exposing the hierarchy must also be read-only. Assay checks the
 underlying `cgroup.procs` inode permissions on the candidate cgroup and all
 ancestors, since a read-only mount alone does not block
@@ -524,9 +528,10 @@ That no-measurement result applies only before the first candidate starts. If
 the observer disappears, the hierarchy changes, or a shared-parent
 failure-relevant event becomes ambiguous during a candidate window, Assay
 marks that window unobserved, records the reason in candidate progress and
-state, prints one advisory line, and continues with termination-based
-classification. A process-tree cleanup failure still takes precedence over a
-later counter-read failure. Run-Gate maps the pre-candidate
+state, prints one advisory line, and continues. For R2, PASS stays `survived`;
+a FAIL without a complete current-run failed-call witness is `crashed`, not kill
+credit. A process-tree cleanup failure still takes precedence over a later
+counter-read failure. Run-Gate maps the pre-candidate
 `CGROUP_OBSERVATION_UNAVAILABLE` refusal to gate `ERROR` only
 when every other claim and external evidence entry passes. An independent
 budget stop remains `BUDGET_EXCEEDED`; an independent product failure,

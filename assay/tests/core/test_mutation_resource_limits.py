@@ -945,6 +945,76 @@ def test_raw_verifier_accepts_omitted_resource_evidence_after_preflight():
     assert failures == []
 
 
+def test_raw_verifier_rejects_unobserved_kill_without_a_clean_report():
+    entry = native_outcome(
+        path="src/mod.py",
+        lineno=1,
+        start_byte=0,
+        end_byte=1,
+        replacement_sha256="a" * 64,
+        operator="python:compare-swap",
+        description="x < y",
+    ).to_dict()
+    del entry["resource_limit_evidence"]
+    failures: list[str] = []
+
+    _check_b145_resource_limit_evidence("killed", entry, failures)
+
+    assert any("clean failed-call witness" in failure for failure in failures)
+
+
+def test_raw_verifier_accepts_unobserved_kill_with_a_clean_report():
+    entry = native_outcome(
+        path="src/mod.py",
+        lineno=1,
+        start_byte=0,
+        end_byte=1,
+        replacement_sha256="a" * 64,
+        operator="python:compare-swap",
+        description="x < y",
+    ).to_dict()
+    del entry["resource_limit_evidence"]
+    entry["execution"]["witness"] = {
+        "node_id": "tests/test_mod.py::test_case",
+        "when": "call",
+        "outcome": "failed",
+        "session_exit_status": 1,
+        "process_exit_status": 1,
+    }
+    failures: list[str] = []
+
+    _check_b145_resource_limit_evidence("killed", entry, failures)
+
+    assert failures == []
+
+
+def test_raw_verifier_report_precedence_accepts_a_positive_limit_event():
+    entry = native_outcome(
+        path="src/mod.py",
+        lineno=1,
+        start_byte=0,
+        end_byte=1,
+        replacement_sha256="a" * 64,
+        operator="python:compare-swap",
+        description="x < y",
+    ).to_dict()
+    entry["resource_limit_evidence"]["pids_events"]["max"].update(
+        before=0, after=1, delta=1
+    )
+    entry["execution"]["witness"] = {
+        "node_id": "tests/test_mod.py::test_case",
+        "when": "call",
+        "outcome": "failed",
+        "session_exit_status": 1,
+        "process_exit_status": 1,
+    }
+    failures: list[str] = []
+
+    _check_b145_resource_limit_evidence("killed", entry, failures)
+
+    assert failures == []
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [("delta", 0), ("before", True)],
@@ -1421,8 +1491,9 @@ def test_candidate_observer_loss_is_recorded_without_aborting_the_campaign(
     assert len(candidate_calls) == 2
     assert len(mutation.survived) == 1
     assert mutation.survived[0].resource_limit_evidence is None
-    assert len(mutation.killed) == 1
-    assert mutation.killed[0].resource_limit_evidence is None
+    assert mutation.killed == ()
+    assert len(mutation.crashed) == 1
+    assert mutation.crashed[0].resource_limit_evidence is None
     state_records = [
         json.loads(path.read_text(encoding="utf-8"))
         for path in state_root.glob("*.json")
@@ -1442,6 +1513,10 @@ def test_candidate_observer_loss_is_recorded_without_aborting_the_campaign(
         record for record in progress_records if record.get("event") == "candidate"
     ]
     assert len(candidate_records) == 2
+    assert sorted(record["outcome_bucket"] for record in candidate_records) == [
+        "crashed",
+        "survived",
+    ]
     assert all("resource_limit_evidence" not in record for record in candidate_records)
     assert all(record["resource_observation"]["status"] == "unobserved"
                for record in candidate_records)
