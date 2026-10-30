@@ -1031,6 +1031,7 @@ def _memory(**counters):
     ("bucket", "entry", "message"),
     [
         ("equivalent", {"execution": {"mode": "ledger"}, "resource_limit_evidence": {}}, "ledger execution cannot carry"),
+        ("killed", {"resource_limit_evidence": "not an object"}, "resource_limit_evidence must be an object"),
         ("killed", {"resource_limit_evidence": {"cgroup_version": 2}}, "invalid resource_limit_evidence fields"),
         ("killed", {"resource_limit_evidence": _resources(cgroup_version=1)}, "requires cgroup v2"),
         ("killed", {"resource_limit_evidence": _resources(pids_events=[])}, "invalid pids_events evidence"),

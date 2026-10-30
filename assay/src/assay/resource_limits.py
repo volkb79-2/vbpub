@@ -123,10 +123,10 @@ class ResourceLimitCounters:
     memory_max: int
     memory_oom_kill: int
     memory_oom_group_kill: int
-    # This is an in-process pre/post binding, not verdict evidence. It makes a
-    # changed cgroup path, mount identity, limit/event interface availability,
-    # or configured limit during one candidate an infrastructure error instead
-    # of hiding a counter from the aggregate merely because it became unlimited.
+    # This is an in-process pre/post binding, not verdict evidence. A changed
+    # cgroup path, mount identity, limit/event interface or configured limit
+    # makes the pair incomparable. The caller keeps preflight fail-closed and
+    # treats later candidate windows as optional telemetry.
     limit_signature: tuple[LimitSignatureEntry, ...] = ()
     # Internal per-cgroup snapshots used only to attribute events. Each row is
     # path, regular pids/memory events, then effective local pids/memory events.

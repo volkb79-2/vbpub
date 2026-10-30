@@ -2250,9 +2250,11 @@ def _terminal_result_matches_bucket(
     ):
         expected_bucket = "crashed"
     elif termination in _termination.JUDGEABLE:
+        # JUDGEABLE is exactly PASSED or FAILED, so the classifier has
+        # already established that this outcome is PASS or FAIL.
         if forced_bucket == "crashed":
             expected_bucket = "crashed"
-        elif outcome in {Outcome.PASS, Outcome.FAIL}:
+        else:
             if equivalence_artifact is not None:
                 if (
                     equivalence_evidence is None

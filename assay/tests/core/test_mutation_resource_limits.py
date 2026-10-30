@@ -1307,10 +1307,50 @@ def test_candidate_counter_comparison_failure_is_unobserved_telemetry(
     assert reason == "shared parent event is ambiguous"
 
 
+def test_limit_signature_detail_names_removed_and_added_cgroups():
+    entry = (
+        "/candidate",
+        31,
+        True,
+        None,
+        True,
+        4096,
+        True,
+        True,
+        True,
+        True,
+        False,
+        False,
+    )
+
+    def counters(signature):
+        return ResourceLimitCounters(
+            pids_max=0,
+            memory_oom=0,
+            memory_max=0,
+            memory_oom_kill=0,
+            memory_oom_group_kill=0,
+            limit_signature=signature,
+        )
+
+    assert resource_limits._limit_signature_change_detail(
+        counters((entry,)), counters(())
+    ) == "cgroup[0] removed: path=/candidate, mount_id=31"
+    assert resource_limits._limit_signature_change_detail(
+        counters(()), counters((entry,))
+    ) == "cgroup[0] added: path=/candidate, mount_id=31"
+
+
+@pytest.mark.parametrize(
+    ("failure_read", "failure_endpoint"),
+    [(4, "before"), (5, "after")],
+)
 def test_candidate_observer_loss_is_recorded_without_aborting_the_campaign(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    failure_read: int,
+    failure_endpoint: str,
 ):
     source = "def flags():\n    return True and False\n"
     repo, lane, baseline, scratch_root = _run_mutation_observation_fixture(
@@ -1335,8 +1375,10 @@ def test_candidate_observer_loss_is_recorded_without_aborting_the_campaign(
     def read_counters(**_kwargs):
         nonlocal read_count
         read_count += 1
-        if read_count == 5:
-            raise ResourceLimitObservationError("observer disappeared after candidate 2")
+        if read_count == failure_read:
+            raise ResourceLimitObservationError(
+                f"observer disappeared {failure_endpoint} candidate 2"
+            )
         return next(reads)
 
     monkeypatch.setattr(mutation_module, "read_candidate_resource_counters", read_counters)
@@ -1390,7 +1432,7 @@ def test_candidate_observer_loss_is_recorded_without_aborting_the_campaign(
     assert all("resource_limit_evidence" not in record for record in unobserved_state)
     assert any("memory.max changed: 4096 -> 8192" in record["resource_observation"]["reason"]
                for record in unobserved_state)
-    assert any("observer disappeared after candidate 2" in record["resource_observation"]["reason"]
+    assert any(f"observer disappeared {failure_endpoint} candidate 2" in record["resource_observation"]["reason"]
                for record in unobserved_state)
     progress_records = [
         json.loads(line)
@@ -1409,7 +1451,7 @@ def test_candidate_observer_loss_is_recorded_without_aborting_the_campaign(
     ]
     assert len(advisory_lines) == 2
     assert any("memory.max changed: 4096 -> 8192" in line for line in advisory_lines)
-    assert any("observer disappeared after candidate 2" in line for line in advisory_lines)
+    assert any(f"observer disappeared {failure_endpoint} candidate 2" in line for line in advisory_lines)
 
 
 def test_pass_with_a_limit_event_remains_survived(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

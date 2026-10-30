@@ -592,6 +592,15 @@ def test_terminal_matcher_cache_decisions(payload, kwargs, expected):
     assert mutation._terminal_result_matches_bucket(payload, **kwargs) is expected
 
 
+def test_terminal_matcher_maps_a_judgeable_nonexited_leader_to_crashed():
+    payload = _terminal(
+        outcome="PASS", reason=None, returncode=0, bucket="crashed"
+    )
+    assert mutation._terminal_result_matches_bucket(
+        payload, process_tree_evidence=_tree("signaled")
+    )
+
+
 # --------------------------------------------------------------------------
 # _load_validated_state_record
 # --------------------------------------------------------------------------
@@ -650,6 +659,27 @@ def _drop(payload, key):
 def test_load_record_refuses_structural_corruption(tmp_path, payload, message):
     _put(tmp_path, payload)
     with pytest.raises(mutation.MutationStateError, match=message):
+        _load(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "resource_observation",
+    [
+        None,
+        {"status": "observed", "reason": "sample present"},
+        {"status": "unobserved", "reason": 1},
+        {"status": "unobserved", "reason": "  "},
+        {"status": "unobserved", "reason": "observer unavailable", "extra": True},
+    ],
+)
+def test_load_record_refuses_malformed_unobserved_resource_marker(
+    tmp_path, resource_observation
+):
+    payload = _record()
+    del payload["resource_limit_evidence"]
+    payload["resource_observation"] = resource_observation
+    _put(tmp_path, payload)
+    with pytest.raises(mutation.MutationStateError, match="invalid resource_observation"):
         _load(tmp_path)
 
 
@@ -1134,6 +1164,72 @@ def _zero_counters():
     )
 
 
+def test_zero_window_observer_loss_is_returned_as_unobserved(monkeypatch):
+    monkeypatch.setattr(
+        mutation,
+        "_read_candidate_resource_counters_during_campaign",
+        lambda: (None, "observer disappeared at sweep close"),
+    )
+    assert mutation._zero_window_resource_limit_evidence() == (
+        None,
+        "observer disappeared at sweep close",
+    )
+
+
+def test_process_tree_converter_preserves_an_already_typed_proof():
+    result = _result(_ECHO_PLAN)
+    proof = _tree("signaled")
+    result.process_tree_evidence = proof
+    assert mutation._process_tree_evidence_from_result(result) is proof
+
+
+def test_unobserved_candidate_record_without_a_reason_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr(mutation, "_read_candidate_resource_counters", _zero_counters)
+    monkeypatch.setattr(
+        mutation, "_candidate_resource_limit_evidence", lambda *_args: (None, None)
+    )
+    with pytest.raises(
+        mutation.MutationStateError,
+        match="unobserved candidate resource-limit evidence lacks a reason",
+    ):
+        _execute(tmp_path, monkeypatch, [_result(_ECHO_PLAN)])
+
+
+def test_zero_window_observer_loss_emits_one_advisory_for_unstarted_candidates(
+    tmp_path, monkeypatch, capsys
+):
+    class ExpiredDeadline:
+        def remaining(self):
+            raise AssayError(
+                "lane budget expired",
+                outcome=Outcome.BUDGET_EXCEEDED,
+                reason_code=ReasonCode.LANE_TIMEOUT,
+            )
+
+    monkeypatch.setattr(mutation, "_read_candidate_resource_counters", _zero_counters)
+    monkeypatch.setattr(
+        mutation,
+        "_zero_window_resource_limit_evidence",
+        lambda: (None, "observer unavailable at sweep close"),
+    )
+    result, complete = _execute(
+        tmp_path,
+        monkeypatch,
+        [_result(_ECHO_PLAN)],
+        deadline=ExpiredDeadline(),
+    )
+    assert not complete
+    assert len(result.budget_exceeded) == 1
+    advisories = [
+        line
+        for line in capsys.readouterr().err.splitlines()
+        if "zero-duration resource-limit sample unobserved" in line
+    ]
+    assert advisories == [
+        "Assay advisory: zero-duration resource-limit sample unobserved for unstarted candidates: observer unavailable at sweep close"
+    ]
+
+
 def test_observer_loss_after_a_failed_command_does_not_replace_command_failure(tmp_path, monkeypatch):
     lost = AssayError("observer gone", outcome=Outcome.ERROR, reason_code=ReasonCode.EXEC_FAILED)
     _counters_sequence(monkeypatch, _zero_counters(), lost)
@@ -1163,6 +1259,20 @@ def test_surviving_descendants_make_a_completed_candidate_crashed(tmp_path, monk
     result, complete = _execute(tmp_path, monkeypatch, [_result(_ECHO_PLAN, tree="outliving")])
     assert [o.path for o in result.crashed] == ["src/mod.py"]
     assert result.killed == ()
+
+
+def test_judgeable_pass_with_a_signaled_leader_is_classified_as_crashed(
+    tmp_path, monkeypatch
+):
+    result = _result(_ECHO_PLAN, outcome="PASS", returncode=0, reason=None)
+    result.process_tree_evidence = {
+        **result.process_tree_evidence,
+        "leader_status": "signaled",
+    }
+    mutation_result, complete = _execute(tmp_path, monkeypatch, [result])
+    assert complete
+    assert len(mutation_result.crashed) == 1
+    assert mutation_result.survived == ()
 
 
 def test_a_non_mapping_process_tree_proof_never_reaches_a_recorded_bucket(tmp_path, monkeypatch):
@@ -1297,6 +1407,30 @@ def test_cold_failure_with_a_proof_but_dirty_process_tree_is_not_a_witnessed_kil
         tmp_path, monkeypatch, receipts, [_result(_PYTEST_PLAN, tree="outliving")]
     )
     assert _bucket_of(result) == "crashed"
+    assert _only(result).execution.mode == "full"
+    assert _only(result).evidence is not None
+
+
+def test_cold_failure_proof_does_not_override_a_non_kill_classifier_result(
+    tmp_path, monkeypatch
+):
+    receipts = _Receipts(monkeypatch)
+    receipts.cold_proof = (_GOOD, 1, 0)
+    receipts.facts[0] = _facts(_SHA_R2)
+    monkeypatch.setattr(
+        mutation,
+        "_classify_mutant_result_with_equivalence",
+        lambda *_args, **_kwargs: "equivalent",
+    )
+    result, _ = _cold_run(
+        tmp_path,
+        monkeypatch,
+        receipts,
+        [_result(_PYTEST_PLAN)],
+        equivalence_artifact="eq.txt",
+        baseline_equivalence=b"baseline",
+    )
+    assert _bucket_of(result) == "equivalent"
     assert _only(result).execution.mode == "full"
     assert _only(result).evidence is not None
 
