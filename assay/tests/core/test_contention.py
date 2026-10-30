@@ -42,11 +42,21 @@ def _pressure(
 def _limit_evidence(*, hit: bool = False):
     pids = int(hit)
     return resource_limits.ResourceLimitEvidence(
-        pids_events_max=resource_limits.CounterDelta(0, pids, pids),
-        memory_events_max=resource_limits.CounterDelta(0, 0, 0),
-        memory_events_oom=resource_limits.CounterDelta(0, 0, 0),
-        memory_events_oom_kill=resource_limits.CounterDelta(0, 0, 0),
-        memory_events_oom_group_kill=resource_limits.CounterDelta(0, 0, 0),
+        pids_events_max=resource_limits.CounterDelta(
+            before=0, after=pids, delta=pids
+        ),
+        memory_events_max=resource_limits.CounterDelta(
+            before=0, after=0, delta=0
+        ),
+        memory_events_oom=resource_limits.CounterDelta(
+            before=0, after=0, delta=0
+        ),
+        memory_events_oom_kill=resource_limits.CounterDelta(
+            before=0, after=0, delta=0
+        ),
+        memory_events_oom_group_kill=resource_limits.CounterDelta(
+            before=0, after=0, delta=0
+        ),
     )
 
 

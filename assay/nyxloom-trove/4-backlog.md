@@ -13308,9 +13308,12 @@ sampler. The test-only preflight at `3faa7878` (Run-Gate ID
 classifier had not yet been added. The implementation preflight at
 `aa3adbcf` (Run-Gate ID `c03fd9a1f89010d4e48076cd91bbdaf2`) stopped during
 collection and produced no coverage artifact; `tests/conftest.py` then raised
-while trying to archive that missing artifact. Its retained output does not
-identify the underlying collection error, so coverage and preflight acceptance
-remain unverified. See the
+while trying to archive that missing artifact. The registered
+`tester-unified` diagnostic at `6d828e37` (Run-Gate ID
+`c4a9176839db955e9e6fa67e5aa69839`) exposed the collection error: a contention
+test passed positional arguments to keyword-only `CounterDelta`. This commit
+corrects that test helper; coverage and preflight acceptance remain pending a
+green preflight on the corrected tree. See the
 [Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md), §§2, 6.1–6.2 and 7/WP1.
 
 ## B174 — wire load-independent termination and progress telemetry through R0/R1
