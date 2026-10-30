@@ -3,5 +3,11 @@
   "target_count": 15,
   "target_manifest_sha256": "9cca9aa37d06e92e5ffa1d0aa74f673599c72620860952a8f13508dfee73a22b",
   "train": "TrueNAS-28-Nightlies",
-  "version": "28.0.0-MASTER+20261014-230204"
+  "version": "28.0.0-MASTER+20261014-230204",
+  "series_dir": "series",
+  "patches": [
+    "0001-storage.patch",
+    "0002-middleware.patch",
+    "0003-boot-mount.patch"
+  ]
 }

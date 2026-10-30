@@ -3,8 +3,9 @@
 
 The input roots are clean stock source trees containing the files listed by
 each adapter's ``targets.sha256``. The proof applies the retained legacy patch
-files in their recorded installer order and the ``patchseries`` files in
-natural series order, then compares SHA-256 for every touched file.
+files in their recorded pre-series installer order and the ``patchseries``
+files in natural series order. It requires a non-empty, exact patch target set,
+then reports any fingerprinted files intentionally left unpatched.
 """
 
 from __future__ import annotations
@@ -109,6 +110,32 @@ def apply_patch_set(root: Path, patches: list[Path], label: str) -> None:
             )
 
 
+def verify_file_coverage(
+    file_rows: list[dict[str, Any]],
+    legacy_paths: set[str],
+    series_paths: set[str],
+    target_paths: set[str],
+    version: str,
+) -> list[str]:
+    """Require proof rows to cover every touched path and no untouched path."""
+    if not file_rows or not legacy_paths or not series_paths:
+        raise ProofError(f"patch equivalence is empty for {version}; refusing a vacuous proof")
+    reported = [item.get("file") for item in file_rows]
+    if any(not isinstance(name, str) for name in reported) or len(set(reported)) != len(reported):
+        raise ProofError(f"proof rows contain missing or duplicate file paths for {version}")
+    reported_paths = set(reported)
+    if reported_paths != legacy_paths or reported_paths != series_paths:
+        raise ProofError(
+            f"proof rows do not exactly cover the union of legacy/series touched paths for {version}: "
+            f"reported-only={sorted(reported_paths-(legacy_paths | series_paths))!r} "
+            f"omitted={sorted((legacy_paths | series_paths)-reported_paths)!r}"
+        )
+    outside_targets = reported_paths - target_paths
+    if outside_targets:
+        raise ProofError(f"proof rows include paths absent from target manifest for {version}: {sorted(outside_targets)!r}")
+    return sorted(target_paths - reported_paths)
+
+
 def parse_stock_roots(values: list[str], registered: set[str]) -> dict[str, Path]:
     roots: dict[str, Path] = {}
     for value in values:
@@ -144,6 +171,8 @@ def build_proof(version: str, row: dict[str, Any], stock_root: Path, vocabulary:
             f"target count differs from supported-build registry for {version}: "
             f"expected={row.get('target_count')!r} actual={len(expected)}"
         )
+    if not row.get("legacy_patches") or not row.get("patches"):
+        raise ProofError(f"legacy and series patch lists must both be non-empty for {version}")
     target_issues = {
         name: {"expected": digest, "actual": None}
         for name, digest in expected.items()
@@ -172,6 +201,8 @@ def build_proof(version: str, row: dict[str, Any], stock_root: Path, vocabulary:
     legacy_root = adapter_root / "legacy"
     legacy_patches = [legacy_root / name for name in row["legacy_patches"]]
     series_patches = [series_root / name for name in row["patches"]]
+    if not legacy_patches or not series_patches:
+        raise ProofError(f"legacy and series patch lists must both be non-empty for {version}")
     for patch_file in [*legacy_patches, *series_patches]:
         if not patch_file.is_file() or patch_file.is_symlink():
             raise ProofError(f"missing or unsafe proof patch: {patch_file}")
@@ -225,6 +256,10 @@ def build_proof(version: str, row: dict[str, Any], stock_root: Path, vocabulary:
         if mismatches:
             raise ProofError(f"relaxed file bytes differ for {version}: {mismatches!r}")
 
+    unpatched_paths = verify_file_coverage(
+        file_rows, legacy_paths, series_paths, set(expected), version,
+    )
+
     return {
         "build": version,
         "adapter_id": row["adapter_id"],
@@ -233,6 +268,16 @@ def build_proof(version: str, row: dict[str, Any], stock_root: Path, vocabulary:
         "legacy_patch_count": len(legacy_patches),
         "series_patch_count": len(series_patches),
         "patched_file_count": len(file_rows),
+        "unpatched_targets": [
+            {
+                "file": name,
+                "reason": (
+                    "fingerprinted for stock preimage validation; neither the retained "
+                    "legacy patch set nor the series modifies this file"
+                ),
+            }
+            for name in unpatched_paths
+        ],
         "all_identical": True,
         "files": file_rows,
     }

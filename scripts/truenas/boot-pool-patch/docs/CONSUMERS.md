@@ -51,22 +51,48 @@ python3 scripts/truenas/boot-pool-patch/scripts/generate_series_views.py --check
 
 Before registering a migrated or new exact build, prove its output against a
 clean stock source tree whose files match that adapter's `targets.sha256`.
-Repeat `--stock-root VERSION=PATH` for every build in the registry; the proof
-uses the old installer order and the new natural series order with GNU
-`patch --batch --fuzz=0 -p1` and emits one old/new SHA-256 row per patched
-file:
+The helper below reads the exact registered version and train, finds that
+version in the official updater feed, verifies the downloaded `.update` size
+and SHA-256, and extracts only the fingerprinted files from its nested
+`rootfs.squashfs`. It runs locally and does not connect to a TrueNAS host.
+Keep the update cache on a filesystem with enough room for the three roughly
+2.3 GB images:
+
+```bash
+python3 scripts/truenas/boot-pool-patch/scripts/rebuild_stock_roots.py \
+  --output-root /path/to/truenas-stock-roots \
+  --cache-dir /path/to/truenas-update-cache
+```
+
+Each root contains `SOURCE-INFO.json` with the official feed URL, update
+digest, and target-manifest digest. The command refuses to overwrite an
+existing build root. Repeat `--stock-root VERSION=PATH` for every build in the
+registry; the proof uses the pre-series installer order captured in
+[`manifest/legacy-installer-order.json`](../manifest/legacy-installer-order.json)
+and the new natural series order with GNU `patch --batch --fuzz=0 -p1`.
+It refuses empty patch lists and requires one proof row for every touched
+path. Fingerprinted targets untouched by either patch set appear in the
+`unpatched_targets` report list with a reason.
+
+The proof command for the current registry is:
 
 ```bash
 python3 scripts/truenas/boot-pool-patch/scripts/prove_series_equivalence.py \
-  --stock-root '27.0.0-RC.1=/path/to/rc1-stock' \
-  --stock-root '27.0.0-MASTER+20261029-173417=/path/to/v27-nightly-stock' \
-  --stock-root '28.0.0-MASTER+20261029-175210=/path/to/v28-nightly-stock'
+  --stock-root '27.0.0-RC.1=/path/to/truenas-stock-roots/27.0.0-RC.1' \
+  --stock-root '27.0.0-MASTER+20261029-173417=/path/to/truenas-stock-roots/27.0.0-MASTER+20261029-173417' \
+  --stock-root '28.0.0-MASTER+20261029-175210=/path/to/truenas-stock-roots/28.0.0-MASTER+20261029-175210'
 ```
 
-The installer packages the selected series files; it does not read
-`legacy/` or `manifest/hunk-map.json`. Bundle hashes bind the archive layout,
-while post-install target hashes bind the installed bytes. The recorded
-conversion proof is
+Recompute the pinned install-bundle archive digests with:
+
+```bash
+python3 scripts/truenas/boot-pool-patch/scripts/check_install_bundle_digests.py
+```
+
+The installers package the selected series files from `adapter.json`; they do
+not read `legacy/` or `manifest/hunk-map.json`. Bundle hashes bind the archive
+layout, while post-install target hashes bind the installed bytes. The
+recorded conversion proof is
 [`series-equivalence-2026-10-30.json`](../reports/series-equivalence-2026-10-30.json).
 The design and compatibility reasoning is in the
 [series design guide](DESIGN-GUIDE.md#patch-series-and-bundle-identity).
@@ -178,21 +204,19 @@ as a separate registered lane on a clean, patched target when collecting UI
 evidence. The current matrix records the combined UI refusal explicitly; a
 clean-target UI execution still needs to be added to the acceptance results.
 
-## Run the patch unit gate
+## Run the unit gate
 
-Run the registered patch test lane from this worktree before changing or
-applying a release adapter:
+Run the registered project unit lane from the TrueNAS project directory before
+changing or applying a release adapter. Use the installed `run-gate` CLI:
 
 ```bash
 cd scripts/truenas
-source "$VENV/bin/activate"
-export DOCKER_HOST=unix:///var/run/docker.sock
-./run-gate.py unit-boot-pool-patch --worktree "$(git rev-parse --show-toplevel)" --allow-dirty
+run-gate unit --worktree "$(git rev-parse --show-toplevel)" --allow-dirty
 ```
 
-This runs the boot-pool patch policy, adapter artifact, and live-gate contract
-tests in `tester-unified`. It does not boot or mutate a TrueNAS guest; use the
-separate guarded live lanes for runtime behavior.
+This runs the TrueNAS client, restore, boot-pool policy, and vanilla ISO
+patcher tests in `tester-unified`. It does not boot or mutate a TrueNAS guest;
+use the separate guarded live lanes for runtime behavior.
 
 ## Run live storage acceptance
 
@@ -1138,7 +1162,7 @@ capped in `$CGROUP_PARENT_DEV_BACKGROUND`.
 
 The only supported v28 build is the latest registered nightly,
 `28.0.0-MASTER+20261029-175210`. Its adapter contains 19 exact source
-fingerprints, four patch files, and a separate Path B partition shim. Its
+fingerprints, six series patches, and a separate Path B partition shim. Its
 current bundle digest is
 `4ff5f7e9ba90481e2d663588ffa2c98b121f7e937343abfd61081b2d9dff9935`. The
 captured Oct 29 source passes all 19 hash checks and six zero-fuzz series

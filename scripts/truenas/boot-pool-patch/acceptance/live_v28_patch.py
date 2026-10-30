@@ -115,6 +115,8 @@ def require_guests_stopped(
 
 def deterministic_bundle(
     version: str = EXPECTED_VERSION,
+    *,
+    verify_registry_digest: bool = True,
 ) -> tuple[bytes, str, dict[str, str]]:
     """Create a stable bundle with closed member names and normalized metadata."""
     patch_dir = adapter_directory(version)
@@ -175,11 +177,12 @@ def deterministic_bundle(
     bundle = raw.getvalue()
     digest = hashlib.sha256(bundle).hexdigest()
     expected_digest = build.get("install_bundle_sha256")
-    require(
-        isinstance(expected_digest, str) and digest == expected_digest,
-        f"v28 patch bundle digest differs from the exact-build registry for {version}: "
-        f"expected={expected_digest!r} actual={digest}",
-    )
+    if verify_registry_digest:
+        require(
+            isinstance(expected_digest, str) and digest == expected_digest,
+            f"v28 patch bundle digest differs from the exact-build registry for {version}: "
+            f"expected={expected_digest!r} actual={digest}",
+        )
     return bundle, digest, target_hashes
 
 

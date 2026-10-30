@@ -4,8 +4,6 @@
 
 The exact-build registry remains `supported-builds.json`. Each registered build points to an ordered `series/` directory; each patch is one logical change with `Change-Id`, `Capability`, `Role`, `Risk`, and `Requires` trailers. The inventory below is parsed and checked with the shared `libraries/patchseries` library.
 
-## Capability and role inventory
-
 ## Capabilities
 
 | Capability | 27.0.0-MASTER+20261029-173417 | 27.0.0-RC.1 | 28.0.0-MASTER+20261029-175210 |

@@ -145,7 +145,8 @@
       "patched_file_count": 19,
       "series_patch_count": 9,
       "target_count": 19,
-      "target_manifest_sha256": "0a7ab3fd05ac0471cda4f48904fbae5c3221de9fa5eb977dcfaecdb245ccf3c1"
+      "target_manifest_sha256": "0a7ab3fd05ac0471cda4f48904fbae5c3221de9fa5eb977dcfaecdb245ccf3c1",
+      "unpatched_targets": []
     },
     {
       "adapter_id": "v27-rc1",
@@ -290,7 +291,8 @@
       "patched_file_count": 19,
       "series_patch_count": 9,
       "target_count": 19,
-      "target_manifest_sha256": "a463dafe522264fd4ad7b2120d5b6d3b25180fe46d98a9ffc8ef1988b93d5d67"
+      "target_manifest_sha256": "a463dafe522264fd4ad7b2120d5b6d3b25180fe46d98a9ffc8ef1988b93d5d67",
+      "unpatched_targets": []
     },
     {
       "adapter_id": "v28-nightly-20261029",
@@ -428,7 +430,13 @@
       "patched_file_count": 18,
       "series_patch_count": 6,
       "target_count": 19,
-      "target_manifest_sha256": "8828c8dfd91617df0bb864c1c3e1687883db7176ea79ac459f6f2d39d7166acf"
+      "target_manifest_sha256": "8828c8dfd91617df0bb864c1c3e1687883db7176ea79ac459f6f2d39d7166acf",
+      "unpatched_targets": [
+        {
+          "file": "middlewared/plugins/zfs/encryption_info.py",
+          "reason": "fingerprinted for stock preimage validation; neither the retained legacy patch set nor the series modifies this file"
+        }
+      ]
     }
   ],
   "patch_command": "patch --batch --fuzz=0 -p1",

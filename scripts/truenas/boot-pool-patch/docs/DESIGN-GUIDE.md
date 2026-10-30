@@ -81,9 +81,48 @@ instead of assigning identity to an old grouped file that combines unrelated
 changes. The installer still applies every selected hunk with zero fuzz and
 checks the exact preimage target hashes before mutation. The archive layout
 uses `v27/series/` or `patch/series/` and updates the bundled adapter metadata;
-bundle digests therefore bind the changed archive bytes. The installed target files remain byte-identical to the former
-grouped-patch output, as recorded per file in
-[`series-equivalence-2026-10-30.json`](../reports/series-equivalence-2026-10-30.json).
+bundle digests therefore bind the changed archive bytes. The installed target
+files remain byte-identical to the former grouped-patch output, as recorded
+per file in [`series-equivalence-2026-10-30.json`](../reports/series-equivalence-2026-10-30.json).
+
+The proof distinguishes the complete fingerprint set from the patched set.
+Both v27 builds fingerprint 19 files and patch all 19. The v28 adapter also
+fingerprints 19 files but patches 18: `middlewared/plugins/zfs/encryption_info.py`
+is required for exact stock preimage validation, but neither the retained
+legacy patches nor the series changes it. The report names that target and
+records why it is unpatched. Proof rows must be non-empty and exactly equal the
+union of paths touched by the legacy and series patch lists.
+
+The legacy patch order was captured from the pre-series installer snapshot
+`fe4adad7185129506738f7bf280418739209a679`; its installer paths and loop lines
+are recorded in [`manifest/legacy-installer-order.json`](../manifest/legacy-installer-order.json).
+The contract test requires every `supported-builds.json` `legacy_patches` list
+to match that recorded installer sequence. Current installers read the
+adapter's ordered series list.
+
+The install-bundle digests changed because the deterministic tar archives now
+store series patch names and series-aware adapter metadata. The retired grouped
+patch members were replaced in the archive; the equivalence report confirms
+the resulting installed middleware bytes did not change.
+
+| Registered build | Before series migration | Current archive SHA-256 |
+|---|---|---|
+| `27.0.0-RC.1` | `50105fc127ab8a17e969d36eba5070efc76fbc0ef2a5dc52b27e2125d869e11c` | `9d96a3ae5603f33f470cf23929b5f3857a48b85d7055da76060a58bc0a6d0409` |
+| `27.0.0-MASTER+20261029-173417` | `60b3696c44768f9c6958791e8b46c2a205d5daede9c8ab29b23228c141b58e76` | `f3fa0be3d25ac3c9fc21a536028c10accf5e66978e5110eb096d443f1e23a702` |
+| `28.0.0-MASTER+20261029-175210` | `5366a8029f34162515e2b6c0935cf9b19abe3c41cc214886428af583d6db069b` | `4ff5f7e9ba90481e2d663588ffa2c98b121f7e937343abfd61081b2d9dff9935` |
+
+Recompute all three archive digests from the same bundle builders used by the
+installers with:
+
+```bash
+python3 scripts/truenas/boot-pool-patch/scripts/check_install_bundle_digests.py
+```
+
+The v27 nightly's `adapter.json` `reapply_from_bundle_sha256s` field includes
+`9d96a3ae…` because that is the registered RC.1 bundle digest it is allowed to
+recognize after the RC.1-to-nightly update. It is a prior-bundle allowlist
+entry, not the nightly's own digest; the nightly archive digest is
+`f3fa0be3…` in `supported-builds.json`.
 
 Grouped patches are retained under each registered adapter's `legacy/`
 directory only as proof inputs for already-gated builds. The generated

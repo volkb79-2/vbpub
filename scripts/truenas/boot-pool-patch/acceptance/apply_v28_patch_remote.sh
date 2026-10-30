@@ -123,10 +123,33 @@ expected = {
     "train": "TrueNAS-28-Nightlies",
     "target_count": 15,
     "target_manifest_sha256": hashlib.sha256(Path(targets_path).read_bytes()).hexdigest(),
+    "series_dir": "series",
 }
-if version != expected["version"] or manifest != expected:
+if (version != expected["version"] or set(manifest) != set(expected) | {"patches"}
+        or any(manifest.get(key) != value for key, value in expected.items())):
     raise SystemExit(f"adapter manifest does not match the exact supported v28 build: {manifest!r}")
+patches = manifest.get("patches")
+if not isinstance(patches, list) or not patches:
+    raise SystemExit("adapter series list is missing or invalid")
 PY
+patch_file_list=$(python3 - "$patch_dir/adapter.json" <<'PY'
+import json
+from pathlib import Path, PurePosixPath
+import sys
+
+manifest = json.loads(Path(sys.argv[1]).read_text())
+series_dir = manifest.get("series_dir")
+patches = manifest.get("patches")
+if series_dir != "series" or not isinstance(patches, list) or not patches:
+    raise SystemExit("adapter series list is missing or invalid")
+for name in patches:
+    if (not isinstance(name, str) or PurePosixPath(name).name != name
+            or not name.endswith(".patch")):
+        raise SystemExit(f"unsafe adapter series filename: {name!r}")
+    print(f"{series_dir}/{name}")
+PY
+)
+mapfile -t patch_files <<< "$patch_file_list"
 [ ! -e /dev/kvm ] || { echo 'this test requires /dev/kvm to be absent' >&2; exit 1; }
 if [ "$storage_profile" = path-a ]; then
     [ ! -e /dev/vda4 ] || { echo 'Path A test unexpectedly has /dev/vda4' >&2; exit 1; }
@@ -303,7 +326,7 @@ sha256sum --check --strict "$patch_dir/targets.sha256"
 for helper in middlewared/plugins/boot_pool_user_data.py middlewared/plugins/vm/virtualization_support.py middlewared/plugins/pool_/boot_pool_mount.py; do
     [ ! -e "$helper" ] || { echo "unrecorded helper already exists: $helper" >&2; exit 1; }
 done
-for patch_file in storage.patch middleware.patch boot-mount.patch; do
+for patch_file in "${patch_files[@]}"; do
     patch --dry-run --batch --fuzz=0 -p1 < "$patch_dir/$patch_file"
 done
 
@@ -318,13 +341,13 @@ mount -o remount,rw /usr
 patch_started=1
 systemctl stop middlewared.service
 middleware_stopped=1
-for patch_file in storage.patch middleware.patch boot-mount.patch; do
+for patch_file in "${patch_files[@]}"; do
     patch --batch --fuzz=0 -p1 < "$patch_dir/$patch_file"
 done
 install -o root -g root -m 0644 "$stage/shared/boot_pool_user_data.py" middlewared/plugins/
 install -o root -g root -m 0644 "$stage/shared/virtualization_support.py" middlewared/plugins/vm/
 install -o root -g root -m 0644 "$patch_dir/boot_pool_mount.py" middlewared/plugins/pool_/
-for patch_file in storage.patch middleware.patch boot-mount.patch; do
+for patch_file in "${patch_files[@]}"; do
     patch --dry-run --batch --fuzz=0 --reverse -p1 < "$patch_dir/$patch_file"
 done
 mapfile -t python_targets < <(sed -n 's/^[0-9a-f]\{64\}  //p' "$patch_dir/targets.sha256")

@@ -65,7 +65,12 @@ def require_fresh_unpatched_target(
     )
 
 
-def make_bundle(profile: str, version: str = EXPECTED_VERSION) -> tuple[Path, str]:
+def make_bundle(
+    profile: str,
+    version: str = EXPECTED_VERSION,
+    *,
+    verify_registry_digest: bool = True,
+) -> tuple[Path, str]:
     adapter = adapter_for_version(version)
     adapter_root = PATCH_ROOT / adapter.directory
     require(adapter_root.is_dir(), f"exact v27 adapter directory is missing: {adapter_root}")
@@ -111,11 +116,12 @@ def make_bundle(profile: str, version: str = EXPECTED_VERSION) -> tuple[Path, st
     bundle.chmod(0o600)
     digest = hashlib.sha256(bundle.read_bytes()).hexdigest()
     expected_digest = build.get("install_bundle_sha256")
-    require(
-        isinstance(expected_digest, str) and digest == expected_digest,
-        f"v27 patch bundle digest differs from the exact-build registry for {version}: "
-        f"expected={expected_digest!r} actual={digest}",
-    )
+    if verify_registry_digest:
+        require(
+            isinstance(expected_digest, str) and digest == expected_digest,
+            f"v27 patch bundle digest differs from the exact-build registry for {version}: "
+            f"expected={expected_digest!r} actual={digest}",
+        )
     return bundle, digest
 
 

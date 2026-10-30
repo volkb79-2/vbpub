@@ -1,0 +1,78 @@
+From b7e277a17b59cb1b9c6baa8423bab71fa9e5282e Mon Sep 17 00:00:00 2001
+From: TrueNAS Patch Series <patchseries@vbpub.invalid>
+Date: Fri, 30 Oct 2026 00:00:00 +0000
+Subject: [PATCH] Enable QEMU TCG when KVM is unavailable
+
+Route v28 virtualization capability checks through the TCG-aware backend selector.
+
+Change-Id: v28-tcg
+Capability: tcg-virtualization
+Role: plumbing
+Risk: medium
+Requires: none
+Forwarded: not-needed
+---
+--- a/middlewared/plugins/vm/__init__.py
++++ b/middlewared/plugins/vm/__init__.py
+@@ -3,7 +3,7 @@
+ import functools
+ import typing
+ 
+-from truenas_pylibvirt.utils import kvm_supported
++from .virtualization_support import virtualization_backend
+ 
+ from middlewared.api import api_method
+ from middlewared.api.current import (
+@@ -512,7 +512,7 @@
+         """
+         Returns "true" if system supports virtualization, "false" otherwise.
+         """
+-        return kvm_supported()
++        return virtualization_backend() is not None
+ 
+     @api_method(VMSuspendArgs, VMSuspendResult, roles=['VM_WRITE'], check_annotations=True)
+     def suspend(self, id_: int) -> None:
+--- a/middlewared/plugins/vm/info.py
++++ b/middlewared/plugins/vm/info.py
+@@ -10,6 +10,7 @@
+ 
+ from truenas_pylibvirt import GuestAgentError
+ from truenas_pylibvirt.utils import kvm_supported
++from .virtualization_support import virtualization_backend
+ from truenas_pylibvirt.utils.cpu import get_cpu_model_choices
+ from truenas_pylicensed.features import LicenseFeature
+ 
+@@ -98,10 +99,9 @@
+ 
+ 
+ def virtualization_details() -> VMVirtualizationDetails:
+-    supported = kvm_supported()
+-    error = None
+-    if not supported:
+-        error = 'Your CPU does not support KVM extensions'
++    backend = virtualization_backend()
++    supported = backend is not None
++    error = None if supported else 'No KVM or QEMU TCG VM backend is available'
+     return VMVirtualizationDetails(supported=supported, error=error)
+ 
+ 
+--- a/middlewared/plugins/vm/crud.py
++++ b/middlewared/plugins/vm/crud.py
+@@ -9,7 +9,7 @@
+ 
+ from truenas_pylibvirt import DomainDoesNotExistError
+ from truenas_pylibvirt.domain.base.configuration import parse_numeric_set
+-from truenas_pylibvirt.utils import kvm_supported
++from .virtualization_support import virtualization_backend
+ 
+ from middlewared.api.current import (
+     QueryOptions,
+@@ -371,7 +371,7 @@
+             elif flags.amd_rvi:
+                 if vcpus > 1 and flags.amd_asids is False:
+                     verrors.add(f'{schema_name}.vcpus', 'Only one virtual CPU is allowed in this system.')
+-            elif not kvm_supported():
++            elif virtualization_backend() is None:
+                 verrors.add(schema_name, 'This system does not support virtualization.')
+ 
+         if data.arch_type or data.machine_type:

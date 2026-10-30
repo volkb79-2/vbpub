@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "source_revision": "fe4adad7185129506738f7bf280418739209a679",
+  "source_note": "Pre-series installer snapshot immediately before the adapter conversion commit.",
+  "build_families": {
+    "v27": {
+      "installer": "scripts/truenas/boot-pool-patch/acceptance/apply_v27_patch_remote.sh",
+      "loop_lines": [144, 155, 163],
+      "patch_order": [
+        "middleware.patch",
+        "storage.patch",
+        "libvirt.patch",
+        "boot-mount.patch",
+        "zvol-blocksize.patch",
+        "ui-pools.patch"
+      ]
+    },
+    "v28": {
+      "installer": "scripts/truenas/boot-pool-patch/acceptance/apply_v28_patch_remote.sh",
+      "loop_lines": [306, 321, 327],
+      "patch_order": [
+        "storage.patch",
+        "middleware.patch",
+        "boot-mount.patch",
+        "ui-pools.patch"
+      ]
+    }
+  }
+}

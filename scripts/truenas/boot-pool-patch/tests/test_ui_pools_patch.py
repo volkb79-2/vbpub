@@ -91,6 +91,28 @@ def test_targets_apply_script_and_bundle_know_the_patch() -> None:
     assert 'PATCH_ROOT / "shared" / "boot_disk_partition.py"' in controller
 
 
+def test_v28_acceptance_installer_reads_series_order_from_adapter_metadata() -> None:
+    adapter_root = PATCH_ROOT / "v28-nightly-20261014"
+    adapter = json.loads((adapter_root / "adapter.json").read_text())
+    apply_script = (PATCH_ROOT / "acceptance" / "apply_v28_patch_remote.sh").read_text()
+    assert adapter["series_dir"] == "series"
+    assert len(adapter["patches"]) == 3
+    assert 'series_dir = manifest.get("series_dir")' in apply_script
+    assert 'patches = manifest.get("patches")' in apply_script
+    assert apply_script.count('for patch_file in "${patch_files[@]}"; do') == 3
+    assert not re.search(r"for patch_file in [^\n;]*(?:storage|middleware|boot-mount)\.patch", apply_script)
+
+    for series_name in adapter["patches"]:
+        series_patch = adapter_root / adapter["series_dir"] / series_name
+        legacy_name = series_name.split("-", 1)[1]
+        legacy_patch = adapter_root / legacy_name
+        assert series_patch.is_file()
+        assert legacy_patch.is_file()
+        series_text = series_patch.read_text()
+        legacy_text = legacy_patch.read_text()
+        assert series_text[series_text.index("--- a/"):] == legacy_text[legacy_text.index("--- a/"):]
+
+
 def test_patch_keeps_the_synthetic_row_safe() -> None:
     text = PATCH.read_text()
     assert "info | {'id': 0, 'guid': guid, 'all_sed': False}" in text  # id/guid win over info

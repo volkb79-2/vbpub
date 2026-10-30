@@ -43,10 +43,14 @@ The legacy grouped patch files are retained under each adapter's `legacy/`
 directory as byte-level proof inputs and as the frozen-build hunk bridge. They
 are not read by installers. The migration proof in
 [`reports/series-equivalence-2026-10-30.json`](reports/series-equivalence-2026-10-30.json)
-compares every patched file from all three registered builds; every legacy and
-series SHA-256 is identical. Bundle members now use `series/`, and adapter
-manifests and bundled readmes were updated. Those archive byte changes alter
-bundle digests while installed middleware bytes remain identical.
+compares a non-empty, exact set of patched files for all three registered
+builds, identifies fingerprinted targets left unpatched, and confirms the
+legacy and series output bytes match. The [consumer guide](docs/CONSUMERS.md#inspect-and-prove-a-series)
+shows how to rebuild the stock roots and rerun the proof. Bundle members now
+use `series/`, and adapter manifests and bundled readmes were updated. Those
+archive byte changes alter bundle digests while installed middleware bytes
+remain identical; the [design guide](docs/DESIGN-GUIDE.md#patch-series-and-bundle-identity)
+records the digest history and verification command.
 
 ## Update and rollback
 
@@ -98,7 +102,7 @@ Run the registered unit gate before changing adapters:
 
 ```bash
 cd scripts/truenas
-./run-gate.py unit-boot-pool-patch --worktree "$(git rev-parse --show-toplevel)" --allow-dirty
+run-gate unit --worktree "$(git rev-parse --show-toplevel)" --allow-dirty
 ```
 
 The gate runs in `tester-unified`. Host acceptance is separate and mutating;
