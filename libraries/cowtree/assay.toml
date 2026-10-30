@@ -1,0 +1,36 @@
+# cowtree's source lane is consumed through run-gate.toml in tester-unified.
+schema_version = 2
+
+[lanes.cowtree]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+argv = [
+  "/opt/tester-venv/bin/python3", "-m", "pytest", "tests", "-q",
+  "--maxfail=1", "--cov=cowtree", "--cov-branch",
+  "--cov-report=json:coverage.json", "--cov-fail-under=100",
+]
+env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
+env_passthrough = ["HOME", "PATH", "TERM", "LANG", "COWTREE_LIVE_ROOT"]
+budget = "180m"
+allow_argv_append = false
+
+[lanes.cowtree.isolation]
+snapshot_selection = "repository-minus-unsafe-symlinks"
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
+
+[lanes.cowtree.judge]
+language = "python"
+source_roots = ["src"]
+fail_under = 100.0
+allow_excluded = false
+require_branch = true
+base = "main"
+
+[lanes.cowtree.judge.coverage]
+format = "coverage-py-json"
+artifact = "coverage.json"

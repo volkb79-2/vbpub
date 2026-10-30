@@ -1,0 +1,490 @@
+from __future__ import annotations
+
+import fcntl
+import json
+import multiprocessing
+import os
+import socket
+from pathlib import Path
+
+import pytest
+from cowtree import SpaceEstimate, open_run
+from cowtree.backends import CopyBackend
+from cowtree.detect import Area, Capabilities
+from cowtree.errors import PathRefused
+from cowtree.gc import _manifest, gc, make_shared, survey
+from cowtree.space import pending_delete_bytes
+
+
+def _abandon(run):
+    fcntl.flock(run._lock_fd, fcntl.LOCK_UN)
+    os.close(run._lock_fd)
+    run._closed = True
+
+
+def _leave_run_in_process(base, tool, connection, area_root, filesystem, create_tree, payload_bytes, remove_trees, trees_target):
+    from .fakes import FakeOps
+
+    if area_root is None:
+        environ = {"COWTREE_MODE": "off"}
+        ops = None
+    else:
+        environ = {"MDT_COW_ROOT": area_root}
+        ops = FakeOps(filesystem=filesystem)
+    run = open_run(
+        tool,
+        estimate=SpaceEstimate(0, 0, 0),
+        environ=environ,
+        ops=ops,
+        plain_dir=base if area_root is None else None,
+    )
+    if create_tree:
+        tree = run.make_tree("tree")
+        if payload_bytes:
+            (tree / "payload").write_bytes(b"x" * payload_bytes)
+    trees_path = Path(run.path) / "trees"
+    if remove_trees:
+        trees_path.rmdir()
+    elif trees_target is not None:
+        trees_path.rmdir()
+        trees_path.symlink_to(trees_target, target_is_directory=True)
+    connection.send(run.path)
+    connection.close()
+
+
+def _dead_run(base, tool, *, area_root=None, filesystem="xfs", create_tree=False, payload_bytes=0, remove_trees=False, trees_target=None):
+    context = multiprocessing.get_context("spawn")
+    parent, child = context.Pipe(duplex=False)
+    process = context.Process(
+        target=_leave_run_in_process,
+        args=(
+            str(base), tool, child, None if area_root is None else str(area_root), filesystem,
+            create_tree, payload_bytes, remove_trees,
+            None if trees_target is None else str(trees_target),
+        ),
+    )
+    process.start()
+    child.close()
+    if not parent.poll(20):
+        process.terminate()
+        process.join()
+        raise AssertionError("spawned owner did not report its run directory")
+    path = Path(parent.recv())
+    parent.close()
+    process.join(20)
+    if process.is_alive():
+        process.terminate()
+        process.join()
+    assert process.exitcode == 0
+    return path
+
+
+def _area(root, *, backend=None):
+    private = root / ".cowtree"
+    runs = private / "runs"
+    shared = root / "shared"
+    for path in (private, runs, shared):
+        path.mkdir(mode=0o700, exist_ok=True)
+    return Area(
+        str(root),
+        Capabilities("copy", "ext4", False, False, True, False, False),
+        backend or CopyBackend(),
+        object(),
+        str(private),
+        str(runs),
+        str(shared),
+    )
+
+
+def test_gc_deletes_only_lease_free_flock_runs(tmp_path):
+    live = open_run("live", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path)
+    live.make_tree("tree")
+    results = gc(tmp_path)
+    assert [(item.name, item.status) for item in results] == [(Path(live.path).name, "lease-held")]
+    live.close()
+
+    dead_path = _dead_run(tmp_path, "dead", create_tree=True)
+    results = gc(tmp_path)
+    assert [(item.name, item.status) for item in results] == [(dead_path.name, "deleted")]
+    assert not dead_path.exists()
+
+
+def test_gc_retains_unlocked_run_while_manifest_owner_is_live(tmp_path):
+    run = open_run("unlocked-live", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path)
+    path = Path(run.path)
+    _abandon(run)
+    result = gc(tmp_path)
+    assert result[0].status == "owner-live"
+    assert path.exists()
+
+
+def test_owner_status_uses_boot_pid_namespace_and_pid_starttime(monkeypatch):
+    import cowtree.gc as gc_module
+
+    owner = {
+        "boot_id": "boot-current",
+        "hostname": socket.gethostname(),
+        "pid": 42,
+        "pid_starttime": 100,
+        "pidns": 77,
+        "uid": os.geteuid(),
+    }
+    original_read_text = Path.read_text
+
+    def read_text(path, *args, **kwargs):
+        if str(path) == "/proc/sys/kernel/random/boot_id":
+            return "boot-current\n"
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    original_stat = os.stat
+
+    def namespace_stat(path, *args, **kwargs):
+        if str(path) == "/proc/self/ns/pid":
+            return type("Stat", (), {"st_ino": 77})()
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(gc_module.os, "stat", namespace_stat)
+    monkeypatch.setattr(gc_module, "_pid_starttime", lambda _pid: 100)
+    assert gc_module._owner_status(owner) == "live"
+
+    monkeypatch.setattr(gc_module, "_pid_starttime", lambda _pid: 101)
+    assert gc_module._owner_status(owner) == "dead"
+    monkeypatch.setattr(
+        gc_module,
+        "_pid_starttime",
+        lambda _pid: (_ for _ in ()).throw(FileNotFoundError("process exited")),
+    )
+    assert gc_module._owner_status(owner) == "dead"
+    monkeypatch.setattr(
+        gc_module,
+        "_pid_starttime",
+        lambda _pid: (_ for _ in ()).throw(PermissionError("proc denied")),
+    )
+    assert gc_module._owner_status(owner) == "unknown"
+
+    assert gc_module._owner_status({**owner, "boot_id": "previous-boot"}) == "dead"
+    assert gc_module._owner_status({**owner, "pidns": 78}) == "unknown"
+    assert gc_module._owner_status({**owner, "uid": owner["uid"] + 1}) == "unknown"
+    assert gc_module._owner_status({**owner, "hostname": "other-host"}) == "unknown"
+    assert gc_module._owner_status({**owner, "hostname": "other-host", "boot_id": "other-boot"}) == "unknown"
+
+    def denied_namespace(path, *args, **kwargs):
+        if str(path) == "/proc/self/ns/pid":
+            raise PermissionError("namespace denied")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(gc_module.os, "stat", denied_namespace)
+    assert gc_module._owner_status(owner) == "unknown"
+
+    monkeypatch.setattr(Path, "read_text", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("boot unavailable")))
+    assert gc_module._owner_status(owner) == "unknown"
+
+    monkeypatch.setattr(Path, "read_text", lambda *_args, **_kwargs: "\n")
+    assert gc_module._owner_status(owner) == "unknown"
+
+
+def test_gc_retains_run_when_owner_namespace_cannot_be_compared(tmp_path):
+    run = open_run("unknown-owner", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path)
+    path = Path(run.path)
+    _abandon(run)
+    manifest_path = path / "owner.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["owner"]["pidns"] += 1
+    manifest_path.write_text(json.dumps(manifest))
+
+    result = gc(tmp_path)
+    assert result[0].status == "owner-identity-unknown"
+    assert path.exists()
+
+
+def test_gc_never_deletes_external_or_manifestless(tmp_path):
+    external = open_run(
+        "external",
+        estimate=SpaceEstimate(0, 0, 0),
+        holder="external",
+        external_ref="vm:42",
+        environ={},
+        plain_dir=tmp_path,
+    )
+    external_path = external.path
+    _abandon(external)
+    manifestless = tmp_path / "old-orphan"
+    manifestless.mkdir()
+    results = gc(tmp_path)
+    states = {item.name: item.status for item in results}
+    assert states[Path(external_path).name] == "external"
+    assert states[manifestless.name] == "manifestless-or-invalid"
+    assert Path(external_path).exists() and manifestless.exists()
+
+
+@pytest.mark.parametrize("payload", ["{", "{}", json.dumps({"format": "wrong"})])
+def test_gc_retains_invalid_manifests(tmp_path, payload):
+    directory = tmp_path / "broken"
+    directory.mkdir()
+    (directory / "owner.json").write_text(payload)
+    result = gc(tmp_path)
+    assert result[0].status == "manifestless-or-invalid"
+    assert directory.exists()
+
+
+def test_manifest_validator_rejects_malformed_identity_and_estimate_fields(tmp_path):
+    run = open_run("manifest-shapes", estimate=SpaceEstimate(1, 2, 3), environ={}, plain_dir=tmp_path)
+    path = Path(run.path) / "owner.json"
+    valid = json.loads(path.read_text())
+    assert _manifest(run.path) == valid
+
+    def altered(section, key, value):
+        document = json.loads(json.dumps(valid))
+        target = document if section is None else document[section]
+        target[key] = value
+        return document
+
+    missing_external_ref = json.loads(json.dumps(valid))
+    del missing_external_ref["external_ref"]
+    missing_estimate_key = altered("estimate", "ingest_bytes", None)
+    del missing_estimate_key["estimate"]["ingest_bytes"]
+    missing_owner_key = json.loads(json.dumps(valid))
+    del missing_owner_key["owner"]["pidns"]
+    missing_required_key = json.loads(json.dumps(valid))
+    del missing_required_key["tool"]
+    invalid_documents = [
+        [],
+        altered(None, "format", "wrong"),
+        missing_required_key,
+        missing_external_ref,
+        altered(None, "holder", "unknown"),
+        altered(None, "run_id", 3),
+        altered(None, "run_id", ""),
+        altered(None, "tool", None),
+        altered(None, "labels", []),
+        altered(None, "estimate", []),
+        altered(None, "backend", []),
+        altered(None, "api", True),
+        altered(None, "api", 2),
+        altered(None, "created_utc", 3),
+        altered(None, "holder", "external") | {"external_ref": None},
+        altered(None, "holder", "external") | {"external_ref": 5},
+        altered(None, "holder", "external") | {"external_ref": ""},
+        altered(None, "external_ref", "vm:1"),
+        missing_estimate_key,
+        altered("estimate", "ingest_bytes", True),
+        altered("estimate", "per_clone_bytes", 1.5),
+        altered("estimate", "max_live_clones", -1),
+        altered(None, "owner", []),
+        missing_owner_key,
+        altered("owner", "uid", True),
+        altered("owner", "pid", -1),
+        altered("owner", "pid", 0),
+        altered("owner", "pid_starttime", "1"),
+        altered("owner", "pid_starttime", 0),
+        altered("owner", "boot_id", ""),
+        altered("owner", "boot_id", 4),
+        altered("owner", "hostname", ""),
+        altered("owner", "hostname", 4),
+    ]
+    for document in invalid_documents:
+        path.write_text(json.dumps(document))
+        assert _manifest(run.path) is None
+    path.write_text(json.dumps(valid))
+    run.close()
+
+
+def test_gc_retains_nonregular_owner_manifest_without_blocking(tmp_path):
+    directory = tmp_path / "fifo-manifest"
+    directory.mkdir()
+    os.mkfifo(directory / "owner.json")
+    result = gc(tmp_path)
+    assert result[0].status == "manifestless-or-invalid"
+    assert directory.exists()
+
+
+def test_gc_retains_symlinked_owner_manifest(tmp_path):
+    directory = tmp_path / "linked-manifest"
+    directory.mkdir()
+    target = tmp_path / "manifest-target"
+    target.write_text("{}")
+    (directory / "owner.json").symlink_to(target)
+    result = gc(tmp_path)
+    assert result[0].status == "manifestless-or-invalid"
+
+
+def test_gc_retains_non_utf8_owner_manifest(tmp_path):
+    directory = tmp_path / "non-utf8-manifest"
+    directory.mkdir()
+    (directory / "owner.json").write_bytes(b"\xff")
+    result = gc(tmp_path)
+    assert result[0].status == "manifestless-or-invalid"
+
+
+def test_gc_missing_scan_root_is_empty(tmp_path):
+    assert gc(tmp_path / "absent") == []
+
+
+def test_gc_retains_missing_or_invalid_lock_and_non_directory(tmp_path):
+    missing_lock = open_run("missing-lock", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path)
+    path = Path(missing_lock.path)
+    fcntl.flock(missing_lock._lock_fd, fcntl.LOCK_UN)
+    os.close(missing_lock._lock_fd)
+    missing_lock._closed = True
+    (path / "owner.lock").unlink()
+    (tmp_path / "symlink-run").symlink_to(path, target_is_directory=True)
+    results = {item.name: item.status for item in gc(tmp_path)}
+    assert results[path.name] == "lock-unavailable"
+    assert results["symlink-run"] == "not-directory"
+    assert path.exists()
+
+
+def test_gc_retains_nonregular_lock(tmp_path):
+    run = open_run("invalid-lock", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path)
+    path = Path(run.path)
+    _abandon(run)
+    (path / "owner.lock").unlink()
+    (path / "owner.lock").mkdir()
+    result = gc(tmp_path)
+    assert result[0].status == "invalid-lock"
+    assert path.exists()
+
+
+def test_gc_reports_lock_and_delete_errors(tmp_path, monkeypatch):
+    import cowtree.gc as gc_module
+
+    locked = open_run("lock-error", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path)
+    real_flock = gc_module.fcntl.flock
+
+    def fail_flock(fd, operation):
+        if operation & fcntl.LOCK_NB:
+            raise OSError(5, "lock manager failed")
+        return real_flock(fd, operation)
+
+    monkeypatch.setattr(gc_module.fcntl, "flock", fail_flock)
+    assert gc(tmp_path)[0].status == "lock-error"
+    monkeypatch.setattr(gc_module.fcntl, "flock", real_flock)
+    locked.close()
+
+    path = _dead_run(tmp_path, "delete-error")
+
+    def fail_delete(_path):
+        raise OSError(5, "delete failed")
+
+    monkeypatch.setattr(gc_module.shutil, "rmtree", fail_delete)
+    result = gc(tmp_path)
+    assert {item.name: item.status for item in result}[path.name] == "delete-failed"
+    assert path.exists()
+
+
+def test_gc_rejects_symlink_scan_root(tmp_path):
+    link = tmp_path / "link"
+    link.symlink_to(tmp_path, target_is_directory=True)
+    with pytest.raises(PathRefused, match="real directory"):
+        gc(link)
+
+
+def test_gc_records_btrfs_pending_delete_on_scan_device(tmp_path, monkeypatch):
+    import cowtree.gc as gc_module
+
+    root = tmp_path / "area"
+    root.mkdir()
+    run_path = _dead_run(root, "pending-gc", area_root=root, filesystem="btrfs", create_tree=True, payload_bytes=8192)
+    device = os.stat(root).st_dev
+    before = pending_delete_bytes(device)
+    monkeypatch.setattr(gc_module, "_allocated_bytes", lambda _path: (8192, device + 1000))
+    result = gc(run_path.parent)
+    assert result[0].status == "deleted"
+    assert pending_delete_bytes(device) >= before + 8192
+    assert not run_path.exists()
+
+
+def test_gc_deletes_btrfs_subvolume_trees_with_backend(tmp_path, monkeypatch):
+    from .fakes import FakeOps
+
+    root = tmp_path / "area"
+    root.mkdir()
+    ops = FakeOps(filesystem="btrfs")
+    run_path = _dead_run(root, "btrfs-gc", area_root=root, filesystem="btrfs", create_tree=True)
+    tree = run_path / "trees" / "tree"
+    ops.destroy_calls.clear()
+
+    real_stat = os.stat
+    target = os.path.abspath(tree)
+
+    def subvolume_stat(path, *args, **kwargs):
+        result = real_stat(path, *args, **kwargs)
+        if isinstance(path, (str, bytes, os.PathLike)) and os.path.abspath(os.fspath(path)) == target:
+            values = list(result)
+            values[1] = 256
+            return os.stat_result(values)
+        return result
+
+    monkeypatch.setattr(os, "stat", subvolume_stat)
+    result = gc(run_path.parent, ops=ops)
+    assert result[0].status == "deleted"
+    assert ops.destroy_calls == ["tree"]
+    assert not run_path.exists()
+
+
+def test_gc_removes_btrfs_run_interrupted_before_trees_directory(tmp_path):
+    root = tmp_path / "area"
+    root.mkdir()
+    run_path = _dead_run(root, "btrfs-before-trees", area_root=root, filesystem="btrfs", remove_trees=True)
+
+    result = gc(run_path.parent)
+    assert result[0].status == "deleted"
+    assert not run_path.exists()
+
+
+def test_gc_retains_btrfs_run_with_symlinked_trees_path(tmp_path):
+    root = tmp_path / "area"
+    root.mkdir()
+    sentinel = tmp_path / "external-trees"
+    sentinel.mkdir()
+    (sentinel / "keep").write_text("retain")
+    run_path = _dead_run(
+        root,
+        "btrfs-symlink-trees",
+        area_root=root,
+        filesystem="btrfs",
+        trees_target=sentinel,
+    )
+
+    result = gc(run_path.parent)
+    assert result[0].status == "delete-failed"
+    assert run_path.exists()
+    assert (sentinel / "keep").read_text() == "retain"
+
+
+def test_survey_lists_managed_runs_and_available_bytes(tmp_path):
+    area = _area(tmp_path / "area")
+    managed = open_run(
+        "survey-managed", estimate=SpaceEstimate(0, 0, 0), environ={"COWTREE_MODE": "off"}, plain_dir=area.runs_dir
+    )
+    external = open_run(
+        "survey-external",
+        estimate=SpaceEstimate(0, 0, 0),
+        holder="external",
+        external_ref="vm:survey",
+        environ={"COWTREE_MODE": "off"},
+        plain_dir=area.runs_dir,
+    )
+    (Path(area.runs_dir) / "bad-entry").mkdir()
+    result = survey(area)
+    assert result["backend"] == "copy" and result["fs_type"] == "ext4"
+    assert {row["state"] for row in result["runs"]} == {"managed", "external", "unknown"}
+    assert result["available_bytes"] > 0
+    managed.close()
+    external.close()
+
+
+def test_make_shared_serializes_and_never_overwrites(tmp_path):
+    area = _area(tmp_path / "area")
+    logs = []
+    area = Area(area.root, area.caps, CopyBackend(log=logs.append), area.ops, area.private_dir, area.runs_dir, area.shared_dir)
+    shared = make_shared(area, "template-cache", compression="zstd:3")
+    assert Path(shared).is_dir()
+    assert logs == ["cowtree: copy backend ignores per-tree compression 'zstd:3'"]
+    with pytest.raises(PathRefused, match="already exists"):
+        make_shared(area, "template-cache")
+    with pytest.raises(PathRefused, match="name must"):
+        make_shared(area, "../escape")
+    with pytest.raises(PathRefused, match="compression"):
+        make_shared(area, "bad-compression", compression="zstd:99")
