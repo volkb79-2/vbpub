@@ -36,6 +36,7 @@ def _limits(*, hit: bool = False) -> ResourceLimitEvidence:
 
 
 LIMITS_HIT = _limits(hit=True)
+LIMITS_CLEAR = _limits()
 
 
 _R2_BUCKET = {
@@ -129,6 +130,8 @@ TERMINATION_CASES = (
             outcome=Outcome.FAIL,
             reason_code=ReasonCode.COMMAND_FAILED,
             returncode=1,
+            process_tree=_tree(),
+            limits=_limits(),
         ),
         Termination.FAILED,
         Outcome.FAIL,
@@ -230,12 +233,49 @@ PRECEDENCE_CASES = (
         ReasonCode.EXEC_FAILED,
     ),
     _case(
+        "leak-beats-not-run",
+        _inputs(
+            outcome=Outcome.NO_MEASUREMENT,
+            reason_code=ReasonCode.TARGET_NOT_MEASURED,
+            returncode=None,
+            process_tree=_tree(outliving_descendants=1),
+        ),
+        Termination.LEAKED,
+        Outcome.ERROR,
+        ReasonCode.EXEC_FAILED,
+    ),
+    _case(
+        "leak-beats-timeout",
+        _inputs(
+            outcome=Outcome.BUDGET_EXCEEDED,
+            reason_code=ReasonCode.LANE_TIMEOUT,
+            returncode=None,
+            process_tree=_tree(outliving_descendants=1),
+        ),
+        Termination.LEAKED,
+        Outcome.ERROR,
+        ReasonCode.EXEC_FAILED,
+    ),
+    _case(
         "report-fail-beats-signal",
         _inputs(
             outcome=Outcome.FAIL,
             reason_code=ReasonCode.COMMAND_FAILED,
             returncode=-signal.SIGKILL,
             decided_by_report=True,
+        ),
+        Termination.FAILED,
+        Outcome.FAIL,
+        ReasonCode.COMMAND_FAILED,
+    ),
+    _case(
+        "report-fail-beats-limit",
+        _inputs(
+            outcome=Outcome.FAIL,
+            reason_code=ReasonCode.COMMAND_FAILED,
+            returncode=1,
+            decided_by_report=True,
+            limits=LIMITS_HIT,
         ),
         Termination.FAILED,
         Outcome.FAIL,
@@ -257,6 +297,16 @@ PRECEDENCE_CASES = (
             outcome=Outcome.PASS,
             observation="unavailable",
             observation_required=True,
+        ),
+        Termination.PASSED,
+        Outcome.PASS,
+        None,
+    ),
+    _case(
+        "pass-beats-external-signal",
+        _inputs(
+            outcome=Outcome.PASS,
+            returncode=-signal.SIGKILL,
         ),
         Termination.PASSED,
         Outcome.PASS,
@@ -285,6 +335,41 @@ PRECEDENCE_CASES = (
         ReasonCode.EXEC_FAILED,
     ),
     _case(
+        "self-signal-beats-tree-signal-status",
+        _inputs(
+            outcome=Outcome.FAIL,
+            reason_code=ReasonCode.COMMAND_FAILED,
+            returncode=-signal.SIGSEGV,
+            process_tree=_tree(leader_status="signaled"),
+        ),
+        Termination.FAILED,
+        Outcome.FAIL,
+        ReasonCode.COMMAND_FAILED,
+    ),
+    _case(
+        "report-pass-stays-pass",
+        _inputs(
+            outcome=Outcome.PASS,
+            decided_by_report=True,
+        ),
+        Termination.PASSED,
+        Outcome.PASS,
+        None,
+    ),
+    _case(
+        "required-clear-observation-does-not-block",
+        _inputs(
+            outcome=Outcome.FAIL,
+            reason_code=ReasonCode.COMMAND_FAILED,
+            returncode=1,
+            observation="clear",
+            observation_required=True,
+        ),
+        Termination.FAILED,
+        Outcome.FAIL,
+        ReasonCode.COMMAND_FAILED,
+    ),
+    _case(
         "not-run-beats-limit-and-signal",
         _inputs(
             outcome=Outcome.ERROR,
@@ -295,6 +380,17 @@ PRECEDENCE_CASES = (
         Termination.NOT_RUN,
         Outcome.ERROR,
         ReasonCode.EXEC_FAILED,
+    ),
+    _case(
+        "no-measurement-without-leak-is-not-run",
+        _inputs(
+            outcome=Outcome.NO_MEASUREMENT,
+            reason_code=ReasonCode.TARGET_NOT_MEASURED,
+            returncode=None,
+        ),
+        Termination.NOT_RUN,
+        Outcome.NO_MEASUREMENT,
+        ReasonCode.TARGET_NOT_MEASURED,
     ),
     _case(
         "timeout-beats-limit",

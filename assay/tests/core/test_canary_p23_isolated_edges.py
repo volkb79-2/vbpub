@@ -37,6 +37,7 @@ from assay.adapters.python import PythonAdapter
 from assay.canary import run_isolated_canary
 from assay.config import CanaryConfig
 from assay.errors import AssayError, Outcome, ReasonCode
+from termination_table import LIMITS_CLEAR, LIMITS_HIT
 
 MOMENT = datetime(2026, 8, 10, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -298,9 +299,9 @@ def test_limit_event_only_withholds_a_failed_canary_result(
     git_repo: GitRepo, tmp_path: Path, monkeypatch, limited_phase: str
 ):
     affected = contention.ContentionObservation(
-        "affected", resource_limit_hit=True, reasons=("pids_events_max=1",)
+        "clear", limits=LIMITS_HIT, reasons=("pids_events_max=1",)
     )
-    clear = contention.ContentionObservation("clear")
+    clear = contention.ContentionObservation("clear", limits=LIMITS_CLEAR)
     observations = (affected, clear) if limited_phase == "control" else (clear, affected)
 
     attempt = _run_import_break_with_resource_observations(
@@ -324,9 +325,9 @@ def test_limit_event_makes_a_failed_control_inconclusive(
     git_repo: GitRepo, tmp_path: Path, monkeypatch
 ):
     affected = contention.ContentionObservation(
-        "affected", resource_limit_hit=True, reasons=("pids_events_max=1",)
+        "clear", limits=LIMITS_HIT, reasons=("pids_events_max=1",)
     )
-    clear = contention.ContentionObservation("clear")
+    clear = contention.ContentionObservation("clear", limits=LIMITS_CLEAR)
     attempt = _run_import_break_with_resource_observations(
         git_repo,
         tmp_path,
@@ -348,6 +349,11 @@ def test_import_break_command_failed_is_expected_under_psi(
 ):
     pressure = contention.ContentionObservation(
         "clear",
+        limits=LIMITS_CLEAR,
+        pressure_us={
+            "cgroup_psi.cpu.some_us": 5_340_037,
+            "cgroup_cpu.throttled_usec": 500,
+        },
         reasons=(
             "cgroup_psi.cpu.some_us=5340037",
             "cgroup_cpu.throttled_usec=500",
@@ -368,12 +374,12 @@ def test_canary_description_has_no_host_telemetry(
 ):
     observations = (
         contention.ContentionObservation(
-            "affected",
-            resource_limit_hit=True,
+            "clear",
+            limits=LIMITS_HIT,
             reasons=("pids_events_max=1",),
         ),
         contention.ContentionObservation(
-            "unknown", reasons=("after-sample-unavailable:/sensitive/path",)
+            "unavailable", reasons=("after-sample-unavailable:/sensitive/path",)
         ),
     )
     attempt = _run_import_break_with_resource_observations(
@@ -391,7 +397,7 @@ def test_canary_description_has_no_host_telemetry(
 def test_signalled_import_break_is_inconclusive(
     git_repo: GitRepo, tmp_path: Path, monkeypatch
 ):
-    clear = contention.ContentionObservation("clear")
+    clear = contention.ContentionObservation("clear", limits=LIMITS_CLEAR)
     attempt = _run_import_break_with_resource_observations(
         git_repo,
         tmp_path,

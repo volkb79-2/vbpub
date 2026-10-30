@@ -13293,13 +13293,17 @@ contract and follow-on WP1–WP8 backlog entries.
 
 ## B173 — one termination classifier for R0, R1, R2 and R3
 
-**Status: OPEN; WP1 follow-up.** Add the pure classifier and shared table from
-the Opus design so producer paths can classify process outcomes from exit,
-report, process-tree and resource-limit evidence. Preserve independent SQL
-qualification and verifier derivations. Acceptance requires a table row for
-every precedence case and 100% line and branch coverage for the classifier and
-contention sampler. See the [Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md),
-§§2, 6.1–6.2 and 7/WP1.
+**Status: WP1 implemented on this branch; OPEN for WP2–WP4 wiring.** Add the
+pure classifier and shared table from the Opus design so producer paths can
+classify process outcomes from exit, report, process-tree and resource-limit
+evidence. WP1 adds the decision table and separates observation availability,
+limit evidence, and pressure telemetry. The existing R0/R1/R3 callers still
+use compatibility helpers until their classifier integrations land in WP2
+and WP3; deleting those helpers in WP1 alone would leave live callers broken.
+Preserve independent SQL qualification and verifier derivations. Acceptance
+requires a table row for every precedence case and 100% line and branch
+coverage for the classifier and contention sampler. See the
+[Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md), §§2, 6.1–6.2 and 7/WP1.
 
 ## B174 — wire load-independent termination and progress telemetry through R0/R1
 

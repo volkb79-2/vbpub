@@ -28,9 +28,18 @@ from assay.contention import ContentionObservation
 from assay.errors import Outcome, ReasonCode
 from assay.mutation_witness import WITNESS_FD_ENV, ReceiptCapture
 from assay.verdict import Claim, Coverage
+from termination_table import LIMITS_CLEAR, LIMITS_HIT
 
 MOMENT_A = datetime(2026, 8, 7, 12, 0, 0, tzinfo=timezone.utc)
 MOMENT_B = datetime(2026, 8, 7, 12, 0, 1, tzinfo=timezone.utc)
+
+
+def _contention_observation(status, limit_hit, reasons):
+    if status == "clear":
+        limits = LIMITS_HIT if limit_hit else LIMITS_CLEAR
+    else:
+        limits = None
+    return ContentionObservation(status, limits=limits, reasons=reasons)
 
 
 # --- exit 0 is PASS -----------------------------------------------------------
@@ -82,8 +91,8 @@ def test_build_r0_claim_reflects_a_fail_result(tmp_path: Path):
     ("status", "resource_limit_hit", "expected_outcome"),
     [
         ("clear", False, Outcome.FAIL),
-        ("affected", True, Outcome.ERROR),
-        ("unknown", False, Outcome.ERROR),
+        ("clear", True, Outcome.ERROR),
+        ("unavailable", False, Outcome.ERROR),
     ],
 )
 def test_gate_mode_failed_r0_is_not_withheld_for_psi_or_throttling(
@@ -94,9 +103,9 @@ def test_gate_mode_failed_r0_is_not_withheld_for_psi_or_throttling(
     expected_outcome: Outcome,
 ):
     class Window:
-        observation = ContentionObservation(
+        observation = _contention_observation(
             status,
-            resource_limit_hit=resource_limit_hit,
+            resource_limit_hit,
             reasons=(
                 "cgroup_psi.cpu.some_us=5340037",
                 "cgroup_cpu.throttled_usec=500",
@@ -140,8 +149,8 @@ def test_gate_mode_failed_r0_is_not_withheld_for_psi_or_throttling(
     ("status", "resource_limit_hit", "expected_outcome"),
     [
         ("clear", False, Outcome.PASS),
-        ("affected", True, Outcome.PASS),
-        ("unknown", False, Outcome.PASS),
+        ("clear", True, Outcome.PASS),
+        ("unavailable", False, Outcome.PASS),
     ],
 )
 def test_gate_mode_pass_verdict_has_no_stderr_tail(
@@ -152,9 +161,9 @@ def test_gate_mode_pass_verdict_has_no_stderr_tail(
     expected_outcome: Outcome,
 ):
     class Window:
-        observation = ContentionObservation(
+        observation = _contention_observation(
             status,
-            resource_limit_hit=resource_limit_hit,
+            resource_limit_hit,
             reasons=(
                 "cgroup_psi.cpu.some_us=5340037",
                 "cgroup_cpu.throttled_usec=500",
@@ -235,7 +244,11 @@ def test_r1_claim_ignores_psi_and_throttling_but_retains_direct_limits():
 
     pressured_failure = adjust(
         _coverage_claim(Outcome.FAIL),
-        ContentionObservation("clear", reasons=("cgroup_cpu.throttled_usec=1",)),
+        ContentionObservation(
+            "clear",
+            limits=LIMITS_CLEAR,
+            reasons=("cgroup_cpu.throttled_usec=1",),
+        ),
         diagnostics=None,
     )
     assert pressured_failure.status is Outcome.FAIL
@@ -245,13 +258,17 @@ def test_r1_claim_ignores_psi_and_throttling_but_retains_direct_limits():
     affected_pass = _coverage_claim(Outcome.PASS)
     assert adjust(
         affected_pass,
-        ContentionObservation("clear", reasons=("cgroup_cpu.throttled_usec=1",)),
+        ContentionObservation(
+            "clear",
+            limits=LIMITS_CLEAR,
+            reasons=("cgroup_cpu.throttled_usec=1",),
+        ),
         diagnostics=None,
     ) is affected_pass
 
     direct_limit_pass = adjust(
         _coverage_claim(Outcome.PASS),
-        ContentionObservation("affected", resource_limit_hit=True),
+        ContentionObservation("clear", limits=LIMITS_HIT),
         diagnostics=None,
     )
     assert direct_limit_pass.status is Outcome.PASS
@@ -259,7 +276,7 @@ def test_r1_claim_ignores_psi_and_throttling_but_retains_direct_limits():
 
     direct_limit_fail = adjust(
         _coverage_claim(Outcome.FAIL),
-        ContentionObservation("affected", resource_limit_hit=True),
+        ContentionObservation("clear", limits=LIMITS_HIT),
         diagnostics=None,
     )
     assert direct_limit_fail.status is Outcome.ERROR
@@ -268,7 +285,7 @@ def test_r1_claim_ignores_psi_and_throttling_but_retains_direct_limits():
 
     unknown_pass = adjust(
         _coverage_claim(Outcome.PASS),
-        ContentionObservation("unknown"),
+        ContentionObservation("unavailable"),
         diagnostics=None,
     )
     assert unknown_pass.status is Outcome.PASS
@@ -285,12 +302,14 @@ def test_r1_claim_ignores_psi_and_throttling_but_retains_direct_limits():
     )
     assert adjust(
         already_infrastructure,
-        ContentionObservation("unknown"),
+        ContentionObservation("unavailable"),
         diagnostics=None,
     ) is already_infrastructure
 
     with pytest.raises(TypeError, match="claim must be an R1 Claim"):
-        adjust(object(), ContentionObservation("clear"), diagnostics=None)
+        adjust(
+            object(), ContentionObservation("clear", limits=LIMITS_CLEAR), diagnostics=None
+        )
 
 
 def test_r1_contention_adjustment_is_wired_after_coverage_judgement():

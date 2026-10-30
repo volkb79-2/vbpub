@@ -17,6 +17,12 @@ from assay.termination import (
 from termination_table import ALL_CASES, LIMITS_HIT, TERMINATION_CASES
 
 
+def test_shared_table_has_one_base_row_for_each_termination():
+    rows = [case.termination for case in TERMINATION_CASES]
+    assert len(rows) == len(Termination)
+    assert set(rows) == set(Termination)
+
+
 @pytest.mark.parametrize("case", TERMINATION_CASES, ids=lambda case: case.name)
 def test_each_termination_has_a_shared_decision_row(case):
     classified = classify(**case.inputs)
