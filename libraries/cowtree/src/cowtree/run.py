@@ -26,7 +26,7 @@ from .errors import (
     SpaceRefused,
 )
 from .paths import mount_fstype, validate_name, within
-from .space import SpaceEstimate, admit, available_bytes, pending_delete_bytes
+from .space import SpaceEstimate, admit, available_bytes, filesystem_identity, pending_delete_bytes
 
 _FORMAT = "cowtree-run/1"
 _MAX_OWNER_MANIFEST_BYTES = 64 * 1024
@@ -147,7 +147,8 @@ class Run:
         manifest: dict[str, object],
         area: Area | None,
         plain_base: str | None,
-        pending_device: int,
+        pending_filesystem,
+        ops,
         holder: str,
         log: Callable[[str], None] | None,
     ):
@@ -164,7 +165,8 @@ class Run:
         self._manifest = manifest
         self._area = area
         self._plain_base = plain_base
-        self._pending_device = pending_device
+        self._pending_filesystem = pending_filesystem
+        self._ops = ops
         self._holder = holder
         self._log = log or logging.getLogger("cowtree").warning
         self._owned: list[str] = []
@@ -425,7 +427,7 @@ class Run:
             self._owned_identities.pop(target, None)
             if self.caps.backend == "btrfs":
                 from .space import record_pending_delete
-                record_pending_delete(self._pending_device, allocated)
+                record_pending_delete(self._pending_filesystem, allocated)
 
     def _owned_tree(self, value: str | os.PathLike[str]) -> str:
         self._require_trees_directory()
@@ -443,8 +445,12 @@ class Run:
             if target is None:
                 raise RootInvalid("plain cowtree run has no space-admission directory")
             additional = extra.needed(self.caps)
-            device = os.stat(target).st_dev
-            pending = pending_delete_bytes(device) if self.caps.backend == "btrfs" else 0
+            filesystem = (
+                filesystem_identity(target, backend="btrfs", ops=self._ops)
+                if self.caps.backend == "btrfs"
+                else None
+            )
+            pending = pending_delete_bytes(filesystem) if filesystem is not None else 0
             available = available_bytes(target)
             needed = self._reserved_bytes + additional + pending
             if needed > available:
@@ -455,9 +461,11 @@ class Run:
                     "additional_max_live_clones": extra.max_live_clones,
                 }
                 raise SpaceRefused(needed, available, details)
-            self._reserved_bytes += additional
-            self._manifest["reserved_bytes"] = self._reserved_bytes
-            _write_manifest(self.path, self._manifest, create=False)
+            reserved_bytes = self._reserved_bytes + additional
+            manifest = {**self._manifest, "reserved_bytes": reserved_bytes}
+            _write_manifest(self.path, manifest, create=False)
+            self._reserved_bytes = reserved_bytes
+            self._manifest = manifest
 
     def close(self) -> None:
         self._close(best_effort=False)
@@ -482,7 +490,7 @@ class Run:
                     self._owned.remove(target)
                     self._owned_identities.pop(target, None)
                     if self.caps.backend == "btrfs":
-                        record_pending_delete(self._pending_device, allocated)
+                        record_pending_delete(self._pending_filesystem, allocated)
                 except Exception as exc:  # noqa: BLE001 - continue cleanup and release the lease.
                     if first_error is None:
                         first_error = exc
@@ -568,8 +576,8 @@ def open_run(
                 f"cowtree: dead flock-owned runs exist under {area.runs_dir}; run cowtree gc",
                 log,
             )
-    device = os.stat(admission_dir).st_dev
-    pending = pending_delete_bytes(device) if caps.backend == "btrfs" else 0
+    pending_filesystem = filesystem_identity(admission_dir, backend=caps.backend, ops=operations)
+    pending = pending_delete_bytes(pending_filesystem) if caps.backend == "btrfs" else 0
     admit(estimate, caps, admission_dir, pending_bytes=pending)
     timestamp, created_utc = _utc_now()
     run_id = f"{tool}-{timestamp}-{secrets.token_hex(8)}"
@@ -644,7 +652,8 @@ def open_run(
         manifest=manifest,
         area=area,
         plain_base=base if area is None else None,
-        pending_device=device,
+        pending_filesystem=pending_filesystem,
+        ops=operations,
         holder=holder,
         log=log,
     )

@@ -12,6 +12,7 @@ from pathlib import Path
 import cowtree.backends as backend_module
 import pytest
 from cowtree.backends import (
+    BTRFS_IOC_FS_INFO,
     BTRFS_IOC_SNAP_CREATE_V2,
     BTRFS_IOC_SNAP_DESTROY,
     BTRFS_IOC_SUBVOL_CREATE,
@@ -635,6 +636,7 @@ def test_ioctl_numbers_and_vol_args_v2_layout(monkeypatch):
     assert BTRFS_IOC_SNAP_CREATE_V2 == 0x50009417
     assert BTRFS_IOC_SUBVOL_GETFLAGS == 0x80089419
     assert BTRFS_IOC_SUBVOL_SETFLAGS == 0x4008941A
+    assert BTRFS_IOC_FS_INFO == 0x8400941F
     old = _old_vol_args("tree")
     assert len(old) == 4096 and struct.unpack_from("=q", old)[0] == -1
     assert old[8:13] == b"tree\0"
@@ -666,3 +668,17 @@ def test_ioctl_numbers_and_vol_args_v2_layout(monkeypatch):
         BTRFS_IOC_SUBVOL_SETFLAGS,
         FICLONE,
     ]
+
+
+def test_linux_ops_reads_btrfs_filesystem_id_from_fs_info_ioctl(monkeypatch):
+    expected = b"filesystem-uuid!"
+    calls = []
+
+    def ioctl(fd, request, argument, mutate=False):
+        calls.append((fd, request, len(argument), mutate))
+        argument[16:32] = expected
+        return 0
+
+    monkeypatch.setattr(backend_module.fcntl, "ioctl", ioctl)
+    assert LinuxOps().btrfs_fs_id(42) == expected
+    assert calls == [(42, BTRFS_IOC_FS_INFO, 1024, True)]

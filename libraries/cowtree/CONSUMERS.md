@@ -83,7 +83,8 @@ explicit scan directory shown above; `gc` logs this reminder when no CoW area
 is configured. Cowtree rejects labels that would produce an `owner.json` larger
 than 64 KiB; GC retains oversized manifests from other sources as invalid.
 Btrfs pending-delete accounting is local to the process and shared by all
-roots on the same filesystem device for 60 seconds.
+roots on the same filesystem for 60 seconds, including roots in different
+subvolumes.
 
 `gc` deletes a flock-owned run only after it acquires the lease and verifies
 the recorded owner process is dead. It keeps runs whose owner identity cannot

@@ -41,17 +41,19 @@ max_live_clones)` from its actual input. For btrfs and reflink, cowtree checks
 checks `(1 + max_live_clones) * max(ingest_bytes, per_clone_bytes)`. Btrfs
 admission also includes this process's bytes deleted in the preceding 60
 seconds because block reclamation can lag. The pending-delete ledger is
-process-local and keyed by filesystem device, so deletions recorded by any run
-or GC scan on a device contribute to every btrfs admission on that device.
-This bound matches the shared free-space pool and can conservatively reserve
-bytes across distinct roots on the same filesystem. `Run.reserve(extra)` checks the
-current reservation plus an additional estimate before the consumer grows
-concurrency. `SpaceRefused` reports the needed and available bytes and the
-estimate values. Cowtree does not invent a fixed capacity floor or move a run
-to another filesystem.
-Admission checks available bytes at the actual run-allocation directory,
-`.cowtree/runs`. Pending-delete bytes use that directory's device identity;
-btrfs subvolumes have distinct device IDs from their containing directory.
+process-local and keyed by the Btrfs filesystem ID returned by
+`BTRFS_IOC_FS_INFO`. `statfs.f_fsid` is not sufficient for Btrfs because the
+kernel mixes the subvolume root ID into that value. Ordinary filesystems use
+the directory's `st_dev`. This groups Btrfs subvolumes that share a filesystem
+and free-space pool, even though their `st_dev` values differ. Deletions
+recorded by any run or GC scan on that filesystem contribute to every Btrfs
+admission there. This bound can conservatively reserve bytes across distinct
+roots on the same filesystem.
+`Run.reserve(extra)` checks the current reservation plus an additional estimate
+before the consumer grows concurrency. `SpaceRefused` reports the needed and
+available bytes and the estimate values. Cowtree does not invent a fixed
+capacity floor or move a run to another filesystem. Admission checks available
+bytes at the actual run-allocation directory, `.cowtree/runs`.
 
 ## Ownership and identity
 

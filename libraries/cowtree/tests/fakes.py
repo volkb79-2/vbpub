@@ -61,6 +61,9 @@ class FakeOps(LinuxOps):
         self.xattrs = []
         self.flags = {}
 
+    def btrfs_fs_id(self, _fd):
+        return bytes.fromhex("00112233445566778899aabbccddeeff")
+
     def effective_uid(self):
         return os.geteuid() if self.uid is None else self.uid
 

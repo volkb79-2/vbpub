@@ -10,6 +10,7 @@ from cowtree.space import (
     _pending_deletes,
     admit,
     available_bytes,
+    filesystem_identity,
     pending_delete_bytes,
     record_pending_delete,
 )
@@ -115,3 +116,39 @@ def test_pending_delete_allowance_is_shared_by_btrfs_roots_on_one_device(tmp_pat
 
     assert pending == 4096
     assert needed == 5120
+
+
+def test_pending_delete_allowance_groups_btrfs_subvolumes_by_filesystem_id():
+    filesystem_id = bytes.fromhex("00112233445566778899aabbccddeeff")
+
+    class FakeSubvolumeOps:
+        def stat(self, path):
+            return SimpleNamespace(st_dev={"/btrfs/one": 101, "/btrfs/two": 202}[path])
+
+        def open(self, path, _flags):
+            assert path in {"/btrfs/one", "/btrfs/two"}
+            return path
+
+        def close(self, _descriptor):
+            pass
+
+        def btrfs_fs_id(self, descriptor):
+            return {"/btrfs/one": filesystem_id, "/btrfs/two": filesystem_id}[descriptor]
+
+    _pending_deletes.clear()
+    ops = FakeSubvolumeOps()
+    first = filesystem_identity("/btrfs/one", backend="btrfs", ops=ops)
+    second = filesystem_identity("/btrfs/two", backend="btrfs", ops=ops)
+
+    assert ops.stat("/btrfs/one").st_dev != ops.stat("/btrfs/two").st_dev
+    assert first == second == ("btrfs", filesystem_id)
+    record_pending_delete(first, 4096, now=10.0)
+    assert pending_delete_bytes(second, now=11.0) == 4096
+
+
+def test_filesystem_identity_uses_st_dev_for_ordinary_directories():
+    class FakeDirectoryOps:
+        def stat(self, _path):
+            return SimpleNamespace(st_dev=303)
+
+    assert filesystem_identity("/ordinary/dir", backend="copy", ops=FakeDirectoryOps()) == ("dev", 303)
