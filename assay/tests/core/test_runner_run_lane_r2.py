@@ -132,7 +132,9 @@ def test_native_whole_target_judgment_sorts_nested_target_paths(tmp_path):
     )
     lane = make_lane(rigor=("R0", "R2"), judge=judge, argv=("true",))
 
-    judgment = runner._build_judgment_r2(lane)
+    judgment = runner._build_judgment_r2(
+        lane, liveness_reason="argv-does-not-invoke-pytest"
+    )
 
     assert judgment.targets == tuple(sorted(targets))
 

@@ -142,10 +142,10 @@ def test_run_lane_sorts_nested_whole_target_paths_in_the_r1_judgment(
     # appears before a later client target even though the wire invariant is
     # globally lexical across path components.
     targets = (
-        "build-push.py",
-        "client/src/pwmcp_client/__init__.py",
-        "containers/ocr/ocr_service.py",
-        "client/src/pwmcp_client/session.py",
+        "build-push.zzz",
+        "client/src/pwmcp_client/__init__.zzz",
+        "containers/ocr/ocr_service.zzz",
+        "client/src/pwmcp_client/session.zzz",
     )
     git_repo.write(".gitignore", "cov.json\n")
     for target in targets:

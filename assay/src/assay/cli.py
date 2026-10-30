@@ -3557,18 +3557,33 @@ def _print_run_summary(verdict: Verdict, out: TextIO) -> None:
     if verdict.reason_code is not None:
         label = f"{label}/{verdict.reason_code.value}"
     print(f"{verdict.lane}: {label} (exit {verdict.exit_code})", file=out)
-    # (B146) A later refusal (e.g. DIRTY_TREE after a failing suite dirtied the
-    # tree) can change the headline while the R0 claim remains FAIL. Only that
-    # measured R0 status supports this line; an execution error with pytest
-    # output must not be relabelled as a test failure.
+    # (B146) A post-command refusal can replace the direct R0 claim with
+    # NO_MEASUREMENT while retaining the exact command-failure diagnostic in
+    # its detail. That recorded detail is enough to report the observed test
+    # failure. An execution error that happens to retain pytest output has no
+    # such command-failure witness and must not be relabelled as a test fail.
     failing_test = None
-    if verdict.outcome is not Outcome.PASS and any(
-        claim.rigor == "R0" and claim.status is Outcome.FAIL
-        for claim in verdict.claims
-    ):
-        failing_test = failure_summary.first_failing_test(
+    r0_claim = next(
+        (claim for claim in verdict.claims if claim.rigor == "R0"), None
+    )
+    if verdict.outcome is not Outcome.PASS and r0_claim is not None:
+        candidate = failure_summary.first_failing_test(
             verdict.result_stdout_tail, verdict.result_stderr_tail
         )
+        measured_failure = r0_claim.status is Outcome.FAIL
+        if (
+            not measured_failure
+            and r0_claim.status is Outcome.NO_MEASUREMENT
+            and getattr(r0_claim, "reason_code", None)
+            in (ReasonCode.DIRTY_TREE, ReasonCode.HEAD_CHANGED)
+            and candidate is not None
+        ):
+            detail = getattr(r0_claim, "detail", None)
+            measured_failure = isinstance(detail, str) and detail.startswith(
+                f"R0 command failed; first failing test: {candidate}; run refusal:"
+            )
+        if measured_failure:
+            failing_test = candidate
     if failing_test is not None:
         print(f"  R0: FAIL (first failing test: {failing_test})", file=out)
     print(f"  commit: {verdict.commit}", file=out)

@@ -4,10 +4,10 @@ All notable changes to iobench are recorded here. Entries marked `cmru: generate
 
 ## [Unreleased]
 
-<!-- cmru: release history -->
-
 ### Fixed
 - Keep the Assay whole-target lane measurable: exclude the docstring-only package initializer, let pytest finish the coverage run after a failure, and reap both detached subprocesses created by the bounded-reaping test.
+
+<!-- cmru: release history -->
 
 ## [0.1.0] - 2026-10-28
 <!-- cmru: generated -->
