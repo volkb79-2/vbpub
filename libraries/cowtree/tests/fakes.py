@@ -3,8 +3,47 @@ from __future__ import annotations
 
 import os
 import shutil
+from typing import ClassVar
 
 from cowtree.backends import LinuxOps
+
+
+class StatResultProxy:
+    """A stat_result view that changes selected fields without losing ns data."""
+
+    _indexes: ClassVar[dict[str, int]] = {
+        "st_mode": 0,
+        "st_ino": 1,
+        "st_dev": 2,
+        "st_nlink": 3,
+        "st_uid": 4,
+        "st_gid": 5,
+        "st_size": 6,
+        "st_atime": 7,
+        "st_mtime": 8,
+        "st_ctime": 9,
+    }
+
+    def __init__(self, result, **overrides):
+        self._result = result
+        self._overrides = overrides
+
+    def __getattr__(self, name):
+        if name in self._overrides:
+            return self._overrides[name]
+        return getattr(self._result, name)
+
+    def __getitem__(self, index):
+        name = next((field for field, field_index in self._indexes.items() if field_index == index), None)
+        if name in self._overrides:
+            return self._overrides[name]
+        return self._result[index]
+
+    def __iter__(self):
+        return iter(tuple(self[index] for index in range(len(self))))
+
+    def __len__(self):
+        return len(self._result)
 
 
 class FakeOps(LinuxOps):

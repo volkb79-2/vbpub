@@ -466,10 +466,6 @@ def _create_copy_tree(
         identity = _identity_at(parent_fd, name)
     except FileExistsError as exc:
         raise DestinationExists(f"destination already exists: {dst!r}") from exc
-    except OSError:
-        if identity is not None:
-            _cleanup_empty_created_directory(dst, identity, delete, log)
-        raise
     finally:
         os.close(parent_fd)
     return _populate_created_tree(
@@ -923,8 +919,6 @@ class BtrfsBackend(ReflinkBackend):
                 parent_fd = _open_dir(parent, self.ops)
                 src_fd = _open_dir(src, self.ops)
             except OSError as exc:
-                if src_fd >= 0:
-                    self.ops.close(src_fd)
                 if parent_fd >= 0:
                     self.ops.close(parent_fd)
                 raise _raise_backend("open-snapshot-source", src, exc) from exc
@@ -1086,7 +1080,7 @@ def _copy_file(
                 _copy_bytes(source, destination, ops)
             ops.fchmod(destination, mode)
             ops.futime(destination, (info.st_atime_ns, info.st_mtime_ns))
-            if destination_identity is None or _path_identity(dst) != destination_identity:
+            if _path_identity(dst) != destination_identity:
                 raise PathRefused("destination identity changed during file creation")
         finally:
             if destination >= 0:

@@ -56,6 +56,12 @@ def test_mountinfo_empty_rows_exact_mount_and_spaces():
     assert mount_fstype("/mnt/my disk", text) == "xfs"
 
 
+@pytest.mark.parametrize("row", ["36 25 0:32 / relative rw - xfs /dev/a rw", "36 25 0:32 / / rw -   /dev/a rw"])
+def test_mountinfo_rejects_nonabsolute_mountpoint_or_empty_filesystem(row):
+    with pytest.raises(RootInvalid, match="malformed"):
+        parse_mountinfo(row)
+
+
 def test_require_directory_rejects_file_and_symlink(tmp_path):
     regular = tmp_path / "file"
     regular.write_text("x")

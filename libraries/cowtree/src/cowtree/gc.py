@@ -190,6 +190,10 @@ def gc(scan_dir: str | os.PathLike[str], *, ops=None) -> list[GcItem]:
         lock_path = os.path.join(run_dir, "owner.lock")
         lock_fd = -1
         try:
+            lock_path_info = os.lstat(lock_path)
+            if not stat.S_ISREG(lock_path_info.st_mode):
+                results.append(GcItem(name, "invalid-lock"))
+                continue
             lock_fd = os.open(lock_path, _LOCK_FLAGS)
             lock_info = os.fstat(lock_fd)
             if not stat.S_ISREG(lock_info.st_mode):

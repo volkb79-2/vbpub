@@ -371,7 +371,7 @@ def test_clone_source_outside_run_refused(tmp_path):
         run.clone_tree(external, "clone")
     with pytest.raises(PathRefused, match="inside this run"):
         run.clone_tree(Path(run.path) / "trees", "clone")
-    with pytest.raises(PathRefused, match="valid"):
+    with pytest.raises(PathRefused, match="name must match"):
         run.make_tree("../escape")
     run.close()
 

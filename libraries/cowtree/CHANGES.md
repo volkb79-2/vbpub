@@ -24,5 +24,9 @@ internal library, not a separately published release target.
   creation identities before `Run` adopts outputs and clean partial trees by
   recorded child identity, preserving unowned children. Isolate cleanup paths
   with non-replacing `renameat2` and verify the moved identity before deletion.
+- Classify non-regular owner locks as invalid before opening them, and report
+  failed or short writes while initializing the private metadata version as a
+  typed invalid-root error. Expand fake-ops coverage for backend cleanup,
+  identity races, shared-tree leases, and metadata initialization failures.
 
 <!-- cmru: release history -->

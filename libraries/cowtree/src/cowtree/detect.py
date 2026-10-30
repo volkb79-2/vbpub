@@ -1,6 +1,7 @@
 """CoW area validation and capability probing in the caller's namespace."""
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import secrets
@@ -113,8 +114,11 @@ def _ensure_private_layout(root: str) -> tuple[str, str, str]:
         raise RootInvalid(f"cannot initialize .cowtree/VERSION: {exc}") from exc
     else:
         try:
-            os.write(descriptor, b"1\n")
+            if os.write(descriptor, b"1\n") != 2:
+                raise OSError(errno.EIO, "short write while initializing metadata version")
             os.fsync(descriptor)
+        except OSError as exc:
+            raise RootInvalid(f"cannot initialize .cowtree/VERSION: {exc}") from exc
         finally:
             os.close(descriptor)
     runs = os.path.join(private, "runs")

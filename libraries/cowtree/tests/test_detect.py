@@ -3,7 +3,9 @@ from __future__ import annotations
 import errno
 import logging
 import os
+from pathlib import Path
 
+import cowtree.detect as detect_module
 import pytest
 from cowtree.backends import LinuxOps
 from cowtree.detect import _read_mountinfo, _reset_info_for_tests, detect
@@ -170,6 +172,72 @@ def test_btrfs_probe_failure_can_select_reflink(tmp_path):
     assert area is not None and area.caps.backend == "reflink"
 
 
+def test_btrfs_probe_removes_source_when_destroy_fails(tmp_path):
+    root = tmp_path / "btrfs-area"
+    root.mkdir()
+    ops = FakeOps(filesystem="btrfs", snapshot_error=errno.EIO, destroy_error=errno.EPERM)
+    area = detect(environ={"MDT_COW_ROOT": str(root)}, ops=ops, log=lambda _message: None)
+    assert area is not None and area.caps.backend == "reflink"
+    assert not list((root / ".cowtree").glob("probe-*"))
+
+
+def test_reflink_probe_short_write_and_probe_cleanup_failure(tmp_path, monkeypatch):
+    root = tmp_path / "area"
+    root.mkdir()
+
+    class ShortWriteOps(FakeOps):
+        def write(self, _fd, _data):
+            return 0
+
+    with pytest.raises(RootInvalid, match="cannot clone files"):
+        detect(environ={"MDT_COW_ROOT": str(root)}, ops=ShortWriteOps(), log=lambda _message: None)
+    assert not list((root / ".cowtree").glob("probe-*"))
+
+    root2 = tmp_path / "cleanup-area"
+    root2.mkdir()
+    real_rmtree = detect_module.shutil.rmtree
+
+    def fail_probe_remove(path, *args, **kwargs):
+        if os.path.basename(path).startswith("probe-"):
+            raise OSError(errno.EIO, "probe cleanup denied")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(detect_module.shutil, "rmtree", fail_probe_remove)
+    with pytest.raises(RootInvalid, match="cannot remove cowtree capability probe"):
+        detect(environ={"MDT_COW_ROOT": str(root2)}, ops=FakeOps(), log=lambda _message: None)
+
+
+def test_private_layout_accepts_existing_version_and_directories(tmp_path):
+    root = tmp_path / "area"
+    root.mkdir()
+    private = root / ".cowtree"
+    private.mkdir(mode=0o700)
+    (private / "VERSION").write_text("1\n")
+    runs = private / "runs"
+    shared = root / "shared"
+    runs.mkdir(mode=0o700)
+    shared.mkdir(mode=0o700)
+    assert detect_module._ensure_private_layout(str(root)) == (str(private), str(runs), str(shared))
+
+
+def test_private_layout_wraps_existing_version_read_failure(tmp_path, monkeypatch):
+    root = tmp_path / "area"
+    root.mkdir()
+    private = root / ".cowtree"
+    private.mkdir(mode=0o700)
+    (private / "VERSION").write_text("1\n")
+    real_read_text = Path.read_text
+
+    def fail_version(path, *args, **kwargs):
+        if str(path) == str(private / "VERSION"):
+            raise OSError(errno.EACCES, "version read denied")
+        return real_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_version)
+    with pytest.raises(RootInvalid, match="cannot read .cowtree/VERSION"):
+        detect_module._ensure_private_layout(str(root))
+
+
 def test_private_layout_refuses_bad_existing_metadata(tmp_path):
     root = tmp_path / "area"
     root.mkdir()
@@ -230,3 +298,73 @@ def test_effective_uid_failure_refuses(tmp_path):
     root.mkdir()
     with pytest.raises(RootInvalid, match="effective uid"):
         detect(environ={"MDT_COW_ROOT": str(root)}, ops=BrokenUid(), log=lambda _message: None)
+
+
+@pytest.mark.parametrize("path_kind", ["private", "runs", "shared"])
+def test_private_layout_rejects_non_directory_child(tmp_path, path_kind):
+    root = tmp_path / "area"
+    root.mkdir()
+    private = root / ".cowtree"
+    if path_kind == "private":
+        private.write_text("file")
+    else:
+        private.mkdir(mode=0o700)
+    if path_kind == "runs":
+        (private / "runs").write_text("file")
+    elif path_kind == "shared":
+        (private / "runs").mkdir(mode=0o700)
+        (root / "shared").write_text("file")
+    with pytest.raises(RootInvalid):
+        detect_module._ensure_private_layout(str(root))
+
+
+def test_private_layout_refuses_child_with_wrong_mode(tmp_path):
+    root = tmp_path / "area"
+    root.mkdir()
+    runs = root / ".cowtree" / "runs"
+    runs.mkdir(parents=True, mode=0o700)
+    os.chmod(runs, 0o755)
+    with pytest.raises(RootInvalid, match="mode 0700"):
+        detect_module._ensure_private_layout(str(root))
+
+
+def test_private_layout_reports_create_and_secure_failures(tmp_path, monkeypatch):
+    root = tmp_path / "area"
+    root.mkdir()
+    real_mkdir = detect_module.os.mkdir
+
+    def deny_private(path, *args, **kwargs):
+        if path == str(root / ".cowtree"):
+            raise PermissionError(errno.EACCES, "private denied")
+        return real_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(detect_module.os, "mkdir", deny_private)
+    with pytest.raises(RootInvalid, match="cannot create cowtree metadata"):
+        detect_module._ensure_private_layout(str(root))
+
+    monkeypatch.setattr(detect_module.os, "mkdir", real_mkdir)
+    real_chmod = detect_module.os.chmod
+
+    def deny_chmod(path, *args, **kwargs):
+        if path == str(root / ".cowtree"):
+            raise PermissionError(errno.EACCES, "chmod denied")
+        return real_chmod(path, *args, **kwargs)
+
+    monkeypatch.setattr(detect_module.os, "chmod", deny_chmod)
+    with pytest.raises(RootInvalid, match="cannot secure cowtree metadata"):
+        detect_module._ensure_private_layout(str(root))
+
+
+def test_private_layout_reports_probe_write_failure(tmp_path, monkeypatch):
+    root = tmp_path / "area"
+    root.mkdir()
+    real_write = detect_module.os.write
+
+    def short_write(fd, data):
+        if os.readlink(f"/proc/self/fd/{fd}").endswith("/.cowtree/VERSION"):
+            raise OSError(errno.EIO, "version write failed")
+        return real_write(fd, data)
+
+    monkeypatch.setattr(detect_module.os, "write", short_write)
+    with pytest.raises(RootInvalid, match="cannot initialize"):
+        detect_module._ensure_private_layout(str(root))

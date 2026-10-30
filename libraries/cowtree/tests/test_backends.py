@@ -33,39 +33,17 @@ from cowtree.detect import _reset_info_for_tests, detect
 from cowtree.errors import BackendFailed, PathRefused, RootInvalid
 from cowtree.paths import mount_fstype
 
-from .fakes import FakeOps
+from .fakes import FakeOps, StatResultProxy
 
 
 def _magic_inode(monkeypatch, *paths):
     real_stat = os.stat
     targets = {os.path.abspath(os.fspath(path)) for path in paths}
 
-    class StatResultProxy:
-        def __init__(self, result):
-            self._result = result
-
-        def __getattr__(self, name):
-            if name == "st_ino":
-                return 256
-            return getattr(self._result, name)
-
-        def __getitem__(self, index):
-            values = list(self._result)
-            values[1] = 256
-            return values[index]
-
-        def __iter__(self):
-            values = list(self._result)
-            values[1] = 256
-            return iter(values)
-
-        def __len__(self):
-            return len(self._result)
-
     def fake_stat(path, *args, **kwargs):
         result = real_stat(path, *args, **kwargs)
         if isinstance(path, (str, bytes, os.PathLike)) and os.path.abspath(os.fspath(path)) in targets:
-            return StatResultProxy(result)
+            return StatResultProxy(result, st_ino=256)
         return result
 
     monkeypatch.setattr(backend_module.os, "stat", fake_stat)
@@ -167,6 +145,17 @@ def test_snapshot_cleanup_logs_secondary_delete_failure(tmp_path, monkeypatch):
     destination = tmp_path / "candidate"
     _magic_inode(monkeypatch, source, destination)
     backend.seal(str(source))
+    original_setflags = ops.subvol_setflags
+    fail_flag_clear = True
+
+    def fail_flag_clear_once(fd, flags):
+        nonlocal fail_flag_clear
+        if fail_flag_clear and not flags & BTRFS_SUBVOL_RDONLY:
+            fail_flag_clear = False
+            raise OSError(errno.EIO, "cannot make snapshot writable")
+        original_setflags(fd, flags)
+
+    ops.subvol_setflags = fail_flag_clear_once
 
     def fail_cleanup(_path):
         raise OSError(errno.EIO, "cleanup unavailable")
@@ -210,12 +199,18 @@ def test_destroy_eperm_rmdir_path(tmp_path, monkeypatch):
     backend = BtrfsBackend(ops)
     root = tmp_path / "tree"
     root.mkdir()
-    (root / "sealed").mkdir(mode=0o500)
-    (root / "sealed" / "file").write_text("x")
+    sealed = root / "sealed"
+    sealed.mkdir()
+    (sealed / "file").write_text("x")
+    sealed.chmod(0o500)
+    outside = tmp_path / "outside"
+    outside.write_text("keep")
+    (root / "sealed-link").symlink_to(outside)
     _magic_inode(monkeypatch, root)
     backend.delete_tree(str(root))
     assert not root.exists()
     assert ops.destroy_calls == ["tree"]
+    assert outside.read_text() == "keep"
 
 
 def test_seal_rdonly_and_unseal_on_delete(tmp_path, monkeypatch):
@@ -572,9 +567,7 @@ def test_ingest_cross_fs_copies_once(tmp_path, monkeypatch):
     def cross_device(path, *args, **kwargs):
         result = real_stat(path, *args, **kwargs)
         if os.path.abspath(os.fspath(path)) == str(source):
-            values = list(result)
-            values[2] = result.st_dev + 100
-            return os.stat_result(values)
+            return StatResultProxy(result, st_dev=result.st_dev + 100)
         return result
 
     monkeypatch.setattr(backend_module.os, "stat", cross_device)
@@ -595,9 +588,7 @@ def test_ingest_file_copies_across_devices_and_reflinks_on_same_device(tmp_path,
     def cross_device(path, *args, **kwargs):
         result = real_stat(path, *args, **kwargs)
         if os.path.abspath(os.fspath(path)) == str(source):
-            values = list(result)
-            values[2] = result.st_dev + 100
-            return os.stat_result(values)
+            return StatResultProxy(result, st_dev=result.st_dev + 100)
         return result
 
     monkeypatch.setattr(backend_module.os, "stat", cross_device)

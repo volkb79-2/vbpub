@@ -7,13 +7,23 @@ import os
 import socket
 from pathlib import Path
 
+import cowtree.gc as gc_module
 import pytest
 from cowtree import SpaceEstimate, open_run
 from cowtree.backends import CopyBackend
 from cowtree.detect import Area, Capabilities
-from cowtree.errors import PathRefused
-from cowtree.gc import _manifest, gc, make_shared, survey
+from cowtree.errors import BackendFailed, PathRefused
+from cowtree.gc import (
+    _allocated_bytes,
+    _manifest,
+    dead_flock_runs,
+    gc,
+    make_shared,
+    survey,
+)
 from cowtree.space import pending_delete_bytes
+
+from .fakes import StatResultProxy
 
 
 def _abandon(run):
@@ -80,6 +90,7 @@ def _dead_run(base, tool, *, area_root=None, filesystem="xfs", create_tree=False
 
 
 def _area(root, *, backend=None):
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
     private = root / ".cowtree"
     runs = private / "runs"
     shared = root / "shared"
@@ -321,6 +332,70 @@ def test_gc_missing_scan_root_is_empty(tmp_path):
     assert gc(tmp_path / "absent") == []
 
 
+def test_gc_rejects_non_directory_scan_root_and_reports_entry_inspection_error(tmp_path, monkeypatch):
+    regular = tmp_path / "regular"
+    regular.write_text("not a directory")
+    with pytest.raises(PathRefused, match="real directory"):
+        gc(regular)
+
+    run = open_run("inspect-error", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path)
+    path = Path(run.path)
+    _abandon(run)
+    real_lstat = gc_module.os.lstat
+
+    def fail_run_lstat(value, *args, **kwargs):
+        if os.fspath(value) == str(path):
+            raise PermissionError(13, "entry inspection denied")
+        return real_lstat(value, *args, **kwargs)
+
+    monkeypatch.setattr(gc_module.os, "lstat", fail_run_lstat)
+    result = gc(tmp_path)
+    assert {item.name: item.status for item in result}[path.name] == "inspect-error"
+    monkeypatch.setattr(gc_module.os, "lstat", real_lstat)
+    import shutil
+    shutil.rmtree(path)
+
+
+def test_allocated_bytes_accounts_for_files_symlinks_and_nested_directories(tmp_path):
+    root = tmp_path / "run"
+    nested = root / "nested"
+    nested.mkdir(parents=True)
+    (root / "payload").write_bytes(b"x" * 4096)
+    (nested / "more").write_text("payload")
+    (root / "link").symlink_to(nested)
+    allocated, device = _allocated_bytes(str(root))
+    assert allocated > 0 and device == os.lstat(root).st_dev
+
+
+def test_dead_flock_inventory_filters_holder_and_lease_outcomes(tmp_path, monkeypatch):
+    external = open_run(
+        "external-inventory", estimate=SpaceEstimate(0, 0, 0), holder="external",
+        external_ref="vm:inventory", environ={}, plain_dir=tmp_path,
+    )
+    external_path = Path(external.path)
+    _abandon(external)
+    assert dead_flock_runs(tmp_path) == []
+    import shutil
+    shutil.rmtree(external_path)
+
+    managed = open_run("managed-inventory", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path)
+    managed_path = Path(managed.path)
+    _abandon(managed)
+    monkeypatch.setattr(gc_module, "_owner_status", lambda _owner: "dead")
+    assert dead_flock_runs(tmp_path) == [managed_path.name]
+    real_flock = gc_module.fcntl.flock
+
+    def lock_error(_fd, operation):
+        if operation & fcntl.LOCK_NB:
+            raise OSError(5, "inventory lock error")
+        return real_flock(_fd, operation)
+
+    monkeypatch.setattr(gc_module.fcntl, "flock", lock_error)
+    assert dead_flock_runs(tmp_path) == []
+    monkeypatch.setattr(gc_module.fcntl, "flock", real_flock)
+    shutil.rmtree(managed_path)
+
+
 def test_gc_retains_missing_or_invalid_lock_and_non_directory(tmp_path):
     missing_lock = open_run("missing-lock", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path)
     path = Path(missing_lock.path)
@@ -488,3 +563,59 @@ def test_make_shared_serializes_and_never_overwrites(tmp_path):
         make_shared(area, "../escape")
     with pytest.raises(PathRefused, match="compression"):
         make_shared(area, "bad-compression", compression="zstd:99")
+
+
+def test_shared_lock_and_backend_failures_are_reported(tmp_path, monkeypatch):
+    area = _area(tmp_path / "area")
+    lock = Path(area.private_dir) / "shared.lock"
+    lock.touch()
+    real_fstat = gc_module.os.fstat
+
+    def directory_stat(fd):
+        return StatResultProxy(real_fstat(fd), st_mode=0o040700)
+
+    monkeypatch.setattr(gc_module.os, "fstat", directory_stat)
+    with pytest.raises(PathRefused, match="regular file"):
+        make_shared(area, "cache")
+    monkeypatch.setattr(gc_module.os, "fstat", real_fstat)
+
+    real_flock = gc_module.fcntl.flock
+
+    def fail_lock(fd, operation):
+        if operation == fcntl.LOCK_EX:
+            raise OSError(5, "shared flock failed")
+        return real_flock(fd, operation)
+
+    monkeypatch.setattr(gc_module.fcntl, "flock", fail_lock)
+    with pytest.raises(BackendFailed, match="shared-lock"):
+        make_shared(area, "cache")
+
+
+def test_shared_creation_wraps_oserror_and_preserves_typed_failures(tmp_path, monkeypatch):
+    area = _area(tmp_path / "area")
+
+    def fail_oserror(_path, compression=None):
+        raise OSError(5, "create failed")
+
+    monkeypatch.setattr(area.backend, "make_tree", fail_oserror)
+    with pytest.raises(BackendFailed, match="make-shared"):
+        make_shared(area, "cache")
+
+    def fail_typed(_path, compression=None):
+        raise PathRefused("typed refusal")
+
+    monkeypatch.setattr(area.backend, "make_tree", fail_typed)
+    with pytest.raises(PathRefused, match="typed refusal"):
+        make_shared(area, "cache")
+
+
+def test_survey_skips_non_directory_entries_and_absent_runs(tmp_path, monkeypatch):
+    area = _area(tmp_path / "area")
+    (Path(area.runs_dir) / "plain-file").write_text("not a run")
+    (Path(area.runs_dir) / "linked-run").symlink_to(Path(area.root), target_is_directory=True)
+    report = survey(area)
+    assert {item["name"]: item["state"] for item in report["runs"]} == {
+        "linked-run": "unknown", "plain-file": "unknown"
+    }
+    monkeypatch.setattr(gc_module.os.path, "isdir", lambda _path: False)
+    assert survey(area)["runs"] == []
