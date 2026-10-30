@@ -4,6 +4,55 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [10.0.1] - 2026-10-30
+<!-- cmru: generated -->
+<!-- cmru: source-end=504b7a9983781bc8cc232f9de1ef4f57d1272525 -->
+
+### Fixed
+- fix(assay): close final 10.0.1 review findings (85e20585c)
+- fix(assay): preserve clean verdicts under contention (211ad4f77)
+- fix(assay): align WP0 regression oracles with shipped output (41bb1f41f)
+- fix(assay): restore 10.0.0 canary and load semantics (643db74b0)
+- fix(assay): normalize SQL witness resource telemetry (c9432a840)
+- fix(assay): report frozen witness mismatch paths (11f095d46)
+- fix(assay): raise PSI-only retry threshold (2010d675f)
+- fix(assay): bind canary proof to exact injected frame (67741f929)
+- fix(assay): attribute contention from direct evidence (c7aff7bf7)
+- fix(assay): preserve expected R3 failure under PSI (9c6545f92)
+- fix(assay): align R3 verifier with incomplete canary outcomes (d2ab21578)
+- fix(assay): scope gate attribution and repair release regressions (8ea6ee6df)
+- fix(assay): complete parallel gate regression proof (7e586c260)
+- fix(assay): allow parallel gates with resource attribution (2627f64b2)
+- fix(assay): preserve campaign scope qualification (a24590839)
+- fix(assay): preserve non-R2 campaign completion (a9374f471)
+- fix(assay): keep unjudged native R2 incomplete (e6c864502)
+- fix(assay): distinguish absent R2 verdict policy (521c4563b)
+
+### Changed
+- Cover negative import-break proof paths (4a16139e1)
+- Cover assay contention and R3 canary proof (b59228e8c)
+- Fix R3 PSI import-break attribution (af5567bca)
+- Merge assay parallel release gate: no host-busy refusal from peer gates, B105 checks kept (luna-reviewed; backlog id renumbered B171->B172 against the run-gate leak entry) (eb09b59da)
+
+### Documentation
+- docs(assay): clarify import-break marker is diagnostic only (20e9702e2)
+- docs(assay): plan descendant leak evidence retention (6650bd3f5)
+- docs(assay): use an absolute path for parallel gate example (bb32847b5)
+
+### Testing
+- test(assay): cover resource-limited canary control (115ce0d9d)
+- test(assay): preserve pilot state in the Docker fake (738e1258a)
+- test(assay): preserve pre-existing pilot state records (f4870fba1)
+- test(assay): make B110 fake progress publication stable (e8f6217b0)
+- test(assay): resolve lane observer from passthrough source (c5ef541b9)
+- test(assay): scope focused lane to available observer data (03aaa2b50)
+- test(assay): expect baseline docs failure (0ff47e490)
+- test(assay): isolate baseline gate regression clone (0db339947)
+- test(assay): cover absent native R2 policy (f3cb5ad22)
+
+<!-- cmru: pending release notes begin -->
 ### Fixed
 - fix(assay): allow concurrent gates through admission independent of Docker-name snapshots; attribute direct resource-limit events to the measured cgroup
 - fix(assay): make the R3 verifier derive incomplete transformed canary runs as INCONCLUSIVE, matching the producer
@@ -25,8 +74,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   establish a native inventory or prove an ingested producer. Tests:
   `analysis/tests/test_analysis_campaign.py::test_failed_baseline_verdict_does_not_establish_native_r2_inventory`;
   `analysis/tests/test_analysis_campaign_residual.py::test_a_non_native_mutation_lane_is_reported_not_supported`.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [10.0.0] - 2026-10-28
 <!-- cmru: generated -->
