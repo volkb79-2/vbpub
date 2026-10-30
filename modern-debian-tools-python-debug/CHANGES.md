@@ -4,6 +4,46 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [source-d654664c21e7] - 2026-10-23
+<!-- cmru: generated -->
+<!-- cmru: source-end=d654664c21e7e855ae90995fd37759e50d8aa6e9 -->
+
+### Testing
+- test(mdt-python-debug): release-flow test reads the builder settings from the estate defaults (d654664c2)
+
+## [source-f17e562aed4b] - 2026-10-23
+<!-- cmru: generated -->
+<!-- cmru: source-end=f17e562aed4ba39106594071d5f4556b9d437331 -->
+
+### Added
+- feat(estate): builder defaults are environment-overridable; pwmcp builds through a plain builder when no managed endpoint is configured (45efdcebf)
+- feat(mdt): expose PWMCP and configure DAMON policy (1f4ab1c5f)
+- feat(run-gate): make wheel SemVer the only supported interface (9a0e192ab)
+- feat(cmru): CMRU-FLOOR: cli-extended floor 0.3.0, remove KI-61 tolerance, surface sync (e09438f4a)
+- feat(cmru): W3-ZERO build/release from zero releases, multi-level dependency graph + pyproject guard (2b842b3ca)
+
+### Fixed
+- fix(mdt): preflight vm-system prerequisites (7235f3ad8)
+- fix(mdt): inspect merged observer rules (079a7525d)
+- fix(modern-debian-tools-python-debug): verify observer host setup (9d3aab7c4)
+- fix: close B114 config and cgroup review findings (ea9de716e)
+- fix(cmru): review fixes for W0-RETIRE (warn once, estate config, docs) (531e48659)
+
+### Changed
+- refactor(estate): BUILDX_BUILDER/BUILDKIT_HOST declared once in cmru.orchestration.toml; old mdt copy builds through the configured endpoint (210bb05e2)
+- SWAP-01 round 2: M5 title quote, guide section cite, [I] on the 30-60 suggestion, UTC time (a6d127942)
+- SWAP-01 review fixes S-01..S-03: canonical doc line, labels and sources, superseded M5/plan/SWAP-2/old copy, two small tests (b00a5bb9d)
+- Merge cgprofile-v1.0.0 (a27fd282f) into estate-integration-20261019 (INT-01 step 1) (12d774477)
+- Add standalone PWMCP instance and inspect CLI (dc4072cf2)
+- wip: checkpoint integrated release candidate (91a4ab26a)
+- chore: integrate contract-2 release wave (336336d81)
+- Fix Assay cold-witness and cgroup admission (03f3c592c)
+- add(mdt): KNOWN_ISSUES_TODO_BACKLOG.md + 5 entries (38060def8)
+- backlog(mdt): ship run-gate in the image the way ciu is shipped (43283767f)
+
+### Testing
+- test(pwmcp): plain-builder path and accurate precedence note (review fixes) (0e8862d82)
+
 ## [source-998a43552c36] - 2026-10-02
 <!-- cmru: generated -->
 <!-- cmru: source-end=998a43552c36a51bc4a87932bd40098f227fd93d -->

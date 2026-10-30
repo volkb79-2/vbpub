@@ -489,8 +489,25 @@ def _select_variant(args: argparse.Namespace, root: Path) -> Optional[str]:
 
 # ─── Download (public or private) (S5) ────────────────────────────────────────
 
+def expected_asset_name(tag: str, variant: Optional[str] = None) -> str:
+    """The canonical bundle asset name for ``tag``: ``<tag>[-<variant>]{suffix}``.
+
+    The same spelling as ``cmru.release.asset_name_for_tag`` (the producer's); a test keeps
+    them equal, because this script cannot import cmru."""
+    return f"{tag}-{variant}{ASSET_SUFFIX}" if variant else f"{tag}{ASSET_SUFFIX}"
+
+
+_CONTRACT_NOTE = (
+    "get.py requests exactly the contract name <tag><asset_suffix>; it never guesses another asset"
+)
+
+
 def _download_asset(tag: str, asset_name: str, dest: Path, token: Optional[str]) -> None:
-    """Download a release asset — private path if token present, public URL otherwise."""
+    """Download a release asset — private path if token present, public URL otherwise.
+
+    A missing asset (HTTP 404) is a loud refusal naming the requested asset: the name is
+    the contract ``expected_asset_name`` (KI-89 / PWMCP-08), never a guess from what the
+    release happens to carry."""
     if token:
         # Private path: resolve release → list assets → find by name → download by ID
         status, body = _gh_request(
@@ -507,7 +524,7 @@ def _download_asset(tag: str, asset_name: str, dest: Path, token: Optional[str])
         if asset is None:
             fatal(
                 f"Asset {asset_name!r} not found in release {tag}. "
-                f"Available: {[a.get('name') for a in assets]}",
+                f"Available: {[a.get('name') for a in assets]}. {_CONTRACT_NOTE}",
                 EXIT_FAIL,
             )
         # Download by asset ID — the token is never forwarded across the redirect (S5)
@@ -525,7 +542,10 @@ def _download_asset(tag: str, asset_name: str, dest: Path, token: Optional[str])
         status, _ = _gh_request(url, token=None, accept="application/octet-stream",
                                 stream_to=dest, timeout=300, max_bytes=_MAX_DOWNLOAD_BYTES)
     if status != 200:
-        fatal(f"Download of {asset_name} failed (HTTP {status}).", EXIT_FAIL)
+        detail = (f": download of {asset_name} from release {tag} returned HTTP 404 (missing "
+                  f"asset, release or tag, or a private repository without a token). {_CONTRACT_NOTE}"
+                  if status == 404 else ".")
+        fatal(f"Download of {asset_name} failed (HTTP {status}){detail}", EXIT_FAIL)
     if not dest.exists() or dest.stat().st_size == 0:
         fatal(f"Download produced empty file: {dest}", EXIT_FAIL)
 
@@ -611,7 +631,7 @@ def download_and_verify(
     ``variant`` (S-REL.6) selects the per-interpreter asset ``<tag>-<variant>{suffix}``;
     ``None`` uses the single-asset name ``<tag>{suffix}``. The signature and manifest
     are verified separately, from the bundle bytes (`_verify_manifest`)."""
-    asset_name   = f"{tag}-{variant}{ASSET_SUFFIX}" if variant else f"{tag}{ASSET_SUFFIX}"
+    asset_name   = expected_asset_name(tag, variant)
     sidecar_name = f"{asset_name}.sha256"
     asset   = workdir / asset_name
     sidecar = workdir / sidecar_name

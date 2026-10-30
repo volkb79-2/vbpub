@@ -20,8 +20,9 @@ missing conversion.
 
 from __future__ import annotations
 
+from conftest import completed_process
+
 import math
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -512,7 +513,7 @@ def test_execute_plan_hands_a_child_no_timeout_at_all_when_unbounded(git_repo):
 
     def record(argv, *, env, cwd, timeout):
         seen.append(timeout)
-        return subprocess.CompletedProcess(list(argv), 0, "", "")
+        return completed_process(list(argv), 0, "", "")
 
     lane = make_lane(argv=("check",), budget=UNBOUNDED_BUDGET, budget_seconds=None)
     result = execute_plan(
@@ -531,7 +532,7 @@ def test_execute_plan_still_forwards_a_finite_timeout_verbatim(git_repo):
 
     def record(argv, *, env, cwd, timeout):
         seen.append(timeout)
-        return subprocess.CompletedProcess(list(argv), 0, "", "")
+        return completed_process(list(argv), 0, "", "")
 
     lane = make_lane(argv=("check",))
     execute_plan(
@@ -631,7 +632,7 @@ def test_a_real_unbounded_R2_lane_runs_every_candidate_with_no_lane_timeout(
 
     def record(argv, *, env, cwd, timeout):
         timeouts.append(timeout)
-        return subprocess.CompletedProcess(list(argv), 0, "", "")
+        return completed_process(list(argv), 0, "", "")
 
     lane = make_lane(
         rigor=("R0", "R2"),

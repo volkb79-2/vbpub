@@ -11,8 +11,13 @@ import builtins
 import hashlib
 import io
 import json
+import os
+import queue
+import stat
 import subprocess
 import sys
+import threading
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -76,6 +81,264 @@ def _instance_id_for(path: Path) -> str:
     return hashlib.sha256(str(path.resolve()).encode("utf-8")).hexdigest()[:6]
 
 
+class TestInitialCheckoutResetSafety:
+    @staticmethod
+    def _record(path: Path) -> worktree.WorktreeInstanceRecord:
+        return worktree.WorktreeInstanceRecord(
+            logical_name="demo",
+            display_name="demo",
+            branch="demo",
+            git_worktree_path=path.resolve(),
+            ciu_root_offset=Path("."),
+            created_at_utc="2026-10-14T00:00:00Z",
+            base_ref="main",
+            state="allocating",
+        )
+
+    def test_status_inspection_failure_refuses_checkout_reset(self, tmp_path, monkeypatch):
+        def fail_status(args, _cwd):
+            assert args[0] == "status"
+            return subprocess.CompletedProcess(args, 1, "", "status unavailable")
+
+        monkeypatch.setattr(worktree, "_git", fail_status)
+        with pytest.raises(worktree.WorktreeError, match="status unavailable"):
+            worktree._assert_allocation_checkout_reset_is_safe(self._record(tmp_path))
+
+    def test_tree_inspection_failure_refuses_checkout_reset(self, tmp_path, monkeypatch):
+        def fail_tree(args, _cwd):
+            if args[0] == "status":
+                return subprocess.CompletedProcess(args, 0, "D  tracked.txt\0", "")
+            assert args[:2] == ["ls-tree", "-r"]
+            return subprocess.CompletedProcess(args, 1, "", "tree unavailable")
+
+        monkeypatch.setattr(worktree, "_git", fail_tree)
+        with pytest.raises(worktree.WorktreeError, match="tree unavailable"):
+            worktree._assert_allocation_checkout_reset_is_safe(self._record(tmp_path))
+
+    def test_ignored_file_at_a_tracked_path_refuses_checkout_reset(
+        self, rootless_repo, tmp_path,
+    ):
+        checkout = tmp_path / "ignored-overlay"
+        _git(["worktree", "add", "--no-checkout", "-b", "ignored-overlay",
+              str(checkout), "main"], rootless_repo)
+        excludes = tmp_path / "global-excludes"
+        excludes.write_text("README.md\n", encoding="utf-8")
+        _git(["config", "core.excludesFile", str(excludes)], rootless_repo)
+        (checkout / "README.md").write_text("operator data\n", encoding="utf-8")
+
+        with pytest.raises(worktree.WorktreeError, match="README.md"):
+            worktree._assert_allocation_checkout_reset_is_safe(
+                self._record(checkout)
+            )
+
+    def test_unexpected_files_are_reported_with_a_bounded_status_sample(
+        self, tmp_path, monkeypatch
+    ):
+        record = self._record(tmp_path)
+        record_path = record.record_path.relative_to(record.git_worktree_path).as_posix()
+        tracked_paths = [f"tracked-{index}.txt" for index in range(5)]
+        status_entries = [
+            f"?? {record_path}",
+            "?? operator.txt",
+            *(f"D  {path}" for path in tracked_paths),
+        ]
+        status_output = "\0".join(status_entries) + "\0"
+        tree_output = "\0".join(tracked_paths) + "\0"
+
+        def fake_git(args, _cwd):
+            if args[0] == "status":
+                return subprocess.CompletedProcess(args, 0, status_output, "")
+            assert args[:2] == ["ls-tree", "-r"]
+            return subprocess.CompletedProcess(args, 0, tree_output, "")
+
+        monkeypatch.setattr(worktree, "_git", fake_git)
+        with pytest.raises(worktree.WorktreeError, match="operator.txt.*7 total entries"):
+            worktree._assert_allocation_checkout_reset_is_safe(record)
+
+    def test_short_unexpected_status_sample_omits_total_count(
+        self, tmp_path, monkeypatch
+    ):
+        record = self._record(tmp_path)
+        record_path = record.record_path.relative_to(record.git_worktree_path).as_posix()
+        status_output = "\0".join([
+            f"?? {record_path}", "?? operator.txt", "D  tracked.txt",
+        ]) + "\0"
+
+        def fake_git(args, _cwd):
+            if args[0] == "status":
+                return subprocess.CompletedProcess(args, 0, status_output, "")
+            assert args[:2] == ["ls-tree", "-r"]
+            return subprocess.CompletedProcess(args, 0, "tracked.txt\0", "")
+
+        monkeypatch.setattr(worktree, "_git", fake_git)
+        with pytest.raises(worktree.WorktreeError, match="operator.txt") as raised:
+            worktree._assert_allocation_checkout_reset_is_safe(record)
+        assert "total entries" not in str(raised.value)
+
+    def test_record_rejects_overlay_intent_below_schema_three(self, tmp_path):
+        record = replace(self._record(tmp_path), schema_version=2, overlay_intent_known=True)
+        with pytest.raises(ValueError, match="requires worktree record schema version 3"):
+            record.to_dict()
+
+    def test_record_rejects_pending_marker_below_schema_four(self, tmp_path):
+        record = replace(
+            self._record(tmp_path), schema_version=3,
+            overlay_intent_known=True, initial_overlay_pending=True,
+        )
+        with pytest.raises(ValueError, match="requires worktree record schema version 4"):
+            record.to_dict()
+
+    def test_record_rejects_reset_phase_below_schema_five(self, tmp_path):
+        record = replace(
+            self._record(tmp_path), schema_version=4,
+            checkout_reset_pending=True,
+        )
+        with pytest.raises(ValueError, match="schema version 5"):
+            record.to_dict()
+
+    @pytest.mark.parametrize(
+        ("updates", "message"),
+        [
+            (
+                {"schema_version": 4, "initial_overlay": "payload"},
+                "unknown initial overlay intent cannot carry a payload",
+            ),
+            (
+                {
+                    "schema_version": 4,
+                    "initial_overlay_pending": True,
+                    "adopted": False,
+                },
+                "pending initial overlay recovery requires known intent",
+            ),
+            (
+                {
+                    "schema_version": 4,
+                    "state": "ready",
+                    "overlay_intent_known": True,
+                    "initial_overlay_pending": True,
+                    "adopted": False,
+                },
+                "ready worktree record cannot have pending overlay recovery",
+            ),
+        ],
+    )
+    def test_record_writer_refuses_inconsistent_v4_overlay_state(
+        self, tmp_path, updates, message
+    ):
+        record = replace(self._record(tmp_path), **updates)
+        with pytest.raises(ValueError, match=message):
+            record.to_dict()
+
+    def test_overlay_writer_accepts_known_no_overlay_intent(self, tmp_path):
+        worktree._write_rendered_worktree_overlay(tmp_path, None)
+        assert not (tmp_path / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES).exists()
+
+    def test_overlay_resume_rechecks_an_identical_file_from_a_publish_race(
+        self, tmp_path, monkeypatch
+    ):
+        payload = "[ciu.instance]\nservice_profiles = [\"core\"]\n"
+        record = replace(
+            self._record(tmp_path), schema_version=3,
+            initial_overlay=payload, overlay_intent_known=True,
+        )
+        overlay = record.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+
+        def raced_publish(_root, contents):
+            overlay.write_text(contents, encoding="utf-8")
+            raise worktree.WorktreeError("publish lost race")
+
+        monkeypatch.setattr(worktree, "_write_rendered_worktree_overlay", raced_publish)
+        worktree._ensure_initial_overlay(record)
+        assert overlay.read_text(encoding="utf-8") == payload
+
+    def test_overlay_resume_refuses_a_symlink_created_during_publish_race(
+        self, tmp_path, monkeypatch
+    ):
+        payload = "[ciu.instance]\nservice_profiles = [\"core\"]\n"
+        record = replace(
+            self._record(tmp_path), schema_version=3,
+            initial_overlay=payload, overlay_intent_known=True,
+        )
+        overlay = record.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        target = tmp_path / "operator-overlay"
+        target.write_text(payload, encoding="utf-8")
+
+        def raced_symlink(_root, _contents):
+            overlay.symlink_to(target)
+            raise worktree.WorktreeError("publish lost race")
+
+        monkeypatch.setattr(worktree, "_write_rendered_worktree_overlay", raced_symlink)
+        with pytest.raises(worktree.WorktreeError, match="is a symlink"):
+            worktree._ensure_initial_overlay(record)
+
+    def test_overlay_resume_reports_raced_file_that_cannot_be_opened(
+        self, tmp_path, monkeypatch
+    ):
+        payload = "[ciu.instance]\nservice_profiles = [\"core\"]\n"
+        record = replace(
+            self._record(tmp_path), schema_version=3,
+            initial_overlay=payload, overlay_intent_known=True,
+        )
+        overlay = record.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        real_open = worktree.os.open
+
+        def deny_raced_open(path, flags):
+            if Path(path) == overlay and overlay.exists():
+                raise PermissionError("read denied")
+            return real_open(path, flags)
+
+        def raced_publish(_root, contents):
+            overlay.write_text(contents, encoding="utf-8")
+            raise worktree.WorktreeError("publish lost race")
+
+        monkeypatch.setattr(worktree.os, "open", deny_raced_open)
+        monkeypatch.setattr(worktree, "_write_rendered_worktree_overlay", raced_publish)
+        with pytest.raises(worktree.WorktreeError, match="cannot verify.*read denied"):
+            worktree._ensure_initial_overlay(record)
+
+    def test_overlay_resume_reports_initial_open_failure(self, tmp_path, monkeypatch):
+        record = replace(
+            self._record(tmp_path), schema_version=3,
+            initial_overlay="payload", overlay_intent_known=True,
+        )
+        monkeypatch.setattr(
+            worktree.os, "open",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("denied")),
+        )
+        with pytest.raises(worktree.WorktreeError, match="cannot verify.*denied"):
+            worktree._ensure_initial_overlay(record)
+
+    def test_overlay_resume_reports_file_read_failure(self, tmp_path, monkeypatch):
+        record = replace(
+            self._record(tmp_path), schema_version=3,
+            initial_overlay="payload", overlay_intent_known=True,
+        )
+        overlay = record.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        overlay.write_text("payload", encoding="utf-8")
+        monkeypatch.setattr(
+            worktree.os, "fdopen",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("read failed")),
+        )
+        with pytest.raises(worktree.WorktreeError, match="cannot verify.*read failed"):
+            worktree._ensure_initial_overlay(record)
+
+    def test_overlay_resume_refuses_records_without_known_intent(self, tmp_path):
+        record = replace(self._record(tmp_path), schema_version=3)
+        with pytest.raises(worktree.WorktreeError, match="predates durable overlay intent"):
+            worktree._ensure_initial_overlay(record)
+
+    def test_overlay_writer_reports_failure_before_temp_file_creation(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            worktree.tempfile, "NamedTemporaryFile",
+            lambda **_kwargs: (_ for _ in ()).throw(PermissionError("denied")),
+        )
+        with pytest.raises(worktree.WorktreeError, match="could not write.*denied"):
+            worktree._write_rendered_worktree_overlay(tmp_path, "payload")
+
+
 class _FlushRecordingStream(io.StringIO):
     def __init__(self):
         super().__init__()
@@ -96,7 +359,12 @@ def fake_generate_env(monkeypatch, write_instance_facts):
     CIU reads back. A fake that wrote only the first would let every test here
     pass against a product that no longer works.
     """
-    def fake(path: Path, *, identity_only: bool = False) -> int:
+    def fake(
+        path: Path,
+        *,
+        identity_only: bool = False,
+        allocation_lock_held: bool = False,
+    ) -> int:
         instance_id = _instance_id_for(path)
         (path / "ciu.env").write_text(
             f'export INSTANCE_ID="{instance_id}"\n'
@@ -137,25 +405,40 @@ class TestCreateRemoveList:
 
     def test_create_profile_writes_durable_instance_override(self, tmp_repo, fake_generate_env):
         target = create_path(tmp_repo, "wt", base="main", profile="core,db")
-        overlay = (target / "ciu.global.instance.toml.j2").read_text(encoding="utf-8")
+        overlay_path = target / "ciu.global.instance.toml.j2"
+        overlay = overlay_path.read_text(encoding="utf-8")
         assert 'service_profiles = ["core", "db"]' in overlay
+        assert overlay_path.stat().st_mode & 0o777 == 0o644
         assert "CIU_SERVICES_PROFILE" not in (target / "ciu.env").read_text(encoding="utf-8")
+
+    def test_empty_profile_refuses_before_checkout_or_exclude_mutation(self, tmp_repo):
+        common = worktree._git_common_dir(tmp_repo)
+        exclude = common / "info" / "exclude"
+        before = exclude.read_bytes() if exclude.exists() else None
+
+        with pytest.raises(worktree.WorktreeError, match="non-empty comma-separated"):
+            worktree.create(tmp_repo, "empty-profile", profile="")
+
+        assert worktree.find_instance_record(tmp_repo, "empty-profile") is None
+        assert worktree.find_worktree(tmp_repo, "empty-profile") is None
+        assert (exclude.read_bytes() if exclude.exists() else None) == before
 
     def test_create_generate_env_failure_raises(self, tmp_repo, monkeypatch):
         monkeypatch.setattr(worktree, "_generate_env_in", lambda path, **_kw: 1)
         with pytest.raises(worktree.WorktreeError, match="ciu env generate"):
             create_path(tmp_repo, "wt", base="main")
 
-    def test_create_surfaces_git_worktree_creation_failure(self, tmp_repo, monkeypatch):
-        monkeypatch.setattr(
-            worktree,
-            "_git",
-            lambda *_args: subprocess.CompletedProcess(
-                ["git"], 1, "", "branch exists"
-            ),
-        )
-        with pytest.raises(worktree.WorktreeError, match="branch exists"):
-            create_path(tmp_repo, "wt", base="main")
+    def test_create_refuses_unresolved_base_before_allocation_mutation(self, tmp_repo):
+        common = worktree._git_common_dir(tmp_repo)
+        exclude = common / "info" / "exclude"
+        before = exclude.read_bytes() if exclude.exists() else None
+
+        with pytest.raises(worktree.WorktreeError, match="cannot verify selected base"):
+            create_path(tmp_repo, "wt", base="missing-base")
+
+        assert worktree.find_instance_record(tmp_repo, "wt") is None
+        assert worktree.find_worktree(tmp_repo, "wt") is None
+        assert (exclude.read_bytes() if exclude.exists() else None) == before
 
     def test_list_worktrees_shows_primary_and_added(self, tmp_repo, fake_generate_env):
         create_path(tmp_repo, "wt1", base="main")
@@ -264,12 +547,186 @@ class TestManagedIdentityLifecycle:
     def test_create_persists_atomic_ready_record(self, tmp_repo, fake_generate_env):
         record = worktree.create(tmp_repo, "logical-one", base="main")
         stored = json.loads(record.record_path.read_text(encoding="utf-8"))
-        assert stored["schema_version"] == 1
+        assert stored["schema_version"] == 6
+        assert stored["base_branch_ref"] == "main"
+        assert stored["adopted"] is False
+        assert stored["checkout_reset_pending"] is False
+        assert stored["network_id"] is None
         assert stored["logical_name"] == "logical-one"
         assert stored["state"] == "ready"
         assert stored["runtime"]["instance_id"] == record.instance_id
         assert "head" not in stored
         assert "password" not in record.record_path.read_text(encoding="utf-8").lower()
+
+    def test_record_writer_syncs_parent_directory_after_replace(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        record = worktree.create(tmp_repo, "durable-record", base="main")
+        directory = record.record_path.parent
+        events = []
+        real_open = os.open
+        real_fsync = os.fsync
+        real_replace = os.replace
+
+        def tracked_open(path, flags, *args, **kwargs):
+            fd = real_open(path, flags, *args, **kwargs)
+            if Path(path) == directory:
+                events.append(("directory-open", fd))
+            return fd
+
+        def tracked_fsync(fd):
+            kind = "directory-fsync" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file-fsync"
+            events.append((kind, fd))
+            return real_fsync(fd)
+
+        def tracked_replace(source, destination):
+            result = real_replace(source, destination)
+            events.append(("replace", str(destination)))
+            return result
+
+        monkeypatch.setattr(worktree.os, "open", tracked_open)
+        monkeypatch.setattr(worktree.os, "fsync", tracked_fsync)
+        monkeypatch.setattr(worktree.os, "replace", tracked_replace)
+        worktree._write_instance_record(record)
+
+        labels = [event[0] for event in events]
+        assert labels.index("file-fsync") < labels.index("replace")
+        assert labels.index("replace") < labels.index("directory-open")
+        assert labels.index("directory-open") < labels.index("directory-fsync")
+
+    def test_parent_directory_sync_failure_reports_already_replaced_record(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        record = worktree.create(tmp_repo, "directory-sync-fails")
+        real_fsync = os.fsync
+
+        def fail_directory_sync(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError("directory sync denied")
+            return real_fsync(fd)
+
+        monkeypatch.setattr(worktree.os, "fsync", fail_directory_sync)
+        with pytest.raises(
+            worktree.WorktreeError, match="was replaced.*durability is uncertain"
+        ):
+            worktree._write_instance_record(record)
+
+        assert worktree.read_instance_record(record.record_path) == record
+
+    def test_lease_update_cannot_restore_allocating_snapshot_after_ready(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        original = worktree.create(tmp_repo, "lease-transition", profile="core")
+        allocating = replace(
+            original,
+            state="allocating",
+            initial_overlay_pending=True,
+            network_id=None,
+        )
+        worktree._write_instance_record(allocating)
+        ready = replace(
+            allocating,
+            state="ready",
+            initial_overlay_pending=False,
+            network_id="a" * 64,
+        )
+
+        ready_write_started = threading.Event()
+        allow_ready_write = threading.Event()
+        ready_written = threading.Event()
+        lease_started = threading.Event()
+        observed = queue.Queue()
+        failures = []
+        real_lock = worktree._allocation_lock
+        real_find = worktree.find_instance_record
+        real_write = worktree._write_instance_record
+
+        @contextmanager
+        def tracked_lock(root):
+            if threading.current_thread().name == "lease-updater":
+                observed.put("lease-lock")
+            with real_lock(root):
+                yield
+
+        def tracked_find(root, name, **kwargs):
+            record = real_find(root, name, **kwargs)
+            if threading.current_thread().name == "lease-updater":
+                observed.put(("lease-read", record.state if record else None))
+            return record
+
+        def tracked_write(candidate):
+            thread_name = threading.current_thread().name
+            if thread_name == "allocator" and candidate.state == "ready":
+                ready_write_started.set()
+                if not allow_ready_write.wait(timeout=5):
+                    raise AssertionError("test did not release ready publication")
+                result = real_write(candidate)
+                ready_written.set()
+                return result
+            if thread_name == "lease-updater" and candidate.lease is not None:
+                if not ready_written.wait(timeout=5):
+                    raise AssertionError("lease write did not follow ready publication")
+            return real_write(candidate)
+
+        monkeypatch.setattr(worktree, "_allocation_lock", tracked_lock)
+        monkeypatch.setattr(worktree, "find_instance_record", tracked_find)
+        monkeypatch.setattr(worktree, "_write_instance_record", tracked_write)
+
+        def publish_ready():
+            try:
+                with worktree._allocation_lock(tmp_repo):
+                    worktree._write_instance_record(ready)
+            except BaseException as exc:  # surface worker failures in the test thread
+                failures.append(exc)
+
+        def update_lease():
+            lease_started.set()
+            try:
+                worktree.apply_lease(
+                    tmp_repo, "lease-transition", extend="1h"
+                )
+            except BaseException as exc:
+                failures.append(exc)
+
+        allocator = threading.Thread(target=publish_ready, name="allocator")
+        allocator.start()
+        assert ready_write_started.wait(timeout=5)
+        lease_thread = threading.Thread(target=update_lease, name="lease-updater")
+        lease_thread.start()
+        assert lease_started.wait(timeout=5)
+        first_lease_action = observed.get(timeout=5)
+        allow_ready_write.set()
+        allocator.join(timeout=5)
+        lease_thread.join(timeout=5)
+
+        assert not allocator.is_alive() and not lease_thread.is_alive()
+        assert not failures
+        assert first_lease_action == "lease-lock"
+        final = worktree.read_instance_record(original.record_path)
+        assert final.state == "ready"
+        assert final.initial_overlay_pending is False
+        assert final.network_id == "a" * 64
+        assert final.lease is not None
+
+    def test_own_lease_entrypoints_use_the_allocation_lock(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        record = worktree.create(tmp_repo, "own-lease-lock")
+        lock_roots = []
+        real_lock = worktree._allocation_lock
+
+        @contextmanager
+        def tracked_lock(root):
+            lock_roots.append(Path(root).resolve())
+            with real_lock(root):
+                yield
+
+        monkeypatch.setattr(worktree, "_allocation_lock", tracked_lock)
+        assert worktree.acquire_own_lease(
+            record.ciu_root, ttl_hours=1
+        ).lease is not None
+        assert worktree.release_own_lease(record.ciu_root).lease is None
+        assert lock_roots == [record.ciu_root.resolve(), record.ciu_root.resolve()]
 
     def test_generated_same_second_collision_suffixes_only_second(
         self, tmp_repo, fake_generate_env, monkeypatch
@@ -321,11 +778,247 @@ class TestManagedIdentityLifecycle:
         assert ensured == created
         assert created.record_path.read_bytes() == before
 
+    def test_ready_ensure_does_not_restore_an_operator_deleted_overlay(
+        self, tmp_repo, fake_generate_env
+    ):
+        created = worktree.create(tmp_repo, "overlay-ready-missing", profile="core")
+        overlay = created.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        overlay.unlink()
+
+        ensured = worktree.ensure(tmp_repo, "overlay-ready-missing")
+
+        assert ensured.state == "ready"
+        assert not overlay.exists()
+
+    def test_ready_ensure_preserves_operator_edits_to_the_overlay(
+        self, tmp_repo, fake_generate_env
+    ):
+        created = worktree.create(tmp_repo, "overlay-ready-edited", profile="core")
+        overlay = created.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        edited = b'# operator edit\r\n[ciu.instance]\r\nservice_profiles = ["db"]\r\n'
+        overlay.write_bytes(edited)
+
+        ensured = worktree.ensure(tmp_repo, "overlay-ready-edited")
+
+        assert ensured.state == "ready"
+        assert overlay.read_bytes() == edited
+
+    def test_ready_root_repair_preserves_operator_overlay_edits(
+        self, tmp_repo, fake_generate_env
+    ):
+        created = worktree.create(tmp_repo, "overlay-ready-root-repair", profile="core")
+        overlay = created.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        edited = b'# operator edit\n[ciu.instance]\nservice_profiles = ["db"]\n'
+        overlay.write_bytes(edited)
+        generated = created.ciu_root / "ciu.instance.generated.toml"
+        generated.unlink()
+
+        ensured = worktree.ensure(tmp_repo, "overlay-ready-root-repair")
+
+        assert ensured.state == "ready"
+        assert generated.is_file()
+        assert overlay.read_bytes() == edited
+
+    @pytest.mark.parametrize("operator_state", ["edited", "deleted"])
+    def test_interrupted_ready_root_repair_preserves_overlay_and_live_network(
+        self, tmp_repo, fake_generate_env, monkeypatch, operator_state
+    ):
+        logical_name = f"overlay-ready-repair-{operator_state}"
+        created = worktree.create(tmp_repo, logical_name, profile="core")
+        overlay = created.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        edited = b'# operator edit\n[ciu.instance]\nservice_profiles = ["db"]\n'
+        if operator_state == "edited":
+            overlay.write_bytes(edited)
+        else:
+            overlay.unlink()
+        generated = created.ciu_root / "ciu.instance.generated.toml"
+        generated.unlink()
+
+        record = worktree.read_instance_record(created.record_path)
+        assert record.state == "ready"
+        assert record.initial_overlay_pending is False
+        monkeypatch.setattr(
+            worktree,
+            "_docker_network_details",
+            lambda _network: {
+                "id": "a" * 64,
+                "labels": {worktree._NETWORK_OWNER_LABEL: created.instance_id},
+            },
+        )
+        real_finish = worktree._finish_allocation
+        monkeypatch.setattr(
+            worktree,
+            "_finish_allocation",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                KeyboardInterrupt("simulated interruption during root repair")
+            ),
+        )
+        with pytest.raises(KeyboardInterrupt, match="during root repair"):
+            worktree.ensure(tmp_repo, logical_name)
+
+        interrupted = worktree.read_instance_record(created.record_path)
+        assert interrupted.state == "allocating"
+        assert interrupted.initial_overlay_pending is False
+        monkeypatch.setattr(worktree, "_finish_allocation", real_finish)
+
+        repaired = worktree.ensure(tmp_repo, logical_name)
+
+        assert repaired.state == "ready"
+        assert generated.is_file()
+        if operator_state == "edited":
+            assert overlay.read_bytes() == edited
+        else:
+            assert not overlay.exists()
+
+    def test_partial_ensure_refuses_crlf_normalized_overlay_bytes(
+        self, tmp_repo, fake_generate_env
+    ):
+        created = worktree.create(tmp_repo, "overlay-ready-crlf", profile="core")
+        overlay = created.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        expected = created.initial_overlay.encode("utf-8")
+        crlf = expected.replace(b"\n", b"\r\n")
+        overlay.write_bytes(crlf)
+        partial = replace(
+            created,
+            state="recovery-required",
+            recovery_status="env-generation-failed",
+            initial_overlay_pending=True,
+        )
+        worktree._write_instance_record(partial)
+
+        with pytest.raises(
+            worktree.WorktreeError, match="differs from the recorded allocation intent"
+        ):
+            worktree.ensure(tmp_repo, "overlay-ready-crlf")
+
+        assert overlay.read_bytes() == crlf
+
+    def test_partial_ensure_refuses_symlink_overlay_without_following_it(
+        self, tmp_repo, fake_generate_env
+    ):
+        created = worktree.create(tmp_repo, "overlay-ready-symlink", profile="core")
+        overlay = created.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        target = tmp_repo / "operator-overlay.toml"
+        target.write_text("operator-owned\n", encoding="utf-8")
+        overlay.unlink()
+        overlay.symlink_to(target)
+        partial = replace(
+            created,
+            state="recovery-required",
+            recovery_status="env-generation-failed",
+            initial_overlay_pending=True,
+        )
+        worktree._write_instance_record(partial)
+
+        with pytest.raises(worktree.WorktreeError, match="is a symlink"):
+            worktree.ensure(tmp_repo, "overlay-ready-symlink")
+
+        assert overlay.is_symlink()
+        assert target.read_text(encoding="utf-8") == "operator-owned\n"
+
+    def test_partial_ensure_refuses_nonregular_overlay_without_replacing_it(
+        self, tmp_repo, fake_generate_env
+    ):
+        created = worktree.create(tmp_repo, "overlay-ready-directory", profile="core")
+        overlay = created.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        overlay.unlink()
+        overlay.mkdir()
+        partial = replace(
+            created,
+            state="recovery-required",
+            recovery_status="env-generation-failed",
+            initial_overlay_pending=True,
+        )
+        worktree._write_instance_record(partial)
+
+        with pytest.raises(worktree.WorktreeError, match="not a regular file"):
+            worktree.ensure(tmp_repo, "overlay-ready-directory")
+
+        assert overlay.is_dir()
+
+    def test_ready_v2_repair_resumes_after_interruption_without_overlay_intent(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        created = worktree.create(tmp_repo, "legacy-ready")
+        legacy = replace(
+            created, base_branch_ref=None, schema_version=2, initial_overlay=None,
+            overlay_intent_known=False,
+            checkout_reset_pending=None, network_id=None,
+        )
+        worktree._write_instance_record(legacy)
+        generated = legacy.ciu_root / "ciu.instance.generated.toml"
+        generated.unlink()
+        monkeypatch.setattr(
+            worktree,
+            "_docker_network_details",
+            lambda _network: {
+                "id": "a" * 64,
+                "labels": {worktree._NETWORK_OWNER_LABEL: created.instance_id},
+            },
+        )
+        real_finish = worktree._finish_allocation
+        monkeypatch.setattr(
+            worktree,
+            "_finish_allocation",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                KeyboardInterrupt("simulated interruption during legacy repair")
+            ),
+        )
+
+        with pytest.raises(KeyboardInterrupt, match="during legacy repair"):
+            worktree.ensure(tmp_repo, "legacy-ready")
+
+        interrupted = worktree.read_instance_record(legacy.record_path)
+        assert interrupted.state == "allocating"
+        assert interrupted.schema_version == 5
+        assert interrupted.base_branch_ref is None
+        assert interrupted.overlay_intent_known is False
+        assert interrupted.initial_overlay_pending is False
+        assert interrupted.adopted is None
+        monkeypatch.setattr(worktree, "_finish_allocation", real_finish)
+
+        ensured = worktree.ensure(tmp_repo, "legacy-ready")
+
+        assert ensured.state == "ready"
+        assert ensured.schema_version == 5
+        assert ensured.base_branch_ref is None
+        assert ensured.overlay_intent_known is False
+        assert generated.is_file()
+
+    def test_ensure_refuses_incomplete_v3_record_with_ambiguous_recovery_state(
+        self, tmp_repo, fake_generate_env
+    ):
+        created = worktree.create(tmp_repo, "legacy-v3-partial", profile="core")
+        legacy = replace(
+            created,
+            base_branch_ref=None, schema_version=3,
+            state="allocating",
+            recovery_status=None,
+            checkout_reset_pending=None,
+            network_id=None,
+        )
+        worktree._write_instance_record(legacy)
+        before = legacy.record_path.read_bytes()
+
+        with pytest.raises(worktree.WorktreeError, match="schema-v3 allocation"):
+            worktree.ensure(tmp_repo, "legacy-v3-partial")
+
+        assert legacy.record_path.read_bytes() == before
+        overlay = legacy.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        assert overlay.read_text(encoding="utf-8") == created.initial_overlay
+
     def test_ensure_repairs_ready_record_while_its_network_exists(
         self, tmp_repo, fake_generate_env, monkeypatch
     ):
         monkeypatch.setattr(worktree, "_docker_network_exists", lambda _network: False)
-        created = worktree.create(tmp_repo, "logical-one")
+        created = worktree.create(tmp_repo, "logical-one", profile="core")
+        overlay = created.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        original_overlay = overlay.read_bytes()
+        legacy_v3 = replace(
+            created, base_branch_ref=None, schema_version=3, initial_overlay_pending=False,
+            checkout_reset_pending=None, network_id=None,
+        )
+        worktree._write_instance_record(legacy_v3)
         context = worktree._ensure_shared_record(tmp_repo, created)
         shared = worktree._shared_worktree()
         shared_record = shared.read_record(context.record_path)
@@ -336,23 +1029,43 @@ class TestManagedIdentityLifecycle:
         facts = created.ciu_root / "ciu.instance.generated.toml"
         facts.unlink()
 
-        existing_networks = {created.network}
-        network_is_present = lambda network: network in existing_networks
-        assert network_is_present(created.network)
-        monkeypatch.setattr(worktree, "_docker_network_exists", network_is_present)
+        monkeypatch.setattr(
+            worktree,
+            "_docker_network_details",
+            lambda network: (
+                {"id": "a" * 64, "labels": {
+                    worktree._NETWORK_OWNER_LABEL: created.instance_id
+                }} if network == created.network else None
+            ),
+        )
 
         repaired = worktree.ensure(tmp_repo, "logical-one")
 
         assert repaired.state == "ready"
+        # The migration upgrades to v5 only and never invents a branch.
+        assert repaired.schema_version == 5
+        assert repaired.base_branch_ref is None
         assert repaired.instance_id == created.instance_id
         assert repaired.network == created.network
         assert facts.is_file()
+        assert overlay.read_bytes() == original_overlay
         assert shared.read_record(context.record_path).metadata["root_entries"]
 
     def test_ensure_constraint_mismatch_fails_closed(self, tmp_repo, fake_generate_env):
         worktree.create(tmp_repo, "logical-one", display_name="visible-one")
         with pytest.raises(worktree.WorktreeError, match="ensure mismatch"):
             worktree.ensure(tmp_repo, "logical-one", display_name="different")
+
+    def test_ensure_refuses_explicit_overlay_options_for_existing_worktree(
+        self, tmp_repo, fake_generate_env
+    ):
+        worktree.create(tmp_repo, "logical-one", profile="core")
+
+        with pytest.raises(
+            worktree.WorktreeError,
+            match="initial overlay options are not reapplied",
+        ):
+            worktree.ensure(tmp_repo, "logical-one", profile="db")
 
     def test_env_failure_is_inspectable_and_ensure_resumes(
         self, tmp_repo, fake_generate_env, monkeypatch, write_instance_facts
@@ -389,12 +1102,138 @@ class TestManagedIdentityLifecycle:
         monkeypatch.setattr(worktree, "_generate_env_in", collide)
         monkeypatch.setattr(worktree, "_docker_network_exists", lambda _network: False)
         worktree.create(tmp_repo, "logical-one")
-        with pytest.raises(worktree.WorktreeError, match="already belongs"):
+        with pytest.raises(
+            worktree.RuntimeNetworkOwnershipError, match="already belongs"
+        ):
             worktree.create(tmp_repo, "logical-two")
         failed = worktree.find_instance_record(tmp_repo, "logical-two")
         assert failed is not None
         assert failed.state == "recovery-required"
         assert failed.recovery_status == "runtime-collision"
+
+    def test_runtime_registry_failure_is_not_classified_as_collision(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        real_scan = worktree._scan_instance_records
+        scan_calls = 0
+
+        def unavailable(_root, **_kwargs):
+            nonlocal scan_calls
+            scan_calls += 1
+            if scan_calls == 2:
+                raise worktree.WorktreeError("Git worktree inventory unavailable")
+            return real_scan(_root)
+
+        monkeypatch.setattr(worktree, "_scan_instance_records", unavailable)
+        with pytest.raises(
+            worktree.RuntimeNetworkVerificationError,
+            match="identity uniqueness.*inventory unavailable",
+        ):
+            worktree.create(tmp_repo, "registry-unavailable")
+
+        assert scan_calls == 2
+        monkeypatch.setattr(worktree, "_scan_instance_records", real_scan)
+        failed = worktree.find_instance_record(tmp_repo, "registry-unavailable")
+        assert failed is not None
+        assert failed.state == "recovery-required"
+        assert failed.recovery_status == "runtime-verification-failed"
+
+    def test_unreadable_ciu_root_sibling_blocks_runtime_identity_admission(
+        self, tmp_repo, fake_generate_env
+    ):
+        damaged = worktree.create(tmp_repo, "damaged-ciu-sibling")
+        damaged.record_path.write_text('{"logical_name":"damaged-ciu-sibling",\n', encoding="utf-8")
+        (damaged.ciu_root / worktree.GLOBAL_CONFIG_DEFAULTS).unlink()
+
+        with pytest.raises(
+            worktree.RuntimeNetworkVerificationError,
+            match="cannot verify runtime identity uniqueness.*damaged-ciu-sibling",
+        ):
+            worktree.create(tmp_repo, "new-runtime-instance")
+
+        partial = worktree.find_instance_record(tmp_repo, "new-runtime-instance")
+        assert partial is not None
+        assert partial.state == "recovery-required"
+        assert partial.recovery_status == "runtime-verification-failed"
+
+    def test_missing_checkout_record_recovers_the_checkpointed_initial_overlay(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        real_write = worktree._write_instance_record
+
+        def interrupt_record_write(_record):
+            raise KeyboardInterrupt("stop between shared and CIU record writes")
+
+        monkeypatch.setattr(worktree, "_write_instance_record", interrupt_record_write)
+        with pytest.raises(KeyboardInterrupt, match="between shared and CIU"):
+            worktree.create(tmp_repo, "record-gap-recovery", profile="core,db")
+
+        shared_record = worktree._shared_record_for_logical_name(
+            tmp_repo, "record-gap-recovery"
+        )
+        assert shared_record is not None
+        recovered_intent = shared_record.metadata[worktree._CIU_WORKTREE_RECORD_METADATA]
+        assert recovered_intent["initial_overlay_pending"] is True
+        assert recovered_intent["initial_overlay"] is not None
+
+        monkeypatch.setattr(worktree, "_write_instance_record", real_write)
+        ready = worktree.ensure(tmp_repo, "record-gap-recovery")
+
+        assert ready.state == "ready"
+        assert ready.initial_overlay_pending is False
+        assert (
+            ready.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        ).read_text(encoding="utf-8") == recovered_intent["initial_overlay"]
+
+    def test_missing_ready_record_refuses_direct_up_then_restores_from_shared_snapshot(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        record = worktree.create(tmp_repo, "missing-ready-record", profile="core")
+        expected_overlay = (
+            record.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        ).read_bytes()
+        record.record_path.unlink()
+        monkeypatch.setattr(
+            worktree,
+            "_docker_network_details",
+            lambda _network: pytest.fail("missing record must refuse before Docker"),
+        )
+
+        with pytest.raises(
+            worktree.RuntimeNetworkVerificationError,
+            match="has no CIU instance record.*worktree ensure",
+        ):
+            worktree.verify_own_runtime_network(
+                record.ciu_root,
+                expected_instance_id=record.instance_id,
+                expected_network=record.network,
+            )
+
+        monkeypatch.setattr(worktree, "_docker_network_details", lambda _network: None)
+        restored = worktree.ensure(tmp_repo, "missing-ready-record")
+        assert restored.state == "ready"
+        assert restored.initial_overlay is None
+        assert restored.initial_overlay_pending is False
+        assert (
+            restored.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        ).read_bytes() == expected_overlay
+
+    def test_runtime_network_probe_failure_has_recoverable_status(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        def unavailable(_network):
+            raise worktree.RuntimeNetworkProbeError("docker permission denied")
+
+        monkeypatch.setattr(worktree, "_docker_network_details", unavailable)
+        with pytest.raises(
+            worktree.RuntimeNetworkProbeError, match="permission denied"
+        ):
+            worktree.create(tmp_repo, "network-probe-unavailable")
+
+        failed = worktree.find_instance_record(tmp_repo, "network-probe-unavailable")
+        assert failed is not None
+        assert failed.state == "recovery-required"
+        assert failed.recovery_status == "runtime-verification-failed"
 
     def test_network_collision_is_independent_of_instance_id(
         self, tmp_repo, monkeypatch, write_instance_facts
@@ -457,10 +1296,17 @@ class TestManagedIdentityLifecycle:
 
         monkeypatch.setattr(worktree, "_generate_env_in", nested_env)
         monkeypatch.setattr(worktree, "_docker_network_exists", lambda _network: False)
-        record = worktree.create(ciu_root, "nested")
+        record = worktree.create(ciu_root, "nested", profile="core")
         assert record.git_worktree_path == git_root / ".worktrees" / "nested"
         assert record.ciu_root_offset == Path("component")
         assert record.record_path == record.git_worktree_path / "component" / worktree.WORKTREE_INSTANCE_RECORD
+        assert (record.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES).is_file()
+
+    def test_overlay_refuses_a_root_not_committed_at_the_selected_base(self, rootless_repo):
+        with pytest.raises(worktree.WorktreeError, match="not a committed CIU root"):
+            worktree.create(rootless_repo, "profiled-rootless", profile="core")
+        assert worktree.find_instance_record(rootless_repo, "profiled-rootless") is None
+        assert worktree.find_worktree(rootless_repo, "profiled-rootless") is None
 
     def test_ensure_absent_creates_and_generated_constraints_are_stable(
         self, tmp_repo, fake_generate_env, monkeypatch
@@ -507,6 +1353,134 @@ class TestManagedIdentityLifecycle:
         with pytest.raises(worktree.WorktreeError, match="cannot be empty"):
             worktree.create(tmp_repo, "logical", branch="")
 
+    def test_create_invalid_overlay_refuses_before_any_allocation_side_effect(
+        self, tmp_repo
+    ):
+        common = worktree._git_common_dir(tmp_repo)
+        exclude = common / "info" / "exclude"
+        exclude_before = exclude.read_bytes() if exclude.exists() else None
+        shared = worktree._shared_worktree()
+
+        with pytest.raises(worktree.WorktreeError, match="blank items"):
+            worktree.create(tmp_repo, "invalid-overlay", profile="core,,db")
+
+        assert not (tmp_repo / ".worktrees" / "invalid-overlay").exists()
+        assert not worktree._branch_exists(tmp_repo, "invalid-overlay")
+        assert worktree.find_instance_record(tmp_repo, "invalid-overlay") is None
+        assert shared.list_workspaces(common) == []
+        assert (exclude.read_bytes() if exclude.exists() else None) == exclude_before
+
+    def test_create_resume_restores_exact_recorded_overlay_after_interruption(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        real_writer = worktree._write_rendered_worktree_overlay
+
+        def interrupt_before_overlay(*_args, **_kwargs):
+            raise KeyboardInterrupt("simulated interruption")
+
+        monkeypatch.setattr(
+            worktree, "_write_rendered_worktree_overlay", interrupt_before_overlay
+        )
+        with pytest.raises(KeyboardInterrupt, match="simulated interruption"):
+            worktree.create(tmp_repo, "overlay-resume", profile="core,db")
+
+        partial = worktree.find_instance_record(tmp_repo, "overlay-resume")
+        assert partial is not None and partial.state == "allocating"
+        assert partial.overlay_intent_known is True
+        assert partial.initial_overlay is not None
+        assert partial.initial_overlay_pending is True
+        assert partial.fork_point_sha == _git(
+            ["rev-parse", "HEAD"], partial.git_worktree_path
+        ).stdout.strip()
+        overlay = partial.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        assert not overlay.exists()
+
+        monkeypatch.setattr(worktree, "_write_rendered_worktree_overlay", real_writer)
+        resumed = worktree.ensure(tmp_repo, "overlay-resume")
+        assert resumed.state == "ready"
+        assert resumed.initial_overlay_pending is False
+        assert overlay.read_text(encoding="utf-8") == partial.initial_overlay
+
+    def test_create_resume_checks_out_a_recorded_but_unpopulated_workspace(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        real_finish = worktree._finish_allocation
+        monkeypatch.setattr(
+            worktree, "_finish_allocation",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                KeyboardInterrupt("simulated stop before checkout")
+            ),
+        )
+        with pytest.raises(KeyboardInterrupt, match="stop before checkout"):
+            worktree.create(tmp_repo, "overlay-before-checkout", profile="core")
+
+        partial = worktree.find_instance_record(tmp_repo, "overlay-before-checkout")
+        assert partial is not None and partial.state == "allocating"
+        assert partial.fork_point_sha is None
+        overlay = partial.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        assert not overlay.exists()
+
+        monkeypatch.setattr(worktree, "_finish_allocation", real_finish)
+        resumed = worktree.ensure(tmp_repo, "overlay-before-checkout")
+
+        assert resumed.state == "ready"
+        assert resumed.fork_point_sha == _git(
+            ["rev-parse", "HEAD"], resumed.git_worktree_path
+        ).stdout.strip()
+        assert overlay.read_text(encoding="utf-8") == partial.initial_overlay
+
+    def test_create_resume_refuses_to_replace_conflicting_overlay(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        def interrupt_before_overlay(*_args, **_kwargs):
+            raise KeyboardInterrupt("simulated interruption")
+
+        real_writer = worktree._write_rendered_worktree_overlay
+        monkeypatch.setattr(
+            worktree, "_write_rendered_worktree_overlay", interrupt_before_overlay
+        )
+        with pytest.raises(KeyboardInterrupt):
+            worktree.create(tmp_repo, "overlay-conflict", profile="core")
+        partial = worktree.find_instance_record(tmp_repo, "overlay-conflict")
+        assert partial is not None
+        overlay = partial.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        overlay.write_text("operator-owned\n", encoding="utf-8")
+
+        monkeypatch.setattr(worktree, "_write_rendered_worktree_overlay", real_writer)
+        with pytest.raises(
+            worktree.WorktreeError, match="differs from the recorded allocation intent"
+        ):
+            worktree.ensure(tmp_repo, "overlay-conflict")
+        assert overlay.read_text(encoding="utf-8") == "operator-owned\n"
+
+    def test_legacy_partial_record_without_overlay_intent_refuses_resume(
+        self, tmp_repo, fake_generate_env
+    ):
+        record = worktree.create(tmp_repo, "legacy-overlay-intent")
+        # A genuinely legacy partial record: written before overlay intent
+        # (and the one-time completion marker, schema v4+) existed. A v4+
+        # record with a cleared pending marker is a completed allocation and
+        # takes the repair path instead.
+        partial = replace(
+            record,
+            base_branch_ref=None, schema_version=2,
+            state="recovery-required",
+            recovery_status="env-generation-failed",
+            initial_overlay=None,
+            overlay_intent_known=False,
+            checkout_reset_pending=None,
+            network_id=None,
+        )
+        worktree._write_instance_record(partial)
+
+        with pytest.raises(
+            worktree.WorktreeError, match="predates durable overlay intent"
+        ):
+            worktree.ensure(tmp_repo, "legacy-overlay-intent")
+        assert not (
+            partial.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        ).exists()
+
     def test_create_rejects_duplicate_logical_identity(self, tmp_repo, fake_generate_env):
         worktree.create(tmp_repo, "logical-one", display_name="first")
         with pytest.raises(worktree.WorktreeError, match="already exists"):
@@ -528,14 +1502,18 @@ class TestManagedIdentityLifecycle:
 
         monkeypatch.undo()
         monkeypatch.setattr(worktree, "_clean_in", lambda *_a, **_kw: 0)
+        monkeypatch.setattr(worktree, "_docker_network_exists", lambda _network: False)
         monkeypatch.setattr(
-            worktree, "_write_worktree_overlay",
+            worktree, "_write_rendered_worktree_overlay",
             lambda *_a, **_kw: (_ for _ in ()).throw(worktree.WorktreeError("overlay failed")),
         )
         with pytest.raises(worktree.WorktreeError, match="overlay failed"):
-            worktree.create(tmp_repo, "overlay-fails")
+            worktree.create(tmp_repo, "overlay-fails", profile="core")
         record = worktree.find_instance_record(tmp_repo, "overlay-fails")
-        assert record is not None and record.recovery_status == "checkout-incomplete"
+        assert record is not None and record.recovery_status == "env-generation-failed"
+        assert record.fork_point_sha == _git(
+            ["rev-parse", "HEAD"], record.git_worktree_path
+        ).stdout.strip()
 
     def test_generated_advanced_override_must_retain_one_to_one_name(
         self, tmp_repo, fake_generate_env, monkeypatch
@@ -568,7 +1546,9 @@ class TestManagedIdentityLifecycle:
     ):
         calls = 0
 
-        def full_failure(path: Path, *, identity_only: bool = False) -> int:
+        def full_failure(
+            path: Path, *, identity_only: bool = False, allocation_lock_held: bool = False
+        ) -> int:
             nonlocal calls
             calls += 1
             write_instance_facts(
@@ -595,7 +1575,9 @@ class TestManagedIdentityLifecycle:
         assert _git(["add", "."], other).returncode == 0
         assert _git(["commit", "-m", "init"], other).returncode == 0
 
-        def changes(path: Path, *, identity_only: bool = False) -> int:
+        def changes(
+            path: Path, *, identity_only: bool = False, allocation_lock_held: bool = False
+        ) -> int:
             suffix = "one" if identity_only else "two"
             write_instance_facts(
                 path, instance_id=suffix, network=f"network-{suffix}"
@@ -606,27 +1588,67 @@ class TestManagedIdentityLifecycle:
         with pytest.raises(worktree.WorktreeError, match="identity changed"):
             worktree.create(other, "logical-two")
         changed = worktree.find_instance_record(other, "logical-two")
-        assert changed is not None and changed.recovery_status == "runtime-collision"
+        assert changed is not None
+        assert changed.recovery_status == "runtime-verification-failed"
 
     def test_host_network_collision_refuses_before_full_bootstrap(
         self, tmp_repo, fake_generate_env, monkeypatch
     ):
-        monkeypatch.setattr(worktree, "_docker_network_exists", lambda _network: True)
-        with pytest.raises(worktree.WorktreeError, match="already exists"):
+        monkeypatch.setattr(
+            worktree,
+            "_docker_network_details",
+            lambda _network: {"id": "a" * 64, "labels": {}},
+        )
+        with pytest.raises(worktree.WorktreeError, match="cannot prove ownership"):
             worktree.create(tmp_repo, "logical-one")
-        failed = worktree.find_instance_record(tmp_repo, "logical-one")
-        assert failed is not None and failed.recovery_status == "runtime-collision"
+
+    def test_create_retry_does_not_claim_a_network_created_after_failure(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        monkeypatch.setattr(worktree, "_docker_network_details", lambda _network: None)
+
+        def fail_full_generation(
+            root: Path, *, identity_only: bool = False, allocation_lock_held: bool = False
+        ) -> int:
+            if identity_only:
+                return fake_generate_env(root, identity_only=True)
+            return 9
+
+        monkeypatch.setattr(worktree, "_generate_env_in", fail_full_generation)
+        with pytest.raises(worktree.WorktreeError, match="full.*failed"):
+            worktree.create(tmp_repo, "network-retry")
+
+        partial = worktree.find_instance_record(tmp_repo, "network-retry")
+        assert partial is not None
+        assert partial.adopted is False
+        assert partial.recovery_status == "env-generation-failed"
+        assert partial.initial_overlay_pending is True
+
+        monkeypatch.setattr(worktree, "_generate_env_in", fake_generate_env)
+        monkeypatch.setattr(
+            worktree,
+            "_docker_network_details",
+            lambda _network: {"id": "b" * 64, "labels": {}},
+        )
+        with pytest.raises(worktree.WorktreeError, match="cannot prove ownership"):
+            worktree.ensure(tmp_repo, "network-retry")
+
+        refused = worktree.read_instance_record(partial.record_path)
+        assert refused.state == "recovery-required"
+        # An unlabeled same-name network is *unproven* ownership (distinct from
+        # a network labeled for another instance, which is `runtime-collision`).
+        assert refused.recovery_status == "runtime-verification-failed"
+        assert refused.adopted is False
+        assert refused.logical_name == "network-retry"
 
 
 class TestForkPointProvenance:
-    """CIU-106: `create()` records WHERE `base_ref` pointed at creation.
+    """CIU-106: new allocations snapshot their requested base commit.
 
-    `base_ref` is a branch NAME and the branch keeps moving. Once it has
-    absorbed this worktree's work, `merge-base(base_ref, HEAD)` stops being
-    the fork point and becomes this tree's own pre-merge tip — and in the
-    fast-forward case nothing local separates that from a healthy fork. The
-    fork commit therefore has to be written down at the one moment it is
-    unambiguous.
+    Historical records may still hold symbolic base refs. A new record stores
+    the resolved commit in `base_ref`, and the `fork_point_sha` is read back
+    from the checkout after reset. A moving branch cannot change the tree
+    validated during preflight or the tree allocated.
     """
 
     def test_create_records_where_base_pointed(self, tmp_repo, fake_generate_env):
@@ -696,6 +1718,7 @@ class TestForkPointProvenance:
                     tmp_repo).returncode == 0
         record = worktree.adopt(tmp_repo, "adopted-one", str(wt_path))
         assert record.fork_point_sha is None
+        assert record.adopted is True
         stored = json.loads(record.record_path.read_text(encoding="utf-8"))
         assert "fork_point_sha" not in stored
 
@@ -707,12 +1730,16 @@ class TestForkPointProvenance:
                     tmp_repo).returncode == 0
         adopted_head = _git(["rev-parse", "HEAD"], wt_path).stdout.strip()
         monkeypatch.setattr(
-            worktree, "_write_worktree_overlay",
+            worktree, "_write_rendered_worktree_overlay",
             lambda *_a, **_kw: (_ for _ in ()).throw(OSError("overlay failed")),
         )
-        with pytest.raises(OSError):
-            worktree.adopt(tmp_repo, "adopted-same-head", str(wt_path))
-        monkeypatch.setattr(worktree, "_write_worktree_overlay", lambda *_a, **_kw: None)
+        with pytest.raises(worktree.WorktreeError, match="multi-root preparation failed"):
+            worktree.adopt(
+                tmp_repo, "adopted-same-head", str(wt_path), profile="core"
+            )
+        monkeypatch.setattr(
+            worktree, "_write_rendered_worktree_overlay", lambda *_a, **_kw: None
+        )
 
         resumed = worktree.ensure(tmp_repo, "adopted-same-head")
         assert resumed.state == "ready"
@@ -738,9 +1765,11 @@ class TestForkPointProvenance:
         def boom(*args, **kwargs):
             raise OSError("no space left on device")
 
-        monkeypatch.setattr(worktree, "_write_worktree_overlay", boom)
-        with pytest.raises(OSError):
-            worktree.adopt(tmp_repo, "adopted-one", str(wt_path))
+        real_writer = worktree._write_rendered_worktree_overlay
+        monkeypatch.setattr(worktree, "_write_rendered_worktree_overlay", boom)
+        with pytest.raises(worktree.WorktreeError, match="multi-root preparation failed"):
+            worktree.adopt(tmp_repo, "adopted-one", str(wt_path), profile="core")
+        monkeypatch.setattr(worktree, "_write_rendered_worktree_overlay", real_writer)
 
         partial = worktree.find_instance_record(tmp_repo, "adopted-one")
         assert partial is not None
@@ -835,21 +1864,25 @@ class TestForkPointProvenance:
         real = worktree._git
 
         def flaky(args, cwd, **kwargs):
-            if args[:2] == ["rev-parse", "--verify"]:
+            if args[:2] == ["rev-parse", "--verify"] and "HEAD^{commit}" in args:
+                # Only the post-allocation HEAD probe; the earlier base
+                # verification (`<base>^{commit}`) must still succeed.
                 return subprocess.CompletedProcess(args, 128, "", "boom")
             return real(args, cwd, **kwargs)
 
         monkeypatch.setattr(worktree, "_git", flaky)
         with pytest.raises(
             worktree.WorktreeError,
-            match="could not determine the allocated worktree commit",
+            match="could not checkpoint its exact HEAD",
         ):
             worktree.create(tmp_repo, "logical-one", base="main")
         record = worktree.find_instance_record(tmp_repo, "logical-one")
         assert record is not None
         assert record.fork_point_sha is None
         assert record.state == "recovery-required"
-        assert record.recovery_status == "env-generation-failed"
+        # The initial reset already ran, so the record is parked as
+        # checkout-incomplete (never re-reset automatically).
+        assert record.recovery_status == "checkout-incomplete"
 
     @pytest.mark.parametrize(
         "output", ["", "   \n", "not-a-sha", "deadbeef",
@@ -869,52 +1902,61 @@ class TestForkPointProvenance:
         real = worktree._git
 
         def odd(args, cwd, **kwargs):
-            if args[:2] == ["rev-parse", "--verify"]:
+            if args[:2] == ["rev-parse", "--verify"] and "HEAD^{commit}" in args:
+                # Only the post-allocation HEAD probe; the earlier base
+                # verification (`<base>^{commit}`) must still succeed.
                 return subprocess.CompletedProcess(args, 0, output, "")
             return real(args, cwd, **kwargs)
 
         monkeypatch.setattr(worktree, "_git", odd)
         with pytest.raises(
             worktree.WorktreeError,
-            match="could not determine the allocated worktree commit",
+            match="could not checkpoint its exact HEAD",
         ):
             worktree.create(tmp_repo, "logical-one", base="main")
         record = worktree.find_instance_record(tmp_repo, "logical-one")
         assert record is not None
         assert record.fork_point_sha is None
         assert record.state == "recovery-required"
-        assert record.recovery_status == "env-generation-failed"
+        # The initial reset already ran, so the record is parked as
+        # checkout-incomplete (never re-reset automatically).
+        assert record.recovery_status == "checkout-incomplete"
 
-    def test_the_fork_point_is_the_CHECKED_OUT_tip_not_base_at_entry(
+    def test_base_ref_is_snapshotted_before_allocation_and_validation(
         self, tmp_repo, fake_generate_env, monkeypatch
     ):
-        """Regression: the capture used to read `base` in repo_root BEFORE
-        `_finish_allocation`'s `reset --hard <base_ref>`, which is what
-        actually sets the branch tip and re-resolves `base_ref` afresh.
-
-        Another session committing to the shared `main` checkout in that
-        window — which this estate's workflow explicitly expects — produced a
-        record that was born SPENT: the consumer refused it forever and
-        blamed `main` for absorbing work it never absorbed. Simulated by
-        moving `main` from inside the overlay write, i.e. exactly between the
-        old capture point and the checkout.
-        """
+        """A moving branch cannot change the tree validated or checked out."""
         before = _git(["rev-parse", "main"], tmp_repo).stdout.strip()
-        real_overlay = worktree._write_worktree_overlay
+        real_write_record = worktree._write_instance_record
+        raced = False
 
-        def racing_overlay(*args, **kwargs):
-            (tmp_repo / "raced.txt").write_text("another session\n", encoding="utf-8")
-            assert _git(["add", "-A"], tmp_repo).returncode == 0
-            assert _git(["commit", "-m", "raced commit"], tmp_repo).returncode == 0
-            return real_overlay(*args, **kwargs)
+        def racing_record(record):
+            nonlocal raced
+            real_write_record(record)
+            if not raced and record.state == "allocating" and record.fork_point_sha is None:
+                raced = True
+                (tmp_repo / "ciu.global.defaults.toml.j2").unlink()
+                (tmp_repo / "raced.txt").write_text(
+                    "another session\n", encoding="utf-8"
+                )
+                assert _git(["add", "-A"], tmp_repo).returncode == 0
+                assert _git(["commit", "-m", "raced commit"], tmp_repo).returncode == 0
 
-        monkeypatch.setattr(worktree, "_write_worktree_overlay", racing_overlay)
-        record = worktree.create(tmp_repo, "logical-one", base="main")
+        monkeypatch.setattr(worktree, "_write_instance_record", racing_record)
+        record = worktree.create(
+            tmp_repo, "logical-one", base="main", profile="core"
+        )
         after = _git(["rev-parse", "main"], tmp_repo).stdout.strip()
+        assert raced
         assert after != before                       # the race really happened
         head = _git(["rev-parse", "HEAD"], record.git_worktree_path).stdout.strip()
-        # the recorded fork point is the tree that actually got checked out
-        assert record.fork_point_sha == head
+        assert record.base_ref == before
+        assert record.fork_point_sha == before
+        assert head == before
+        assert (record.ciu_root / "ciu.global.defaults.toml.j2").is_file()
+        assert (
+            record.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        ).is_file()
         # ... and the record is therefore LIVE, not born spent
         assert _git(["merge-base", "main", "HEAD"],
                     record.git_worktree_path).stdout.strip() == record.fork_point_sha
@@ -949,14 +1991,174 @@ class TestForkPointProvenance:
         assert resumed.state == "ready"
         assert resumed.fork_point_sha == head      # survived the replace() chain
 
+    def test_ensure_refuses_to_reset_after_uncheckpointed_reset_and_staged_deletions(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        real_git = worktree._git
+        reset_calls = 0
+        fail_head_checkpoint = False
+
+        def interrupt_after_reset(args, cwd):
+            nonlocal reset_calls, fail_head_checkpoint
+            result = real_git(args, cwd)
+            if args[:2] == ["reset", "--hard"] and result.returncode == 0:
+                reset_calls += 1
+                fail_head_checkpoint = True
+            elif (
+                fail_head_checkpoint
+                and args[:3] == ["rev-parse", "--verify", "--quiet"]
+            ):
+                fail_head_checkpoint = False
+                return subprocess.CompletedProcess(args, 1, "", "simulated interruption")
+            return result
+
+        monkeypatch.setattr(worktree, "_git", interrupt_after_reset)
+        with pytest.raises(worktree.WorktreeError, match="exact HEAD"):
+            worktree.create(tmp_repo, "reset-interrupted")
+
+        partial = worktree.find_instance_record(tmp_repo, "reset-interrupted")
+        assert partial is not None
+        assert partial.checkout_reset_pending is True
+        assert partial.fork_point_sha is None
+        assert reset_calls == 1
+
+        # Reproduce the ambiguous porcelain shape: after a successful reset,
+        # the operator stages deletion of every tracked path. It is identical
+        # to a pristine --no-checkout worktree, so ensure must refuse to reset.
+        removed = real_git(["rm", "-r", "."], partial.git_worktree_path)
+        assert removed.returncode == 0
+        before_status = real_git(
+            ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+            partial.git_worktree_path,
+        ).stdout
+
+        with pytest.raises(worktree.WorktreeError, match="will not repeat"):
+            worktree.ensure(tmp_repo, "reset-interrupted")
+
+        after_status = real_git(
+            ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+            partial.git_worktree_path,
+        ).stdout
+        assert after_status == before_status
+        assert reset_calls == 1
+
+    def test_ensure_base_must_resolve_to_the_saved_allocation_commit(
+        self, tmp_repo, fake_generate_env
+    ):
+        record = worktree.create(tmp_repo, "base-constrained", base="main")
+        (tmp_repo / "later.txt").write_text("later base\n", encoding="utf-8")
+        assert _git(["add", "later.txt"], tmp_repo).returncode == 0
+        assert _git(["commit", "-m", "move main"], tmp_repo).returncode == 0
+
+        with pytest.raises(worktree.WorktreeError, match="recorded allocation commit"):
+            worktree.ensure(tmp_repo, "base-constrained", base="main")
+
+        assert worktree.read_instance_record(record.record_path).state == "ready"
+
+    def test_ensure_worktree_dir_must_match_existing_path(
+        self, tmp_repo, fake_generate_env
+    ):
+        worktree.create(tmp_repo, "dir-constrained", worktree_dir=".worktrees")
+
+        with pytest.raises(worktree.WorktreeError, match="ensure mismatch for worktree_dir"):
+            worktree.ensure(
+                tmp_repo, "dir-constrained", worktree_dir=".other-worktrees"
+            )
+
+
+class TestBaseBranchRef:
+    """Schema v6: ``base_branch_ref`` is decided once, at allocation."""
+
+    @staticmethod
+    def _stored(record):
+        return json.loads(record.record_path.read_text(encoding="utf-8"))
+
+    def test_local_branch_name_is_recorded(self, tmp_repo, fake_generate_env):
+        record = worktree.create(tmp_repo, "by-name", base="main")
+        assert record.schema_version == 6
+        assert record.base_branch_ref == "main"
+        assert self._stored(record)["base_branch_ref"] == "main"
+        assert record.base_ref == _git(["rev-parse", "main"], tmp_repo).stdout.strip()
+
+    def test_refs_heads_spelling_is_canonicalised(self, tmp_repo, fake_generate_env):
+        record = worktree.create(tmp_repo, "by-ref", base="refs/heads/main")
+        assert record.base_branch_ref == "main"
+
+    def test_tag_sha_head_and_remote_tracking_names_record_null(
+        self, tmp_repo, fake_generate_env
+    ):
+        sha = _git(["rev-parse", "main"], tmp_repo).stdout.strip()
+        assert _git(["tag", "release-1", sha], tmp_repo).returncode == 0
+        assert _git(
+            ["update-ref", "refs/remotes/origin/main", sha], tmp_repo
+        ).returncode == 0
+        for logical, base in (
+            ("by-tag", "release-1"),
+            ("by-sha", sha),
+            ("by-head", "HEAD"),
+            ("by-remote", "origin/main"),
+            ("by-full-remote", "refs/remotes/origin/main"),
+            # Revision syntax resolves to the same commit but is not a branch name.
+            ("by-tilde", "main~0"),
+            ("by-caret", "main^0"),
+            ("by-peel", "main^{commit}"),
+            ("by-reflog", "main@{0}"),
+        ):
+            record = worktree.create(tmp_repo, logical, base=base)
+            assert record.base_branch_ref is None, base
+            assert self._stored(record)["base_branch_ref"] is None, base
+            assert record.base_ref == sha
+
+    def test_branch_moved_between_resolution_and_check_records_null(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        real_git = worktree._git
+
+        def moved(args, cwd):
+            if any(str(a) == "refs/heads/main^{commit}" for a in args):
+                return subprocess.CompletedProcess(args, 0, "f" * 40 + "\n", "")
+            return real_git(args, cwd)
+
+        monkeypatch.setattr(worktree, "_git", moved)
+        record = worktree.create(tmp_repo, "moved", base="main")
+        assert record.base_branch_ref is None
+
+    def test_missing_branch_is_null(self, tmp_repo):
+        sha = _git(["rev-parse", "main"], tmp_repo).stdout.strip()
+        assert worktree._local_base_branch(tmp_repo, "no-such-branch", sha) is None
+        assert worktree._local_base_branch(tmp_repo, "main", "e" * 40) is None
+        assert worktree._local_base_branch(tmp_repo, "main", sha) == "main"
+
+    def test_ensure_keeps_the_persisted_value(self, tmp_repo, fake_generate_env):
+        created = worktree.create(tmp_repo, "kept", base="main")
+        ensured = worktree.ensure(tmp_repo, "kept")
+        assert ensured.base_branch_ref == "main"
+        (tmp_repo / "later.txt").write_text("later\n", encoding="utf-8")
+        assert _git(["add", "later.txt"], tmp_repo).returncode == 0
+        assert _git(["commit", "-m", "advance main"], tmp_repo).returncode == 0
+        again = worktree.ensure(tmp_repo, "kept")
+        assert again.base_branch_ref == "main"
+        assert again.base_ref == created.base_ref
+        assert self._stored(again)["base_branch_ref"] == "main"
+
+    def test_adopt_records_null(self, tmp_repo, fake_generate_env):
+        wt_path = tmp_repo.parent / "adopted-v6"
+        assert _git(["worktree", "add", "-b", "adopted-v6", str(wt_path), "main"],
+                    tmp_repo).returncode == 0
+        record = worktree.adopt(tmp_repo, "adopted-v6", str(wt_path))
+        assert record.schema_version == 6
+        assert record.base_branch_ref is None
+        assert self._stored(record)["base_branch_ref"] is None
+
 
 class TestRunGateReadsTheRealRecord:
     """The seam itself, run for real ONCE rather than trusted.
 
-    `ciu.worktree-instance.json` is consumed by vbpub's `run-gate.py` as a
+    `ciu.worktree-instance.json` is consumed by vbpub's installed Run-Gate
+    wheel as a
     loose FILE-FORMAT contract — by well-known filename, with stdlib `json`,
-    deliberately never by importing `ciu` (separate projects; that launcher
-    must run on a fresh clone with zero installs). The cost of that choice is
+    deliberately never by importing `ciu` (separate projects; Run-Gate's
+    supported CLI remains a separately installed wheel). The cost of that choice is
     that BOTH sides' unit tests use hand-written fixtures of the other side's
     output, which is exactly the drift TESTING-METHODOLOGY's "no drifted
     fixtures at a seam" row warns about: run-gate's suite writes records by
@@ -964,22 +2166,22 @@ class TestRunGateReadsTheRealRecord:
     `to_dict()` and the reader stopped agreeing.
 
     So: produce a record with the REAL `worktree.create()`, and feed it to
-    the REAL reader, loaded by path (run-gate.py is stdlib-only, so this
-    costs an exec and nothing else). Skipped when the counterpart is not
-    present, which is every checkout of ciu outside this monorepo.
+    the REAL reader from the installed `run-gate` wheel. A missing Run-Gate
+    package FAILS the test (a missing optional dependency is never a skip).
     """
 
     @staticmethod
     def _run_gate():
-        import importlib.util
-
-        script = Path(__file__).resolve().parents[2] / "run-gate.py"
-        if not script.is_file():
-            pytest.skip("run-gate.py is not present beside this checkout")
-        spec = importlib.util.spec_from_file_location("_rg_seam", script)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
+        try:
+            import run_gate
+        except ModuleNotFoundError as exc:
+            if exc.name != "run_gate":
+                raise
+            pytest.fail(
+                "run_gate is not importable: the seam tests need a Run-Gate "
+                "reader that understands record schema 6"
+            )
+        return run_gate
 
     def test_a_real_ciu_record_is_ACCEPTED_by_run_gates_real_reader(
         self, tmp_repo, fake_generate_env
@@ -1024,26 +2226,49 @@ class TestRunGateReadsTheRealRecord:
     def test_an_adopt_record_is_refused_by_the_real_reader(
         self, tmp_repo, fake_generate_env
     ):
-        """`adopt()` records no fork point AND a frozen commit id as
-        `base_ref`, and the real reader refuses on the latter first — the
-        must-be-a-LOCAL-BRANCH clause, which is precisely the split the
-        run-gate side documents (round 1's false green is caught there, not
-        by the fork-point or containment clauses). Pinning WHICH clause
-        fires matters: if the ordering ever changed so that adopt fell
-        through to a later clause, this would go red rather than silently
-        relying on a guard that no longer runs first."""
+        """`adopt()` records no fork point and a null `base_branch_ref`; the
+        real reader refuses on the null branch with the explicit-`--base`
+        remedy. Pinning WHICH clause fires matters: if the ordering ever
+        changed so that adopt fell through to a later clause, this would go
+        red rather than silently relying on a guard that no longer runs."""
         rg = self._run_gate()
         wt_path = tmp_repo.parent / "adopted"
         assert _git(["worktree", "add", "-b", "adopted", str(wt_path), "main"],
                     tmp_repo).returncode == 0
         record = worktree.adopt(tmp_repo, "adopted-one", str(wt_path))
         assert record.fork_point_sha is None
+        assert record.base_branch_ref is None
         base, found, why = rg.recorded_worktree_base(
             record.git_worktree_path, record.git_worktree_path, record.ciu_root
         )
         assert base is None
         assert found == record.record_path
-        assert "does not name a local branch" in why
+        assert "'base_branch_ref' is null" in why
+        assert "--base" in why
+
+    def test_a_schema_five_sha_record_is_refused_with_the_base_remedy(
+        self, tmp_repo, fake_generate_env
+    ):
+        """Records written by ciu 7.17.0 keep a frozen-SHA `base_ref` and no
+        `base_branch_ref`; they stay valid for ciu but the real reader
+        refuses them and names the explicit `--base` remedy."""
+        rg = self._run_gate()
+        created = worktree.create(tmp_repo, "legacy-five", base="main")
+        v5 = replace(created, schema_version=5, base_branch_ref=None)
+        worktree._write_instance_record(v5)
+        tree = created.git_worktree_path
+        (tree / "feature.txt").write_text("work\n", encoding="utf-8")
+        assert _git(["add", "-A"], tree).returncode == 0
+        assert _git(["commit", "-m", "branch work"], tree).returncode == 0
+        stored = json.loads(created.record_path.read_text(encoding="utf-8"))
+        assert stored["schema_version"] == 5
+        assert "base_branch_ref" not in stored
+
+        base, found, why = rg.recorded_worktree_base(tree, tree, created.ciu_root)
+
+        assert base is None
+        assert found == created.record_path
+        assert "--base" in why
 
 
 class TestManagedRecordValidation:
@@ -1063,6 +2288,21 @@ class TestManagedRecordValidation:
             "recovery_status": None,
         }
 
+    @classmethod
+    def raw_v5(cls, tmp_path: Path) -> dict:
+        return {
+            **cls.raw(tmp_path),
+            "schema_version": 5,
+            "lease": None,
+            "initial_overlay": None,
+            "overlay_intent_known": True,
+            "initial_overlay_pending": False,
+            "adopted": False,
+            "checkout_reset_pending": False,
+            "network_id": "a" * 64,
+            "fork_point_sha": "b" * 40,
+        }
+
     @pytest.mark.parametrize(
         ("change", "message"),
         [
@@ -1073,6 +2313,11 @@ class TestManagedRecordValidation:
             (lambda raw: {**raw, "branch": ""}, "required string"),
             (lambda raw: {**raw, "state": "future"}, "lifecycle state"),
             (lambda raw: {**raw, "recovery_status": "future"}, "recovery status"),
+            (lambda raw: {
+                **raw, "schema_version": 4, "lease": None,
+                "initial_overlay": None, "overlay_intent_known": True,
+                "initial_overlay_pending": False, "adopted": 1,
+            }, "adopted must be boolean"),
             (lambda raw: {**raw, "runtime": {"instance_id": 3, "network": "n"}}, "runtime.instance_id"),
             (lambda raw: {**raw, "runtime": {"instance_id": None, "network": "n"}}, "incomplete runtime identity"),
             (lambda raw: {**raw, "state": "allocating", "runtime": {"instance_id": "i", "network": None}}, "incomplete runtime identity"),
@@ -1092,6 +2337,175 @@ class TestManagedRecordValidation:
         path.write_text("{not-json", encoding="utf-8")
         with pytest.raises(worktree.WorktreeError, match="valid instance record"):
             worktree.read_instance_record(path)
+
+    @pytest.mark.parametrize(
+        ("updates", "message"),
+        [
+            ({"overlay_intent_known": 1}, "overlay_intent_known must be boolean"),
+            ({"initial_overlay_pending": 1}, "initial_overlay_pending must be boolean"),
+            ({"initial_overlay": []}, "expected a string or null"),
+            (
+                {"initial_overlay": "payload", "overlay_intent_known": False},
+                "unknown intent cannot carry a payload",
+            ),
+            (
+                {"initial_overlay_pending": True, "overlay_intent_known": False},
+                "pending recovery requires known intent",
+            ),
+            (
+                {"initial_overlay_pending": True},
+                "ready record cannot have pending recovery",
+            ),
+        ],
+    )
+    def test_schema_four_rejects_malformed_overlay_intent(
+        self, tmp_path, updates, message
+    ):
+        raw = self.raw(tmp_path)
+        raw.update(
+            schema_version=4,
+            lease=None,
+            initial_overlay=None,
+            overlay_intent_known=True,
+            initial_overlay_pending=False,
+            adopted=False,
+        )
+        raw.update(updates)
+        with pytest.raises(worktree.WorktreeError, match=message):
+            worktree._record_from_dict(raw, tmp_path / "record.json")
+
+    def test_schema_five_network_and_checkout_markers_round_trip(self, tmp_path):
+        raw = self.raw_v5(tmp_path)
+
+        record = worktree._record_from_dict(raw, tmp_path / "record.json")
+
+        assert record.checkout_reset_pending is False
+        assert record.network_id == "a" * 64
+        assert record.to_dict() == raw
+
+    @pytest.mark.parametrize(
+        ("change", "message"),
+        [
+            (lambda raw: {key: value for key, value in raw.items() if key != "network_id"}, "missing"),
+            (lambda raw: {**raw, "checkout_reset_pending": 1}, "checkout_reset_pending must be boolean"),
+            (lambda raw: {**raw, "network_id": "abc"}, "full 64-hex Docker id"),
+            (lambda raw: {**raw, "runtime": {"instance_id": None, "network": None}}, "network_id requires a runtime network name"),
+            (lambda raw: {**raw, "checkout_reset_pending": True, "adopted": True, "state": "recovery-required", "recovery_status": "checkout-incomplete", "fork_point_sha": None}, "requires a created allocation"),
+        ],
+    )
+    def test_schema_five_rejects_malformed_recovery_and_network_identity(
+        self, tmp_path, change, message
+    ):
+        raw = change(self.raw_v5(tmp_path))
+        with pytest.raises(worktree.WorktreeError, match=message):
+            worktree._record_from_dict(raw, tmp_path / "record.json")
+
+    @classmethod
+    def raw_v6(cls, tmp_path: Path, base_branch_ref="main") -> dict:
+        return {
+            **cls.raw_v5(tmp_path),
+            "schema_version": 6,
+            "base_branch_ref": base_branch_ref,
+        }
+
+    @pytest.mark.parametrize("value", ["main", "feature/x", None])
+    def test_schema_six_base_branch_ref_round_trips(self, tmp_path, value):
+        raw = self.raw_v6(tmp_path, value)
+
+        record = worktree._record_from_dict(raw, tmp_path / "record.json")
+
+        assert record.schema_version == 6
+        assert record.base_branch_ref == value
+        assert record.to_dict() == raw
+
+    def test_schema_five_json_has_no_base_branch_ref_key(self, tmp_path):
+        record = worktree._record_from_dict(
+            self.raw_v5(tmp_path), tmp_path / "record.json"
+        )
+        assert record.base_branch_ref is None
+        assert "base_branch_ref" not in record.to_dict()
+
+    @pytest.mark.parametrize(
+        ("change", "message"),
+        [
+            (lambda raw: {k: v for k, v in raw.items() if k != "base_branch_ref"}, "missing"),
+            (lambda raw: {**raw, "base_branch_ref": ""}, "malformed base_branch_ref"),
+            (lambda raw: {**raw, "base_branch_ref": " main"}, "malformed base_branch_ref"),
+            (lambda raw: {**raw, "base_branch_ref": "main "}, "malformed base_branch_ref"),
+            (lambda raw: {**raw, "base_branch_ref": "ma in"}, "malformed base_branch_ref"),
+            (lambda raw: {**raw, "base_branch_ref": "ma\x07in"}, "malformed base_branch_ref"),
+            (lambda raw: {**raw, "base_branch_ref": "ma\x7fin"}, "malformed base_branch_ref"),
+            (lambda raw: {**raw, "base_branch_ref": 7}, "malformed base_branch_ref"),
+            (lambda raw: {**raw, "base_branch_ref": ["main"]}, "malformed base_branch_ref"),
+            (lambda raw: {**raw, "base_branch_ref": "main~0"}, "malformed base_branch_ref"),
+            (lambda raw: {**raw, "base_branch_ref": "main^0"}, "malformed base_branch_ref"),
+            (lambda raw: {**raw, "base_branch_ref": "main@{0}"}, "malformed base_branch_ref"),
+            (lambda raw: {**raw, "base_branch_ref": "a..b"}, "malformed base_branch_ref"),
+            (lambda raw: {**raw, "base_branch_ref": "-main"}, "malformed base_branch_ref"),
+            (lambda raw: {**raw, "base_branch_ref": "refs/heads/main"}, "malformed base_branch_ref"),
+            (lambda raw: {**raw, "base_branch_ref": "ma:in"}, "malformed base_branch_ref"),
+        ],
+    )
+    def test_schema_six_rejects_malformed_base_branch_ref(
+        self, tmp_path, change, message
+    ):
+        raw = change(self.raw_v6(tmp_path))
+        with pytest.raises(worktree.WorktreeError, match=message):
+            worktree._record_from_dict(raw, tmp_path / "record.json")
+
+    @pytest.mark.parametrize("version", [1, 2, 3, 4, 5])
+    def test_base_branch_ref_is_rejected_before_schema_six(self, tmp_path, version):
+        raw = self.raw_v5(tmp_path)
+        raw["schema_version"] = version
+        if version < 5:
+            raw.pop("checkout_reset_pending")
+            raw.pop("network_id")
+        if version < 4:
+            raw.pop("initial_overlay_pending")
+            raw.pop("adopted")
+        if version < 3:
+            raw.pop("initial_overlay")
+            raw.pop("overlay_intent_known")
+        if version < 2:
+            raw.pop("lease")
+        raw["base_branch_ref"] = "main"
+        with pytest.raises(worktree.WorktreeError, match="unknown=.*base_branch_ref"):
+            worktree._record_from_dict(raw, tmp_path / "record.json")
+
+    def test_to_dict_refuses_base_branch_ref_before_schema_six(self, tmp_path):
+        record = worktree._record_from_dict(
+            self.raw_v5(tmp_path), tmp_path / "record.json"
+        )
+        with pytest.raises(ValueError, match="schema version 6"):
+            replace(record, base_branch_ref="main").to_dict()
+
+    @pytest.mark.parametrize("value", ["", " main", "ma in", 7])
+    def test_to_dict_refuses_malformed_base_branch_ref_at_schema_six(
+        self, tmp_path, value
+    ):
+        record = worktree._record_from_dict(
+            self.raw_v6(tmp_path), tmp_path / "record.json"
+        )
+        with pytest.raises(ValueError, match="clean branch name or null"):
+            replace(record, base_branch_ref=value).to_dict()
+
+    def test_reading_a_schema_five_record_does_not_upgrade_it(self, tmp_path):
+        checkout = tmp_path / "checkout"
+        checkout.mkdir()
+        raw = self.raw_v5(tmp_path)
+        raw["git_worktree_path"] = str(checkout)
+        raw["state"] = "allocating"
+        raw["checkout_reset_pending"] = False
+        raw["fork_point_sha"] = "b" * 40
+        path = checkout / worktree.WORKTREE_INSTANCE_RECORD
+        text = json.dumps(raw, indent=2, sort_keys=True) + "\n"
+        path.write_text(text, encoding="utf-8")
+
+        record = worktree.read_instance_record(path)
+
+        assert record.schema_version == 5
+        assert record.base_branch_ref is None
+        assert path.read_text(encoding="utf-8") == text
 
     def test_generated_name_rejects_naive_clock(self):
         with pytest.raises(worktree.WorktreeError, match="timezone-aware"):
@@ -1281,8 +2695,8 @@ class TestManagedRecordValidation:
         second = worktree.create(rootless_repo, "generic-two")
 
         assert [record.state for record in writes] == [
-            "allocating", "allocating", "ready",
-            "allocating", "allocating", "ready",
+            "allocating", "allocating", "allocating", "ready",
+            "allocating", "allocating", "allocating", "ready",
         ]
         for record in (first, second):
             assert record.state == "ready"
@@ -1310,7 +2724,8 @@ class TestManagedRecordValidation:
         assert ready.instance_id
         assert ready.network
         assert [record.state for record in writes] == [
-            "allocating", "allocating", "allocating", "ready",
+            "allocating", "allocating", "allocating", "allocating",
+            "allocating", "ready",
         ]
 
     def test_ciu_root_ready_record_still_rejects_null_identity(self, tmp_path):
@@ -1469,11 +2884,26 @@ class TestManagedHelperRefusals:
             worktree._write_worktree_overlay(tmp_path, "core", None)
         path.unlink()
         monkeypatch.setattr(
-            worktree.os, "replace",
+            worktree.os, "link",
             lambda *_args: (_ for _ in ()).throw(PermissionError("denied")),
         )
         with pytest.raises(worktree.WorktreeError, match="could not write.*denied"):
             worktree._write_worktree_overlay(tmp_path, "core", None)
+
+    def test_overlay_publish_does_not_clobber_file_created_after_preflight(
+        self, tmp_path, monkeypatch
+    ):
+        path = tmp_path / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        real_link = worktree.os.link
+
+        def race_create(source, target):
+            Path(target).write_text("operator-owned\n", encoding="utf-8")
+            return real_link(source, target)
+
+        monkeypatch.setattr(worktree.os, "link", race_create)
+        with pytest.raises(worktree.WorktreeError, match="refusing to overwrite"):
+            worktree._write_worktree_overlay(tmp_path, "core", None)
+        assert path.read_text(encoding="utf-8") == "operator-owned\n"
 
     def test_overlay_can_hold_shared_intent_without_profile_at_helper_boundary(self):
         intent = worktree.SharedInfraIntent(
@@ -1489,6 +2919,12 @@ class TestManagedHelperRefusals:
             lambda *_a, **_kw: (_ for _ in ()).throw(FileNotFoundError()),
         )
         assert worktree._docker_network_exists("wanted") is False
+        monkeypatch.setattr(
+            worktree.procutil, "docker",
+            lambda *_a, **_kw: (_ for _ in ()).throw(PermissionError("permission denied")),
+        )
+        with pytest.raises(worktree.RuntimeNetworkProbeError, match="permission denied"):
+            worktree._docker_network_exists("wanted")
         monkeypatch.setattr(
             worktree.procutil, "docker",
             lambda *_a, **_kw: subprocess.CompletedProcess([], 1, "", "denied"),
@@ -1520,6 +2956,34 @@ class TestManagedHelperRefusals:
         assert [call[0][3] for call in calls] == [
             "name=wanted", "name=prefix-wanted-suffix", "name=prefix",
         ]
+
+    def test_docker_network_details_read_the_exact_object_id_and_labels(
+        self, monkeypatch
+    ):
+        calls = []
+
+        def docker(argv, **kwargs):
+            calls.append(argv)
+            if argv[:2] == ["network", "ls"]:
+                return subprocess.CompletedProcess(argv, 0, "wanted\n", "")
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                json.dumps([{
+                    "Name": "wanted",
+                    "Id": "a" * 64,
+                    "Labels": {worktree._NETWORK_OWNER_LABEL: "instance-7"},
+                }]),
+                "",
+            )
+
+        monkeypatch.setattr(worktree.procutil, "docker", docker)
+
+        assert worktree._docker_network_details("wanted") == {
+            "id": "a" * 64,
+            "labels": {worktree._NETWORK_OWNER_LABEL: "instance-7"},
+        }
+        assert calls[1][:3] == ["network", "inspect", "wanted"]
 
     def test_runtime_identity_reader_rejects_missing_and_malformed_env(
         self, tmp_path, write_instance_facts
@@ -1575,6 +3039,33 @@ class TestManagedHelperRefusals:
 
 
 class TestAdoptRefusals:
+    def test_adopt_invalid_overlay_refuses_before_record_or_exclusion_write(
+        self, tmp_repo
+    ):
+        target = tmp_repo / ".worktrees" / "invalid-profile-adopt"
+        assert _git(
+            ["worktree", "add", "-b", "invalid-profile-adopt", str(target), "main"],
+            tmp_repo,
+        ).returncode == 0
+        before_head = _git(["rev-parse", "HEAD"], target).stdout.strip()
+        common = worktree._git_common_dir(tmp_repo)
+        exclude = common / "info" / "exclude"
+        exclude_before = exclude.read_bytes() if exclude.exists() else None
+        shared = worktree._shared_worktree()
+        shared_before = shared.list_workspaces(common)
+
+        with pytest.raises(worktree.WorktreeError, match="blank items"):
+            worktree.adopt(
+                tmp_repo, "invalid-profile-adopt", str(target), profile="core,,db"
+            )
+
+        assert _git(["rev-parse", "HEAD"], target).stdout.strip() == before_head
+        assert worktree.find_instance_record(tmp_repo, "invalid-profile-adopt") is None
+        assert worktree._shared_record_for_checkout(target) is None
+        assert not (target / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES).exists()
+        assert shared.list_workspaces(common) == shared_before
+        assert (exclude.read_bytes() if exclude.exists() else None) == exclude_before
+
     def test_adopt_refuses_partial_options_unknown_primary_and_managed(
         self, tmp_repo, fake_generate_env
     ):
@@ -1692,6 +3183,39 @@ class TestWorktreeSubprocessEnvironment:
         monkeypatch.setattr(worktree.subprocess, "run", fake_run)
         assert worktree._generate_env_in(tmp_path, identity_only=True) == 0
         assert seen["argv"][-1] == "--identity-only"
+
+    def test_allocation_lock_generation_uses_private_direct_entrypoint(
+        self, tmp_path, monkeypatch,
+    ):
+        seen = {}
+
+        def fake_run(argv, **kwargs):
+            seen.update(argv=argv, **kwargs)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        monkeypatch.setattr(worktree.subprocess, "run", fake_run)
+        assert worktree._generate_env_in(tmp_path, allocation_lock_held=True) == 0
+        argv = seen["argv"]
+        assert argv[1] == "-c"
+        assert "--allocation-lock-held" not in argv
+        assert "_generate_env_with_lock_held" in argv[2]
+
+    def test_locked_env_generation_keeps_cli_error_diagnostic(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        from ciu import deploy
+        from ciu.workspace_env import WorkspaceEnvError
+
+        def fail_generation(*_args, **_kwargs):
+            raise WorkspaceEnvError("workspace identity is malformed")
+
+        monkeypatch.setattr(deploy, "action_generate_env", fail_generation)
+        monkeypatch.chdir(tmp_path)
+
+        assert worktree._generate_env_with_lock_held() == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == "[ERROR] workspace identity is malformed\n"
 
     def test_clean_strips_the_callers_service_profile_selection(
         self, tmp_path, monkeypatch, write_instance_facts
@@ -1880,10 +3404,22 @@ class TestBestEffortCleanupArcs:
 
     def test_overlay_write_unlink_failure_is_best_effort(self, tmp_path, monkeypatch):
         """Same double-failure arc for the worktree-overlay writer."""
-        self._replace_fails(monkeypatch)
+        monkeypatch.setattr(
+            worktree.os, "link",
+            lambda *_args: (_ for _ in ()).throw(PermissionError("denied")),
+        )
         self._unlink_fails(monkeypatch)
         with pytest.raises(worktree.WorktreeError, match="could not write"):
             worktree._write_worktree_overlay(tmp_path, "core", None)
+
+    def test_overlay_write_succeeds_when_post_publish_tmp_cleanup_fails(
+        self, tmp_path, monkeypatch
+    ):
+        self._unlink_fails(monkeypatch)
+        worktree._write_worktree_overlay(tmp_path, "core", None)
+        path = tmp_path / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        assert path.is_file()
+        assert 'service_profiles = ["core"]' in path.read_text(encoding="utf-8")
 
     def test_find_instance_record_ambiguous_constructed_duplicate(
         self, tmp_path, monkeypatch
@@ -2212,6 +3748,49 @@ class TestExactWorktreeControl:
             "--profile", "core", "--profile", "db", "--deploy", "--healthcheck",
         ]
         assert kwargs["cwd"] == record.ciu_root
+
+    def test_up_refuses_same_name_network_replacement_before_child_start(
+        self, ready, fake_run, monkeypatch
+    ):
+        repo_root, record = ready
+        recorded = replace(record, network_id="4" * 64)
+        worktree._write_instance_record(recorded)
+        monkeypatch.setattr(
+            worktree,
+            "_docker_network_details",
+            lambda _network: {"id": "5" * 64, "labels": {}},
+        )
+
+        with pytest.raises(
+            worktree.RuntimeNetworkOwnershipUnprovenError,
+            match="cannot prove ownership",
+        ):
+            worktree.up_instance(repo_root, "ctrl")
+
+        assert fake_run["calls"] == []
+        failed = worktree.read_instance_record(record.record_path)
+        assert failed.state == "recovery-required"
+        assert failed.recovery_status == "runtime-verification-failed"
+        assert failed.network_id == "4" * 64
+
+    def test_up_probe_failure_refuses_without_demoting_ready_record(
+        self, ready, fake_run, monkeypatch
+    ):
+        repo_root, record = ready
+
+        def probe_failure(_network):
+            raise worktree.RuntimeNetworkProbeError("docker permission denied")
+
+        monkeypatch.setattr(worktree, "_docker_network_details", probe_failure)
+        with pytest.raises(
+            worktree.RuntimeNetworkProbeError, match="permission denied"
+        ):
+            worktree.up_instance(repo_root, "ctrl")
+
+        assert fake_run["calls"] == []
+        current = worktree.read_instance_record(record.record_path)
+        assert current.state == "ready"
+        assert current.recovery_status is None
 
     def test_up_all_ignores_declared_profiles(self, ready, monkeypatch, fake_run):
         repo_root, _record = ready
@@ -2711,7 +4290,7 @@ def test_generated_allocation_recovery_does_not_apply_adopt_head_guard(
     base_sha = _git(["rev-parse", "HEAD"], tmp_repo).stdout.strip()
     attempts = 0
 
-    def fail_first_generation(path, *, identity_only=False):
+    def fail_first_generation(path, *, identity_only=False, allocation_lock_held=False):
         nonlocal attempts
         attempts += 1
         if attempts == 1:
@@ -2744,16 +4323,17 @@ def test_generated_allocation_recovery_does_not_apply_adopt_head_guard(
 
 
 @pytest.mark.parametrize(
-    ("recovery_status", "fork_point", "base_ref"),
+    ("recovery_status", "fork_point", "base_ref", "adopted"),
     [
-        ("checkout-incomplete", None, "full-sha"),
-        ("env-generation-failed", "full-sha", "full-sha"),
-        ("env-generation-failed", None, "main"),
+        ("checkout-incomplete", None, "full-sha", False),
+        ("env-generation-failed", "full-sha", "full-sha", False),
+        ("env-generation-failed", None, "main", False),
+        ("env-generation-failed", None, "full-sha", True),
     ],
 )
-def test_only_adopt_shaped_recovery_records_keep_the_no_reset_marker(
+def test_adopted_record_fact_controls_the_no_reset_marker(
     tmp_repo, fake_generate_env, monkeypatch,
-    recovery_status, fork_point, base_ref,
+    recovery_status, fork_point, base_ref, adopted,
 ):
     base_sha = _git(["rev-parse", "HEAD"], tmp_repo).stdout.strip()
     record = worktree.create(tmp_repo, "recovery-shape", base=base_sha)
@@ -2763,8 +4343,37 @@ def test_only_adopt_shaped_recovery_records_keep_the_no_reset_marker(
         recovery_status=recovery_status,
         fork_point_sha=(base_sha if fork_point == "full-sha" else None),
         base_ref=(base_sha if base_ref == "full-sha" else base_ref),
+        adopted=adopted,
     )
+    # A created record that never checkpointed its post-reset HEAD resumes the
+    # initial reset only while BOTH durable markers still prove the reset has
+    # not started: the local pending flag and the shared `not-started` phase.
+    # (Otherwise recovery is operator-directed and never repeats the reset.)
+    resumes_reset = (
+        fork_point is None and recovery_status == "checkout-incomplete"
+        and not adopted
+    )
+    if resumes_reset:
+        edited = replace(edited, checkout_reset_pending=True)
     worktree._write_instance_record(edited)
+    if resumes_reset:
+        worktree._write_shared_ciu_record_snapshot(
+            worktree._ensure_shared_record(tmp_repo, edited),
+            edited,
+            checkout_reset_phase="not-started",
+        )
+        # Make the checkout genuinely unpopulated, as `--no-checkout` leaves
+        # it: empty index, no working-tree files except Git's own pointer and
+        # the (untracked, excluded) CIU record.
+        checkout = edited.git_worktree_path
+        assert _git(["read-tree", "--empty"], checkout).returncode == 0
+        for child in checkout.iterdir():
+            if child.name in {".git", worktree.WORKTREE_INSTANCE_RECORD}:
+                continue
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
 
     real_write = worktree._write_instance_record
     attempted = []
@@ -2772,6 +4381,12 @@ def test_only_adopt_shaped_recovery_records_keep_the_no_reset_marker(
     def interrupt_after_transition(candidate):
         real_write(candidate)
         attempted.append(candidate)
+        if resumes_reset and len(attempted) == 1:
+            # The resumed reset first checkpoints its exact HEAD (clearing the
+            # pending marker); the recovery classification is the NEXT write.
+            assert candidate.fork_point_sha == base_sha
+            assert candidate.checkout_reset_pending is False
+            return
         raise KeyboardInterrupt("pause after recovery classification")
 
     monkeypatch.setattr(worktree, "_write_instance_record", interrupt_after_transition)
@@ -2779,8 +4394,13 @@ def test_only_adopt_shaped_recovery_records_keep_the_no_reset_marker(
         worktree.ensure(tmp_repo, "recovery-shape")
 
     assert attempted
-    assert attempted[0].state == "allocating"
-    assert attempted[0].recovery_status is None
+    classified = attempted[-1]
+    if adopted:
+        assert classified.state == "recovery-required"
+        assert classified.recovery_status == "env-generation-failed"
+    else:
+        assert classified.state == "allocating"
+        assert classified.recovery_status is None
 
 
 @pytest.mark.parametrize("resume", [False, True])
@@ -2793,22 +4413,346 @@ def test_adopt_allows_an_existing_network_for_its_own_checkout(
     ).returncode == 0
     expected_network = f"repo-{_instance_id_for(target)}-network"
     monkeypatch.setattr(
-        worktree, "_docker_network_exists",
-        lambda network: network == expected_network,
+        worktree,
+        "_docker_network_details",
+        lambda network: (
+            {
+                "id": "c" * 64,
+                "labels": {
+                    worktree._NETWORK_OWNER_LABEL: _instance_id_for(target)
+                },
+            }
+            if network == expected_network else None
+        ),
     )
 
     if resume:
-        write_overlay = worktree._write_worktree_overlay
+        write_overlay = worktree._write_rendered_worktree_overlay
         monkeypatch.setattr(
-            worktree, "_write_worktree_overlay",
+            worktree, "_write_rendered_worktree_overlay",
             lambda *_a, **_kw: (_ for _ in ()).throw(OSError("interrupted overlay")),
         )
-        with pytest.raises(OSError, match="interrupted overlay"):
-            worktree.adopt(tmp_repo, target.name, str(target))
-        monkeypatch.setattr(worktree, "_write_worktree_overlay", write_overlay)
+        with pytest.raises(worktree.WorktreeError, match="interrupted overlay"):
+            worktree.adopt(tmp_repo, target.name, str(target), profile="core")
+        monkeypatch.setattr(worktree, "_write_rendered_worktree_overlay", write_overlay)
         ready = worktree.ensure(tmp_repo, target.name)
     else:
         ready = worktree.adopt(tmp_repo, target.name, str(target))
 
     assert ready.state == "ready"
     assert ready.network == expected_network
+    assert ready.network_id == "c" * 64
+
+
+def test_adopt_requires_explicit_claim_for_an_unlabeled_legacy_network(
+    tmp_repo, fake_generate_env, monkeypatch,
+):
+    target = tmp_repo.parent / "adopted-legacy-network"
+    assert _git(
+        ["worktree", "add", "-b", target.name, str(target), "main"], tmp_repo
+    ).returncode == 0
+    expected_network = f"repo-{_instance_id_for(target)}-network"
+    monkeypatch.setattr(
+        worktree,
+        "_docker_network_details",
+        lambda network: (
+            {"id": "d" * 64, "labels": {}}
+            if network == expected_network else None
+        ),
+    )
+
+    with pytest.raises(worktree.WorktreeError, match="cannot prove ownership"):
+        worktree.adopt(tmp_repo, target.name, str(target))
+
+    partial = worktree.find_instance_record(tmp_repo, target.name)
+    assert partial is not None
+    assert partial.state == "recovery-required"
+    assert partial.network_id is None
+
+    ready = worktree.ensure(
+        tmp_repo, target.name, adopt_existing_network=True
+    )
+    assert ready.state == "ready"
+    assert ready.network_id == "d" * 64
+
+
+def test_explicit_network_claim_refuses_when_no_network_object_exists(
+    tmp_repo, fake_generate_env, monkeypatch
+):
+    target = tmp_repo.parent / "adopted-missing-network"
+    assert _git(
+        ["worktree", "add", "-b", target.name, str(target), "main"], tmp_repo
+    ).returncode == 0
+    monkeypatch.setattr(worktree, "_docker_network_details", lambda _network: None)
+
+    with pytest.raises(
+        worktree.RuntimeNetworkVerificationError,
+        match="no existing runtime network.*available to adopt",
+    ):
+        worktree.adopt(
+            tmp_repo, target.name, str(target), adopt_existing_network=True
+        )
+
+    partial = worktree.find_instance_record(tmp_repo, target.name)
+    assert partial is not None
+    assert partial.state == "recovery-required"
+    assert partial.recovery_status == "runtime-verification-failed"
+    assert partial.network_id is None
+
+
+def test_direct_managed_startup_verifies_and_saves_the_network_object_id(
+    tmp_repo, fake_generate_env, monkeypatch
+):
+    record = worktree.create(tmp_repo, "direct-startup-network")
+    docker_id = "a" * 64
+    monkeypatch.setattr(
+        worktree,
+        "_docker_network_details",
+        lambda network: (
+            {
+                "id": docker_id,
+                "labels": {worktree._NETWORK_OWNER_LABEL: record.instance_id},
+            }
+            if network == record.network else None
+        ),
+    )
+
+    verified = worktree.verify_own_runtime_network(
+        record.ciu_root,
+        expected_instance_id=record.instance_id,
+        expected_network=record.network,
+    )
+
+    assert verified is not None
+    assert verified.network_id == docker_id
+    saved = worktree.read_instance_record(record.record_path)
+    assert saved.network_id == docker_id
+
+
+def test_final_managed_startup_verification_requires_network_to_still_exist(
+    tmp_repo, fake_generate_env, monkeypatch
+):
+    record = worktree.create(tmp_repo, "direct-startup-network-disappeared")
+    monkeypatch.setattr(worktree, "_docker_network_details", lambda _network: None)
+
+    with pytest.raises(
+        worktree.RuntimeNetworkVerificationError,
+        match="disappeared before Compose startup",
+    ):
+        worktree.verify_own_runtime_network(
+            record.ciu_root,
+            expected_instance_id=record.instance_id,
+            expected_network=record.network,
+            require_network_present=True,
+        )
+
+    saved = worktree.read_instance_record(record.record_path)
+    assert saved.state == "ready"
+    assert saved.recovery_status is None
+
+
+def test_direct_managed_startup_records_unknown_network_as_verification_failure(
+    tmp_repo, fake_generate_env, monkeypatch
+):
+    record = worktree.create(tmp_repo, "direct-startup-replacement")
+    monkeypatch.setattr(
+        worktree,
+        "_docker_network_details",
+        lambda network: (
+            {"id": "b" * 64, "labels": {}}
+            if network == record.network else None
+        ),
+    )
+
+    with pytest.raises(
+        worktree.RuntimeNetworkOwnershipUnprovenError,
+        match="cannot prove ownership",
+    ):
+        worktree.verify_own_runtime_network(
+            record.ciu_root,
+            expected_instance_id=record.instance_id,
+            expected_network=record.network,
+        )
+
+    failed = worktree.read_instance_record(record.record_path)
+    assert failed.state == "recovery-required"
+    assert failed.recovery_status == "runtime-verification-failed"
+
+
+def test_direct_managed_startup_refuses_generated_identity_mismatch_before_probe(
+    tmp_repo, fake_generate_env, monkeypatch
+):
+    record = worktree.create(tmp_repo, "direct-startup-identity-mismatch")
+    monkeypatch.setattr(
+        worktree,
+        "_docker_network_details",
+        lambda _network: pytest.fail("identity mismatch must refuse before Docker"),
+    )
+
+    with pytest.raises(
+        worktree.RuntimeNetworkVerificationError,
+        match="generated runtime identity.*does not match",
+    ):
+        worktree.verify_own_runtime_network(
+            record.ciu_root,
+            expected_instance_id="different-instance",
+            expected_network=record.network,
+        )
+
+    saved = worktree.read_instance_record(record.record_path)
+    assert saved.state == "ready"
+    assert saved.recovery_status is None
+
+
+def test_direct_managed_startup_refuses_duplicate_sibling_identity_before_probe(
+    tmp_repo, fake_generate_env, monkeypatch
+):
+    record = worktree.create(tmp_repo, "direct-startup-family-owner")
+    sibling = worktree.create(tmp_repo, "direct-startup-family-duplicate")
+    duplicate = replace(
+        worktree.read_instance_record(sibling.record_path),
+        instance_id=record.instance_id,
+        network=record.network,
+    )
+    worktree._write_instance_record(duplicate)
+    monkeypatch.setattr(
+        worktree,
+        "_docker_network_details",
+        lambda _network: pytest.fail("family conflict must refuse before Docker"),
+    )
+
+    with pytest.raises(
+        worktree.RuntimeNetworkOwnershipError,
+        match="already belongs to logical instance",
+    ):
+        worktree.verify_own_runtime_network(
+            record.ciu_root,
+            expected_instance_id=record.instance_id,
+            expected_network=record.network,
+        )
+
+
+def test_direct_managed_startup_refuses_unreadable_committed_ciu_sibling(
+    tmp_repo, fake_generate_env, monkeypatch
+):
+    record = worktree.create(tmp_repo, "direct-startup-family-incomplete")
+    sibling = worktree.create(tmp_repo, "direct-startup-family-corrupt")
+    sibling.record_path.write_text('{"logical_name":', encoding="utf-8")
+    (sibling.ciu_root / worktree.GLOBAL_CONFIG_DEFAULTS).unlink()
+    monkeypatch.setattr(
+        worktree,
+        "_docker_network_details",
+        lambda _network: pytest.fail("unreadable sibling must refuse before Docker"),
+    )
+
+    with pytest.raises(
+        worktree.RuntimeNetworkVerificationError,
+        match="cannot verify runtime identity uniqueness.*CIU-root sibling",
+    ):
+        worktree.verify_own_runtime_network(
+            record.ciu_root,
+            expected_instance_id=record.instance_id,
+            expected_network=record.network,
+        )
+
+
+def test_ready_ensure_refuses_same_name_replacement_network(
+    tmp_repo, fake_generate_env, monkeypatch,
+):
+    record = worktree.create(tmp_repo, "network-replaced")
+    record = replace(record, network_id="e" * 64)
+    worktree._write_instance_record(record)
+    monkeypatch.setattr(
+        worktree,
+        "_docker_network_details",
+        lambda _network: {"id": "f" * 64, "labels": {}},
+    )
+
+    with pytest.raises(worktree.WorktreeError, match="cannot prove ownership"):
+        worktree.ensure(tmp_repo, "network-replaced")
+
+    failed = worktree.read_instance_record(record.record_path)
+    assert failed.state == "recovery-required"
+    assert failed.recovery_status == "runtime-verification-failed"
+    assert failed.network_id == "e" * 64
+
+
+def test_ready_ensure_marks_a_conflicting_owner_label_as_collision(
+    tmp_repo, fake_generate_env, monkeypatch
+):
+    record = worktree.create(tmp_repo, "network-foreign-label")
+    monkeypatch.setattr(
+        worktree,
+        "_docker_network_details",
+        lambda _network: {
+            "id": "6" * 64,
+            "labels": {worktree._NETWORK_OWNER_LABEL: "foreign-instance"},
+        },
+    )
+
+    with pytest.raises(
+        worktree.RuntimeNetworkOwnershipError, match="carries owner instance"
+    ):
+        worktree.ensure(tmp_repo, "network-foreign-label")
+
+    failed = worktree.read_instance_record(record.record_path)
+    assert failed.state == "recovery-required"
+    assert failed.recovery_status == "runtime-collision"
+
+
+def test_ready_ensure_keeps_last_network_id_while_network_is_absent(
+    tmp_repo, fake_generate_env, monkeypatch,
+):
+    record = worktree.create(tmp_repo, "network-outage")
+    record = replace(record, network_id="1" * 64)
+    worktree._write_instance_record(record)
+    monkeypatch.setattr(worktree, "_docker_network_details", lambda _network: None)
+
+    ready = worktree.ensure(tmp_repo, "network-outage")
+
+    assert ready.state == "ready"
+    assert ready.network_id == "1" * 64
+
+
+def test_ensure_probe_permission_error_is_not_network_absence(
+    tmp_repo, fake_generate_env, monkeypatch
+):
+    record = worktree.create(tmp_repo, "network-probe-denied")
+    # `fake_generate_env` stubs the network-existence probe itself; this test
+    # is about that probe's real Docker call, so restore it (create is done).
+    monkeypatch.undo()
+    monkeypatch.setattr(
+        worktree.procutil,
+        "docker",
+        lambda *_a, **_kw: (_ for _ in ()).throw(PermissionError("docker denied")),
+    )
+
+    with pytest.raises(worktree.RuntimeNetworkProbeError, match="docker denied"):
+        worktree.ensure(tmp_repo, "network-probe-denied")
+
+    assert worktree.read_instance_record(record.record_path).state == "ready"
+
+
+def test_explicit_network_claim_cannot_replace_saved_object_id(
+    tmp_repo, fake_generate_env, monkeypatch
+):
+    record = worktree.create(tmp_repo, "network-claim-once")
+    record = replace(record, network_id="2" * 64)
+    worktree._write_instance_record(record)
+    monkeypatch.setattr(
+        worktree,
+        "_docker_network_details",
+        lambda _network: {"id": "3" * 64, "labels": {}},
+    )
+
+    with pytest.raises(
+        worktree.RuntimeNetworkOwnershipUnprovenError,
+        match="cannot prove ownership",
+    ):
+        worktree.ensure(
+            tmp_repo, "network-claim-once", adopt_existing_network=True
+        )
+
+    failed = worktree.read_instance_record(record.record_path)
+    assert failed.network_id == "2" * 64
+    assert failed.state == "recovery-required"

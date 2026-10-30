@@ -1,0 +1,9 @@
+{
+ "_comment": "Near-duplicate frames of one screen share a group: they are ONE independent piece of evidence for a glyph label. Frames not listed are their own group. Members are frame number prefixes.",
+ "groups": {
+  "progress-scroll": ["12", "13"],
+  "choose-destination": ["05", "06"],
+  "password-dialog": ["09", "10", "11"],
+  "installed-console-menu": ["19", "20"]
+ }
+}

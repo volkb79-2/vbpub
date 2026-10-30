@@ -281,7 +281,9 @@ with sqlfluff in a command lane if the project wants it.
   `"exec"`, or `"socket"`, set `socket_path`, and set `admission_wait`.
   `auto` uses the socket only after a successful version probe and otherwise
   uses Docker exec. The daemon watch is one reader per session; if it is
-  unavailable, the in-process assay watch uses the producer's calibrated
+  unavailable, the in-process assay watch bounds the R2 baseline by Assay's
+  heartbeat (`300s` minimum; run-gate requests a 60 s heartbeat, so an assay
+  lane's `stall_timeout` below `120s` is refused at load) and then uses the producer's calibrated
   cadence and pauses its idle clock during high host memory PSI. For an
   exec or bare-host lane without a placement request, daemon stall policy
   is `report`; a shared container is never a kill target.
@@ -305,7 +307,7 @@ with sqlfluff in a command lane if the project wants it.
   than or comparable to run-gate's own process, not necessarily the exact
   number shown; budget it as SMALL rather than reading the number
   literally.
-  Once a lane has a handful of profiled runs, `./run-gate.py footprint
+  Once a lane has a handful of profiled runs, `run-gate footprint
   --write` distills a COMMITTED peak-memory/CPU/stall number for it —
   size `resources.memory`/`resources.cpus` off THAT (with headroom for the
   outlier `max`, not just the `median`), not off a number picked in a
@@ -326,7 +328,7 @@ with sqlfluff in a command lane if the project wants it.
   `{worktree}` (exit 127 under a worktree-only mount, RG-34; `doctor` names
   it from 23.4.0).
 - A conjunction lane that duplicates its sub-lanes' internals in a
-  consumer config instead of pointing at `./run-gate.py <lane>`.
+  consumer config instead of pointing at `run-gate <lane>`.
 - A directory of tests called "the gate" with no lane declaring it.
 
 ---
@@ -337,7 +339,7 @@ Some lanes do not belong on the developer's host at all: nightly property
 profiles, mutation campaigns over a whole module, fuzzing, and anything that
 takes hours. The estate's decision for those is **D-110.4 (dstdns decisions,
 2026-08-20)**: additional lanes with large budgets, run by **Buildkite agents
-on the remote hosts**, calling the SAME `./run-gate.py <lane>` — nyxloom, the
+on the remote hosts**, calling the SAME `run-gate <lane>` — nyxloom, the
 operator and a controller session are equal triggers. `CONSUMERS.md`
 "Partner integration notes" carries the forward note; the enrollment manual
 and the integration seams are in **`REMOTE-LANES-BUILDKITE.md`**.
@@ -363,7 +365,7 @@ a yes/no.
 
 - [ ] One concern; re-runnable alone; named for what it proves.
 - [ ] Fast lanes first in the conjunction; the conjunction points at
-      `./run-gate.py <sub-lane>`, never at internals.
+      `run-gate <sub-lane>`, never at internals.
 - [ ] Lint and types as command lanes; production code under an assay lane.
 - [ ] Deterministic: offline, seeded, no order dependence, no xdist on the
       shared host, Hypothesis on the `gate` profile.
@@ -378,7 +380,8 @@ a yes/no.
       fields are documented for the adopter and exercised by `doctor` or
       `--dry-run`; no consumer starts or stops the daemon.
 - [ ] Artifacts declared if the lane may run remotely.
-- [ ] `./run-gate.py doctor` clean; the lane run once from a fresh clone.
+- [ ] `run-gate doctor` clean; the lane runs once from a clean checkout with
+      the Run-Gate wheel installed.
 
 ---
 

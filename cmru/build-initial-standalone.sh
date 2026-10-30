@@ -50,15 +50,6 @@ if [[ -z "${cgroup_parent}" ]]; then
     exit 2
 fi
 
-if ! docker image inspect "${builder_image}" >/dev/null 2>&1; then
-    echo "[INFO] Building ${builder_image} from wheel-builder/Dockerfile" >&2
-    docker build \
-        --cgroup-parent "${cgroup_parent}" \
-        -f "${repo_root}/wheel-builder/Dockerfile" \
-        -t "${builder_image}" \
-        "${repo_root}"
-fi
-
 # cmru depends on the cli-extended WHEEL (KI-51 / CX-D1: never vendored, never from
 # an index; normally the RELEASED one, or the explicit zero-release source build
 # below). `python -m cmru.handlers` imports it, so the bootstrap
@@ -186,6 +177,163 @@ printf 'Metadata-Version: 2.1\nName: cmru\nVersion: %s\n' "${cmru_version}" > "$
 printf 'bootstrap\n' > "${cmru_dist_info}/INSTALLER"
 : > "${cmru_dist_info}/RECORD"
 
+# SOURCE BINDING (before any Docker invocation, the host probe included). The wheel
+# builder bind-mounts the LIVE working tree, but this script claims the identity of
+# HEAD: the version is derived from HEAD's tags and SOURCE_DATE_EPOCH is HEAD's commit
+# time. This wheel becomes the controller of later releases, so it may only be built
+# from exactly the committed bytes. Refuse when any file that goes into a wheel built
+# here differs from HEAD: tracked edits, untracked files, and ignored files that
+# setuptools would still package (it ignores .gitignore when packaging a source root).
+# The relevant inputs are cmru's pyproject and package sources, the worktree library it
+# carries, and, in source mode only, the cli-extended library built here. An unreadable
+# Git state is a refusal too, never "clean".
+source_binding_paths=(cmru/pyproject.toml cmru/src libraries/worktree/src)
+source_binding_roots=(cmru/src libraries/worktree/src)
+for optional in cmru/setup.py cmru/setup.cfg cmru/MANIFEST.in; do
+    if [[ -e "${repo_root}/${optional}" ]]; then
+        source_binding_paths+=("${optional}")
+    fi
+done
+if [[ "${cli_extended_mode}" == "source" ]]; then
+    source_binding_paths+=(libraries/cli-extended/pyproject.toml libraries/cli-extended/README.md libraries/cli-extended/src)
+    source_binding_roots+=(libraries/cli-extended/src)
+fi
+source_binding_fail() {
+    echo "[ERROR] refusing to build the bootstrap wheel: its source is not exactly the committed HEAD ($(git -C "${repo_root}" rev-parse --short HEAD 2>/dev/null || echo unknown))." >&2
+    echo "        This wheel becomes the controller of later releases, so it may not be built from" >&2
+    echo "        uncommitted bytes under a committed identity. $1" >&2
+    echo "        Commit, stash or remove these paths (nothing was built and no Docker command ran):" >&2
+    printf '%s\n' "$2" | head -n 20 | sed 's/^/          /' >&2
+    exit 2
+}
+source_binding_changes="$(git -C "${repo_root}" status --porcelain=v1 --untracked-files=all -- "${source_binding_paths[@]}")" || {
+    echo "[ERROR] cannot read the Git state of ${repo_root}; refusing to build the bootstrap wheel from unverifiable source" >&2
+    exit 2
+}
+if [[ -n "${source_binding_changes}" ]]; then
+    source_binding_fail "Tracked edits or untracked files differ from HEAD." "${source_binding_changes}"
+fi
+source_binding_ignored="$(git -C "${repo_root}" ls-files --others --ignored --exclude-standard -- "${source_binding_roots[@]}")" || {
+    echo "[ERROR] cannot list ignored files under the wheel source roots; refusing to build the bootstrap wheel" >&2
+    exit 2
+}
+source_binding_ignored="$(printf '%s\n' "${source_binding_ignored}" | grep -Ev '(^$|(^|/)__pycache__/|\.py[co]$|\.egg-info/)' || true)"
+if [[ -n "${source_binding_ignored}" ]]; then
+    source_binding_fail "Git-ignored files under a wheel source root would still be packaged." "${source_binding_ignored}"
+fi
+
+# Host placement is proven BEFORE any Docker/Buildx workload starts. systemd
+# auto-vivifies an unlimited transient slice for a typo'd name and Docker then
+# starts the build there without complaint. This is CMRU's own host-side probe
+# contract (LoadState=loaded + non-empty FragmentPath, read from the Docker
+# HOST's systemd by a pinned privileged probe container; never a local
+# systemctl): the same check `cmru handler wheel-build` repeats for each build.
+# It needs the staged cli-extended + cmru identity above, which is why the
+# builder image is built only after them. Probe image and probe placement come
+# from CMRU_TESTER_CGROUP_PROBE_IMAGE / CMRU_TESTER_CGROUP_PARENT (environment,
+# else cmru.orchestration.toml [env]); a missing input or any uncertainty refuses.
+verify_pythonpath="${project_dir}/src:${cli_extended_stage}/site:${repo_root}/libraries/worktree/src"
+if [[ "${cli_extended_mode}" == "source" ]]; then
+    # Zero-release path only: cli-extended does not exist as a wheel yet.
+    verify_pythonpath="${verify_pythonpath}:${repo_root}/libraries/cli-extended/src"
+fi
+# A refusal (SystemExit) prints its own specific reason; any other failure
+# (unreadable cmru.orchestration.toml, an unset ${CGROUP_PARENT_DEV_GATES}
+# reference, an import error) is reported as itself, not as a bad slice.
+PYTHONPATH="${verify_pythonpath}" "${python_bin}" -s -c '
+import sys
+from pathlib import Path
+from cmru import handlers
+try:
+    handlers.require_installed_cgroup_parent(sys.argv[1], Path(sys.argv[2]))
+except Exception as exc:
+    print(f"[ERROR] cannot verify the cgroup parent: {type(exc).__name__}: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+' "${cgroup_parent}" "${project_dir}" || {
+    echo "[ERROR] cgroup parent verification of ${cgroup_parent} did not succeed (see the message above: a refused or" >&2
+    echo "        unverified slice, a missing or unreadable probe input such as CMRU_TESTER_CGROUP_PROBE_IMAGE," >&2
+    echo "        CMRU_TESTER_CGROUP_PARENT / \$CGROUP_PARENT_DEV_GATES or cmru.orchestration.toml, or an unavailable probe); no build was started" >&2
+    exit 2
+}
+
+builder_kind=""
+if docker image inspect "${builder_image}" >/dev/null 2>&1; then
+    builder_kind="$(docker image inspect \
+        --format '{{index .Config.Labels "org.vbpub.wheel-builder.kind"}}' \
+        "${builder_image}" 2>/dev/null || true)"
+fi
+if [[ "${builder_kind}" != "python-wheel-builder" ]]; then
+    # The builder's base is the declared ARG default of wheel-builder/Dockerfile (read, not retyped).
+    # The estate default is tester-base:local, a LOCAL tag built from public upstream inputs only
+    # (tester-base/Dockerfile): no published vbpub image is needed, but the tag must exist before
+    # this build, and a local-only tag is visible to the `docker` driver builder only (a remote
+    # builder would try a registry), and `--pull` would ask a registry for it too.
+    builder_base="$(sed -n 's/^ARG WHEEL_BUILDER_BASE_IMAGE=\(.*\)$/\1/p' \
+        "${repo_root}/wheel-builder/Dockerfile")"
+    [[ -n "${builder_base}" ]] || {
+        echo "[ERROR] wheel-builder/Dockerfile declares no ARG WHEEL_BUILDER_BASE_IMAGE default" >&2
+        exit 2
+    }
+    # A local-only tag needs the `docker` driver builder; say so instead of failing inside Docker.
+    docker buildx inspect default >/dev/null 2>&1 || {
+        echo "[ERROR] the buildx builder 'default' (docker driver) is not available; a local-only base tag (${builder_base})" >&2
+        echo "        is invisible to any other builder. Create it with: docker buildx use default" >&2
+        exit 2
+    }
+    if [[ "${builder_base}" == "tester-base:local" ]]; then
+        # Reuse an existing tester-base:local only when it is a tester-base build of THIS source: a
+        # kind label plus the sha256 of its only build input (tester-base/Dockerfile, no COPY). A stale
+        # build is rebuilt (docker's layer cache keeps that cheap); an image without the kind label is
+        # not ours and is refused rather than silently used as the builder's base.
+        # the WORKING-TREE file: it is what the build context contains, so an uncommitted edit cannot
+        # be labelled with the hash of the committed bytes
+        tester_base_source_hash="$(sha256sum "${repo_root}/tester-base/Dockerfile" | cut -d' ' -f1)"
+        [[ "${tester_base_source_hash}" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "[ERROR] cannot hash tester-base/Dockerfile" >&2
+            exit 2
+        }
+        build_tester_base=1
+        if docker image inspect "${builder_base}" >/dev/null 2>&1; then
+            tb_kind="$(docker image inspect --format '{{index .Config.Labels "org.vbpub.tester-base.kind"}}' "${builder_base}" 2>/dev/null || true)"
+            tb_hash="$(docker image inspect --format '{{index .Config.Labels "org.vbpub.tester-base.source-hash"}}' "${builder_base}" 2>/dev/null || true)"
+            if [[ "${tb_kind}" != "tester-base" ]]; then
+                echo "[ERROR] ${builder_base} exists but is not a tester-base build (kind label '${tb_kind:-missing}'); refusing to use it as the builder's base" >&2
+                echo "        remove it by exact tag (docker rmi ${builder_base}) or build the right image: docker buildx build --load -t ${builder_base} tester-base/" >&2
+                exit 2
+            fi
+            if [[ "${tb_hash}" == "${tester_base_source_hash}" ]]; then
+                build_tester_base=0
+            else
+                echo "[INFO] ${builder_base} was built from other tester-base sources; rebuilding" >&2
+            fi
+        fi
+        if (( build_tester_base )); then
+            echo "[INFO] Building ${builder_base} from tester-base/Dockerfile (public upstream inputs only)" >&2
+            BUILDX_BUILDER=default docker buildx build --load \
+                --cgroup-parent "${cgroup_parent}" \
+                --build-arg "TESTER_BASE_SOURCE_HASH=${tester_base_source_hash}" \
+                -t "${builder_base}" \
+                "${repo_root}/tester-base"
+        fi
+    fi
+    echo "[INFO] Building ${builder_image} from wheel-builder/Dockerfile (image label is ${builder_kind:-missing})" >&2
+    BUILDX_BUILDER=default docker buildx build --load \
+        --cgroup-parent "${cgroup_parent}" \
+        -f "${repo_root}/wheel-builder/Dockerfile" \
+        -t "${builder_image}" \
+        "${repo_root}"
+    builder_kind="$(docker image inspect \
+        --format '{{index .Config.Labels "org.vbpub.wheel-builder.kind"}}' \
+        "${builder_image}" 2>/dev/null)" || {
+        echo "[ERROR] cannot verify the rebuilt wheel-builder image ${builder_image}" >&2
+        exit 2
+    }
+    if [[ "${builder_kind}" != "python-wheel-builder" ]]; then
+        echo "[ERROR] rebuilt image ${builder_image} has unexpected wheel-builder label ${builder_kind:-missing}" >&2
+        exit 2
+    fi
+fi
+
 # Zero-release path (CMRU_BOOTSTRAP_CLI_EXTENDED=source): build cli-extended with
 # the SAME builder every estate wheel uses (`cmru.handlers wheel-build`, i.e. the
 # wheel-builder image). cmru can only run from this checkout, so for THIS build
@@ -257,16 +405,33 @@ fi
 cp -f "${cli_extended_wheel}" "${project_dir}/dist/"
 cli_extended_installed="${project_dir}/dist/$(basename "${cli_extended_wheel}")"
 
+sha256_of() {
+    "${python_bin}" -s -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$1"
+}
+cmru_wheel_sha="$(sha256_of "${wheels[0]}")" || { echo "[ERROR] cannot read ${wheels[0]}" >&2; exit 2; }
+cli_extended_sha_installed="$(sha256_of "${cli_extended_installed}")" || { echo "[ERROR] cannot read ${cli_extended_installed}" >&2; exit 2; }
+
+# The exact artifacts this run produced, as a sourceable record. A later step
+# (install, tester-image build) reads the paths and digests from HERE instead of
+# re-typing a wheel name or a digest: docs/BOOTSTRAP-FROM-ZERO.md sources it.
+identity_file="${project_dir}/dist/bootstrap-artifacts.env"
+{
+    printf 'BOOTSTRAP_CMRU_WHEEL=%q\n' "${wheels[0]}"
+    printf 'BOOTSTRAP_CMRU_WHEEL_SHA256=%q\n' "${cmru_wheel_sha}"
+    printf 'BOOTSTRAP_CLI_EXTENDED_WHEEL=%q\n' "${cli_extended_installed}"
+    printf 'BOOTSTRAP_CLI_EXTENDED_WHEEL_SHA256=%q\n' "${cli_extended_sha_installed}"
+} > "${identity_file}"
+
 echo "" >&2
-echo "[INFO] Built: ${wheels[0]}" >&2
-echo "[INFO] Verified cli-extended wheel kept beside it: ${cli_extended_installed}" >&2
+echo "[INFO] Built: ${wheels[0]} sha256=${cmru_wheel_sha}" >&2
+echo "[INFO] Verified cli-extended wheel kept beside it: ${cli_extended_installed} sha256=${cli_extended_sha_installed}" >&2
+echo "[INFO] Exact artifact paths and digests: ${identity_file}" >&2
 echo "" >&2
 echo "[INFO] cmru requires cli-extended (a release asset, never on PyPI): install both" >&2
-echo "       wheels offline, cli-extended first. Install into an isolated environment with:" >&2
-echo "       cd ${repo_root}" >&2
-echo "       python3 -m venv .venv-cmru" >&2
-echo "       .venv-cmru/bin/python -m pip install --no-index --no-deps ${cli_extended_installed} ${wheels[0]}" >&2
-echo "       export PATH=\"${repo_root}/.venv-cmru/bin:\$PATH\"" >&2
-echo "" >&2
-echo "[INFO] Install the wheels directly into \`.venv/bin/cmru\`:" >&2
-echo "       python -m pip install --no-index --no-deps ${cli_extended_installed} ${wheels[0]}" >&2
+echo "       wheels offline, cli-extended first, into the Python environment you select" >&2
+echo "       (this script installs nothing; no cmru command exists until you do this):" >&2
+echo "       . ${identity_file}" >&2
+echo "       <python-of-the-chosen-environment> -m pip install --no-index --no-deps \\" >&2
+echo "           \"\$BOOTSTRAP_CLI_EXTENDED_WHEEL\" \"\$BOOTSTRAP_CMRU_WHEEL\"" >&2
+echo "       then put that environment's bin directory first on PATH" >&2
+echo "       (docs/BOOTSTRAP-FROM-ZERO.md step 1 has the complete, verified block)." >&2

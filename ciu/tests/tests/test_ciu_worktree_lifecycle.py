@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -122,6 +123,22 @@ def _base_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("INSTANCE_ID", "ambient-wrong")
 
 
+def _git_family(root: Path) -> None:
+    """Make *root* a real Git repository with a resolvable HEAD.
+
+    The lease path takes the allocation lock in the Git common dir and mirrors
+    into the Git-family lifecycle record, so even an unmanaged (primary)
+    checkout must be a Git family, not a bare directory.
+    """
+    for argv in (
+        ["init", "-b", "main"],
+        ["config", "user.email", "t@example.com"],
+        ["config", "user.name", "Test"],
+        ["commit", "--allow-empty", "-m", "init"],
+    ):
+        subprocess.run(["git", *argv], cwd=str(root), check=True, capture_output=True)
+
+
 def _write_repo(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, managed: bool
 ) -> Path:
@@ -163,6 +180,7 @@ def _write_repo(
         machine_facts=machine,
     )
     (tmp_path / ".gitignore").write_text("**/.ciu/\n")
+    _git_family(tmp_path)
     if managed:
         (tmp_path / worktree.WORKTREE_INSTANCE_RECORD).write_text(
             _record_body(tmp_path), encoding="utf-8"
@@ -548,6 +566,7 @@ class TestCleanClearsTheLease:
         )
 
     def _leased(self, root: Path) -> Path:
+        _git_family(root)
         path = root / worktree.WORKTREE_INSTANCE_RECORD
         path.write_text(_record_body(root), encoding="utf-8")
         worktree.acquire_own_lease(root, ttl_hours=24)

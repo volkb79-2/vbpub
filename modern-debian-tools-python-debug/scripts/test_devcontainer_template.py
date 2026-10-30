@@ -91,6 +91,23 @@ def test_template_keeps_codex_database_persistent_and_container_running() -> Non
     assert '"shutdownAction": "none"' in TEMPLATE_TEXT
 
 
+def test_template_exposes_pwmcp_cli_and_mcp_endpoint_to_remote_processes() -> None:
+    document = bootstrap._parse_jsonc_object(TEMPLATE_TEXT)
+    assert document["remoteEnv"] == {
+        "PATH": "/home/vscode/.venv/bin:/srv/pwmcp-instance/bin:${containerEnv:PATH}",
+        "PWMCP_MCP_URL": "http://pwmcp:8931/mcp",
+    }
+
+
+def test_image_selects_estate_python_without_claiming_shell_activation() -> None:
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    profile = (ROOT / "customization" / "profile.sh").read_text(encoding="utf-8")
+    assert 'ENV PATH="/home/vscode/.venv/bin:${PATH}"' in dockerfile
+    assert 'ENV VIRTUAL_ENV=' not in dockerfile
+    assert 'export PATH="$HOME/.venv/bin:$HOME/.local/bin:/srv/pwmcp-instance/bin:$PATH"' in profile
+    assert 'dstdns-venv.sh' not in dockerfile
+
+
 def test_bootstrap_derives_every_active_home_bind_source() -> None:
     host_home = Path("/host/home")
     original_home = bootstrap.HOME

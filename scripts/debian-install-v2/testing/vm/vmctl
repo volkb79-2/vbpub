@@ -32,7 +32,7 @@
 #   vmctl prepare-base <case>          # download + stage .vm/images/<case>-base.qcow2
 #   vmctl prepare-ready-base <case>    # prepare-base, then boot+wait for cloud-init to
 #                                       # finish, disable it, flatten -> <case>-ready-base.qcow2
-#   vmctl start <run>  [--case <case>] [--ssh-port N] [--mem MB] [--smp N] [--no-apt-cache]
+#   vmctl start <run>  [--case <case>] [--ssh-port N] [--mem MB] [--smp N] [--disk-gb N] [--no-apt-cache] [--seed-iso PATH]
 #   vmctl wait <run>   [--timeout-s N]
 #   vmctl ssh <run> [-- cmd...]        # interactive shell if no cmd given
 #   vmctl copy <run> <src> <dst>       # rsync local src -> guest dst
@@ -218,23 +218,46 @@ run_dir_for() {
 }
 
 cmd_start() {
-    local run="${1:?usage: vmctl start <run> [--case case-b] [--ssh-port N] [--mem MB] [--smp N] [--no-apt-cache]}"
+    local run="${1:?usage: vmctl start <run> [--case case-b] [--ssh-port N] [--mem MB] [--smp N] [--disk-gb N] [--no-apt-cache] [--seed-iso PATH]}"
     shift
     local case_name="case-b"
     local ssh_port="$DEFAULT_SSH_PORT"
     local mem_mb="$DEFAULT_MEM_MB"
     local smp="$DEFAULT_SMP"
+    local disk_gb=""
+    local disk_gb_requested=0
     local want_apt_cache=1
+    local seed_iso=""
     while [ $# -gt 0 ]; do
         case "$1" in
             --case) case_name="$2"; shift 2 ;;
             --ssh-port) ssh_port="$2"; shift 2 ;;
             --mem) mem_mb="$2"; shift 2 ;;
             --smp) smp="$2"; shift 2 ;;
+            --disk-gb)
+                [ "$#" -ge 2 ] || die "--disk-gb requires a positive whole number of GiB"
+                disk_gb="$2"
+                disk_gb_requested=1
+                shift 2
+                ;;
             --no-apt-cache) want_apt_cache=0; shift ;;
+            --seed-iso)
+                [ "$#" -ge 2 ] || die "--seed-iso requires a path"
+                seed_iso="$2"
+                shift 2
+                ;;
             *) die "unknown start option: $1" ;;
         esac
     done
+
+    if [ "$disk_gb_requested" = "1" ] && [[ ! "$disk_gb" =~ ^[1-9][0-9]*$ ]]; then
+        die "--disk-gb requires a positive whole number of GiB"
+    fi
+
+    if [ -n "$seed_iso" ] \
+        && { [ -L "$seed_iso" ] || [ ! -f "$seed_iso" ] || [ ! -r "$seed_iso" ] || [ ! -s "$seed_iso" ]; }; then
+        die "custom seed ISO must be a readable, non-empty regular file (not a symlink): $seed_iso"
+    fi
 
     local base="$IMAGES_DIR/${case_name}-base.qcow2"
     [ -f "$base" ] || die "no base image for '$case_name' -- run: vmctl prepare-base $case_name"
@@ -248,13 +271,25 @@ cmd_start() {
 
     log "creating CoW overlay over $base"
     qemu-img create -q -f qcow2 -F qcow2 -b "$base" "$run_dir/disk.qcow2" >/dev/null
+    if [ "$disk_gb_requested" = "1" ]; then
+        # qemu-img resize without --shrink can only extend the disposable
+        # overlay. The immutable downloaded base remains unchanged.
+        log "extending disposable overlay to ${disk_gb}G (base image stays immutable)"
+        qemu-img resize "$run_dir/disk.qcow2" "${disk_gb}G"
+    fi
 
     local apt_cache_active=0
     if [ "$want_apt_cache" = "1" ] && ensure_apt_cache; then
         apt_cache_active=1
     fi
     echo "$apt_cache_active" > "$run_dir/apt_cache_active"
-    cloud_init_seed "$run_dir"
+    if [ -n "$seed_iso" ]; then
+        log "using supplied cloud-init seed ISO: $seed_iso"
+        cp -- "$seed_iso" "$run_dir/seed.iso"
+        chmod 0600 "$run_dir/seed.iso"
+    else
+        cloud_init_seed "$run_dir"
+    fi
 
     echo "$ssh_port" > "$run_dir/ssh_port"
 

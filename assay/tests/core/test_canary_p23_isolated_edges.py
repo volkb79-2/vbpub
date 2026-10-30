@@ -18,13 +18,13 @@ tested as one.
 
 from __future__ import annotations
 
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 from conftest import (
     GitRepo,
+    completed_process,
     make_deadline,
     make_lane,
     make_plan,
@@ -32,7 +32,7 @@ from conftest import (
     prepared_snapshot,
 )
 
-from assay import runner
+from assay import canary, contention, runner
 from assay.adapters.python import PythonAdapter
 from assay.canary import run_isolated_canary
 from assay.config import CanaryConfig
@@ -57,10 +57,15 @@ class CountingMonotonic:
 
 
 def _pass_everything(argv, *, env, cwd, timeout):
-    return subprocess.CompletedProcess(list(argv), 0, "", "")
+    return completed_process(list(argv), 0, "", "")
 
 
-def _r3_lane(repo: GitRepo, *, mechanism: str = "import-break"):
+def _r3_lane(
+    repo: GitRepo,
+    *,
+    mechanism: str = "import-break",
+    env_passthrough: tuple[str, ...] = (),
+):
     return make_lane(
         rigor=("R0", "R3"),
         judge=make_r3_judge(
@@ -69,6 +74,7 @@ def _r3_lane(repo: GitRepo, *, mechanism: str = "import-break"):
             canary=CanaryConfig(mechanism=mechanism, target="pkg/mod.py"),
         ),
         argv=("check",),
+        env_passthrough=env_passthrough,
     )
 
 
@@ -101,7 +107,7 @@ def test_a_no_op_transform_judges_nothing_and_runs_no_transform_unit(
 
     def process(argv, *, env, cwd, timeout):
         units.append(Path(cwd))
-        return subprocess.CompletedProcess(list(argv), 0, "", "")
+        return completed_process(list(argv), 0, "", "")
 
     verdict = runner.run_lane(
         _r3_lane(git_repo),
@@ -144,7 +150,7 @@ def test_a_non_utf8_canary_target_is_a_payload_free_r3_claim(git_repo: GitRepo):
     def process(argv, *, env, cwd, timeout):
         nonlocal units
         units += 1
-        return subprocess.CompletedProcess(list(argv), 0, "", "")
+        return completed_process(list(argv), 0, "", "")
 
     verdict = runner.run_lane(
         _r3_lane(repo),
@@ -187,7 +193,7 @@ def test_an_unrecognised_mechanism_judges_nothing_on_the_public_surface(
     def process(argv, *, env, cwd, timeout):
         nonlocal units
         units += 1
-        return subprocess.CompletedProcess(list(argv), 0, "", "")
+        return completed_process(list(argv), 0, "", "")
 
     with prepared_snapshot(git_repo, commit=head_rev, scratch_root=scratch) as prepared:
         result = run_isolated_canary(
@@ -211,6 +217,196 @@ def test_an_unrecognised_mechanism_judges_nothing_on_the_public_surface(
     assert "not a known canary mechanism" in result.attempts[0].description
     assert "import-break" in result.attempts[0].description and "uncovered-line" in result.attempts[0].description
 
+
+def _run_import_break_with_resource_observations(
+    git_repo: GitRepo,
+    tmp_path: Path,
+    monkeypatch,
+    observations: tuple[contention.ContentionObservation, ...],
+    *,
+    control_returncode: int | None = None,
+    transformed_returncode: int | None = None,
+):
+    monkeypatch.setenv("ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION", "1")
+    monkeypatch.setenv("ASSAY_RESOURCE_OBSERVER_SOCKET", "/observer.sock")
+    head_rev = _seed(git_repo)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    lane = _r3_lane(
+        git_repo,
+        env_passthrough=("ASSAY_RESOURCE_OBSERVER_SOCKET",),
+    )
+
+    class Window:
+        def __init__(self, observation):
+            self.observation = observation
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    window_observations = iter(observations)
+    observer_paths: list[str | None] = []
+
+    def window(**kwargs):
+        observer_paths.append(kwargs["observer_socket_path"])
+        return Window(next(window_observations))
+
+    monkeypatch.setattr(canary.contention, "ContentionWindow", window)
+
+    def process(argv, *, env, cwd, timeout):
+        source = (Path(cwd) / "pkg/mod.py").read_text()
+        broken = "assay-canary-import-break" in source
+        if broken:
+            returncode = (
+                transformed_returncode
+                if transformed_returncode is not None
+                else 1
+            )
+        else:
+            returncode = control_returncode if control_returncode is not None else 0
+        return completed_process(list(argv), returncode, "", "")
+
+    with prepared_snapshot(git_repo, commit=head_rev, scratch_root=scratch) as prepared:
+        result = run_isolated_canary(
+            lane,
+            prepared=prepared,
+            plan=make_plan(
+                lane,
+                passthrough_source={
+                    "ASSAY_RESOURCE_OBSERVER_SOCKET": "/observer.sock"
+                },
+            ),
+            deadline=make_deadline(),
+            project_root=git_repo.path,
+            resolved_base=None,
+            mechanism="import-break",
+            target="pkg/mod.py",
+            adapter=PythonAdapter(),
+            process_runner=process,
+            clock=_clock,
+        )
+
+    assert observer_paths == ["/observer.sock", "/observer.sock"]
+    return result.attempts[0]
+
+
+@pytest.mark.parametrize("limited_phase", ["control", "transform"])
+def test_limit_event_only_withholds_a_failed_canary_result(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch, limited_phase: str
+):
+    affected = contention.ContentionObservation(
+        "affected", resource_limit_hit=True, reasons=("pids_events_max=1",)
+    )
+    clear = contention.ContentionObservation("clear")
+    observations = (affected, clear) if limited_phase == "control" else (clear, affected)
+
+    attempt = _run_import_break_with_resource_observations(
+        git_repo, tmp_path, monkeypatch, observations
+    )
+
+    assert attempt.control_outcome is Outcome.PASS
+    assert attempt.transformed_outcome is (
+        Outcome.INCONCLUSIVE if limited_phase == "transform" else Outcome.FAIL
+    )
+    if limited_phase == "transform":
+        assert attempt.observed_reason_code is ReasonCode.CANARY_INCONCLUSIVE
+    assert canary.judge_attempt(attempt) == (
+        (Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE)
+        if limited_phase == "transform"
+        else (Outcome.PASS, None)
+    )
+
+
+def test_limit_event_makes_a_failed_control_inconclusive(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch
+):
+    affected = contention.ContentionObservation(
+        "affected", resource_limit_hit=True, reasons=("pids_events_max=1",)
+    )
+    clear = contention.ContentionObservation("clear")
+    attempt = _run_import_break_with_resource_observations(
+        git_repo,
+        tmp_path,
+        monkeypatch,
+        (affected, clear),
+        control_returncode=1,
+    )
+
+    assert attempt.control_outcome is Outcome.INCONCLUSIVE
+    assert attempt.transformed_outcome is Outcome.FAIL
+    assert canary.judge_attempt(attempt) == (
+        Outcome.INCONCLUSIVE,
+        ReasonCode.CANARY_INCONCLUSIVE,
+    )
+
+
+def test_import_break_command_failed_is_expected_under_psi(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch
+):
+    pressure = contention.ContentionObservation(
+        "clear",
+        reasons=(
+            "cgroup_psi.cpu.some_us=5340037",
+            "cgroup_cpu.throttled_usec=500",
+        ),
+    )
+    attempt = _run_import_break_with_resource_observations(
+        git_repo, tmp_path, monkeypatch, (pressure, pressure)
+    )
+
+    assert attempt.control_outcome is Outcome.PASS
+    assert attempt.transformed_outcome is Outcome.FAIL
+    assert attempt.observed_reason_code is ReasonCode.COMMAND_FAILED
+    assert canary.judge_attempt(attempt) == (Outcome.PASS, None)
+
+
+def test_canary_description_has_no_host_telemetry(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch
+):
+    observations = (
+        contention.ContentionObservation(
+            "affected",
+            resource_limit_hit=True,
+            reasons=("pids_events_max=1",),
+        ),
+        contention.ContentionObservation(
+            "unknown", reasons=("after-sample-unavailable:/sensitive/path",)
+        ),
+    )
+    attempt = _run_import_break_with_resource_observations(
+        git_repo, tmp_path, monkeypatch, observations
+    )
+
+    description = attempt.description.lower()
+    assert "cgroup" not in description
+    assert "psi" not in description
+    assert "throttl" not in description
+    assert "pids_events" not in description
+    assert "/sensitive/path" not in description
+
+
+def test_signalled_import_break_is_inconclusive(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch
+):
+    clear = contention.ContentionObservation("clear")
+    attempt = _run_import_break_with_resource_observations(
+        git_repo,
+        tmp_path,
+        monkeypatch,
+        (clear, clear),
+        transformed_returncode=-9,
+    )
+
+    assert attempt.control_outcome is Outcome.PASS
+    assert attempt.transformed_outcome is Outcome.INCONCLUSIVE
+    assert attempt.observed_reason_code is ReasonCode.CANARY_INCONCLUSIVE
+    assert canary.judge_attempt(attempt) == (
+        Outcome.INCONCLUSIVE,
+        ReasonCode.CANARY_INCONCLUSIVE,
+    )
 
 def test_a_test_path_canary_target_is_still_refused_before_any_unit(
     git_repo: GitRepo, tmp_path: Path

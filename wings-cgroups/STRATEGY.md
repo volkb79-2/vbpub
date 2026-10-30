@@ -239,7 +239,12 @@ fourth clean commit in a day (`internal/cgroups` plus the config and create-site
 wiring, ~1000 lines of non-test production code across 7 files, plus ~530 lines
 of tests).
 
-Design as shipped (`patchstack/patches/*/0004-*`, both trees):
+Historical first design (`v1-legacy` and the archived Pelican series):
+
+> This per-server slice design was superseded by the 2026-09-08 scope redesign
+> below. The active Pterodactyl implementation is in
+> [`wings-patchstack/patches/pterodactyl-v1.13.3/`](../wings-patchstack/patches/pterodactyl-v1.13.3/);
+> the stale Pelican series is archived and is not equivalent.
 
 - `docker.per_server_slices.enabled: true` places **every** server under a
   derived `wings-<dashless-uuid>.slice` (dash naming nests it under
@@ -315,10 +320,11 @@ admin `systemctl show`-ing a server's committed floor while it was stopped — i
 gone with it. Both costs were weighed and accepted.
 
 The shipped series is the table in
-[`v1-legacy/patchstack/README.md`](v1-legacy/patchstack/README.md) (0001–0009,
+[`wings-patchstack/README.md`](../wings-patchstack/README.md) (0001–0011,
 contiguous); the retirements of the old 0005 (`io_bfq_weight`) and 0011
 (`WINGS_CG_RAMDISK_UNITS`) are argued in the same file. Note that the links
-elsewhere in this document predate the `v1-legacy/` move and are stale.
+in the historical notes above describe the earlier layout; the canonical
+workflow is now under `wings-patchstack/`.
 
 ---
 

@@ -95,6 +95,32 @@ def check_docker(runtime=None, args=None) -> CheckResult:
     )
 
 
+def _nearest_config_path():
+    """The nearest cmru config file (same precedence as real discovery), or ``None``."""
+    from cmru.config import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
+
+    # Same precedence as the real discovery (resolve_invocation_context): the
+    # nearest orchestration file anywhere above wins over a nearer project file.
+    current = Path.cwd().resolve()
+    for name in (ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME):
+        for directory in (current, *current.parents):
+            if (directory / name).is_file():
+                return directory / name
+    return None
+
+
+def _declared_token_source(path) -> str | None:
+    """The ``[github] token_source`` the file declares, read without full validation (L2)."""
+    import tomllib
+
+    try:
+        with open(path, "rb") as handle:
+            value = (tomllib.load(handle).get("github") or {}).get("token_source")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return value if value in ("gh", "cmru") else None
+
+
 def _load_nearest_config():
     """Return ``(path, ForgeConfig)`` for the nearest cmru config, or ``None``.
 
@@ -108,17 +134,7 @@ def _load_nearest_config():
         load_forge_config,
     )
 
-    # Same precedence as the real discovery (resolve_invocation_context): the
-    # nearest orchestration file anywhere above wins over a nearer project file.
-    current = Path.cwd().resolve()
-    found = None
-    for name in (ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME):
-        for directory in (current, *current.parents):
-            if (directory / name).is_file():
-                found = directory / name
-                break
-        if found is not None:
-            break
+    found = _nearest_config_path()
     if found is None:
         return None
     captured = io.StringIO()
@@ -153,7 +169,44 @@ def check_config(runtime=None, args=None) -> CheckResult:
 
 
 def check_credentials(runtime=None, args=None) -> CheckResult:
-    """A GitHub token variable is present; reports WHICH one, never its value."""
+    """A GitHub token is available; reports WHICH source, never its value."""
+    try:
+        loaded = _load_nearest_config()
+    except ValueError:
+        loaded = None
+    if loaded is not None:
+        declared = getattr(loaded[1].github, "token_source", "cmru")
+    else:
+        nearest = _nearest_config_path()
+        declared = _declared_token_source(nearest) if nearest is not None else None
+    if declared == "gh":
+        # Config load no longer runs gh (the lookup is lazy), so doctor makes the
+        # one lookup itself.  `gh auth token` only prints the stored token: it
+        # does NOT validate it against GitHub or check its scopes.
+        from cmru.config import gh_token_cached
+
+        captured = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(captured), contextlib.redirect_stdout(captured):
+                gh_token_cached()
+        except SystemExit:
+            return CheckResult(
+                "fail", "token_source = gh: `gh auth token` returned no token",
+                remedy="run `gh auth login`, then `gh auth refresh -h github.com -s "
+                "read:packages,write:packages,delete:packages` for GHCR",
+                details={"token_source": "gh"},
+            )
+        return CheckResult(
+            "ok",
+            "token_source = gh: `gh auth token` returned a token (scopes and validity "
+            "are not checked: run `gh auth status`)",
+            details={"token_source": "gh"},
+        )
+    if declared == "cmru" and loaded is None:
+        return CheckResult(
+            "warn", "token_source = cmru is declared but the config does not otherwise load",
+            details={"token_source": "cmru"},
+        )
     for name in CREDENTIAL_VARIABLES:
         if os.environ.get(name, "").strip():
             return CheckResult(

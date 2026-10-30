@@ -1,0 +1,4 @@
+# BEGIN mdt-buildkit (managed by mdt host-setup install.sh; edit host-setup/etc/environment.mdt-buildkit in the repo)
+BUILDX_BUILDER=mdt-managed
+BUILDKIT_HOST=unix:///run/mdt-buildkitd/buildkitd.sock
+# END mdt-buildkit

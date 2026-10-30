@@ -180,14 +180,41 @@ note in `docs/CONSUMERS.md` and the rationale in `docs/DESIGN-GUIDE.md`.
 listener. `exec` is `true` by construction — the exec carrier is permanent
 (§8.1 rule 5), not probed.
 
+The additive `resource_observer` field reports the distinct observer listener:
+
+```json
+"resource_observer": {"contract": 2,
+                       "path": "/run/cgprofile/observer/resource-observer.sock",
+                       "listening": true}
+```
+
+Its contract number is independent of the control protocol's `contract: 1`.
+If binding the observer socket failed, `listening` is false; opted-in native
+R2 consumers still fail closed when their configured endpoint is unavailable.
+
 ## 6. Errors
 
 Response shape is always
 `{"ok": false, "contract": 1, "error": {"code": "<kebab-code>", "message": "…"}}`,
 exit code 2 over the exec carrier (§1.3). Codes: `bad-argument`,
 `target-not-found`, `too-many-sessions`, `unknown-session`,
-`report-unavailable`, `report-failed`, and from §8.8 `peer-refused`,
+`report-unavailable`, `report-failed`, `stop-incomplete` (a `stop` whose
+sampling worker did not exit within 10 s: the session is NOT finalized, keeps
+its placement and DAMON resources, and `stop` may be retried; the third
+consecutive incomplete attempt finalizes anyway with `stop_forced`), and from §8.8 `peer-refused`,
 `place-refused:*`, `bad-policy`, `not-streaming`.
+
+Additive optional Summary keys (cgprofile 1.1.0; the contract number stays 1
+and the Summary schema stays v1.1; full definitions in
+`RG55-INTERFACE-CONTRACT.md` §8.7):
+
+* `summary.damon_cleanup` — `{confirmed, slot, quarantined}`, present when a
+  DAMON owner was closed; `confirmed: false` means the kdamond teardown could
+  not be verified (it may still be active), which is NOT the same as DAMON off.
+* `summary.stop_forced` — `"sampler-still-running"` when the session was
+  finalized while its sampling worker was still alive (the third consecutive
+  `stop-incomplete`, or daemon shutdown); the manifest is then `aborted` with
+  the same reason. Absent otherwise.
 
 ## 7. Goldens
 
@@ -200,21 +227,24 @@ they are what the run-gate socket client (P5) is written against.
 ## 8. Native R2 resource observer (RG-89)
 
 This is a **separate listener**, not a new verb on the control carrier:
-`/run/cgprofile/resource-observer.sock`. Run-Gate may bind-mount only this
-socket into an explicitly opted-in Assay R2 container. The listener is served
+`/run/cgprofile/observer/resource-observer.sock`. Host setup provisions the
+root-owned `/run/cgprofile/observer` directory as `0751` with the dedicated
+`cgprofile-observer` group. Run-Gate bind-mounts this directory read-only into
+an explicitly opted-in Assay R2 container, so daemon restarts replace the
+socket inode at a path an existing container can still resolve. The listener is served
 by the existing daemon and accepts no control operation, including `start`,
-`stop`, or placement. Its socket mode uses the existing `/run/cgprofile`
-directory group and `CGPROFILE_ALLOW_UIDS` policy; Run-Gate forwards the
-observed socket GID as a supplementary group. A read-only mount of `ctl.sock`
+`stop`, or placement. Its socket mode uses the dedicated observer directory
+group and the `CGPROFILE_ALLOW_UIDS` policy; Run-Gate forwards the observed
+socket GID as a supplementary group. Observer lanes also declare per-container
+memory and PID ceilings and refuse arbitrary extra mounts. A read-only mount of `ctl.sock`
 is not equivalent and is prohibited for this use.
 
-The observer supports contracts 1 and 2 independently of the daemon's
-contract-1 control protocol. Contract 1 keeps the original response shape for
-existing clients. Assay uses contract 2 because it needs the regular event
-scope and effective local counters. The requests are:
+The observer requires contract 2, independently of the daemon's contract-1
+control protocol. Contract 2 reports regular event scope and effective local
+counters. Contract-1 observer requests receive `bad-argument` with an
+unsupported-contract message. The request is:
 
 ```json
-{"verb":"resource-limits","args":{"thread_id":1234},"contract":1}
 {"verb":"resource-limits","args":{"thread_id":1234},"contract":2}
 ```
 
@@ -227,14 +257,17 @@ The daemon uses that PID/UID plus the requested TID to prove the caller's
 thread identity, shared thread cgroup/credentials, and gates-slice membership;
 the request cannot choose a PID, cgroup path, or slice. A successful response
 contains only the complete canonical leaf-to-root cgroup-v2 ancestry, mount
-ID, limit presence/value pairs, and pids/memory event counters. Contract 2
-also reports whether the regular event files are `hierarchical` or `local`
-under the verified mount's `pids_localevents` and `memory_localevents` modes,
-and includes effective local event maps at each path. The observer reads the
-`.local` files when available; if a regular file is already local under the
-mount mode, it can supply equivalent local evidence when the `.local` file is
-unavailable. Neither contract returns a
-process list, PID, or sibling cgroup data. See contract §9 for exact response
+ID, limit presence/value pairs, both event-counter scopes, and effective
+local event maps at every path. Successful responses always report
+`pids_events_scope: "hierarchical"`; the observer refuses a mount using
+`pids_localevents`, because that option counts failed forks in the cgroup where
+the process tried to fork even when an ancestor's `pids.max` rejected it. That
+counter cannot identify the enforcing cgroup. `memory_events_scope` reports
+whether regular memory events are hierarchical or local under
+`memory_localevents`. The observer reads the `.local` files when available; if
+a regular memory file is already local under the mount mode, it can supply
+equivalent local evidence when the `.local` file is unavailable. The response
+contains no process list, PID, or sibling cgroup data. See contract §9 for exact response
 shapes and the verified private-cgroup-namespace path mapping.
 
 Assay configures this socket explicitly and consults it only after its local

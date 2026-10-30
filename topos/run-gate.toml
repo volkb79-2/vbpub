@@ -1,5 +1,5 @@
 # =============================================================================
-# topos project gate lanes — parsed ONLY by run-gate.py (one parser, D-110).
+# topos project gate lanes — parsed ONLY by Run-Gate CLI (one parser, D-110).
 # Environment facts come from the CENTRAL vbpub-root run-gate.root.toml. The
 # topos-suite argv is the pre-adoption nyxloom gate mechanics VERBATIM (only
 # re-homed) — including its hardcoded-slice removal: the central environment
@@ -17,7 +17,12 @@ budget = "30m"
 
 [lanes.py-compile]
 kind = "command"
-environment = "host"
-# P96: fail-closed NUL-delimited argv over changed .py files; no changes → OK.
-argv = ["bash", "-c", "cd {worktree} && set -o pipefail && git diff --name-only -z main...HEAD -- '*.py' | xargs -0 -r python3 -m py_compile && echo 'py-compile: OK' || { rc=$?; echo \"py-compile: FAILED (exit $rc)\" 1>&2; exit $rc; }"]
+# tester-unified, not `host`: this lane writes __pycache__ into the bind-mounted worktree, so it must
+# run as the worktree owner with a full identity (passwd, group, HOME, XDG). The `host` environment
+# is tester-base, which runs as root and has no user (MDTC-02 D-002).
+environment = "tester-unified"
+# P96: fail-closed NUL-delimited argv over changed .py files; no changes → OK. Deleted files are
+# excluded (--diff-filter=d): py_compile of a path the branch removed is a false failure (seen when
+# Run-Gate 24 retired the run-gate.py symlinks).
+argv = ["bash", "-c", "cd {worktree} && set -o pipefail && git diff --name-only -z --diff-filter=d main...HEAD -- '*.py' | xargs -0 -r python3 -m py_compile && echo 'py-compile: OK' || { rc=$?; echo \"py-compile: FAILED (exit $rc)\" 1>&2; exit $rc; }"]
 budget = "2m"

@@ -398,6 +398,7 @@ operators = ["python:compare-swap"]
         "mutated_file_sha256",
         "execution",
         "resource_limit_evidence",
+        "process_tree_evidence",
     }
     assert len(killed["candidate_id"]) == 64
     assert len(killed["source_sha256"]) == 64

@@ -4,6 +4,65 @@ This document is the pasteable adoption contract for MDT's host governance and
 managed BuildKit backend. Host setup is intentionally manual because it
 changes systemd, Docker, and cgroup policy.
 
+## PWMCP browser service
+
+The MDT image includes PWMCP at `/srv/pwmcp-instance`. Start it when you need
+the shared remote browser:
+
+```bash
+cd /srv/pwmcp-instance
+ciu up
+```
+
+The connected devcontainer joins the instance network. Configure an MCP client
+inside it with:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "pwmcp": {
+        "type": "http",
+        "url": "http://pwmcp:8931/mcp"
+      }
+    }
+  }
+}
+```
+
+The Playwright WebSocket endpoint is `ws://pwmcp:3000/`. The `pwmcp` CLI can
+inspect rendered pages through that remote browser:
+
+```bash
+pwmcp inspect https://example.com --format snapshot --output page.yml
+pwmcp inspect https://example.com --format screenshot --output page.png --full-page
+```
+
+The MDT devcontainer template exposes `/srv/pwmcp-instance/bin` on remote
+process `PATH` and sets `PWMCP_MCP_URL=http://pwmcp:8931/mcp`. Agent harnesses
+still need an HTTP MCP server entry pointing at that URL; installing the
+packaged PWMCP skill does not change a harness's MCP configuration. A consumer
+using another devcontainer must expose its installed CLI on `PATH` and ensure
+the agent can resolve and reach the MCP endpoint on its internal network.
+
+For the devcontainer that is already running while its image cannot be
+rebuilt, install the current release into `/srv` and start it manually:
+
+```bash
+sudo install -d -m 0755 -o vscode -g vscode /srv/pwmcp-instance
+set -o pipefail
+curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/pwmcp/get.py \
+  | XDG_DATA_HOME=/srv python3 - install --scope user
+export PATH="/srv/pwmcp-instance/bin:$PATH"
+cd /srv/pwmcp-instance
+ciu up
+```
+
+To update that install, replace `install` with `update` in the pipeline, add
+the launcher directory to `PATH`, then run `ciu up` again. The instance remains internal-only and unauthenticated,
+matching PWMCP's existing network policy. See
+[PWMCP's consumer guide](../../pwmcp/docs/CONSUMERS.md#install-and-update).
+
 ## Host prerequisite
 
 On the Docker host, review and apply the shipped host configuration:
@@ -12,6 +71,13 @@ On the Docker host, review and apply the shipped host configuration:
 sudo ./host-setup/install.sh --wizard
 sudo mdt-host-check.sh
 ```
+
+The wizard asks for `DAMON_STAT_DISABLE_DEFAULT=yes|no`. Enter accepts the
+recommended `yes`: MDT writes `N` to the kernel's
+`/sys/module/damon_stat/parameters/enabled` parameter now and on each boot,
+letting cgprofile collect DAMON samples. Choose `no` to keep the kernel's
+configured default. Removing a previous MDT override leaves the live parameter
+unchanged until reboot. `mdt-host-check.sh` reports a stale or unapplied choice.
 To identify the MDT build before choosing an operation, run:
 
     ./build-push.py --version
@@ -37,6 +103,33 @@ Fresh installs default to `report-only`. If a plain install finds an existing
 until `--wizard` explicitly confirms that policy again; it leaves the host
 config available for review. During `--wizard`, accepting the default answer
 changes `terminate` to `report-only`.
+
+### cgprofile resource-observer host setup
+
+For an existing MDT host with a valid `/run/cgprofile` control directory,
+provision the contract-2 observer path with this focused host command:
+
+```bash
+sudo ./host-setup/install.sh --observer-only
+stat -c '%u:%g %a %n' /run/cgprofile/observer
+getent group cgprofile-observer
+sudo mdt-host-check.sh
+```
+
+The command installs the dedicated `cgprofile-observer` group and its separate
+tmpfiles rule, then checks for a real `root:<observer-gid>` directory with mode
+`0751`. It refuses a pre-existing observer group that shares Docker's GID
+before changing units or creating the directory. It also refuses a pre-existing
+observer path whose type, owner, group, or mode has drifted; inspect and repair
+that path before retrying rather than relying on tmpfiles to re-own it. The
+host checker independently verifies the observer group, directory metadata,
+and the complete active sysusers/tmpfiles rule sets. Blank lines and comments
+are ignored; additional active directives fail the check. It points back to
+this command when provisioning is missing. It also refuses if
+`/run/cgprofile` is missing, a symlink, or not `root:docker 0770`. Run it from the Docker host; the
+[host-escape consumer guidance](#host-commands-from-an-mdt-devcontainer)
+shows how to run host commands from the cockpit. Deploy the daemon through the
+supported CIU consumer workflow after the observer directory exists.
 
 The wizard reads live `MemTotal`, `MemAvailable`, CPU count, swap, the
 configured `IO_BASELINE_ENV` benchmark-results file and `IO_BASELINE_TESTFILE`, and Docker mount
@@ -329,16 +422,19 @@ unprivileged. Keep VM disks under disposable storage and never attach a
 production block device.
 
 MDT's system acceptance uses the repository's shared Debian-install VM
-harness. From the MDT project root, run `./run-gate.py vm-system`; the lane
+harness. From the MDT project root, run `run-gate vm-system`; the lane
 requires the governed `CGROUP_PARENT_DEV_GATES`,
-`CGROUP_PARENT_DEV_INTERACTIVE`, and `BUILDX_BUILDER` variables. The harness
-maps the selected worktree's physical source mount and runs the installer,
-systemd, cgroup, Docker, and slice assertions inside the QEMU guest. It does
-not run those product checks in the cockpit. The harness override is
+`CGROUP_PARENT_DEV_INTERACTIVE`, `BUILDX_BUILDER`, `BUILDX_CONFIG`, and
+`DOCKER_HOST` variables from the configured host environment. Run-Gate checks
+all five before launching the controller. The harness maps the selected
+worktree's physical source mount and runs the installer, systemd, cgroup,
+Docker, and slice assertions inside the QEMU guest. It does not run those
+product checks in the cockpit. The harness override is
 `MDT_VM_SOURCE_DIR`, which is resolved through Docker's authoritative mount
-table and refuses an unmapped or missing source.
+table and refuses an unmapped or missing source. The single prerequisite list
+lives in `run-gate.toml`; see the [design note](DESIGN-GUIDE.md#vm-system-prerequisites-live-in-run-gate).
 
-The image release gate is `./run-gate.py release`. CMRU invokes that declared
+The image release gate is `run-gate release`. CMRU invokes that declared
 lane, so the OCI release-flow tests remain in `tester-unified` and do not have
 a second hand-written tester command in `cmru.toml`.
 

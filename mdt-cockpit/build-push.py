@@ -1,0 +1,1031 @@
+#!/usr/bin/env python3
+"""Build and push mdt-cockpit images.
+
+CMRU uses this script for the prepare phase and, for the source-first ``load``
+flow, its post-gate publication phase.  The latter is dispatched by
+``scripts/release-bake.sh push`` after the source commit has passed its gate.
+The other flows publish during their build and finish with an explicit
+already-published terminal state in that later step.
+
+Usage:
+  ./build-push.py --build        # Resolve env, build images, save state
+  ./build-push.py --push         # Load saved state, push images (skips resolver)
+  ./build-push.py --rebuild      # Build then push sequentially
+                                 # (push/repack publish during build; their later step is terminal)
+  ./build-push.py --build --local-dev local-dev-artifacts.toml [--target NAME ...]
+                                 # EXPLICIT local-dev build from verified local artifacts
+                                 # (docs/CONSUMERS.md "Local-dev build"): loaded into the
+                                 # local Docker daemon under ``...-dev-...`` tags, labelled
+                                 # local-dev, never publishable.
+"""
+from __future__ import annotations
+
+import argparse
+from mdt_cli import MdtArgumentParser
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import tomllib
+from datetime import datetime, timezone
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+REPO_ROOT = ROOT.parent
+# Load CMRU and its shared libraries from this monorepo snapshot. The package
+# metadata declares these sibling source roots, but direct imports from this
+# release script do not run the editable-install path setup.
+for source_root in (
+    REPO_ROOT / "libraries" / "cli-extended" / "src",
+    REPO_ROOT / "libraries" / "worktree" / "src",
+    REPO_ROOT / "cmru" / "src",
+):
+    if str(source_root) not in sys.path:
+        sys.path.insert(0, str(source_root))
+if str(ROOT / "scripts") not in sys.path:
+    sys.path.insert(0, str(ROOT / "scripts"))
+
+import local_dev  # noqa: E402
+from cmru import exit_codes  # noqa: E402
+from cmru.ghcr import GitHubPackages  # noqa: E402
+from cmru.runner import run_step  # noqa: E402
+
+BUILD_ENV_FILE = ROOT / ".build-env.json"
+# A local-dev build keeps its own state: it must neither clobber the saved
+# release state a pending `--push` reads, nor ever be read by one.
+LOCAL_DEV_BUILD_ENV_FILE = ROOT / ".build-env.local-dev.json"
+LOCAL_DEV_STAGING = ROOT / "build" / "local-dev"
+WHEELS_LIST = ROOT / "pip" / "wheels.list"
+RESOLVER_SCRIPT = ROOT / "scripts" / "resolve-devcontainers-release.py"
+COUNTER_DIR = ROOT / "logs"
+_PUSH_STEP_GUARD = "MDT_RELEASE_PUSH_STEP_ACTIVE"
+
+
+def parse_args() -> argparse.Namespace:
+    parser = MdtArgumentParser(
+        description="Build and/or push mdt-cockpit images"
+    )
+    parser.add_version_argument()
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--build", action="store_true", help="Resolve env and build images locally")
+    mode.add_argument("--push", action="store_true", help="Push previously built images to registry")
+    mode.add_argument(
+        "--rebuild", action="store_true", help="Build then push sequentially"
+    )
+    parser.add_argument(
+        "--ignore-new-releases",
+        action="store_true",
+        help=(
+            "Continue build even when dynamic pre-check detects newer stable devcontainer "
+            "Python/Debian releases on MCR."
+        ),
+    )
+    parser.add_argument(
+        "--local-dev",
+        metavar="MANIFEST",
+        type=Path,
+        help=(
+            "Explicit local-dev build (only with --build): use the local artifacts listed "
+            "in MANIFEST (TOML; see local-dev-artifacts.toml.example) instead of the "
+            "releases they replace. The image is loaded into the local Docker daemon "
+            "under -dev- tags, labelled local-dev, and can never be pushed."
+        ),
+    )
+    parser.add_argument(
+        "--target",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="Bake target to build (repeatable; only with --local-dev; default: group 'all').",
+    )
+    args = parser.parse_args()
+    if args.local_dev is not None and not args.build:
+        parser.error("--local-dev is only valid with --build (a local-dev image is never pushed)")
+    if args.target and args.local_dev is None:
+        parser.error("--target is only valid with --local-dev; release builds always use group 'all'")
+    return args
+
+
+def _read_bake_default(var_name: str) -> str | None:
+    """Read a variable default from docker-bake.hcl."""
+    bake_path = ROOT / "docker-bake.hcl"
+    if not bake_path.exists():
+        return None
+    content = bake_path.read_text(encoding="utf-8")
+    pattern = re.compile(
+        rf'variable\s+"{re.escape(var_name)}"\s*\{{[^}}]*?default\s*=\s*"([^"]+)"',
+        re.DOTALL,
+    )
+    match = pattern.search(content)
+    return match.group(1).strip() if match else None
+
+
+def _read_cmru_env_default(var_name: str) -> str | None:
+    """Read a default from this project's strict cmru.toml [env]."""
+    build_path = ROOT / "cmru.toml"
+    if not build_path.exists():
+        return None
+    content = build_path.read_text(encoding="utf-8")
+    pattern = re.compile(
+        rf'^\s*{re.escape(var_name)}\s*=\s*"([^"]+)"\s*$',
+        re.MULTILINE,
+    )
+    match = pattern.search(content)
+    return match.group(1).strip() if match else None
+
+
+def ensure_devcontainers_base_from_bake_defaults() -> None:
+    """Set DEVCONTAINERS_BASE_PINNED/DEV from bake defaults if not in env."""
+    if os.getenv("DEVCONTAINERS_BASE_PINNED") and os.getenv("DEVCONTAINERS_BASE_DEV"):
+        return
+
+    latest_python = _read_bake_default("LATEST_KNOWN_PYTHON")
+    latest_debian = _read_bake_default("LATEST_KNOWN_DEBIAN")
+    if not latest_python or not latest_debian:
+        return
+
+    os.environ.setdefault(
+        "DEVCONTAINERS_BASE_PINNED",
+        f"mcr.microsoft.com/devcontainers/python:{latest_python}-{latest_debian}",
+    )
+    os.environ.setdefault(
+        "DEVCONTAINERS_BASE_DEV",
+        f"mcr.microsoft.com/devcontainers/python:dev-{latest_python}-{latest_debian}",
+    )
+
+
+def sync_ghcr_package_visibility(package_names: list[str]) -> None:
+    """Mirror repo visibility onto GHCR packages that this release just pushed."""
+    names = [name.strip() for name in package_names if name and str(name).strip()]
+    if not names:
+        return
+
+    username = os.environ.get("GITHUB_USERNAME", "").strip()
+    repo = os.environ.get("GITHUB_REPO", "").strip()
+    token = os.environ.get("GITHUB_PUSH_PAT", "").strip()
+    owner_type = os.environ.get("GITHUB_OWNER_TYPE", "").strip()
+    if not username or not repo or not token or not owner_type:
+        missing = [
+            name for name, value in {
+                "GITHUB_USERNAME": username,
+                "GITHUB_REPO": repo,
+                "GITHUB_PUSH_PAT": token,
+                "GITHUB_OWNER_TYPE": owner_type,
+            }.items() if not value
+        ]
+        raise SystemExit(
+            "[ERROR] GHCR visibility sync requires " + ", ".join(missing) +
+            "; run through CMRU or export the release identity explicitly."
+        )
+
+    ghcr = GitHubPackages(username, repo, token, owner_type)
+    repo_visibility = ghcr.repo_visibility()
+    sys.stderr.write(
+        f"[INFO] Syncing GHCR package visibility to {repo_visibility}: {', '.join(names)}\n"
+    )
+    for package_name in names:
+        synced = ghcr.mirror_package_visibility(package_name, expected_visibility=repo_visibility)
+        if synced is None:
+            # cmru KI-97: the package could not be inspected (warned above); not a release failure.
+            sys.stderr.write(
+                f"[INFO] NOT synced: {package_name} visibility could not be verified "
+                "(see the warning above)\n"
+            )
+        else:
+            sys.stderr.write(f"[INFO] Synced {package_name} visibility to {synced}\n")
+
+
+def run_resolver() -> dict[str, str]:
+    """Run resolve-devcontainers-release.py and return KEY=VALUE pairs as a dict.
+
+    Handles exit code 3 (newer releases detected) with a clean error message.
+    """
+    if not RESOLVER_SCRIPT.exists():
+        raise FileNotFoundError(f"Resolver script not found: {RESOLVER_SCRIPT}")
+
+    result = subprocess.run(
+        [sys.executable, str(RESOLVER_SCRIPT)],
+        cwd=str(ROOT),
+        text=True,
+        stdout=subprocess.PIPE,  # capture KEY=VALUE output for parsing
+        # stderr inherits parent → streams live to terminal
+    )
+
+    if result.returncode == 3:
+        sys.stderr.write(
+            "\n[ERROR] Build stopped because newer stable devcontainer release(s) were detected.\n"
+        )
+        sys.stderr.write(
+            "[HINT] Update LATEST_KNOWN_PYTHON/LATEST_KNOWN_DEBIAN in docker-bake.hcl "
+            "to adopt the new baseline, or continue intentionally with:\n"
+        )
+        sys.stderr.write("[HINT]   ./build-push.py --build --ignore-new-releases\n")
+        raise SystemExit(3)
+
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(result.returncode, RESOLVER_SCRIPT)
+
+    env_vars: dict[str, str] = {}
+    for raw_line in result.stdout.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            sys.stderr.write(f"[WARN] Ignoring malformed resolver output: {line}\n")
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            sys.stderr.write(f"[WARN] Ignoring empty key from resolver: {line}\n")
+            continue
+        env_vars[key] = value
+
+    return env_vars
+
+
+def save_build_env(env_vars: dict[str, str], path: Path | None = None) -> None:
+    """Save resolved env vars (default .build-env.json) with a timestamp."""
+    path = path or BUILD_ENV_FILE
+    data = {
+        "resolved_at": datetime.now(timezone.utc).isoformat(),
+        "vars": env_vars,
+    }
+    path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+    sys.stderr.write(f"[INFO] Saved build environment to {path}\n")
+
+
+def load_build_env() -> dict[str, str]:
+    """Load resolved env vars from .build-env.json."""
+    if not BUILD_ENV_FILE.exists():
+        sys.stderr.write(
+            f"[ERROR] No build environment found at {BUILD_ENV_FILE}.\n"
+        )
+        sys.stderr.write(
+            "[HINT] Run './build-push.py --build' first to create the build state.\n"
+        )
+        raise SystemExit(1)
+
+    data = json.loads(BUILD_ENV_FILE.read_text(encoding="utf-8"))
+    resolved_at = data.get("resolved_at", "unknown")
+    sys.stderr.write(
+        f"[INFO] Loaded build environment from {BUILD_ENV_FILE} "
+        f"(resolved at {resolved_at})\n"
+    )
+    return data.get("vars", {})
+
+
+def apply_env_to_os(env_vars: dict[str, str]) -> None:
+    """Set resolved env vars into os.environ so step_runner can inject them via bake_set_vars."""
+    for key, value in env_vars.items():
+        os.environ[key] = value
+
+
+def pwmcp_build_inputs() -> dict[str, str]:
+    """Pin the generated installer and release bundle to this vbpub commit."""
+    identity_path = REPO_ROOT / "cmru.orchestration.toml"
+    contract_path = REPO_ROOT / "pwmcp" / "pwmcp.contract.json"
+    getpy_path = REPO_ROOT / "pwmcp" / "get.py"
+    try:
+        with identity_path.open("rb") as stream:
+            identity = tomllib.load(stream)["github"]
+        contract = json.loads(contract_path.read_text(encoding="utf-8"))
+        getpy = getpy_path.read_bytes()
+        owner, repo = identity["owner"], identity["repo"]
+        version = contract["release"]
+    except (OSError, KeyError, TypeError, ValueError, tomllib.TOMLDecodeError) as exc:
+        raise SystemExit(f"[ERROR] cannot resolve pinned PWMCP build inputs: {exc}") from None
+
+    if not isinstance(owner, str) or not re.fullmatch(r"[A-Za-z0-9-]+", owner):
+        raise SystemExit("[ERROR] cmru.orchestration.toml has an invalid GitHub owner")
+    if not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", repo):
+        raise SystemExit("[ERROR] cmru.orchestration.toml has an invalid GitHub repository")
+    if not isinstance(version, str) or not re.fullmatch(
+        r"[0-9]+(?:\.[0-9]+)+(?:-[A-Za-z0-9.-]+)?", version
+    ):
+        raise SystemExit("[ERROR] pwmcp.contract.json has an invalid release version")
+
+    revision_result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    revision = revision_result.stdout.strip()
+    if revision_result.returncode or not re.fullmatch(r"[0-9a-f]{40,64}", revision):
+        raise SystemExit("[ERROR] cannot resolve this source commit for the PWMCP installer")
+
+    base_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{revision}/pwmcp"
+    return {
+        "PWMCP_VERSION": version,
+        "PWMCP_GETPY_URL": f"{base_url}/get.py",
+        "PWMCP_GETPY_SHA256": hashlib.sha256(getpy).hexdigest(),
+        "PWMCP_CONTRACT_URL": f"{base_url}/pwmcp.contract.json",
+        "PWMCP_CONTRACT_SHA256": hashlib.sha256(
+            contract_path.read_bytes()
+        ).hexdigest(),
+    }
+
+
+def compute_build_date_with_counter(base_date: str) -> str:
+    """Apply -N build counter and return the final BUILD_DATE.
+
+    Counter file: logs/build-counter-{base_date}.txt
+
+    - First build of the day: no suffix (e.g., 20260604)
+    - Subsequent builds: -2, -3, ... suffix
+    """
+    COUNTER_DIR.mkdir(parents=True, exist_ok=True)
+    counter_file = COUNTER_DIR / f"build-counter-{base_date}.txt"
+
+    if counter_file.exists():
+        counter_raw = counter_file.read_text(encoding="utf-8").strip()
+    else:
+        counter_raw = "0"
+
+    if not counter_raw.isdigit():
+        raise ValueError(f"Invalid build counter value in {counter_file}: {counter_raw}")
+
+    counter = int(counter_raw)
+    if counter == 0:
+        # First build of the day — write next counter, return bare date
+        counter_file.write_text("2", encoding="utf-8")
+        return base_date
+
+    # Nth build — append -{counter} suffix (starts at -2)
+    build_date = f"{base_date}-{counter}"
+    counter_file.write_text(str(counter + 1), encoding="utf-8")
+    return build_date
+
+
+def ensure_manifests_dir() -> None:
+    """Create package-manifests-versioned directory if missing."""
+    manifests_dir = ROOT / "package-manifests-versioned"
+    if not manifests_dir.exists():
+        sys.stderr.write(f"[INFO] Creating missing manifests directory: {manifests_dir}\n")
+        manifests_dir.mkdir(parents=True, exist_ok=True)
+
+
+def _prepare_local_dev(
+    manifest: Path,
+) -> tuple[list[local_dev.LocalArtifact], dict[str, str]]:
+    """Verify the local-dev manifest in full BEFORE any network or build work.
+
+    Returns the verified artifacts and the pinned PWMCP build inputs. Any entry
+    that is unknown, missing, unreadable or hash-mismatched refuses the build.
+    """
+    pwmcp = pwmcp_build_inputs()
+    try:
+        artifacts = local_dev.load_manifest(
+            manifest,
+            allowed_wheels=local_dev.wheel_names(WHEELS_LIST),
+            pwmcp_version=pwmcp["PWMCP_VERSION"],
+        )
+    except local_dev.LocalDevError as exc:
+        raise SystemExit(f"[ERROR] local-dev manifest rejected: {exc}") from None
+    return artifacts, pwmcp
+
+
+def _local_dev_build_date() -> str:
+    """The ``dev-YYYYMMDD[-n]`` coordinate; a release date is refused, never reused."""
+    explicit = os.getenv("BUILD_DATE")
+    if explicit:
+        if not re.fullmatch(r"dev-\d{8}(?:-\d+)?", explicit):
+            raise SystemExit(
+                f"[ERROR] BUILD_DATE={explicit!r} is not a local-dev coordinate "
+                "(dev-YYYYMMDD[-n]); unset it for a local-dev build."
+            )
+        return explicit
+    return compute_build_date_with_counter(
+        "dev-" + datetime.now(timezone.utc).strftime("%Y%m%d")
+    )
+
+
+def _bake_print_targets(names: list[str]) -> dict:
+    result = subprocess.run(
+        ["docker", "buildx", "bake", "-f", str(ROOT / "docker-bake.hcl"), "--print", *names],
+        cwd=str(ROOT), capture_output=True, text=True, check=True,
+    )
+    return json.loads(result.stdout).get("target") or {}
+
+
+def local_dev_tag_plan(requested: list[str], build_date: str) -> dict[str, list[str]]:
+    """Per bake target, the tags a local-dev build will carry - proven local-only.
+
+    The tags come from ``docker-bake.hcl`` evaluated in local-dev mode (which emits
+    only ``-dev-`` tags); ``local_dev.check_local_dev_tags`` refuses anything else.
+    """
+    if requested:
+        names = list(dict.fromkeys(requested))
+        specs = _bake_print_targets(names)
+    else:
+        specs, names = _enumerate_bake_targets()
+    plan: dict[str, list[str]] = {}
+    for name in names:
+        spec = specs.get(name)
+        if spec is None:
+            raise SystemExit(f"[ERROR] unknown bake target {name!r}")
+        try:
+            plan[name] = local_dev.check_local_dev_tags(
+                [str(tag) for tag in spec.get("tags") or []], build_date
+            )
+        except local_dev.LocalDevError as exc:
+            raise SystemExit(f"[ERROR] target {name!r}: {exc}") from None
+    if not plan:
+        raise SystemExit("[ERROR] no bake targets selected for the local-dev build")
+    return plan
+
+
+def verify_local_dev_images(plan: dict[str, list[str]]) -> None:
+    """After the build: every local-dev tag exists and carries the local-dev label."""
+    for target, tags in plan.items():
+        for tag in tags:
+            result = subprocess.run(
+                [
+                    "docker", "image", "inspect", tag, "--format",
+                    "{{.Id}} {{.Size}} {{index .Config.Labels \"" + local_dev.BUILD_MODE_LABEL + "\"}}",
+                ],
+                capture_output=True, text=True, check=False,
+            )
+            fields = result.stdout.split()
+            if result.returncode != 0 or len(fields) != 3 or fields[2] != local_dev.MODE_LOCAL_DEV:
+                raise SystemExit(
+                    f"[ERROR] built image {tag} (target {target}) is missing or lacks the "
+                    f"{local_dev.BUILD_MODE_LABEL}={local_dev.MODE_LOCAL_DEV} label: "
+                    f"{result.stdout.strip() or result.stderr.strip()}"
+                )
+            sys.stderr.write(f"[INFO] local-dev image {tag} id={fields[0]} size={fields[1]}\n")
+
+
+def do_local_dev_build(
+    ignore_new_releases: bool, manifest: Path, requested_targets: list[str]
+) -> None:
+    """Explicit local-dev build: verified local artifacts, loaded locally, unpublishable."""
+    sys.stderr.write("[INFO] === mdt-cockpit: LOCAL-DEV build (never published) ===\n")
+    manifest = manifest.resolve()
+    artifacts, pwmcp = _prepare_local_dev(manifest)
+    for artifact in artifacts:
+        sys.stderr.write(
+            f"[INFO] local-dev artifact {artifact.name} {artifact.version} "
+            f"sha256={artifact.sha256} <- {artifact.path}\n"
+        )
+
+    ensure_devcontainers_base_from_bake_defaults()
+    # The mode must be in the environment before ANYTHING evaluates the bake file:
+    # in local-dev mode it emits only -dev- tags, and the tag plan below is checked
+    # against exactly that.
+    os.environ["MDT_BUILD_MODE"] = local_dev.MODE_LOCAL_DEV
+    build_date = _local_dev_build_date()
+    os.environ["BUILD_DATE"] = build_date
+    sys.stderr.write(f"[INFO] BUILD_DATE={build_date}\n")
+    build_timestamp = (
+        datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    )
+    os.environ["BUILD_TIMESTAMP"] = build_timestamp
+    if ignore_new_releases:
+        os.environ["DEVCONTAINERS_IGNORE_NEW_RELEASES"] = "true"
+
+    # The resolver re-verifies the manifest and skips the release lookup for the
+    # wheels it lists; it needs the pinned PWMCP version for that check.
+    os.environ[local_dev.ENV_MANIFEST] = str(manifest)
+    os.environ["PWMCP_VERSION"] = pwmcp["PWMCP_VERSION"]
+    sys.stderr.write("[INFO] Step 1/3: Resolving environment (local-dev) ...\n")
+    env_vars = run_resolver()
+    env_vars.update(pwmcp)
+    apply_env_to_os(env_vars)
+
+    sys.stderr.write("[INFO] Step 2/3: Staging verified local artifacts ...\n")
+    local_dev.stage(artifacts, staging_dir=LOCAL_DEV_STAGING)
+    ensure_manifests_dir()
+
+    plan = local_dev_tag_plan(requested_targets, build_date)
+    env_vars.update(
+        {
+            "BUILD_DATE": build_date,
+            "BUILD_TIMESTAMP": build_timestamp,
+            "RELEASE_IMAGE_FLOW": local_dev.MODE_LOCAL_DEV,
+            "MDT_BUILD_MODE": local_dev.MODE_LOCAL_DEV,
+            "MDT_LOCAL_ARTIFACTS_JSON": local_dev.provenance_json(artifacts),
+            "MDT_BAKE_TARGETS": ",".join(plan),
+            "MDT_LOCAL_DEV_STAGING": str(LOCAL_DEV_STAGING),
+        }
+    )
+    apply_env_to_os(env_vars)
+    save_build_env(env_vars, LOCAL_DEV_BUILD_ENV_FILE)
+
+    sys.stderr.write(
+        f"[INFO] Step 3/3: Building {', '.join(plan)} (MDT_BUILD_MODE=local-dev) ...\n"
+    )
+    try:
+        run_step(ROOT / "cmru.toml", "build")
+    except subprocess.CalledProcessError as exc:
+        sys.stderr.write(f"[ERROR] Build failed. Exit code: {exc.returncode}\n")
+        raise SystemExit(exc.returncode) from None
+    verify_local_dev_images(plan)
+
+
+def do_build(ignore_new_releases: bool) -> None:
+    """Build phase: resolve env, compute counter, build images."""
+    sys.stderr.write("[INFO] === mdt-cockpit: build ===\n")
+
+    ensure_devcontainers_base_from_bake_defaults()
+    release_image_flow = (
+        os.getenv("RELEASE_IMAGE_FLOW")
+        or _read_cmru_env_default("RELEASE_IMAGE_FLOW")
+        or "load"
+    ).strip().lower()
+    if release_image_flow not in {"load", "push", "repack"}:
+        raise SystemExit(
+            f"[ERROR] RELEASE_IMAGE_FLOW must be 'load', 'push', or 'repack', got: {release_image_flow!r}"
+        )
+    if release_image_flow == "load":
+        _require_crane_regctl()
+
+    # Compute BUILD_DATE first (resolver depends on it). An explicit coordinate
+    # is authoritative so a failed release can be retried without inventing a
+    # nested counter suffix. Only an implicit date uses the local build counter.
+    explicit_build_date = os.getenv("BUILD_DATE")
+    if explicit_build_date:
+        build_date = explicit_build_date
+    else:
+        base_date = datetime.now(timezone.utc).strftime("%Y%m%d")
+        build_date = compute_build_date_with_counter(base_date)
+    os.environ["BUILD_DATE"] = build_date
+    sys.stderr.write(f"[INFO] BUILD_DATE={build_date}\n")
+
+    build_timestamp = os.getenv("BUILD_TIMESTAMP") or (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+    os.environ["BUILD_TIMESTAMP"] = build_timestamp
+    sys.stderr.write(f"[INFO] BUILD_TIMESTAMP={build_timestamp}\n")
+
+    sys.stderr.write(
+        "[INFO] Step 1/3: Resolving environment "
+        "(MCR check, tool versions, CIU coordinates)...\n"
+    )
+
+    if ignore_new_releases:
+        os.environ["DEVCONTAINERS_IGNORE_NEW_RELEASES"] = "true"
+
+    # Run the resolver
+    env_vars = run_resolver()
+    env_vars.update(pwmcp_build_inputs())
+
+    # Apply resolved vars to environment
+    apply_env_to_os(env_vars)
+
+    # Include BUILD_DATE in saved state
+    env_vars["BUILD_DATE"] = build_date
+    env_vars["BUILD_TIMESTAMP"] = build_timestamp
+    env_vars["RELEASE_IMAGE_FLOW"] = release_image_flow
+    save_build_env(env_vars)
+
+    # Ensure manifests directory
+    ensure_manifests_dir()
+
+    # Run build
+    sys.stderr.write(
+        f"[INFO] Step 3/3: Running release bake flow (RELEASE_IMAGE_FLOW={release_image_flow}) ...\n"
+    )
+    config_path = ROOT / "cmru.toml"
+    try:
+        run_step(config_path, "build")
+    except subprocess.CalledProcessError as exc:
+        if exc.returncode == 3:
+            sys.stderr.write(
+                "\n[ERROR] Build stopped due to new devcontainer release detection.\n"
+            )
+            raise SystemExit(3) from None
+        sys.stderr.write(f"[ERROR] Build failed. Exit code: {exc.returncode}\n")
+        raise SystemExit(exc.returncode) from None
+
+    if release_image_flow == "load":
+        write_layout_transaction(build_date, build_timestamp)
+
+    # Post-build manifest extraction: copy the in-image canonical manifest
+    # into package-manifests-versioned/ so the committed version matches.
+    extract_manifests(build_date, env_vars)
+
+
+LAYOUT_TRANSACTION_FILE = "transaction.json"
+
+
+def write_layout_transaction(build_date: str, build_timestamp: str) -> Path:
+    """Bind the OCI layouts to THIS build (the oci-push lane refuses anything else).
+
+    Records, next to the layouts, the build date/timestamp (the same values saved in
+    .build-env.json), the source commit the build ran at and each layout's top index digest. A layout
+    left over from another build, another commit, or edited since cannot match all of them.
+    """
+    root = _oci_layout_dir()
+    targets: dict[str, str] = {}
+    for layout in sorted(p for p in root.glob("*") if (p / "oci-layout").is_file() and (p / "index.json").is_file()):
+        index = json.loads((layout / "index.json").read_text(encoding="utf-8"))
+        manifests = index.get("manifests") or []
+        if not manifests:
+            raise SystemExit(f"[ERROR] OCI layout {layout} has no manifests")
+        targets[layout.name] = manifests[0]["digest"]
+    if not targets:
+        raise SystemExit(f"[ERROR] The build left no OCI layout under {root}")
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip()
+    path = root / LAYOUT_TRANSACTION_FILE
+    path.write_text(
+        json.dumps(
+            {"build_date": build_date, "build_timestamp": build_timestamp, "source_head": head, "targets": targets},
+            indent=2, sort_keys=True,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    sys.stderr.write(f"[INFO] Bound {len(targets)} OCI layout(s) to this build: {path}\n")
+    return path
+
+
+_MANIFEST_PATH = "/usr/local/share/mdt-cockpit/manifest.md"
+
+
+def _require_crane_regctl() -> None:
+    """Fail closed with an actionable message before the load-flow build/push
+    reaches a confusing 'command not found' deep in a subprocess (S8 exit 3)."""
+    missing = [tool for tool in ("crane", "regctl") if shutil.which(tool) is None]
+    if missing:
+        sys.stderr.write(
+            f"[ERROR] RELEASE_IMAGE_FLOW=load requires {' and '.join(missing)} on PATH "
+            "for the digest-verified OCI-layout build/push (build once, push exactly "
+            "that artifact, verify the registry digest matches).\n"
+        )
+        raise SystemExit(exit_codes.PREREQ_MISSING)
+
+
+def _oci_layout_dir() -> Path:
+    """The directory release-bake.sh's oci_layout_bake() wrote per-target layouts to."""
+    raw = os.environ.get("MDT_OCI_LAYOUT_DIR") or _read_cmru_env_default("MDT_OCI_LAYOUT_DIR") or "build/oci-layouts"
+    path = Path(raw)
+    return path if path.is_absolute() else ROOT / path
+
+
+def _tag_component(image_ref: str) -> str:
+    """The bare tag off a full image reference, tolerating a registry host:port.
+
+    ``ghcr.io/owner/name:tag`` -> ``tag``; a colon before the last ``/`` (a
+    registry port) is not mistaken for the tag separator.
+    """
+    last_segment = image_ref.rsplit("/", 1)[-1]
+    if ":" not in last_segment:
+        raise ValueError(f"image reference has no tag: {image_ref!r}")
+    return last_segment.rsplit(":", 1)[-1]
+
+
+def _safe_target_name(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]", "_", name)
+
+
+def _enumerate_bake_targets() -> tuple[dict, list[str]]:
+    """Return (target_specs, ordered_target_names) for the 'all' bake group."""
+    result = subprocess.run(
+        ["docker", "buildx", "bake", "-f", str(ROOT / "docker-bake.hcl"), "all", "--print"],
+        cwd=str(ROOT), capture_output=True, text=True, check=True,
+    )
+    bake = json.loads(result.stdout)
+    names = ((bake.get("group") or {}).get("all") or {}).get("targets") or []
+    return (bake.get("target") or {}), list(names)
+
+
+def _read_layout_labels(layout_ref: str) -> dict[str, str]:
+    """Image config labels of a built OCI layout; fail closed when unreadable."""
+    try:
+        result = subprocess.run(
+            ["regctl", "image", "config", layout_ref, "--format", "{{json .Config.Labels}}"],
+            cwd=str(ROOT), capture_output=True, text=True, check=True,
+        )
+        labels = json.loads(result.stdout or "null") or {}
+    except (subprocess.CalledProcessError, OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(
+            f"[ERROR] cannot read the labels of {layout_ref}: {exc}; refusing to publish an "
+            "image whose build mode cannot be verified."
+        ) from None
+    return {str(key): str(value) for key, value in labels.items()}
+
+
+def _push_oci_layouts(env_vars: dict[str, str]) -> None:
+    """Push each target's OCI layout built by oci_layout_bake(), verifying that
+    the registry ends up reporting the exact digest that was built and
+    manifest-extracted (the CMRU S14 command-boundary's same-digest guarantee,
+    applied to MDT's project-owned flow rather than an implicit handler).
+    """
+    _require_crane_regctl()
+    layout_root = _oci_layout_dir()
+    targets, target_names = _enumerate_bake_targets()
+    if not target_names:
+        raise SystemExit("[ERROR] Bake group 'all' contains no targets.")
+
+    pushed: list[str] = []
+    for name in target_names:
+        spec = targets.get(name) or {}
+        tags = [str(t) for t in (spec.get("tags") or [])]
+        if not tags:
+            continue
+
+        layout_dir = layout_root / _safe_target_name(name)
+        index_path = layout_dir / "index.json"
+        if not index_path.exists():
+            raise SystemExit(
+                f"[ERROR] Missing built OCI layout for target '{name}' at {layout_dir}; "
+                "run `./build-push.py --build` first."
+            )
+        ref_name = _tag_component(tags[0])
+        layout_ref = f"ocidir://{layout_dir}:{ref_name}"
+
+        # A local-dev image must never reach a registry, however it got here.
+        try:
+            local_dev.refuse_unpublishable(_read_layout_labels(layout_ref), layout_ref)
+        except local_dev.LocalDevError as exc:
+            raise SystemExit(f"[ERROR] {exc}") from None
+
+        local_digest = subprocess.run(
+            ["regctl", "manifest", "digest", layout_ref],
+            cwd=str(ROOT), capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+        for tag in tags:
+            sys.stderr.write(f"[INFO] Pushing {layout_dir.name} -> {tag}\n")
+            # A target's OCI layout holds one index entry per configured tag
+            # (all sharing the same digest, one per `org.opencontainers.image.ref.name`)
+            # — `crane push <dir> <tag>` can't disambiguate once a target has more
+            # than one tag ("layout contains N entries, consider --index") and
+            # --index would push them as a manifest-list instead of retagging the
+            # same image. `ocidir://<dir>:<ref>` scopes the source to one entry;
+            # regctl handles that addressing, crane doesn't.
+            tag_ref_name = _tag_component(tag)
+            subprocess.run(
+                ["regctl", "image", "copy", f"ocidir://{layout_dir}:{tag_ref_name}", tag],
+                cwd=str(ROOT), check=True,
+            )
+            remote_digest = subprocess.run(
+                ["crane", "digest", tag], cwd=str(ROOT), capture_output=True, text=True, check=True,
+            ).stdout.strip()
+            if remote_digest != local_digest:
+                raise SystemExit(
+                    f"[ERROR] Checksum drift for {tag}: built {local_digest}, "
+                    f"registry now reports {remote_digest}. A direct layout push should "
+                    "never produce a different digest — investigate before retrying; "
+                    "do not blindly re-push."
+                )
+            sys.stderr.write(f"[INFO] Verified identical checksum for {tag}: {remote_digest}\n")
+            pushed.append(tag)
+
+    if not pushed:
+        raise SystemExit("[ERROR] No tags were pushed — nothing to publish.")
+    sys.stderr.write(f"[INFO] Pushed {len(pushed)} tag(s), all digest-verified against the build.\n")
+
+
+def extract_manifests(build_date: str, env_vars: dict[str, str]) -> None:
+    """Extract canonical manifests from freshly built images.
+
+    Repack mode reads the bounded repacked OCI layout.  The source-first
+    ``load`` flow reads the just-loaded local image before the source commit and
+    registry publication; registry flows read the published image through the
+    governed builder.
+    """
+    username = os.environ.get("GITHUB_USERNAME") or env_vars.get("GITHUB_USERNAME")
+    repo = os.environ.get("GITHUB_REPO") or env_vars.get("GITHUB_REPO")
+    if not username or not repo:
+        raise SystemExit(
+            "[ERROR] Manifest extraction requires GITHUB_USERNAME and GITHUB_REPO; "
+            "run through CMRU or export both explicitly."
+        )
+
+    # Enumerate bake targets from the bake group.
+    BAKE_FILE = ROOT / "docker-bake.hcl"
+    try:
+        result = subprocess.run(
+            ["docker", "buildx", "bake", "-f", str(BAKE_FILE), "all", "--print"],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        sys.stderr.write(
+            f"[WARN] Failed to enumerate bake targets for manifest extraction: {exc}\n"
+        )
+        return
+
+    bake = json.loads(result.stdout)
+    target_names = ((bake.get("group") or {}).get("all") or {}).get("targets") or []
+    targets = bake.get("target") or {}
+
+    manifests_root = ROOT / "package-manifests-versioned"
+    release_flow = (env_vars.get("RELEASE_IMAGE_FLOW") or "load").strip().lower()
+    repack_work = Path(
+        os.environ.get("REPACK_WORK_DIR")
+        or _read_cmru_env_default("REPACK_WORK_DIR")
+        or "build/repack"
+    )
+    if not repack_work.is_absolute():
+        repack_work = ROOT / repack_work
+    extracted: list[str] = []
+    failed: list[str] = []
+
+    for name in target_names:
+        spec = targets.get(name) or {}
+        args = spec.get("args") or {}
+        tags = spec.get("tags") or []
+        if not tags:
+            continue
+        first_tag = str(tags[0])
+
+        if release_flow == "repack":
+            safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", name)
+            manifest_file = repack_work / "manifests" / safe_name / "manifest.md"
+            try:
+                manifest_content = manifest_file.read_text(encoding="utf-8")
+            except OSError as exc:
+                sys.stderr.write(
+                    f"[WARN] Failed to read repacked manifest {manifest_file}: {exc}\n"
+                )
+                failed.append(name)
+                continue
+        elif release_flow == "load":
+            # The release's private build intentionally precedes both source
+            # promotion and image publication, so nothing has been pushed to a
+            # registry yet. oci_layout_bake() (release-bake.sh) already built
+            # this target once to a local OCI layout — read the manifest
+            # straight out of that layout (no daemon, no second build); the
+            # exact same layout is what _push_oci_layouts() later publishes.
+            _require_crane_regctl()
+            layout_dir = _oci_layout_dir() / _safe_target_name(name)
+            try:
+                ref_name = _tag_component(first_tag)
+                with tempfile.TemporaryDirectory(prefix="mdt-manifest-") as temp_dir:
+                    destination = Path(temp_dir) / "manifest.md"
+                    subprocess.run(
+                        [
+                            "regctl", "image", "get-file",
+                            f"ocidir://{layout_dir}:{ref_name}", _MANIFEST_PATH, str(destination),
+                        ],
+                        cwd=str(ROOT),
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                    )
+                    manifest_content = destination.read_text(encoding="utf-8")
+            except (subprocess.CalledProcessError, OSError, ValueError) as exc:
+                sys.stderr.write(
+                    f"[WARN] Failed to extract local manifest from {layout_dir}: {exc}\n"
+                )
+                failed.append(name)
+                continue
+        else:
+            try:
+                with tempfile.TemporaryDirectory(prefix="mdt-manifest-") as temp_dir:
+                    subprocess.run(
+                        [
+                            "docker",
+                            "buildx",
+                            "build",
+                            "--file",
+                            "scripts/repack-push.Dockerfile",
+                            "--target",
+                            "manifest",
+                            "--build-context",
+                            f"repacked=docker-image://{first_tag}",
+                            "--output",
+                            f"type=local,dest={temp_dir}",
+                            ".",
+                        ],
+                        cwd=str(ROOT),
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                        timeout=180,
+                    )
+                    manifest_content = (Path(temp_dir) / "manifest.md").read_text(
+                        encoding="utf-8"
+                    )
+            except (subprocess.CalledProcessError, OSError) as exc:
+                sys.stderr.write(
+                    f"[WARN] Failed to extract manifest from {first_tag}: {exc}\n"
+                )
+                failed.append(name)
+                continue
+
+        # Derive package name and tag for the output path.
+        debian = args.get("DEBIAN_VERSION") or ""
+        python = args.get("PYTHON_VERSION") or ""
+        install_php = str(args.get("INSTALL_PHP") or "").strip().lower() == "true"
+        php_version = str(args.get("PHP_VERSION") or "").strip()
+        variant = f"php{php_version}" if install_php and php_version else ""
+
+        # Derive package name from PACKAGE_MANIFEST_SOURCE.
+        manifest_source = args.get("PACKAGE_MANIFEST_SOURCE") or ""
+        parts = manifest_source.split("/")
+        if len(parts) >= 2 and parts[0] == "package-manifests-versioned" and parts[1]:
+            package_name = parts[1]
+        else:
+            is_vsc = any("-vsc-devcontainer" in str(tag) for tag in tags) or name.endswith("-vsc")
+            package_name = (
+                "mdt-cockpit-devcontainer"
+                if is_vsc
+                else "mdt-cockpit"
+            )
+
+        variant_part = f"-{variant}" if variant else ""
+        tag_str = f"{debian}-py{python}{variant_part}-{build_date}"
+        output_dir = manifests_root / package_name
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / f"{tag_str}.md"
+
+        output_path.write_text(manifest_content, encoding="utf-8")
+        extracted.append(str(output_path.relative_to(ROOT)))
+        sys.stderr.write(f"[INFO] Extracted manifest: {output_path}\n")
+
+    if extracted:
+        sys.stderr.write(
+            f"[INFO] Extracted {len(extracted)} manifest(s) to "
+            f"package-manifests-versioned/\n"
+        )
+    if failed:
+        sys.stderr.write(
+            f"[WARN] Failed to extract {len(failed)} manifest(s): "
+            f"{', '.join(failed)}\n"
+        )
+
+
+def do_push() -> None:
+    """Push phase: load saved env, push to registry (no resolver re-run)."""
+    sys.stderr.write("[INFO] === mdt-cockpit: push ===\n")
+    sys.stderr.write("[INFO] Step 1/3: Loading saved build environment...\n")
+
+    # Load and apply saved env vars
+    env_vars = load_build_env()
+    if (env_vars.get("MDT_BUILD_MODE") or local_dev.MODE_RELEASE) != local_dev.MODE_RELEASE:
+        raise SystemExit(
+            f"[ERROR] the saved build state is MDT_BUILD_MODE={env_vars['MDT_BUILD_MODE']!r}; "
+            "only a release build can be pushed."
+        )
+    apply_env_to_os(env_vars)
+
+    release_image_flow = (env_vars.get("RELEASE_IMAGE_FLOW") or "load").strip().lower()
+    sys.stderr.write(
+        f"[INFO] Step 2/3: Running release push flow (RELEASE_IMAGE_FLOW={release_image_flow}) ...\n"
+    )
+    if release_image_flow == "load":
+        # Digest-verified crane push of the OCI layout oci_layout_bake() already
+        # built — not a bash step, so the double-build it replaces cannot come back.
+        _push_oci_layouts(env_vars)
+    else:
+        if os.environ.get(_PUSH_STEP_GUARD) == "1":
+            raise SystemExit(
+                "[ERROR] build-push.py --push recursively reached the configured "
+                "push step for RELEASE_IMAGE_FLOW="
+                f"{release_image_flow!r}; configure that step to call "
+                "scripts/release-bake.sh push instead."
+            )
+        config_path = ROOT / "cmru.toml"
+        os.environ[_PUSH_STEP_GUARD] = "1"
+        try:
+            run_step(config_path, "push")
+        except subprocess.CalledProcessError as exc:
+            sys.stderr.write(f"[ERROR] Push failed. Exit code: {exc.returncode}\n")
+            raise SystemExit(exc.returncode) from None
+        finally:
+            os.environ.pop(_PUSH_STEP_GUARD, None)
+
+    sys.stderr.write("[INFO] Step 3/3: Syncing GHCR package visibility ...\n")
+    # PHP 8.5 is a TAG variant of the base families now, not a separate package name —
+    # only two GHCR package families are ever published (see docker-bake.hcl "all" group).
+    package_names = [
+        name.strip()
+        for name in (
+            env_vars.get("GHCR_PACKAGE_NAMES")
+            or "mdt-cockpit,mdt-cockpit-devcontainer"
+        ).split(",")
+        if name.strip()
+    ]
+    sync_ghcr_package_visibility(package_names)
+
+
+def main() -> None:
+    args = parse_args()
+
+    if args.build and args.local_dev is not None:
+        do_local_dev_build(args.ignore_new_releases, args.local_dev, args.target)
+    elif args.build:
+        do_build(args.ignore_new_releases)
+    elif args.push:
+        do_push()
+    elif args.rebuild:
+        do_build(args.ignore_new_releases)
+        do_push()
+
+
+if __name__ == "__main__":
+    main()

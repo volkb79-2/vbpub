@@ -1,5 +1,5 @@
 # =============================================================================
-# ciu project gate lanes — parsed ONLY by Run-Gate (one parser, D-110).
+# ciu project gate lanes — parsed ONLY by the installed Run-Gate CLI (one parser, D-110).
 # Environment facts come from the CENTRAL vbpub-root run-gate.root.toml (nearest
 # ancestor); judgment policy lives in assay.toml [lanes.ciu] (R0-R3: the full
 # pytest suite, 100% line AND branch floor plus native mutation and

@@ -626,6 +626,8 @@ def test_required_nested_subcommand_is_a_prefix_not_a_false_invocation_candidate
 
     assert prefix["kind"] == "route-prefix"
     assert prefix["subcommands_required"] is True
+    assert "fallback" not in prefix
+    assert "fallback" not in child_route
     assert prefix["subcommand_groups"] == [
         {
             "destination": "operation",

@@ -46,7 +46,10 @@ def test_vm_runner_is_governed_and_has_no_host_device_passthrough():
     assert 'MDT_VM_CACHE_DIR=$VM_CACHE_DIR' in runner
     assert '--cgroup-parent="$VM_CGROUP_PARENT"' in runner
     assert "        --init \\\n" in runner
-    assert '"$HOST_TESTING_DIR:/work:ro"' in runner
+    assert '--mount "type=bind,src=$HOST_TESTING_DIR,dst=/work,readonly"' in runner
+    assert '--mount "type=bind,src=$HOST_SOURCE_DIR,dst=/source,readonly"' in runner
+    assert '-v "$HOST_TESTING_DIR:/work:ro"' not in runner
+    assert '-v "$HOST_SOURCE_DIR:/source:ro"' not in runner
     assert "--privileged" not in "\n".join(
         line for line in runner.splitlines() if not line.lstrip().startswith("#")
     )
@@ -211,8 +214,8 @@ esac
     assert "inspect unrelated-id" in calls
     expected_testing = str(physical / "testing")
     expected_project = str(physical)
-    assert f"{expected_testing}:/work:ro" in calls
-    assert f"{expected_project}:/source:ro" in calls
+    assert f"type=bind,src={expected_testing},dst=/work,readonly" in calls
+    assert f"type=bind,src={expected_project},dst=/source,readonly" in calls
 
 
 def test_vm_wrapper_maps_an_explicit_project_source_to_the_physical_mount(tmp_path):
@@ -267,7 +270,7 @@ esac
     )
     assert result.returncode == 0, result.stderr + "\nDocker calls:\n" + fake_log.read_text()
     calls = fake_log.read_text()
-    assert f"{physical / 'modern-debian-tools-python-debug'}:/source:ro" in calls
+    assert f"type=bind,src={physical / 'modern-debian-tools-python-debug'},dst=/source,readonly" in calls
 
 
 def test_vmctl_quotes_multiple_ssh_arguments_but_preserves_one_script(tmp_path):
@@ -311,3 +314,171 @@ for arg in "$@"; do printf '<%s>\\n' "$arg" >> "$FAKE_SSH_LOG"; done
     )
     assert single.returncode == 0, single.stderr
     assert f"<{script}>" in fake_log.read_text()
+
+
+def test_vmctl_start_uses_a_supplied_seed_iso_without_rewriting_it(tmp_path):
+    state = tmp_path / "state"
+    images = state / "images"
+    images.mkdir(parents=True)
+    (images / "case-b-base.qcow2").write_bytes(b"base fixture")
+    source_iso = tmp_path / "private-seed.iso"
+    source_iso.write_bytes(b"NoCloud seed fixture")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+
+    (fake_bin / "ssh-keygen").write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "key=''\n"
+        "while [ \"$#\" -gt 0 ]; do\n"
+        "  if [ \"$1\" = \"-f\" ]; then shift; key=\"$1\"; fi\n"
+        "  shift\n"
+        "done\n"
+        ": > \"$key\"\n"
+        ": > \"$key.pub\"\n"
+    )
+    (fake_bin / "qemu-img").write_text("#!/bin/sh\nexit 0\n")
+    qemu_args = tmp_path / "qemu-args.log"
+    (fake_bin / "qemu-system-x86_64").write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "printf '%s\\n' \"$@\" > \"$FAKE_QEMU_ARGS\"\n"
+        "pidfile=''\n"
+        "while [ \"$#\" -gt 0 ]; do\n"
+        "  if [ \"$1\" = \"-pidfile\" ]; then shift; pidfile=\"$1\"; fi\n"
+        "  shift\n"
+        "done\n"
+        "printf '999999\\n' > \"$pidfile\"\n"
+    )
+    cloud_localds_called = tmp_path / "cloud-localds-called"
+    (fake_bin / "cloud-localds").write_text(
+        "#!/bin/sh\n: > \"$CLOUD_LOCALDS_CALLED\"\nexit 91\n"
+    )
+    for executable in fake_bin.iterdir():
+        executable.chmod(0o755)
+
+    env = os.environ.copy()
+    env.update(
+        PATH=f"{fake_bin}:{env['PATH']}",
+        MDT_VM_STATE_DIR=str(state),
+        FAKE_QEMU_ARGS=str(qemu_args),
+        CLOUD_LOCALDS_CALLED=str(cloud_localds_called),
+    )
+    result = subprocess.run(
+        [
+            str(VM / "vmctl"), "start", "custom-seed",
+            "--case", "case-b", "--no-apt-cache",
+            "--seed-iso", str(source_iso),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    run_dir = state / "runs" / "custom-seed"
+    attached_iso = run_dir / "seed.iso"
+    assert attached_iso.read_bytes() == source_iso.read_bytes()
+    assert attached_iso.stat().st_mode & 0o777 == 0o600
+    assert not cloud_localds_called.exists()
+    assert f"file={run_dir}/seed.iso,format=raw,media=cdrom,readonly=on" in qemu_args.read_text()
+    assert source_iso.read_bytes() == b"NoCloud seed fixture"
+
+
+def test_vmctl_rejects_a_symlink_custom_seed_before_creating_a_run(tmp_path):
+    target = tmp_path / "real-seed.iso"
+    target.write_bytes(b"seed")
+    seed_link = tmp_path / "seed.iso"
+    seed_link.symlink_to(target)
+    state = tmp_path / "state"
+    env = os.environ.copy()
+    env["MDT_VM_STATE_DIR"] = str(state)
+    result = subprocess.run(
+        [str(VM / "vmctl"), "start", "bad-seed", "--seed-iso", str(seed_link)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "not a symlink" in result.stderr
+    assert not (state / "runs" / "bad-seed").exists()
+
+
+def test_vmctl_grows_only_the_per_run_overlay_before_qemu_start(tmp_path):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    log = tmp_path / "commands.log"
+    state = tmp_path / "state"
+    images = state / "images"
+    images.mkdir(parents=True)
+    base = images / "case-b-base.qcow2"
+    base.write_bytes(b"immutable-base-fixture")
+    seed_iso = tmp_path / "private.iso"
+    seed_iso.write_bytes(b"private-seed-fixture")
+
+    (fake_bin / "qemu-img").write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "printf 'qemu-img %s\\n' \"$*\" >> \"$FAKE_VM_LOG\"\n"
+        "if [ \"$1\" = create ]; then\n"
+        "  for arg do last=$arg; done\n"
+        "  : > \"$last\"\n"
+        "fi\n"
+    )
+    (fake_bin / "qemu-system-x86_64").write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "printf 'qemu-system-x86_64 %s\\n' \"$*\" >> \"$FAKE_VM_LOG\"\n"
+        "while [ \"$#\" -gt 0 ]; do\n"
+        "  if [ \"$1\" = -pidfile ]; then printf '99999999\\n' > \"$2\"; shift 2; else shift; fi\n"
+        "done\n"
+    )
+    (fake_bin / "ssh-keygen").write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "while [ \"$#\" -gt 0 ]; do\n"
+        "  if [ \"$1\" = -f ]; then key=$2; shift 2; else shift; fi\n"
+        "done\n"
+        ": > \"$key\"\n"
+        "printf 'ssh-ed25519 fixture\\n' > \"$key.pub\"\n"
+    )
+    for executable in fake_bin.iterdir():
+        executable.chmod(0o755)
+
+    env = os.environ.copy()
+    env.update(
+        MDT_VM_STATE_DIR=str(state),
+        PATH=f"{fake_bin}:{env['PATH']}",
+        FAKE_VM_LOG=str(log),
+    )
+    result = subprocess.run(
+        [
+            str(VM / "vmctl"), "start", "disk-size-test",
+            "--disk-gb", "20", "--seed-iso", str(seed_iso), "--no-apt-cache",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+    calls = log.read_text().splitlines()
+    resize = next(i for i, call in enumerate(calls) if call.startswith("qemu-img resize "))
+    start = next(i for i, call in enumerate(calls) if call.startswith("qemu-system-x86_64 "))
+    assert resize < start
+    assert calls[resize].endswith(" 20G")
+    assert base.read_bytes() == b"immutable-base-fixture"
+    assert (state / "runs/disk-size-test/disk.qcow2").is_file()
+
+    invalid = subprocess.run(
+        [str(VM / "vmctl"), "start", "invalid-disk-size", "--disk-gb", "1.5"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert invalid.returncode != 0
+    assert "positive whole number of GiB" in invalid.stderr

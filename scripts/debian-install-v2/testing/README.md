@@ -56,9 +56,14 @@ per-worktree lock prevents two runs from competing for the runner's forwarded
 SSH port.
 
 The ordinary `r0-r1` tester-unified lane still exercises the mocked tests in
-`test_inuse_partition_editor_r1.py`. Only tests that invoke real `sfdisk` on a
-regular-file image skip when util-linux is absent; loop-device and swap tests
-remain exclusive to this VM lane.
+`test_inuse_partition_editor_r1.py`. Every test that executes a real low-level OS
+binary (`sfdisk`/`blockdev`/`partx` on an image file, loop-device and swap tests, the real
+`systemd-tmpfiles` test in `test_lt_mem.py`, the real `sysctl` test in `test_io_benchmark.py`)
+carries the pytest marker `os_integration`: the gate containers (built on the minimal
+`tester-base`, which ships none of those binaries) deselect it with `-m "not os_integration"`,
+and this VM lane runs it with `VBPUB_REQUIRE_OS_INTEGRATION=1`, under which a SKIP of such a test
+is a FAILURE (`debian_install_v2/tests/os_integration_plugin.py`). The guest therefore installs
+`procps` and the lane preflight checks `systemd-tmpfiles` and `sysctl` beside the disk tools.
 
 For interactive work, the lower-level controls are documented in
 [`vm/README.md`](vm/README.md):

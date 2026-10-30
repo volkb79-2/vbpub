@@ -156,12 +156,12 @@ series       = "nyxloom-trove/handoffs/README.md"
 # tester-unified.json` and prints `ASSAY_REGISTERED_GATE_RECEIPT=<path>` before
 # the final marker. The receipt is removed at every launch, and the full
 # `self-qualification` lane refuses to start without one for its own commit and
-# tree. A host with another `run-gate-*` container running makes the gate exit 3
-# (`ASSAY_GATE_INCONCLUSIVE=host busy`); run-gate records that as an
-# infrastructure ERROR, which always means "rerun". The registered
-# `tester-unified`, self-qualification, preflight, pilot, and screen lanes share
-# one run-gate lock, so those Assay campaigns cannot race each other's host
-# check or consume the same host capacity concurrently.
+# tree. Cross-project Docker names do not block admission. R0 and R3 failed
+# commands use the lane's cgroup resource events for attribution; R2 keeps its
+# candidate-local resource windows and pressure-adjusted liveness. B105 still
+# checks its own 2 GiB gates-cgroup launch reserve, so concurrent use can make
+# admission unavailable. The registered qualification lanes share a run-gate
+# lock, and B105 callers also hold the Git-common-directory lock.
 #
 # `tools/cgroup-parent.sh` reads CGROUP_PARENT_DEV_GATES and verifies the
 # named unit against the host cgroup tree before Docker sees it. An unset
@@ -179,7 +179,7 @@ series       = "nyxloom-trove/handoffs/README.md"
 # SSOT pointer (D-110/D-111): the lane lives in assay/run-gate.toml (host lane
 # invoking tools/tester-unified-gate.sh, which owns its own container
 # mechanics — exact-OID clone, pinned build closure, detached run).
-argv = ["bash", "-c", "cd {worktree}/assay && exec ./run-gate.py --worktree {worktree} tester-unified"]
+argv = ["bash", "-c", "cd {worktree}/assay && exec run-gate --worktree {worktree} tester-unified"]
 phase = "implementation"
 asserts = ["tests-pass"]
 timeout_seconds = 21600
@@ -196,7 +196,7 @@ environment = "tester-unified"
 # lane budget follows its separate 60-minute preflight. Nyxloom's 8-hour
 # controller timeout is an outer failsafe, not a campaign-wide deadline.
 # Expiry is incomplete, never a candidate outcome or qualification pass.
-argv = ["bash", "-c", "cd {worktree}/assay && exec ./run-gate.py --worktree {worktree} self-qualification"]
+argv = ["bash", "-c", "cd {worktree}/assay && exec run-gate --worktree {worktree} self-qualification"]
 phase = "implementation"
 asserts = ["tests-pass"]
 timeout_seconds = 28800
@@ -207,7 +207,7 @@ environment = "tester-unified"
 # full B105 gate runs this first in the same Assay-owned, cgroup-visible
 # tester-unified container and does not begin native mutation if the baseline
 # suite or whole-source coverage is red.
-argv = ["bash", "-c", "cd {worktree}/assay && exec ./run-gate.py --worktree {worktree} self-qualification-preflight"]
+argv = ["bash", "-c", "cd {worktree}/assay && exec run-gate --worktree {worktree} self-qualification-preflight"]
 phase = "implementation"
 asserts = ["tests-pass"]
 # 75m run-gate budget plus 15m for admission/startup and evidence collection.
@@ -219,7 +219,7 @@ environment = "tester-unified"
 # pass. run-gate's 2h20m bound includes a planned <=10m build/venv allowance,
 # which the registered gate report must measure and confirm, plus campaign and
 # cleanup time. This controller leaves 10m for admission and startup.
-argv = ["bash", "-c", "cd {worktree}/assay && exec ./run-gate.py --worktree {worktree} b110-pilot"]
+argv = ["bash", "-c", "cd {worktree}/assay && exec run-gate --worktree {worktree} b110-pilot"]
 phase = "implementation"
 asserts = ["tests-pass"]
 timeout_seconds = 9000
@@ -230,7 +230,7 @@ environment = "tester-unified"
 # source-root qualification. The gate binds selected candidates, state,
 # progress, wheel and deadline to one exact analysis plan and reports a pilot,
 # never a qualifying verdict.
-argv = ["bash", "-c", "cd {worktree}/assay && exec ./run-gate.py --worktree {worktree} analysis-r2-pilot"]
+argv = ["bash", "-c", "cd {worktree}/assay && exec run-gate --worktree {worktree} analysis-r2-pilot"]
 phase = "implementation"
 asserts = ["tests-pass"]
 # 140m run-gate budget plus 10m for admission/startup and evidence collection.
@@ -241,7 +241,7 @@ environment = "tester-unified"
 # Non-qualifying full-plan survivor screen. The 7h30m command timeout and 8h
 # run-gate budget include container cleanup; the verifier and report checker
 # accept complete survivors but refuse partial or timed-out measurements.
-argv = ["bash", "-c", "cd {worktree}/assay && exec ./run-gate.py --worktree {worktree} b110-screen"]
+argv = ["bash", "-c", "cd {worktree}/assay && exec run-gate --worktree {worktree} b110-screen"]
 phase = "implementation"
 asserts = ["tests-pass"]
 timeout_seconds = 28800

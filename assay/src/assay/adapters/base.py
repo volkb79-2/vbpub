@@ -12,7 +12,7 @@ type. P09 (this package, A-084/A-105) adds the second deliberate extension:
 :meth:`LanguageAdapter.inject_import_break` and
 :meth:`LanguageAdapter.inject_uncovered_line`, the pure ``(text) -> (text,
 description)`` transforms :mod:`assay.canary` drives to build its
-cause-sensitive canary (A-010 — nyxloom's own versions of these two write the
+R3 canary (A-010 — nyxloom's own versions of these two write the
 file directly; these do not touch a filesystem). P11 (this package,
 A-084/A-112/A-114) adds the THIRD and final deliberate extension DESIGN-GUIDE
 §11 sketches: mutation construction — construction only; P12 consumes the
@@ -73,6 +73,11 @@ __all__ = [
     "StatementBlockReport",
     "StatementSpan",
 ]
+
+# Shared diagnostic included in each import-break error message. The canary
+# checks the command outcome and reason code; it does not use this text to
+# attribute a failure to the injected source.
+_IMPORT_BREAK_MARKER = "assay-canary-import-break"
 
 
 @record
@@ -188,7 +193,7 @@ class StatementBlockReport:
 
 class LanguageAdapter(Protocol):
     """A language's contribution to changed-line coverage evaluation, plus
-    (P09) to the cause-sensitive canary and (P11) to mutant construction.
+    (P09) to R3 canaries and (P11) to mutant construction.
 
     SIX attributes and NINE methods after the P27 re-carve
     (A-097/A-101/A-105/A-114/A-397/A-404) — reached only because each of the
@@ -447,7 +452,7 @@ class LanguageAdapter(Protocol):
         """A MINIMAL, valid-as-source, known-bad transform of *text* that
         should make any test importing/loading it fail outright (P09,
         A-010/A-105) — proves a gate rejects broken code AT ALL, the R0-level
-        half of the cause-sensitive canary.
+        half of the R3 canary.
 
         Pure: returns ``(transformed_text, description)`` and never touches
         a filesystem. *description* is a short, human-readable account of
@@ -471,7 +476,7 @@ class LanguageAdapter(Protocol):
         """A MINIMAL, valid, lint-clean, test-neutral addition to *text*
         whose lines are never executed by any test (P09, A-010/A-105) —
         proves a gate specifically enforces a changed-line-coverage floor,
-        the R1-level half of the cause-sensitive canary: a tests-only gate
+        the R1-level half of the R3 canary: a tests-only gate
         (one that runs the suite but never checks coverage) sails past this
         transform, while a gate enforcing changed-line coverage rejects it.
 

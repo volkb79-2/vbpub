@@ -3,6 +3,11 @@
 > **Target system:** Debian 12 VM, 8 cores, 16 GB RAM, kernel 6.12.90 (backports)  
 > **Workload:** Pterodactyl Wings → Docker → Soulmask game server (13-14 GB, 80% single-core)  
 > **Secondary workload:** VSC SSH dev, up to 20 dev containers, large Docker builds (~12 GB images)  
+> **Superseded IO advice (2026-10-20):** the `io.max` 200 MB/s dev cap in this guide was never derived from
+> the device. gstammtisch writes only ~14–18 MB/s (~10 steady), so that cap never binds, and caps do not
+> address the shared-journal stall anyway. Use [HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md). The
+> memory architecture below is unaffected, **except `vm.swappiness`**: the "80–100" proposed in this guide is
+> superseded; the value is now **10** (operator decision 2026-10-21, MEMORY-ARCHITECTURE.md section 4).
 > **Constraint:** RAM is the scarce resource — frequent container start/tear-down and image builds compete with the game server.
 
 ---

@@ -119,14 +119,40 @@ test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[build/argument-s
 id = "case:route:entrypoint:cmru/build/minimum"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:94a4f28fa919570c474bbcee9f0c1ad2f0fc0d36648eee253e7db5a5c44ba147"
-rationale = "Nothing is required: a bare `build` builds the current project from an isolated snapshot."
+reviewed_signature = "sha256:0faabda86a74f56e03c628fcc2c8caaa3accdd35e3e7d2f6efef0728b01df2f5"
+rationale = "Nothing is required: a bare `build` builds the current project from an isolated snapshot of the checked-out commit (KI-95)."
 invocation = ["build"]
 expected_exit_status = 2
 expected_stdout_contains = ""
 expected_stderr_contains = "config file not found"
 effects = ["Without a cmru config the verb refuses (exit 2) before any snapshot or step runs."]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[build/minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/build/option-spelling/option:route:entrypoint:cmru/build/--allow-uncommitted/--allow-uncommitted"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ba96923700e800b63ad8e0f064cc564e302ad2701f9d9bd07dc8b90020a46286"
+rationale = "--allow-uncommitted builds the committed state when the selected projects have uncommitted edits; without it the dirty tree is refused, naming this option."
+invocation = ["build", "--allow-uncommitted"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["Stops at configuration discovery (exit 2); with a config the uncommitted edits are omitted from the isolated build, never built."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[build/option-spelling/--allow-uncommitted/--allow-uncommitted]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/build/option-spelling/option:route:entrypoint:cmru/build/--from-origin-main/--from-origin-main"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:93ef0681343097da39c56fab3f72ec469d663b7dca6b4e799a298dd0e9d4a3a5"
+rationale = "--from-origin-main builds the fetched origin/main snapshot (with the ahead/behind checks) instead of the default checked-out commit."
+invocation = ["build", "--from-origin-main"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["Stops at configuration discovery (exit 2); with a config the build source is fetched origin/main, not HEAD."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[build/option-spelling/--from-origin-main/--from-origin-main]"]
 
 [[cases]]
 id = "case:route:entrypoint:cmru/build/option-spelling/option:route:entrypoint:cmru/build/--config/--config"
@@ -1182,6 +1208,97 @@ effects = ["Presentation only; refuses on the unset REGISTRY (exit 1)."]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/oci-image-push/option-spelling/--log-prefix-time-short/--log-prefix-time-short]"]
 
 [[cases]]
+id = "case:route:entrypoint:cmru/handler/oci-image-release/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6eb6ae0febad975ab7ec783b4c69b9bd2b60c7badab5a812b1bfd89e5b0b34c1"
+rationale = "--prefix, --image and --cwd are required; the handler publishes only the GitHub Release body of an already-pushed image and runs only with the protected release identity that `cmru release` supplies."
+invocation = ["handler", "oci-image-release", "--prefix", "demo", "--image", "ghcr.io/example/demo", "--cwd", "missing-dir"]
+expected_exit_status = 4
+expected_stdout_contains = ""
+expected_stderr_contains = "CMRU_RELEASE_TAG and CMRU_RELEASE_COMMIT not set"
+effects = ["Refuses (exit 4) on the absent protected release identity before any GitHub request, git read or file access."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/oci-image-release/minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/handler/oci-image-release/option-spelling/option:route:entrypoint:cmru/handler/oci-image-release/--cwd/--cwd"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f97818cdb3932586a994519f61bcf4fb986a305ed182ad934ec755f33905f1a6"
+rationale = "--cwd PATH is the project tree whose changelog the tagged section is read from."
+invocation = ["handler", "oci-image-release", "--prefix", "demo", "--image", "ghcr.io/example/demo", "--cwd", "missing-dir"]
+expected_exit_status = 4
+expected_stdout_contains = ""
+expected_stderr_contains = "CMRU_RELEASE_TAG and CMRU_RELEASE_COMMIT not set"
+effects = ["Refuses (exit 4) on the absent release identity; the directory is not read and nothing is published."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/oci-image-release/option-spelling/--cwd/--cwd]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/handler/oci-image-release/option-spelling/option:route:entrypoint:cmru/handler/oci-image-release/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c4e95062f13c9b061721cef79f77864b137c3e4ba9c59eb80f6603868695efa7"
+rationale = "Library control: --debug-raw lifts diagnostic redaction and warns."
+invocation = ["handler", "oci-image-release", "--prefix", "demo", "--image", "ghcr.io/example/demo", "--cwd", "missing-dir", "--debug-raw"]
+expected_exit_status = 4
+expected_stdout_contains = ""
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the warning, then refuses (exit 4) on the absent release identity; nothing is published."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/oci-image-release/option-spelling/--debug-raw/--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/handler/oci-image-release/option-spelling/option:route:entrypoint:cmru/handler/oci-image-release/--dry-run/--dry-run"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6413057a010a7a42ed3bf7b7ffbff6c7e1a4326b6d954e7323ac073de6b09af5"
+rationale = "--dry-run shows the accepted inputs without reading the release identity, the changelog or calling GitHub; `cmru release --dry-run` previews the complete body."
+invocation = ["handler", "oci-image-release", "--prefix", "demo", "--image", "ghcr.io/example/demo", "--cwd", "missing-dir", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "[DRY RUN] Would run cmru handler oci-image-release"
+expected_stderr_contains = ""
+effects = ["Prints the inputs only; no GitHub request, no git or file read, nothing is published."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/oci-image-release/option-spelling/--dry-run/--dry-run]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/handler/oci-image-release/option-spelling/option:route:entrypoint:cmru/handler/oci-image-release/--image/--image"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:41ed428c2a0b29f48ed872438b08560a00d47ea802bbd73d1aa6c4d8e22e92b7"
+rationale = "--image REPOSITORY is the registry repository with no tag and no digest; the image tag is derived from the protected release tag. Its shape is validated after the release identity, so a bad value is pinned by the handler's own tests."
+invocation = ["handler", "oci-image-release", "--prefix", "demo", "--image", "ghcr.io/example/demo", "--cwd", "missing-dir"]
+expected_exit_status = 4
+expected_stdout_contains = ""
+expected_stderr_contains = "CMRU_RELEASE_TAG and CMRU_RELEASE_COMMIT not set"
+effects = ["Refuses (exit 4) on the absent release identity; nothing is published."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/oci-image-release/option-spelling/--image/--image]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/handler/oci-image-release/option-spelling/option:route:entrypoint:cmru/handler/oci-image-release/--log-prefix-time-short/--log-prefix-time-short"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:39f95273b7ee378691ce3c2c85311b55d9a1850bdbd81409939d4d6bde825ed7"
+rationale = "Consumer-global presentation option; output only."
+invocation = ["handler", "oci-image-release", "--prefix", "demo", "--image", "ghcr.io/example/demo", "--cwd", "missing-dir", "--log-prefix-time-short"]
+expected_exit_status = 4
+expected_stdout_contains = ""
+expected_stderr_contains = "CMRU_RELEASE_TAG and CMRU_RELEASE_COMMIT not set"
+effects = ["Presentation only; refuses (exit 4) on the absent release identity."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/oci-image-release/option-spelling/--log-prefix-time-short/--log-prefix-time-short]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/handler/oci-image-release/option-spelling/option:route:entrypoint:cmru/handler/oci-image-release/--prefix/--prefix"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7319803f511614ef428e515475f40ecc6030f9ce1378a589641ca897704e452b"
+rationale = "--prefix PREFIX is the release prefix without -v; the protected release tag must be <prefix>-v<version>. A mismatch is refused after the identity is present, so it is pinned by the handler's own tests."
+invocation = ["handler", "oci-image-release", "--prefix", "demo", "--image", "ghcr.io/example/demo", "--cwd", "missing-dir"]
+expected_exit_status = 4
+expected_stdout_contains = ""
+expected_stderr_contains = "CMRU_RELEASE_TAG and CMRU_RELEASE_COMMIT not set"
+effects = ["Refuses (exit 4) on the absent release identity; nothing is published."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/oci-image-release/option-spelling/--prefix/--prefix]"]
+
+[[cases]]
 id = "case:route:entrypoint:cmru/handler/tarball-publish/exclusive-conflict/version-source/option:route:entrypoint:cmru/handler/tarball-publish/--version-env/option:route:entrypoint:cmru/handler/tarball-publish/--version-file"
 state = "active"
 decision = "refuse"
@@ -1420,12 +1537,12 @@ id = "case:route:entrypoint:cmru/handler/wheel-build/minimum"
 state = "active"
 decision = "accept"
 reviewed_signature = "sha256:9695dac128fad7bbfb146ee9e6e57d0f3ddda1c5f55bc52184868c7d77350dbd"
-rationale = "--cwd PATH is the only required input; the builder image comes from CMRU_WHEEL_BUILDER_IMAGE."
+rationale = "--cwd PATH identifies the project; the builder image comes from the explicit environment or enclosing CMRU configuration."
 invocation = ["handler", "wheel-build", "--cwd", "missing-dir"]
 expected_exit_status = 3
 expected_stdout_contains = ""
 expected_stderr_contains = "CMRU_WHEEL_BUILDER_IMAGE is required"
-effects = ["Refuses on the undeclared builder image (exit 3); no container is started."]
+effects = ["Refuses when neither environment nor enclosing CMRU configuration declares the builder image (exit 3); no container is started."]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/wheel-build/minimum]"]
 
 [[cases]]
@@ -1991,8 +2108,8 @@ test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[init/option-spel
 id = "case:route:entrypoint:cmru/publish/argument-shape/argument:route:entrypoint:cmru/publish/target"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:a628ef2ded83465e953e661b33650d81a332729e0f03faaac5d52a7d68b28de0"
-rationale = "The optional target selects projects, each of which must declare a push step; --build-output needs exactly one selected project."
+reviewed_signature = "sha256:d5094d605c35410be507c58b483cf991d145002210e3e00e03d1c6dce90f6575"
+rationale = "The optional target selects projects, each of which must declare a push step; retained-build and tagged-body modes each require one selected project."
 invocation = ["publish", "--build-output", "20260101T000000Z-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "demo"]
 expected_exit_status = 2
 expected_stdout_contains = ""
@@ -2004,7 +2121,7 @@ test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[publish/argument
 id = "case:route:entrypoint:cmru/publish/exclusive-conflict/publish-source/option:route:entrypoint:cmru/publish/--build-output/option:route:entrypoint:cmru/publish/--from-checkout"
 state = "active"
 decision = "refuse"
-reviewed_signature = "sha256:6420543219fa8a902d86afe556b0ca6a1f1a756bcfb8285e2b1ec580c8fbc350"
+reviewed_signature = "sha256:7faa5f88a5b9f6183f5c8f46651d5e0871c2df50e33f38914097bf2b60b6e5a8"
 rationale = "Exactly one publication source: retained build output or the caller's checkout, never both."
 invocation = ["publish", "--build-output", "20260101T000000Z-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--from-checkout"]
 expected_exit_status = 2
@@ -2017,7 +2134,7 @@ test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[publish/exclusiv
 id = "case:route:entrypoint:cmru/publish/exclusive-member/publish-source/option:route:entrypoint:cmru/publish/--build-output"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:bbec8719a27c757dee3ad8aae54cfce629eab9fc216c51c8695ff9a9dc4140b7"
+reviewed_signature = "sha256:f99384a7695bf32a77d3464a73a246dc8964124d881eef6f026aca3ad448df8e"
 rationale = "--build-output ID accepts the exact UTC timestamp plus 40-character commit printed by `cmru build` and publishes that retained record without rebuilding; records with source-tree changes are refused."
 invocation = ["publish", "--build-output", "20260101T000000Z-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
 expected_exit_status = 2
@@ -2030,8 +2147,8 @@ test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[publish/exclusiv
 id = "case:route:entrypoint:cmru/publish/exclusive-member/publish-source/option:route:entrypoint:cmru/publish/--from-checkout"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:502961bd2678c4fe805042b0ce0a1fcac9c3f056f35e3607d16af48f3ebe4bb0"
-rationale = "--from-checkout explicitly publishes whatever the caller's checkout holds (not isolated)."
+reviewed_signature = "sha256:c41b04bcb2c735cf8150ca39d33f912a73f19302a007787306c824b3b59c9204"
+rationale = "--from-checkout runs the caller's declared push step; with --release-tag, CMRU applies the documented clean-tag checks and runs only the OCI release-body command."
 invocation = ["publish", "--from-checkout"]
 expected_exit_status = 2
 expected_stdout_contains = ""
@@ -2043,8 +2160,8 @@ test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[publish/exclusiv
 id = "case:route:entrypoint:cmru/publish/minimum"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:887176dfaf822f43f06e290f6fdd0f96816e28d05fb25f7e01958b0e773e436f"
-rationale = "Exactly one source is required (--build-output or --from-checkout); a missing push step fails as a usage/configuration error before credentials or external actions."
+reviewed_signature = "sha256:45f27dc29eca3f4f3c3d6bf298a1b4ecbafbdfb796db408e5e50545b0c04e920"
+rationale = "Exactly one source is required; --release-tag additionally requires --from-checkout and selects the explicit OCI release-body retry."
 invocation = ["publish", "--build-output", "20260101T000000Z-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
 expected_exit_status = 2
 expected_stdout_contains = ""
@@ -2056,7 +2173,7 @@ test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[publish/minimum]
 id = "case:route:entrypoint:cmru/publish/option-spelling/option:route:entrypoint:cmru/publish/--build-output/--build-output"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:e2f60f895d9ea7d78a4d92bc80a215feb4beb7e3362bb6d7121fcb1c9ba5fa6f"
+reviewed_signature = "sha256:57121a5821664ea4c2cb63a7b7d658bf98daa9be55ccfa58658718ed8cff82d3"
 rationale = "Exact spelling of the retained-record source; one non-empty ID."
 invocation = ["publish", "--build-output", "20260101T000000Z-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
 expected_exit_status = 2
@@ -2069,7 +2186,7 @@ test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[publish/option-s
 id = "case:route:entrypoint:cmru/publish/option-spelling/option:route:entrypoint:cmru/publish/--config/--config"
 state = "active"
 decision = "refuse"
-reviewed_signature = "sha256:6b59ce704cc07699117b384accd280be183e3bbf6ea1a879c45a97cf472fb7d3"
+reviewed_signature = "sha256:ad30502da1db9e85b74dd8f2c492de0dcef8d794c2e9e910bf02340d1f38e8c7"
 rationale = "--config selects the project contract; only the two canonical names are accepted."
 invocation = ["publish", "--build-output", "20260101T000000Z-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--config", "missing.toml"]
 expected_exit_status = 2
@@ -2082,7 +2199,7 @@ test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[publish/option-s
 id = "case:route:entrypoint:cmru/publish/option-spelling/option:route:entrypoint:cmru/publish/--debug-raw/--debug-raw"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:310f963b796126326a9a7fa58433ab40dcec744a2470f03d4432b81016c6eef8"
+reviewed_signature = "sha256:cee1743042ac65e628ac1e0dc36f297824424ab7bbeb1b02d282a885db0c88e9"
 rationale = "Library control: --debug-raw lifts diagnostic redaction and warns."
 invocation = ["publish", "--build-output", "20260101T000000Z-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--debug-raw"]
 expected_exit_status = 2
@@ -2095,8 +2212,8 @@ test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[publish/option-s
 id = "case:route:entrypoint:cmru/publish/option-spelling/option:route:entrypoint:cmru/publish/--dry-run/--dry-run"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:027a0bc4b14a49b9a19766632974b774569633f1324b7726888b216d31de5a76"
-rationale = "--dry-run displays the record, digests and publisher commands without credentials or execution, and without querying remote tags."
+reviewed_signature = "sha256:0a577c2189f808a134ae6329e5b8669ed5d5acaf91097fa5f4b53822a428f4cb"
+rationale = "--dry-run displays retained records and publisher commands without execution; a tagged OCI-body retry checks local tag identity but deliberately does not query origin."
 invocation = ["publish", "--build-output", "20260101T000000Z-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--dry-run"]
 expected_exit_status = 2
 expected_stdout_contains = ""
@@ -2108,7 +2225,7 @@ test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[publish/option-s
 id = "case:route:entrypoint:cmru/publish/option-spelling/option:route:entrypoint:cmru/publish/--from-checkout/--from-checkout"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:98e7c2da63a05c99838fa18eaa793773812d206e9ae407080922eb7d2b4dcbc8"
+reviewed_signature = "sha256:8f0b551fea9a05f43178eb0e50e16f4a8b09cc414aac0da0f0ac972784eed77b"
 rationale = "Exact spelling of the explicit checkout source."
 invocation = ["publish", "--from-checkout"]
 expected_exit_status = 2
@@ -2121,7 +2238,7 @@ test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[publish/option-s
 id = "case:route:entrypoint:cmru/publish/option-spelling/option:route:entrypoint:cmru/publish/--log-append/--log-append"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:29ed9eceb4b95c9f78874993b5d276671c0c8d07a8e948fdb393c960d6d2d17f"
+reviewed_signature = "sha256:192441e167d64950f91a0900b24057a01660e86780252523cf528ff472d63885"
 rationale = "--log-append retains prior step logs."
 invocation = ["publish", "--build-output", "20260101T000000Z-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--log-append"]
 expected_exit_status = 2
@@ -2134,7 +2251,7 @@ test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[publish/option-s
 id = "case:route:entrypoint:cmru/publish/option-spelling/option:route:entrypoint:cmru/publish/--log-prefix-time-short/--log-prefix-time-short"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:ff8660256801353a35dce86879662ad5e3ae643a2506394f1c1a35cc1ec52cc8"
+reviewed_signature = "sha256:1eb943a61a85d668d544eac9aee1f084569e7f0754949287cea53c0beeb00da5"
 rationale = "Consumer-global presentation option; output only."
 invocation = ["publish", "--build-output", "20260101T000000Z-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--log-prefix-time-short"]
 expected_exit_status = 2
@@ -2147,7 +2264,7 @@ test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[publish/option-s
 id = "case:route:entrypoint:cmru/publish/option-spelling/option:route:entrypoint:cmru/publish/--show-run-details/--show-run-details"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:6648947d72f1c97663f5029bb8da597b367f5c8160a8c5c841e6e5bc5a582b10"
+reviewed_signature = "sha256:0297417a24da483dc3de2e4cd8d89d0d40d05c11642d0807cd820b6d67b15e3e"
 rationale = "--show-run-details streams publisher output."
 invocation = ["publish", "--build-output", "20260101T000000Z-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--show-run-details"]
 expected_exit_status = 2
@@ -2155,6 +2272,45 @@ expected_stdout_contains = ""
 expected_stderr_contains = "config file not found"
 effects = ["Stops at configuration discovery (exit 2); nothing streams."]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[publish/option-spelling/--show-run-details/--show-run-details]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/publish/constraint-requires/1"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:d491bc8b16c03ef81a56dfdc890066d19da13fd07562ceef8f2749e028defb02"
+rationale = "A tagged release-body retry needs the explicit caller checkout; a retained-build publication cannot supply the local tag-at-HEAD source identity."
+invocation = ["publish", "demo", "--build-output", "20260101T000000Z-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--release-tag", "demo-v1.0.0"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "--release-tag needs --from-checkout"
+effects = ["Refused during argument validation (exit 2), before config discovery or any network call; nothing changes."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[publish/constraint-requires/1]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/publish/option-spelling/option:route:entrypoint:cmru/publish/--release-tag/--release-tag"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ecdb2dfdb9c47878ce40bda88faab3a05f4bb755ad14d7a6cb84a60f0c2ac742"
+rationale = "--release-tag names the exact released <prefix>-v<version> project tag whose body is retried; it does not guess a tag from HEAD or replay the image push."
+invocation = ["publish", "demo", "--from-checkout", "--release-tag", "demo-v1.0.0"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["The option is accepted; execution stops at config discovery (exit 2), before any remote query or publication."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[publish/option-spelling/--release-tag/--release-tag]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/publish/option-spelling/option:route:entrypoint:cmru/publish/--secret-file/--secret-file"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5b488593070f0c0b31ce162e48a07ebbfbd64b2321ae2f133b8e279f30447fae"
+rationale = "--secret-file explicitly selects the root credential document for a publish invocation; CMRU never guesses another worktree's path."
+invocation = ["publish", "demo", "--from-checkout", "--secret-file", "/tmp/cmru.secret.toml"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["The option is accepted; execution stops at config discovery (exit 2), before the secret file is read."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[publish/option-spelling/--secret-file/--secret-file]"]
 
 [[cases]]
 id = "case:route:entrypoint:cmru/release/argument-shape/argument:route:entrypoint:cmru/release/target"
@@ -2251,8 +2407,8 @@ test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[release/exclusiv
 id = "case:route:entrypoint:cmru/release/minimum"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:3c52cb65002d40abe9f65b09e0bcf67e615e3c5ecbf4dca34640fef7c7798d32"
-rationale = "Nothing is required: a bare `release` is the atomic source-first release of the current project, with the version derived from the changelog/commits."
+reviewed_signature = "sha256:54f16141b6e58ff69c89bcb56c705f54a01460354c366dc9df84b8a8dffc3b35"
+rationale = "Nothing is required: `release` selects changed projects and derives versions. It uses origin/main by default; `--from-worktree` explicitly selects a matching pushed feature branch."
 invocation = ["release"]
 expected_exit_status = 2
 expected_stdout_contains = ""
@@ -2311,6 +2467,32 @@ expected_stdout_contains = ""
 expected_stderr_contains = "config file not found"
 effects = ["Stops at configuration discovery (exit 2); no guard runs."]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[release/option-spelling/--ahead-check-ref/--ahead-check-ref]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/release/option-spelling/option:route:entrypoint:cmru/release/--from-worktree/--from-worktree"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2df5379436e091627593dfcf5605a0d8907007aadce9afa2db0a4f7589273544"
+rationale = "--from-worktree opts into releasing the exact clean named feature branch only when its fetched same-named origin ref matches HEAD; the generated release candidate remains separate."
+invocation = ["release", "--from-worktree"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["The option is recognized, then configuration discovery refuses (exit 2); no branch, tag or publication is created."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[release/option-spelling/--from-worktree/--from-worktree]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/release/option-spelling/option:route:entrypoint:cmru/release/--secret-file/--secret-file"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2503c0ec2e0019b1f6261c95f62da31e8ab2b243987521c28a2ccbea8e5b1ed3"
+rationale = "--secret-file PATH explicitly selects the root credential document for this release; another worktree's secret is never read automatically."
+invocation = ["release", "--secret-file", "/tmp/cmru.secret.toml"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["The option is recognized, then configuration discovery refuses (exit 2); the named file is not read and no transaction starts."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[release/option-spelling/--secret-file/--secret-file]"]
 
 [[cases]]
 id = "case:route:entrypoint:cmru/release/option-spelling/option:route:entrypoint:cmru/release/--allow-stale-tool-deps/--allow-stale-tool-deps"
@@ -2506,6 +2688,19 @@ expected_stdout_contains = ""
 expected_stderr_contains = "config file not found"
 effects = ["Stops at configuration discovery (exit 2); no candidate is created."]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[release/option-spelling/--set-version/--set-version]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/release/option-spelling/option:route:entrypoint:cmru/release/--skip-gates/--skip-gates"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c586c26472759583e8108c3b6045646ba20a4d27d2d37abc65864adf266c6a5f"
+rationale = "Exact spelling of the explicit, recorded ungated-release option (CMRU-SKIP-01); its non-empty reason and its refusal with --resume are pinned in tests/test_release_skip_gates.py."
+invocation = ["release", "--skip-gates", "operator: re-publish after release cleanup"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["The option and its reason are recognized, then configuration discovery refuses (exit 2); no candidate is created and no gate decision is recorded."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[release/option-spelling/--skip-gates/--skip-gates]"]
 
 [[cases]]
 id = "case:route:entrypoint:cmru/release/option-spelling/option:route:entrypoint:cmru/release/--show-run-details/--show-run-details"
@@ -3912,6 +4107,110 @@ effects = ["Presentation only; refuses outside a repository (exit 2); read-only.
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[worktrees/option-spelling/--log-prefix-time-short/--log-prefix-time-short]"]
 
 [[cases]]
+id = "case:route:entrypoint:cmru/gate-snapshots/constraint-requires/1"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:3dce113e4996da6a18620fd46158f1fdcd5eaa0eb0f786564e1818dc1d8679ba"
+rationale = "A removal preview is only meaningful with --remove: --dry-run alone is refused instead of silently listing."
+invocation = ["gate-snapshots", "--dry-run"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "--dry-run requires --remove"
+effects = ["Refused as a usage error (exit 2) before any repository is inspected; nothing is read or removed."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[gate-snapshots/constraint-requires/1]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/gate-snapshots/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:20bcdc64fa444fae97e819f3e401c79eef76a9328fff6527e9efdc9dd3bffccd"
+rationale = "Bare `gate-snapshots` is the read-only listing of retained release-gate snapshots; --remove is the opt-in mutation (mixed-operations verb)."
+invocation = ["gate-snapshots"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "must run inside the repository"
+effects = ["Outside a git repository it refuses (exit 2); read-only."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[gate-snapshots/minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/gate-snapshots/option-spelling/option:route:entrypoint:cmru/gate-snapshots/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:75c06b800556d5a6bfd73a9f03ebee5a5bff0a8f3fb8b5cc079bc7198b97c5b1"
+rationale = "Library control: --debug-raw lifts diagnostic redaction and warns."
+invocation = ["gate-snapshots", "--debug-raw"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the warning, then refuses outside a repository (exit 2); read-only."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[gate-snapshots/option-spelling/--debug-raw/--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/gate-snapshots/option-spelling/option:route:entrypoint:cmru/gate-snapshots/--dry-run/--dry-run"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:3dc2bd586aae61a337d5b093f7af6940e9257668530e2a182df87806fe5a9c99"
+rationale = "--dry-run (with --remove) previews which snapshots would be removed without removing anything."
+invocation = ["gate-snapshots", "--remove", "--dry-run"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "must run inside the repository"
+effects = ["Outside a git repository it refuses (exit 2); nothing is removed."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[gate-snapshots/option-spelling/--dry-run/--dry-run]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/gate-snapshots/option-spelling/option:route:entrypoint:cmru/gate-snapshots/--include-current/--include-current"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:58b898866c1da1ddeba5aebd89ae8a5440ebb8bf9ca6452c820ea11453d4b097"
+rationale = "--include-current widens what counts as removable to a snapshot whose source is still at its commit (it can then no longer resume); lease and source-observability refusals still apply."
+invocation = ["gate-snapshots", "--include-current"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "must run inside the repository"
+effects = ["Outside a git repository it refuses (exit 2); read-only without --remove."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[gate-snapshots/option-spelling/--include-current/--include-current]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/gate-snapshots/option-spelling/option:route:entrypoint:cmru/gate-snapshots/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:432476a85d9fc7871020f496a0654ad9d404062aa46bcbbfc9c690ceabc957d8"
+rationale = "--json emits machine-readable gate-snapshot reports (a genuine output mode, not a mutation selector)."
+invocation = ["gate-snapshots", "--json"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "must run inside the repository"
+effects = ["Outside a git repository it refuses (exit 2); read-only."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[gate-snapshots/option-spelling/--json/--json]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/gate-snapshots/option-spelling/option:route:entrypoint:cmru/gate-snapshots/--log-prefix-time-short/--log-prefix-time-short"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e0b686d58dd2da8b97e7eb3a562768409ed85634138c32202f78e164b2070f26"
+rationale = "Consumer-global presentation option; output only."
+invocation = ["gate-snapshots", "--log-prefix-time-short"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "must run inside the repository"
+effects = ["Presentation only; refuses outside a repository (exit 2); read-only."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[gate-snapshots/option-spelling/--log-prefix-time-short/--log-prefix-time-short]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/gate-snapshots/option-spelling/option:route:entrypoint:cmru/gate-snapshots/--remove/--remove"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9a41a4adf8c6bcbc03156cade9e767325eb1221c2fc4e4df26d25ae1cf9ddcfc"
+rationale = "--remove is the opt-in deletion of every snapshot judged removable; each is re-judged from fresh facts and a live or unprovable one is kept."
+invocation = ["gate-snapshots", "--remove"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "must run inside the repository"
+effects = ["Outside a git repository it refuses (exit 2) before anything is removed."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[gate-snapshots/option-spelling/--remove/--remove]"]
+
+[[cases]]
 id = "case:route:entrypoint:cmru/skills/check/exclusive-conflict/target/option:route:entrypoint:cmru/skills/check/--dest/option:route:entrypoint:cmru/skills/check/--harness"
 state = "active"
 decision = "refuse"
@@ -4562,3 +4861,94 @@ effects = ["Presentation only; removes only under the sandbox HOME (absent here,
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[skills/uninstall/option-spelling/--log-prefix-time-short/--log-prefix-time-short]"]
 
 # --END-OF-CATALOG-CHUNKS--
+
+[[cases]]
+id = "case:route:entrypoint:cmru/publish/constraint-requires/2"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:37da00f51f5afa1dd44d5af73630e119db4fe577430f7af9b2a5900d14d6a2c6"
+rationale = "The gates fact is declared only for the body retry of a tagged release; it has no meaning elsewhere."
+invocation = ["publish", "demo", "--from-checkout", "--gates-skipped", "operator: gate host down"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "--gates-skipped only declares"
+effects = ["Refused during argument validation (exit 2); nothing changes."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[publish/constraint-requires/2]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/publish/constraint-requires/3"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:d5b6337cccc6315beb4b63e761ec247b535c796c49369eb571ff7f2194719646"
+rationale = "The gates fact is declared only for the body retry of a tagged release; it has no meaning elsewhere."
+invocation = ["publish", "demo", "--from-checkout", "--gates-ran"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "--gates-ran only declares"
+effects = ["Refused during argument validation (exit 2); nothing changes."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[publish/constraint-requires/3]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/publish/exclusive-conflict/gates-fact/option:route:entrypoint:cmru/publish/--gates-ran/option:route:entrypoint:cmru/publish/--gates-skipped"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:79341f3d1605a9de872f4eaf14e83a2e00f6c09b0b42c129e08b47b4e9b62bb6"
+rationale = "A retry declares one gates fact: ran or skipped, never both."
+invocation = ["publish", "demo", "--from-checkout", "--release-tag", "demo-v1.0.0", "--gates-ran", "--gates-skipped", "why"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "not allowed with argument"
+effects = ["Refused during argument parsing (exit 2); nothing is published."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[publish/exclusive-conflict/gates-fact/--gates-ran/--gates-skipped]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/publish/exclusive-member/gates-fact/option:route:entrypoint:cmru/publish/--gates-ran"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:40161fce6291e19241f88cf160addce5b81cdaa99ee80997cc2cecbd1d5e2093"
+rationale = "Explicit declaration of the retried release's gates fact, used only when no retained transaction or existing Release body states it (CMRU-SKIP-01)."
+invocation = ["publish", "demo", "--from-checkout", "--release-tag", "demo-v1.0.0", "--gates-ran"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["The option is accepted; execution stops at config discovery (exit 2), before any remote query or publication."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[publish/exclusive-member/gates-fact/--gates-ran]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/publish/option-spelling/option:route:entrypoint:cmru/publish/--gates-ran/--gates-ran"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:bfd687da91ffc4ac2fbe449a353bab06259c5170cfc12fbced83ae10c5b56094"
+rationale = "Exact spelling of the explicit gates-fact declaration for a --release-tag retry (CMRU-SKIP-01)."
+invocation = ["publish", "demo", "--from-checkout", "--release-tag", "demo-v1.0.0", "--gates-ran"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["The option is accepted; execution stops at config discovery (exit 2), before any remote query or publication."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[publish/option-spelling/--gates-ran/--gates-ran]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/publish/exclusive-member/gates-fact/option:route:entrypoint:cmru/publish/--gates-skipped"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:06a6fcf615d66d3638d0b8223531dc367820135fdbf87370addcff0ce6aa265b"
+rationale = "Explicit declaration of the retried release's gates fact, used only when no retained transaction or existing Release body states it (CMRU-SKIP-01)."
+invocation = ["publish", "demo", "--from-checkout", "--release-tag", "demo-v1.0.0", "--gates-skipped", "operator: gate host down"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["The option is accepted; execution stops at config discovery (exit 2), before any remote query or publication."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[publish/exclusive-member/gates-fact/--gates-skipped]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/publish/option-spelling/option:route:entrypoint:cmru/publish/--gates-skipped/--gates-skipped"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d42ea7642bc169e57b177761f894d20e8587f83ca4083838a560c953f4832bf1"
+rationale = "Exact spelling of the explicit gates-fact declaration for a --release-tag retry (CMRU-SKIP-01)."
+invocation = ["publish", "demo", "--from-checkout", "--release-tag", "demo-v1.0.0", "--gates-skipped", "operator: gate host down"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["The option is accepted; execution stops at config discovery (exit 2), before any remote query or publication."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[publish/option-spelling/--gates-skipped/--gates-skipped]"]

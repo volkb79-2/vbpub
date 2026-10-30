@@ -1,0 +1,79 @@
+{
+  "generated_by": "cmru versions resolve",
+  "resolved_at": "2026-10-19T01:54:29Z",
+  "schema_version": 1,
+  "targets": {
+    "oci.devcontainers-python.311.trixie": {
+      "age_source": "oci-image-created-fallback",
+      "digest": "sha256:01f7fa973e78e9e106b347ebe9b4c85e46c7d67f839c21ba7ba4fd930a6518e1",
+      "image": "mcr.microsoft.com/devcontainers/python",
+      "reason": null,
+      "released_at": "2026-09-10T13:02:26Z",
+      "tag": "3.2.3-3.11-trixie",
+      "version": "3.2.3-3.11-trixie"
+    },
+    "oci.devcontainers-python.313.trixie": {
+      "age_source": "oci-image-created-fallback",
+      "digest": "sha256:40c2785f2feb72a83bdf40bf052e1141d52b24bec60d4d5652eb27572d8df6b2",
+      "image": "mcr.microsoft.com/devcontainers/python",
+      "reason": null,
+      "released_at": "2026-09-10T13:33:49Z",
+      "tag": "3.2.3-3.13-trixie",
+      "version": "3.2.3-3.13-trixie"
+    },
+    "oci.devcontainers-python.314.trixie": {
+      "age_source": "oci-image-created-fallback",
+      "digest": "sha256:3b3c45535947751e9dfcd513ef5bee858d221844f55e278e92d1cd8f5b1f2972",
+      "image": "mcr.microsoft.com/devcontainers/python",
+      "reason": null,
+      "released_at": "2026-09-10T13:10:58Z",
+      "tag": "3.2.3-3.14-trixie",
+      "version": "3.2.3-3.14-trixie"
+    },
+    "oci.python.311.bookworm": {
+      "age_source": "oci-image-created-fallback",
+      "digest": "sha256:b99029c95d3d37fb1e4e76d287f7984373dca77c665885986e31b2c95260c13c",
+      "image": "docker.io/library/python",
+      "reason": null,
+      "released_at": "2026-09-19T15:29:40Z",
+      "tag": "3.11.16-bookworm",
+      "version": "3.11.16-bookworm"
+    },
+    "oci.python.311.trixie": {
+      "age_source": "oci-image-created-fallback",
+      "digest": "sha256:70e8e937c1da72df1688e883a2108b0feff03381187fa78eca6d9b10df411320",
+      "image": "docker.io/library/python",
+      "reason": null,
+      "released_at": "2026-09-19T15:25:01Z",
+      "tag": "3.11.16-trixie",
+      "version": "3.11.16-trixie"
+    },
+    "oci.python.313.bookworm": {
+      "age_source": "oci-image-created-fallback",
+      "digest": "sha256:227b6570d6ee07061ae6ca2eb04dedfb6d2b34045835f343065b9869e4d427ea",
+      "image": "docker.io/library/python",
+      "reason": null,
+      "released_at": "2026-09-19T14:49:59Z",
+      "tag": "3.13.15-bookworm",
+      "version": "3.13.15-bookworm"
+    },
+    "oci.python.313.trixie": {
+      "age_source": "oci-image-created-fallback",
+      "digest": "sha256:82c46c08c991d3d3ff10476ac5e386c2c28f27bbd3985a02c5e39fe99ab272eb",
+      "image": "docker.io/library/python",
+      "reason": null,
+      "released_at": "2026-09-19T14:16:41Z",
+      "tag": "3.13.15-trixie",
+      "version": "3.13.15-trixie"
+    },
+    "oci.python.314.trixie": {
+      "age_source": "oci-image-created-fallback",
+      "digest": "sha256:0876e54cf728d89fd9d0fdaf5837b9ee879ea5fbbd6fd0cddbe5eb0cce3f5f9e",
+      "image": "docker.io/library/python",
+      "reason": null,
+      "released_at": "2026-09-19T13:55:46Z",
+      "tag": "3.14.7-trixie",
+      "version": "3.14.7-trixie"
+    }
+  }
+}

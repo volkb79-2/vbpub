@@ -1,0 +1,1406 @@
+schema_version = 1
+cli_id = "pwmcp"
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/contract/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5d8a6a4b5e215a7df4a9716e4d31e76196dccdd4613e0979c9cde0770148408d"
+rationale = "The only required input is the contract source, which defaults to the in-network server URL."
+invocation = ["contract", "--contract", "contract.json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"release\": \"1.63.0-r2\""
+expected_stderr_contains = ""
+effects = ["Reads the contract file (or one HTTP GET); prints it as key-sorted JSON; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[contract---contract-contract.json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/contract/option-spelling/option:route:entrypoint:pwmcp/contract/--contract/--contract"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7facdf40ef2ab2f27816aaa36dbd33826b32f2eda81ee55b672715712b22551b"
+rationale = "--contract is invocation-wide, so it is also accepted before the verb."
+invocation = ["--contract", "contract.json", "contract"]
+expected_exit_status = 0
+expected_stdout_contains = "\"ws_url\": \"ws://pwmcp:3000/\""
+expected_stderr_contains = ""
+effects = ["Reads the contract file (or one HTTP GET); prints it as key-sorted JSON; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[--contract-contract.json-contract]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/contract/option-spelling/option:route:entrypoint:pwmcp/contract/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:bae1d28c1ce174c4772bef5304e4d9dfb6a974dc452bd40804988fbc1c9ad6eb"
+rationale = "The shared control is accepted by a read-only verb; it only lifts redaction and warns."
+invocation = ["contract", "--debug-raw", "--contract", "contract.json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"release\""
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Reads the contract file (or one HTTP GET); prints it as key-sorted JSON; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[contract---debug-raw---contract-contract.json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/contract/option-spelling/option:route:entrypoint:pwmcp/contract/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a4d4ffab5970ee4f162ddc263aaba2d74676e451027e11770dd818f7509aea50"
+rationale = "--json prints the same object on one line for machines."
+invocation = ["contract", "--json", "--contract", "contract.json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"max_clients\": 2"
+expected_stderr_contains = ""
+effects = ["Reads the contract file (or one HTTP GET); prints it as key-sorted JSON; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[contract---json---contract-contract.json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/doctor/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:bc091694a931e1833afd409949bba5151d88e26de07380dd391f418f8e04889d"
+rationale = "All checks run by default; the shared skills check only warns when skills are not installed."
+invocation = ["doctor", "--contract", "contract.json"]
+expected_exit_status = 0
+expected_stdout_contains = "[OK] playwright: playwright=1.63.4"
+expected_stderr_contains = ""
+effects = ["Reads the contract and installed package metadata; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[doctor---contract-contract.json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/doctor/option-spelling/option:route:entrypoint:pwmcp/doctor/--check/--check"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0cb77b885e1f91b5e3ee0120b6a8eab4d0a10fdfc1ac1f7f6cf8b86a9b8b5c33"
+rationale = "A named check can be run alone; an unknown name is a usage error."
+invocation = ["doctor", "--check", "contract", "--contract", "contract.json"]
+expected_exit_status = 0
+expected_stdout_contains = "doctor: 1 ok, 0 warn, 0 fail, 0 skip"
+expected_stderr_contains = ""
+effects = ["Reads the contract and installed package metadata; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[doctor---check-contract---contract-contract.json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/doctor/option-spelling/option:route:entrypoint:pwmcp/doctor/--contract/--contract"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:4e2d7f48f051dc0e603988fa6d0c86a6e9e93fcaf97586d610fb4495a0537ebe"
+rationale = "--contract is invocation-wide, so it is also accepted before the verb."
+invocation = ["--contract", "contract.json", "doctor", "--check", "playwright"]
+expected_exit_status = 0
+expected_stdout_contains = "[OK] playwright"
+expected_stderr_contains = ""
+effects = ["Reads the contract and installed package metadata; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[--contract-contract.json-doctor---check-playwright]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/doctor/option-spelling/option:route:entrypoint:pwmcp/doctor/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:807ba53bc2a658268086e5f1f53161395cf519423feb2311da16669275bb6bf1"
+rationale = "The shared control is accepted by a read-only verb; it only lifts redaction and warns."
+invocation = ["doctor", "--debug-raw", "--check", "contract", "--contract", "contract.json"]
+expected_exit_status = 0
+expected_stdout_contains = "[OK] contract"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Reads the contract and installed package metadata; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[doctor---debug-raw---check-contract---contract-contract.json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/doctor/option-spelling/option:route:entrypoint:pwmcp/doctor/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c3b7da443f20feb7c1e00e5ecfddf4616eb7ea17e30a027810a30fb5ed32a4f4"
+rationale = "--json is the machine-readable doctor report."
+invocation = ["doctor", "--json", "--check", "contract", "--contract", "contract.json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"tool\": \"pwmcp\""
+expected_stderr_contains = ""
+effects = ["Reads the contract and installed package metadata; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[doctor---json---check-contract---contract-contract.json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/check/exclusive-conflict/target/option:route:entrypoint:pwmcp/skills/check/--dest/option:route:entrypoint:pwmcp/skills/check/--harness"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:17d19bd3fff8858c62f9aec308412496e840689b24f0df61775e2a5f85db80bb"
+rationale = "A harness and an explicit destination are two different targets; exactly one is allowed."
+invocation = ["skills", "check", "--dest", "skills-out", "--harness", "claude"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "not allowed with argument"
+effects = ["None: refused by the parser before anything is read or written"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-check---dest-skills-out---harness-claude]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/check/exclusive-member/target/option:route:entrypoint:pwmcp/skills/check/--dest"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:8d58a741d21384e03351cfd58edbada89253e089c10450875fe5519613f355b7"
+rationale = "--dest names exactly one directory, the project-level install form."
+invocation = ["skills", "check", "--dest", "skills-out"]
+expected_exit_status = 1
+expected_stdout_contains = "absent"
+expected_stderr_contains = "not current"
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-check---dest-skills-out]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/check/exclusive-member/target/option:route:entrypoint:pwmcp/skills/check/--harness"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:89c04ee747e47b51f82bd50409c2d73c39fe933cdabb0ca0c83620a1c9f1a51d"
+rationale = "--harness limits the group to one harness directory."
+invocation = ["skills", "check", "--harness=claude"]
+expected_exit_status = 1
+expected_stdout_contains = "absent"
+expected_stderr_contains = "not current"
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-check---harness=claude]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/check/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:76d3782510d5dccf5b6a06214ee6978f9146762a58995015841e48c33f0697c1"
+rationale = "With no target the group covers every harness directory under HOME."
+invocation = ["skills", "check"]
+expected_exit_status = 1
+expected_stdout_contains = "absent"
+expected_stderr_contains = "not current"
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-check]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/check/option-choice/option:route:entrypoint:pwmcp/skills/check/--harness/389432cbf8"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ae3ef4a2588b2dfda7e58744275145bee34bcea673ca4d518e4709543e3dd54b"
+rationale = "Each harness choice is a supported target."
+invocation = ["skills", "check", "--harness", "claude"]
+expected_exit_status = 1
+expected_stdout_contains = "absent"
+expected_stderr_contains = "not current"
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-check---harness-claude]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/check/option-choice/option:route:entrypoint:pwmcp/skills/check/--harness/5cf7504d97"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0578d7c828e4148dd569888a1254f0ccea4cea480027ff5520873c4e2d7ec968"
+rationale = "Each harness choice is a supported target."
+invocation = ["skills", "check", "--harness", "all"]
+expected_exit_status = 1
+expected_stdout_contains = "absent"
+expected_stderr_contains = "not current"
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-check---harness-all]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/check/option-choice/option:route:entrypoint:pwmcp/skills/check/--harness/bc42532430"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:50559fbf013686a6914de17104a9f48fff58ea11d29cd7430d4ba345d5ed2464"
+rationale = "Each harness choice is a supported target."
+invocation = ["skills", "check", "--harness", "agents"]
+expected_exit_status = 1
+expected_stdout_contains = "absent"
+expected_stderr_contains = "not current"
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-check---harness-agents]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/check/option-spelling/option:route:entrypoint:pwmcp/skills/check/--contract/--contract"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a7302f5599e8b264797698e0ff528a49d0e77507137a1ced32711f2986a55691"
+rationale = "The consumer's invocation-wide --contract is forwarded to the skills group (cli-extended 0.3.0 floor, CLI-EXT-26) and ignored by it."
+invocation = ["skills", "check", "--contract", "contract.json"]
+expected_exit_status = 1
+expected_stdout_contains = "absent"
+expected_stderr_contains = "not current"
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-check---contract-contract.json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/check/option-spelling/option:route:entrypoint:pwmcp/skills/check/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6b7ac1dc68e5dec64e6aa26b7a3c5811039727d609fbaab8a56b2b68d4564423"
+rationale = "The shared control only lifts redaction and warns."
+invocation = ["skills", "check", "--debug-raw"]
+expected_exit_status = 1
+expected_stdout_contains = "absent"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-check---debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/check/option-spelling/option:route:entrypoint:pwmcp/skills/check/--dest/--dest"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5478497de04aa9948497ccfa0c1bfba989a9a515a91b8a686f88d9f190d3300f"
+rationale = "The = spelling of --dest is accepted like the spaced one."
+invocation = ["skills", "check", "--dest=skills-out"]
+expected_exit_status = 1
+expected_stdout_contains = "absent"
+expected_stderr_contains = "not current"
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-check---dest=skills-out]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/check/option-spelling/option:route:entrypoint:pwmcp/skills/check/--harness/--harness"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:05e7e09e6811bd26d506e4e78479fe7528df9cf5e39dbb2c6635ceab623f5b81"
+rationale = "The = spelling of --harness is accepted like the spaced one."
+invocation = ["skills", "check", "--harness=all"]
+expected_exit_status = 1
+expected_stdout_contains = "absent"
+expected_stderr_contains = "not current"
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-check---harness=all]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/check/option-spelling/option:route:entrypoint:pwmcp/skills/check/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:81afe11cebfe2836355adf11b8a91c8dfc02a525d9107a353eb02dfd2140112c"
+rationale = "--json is the machine-readable state."
+invocation = ["skills", "check", "--json"]
+expected_exit_status = 1
+expected_stdout_contains = "\"skills\""
+expected_stderr_contains = "not current"
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-check---json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/install/exclusive-conflict/target/option:route:entrypoint:pwmcp/skills/install/--dest/option:route:entrypoint:pwmcp/skills/install/--harness"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:c14380ddd27b434d8457a709802004164979108b04e230447149d4bcf35c4aeb"
+rationale = "A harness and an explicit destination are two different targets; exactly one is allowed."
+invocation = ["skills", "install", "--dest", "skills-out", "--harness", "claude"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "not allowed with argument"
+effects = ["None: refused by the parser before anything is read or written"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-install---dest-skills-out---harness-claude]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/install/exclusive-member/target/option:route:entrypoint:pwmcp/skills/install/--dest"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9accadb266e6764e877b9320f0c0c31fcfe1d5caba398a19aedd482457699ae8"
+rationale = "--dest names exactly one directory, the project-level install form."
+invocation = ["skills", "install", "--dest", "skills-out"]
+expected_exit_status = 0
+expected_stdout_contains = "installed pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Writes the packaged pwmcp-fetch skill under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-install---dest-skills-out]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/install/exclusive-member/target/option:route:entrypoint:pwmcp/skills/install/--harness"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:00364712f2bf9ea9b0684a9c60bb0e549a5d1bb39b000bb8bfe27e2a8f46a46d"
+rationale = "--harness limits the group to one harness directory."
+invocation = ["skills", "install", "--harness=claude"]
+expected_exit_status = 0
+expected_stdout_contains = "installed pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Writes the packaged pwmcp-fetch skill under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-install---harness=claude]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/install/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9452006f3360fcb50f36be3da36e8d7b9dd68c2bb3f0ba9af96440f3dd345108"
+rationale = "With no target the group covers every harness directory under HOME."
+invocation = ["skills", "install"]
+expected_exit_status = 0
+expected_stdout_contains = "installed pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Writes the packaged pwmcp-fetch skill under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-install]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/install/option-choice/option:route:entrypoint:pwmcp/skills/install/--harness/389432cbf8"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:303d0f6e2faebd2b1de930a017e3faeeb3057a51b165263b8e3b2f5c482f006e"
+rationale = "Each harness choice is a supported target."
+invocation = ["skills", "install", "--harness", "claude"]
+expected_exit_status = 0
+expected_stdout_contains = "installed pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Writes the packaged pwmcp-fetch skill under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-install---harness-claude]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/install/option-choice/option:route:entrypoint:pwmcp/skills/install/--harness/5cf7504d97"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:aec0c38fd8b97b897cfbc59dacd10fffcba323136e22152fca9cd40f4d9f5f42"
+rationale = "Each harness choice is a supported target."
+invocation = ["skills", "install", "--harness", "all"]
+expected_exit_status = 0
+expected_stdout_contains = "installed pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Writes the packaged pwmcp-fetch skill under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-install---harness-all]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/install/option-choice/option:route:entrypoint:pwmcp/skills/install/--harness/bc42532430"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d444e9b2be65ebf1a9965e872d1a0109e2e5f27798d1c9241ad259e74d5bc4e6"
+rationale = "Each harness choice is a supported target."
+invocation = ["skills", "install", "--harness", "agents"]
+expected_exit_status = 0
+expected_stdout_contains = "installed pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Writes the packaged pwmcp-fetch skill under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-install---harness-agents]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/install/option-spelling/option:route:entrypoint:pwmcp/skills/install/--contract/--contract"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e2e51b52bb38b22c8178c3620c2826711a99685979a87aebd96b4ea261710418"
+rationale = "The consumer's invocation-wide --contract is forwarded to the skills group (cli-extended 0.3.0 floor, CLI-EXT-26) and ignored by it."
+invocation = ["skills", "install", "--contract", "contract.json"]
+expected_exit_status = 0
+expected_stdout_contains = "installed pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Writes the packaged pwmcp-fetch skill under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-install---contract-contract.json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/install/option-spelling/option:route:entrypoint:pwmcp/skills/install/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6131e808ef18c7e39dc95cc5a46f81cd04ca6a0bfc861970b629508d7918f1dd"
+rationale = "The shared control only lifts redaction and warns."
+invocation = ["skills", "install", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "installed pwmcp-fetch"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Writes the packaged pwmcp-fetch skill under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-install---debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/install/option-spelling/option:route:entrypoint:pwmcp/skills/install/--dest/--dest"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:bb116df421e1fa5906c734b9e5b9a451da369a7806ae74afcf47e57b20557af8"
+rationale = "The = spelling of --dest is accepted like the spaced one."
+invocation = ["skills", "install", "--dest=skills-out"]
+expected_exit_status = 0
+expected_stdout_contains = "installed pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Writes the packaged pwmcp-fetch skill under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-install---dest=skills-out]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/install/option-spelling/option:route:entrypoint:pwmcp/skills/install/--dry-run/--dry-run"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:00365891d1260c745afa8823ae93bee90ee219775b31a02fae118b53870dc41a"
+rationale = "--dry-run previews the plan and writes nothing."
+invocation = ["skills", "install", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "would install pwmcp-fetch"
+expected_stderr_contains = "Dry run: no changes made."
+effects = ["Writes the packaged pwmcp-fetch skill under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-install---dry-run]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/install/option-spelling/option:route:entrypoint:pwmcp/skills/install/--harness/--harness"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b16a9360efcda57bafbc414a651430d84e67ad1c8bc9e683bc2ca4cbd8fd30b4"
+rationale = "The = spelling of --harness is accepted like the spaced one."
+invocation = ["skills", "install", "--harness=all"]
+expected_exit_status = 0
+expected_stdout_contains = "installed pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Writes the packaged pwmcp-fetch skill under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-install---harness=all]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/install/option-spelling/option:route:entrypoint:pwmcp/skills/install/--overwrite-modified/--overwrite-modified"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:325699fddf6a74d61da69a0df500f08befe3bd555bb61f19c3cc312ec953dad4"
+rationale = "--overwrite-modified only matters for a locally edited skill; on a clean target it changes nothing."
+invocation = ["skills", "install", "--overwrite-modified"]
+expected_exit_status = 0
+expected_stdout_contains = "installed pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Writes the packaged pwmcp-fetch skill under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-install---overwrite-modified]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/list/exclusive-conflict/target/option:route:entrypoint:pwmcp/skills/list/--dest/option:route:entrypoint:pwmcp/skills/list/--harness"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:80c08831f42d8bfacf77596ed72b943e6cbf8a5cbb8917e89d27ca60642b9cc6"
+rationale = "A harness and an explicit destination are two different targets; exactly one is allowed."
+invocation = ["skills", "list", "--dest", "skills-out", "--harness", "claude"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "not allowed with argument"
+effects = ["None: refused by the parser before anything is read or written"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-list---dest-skills-out---harness-claude]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/list/exclusive-member/target/option:route:entrypoint:pwmcp/skills/list/--dest"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9106388706022e9fb44b5622a222380817a14ed1d0fb968eade5d592ffc84864"
+rationale = "--dest names exactly one directory, the project-level install form."
+invocation = ["skills", "list", "--dest", "skills-out"]
+expected_exit_status = 0
+expected_stdout_contains = "skills-out"
+expected_stderr_contains = ""
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-list---dest-skills-out]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/list/exclusive-member/target/option:route:entrypoint:pwmcp/skills/list/--harness"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ef766212762f54528d8fdb8e8fbbf5b440de89a0023d86ea2092ed5665c12806"
+rationale = "--harness limits the group to one harness directory."
+invocation = ["skills", "list", "--harness=claude"]
+expected_exit_status = 0
+expected_stdout_contains = "absent"
+expected_stderr_contains = ""
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-list---harness=claude]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/list/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9c8997a23b7850a31d48b8a887b5145d15f6beb875a592b2178d2b90a130ed7f"
+rationale = "With no target the group covers every harness directory under HOME."
+invocation = ["skills", "list"]
+expected_exit_status = 0
+expected_stdout_contains = "absent"
+expected_stderr_contains = ""
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-list]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/list/option-choice/option:route:entrypoint:pwmcp/skills/list/--harness/389432cbf8"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6040b424eb92bcc00d7fa075802f010bbbbe7f040c8f788c8ee6fbb5ce2cbb86"
+rationale = "Each harness choice is a supported target."
+invocation = ["skills", "list", "--harness", "claude"]
+expected_exit_status = 0
+expected_stdout_contains = "absent"
+expected_stderr_contains = ""
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-list---harness-claude]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/list/option-choice/option:route:entrypoint:pwmcp/skills/list/--harness/5cf7504d97"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6c5282e88d620e5e5eda87c9aa18b0c3058fdf67c7ce8194fbdf9ddc7c3a9d0c"
+rationale = "Each harness choice is a supported target."
+invocation = ["skills", "list", "--harness", "all"]
+expected_exit_status = 0
+expected_stdout_contains = "absent"
+expected_stderr_contains = ""
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-list---harness-all]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/list/option-choice/option:route:entrypoint:pwmcp/skills/list/--harness/bc42532430"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0635a42c5df66288dc8f2e072262f4dc29c1fc74fcc610dc608eb0004feae448"
+rationale = "Each harness choice is a supported target."
+invocation = ["skills", "list", "--harness", "agents"]
+expected_exit_status = 0
+expected_stdout_contains = "absent"
+expected_stderr_contains = ""
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-list---harness-agents]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/list/option-spelling/option:route:entrypoint:pwmcp/skills/list/--contract/--contract"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d710565b8f18d78d5969c05f56cec3af7c10b7de3927c510fa9c560b963b063a"
+rationale = "The consumer's invocation-wide --contract is forwarded to the skills group (cli-extended 0.3.0 floor, CLI-EXT-26) and ignored by it."
+invocation = ["skills", "list", "--contract", "contract.json"]
+expected_exit_status = 0
+expected_stdout_contains = "absent"
+expected_stderr_contains = ""
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-list---contract-contract.json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/list/option-spelling/option:route:entrypoint:pwmcp/skills/list/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:50066428332c0e01c872076cdabc5df7fba9f3e5528587500b3b0e7f8b314a58"
+rationale = "The shared control only lifts redaction and warns."
+invocation = ["skills", "list", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "absent"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-list---debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/list/option-spelling/option:route:entrypoint:pwmcp/skills/list/--dest/--dest"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9db3d894e3148b7b2f08d0b76558adb0d4f3c12a2a96b7f20c7791a51d7fea93"
+rationale = "The = spelling of --dest is accepted like the spaced one."
+invocation = ["skills", "list", "--dest=skills-out"]
+expected_exit_status = 0
+expected_stdout_contains = "skills-out"
+expected_stderr_contains = ""
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-list---dest=skills-out]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/list/option-spelling/option:route:entrypoint:pwmcp/skills/list/--harness/--harness"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:fbf931a13b7ffee741631d774021fc200f2a31eb879d587fd0235caf0a210a09"
+rationale = "The = spelling of --harness is accepted like the spaced one."
+invocation = ["skills", "list", "--harness=all"]
+expected_exit_status = 0
+expected_stdout_contains = "absent"
+expected_stderr_contains = ""
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-list---harness=all]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/list/option-spelling/option:route:entrypoint:pwmcp/skills/list/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2e17b719e9322ca8663c2728f7251538a3d962b4fe9f51605c1a99faf745b44f"
+rationale = "--json is the machine-readable state."
+invocation = ["skills", "list", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"skills\""
+expected_stderr_contains = ""
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-list---json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/uninstall/exclusive-conflict/target/option:route:entrypoint:pwmcp/skills/uninstall/--dest/option:route:entrypoint:pwmcp/skills/uninstall/--harness"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:15b2a36d5157eff953d6ea4f6967941ce3c5c44af607ae3b955c3c3c9b0fc56f"
+rationale = "A harness and an explicit destination are two different targets; exactly one is allowed."
+invocation = ["skills", "uninstall", "--dest", "skills-out", "--harness", "claude"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "not allowed with argument"
+effects = ["None: refused by the parser before anything is read or written"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-uninstall---dest-skills-out---harness-claude]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/uninstall/exclusive-member/target/option:route:entrypoint:pwmcp/skills/uninstall/--dest"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:23cf0289dc2d5d943040e18aadd7e9a4ff3c0533dab68a96e36862f51c6b0e40"
+rationale = "--dest names exactly one directory, the project-level install form."
+invocation = ["skills", "uninstall", "--dest", "skills-out"]
+expected_exit_status = 0
+expected_stdout_contains = "skipped pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Removes the pwmcp-fetch skill this tool installed under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-uninstall---dest-skills-out]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/uninstall/exclusive-member/target/option:route:entrypoint:pwmcp/skills/uninstall/--harness"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e2b215476d6f275bb6df131d92bd7108f34daf4aad8e8771a5a4bf1775763350"
+rationale = "--harness limits the group to one harness directory."
+invocation = ["skills", "uninstall", "--harness=claude"]
+expected_exit_status = 0
+expected_stdout_contains = "skipped pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Removes the pwmcp-fetch skill this tool installed under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-uninstall---harness=claude]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/uninstall/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7456a2a344341a14ae29fdd83387683b1035cffbdc7e9da89875ab4ece695cdd"
+rationale = "With no target the group covers every harness directory under HOME."
+invocation = ["skills", "uninstall"]
+expected_exit_status = 0
+expected_stdout_contains = "skipped pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Removes the pwmcp-fetch skill this tool installed under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-uninstall]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/uninstall/option-choice/option:route:entrypoint:pwmcp/skills/uninstall/--harness/389432cbf8"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:24b9757c4336490375b8e87e49c017f423f5041433377673ae224cb6b0d2a3d9"
+rationale = "Each harness choice is a supported target."
+invocation = ["skills", "uninstall", "--harness", "claude"]
+expected_exit_status = 0
+expected_stdout_contains = "skipped pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Removes the pwmcp-fetch skill this tool installed under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-uninstall---harness-claude]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/uninstall/option-choice/option:route:entrypoint:pwmcp/skills/uninstall/--harness/5cf7504d97"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:728af97a82f1a7dc1a93f332d1e84978c6f2f48523958b43917e923ff7152c31"
+rationale = "Each harness choice is a supported target."
+invocation = ["skills", "uninstall", "--harness", "all"]
+expected_exit_status = 0
+expected_stdout_contains = "skipped pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Removes the pwmcp-fetch skill this tool installed under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-uninstall---harness-all]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/uninstall/option-choice/option:route:entrypoint:pwmcp/skills/uninstall/--harness/bc42532430"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:64c455077ec14f6ddb6886f058151c0e78667dde19c621b9734ba706a88f34ec"
+rationale = "Each harness choice is a supported target."
+invocation = ["skills", "uninstall", "--harness", "agents"]
+expected_exit_status = 0
+expected_stdout_contains = "skipped pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Removes the pwmcp-fetch skill this tool installed under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-uninstall---harness-agents]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/uninstall/option-spelling/option:route:entrypoint:pwmcp/skills/uninstall/--contract/--contract"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9978e2924966e0fc7eb7f29ce8c5b5c3ed21ed2147683d338fbfb85a659df1a2"
+rationale = "The consumer's invocation-wide --contract is forwarded to the skills group (cli-extended 0.3.0 floor, CLI-EXT-26) and ignored by it."
+invocation = ["skills", "uninstall", "--contract", "contract.json"]
+expected_exit_status = 0
+expected_stdout_contains = "skipped pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Removes the pwmcp-fetch skill this tool installed under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-uninstall---contract-contract.json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/uninstall/option-spelling/option:route:entrypoint:pwmcp/skills/uninstall/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ef8abbadda061d2be2dc67ae2e3db5f72a3e01073f15dd61dfdb0622cefc3dd7"
+rationale = "The shared control only lifts redaction and warns."
+invocation = ["skills", "uninstall", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "skipped pwmcp-fetch"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Removes the pwmcp-fetch skill this tool installed under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-uninstall---debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/uninstall/option-spelling/option:route:entrypoint:pwmcp/skills/uninstall/--dest/--dest"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9bfd251bebb9da6410c51b6fc4e7cde2669e74658a8b34c4790d38dd1423eafc"
+rationale = "The = spelling of --dest is accepted like the spaced one."
+invocation = ["skills", "uninstall", "--dest=skills-out"]
+expected_exit_status = 0
+expected_stdout_contains = "skipped pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Removes the pwmcp-fetch skill this tool installed under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-uninstall---dest=skills-out]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/uninstall/option-spelling/option:route:entrypoint:pwmcp/skills/uninstall/--dry-run/--dry-run"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:53a07a276e9a1baa4fc2e4e52d379d62a74115422946cab43ba874e99691e51d"
+rationale = "--dry-run previews the plan and writes nothing."
+invocation = ["skills", "uninstall", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "would skip pwmcp-fetch"
+expected_stderr_contains = "Dry run: no changes made."
+effects = ["Removes the pwmcp-fetch skill this tool installed under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-uninstall---dry-run]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/uninstall/option-spelling/option:route:entrypoint:pwmcp/skills/uninstall/--harness/--harness"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:8f8f402d60f2e33c424d376a2f772e754f1fb734977df8b697fc417700cd15c8"
+rationale = "The = spelling of --harness is accepted like the spaced one."
+invocation = ["skills", "uninstall", "--harness=all"]
+expected_exit_status = 0
+expected_stdout_contains = "skipped pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Removes the pwmcp-fetch skill this tool installed under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-uninstall---harness=all]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/uninstall/option-spelling/option:route:entrypoint:pwmcp/skills/uninstall/--overwrite-modified/--overwrite-modified"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:33fc6feb12425836f38ab7b8139c903da88012768c73634f8c467bf49b701244"
+rationale = "--overwrite-modified only matters for a locally edited skill; on a clean target it changes nothing."
+invocation = ["skills", "uninstall", "--overwrite-modified"]
+expected_exit_status = 0
+expected_stdout_contains = "skipped pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Removes the pwmcp-fetch skill this tool installed under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-uninstall---overwrite-modified]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/argument-shape/argument:route:entrypoint:pwmcp/inspect/url"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1f43d8cfc78ca9d53f6680bcc9c67e686cc3047851c82af2ad876fdccc27c310"
+rationale = "The URL argument supplies one absolute HTTP or HTTPS page for the remote browser."
+invocation = ["inspect", "https://example.test", "--timeout-ms", "15000"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = ""
+effects = ["Opens one remote browser lease, waits for the page to render, and prints its body text; the lease closes afterward."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---timeout-ms-15000]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:77e2e991af2ae5e1452cf8e008082df929ef04d69f305e113b1c06fa98ce87c8"
+rationale = "The required URL is the only operand; certificate verification stays enabled, with text output, load wait, and the standard timeout by default."
+invocation = ["inspect", "https://example.test"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = ""
+effects = ["Opens one remote browser lease, waits for the page to render, and prints its body text; the lease closes afterward."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--ignore-https-errors/--ignore-https-errors"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c4bced7b30e2eb5a00419d4efac3f7c37898b716f8c869f035eece8e69c0efe4"
+rationale = "A caller can opt into invalid-certificate acceptance for a trusted endpoint; the setting is limited to this inspection's temporary browser context."
+invocation = ["inspect", "https://example.test", "--ignore-https-errors", "--wait-until", "commit"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = ""
+effects = ["Creates one isolated Playwright context with ignore_https_errors enabled for this invocation, reads rendered text, then closes the context and lease."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---ignore-https-errors---wait-until-commit]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--user-agent/--user-agent"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:945b88b41f9101daf4e6d0b440592a1e6a2c54a2befdadf208bd953cd003c36b"
+rationale = "A caller can present a named browser identity for ONE inspection (PWMCP-09); it is opt-in, validated before connecting, and the result reports the active user agent and its source whenever an override is active, so a spoofed identity is never mistaken for the default."
+invocation = ["inspect", "https://example.test", "--user-agent", "edge-windows"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = "(source: preset:edge-windows)"
+effects = ["Creates one isolated Playwright context with the preset user agent and matching client-hint metadata, reads rendered text, then closes the context (which restores the default) and the lease; because an override is ACTIVE, stderr states the user agent and its source (not silenced by --quiet) and --json prints an object with content, user_agent and user_agent_source instead of the bare string. Without an override the output is unchanged."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---user-agent-edge-windows]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--format/1e1d0f251d"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:38c1a425d6bd4c6b34f7decab05a6a66c085151cbacde9c50e7f8b1a8e786211"
+rationale = "Text mode is the default and emits the rendered body."
+invocation = ["inspect", "https://example.test", "--format", "text"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = ""
+effects = ["Reads and prints the rendered body text through one remote browser lease."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---format-text]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--format/20ccb3d1c6"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a5978cd6b93e04da4c8a81ecf411bc6fc3ca5d7b04fa7ef6eb4864c23ac7f062"
+rationale = "Snapshot mode exposes the rendered accessibility tree."
+invocation = ["inspect", "https://example.test", "--format", "snapshot"]
+expected_exit_status = 0
+expected_stdout_contains = "- heading \"Sample page\" [level=1]"
+expected_stderr_contains = ""
+effects = ["Reads and prints the body ARIA snapshot through one remote browser lease."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---format-snapshot]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--format/cd172ffb54"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:67fec2ca65df8ba13aefb8f8f16dbbd0574012e29e9c29de4616da1cf8cb0816"
+rationale = "A screenshot without a file path would discard the image, so the CLI requires --output."
+invocation = ["inspect", "https://example.test", "--format", "screenshot"]
+expected_exit_status = 1
+expected_stdout_contains = ""
+expected_stderr_contains = "--output is required when --format=screenshot"
+effects = ["Refuses before opening a browser because screenshot bytes need a destination file."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---format-screenshot]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--wait-until/528dd71551"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:038dd7e39b04f65cbc29d7409a23f468c6929ca7964dd9beb4e47d3e3046c1f9"
+rationale = "networkidle is a supported Playwright navigation state."
+invocation = ["inspect", "https://example.test", "--wait-until", "networkidle"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = ""
+effects = ["Waits for network idle before reading and printing body text."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---wait-until-networkidle]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--wait-until/575b2613ea"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d1783721db53d6f012ae588517690c3529a26070aad8004cf6a8ca97c4a08473"
+rationale = "domcontentloaded is a supported Playwright navigation state."
+invocation = ["inspect", "https://example.test", "--wait-until", "domcontentloaded"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = ""
+effects = ["Waits for DOM content to load before reading and printing body text."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---wait-until-domcontentloaded]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--wait-until/5ea9c58673"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d32196017773419319fb63c02441cd7b927ce6d52c93b1cc1a08d41fc29965fa"
+rationale = "commit is a supported Playwright navigation state."
+invocation = ["inspect", "https://example.test", "--wait-until", "commit"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = ""
+effects = ["Waits for navigation commit before reading and printing body text."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---wait-until-commit]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--wait-until/a4fcee2b70"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b5099a517625e86bf0fde9f3d7a9b8227dc4a8e53c7772cb0bf8999343896622"
+rationale = "load is a supported Playwright navigation state and the default."
+invocation = ["inspect", "https://example.test", "--wait-until", "load"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = ""
+effects = ["Waits for the load event before reading and printing body text."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---wait-until-load]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--contract/--contract"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:970b22f0840b7fbd57956271e925531917342443e5e7fd243878252aab79eee4"
+rationale = "The invocation-wide --contract option is accepted after the inspect verb."
+invocation = ["inspect", "https://example.test", "--contract", "contract.json"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = ""
+effects = ["Uses the selected contract source to connect to the managed browser and prints rendered body text."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---contract-contract.json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1f2caa03269f325617b69b0ec346592bc877331f2ce9ce896f62b2ba7a9bc984"
+rationale = "--debug-raw remains available on read-only verbs."
+invocation = ["inspect", "https://example.test", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints rendered body text; the shared diagnostic control only lifts redaction and warns."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--format/--format"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1205ae0ec91535292ce8c6f42e70a2a67b71c5a5e51a66ddb2d214a1d44d5b30"
+rationale = "The equals form of --format is accepted."
+invocation = ["inspect", "https://example.test", "--format=text"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = ""
+effects = ["Prints rendered body text through one remote browser lease."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---format=text]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--full-page/--full-page"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2ba90037d46ff98ce4d9a407a22cdf25a1f2a3dfbbedb24795630f2b3504e958"
+rationale = "--full-page selects the full scrollable page when screenshot mode is active."
+invocation = ["inspect", "https://example.test", "--format", "screenshot", "--output", "full.png", "--full-page"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = "wrote screenshot output to full.png"
+effects = ["Writes a full-page screenshot to the selected PNG file and closes the remote browser lease."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---format-screenshot---output-full.png---full-page]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:4e7b74620047c395a39709fbf1295774e8e2190cf1651538671df1d86fa95ef8"
+rationale = "--json is an invocation-wide output control accepted by inspect."
+invocation = ["inspect", "https://example.test", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = ""
+effects = ["Prints the body text in the shared machine-readable output mode."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--output/--output"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2b86fb2da427db8248262d9a43ec9722c426b1993232d5f9aff7c745ce785a5d"
+rationale = "--output redirects text or snapshot results from stdout to the selected file."
+invocation = ["inspect", "https://example.test", "--output", "result.txt"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = "wrote text output to result.txt"
+effects = ["Writes rendered body text to result.txt and reports the destination."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---output-result.txt]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--timeout-ms/--timeout-ms"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9a4f9e0d5d493caccf9ed33e43fb3ce44aff2bd7ca40aa2c93360a14a481e728"
+rationale = "--timeout-ms accepts a positive integer timeout."
+invocation = ["inspect", "https://example.test", "--timeout-ms", "1234"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = ""
+effects = ["Uses a 1234 millisecond timeout for navigation and page reads."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---timeout-ms-1234]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--wait-for/--wait-for"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2bc47db26ec82ed5c1b5ff94befa43178746513aa943a3e1665c4b49e95010be"
+rationale = "--wait-for waits for the selected CSS locator to be visible."
+invocation = ["inspect", "https://example.test", "--wait-for", "#content"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = ""
+effects = ["Waits for #content to become visible before reading rendered body text."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---wait-for-#content]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--wait-until/--wait-until"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9200057479e4fe21594325ee014371c99a67908d401e759b99331122657a44e6"
+rationale = "The equals form of --wait-until is accepted."
+invocation = ["inspect", "https://example.test", "--wait-until=domcontentloaded"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = ""
+effects = ["Waits for DOM content to load before reading body text."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---wait-until=domcontentloaded]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/argument-shape/argument:route:entrypoint:pwmcp/ocr/url"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0b098a9cf91ec8651a55ae1d78200b51aac637cc60d2542f968a138cdbf1c3f9"
+rationale = "A page URL plus --selector captures that element in a fresh context and recognises it; the URL is optional because --image is the primary input."
+invocation = ["ocr", "https://example.test", "--selector", "canvas"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Opens a fresh isolated browser context, captures the matching element as a PNG, closes the context and the lease, then makes one HTTP POST of the PNG to the OCR sidecar and prints the recognised text; sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr-https://example.test---selector-canvas]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:17b7626867c08b42fa8345dc6cbc43d809f2179e5d92df1d7c8c8cc61e19c1af"
+rationale = "The only required input is an image; the sidecar URL comes from the environment or the contract."
+invocation = ["ocr", "--image", "screen.png"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-choice/option:route:entrypoint:pwmcp/ocr/--format/1e1d0f251d"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:cc1d3fdc9330ab633a09c6ae48e861cea65c6bafbcb9ed417bd1ddf4d166a651"
+rationale = "--format text is a supported output shape."
+invocation = ["ocr", "--image", "screen.png", "--format", "text"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---format-text]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-choice/option:route:entrypoint:pwmcp/ocr/--format/4e23b39204"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9d6ac119416d8804f035880a5556392d0aa154720cc937368ae3a78c6bb5d08d"
+rationale = "--format json is a supported output shape."
+invocation = ["ocr", "--image", "screen.png", "--format", "json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"engine\": \"tesseract\""
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---format-json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-choice/option:route:entrypoint:pwmcp/ocr/--format/84206304c2"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:22c553a9b1edf1ea4ea4cbd68e9c8a217a1fe8e58ae0afe305ec1c9ee1f9309a"
+rationale = "--format tsv is a supported output shape."
+invocation = ["ocr", "--image", "screen.png", "--format", "tsv"]
+expected_exit_status = 0
+expected_stdout_contains = "line\tx\ty\tw\th\tconf\tlow_conf\ttext"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---format-tsv]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-choice/option:route:entrypoint:pwmcp/ocr/--psm/4e07408562"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c63fff73457a88f23b21dbade7d2bda7b3edb3b9901a2f311146ae16050ccb5b"
+rationale = "Page segmentation mode 3 is forwarded to the sidecar unchanged."
+invocation = ["ocr", "--image", "screen.png", "--psm", "3"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---psm-3]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-choice/option:route:entrypoint:pwmcp/ocr/--psm/4b227777d4"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:4210502f5b8de5baa620844038465b21fe4f0013ab86aec3a3cb5db346d03c62"
+rationale = "Page segmentation mode 4 is forwarded to the sidecar unchanged."
+invocation = ["ocr", "--image", "screen.png", "--psm", "4"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---psm-4]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-choice/option:route:entrypoint:pwmcp/ocr/--psm/e7f6c01177"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e1019c8d6a4d06d0e85114960333b480b896b7144eb3645fd3dbf11f363cdc4a"
+rationale = "Page segmentation mode 6 is forwarded to the sidecar unchanged."
+invocation = ["ocr", "--image", "screen.png", "--psm", "6"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---psm-6]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-choice/option:route:entrypoint:pwmcp/ocr/--psm/7902699be4"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:8c41b75febfa84632a54ebfd0ea6aebe3ac5dda0c60cdd5a4babcdc382f01f8a"
+rationale = "Page segmentation mode 7 is forwarded to the sidecar unchanged."
+invocation = ["ocr", "--image", "screen.png", "--psm", "7"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---psm-7]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-choice/option:route:entrypoint:pwmcp/ocr/--psm/4fc82b26ae"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:af79102b782948581290fdc8ff8d9904f93d9555b14a6bc954ad99a694b424b5"
+rationale = "Page segmentation mode 11 is forwarded to the sidecar unchanged."
+invocation = ["ocr", "--image", "screen.png", "--psm", "11"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---psm-11]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-choice/option:route:entrypoint:pwmcp/ocr/--psm/3fdba35f04"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:beb5c0b416200f45dbbbd0cc533049f91804eb6f232fbf4b6c80c20ef3bd1d3e"
+rationale = "Page segmentation mode 13 is forwarded to the sidecar unchanged."
+invocation = ["ocr", "--image", "screen.png", "--psm", "13"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---psm-13]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--contract/--contract"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:dc24395f5f0e758088c7199bf3d97644a734b88d075f19d3500222b034640cc5"
+rationale = "--contract is invocation-wide, so it is also accepted before the verb."
+invocation = ["--contract", "contract.json", "ocr", "--image", "screen.png"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[--contract-contract.json-ocr---image-screen.png]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:75f4ed53e702fa31b6a8a8167a9f1a27b8fdc19b44a9f162714b2d1d38d31e1a"
+rationale = "The shared control is accepted; it only lifts redaction and warns."
+invocation = ["ocr", "--image", "screen.png", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--engine/--engine"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c9b45eab27215c4566b339ae310a97f63ef36142d49da1acbca7cfa7ddb702ff"
+rationale = "A named engine is forwarded to the sidecar."
+invocation = ["ocr", "--image", "screen.png", "--engine", "tesseract"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---engine-tesseract]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--format/--format"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c2a6bbf5f897c06c67a08760ddf147f165137bb6e932ea66285775456d91a0e0"
+rationale = "The equals form of --format is accepted."
+invocation = ["ocr", "--image", "screen.png", "--format=json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"engine\": \"tesseract\""
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---format=json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--ignore-https-errors/--ignore-https-errors"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ae33d9ad4f1226213ffbec2921012f7affb06305fad35300b928e1517d2dea41"
+rationale = "A self-signed console page can be opened; the bypass applies only to this invocation's context."
+invocation = ["ocr", "https://example.test", "--selector", "canvas", "--ignore-https-errors"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Opens a fresh isolated browser context, captures the matching element as a PNG, closes the context and the lease, then makes one HTTP POST of the PNG to the OCR sidecar and prints the recognised text; sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr-https://example.test---selector-canvas---ignore-https-errors]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--image/--image"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a6466a847490ffd7c5d3422406b36c9b7e0bd467b42a615128b86ce4585f2de6"
+rationale = "The equals form of --image is accepted."
+invocation = ["ocr", "--image=screen.png"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image=screen.png]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e02b7b738f6397be5578bfea6b8ac7a50d0eb143ba650e5a16c3f5f37ca987fe"
+rationale = "--json prints the full result object on one line."
+invocation = ["ocr", "--image", "screen.png", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"text\": \"Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--lang/--lang"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a25b3f6d8fe256f176cc995f393eeb19bc62fe9e374a0491e597c820f9abc59c"
+rationale = "One or more language codes are forwarded to the sidecar."
+invocation = ["ocr", "--image", "screen.png", "--lang", "eng+deu"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---lang-eng+deu]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--min-conf/--min-conf"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:22f5e02ccca328b70d675fcbcad011d76027ac94563b7effd8c46ff5acffe323"
+rationale = "Words below the threshold are FLAGGED low_conf (and counted), never removed: the text stays complete. Without --min-conf nothing is assessed and the flags are null. Confidence is not calibrated, so a flag is a hint, not a safety check."
+invocation = ["ocr", "--image", "screen.png", "--min-conf", "60"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---min-conf-60]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--output/--output"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:30b92532d20a1ebc5601a827a4d87d0366d5f13326092b4ca43a1779fb61d186"
+rationale = "The result goes to a named file instead of stdout."
+invocation = ["ocr", "--image", "screen.png", "--output", "ocr.txt"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = "wrote text output to"
+effects = ["As --image, but writes the recognised text to the named local file instead of stdout."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---output-ocr.txt]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--psm/--psm"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:cbbfbd66cce4fd48a7fa41760a3a283576e22cd3ec176acb41aad3a48d980b13"
+rationale = "The equals form of --psm is accepted."
+invocation = ["ocr", "--image", "screen.png", "--psm=7"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---psm=7]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--region/--region"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:28704f316ef347952020818bf6df93d72fd56956b271b73c6b472784cb72dae4"
+rationale = "Only a sub-rectangle of the element is captured, relative to the element."
+invocation = ["ocr", "https://example.test", "--selector", "canvas", "--region", "0,0,100,50"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Opens a fresh isolated browser context, captures the matching element as a PNG, closes the context and the lease, then makes one HTTP POST of the PNG to the OCR sidecar and prints the recognised text; sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr-https://example.test---selector-canvas---region-0,0,100,50]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--scale/--scale"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b0cc53e1da14623b0e7e2b43160e6f8dccdff717c78981e43a518a450906b9ac"
+rationale = "Integer upscaling happens in the sidecar; boxes stay in original pixels."
+invocation = ["ocr", "--image", "screen.png", "--scale", "2"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---scale-2]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--selector/--selector"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5146407ab056c45e018b8647d3313d105310ef5afee85da7a78a21c3eb7332f6"
+rationale = "The equals form of --selector is accepted."
+invocation = ["ocr", "https://example.test", "--selector=canvas"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Opens a fresh isolated browser context, captures the matching element as a PNG, closes the context and the lease, then makes one HTTP POST of the PNG to the OCR sidecar and prints the recognised text; sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr-https://example.test---selector=canvas]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--sidecar-url/--sidecar-url"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:42686cf2bae8f66162d88c412995fb92ab8208a10df9e2873e9376859a2b2329"
+rationale = "An explicit sidecar URL wins over the environment and the contract."
+invocation = ["ocr", "--image", "screen.png", "--sidecar-url", "http://pwmcp-ocr.test:8941"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---sidecar-url-http://pwmcp-ocr.test:8941]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--timeout-ms/--timeout-ms"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:458833e379db9e55e5059138b957ca82b42878960ac171d97ff1568185586fef"
+rationale = "One timeout bounds the capture and the sidecar call."
+invocation = ["ocr", "--image", "screen.png", "--timeout-ms", "5000"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---timeout-ms-5000]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--wait-ms/--wait-ms"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f0054a58b3c84172de78229d008cfebcfab9cd48d5b94783f908b2eba662a7c0"
+rationale = "A settle delay before the element is captured."
+invocation = ["ocr", "https://example.test", "--selector", "canvas", "--wait-ms", "250"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Opens a fresh isolated browser context, captures the matching element as a PNG, closes the context and the lease, then makes one HTTP POST of the PNG to the OCR sidecar and prints the recognised text; sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr-https://example.test---selector-canvas---wait-ms-250]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/ocr/option-spelling/option:route:entrypoint:pwmcp/ocr/--whitelist/--whitelist"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0cb7fa07b282e3b6a90297799fc914fce2dc83e097a082a9fe64dc3df4dc6e0a"
+rationale = "A character whitelist is forwarded to the sidecar."
+invocation = ["ocr", "--image", "screen.png", "--whitelist", "0123456789"]
+expected_exit_status = 0
+expected_stdout_contains = "Debian GNU/Linux installer"
+expected_stderr_contains = ""
+effects = ["Reads the local image, makes one HTTP POST of its bytes to the OCR sidecar, prints the recognised text (or the selected format); changes nothing and sends no keys."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[ocr---image-screen.png---whitelist-0123456789]"]

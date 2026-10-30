@@ -338,8 +338,10 @@ def test_markdown_help_with_a_configure_callback_lists_the_label():
 def test_no_fallback_no_usage_line_and_no_label():
     app = build([], fallback=False)
     text = app.catalog.render()
+    markdown = app.catalog.render_markdown()
     assert "[options] lane" not in text and "default verb" not in text
-    assert "[options] lane" not in app.catalog.render_markdown()
+    assert "       []" not in text
+    assert "[options] lane" not in markdown and "       []" not in markdown
 
 
 # ------------------------------------------------------- rule 1: registration
@@ -428,6 +430,21 @@ def test_the_fallback_route_changes_the_review_signature():
     assert run_cases and list_cases
     assert all(plain_sigs[case] != flagged_sigs[case] for case in run_cases)
     assert all(plain_sigs[case] == flagged_sigs[case] for case in list_cases)
+
+
+def test_fallback_review_signature_is_stable_for_a_reviewed_registry():
+    surface = _surface(build([]))
+    minimum = next(
+        candidate
+        for candidate in surface["candidates"]
+        if candidate["id"] == "case:route:entrypoint:audit-tool/run/minimum"
+    )
+
+    # Consumers persist this opaque signature in their review catalog. Keep
+    # the same declared CLI from causing a spurious "changed" review finding.
+    assert minimum["signature"] == (
+        "sha256:7e102db5ef2f82fe4f7da7f4c51d19f0c6d249e14e5a78112566fac72b2eb128"
+    )
 
 
 def _surface_files(tmp_path, app):

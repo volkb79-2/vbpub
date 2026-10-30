@@ -326,7 +326,7 @@ def test_hidden_ancestor_fallback_is_explicit_and_narrow(monkeypatch):
     monkeypatch.setattr(resource_limits, "read_current_cgroup_counters", hidden)
     monkeypatch.setattr(resource_limits, "read_resource_observer_counters", lambda path: remote)
     assert resource_limits.read_candidate_resource_counters(
-        observer_socket_path="/run/cgprofile/resource-observer.sock"
+        observer_socket_path="/run/cgprofile-observer/resource-observer.sock"
     ) is remote
     with pytest.raises(ResourceLimitAncestorsHiddenError):
         resource_limits.read_candidate_resource_counters()
@@ -337,7 +337,7 @@ def test_hidden_ancestor_fallback_is_explicit_and_narrow(monkeypatch):
     monkeypatch.setattr(resource_limits, "read_current_cgroup_counters", ordinary_failure)
     with pytest.raises(ResourceLimitObservationError, match="bad local mount"):
         resource_limits.read_candidate_resource_counters(
-            observer_socket_path="/run/cgprofile/resource-observer.sock"
+            observer_socket_path="/run/cgprofile-observer/resource-observer.sock"
         )
 
 
@@ -529,13 +529,54 @@ def test_socket_client_requires_absolute_nonempty_path(path):
         resource_limits.read_resource_observer_counters(path)
 
 
-def test_socket_client_refuses_regular_file_and_missing_path(tmp_path):
+def test_socket_client_refuses_regular_file_and_missing_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        resource_limits, "_RESOURCE_OBSERVER_RESTART_RETRY_SECONDS", 0.0
+    )
     regular = tmp_path / "not-socket"
     regular.write_text("x", encoding="ascii")
     with pytest.raises(ResourceLimitObservationError, match="not a Unix socket"):
         resource_limits.read_resource_observer_counters(str(regular))
     with pytest.raises(ResourceLimitObservationError, match="cannot inspect"):
         resource_limits.read_resource_observer_counters(str(tmp_path / "missing.sock"))
+
+
+def test_socket_client_retries_when_daemon_replaces_observer_socket(tmp_path, monkeypatch):
+    socket_path = tmp_path / "observer.sock"
+    stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    stale.bind(str(socket_path))
+    stale.close()
+    monkeypatch.setattr(
+        resource_limits, "_RESOURCE_OBSERVER_RESTART_RETRY_SECONDS", 1.0
+    )
+    monkeypatch.setattr(
+        resource_limits, "_RESOURCE_OBSERVER_RETRY_INTERVAL_SECONDS", 0.01
+    )
+
+    def replace_socket_and_serve():
+        time.sleep(0.05)
+        socket_path.unlink(missing_ok=True)
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(str(socket_path))
+        listener.listen(1)
+        try:
+            conn, _ = listener.accept()
+            with conn:
+                payload = bytearray()
+                while b"\n" not in payload:
+                    payload.extend(conn.recv(4096))
+                request = json.loads(bytes(payload).split(b"\n", 1)[0])
+                response = _document(request["args"]["thread_id"])
+                conn.sendall(json.dumps(response).encode("utf-8") + b"\n")
+        finally:
+            listener.close()
+
+    server = threading.Thread(target=replace_socket_and_serve, daemon=True)
+    server.start()
+    counters = resource_limits.read_resource_observer_counters(str(socket_path))
+    server.join(timeout=2)
+    assert not server.is_alive()
+    assert counters.path_event_counters[0][0] == LEAF
 
 
 @pytest.mark.parametrize("failure", ["oversize", "connect"])

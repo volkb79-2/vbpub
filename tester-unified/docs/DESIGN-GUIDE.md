@@ -36,21 +36,106 @@ copied Assay tree, because the judged worktree is the source of truth.
 ## The installed Run-Gate CLI
 
 Some CMRU steps invoke Run-Gate after CMRU has started tester-unified. The image
-builds the internal Run-Gate wheel from the copied source and installs its
-console script into `/opt/tester-venv`; `PATH` places that venv first. This
-keeps the command readable as `run-gate <lane>` and avoids relying on the
-base image's private `/home/vscode/.venv`, which the uid 1003 tester cannot
-traverse. The wheel supplies the command entry point; the selected checkout
-still supplies the lane configuration and judged project files. CIU's release
-gate uses this installed CLI even though its checkout also contains a
-repository-level Run-Gate symlink; it first compares the installed module files
-with the selected source and refuses a stale tester image.
-`tester-unified:local` is one mutable tag shared by worktrees. Other consumers
-that invoke Run-Gate inside the image must rebuild it from the selected checkout
-after changing Run-Gate source, or add an equivalent source-match preflight.
-Concurrent exact-tree runs that need different Run-Gate revisions require
-distinct image tags; consumers that use the shared local tag must serialize
-those rebuilds and runs.
+installs one exact Run-Gate wheel (a developer build from the selected checkout via
+`--wheel-dir`, or the published release via `--run-gate-published` for the image that
+gates releases, see below), exposes its console script from `/opt/tester-venv`, and
+puts that environment first on `PATH`. The supported image builder passes one wheel through a named BuildKit
+context, verifies its digest during the build, and checks the installed
+metadata version against the wheel's version. This keeps command lookup
+independent of the base image's private `/home/vscode/.venv`, which uid 1003
+cannot traverse.
+
+The image build is a host workload too. `build-image.sh` requires the declared
+gates slice (or an explicit override), verifies that slice through CMRU's
+host-systemd probe, and passes it to Buildx. When an explicit `--base-image` is
+selected, CMRU's unprivileged preflight runs from that same base. This breaks
+the first-image bootstrap loop without weakening the separate digest-pinned,
+pull-disabled host-systemd probe. The loaded image carries the exact Run-Gate
+wheel version and digest as labels; the builder checks those labels before
+reporting success. The release controller injects tester resource settings
+from the estate configuration. Direct shell builds must provide those same
+declared settings explicitly, and the pinned host probe must already be
+present locally.
+
+The default base is `tester-base:local` (MDTC-02): the minimal, digest-pinned gate base, not the
+floating 8 GB MDT cockpit image, so a cockpit release can no longer change the gate environment
+without a commit. After tester-base's first release the controller switches the default to its
+published digest (the one pin site is the Dockerfile's `ARG TESTER_UNIFIED_BASE_IMAGE=`, an ARG name
+that build-image.sh and Run-Gate's release preparation parse). The explicit `--base-image` override
+supports first-release bootstrapping: it lets the tester image start from the upstream Python
+devcontainer while vbpub has no released images. The Dockerfile installs its
+small host-tool set itself. A missing base never triggers an implicit
+fallback; the base choice is visible in the build command. The image also
+records that choice as the `org.vbpub.tester-unified.base-image` label, and the
+builder and Run-Gate's release preparation compare it with the requested base.
+Buildx only warns about a build argument that no stage consumes, so a renamed
+`ARG` would otherwise build the default base while the command named another.
+The reference label records a name, which can be a mutable tag (`tester-base:local`), so a second
+label, `org.vbpub.tester-unified.base-image-id`, records the identity (image id or digest) the
+reference resolved to when `build-image.sh` built the image; the builder refuses a base it cannot
+identify and re-reads the label after the build. Two images built on different content of the same
+tag are therefore distinguishable.
+
+The Docker client is installed by capability, not unconditionally. Debian's
+`docker-cli` owns the same file as Docker's `docker-ce-cli` that tester-base and an MDT base ship,
+so installing it over them makes dpkg refuse the overwrite or, if apt resolved the clash, quietly
+swaps the gate's Docker client. The host-tools step therefore installs `docker-cli` only when
+`docker` is absent from PATH. Compose is a separate step (below). Every base variant is covered
+by an executable oracle (`run-gate-project/tests/test_tester_unified_base_variants.py`) that runs
+the Dockerfile's real RUN steps against shim tools and a dpkg-style ownership clash; building an
+image on each base remains a release-lane activity.
+
+## Userland added on top of the base
+Beyond the Docker client step, this image adds (all before the source-built CMRU wheel, so the cmru
+Dockerfile oracle that forbids a later layer rewriting that wheel still holds): `zsh` (the mdt-cockpit
+login-hook tests exercise it), Node.js with npm and npx copied from a digest-pinned official node image
+stage (it is only a `FROM <image>@sha256:` stage, which the oracle asserts), Go from the toolchain image
+selected by `wings-patchstack/stack.conf`, and the **real `systemctl` client** from Debian's `systemd`
+package.
+
+Go is copied into this image because Wings is a Go project and its gate must
+run inside tester-unified under the same Run-Gate cgroup placement, identity,
+and resource limits as the Python suites. The builder reads
+`PTERODACTYL_GO_IMAGE` from the Wings stack configuration, passes it as a
+required build argument, records it as an image label, and verifies that label
+after loading. The Wings gate does not start a nested Go container or mount the
+host Docker socket for integration tests.
+
+Why `systemctl`: the cgroup-profiler placement probe (`scripts/cgroup-profiler/tools/gate.sh`,
+`lib/access.py` `_PLACEMENT_PROBE`, "placement verifier image must provide systemctl") starts a probe
+container from this image and runs `systemctl show <slice> --property=LoadState,FragmentPath,ControlGroup`
+inside it against the HOST system bus (`/run/dbus/system_bus_socket` and `/run/systemd/system` bind-mounted
+read-only), the estate proof that a slice name is a real unit and not a fail-open transient one. The old
+cockpit base carried the binary; tester-base does not, and without it the probe exits 127. What it can do:
+with the bus and `/run/systemd/system` mounted it answers for the host. What it cannot: in a plain
+gate container there is no systemd, so it exits 1 (`Failed to connect to system scope bus`, or `System has
+not been booted with systemd`); tests must not rely on it (topos treats an unavailable systemctl as
+`unavailable`, ciu tests inject the lookup, assay's cgroup-parent tests fake it). No stub is installed
+(MDTC-02 D-001), and the package also puts `busctl`, `systemd-run` and `systemd-tmpfiles` on PATH: the
+one test that skips when `systemd-tmpfiles` is absent is `os_integration`-marked and deselected by every
+lane that runs its suite. The revert path is a dedicated probe image for the cgroup probes.
+
+The Docker compose layer (INT-01 D-006, decided): real `docker compose` is needed in this image (ciu has
+16 test files that drive it, plus topos, nyxloom, cmru and run-gate-project). tester-base keeps the plugin
+out (T2), so on it this image installs Docker's OWN `docker-compose-plugin` at an exact version, not
+Debian's `docker-compose` (an unpinned, differently built 2.26.1). The package is downloaded from Docker's
+apt pool by exact version and checked against a pinned sha256 per architecture before `dpkg -i`, so it needs
+neither the base's apt source nor a "latest" lookup, and a bump is a reviewed edit of the three
+`DOCKER_COMPOSE_PLUGIN_*` ARGs in the Dockerfile. Pin evidence under the 14-day freshness rule: docker/compose
+v5.6.0 was published 2026-10-02 (17 days before the 2026-10-19 pin) and Docker's apt index serves it as
+`5.6.0-1~debian.13~trixie`. The step only runs when `docker compose version` does not already answer (an MDT
+base ships the plugin) and the image build fails unless it does afterwards. The oracle
+`cmru/tests/test_tester_unified_image.py::test_compose_is_dockers_pinned_plugin_not_debians_package`
+refuses a floating or missing version, a missing sha256, any bare `docker-compose` package name and an apt
+install of the plugin; the shim test above executes the step, including the checksum-mismatch stop.
+
+The wheel supplies the command entrypoint; the bind-mounted checkout supplies
+lane configuration and judged project files. CIU's release gate also compares
+the installed Run-Gate module bytes with the selected checkout and refuses a
+stale tester image. `tester-unified:local` is one mutable tag shared by
+worktrees, so a rebuild and the exact-tree gate that consumes it must be
+serialized. Distinct image tags are needed for concurrent exact-tree runs that
+need different Run-Gate versions.
 
 The launcher refuses missing cgroup configuration, workspace-root fallbacks,
 high launch-time memory pressure, absent Docker access, missing images, more
@@ -73,3 +158,40 @@ metadata; a mismatch aborts only the owned container. The only explicit network
 value is `none`. Omitting the option preserves existing Docker selection;
 the launcher does not invent a network name. The Docker socket remains mounted
 for product boundary tests, so this is network isolation, not a security sandbox.
+
+## The image that gates a release: published inputs
+
+The release gate binds three identities: the host's installed Run-Gate judge, the published GitHub release it
+came from, and the selected tester image's Run-Gate labels (`cmru/tools/run_release_gate.py`,
+`_check_run_gate_release_artifacts` and `_check_tester_image_identity`). A tester image therefore has to carry
+the published wheel, byte for byte. `build-image.sh --run-gate-published` stages exactly that through
+`fetch-run-gate-wheel.py`, which requires the `latest.json` pointer, the release's `.sha256` sidecar and the
+downloaded bytes to agree before anything is written (the redirect policy is the one `fetch-cli-extended.py`
+enforces). No age window applies to this first-party wheel: the gate demands the published release, not an aged
+one. CMRU stays source-built (`+tester.unified`) because it is installed only for its dependency closure while the
+suites run against the bound worktree; Assay is not installed at all (run-gate installs the worktree's `assay/`
+at lane runtime), so no published Assay or CMRU wheel is needed in the image.
+
+Third-party packages follow the estate freshness rule instead: nothing is pinned, and pip's
+`--uploaded-prior-to` (pip 26.0 or newer, which the base's bundled pip satisfies) restricts every index-capable
+install to releases uploaded at least `PIP_MIN_RELEASE_AGE` (default `P14D`) ago. A build argument rather than a
+file of pins keeps the "newest, but vetted" policy in one place; the cost is that two builds of the same
+Dockerfile on different days differ, which is why the age is recorded as an image label and a rebuild uses
+`--no-cache`. The duration is pip's own vocabulary (`P<n>D`, whole days; `build-image.sh` only pre-checks the
+spelling), the cutoff is computed when pip runs, and pip fails closed: a link without `upload-time` metadata (an
+index that is not PyPI-compatible on that point, such as a bare mirror) is an installation error, not a silently
+ignored window. First-party packages have no age window at all (operator decision 2026-10-27: our own tools are
+always the latest published release; the 14-day rule is for third-party dependencies only), and the image honours
+that structurally rather than by exemption: a first-party name never reaches an index-bound pip (released wheels
+`--no-index --no-deps`, cmru source-built offline, the generator refusing the names), which
+`test_the_age_window_never_applies_to_a_first_party_package` in `cmru/tests/test_tester_unified_image.py` asserts. The
+Debian/Python base digest and the node image digest are the deliberate exceptions: they are
+digest-pinned and age-checked by `cmru versions` (`tester-base/versions/`). `wheel-builder` ages the two installs
+baked into it the same way; the build backends that `python -m build` installs at run time are a separate matter
+(tester-base backlog TB-08).
+
+Three checks bind an image to a Run-Gate and agree at one point only (the consumer runbook,
+[where the rebuild sits in the release order](CONSUMERS.md#where-the-rebuild-sits-in-the-release-order-and-the-bootstrap),
+spells out the order): cmru's gate wants the published bytes, ciu's preflight wants the checkout's bytes, and
+run-gate's own release builds its candidate image from the candidate wheel with the previous image as the
+preflight host. The last is the bootstrap; the first two coincide while the checkout is at the released commit.

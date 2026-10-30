@@ -1,0 +1,66 @@
+# mdt-cockpit interactive zsh defaults.
+#
+# Loaded system-wide from /etc/zsh/zshrc (the hook is appended by the
+# Dockerfile). zsh reads the user's ~/.zshrc AFTER this file, so anything there
+# overrides what follows. The finalizer only writes a comment-only ~/.zshrc stub
+# (when none exists) so zsh-newuser-install does not take over the terminal.
+
+# Same env/aliases/cgroup-banner profile that bash gets — zsh otherwise never
+# picks up shell.env / ai.env / aliases.sh.
+if [ -r /usr/local/share/mdt-cockpit/profile.sh ]; then
+    . /usr/local/share/mdt-cockpit/profile.sh
+fi
+
+# Oh My Zsh (VS Code image family): image-owned under /opt/mdt/oh-my-zsh, with the
+# devcontainers theme the Microsoft base image configured. Skipped when the user's
+# own ~/.zshrc already loads it, so a bring-your-own setup is never initialised
+# twice.
+#  - the cache goes to the home (the image tree is not where state belongs);
+#  - updates are disabled: the image owns the framework version;
+#  - ZSH_DISABLE_COMPFIX: the image tree is group-writable by design (group `mdt`,
+#    see docs/DESIGN-GUIDE.md), which compaudit would report as insecure and ask
+#    about interactively on every start.
+if [[ -n "${ZSH:-}" && -r "$ZSH/oh-my-zsh.sh" ]] && ! grep -qs 'oh-my-zsh\.sh' "$HOME/.zshrc" 2>/dev/null; then
+    export ZSH_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/oh-my-zsh"
+    ZSH_COMPDUMP="$ZSH_CACHE_DIR/.zcompdump-${SHORT_HOST:-$HOST}-$ZSH_VERSION"
+    ZSH_DISABLE_COMPFIX=true
+    ZSH_THEME="devcontainers"
+    plugins=(git)
+    zstyle ':omz:update' mode disabled
+    source "$ZSH/oh-my-zsh.sh"
+fi
+
+# Keep the familiar emacs-style editing mode and make Ctrl-R useful even when
+# fzf is unavailable or its integration is disabled.
+bindkey -e
+bindkey '^R' history-incremental-search-backward
+# Same word and history keys as customization/inputrc gives bash. Both arrow encodings
+# (normal and application cursor mode); Ctrl+arrows, Ctrl+Delete, Alt+Backspace.
+autoload -Uz up-line-or-beginning-search down-line-or-beginning-search
+zle -N up-line-or-beginning-search
+zle -N down-line-or-beginning-search
+bindkey '^[[A' up-line-or-beginning-search
+bindkey '^[OA' up-line-or-beginning-search
+bindkey '^[[B' down-line-or-beginning-search
+bindkey '^[OB' down-line-or-beginning-search
+bindkey '^[[1;5C' forward-word
+bindkey '^[[1;5D' backward-word
+bindkey '^[[3;5~' kill-word
+bindkey '^[^?' backward-kill-word
+
+# Debian packages provide these without requiring a framework such as Oh My Zsh.
+if [[ -r /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh ]]; then
+    source /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh
+fi
+
+# fzf is shipped as a standalone binary.  Its generated zsh integration adds
+# fuzzy Ctrl-R history search plus Ctrl-T and Alt-C, and supersedes the basic
+# Ctrl-R binding above when available.
+if (( $+commands[fzf] )); then
+    eval "$(fzf --zsh)"
+fi
+
+# Syntax highlighting must be loaded after widgets and other integrations.
+if [[ -r /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]]; then
+    source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+fi

@@ -1,7 +1,7 @@
 # =============================================================================
-# plesk-mailbox-create gate lanes — parsed ONLY by run-gate.py (one parser,
+# plesk-mailbox-create gate lanes — parsed ONLY by Run-Gate CLI (one parser,
 # D-110). Single-script project with no test suite: the lane is a syntax
-# smoke (py_compile) so `./run-gate.py --list` answers "how do I test this?"
+# smoke (py_compile) so `run-gate --list` answers "how do I test this?"
 # uniformly. Host lane.
 # See run-gate-project/SPEC.md.
 # =============================================================================
@@ -9,6 +9,8 @@ schema_version = 1
 
 [lanes.smoke]
 kind = "command"
-environment = "host"
+# tester-unified, not `host`: py_compile writes __pycache__ into the bind-mounted worktree, so the lane
+# must run as the worktree owner with a full identity (MDTC-02 D-002).
+environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree}/plesk-mailbox-create && python3 -m py_compile email_creator.py && echo 'smoke: OK'"]
 budget = "1m"

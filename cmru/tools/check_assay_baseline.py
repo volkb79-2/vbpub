@@ -133,7 +133,7 @@ def _host_remote_baseline(
     if not raw:
         print(
             "check-assay-baseline: host-prepared origin facts are missing; "
-            "run the registered `./run-gate.py gate` lane",
+            "run the registered `run-gate gate` lane",
             file=sys.stderr,
         )
         return None

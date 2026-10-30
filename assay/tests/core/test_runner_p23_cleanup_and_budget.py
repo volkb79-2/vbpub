@@ -25,7 +25,8 @@ identically, so the outer one stands in for both.
 
 from __future__ import annotations
 
-import subprocess
+from conftest import completed_process
+
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
@@ -91,7 +92,7 @@ def _r2_lane(
 
 
 def _pass_everything(argv, *, env, cwd, timeout):
-    return subprocess.CompletedProcess(list(argv), 0, "", "")
+    return completed_process(list(argv), 0, "", "")
 
 
 # --- the outer-cleanup handlers ---------------------------------------------
@@ -142,7 +143,7 @@ def test_a_cleanup_assay_error_replaces_only_the_highest_higher_rigor_claim(
     def process(argv, *, env, cwd, timeout):
         nonlocal calls
         calls += 1
-        return subprocess.CompletedProcess(list(argv), 0, "", "")
+        return completed_process(list(argv), 0, "", "")
 
     verdict = runner.run_lane(
         _r2_lane(git_repo, base_rev),
@@ -191,7 +192,7 @@ def test_a_cleanup_failure_after_a_FAILING_baseline_is_still_verify_clean(
     scratch.mkdir()
 
     def failing(argv, *, env, cwd, timeout):
-        return subprocess.CompletedProcess(list(argv), 1, "", "the lane's own tests failed")
+        return completed_process(list(argv), 1, "", "the lane's own tests failed")
 
     verdict = runner.run_lane(
         _r2_lane(git_repo, base_rev),
@@ -316,7 +317,7 @@ def test_every_identity_after_an_expiry_is_budget_stopped_not_only_the_next(
         units.append(unit)
         if unit == "mutant":
             expired = True
-        return subprocess.CompletedProcess(
+        return completed_process(
             list(argv), 0 if unit == "baseline" else 1, "", ""
         )
 
@@ -524,7 +525,7 @@ def test_mutation_integrity_deadline_leaves_expired_candidate_unclassified(
         units.append(unit)
         if unit == "mutant":
             expired = True
-        return subprocess.CompletedProcess(
+        return completed_process(
             list(argv), 0 if unit == "baseline" else 1, "", ""
         )
 

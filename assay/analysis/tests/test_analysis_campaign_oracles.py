@@ -26,6 +26,7 @@ from analysis.tests.test_analysis_campaign import (
     _validate,
     _write_progress,
 )
+from assay_analysis import campaign as campaign_api
 
 def _synthetic(tmp_path, monkeypatch, count):
     """A lane repository with ``count`` synthetic plan rows installed as the plan."""
@@ -57,6 +58,43 @@ def test_o1_a_pass_campaign_without_command_exit_is_incomplete(tmp_path, monkeyp
     assert document["complete_blockers"] == ["command_exit_not_observed"]
     assert document["verdict"]["observed_command_exit"] is None
     assert document["verdict"]["command_exit_matches"] is False
+
+
+def test_o1_report_output_budget_is_a_named_evidence_refusal(tmp_path, monkeypatch):
+    root, head, verdict, progress = _complete_fixture(tmp_path, monkeypatch, "r2_pass")
+    monkeypatch.setattr(campaign_api, "MAX_ANALYSIS_OUTPUT_BYTES", 1)
+
+    code, out, err = _invoke(
+        root, head, verdict, progress, command_exit=0,
+    )
+    document = json.loads(out)
+    _validate(document)
+    assert code == 2
+    assert document["status"] == "evidence_error"
+    assert document["errors"] == [{
+        "source": "input",
+        "message": "analysis report exceeds 1 output bytes",
+    }]
+    assert "analysis report exceeds 1 output bytes" in err
+
+
+def test_o1_refusal_streams_bound_a_large_duplicate_json_key(tmp_path, monkeypatch):
+    root, head, _rows = _synthetic(tmp_path, monkeypatch, 1)
+    progress = tmp_path / "progress.jsonl"
+    duplicate_key = "x" * (campaign_api.MAX_ANALYSIS_OUTPUT_BYTES + 1)
+    progress.write_text(
+        '{"' + duplicate_key + '":0,"' + duplicate_key + '":1}\n',
+        encoding="utf-8",
+    )
+
+    code, out, err = _invoke(root, head, None, progress)
+    document = json.loads(out)
+    _validate(document)
+    assert code == 2
+    assert document["status"] == "evidence_error"
+    assert document["errors"][0]["message"].startswith("duplicate JSON key: ")
+    assert len(out.encode("utf-8")) <= campaign_api.MAX_ERROR_OUTPUT_BYTES
+    assert len(err.encode("utf-8")) <= 4 * campaign_api.MAX_ERROR_MESSAGE_CHARS
 
 
 # ---- O3 -------------------------------------------------------------------
@@ -195,6 +233,57 @@ def test_o10_the_adverse_page_reports_its_total_and_next_offset(tmp_path, monkey
     assert len(second["candidate_details"]["candidates"]) == 1
 
 
+def test_o10b_a_truncated_adverse_list_can_be_continued_to_its_last_record(tmp_path, monkeypatch):
+    """B108 box 3: truncation reports the full total AND a working way to the rest.
+
+    ``adverse.<bucket>.next_offset`` is the ``--offset`` that ``--outcome <bucket>``
+    pages on in ``candidate_details`` (same ordering), so following it must visit
+    every matching record exactly once with a constant ``matching_total``.
+    """
+    root, head, rows = _synthetic(tmp_path, monkeypatch, 7)
+    progress = tmp_path / "progress.jsonl"
+    support.write_records(progress, support.run_records(
+        head, rows, buckets={row["id"]: "survived" for row in rows}
+    ))
+    _code, _err, first = _analyze(root, head, progress, extra=("--limit", "3"))
+    page = first["adverse"]["survived"]
+    seen = [item["candidate_id"] for item in page["candidates"]]
+    assert (len(seen), page["matching_total"], page["next_offset"]) == (3, 7, 3)
+    offset = page["next_offset"]
+    while offset is not None:
+        _code, _err, document = _analyze(root, head, progress, extra=(
+            "--limit", "3", "--outcome", "survived", "--offset", str(offset),
+        ))
+        details = document["candidate_details"]
+        assert details["matching_total"] == 7
+        assert details["offset"] == offset
+        seen.extend(item["candidate_id"] for item in details["candidates"])
+        offset = details["next_offset"]
+    assert len(seen) == len(set(seen)) == 7
+    assert set(seen) == {row["id"] for row in rows}
+    # the pages are slices of ONE stable order, not three unrelated samples
+    _code, _err, everything = _analyze(root, head, progress, extra=(
+        "--limit", "500", "--outcome", "survived",
+    ))
+    assert seen == [item["candidate_id"] for item in everything["candidate_details"]["candidates"]]
+
+
+def test_o10c_an_untruncated_list_offers_no_continuation_and_a_zero_total_is_not_missing(
+    tmp_path, monkeypatch
+):
+    root, head, rows = _synthetic(tmp_path, monkeypatch, 2)
+    progress = tmp_path / "progress.jsonl"
+    support.write_records(progress, support.run_records(
+        head, rows, buckets={row["id"]: "killed" for row in rows}
+    ))
+    _code, _err, document = _analyze(root, head, progress, extra=("--limit", "5"))
+    for bucket in ("survived", "hung", "crashed", "budget_exceeded"):
+        page = document["adverse"][bucket]
+        assert (page["matching_total"], page["candidates"], page["next_offset"]) == (0, [], None)
+    assert document["candidate_details"]["matching_total"] == 2
+    assert document["candidate_details"]["next_offset"] is None
+
+
 # ---- O12 ------------------------------------------------------------------
 
 def test_o12_a_torn_final_record_is_incomplete_without_a_verdict(tmp_path, monkeypatch):
@@ -228,7 +317,7 @@ def test_o12_a_torn_final_record_is_an_evidence_error_with_a_verdict(tmp_path, m
 
 def test_o13_the_schema_rejects_documents_that_break_its_closed_shape(tmp_path, monkeypatch):
     root, head, verdict, progress = _complete_fixture(tmp_path / "v", monkeypatch, "r2_pass")
-    code, out, _err = _invoke(root, head, verdict, progress, command_exit=0, extra=("--project", "--project-jobs", "2"))
+    code, out, _err = _invoke(root, head, verdict, progress, command_exit=0, extra=("--project", "--project-jobs", "1"))
     assert code == 0
     complete = json.loads(out)
     _validate(complete)
@@ -316,7 +405,7 @@ def test_o24_a_pilot_selection_in_the_progress_stream_is_an_evidence_error(tmp_p
     code, _err, document = _analyze(root, head, progress)
     assert code == 2
     assert document["errors"] == [
-        {"source": "progress", "message": "pilot selection unsupported before P7"}
+        {"source": "progress", "message": "pilot progress requires --plan-json and --selection-file"}
     ]
 
 

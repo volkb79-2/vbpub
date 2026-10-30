@@ -112,7 +112,114 @@ name = "claude-code"
 # numbering (and therefore a uuid-less record's fallback marker) drifts.
 _CONVERSATION_TYPES = ("user", "assistant", "system")
 
+
+@dataclass(frozen=True, slots=True)
+class AgentLineage:
+    """Resolved parent edge shared by family discovery and usage reporting."""
+
+    agent_id: str
+    parent_agent_id: str | None
+    parent_is_root: bool
+    status: str
+    candidate_agent_ids: tuple[str | None, ...]
+    claimed_parent_agent_id: str | None
+    tool_use_id: str | None
+
+
+def resolve_agent_lineage(
+    agent_metadata: dict[str, dict[str, Any]],
+    tool_use_owners: dict[str, set[str | None]],
+    *,
+    known_agent_ids: set[str],
+    root_available: bool,
+) -> dict[str, AgentLineage]:
+    """Resolve source-level Claude parent edges without timestamp guesses.
+
+    A valid ``parentAgentId`` wins when it agrees with the available
+    ``toolUseId`` owners (or when that source has no owner record). Otherwise
+    only a unique tool-use owner is accepted. Missing and ambiguous edges stay
+    unresolved for callers to expose; ``spawnDepth`` is descriptive and never
+    invents a parent.
+    """
+    result: dict[str, AgentLineage] = {}
+    for agent_id in sorted(known_agent_ids):
+        metadata = agent_metadata.get(agent_id, {})
+        claimed = metadata.get("parentAgentId")
+        claimed = (
+            claimed
+            if isinstance(claimed, str) and claimed and "/" not in claimed and "\\" not in claimed
+            else None
+        )
+        tool_use_id = metadata.get("toolUseId")
+        tool_use_id = (
+            tool_use_id
+            if isinstance(tool_use_id, str) and tool_use_id and "/" not in tool_use_id and "\\" not in tool_use_id
+            else None
+        )
+        owners = set(tool_use_owners.get(tool_use_id, set())) if tool_use_id else set()
+        candidates = tuple(sorted(owners, key=lambda owner: (owner is not None, owner or "")))
+
+        parent_agent_id: str | None = None
+        parent_is_root = False
+        if claimed is not None and claimed in known_agent_ids:
+            if not owners or claimed in owners:
+                parent_agent_id = claimed
+                status = "resolved_parent_agent_id"
+            elif len(owners) == 1:
+                owner = next(iter(owners))
+                if owner is None and root_available:
+                    parent_is_root = True
+                    status = "resolved_tool_use_id_parent_metadata_conflict"
+                elif owner is not None and owner in known_agent_ids:
+                    parent_agent_id = owner
+                    status = "resolved_tool_use_id_parent_metadata_conflict"
+                else:
+                    status = "unresolved_unknown_parent"
+            else:
+                status = "unresolved_parent_conflict"
+        elif claimed is not None:
+            if len(owners) == 1:
+                owner = next(iter(owners))
+                if owner is None and root_available:
+                    parent_is_root = True
+                    status = "resolved_tool_use_id_parent_metadata_conflict"
+                elif owner is not None and owner in known_agent_ids:
+                    parent_agent_id = owner
+                    status = "resolved_tool_use_id_parent_metadata_conflict"
+                else:
+                    status = "unresolved_unknown_parent"
+            else:
+                status = "unresolved_unknown_parent"
+        elif tool_use_id is None:
+            status = "unresolved_missing_lineage_metadata"
+        elif len(owners) > 1:
+            status = "unresolved_ambiguous_tool_use"
+        elif not owners:
+            status = "unresolved_missing_tool_use_owner"
+        else:
+            owner = next(iter(owners))
+            if owner is None and root_available:
+                parent_is_root = True
+                status = "resolved_tool_use_id"
+            elif owner is not None and owner in known_agent_ids:
+                parent_agent_id = owner
+                status = "resolved_tool_use_id"
+            else:
+                status = "unresolved_missing_parent_source"
+
+        result[agent_id] = AgentLineage(
+            agent_id=agent_id,
+            parent_agent_id=parent_agent_id,
+            parent_is_root=parent_is_root,
+            status=status,
+            candidate_agent_ids=candidates,
+            claimed_parent_agent_id=claimed,
+            tool_use_id=tool_use_id,
+        )
+    return result
+
 _COMMAND_NAME_RE = re.compile(r"<command-name>([^<]*)</command-name>", re.IGNORECASE)
+_TOOL_USE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _LEADING_CAVEAT_RE = re.compile(r"\A\s*<local-command-caveat>.*?</local-command-caveat>\s*", re.IGNORECASE | re.DOTALL)
 # command-args is deliberately NOT in this strip set: its inner content is
 # the operator's own typed argument text (e.g. "/review please check the
@@ -412,18 +519,29 @@ def _file_timestamps(path: Path) -> tuple[int, str | None, str | None]:
     return len(records), first_ts, last_ts
 
 
+def tool_use_ids_in_message(message: dict[str, Any]) -> set[str]:
+    """Return safe tool-use IDs from one message for lineage joins."""
+    content = message.get("content")
+    if not isinstance(content, list):
+        return set()
+    return {
+        block["id"] for block in content
+        if isinstance(block, dict)
+        and block.get("type") == "tool_use"
+        and isinstance(block.get("id"), str)
+        and _TOOL_USE_ID_RE.fullmatch(block["id"])
+    }
+
+
 def _tool_use_ids(path: Path) -> set[str]:
-    """Every tool_use block id found in an assistant record in this file --
-    used to resolve which file dispatched a given sub-agent (its
-    `.meta.json`'s toolUseId), regardless of the tool's own name (an Agent-
-    tool dispatch today, but this deliberately doesn't hardcode that name)."""
+    """Every safe tool-use ID found in assistant records in this file."""
     ids: set[str] = set()
     for rec in _load_records(path):
         if rec.get("type") != "assistant":
             continue
-        for block in rec.get("message", {}).get("content", []) or []:
-            if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("id"):
-                ids.add(block["id"])
+        message = rec.get("message")
+        if isinstance(message, dict):
+            ids.update(tool_use_ids_in_message(message))
     return ids
 
 
@@ -434,17 +552,10 @@ def list_agents(path: Path) -> list["SessionNode"]:
     "Nested subagents" section for the on-disk layout this walks, and
     E-015 for how it was verified against real data).
 
-    Lineage is resolved the same way it was confirmed by hand this
-    session: a sub-agent's `.meta.json` gives its own `spawnDepth`
-    directly (the source of truth for "how deep"), and its `toolUseId` is
-    cross-referenced against every CANDIDATE parent file's own tool_use
-    ids (root file + every other sub-agent file, since a depth>1 agent's
-    real dispatcher is another sub-agent, not necessarily the root) to
-    find which file actually dispatched it. When that cross-reference
-    can't resolve an edge (data anomaly, or a future spawn mechanism this
-    wasn't written against), the node still surfaces -- with its own known
-    spawnDepth kept visible -- rather than being silently dropped; only
-    the tree NESTING for that one node is left unresolved.
+    Parent edges use the shared source-level resolver: a consistent
+    `parentAgentId` first, otherwise a unique `toolUseId` owner. Ambiguous
+    and missing edges remain visible with no invented parent. `spawnDepth`
+    is retained as descriptive metadata and never creates an edge.
     """
     from ..sessions import SessionNode
 
@@ -466,31 +577,60 @@ def list_agents(path: Path) -> list["SessionNode"]:
 
     subagents_dir = session_dir / "subagents"
     meta_files = sorted(subagents_dir.glob("agent-*.meta.json")) if subagents_dir.is_dir() else []
-    if not meta_files:
+    transcript_files = sorted(subagents_dir.glob("agent-*.jsonl")) if subagents_dir.is_dir() else []
+    if not root_file.exists() and not meta_files:
+        return nodes
+    if not meta_files and not transcript_files:
         return nodes
 
-    agent_files = {m: subagents_dir / (m.name[: -len(".meta.json")] + ".jsonl") for m in meta_files}
+    agent_files = {
+        path.stem.removeprefix("agent-"): path for path in transcript_files
+    }
+    for meta_path in meta_files:
+        agent_id = meta_path.name[len("agent-"): -len(".meta.json")]
+        agent_files.setdefault(agent_id, subagents_dir / f"agent-{agent_id}.jsonl")
     candidate_files = ([root_file] if root_file.exists() else []) + [
         f for f in agent_files.values() if f.exists()
     ]
-    owner_of_tool_use: dict[str, str] = {}
+    tool_use_owners: dict[str, set[str | None]] = {}
     for f in candidate_files:
-        owner = root_id if f == root_file else str(f)
+        owner = None if f == root_file else f.stem.removeprefix("agent-")
         for tid in _tool_use_ids(f):
-            owner_of_tool_use.setdefault(tid, owner)
+            tool_use_owners.setdefault(tid, set()).add(owner)
 
+    metadata_by_agent: dict[str, dict[str, Any]] = {}
     for meta_path in meta_files:
-        jsonl_path = agent_files[meta_path]
+        agent_id = meta_path.name[len("agent-"): -len(".meta.json")]
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             meta = {}
-        agent_id = meta_path.name[len("agent-"): -len(".meta.json")]
+        metadata_by_agent[agent_id] = meta if isinstance(meta, dict) else {}
+    known_agent_ids = {
+        meta_path.name[len("agent-"): -len(".meta.json")]
+        for meta_path in meta_files
+    } | {
+        agent_id for agent_id in agent_files
+    }
+    lineage = resolve_agent_lineage(
+        metadata_by_agent,
+        tool_use_owners,
+        known_agent_ids=known_agent_ids,
+        root_available=root_file.exists(),
+    )
+
+    for agent_id in sorted(known_agent_ids):
+        jsonl_path = agent_files[agent_id]
+        meta = metadata_by_agent.get(agent_id, {})
         spawn_depth = meta.get("spawnDepth")
-        tool_use_id = meta.get("toolUseId")
-        parent_id = owner_of_tool_use.get(tool_use_id) if tool_use_id else None
-        if parent_id is None and spawn_depth == 1:
-            parent_id = root_id if root_file.exists() else None
+        edge = lineage[agent_id]
+        if edge.parent_is_root:
+            parent_id = root_id
+        elif edge.parent_agent_id is not None:
+            parent_path = agent_files.get(edge.parent_agent_id)
+            parent_id = str(parent_path) if parent_path is not None else None
+        else:
+            parent_id = None
         label = meta.get("description") or meta.get("agentType") or "(sub-agent)"
         if spawn_depth is not None:
             label = f"{label} (spawnDepth {spawn_depth})"

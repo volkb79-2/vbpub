@@ -260,7 +260,7 @@ def test_sniff_skips_blank_lines(tmp_path):
     assert claude_code.sniff(fp)
 
 
-def test_list_agents_keeps_malformed_metadata_and_resolves_an_unowned_depth_one_agent(tmp_path):
+def test_list_agents_keeps_malformed_metadata_and_does_not_infer_parent_from_depth(tmp_path):
     root = tmp_path / "root.jsonl"
     root.write_text("{}\n", encoding="utf-8")
     subagents = tmp_path / "root" / "subagents"
@@ -281,8 +281,21 @@ def test_list_agents_keeps_malformed_metadata_and_resolves_an_unowned_depth_one_
     orphan = next(node for node in nodes if node.id.endswith("agent-orphan.jsonl"))
     assert bad.label == "(sub-agent)"
     assert bad.parent_id is None
-    assert orphan.parent_id == str(root)
+    assert orphan.parent_id is None
     assert "orphan (spawnDepth 1)" == orphan.label
+
+
+def test_list_agents_includes_transcript_without_meta_as_unresolved(tmp_path):
+    root = tmp_path / "root.jsonl"
+    root.write_text("{}\n", encoding="utf-8")
+    child = tmp_path / "root" / "subagents" / "agent-no-meta.jsonl"
+    child.parent.mkdir(parents=True)
+    child.write_text("{}\n", encoding="utf-8")
+
+    nodes = claude_code.list_agents(root)
+
+    no_meta = next(node for node in nodes if node.id == str(child))
+    assert no_meta.parent_id is None
 
 
 def test_sniff_gives_up_past_the_scan_window(tmp_path):
@@ -1437,3 +1450,75 @@ def test_update_interview_pending_tolerates_non_object_question_input():
         pending,
     ) == "(question)"
     assert pending == {"bad": "(question)"}
+
+
+def test_resolve_agent_lineage_handles_conflicting_and_unresolved_sources():
+    metadata = {
+        "claimed-root": {"parentAgentId": "parent", "toolUseId": "t1"},
+        "claimed-known": {"parentAgentId": "parent", "toolUseId": "t2"},
+        "claimed-unknown": {"parentAgentId": "parent", "toolUseId": "t3"},
+        "claimed-many": {"parentAgentId": "parent", "toolUseId": "t4"},
+        "unknown-claim-root": {"parentAgentId": "missing-parent", "toolUseId": "t5"},
+        "unknown-claim-known": {"parentAgentId": "missing-parent", "toolUseId": "t6"},
+        "unknown-claim-unknown": {"parentAgentId": "missing-parent", "toolUseId": "t7"},
+        "unknown-claim-many": {"parentAgentId": "missing-parent", "toolUseId": "t8"},
+        "missing-metadata": {},
+        "ambiguous-owner": {"toolUseId": "t9"},
+        "missing-owner": {"toolUseId": "t10"},
+        "root-owner": {"toolUseId": "t11"},
+        "known-owner": {"toolUseId": "t12"},
+        "unknown-owner": {"toolUseId": "t13"},
+    }
+    owners = {
+        "t1": {None},
+        "t2": {"known-parent"},
+        "t3": {"unknown-parent"},
+        "t4": {"known-parent", "unknown-parent"},
+        "t5": {None},
+        "t6": {"known-parent"},
+        "t7": {"unknown-parent"},
+        "t8": {"known-parent", "unknown-parent"},
+        "t9": {"known-parent", "unknown-parent"},
+        "t11": {None},
+        "t12": {"known-parent"},
+        "t13": {"unknown-parent"},
+    }
+    known = set(metadata) | {"parent", "known-parent"}
+
+    result = claude_code.resolve_agent_lineage(
+        metadata, owners, known_agent_ids=known, root_available=True,
+    )
+
+    assert result["claimed-root"].parent_is_root is True
+    assert result["claimed-root"].status == "resolved_tool_use_id_parent_metadata_conflict"
+    assert result["claimed-known"].parent_agent_id == "known-parent"
+    assert result["claimed-unknown"].status == "unresolved_unknown_parent"
+    assert result["claimed-many"].status == "unresolved_parent_conflict"
+    assert result["unknown-claim-root"].parent_is_root is True
+    assert result["unknown-claim-known"].parent_agent_id == "known-parent"
+    assert result["unknown-claim-unknown"].status == "unresolved_unknown_parent"
+    assert result["unknown-claim-many"].status == "unresolved_unknown_parent"
+    assert result["missing-metadata"].status == "unresolved_missing_lineage_metadata"
+    assert result["ambiguous-owner"].status == "unresolved_ambiguous_tool_use"
+    assert result["missing-owner"].status == "unresolved_missing_tool_use_owner"
+    assert result["root-owner"].parent_is_root is True
+    assert result["known-owner"].parent_agent_id == "known-parent"
+    assert result["unknown-owner"].status == "unresolved_missing_parent_source"
+
+    without_root = claude_code.resolve_agent_lineage(
+        {"claimed-root": metadata["claimed-root"]}, {"t1": {None}},
+        known_agent_ids={"claimed-root", "parent"}, root_available=False,
+    )
+    assert without_root["claimed-root"].status == "unresolved_unknown_parent"
+
+
+def test_tool_use_ids_ignores_non_object_assistant_messages(tmp_path):
+    path = tmp_path / "tool-use.jsonl"
+    path.write_text("\n".join([
+        json.dumps({"type": "assistant", "message": {
+            "content": [{"type": "tool_use", "id": "safe-tool-id"}],
+        }}),
+        json.dumps({"type": "assistant", "message": []}),
+    ]) + "\n", encoding="utf-8")
+
+    assert claude_code._tool_use_ids(path) == {"safe-tool-id"}

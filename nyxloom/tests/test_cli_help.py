@@ -16,7 +16,7 @@ from nyxloom.cli_registry import harness_cli, operator_cli, primary_cli
 @pytest.mark.parametrize(
     ("factory", "entrypoint", "command", "root_verbs"),
     [
-        (primary_cli, nyxloom_main, "nyxloom", {"lint", "init", "onboard", "backlog"}),
+        (primary_cli, nyxloom_main, "nyxloom", {"lint", "init", "onboard", "backlog", "usage"}),
         (harness_cli, harness_main, "nyxloom-harness", {"extract", "extract-lossless", "extract-debug", "extract-report", "extract-sessions"}),
         (operator_cli, ctl_main, "nyxloomctl", {"project", "lint", "doctor", "status", "resync", "daemon", "auth", "events"}),
     ],

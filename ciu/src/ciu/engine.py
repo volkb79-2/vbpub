@@ -88,6 +88,7 @@ from .workspace_env import (  # P8 contract — relied on exactly, never edited 
     read_generated_facts,
     resolve_env_root,
     validate_required_certs,
+    verify_workspace_runtime_network,
 )
 
 # Global logger instance (configured after parsing config).
@@ -501,6 +502,55 @@ def _rmtree_with_fallback(vol_dir: Path, *, repo_root: Optional[Path]) -> None:
     privileged_rmtree(physical)
 
 
+def _require_no_compose_project_containers(
+    project: str, down_stderr: str | None, stack_dir: Path,
+) -> None:
+    """Refuse host-data cleanup unless Docker proves the exact project is empty.
+
+    ``docker compose down`` can fail while one of its containers is still
+    using a host-mounted ``vol-*`` directory. A failed teardown is safe to
+    continue past only when a separate, exact project-label query succeeds and
+    returns no containers. Inspection errors and any remaining container keep
+    the host directories and rendered configuration in place for recovery.
+    """
+    preserved = (
+        f"Preserving host volume directories and rendered configuration under {stack_dir}."
+    )
+    command = [
+        "docker", "ps", "-a", "--no-trunc",
+        "--filter", f"label=com.docker.compose.project={project}",
+        "--format", "{{.ID}}",
+    ]
+    try:
+        result = procutil.run_cmd(command, check=False)
+    except OSError as exc:
+        raise RuntimeError(
+            f"[CIU-137] docker compose down failed for project {project!r} "
+            f"({down_stderr or 'no diagnostic'}); cannot inspect whether its "
+            f"containers remain ({exc}). {preserved}"
+        ) from exc
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "no diagnostic").strip()
+        raise RuntimeError(
+            f"[CIU-137] docker compose down failed for project {project!r} "
+            f"({down_stderr or 'no diagnostic'}); exact-project container "
+            f"inspection also failed (exit {result.returncode}: {detail}). "
+            f"{preserved}"
+        )
+    container_ids = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+    if container_ids:
+        raise RuntimeError(
+            f"[CIU-137] docker compose down failed for project {project!r} "
+            f"({down_stderr or 'no diagnostic'}); containers remain: "
+            f"{', '.join(container_ids)}. {preserved}"
+        )
+    print(
+        f"[INFO]   No containers remain for compose project {project!r}; "
+        "continuing reset.",
+        flush=True,
+    )
+
+
 def _chown_with_fallback(
     path: Path, uid: int, gid: int, *, physical_path: Path, chown_fn: Optional[Callable]
 ) -> None:
@@ -805,23 +855,48 @@ def reset_service(
     try:
         result = procutil.run_cmd(down_cmd, check=False)
         if result.returncode != 0:
-            print(f"[WARN]   docker compose down failed (may be OK if no containers): {result.stderr}", flush=True)
+            print(f"[WARN]   docker compose down failed: {result.stderr}", flush=True)
+            _require_no_compose_project_containers(compose_project, result.stderr, stack_dir)
         else:
             print("[INFO]   Containers stopped, volumes removed", flush=True)
     except FileNotFoundError as e:
-        raise RuntimeError(f"docker not available for reset: {e}") from e
+        raise RuntimeError(
+            f"[CIU-137] docker not available for reset: {e}. "
+            f"Host volume directories and rendered configuration under "
+            f"{stack_dir} were preserved."
+        ) from e
 
     # Step 2: remove vol-* dirs of THIS stack dir (B14). Fixed-UID images write
     # data owned by the image UID (postgres 999, pgAdmin 5050 — S6.7 Pattern (a)),
     # which the unprivileged operator cannot rmtree; on PermissionError we degrade
     # to the S6.5 root helper container so the wipe completes instead of aborting.
     print("[INFO]   Step 2/4: Removing host-mounted volume directories...", flush=True)
-    removed = 0
+    stack_real = stack_dir.resolve()
+    volume_dirs: list[tuple[Path, Path]] = []
     for vol_dir in stack_dir.glob("vol-*"):
-        if vol_dir.is_dir():
-            _rmtree_with_fallback(vol_dir, repo_root=repo_root)
-            print(f"[INFO]     Removed: {vol_dir}", flush=True)
-            removed += 1
+        if vol_dir.is_symlink():
+            raise RuntimeError(
+                f"[CIU-137] refusing to follow symlinked volume path {vol_dir}; "
+                "the link and its target are preserved."
+            )
+        if not vol_dir.is_dir():
+            continue
+        try:
+            resolved = vol_dir.resolve(strict=True)
+            resolved.relative_to(stack_real)
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(
+                f"[CIU-137] refusing to remove volume path {vol_dir}: its resolved "
+                f"location is unavailable or outside stack directory {stack_real} "
+                f"({exc}). The path is preserved."
+            ) from exc
+        volume_dirs.append((vol_dir, resolved))
+
+    removed = 0
+    for vol_dir, resolved in volume_dirs:
+        _rmtree_with_fallback(resolved, repo_root=repo_root)
+        print(f"[INFO]     Removed: {vol_dir}", flush=True)
+        removed += 1
     print(f"[INFO]   Removed {removed} volume directories" if removed else "[INFO]   No volume directories to remove", flush=True)
 
     # Step 3: remove rendered outputs + overlay + rendered configfiles.
@@ -1117,12 +1192,24 @@ def execute_docker_compose_with_logs(
     Returns ``{'status': 'success'|'error'|'interrupted', 'message', 'stdout'}``.
     """
     result = {"status": "success", "message": "", "stdout": ""}
-    print("[INFO] Executing docker compose up...", flush=True)
     cmd = [
         "docker", "compose", "-p", project,
         "--project-directory", str(Path(repo_root).resolve()),
         *file_args, "up", "-d",
     ]
+
+    # Native and shipped startup share this process boundary. Recheck managed
+    # network ownership immediately before Compose resolves the configured
+    # network name; a separate Docker actor can still race after this check.
+    try:
+        verify_workspace_runtime_network(Path(repo_root))
+    except WorkspaceEnvError as exc:
+        result["status"] = "error"
+        result["message"] = str(exc)
+        print(f"[ERROR] {result['message']}", flush=True)
+        return result
+
+    print("[INFO] Executing docker compose up...", flush=True)
 
     proc = None
     try:
@@ -1608,7 +1695,10 @@ def main_execution(
             print("[SUCCESS] Rendered CIU TOML files (ciu.global.toml, ciu.toml)", flush=True)
             return result
 
-        ensure_workspace_network(auto_connect=auto_connect_setting)
+        ensure_workspace_network(
+            auto_connect=auto_connect_setting,
+            verify_managed_instance=True,
+        )
 
         # ---- Step 4: merge (S3.3) ----
         print("[STEP 4/17] Merging configurations...", flush=True)
@@ -2141,7 +2231,10 @@ def run_shipped(
         auto_connect_setting = global_config.get("ciu", {}).get("auto_connect_network", True)
         if auto_connect_network is not None:
             auto_connect_setting = auto_connect_network
-        ensure_workspace_network(auto_connect=auto_connect_setting)
+        ensure_workspace_network(
+            auto_connect=auto_connect_setting,
+            verify_managed_instance=True,
+        )
 
         # ---- DooD preflight (S1.5) before the first daemon bind use ----
         _dood_preflight(to_physical_path(working_dir, repo_root=repo_root))

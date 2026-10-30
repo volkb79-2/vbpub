@@ -1,0 +1,32 @@
+# mdt host-setup — reconciles the runtime half of the dev-tier governance:
+# dev.slice measured IO caps (covers every dev.slice child combined), zswap
+# policy, transient per-container IO caps, and cgroup2 mount flags. It also
+# runs the read-only memory.min/memory.low
+# effectiveness audit. Idempotent oneshot; run at boot and periodically.
+#
+# ExecStopPost: mdt-slice-memory-min-low-audit.py — read-only; walks the SAME dev.slice
+# tree and logs a [WARN] for any memory.min/memory.low that is a silent
+# no-op because an ancestor cgroup lacks its own value (a container/config
+# can request mem_min while the dev tiers don't set it — this is exactly
+# that case, caught on the same cadence rather than only when someone
+# thinks to check). See scripts/mdt-slice-memory-min-low-audit.py and
+# ciu/docs/DESIGN-NOTES.md D1/D3/D4/D6. Runs after the caps script (so a
+# finding reflects whatever this run just applied) and EVEN WHEN that script
+# fails: in a oneshot unit a failed first ExecStart= skips a second ExecStart=,
+# but ExecStopPost= always runs, and the reconcile now exits non-zero when the
+# kernel does not hold the intended IO caps (MDT-016).
+[Unit]
+Description=mdt host-setup — reconcile dev governance and audit memory min/low
+Documentation=file:/etc/mdt/host-setup.env
+# The container sweep needs docker; the slice property calls do not — the
+# script degrades gracefully when docker is down.
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/mdt-dev-governance-reconcile.sh
+ExecStopPost=/usr/local/sbin/mdt-slice-memory-min-low-audit.py
+
+[Install]
+WantedBy=multi-user.target

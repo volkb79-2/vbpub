@@ -1,0 +1,12 @@
+TrueNAS Installation
+WARNING:
+- This erases ALL partitions and data on vda.
+- vda will be unavailable for use in storage pools.
+
+NOTE:
+- Installing on SATA, SAS, or NVMe flash media is recommended.
+ USB flash sticks are discouraged.
+
+Proceed with the installation?
+< Yes >
+< No  >

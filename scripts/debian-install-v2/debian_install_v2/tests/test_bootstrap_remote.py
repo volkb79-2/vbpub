@@ -10,7 +10,6 @@ import importlib.util
 import io
 import json
 import shlex
-import tarfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -45,7 +44,9 @@ def test_manual_bootstrap_recipe_uses_native_python_fetch_without_pipeline(mod):
 
 def test_build_config_maps_named_env_vars(mod, monkeypatch):
     monkeypatch.setenv("SWAP_DISK_TOTAL_GB", "64")
-    monkeypatch.setenv("SWAP_FILE_COUNT", "4")
+    monkeypatch.setenv("SWAP_PARTITION_COUNT", "4")
+    monkeypatch.setenv("ROOT_RESIZE_POLICY", "grow-only")
+    monkeypatch.setenv("SWAP_POLICY", "on")
     monkeypatch.setenv("ZSWAP_COMPRESSOR", "zstd")
     monkeypatch.setenv("VM_SWAPPINESS", "50")
     monkeypatch.setenv("NEVER_REBOOT", "no")
@@ -55,7 +56,9 @@ def test_build_config_maps_named_env_vars(mod, monkeypatch):
     config = mod.build_config()
     assert config == {
         "swap_disk_total_gb": 64,
-        "swap_file_count": 4,
+        "swap_partition_count": 4,
+        "root_resize_policy": "grow-only",
+        "swap_policy": "on",
         "zswap_compressor": "zstd",
         "vm_swappiness": 50,
         "never_reboot": False,
@@ -71,8 +74,17 @@ def test_build_config_maps_controller_ssh_pubkey(mod, monkeypatch):
     assert config == {"controller_ssh_pubkey": "ssh-ed25519 AAAAtest vbpub-controller-ephemeral"}
 
 
+def test_build_config_maps_new_optional_host_tuning_flags(mod, monkeypatch):
+    monkeypatch.setenv("RUN_ZSWAP_CONFIG", "no")
+    monkeypatch.setenv("RUN_CGROUP2_CONFIG", "false")
+    assert mod.build_config() == {
+        "run_zswap_config": False,
+        "run_cgroup2_config": False,
+    }
+
+
 def test_build_config_empty_when_nothing_set(mod, monkeypatch):
-    for name in list(mod._STRING_FIELDS) + list(mod._INT_FIELDS) + list(mod._BOOL_FIELDS):
+    for name in list(mod._STRING_FIELDS) + list(mod._POLICY_STRING_FIELDS) + list(mod._INT_FIELDS) + list(mod._BOOL_FIELDS) + list(mod._LEGACY_INT_FIELDS):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.delenv("VBPUB_CONFIG_EXTRA_JSON", raising=False)
     assert mod.build_config() == {}
@@ -92,17 +104,36 @@ def test_bool_env_rejects_unrecognized_values(mod, monkeypatch, value):
 
 
 def test_int_env_rejects_non_numeric(mod, monkeypatch):
-    monkeypatch.setenv("SWAP_FILE_COUNT", "eight")
+    monkeypatch.setenv("SWAP_PARTITION_COUNT", "eight")
     with pytest.raises(SystemExit, match="not an integer"):
         mod.build_config()
 
 
+def test_swap_total_env_accepts_auto(mod, monkeypatch):
+    monkeypatch.setenv("SWAP_DISK_TOTAL_GB", "auto")
+    profile = {"swap_disk_total_gb": 64}
+    profile.update(mod.build_config())
+    assert profile["swap_disk_total_gb"] is None
+
+
 def test_extra_json_wins_over_named_vars(mod, monkeypatch):
-    monkeypatch.setenv("SWAP_FILE_COUNT", "8")
-    monkeypatch.setenv("VBPUB_CONFIG_EXTRA_JSON", json.dumps({"swap_file_count": 16, "credential_mode": "systemd"}))
+    monkeypatch.setenv("SWAP_PARTITION_COUNT", "8")
+    monkeypatch.setenv("VBPUB_CONFIG_EXTRA_JSON", json.dumps({"swap_partition_count": 16, "credential_mode": "systemd"}))
     config = mod.build_config()
-    assert config["swap_file_count"] == 16
+    assert config["swap_partition_count"] == 16
     assert config["credential_mode"] == "systemd"
+
+
+def test_legacy_swap_file_count_env_maps_to_partition_count(mod, monkeypatch):
+    monkeypatch.setenv("SWAP_FILE_COUNT", "8")
+    assert mod.build_config() == {"swap_partition_count": 8}
+
+
+def test_conflicting_swap_partition_env_aliases_refuse(mod, monkeypatch):
+    monkeypatch.setenv("SWAP_FILE_COUNT", "8")
+    monkeypatch.setenv("SWAP_PARTITION_COUNT", "4")
+    with pytest.raises(SystemExit, match="conflicts"):
+        mod.build_config()
 
 
 def test_extra_json_must_be_an_object(mod, monkeypatch):
@@ -124,101 +155,140 @@ def test_build_config_rejects_v1_obsolete_env_var_names(mod, monkeypatch, name):
 
 # --- fetch_subtree -------------------------------------------------------
 
-def _fake_tarball(files: dict[str, bytes], *, executable: set[str] = frozenset()) -> bytes:
-    buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
-        for name, content in files.items():
-            info = tarfile.TarInfo(name=f"vbpub-main/{name}")
-            info.size = len(content)
-            info.mode = 0o755 if name in executable else 0o644
-            archive.addfile(info, io.BytesIO(content))
-    return buffer.getvalue()
+def _fake_git(monkeypatch, mod, files):
+    calls = []
+    sparse_patterns = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        args = argv[1:]
+        if args and args[0] == "clone":
+            Path(args[-1]).mkdir(parents=True)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if "check-ref-format" in args:
+            branch = args[-1]
+            return SimpleNamespace(
+                returncode=1 if branch.startswith("-") else 0,
+                stdout="",
+                stderr="invalid branch" if branch.startswith("-") else "",
+            )
+        if "set" in args and "sparse-checkout" in args:
+            sparse_patterns.extend(args[args.index("set") + 2 :])
+        if "checkout" in args:
+            checkout = Path(args[args.index("-C") + 1])
+            for relative, content in files.items():
+                target = checkout / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(content)
+                if relative.endswith("debian-install-v2.py"):
+                    target.chmod(0o755)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(mod, "_ensure_git", lambda *, debug: "/usr/bin/git")
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    return calls, sparse_patterns
 
 
-class _FakeResponse(io.BytesIO):
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc_info):
-        self.close()
-
-
-def test_fetch_subtree_extracts_only_the_matching_subtree(mod, monkeypatch, tmp_path):
-    tarball = _fake_tarball({
+def test_fetch_subtree_uses_provider_neutral_blobless_sparse_git(mod, monkeypatch, tmp_path):
+    files = {
         "scripts/debian-install-v2/debian-install-v2.py": b"#!/usr/bin/env python3\n",
         "scripts/debian-install-v2/debian_install_v2/installer.py": b"# installer\n",
-        "scripts/debian-install-v2/VERSION": b"2.0.0\n",
-        # The library is no longer extracted from the source tree: it arrives
-        # as a released wheel (install_wheel), never as a source subtree.
-        "libraries/cli-extended/src/cli_extended/__init__.py": b"# shared CLI\n",
-        "libraries/cli-extended/README.md": b"not runtime\n",
-        "scripts/other-tool/README.md": b"unrelated\n",
-        "README.md": b"repo root readme\n",
-    }, executable={"scripts/debian-install-v2/debian-install-v2.py"})
-
-    monkeypatch.setattr(mod.urllib.request, "urlopen", lambda *a, **k: _FakeResponse(tarball))
-
+        "scripts/debian-install-v2/profiles/default.jsonc": b'{"schema_version":1}\n',
+        "scripts/debian-install-v2/tools/iocost_coef_gen.py": b"# tool\n",
+        "README.md": b"unrelated repository file\n",
+        "libraries/cli-extended/README.md": b"separate released wheel\n",
+    }
+    calls, patterns = _fake_git(monkeypatch, mod, files)
     install_dir = tmp_path / "install"
-    mod.fetch_subtree("https://github.com/volkb79-2/vbpub", "main", install_dir, debug=False)
+    mod.fetch_subtree("https://git.example.test/team/vbpub.git", "main", install_dir, debug=False)
 
-    assert (install_dir / "debian-install-v2.py").read_bytes() == b"#!/usr/bin/env python3\n"
-    assert (install_dir / "debian_install_v2" / "installer.py").is_file()
-    assert (install_dir / "VERSION").read_bytes() == b"2.0.0\n"
-    assert not (install_dir / "cli_extended").exists()
-    assert not (install_dir / "other-tool").exists()
-    assert not (install_dir / "README.md").exists()
-    assert sorted(path.name for path in install_dir.iterdir()) == [
-        "VERSION", "debian-install-v2.py", "debian_install_v2",
+    clone = next(call for call in calls if "clone" in call)
+    assert "--filter=blob:none" in clone
+    assert "--depth=1" in clone
+    assert clone[-2] == "https://git.example.test/team/vbpub.git"
+    checkout = next(call for call in calls if "checkout" in call)
+    assert checkout[-3:] == ["checkout", "--detach", "refs/remotes/origin/main"]
+    assert "/scripts/debian-install-v2/profiles/*.jsonc" in patterns
+    assert (install_dir / "debian-install-v2.py").read_bytes() == files[
+        "scripts/debian-install-v2/debian-install-v2.py"
     ]
-    mode = (install_dir / "debian-install-v2.py").stat().st_mode
-    assert mode & 0o111
+    assert (install_dir / "profiles" / "default.jsonc").is_file()
+    assert (install_dir / "tools" / "iocost_coef_gen.py").is_file()
+    assert not (install_dir / "README.md").exists()
+    assert not (install_dir / "libraries").exists()
+    assert (install_dir / "debian-install-v2.py").stat().st_mode & 0o111
 
 
-def test_fetch_subtree_raises_when_nothing_matches(mod, monkeypatch, tmp_path):
-    tarball = _fake_tarball({"README.md": b"nothing relevant here\n"})
-    monkeypatch.setattr(mod.urllib.request, "urlopen", lambda *a, **k: _FakeResponse(tarball))
-    with pytest.raises(SystemExit, match="required source tree"):
-        mod.fetch_subtree("https://github.com/volkb79-2/vbpub", "main", tmp_path / "install", debug=False)
+def test_fetch_subtree_refuses_remote_without_partial_clone_support(mod, monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if "clone" in argv:
+            Path(argv[-1]).mkdir(parents=True)
+            return SimpleNamespace(
+                returncode=0,
+                stdout="",
+                stderr="warning: filtering not recognized by server, ignoring",
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(mod, "_ensure_git", lambda *, debug: "/usr/bin/git")
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    with pytest.raises(SystemExit, match="refusing to download the complete repository"):
+        mod.fetch_subtree("https://git.example.test/repo", "main", tmp_path / "install", debug=False)
+    assert not (tmp_path / "install").exists()
 
 
-def test_fetch_subtree_does_not_require_the_library_source_tree(mod, monkeypatch, tmp_path):
-    tarball = _fake_tarball({
-        "scripts/debian-install-v2/debian-install-v2.py": b"#!/usr/bin/env python3\n",
-    })
-    monkeypatch.setattr(mod.urllib.request, "urlopen", lambda *a, **k: _FakeResponse(tarball))
-    mod.fetch_subtree("https://github.com/volkb79-2/vbpub", "main", tmp_path / "install", debug=False)
-    assert (tmp_path / "install" / "debian-install-v2.py").is_file()
+@pytest.mark.parametrize(
+    "url",
+    [
+        "git@example.test:team/repo.git",
+        "https://user:password@example.test/team/repo.git",
+        "https://example.test/team/repo.git?token=secret",
+    ],
+)
+def test_fetch_subtree_rejects_unsupported_or_credentialed_remote_urls(mod, tmp_path, url):
+    with pytest.raises(SystemExit, match="REPO_URL must be a public https"):
+        mod.fetch_subtree(url, "main", tmp_path / "install", debug=False)
 
 
-def test_fetch_subtree_refuses_tar_slip_path_traversal(mod, monkeypatch, tmp_path):
-    # A member name embedding ".." after the matched subtree prefix would
-    # otherwise resolve outside install_dir the moment target.write_bytes()
-    # touches the real filesystem -- this process runs as root (adversarial
-    # review finding).
-    tarball = _fake_tarball({"scripts/debian-install-v2/../../../etc/cron.d/evil": b"* * * * * root pwned\n"})
-    monkeypatch.setattr(mod.urllib.request, "urlopen", lambda *a, **k: _FakeResponse(tarball))
-    install_dir = tmp_path / "install"
-    with pytest.raises(SystemExit, match="unsafe path"):
-        mod.fetch_subtree("https://github.com/volkb79-2/vbpub", "main", install_dir, debug=False)
-    assert not (tmp_path / "etc").exists()
-    assert not Path("/etc/cron.d/evil").exists()
+def test_fetch_subtree_rejects_bad_branch_before_cloning(mod, monkeypatch, tmp_path):
+    calls, _patterns = _fake_git(monkeypatch, mod, {})
+    with pytest.raises(SystemExit, match="REPO_BRANCH must"):
+        mod.fetch_subtree("https://git.example.test/repo", "--bad", tmp_path / "install", debug=False)
+    assert not any("clone" in call for call in calls)
 
 
-def test_fetch_subtree_reports_a_truncated_download_cleanly(mod, monkeypatch, tmp_path):
-    class _TruncatedResponse(io.BytesIO):
-        def __enter__(self):
-            return self
+def test_git_preflight_installs_missing_git_before_any_remote_fetch(mod, monkeypatch):
+    calls = []
+    installed = {"git": False}
 
-        def __exit__(self, *exc_info):
-            self.close()
+    def which(name):
+        if name == "git":
+            return "/usr/bin/git" if installed["git"] else None
+        return "/usr/bin/apt-get" if name == "apt-get" else None
 
-    # Valid gzip header, then nothing -- tarfile raises ReadError, not
-    # URLError, when the stream is corrupt/truncated mid-download.
-    import gzip
-    truncated = gzip.compress(b"scripts/debian-install-v2/x")[:8]
-    monkeypatch.setattr(mod.urllib.request, "urlopen", lambda *a, **k: _TruncatedResponse(truncated))
-    with pytest.raises(SystemExit, match="corrupt or truncated download"):
-        mod.fetch_subtree("https://github.com/volkb79-2/vbpub", "main", tmp_path / "install", debug=False)
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        if argv[1] == "install":
+            installed["git"] = True
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(mod.shutil, "which", which)
+    monkeypatch.setattr(mod.subprocess, "run", run)
+    git = mod.preflight_git("https://git.example.test/team/repo.git", "main", debug=False)
+
+    assert git == "/usr/bin/git"
+    assert [call[0][1:3] for call in calls[:2]] == [["update", "-qq"], ["install", "-y"]]
+    assert all(call[1]["env"]["DEBIAN_FRONTEND"] == "noninteractive" for call in calls[:2])
+    assert calls[-1][0] == ["/usr/bin/git", "check-ref-format", "--branch", "main"]
+
+
+def test_git_preflight_rejects_source_before_attempting_apt(mod, monkeypatch):
+    monkeypatch.setattr(mod, "_ensure_git", lambda **_kwargs: pytest.fail("Git should not be installed"))
+    with pytest.raises(SystemExit, match="public https:// Git remote"):
+        mod.preflight_git("http://git.example.test/repo", "main", debug=False)
 
 
 def test_remote_invocation_dispatches_install_verb_with_explicit_acceptance(
@@ -230,7 +300,7 @@ def test_remote_invocation_dispatches_install_verb_with_explicit_acceptance(
     monkeypatch.delenv("DEBUG_MODE", raising=False)
     monkeypatch.setattr(mod.os, "geteuid", lambda: 0)
 
-    def fake_fetch(repo_url, branch, target, *, debug):
+    def fake_fetch(repo_url, branch, target, *, debug, git_path):
         events.append("fetch")
         target.mkdir(parents=True)
         (target / "debian-install-v2.py").write_text("# entrypoint\n", encoding="utf-8")
@@ -239,6 +309,10 @@ def test_remote_invocation_dispatches_install_verb_with_explicit_acceptance(
     monkeypatch.setattr(
         mod, "resolve_wheel",
         lambda *, debug: events.append("resolve") or ("https://example.test/cli_extended-9.9.9-py3-none-any.whl", "0" * 64),
+    )
+    monkeypatch.setattr(
+        mod, "preflight_git",
+        lambda repo_url, branch, *, debug: events.append("preflight") or "/usr/bin/git",
     )
     monkeypatch.setattr(
         mod, "download_wheel",
@@ -261,6 +335,7 @@ def test_remote_invocation_dispatches_install_verb_with_explicit_acceptance(
 
     assert mod.main() == 0
     assert events == [
+        "preflight",
         "resolve",
         ("download", "https://example.test/cli_extended-9.9.9-py3-none-any.whl", "0" * 64),
         "fetch",
@@ -309,6 +384,14 @@ class _FakeNet:
         if isinstance(outcome, BaseException):
             raise outcome
         return _FakeResponse(outcome)
+
+
+class _FakeResponse(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.close()
 
 
 @pytest.fixture()
@@ -519,9 +602,7 @@ def test_main_fetches_tree_and_released_wheel_end_to_end_with_faked_urllib(
     mod, monkeypatch, net, tmp_path
 ):
     data = _wheel_bytes()
-    tarball = _fake_tarball({"scripts/debian-install-v2/debian-install-v2.py": b"# entrypoint\n"})
     fake = net({
-        "https://github.com/volkb79-2/vbpub/archive/refs/heads/main.tar.gz": tarball,
         mod.LATEST_URL_DEFAULT: _manifest(sha256=_sha(data)),
         WHEEL_URL: data,
     })
@@ -531,12 +612,18 @@ def test_main_fetches_tree_and_released_wheel_end_to_end_with_faked_urllib(
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(mod.os, "geteuid", lambda: 0)
     monkeypatch.setattr(mod.subprocess, "run", lambda argv, *, check: SimpleNamespace(returncode=7))
+    monkeypatch.setattr(mod, "preflight_git", lambda repo_url, branch, *, debug: "/usr/bin/git")
+
+    def fake_fetch(repo_url, branch, target, *, debug, git_path):
+        target.mkdir(parents=True)
+        (target / "debian-install-v2.py").write_text("# entrypoint\n", encoding="utf-8")
+
+    monkeypatch.setattr(mod, "fetch_subtree", fake_fetch)
 
     assert mod.main() == 7
     assert [call[0] for call in fake.calls] == [
         mod.LATEST_URL_DEFAULT,
         WHEEL_URL,
-        "https://github.com/volkb79-2/vbpub/archive/refs/heads/main.tar.gz",
     ]
     assert sorted(path.name for path in install_dir.iterdir()) == [WHEEL_NAME, "debian-install-v2.py"]
 
@@ -545,9 +632,7 @@ def test_main_with_a_bad_wheel_digest_writes_nothing_to_the_install_dir(
     mod, monkeypatch, net, tmp_path
 ):
     data = _wheel_bytes()
-    tarball = _fake_tarball({"scripts/debian-install-v2/debian-install-v2.py": b"# entrypoint\n"})
     fake = net({
-        "https://github.com/volkb79-2/vbpub/archive/refs/heads/main.tar.gz": tarball,
         mod.LATEST_URL_DEFAULT: _manifest(sha256="0" * 64),
         WHEEL_URL: data,
     })
@@ -556,6 +641,7 @@ def test_main_with_a_bad_wheel_digest_writes_nothing_to_the_install_dir(
     for name in ("DRY_RUN", "DEBUG_MODE", "REPO_URL", "REPO_BRANCH"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(mod.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(mod, "preflight_git", lambda repo_url, branch, *, debug: "/usr/bin/git")
     with pytest.raises(SystemExit, match="sha256 mismatch"):
         mod.main()
     assert [call[0] for call in fake.calls] == [mod.LATEST_URL_DEFAULT, WHEEL_URL]
@@ -756,11 +842,12 @@ def _run_main_with_webhook(mod, monkeypatch, tmp_path, *, debug, observed):
         monkeypatch.delenv("DEBUG_MODE", raising=False)
     monkeypatch.setattr(mod.os, "geteuid", lambda: 0)
 
-    def fake_fetch(repo_url, branch, target, *, debug):
+    def fake_fetch(repo_url, branch, target, *, debug, git_path):
         target.mkdir(parents=True, exist_ok=True)
         (target / "debian-install-v2.py").write_text("# entrypoint\n", encoding="utf-8")
 
     monkeypatch.setattr(mod, "resolve_wheel", lambda *, debug: ("https://example.test/w.whl", "0" * 64))
+    monkeypatch.setattr(mod, "preflight_git", lambda repo_url, branch, *, debug: "/usr/bin/git")
     monkeypatch.setattr(mod, "download_wheel", lambda url, sha256, *, debug: ("w.whl", b"d"))
     monkeypatch.setattr(mod, "write_wheel", lambda *a, **k: None)
     monkeypatch.setattr(mod, "fetch_subtree", fake_fetch)
@@ -798,9 +885,15 @@ def test_remote_config_preexisting_loose_file_is_tightened(mod, monkeypatch, tmp
 
 
 def test_bootstrap_debug_never_prints_the_webhook_url(mod, monkeypatch, tmp_path, capsys):
+    key = (
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIcesQXRRI6R1benlU3hpLX712Iokf4htzSKpuk25Q2n "
+        "fixture@example.test"
+    )
+    monkeypatch.setenv("VBPUB_CONFIG_EXTRA_JSON", json.dumps({"ssh_authorized_keys": [key]}))
     observed = {}
     _run_main_with_webhook(mod, monkeypatch, tmp_path, debug=True, observed=observed)
     assert mod.main() == 0
     err = capsys.readouterr()
     assert "SECRETID123" not in err.err + err.out
+    assert key not in err.err + err.out
     assert "<redacted>" in err.err

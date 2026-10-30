@@ -94,6 +94,13 @@ def slice_to_path(name: str) -> str:
     if not stem:
         raise TargetError(f"not a usable slice name: {name!r}")
     parts = stem.split("-")
+    # systemd never produces an empty hierarchy component: a literal "-" in a
+    # unit name is escaped as `\x2d`, so `a--b`, `-a` and `a-` are typos, not
+    # slices. Expanding them would nest a phantom `a-.slice` level and point
+    # the sampler at a cgroup that cannot exist. A "/" cannot be in a unit
+    # name either (that is a cgroup path, the `cgroup:` scheme).
+    if any(not part for part in parts) or "/" in stem:
+        raise TargetError(f"not a usable slice name: {name!r}")
     path = ""
     for index in range(1, len(parts) + 1):
         path += "/" + "-".join(parts[:index]) + ".slice"
@@ -112,9 +119,14 @@ def _docker_json(*args: str) -> Optional[list]:
     binary = docker_bin()
     if not binary:
         return None
-    result = subprocess.run(
-        [binary, *args], capture_output=True, text=True, timeout=30, check=False
-    )
+    try:
+        result = subprocess.run(
+            [binary, *args], capture_output=True, text=True, timeout=30, check=False
+        )
+    except subprocess.TimeoutExpired:
+        # A hung Docker daemon is "cannot resolve", the same answer as a
+        # missing CLI -- not a traceback out of target parsing.
+        return None
     if result.returncode != 0:
         return None
     try:
@@ -124,15 +136,28 @@ def _docker_json(*args: str) -> Optional[list]:
 
 
 def resolve_container(ref: str) -> Tuple[str, str]:
-    """``(full_id, display_name)`` for a container name, id, or id prefix."""
-    data = _docker_json("inspect", ref)
-    if not data:
+    """``(full_id, display_name)`` for a container name, id, or id prefix.
+
+    ``--type container`` pins the lookup to containers: a bare ``docker
+    inspect`` answers for ANY object with that name or id (an image, volume
+    or network called ``gate`` would return its own ``Id``, which is not a
+    cgroup anywhere), and the ambiguity is silent. Only an exact, single
+    ``docker inspect`` of the one reference ever runs -- no listing.
+    """
+    # `--` so a reference that begins with `-` can never be read as a flag.
+    data = _docker_json("inspect", "--type", "container", "--", ref)
+    if not data or not isinstance(data, list) or not isinstance(data[0], dict):
         raise TargetError(
             f"no container matches {ref!r} (docker inspect found nothing). "
             "Check `docker ps` — a stopped container has no cgroup to sample."
         )
     info = data[0]
-    return info["Id"], str(info.get("Name", ref)).lstrip("/")
+    full_id = info.get("Id")
+    if not util.is_container_id(full_id):
+        raise TargetError(
+            f"docker inspect returned no usable 64-hex container id for {ref!r}"
+        )
+    return full_id, str(info.get("Name", ref)).lstrip("/")
 
 
 def resolve_label(selector: str) -> List[Tuple[str, str]]:
@@ -502,16 +527,41 @@ def _split_spec(spec: str) -> Tuple[str, str]:
     return ("", spec)
 
 
+#: Every option word the ``@`` suffix grammar knows. The split below only
+#: treats a suffix as options when EVERY item's key is one of these; this is
+#: what lets a ``@`` inside a real cgroup name survive (see `_parse_options`).
+OPTION_KEYS = frozenset({
+    "follow", "nofollow", "metrics", "as", "role", "subpath", _HELPER_PID_OPTION,
+})
+
+
 def _parse_options(rest: str) -> Tuple[str, Dict[str, str]]:
-    """Split ``value@opt=a,opt=b`` into value and options."""
-    value, sep, opts = rest.partition("@")
+    """Split ``value@opt=a,opt=b`` into value and options.
+
+    Grammar: the options are the text after the LAST ``@``, and only when
+    every comma-separated item there has a key in :data:`OPTION_KEYS`.
+    Otherwise there are no options and the whole text is the value --
+    ``@`` is a legal character in a cgroup name, and systemd's own user
+    manager lives in ``/user.slice/user-N.slice/user@N.service``, so
+    splitting at the first ``@`` truncated that path to ``.../user`` and
+    read ``N.service`` as an option. Consequences of "last ``@``":
+
+    * ``/a@follow@follow`` is the path ``/a@follow`` with ``follow`` set;
+    * ``/a@x@follow`` is the path ``/a@x`` with ``follow`` set;
+    * ``/a@follow@`` (empty suffix) is the path ``/a@follow`` with NO
+      options -- the escape for a name whose last segment happens to be an
+      option word.
+    """
+    value, sep, opts = rest.rpartition("@")
+    if not sep:
+        return rest.strip(), {}
+    items = [item for item in opts.split(",") if item]
+    if any(item.partition("=")[0].strip() not in OPTION_KEYS for item in items):
+        return rest.strip(), {}
     options: Dict[str, str] = {}
-    if sep:
-        for item in opts.split(","):
-            if not item:
-                continue
-            key, _, val = item.partition("=")
-            options[key.strip()] = val.strip() or "1"
+    for item in items:
+        key, _, val = item.partition("=")
+        options[key.strip()] = val.strip() or "1"
     return value.strip(), options
 
 
@@ -635,7 +685,7 @@ def parse_target(
         return [make(cgroup, value, "slice")]
 
     if scheme == "cgroup":
-        cgroup = "/" + value.strip("/")
+        cgroup = _canonical_cgroup_path(value)
         return [make(cgroup, util.short_label(cgroup), "cgroup")]
 
     # No scheme: infer. A running container name is the friendliest reading,
@@ -649,6 +699,28 @@ def parse_target(
         if value.endswith(".slice") or _looks_like_slice(value):
             return parse_target(f"slice:{rest}", root, default_follow, role, proc_root)
     return parse_target(f"cgroup:{rest}", root, default_follow, role, proc_root)
+
+
+def _canonical_cgroup_path(value: str) -> str:
+    """``cgroup:`` text -> one canonical absolute cgroup path, or a refusal.
+
+    ``Target.abs_path`` joins this onto the cgroup root, so a ``..``
+    component would walk the sampler (and a ``@follow`` subtree scan) OUT of
+    the mounted tree -- `cgroup:/../..@follow` from a helper would happily
+    list four levels of the host filesystem looking for `memory.current`.
+    Empty and ``.`` components are collapsed rather than refused: they name
+    the same cgroup, and the canonical spelling is what membership
+    de-duplication and the JSONL keys must agree on.
+    """
+    text = value.strip()
+    # Refuse on the RAW components: normpath folds `/../../etc` into `/etc`
+    # and `/a/../b` into `/b`, which is a silent rewrite of what the caller
+    # typed, not the refusal this contract wants.
+    if any(part == ".." for part in text.split("/")):
+        raise TargetError(f"cgroup: path must not contain '..': {value!r}")
+    # lstrip first: POSIX normpath keeps exactly two leading slashes as
+    # significant, so "/" + "/x" would otherwise come back as "//x".
+    return posixpath.normpath("/" + text.lstrip("/"))
 
 
 def _looks_like_slice(value: str) -> bool:

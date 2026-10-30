@@ -11,6 +11,8 @@ kind = "none"
 owner = "your-github-owner"
 repo = "your-repository"
 owner_type = "user"
+# Mandatory (KI-94): "gh" = `gh auth token --hostname github.com`; "cmru" = GITHUB_PUSH_PAT/GITHUB_TOKEN or cmru.secret.toml.
+token_source = "gh"
 
 [targets]
 host = "github"

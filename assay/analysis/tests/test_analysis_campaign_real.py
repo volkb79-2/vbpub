@@ -135,6 +135,7 @@ def test_o19_coverage_reverifies_the_artifact_and_lists_the_gaps_exactly(tmp_pat
     ]
     assert coverage["branch_arc_detail_status"] == "exact_from_coverage_py_artifact_and_reverified_r1"
     assert (code, document["status"]) == (1, "complete")
+    assert document["qualifying"] is True
 
 
 def test_o19_without_coverage_the_declared_artifact_is_never_read(tmp_path):

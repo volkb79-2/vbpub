@@ -25,6 +25,7 @@ import json
 import os
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import tomllib
@@ -35,6 +36,8 @@ import pytest
 from gate.tests.support import PROJECT_ROOT
 
 GATE_SCRIPT = PROJECT_ROOT / "tools" / "tester-unified-gate.sh"
+SELF_QUALIFICATION_SCRIPT = PROJECT_ROOT / "tools" / "self-qualification-container.sh"
+OBSERVER_GID_HELPER = PROJECT_ROOT / "tools" / "resource-observer-gid.sh"
 DISTRIBUTION = PROJECT_ROOT / "gate" / "distribution"
 LOCKED_ASSETS = PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "P24"
 AMBIENT_TESTER_VENV_PYTHON = "/opt/tester-venv/bin/python"
@@ -77,6 +80,7 @@ def gate_functions(tmp_path_factory) -> Path:
 
     out = tmp_path_factory.mktemp("gate-functions") / "gate-functions.sh"
     out.write_text(body, encoding="utf-8")
+    shutil.copyfile(OBSERVER_GID_HELPER, out.parent / OBSERVER_GID_HELPER.name)
     return out
 
 
@@ -84,7 +88,10 @@ def _host_environ() -> dict[str, str]:
     """The caller's environment minus the CD50 opt-in (CD54): a shell that exports
     `ASSAY_GATE_ALLOW_SHARED_HOST` must not flip a test's result. Tests of the opt-in
     set it explicitly on the environment they pass."""
-    return {k: v for k, v in os.environ.items() if k != "ASSAY_GATE_ALLOW_SHARED_HOST"}
+    return {
+        **{k: v for k, v in os.environ.items() if k != "ASSAY_GATE_ALLOW_SHARED_HOST"},
+        "ASSAY_GATE_HOST_DOCKER_GID": "994",
+    }
 
 
 def run_bash(
@@ -108,6 +115,51 @@ def run_bash(
         env=_host_environ() if env is None else env,
         timeout=timeout,  # failsafe only; no assertion depends on elapsed time
     )
+
+
+@pytest.mark.parametrize(
+    ("function_name", "run_status", "expected_status"),
+    [
+        ("run_self_hosted_lane", 1, 1),
+        ("run_self_hosted_lane", 2, 3),
+        ("run_self_hosted_lane", 3, 3),
+        ("run_self_hosted_lane", 4, 3),
+        ("run_self_hosted_lane", 5, 3),
+        ("run_analysis_lane", 1, 1),
+        ("run_analysis_lane", 2, 3),
+        ("run_analysis_lane", 3, 3),
+        ("run_analysis_lane", 4, 3),
+        ("run_analysis_lane", 5, 3),
+    ],
+)
+def test_incomplete_assay_outcomes_are_infrastructure_not_product_failures(
+    tmp_path: Path,
+    gate_functions: Path,
+    function_name: str,
+    run_status: int,
+    expected_status: int,
+) -> None:
+    worktree = tmp_path / "worktree"
+    (worktree / "assay").mkdir(parents=True)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    env = _host_environ()
+    env["ASSAY_RUN_STATUS"] = str(run_status)
+    snippet = "\n".join(
+        [
+            'assay() { if [[ "$1" == run ]]; then return "$ASSAY_RUN_STATUS"; fi; return 0; }',
+            "assay_git() { printf '0123456789012345678901234567890123456789\\n'; }",
+            f'{function_name} "{worktree}" "{scratch}" 10.0.1 /tmp/unused-wheel',
+        ]
+    )
+
+    proc = run_bash(snippet, gate_functions=gate_functions, env=env)
+
+    assert proc.returncode == expected_status, proc.stdout + proc.stderr
+    if run_status == 1:
+        assert "ASSAY_GATE_INCONCLUSIVE=" not in proc.stderr
+    else:
+        assert "ASSAY_GATE_INCONCLUSIVE=" in proc.stderr
 
 
 def _make_synthetic_untagged_repo(root: Path) -> None:
@@ -140,10 +192,113 @@ def _make_synthetic_untagged_repo(root: Path) -> None:
 
 
 def test_gate_script_has_valid_bash_syntax() -> None:
+    for script in (GATE_SCRIPT, SELF_QUALIFICATION_SCRIPT, OBSERVER_GID_HELPER):
+        proc = subprocess.run(
+            ["bash", "-n", str(script)], capture_output=True, text=True, timeout=10
+        )
+        assert proc.returncode == 0, f"{script}: {proc.stderr}"
+
+
+def test_observer_guards_read_the_host_docker_gid_from_the_runtime_path() -> None:
+    for script in (GATE_SCRIPT, SELF_QUALIFICATION_SCRIPT):
+        source = script.read_text(encoding="utf-8")
+        assert 'resource-observer-gid.sh' in source
+        assert 'assay_resource_observer_gid "$RESOURCE_OBSERVER_SOURCE" /run/cgprofile' in source
+        assert "getent group docker" not in source
+        assert "ASSAY_GATE_HOST_DOCKER_GID" in source
+    helper = OBSERVER_GID_HELPER.read_text(encoding="utf-8")
+    assert 'control_gid" =~ ^[1-9][0-9]*$' in helper
+    assert "control_mode\" == 770" in helper
+
+
+@pytest.mark.parametrize(
+    ("control_gid", "control_mode", "socket_gid", "directory_gid", "expected_status"),
+    [
+        (994, "770", 995, 995, 0),
+        (0, "770", 995, 995, 1),
+        (994, "750", 995, 995, 1),
+        (994, "770", 994, 994, 1),
+        # the socket's group must equal its directory's group
+        (994, "770", 995, 996, 1),
+    ],
+)
+def test_observer_gid_guard_rejects_wrong_host_group_facts(
+    tmp_path: Path, control_gid: int, control_mode: str,
+    socket_gid: int, directory_gid: int, expected_status: int,
+) -> None:
+    observer_dir = tmp_path / "observer"
+    observer_dir.mkdir()
+    observer_socket = observer_dir / "resource-observer.sock"
+    with socket.socket(socket.AF_UNIX) as listener:
+        listener.bind(str(observer_socket))
+    control_dir = tmp_path / "control"
+    control_dir.mkdir()
+    script = r'''source "$1"
+observer_socket="$2"
+control_dir="$3"
+# Fact variables use a prefix: the helper declares `local socket_gid` /
+# `control_gid` / `control_mode`, which would shadow same-named test globals
+# inside this dynamically scoped stat stub.
+fact_control_gid="$4"
+fact_control_mode="$5"
+fact_socket_gid="$6"
+fact_directory_gid="$7"
+observer_dir="$(dirname "$observer_socket")"
+stat() {
+  local path="${@: -1}"
+  case "$path" in
+    "$observer_dir") printf '0 %s 751\n' "$fact_directory_gid" ;;
+    "$observer_socket") printf '0 %s 660\n' "$fact_socket_gid" ;;
+    "$control_dir") printf '0 %s %s\n' "$fact_control_gid" "$fact_control_mode" ;;
+    *) return 1 ;;
+  esac
+}
+assay_resource_observer_gid "$observer_socket" "$control_dir"
+'''
     proc = subprocess.run(
-        ["bash", "-n", str(GATE_SCRIPT)], capture_output=True, text=True, timeout=10
+        [
+            "bash", "-c", script, "observer-gid-test",
+            str(OBSERVER_GID_HELPER), str(observer_socket), str(control_dir),
+            str(control_gid), control_mode, str(socket_gid), str(directory_gid),
+        ],
+        capture_output=True, text=True, timeout=10,
     )
-    assert proc.returncode == 0, proc.stderr
+    assert proc.returncode == expected_status, proc.stderr
+    if expected_status == 0:
+        assert proc.stdout == "995\n"
+    else:
+        assert proc.stderr
+
+
+def test_observer_gid_guard_refuses_translated_socket_without_host_gid(
+    tmp_path: Path,
+) -> None:
+    observer_dir = tmp_path / "observer"
+    observer_dir.mkdir()
+    observer_socket = observer_dir / "resource-observer.sock"
+    with socket.socket(socket.AF_UNIX) as listener:
+        listener.bind(str(observer_socket))
+    script = r'''source "$1"
+unset ASSAY_GATE_HOST_DOCKER_GID
+stat() {
+  local path="${@: -1}"
+  case "$path" in
+    "$observer_dir") printf '0 995 751\n' ;;
+    "$observer_socket") printf '0 995 660\n' ;;
+    *) return 1 ;;
+  esac
+}
+observer_dir="$(dirname "$2")"
+observer_socket="$2"
+assay_resource_observer_gid "$observer_socket" "$3"
+'''
+    proc = subprocess.run(
+        ["bash", "-c", script, "observer-gid-test", str(OBSERVER_GID_HELPER),
+         str(observer_socket), str(tmp_path / "missing-control")],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert proc.returncode != 0
+    assert "pass ASSAY_GATE_HOST_DOCKER_GID from the host launcher" in proc.stderr
 
 
 def test_gate_driver_git_wrapper_overrides_local_maintenance_settings(tmp_path: Path) -> None:
@@ -256,14 +411,15 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
 
     proc = run_bash(
         'run_registered_tester_container "/workspaces/vbpub/.worktrees/test" '
-        '"/host/vbpub" "dev-gates.slice" "994"',
+        '"/host/vbpub" "dev-gates.slice" "994" "994"',
         gate_functions=gate_functions,
         env=env,
     )
 
-    assert proc.returncode == 17, proc.stdout + proc.stderr
+    assert proc.returncode == 3, proc.stdout + proc.stderr
     assert "fake nested gate output" in proc.stdout
     assert "ASSAY_GATE_CONTAINER_EXIT=17" in proc.stdout
+    assert "ASSAY_GATE_INCONCLUSIVE=tester-unified container exited with infrastructure status 17" in proc.stderr
     calls = [json.loads(line) for line in calls_path.read_text().splitlines()]
     run = next(argv for argv in calls if argv[:2] == ["run", "-d"])
     assert run[2] == "--cidfile"
@@ -279,13 +435,13 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
     assert "--cpus=3" in run
     assert "--group-add" in run and "994" in run
     assert "CGROUP_PARENT_DEV_GATES=dev-gates.slice" in run
-    assert "ASSAY_RESOURCE_OBSERVER_SOCKET=/tmp/cgprofile-resource-observer.sock" in run
+    assert "ASSAY_RESOURCE_OBSERVER_SOCKET=/run/cgprofile-observer/resource-observer.sock" in run
     assert f"ASSAY_GATE_EXPECTED_COMMIT={HEX40}" in run
     assert "CGROUP_PARENT_DEV_BACKGROUND=dev-background.slice" in run
     assert "--network=none" in run
     assert "type=bind,src=/host/vbpub,dst=/host/vbpub" in run
     assert "type=bind,src=/host/vbpub,dst=/workspaces/vbpub" in run
-    assert "type=bind,source=/run/cgprofile/resource-observer.sock,target=/tmp/cgprofile-resource-observer.sock,readonly" in run
+    assert "type=bind,source=/run/cgprofile/observer,target=/run/cgprofile-observer,readonly" in run
     assert not any("docker.sock" in value for value in run)
     assert run.index("tester-unified:local") < run.index("bash")
     container_id = "a" * 64
@@ -301,7 +457,7 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
     env["DOCKER_RUN_STATUS"] = "18"
     failed_launch = run_bash(
         'run_registered_tester_container "/workspaces/vbpub/.worktrees/test" '
-        '"/host/vbpub" "dev-gates.slice" "994"',
+        '"/host/vbpub" "dev-gates.slice" "994" "994"',
         gate_functions=gate_functions,
         env=env,
     )
@@ -313,7 +469,7 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
     env["DOCKER_CID_ON_FAILED_LAUNCH"] = "1"
     accepted_but_transport_failed = run_bash(
         'run_registered_tester_container "/workspaces/vbpub/.worktrees/test" '
-        '"/host/vbpub" "dev-gates.slice" "994"',
+        '"/host/vbpub" "dev-gates.slice" "994" "994"',
         gate_functions=gate_functions,
         env=env,
     )
@@ -325,7 +481,7 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
     env["DOCKER_INSPECT_OWNER_OVERRIDE"] = "f" * 64
     foreign_cidfile = run_bash(
         'run_registered_tester_container "/workspaces/vbpub/.worktrees/test" '
-        '"/host/vbpub" "dev-gates.slice" "994"',
+        '"/host/vbpub" "dev-gates.slice" "994" "994"',
         gate_functions=gate_functions,
         env=env,
     )
@@ -355,7 +511,7 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
     env["TIMEOUT_CALLS"] = str(timeout_calls)
     update_timeout = run_bash(
         'run_registered_tester_container "/workspaces/vbpub/.worktrees/test" '
-        '"/host/vbpub" "dev-gates.slice" "994"',
+        '"/host/vbpub" "dev-gates.slice" "994" "994"',
         gate_functions=gate_functions,
         env=env,
     )
@@ -438,11 +594,13 @@ def test_registered_tester_log_follower_has_a_bound(
     assert production_wait in source
     short_functions = tmp_path / "gate-functions-short-ordinary-log-wait.sh"
     short_functions.write_text(source.replace(production_wait, production_wait[:-2] + "1 1"), encoding="utf-8")
+    # The gate functions source the observer helper next to themselves.
+    shutil.copyfile(OBSERVER_GID_HELPER, tmp_path / OBSERVER_GID_HELPER.name)
 
     proc = run_bash(
         'wait() { if command kill -0 "$1" 2>/dev/null; then printf "live\\n" > "$WAIT_MARKER"; else printf "exited\\n" > "$WAIT_MARKER"; fi; return 0; }\n'
         'run_registered_tester_container "/workspaces/vbpub/.worktrees/test" '
-        '"/host/vbpub" "dev-gates.slice" "994"',
+        '"/host/vbpub" "dev-gates.slice" "994" "994"',
         gate_functions=short_functions,
         env=env,
         timeout=15,
@@ -551,7 +709,7 @@ def test_b145_probe_is_capped_placed_and_waited_before_logs(
 
     proc = run_bash(
         'run_b145_low_pids_probe "/workspaces/vbpub/.worktrees/assay-b145" '
-        '"/host/vbpub" "dev-gates.slice" "994"',
+        '"/host/vbpub" "dev-gates.slice" "994" "994"',
         gate_functions=gate_functions,
         env=env,
     )
@@ -572,11 +730,11 @@ def test_b145_probe_is_capped_placed_and_waited_before_logs(
     assert "--pids-limit=32" in run
     assert "--cgroup-parent=dev-gates.slice" in run
     assert "CGROUP_PARENT_DEV_GATES=dev-gates.slice" in run
-    assert "ASSAY_RESOURCE_OBSERVER_SOCKET=/tmp/cgprofile-resource-observer.sock" in run
+    assert "ASSAY_RESOURCE_OBSERVER_SOCKET=/run/cgprofile-observer/resource-observer.sock" in run
     assert "ASSAY_B145_LOW_PIDS_PROBE=1" in run
     assert "type=bind,src=/host/vbpub,dst=/host/vbpub" in run
     assert "type=bind,src=/host/vbpub,dst=/workspaces/vbpub" in run
-    assert "type=bind,source=/run/cgprofile/resource-observer.sock,target=/tmp/cgprofile-resource-observer.sock,readonly" in run
+    assert "type=bind,source=/run/cgprofile/observer,target=/run/cgprofile-observer,readonly" in run
     assert "tester-unified:local" in run
     probe_command = run[run.index("bash") + 2]
     assert probe_command.startswith(
@@ -592,6 +750,30 @@ def test_b145_probe_is_capped_placed_and_waited_before_logs(
     assert calls[5][:2] == ["ps", "--all"]
     assert calls[6] == ["rm", "-f", _FAKE_B145_ID]
     assert container_name in run
+
+
+def test_b145_completed_low_pids_failure_is_exit_one(
+    tmp_path: Path, gate_functions: Path
+) -> None:
+    fake_bin = tmp_path / "failed-probe-bin"
+    fake_bin.mkdir()
+    calls_path = tmp_path / "failed-probe-docker-calls.log"
+    _b145_docker(fake_bin)
+    env = _b145_env(fake_bin, tmp_path, calls_path)
+    env["FAKE_B145_WAIT_STATUS"] = "1"
+
+    proc = run_bash(
+        'run_b145_low_pids_probe "/workspaces/vbpub/.worktrees/assay-b145" '
+        '"/host/vbpub" "dev-gates.slice" "994" "994"',
+        gate_functions=gate_functions,
+        env=env,
+    )
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "B145 low-pids acceptance test failed" in proc.stderr
+    assert "ASSAY_GATE_INCONCLUSIVE=" not in proc.stderr
+    calls = [json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()]
+    assert calls[-1] == ["rm", "-f", _FAKE_B145_ID]
 
 
 def test_b145_bounded_wait_acceptance_exercises_timeout_and_force_remove(
@@ -680,7 +862,7 @@ def test_b145_low_pids_wait_timeout_logs_and_force_removes(
 
     proc = run_bash(
         'run_b145_low_pids_probe "/workspaces/vbpub/.worktrees/assay-b145" '
-        '"/host/vbpub" "dev-gates.slice" "994"',
+        '"/host/vbpub" "dev-gates.slice" "994" "994"',
         gate_functions=gate_functions,
         env=env,
     )
@@ -747,7 +929,7 @@ def test_b145_name_conflict_never_removes_by_name_or_unverified_cid(
         (
             "run_b145_low_pids_probe",
             '"/workspaces/vbpub/.worktrees/assay-b145" '
-            '"/host/vbpub" "dev-gates.slice" "994"',
+            '"/host/vbpub" "dev-gates.slice" "994" "994"',
             124,
             "exceeded 150s",
         ),
@@ -1977,40 +2159,37 @@ def test_a_green_container_yields_the_receipt_and_exactly_one_complete_marker(
     ]
 
 
-def test_a_busy_host_makes_the_gate_inconclusive_before_anything_else_happens(
+def test_a_busy_host_does_not_block_the_registered_gate(
     tmp_path: Path, gate_functions: Path
 ) -> None:
-    """CD32: one `docker ps`, no waiting. The receipt from an earlier green run is
-    untouched (it is cleared only once this run really starts), the tester never
-    launches, and no other docker call is made."""
-    worktree, commit, tree = _receipt_worktree(tmp_path)
+    """Running gates do not control admission; the gate's own evidence does."""
+    worktree, commit, _tree = _receipt_worktree(tmp_path)
     earlier = worktree / RECEIPT_RELATIVE
     earlier.parent.mkdir(parents=True)
     earlier.write_bytes(b'{"an earlier": "receipt"}\n')
-    before = earlier.read_bytes()
     env, log = _docker_stub(tmp_path, "run-gate-x\nrun-gate-y\nsome-other-container\n")
 
     proc = run_bash(
         "run_registered_tester_container() { echo LAUNCHED; }\n"
+        "run_sql_qualification() { :; }\n"
+        "run_b145_bounded_wait_acceptance_probe() { :; }\n"
         "run_b145_low_pids_probe() { :; }\n"
         f'run_registered_gate "{worktree}" "/host/vbpub" "dev-gates.slice"',
         gate_functions=gate_functions,
         env=env,
     )
 
-    assert proc.returncode == 3, proc.stdout + proc.stderr
-    assert "ASSAY_GATE_INCONCLUSIVE=host busy — rerun: run-gate-x,run-gate-y" in proc.stderr
-    assert earlier.read_bytes() == before
-    assert "LAUNCHED" not in proc.stdout
-    assert "ASSAY_REGISTERED_GATE_COMPLETE" not in proc.stdout
-    calls = log.read_text(encoding="utf-8").splitlines()
-    assert len(calls) == 1 and calls[0].startswith("ps "), calls
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "LAUNCHED" in proc.stdout
+    assert "ASSAY_GATE_INCONCLUSIVE=host busy" not in proc.stderr
+    assert json.loads((worktree / RECEIPT_RELATIVE).read_text(encoding="utf-8"))["commit"] == commit
+    assert not log.exists()  # no Docker-name inventory is used for admission
 
 
 def test_a_host_running_only_other_containers_proceeds_to_the_tester(
     tmp_path: Path, gate_functions: Path
 ) -> None:
-    worktree, commit, tree = _receipt_worktree(tmp_path)
+    worktree, commit, _tree = _receipt_worktree(tmp_path)
     env, log = _docker_stub(tmp_path, "other-container\nnot-run-gate-x\n")
 
     proc = run_bash(
@@ -2028,11 +2207,10 @@ def test_a_host_running_only_other_containers_proceeds_to_the_tester(
     assert (worktree / RECEIPT_RELATIVE).is_file()
 
 
-def test_the_shared_host_opt_in_lets_other_projects_gates_run_alongside_and_prints_them(
+def test_legacy_shared_host_opt_in_is_a_noop(
     tmp_path: Path, gate_functions: Path
 ) -> None:
-    """CD50 (G1): `ASSAY_GATE_ALLOW_SHARED_HOST=1` tolerates other projects' `run-gate-*`
-    containers, names them on stdout and runs the normal gate; the receipt is unchanged."""
+    """The compatibility spelling does not change gate admission or its verdict."""
     worktree, commit, tree = _receipt_worktree(tmp_path)
     env, log = _docker_stub(tmp_path, "run-gate-x\nrun-gate-y\nother\n")
     env["ASSAY_GATE_ALLOW_SHARED_HOST"] = "1"
@@ -2049,7 +2227,7 @@ def test_the_shared_host_opt_in_lets_other_projects_gates_run_alongside_and_prin
 
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "LAUNCHED" in proc.stdout
-    assert "ASSAY_GATE_SHARED_HOST=run-gate-x,run-gate-y" in proc.stdout.splitlines()
+    assert "ASSAY_GATE_SHARED_HOST=" not in proc.stdout
     receipt = worktree / RECEIPT_RELATIVE
     assert json.loads(receipt.read_text(encoding="utf-8")) == {
         "schema_version": 1,
@@ -2057,36 +2235,34 @@ def test_the_shared_host_opt_in_lets_other_projects_gates_run_alongside_and_prin
         "commit": commit,
         "tree": tree,
     }
-    calls = log.read_text(encoding="utf-8").splitlines()
-    assert len(calls) == 1 and calls[0].startswith("ps "), calls
+    assert not log.exists()
 
 
-def test_the_shared_host_opt_in_still_refuses_another_assay_gate(tmp_path: Path, gate_functions: Path) -> None:
-    """CD50 (G2): one assay gate at a time, opt-in or not."""
-    worktree, commit, tree = _receipt_worktree(tmp_path)
+def test_legacy_shared_host_opt_in_does_not_scan_or_refuse_assay_names(
+    tmp_path: Path, gate_functions: Path
+) -> None:
+    worktree, commit, _tree = _receipt_worktree(tmp_path)
     earlier = worktree / RECEIPT_RELATIVE
     earlier.parent.mkdir(parents=True)
     earlier.write_bytes(b'{"an earlier": "receipt"}\n')
-    before = earlier.read_bytes()
     env, log = _docker_stub(tmp_path, "run-gate-assay-selfhosted-1-2-3\nrun-gate-x\n")
     env["ASSAY_GATE_ALLOW_SHARED_HOST"] = "1"
 
     proc = run_bash(
         "run_registered_tester_container() { echo LAUNCHED; }\n"
+        "run_sql_qualification() { :; }\n"
+        "run_b145_bounded_wait_acceptance_probe() { :; }\n"
         "run_b145_low_pids_probe() { :; }\n"
         f'run_registered_gate "{worktree}" "/host/vbpub" "dev-gates.slice"',
         gate_functions=gate_functions,
         env=env,
     )
 
-    assert proc.returncode == 3, proc.stdout + proc.stderr
-    assert "ASSAY_GATE_INCONCLUSIVE=host busy — rerun: run-gate-assay-selfhosted-1-2-3" in proc.stderr
-    assert "run-gate-x" not in proc.stderr
-    assert earlier.read_bytes() == before
-    assert "LAUNCHED" not in proc.stdout
-    assert "ASSAY_GATE_SHARED_HOST" not in proc.stdout
-    calls = log.read_text(encoding="utf-8").splitlines()
-    assert len(calls) == 1 and calls[0].startswith("ps "), calls
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "LAUNCHED" in proc.stdout
+    assert "ASSAY_GATE_INCONCLUSIVE=host busy" not in proc.stderr
+    assert json.loads(earlier.read_text(encoding="utf-8"))["commit"] == commit
+    assert not log.exists()
 
 
 def test_a_shared_host_opt_in_value_other_than_empty_or_one_is_refused_before_docker(
@@ -2116,7 +2292,7 @@ def test_a_shared_host_opt_in_value_other_than_empty_or_one_is_refused_before_do
     assert not log.exists()  # zero docker calls
 
 
-def test_a_failing_docker_ps_is_inconclusive_and_leaves_the_receipt(
+def test_a_failing_docker_ps_does_not_block_the_gate(
     tmp_path: Path, gate_functions: Path
 ) -> None:
     worktree, commit, tree = _receipt_worktree(tmp_path)
@@ -2132,16 +2308,18 @@ def test_a_failing_docker_ps_is_inconclusive_and_leaves_the_receipt(
 
     proc = run_bash(
         "run_registered_tester_container() { echo LAUNCHED; }\n"
+        "run_sql_qualification() { :; }\n"
+        "run_b145_bounded_wait_acceptance_probe() { :; }\n"
         "run_b145_low_pids_probe() { :; }\n"
         f'run_registered_gate "{worktree}" "/host/vbpub" "dev-gates.slice"',
         gate_functions=gate_functions,
         env=env,
     )
 
-    assert proc.returncode == 3, proc.stdout + proc.stderr
-    assert "ASSAY_GATE_INCONCLUSIVE=host check failed (docker ps) — rerun" in proc.stderr
-    assert "LAUNCHED" not in proc.stdout
-    assert earlier.read_bytes() == b'{"an earlier": "receipt"}\n'
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "LAUNCHED" in proc.stdout
+    assert "ASSAY_GATE_INCONCLUSIVE=host check failed (docker ps)" not in proc.stderr
+    assert (worktree / RECEIPT_RELATIVE).is_file()
 
 
 def test_the_entry_section_ends_with_run_registered_gate_and_only_the_finisher_says_complete() -> None:

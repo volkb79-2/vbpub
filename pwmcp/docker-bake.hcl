@@ -8,7 +8,7 @@ variable "NAMESPACE" {
 
 // One version is released only when npm, PyPI, and MCR all provide it.
 variable "PLAYWRIGHT_VERSION" {
-  default = "1.62.0"
+  default = "1.64.0"
 }
 
 variable "PLAYWRIGHT_DISTRO" {
@@ -18,7 +18,7 @@ variable "PLAYWRIGHT_DISTRO" {
 // Multi-arch manifest digest for the selected Playwright base image.
 // The resolver refreshes this together with PLAYWRIGHT_VERSION.
 variable "PLAYWRIGHT_IMAGE_DIGEST" {
-  default = "sha256:baed2032d533817f3dbe6425de795788430ba345e819a1201337009ba17c9d07"
+  default = "sha256:06a9939e57531807f8d5fd76ce44b53165ffb7d7501d87ab10e285c20b1e971f"
 }
 
 // @playwright/mcp pin (bundled MCP Streamable HTTP server).
@@ -44,7 +44,17 @@ variable "LIGHTHOUSE_VERSION" {
 
 // CMRU's prepared, Playwright-driven pwmcp release coordinate.
 variable "PWMCP_VERSION" {
-  default = "1.62.0-r4"
+  default = "1.64.0-r3"
+}
+
+// OCR sidecar base (containers/ocr/Dockerfile): debian:<release>-slim pinned by manifest digest.
+// Projections of the same values live in that Dockerfile and cmru.vars; the resolver keeps them equal.
+variable "DEBIAN_RELEASE" {
+  default = "trixie"
+}
+
+variable "DEBIAN_IMAGE_DIGEST" {
+  default = "sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad"
 }
 
 variable "OCI_SOURCE" {
@@ -77,6 +87,21 @@ target "pwmcp-latest" {
   ]
 }
 
+// The OCR sidecar ships with every pwmcp release under the SAME release coordinate, in its own
+// GHCR repository (pwmcp-ocr), so a stack bundle's two image tags always match.
+target "pwmcp-ocr" {
+  context    = "."
+  dockerfile = "containers/ocr/Dockerfile"
+  args = {
+    DEBIAN_RELEASE      = "${DEBIAN_RELEASE}"
+    DEBIAN_IMAGE_DIGEST = "${DEBIAN_IMAGE_DIGEST}"
+  }
+  tags = [
+    "${REGISTRY}/${NAMESPACE}/pwmcp-ocr:${PWMCP_VERSION}",
+    "${REGISTRY}/${NAMESPACE}/pwmcp-ocr:latest",
+  ]
+}
+
 group "all" {
-  targets = ["pwmcp-latest"]
+  targets = ["pwmcp-latest", "pwmcp-ocr"]
 }

@@ -159,14 +159,27 @@ def _assert_current_verdict_schema_is_documented(changes: str, version: int) -> 
 
 def test_consumers_covers_the_latest_two_verdict_schema_cuts():
     changes = (REPO_ROOT / "CHANGES.md").read_text(encoding="utf-8")
-    # During development the current cut is under `[Unreleased]`; release
-    # preparation folds it into the newest dated section. Older releases must
-    # not mask a missing note in either current location.
-    _assert_current_verdict_schema_is_documented(changes, VERDICT_SCHEMA_VERSION)
     consumer_text = CONSUMERS.read_text(encoding="utf-8")
+    # CMRU owns release history and requires [Unreleased] to remain empty in
+    # an untagged worktree. Before release, the adopter migration in
+    # CONSUMERS.md is the current-schema source. If the generated changelog
+    # already contains this schema note, require it in the current section so
+    # an older release cannot mask a stale generated entry.
+    if f"verdict schema v{VERDICT_SCHEMA_VERSION}" in changes:
+        _assert_current_verdict_schema_is_documented(
+            changes, VERDICT_SCHEMA_VERSION
+        )
     _assert_recent_verdict_migrations_are_documented(
         consumer_text, VERDICT_SCHEMA_VERSION
     )
+
+
+def test_readme_documents_current_native_r2_serial_constraint():
+    text = re.sub(r"\s+", " ", README.read_text(encoding="utf-8"))
+
+    assert "native R2 lanes must declare `judge.mutation.jobs = 1`" in text
+    assert "a higher value refuses during load" in text
+    assert "Existing v2 lane files still load" not in text
 
 
 def test_current_verdict_schema_check_ignores_historical_release_notes():
@@ -962,3 +975,25 @@ def test_wave1_new_anchors_are_present_and_resolve():
         assert expected in _readme_design_guide_links(), (
             f"README does not link to {expected}"
         )
+
+
+def test_provisional_self_qualification_is_documented_across_the_public_docs():
+    for document in DOCS:
+        text = document.read_text(encoding="utf-8")
+        assert "self-qualification-provisional" in text, (
+            f"{document.name} does not name the provisional qualification lane"
+        )
+    consumer_text = CONSUMERS.read_text(encoding="utf-8")
+    for required in (
+        "R0, R1 over all of `src/assay`",
+        "the R3 canary",
+        ".assay/mutation-postponed-assay.json",
+        '"result": "provisional"',
+        "10.0.0 <= version < 10.1.0",
+        "CMRU's isolated `run-tests` step",
+    ):
+        assert required in consumer_text, f"CONSUMERS.md omits provisional lane fact {required!r}"
+    expected_anchor = "provisional-release-qualification-b169-b170"
+    assert expected_anchor in _design_guide_anchors()
+    assert expected_anchor in _document_anchors(CONSUMERS)
+    assert expected_anchor in _readme_design_guide_links()

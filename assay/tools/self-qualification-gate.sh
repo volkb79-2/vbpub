@@ -121,7 +121,7 @@ run_b110_pilot_inner() {
     --expected-assay-inode "$ASSAY_B110_ASSAY_STATE_INODE" \
     --output b110-pilot-plan.json -- \
     timeout --verbose --signal=TERM --kill-after=30s "${pilot_step_budget_s}s" \
-      "$assay_bin" plan self-qualification --file assay.toml
+      "$assay_bin" plan self-qualification --json --file assay.toml
   pilot_plan_status=$?
   set -e
   if (( pilot_plan_status != 0 )); then
@@ -159,14 +159,14 @@ run_b110_pilot_inner() {
     return 124
   fi
   set +e
-  python3 "$project/tools/b110_pilot_safe_output.py" \
+  ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION=1 python3 "$project/tools/b110_pilot_safe_output.py" \
     --assay-fd "$assay_state_fd" \
     --expected-assay-device "$ASSAY_B110_ASSAY_STATE_DEVICE" \
     --expected-assay-inode "$ASSAY_B110_ASSAY_STATE_INODE" \
     --output b110-pilot-summary.json --stderr b110-pilot-run.log -- \
     timeout --verbose --signal=TERM --kill-after=30s "${pilot_run_timeout_s}s" \
       "$assay_bin" run self-qualification --file assay.toml \
-      --candidates-file "$assay_state_root/b110-pilot-candidates.txt" --pilot-jobs 3 --cold-witness --resume \
+      --candidates-file "$assay_state_root/b110-pilot-candidates.txt" --pilot-jobs 1 --cold-witness --resume \
       --state-dir "$assay_state_root/b110-pilot-state" --progress "$assay_state_root/progress-b110-pilot.jsonl" \
       --r2-manifest "$assay_state_root/r2-manifest-b110-pilot.txt" \
       --campaign-deadline "$pilot_deadline"
@@ -267,7 +267,10 @@ run_analysis_r2_pilot() {
   local pilot_plan_status pilot_selection_status checker_status pilot_init_status
   local campaign_remaining_after_run_s pilot_run_timeout_s pilot_run_started_s
   local pilot_checker_stdout pilot_attestation_sha256
-  local state_dir=.assay/analysis-r2-pilot-state
+  # Keep resume records separate for each exact source revision. A fixed path
+  # would make a new pilot collide with the previous
+  # commit's PILOT-STATE sentinel; the old records remain available for audit.
+  local state_dir=.assay/analysis-r2-pilot-state-${source_commit:0:12}
   local plan_path=.assay/analysis-r2-pilot-plan.json
   local candidates_path=.assay/analysis-r2-pilot-candidates.txt
   local selection_path=.assay/analysis-r2-pilot-selection.json
@@ -317,7 +320,7 @@ run_analysis_r2_pilot() {
   fi
   set +e
   timeout --verbose --signal=TERM --kill-after=30s "${pilot_step_budget_s}s" \
-    "$assay_bin" plan analysis-r2 --file assay.toml --cold-witness > "$plan_path"
+    "$assay_bin" plan analysis-r2 --json --file assay.toml --cold-witness > "$plan_path"
   pilot_plan_status=$?
   set -e
   if (( pilot_plan_status != 0 )); then
@@ -358,7 +361,7 @@ run_analysis_r2_pilot() {
   fi
   pilot_run_started_s=$SECONDS
   set +e
-  timeout --verbose --signal=TERM --kill-after=30s "${pilot_run_timeout_s}s" \
+  ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION=1 timeout --verbose --signal=TERM --kill-after=30s "${pilot_run_timeout_s}s" \
     "$assay_bin" run analysis-r2 --file assay.toml \
       --candidates-file "$candidates_path" --cold-witness --resume \
       --state-dir "$state_dir" --progress "$progress_path" \
@@ -451,10 +454,10 @@ run_b110_screen() {
     --expected-assay-device "$ASSAY_B110_ASSAY_STATE_DEVICE" \
     --expected-assay-inode "$ASSAY_B110_ASSAY_STATE_INODE" \
     --output b110-screen-plan.json -- \
-    "$assay_bin" plan self-qualification --file assay.toml \
+    "$assay_bin" plan self-qualification --json --file assay.toml \
     || { plan_status=$?; echo "B110_SCREEN_PLANNING_FAILED=1" >&2; return "$plan_status"; }
   set +e
-  python3 "$project/tools/b110_pilot_safe_output.py" \
+  ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION=1 python3 "$project/tools/b110_pilot_safe_output.py" \
     --assay-fd "$assay_state_fd" \
     --expected-assay-device "$ASSAY_B110_ASSAY_STATE_DEVICE" \
     --expected-assay-inode "$ASSAY_B110_ASSAY_STATE_INODE" \
@@ -536,14 +539,19 @@ requested_lane="${2:-self-qualification}"
 project="$worktree/assay"
 
 case "$requested_lane" in
-  self-qualification|self-qualification-preflight|b110-pilot|b110-screen|analysis-r2-pilot) ;;
+  self-qualification|self-qualification-preflight|self-qualification-provisional|b110-pilot|b110-screen|analysis-r2-pilot) ;;
   *) die "unsupported self-qualification lane: $requested_lane" ;;
 esac
 
-[[ -x "$tester_python" ]] || die "B105 requires tester-unified's $tester_python"
-[[ -f "$project/pyproject.toml" ]] || die "selected worktree has no assay/pyproject.toml: $project"
-
 cd "$project"
+postponed_marker=".assay/mutation-postponed-assay.json"
+if [[ "$requested_lane" == self-qualification || "$requested_lane" == self-qualification-provisional ]]; then
+  # Clear success-shaped evidence before any setup check can refuse this run.
+  rm -f -- "$postponed_marker"
+fi
+[[ -x "$tester_python" ]] || die "B105 requires tester-unified's $tester_python"
+[[ -f pyproject.toml ]] || die "selected worktree has no assay/pyproject.toml: $project"
+
 if [[ "$requested_lane" == b110-pilot || "$requested_lane" == b110-screen ]]; then
   pin_b110_assay_state
 else
@@ -585,7 +593,7 @@ source_epoch="$(assay_git -C "$scratch/source" log -1 --format=%ct "$source_comm
   || die "cannot derive SOURCE_DATE_EPOCH from selected commit $source_commit"
 
 # S1 (B123): the full lane needs the registered tester-unified gate to have passed
-# at this exact commit and tree. `./run-gate.py tester-unified` writes this receipt
+# at this exact commit and tree. `run-gate tester-unified` writes this receipt
 # only after a green run; the preflight lane does not require it (CD9).
 receipt="$project/.assay/registered-gate/tester-unified.json"
 if [[ "$requested_lane" == "self-qualification" ]]; then
@@ -595,7 +603,7 @@ if [[ "$requested_lane" == "self-qualification" ]]; then
     --tester-unified-receipt "$receipt" \
     --expected-commit "$source_commit" \
     --expected-tree "$source_tree" \
-    || die "no registered tester-unified pass at $source_commit; run ./run-gate.py tester-unified first"
+    || die "no registered tester-unified pass at $source_commit; run run-gate tester-unified first"
 fi
 
 distribution="$project/gate/distribution"
@@ -670,6 +678,9 @@ if [[ "$requested_lane" == "self-qualification" ]]; then
   deadline=".assay/campaign-deadline-$campaign.json"
 elif [[ "$requested_lane" == "self-qualification-preflight" ]]; then
   campaign="b105-pre-${source_commit:0:12}"
+  deadline=".assay/campaign-deadline-$campaign.json"
+elif [[ "$requested_lane" == "self-qualification-provisional" ]]; then
+  campaign="b105-prov-${source_commit:0:12}"
   deadline=".assay/campaign-deadline-$campaign.json"
 elif [[ "$requested_lane" == "b110-pilot" ]]; then
   campaign="b110-pilot-${source_commit:0:12}"
@@ -748,6 +759,21 @@ if [[ "$requested_lane" == "self-qualification" ]]; then
       exit "$init_status"
     fi
   fi
+elif [[ "$requested_lane" == "self-qualification-provisional" ]]; then
+  if [[ ! -e "$deadline" ]]; then
+    if "$assay_bin" campaign init --file assay.toml \
+        --campaign "$campaign" \
+        --lane self-qualification-provisional \
+        --hours 2 \
+        --state-dir .assay/mutation-state-self-qualification-provisional \
+        --wheel-sha256 "$wheel_digest"; then
+      :
+    else
+      init_status=$?
+      echo "B105_CAMPAIGN_INIT_REFUSED=1" >&2
+      exit "$init_status"
+    fi
+  fi
 else
   if [[ ! -e "$deadline" ]]; then
     if "$assay_bin" campaign init --file assay.toml \
@@ -767,6 +793,157 @@ fi
 echo "B105_CAMPAIGN_DEADLINE=$deadline"
 check_campaign_wheel_digest \
   || die "persisted campaign deadline does not bind this deterministic source wheel"
+
+# The R2 waiver is keyed to an explicit operator decision and the prepared
+# release heading, never the pre-tag wheel version: the provisional lane is
+# valid only for assay 10.0.x, and refuses if release tags cannot be inspected
+# or an assay release at or above the window's upper bound exists. The full
+# `self-qualification` lane deletes any marker so a postponement can never
+# stand in for an R2 result.
+record_r2_postponement() {
+  "$scratch/run-venv/bin/python" - "$postponed_marker" "$source_commit" "$source_tree" "$version" <<'PYEOF'
+import json
+import os
+import re
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+marker, commit, tree, version = sys.argv[1:]
+TRACKING_ID = "B169"
+DECISION = "operator decision 2026-10-27: R2 mutation waived for the release wave"
+WINDOW = ((10, 0, 0), (10, 1, 0))  # `>= 10.0.0`, `< 10.1.0`
+VERSION_RE = re.compile(
+    r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+)
+
+try:
+    changelog = Path("CHANGES.md").read_text(encoding="utf-8")
+except OSError as exc:
+    raise SystemExit(f"cannot read prepared release changelog CHANGES.md: {exc}")
+cmru_source = Path.cwd().parent / "cmru" / "src"
+sys.path.insert(0, str(cmru_source))
+try:
+    from cmru.release_notes import markdown_h2_headings
+except ImportError as exc:
+    raise SystemExit(f"cannot load CMRU's prepared release-heading parser: {exc}")
+headings = markdown_h2_headings(changelog)
+unreleased_indexes = [
+    index for index, heading in enumerate(headings)
+    if heading.text == "## [Unreleased]"
+]
+if len(unreleased_indexes) != 1:
+    raise SystemExit(
+        "the R2 postponement B169 requires exactly one Unreleased heading in CHANGES.md"
+    )
+first_release_index = unreleased_indexes[0] + 1
+if first_release_index >= len(headings):
+    raise SystemExit(
+        "the R2 postponement B169 requires a dated, prepared release heading in CHANGES.md"
+    )
+first_release_heading = headings[first_release_index].text
+match = re.fullmatch(
+    r"## \[((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))\] - "
+    r"(\d{4}-\d{2}-\d{2})",
+    first_release_heading,
+)
+if match is None:
+    raise SystemExit(
+        "the first release heading after Unreleased is not a supported dated stable release heading: "
+        f"{first_release_heading!r}"
+    )
+prepared_release_version, prepared_release_date = match.groups()
+try:
+    datetime.strptime(prepared_release_date, "%Y-%m-%d")
+except ValueError:
+    raise SystemExit(
+        "the first release heading after Unreleased has an invalid release date: "
+        f"{first_release_heading!r}"
+    ) from None
+
+transaction_version = os.environ.get("CMRU_RELEASE_GATE_VERSION")
+if transaction_version is not None:
+    if VERSION_RE.fullmatch(transaction_version) is None:
+        raise SystemExit(
+            "CMRU's release transaction version is not a stable X.Y.Z version: "
+            f"{transaction_version!r}"
+        )
+    if transaction_version != prepared_release_version:
+        raise SystemExit(
+            "the prepared release heading "
+            f"{prepared_release_version} does not match CMRU's release transaction version "
+            f"{transaction_version}"
+        )
+
+def version_tuple(value):
+    if VERSION_RE.fullmatch(value) is None:
+        return None
+    return tuple(int(part) for part in value.split("."))
+
+release_version_tuple = version_tuple(prepared_release_version)
+if not WINDOW[0] <= release_version_tuple < WINDOW[1]:
+    raise SystemExit(
+        "the R2 postponement B169 is authorized only for assay >= 10.0.0, < 10.1.0; "
+        f"prepared changelog release is {prepared_release_version}. "
+        "Run the full self-qualification lane."
+    )
+
+try:
+    tag_result = subprocess.run(
+        ["git", "tag", "--list", "assay-v*"], capture_output=True, text=True, check=False
+    )
+except OSError as exc:
+    raise SystemExit(f"cannot list existing assay release tags: {exc}")
+if tag_result.returncode != 0:
+    detail = tag_result.stderr.strip() or f"git exited {tag_result.returncode}"
+    raise SystemExit(f"cannot list existing assay release tags: {detail}")
+tags = tag_result.stdout.split()
+stable_tags = []
+for tag in tags:
+    if not tag.startswith("assay-v"):
+        continue
+    parsed = version_tuple(tag.removeprefix("assay-v"))
+    if parsed is not None:
+        stable_tags.append((parsed, tag))
+newest = max(stable_tags, default=None)
+if newest is None:
+    raise SystemExit(
+        "cannot determine the latest stable assay tag: `git tag --list assay-v*` "
+        "returned no valid X.Y.Z release tags"
+    )
+newest_version, newest_tag = newest
+if newest_version >= WINDOW[1]:
+    raise SystemExit(
+        f"the R2 postponement {TRACKING_ID} is valid only below assay "
+        f"{'.'.join(map(str, WINDOW[1]))}; tag {newest_tag} exists. "
+        "Run the full self-qualification lane."
+    )
+document = {
+    "schema_version": 1,
+    "status": "postponed",
+    "result": "provisional",
+    "lane": "self-qualification-provisional",
+    "rigor_postponed": "R2",
+    "tracking_id": TRACKING_ID,
+    "decision": DECISION,
+    "window": "assay >= 10.0.0, < 10.1.0",
+    "target_version": prepared_release_version,
+    "cmru_release_gate_version_bound": transaction_version is not None,
+    "commit": commit,
+    "tree": tree,
+    "assay_version": version,
+    "recorded_at": datetime.now(timezone.utc).isoformat(),
+    "note": "This is deferral evidence, not an R2 pass. R0, R1 and R3 were judged; R2 is owed.",
+}
+tmp = marker + ".tmp"
+with open(tmp, "w", encoding="utf-8") as handle:
+    json.dump(document, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+os.replace(tmp, marker)
+print(f"B105_WARN=R2 mutation postponed under {TRACKING_ID} ({DECISION}); this is not an R2 pass", file=sys.stderr)
+PYEOF
+}
 
 run_and_verify_lane() {
   local lane="$1" run_status=0 expected_rigor coverage_archive_root coverage_archive_attempt
@@ -795,6 +972,16 @@ run_and_verify_lane() {
       echo "B105_COVERAGE_ARCHIVE_DIR=$coverage_archive_attempt"
       echo "B105_COVERAGE_ARCHIVE=$coverage_archive_attempt/coverage-self-qualification-preflight-snapshot-$source_commit-$source_tree.json"
       ;;
+    self-qualification-provisional)
+      expected_rigor="R0,R1,R3"
+      # Unlike the preflight, this lane also runs the R3 canary, whose control
+      # and transformed runs re-execute the same pytest command: the
+      # coverage-archive export hook in tests/conftest.py must not be armed
+      # for them (it refuses a second, different export), exactly as for the
+      # full lane.
+      unset ASSAY_B105_COVERAGE_SOURCE ASSAY_B105_COVERAGE_ARCHIVE_DIR \
+        ASSAY_B105_SOURCE_COMMIT ASSAY_B105_SOURCE_TREE
+      ;;
     self-qualification)
       expected_rigor="R0,R1,R2,R3"
       unset ASSAY_B105_COVERAGE_SOURCE ASSAY_B105_COVERAGE_ARCHIVE_DIR \
@@ -807,7 +994,7 @@ run_and_verify_lane() {
 
   if [[ "$expected_rigor" == *R2* ]]; then
     echo "B105_PHASE=assay-plan-$lane"
-    "$assay_bin" plan "$lane" --file assay.toml > "$plan_path" || return 2
+    "$assay_bin" plan "$lane" --json --file assay.toml > "$plan_path" || return 2
     plan_args=(--plan-json "$plan_path")
   fi
 
@@ -825,7 +1012,7 @@ remaining = (expires_at - datetime.now(timezone.utc)).total_seconds()
 print(max(0, math.floor(remaining)))
 PYEOF
 )"
-  if timeout --verbose --signal=TERM --kill-after=30s \
+  if ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION=1 timeout --verbose --signal=TERM --kill-after=30s \
       "$((remaining_s + 120))s" "$assay_bin" run "$lane" --file assay.toml \
       --require-judge-provenance \
       --resume \
@@ -881,6 +1068,21 @@ if [[ "$requested_lane" == "self-qualification-preflight" ]]; then
   echo "B105_VERDICT=.assay/verdict-$requested_lane.json"
   echo "B105_PROGRESS=.assay/progress-$requested_lane.jsonl"
   echo "ASSAY_SELF_QUALIFICATION_PREFLIGHT_VERIFIED=1"
+  exit 0
+fi
+
+if [[ "$requested_lane" == "self-qualification-provisional" ]]; then
+  run_and_verify_lane "$requested_lane"
+  ensure_source_unchanged
+  # The R2 postponement is recorded only after every other rigor level of the
+  # lane was judged and its verdict verified; a failed lane returned above.
+  record_r2_postponement
+  echo "B105_VERIFIED_SOURCE_COMMIT=$source_commit"
+  echo "B105_VERIFIED_SOURCE_TREE=$source_tree"
+  echo "B105_VERDICT=.assay/verdict-$requested_lane.json"
+  echo "B105_PROGRESS=.assay/progress-$requested_lane.jsonl"
+  echo "B105_R2_POSTPONED=$postponed_marker"
+  echo "ASSAY_SELF_QUALIFICATION_PROVISIONAL_VERIFIED=1"
   exit 0
 fi
 

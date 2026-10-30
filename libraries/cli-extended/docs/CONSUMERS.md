@@ -1399,7 +1399,7 @@ Package gate (R0/R1/R2 plus the independent R3 canary):
 
 ```bash
 cd libraries/cli-extended
-./run-gate.py gate
+run-gate gate
 ```
 
 All gate lanes execute in `tester-unified`. R1 enforces 100% statement and

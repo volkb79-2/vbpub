@@ -893,7 +893,7 @@ def test_a_declaring_lane_produces_identical_canary_behaviour(tmp_path: Path):
             infrastructure_environment=None,
             process_runner=runner.default_process_runner,
             clock=lambda: datetime(2026, 9, 8, tzinfo=timezone.utc),
-        )
+        )[:2]
 
     declaring = outcome_for(VITEST_REPORT)
 

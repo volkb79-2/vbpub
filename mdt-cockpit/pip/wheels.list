@@ -1,0 +1,19 @@
+# First-party wheels to install into the mdt image.
+# One package name per line. Text after '#' is a comment.
+# Resolved pre-build by scripts/resolve-devcontainers-release.py; wheels are
+# downloaded into pip/wheels/ and installed via `pip install --no-index --find-links`.
+#
+# Format mirrors apt/packages.list: one entry per line, '#' starts a comment.
+#
+# Depends on <name>-latest GitHub Release existing at build time.
+# The resolver only warns when a release is not found, but the image build then FAILS
+# (scripts/check_wheel_set.py): an empty pip/wheels/, or one lacking a name declared
+# here, is an error in every build mode.
+#
+# See: docs/plan-cmru-finish.md §2B (deferred build / cmru-latest dependency).
+
+cli-extended  # https://github.com/volkb79-2/vbpub/releases — cli-extended-v* releases carry the wheel (stdlib-only). cmru declares `cli-extended>=0.3.0` as a real dependency, and the install below is `pip --no-index`, so the cmru wheel can only resolve it from this directory (W3-ZERO Z3). Resolved generically by resolve-devcontainers-release.py via GitHubReleases.resolve_latest; no ordering requirement inside this file.
+ciu   # https://github.com/volkb79-2/vbpub/releases — ciu-v* releases carry the wheel (deps Jinja2/PyYAML/tomli_w provided by requirements/toolkit.txt)
+cmru  # https://github.com/volkb79-2/vbpub/releases — cmru-v* releases carry the wheel (no runtime deps)
+topos  # https://github.com/volkb79-2/vbpub/releases — topos-v* releases carry the wheel (dep textual provided by requirements/toolkit.txt). CLI/client only (`topos --attach`, `topos daemon status|current`) — the root daemon itself needs host DAMON/debugfs/cgroup access this devcontainer does not mount and is not meant to run in a container (see topos/docs/DAEMON.md "Threat Model" + topos/README.md); it connects OUT to a daemon socket, it does not run one in here.
+nyxloom  # https://github.com/volkb79-2/vbpub/releases — nyxloom-v* releases carry the wheel (deps PyYAML/jsonschema/structlog/rich/pygments provided by requirements/toolkit.txt). CLI/dev-tooling only (lint/backlog/registry) — the resident nyxloomd daemon is offline/not deployed; adopting the wheel here does not start or require it.

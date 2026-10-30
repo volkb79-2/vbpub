@@ -52,7 +52,7 @@ def test_transaction_build_retention_rolls_back_first_rename_on_second_rename_fa
         return original_replace(self, target)
     with patch.object(Path, "replace", new=fail_artifact_rename):
         with pytest.raises(OSError, match="artifact rename"):
-            transaction.retain_successful_build_outputs(root, workspace, {"demo": project}, ["demo"])
+            transaction.retain_successful_build_outputs(root, workspace, {"demo": project}, ["demo"], source_mode="origin-main")
     retained_logs = root / "demo" / "logs" / output_id
     retained_artifacts = root / "demo" / "artifacts" / output_id
     assert not retained_logs.exists()

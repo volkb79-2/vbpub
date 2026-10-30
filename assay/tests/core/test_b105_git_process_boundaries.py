@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from conftest import timeout_expired
+
 import errno
 import math
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -189,7 +190,7 @@ class _WaitProcess:
         if self.wait_fails:
             raise OSError("wait failed")
         if self.first_wait_times_out and self.waits == 1:
-            raise subprocess.TimeoutExpired("fake git", timeout)
+            raise timeout_expired("fake git", timeout)
         return 0
 
 
@@ -551,7 +552,7 @@ def test_p22_pump_kills_a_child_whose_reap_wait_times_out(monkeypatch):
     class Process:
         def wait(self, *, timeout):
             assert timeout == 1.0
-            raise subprocess.TimeoutExpired("git", timeout)
+            raise timeout_expired("git", timeout)
 
     process = Process()
     with pytest.raises(AssayError) as caught:

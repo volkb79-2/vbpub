@@ -1,5 +1,5 @@
 # =============================================================================
-# assay project gate lanes — parsed ONLY by run-gate.py (one parser, D-110).
+# assay project gate lanes — parsed ONLY by Run-Gate CLI (one parser, D-110).
 # The self-hosting driver (tools/tester-unified-gate.sh) owns its own
 # container mechanics: exact-OID private clone, hash-pinned offline build
 # closure, two-venv install, detached run with verified cgroup placement, and
@@ -17,8 +17,9 @@
 # headroom, then enforces 3 CPUs, 2 GiB RAM, and 8 GiB RAM+swap on its child.
 # `resources.shared` serializes these Assay lanes in one run-gate namespace; a
 # separate Git-common-dir flock serializes B105 callers across container /tmp
-# namespaces. Other projects still require the estate's serial gate coordinator:
-# the Docker scan is a preflight, not an atomic cross-project lease.
+# namespaces. Cross-project gates may run concurrently; R0 and R3 attribute
+# failed commands to their own cgroup evidence, while R2 keeps its existing
+# candidate-local counters and pressure-aware liveness.
 #
 # environment = "bare-host", not "host" (run-gate RG-43 estate-wide sweep,
 # 2026-09-03): as of rev 36, plain "host" is a CONTAINER default with no
@@ -83,6 +84,26 @@ artifacts = [
   ".assay/coverage-self-qualification-preflight-snapshots",
 ]
 
+# B169/B170 (operator decision 2026-10-27): the full qualification MINUS R2.
+# R0, R1 (whole-target line and branch over src/assay) and the R3 canary run;
+# R2 mutation is explicitly postponed and the run records
+# .assay/mutation-postponed-assay.json (deferral evidence, never an R2 pass).
+# Valid only below assay 10.1.0; the full `self-qualification` lane is unchanged
+# and clears the marker. The campaign deadline is its own b105-prov-* file.
+[lanes.self-qualification-provisional]
+kind = "command"
+environment = "bare-host"
+argv = ["bash", "{worktree}/assay/tools/self-qualification-container.sh", "{worktree}", "self-qualification-provisional"]
+exit_map = { "3" = "ERROR" }
+resources = { shared = ["assay-self-qualification"] }
+clean_tree = true
+budget = "210m"
+artifacts = [
+  ".assay/verdict-self-qualification-provisional.json",
+  ".assay/progress-self-qualification-provisional.jsonl",
+  ".assay/mutation-postponed-assay.json",
+]
+
 # A-474 / B110 P7: the bounded pilot is a non-qualifying measurement. Campaign
 # init happens after clone/build/venv setup and before plan/selection. Campaign
 # init, planning, selection and Assay execution share one hard 90m
@@ -131,6 +152,8 @@ artifacts = [
 # The campaign deadline filename includes the judged commit. The registered
 # host runner emits its resolved path in the lane output; `.assay` remains the
 # containing state-directory artifact, not a substitute for naming that file.
+# The resumable B131 state directory is commit-scoped and is captured by the
+# `.assay` artifact above.
 [lanes.analysis-r2-pilot]
 kind = "command"
 environment = "bare-host"
@@ -149,7 +172,6 @@ artifacts = [
   ".assay/analysis-r2-pilot-attestation.json",
   ".assay/r2-manifest-analysis-r2-pilot.txt",
   ".assay/progress-analysis-r2-pilot.jsonl",
-  ".assay/analysis-r2-pilot-state",
 ]
 
 # Non-qualifying survivor screen (B110 plan §9.1). It is never B105 evidence

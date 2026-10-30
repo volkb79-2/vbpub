@@ -40,7 +40,9 @@ from assay.mutation_witness import (
     receipt_facts,
     replay_witness_from_receipt,
     supports_sequential_pytest,
+    survivor_proof_failure,
     survivor_proof_ok,
+    unsupported_hook_diagnostic,
     witness_from_receipt,
 )
 from assay.runner import CommandPlan
@@ -89,6 +91,7 @@ def _receipt(**overrides):
         "runtime_fingerprint_sha256": "c" * 64,
         "config_sha256": None,
         "archive_hook_exception_used": False,
+        "unsupported_hook_names": [],
     }
     value.update(overrides)
     return value
@@ -102,6 +105,7 @@ def _run_child_pytest(
     pytest_args: tuple[str, ...] = (),
     env_overrides: dict[str, str] | None = None,
     cold: bool = False,
+    autoload_plugins: bool = False,
     liveness_plugin_path: Path | None = None,
 ):
     env = os.environ.copy()
@@ -109,7 +113,10 @@ def _run_child_pytest(
     env.pop("PYTEST_ADDOPTS", None)
     # These subprocesses pin their own hook shapes; ambient entry-point plugins
     # from the cockpit would make the expected builtin-only baseline vary.
-    env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    if autoload_plugins:
+        env.pop("PYTEST_DISABLE_PLUGIN_AUTOLOAD", None)
+    else:
+        env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     env.pop("INSTALL_FORGER", None)
     env.pop("FAIL_CALL", None)
     if env_overrides:
@@ -1011,6 +1018,47 @@ def test_cold_and_survivor_proofs_require_complete_matching_receipts():
         expected=expected,
         command="declared",
     )
+    assert survivor_proof_failure(
+        {**survivor, "runtime_fingerprint_sha256": None},
+        process_exit_status=0,
+        expected=expected,
+        command="declared",
+    ) == "the pytest runtime fingerprint is unavailable"
+    assert survivor_proof_failure(
+        {**survivor, "started_prefix_ok": False},
+        process_exit_status=0,
+        expected=expected,
+        command="declared",
+    ) == "collection failed or execution did not follow the collected order"
+    assert survivor_proof_failure(
+        {**survivor, "started_prefix_ok": False},
+        process_exit_status=0,
+        expected=expected,
+        command="r2",
+    ) == "collection failed or execution did not follow the collected order"
+    other_collection = receipt_facts(
+        {**survivor, "collection_sha256": "d" * 64}
+    )
+    assert other_collection is not None
+    assert survivor_proof_failure(
+        survivor,
+        process_exit_status=0,
+        expected=other_collection,
+        command="r2",
+    ) == "the baseline test collection differs from the expected collection"
+    r2_without_coverage = {
+        **survivor,
+        "hook_fingerprint_sha256": "d" * 64,
+    }
+    r2_facts = receipt_facts(r2_without_coverage)
+    assert r2_facts is not None
+    assert r2_facts.hook_fingerprint_sha256 != expected.hook_fingerprint_sha256
+    assert survivor_proof_failure(
+        r2_without_coverage,
+        process_exit_status=0,
+        expected=r2_facts,
+        command="r2",
+    ) is None
     assert not survivor_proof_ok(
         {**survivor, "unsupported": True},
         process_exit_status=0,
@@ -1056,6 +1104,79 @@ def test_cold_and_survivor_proofs_require_complete_matching_receipts():
     assert cold_witness_from_receipt(
         {**cold, "session_exit_status": True}, process_exit_status=1, expected=expected
     ) is None
+
+
+def test_unsupported_hook_receipt_names_the_fail_closed_reason():
+    baseline = _receipt(
+        unsupported=True,
+        unsupported_pytest_cov_only=False,
+        unsupported_hook_names=["pytest_runtest_call"],
+        session_exit_status=0,
+        witness_node_id=None,
+        witness_when=None,
+        witness_outcome=None,
+    )
+    expected = receipt_facts(baseline)
+    assert expected is not None
+
+    assert survivor_proof_failure(
+        baseline,
+        process_exit_status=0,
+        expected=expected,
+        command="declared",
+    ) == "the baseline uses an unsupported pytest hook configuration"
+
+    assert survivor_proof_failure(
+        baseline,
+        process_exit_status=0,
+        expected=expected,
+        command="r2",
+    ) == "the no-coverage R2 baseline uses an unsupported pytest hook configuration"
+
+
+def test_unsupported_hook_diagnostic_validates_names_independently_of_other_facts():
+    partial = _receipt(
+        unsupported=True,
+        unsupported_pytest_cov_only=False,
+        unsupported_hook_names=["pytest_runtest_call"],
+        collection_count=-1,
+        session_exit_status=0,
+        witness_node_id=None,
+        witness_when=None,
+        witness_outcome=None,
+    )
+    assert receipt_facts(partial) is None
+    assert survivor_proof_failure(
+        partial,
+        process_exit_status=0,
+        expected=None,
+        command="declared",
+    ) == (
+        "the baseline uses an unsupported pytest hook configuration; "
+        "receipt facts are missing or malformed"
+    )
+    assert unsupported_hook_diagnostic(partial) == (
+        "unsupported pytest hooks: pytest_runtest_call"
+    )
+
+    malformed = {
+        **partial,
+        "unsupported_hook_names": ["pytest_unknown_hook"],
+    }
+    assert unsupported_hook_diagnostic(malformed) == (
+        "hook names unavailable (name evidence is missing or malformed)"
+    )
+    assert "pytest_unknown_hook" not in unsupported_hook_diagnostic(malformed)
+
+    empty = {**partial, "unsupported_hook_names": []}
+    assert unsupported_hook_diagnostic(empty) == (
+        "no unsupported pytest hook names were recorded"
+    )
+
+    inconsistent = {**partial, "unsupported_pytest_cov_only": True}
+    assert unsupported_hook_diagnostic(inconsistent) == (
+        "hook names unavailable (support flags are missing or malformed)"
+    )
 
 
 def test_makereport_wrapper_changes_fingerprint_and_cannot_prove_a_cold_kill(tmp_path):
@@ -1279,6 +1400,18 @@ def test_external_hook_allowlist_pins_distribution_version_and_source_digest():
         reviewed_here = (
             installed.version == version and installed_source_sha256 == source_sha256
         )
+        if distribution == "hypothesis":
+            assert installed.version == "6.169.0"
+            assert installed_source_sha256 == (
+                "5b8df643a5394e86bfe608b710ff2534ac74f7192f4f81faa091356ad426f182"
+            )
+            assert reviewed_here
+        if distribution == "pytest-cov":
+            assert installed.version == "7.1.0"
+            assert installed_source_sha256 == (
+                "7cc8a14b8cc8effa886c40fdfa058459d89686d62c53fea6721750e722a60f40"
+            )
+            assert reviewed_here
         assert namespace["_reviewed_external_hook"](
             impl, hook_name, distribution
         ) is reviewed_here
@@ -1341,6 +1474,190 @@ def test_external_hook_allowlist_pins_distribution_version_and_source_digest():
             version,
             source_sha256,
         )
+
+
+def test_reviewed_hypothesis_hooks_accept_real_receipts_and_preserve_collection(tmp_path):
+    project = tmp_path / "project"
+    tests = project / "tests"
+    tests.mkdir(parents=True)
+    (tests / "test_hypothesis.py").write_text(
+        "from hypothesis import given, strategies as st\n\n"
+        "@given(st.integers(min_value=0, max_value=2))\n"
+        "def test_generated_values_are_nonnegative(value):\n"
+        "    assert value >= 0\n\n"
+        "@given(st.integers(min_value=1, max_value=3))\n"
+        "def test_other_generated_values_are_positive(value):\n"
+        "    assert value > 0\n\n"
+        "def test_declared_test_after_hypothesis():\n"
+        "    assert True\n",
+        encoding="utf-8",
+    )
+    plugin_dir = tmp_path / "plugins"
+
+    coverage_result, coverage_receipt = _run_child_pytest(
+        project,
+        plugin_dir,
+        tmp_path / "coverage.json",
+        pytest_args=("--cov=tests", "-m", "hypothesis"),
+        autoload_plugins=True,
+    )
+    assert coverage_result.returncode == 0, coverage_result.stderr
+    assert coverage_receipt is not None
+    # Coverage hooks are intentionally classified as the only unsupported
+    # hooks; the declared-command proof accepts this exact reviewed set.
+    assert coverage_receipt["unsupported"] is True
+    assert coverage_receipt["unsupported_pytest_cov_only"] is True
+    assert coverage_receipt["unsupported_hook_names"] == []
+    coverage_facts = receipt_facts(coverage_receipt)
+    assert coverage_facts is not None
+    assert survivor_proof_ok(
+        coverage_receipt,
+        process_exit_status=coverage_result.returncode,
+        expected=coverage_facts,
+        command="declared",
+    )
+
+    cold_result, cold_receipt = _run_child_pytest(
+        project,
+        plugin_dir,
+        tmp_path / "cold.json",
+        pytest_args=("-m", "hypothesis"),
+        cold=True,
+        autoload_plugins=True,
+    )
+    assert cold_result.returncode == 0, cold_result.stderr
+    assert cold_receipt is not None
+    assert cold_receipt["unsupported"] is False
+    assert cold_receipt["unsupported_hook_names"] == []
+    cold_facts = receipt_facts(cold_receipt)
+    assert cold_facts is not None
+    # Hypothesis' collection hook adds the marker consumed by ``-m``. This
+    # checks the selected ordered manifest in both coverage and candidate mode.
+    assert cold_facts.collection_count == coverage_facts.collection_count == 2
+    assert cold_facts.collection_sha256 == coverage_facts.collection_sha256
+    assert survivor_proof_ok(
+        cold_receipt,
+        process_exit_status=cold_result.returncode,
+        expected=cold_facts,
+        command="r2",
+    )
+
+
+def test_reviewed_hypothesis_call_hook_records_generated_failure_and_rejects_bad_baseline(
+    tmp_path,
+):
+    plugin_dir = tmp_path / "plugins"
+    failing_project = tmp_path / "failing-project"
+    failing_tests = failing_project / "tests"
+    failing_tests.mkdir(parents=True)
+    (failing_tests / "test_generated_failure.py").write_text(
+        "from hypothesis import given, strategies as st\n\n"
+        "@given(st.just(0))\n"
+        "def test_generated_example_fails(value):\n"
+        "    assert value != 0\n",
+        encoding="utf-8",
+    )
+    failure_result, failure_receipt = _run_child_pytest(
+        failing_project,
+        plugin_dir,
+        tmp_path / "failure.json",
+        cold=True,
+        autoload_plugins=True,
+    )
+    assert failure_result.returncode != 0
+    assert failure_receipt is not None
+    assert failure_receipt["unsupported"] is False
+    failure_facts = receipt_facts(failure_receipt)
+    assert failure_facts is not None
+    proof = cold_witness_from_receipt(
+        failure_receipt,
+        process_exit_status=failure_result.returncode,
+        expected=failure_facts,
+    )
+    assert proof is not None
+    assert proof[0]["node_id"] == "tests/test_generated_failure.py::test_generated_example_fails"
+    assert proof[0]["when"] == "call"
+
+    malformed_project = tmp_path / "malformed-project"
+    malformed_tests = malformed_project / "tests"
+    malformed_tests.mkdir(parents=True)
+    (malformed_tests / "test_bad_hypothesis.py").write_text(
+        "from hypothesis import given, strategies as st\n\n"
+        "@given(st.integers())\n"
+        "def test_missing_generated_argument():\n"
+        "    assert True\n",
+        encoding="utf-8",
+    )
+    malformed_result, malformed_receipt = _run_child_pytest(
+        malformed_project,
+        plugin_dir,
+        tmp_path / "malformed.json",
+        pytest_args=("--cov=tests",),
+        autoload_plugins=True,
+    )
+    assert malformed_result.returncode != 0
+    assert malformed_receipt is not None
+    assert malformed_receipt["unsupported"] is True
+    assert malformed_receipt["unsupported_pytest_cov_only"] is True
+    assert malformed_receipt["unsupported_hook_names"] == []
+    malformed_facts = receipt_facts(malformed_receipt)
+    refusal = survivor_proof_failure(
+        malformed_receipt,
+        process_exit_status=malformed_result.returncode,
+        expected=malformed_facts,
+        command="declared",
+    )
+    assert refusal is not None
+    assert refusal in {
+        "the baseline process did not exit successfully",
+        "the pytest session did not exit successfully",
+    }
+
+
+def test_reviewed_hypothesis_report_hook_preserves_call_and_teardown_outcomes(tmp_path):
+    project = tmp_path / "project"
+    tests = project / "tests"
+    tests.mkdir(parents=True)
+    (tests / "test_report_outcomes.py").write_text(
+        "import pytest\n"
+        "from hypothesis import given, strategies as st\n\n"
+        "@given(st.just(1))\n"
+        "def test_hypothesis_call_passes(value):\n"
+        "    assert value == 1\n\n"
+        "@given(st.just(0))\n"
+        "def test_hypothesis_call_fails(value):\n"
+        "    assert value != 0\n\n"
+        "@pytest.fixture\n"
+        "def bad_teardown():\n"
+        "    yield\n"
+        "    raise RuntimeError('teardown failure')\n\n"
+        "def test_teardown_fails(bad_teardown):\n"
+        "    assert True\n",
+        encoding="utf-8",
+    )
+    result, receipt = _run_child_pytest(
+        project,
+        tmp_path / "plugins",
+        tmp_path / "receipt.json",
+        pytest_args=("--cov=tests",),
+        autoload_plugins=True,
+    )
+    assert result.returncode != 0
+    assert receipt is not None
+    # pytest-cov is the only unsupported execution-hook set. Assay records
+    # the call failure separately from the teardown error.
+    assert receipt["unsupported"] is True
+    assert receipt["unsupported_pytest_cov_only"] is True
+    assert receipt["unsupported_hook_names"] == []
+    assert receipt["session_exit_status"] != 0
+    assert receipt_facts(receipt) is not None
+    assert receipt["witness_node_id"] == (
+        "tests/test_report_outcomes.py::test_hypothesis_call_fails"
+    )
+    assert receipt["witness_when"] == "call"
+    assert receipt["auxiliary_failure"] is True
+    assert "FAILED tests/test_report_outcomes.py::test_hypothesis_call_fails" in result.stdout
+    assert "ERROR tests/test_report_outcomes.py::test_teardown_fails" in result.stdout
 
 
 @pytest.mark.parametrize(
@@ -1883,6 +2200,71 @@ def test_declared_failure_proof_only_allows_reviewed_pytest_cov_unsupported_hook
     )
 
 
+def test_unsupported_coverage_baseline_names_the_untrusted_pytest_hook():
+    baseline = _receipt(
+        unsupported=True,
+        unsupported_pytest_cov_only=False,
+        unsupported_hook_names=["pytest_runtest_call"],
+        session_exit_status=0,
+        witness_node_id=None,
+        witness_when=None,
+        witness_outcome=None,
+        started_count=1,
+    )
+    expected = receipt_facts(baseline)
+    assert expected is not None
+
+    assert survivor_proof_failure(
+        baseline,
+        process_exit_status=0,
+        expected=expected,
+        command="declared",
+    ) == "the baseline uses an unsupported pytest hook configuration"
+
+    assert receipt_facts(
+        {**baseline, "unsupported_hook_names": ["pytest_unknown_hook"]}
+    ) is None
+    assert survivor_proof_failure(
+        {**baseline, "unsupported_hook_names": ["pytest_runtest_call", "pytest_runtest_call"]},
+        process_exit_status=0,
+        expected=expected,
+        command="declared",
+    ) == (
+        "the baseline uses an unsupported pytest hook configuration; "
+        "receipt facts are missing or malformed"
+    )
+
+
+def test_real_receipt_names_untrusted_hook_without_weakening_refusal(tmp_path):
+    project = tmp_path / "project"
+    tests = project / "tests"
+    tests.mkdir(parents=True)
+    (tests / "conftest.py").write_text(
+        "def pytest_runtest_setup(item):\n    return None\n",
+        encoding="utf-8",
+    )
+    (tests / "test_ok.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+    result, receipt = _run_child_pytest(
+        project, tmp_path / "plugins", tmp_path / "receipt.json", cold=True
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert receipt is not None
+    assert receipt["unsupported"] is True
+    assert receipt["unsupported_pytest_cov_only"] is False
+    assert receipt["unsupported_hook_names"] == ["pytest_runtest_setup"]
+    facts = receipt_facts(receipt)
+    assert facts is not None
+    assert survivor_proof_failure(
+        receipt,
+        process_exit_status=result.returncode,
+        expected=facts,
+        command="declared",
+    ) == "the baseline uses an unsupported pytest hook configuration"
+
+
 def test_declared_failure_proof_accepts_a_failure_inside_the_started_prefix():
     failed_node = "tests/test_example.py::test_first"
     later_node = "tests/test_example.py::test_later"
@@ -2029,6 +2411,40 @@ def test_valid_failure_receipt_projects_and_replays_only_for_its_exact_target():
     ) == expected
     assert replay_witness_from_receipt(
         receipt, process_exit_status=1, target_node_id="another::test"
+    ) is None
+
+
+def test_pre_b158_receipt_shape_is_projected_only_for_non_cold_witnesses():
+    node = "tests/test_example.py::test_case"
+    receipt = _receipt(
+        target_node_id=node,
+        target_count=1,
+        witness_node_id=node,
+        stopped_at_target=True,
+    )
+    receipt.pop("unsupported_hook_names")
+    expected = {
+        "node_id": node,
+        "when": "call",
+        "outcome": "failed",
+        "session_exit_status": 1,
+        "process_exit_status": 1,
+    }
+
+    assert witness_from_receipt(receipt, process_exit_status=1) == expected
+    assert replay_witness_from_receipt(
+        receipt, process_exit_status=1, target_node_id=node
+    ) == expected
+
+    receipt["cold_requested"] = True
+    assert witness_from_receipt(receipt, process_exit_status=1) is None
+    assert replay_witness_from_receipt(
+        receipt, process_exit_status=1, target_node_id=node
+    ) is None
+    expected_facts = receipt_facts(_receipt())
+    assert expected_facts is not None
+    assert cold_witness_from_receipt(
+        receipt, process_exit_status=1, expected=expected_facts
     ) is None
 
 

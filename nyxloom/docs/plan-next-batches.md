@@ -5,7 +5,7 @@
 > which retired the GA1/GA4 toolkit. Specifically: **`nyxloom gate verify`
 > (GA1) no longer exists** — `gate` is now a reserved top-level verb with
 > zero subcommands (nyxloom-P98); gate execution and trustworthiness
-> verification live entirely in each project's own `run-gate.py`/Assay lane
+> verification live entirely in each project's own `run-gate`/Assay lane
 > (Assay's R2/R3 supersede GA1's purpose). The GA4 daemon verify-cadence no
 > longer fires — its `gate_verify_interval_days` knob (`config.py`) and
 > `days_since_gate_verify` input (`reconcile.py`) survive as dead,

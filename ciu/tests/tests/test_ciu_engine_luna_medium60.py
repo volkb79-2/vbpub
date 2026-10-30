@@ -1,10 +1,11 @@
 """Focused reset safety outcome tests for P60."""
 
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import sys
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from ciu import engine  # noqa: E402
@@ -24,11 +25,18 @@ def _write_identity_facts(root):
 
 
 
+# The test config carries no environment_tag, so reset derives the compose
+# project from the generated identity facts: <repo_name>-<instance_id>-<stack>.
+IDENTITY_PROJECT = "dstdns-abc123-stack"
+
+
 def _config() -> dict:
     return {"deploy": {"project_name": "test-project", "labels": {"prefix": "dstdns"}}}
 
 
-def test_compose_down_warning_does_not_abort_remaining_cleanup(tmp_path, capsys, monkeypatch):
+def test_compose_down_failure_continues_only_after_empty_project_inspection(
+    tmp_path, capsys, monkeypatch,
+):
     _write_identity_facts(tmp_path)
     stack_dir = tmp_path / "stack"
     stack_dir.mkdir()
@@ -40,6 +48,12 @@ def test_compose_down_warning_does_not_abort_remaining_cleanup(tmp_path, capsys,
     def run_cmd(command, **kwargs):
         if "compose" in command and "down" in command:
             return SimpleNamespace(returncode=1, stdout="", stderr="stale project")
+        if command[:2] == ["docker", "ps"] and not any(
+            token.startswith("label=dstdns.component=") for token in command
+        ):
+            assert "--no-trunc" in command
+            assert f"label=com.docker.compose.project={IDENTITY_PROJECT}" in command
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(engine, "to_physical_path", lambda pth, **k: pth)
@@ -48,9 +62,75 @@ def test_compose_down_warning_does_not_abort_remaining_cleanup(tmp_path, capsys,
 
     output = capsys.readouterr().out
     assert "docker compose down failed" in output
+    assert f"No containers remain for compose project '{IDENTITY_PROJECT}'" in output
     assert not volume.exists()
     assert not generated.exists()
     assert "Reset complete for service: stack" in output
+
+
+@pytest.mark.parametrize(
+    ("inspection_result", "message"),
+    [
+        (SimpleNamespace(returncode=0, stdout="container-123\n", stderr=""), "containers remain"),
+        (SimpleNamespace(returncode=1, stdout="", stderr="daemon unavailable"), "inspection also failed"),
+    ],
+)
+def test_compose_down_failure_preserves_host_data_when_inspection_is_not_empty_or_fails(
+    tmp_path, monkeypatch, inspection_result, message,
+):
+    _write_identity_facts(tmp_path)
+    stack_dir = tmp_path / "stack"
+    stack_dir.mkdir()
+    volume = stack_dir / "vol-data"
+    volume.mkdir()
+    generated = stack_dir / "ciu.compose.yml"
+    generated.touch()
+
+    def run_cmd(command, **kwargs):
+        if "compose" in command and "down" in command:
+            return SimpleNamespace(returncode=1, stdout="", stderr="stale project")
+        if command[:2] == ["docker", "ps"] and not any(
+            token.startswith("label=dstdns.component=") for token in command
+        ):
+            assert f"label=com.docker.compose.project={IDENTITY_PROJECT}" in command
+            return inspection_result
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(engine, "to_physical_path", lambda pth, **k: pth)
+    with patch.object(engine.procutil, "run_cmd", side_effect=run_cmd):
+        with pytest.raises(RuntimeError, match=message) as exc:
+            reset_service(_config(), stack_dir, assume_yes=True, repo_root=tmp_path)
+
+    assert str(stack_dir) in str(exc.value)
+    assert volume.is_dir()
+    assert generated.is_file()
+
+
+def test_reset_refuses_symlinked_volume_without_deleting_its_target(tmp_path, monkeypatch):
+    _write_identity_facts(tmp_path)
+    stack_dir = tmp_path / "stack"
+    stack_dir.mkdir()
+    target = tmp_path / "operator-data"
+    target.mkdir()
+    (target / "keep.txt").write_text("preserve")
+    volume_link = stack_dir / "vol-data"
+    volume_link.symlink_to(target, target_is_directory=True)
+    generated = stack_dir / "ciu.compose.yml"
+    generated.touch()
+
+    with (
+        patch.object(engine.procutil, "run_cmd", return_value=SimpleNamespace(
+            returncode=0, stdout="", stderr=""
+        )),
+        patch.object(engine, "_rmtree_with_fallback") as remove_volume,
+    ):
+        with pytest.raises(RuntimeError, match="symlinked volume path"):
+            reset_service(_config(), stack_dir, assume_yes=True, repo_root=tmp_path)
+
+    remove_volume.assert_not_called()
+    assert volume_link.is_symlink()
+    assert (target / "keep.txt").read_text() == "preserve"
+    assert generated.is_file()
 
 
 def test_reset_with_secrets_reports_materialized_stores_and_removes_fallback(tmp_path, capsys):

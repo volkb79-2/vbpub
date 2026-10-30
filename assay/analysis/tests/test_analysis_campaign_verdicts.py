@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import json
+from datetime import timedelta
 
 from analysis.tests import campaign_support as support
 from analysis.tests.test_analysis_campaign import (
@@ -20,11 +21,13 @@ from analysis.tests.test_analysis_campaign import (
     _write_progress,
 )
 from assay.candidate_identity import candidate_id_from_fields
+from tests.conftest import process_tree_evidence_dict
 
 BUCKETS = ("killed", "survived", "crashed", "budget_exceeded", "equivalent", "hung")
 
 
-def _entry(row):
+def _entry(row, bucket="killed"):
+    leader = "timeout-killed" if bucket in {"hung", "budget_exceeded"} else "exited"
     return {
         **{key: row[key] for key in (
             "path", "lineno", "start_byte", "end_byte", "operator", "description",
@@ -33,6 +36,7 @@ def _entry(row):
         "replacement_sha256": "c" * 64,
         "candidate_id": row["id"],
         "execution": {"mode": "full"},
+        "process_tree_evidence": process_tree_evidence_dict(leader_status=leader),
         "resource_limit_evidence": {
             "cgroup_version": 2,
             "pids_events": {"max": {"before": 0, "after": 0, "delta": 0}},
@@ -61,7 +65,7 @@ def _verdict_document(by_bucket, *, outcome, exit_code, reason, policy=None):
     claim["mutation"] = {
         "candidate_count": len(everything),
         "total": len(everything),
-        **{bucket: [_entry(row) for row in by_bucket.get(bucket, [])] for bucket in BUCKETS},
+        **{bucket: [_entry(row, bucket) for row in by_bucket.get(bucket, [])] for bucket in BUCKETS},
         "candidate_ids": [row["id"] for row in everything],
     }
     return document, everything
@@ -143,6 +147,106 @@ def test_o17_f4_a_sharded_pass_verdict_is_never_a_complete_campaign(tmp_path, mo
     assert result["status"] == "incomplete"
     assert "inventory_not_exhausted" in result["complete_blockers"]
     assert result["plan"]["shard"] == "0/4"
+    assert result["qualifying"] is False
+
+
+def test_a_complete_single_shard_campaign_qualifies_as_whole_plan(tmp_path, monkeypatch):
+    rows = support.make_rows(8)
+    document, _everything = _verdict_document(
+        {"killed": rows}, outcome="PASS", exit_code=0, reason=None,
+        policy={"shard_index": 0, "shard_count": 1},
+    )
+    root, head, verdict = _repository(tmp_path, document)
+    _install_plan(monkeypatch, document, rows)
+    progress = tmp_path / "progress.jsonl"
+    records = support.run_records(head, rows)
+    records.insert(1, {
+        "event": "shard", "shard_index": 0, "shard_count": 1,
+        "selected_total": len(rows),
+    })
+    support.write_records(progress, records)
+
+    code, out, err = _invoke(root, head, verdict, progress, command_exit=0)
+
+    assert (code, err) == (0, "")
+    result = json.loads(out)
+    _validate(result)
+    assert result["status"] == "complete"
+    assert result["qualifying"] is True
+    assert result["plan"]["shard"] == "0/1"
+
+
+def test_a_multi_shard_with_every_small_plan_candidate_is_still_incomplete(
+    tmp_path, monkeypatch,
+):
+    rows = support.make_rows(1)
+    from assay.mutation import select_mutation_shard
+
+    ids = [row["id"] for row in rows]
+    shard_index = next(
+        index for index in range(2)
+        if select_mutation_shard(ids, index=index, count=2)
+    )
+    document, _everything = _verdict_document(
+        {"killed": rows}, outcome="PASS", exit_code=0, reason=None,
+        policy={"shard_index": shard_index, "shard_count": 2},
+    )
+    root, head, verdict = _repository(tmp_path, document)
+    _install_plan(monkeypatch, document, rows)
+    progress = tmp_path / "progress.jsonl"
+    records = support.run_records(head, rows)
+    records.insert(1, {
+        "event": "shard", "shard_index": shard_index, "shard_count": 2,
+        "selected_total": 1,
+    })
+    support.write_records(progress, records)
+
+    code, out, err = _invoke(root, head, verdict, progress, command_exit=0)
+
+    assert (code, err) == (3, "")
+    result = json.loads(out)
+    _validate(result)
+    assert result["status"] == "incomplete"
+    assert "shard_not_merged" in result["complete_blockers"]
+    assert result["qualifying"] is False
+    assert result["plan"]["shard"] == f"{shard_index}/2"
+
+
+def test_a_multi_shard_empty_plan_is_still_incomplete(tmp_path, monkeypatch):
+    document, _everything = _verdict_document(
+        {}, outcome="INCONCLUSIVE", exit_code=5, reason="NO_MUTANTS",
+        policy={"shard_index": 0, "shard_count": 2},
+    )
+    root, head, verdict = _repository(tmp_path, document)
+    _install_plan(monkeypatch, document, [])
+    progress = tmp_path / "progress.jsonl"
+    support.write_records(progress, [
+        {
+            "event": "run", "commit": head, "lane": "package",
+            "rigor": ["R0", "R2"], "started": support.RUN_START.isoformat(),
+        },
+        {
+            "event": "end", "candidate_total": 0,
+            "buckets": {name: 0 for name in BUCKETS},
+            "reason": "no_candidates",
+        },
+        {
+            "event": "verdict_written", "outcome": "INCONCLUSIVE", "exit_code": 5,
+            "reason_code": "NO_MUTANTS",
+            "emitted_at": (support.RUN_START + timedelta(seconds=15)).isoformat(),
+            "elapsed_s": 15.0,
+        },
+    ])
+
+    code, out, err = _invoke(root, head, verdict, progress, command_exit=5)
+
+    assert (code, err) == (3, "")
+    result = json.loads(out)
+    _validate(result)
+    assert result["status"] == "incomplete"
+    assert "shard_not_merged" in result["complete_blockers"]
+    assert result["qualifying"] is False
+    assert result["plan"]["shard"] == "0/2"
 
 
 # ---- O18 ------------------------------------------------------------------
@@ -230,6 +334,7 @@ def test_a_never_started_leftover_under_a_non_timeout_reason_is_unresolved(tmp_p
     extra["lineno"] += 50
     extra["mutated_file_sha256"] = "ab" * 32
     extra.pop("kill_signal", None)
+    extra["process_tree_evidence"] = process_tree_evidence_dict(leader_status="not-started")
     extra["candidate_id"] = candidate_id_from_fields(**{k: extra[k] for k in (
         "path", "source_sha256", "start_byte", "end_byte", "mutated_file_sha256", "operator")})
     mutation["budget_exceeded"] = [extra]

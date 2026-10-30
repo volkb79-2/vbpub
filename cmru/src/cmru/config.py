@@ -16,9 +16,11 @@ repository root without an implicit dependency on a former monorepo root.
 from __future__ import annotations
 
 import os
+import sys
 import re
 import subprocess
 import tomllib
+import dataclasses
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import List, Mapping, Optional
@@ -34,12 +36,66 @@ from cmru.version_config import deep_merge_versions, parse_versions_section
 
 # ─── Config dataclasses (S2) ─────────────────────────────────────────────────
 
+class LazyGhToken:
+    """Placeholder for the ``gh`` login's token (``token_source = "gh"``, KI-94).
+
+    Config load only validates ``token_source``; the token is fetched the first
+    time a credential-bearing attribute is *read* (see :class:`ResolvesLazyTokens`),
+    so ``status``/``dependencies``/``doctor`` and the tests that load the real
+    estate config need no working ``gh`` login.  Truthy so ``token or None`` keeps it.
+    """
+
+    __slots__ = ()
+
+    def resolve(self) -> str:
+        return gh_token_cached()
+
+    def __bool__(self) -> bool:
+        return True
+
+    def __repr__(self) -> str:
+        return "<gh token (resolved lazily)>"
+
+
+class ResolvesLazyTokens:
+    """Mixin: reading a field that holds a :class:`LazyGhToken` yields the real token.
+
+    ``object.__getattribute__(obj, name)`` (see :func:`raw_field`) returns the
+    placeholder without triggering the ``gh`` lookup.
+    """
+
+    def __getattribute__(self, name):
+        value = object.__getattribute__(self, name)
+        if type(value) is LazyGhToken:
+            return value.resolve()
+        return value
+
+
+def lazy_replace(obj, **changes):
+    """``dataclasses.replace`` that keeps a lazy ``gh`` token lazy.
+
+    Plain ``replace`` reads every field through ``getattr`` and would run ``gh``
+    (this made ``cmru status`` need a login).  Unchanged fields are read raw.
+    """
+    kept = {
+        f.name: object.__getattribute__(obj, f.name)
+        for f in dataclasses.fields(obj) if f.init and f.name not in changes
+    }
+    return dataclasses.replace(obj, **kept, **changes)
+
+
+def raw_field(obj: object, name: str):
+    """Read a field without resolving a lazy ``gh`` token."""
+    return object.__getattribute__(obj, name)
+
+
 @dataclass(frozen=True)
-class GitHubS2Config:
+class GitHubS2Config(ResolvesLazyTokens):
     owner: str
     repo: str
     owner_type: str          # "user" | "org"  (V03)
-    token: Optional[str]     # resolved repository baseline secret; never from committed config
+    token: Optional[str] = field(repr=False, compare=False)  # resolved repository baseline secret; never from committed config
+    token_source: str = "cmru"  # "gh" | "cmru" (KI-94); mandatory in the committed [github] table
 
 
 @dataclass(frozen=True)
@@ -783,6 +839,24 @@ _RESERVED_CREDENTIAL_ENV = frozenset({
 _RESERVED_CMRU_INTERNAL_ENV = frozenset({
     "CMRU_INTERNAL_RELEASE_PREFLIGHT_FD",
     "CMRU_RELEASE_PREFLIGHT_SNAPSHOT",
+    # The release launcher binds its installed controller to the child before
+    # any project gate can run; project config may not forge that identity.
+    "CMRU_RELEASE_CONTROLLER_VERSION",
+    "CMRU_RELEASE_CONTROLLER_WHEEL_SHA256",
+    "CMRU_RELEASE_CONTROLLER_FILES_SHA256",
+    "CMRU_RELEASE_GATE_COMMIT",
+    "CMRU_RELEASE_GATE_VERSION",
+    # Exact tagged candidate identity injected only into release artifact and
+    # publisher steps; project env must not be able to shadow the source CMRU
+    # already gated and tagged.
+    "CMRU_RELEASE_COMMIT",
+    "CMRU_RELEASE_TAG",
+    # Where a publisher reads the curated notes for the version it releases
+    # (KI-75); a project cannot redirect its own release notes.
+    "CMRU_RELEASE_NOTES_SOURCE",
+    # The operator's recorded `--skip-gates` reason, published in the release
+    # body; a project cannot forge or suppress it.
+    "CMRU_RELEASE_GATES_SKIPPED",
 })
 #: The whole ``CMRU_INTERNAL_`` namespace is cmru's own launch/log state
 #: (``CMRU_INTERNAL_BIN``, ``..._RUN_LOG``, ...): a project ``[env]`` may declare none of it.
@@ -812,7 +886,7 @@ def _scalar_env(
             )
         if reject_credentials and is_reserved_internal_env(key):
             _error(
-                f"{where}.{key} is reserved for CMRU internal launch state and "
+                f"{where}.{key} is reserved for CMRU-managed protected context and "
                 "cannot be declared in project or orchestration configuration"
             )
         result[key] = _expand_env_reference(str(value), where, key)
@@ -822,7 +896,7 @@ def _scalar_env(
 def _github(raw: object) -> GitHubS2Config:
     if not isinstance(raw, dict):
         _error("[github] is required")
-    _reject_unknown(raw, {"owner", "repo", "owner_type"}, "github")
+    _reject_unknown(raw, {"owner", "repo", "owner_type", "token_source"}, "github")
     owner = _require(raw, "owner", "github")
     repo = _require(raw, "repo", "github")
     owner_type = _require(raw, "owner_type", "github")
@@ -830,7 +904,102 @@ def _github(raw: object) -> GitHubS2Config:
         _error("github.owner and github.repo must be non-empty strings")
     if owner_type not in {"user", "org"}:
         _error("github.owner_type must be 'user' or 'org'")
-    return GitHubS2Config(owner=owner.strip(), repo=repo.strip(), owner_type=owner_type, token=None)
+    token_source = raw.get("token_source")
+    if token_source not in TOKEN_SOURCES:
+        shown = "missing" if token_source is None else f"{token_source!r}"
+        _error(
+            f"github.token_source is {shown}: it is mandatory and must be exactly "
+            "'gh' (the token comes from `gh auth token --hostname github.com`) or "
+            "'cmru' (the token comes from GITHUB_PUSH_PAT/GITHUB_TOKEN or cmru.secret.toml). "
+            "Set it in the [github] table of cmru.orchestration.toml (or cmru.toml), "
+            'for example token_source = "gh"'
+        )
+    return GitHubS2Config(
+        owner=owner.strip(), repo=repo.strip(), owner_type=owner_type, token=None,
+        token_source=token_source,
+    )
+
+
+#: The closed vocabulary of ``[github] token_source`` (KI-94).
+TOKEN_SOURCES = ("gh", "cmru")
+GH_LOGIN_HINT = "run `gh auth login`"
+#: delete:packages is needed by `cmru cleanup` (GHCR package-version deletion).
+GH_PACKAGES_HINT = "gh auth refresh -h github.com -s read:packages,write:packages,delete:packages"
+
+_GH_TOKEN_CACHE: list[str] = []
+_GH_TOKEN_FAILURE: list[tuple[int, str]] = []
+
+
+def reset_gh_token_cache() -> None:
+    """Forget the cached ``gh`` result (tests; a new login in a long process)."""
+    _GH_TOKEN_CACHE.clear()
+    _GH_TOKEN_FAILURE.clear()
+
+
+def gh_token_cached() -> str:
+    """One ``gh auth token`` lookup per process, made only where a credential is used.
+
+    A FAILED lookup is cached too (its diagnostic is replayed each time), so
+    best-effort callers do not rerun ``gh`` (up to 15 s) for every step/project.
+    """
+    import contextlib
+    import io
+
+    if _GH_TOKEN_CACHE:
+        return _GH_TOKEN_CACHE[0]
+    if _GH_TOKEN_FAILURE:
+        code, text = _GH_TOKEN_FAILURE[0]
+        sys.stderr.write(text)
+        raise SystemExit(code)
+    captured = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(captured):
+            token = _gh_token()
+    except SystemExit as exc:
+        code = exc.code if isinstance(exc.code, int) else exit_codes.CONFIG_ERROR
+        _GH_TOKEN_FAILURE.append((code, captured.getvalue()))
+        sys.stderr.write(captured.getvalue())
+        raise
+    _GH_TOKEN_CACHE.append(token)
+    return token
+
+
+def _gh_token() -> str:
+    """Return the logged-in ``gh`` user's token (``token_source = "gh"``).
+
+    ``gh`` runs with a minimal environment so an ambient GH_TOKEN/GITHUB_TOKEN
+    cannot silently stand in for the login the operator declared.  The token is
+    read from stdout only and is never logged, echoed or placed in an error.
+    """
+    env = {
+        key: os.environ[key]
+        for key in (
+            "PATH", "HOME", "XDG_CONFIG_HOME", "GH_CONFIG_DIR", "XDG_RUNTIME_DIR",
+            "DBUS_SESSION_BUS_ADDRESS", "LANG", "LC_ALL",
+        )
+        if os.environ.get(key)
+    }
+    command = ["gh", "auth", "token", "--hostname", "github.com"]
+    try:
+        completed = subprocess.run(
+            command, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=15, check=False,
+        )
+    except FileNotFoundError:
+        _error(
+            "github.token_source = 'gh' but the `gh` CLI is not installed or not on PATH; "
+            "install it, or set token_source = 'cmru' and supply a PAT"
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        _error(f"github.token_source = 'gh': `gh auth token` could not run ({type(exc).__name__}); {GH_LOGIN_HINT}")
+    token = (completed.stdout or "").strip()
+    if completed.returncode != 0 or not token:
+        _error(
+            "github.token_source = 'gh' but `gh auth token --hostname github.com` "
+            f"returned {'no token' if completed.returncode == 0 else f'exit {completed.returncode}'}; "
+            f"{GH_LOGIN_HINT} (for GHCR also run `{GH_PACKAGES_HINT}`)"
+        )
+    return token
 
 
 def _environment_token() -> str:
@@ -845,8 +1014,14 @@ def _environment_token() -> str:
 def _secret_token(raw: object, where: str) -> str:
     if not isinstance(raw, dict):
         _error(f"{where} must be a table")
+    if "token_source" in raw:
+        _error(
+            f"{where}.token_source does not belong in the secret file: set "
+            "token_source = 'gh' or 'cmru' in the [github] table of cmru.orchestration.toml "
+            "(or cmru.toml); the secret file carries only [github] token"
+        )
     _reject_unknown(raw, {"token"}, where)
-    token = _require(raw, "token", where)
+    token =_require(raw, "token", where)
     if not isinstance(token, str) or not token.strip():
         _error(f"{where}.token must be a non-empty string")
     return token.strip()
@@ -895,7 +1070,8 @@ def _resolved_secret_token(raw: Mapping[str, object], where: str) -> str:
 
 
 def _load_repository_secrets(
-    config_root: Path, project_configs: Mapping[str, Path],
+    config_root: Path, project_configs: Mapping[str, Path], *, secret_file: Path | None = None,
+    token_source: str = "cmru",
 ) -> tuple[str, Mapping[str, str]]:
     """Deep-merge root secrets with an optional project-local override.
 
@@ -917,9 +1093,25 @@ def _load_repository_secrets(
         return handoff.root, {
             name: handoff.projects.get(name, handoff.root) for name in project_configs
         }
+    if token_source == "gh":
+        # KI-94: the declared source is authoritative. No secret file is read
+        # (so none is needed in a worktree) and GITHUB_PUSH_PAT/GITHUB_TOKEN do
+        # not shadow the login.  The token then flows through the same
+        # reserved-credential handling as any resolved PAT.
+        # Lazy: the lookup happens when a credential is first read (L5: short
+        # timeout, one cached call per process), not at config load.
+        lazy = LazyGhToken()
+        return lazy, {name: lazy for name in project_configs}
     config_root = config_root.resolve()
-    root_raw = _read_secret_document(config_root / "cmru.secret.toml")
-    root_token = _resolved_secret_token(root_raw, str(config_root / "cmru.secret.toml"))
+    root_secret_path = (
+        secret_file.expanduser().resolve()
+        if secret_file is not None
+        else config_root / "cmru.secret.toml"
+    )
+    if secret_file is not None and not root_secret_path.is_file():
+        _error(f"{root_secret_path}: explicitly selected secret file is missing or not a regular file")
+    root_raw = _read_secret_document(root_secret_path)
+    root_token = _resolved_secret_token(root_raw, str(root_secret_path))
 
     environment_token = _environment_token()
     if environment_token:
@@ -1175,15 +1367,16 @@ def _parse_cleanup(raw: object) -> CleanupS2Config:
     )
 
 
-def _load_project_config(config_path: Path) -> ForgeConfig:
+def _load_project_config(config_path: Path, *, secret_file: Path | None = None) -> ForgeConfig:
     project, github, targets = _parse_project_document(config_path)
     assert github is not None and targets is not None
     root_token, project_tokens = _load_repository_secrets(
-        config_path.parent, {project.name: config_path},
+        config_path.parent, {project.name: config_path}, secret_file=secret_file,
+        token_source=github.token_source,
     )
     github = GitHubS2Config(
         owner=github.owner, repo=github.repo, owner_type=github.owner_type,
-        token=root_token or None,
+        token=root_token or None, token_source=github.token_source,
     )
     orchestration = OrchestrationConfig(
         project_order=[project.name],
@@ -1197,7 +1390,9 @@ def _load_project_config(config_path: Path) -> ForgeConfig:
     )
 
 
-def _load_orchestration_config(config_path: Path) -> ForgeConfig:
+def _load_orchestration_config(
+    config_path: Path, *, secret_file: Path | None = None,
+) -> ForgeConfig:
     raw = _read_toml(config_path, ORCHESTRATION_CONFIG_FILENAME)
     _reject_unknown(
         raw, {"schema_version", "github", "targets", "orchestration", "cleanup", "versions"},
@@ -1307,8 +1502,11 @@ def _load_orchestration_config(config_path: Path) -> ForgeConfig:
         for name, project in docs.items()
     }
     known = set(docs)
-    root_token, project_tokens = _load_repository_secrets(config_path.parent, paths)
-    unknown = sorted(set(orch_raw["project_order"]) - known)
+    root_token, project_tokens = _load_repository_secrets(
+        config_path.parent, paths, secret_file=secret_file,
+        token_source=github.token_source,
+    )
+    unknown =sorted(set(orch_raw["project_order"]) - known)
     if unknown:
         _error(f"orchestration.project_order names unknown project(s): {unknown}")
     for project_id, deps in dependencies.items():
@@ -1336,7 +1534,7 @@ def _load_orchestration_config(config_path: Path) -> ForgeConfig:
                 )
     github = GitHubS2Config(
         owner=github.owner, repo=github.repo, owner_type=github.owner_type,
-        token=root_token or None,
+        token=root_token or None, token_source=github.token_source,
     )
     return ForgeConfig(
         github=github, targets=targets,
@@ -1351,13 +1549,16 @@ def _load_orchestration_config(config_path: Path) -> ForgeConfig:
     )
 
 
-def load_forge_config(config_path: Path, *, require_orchestration: bool = False) -> ForgeConfig:
+def load_forge_config(
+    config_path: Path, *, require_orchestration: bool = False,
+    secret_file: Path | None = None,
+) -> ForgeConfig:
     """Load exactly one of the two strict CMRU config documents."""
     config_path = config_path.expanduser().resolve()
     if config_path.name == PROJECT_CONFIG_FILENAME:
-        config = _load_project_config(config_path)
+        config = _load_project_config(config_path, secret_file=secret_file)
     elif config_path.name == ORCHESTRATION_CONFIG_FILENAME:
-        config = _load_orchestration_config(config_path)
+        config = _load_orchestration_config(config_path, secret_file=secret_file)
     else:
         _error("CMRU configuration must be named " + " or ".join(sorted(CONFIG_FILENAMES)))
     if require_orchestration and config_path.name != ORCHESTRATION_CONFIG_FILENAME:

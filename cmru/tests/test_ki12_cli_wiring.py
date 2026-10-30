@@ -25,6 +25,8 @@ from cmru import cli, transaction, version
 
 @pytest.fixture(autouse=True)
 def empty_origin_tag_inventory(monkeypatch):
+    monkeypatch.setattr(cli.transaction, "read_release_source", lambda *_args: None)
+    monkeypatch.setattr(cli.transaction, "source_git_root_for_projects", lambda root, _projects: root)
     monkeypatch.setattr(cli, "_read_origin_tag_refs", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(cli.transaction, "write_release_tag_snapshot", lambda *_args, **_kwargs: None)
 
@@ -45,6 +47,8 @@ def _run_release(monkeypatch, tmp_path, extra_args):
     monkeypatch.setattr(cli, "_resolve_config", lambda _: config_path)
     monkeypatch.setattr(cli, "resolve_invocation_context", lambda *_args, **_kwargs: type("Context", (), {"project_name": None, "scope": "estate"})())
     monkeypatch.setattr(cli, "load_config", lambda _: _config(tmp_path))
+    monkeypatch.setenv(transaction.BRANCH_ENV, "cmru-release-test")
+    monkeypatch.setenv(transaction.BASE_ENV, "a" * 40)
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
 
     def fake_detect(repo_root, projects, **kwargs):

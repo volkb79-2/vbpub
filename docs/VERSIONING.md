@@ -5,16 +5,18 @@ This replaced the old clock-derived `YYYYMMDD` scheme (see "Why we changed" belo
 
 ## TL;DR
 
-- Versions are **SemVer derived from git tags** by [setuptools-scm]. You never edit a
-  version by hand — you create a tag.
+- Release versions use **SemVer**. SCM-based Python projects derive versions from git tags
+  with [setuptools-scm]; file-strategy projects such as tnt use a tracked `VERSION` that
+  CMRU updates and commits before creating the release tag.
 - **MAJOR** = breaking change, **MINOR** = backwards-compatible feature, **PATCH** = fix.
-- Untagged commits build as `X.Y.Z.devN+g<sha>` — unique per commit, static once built.
+- For SCM-based projects, untagged commits build as `X.Y.Z.devN+g<sha>` — unique per commit,
+  static once built. A file-strategy project keeps the committed `VERSION` until CMRU advances it.
 - Wheels are **reproducible**: same commit + pinned toolchain + `SOURCE_DATE_EPOCH`
   → identical sha256.
 
 ## Per-package tags
 
-Each distribution has its own tag prefix (one shared git history, four version lines):
+Each distribution has its own tag prefix in the shared git history. The table lists SCM-based examples:
 
 | Distribution   | Tag prefix         | Example tag           | `setuptools_scm` pretend-version env var          |
 |----------------|--------------------|-----------------------|---------------------------------------------------|
@@ -23,10 +25,14 @@ Each distribution has its own tag prefix (one shared git history, four version l
 | `pwmcp-client` | `pwmcp-client-v`   | `pwmcp-client-v0.1.0` | `SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PWMCP_CLIENT` |
 | `pwmcp-server` | `pwmcp-server-v`   | `pwmcp-server-v0.1.0` | `SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PWMCP_SERVER` |
 
-Each `pyproject.toml` filters to its own prefix via `[tool.setuptools_scm]`
+Each SCM-based `pyproject.toml` filters to its own prefix via `[tool.setuptools_scm]`
 (`tag_regex` + `git_describe_command --match`), so a commit touching only `pwmcp` never
 bumps `ciu`'s release number — only its `.devN+g<sha>` suffix advances. Release numbers
 move **only** when you cut a new `<dist>-v*` tag.
+
+`tnt` uses CMRU's `file:VERSION` strategy instead: `truenas/tnt/VERSION` starts at `0.1.0`,
+and setuptools reads that file for the wheel version. CMRU commits a changed `VERSION` before
+tagging `tnt-v<version>`; `tnt` does not use a `setuptools-scm` pretend-version variable.
 
 **ciu MAJOR tracks the SPEC MAJOR.** `ciu/docs/SPEC.md` is the contract; a breaking SPEC
 change bumps ciu's MAJOR. ciu is seeded at `v2.0.0` to match SPEC `2.0.0`.

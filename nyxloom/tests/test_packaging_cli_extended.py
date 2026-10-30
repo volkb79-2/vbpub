@@ -19,7 +19,7 @@ import pytest
 
 PROJECT = Path(__file__).resolve().parents[1]
 PYPROJECT = tomllib.loads((PROJECT / "pyproject.toml").read_text(encoding="utf-8"))
-REQUIREMENT = "cli-extended>=0.3.0"
+REQUIREMENT = "cli-extended>=0.4.0"
 
 
 def _code_lines(path: Path) -> str:
@@ -67,7 +67,7 @@ def test_pyproject_declares_cli_extended_with_the_documented_floor():
     text = (PROJECT / "pyproject.toml").read_text(encoding="utf-8")
     declaration = text.index(f'"{REQUIREMENT}"')
     # The floor carries its reason (estate version policy), right at the declaration.
-    assert "Floor 0.3.0" in text[:declaration] and "CX-D1" in text[:declaration]
+    assert "Floor 0.4.0" in text[:declaration] and "CX-D1" in text[:declaration]
 
 
 def test_pyproject_vendors_no_cli_extended_source_in_any_packaging_config():

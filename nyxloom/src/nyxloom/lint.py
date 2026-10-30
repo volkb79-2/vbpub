@@ -966,7 +966,10 @@ def _check_l7(findings: list[LintFinding], path: Path, fm, body: str, cfg: Proje
         _check_path_resolution(findings, path, touch_path, cfg, is_touch=True)
 
     for forbid_path in fm.scope.forbid:
-        _check_path_resolution(findings, path, forbid_path, cfg, is_touch=False)
+        # NL-26: forbidding a path that does not exist (yet) is valid -- a
+        # prohibition on creating a file is a legitimate guard. Only the
+        # absolute / ../ and archived-document checks still apply.
+        _check_path_resolution(findings, path, forbid_path, cfg, is_touch=False, must_exist=False)
 
     # Check source.ref
     if fm.source.ref:
@@ -1012,8 +1015,10 @@ def _own_repo_segment(root: Path) -> str | None:
     return None
 
 
-def _check_path_resolution(findings: list[LintFinding], path: Path, check_path: str, cfg: ProjectConfig, is_touch: bool) -> None:
-    """Helper to check if a path resolves."""
+def _check_path_resolution(findings: list[LintFinding], path: Path, check_path: str, cfg: ProjectConfig, is_touch: bool, must_exist: bool = True) -> None:
+    """Helper to check if a path resolves. ``must_exist=False`` (scope.forbid,
+    NL-26) skips only the existence test; absolute, ``../`` and archived
+    references are still errors."""
     if check_path.startswith("/") or check_path.startswith("../"):
         findings.append(LintFinding(
             rule="L7",
@@ -1041,8 +1046,8 @@ def _check_path_resolution(findings: list[LintFinding], path: Path, check_path: 
         ))
         return
 
-    # Files to be created (in scope.touch) are exempt
-    if not is_touch and not full_path.exists():
+    # Files to be created (in scope.touch) and absent forbid entries are exempt
+    if must_exist and not is_touch and not full_path.exists():
         findings.append(LintFinding(
             rule="L7",
             severity="error",

@@ -12,7 +12,8 @@ from cmru import cli, transaction
 
 def _project(name="demo", token="tok"):
     return SimpleNamespace(name=name, cwd=name, project_root=Path(name), paths=[name], prefix=f"{name}-v",
-                           github_token=token, env={}, steps={}, runner_steps={}, changelog="CHANGES.md")
+                           github_token=token, env={}, steps={}, runner_steps={}, changelog="CHANGES.md",
+                           known_project_names=frozenset())
 
 
 def _loaded(tmp_path, project=None):
@@ -80,6 +81,9 @@ def test_main_cleanup_build_output_and_discard_worktree_route_exact_targets(monk
 
 
 def test_main_release_child_dry_run_has_no_promotion_or_workspace_mutation(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
+    monkeypatch.setenv(transaction.BRANCH_ENV, "cmru-release-test")
+    monkeypatch.setenv(transaction.BASE_ENV, "a" * 40)
     project = _project()
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: _loaded(tmp_path, project))

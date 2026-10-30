@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -96,6 +97,7 @@ def _project(name: str, *, paths: list[str] | None = None, steps=None):
         steps=steps or {},
         project_root=Path(name),
         github_token="test-credential",
+        known_project_names=frozenset(),
     )
 
 
@@ -169,15 +171,20 @@ def test_build_step_config_defaults_every_project_subprocess_to_quiet():
 
 def test_required_gate_runs_declared_command(tmp_path, monkeypatch):
     project = _project("alpha", steps={"run-tests": [object()]})
-    calls: list[tuple[str, Path]] = []
+    calls: list[tuple[str, Path, object]] = []
+    monkeypatch.setattr(cli, "_git", lambda *_args, **_kwargs: "a" * 40)
     monkeypatch.setattr(
         cli, "run_project_step",
-        lambda _project, step, root, _logs: calls.append((step, root)),
+        lambda _project, step, root, _logs, **kwargs: calls.append(
+            (step, root, kwargs.get("protected_env")),
+        ),
     )
 
     cli._run_release_gates(tmp_path, {"alpha": project}, ["alpha"])
 
-    assert calls == [("run-tests", tmp_path)]
+    assert calls == [
+        ("run-tests", tmp_path, {"CMRU_RELEASE_GATE_COMMIT": "a" * 40}),
+    ]
 
 
 def test_prepare_commits_only_declared_generated_paths(tmp_path, monkeypatch):
@@ -214,6 +221,11 @@ def test_prepare_generates_and_commits_declared_changelog(tmp_path, monkeypatch)
         lambda *args, **kwargs: generated.append((args, kwargs)) or True,
     )
     monkeypatch.setattr(cli, "_commit_prepared_generated", lambda *_args: committed.append(True) or True)
+    monkeypatch.setattr(
+        cli, "_pending_release_notes_or_refuse",
+        lambda *_args, **_kwargs: SimpleNamespace(version="1.0.0"),
+    )
+    monkeypatch.setattr(cli, "_fold_pending_release_notes", lambda *_args, **_kwargs: False)
 
     cli._prepare_release_projects(tmp_path, {"alpha": project}, ["alpha"], minor=True)
 
@@ -294,6 +306,7 @@ def test_release_proceeds_when_uncommitted_changes_are_explicitly_allowed(monkey
         monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
         monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
         monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
+        monkeypatch.setattr(transaction, "local_head_commit", lambda _root, **_kwargs: "a" * 40)
         monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
         monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
         monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: calls.append("ran-child") or 0)
@@ -322,6 +335,12 @@ def test_release_refuses_unsupported_git_before_creating_candidate_or_running_ch
     git_calls = []
 
     monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
+    monkeypatch.setattr(
+        transaction, "project_git_family_groups",
+        lambda root, projects: {root: list(projects)},
+    )
+    monkeypatch.setattr(transaction, "source_git_root_for_projects", lambda root, _projects: root)
+    monkeypatch.setattr(cli, "_configure_native_release_logging", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
@@ -369,6 +388,7 @@ def test_dry_run_is_not_blocked_by_uncommitted_release_path_changes(monkeypatch)
         monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
         monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
         monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
+        monkeypatch.setattr(transaction, "local_head_commit", lambda _root, **_kwargs: "a" * 40)
         monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
         monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
         monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: calls.append("ran-child") or 0)
@@ -396,6 +416,7 @@ def test_release_ignores_ambient_snapshot_and_uses_only_launcher_handoff(
 owner = "octocat"
 repo = "demo"
 owner_type = "user"
+token_source = "cmru"
 [orchestration]
 project_order = ["alpha"]
 [project.alpha]
@@ -412,6 +433,15 @@ cwd = "alpha"
     workspace_bases = []
 
     monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
+    monkeypatch.setattr(
+        transaction, "project_git_family_groups",
+        lambda root, projects: {root: list(projects)},
+    )
+    monkeypatch.setattr(transaction, "source_git_root_for_projects", lambda root, _projects: root)
+    monkeypatch.setattr(cli, "_configure_native_release_logging", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
+    monkeypatch.setattr(transaction, "backup_was_pushed", lambda *_args: False)
+    monkeypatch.setattr(transaction, "read_release_results", lambda *_args: {})
     monkeypatch.setenv(
         "CMRU_RELEASE_PREFLIGHT_SNAPSHOT", f"{tmp_path.resolve()}:{'c' * 40}",
     )
@@ -1364,6 +1394,7 @@ def test_parent_reverts_promotion_and_reports_sync_failure_on_child_failure(
 owner = "octocat"
 repo = "demo"
 owner_type = "user"
+token_source = "cmru"
 [orchestration]
 project_order = ["alpha"]
 [project.alpha]
@@ -1384,6 +1415,7 @@ cwd = "alpha"
     monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
     monkeypatch.setattr(cli, "_require_local_tag_inspection_support", lambda _root: None)
     monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
+    monkeypatch.setattr(transaction, "local_head_commit", lambda _root, **_kwargs: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
     monkeypatch.setattr(transaction, "write_release_tag_snapshot", lambda *_args, **_kwargs: None)
@@ -1429,6 +1461,7 @@ def test_parent_skips_revert_when_promotion_never_landed(tmp_path, monkeypatch):
 owner = "octocat"
 repo = "demo"
 owner_type = "user"
+token_source = "cmru"
 [orchestration]
 project_order = ["alpha"]
 [project.alpha]
@@ -1449,6 +1482,7 @@ cwd = "alpha"
     monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
     monkeypatch.setattr(cli, "_require_local_tag_inspection_support", lambda _root: None)
     monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
+    monkeypatch.setattr(transaction, "local_head_commit", lambda _root, **_kwargs: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
     monkeypatch.setattr(transaction, "write_release_tag_snapshot", lambda *_args, **_kwargs: None)
@@ -2013,6 +2047,71 @@ def test_run_child_marks_process_as_transaction_child(tmp_path, monkeypatch):
     assert observed["env"][transaction.BRANCH_ENV] == workspace.branch
 
 
+def test_run_child_passes_launcher_controller_identity_to_transaction(
+    tmp_path, monkeypatch,
+):
+    workspace = transaction.ReleaseWorkspace(
+        tmp_path, tmp_path / "release", "cmru-release-identity", "b" * 40,
+    )
+    identity = {
+        "version": "6.2.0",
+        "wheel_sha256": "a" * 64,
+        "distribution_sha256": "c" * 64,
+    }
+    observed = {}
+
+    def fake_run(_command, **kwargs):
+        observed.update(kwargs["env"])
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(transaction.subprocess, "run", fake_run)
+    assert transaction.run_child(
+        workspace, ["demo"], controller_identity=identity,
+    ) == 0
+
+    assert observed[transaction.RELEASE_CONTROLLER_VERSION_ENV] == "6.2.0"
+    assert observed[transaction.RELEASE_CONTROLLER_WHEEL_SHA256_ENV] == "a" * 64
+    assert observed[transaction.RELEASE_CONTROLLER_FILES_SHA256_ENV] == "c" * 64
+
+
+def _refused_identity_cases():
+    good = {"version": "6.2.0", "wheel_sha256": "a" * 64, "distribution_sha256": "c" * 64}
+    cases = [
+        ("incomplete", {key: value for key, value in good.items() if key != name})
+        for name in good
+    ]
+    cases += [
+        ("malformed", {**good, "version": ""}),
+        ("malformed", {**good, "version": 6}),
+        ("malformed", {**good, "wheel_sha256": "z" * 64}),
+        ("malformed", {**good, "wheel_sha256": 7}),
+        ("malformed", {**good, "distribution_sha256": "c" * 63}),
+        ("malformed", {**good, "distribution_sha256": None}),
+    ]
+    return cases
+
+
+@pytest.mark.parametrize(("problem", "identity"), _refused_identity_cases())
+def test_run_child_refuses_an_incomplete_or_malformed_controller_identity_before_launch(
+    tmp_path, monkeypatch, problem, identity,
+):
+    workspace = transaction.ReleaseWorkspace(
+        tmp_path, tmp_path / "release", "cmru-release-identity", "b" * 40,
+    )
+    launched = []
+    monkeypatch.setattr(
+        transaction.subprocess, "run", lambda *args, **kwargs: launched.append(args),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=rf"release controller identity is {problem} before child launch",
+    ):
+        transaction.run_child(workspace, ["demo"], controller_identity=identity)
+
+    assert launched == []  # no child process ever ran under an unproven controller
+
+
 def test_resume_requires_operator_fixes_to_be_committed_on_retained_branch():
     with _OriginAndClone() as h:
         workspace = h.clone_workspace("cmru/release/resume")
@@ -2227,6 +2326,7 @@ def test_resume_refuses_legacy_progress_outside_the_candidate_history():
 
 
 def test_push_backup_branch_force_pushes_under_its_own_name_and_records_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
     """KI-15: a successful push MUST be recorded as this transaction's own
     state (mark_backup_pushed) -- that record is what later tells cleanup
     apart "nothing to delete" from "delete this"."""
@@ -2245,9 +2345,10 @@ def test_push_backup_branch_force_pushes_under_its_own_name_and_records_it(tmp_p
 
     transaction.push_backup_branch(workspace)
 
-    assert calls[0][0] == ["git", "push", "--force", "origin", "HEAD:refs/heads/cmru/release/x"]
-    assert calls[0][1]["cwd"] == workspace.path
-    assert calls[0][1]["check"] is True
+    push = next(call for call in calls if call[0][:2] == ["git", "push"])
+    assert push[0] == ["git", "push", "--force", "origin", "HEAD:refs/heads/cmru/release/x"]
+    assert push[1]["cwd"] == workspace.path
+    assert push[1]["check"] is True
     assert transaction.backup_was_pushed(tmp_path, workspace) is True
 
 
@@ -2846,10 +2947,12 @@ def test_sync_local_main_classifies_real_interrupted_rebase_abort(
             str(hook_dir),
             cwd=h.repo_root,
         )
+        hook_pids = h.repo_root / ".git" / "cmru-test-hook-pids"
         hook_script = (
             "#!/bin/sh\n"
             "set -eu\n"
             'git_dir=$(git rev-parse --git-dir)\n'
+            'printf "%s\\n" "$$" >> "$git_dir/cmru-test-hook-pids"\n'
             'if test -d "$git_dir/rebase-merge" || test -d "$git_dir/rebase-apply"; then\n'
             '    printf "active\\n" > "$git_dir/post-rewrite-state"\n'
             'else\n'
@@ -2878,6 +2981,23 @@ def test_sync_local_main_classifies_real_interrupted_rebase_abort(
         try:
             result = transaction._sync_local_main_result(h.repo_root)
         finally:
+            if hook_pids.exists():
+                for raw_pid in hook_pids.read_text(encoding="ascii").splitlines():
+                    try:
+                        hook_pid = int(raw_pid)
+                        deadline = time.monotonic() + 5
+                        while True:
+                            waited_pid, _status = os.waitpid(hook_pid, os.WNOHANG)
+                            if waited_pid == hook_pid:
+                                break
+                            if time.monotonic() >= deadline:
+                                raise TimeoutError(
+                                    f"test Git hook pid {hook_pid} was not reaped within 5 seconds"
+                                )
+                            time.sleep(0.01)
+                    except ChildProcessError:
+                        # Git may have collected a hook before it was signalled.
+                        pass
             # The failed-abort fixture deliberately leaves a real lock behind;
             # remove it after the shipped function has observed the failure so
             # the temporary repository can be discarded normally.
@@ -3335,6 +3455,7 @@ def _seq_project(
         build_step=build_step,
         commit_generated=commit_generated,
         github_token="test-credential",
+        known_project_names=frozenset(),
     )
 
 
@@ -3394,7 +3515,7 @@ def test_release_projects_sequentially_lets_a_later_project_see_an_earlier_ones_
     previous run's — because alpha's entire cycle (prepare/gate/promote/tag/
     build/publish) finishes before beta's cycle starts."""
     with _OriginAndClone() as h:
-        workspace_path = h.clone_workspace("cmru/release/seq")
+        workspace_path = h.add_worktree("cmru/release/seq")
         (workspace_path / "beta").mkdir()
         # release steps write their own step logs under repo_root/logs/ — ignore
         # it so that doesn't trip release_cmd's clean-working-tree guard.
@@ -3455,7 +3576,7 @@ def test_release_projects_sequentially_lets_a_later_project_see_an_earlier_ones_
 def test_release_stops_before_publisher_when_release_tag_push_fails(monkeypatch):
     with _OriginAndClone() as h:
         branch = "cmru/release/tag-push-failure"
-        workspace_path = h.clone_workspace(branch)
+        workspace_path = h.add_worktree(branch)
         (workspace_path / "alpha").mkdir()
         (workspace_path / "alpha" / "feature.txt").write_text("candidate\n")
         _git("add", "alpha/feature.txt", cwd=workspace_path)
@@ -3473,7 +3594,7 @@ def test_release_stops_before_publisher_when_release_tag_push_fails(monkeypatch)
         step_calls = []
         monkeypatch.setattr(
             cli, "run_project_step",
-            lambda project, step, _root, _logs: step_calls.append((project.name, step)),
+            lambda project, step, _root, _logs, **_kw: step_calls.append((project.name, step)),
         )
 
         real_remote_git = cli.run_remote_git
@@ -3511,7 +3632,7 @@ def test_release_projects_sequentially_checkpoints_only_up_to_the_last_success()
     the checkpoint deliberately excludes beta's unpromoted local commit rather
     than just tracking HEAD."""
     with _OriginAndClone() as h:
-        workspace_path = h.clone_workspace("cmru/release/partial")
+        workspace_path = h.add_worktree("cmru/release/partial")
         (workspace_path / "beta").mkdir()
         (workspace_path / ".gitignore").write_text("logs/\n")
         _git("add", ".gitignore", cwd=workspace_path)
@@ -3572,7 +3693,7 @@ def test_release_projects_sequentially_seeds_checkpoint_from_this_runs_base_not_
     could revert past a commit the operator made while fixing things up for the
     resume — see the review finding this test locks in."""
     with _OriginAndClone() as h:
-        workspace_path = h.clone_workspace("cmru/release/resume-token")
+        workspace_path = h.add_worktree("cmru/release/resume-token")
         (workspace_path / ".gitignore").write_text("logs/\n")
         _git("add", ".gitignore", cwd=workspace_path)
         _git("commit", "-q", "-m", "chore: ignore step logs", cwd=workspace_path)
@@ -3662,7 +3783,7 @@ def test_retain_successful_build_outputs_copies_commit_addressed_record(tmp_path
     monkeypatch.setattr(transaction, "_git", fake_git)
 
     retained = transaction.retain_successful_build_outputs(
-        repo_root, workspace, {"alpha": project}, ["alpha"],
+        repo_root, workspace, {"alpha": project}, ["alpha"], source_mode="origin-main",
     )
 
     output_id = f"19700101T000000Z_{'a' * 40}"
@@ -3792,6 +3913,7 @@ def test_parent_build_retains_successful_outputs_then_removes_worktree(tmp_path,
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *_args: {})
     monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
     monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
+    monkeypatch.setattr(transaction, "local_head_commit", lambda _root, **_kwargs: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(
         transaction, "create_workspace", lambda _root, *, base, purpose, **_kw: workspace,
@@ -3800,7 +3922,7 @@ def test_parent_build_retains_successful_outputs_then_removes_worktree(tmp_path,
     monkeypatch.setattr(
         transaction,
         "retain_successful_build_outputs",
-        lambda *_args: calls.append("retained") or [tmp_path / "alpha" / "logs" / "record"],
+        lambda *_args, **_kw: calls.append("retained") or [tmp_path / "alpha" / "logs" / "record"],
     )
     monkeypatch.setattr(transaction, "remove_workspace", lambda _workspace: calls.append("removed"))
 
@@ -3828,13 +3950,14 @@ def test_parent_build_failure_keeps_worktree_and_does_not_retain_outputs(tmp_pat
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *_args: {})
     monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
     monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
+    monkeypatch.setattr(transaction, "local_head_commit", lambda _root, **_kwargs: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(
         transaction, "create_workspace", lambda _root, *, base, purpose, **_kw: workspace,
     )
     monkeypatch.setattr(transaction, "run_child", lambda *_args, **_kwargs: 1)
     monkeypatch.setattr(
-        transaction, "retain_successful_build_outputs", lambda *_args: calls.append("retained"),
+        transaction, "retain_successful_build_outputs", lambda *_args, **_kw: calls.append("retained"),
     )
     monkeypatch.setattr(transaction, "remove_workspace", lambda _workspace: calls.append("removed"))
 

@@ -4,6 +4,23 @@
 
 ## Known limitations
 
+### Mattermost Calls: tls-edge and mattermost-server defaults disagree (INT-01 A-06, filed 2026-10-19)
+
+Introduced by `93c6a39aa` (no review recorded, no test or lane). tls-edge defaults
+`[tls_edge.calls] enabled = false, public_port = 8444`; mattermost-server defaults
+`[mattermost.calls] enabled = true, port = 8443, public_port = 8443` and advertises
+`MM_CALLS_ICE_HOST_PORT_OVERRIDE=8443`. A tls-edge install that enables Calls without a host override
+publishes 8444 while Mattermost advertises 8443; with Calls off in tls-edge the Mattermost labels name
+entrypoints (`mattermost-calls-tcp/udp`) that do not exist. `edge-proxy/docker-compose.yml` and
+`traefik.yml` publish `8443:8444/tcp` and `8443:8443/udp` unconditionally, while the DESIGN-GUIDE says no
+media port opens unless the override enables it (true only for the CIU template; whether `edge-proxy/`
+is the host-only live copy is unverified). Unverified: that the Calls plugin honours the `MM_CALLS_*`
+environment names and that `MM_PLUGINSETTINGS_PLUGINSTATES` is parsed as an environment JSON map; the
+plugin-id deny-list is not an allow-list. Options (operator's choice, report D-008): default Mattermost
+`calls.enabled` to false and let the host override turn it on; or default tls-edge Calls on at 8443; or
+add a test that renders both stacks' defaults and asserts port and entrypoint names agree. Add an
+acceptance probe (`mmctl plugin list`) to the live-deploy checklist either way.
+
 ### acme-data volume loss triggers certificate re-issuance
 
 Running `docker compose down -v` or `ciu --reset` destroys the `acme-data`

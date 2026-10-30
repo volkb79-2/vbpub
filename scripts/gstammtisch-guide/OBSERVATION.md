@@ -222,14 +222,14 @@ scheduler = none mq-deadline [bfq]
 ```
 Interpretation:
 - **`DISC-MAX=2G` (and `DISC-GRAN=512B`) ⇒ TRIM/discard is supported ⇒ thin-provisioned backend** (network/SAN/qcow2/LVM-thin). This is the signal that matters → use `discard=once` on swap (TRIM the area at activation; reclaims backing cheaply). Avoid *continuous* `discard` (per-free latency).
-- **`rotational=1` is almost certainly the hypervisor's default, not truth** — don't tune for a spinning disk. Treat as SSD/thin: keep `vm.page-cluster=0`. (Confirmed by `r_await ≈ 0.3 ms` observed with `iostat -x` — typical of SSD-backed thin storage, not the 5–15 ms of a real HDD.)
+- **`rotational=1` is almost certainly the hypervisor's default, not truth** — don't tune for a spinning disk. Treat as SSD/thin: keep `vm.page-cluster=0`. (Confirmed by `r_await ≈ 0.3 ms` observed with `iostat -x` — typical of SSD-backed thin storage, not the 5–15 ms of a real HDD. Writes are the weak side: measured 2026-10-20, the device sustains only ~14–18 MB/s, ~10 MB/s once a burst budget is spent.)
 - **`scheduler [bfq]`** — we switched from the VM default `[none]` to BFQ. Rationale below.
 
 ### Why we use BFQ instead of `[none]`
 
 The conventional advice for VMs is "leave `[none]` — the hypervisor handles scheduling." That is correct for raw throughput. It is **wrong** when you need cgroup I/O priorities: `[none]` passes all I/O to the device queue in arrival order; cgroup `io.weight` and `ionice` classes are entirely ignored.
 
-BFQ (Budget Fair Queueing, `CONFIG_BFQ_GROUP_IOSCHED=y`) is the only multi-queue scheduler that enforces cgroup v2 `io.weight` / `io.bfq.weight`. It also exposes the per-cgroup `io.bfq.weight` knob (range 1–1000). On this host, Soulmask holds `io.bfq.weight=1000` and bench containers hold `io.bfq.weight=1` — a 1000:1 ratio that is only meaningful with BFQ active.
+BFQ (Budget Fair Queueing, `CONFIG_BFQ_GROUP_IOSCHED=y`) is the only multi-queue scheduler that enforces cgroup v2 `io.weight` / `io.bfq.weight`. It also exposes the per-cgroup `io.bfq.weight` knob (range 1–1000). On this host, Soulmask holds `io.bfq.weight=1000` and bench containers hold `io.bfq.weight=1` — a 1000:1 ratio that is only meaningful with BFQ active. It orders requests between cgroups; it does not shorten a wait behind the shared ext4 journal ([HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md)).
 
 The thin-provisioned backing storage (`r_await ≈ 0.3 ms`) means BFQ's scheduler overhead is negligible; the benefit of weight enforcement far outweighs the marginal latency.
 
@@ -273,7 +273,53 @@ cat /sys/fs/cgroup/dev-workloads.slice/memory.current
 cat /sys/fs/cgroup/dev-workloads.slice/memory.zswap.current   # how much zswap this slice uses
 cat /sys/fs/cgroup/dev-workloads.slice/{memory.high,memory.max,memory.zswap.writeback}
 cat /sys/fs/cgroup/dev-workloads.slice/io.stat
-# on the Soulmask scope: memory.min, memory.low, memory.zswap.writeback (want 0)
+# on the Soulmask scope: memory.min, memory.low, memory.zswap.writeback
+# (the live value is 1: writeback=1 and the shrinker are required, an operator decision recorded in
+#  HOST-IO-INTERFERENCE.md; the earlier "want 0" was superseded)
+```
+
+### Per-memcg zswap residency and charged IO (manual commands)
+
+For when topos is unavailable. Why these quantities matter: a game's zswap pool is charged to its own memcg
+(`memory.current` includes it), and reclaim, with the zswap shrinker, skips a memcg that is below its
+`memory.low`; so residency against low is what to read
+([zswap-writeback-governor KERNEL-ANALYSIS 6.1](../../zswap-writeback-governor/docs/KERNEL-ANALYSIS.md#61-steady-state-zswap-residency-below-memorylow-observation-2026-10-20-2140-utc)).
+Read-only. `/sys/kernel/debug` needs root.
+
+```bash
+grep -E '^(Zswap|Zswapped)' /proc/meminfo                       # host: compressed bytes in RAM / original bytes
+grep -r . /sys/kernel/debug/zswap/                              # pool_total_size, stored_pages, written_back_pages, pool_limit_hit, reject_*
+grep -E '^(zswpin|zswpout|zswpwb|pswpin|pswpout) ' /proc/vmstat # host rates (diff two reads)
+for d in /sys/fs/cgroup/wings.slice/docker-*.scope; do
+  echo "$d cur=$(cat $d/memory.current) low=$(cat $d/memory.low)"
+  grep -E '^(anon|file|zswap|zswapped|zswpin|zswpout|zswpwb|workingset_refault_anon) ' $d/memory.stat
+  grep -E '^low ' $d/memory.events          # times reclaimed despite being under low
+done
+```
+
+Reading it: a game with `memory.current` below `memory.low` and a stable `zswapped` is being left alone (nothing
+reclaims it); `low` in `memory.events` counts reclaim that took pages anyway. (Measured values: KERNEL-ANALYSIS 6.1, linked above.)
+
+**Issuer versus charged cgroup (IO).** The task that *issues* an IO and the cgroup it is *charged to* differ.
+Writeback is issued by `kworker` flush threads but charged to the memcg/blkcg that dirtied the page (cgroup
+writeback); swap-out is issued by kswapd or a direct-reclaiming thread but charged to the page owner's cgroup, as
+io.cost debt. Tools, and what each answers:
+
+| Tool | Shows | Note |
+|---|---|---|
+| `systemd-cgtop -d 2 -i --depth=4` | per-slice/scope IO as *charged* (`io.stat`) | the at-a-glance "where does the IO belong"; installed |
+| `iotop -oPa` / `iotop-c` | per-process IO as *issued* | `iotop-c` is trixie-backports 1.31; SWAPIN/IO% need `sysctl kernel.task_delayacct=1` |
+| `atop` 2.11 | per-process disk, a cgroup view, PSI, and a recorder (`atop -w file` / `atop -r file`) to replay an incident | installable; its zswap fields are unverified **[I]** |
+| `htop` | `IO_READ_RATE`/`IO_WRITE_RATE` and `CGROUP` columns per process | |
+| `below` (Meta) | cgroup-first with history | not packaged in Debian |
+
+None of them shows per-memcg zswap residency next to `memory.low`, or io.cost vrate/debt; the manual equivalents:
+
+```bash
+cat /sys/fs/cgroup/<slice>/io.stat                       # charged IO per cgroup (diff two reads)
+grep -o 'cost\.vrate=[0-9]*' /sys/fs/cgroup/io.stat      # io.cost vrate
+cat /sys/fs/cgroup/<slice>/io.pressure                   # per-cgroup IO pressure
+cat /proc/<pid>/task/*/stack                             # D-state stacks, for tasks in state D (root)
 ```
 
 ---

@@ -16,14 +16,16 @@ from pathlib import Path
 from typing import Iterator
 from urllib.parse import unquote, urlsplit
 
+from cmru.config import ResolvesLazyTokens
+
 
 @dataclass(frozen=True)
-class GitHubGitAuth:
+class GitHubGitAuth(ResolvesLazyTokens):
     """The already-resolved repository credential used by CMRU's Git transport."""
 
     owner: str
     repo: str
-    token: str = field(repr=False)
+    token: str = field(repr=False, compare=False)
 
 
 _ASKPASS_SOURCE = """import os
@@ -54,7 +56,11 @@ if not answer:
 sys.stdout.write(answer)
 """
 
-_PUBLISHER_ENV_KEYS = ("GITHUB_PUSH_PAT", "GITHUB_TOKEN", "CMRU_GIT_AUTH_TOKEN")
+_PUBLISHER_ENV_KEYS = (
+    "GITHUB_PUSH_PAT", "GITHUB_TOKEN", "CMRU_GIT_AUTH_TOKEN",
+    # gh's own variables: a `token_source = "gh"` login must not leak to hooks (L3).
+    "GH_TOKEN", "GH_ENTERPRISE_TOKEN",
+)
 
 
 @contextmanager
@@ -136,8 +142,12 @@ def _git_environment(
     repo_root: Path, auth: GitHubGitAuth | None, *, for_push: bool,
 ) -> Iterator[dict[str, str] | None]:
     """Yield a Git-only askpass environment for the configured HTTPS origin."""
-    if auth is None or not auth.token.strip():
+    if auth is None:
         yield None
+        return
+    raw_token = object.__getattribute__(auth, "token")
+    if isinstance(raw_token, str) and not raw_token.strip():
+        yield None  # no credential: never even inspect the origin
         return
     origin_urls = _origin_urls(repo_root, for_push=for_push)
     if not origin_urls or not all(
@@ -145,6 +155,8 @@ def _git_environment(
     ):
         # Do not send a GitHub token to SSH remotes, other hosts, or another
         # GitHub repository. Those remotes keep their own configured auth.
+        # (Checked before reading the token so a lazy `gh` lookup only happens
+        # when the credential is actually going to be used.)
         yield None
         return
 

@@ -460,6 +460,31 @@ def test_whole_target_scope_counts_only_declared_target_files(
     assert r2.mutation.total == 2
 
 
+def test_ingested_whole_target_judgment_sorts_nested_target_paths(
+    git_repo: GitRepo, tmp_path: Path
+):
+    document = _report_document()
+    document["projectRoot"] = PLACEHOLDER
+    staged = _stage_report(tmp_path, document)
+    _seed_repo(git_repo, document)
+    targets = ("app/src/orphan.ts", "app/src/branchy.ts")
+
+    verdict = _run(
+        git_repo,
+        _lane(
+            git_repo=git_repo,
+            staged=staged,
+            mode="whole_target",
+            targets=targets,
+            base="unused",
+        ),
+    )
+
+    assert verdict.judgment is not None
+    assert verdict.judgment.r2 is not None
+    assert verdict.judgment.r2.targets == tuple(sorted(targets))
+
+
 # --------------------------------------------------------------------------
 # The refusals — each its own named terminal
 # --------------------------------------------------------------------------

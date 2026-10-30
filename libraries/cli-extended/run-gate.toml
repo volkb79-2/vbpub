@@ -18,6 +18,7 @@ memory = "512m"
 
 [lanes.r2]
 kind = "command"
+resource_observer = "cgprofile"
 environment = "tester-unified"
 argv = [
   "bash", "-c",
@@ -28,7 +29,8 @@ budget = "720m"
 artifacts = [".assay/verdict-r2.json", ".assay/progress-r2.jsonl"]
 
 [lanes.r2.resources]
-# jobs = 3 workers at ~240 MB peak RSS each, plus the assay parent.
+pids = 8192
+# B157 keeps one native candidate active so cgroup event windows do not overlap.
 memory = "1536m"
 
 [lanes.r3]
@@ -49,7 +51,7 @@ kind = "command"
 environment = "bare-host"
 argv = [
   "bash", "-c",
-  "cd {worktree}/libraries/cli-extended && ./run-gate.py --worktree {worktree} r0-r1 && ./run-gate.py --worktree {worktree} r2 && ./run-gate.py --worktree {worktree} r3",
+  "cd {worktree}/libraries/cli-extended && run-gate --worktree {worktree} r0-r1 && run-gate --worktree {worktree} r2 && run-gate --worktree {worktree} r3",
 ]
 clean_tree = false
 budget = "750m"

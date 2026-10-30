@@ -1,0 +1,39 @@
+{
+  "schema_version": 2,
+  "legacy_unrecorded": [
+    {
+      "reason": "Predates the provenance ledger; series digest and image ID were not recorded.",
+      "suffix": "cgroup.4",
+      "upstream": "1.13.3"
+    },
+    {
+      "reason": "Pre-ledger local tag observed on 2026-10-30 in running container <compose-project>-wings-1. Image ID sha256:abd25f6ee6fadd865ba06d2b2192bfb466b5b5e0280751b78de76f273abf5468; image labels are absent, so its original series digest remains unknown. Binary SHA-256 8d41e704662c815c67ef3427dc92757a2c25c8685afb1db0346aca0e893a080f was reproduced byte-for-byte from the current v1.13.3 series using Go 1.24.11 and the Dockerfile build recipe with VERSION=1.13.3-cgroup.6.",
+      "suffix": "cgroup.6",
+      "upstream": "1.13.3"
+    }
+  ],
+  "builds": [
+    {
+      "built_at": "2026-10-30T12:28:42Z",
+      "image_id": "sha256:eb10b720d51694acbfe8e777020ba83c65172caf3bdd710757e6f3f6a5797e97",
+      "image_label_series_digest": "358e0116e1ceca1296daa156ea2b4e82ebf0719197d9731c6ee950523d028d66",
+      "series_digest": "3f9df8045b72c0346a0a2bc9aeac7fa1af1fb033e3e395d7c568ab22fae2558b",
+      "suffix": "cgroup.7",
+      "upstream": "1.13.3"
+    },
+    {
+      "built_at": "2026-10-30T12:47:03Z",
+      "image_id": "sha256:a4ceb4632f3e93b8c1c87b7e01d71211de590d27a90b5df954d5890cc4f554ec",
+      "image_label_series_digest": "923d9296e08ab5dcbaaec6a722625c99f0e14a968f424685e8c48dfc452257c7",
+      "series_digest": "fbe1fcddd19c59127f45d3afb923c532a15d054dfdd23f7d3f6c398c48838dec",
+      "suffix": "cgroup.1",
+      "upstream": "1.13.4"
+    }
+  ],
+  "current_series": {
+    "upstream_version": "1.13.4",
+    "upstream_commit": "747bc4393daf5d95fdf61d76382f5e23749cffe9",
+    "series_digest": "fbe1fcddd19c59127f45d3afb923c532a15d054dfdd23f7d3f6c398c48838dec"
+  },
+  "reservations": []
+}

@@ -3,35 +3,53 @@
 This file records consumer-facing product gaps for later triage. Normative
 behavior remains in the product specification and consumer documentation.
 
-Last updated: 2026-10-05 (PWMCP-02 filed).
+Last updated: 2026-10-27 (PWMCP-11 OCR sidecar and console watching program, phase 1 on branch).
 
 ## PWMCP-01 — Provide a rendered-page inspection command
 
-**Status: OPEN — candidate.**
+**Status: IMPLEMENTED 2026-10-15; R1 PASS 2026-10-16; live CLI/MCP acceptance PASS 2026-10-16; public bundle publication pending.**
 
-Consumers sometimes need one page's JavaScript-rendered text or screenshot
-without writing a browser client. Today the `pwmcp` command only exposes
-`doctor` and `contract`; consumers must either call MCP tools directly or
-install the release-bundled Python client plus the matching Playwright package
-and write a `BrowserLease` script. Raw MCP SDK snippets also couple consumers
-to transport and SDK API details.
+Consumers needed one page's JavaScript-rendered text or screenshot without
+writing a browser client. Before this change, the CLI exposed only `doctor` and
+`contract`; consumers had to call MCP tools directly or install the
+release-bundled Python client plus matching Playwright package and write a
+`BrowserLease` script. Raw MCP SDK snippets also coupled consumers to transport
+and SDK API details.
 
-Consider adding a small command such as `pwmcp inspect URL --format text|snapshot|screenshot --output PATH` 
-that connects to
-the existing remote browser and can return rendered body text, an accessibility
-snapshot, or a screenshot. It should reuse the release contract and managed
-browser lease, support an explicit wait condition, clean up the lease on every
-exit path, and avoid requiring local browser binaries. The current use case
-that surfaced this gap was reading a JavaScript-rendered GitHub project page
-from a devcontainer.
+Implemented as a registered `pwmcp inspect URL` verb using `BrowserLease` and
+the matching Playwright package from the release bundle. It returns rendered
+body text, an ARIA snapshot, or a screenshot; supports navigation and visible
+selector waits; and closes the managed lease on exit. It does not require local
+browser binaries. The standalone CMRU install also ships this CLI and makes
+the service available to agents over the existing internal network.
 
-Acceptance should include a documented one-command consumer example and a
-repeatable output mode suitable for saving a page snapshot to a file. This is a
-proposal only; implementation shape and security boundaries still need review.
+The consumer examples, output formats, wait states, standalone install/update
+flow, and internal MCP endpoint are documented in the README and consumer
+guide. The registered `./run-gate.py r1` passed in `tester-unified` on commit
+`d7caee83c479db157995c90d6730d76b18290ba9`: 247 tests passed, with 719/719
+statements and 206/206 branches covered across the seven judged targets. The
+updated R1 lane also passed on `f335b26b15cafd9a0292e037c52af951b0889fa5`.
+
+Live acceptance passed on 2026-10-16: after `ciu up` from
+`/srv/pwmcp-instance`, `pwmcp inspect https://example.com` returned rendered
+page text, and an MCP client initialized over Streamable HTTP, listed tools,
+navigated to the page, and retrieved its browser snapshot. The public bundle
+remains unpublished because the configured GHCR credential lacks
+`write:packages`; the local installer bundle and service image were deployed
+for this acceptance run.
 
 ## PWMCP-02 — Adopt cli-extended (unified adoption, order 5 of 8)
 
-**Status: PLANNED (filed 2026-10-05 by the cli-extended unified-adoption program, W10).**
+**Status: FIXED 2026-10-07 (branch `pwmcp-clix`; controller merges and releases).**
+
+**Observed / fix / oracle (evidence in [`docs/PWMCP-02-REPORT.md`](docs/PWMCP-02-REPORT.md)).**
+
+- **Observed:** the mechanism section below (hand-rolled argparse with a `choices` list, a literal `"0.1.0"` fallback, tracebacks from `contract`/`doctor`, `dependencies = []`, four scripts with their own parsers and a `sys.path.insert` toward `cmru/src`).
+- **Fix:** the client CLI is registered on `CliRegistry` (`contract`, shared `doctor` with `contract`/`playwright`/`skills` checks, `skills` via `register_skills_verbs`), identity through `CliIdentity.resolve` (`client/src/pwmcp_client/VERSION` is the wheel's dynamic version, metadata and file must agree), `unexpected_exceptions="report"`, domain failures as `CliFailure`; `cli-extended>=0.3.0` is declared in `client/pyproject.toml` with its floor reason; the skill moved to package data; surface lifecycle configured in `client/pyproject.toml` (`docs/CLI-SPEC.md`, `docs/cli-review.toml` with 59 cases, `docs/cli-surface.json`); `build-push.py` and the three `scripts/` files register a single-command CLI through `scripts/_vars.py` `script_cli` (`--dry-run`, no `--yes`: non-interactive CMRU steps) and import the installed `cli_extended` and `cmru` (the `sys.path.insert` toward `cmru/src` is gone: cmru's own wheel requires `cli-extended`, so any interpreter that runs these scripts under CMRU has both); `cli-extended` added to pwmcp's `depends_on` in `cmru.orchestration.toml`.
+- **Oracle:** `./run-gate.py r1` PASS at 100% line and branch coverage of the judged targets; `cli-extended audit` 15 pass / 0 fail / 0 manual; `cli-extended surface check` passes; `assert_cli_contract` against the real `python -m pwmcp_client.cli`; plants (exit code, vendoring, `sys.path`, literal version fallback, stale surface) each fail a named test. Intentional behavior changes are listed in the report.
+- **Not covered / follow-ups:** deploy of a released pwmcp (client wheel plus bundle) is the controller's; cmru KI-83 (filed from this item as KI-70; preflight does not read the nested `client/pyproject.toml`, so the `depends_on` edge is declared by hand); CLI-EXT-32 (audit AC-25 piecewise-path gap). PWMCP-01 is implemented separately in the 2026-10-15 instance work; its release-gate verification is pending.
+
+Original plan (filed 2026-10-05 by the cli-extended unified-adoption program, W10):
 
 **Source documents.** [`libraries/cli-extended/docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md`](../libraries/cli-extended/docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md) (decisions CX-D1..CX-D12, section "W10 - planned adoptions") and [`libraries/cli-extended/docs/ADOPTION-CHECKLIST.md`](../libraries/cli-extended/docs/ADOPTION-CHECKLIST.md) (AC-01..AC-25). **Dependency:** cli-extended 0.2.0 released first (W8, the controller). Not executed in the program's session. Land this before PWMCP-01 so the proposed `pwmcp inspect` verb is registered with the library from the start instead of added to a hand-rolled parser.
 
@@ -62,3 +80,347 @@ proposal only; implementation shape and security boundaries still need review.
 **Acceptance.** `cli-extended audit` reports no `fail`; `cli-extended surface check` passes; pwmcp's own registered gate passes (`run-gate.toml`, `assay.toml`); a released pwmcp (client wheel plus server bundle) is deployed. The release bundle's client install instructions work offline with `--no-index --find-links` and the cli-extended wheel (CX-D2).
 
 **Oracles.** `pwmcp --version`, `pwmcp doctor` and `pwmcp contract` keep their observable output on the golden fixtures in `client/tests/`; installing the built `pwmcp-client` wheel without the library fails with the dependency named; a controlled wrong implementation that keeps the `"0.1.0"` literal fails a test that removes the metadata and expects `VersionLookupError`.
+
+## PWMCP-03 — Opt-in invalid-certificate support for `pwmcp inspect`
+
+**Status: IMPLEMENTED 2026-10-16; `cli-extended` audit and surface check pass; R1 PASS; live-host acceptance PASS.**
+
+**Observed.** `pwmcp inspect` failed with `ERR_CERT_AUTHORITY_INVALID` on the supplied TrueNAS host, while consumers could connect with Playwright by setting `ignore_https_errors=True` on their browser context.
+
+**Fix.** Add `pwmcp inspect URL --ignore-https-errors`. It creates a temporary Playwright context with certificate errors ignored only for that invocation, then closes the context and the managed browser lease. This setting is context-wide: redirects and HTTPS resources loaded from other hosts in the page are included. Certificate verification remains on by default, and PWMCP's shared service policy is unchanged.
+
+**Oracle.** Unit coverage proves the default passes `ignore_https_errors=False`, the option passes `True`, and the context closes on success and navigation failure. On 2026-10-16, the CLI reproduced the certificate failure without the flag, then returned the live sign-in form snapshot with the flag and a visible username-field wait. The initial root URL redirects to `/ui/signin`; waiting for `input[autocomplete="username"]` allows the JavaScript UI to hydrate before inspection. `cli-extended audit` passed 15/15 checks, `surface check` passed, and `./run-gate.py r1` passed on implementation commit `849129bfc8df05c35d31fad0a99349bbea51a49a`.
+
+## PWMCP-04 — Inspect pages that hydrate after navigation
+
+**Status: IMPLEMENTED 2026-10-17; live shared-page reproduction confirmed.**
+
+**Observed.** The default `load` navigation wait returned ChatGPT's initial
+shell before its shared conversation was rendered. `networkidle` returned the
+later page text. A visible selector for message roles matched several message
+elements, but `Locator.wait_for()` raised Playwright's strict-mode error.
+
+**Fix.** Keep the efficient `load` default for ordinary pages. For delayed
+single-page applications, document `--wait-until networkidle` together with a
+page-specific `--wait-for` selector. Filter to visible matches and wait for the
+first, so repeated selectors work without a fixed delay on all inspections.
+Update the bundled `pwmcp-fetch` skill to prefer this readiness check and treat
+its MCP fixed wait as an initial poll only.
+
+**Oracle.** Unit coverage asserts multi-match selectors use the visible first
+match. On the supplied shared page, the default inspection returned 993
+characters, while `networkidle` returned about 11 KB. The message-role selector
+resolved four elements and exposed the strict-mode defect. The registered R1
+gate validates the implementation and documentation change.
+
+## PWMCP-05 — the canonical `pwmcp-fetch` skill hard-codes a consumer's literal ciu instance id in its examples
+
+**Status:** OPEN. Filed 2026-10-15 from dstdns (docs-sync W05, dstdns@16fc5d7e). Severity Low. Type: bugfix (docs).
+
+**Observed.** `.claude/skills/pwmcp-fetch/SKILL.md:30` and `:34` give `dstdns-98535c-pwmcp` and `dstdns-98535c-network` as examples. `98535c` is a ciu instance id that dstdns's checkout path once derived. Instance ids are dynamic: dstdns's current main instance has another id, and every worktree has its own. A reader who copies the example targets a container that does not exist. A consumer that vendors the skill also trips its own literal-instance-id check (dstdns `tests/config/test_instance_identity_contract.py`).
+
+**Why pwmcp owns it.** The skill text is pwmcp's canonical; consumers sync from it (NL-23).
+
+**Required contract.** Examples use a placeholder (`<project>-<instance_id>-pwmcp`) and say how to resolve the real name, with `ciu resolve --json` or `docker ps --filter label=com.docker.compose.service=pwmcp`.
+
+**Oracle.** `grep -nE '[a-z0-9]+-[a-z0-9]{6}-(pwmcp|network)' .claude/skills/pwmcp-fetch/SKILL.md` finds no literal id.
+
+**Numbering note (INT-01, 2026-10-19):** filed on local main as `PWMCP-03`; renumbered because origin/main already used `PWMCP-03` (invalid-certificate inspect) for a different item.
+
+## PWMCP-06 — Recover transient browser WebSocket failures during worker recycle
+
+**Status: OPEN — candidate.**
+
+**Observed 2026-10-16.** With PWMCP `1.64.0-r1` and Playwright `1.64.0`, a direct
+`chromium.connect("ws://pwmcp:3000/")` call once failed with `socket hang up`
+and WebSocket close code `1006`. At the same time, `pwmcp doctor` passed the
+release and Playwright checks and Docker reported the PWMCP container healthy.
+The container log showed a `run-server` recycle and a gateway session closed
+with `reason=upstream_error`; the next `pwmcp inspect` call succeeded. This is
+evidence of a transient connection failure near worker recycling, not a
+confirmed root cause.
+
+**Required investigation.** Reproduce a client connection during the idle
+`run-server` recycle and determine whether the gateway should hold the request
+until a worker is ready or return a typed, retryable availability error. Make
+the supported Python `connect()` path resilient to that lifecycle edge, with a
+bounded retry only before a browser session is established. Page navigation
+and interaction failures must remain visible to the caller.
+
+**Oracle.** A repeatable test forces the worker recycle while clients connect.
+Each connection either succeeds or returns a documented retryable error, no
+orphan browser lease remains, and a page/action error is never retried as a
+connection startup failure. `pwmcp doctor` alone does not count as evidence for
+this lifecycle case.
+
+**Numbering note (INT-01, 2026-10-19):** filed on local main (`b3277b36e`) as `PWMCP-04`; renumbered because origin/main already used `PWMCP-04` (delayed page hydration) for a different item.
+
+## PWMCP-07 — every published pwmcp release ships a bundle its own `get.py` cannot download (asset name lacks the `v`)
+
+**Status: FIXED on main (merged 2026-10-21, gate-provisional PASS at b22b747a6), not released; fix C removed by PWMCP-08 (2026-10-21).**
+
+Found 2026-10-20 by `BUILD_NO_CACHE=1 cmru build mdt-cockpit`; independently reviewed, and the
+review's conclusions (contract, keystone scope, unblock preconditions) are inlined below.
+
+**Evidence.** Stage-2 step 39/55 (`python3 /tmp/install_pwmcp_instance.py`) fails:
+`==> Pinned version: pwmcp-v1.64.0-r2` / `==> Downloading pwmcp-v1.64.0-r2.tar.xz ...` /
+`err Download of pwmcp-v1.64.0-r2.tar.xz failed (HTTP 404).` (log: the build worktree's
+`mdt-cockpit/logs/cmru/build.log`, search `#51 `). Release `pwmcp-v1.64.0-r2` (2026-10-17T19:16:20Z)
+carries `get.py get.py.sha256 pwmcp-1.64.0-r2.tar.xz pwmcp-1.64.0-r2.tar.xz.sha256`; r1
+(`pwmcp-1.64.0-r1.tar.xz`), v1.63.0-r2 and v1.62.0-r3 are named the same way (no `v`).
+For comparison `tls-edge-v2.0.0` carries `tls-edge-v2.0.0.tar.xz` (+ sidecar; it ships no `get.py`
+asset): its asset name matches what a get.py requests.
+
+**The contract.** The tag-based name is the documented one: `cmru/docs/CONSUMERS.md:319` ("The release
+assets are `<tag>.tar.xz` ... `<tag>.tar.xz.sha256` ... and `get.py`") and SPEC S6.3 step 3; tls-edge
+(`scripts/build-artifact.sh:45`) and the variants publisher follow it. pwmcp is the deviating
+producer; the decision is "producers conform to the documented contract", not a free choice.
+
+**Mechanism (two sources, no shared function).**
+- Producer: `pwmcp/bundle.toml:14` `name_template = "pwmcp-{version}.tar.xz"` (since `82c29e2db`,
+  2026-06-16) -> `pwmcp/scripts/publish-bundle.py:55` (`find_bundle`) ->
+  `publish_versioned(...)` (`cmru/src/cmru/release.py:745`), which uploads `asset_path` under the file's
+  own name (`:865`, `:869`, `:890` all use `asset_path.name`); it never renames. Only the variants path
+  (`release.py:940 variant_asset_name`) derives a name, the tag-based one.
+- Consumer: the rendered `get.py` (`cmru/src/cmru/templates/get.py.tmpl:614`) computes
+  `f"{tag}{ASSET_SUFFIX}"` = `pwmcp-v1.64.0-r2.tar.xz` (tag-based in the rendered get.py, spelled
+  `ASSET_SUFFIX` since `c54e90581`). `hosts/github.py:101` has the same expectation, but only on the
+  ambiguity branch; with exactly one match `resolve_latest` returns whatever single asset exists, so
+  cmru's own resolution masked the mismatch while get.py could not.
+- First exercised only now: pwmcp's get.py began shipping as a release asset with r1 (2026-10-17,
+  `dc4072cf2`) and mdt-cockpit is its first real consumer. Same class as CIU-99 (get.py's
+  `<tag><asset_suffix>` resolves nothing because ciu publishes only a bare wheel, no bundle at all).
+  Generic part: nothing compares any producer with the contract (cmru KI-89).
+
+**Blast radius.** `get.py install` from any pwmcp release (r1..r2 and all earlier), hence the mdt-cockpit
+image and anything pinning `pwmcp.contract.json`'s release. Not affected: the offline
+`--local-dev-dir` path (it replaces `_download_asset`, so it also hides this bug).
+
+**Why no test caught it.** `cmru/tests/installer_fakes.py:138` types the template's formula out in the
+fake release, so the template is compared with itself. `pwmcp/tests/test_script_cli.py:340-345` mocks
+`publish_versioned`. Nothing compares the name the real producer publishes with the name get.py requests.
+
+**Fix, in this order (sequencing A, then B, then C).**
+- **A. pwmcp-local (primary; independent of any cmru release):** `bundle.toml` `name_template` becomes
+  `pwmcp-v{version}.tar.xz`, `find_bundle` expects the same, plus the tests and the docs that name the
+  file. Fixes the next pwmcp release (r3).
+- **B. cmru KI-89, so it cannot recur:** one name function (`asset_name_for_tag` / `bundle_asset_name`)
+  used by the variants publisher, `hosts/github.py` and (equality-tested) by the rendered get.py, and an
+  oracle that reads EVERY project with `[project.installer]` + `asset_suffix` and compares the name its
+  producer (`bundle.toml` template or `tarball-publish --glob`) would publish with the contract name.
+  `publish_versioned` is NOT changed to rename or refuse: it is the keystone behind `wheel-publish` and
+  `tarball-publish`, and a wheel's file name is pip's. A runtime refusal, if wanted later, must be scoped
+  to installer projects and make `latest.json`, the release body and the download URL follow the placed
+  name. Cross-reference CIU-99 (ciu is the listed no-producer exemption).
+- **C. get.py fallback for the already-published releases: REMOVED (PWMCP-08, operator decision
+  2026-10-21: "just leave it be, we clean up eventually").** It had been implemented (listing the release's
+  assets on a 404 and taking the single `*{ASSET_SUFFIX}` asset whose sha256 sidecar verified). It is
+  gone from `get.py.tmpl` and its tests; `get.py` requests exactly `expected_asset_name` and a 404 is a
+  loud refusal naming the requested asset. **Consequence:** the already-published pwmcp releases
+  <= `v1.64.0-r2` (r1, r2, 1.63.0-r2, 1.62.0-r3 and earlier) stay undownloadable by `get.py`; consumers
+  must pin a release >= the next one published after A. The checked-in installers (`ciu/get.py`,
+  `tls-edge/get.py`, `pwmcp/get.py`) are re-rendered from the changed template
+  (`cmru get-py <project> --output <project>/get.py`, in-process from the worktree's cmru); pwmcp's
+  `get.py` sha256 must be re-pinned in mdt-cockpit after the release (not part of this change).
+
+**Unblock options for mdt-cockpit (not done here).**
+- (a) Release pwmcp r3 with fix A (a new tag: mdt-cockpit's `pwmcp.contract.json` version and the
+  `PWMCP_VERSION`/get.py URL+sha256 pins change with it). Sound, and needs only A.
+- (b) WITHDRAWN: it depended on fix C, which was removed (PWMCP-08).
+- (c) A local-dev build is not set by hand: `MDT_BUILD_MODE=local-dev` is selected only by
+  `build-push.py --build --local-dev <manifest.toml>`, which supplies artifacts through the
+  `mdt-local-dev` context. Its image is provenance-marked as local-dev and not a releasable image, so (c)
+  unblocks a developer build only.
+No existing release works with `get.py`; only a release published after A does.
+
+## PWMCP-09 — pages protected by Anubis answer "Access Denied" to the managed browser; a human sees them fine
+
+**Status: IN PROGRESS, FIXED-ON-BRANCH for the configurable user agent (option 3); acceptance part 2 (`blocked-by-site` detection) still OPEN.**
+**Decision (operator, 2026-10-27): option 3, with selectable presets**, as an explicit, recorded, opt-in
+feature (off by default): config key `user_agent` / `PWMCP_USER_AGENT` with presets `edge-windows`,
+`chrome-windows`, `firefox-windows`, or a custom string; the UA string and its matching client-hint
+brands only (no navigator.webdriver, plugin or canvas changes); every `pwmcp inspect` result carries
+`user_agent` and `user_agent_source`; `pwmcp inspect --user-agent` for one call. Details: README
+"Overridable User Agent". **STILL UNVERIFIED: whether Anubis actually lifts the block** under any
+preset (nothing was run against a live deployment from the implementing worktree), whether Chromium
+omits `Sec-CH-UA` for the Firefox preset's empty brand list, and the container wiring (supervisord
+wrapper, `ua-override`, entrypoint) until an image is built and run. Open: the `blocked-by-site`
+classification of recognised Anubis/Cloudflare block pages and the skill wording for that outcome.
+
+*Original filing:* (filed 2026-10-27, operator request). Found while reading <https://git.azlux.fr/Azlux/sss>
+through the `pwmcp-fetch` recipe.
+
+**Evidence.** `browser_navigate` + `browser_evaluate document.body.innerText` returned "Oh noes! Access
+Denied: error code 4d1dbaddfcc0f385 ... Protected by Anubis ... version v1.28.2" (WebFetch got the same
+page, code 9e4edb5b6b850c41). The browser's identity as measured through the same endpoint:
+`navigator.userAgent` = `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko)
+HeadlessChrome/156.0.0.0 Safari/537.36`, `navigator.webdriver` = false, 5 plugins. The operator opens the
+same URL in their own browser without a block. The word "Access Denied" (not a proof-of-work challenge page)
+is Anubis answering a deny rule, which is consistent with the `HeadlessChrome` token, but that cause is NOT
+yet verified: nothing was changed to test it.
+
+**Why this is not simply "spoof a normal browser".** Anubis is deployed to refuse automated clients. Making the
+managed browser present as a non-headless user agent to defeat an explicit deny rule is circumvention of the
+site owner's access control, so it is a decision to take deliberately, not a silent default in the shared
+service. What the managed browser may legitimately do, in increasing order of intrusiveness, for the operator's
+own reading of a public page:
+1. Report what it is: document that these hosts are unreachable by design and have the consumer use another
+   source (the GitHub mirror of the same project worked on 2026-10-27).
+2. Operator-solved session handoff: the operator opens the page in their own browser, and the cookie Anubis
+   sets is imported into a named, expiring PWMCP browser context for that host (explicit, per host, logged).
+3. A configurable `--user-agent` (off by default, recorded in every result) for hosts the operator owns or
+   has permission to read automatically.
+
+**Acceptance.** A decision recorded among 1-3, then: `pwmcp inspect` reports a recognised Anubis/Cloudflare-style
+block as `blocked-by-site` (distinct from empty content and from timeout) with the block's error code, so an agent
+does not mistake it for page content; the `pwmcp-fetch` skill documents the outcome.
+
+## PWMCP-10 — two concurrent clients collide on the single shared browser ("Browser is already in use")
+
+**Status: OPEN (filed 2026-10-27).** Running four `browser_navigate` clients in parallel against
+`http://pwmcp:8931/mcp` made all but one fail with: `Browser is already in use for
+/tmp/.cache/ms-playwright-mcp/mcp-chrome-for-testing-8a5edab, use --isolated to run multiple instances of the
+same browser`. Sequential use works. `containers/pwmcp/supervisord.shared.conf:27,114` records that `--isolated`
+broke the shared-browser mode on 2026-07-13, so the fix is not "add the flag". **Acceptance.** Either concurrent
+sessions are served (per-session contexts on the one browser) or the `pwmcp-fetch` skill and the error text say
+plainly that fetches must be serialised; today the error names a flag the service cannot take.
+
+## PWMCP-11 — OCR sidecar and console watching (program)
+
+**Status: phase 1 FIXED-ON-BRANCH (2026-10-27), release wiring for the second image included (FIXED-ON-BRANCH, unverified until a real release is cut); phases 2 and 3 OPEN.**
+
+**Need.** Automating a host console through a web console. The Netcup SCP "Screen" is ONE 1280x800 `<canvas>`
+fed by a VNC WebSocket, so Playwright snapshots carry no text and an agent was interpreting screenshots
+visually. Wanted: MECHANICAL recognition of what a text console (Debian installer, TrueNAS installer, shells)
+shows. Origin: a Codex session driving a TrueNAS relaxed unattended install on a Netcup host (rollout
+`01a14d1b-bec6-7671-80b8-a5c53ff976ee`, 2026-10-18; read it with
+`nyxloom-harness extract --format codex --preset watch <rollout.jsonl>`).
+
+**Operator decisions (2026-10-27).**
+- OCR runs in a STATELESS SIDECAR container: pwmcp posts a PNG and gets text + word boxes + confidence (or a
+  glyph-grid text screen); pwmcp keeps the browser and the watch loop. The sidecar lives under
+  `containers/` in the same ciu/compose stack with its own service alias and is released WITH pwmcp (one
+  contract, one set of gates).
+- Engines: Tesseract (native, pluggable interface) first, then exact glyph-grid matching for fixed-font text
+  consoles (Debian installer, TrueNAS installer).
+- Watching: in-browser canvas change detection (hash on animation frames, debounce), then OCR on change,
+  exposed as `wait_for_text(pattern|regex, timeout, stable)`. The WebSocket frame event is only an optional
+  wake-up hint (66 frames in 15 s with unchanged text), never the decision. Unrecognised screens are
+  INDETERMINATE.
+- A guarded expect-and-send primitive in pwmcp is OFF unless a config flag enables it ("flag only": no
+  allowlist, no rules file). Consumers may still own policy (for example the Netcup protected-server check).
+- Test corpus: the local QEMU VM harness (`testing/vm/vmctl`) captures first; live Netcup captures verify
+  afterwards. Finish/reboot screens of the TrueNAS install were never observed; only the ready signature
+  ("Console setup" plus management URLs) is known.
+
+**Phases.**
+1. (FIXED-ON-BRANCH) The sidecar (`containers/ocr/`: Dockerfile, `ocr_service.py`; Tesseract via the CLI,
+   pluggable engine registry with `glyphgrid` registered-but-501), compose/ciu wiring (`pwmcp.ocr.*`, default
+   off, alias `pwmcp-ocr`, port 8941 because 8940 is the run-server admin port), the `/contract` `ocr` block,
+   `pwmcp_client.ocr.recognize`, `pwmcp ocr`, docs and offline tests. Returns text and confidence only.
+2. (OPEN) `wait_for_text` watcher (in-browser canvas change detection on the shared browser's already-open
+   page; the shared-browser mode from P03 is the natural home) and the glyph-grid engine fed by VM-harness
+   captures. Needs the PWMCP-10 concurrency answer first, since a watcher holds the one shared browser.
+3. (OPEN) Guarded expect-and-send, OFF unless a config flag enables it.
+
+**Release wiring: FIXED-ON-BRANCH (operator decision 2026-10-27: extend the existing release so ONE pwmcp
+release builds, publishes and records BOTH images under one contract).** No release was cut and nothing was
+built, pushed or run through cmru/ciu/docker/the gate, so this stays UNVERIFIED until a real release is cut.
+- Image: `ghcr.io/volkb79-2/pwmcp-ocr` (sibling of `ghcr.io/volkb79-2/pwmcp`, the repository naming
+  convention), tagged `<PWMCP_VERSION>` (the SAME coordinate, e.g. `1.64.0-r3`) and `latest`.
+- Build/push: a `pwmcp-ocr` target in `docker-bake.hcl` (same context `.`, no extra platform/cache policy),
+  added to the `all` group, so the existing `build-push.py --build/--push` bake builds and pushes both.
+  `GHCR_PACKAGE_NAMES` is `pwmcp,pwmcp-ocr`, so the existing visibility sync runs for both packages. The main
+  image has no signing/provenance step, so none is added.
+- Base pin: `debian:trixie-slim` pinned by multi-arch manifest digest in `containers/ocr/Dockerfile`
+  (`DEBIAN_RELEASE`, `DEBIAN_IMAGE_DIGEST`), `docker-bake.hcl` and `cmru.vars`. The mechanism is the same as
+  the Playwright base: `scripts/resolve-playwright-version.py --refresh` resolves the digest (Docker Hub,
+  anonymous HEAD) and rewrites all projections; `--check` (CMRU's prepare phase) fails if they disagree, are
+  not a sha256, the FROM lost its digest, or `[pwmcp.ocr.image] tag` differs from the pwmcp release.
+  `containers/ocr/Dockerfile` is in cmru's `commit_generated`, so a refreshed pin is committed. The loader
+  (`scripts/_vars.py`) now requires the two keys, so an old `cmru.vars` fails closed. The digest was read
+  from Docker Hub on 2026-10-27 (`sha256:62bd423a...`).
+- Coordinate/contract: `pwmcp.ocr.image.tag` defaults to the pwmcp tag and the resolver keeps them equal.
+  `pwmcp.contract.json` carries no image coordinates (not for the main image either) and is UNCHANGED, as is
+  `get.py`; consumers pin images through the bundle's `ciu.defaults.toml.j2`, which now has both. Neither
+  mdt-cockpit (it reads only the contract `release` and `get.py`) nor `topos/pwmcp-instance/UPSTREAM.toml`
+  (vendored copy at 1.61.0-r6) needs a change; topos picks the OCR defaults up on its next re-vendor.
+- STILL OPEN / decisions not made: (a) DECIDED BY DESIGN, 2026-10-27: no age window for the rolling Debian base
+  digest (a rolling OS tag whose newer digests are mostly security rebuilds, which a window would only delay);
+  the digest is whatever the tag points to at `--refresh`. (b) The second GHCR package is created on first push; the existing
+  mirror-repo-visibility sync is applied to it, which assumes the release PAT may create and administer it.
+  (c) Whether to also register `debian:trixie-slim` as a cmru `[versions.targets."oci.*"]` target (mdt-cockpit
+  has advisory ones); NOT added, because it could not be validated without running cmru and a failed load
+  would break the release. (d) cmru's own artifact accounting still lists `artifacts = ["oci-image",
+  "bundle"]`; whether it needs to enumerate the second image is not checkable without running cmru. (e) The
+  main image's unpinned `debian:bookworm-slim` KSM builder stage is untouched.
+
+**Result contract (reviewed 2026-10-27).** The sidecar result is COMPLETE: `min_conf` flags words below it
+(`low_conf`, per-line `conf_mean` / `conf_min` / `low_conf_words`, top-level `low_conf_words` and
+`min_conf_applied`) and never deletes them; removal is the explicit `drop_low_conf=1` opt-in. Phases 2-3 match
+on this text and send keystrokes, so doubt must stay visible.
+
+**Phase 2-3 hazards / required inputs** (from the Opus review and the TrueNAS capture; that corpus is on another
+branch, to be merged after this one):
+- (a) `text` joins a line's words with single spaces, so the console's column layout is lost. Phase 2 needs a
+  grid/rows output for console frames (a fixed 160x50 character grid at 1280x800), not free text.
+- (b) `_capture_element` captures at CSS size, which RESAMPLES the exact 8x16 px cell grid. Phase 2 must capture
+  the canvas's intrinsic bitmap (and verify the size), not a displayed-size screenshot.
+- (c) Tesseract reads light-on-black console text at 92-100% but FAILS black-on-grey installer dialogs (needs
+  colour-aware preprocessing: invert/threshold) and mis-reads digits (`10.0.2.15` -> `16.0.2.15`, `9)` -> `3)`).
+  Exact values need glyph matching: the console is an exact 8x16 px cell grid.
+- (d) Confidence is NOT calibrated: a garbled dialog read at 91% mean confidence. `low_conf` is a hint; an
+  unflagged word is not verified; without `min_conf` the flags are null. Keystrokes need an EXACT match of a
+  known screen signature or the glyph-grid engine, never "unflagged".
+- (e) UNMEASURED: whether the 512m limit holds for 24 MP scaled images, and the R2 mutation runtime on the newly
+  judged files (about 380 mutation sites); expect the r2 lane budget of 4h to matter.
+- The container `mem_limit`/`cpus`/`pids_limit` keys are author-set and replace (are not clamped by) the ciu
+  governance overlay's per-service value (author-set keys win): their interaction with a live overlay is UNVERIFIED.
+
+**First release of the OCR image: checklist** (also in README "Release Model"): confirm the base digest with
+`docker buildx imagetools inspect debian:trixie-slim` (and `--refresh` if it differs); a transaction prepared
+before the new `cmru.vars` keys fails closed; confirm the token has `write:packages` for a new package
+(PWMCP-01); expect `pwmcp-ocr` to be created PRIVATE and unlinked and make it public once in the GHCR UI
+(the `org.opencontainers.image.source` label links it); if the visibility sync hard-fails after both images
+were pushed (cmru KI-97) re-run ONLY the sync step, never `cmru release --resume` without `--set-version`
+(the 2026-09-08 v1.0.0 incident). The sidecar image exists from the NEXT release after `1.64.0-r3`; until
+then enabling `pwmcp.ocr` needs a local build (README). The pwmcp gate lanes depend on the tester
+image carrying the pwmcp-client `test` extra (pytest, pillow, websockets, jinja2, pyyaml) plus node and sh.
+Operator policy 2026-10-27: a test needing an optional module or binary FAILS when it is missing (clear message
+naming it and the extra); skipping is the opt-in, `PWMCP_ALLOW_MISSING_TEST_DEPS=1` on a developer machine.
+One helper (`tests/_testdeps.py`) serves every site; the lanes set nothing. The real-Tesseract test keeps an
+explicit skip (the binary exists only in the sidecar image) and fails when `PWMCP_REQUIRE_TESSERACT=1` (set only
+in a lane that runs inside the OCR image; none exists today). `client/src/pwmcp_client/user_agent.py` (PWMCP-09) and the sidecar are judged targets at 100% line and branch
+(user_agent.py was 73% before: its `_main` and platform/hint branches had no in-process tests). The Node code
+(`ua-override/index.js`, the two gateways, the admin server) is outside the Python judge and is exercised only by
+the subprocess tests. Not judged: `get.py` (generated by `cmru get-py`, 1093 statements), `installer/adapter.py`,
+`scripts/build-bundle.py`, `scripts/publish-bundle.py`, `scripts/prepare-client-wheels.py`, `scripts/_vars.py`
+(partly covered, see the report). The controller owns the tester-unified change and
+image rebuild and the `test` extra in `client/pyproject.toml` (not touched on this branch: keep it verbatim on merge).
+
+**UNVERIFIED until an image is built and run.**
+- Real Tesseract behaviour: the TSV column layout assumption (12 columns, level 5 = word, `conf` -1 for
+  layout rows) matches the documented format and the fake used by the tests, but was not checked against the
+  packaged binary; `tesseract stdin stdout ... tsv` reading from stdin and `--list-langs` / `--version`
+  output shapes are likewise assumed.
+- Recognition accuracy on real console frames (fonts, colours, `--psm 6` vs `11`, `--scale`), and whether
+  the Debian `tesseract-ocr-eng` data (fast or best) is good enough. The ONE real-engine test
+  (`tests/test_ocr_service.py::test_real_tesseract_recognises_rendered_console_lines`) skips unless
+  `tesseract`, Pillow and DejaVu Sans Mono are present; it did NOT run in the implementing worktree.
+- The release wiring end to end: `docker buildx bake all` against the managed BuildKit builder building both
+  targets (the `bake --print` plan was NOT run: no docker here), the push, the GHCR visibility sync for the
+  new `pwmcp-ocr` package, cmru's handling of the extra `commit_generated` path, and `cmru release pwmcp`
+  itself. Offline tests check the committed inputs against each other and the push loop's package list only.
+- The image build (`containers/ocr/Dockerfile`: package names on the pinned Debian release, uid 1000,
+  read-only rootfs with only `/tmp` writable, `nice` entrypoint) and the healthcheck.
+- The compose wiring under a real `ciu up` (that the narrowing `mem_limit`/`memswap_limit`/`cpus` coexist
+  with the governance overlay, that `read_only` plus tmpfs is accepted, the `$INSTANCE_ID` container name,
+  alias resolution from the pwmcp container). The offline tests render the template with plain Jinja
+  (`StrictUndefined`, as ciu does), not through ciu.
+- Element capture of a real canvas through Playwright's compositor screenshot (chosen over `toDataURL`
+  because it does not fail on tainted or WebGL canvases): the image is the DISPLAYED size, not the canvas's
+  intrinsic 1280x800 bitmap unless the page is shown at that size. The fake browser in the tests cannot
+  show this.
+- Gate coverage: `client/src/pwmcp_client/ocr.py` was added to the `assay.toml` judged targets (100% line
+  and branch measured locally); the sidecar `containers/ocr/ocr_service.py` is tested but deliberately NOT a
+  judged target yet, and the registered gate was not run.

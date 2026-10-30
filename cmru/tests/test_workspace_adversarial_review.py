@@ -536,7 +536,7 @@ def _child_forge(source_root: Path, source_config: Path):
     return SimpleNamespace(
         repo_root=source_root, orchestration=orchestration, projects={"demo": parsed},
         cleanup=None,
-        github=SimpleNamespace(owner="owner", repo="repo", token=None, owner_type="user"),
+        github=SimpleNamespace(owner="owner", repo="repo", token=None, owner_type="user", token_source="cmru"),
         targets=SimpleNamespace(registry=[]), env={}, project_tokens={},
     )
 
@@ -658,7 +658,7 @@ def test_load_config_transaction_scope_requires_child_ownership(monkeypatch, tmp
             project_configs=paths, dependencies={},
         ),
         projects=parsed, cleanup=None,
-        github=SimpleNamespace(owner="owner", repo="repo", token=None, owner_type="user"),
+        github=SimpleNamespace(owner="owner", repo="repo", token=None, owner_type="user", token_source="cmru"),
         targets=SimpleNamespace(registry=[]), env={}, project_tokens={},
     )
     monkeypatch.setattr(cli, "load_forge_config", lambda _path: forge)

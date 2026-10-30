@@ -97,6 +97,56 @@ canary env-of-ignores-docker-failure files/usr/local/sbin/soulmask-monitor.py \
         return ""' \
   tests/test_soulmask_monitor.py::test_env_of_returns_empty_on_docker_failure
 
+# 4. A per-instance target that is ANY mount other than our own tagged tmpfs
+#    must be refused, not stacked on (fstype alone is not identity).
+canary pi-foreign-mount-accepted files/usr/local/sbin/soulmask_tmpfs-setup.sh \
+  '    if [ "$fs" != "tmpfs" ] || [ "$src" != "$tag" ]; then' \
+  '    if false; then' \
+  tests/test_soulmask_tmpfs_per_instance.py::test_a_recorded_looking_foreign_mount_is_refused_by_the_identity_check_itself
+
+# 5. [per-instance-noswap] must really mount noswap (dropping the option would
+#    silently serve a swappable mount under a "stays resident" claim).
+canary pi-noswap-option-dropped files/usr/local/sbin/soulmask_tmpfs-setup.sh \
+  '    [ "$noswap" = "1" ] && opts+=",noswap"' \
+  '    :' \
+  tests/test_soulmask_tmpfs_per_instance.py::test_noswap_section_mounts_with_noswap
+
+# 6. A busy per-instance mount must fail teardown, not be swallowed.
+canary pi-busy-teardown-swallowed files/usr/local/sbin/soulmask_tmpfs-teardown.sh \
+  'resolve and re-run"
+      PI_BUSY+=("$t"); RC=1' \
+  'resolve and re-run"
+      PI_BUSY+=("$t"); RC=0' \
+  tests/test_soulmask_tmpfs_per_instance.py::test_teardown_refuses_when_a_per_instance_mount_is_busy
+
+# 7. The prune script may only delete regular files named like game backups:
+#    without `-type f` a symlink named WS-backup-*.log would be treated (and
+#    removed) as a backup.
+canary pi-prune-follows-symlinks files/usr/local/sbin/soulmask_logs-prune.sh \
+  "find \"\$t\" -maxdepth 1 -type f -name" \
+  "find \"\$t\" -maxdepth 1 -name" \
+  tests/test_soulmask_tmpfs_per_instance.py::test_prune_keeps_live_log_and_newest_backups_and_touches_nothing_else
+
+# 8. KEEP_BACKUPS=N keeps N backups (an off-by-one would delete the newest).
+canary pi-prune-keep-off-by-one files/usr/local/sbin/soulmask_logs-prune.sh \
+  'while [ "${#backups[@]}" -gt "$KEEP" ]; do' \
+  'while [ "${#backups[@]}" -ge "$KEEP" ]; do' \
+  tests/test_soulmask_tmpfs_per_instance.py::test_prune_keeps_live_log_and_newest_backups_and_touches_nothing_else
+
+# 9. A symlink component that stays INSIDE the volume is only caught by the
+#    explicit -L check (realpath containment alone would accept it).
+canary pi-symlink-component-accepted files/usr/local/sbin/soulmask_tmpfs-setup.sh \
+  '    if [ -L "$cur" ]; then' \
+  '    if false; then' \
+  tests/test_soulmask_tmpfs_per_instance.py::test_symlink_staying_inside_the_volume_is_still_refused
+
+# 10. Teardown must not unmount a per-instance tmpfs while its game container
+#     runs (a successful host umount does not stop the game writing).
+canary pi-teardown-ignores-running-container files/usr/local/sbin/soulmask_tmpfs-teardown.sh \
+  'rc=0; _container_running "$u" || rc=$?' \
+  'rc=1' \
+  tests/test_soulmask_tmpfs_per_instance.py::test_teardown_refuses_a_target_whose_container_is_running
+
 echo
 if [ "$fail" -gt 0 ]; then
   echo "canaries: $pass rejected, $fail SURVIVED — the gate is not discriminating"

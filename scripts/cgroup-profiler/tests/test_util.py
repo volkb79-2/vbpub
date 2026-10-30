@@ -116,6 +116,16 @@ class TestReaders:
         # line still comes through.
         assert util.read_pressure(str(path)) == {"some_total": 1.0}
 
+    @pytest.mark.parametrize("text", ["nan", "NaN", "inf", "-inf", "1e999", "Infinity"])
+    def test_pressure_drops_a_non_finite_value(self, tmp_path: Path, text: str):
+        # `float()` accepts these spellings, and `json.dumps` would then emit
+        # a bare NaN/Infinity token that is not JSON. The kernel never writes
+        # them; a corrupted or hostile file must not poison a JSONL stream
+        # another consumer parses strictly.
+        path = tmp_path / "memory.pressure"
+        path.write_text(f"some avg10={text} avg60=2.5 total=1\n")
+        assert util.read_pressure(str(path)) == {"some_avg60": 2.5, "some_total": 1.0}
+
 
 class TestRate:
     def test_normal_rate(self):

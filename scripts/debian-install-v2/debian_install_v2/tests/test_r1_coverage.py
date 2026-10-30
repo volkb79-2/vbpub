@@ -19,7 +19,7 @@ BASE_CONFIG = {
     "schema_version": 1,
     "fresh_install": True,
     "swap_disk_total_gb": 32,
-    "swap_file_count": 8,
+    "swap_partition_count": 8,
     "telegram_bot_token": "",
     "telegram_chat_id": "",
     "auto_reboot_after_stage1": False,
@@ -187,6 +187,11 @@ def test_cli_disable_and_show_plan(tmp_path, monkeypatch):
         "release": "trixie",
         "root_device": "/dev/vda3",
         "new_root_size_sectors": 1024,
+        "root_shrink_check": "not required",
+        "swap_policy": "off",
+        "swap_total_gb": None,
+        "swap_retained_before_root_gb": None,
+        "swap_after_root_gb": None,
         "swap_partitions": [],
         "sfdisk_plan": "label: gpt\n",
     }
@@ -246,8 +251,8 @@ def test_config_rejects_swap_size_out_of_range():
 
 
 def test_config_rejects_file_count_out_of_range():
-    data = dict(BASE_CONFIG, swap_file_count=0)
-    with pytest.raises(ConfigError, match="swap_file_count"):
+    data = dict(BASE_CONFIG, swap_partition_count=0)
+    with pytest.raises(ConfigError, match="swap_partition_count"):
         load_config(raw_json=json.dumps(data))
 
 
@@ -504,7 +509,7 @@ def test_verify_missing_manifest(tmp_path):
 def test_show_plan_returns_partitions(tmp_path):
     installer = _make_with_state(tmp_path)
     plan = installer.show_plan()
-    assert len(plan["swap_partitions"]) == 8
+    assert len(plan["swap_partitions"]) == 4
     assert plan["release"] == "trixie"
 
 
@@ -667,6 +672,14 @@ def test_disk_facts_missing_root(tmp_path):
         installer._disk_facts()
 
 
+def _configure_preflight_vda(installer, entries, *, root_number, root_start, root_size):
+    installer.root_disk = "vda"
+    installer.root_number = root_number
+    installer.root_partition_path = f"/dev/vda{root_number}"
+    installer._disk_facts = lambda: (40_000_000, root_start, root_size)
+    installer._live_partition_entries = lambda *_args: entries
+
+
 def test_preflight_rejects_unexpected_mounts(tmp_path):
     from debian_install_v2.tests.test_fake_integration import FakeHostActions
     config = Config(
@@ -680,19 +693,25 @@ def test_preflight_rejects_unexpected_mounts(tmp_path):
         "/dev/vda3 / ext4\n/dev/vda4 /mnt ext4\n"
     )
     installer = Installer(config, actions)
+    _configure_preflight_vda(
+        installer,
+        {
+            3: {"start": "2048", "size": "10000", "type": "linux"},
+            4: {"start": "12048", "size": "10000", "type": "linux"},
+        },
+        root_number=3,
+        root_start=2048,
+        root_size=10000,
+    )
     with pytest.raises(RuntimeError, match="partitions are mounted"):
         installer._preflight_disk_transaction()
 
 
-def test_preflight_allows_lower_numbered_boot_partitions(tmp_path):
-    """Regression for a real bug found live 2026-09-08 on a freshly
-    provisioned netcup trixie host: a standard UEFI/GPT layout (ESP +
-    /boot + root, all on one disk) always has vda1/vda2 mounted alongside
-    root. _write_sfdisk_plan()'s own `kept` pass already leaves every
-    partition numbered below root_number byte-for-byte untouched, so their
-    being mounted is not a hazard and must not abort the transaction --
-    the original allowlist-only-root check refused every single run on
-    this (extremely common) layout.
+def test_preflight_allows_high_numbered_boot_partition_physically_before_root(tmp_path):
+    """Debian genericcloud uses p14/p15 before root p1; IDs are not order.
+
+    The ESP is mounted during the transaction and must be allowed because its
+    full extent ends before root starts and the writer preserves it unchanged.
     """
     from debian_install_v2.tests.test_fake_integration import FakeHostActions
     config = Config(
@@ -703,20 +722,27 @@ def test_preflight_allows_lower_numbered_boot_partitions(tmp_path):
     actions = FakeHostActions()
     actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
     actions.outputs[("/usr/bin/findmnt", "-rn", "-o", "SOURCE,TARGET,FSTYPE")] = (
-        "/dev/vda1 /boot/efi vfat\n/dev/vda2 /boot ext4\n/dev/vda3 / ext4\n"
+        "/dev/vda15 /boot/efi vfat\n/dev/vda1 / ext4\n"
     )
     installer = Installer(config, actions)
+    _configure_preflight_vda(
+        installer,
+        {
+            14: {"start": "2048", "size": "6144", "type": "bios"},
+            15: {"start": "8192", "size": "253952", "type": "efi"},
+            1: {"start": "262144", "size": "20000000", "type": "linux"},
+        },
+        root_number=1,
+        root_start=262144,
+        root_size=20000000,
+    )
     preflight = installer._preflight_disk_transaction()
     assert preflight["holders"] == []
-    assert len(preflight["mounts"]) == 3
+    assert len(preflight["mounts"]) == 2
 
 
-def test_preflight_still_rejects_higher_numbered_mount_alongside_boot_partitions(tmp_path):
-    """A partition numbered ABOVE root (e.g. a leftover swap partition
-    still mounted from a previous attempt) is exactly what
-    _write_sfdisk_plan() would append new entries after / could clobber --
-    it must still be rejected even when normal lower-numbered boot
-    partitions are also mounted."""
+def test_preflight_rejects_mounted_partition_physically_after_root(tmp_path):
+    """Mounted data after root remains a refusal, regardless of partition ID."""
     from debian_install_v2.tests.test_fake_integration import FakeHostActions
     config = Config(
         state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
@@ -724,11 +750,22 @@ def test_preflight_still_rejects_higher_numbered_mount_alongside_boot_partitions
         auto_reboot_after_stage1=False,
     )
     actions = FakeHostActions()
-    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
+    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda1\n"
     actions.outputs[("/usr/bin/findmnt", "-rn", "-o", "SOURCE,TARGET,FSTYPE")] = (
-        "/dev/vda1 /boot/efi vfat\n/dev/vda2 /boot ext4\n/dev/vda3 / ext4\n/dev/vda4 /mnt ext4\n"
+        "/dev/vda15 /boot/efi vfat\n/dev/vda1 / ext4\n/dev/vda2 /mnt ext4\n"
     )
     installer = Installer(config, actions)
+    _configure_preflight_vda(
+        installer,
+        {
+            15: {"start": "8192", "size": "253952", "type": "efi"},
+            1: {"start": "262144", "size": "20000000", "type": "linux"},
+            2: {"start": "20262144", "size": "10000", "type": "linux"},
+        },
+        root_number=1,
+        root_start=262144,
+        root_size=20000000,
+    )
     with pytest.raises(RuntimeError, match="partitions are mounted"):
         installer._preflight_disk_transaction()
 

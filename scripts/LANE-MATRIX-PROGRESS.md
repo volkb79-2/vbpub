@@ -345,7 +345,7 @@ DEBIAN-INSTALL-REVIEW.md/DEBIAN-INSTALLv2-REVIEW.md/custom_script.output
 (pre-existing untracked root cruft, out of scope per the original brief) —
 NOT touching their content, just stopping them from permanently tripping
 assay's repo-wide dirty-tree check, which has no --allow-dirty escape
-hatch unlike run-gate.py's.
+hatch unlike run-gate's.
 
 ## Lane matrix (all 4 projects: gstammtisch-guide, debian-install-v2,
 ## damon-analysis, cgroup-profiler)
@@ -382,11 +382,11 @@ debian-install-v2's.
 zipapp-drop above), `environment = "host"|"tester-unified"` (declared
 centrally in the root `run-gate.root.toml`'s `[environments.tester-unified]`,
 inherited by every project unless shadowed). `environment = "host"` for a
-lane means run-gate.py execs the argv directly with no container, no
+lane means run-gate execs the argv directly with no container, no
 placement, no dual-mount — appropriate for anything that does no real
 disk/systemd/privileged mutation (matches debian-install-v2's existing
 r0-r1/fake-integration precedent). `environment = "tester-unified"` gets
-FULL container orchestration natively from run-gate.py itself (SPEC.md
+FULL container orchestration natively from run-gate itself (SPEC.md
 R-15/R-16/R-19a/R-23: detached run, dual mount, cgroup placement +
 LoadState verification, safe.directory, separate `docker wait`/`docker
 logs` verdict read) — this is a more mature, generalized version of what
@@ -398,7 +398,7 @@ scripts (matching the "srdm forked, cgroup-profiler extends the shared
 image but keeps its own scripts" precedent already recorded in its own
 nyxloom.toml), wired into run-gate.toml as `environment = "host"` command
 lanes that just `exec tools/gate.sh {worktree} coverage` /
-`exec tools/canary-run.sh` — run-gate.py's own container orchestration is
+`exec tools/canary-run.sh` — run-gate's own container orchestration is
 reserved for lanes that don't already self-contain their own docker calls
 (that's exactly cgroup-profiler's r2 mutation lane, the one new thing it
 needs: `environment = "tester-unified"`, since assay's own R2 execution
@@ -428,7 +428,7 @@ This task's r3 tier uses a PROJECT-OWNED canary script (cgroup-profiler's
 tools/canary-run.sh pattern), never assay's own R3 vocabulary — assay.toml
 per project therefore only ever declares `rigor = ["R0", "R2"]`, no R1, no
 R3. (5) assay's own dirty-tree check has NO --allow-dirty escape hatch
-(unlike run-gate.py's `clean_tree = false`/`--allow-dirty`) — an untracked
+(unlike run-gate's `clean_tree = false`/`--allow-dirty`) — an untracked
 file ANYWHERE in the repo blocks every project's R1+/R2 lane; see the
 .gitignore fix above.
 
@@ -446,7 +446,7 @@ project's r2 tier is "green" — see the new "r2/coverage 'green' is a
 separate, larger scope" note below, this is the central open finding of
 this session's lane-matrix phase. [lanes.r3]: 3 real canaries
 (obsolete-v1-config-accepted, dry-run-executes-anyway, command-allowlist-
-disabled), all verified LIVE via `./run-gate.py r3`, real rejection
+disabled), all verified LIVE via `run-gate r3`, real rejection
 confirmed, exit 0. [lanes.gate]: new aggregator, `--dry-run`-verified
 (not run live end-to-end as a single invocation — its three sub-lanes
 were each verified individually instead, since a live r2 sub-run inside
@@ -462,7 +462,7 @@ fmt_bytes PiB fallback, classifier cold-age branch) — first attempt at
 canary #1 targeted the WRONG function (_pack, the send-side, when the
 actual bug and its regression test are in _recv_packet, the receive-side)
 and survived; fixed to target the receive-side unpack call, then all 3
-passed live via `./run-gate.py r3`, exit 0. [lanes.r2]: config validated
+passed live via `run-gate r3`, exit 0. [lanes.r2]: config validated
 via `assay lanes` only (source_roots = ".", which also covers tests/ —
 confirmed via debian-install-v2's own `assay plan` output that assay's
 Python adapter already excludes test files and __init__.py from
@@ -478,10 +478,10 @@ docker orchestration). [lanes.r3] wraps tools/canary-run.sh, but
 CORRECTED from an initial `environment = "host"` (which failed live:
 canary-run.sh does NOT launch its own container, unlike gate.sh — it
 expects to already be running somewhere with $TESTER_VENV/report-tier
-deps resolvable, so it needs run-gate.py's own tester-unified
+deps resolvable, so it needs run-gate's own tester-unified
 orchestration, not none). [lanes.r2] also tester-unified (assay needs
 pandas/plotly). All three run live inside a REAL tester-unified
-container via run-gate.py's native orchestration (SPEC.md R-15/R-16 —
+container via run-gate's native orchestration (SPEC.md R-15/R-16 —
 genuine cgroup placement against dev-background.slice, dual-mount, real
 `docker run -d`/`docker wait`/`docker logs`), not the scratch venv this
 session's earlier Phase-2 review used. That distinction mattered: the
@@ -521,7 +521,7 @@ the test's fixture to use a non-empty, matching stdout
 (`"RCON_PORT=1234\n"`), the same "sharpen a weak test the canary
 surfaced" move as Phase 1/2's own step-3 discipline, just triggered by
 lane-matrix work instead of the earlier review pass. All 3 pass live now
-(`./run-gate.py r3`, exit 0); full suite re-confirmed unaffected (59
+(`run-gate r3`, exit 0); full suite re-confirmed unaffected (59
 passed). [lanes.r2]: config validated via `assay lanes` only, same
 time-conservation reasoning as damon-analysis.
 
@@ -554,7 +554,7 @@ next checkpoint/operator decision rather than deciding unilaterally.
 RESOLVED this session (see "Real per-project run-gate.toml lane naming
 confirmed..." above): cgroup-profiler's gate.sh/canary-run.sh pattern
 stays project-owned, not generalized into a shared script, and cgroup-
-profiler is not migrated onto run-gate.py's native container
+profiler is not migrated onto run-gate's native container
 orchestration for its existing lanes (only its NEW r2/r3 lanes use it —
 r3 needed it too, a correction from the original plan, see above).
 

@@ -87,6 +87,31 @@ echo "iocost-calibrate: raw result: $RESULT_LINE"
 
 # RESULT_LINE shape: "MAJ:MIN rbps=N rseqiops=N rrandiops=N wbps=N wseqiops=N wrandiops=N"
 DEVNO="${RESULT_LINE%% *}"
+
+# PLAUSIBILITY (MDT-016 / D-HS-01-2): the generator runs fio --direct=1, which
+# bypasses only the GUEST page cache; a hypervisor write-back cache still
+# absorbs the writes.  The rule lives in ONE place, tools/iocost_plausibility.py,
+# shared with mdt-cockpit's mdt-io-baseline.py (bandwidth on the sequential
+# numbers, IOPS on random 4 KiB only, ceilings for rotational devices, explicit
+# IO_BASELINE_ROTATIONAL_FLAG=ignore override for a fast virtio disk).  A refusal
+# writes no model.  The generator redesign is in TODO.md.
+if [ ! -r "$HERE/iocost_plausibility.py" ]; then
+  echo "iocost-calibrate: REFUSED: the shared plausibility module $HERE/iocost_plausibility.py is missing, so the numbers cannot be checked. No model written. Restore tools/iocost_plausibility.py." >&2
+  exit 1
+fi
+command -v python3 >/dev/null 2>&1 || { echo "iocost-calibrate: REFUSED: python3 is required for the plausibility check. No model written." >&2; exit 1; }
+SYSFS_ROOT="${IOCOST_SYSFS_ROOT:-/sys}"
+ROTATIONAL=$(cat "$SYSFS_ROOT/dev/block/$DEVNO/queue/rotational" 2>/dev/null || echo "")
+pairs=" ${RESULT_LINE#* } "
+get() { local v="${pairs#* $1=}"; echo "${v%% *}"; }
+if ! python3 "$HERE/iocost_plausibility.py" --rotational "${ROTATIONAL:-unknown}" \
+     --rbps "$(get rbps)" --wbps "$(get wbps)" \
+     --rrandiops "$(get rrandiops)" --wrandiops "$(get wrandiops)" 2>"$OUT_DIR/.plausibility.err"; then
+  echo "iocost-calibrate: REFUSED ($DEVNO): $(cat "$OUT_DIR/.plausibility.err"). No model written." >&2
+  rm -f "$OUT_DIR/.plausibility.err"
+  exit 1
+fi
+rm -f "$OUT_DIR/.plausibility.err"
 {
   echo "MEASURED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "DEVNO=$DEVNO"

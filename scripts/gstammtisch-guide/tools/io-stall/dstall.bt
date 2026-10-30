@@ -1,0 +1,30 @@
+// Game threads blocked in D state >= 20 ms: total ms and count per kernel stack, 10 s windows.
+// Usage: bpftrace dstall.bt <tgid>
+tracepoint:sched:sched_switch
+{
+  if (curtask->tgid == $1 && (args.prev_state & 2)) {
+    @s[args.prev_pid] = nsecs;
+    @k[args.prev_pid] = kstack(10);
+  }
+  if (@s[args.next_pid]) {
+    $d = (nsecs - @s[args.next_pid]) / 1000000;
+    if ($d >= 20) {
+      @ms[@k[args.next_pid]] = sum($d);
+      @n[@k[args.next_pid]] = count();
+      @maxms = max($d);
+    }
+    delete(@s[args.next_pid]);
+    delete(@k[args.next_pid]);
+  }
+}
+
+interval:s:10
+{
+  time("=== %Y-%m-%dT%H:%M:%S\n");
+  print(@maxms);
+  print(@ms, 6);
+  print(@n, 6);
+  clear(@ms);
+  clear(@n);
+  clear(@maxms);
+}

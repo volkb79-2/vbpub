@@ -24,18 +24,64 @@ interactive tier before starting, and builds through the declared
 mount table and refuses an unmapped or missing source. This prevents a
 container path from being passed to the daemon as if it were a host path.
 
-## Why Assay is not used to pretend the VM is a unit test
+## VM system prerequisites live in Run-Gate
 
-Assay judges the VM controller's R0 receipt. It does not move systemd or
-Docker assertions into the Python mutation snapshot, because that would test
-the controller's text and mocks while claiming to test the host boundary.
-The VM lane therefore remains R0: its value is the real guest acceptance
-receipt, while the Python lane supplies the deeper R1-R3 evidence for code
-whose behavior can be reproduced safely in `tester-unified`.
+The VM lane is a Run-Gate command lane. Its five host inputs are declared once
+in `run-gate.toml`, so Run-Gate can refuse before starting the controller when
+the environment is incomplete. The controller inherits the caller's selected
+Docker endpoint and Buildx configuration. Wrapping this R0 orchestration
+receipt in Assay would require a second environment allowlist to pass the same
+inputs to the shell command without adding judgment beyond Run-Gate's own
+record. Systemd, Docker, and cgroup assertions remain inside the QEMU guest;
+the Python wizard lane supplies the deeper R1-R3 evidence for behavior that
+can be reproduced safely in `tester-unified`.
 
 MDT has no owned HTTP/OpenAPI contract. Hypothesis is used for pure
 configuration invariants where generated values are meaningful; Schemathesis
 would add no evidence to this product.
+
+## PWMCP service in the image
+
+The MDT Dockerfile installs PWMCP from the same committed CMRU `get.py` and
+contract that its build inputs identify. The build helper records both source
+URLs at the exact repository commit and their SHA-256 digests; the helper
+rejects a mismatched download before running the installer. The installer
+then fetches the versioned PWMCP bundle, verifies its checksum and wheel
+manifest, and creates `/srv/pwmcp-instance` as a `vscode`-owned user-scope
+install. PWMCP is a declared release dependency, so the matching bundle exists
+before an MDT image build can consume it.
+
+The instance is preinstalled but does not start during image build. A user runs
+`ciu up` when browser service is needed. CIU's standalone root gives the
+service its own internal network and attaches the current devcontainer; this
+keeps the unauthenticated internal-network policy identical to PWMCP's other
+internal deployments. No host port is published. The installed `pwmcp` CLI
+uses the version-matched client and Playwright wheel in the same private venv.
+See the [pasteable consumer steps](CONSUMERS.md#pwmcp-browser-service).
+
+The devcontainer template puts `/srv/pwmcp-instance/bin` on remote process
+`PATH` and exports `PWMCP_MCP_URL`. The CLI lives outside `/home/vscode`, so a
+persisted home mount cannot hide it. The endpoint variable makes the network
+resource explicit; each agent harness still owns its MCP registration format.
+
+## The estate venv is selected by PATH
+
+The MDT image puts `/home/vscode/.venv/bin` first in image and login-shell
+`PATH`. This selects the estate Python for all cockpit processes, including
+noninteractive agent commands and children started by release tools. It does
+not pretend that every process has activated a shell venv: `VIRTUAL_ENV` is
+reserved for actual activation, while the selected interpreter and its
+installed packages are determined by `PATH`.
+
+## DAMON_STAT is an explicit host choice
+
+`DAMON_STAT` and cgprofile's generic DAMON sysfs sessions are mutually
+exclusive kernel consumers. MDT asks the host operator whether to disable
+`DAMON_STAT`, recommends disabling it for the development host, and applies
+the choice through a boot-time tmpfiles rule. The non-wizard example keeps the
+kernel default. This keeps a host-wide monitoring policy out of cgprofile's
+runtime and gives the operator a clear way to preserve `DAMON_STAT` when it is
+needed for other workloads.
 
 ## Managed BuildKit socket access
 
@@ -94,6 +140,30 @@ or an option cannot be classified, startup refuses instead of accepting a
 decoy.
 See the [consumer setup](CONSUMERS.md#host-cgroup-preflight) for the required
 install and rebuild steps.
+
+## Narrow cgprofile observer provisioning
+
+The resource observer uses a read-only Unix socket whose group is deliberately
+separate from `docker`. A normal MDT host install creates its group and runtime
+directory as part of the complete host policy workflow. Contract-2 adoption on
+an already configured host also needs a small additive path that prepares the
+socket directory without re-running unrelated host policy, Docker, or BuildKit
+steps. `install.sh --observer-only` provides that path: it verifies the
+existing `/run/cgprofile` control directory and refuses a pre-existing
+observer group that aliases Docker's GID or an observer path with the wrong
+type, owner, group, or mode before it writes units or applies tmpfiles. It
+refuses drift rather than letting tmpfiles silently re-own a live path. It
+creates the observer group, applies only the observer tmpfiles rule, and
+validates the resulting owner, group, and mode before returning.
+
+The dedicated tmpfiles rule is separate from the control-socket rule so the
+narrow path cannot rewrite the Docker-accessible parent directory. The full
+installer uses the same provisioning helper, keeping both host workflows on
+one implementation. `mdt-host-check.sh` verifies the live observer group,
+directory metadata, and the complete active sysusers/tmpfiles rule sets. It
+ignores blank lines and comments but rejects extra active directives, so a
+missing or widened rule is reported before a consumer lane tries to mount the socket. See the
+[pasteable consumer command](CONSUMERS.md#cgprofile-resource-observer-host-setup).
 
 ## BuildKit guard policy
 

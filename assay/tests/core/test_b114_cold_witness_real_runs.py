@@ -362,7 +362,7 @@ def test_assay_run_cold_witness_covers_early_kill_survivor_and_one_fallback(
 
     plan_stdout, plan_stderr = io.StringIO(), io.StringIO()
     plan_code = cli.main(
-        ["plan", "package", "--file", str(config)],
+        ["plan", "--json", "package", "--file", str(config)],
         stdout=plan_stdout,
         stderr=plan_stderr,
     )
@@ -524,7 +524,7 @@ def test_assay_run_liveness_hook_replacement_falls_back_to_declared_command(
 
     plan_stdout, plan_stderr = io.StringIO(), io.StringIO()
     plan_code = cli.main(
-        ["plan", "package", "--file", str(config)],
+        ["plan", "--json", "package", "--file", str(config)],
         stdout=plan_stdout,
         stderr=plan_stderr,
     )
@@ -730,3 +730,88 @@ liveness = false
     assert "cold witness:" in r2["detail"]
     assert not attempt_log.exists()
     assert cli.main(["verify", str(verdict_path)], stdout=io.StringIO(), stderr=io.StringIO()) == 0
+
+
+def test_unsupported_coverage_hook_is_diagnostic_only_not_verdict_data(
+    git_repo: GitRepo,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    attempt_log = tmp_path / "attempts.log"
+    config = _seed_campaign(git_repo, attempt_log)
+    git_repo.write(
+        "tests/conftest.py",
+        "def pytest_runtest_setup(item):\n    return None\n",
+    )
+    git_repo.commit_all("add a cold-witness-unsupported hook")
+    monkeypatch.setenv("ASSAY_TEST_ATTEMPT_LOG", str(attempt_log))
+    # Model a failure in an unrelated receipt fact parser. B158 must still
+    # print only the independently validated, closed hook-name field.
+    from assay import mutation_witness as witness_module
+    from assay import runner as runner_module
+
+    monkeypatch.setattr(runner_module, "receipt_facts", lambda _receipt: None)
+    monkeypatch.setattr(witness_module, "receipt_facts", lambda _receipt: None)
+
+    code, stdout, stderr, _progress, _manifest, verdict_path, _state_dir = (
+        _run_cold_campaign(
+            git_repo, config, tmp_path=tmp_path, attempt_log=attempt_log
+        )
+    )
+
+    assert code != 0, f"stdout:\n{stdout}\nstderr:\n{stderr}"
+    assert "pytest_runtest_setup" in stderr
+    document = json.loads(verdict_path.read_text(encoding="utf-8"))
+    r2 = next(claim for claim in document["claims"] if claim["rigor"] == "R2")
+    assert r2["status"] == "ERROR"
+    assert r2["reason_code"] == "BAD_LANE_CONFIG"
+    assert "unsupported pytest hook configuration" in r2["detail"]
+    assert "pytest_runtest_setup" not in r2["detail"]
+    assert attempt_log.is_file()
+    assert all(not line.startswith("cold|") for line in attempt_log.read_text().splitlines())
+    assert cli.main(
+        ["verify", str(verdict_path)], stdout=io.StringIO(), stderr=io.StringIO()
+    ) == 0
+
+
+def test_unsupported_no_coverage_hook_is_diagnostic_only_not_verdict_data(
+    git_repo: GitRepo,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    attempt_log = tmp_path / "attempts.log"
+    config = _seed_campaign(git_repo, attempt_log)
+    git_repo.write(
+        "tests/conftest.py",
+        "import pytest\n\n"
+        "def pytest_configure(config):\n"
+        "    if config.pluginmanager.hasplugin('_cov'):\n"
+        "        return\n"
+        "    class NoCoverageOnlyHook:\n"
+        "        @pytest.hookimpl\n"
+        "        def pytest_runtest_setup(self, item):\n"
+        "            return None\n"
+        "    config.pluginmanager.register(NoCoverageOnlyHook(), 'no-coverage-only-hook')\n",
+    )
+    git_repo.commit_all("add an unsupported hook only to the no-coverage baseline")
+    monkeypatch.setenv("ASSAY_TEST_ATTEMPT_LOG", str(attempt_log))
+
+    code, stdout, stderr, _progress, _manifest, verdict_path, _state_dir = (
+        _run_cold_campaign(
+            git_repo, config, tmp_path=tmp_path, attempt_log=attempt_log
+        )
+    )
+
+    assert code != 0, f"stdout:\n{stdout}\nstderr:\n{stderr}"
+    assert "pytest_runtest_setup" in stderr
+    document = json.loads(verdict_path.read_text(encoding="utf-8"))
+    r2 = next(claim for claim in document["claims"] if claim["rigor"] == "R2")
+    assert r2["status"] == "ERROR"
+    assert r2["reason_code"] == "BAD_LANE_CONFIG"
+    assert "unsupported pytest hook configuration" in r2["detail"]
+    assert "pytest_runtest_setup" not in r2["detail"]
+    assert attempt_log.is_file()
+    assert all(not line.startswith("cold|") for line in attempt_log.read_text().splitlines())
+    assert cli.main(
+        ["verify", str(verdict_path)], stdout=io.StringIO(), stderr=io.StringIO()
+    ) == 0

@@ -13,7 +13,7 @@
         "SteamCMD": "ghcr.io/ptero-eggs/steamcmd:debian"
     },
     "file_denylist": [],
-    "startup": "if [ ! -f /home/container/WS/Content/Paks/WS-LinuxServer.pak ] || [ -w /home/container/WS/Content/Paks/WS-LinuxServer.pak ]; then /home/container/steamcmd/steamcmd.sh +force_install_dir /home/container +login anonymous +app_update 3017300 validate +quit; else echo \"[startup] Paks is read-only (ramdisk active) -- skipping steamcmd update\"; fi; LD_PRELOAD=/home/container/ksm-optin.so /home/container/WS/Binaries/Linux/WSServer-Linux-Shipping {{MAP_TYPE}} -server -SteamServerName=\"{{SERVER_NAME}}\" -PSW={{SERVER_PASSWORD}} -saving={{SAVE_TIME}} -Port={{PORT_SERVER}} -QueryPort={{QUERY_PORT}} -EchoPort={{ECHO_PORT}} -forcepassthrough -adminpsw={{ADMIN_PASSWORD}} -MaxPlayers={{MAX_PLAYERS}} -gamedistindex={{REGION}} -backup={{BACKUP_TIME}} -log -UTF8Output -MULTIHOME=0.0.0.0 -rconport={{RCON_PORT}} -rconpsw={{RCON_PASSWORD}} $( [ -z \"{{SERVER_ID}}\" ] || printf %s \"-serverid={{SERVER_ID}}\" ) $( [ -z \"{{MAIN_SERVER_PORT}}\" ] || printf %s \"-mainserverport={{MAIN_SERVER_PORT}}\" ) $( [ -z \"{{CLIENT_SERVER_CONNECT}}\" ] || printf %s \"-clientserverconnect={{CLIENT_SERVER_CONNECT}}\" ) -mod=\\\"{{MOD_ID}}\\\"",
+    "startup": "if [ ! -f /home/container/WS/Content/Paks/WS-LinuxServer.pak ] || [ -w /home/container/WS/Content/Paks/WS-LinuxServer.pak ]; then /home/container/steamcmd/steamcmd.sh +force_install_dir /home/container +login anonymous +app_update 3017300 validate +quit; else echo \"[startup] Paks is read-only (ramdisk active) -- skipping steamcmd update\"; fi; LD_PRELOAD=/home/container/ksm-optin.so$( [ \"{{EATMYDATA}}\" = \"1\" ] && printf %s :/home/container/libeatmydata.so ) /home/container/WS/Binaries/Linux/WSServer-Linux-Shipping {{MAP_TYPE}} -server -SteamServerName=\"{{SERVER_NAME}}\" -PSW={{SERVER_PASSWORD}} -saving={{SAVE_TIME}} -Port={{PORT_SERVER}} -QueryPort={{QUERY_PORT}} -EchoPort={{ECHO_PORT}} -forcepassthrough -adminpsw={{ADMIN_PASSWORD}} -MaxPlayers={{MAX_PLAYERS}} -gamedistindex={{REGION}} -backup={{BACKUP_TIME}} -log -UTF8Output -MULTIHOME=0.0.0.0 -rconport={{RCON_PORT}} -rconpsw={{RCON_PASSWORD}} $( [ -z \"{{SERVER_ID}}\" ] || printf %s \"-serverid={{SERVER_ID}}\" ) $( [ -z \"{{MAIN_SERVER_PORT}}\" ] || printf %s \"-mainserverport={{MAIN_SERVER_PORT}}\" ) $( [ -z \"{{CLIENT_SERVER_CONNECT}}\" ] || printf %s \"-clientserverconnect={{CLIENT_SERVER_CONNECT}}\" ) -mod=\\\"{{MOD_ID}}\\\"",
     "config": {
         "files": "{}",
         "startup": "{\r\n    \"done\": \"Create Dungeon Successed\"\r\n}",
@@ -226,6 +226,16 @@
             "user_viewable": true,
             "user_editable": true,
             "rules": "nullable|string|max:128",
+            "field_type": "text"
+        },
+        {
+            "name": "Disable fsync via eatmydata (admin-only, default 0)",
+            "description": "0 = off (default): fsync/fdatasync stay real. 1 = preload /home/container/libeatmydata.so into the GAME process only (next to ksm-optin.so), turning fsync/fdatasync/msync/sync into no-ops so the game never waits on the shared host journal. RISK: SQLite world.db/account.db are then NOT crash-consistent across a host crash or power loss (corruption, not just lost minutes); a game-process crash is safe. Needs libeatmydata.so in the volume root (chown 988:988); a missing file is a harmless ld.so warning and fsync stays real. See game_stuff/soulmask/README.md.",
+            "env_variable": "EATMYDATA",
+            "default_value": "0",
+            "user_viewable": true,
+            "user_editable": false,
+            "rules": "required|boolean",
             "field_type": "text"
         },
         {

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import os
+import argparse
+import json
 import shutil
 import subprocess
 import sys
 import tempfile
 import venv
 import zipfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -18,6 +21,7 @@ _CONFIG = '''schema_version = 1
 owner = "octocat"
 repo = "demo"
 owner_type = "user"
+token_source = "cmru"
 
 [targets]
 host = "github"
@@ -111,8 +115,84 @@ def _build_wheel(source: Path, wheelhouse: Path, *, cwd: Path) -> None:
                 shutil.rmtree(created, ignore_errors=True)
 
 
-def main() -> int:
+_MANIFEST_MAX_AGE = timedelta(minutes=30)
+
+
+def _manifest_is_fresh(record: dict, now: datetime) -> bool:
+    try:
+        refreshed = datetime.strptime(
+            record["refreshed_at_utc"], "%Y-%m-%dT%H:%M:%SZ",
+        ).replace(tzinfo=timezone.utc)
+    except (KeyError, TypeError, ValueError):
+        return False
+    return timedelta(minutes=-5) <= now - refreshed <= _MANIFEST_MAX_AGE
+
+
+def _check_live_gate_snapshot(
+        repo_root: Path, *, required: bool = False, now: datetime | None = None) -> None:
+    """Prove the real tester container cannot see a host-only canary file.
+
+    A manifest only counts when it is the CURRENT gate's: running, naming THIS
+    snapshot checkout, and refreshed moments ago. A ``running`` manifest left by
+    a killed gate fails the second and third tests, so it can never satisfy
+    ``required``; without ``required`` it is simply not a live gate, and the
+    lane runs as the direct component lane its documentation describes.
+    """
+    now = now or datetime.now(timezone.utc)
+    manifest = repo_root / "cmru" / ".assay" / "release-gate-snapshot.json"
+
+    def not_live(reason: str) -> None:
+        if required:
+            raise RuntimeError(
+                f"required live release-gate snapshot is not proven ({reason}): {manifest}"
+            )
+
+    if not manifest.is_file():
+        return not_live("the manifest is missing")
+    try:
+        record = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"release-gate snapshot manifest is unreadable: {manifest}") from exc
+    if not isinstance(record, dict) or record.get("state") != "running":
+        return not_live("its state is not running")
+    snapshot_path = record.get("snapshot_path")
+    if (
+        not isinstance(snapshot_path, str)
+        or Path(snapshot_path).name != repo_root.name
+        or record.get("snapshot_branch") != repo_root.name
+    ):
+        return not_live("it names a different checkout than this one")
+    if not _manifest_is_fresh(record, now):
+        return not_live("it was not refreshed in the last 30 minutes")
+    source_root = record.get("source_root")
+    relative = record.get("source_canary")
+    if not isinstance(source_root, str) or not Path(source_root).is_absolute():
+        raise RuntimeError("active release-gate snapshot has no absolute source_root")
+    if not isinstance(relative, str) or not relative.startswith(".cmru-gate-canary-"):
+        raise RuntimeError("active release-gate snapshot has no host canary path")
+    if Path(relative).name != relative:
+        raise RuntimeError("active release-gate snapshot canary path is not a root filename")
+    canary = Path(source_root) / relative
+    if canary.exists() or canary.is_symlink():
+        raise RuntimeError(
+            "tester container can see the host release-gate source canary; "
+            f"the source checkout is still mounted: {canary}"
+        )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--require-live-snapshot", action="store_true",
+        help=(
+            "fail unless running inside CMRU's active exact-HEAD release gate "
+            "(a fresh manifest bound to this snapshot checkout); without it a "
+            "direct run is an ordinary component lane"
+        ),
+    )
+    args = parser.parse_args(argv)
     project_root = Path(__file__).resolve().parents[1]
+    _check_live_gate_snapshot(project_root.parent, required=args.require_live_snapshot)
     with tempfile.TemporaryDirectory(prefix="cmru-installed-wheel-") as raw_tmp:
         tmp_path = Path(raw_tmp)
         wheelhouse = tmp_path / "wheelhouse"

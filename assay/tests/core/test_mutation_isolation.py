@@ -32,7 +32,8 @@ shares across every unit.
 
 from __future__ import annotations
 
-import subprocess
+from conftest import completed_process, file_not_found, timeout_expired
+
 from concurrent.futures import Future
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -41,6 +42,7 @@ from pathlib import Path
 from conftest import GitRepo, make_deadline, make_lane, make_plan, prepared_snapshot
 
 from assay.adapters.python import PythonAdapter
+from assay import mutation as mutation_module
 from assay.errors import Outcome
 from assay.mutation import MutationSite, MutationTarget, run_mutation
 from assay.runner import execute_command
@@ -118,16 +120,16 @@ def _make_decide_by_mutated_content(repo_path: Path):
 
     def decide(argv, *, env, cwd, timeout):
         if Path(cwd) == repo_path:
-            return subprocess.CompletedProcess(list(argv), returncode=0, stdout="", stderr="")
+            return completed_process(list(argv), returncode=0, stdout="", stderr="")
         text = (Path(cwd) / "pkg" / "flags.py").read_text(encoding="utf-8")
         if "a = False" in text:
-            return subprocess.CompletedProcess(list(argv), returncode=1, stdout="", stderr="")
+            return completed_process(list(argv), returncode=1, stdout="", stderr="")
         if "b = False" in text:
-            return subprocess.CompletedProcess(list(argv), returncode=0, stdout="", stderr="")
+            return completed_process(list(argv), returncode=0, stdout="", stderr="")
         if "c = False" in text:
-            raise FileNotFoundError(2, "No such file or directory", argv[0])
+            raise file_not_found(2, "No such file or directory", argv[0])
         if "d = False" in text:
-            raise subprocess.TimeoutExpired(cmd=list(argv), timeout=timeout)
+            raise timeout_expired(cmd=list(argv), timeout=timeout)
         raise AssertionError(f"unexpected mutated content in {cwd}: {text!r}")
 
     return decide
@@ -146,14 +148,14 @@ def test_each_jobs_own_result_attaches_to_that_same_job_not_to_its_position(
     deadline = make_deadline()
 
     with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
-        mutation = run_mutation(
+        mutation = mutation_module._run_mutation_impl(
             baseline=baseline,
             prepared=prepared,
             plan=plan,
             deadline=deadline,
             targets=_TARGETS,
             adapter=PythonAdapter(),
-            jobs=2,
+            jobs=1,
             max_mutants=50,
             operators=("python:bool-const-flip",),
             process_runner=decide,
@@ -189,7 +191,7 @@ def test_jobs_1_and_jobs_3_render_identical_records_under_the_real_executor(
         plan = make_plan(lane)
         deadline = make_deadline()
         with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
-            mutation = run_mutation(
+            mutation = mutation_module._run_mutation_impl(
                 baseline=baseline,
                 prepared=prepared,
                 plan=plan,
@@ -239,7 +241,7 @@ def test_the_shared_source_tree_is_byte_identical_after_all_four_terminal_cases(
             deadline=deadline,
             targets=_TARGETS,
             adapter=PythonAdapter(),
-            jobs=2,
+            jobs=1,
             max_mutants=50,
             operators=("python:bool-const-flip",),
             process_runner=decide,
@@ -277,7 +279,7 @@ def test_scratch_copies_are_discarded_after_every_mutant_run(tmp_path: Path):
             deadline=deadline,
             targets=_TARGETS,
             adapter=PythonAdapter(),
-            jobs=2,
+            jobs=1,
             max_mutants=50,
             operators=("python:bool-const-flip",),
             process_runner=decide,
@@ -297,7 +299,7 @@ def test_scratch_copies_are_discarded_after_every_mutant_run(tmp_path: Path):
 
 
 def _always_pass(argv, *, env, cwd, timeout):
-    return subprocess.CompletedProcess(list(argv), returncode=0, stdout="", stderr="")
+    return completed_process(list(argv), returncode=0, stdout="", stderr="")
 
 
 @dataclass(frozen=True)
@@ -397,7 +399,7 @@ def test_the_recorded_buckets_come_out_identity_ordered_across_files(
             deadline=deadline,
             targets=targets,
             adapter=_ReverseOrderAdapter(),
-            jobs=3,
+            jobs=1,
             max_mutants=50,
             operators=("python:bool-const-flip",),
             process_runner=_always_pass,

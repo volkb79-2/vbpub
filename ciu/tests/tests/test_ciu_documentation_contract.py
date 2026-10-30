@@ -89,6 +89,7 @@ CLOSED_PUBLIC_VALUES = {
     "checkout-incomplete",
     "env-generation-failed",
     "runtime-collision",
+    "runtime-verification-failed",
 }
 
 

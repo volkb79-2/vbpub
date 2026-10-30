@@ -50,6 +50,9 @@ def test_dependencies_error_report_exits_config_error_and_renders_cause(monkeypa
 
 
 def test_release_child_non_dry_run_with_no_changes_returns_without_release_calls(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
+    monkeypatch.setenv(transaction.BRANCH_ENV, "cmru-release-test")
+    monkeypatch.setenv(transaction.BASE_ENV, "a" * 40)
     project = cli.ProjectConfig("demo", {}, {}, prefix="demo-v", github_token="token")
     config = _config(tmp_path, project)
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")

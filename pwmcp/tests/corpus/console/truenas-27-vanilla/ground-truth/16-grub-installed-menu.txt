@@ -1,0 +1,8 @@
+GNU GRUB  version 2.12-9
+*TrueNAS Scale GNU/Linux 27.0.0-RC.1
+ Advanced options for TrueNAS Scale GNU/Linux 27.0.0-RC.1
+ UEFI Firmware Settings
+Use the ▲ and ▼ keys to select which entry is highlighted.
+Press enter to boot the selected OS, `e' to edit the commands before booting or `c' for
+a command-line.
+The highlighted entry will be executed automatically in 10s.

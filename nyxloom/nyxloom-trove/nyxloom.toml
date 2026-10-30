@@ -67,12 +67,12 @@ architecture = "docs/ARCHITECTURE.md"
 #     container, same python (3.14) the nyxloomd runtime uses. {worktree} = the
 #     attempt checkout; the nyxloom package is at {worktree}/nyxloom.
 [gates.tester-unified]
-# 2026-08-22 (run-gate P01): gate MECHANICS moved into ./run-gate.py — the
+# 2026-08-22 (run-gate P01): gate MECHANICS moved into Run-Gate — the
 # docker/mounts/cgroup/detached-run incantation that lived in this argv is now
 # TESTED CODE (run-gate-project/, see its SPEC.md; adoption contract in its
 # CONSUMERS.md). This entry is scheduling policy only.
 # Cgroup (controller A3): the gate slice resolves at run time from
-# $CGROUP_PARENT_DEV_GATES via run-gate.py — the hardcoded
+# $CGROUP_PARENT_DEV_GATES via Run-Gate — the hardcoded
 # `nyxloom-gates.slice` literal was intended for a future PROD instance
 # outside this repo, not for dev gates here. Its measured IO/CPU policy
 # (infra/slices/) travels with that prod deployment.
@@ -82,7 +82,7 @@ architecture = "docs/ARCHITECTURE.md"
 # dual-mounts the repo, and runs the source-backed assay lane
 # (assay.toml [lanes.tester-unified]) in tester-unified. NL-1 landed
 # 2026-09-02 (nyxloom-P48): judgment moved off `nyxloom.coverage_gate`.
-argv = ["bash", "-c", "cd {worktree}/nyxloom && ./run-gate.py --worktree {worktree} tester-unified"]
+argv = ["bash", "-c", "cd {worktree}/nyxloom && run-gate --worktree {worktree} tester-unified"]
 phase = "implementation"
 # "assay-verdict" is NOT listed: it isn't a supported value in the asserts
 # schema enum yet (src/nyxloom/schemas/nyxloom-config.schema.json) -- adding

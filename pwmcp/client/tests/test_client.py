@@ -7,7 +7,6 @@ import pytest
 from pwmcp_client import __version__
 from pwmcp_client.contract import load_contract
 from pwmcp_client.cli import main
-from pwmcp_client.diagnostics import cli_headline
 from pwmcp_client.session import _major_minor
 
 
@@ -29,19 +28,20 @@ def test_major_minor_ignores_patch():
     assert _major_minor("1.61.1") == _major_minor("1.61.0")
 
 
-def test_parser_help_and_errors_start_with_the_package_headline(monkeypatch, capsys):
+def test_parser_errors_report_the_diagnostic_first_then_the_package_headline(monkeypatch, capsys):
+    # Intentional change (library error layout, AC-03/AC-04): the failure diagnostic is
+    # now the first block and the identity headline follows after a blank line, instead
+    # of the headline being line 1 of the diagnostic.
     monkeypatch.setattr("sys.argv", ["pwmcp", "--bad"])
-    try:
-        main()
-    except SystemExit:
-        pass
-    assert capsys.readouterr().err.splitlines()[0] == cli_headline()
+    assert main() == 2
+    lines = capsys.readouterr().err.splitlines()
+    assert lines[0].startswith("[ERROR] pwmcp:")
+    assert lines[1] == ""
+    assert lines[2] == f"PWMCP {__version__} — client utility"
 
 
 def test_version_flag_prints_package_version(capsys):
-    with pytest.raises(SystemExit) as exc:
-        main(["--version"])
+    assert main(["--version"]) == 0
     captured = capsys.readouterr()
-    assert exc.value.code == 0
     assert captured.out == f"pwmcp {__version__}\n"
     assert captured.err == ""

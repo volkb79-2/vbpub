@@ -1,5 +1,5 @@
 # =============================================================================
-# mattermost gate lane — parsed ONLY by run-gate.py (one parser, D-110).
+# mattermost gate lane — parsed ONLY by Run-Gate CLI (one parser, D-110).
 # The stack's Python is stdlib-only (hooks/post_compose_provision.py and
 # tools/mm_reachability.py) and loads in the tests via importlib against
 # fixture data (a fake mmctl, a fake docker/HTTP world), so the suite needs

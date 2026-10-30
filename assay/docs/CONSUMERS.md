@@ -64,9 +64,9 @@ qualification is required. It runs in the dedicated `tester-unified`
 environment, uses the exact selected worktree source, resumes native R2 from
 gitignored state, and verifies its verdict before it can report success.
 Use the registered commands from the same clean worktree:
-`./run-gate.py tester-unified`, followed by
-`./run-gate.py self-qualification-preflight` or
-`./run-gate.py self-qualification`. The B105 lanes execute a bare-host Assay
+`run-gate tester-unified`, followed by
+`run-gate self-qualification-preflight` or
+`run-gate self-qualification`. The B105 lanes execute a bare-host Assay
 wrapper that launches the inner lane in a detached `tester-unified` container
 with the host gates cgroup namespace visible, explicit CPU/memory bounds,
 network disabled, and the whole workspace root mounted at both its physical
@@ -88,40 +88,51 @@ configuration; the inner gate checks that its commit and tree equal the
 wrapper's recorded source. Do not run `self-qualification-gate.sh` directly or
 substitute a generic private-cgroup tester container. The invoking environment
 must expose Docker, `$CGROUP_PARENT_DEV_GATES`, and the trusted
-`$CGROUP_PARENT_DEV_INTERACTIVE` probe tier. If another registered gate is
-active, the wrapper refuses and the lane should be retried after it ends.
+`$CGROUP_PARENT_DEV_INTERACTIVE` probe tier. The wrapper does not inspect
+other Docker names for admission. Gates may run concurrently; each gate's own
+cgroup events, bounded operations and verdict decide whether its evidence is
+usable.
 The pytest command resolves `src/` inside each isolated snapshot (through
 pyproject's `pythonpath = ["src", "analysis/src"]`, with no `--override-ini`) so R1
 coverage and R2 mutations apply to the snapshot being judged. It collects the judge
 tests in `tests/` only; the tooling tests in `gate/tests/` run in `tester-unified`
 (B123). **The full lane needs a same-commit `tester-unified` pass:** run
-`./run-gate.py tester-unified` first. After a green run at a commit and tree it
+`run-gate tester-unified` first. After a green run at a commit and tree it
 writes `.assay/registered-gate/tester-unified.json` and prints
 `ASSAY_REGISTERED_GATE_RECEIPT=`; the full lane's driver and the B105 checker refuse
 to proceed without a receipt for the commit and tree being judged (the preflight
 does not need one). The receipt lives in that worktree's ignored `.assay/` and names
 its HEAD, so run both lanes in the same worktree with no commit in between: any
 later commit, a docs-only or merge commit included, needs a fresh `tester-unified`
-run. `tester-unified` exits 3 with `ASSAY_GATE_INCONCLUSIVE=host busy — rerun: <names>`
-when another `run-gate-*` container is running. Run-gate maps this infrastructure
-status to `ERROR`, not to an Assay test failure; retry after the host is clear.
-The five registered Assay lanes share one run-gate lock, and a separate lock
-in the Git common directory serializes full-source qualification, pilot and
-screen callers across container `/tmp`
-namespaces. The wrapper's one-time scan is not an atomic lease against another
-project starting a gate afterward. The coordinator must keep all other
-registered gates serial until B105 finishes; a concurrent cross-project gate
-invalidates its resource evidence. `ASSAY_GATE_ALLOW_SHARED_HOST=1` is accepted
-only by the ordinary `tester-unified` lane; B105 refuses it because B105
-requires an exclusive host window. The receipt is left as it was on refusal.
-On a deliberately shared host, `ASSAY_GATE_ALLOW_SHARED_HOST=1`
-runs the ordinary gate alongside other projects' `run-gate-*` containers (printing
-`ASSAY_GATE_SHARED_HOST=<names>`) and still refuses any other `run-gate-assay-*` one; the
-SQL phase starts a separate `tester-unified` container with a private
+run. Docker container names do not block this lane. Run-Gate maps exit 3 to
+infrastructure `ERROR`; the wrapper uses it for launch failures, timeouts and
+incomplete resource evidence. For R0/R1/R3, `affected` means a direct pids or
+memory OOM event in the measured cgroup. PSI and CPU throttling do not change
+verdicts. A direct event never changes a completed PASS. It can turn a failed
+R0 command or R1 coverage claim into an infrastructure error; an unavailable
+direct-counter observation can do the same when the gate requires it. PSI or
+CPU-stat sample availability alone never changes a failed verdict. R1 coverage
+arithmetic is unchanged for the same complete report, and its claim uses the
+R0 command's resource window. R2 keeps per-candidate resource events and its
+pressure-adjusted liveness clock.
+Import-break canaries require the transformed command to exit normally with a
+nonzero status and the expected `COMMAND_FAILED` reason; signal deaths and
+report-derived `COMMAND_FAILED` results with exit status zero are
+`INCONCLUSIVE`. Assay does not inspect output for a separate cause proof.
+Timeouts, execution errors and missing R3 results remain
+`INCONCLUSIVE`. Observer sampling follows the lane's resolved environment, so
+the tester gate's ambient socket cannot change a nested lane's result. The five
+registered lanes share a Run-Gate lock and a Git-common-directory lock; no
+host-wide quiet window is required. See
+[host load and verdicts](DESIGN-GUIDE.md#host-load-and-verdicts).
+
+`ASSAY_GATE_ALLOW_SHARED_HOST=1` is a compatibility no-op across the
+registered gate and B105 wrappers; other values are refused. The SQL phase
+starts a separate `tester-unified` container with a private
 cgroup namespace and the read-only resource-observer socket, and mounts the
 Docker socket only there. The observer supplies only the runner's own cgroup
-ancestors required by B145. Its `--allow-shared-host` still refuses
-another `run-gate-assay-sql-*` container after excluding its own runner. No collected judge test
+ancestors required by B145. Its legacy `--allow-shared-host` flag is a no-op.
+No collected judge test
 reads history or tags (A-475), so both lanes use the shallow snapshot default
 (`snapshot_history = "shallow"`, B128; the lanes declare no `judge.base`, so
 the seed holds only the judged commit), and snapshot refs/tags are not copied.
@@ -163,6 +174,49 @@ When preparing coverage outside the full campaign, the registered standalone
 90-minute Nyxloom timeout. The Assay lane itself remains capped at 60 minutes;
 the extra time covers admission, startup, and evidence collection.
 
+### Provisional release qualification B169 B170
+
+For the explicitly waived 10.0.x release, CMRU's isolated `run-tests` step
+runs `tools/tester-unified-gate.sh` first and then invokes
+`run-gate self-qualification-provisional` before it creates the release tag.
+The lane runs R0, R1 over all of `src/assay` with 100% whole-target line and
+branch coverage, and the R3 canary. It omits R2 and, only after the lane is
+verified, records `.assay/mutation-postponed-assay.json` with
+`"result": "provisional"` and tracking id B169. Its
+`cmru_release_gate_version_bound` boolean is true when the protected CMRU
+transaction version was received and matched, and false when no transaction
+binding was applied. That marker says R2 is owed; it is not an R2 pass. Use
+`run-gate self-qualification` when full R0-R3 evidence is required.
+
+The gate reads the first H2 release heading after `## [Unreleased]` in
+`CHANGES.md`, because CMRU runs the release gate before the tag exists. It
+refuses that heading if it is malformed or unsupported, even when an older
+heading is valid. CMRU passes the transaction's planned version as a protected
+gate input; the heading must match it. The accepted target interval is
+`10.0.0 <= version < 10.1.0`; at least one stable `assay-vX.Y.Z` tag must be
+listable, and its latest version must be below 10.1.0. A release at 9.9.9,
+10.1.0 or later, an unreadable tag list, or no visible stable tag refuses the
+waiver.
+
+Once the bare-host wrapper starts for the full or provisional lane, it removes
+an old postponement marker before its dirty-tree and cgroup-capacity checks. A
+Run-Gate admission refusal can happen before the wrapper starts, so that
+refusal retains the previous marker. Do not use marker presence alone as a
+current result: require a successful Run-Gate result bound to the same source
+tree. A refused or failed current attempt does not make an older marker current.
+
+**Host and time precondition:** reserve the provisional lane's 210-minute
+Run-Gate budget after the ordinary self-hosted release gate, plus startup and
+evidence-collection time. Other gates may run concurrently. The 2 GiB B105
+launch reserve and configured gates cgroup must still be available; CPU or
+storage contention may delay the work until a bounded operation reports an
+incomplete result. Incomplete R0/R1/R3 work is Run-Gate `ERROR` and can be
+retried. Run-Gate holds the configured Assay shared resource lock while this
+lane runs; that lock serializes Assay lanes only.
+`ASSAY_GATE_ALLOW_SHARED_HOST=1` is a compatibility no-op. CMRU's
+`--dry-run` previews a transaction without executing `run-tests`, so it cannot
+prove cgroup capacity or lane admission.
+
 ### Cold-witness R2 (B114)
 
 Cold-witness mode is an explicit opt-in for the supported native Python pytest
@@ -178,11 +232,16 @@ declared command. Each baseline must finish its complete suite with both the
 pytest session and process exit status equal to zero; a hook cannot mask a
 baseline failure. Cold proof accepts
 pytest's built-in hooks and the reviewed
-Hypothesis 6.156.6 hooks only when their module source digest, distribution
+Hypothesis 6.169.0 hooks only when their module source digest, distribution
 ownership, plugin identity, function and wrapper flags match. The declared
 fallback may also use the exact reviewed pytest-cov 7.1.0 hooks. These versions
 and module digests are the current reviewed implementations; another version
 or changed source cannot establish a cold kill or survivor.
+Other Hypothesis versions or module digests are refused for cold-witness
+evidence until reviewed. If a baseline refuses for an unsupported hook,
+stderr reports its name only when the closed hook-name field is valid; malformed
+or missing name evidence is reported as unavailable, and hook names stay out of
+verdict JSON.
 Pytest's built-in HookImpl callables are captured before initial conftests
 load; built-ins created later are accepted only when their class and source
 callable match that early snapshot. A callable replacement is unsupported even
@@ -282,7 +341,7 @@ the 100% whole-source coverage floor:
 
 ```bash
 cd assay
-./run-gate.py self-qualification-preflight
+run-gate self-qualification-preflight
 ```
 
 A red preflight is a verified failure report and stops the full gate before
@@ -296,12 +355,17 @@ R2 measures whether tests detect changed code, while B145 guards against
 mistaking a resource-limited test failure for a kill. B145 is not a CPU or
 memory usage profile. It samples these counters at the candidate and visible
 active ancestors immediately before and after each started full candidate
-command:
+command. Native candidates run serially: set `judge.mutation.jobs = 1`, and
+use `--pilot-jobs 1` for a bounded native pilot. The config loader, CLI, and
+public `run_mutation` entry point refuse larger values because simultaneous
+candidates share the sampled counters and a delta could not be attributed to
+one candidate. `assay analyze plan-estimate --workers N` only projects
+runtime; it does not run candidates and may use a larger worker count:
 
 | Counter | What it detects |
 |---|---|
 | `pids.events:max` | A process or thread creation was refused at a `pids.max` boundary. |
-| `memory.events:max` | Memory use was about to exceed a `memory.max` boundary, even if reclaim prevented an OOM. |
+| `memory.events:max` | Memory use approached `memory.max`; reclaim may succeed. Assay records it as telemetry, and it does not invalidate a candidate by itself. |
 | `memory.events:oom` | A memory allocation reached the cgroup OOM condition. |
 | `memory.events:oom_kill` | An OOM killer killed a process belonging to the cgroup, including a global OOM kill. |
 | `memory.events:oom_group_kill` | A cgroup group-OOM kill occurred. |
@@ -315,8 +379,12 @@ are needed because an ancestor may impose a stricter effective limit than the
 container's own cgroup reports. A leaf showing `pids.max = max`, for example,
 can still have a fork refused by a finite parent `pids.max`.
 
-These are event checks, not measurements of current or peak usage. B145 does
-not use `pids.current`, `memory.current`, `memory.peak`, CPU usage, or
+These are event checks, not measurements of current or peak usage. A
+`memory.events:max` increment is retained as telemetry when reclaim lets the
+command continue; it does not invalidate the mutation result without an OOM
+event. `pids.events:max` or an OOM-related counter still makes the result
+infrastructure-affected. The bounded pilots record `memory.events:max` under
+their configured envelope. B145 does not use `pids.current`, `memory.current`, `memory.peak`, CPU usage, or
 `memory.events:high` to decide whether a mutant was killed. Those measurements
 can help explain runtime or pressure, but they do not by themselves establish
 that a test failure came from resource enforcement.
@@ -336,10 +404,21 @@ requires the candidate cgroup to have no child cgroups. It binds the mount
 mode and event-file availability across the candidate window. The
 hidden-ancestor observer must implement
 resource-observer contract 2 and return both scopes. Assay refuses contract 1
-rather than treating hierarchical counters as local. See B155 in the
+rather than treating hierarchical counters as local. The minimum supported
+daemon release is cgroup-profiler 1.0.0. See B155 in the
 [Assay backlog](../nyxloom-trove/4-backlog.md) and the
 [Linux cgroup v2 documentation](https://docs.kernel.org/admin-guide/cgroup-v2.html)
 for the hierarchy and event-counter semantics.
+
+Native R2 does not infer support from a numeric kernel-version floor. It probes
+the active cgroup mount and requires `pids.events.local` and
+`memory.events.local`, or a verified `pids_localevents` or
+`memory_localevents` mount option that makes the corresponding regular event
+file local. This capability check accounts for distribution backports and
+mount configuration. If the required local evidence is absent, preflight marks
+only R2 `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`; completed R0/R1 claims
+remain, and independent R3 can still run. `assay plan` and
+`assay lanes --json` report the observed availability.
 
 Do not move a tester container outside `$CGROUP_PARENT_DEV_GATES` to avoid
 ancestor checks. A higher placement does not remove all host limits, can put
@@ -367,14 +446,16 @@ return a complete verified ancestry, and expose no control verbs. Run-Gate's
 observer socket read-only, supplies its observed GID, and sets this variable.
 Never mount cgprofile's `ctl.sock`: a read-only bind does not make its
 protocol read-only. This socket supplies verified ancestry and event-counter
-evidence; it is not a performance-profile stream. Without the explicit endpoint, or on any endpoint,
-identity, mount, or counter failure, Assay returns `ERROR/EXEC_FAILED`.
-Before R0, B148 applies the same local-first observation rule to the exact
-selected native candidate set: a configured observer can satisfy the preflight
-only when the local reader specifically proves ancestors hidden. Without a
-usable local view or explicit observer, Assay refuses before R0 with
-`NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`; a visibility loss during a
-candidate remains `ERROR/EXEC_FAILED`. Every visible
+evidence; it is not a performance-profile stream. If the endpoint, identity,
+mount, or counters are unavailable, Assay does not make an R2 claim; R0/R1
+results remain in the verdict. A positive resource-limit event during a
+candidate remains an infrastructure failure, never a mutant kill. After R0/R1,
+B148/A-494 applies the same local-first observation rule before any selected
+native candidate starts: a configured observer can satisfy it only when the
+local reader specifically proves ancestors hidden. Without a usable local
+view or explicit observer, Assay records
+`NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` for R2 and keeps the R0/R1
+claims. Independent R3 can still run. Every visible
 cgroup2 mount exposing the hierarchy must also be read-only. Assay checks the
 underlying `cgroup.procs` inode permissions on the candidate cgroup and all
 ancestors, since a read-only mount alone does not block
@@ -388,9 +469,11 @@ cgroup path, controller availability, or configured limits during a candidate
 also makes the run an infrastructure error. A positive candidate event delta
 records that candidate as `crashed`; the R2 result is an infrastructure error,
 never a mutation kill or survivor. If the candidate is quiet but a visible
-ancestor's local counter increases, Assay cannot attribute the event and
-withholds mutation outcomes with `ERROR/EXEC_FAILED`. A hierarchical-only
-ancestor change does not block the candidate. A positive delta during a
+ancestor's local failure-relevant counter increases, Assay cannot attribute
+the event and withholds mutation outcomes with `ERROR/EXEC_FAILED`.
+`memory.events:max` remains telemetry at ancestors too and does not block the
+candidate by itself. A hierarchical-only ancestor change does not block the
+candidate. A positive delta during a
 saved-witness replay likewise stops the lane with a payload-free
 `ERROR/EXEC_FAILED` before Assay can retry
 the candidate; it does not produce a per-candidate outcome. Fix the runner's
@@ -405,26 +488,38 @@ changed. Ingested third-party R2 reports have no local candidate process and
 do not carry these counters. See the
 [design rationale](DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145).
 
-### Native R2 cgroup visibility preflight (B148)
+### Native R2 cgroup observation (B148/A-494)
 
 Native R2 needs the complete cgroup v2 ancestor hierarchy B145 uses to
-separate a test failure from a process or memory limit event. Before R0,
-Assay probes the same local-first reader for the exact selected native
-candidate set. If a private cgroup namespace hides ancestors, a caller may
-explicitly configure a trusted observer-only socket with
+separate a test failure from a process or memory limit event. After the R0/R1
+measurements and before any selected native candidate starts, Assay checks the
+same local-first reader. If a private cgroup namespace hides ancestors, a
+caller may explicitly configure a trusted observer-only socket with
 `ASSAY_RESOURCE_OBSERVER_SOCKET`; Assay consults it only after the local reader
 specifically proves that ancestors are hidden. Run-Gate's
 `resource_observer = "cgprofile"` option mounts cgprofile's separate observer
 socket read-only and supplies this setting. Do not use `--cgroupns=host` or
 mount cgprofile's control socket as a workaround. If neither the local view
 nor the explicit observer can provide the required hierarchy, Assay writes
-`NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` before the lane command starts.
+`NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` on the R2 claim. Completed
+R0/R1 claims are retained, and independent R3 may continue.
+
+That no-measurement result applies only before the first candidate starts. If
+the observer disappears, the hierarchy changes, or a shared-parent
+failure-relevant event becomes ambiguous during a candidate window, Assay returns
+`ERROR/EXEC_FAILED` and withholds the candidate bucket. A process-tree cleanup
+failure takes precedence over a later counter-read failure. Run-Gate maps the
+pre-candidate `CGROUP_OBSERVATION_UNAVAILABLE` refusal to gate `ERROR` only
+when every other claim and external evidence entry passes. An independent
+budget stop remains `BUDGET_EXCEEDED`; an independent product failure,
+inconclusive result, or other `NO_MEASUREMENT` remains `FAIL`. Malformed claim
+or evidence records become `ERROR`.
 
 Check the candidate selection without running R0:
 
 ```bash
 mkdir -p .assay
-assay plan unit --file assay.toml > .assay/plan-unit.json
+assay plan unit --json --file assay.toml > .assay/plan-unit.json
 ```
 
 The plan's `resource_observation` object reports `applies_to =
@@ -448,7 +543,7 @@ silently select a namespace setting or add a lane option that substitutes for
 kernel visibility. Candidate-time reader errors still use B145's
 `ERROR/EXEC_FAILED`, since a successful preflight cannot prove that
 observability stayed stable later. See
-the [design rationale](DESIGN-GUIDE.md#native-r2-cgroup-visibility-preflight-b148).
+the [design rationale](DESIGN-GUIDE.md#native-r2-cgroup-observation-b148a-494).
 
 From a clean Assay worktree, capture the gate output under `.assay/` so it does
 not dirty the judged tree:
@@ -456,7 +551,7 @@ not dirty the judged tree:
 ```bash
 cd assay
 mkdir -p .assay
-if ./run-gate.py self-qualification >.assay/self-qualification-gate.log 2>&1; then
+if run-gate self-qualification >.assay/self-qualification-gate.log 2>&1; then
   cat .assay/self-qualification-gate.log
 else
   status=$?
@@ -680,7 +775,7 @@ assay plan unit --allow-dirty
 The flag applies only to R1+ snapshot lanes; R0 remains strict. The verdict's
 `worktree_integrity.overridden_dirty_paths` is accepted, with an explicit
 warning, by `assay verify` but is refused by `assay analyze receipt` by
-default. `run-gate.py --allow-dirty` is a separate outer clean-tree policy;
+default. `run-gate --allow-dirty` is a separate outer clean-tree policy;
 run-gate does not forward or reinterpret it as assay's flag.
 
 ## Scope a changed-lines lane to one file (B141)
@@ -1098,26 +1193,34 @@ admitting it, which is the auditability the flag exists to provide. Declare
 
 Use a pilot to measure a deterministic subset of a native R2 plan before
 committing to a full campaign. This is measurement only; it does not qualify
-B105. The selector requires the JSON from `assay plan`
+B105. The selector requires the JSON from `assay plan --json`
 for the current Git HEAD and tree, and refuses a dirty checkout. It reads the
 source files named by that plan, checks every row's `source_sha256`, and records
 the plan commit, tree, raw plan digest, and selected IDs in its report. A plan
 from an older commit is refused even when its planned source files are
 unchanged:
 
+When a pilot stops before candidate execution, inspect the JSON summary emitted
+by `assay run` (or the file where you redirected it) and read
+`claim_diagnostics` for bounded R0/R1/R2 claim details. For a recognized
+test failure, the R0 detail names the first failing test; `detail_dropped_bytes`
+shows whether the text was truncated. Claim statuses and reason codes continue
+to carry the outcome; diagnostic text adds context.
+
 ### Registered pilot and survivor-screen gates
 
 Use the registered lanes for reviewable gate evidence:
 
 ```sh
-./run-gate.py b110-pilot
-./run-gate.py b110-screen
+run-gate b110-pilot
+run-gate b110-screen
 ```
 
 `b110-pilot` initializes a two-hour campaign after building the exact commit,
 then plans and selects candidates inside that campaign. It runs the selected
-subset with three pilot jobs, cold witnesses, resume state and a progress
-stream. Campaign initialization, planning, selection, Assay execution, report
+subset with one serial pilot job, cold witnesses, resume state and a progress
+stream. Native R2 candidate event windows share cgroup counters, so they cannot
+overlap. Campaign initialization, planning, selection, Assay execution, report
 checking, final source/deadline checks and completion markers share a hard
 90-minute per-invocation cap. Planning and selection are bounded by the
 remaining campaign deadline. Assay execution and evidence checks use the time
@@ -1137,7 +1240,11 @@ transformed R2 command, configuration digest, and coverage/R2 baselines. The
 gate retains `.assay/r2-manifest-b110-pilot.txt` with the summary. The checker
 recomputes its ordered collection digest, requires candidate collection facts
 to match the appropriate baseline, and requires every kill witness to name a
-collected test. It validates candidate elapsed and phase evidence and binds
+collected test. It also validates each v16 `process_tree_evidence` object from
+resumable state before accepting the terminal outcome: killed, survived and
+equivalent require a normally exited leader and no outliving descendants;
+timeout and hung records must prove the corresponding timeout-killed leader.
+It validates candidate elapsed and phase evidence and binds
 CPU/RSS/phase/startup measurements between progress and state. It also
 validates resource evidence, pending and resumed progress, campaign deadline,
 the 90-minute attempt window and wheel digest. The 90-minute cap
@@ -1291,7 +1398,7 @@ run_pilot_phase() {
   timeout --verbose --signal=TERM --kill-after=30s "${budget_s}s" "$@"
 }
 set +e
-run_pilot_phase assay plan self-qualification --file assay.toml \
+run_pilot_phase assay plan self-qualification --json --file assay.toml \
   > "$pilot_plan"
 phase_status=$?
 set -e
@@ -1310,7 +1417,7 @@ pilot_run_s="$(pilot_remaining_s "$SECONDS")"
 if timeout --verbose --signal=TERM --kill-after=30s "${pilot_run_s}s" \
     assay run self-qualification --file assay.toml \
     --candidates-file "$pilot_candidates" \
-    --pilot-jobs 3 \
+    --pilot-jobs 1 \
     --state-dir "$pilot_state" \
     --progress "$pilot_progress" \
     --cold-witness --resume --campaign-deadline "$deadline" \
@@ -1385,6 +1492,10 @@ with its bucket; missing or contradictory legacy records are re-executed. See th
 [design rationale](DESIGN-GUIDE.md#non-qualifying-candidate-pilots-b118).
 
 ## Resume and shard a long mutation lane
+
+Assay-managed candidate resume and rejudge apply to **native R2** (currently
+Python and SQL). JavaScript/TypeScript's ingested R2 path has no Assay-owned
+candidate state; see [R2 for JavaScript](#r2-for-javascript-by-ingesting-strykers-report-b046).
 
 **A consumer gate passes `--resume --progress <path>` on EVERY lane it runs,
 not only its mutation lanes.** Resume state is still touched only by the
@@ -1508,7 +1619,7 @@ source_roots = ["src"]
 base = "main"
 
 [lanes.package.judge.mutation]
-jobs = 2
+jobs = 1
 max_mutants = 500
 operators = ["python:compare-swap"]
 identity_exclude = ["nyxloom-trove/**"]
@@ -2074,11 +2185,12 @@ bounded integer columns. Fixed-length
 **R1** (coverage), **R2 by evidence ingestion** — your own argv runs StrykerJS
 inside the snapshot and assay judges the report
 ([below](#r2-for-javascript-by-ingesting-strykers-report-b046)) — and **R3**
-by the existing cause-sensitive canary runner. Assay still ships no JS/TS
+by the existing canary runner. Assay still ships no JS/TS
 mutation engine, so a *native* R2 lane is still refused. B087 registers R3
-and local real-Vitest tests exercise both mechanisms. Both current dstdns
-canaries passed with retained schema-v15 verdicts and verifier transcripts;
-the integrated Assay release gate is separate. See the
+and local real-Vitest tests exercise both mechanisms. Both dstdns canaries
+were qualified under Assay 9.0.0/schema v15; their retained verdicts and
+verifier transcripts document that release. The integrated Assay release gate
+is separate. See the
 [qualification report](../nyxloom-trove/reports/B087-js-r3-qualification.md).
 
 ### Make your test runner emit `coverage-final.json`
@@ -2121,7 +2233,7 @@ point at `lcov.info`).
 
 ### Add an R3 canary to a JavaScript lane
 
-R3 checks that the lane's command catches a deliberately injected cause. Use
+R3 checks that the lane's command rejects a deliberately transformed target. Use
 `import-break` when the test suite imports the target file; it must make the
 command fail with `COMMAND_FAILED`. Use `uncovered-line` when the lane also
 declares R1 coverage; the appended function body must make R1 fail with
@@ -2329,8 +2441,9 @@ from a cold `node_modules`. This triples the cost of that lane. The lane's
 `mechanism` is exactly one of `import-break` or `uncovered-line`; declare
 separate lanes if you want to exercise both, and budget each lane for its own
 baseline and two canary commands. R3 is registered and has local real-Vitest
-oracles. Both current dstdns canaries passed with retained v15 verdicts and
-verifier transcripts; the [qualification report](../nyxloom-trove/reports/B087-js-r3-qualification.md)
+oracles. Both dstdns canaries were qualified under Assay 9.0.0/schema v15;
+their retained verdicts and verifier transcripts document that release. The
+[qualification report](../nyxloom-trove/reports/B087-js-r3-qualification.md)
 records the evidence and scope. This is distinct from Assay's integrated
 release gate.
 
@@ -2768,6 +2881,17 @@ the snapshot itself, and the declared artifact is held through the same
 single-owner reservation the coverage artifact uses, so a committed or stale
 report cannot satisfy the path.
 
+That producer boundary also defines the campaign features. Assay validates
+and scores Stryker's completed report, but does not own Stryker's candidate
+state: Assay's `--resume`, `--rejudge`, and per-candidate cgroup event checks
+apply to native Python/SQL R2, not this ingested JavaScript path. Stryker (or
+the chosen external producer) owns retries and any candidate-level progress
+or measurements it supports. To retry an incomplete or selected survivor
+campaign, use that producer's documented workflow against the same intended
+source snapshot, then let Assay ingest the completed report again. Do not
+interpret the Assay lane's run-level progress as Stryker's per-mutant
+progress.
+
 ```toml
 schema_version = 2
 
@@ -3073,13 +3197,13 @@ sha256 = "tools/assay/assay-<version>.pyz.sha256"
 ```
 
 The product owns the `assay.toml` lane; an external consumer owns its pinned
-artifact, while `run-gate.py` owns the isolated execution boundary. A
-consumer invokes it as `./run-gate.py assay`; see run-gate's own `CONSUMERS.md`
+artifact, while `run-gate` owns the isolated execution boundary. A
+consumer invokes it as `run-gate assay`; see run-gate's own `CONSUMERS.md`
 for orchestration mechanics.
 
 ### Preflighting a gate environment with `assay lanes --json` (B044)
 
-A gate tool that owns WHERE a lane runs (`ciu`, `run-gate.py`) needs to know
+A gate tool that owns WHERE a lane runs (`ciu`, `run-gate`) needs to know
 WHAT a lane needs from its environment before it launches a container for
 it — does this project even declare a `javascript` lane, and if so, does the
 chosen environment actually have Node on `PATH`? Reading `assay.toml`
@@ -3212,7 +3336,8 @@ command or creating mutant snapshots:
 assay plan worker_lane --file assay.toml
 ```
 
-The JSON output reports deterministic candidate IDs, total/per-file/per-operator counts, declared
+The default output is a concise human summary. Add `--json` for the full plan:
+deterministic candidate IDs, total/per-file/per-operator counts, declared
 worker concurrency, and runtime estimates. The candidate IDs and counts are the SAME ones a real
 `assay run` of that lane executes — plan resolves them against the same declared source roots, the
 same adapter, and the same `max_mutants`/operator selection.
@@ -3226,14 +3351,14 @@ suite can take longer than the declared bound or the placeholder. Treat them as 
 optional per-candidate bound, never as a forecast.
 
 The plan JSON also carries `lane`, `commit` and `tree` (the full object ids of
-the source it was made at), and `assay plan` prints a one-line hint on stderr
-(stdout stays one JSON document) naming the measured projection. To project
+the source it was made at), and `assay plan --json` prints a one-line hint on
+stderr (stdout stays one JSON document) naming the measured projection. To project
 the campaign from a measured baseline, save the plan and give it a progress
 file from a completed baseline at that same lane and commit, such as a
 preflight or an R0/R1 run:
 
 ```bash
-assay plan worker_lane --file assay.toml > plan.json
+assay plan worker_lane --json --file assay.toml > plan.json
 assay analyze plan-estimate --plan-json plan.json --progress .assay/progress-worker_lane.jsonl --workers 3
 ```
 
@@ -3247,7 +3372,7 @@ plan's facts to choose an optional per-candidate bound:
 <!-- assay-doc-example:skip reason="mutation sub-table fragment; the surrounding consumer lane supplies schema_version and the rest of the closed lane grammar" -->
 ```toml
 [lanes.worker_lane.judge.mutation]
-jobs = 4
+jobs = 1
 max_mutants = 100
 operators = ["python:compare-swap"]
 budget_per_candidate = "300s"
@@ -3258,7 +3383,7 @@ budget_per_candidate = "300s"
 `assay plan` enumerates Assay's native candidate inventory. An ingested lane
 such as the Stryker lane above has no such inventory: the foreign report does
 not provide the execution facts Assay needs for candidate-count estimates.
-`assay plan ui_mutation --file assay.toml` therefore returns JSON with
+`assay plan ui_mutation --json --file assay.toml` therefore returns JSON with
 `status = "unsupported"`, the lane, `reason_code = "MUTATION_UNSUPPORTED"`,
 and a named reason. Passing that result to `assay analyze plan-estimate`
 forwards the reason and exits `2`; it does not return a fabricated zero or
@@ -3381,9 +3506,47 @@ check — assay now:
    (`Popen(start_new_session=True)`, 1 s sampling) instead of a plain
    blocking wait, watching the plugin's own side-file events AND the
    process tree's `/proc` CPU time. The whole candidate process group is
-   cleaned up after every candidate, including normal leader exit, so leaked
-   descendants cannot accumulate across mutants and exhaust the gate cgroup's
-   PID budget.
+   cleaned up after every candidate, including normal leader exit. Assay uses
+   Linux child-subreaper mode to catch descendants that call `setsid()` or
+   double-fork, then waits for and reaps them before reading the after-counters
+   or starting the next candidate. If a candidate otherwise completes with
+   descendants, Assay cleans them up, records the attempt as `crashed`, and
+   continues; that attempt cannot count as killed or survived. Timeout and
+   `hung` classifications remain intact when cleanup succeeds, even if it
+   reaps descendants. A baseline command that leaves descendants refuses the
+lane. Cleanup failure stops
+the lane without a candidate result. Native R2 therefore requires Linux
+child-subreaper support in addition to its cgroup-v2 observation contract.
+The verifier also checks process-tree evidence consistency: the recorded
+signalled-descendant count cannot exceed the count observed outliving the
+leader.
+
+Each attempted native candidate in the verdict includes
+`process_tree_evidence`: protocol, leader status, whether the group was
+signalled before reaping, counts of outliving and signalled descendants,
+cleanup time, and the clean-tree proof. A native `killed`, `survived`, or
+`equivalent` result requires a normally exited leader and zero outliving
+descendants. A cleaned leak is recorded as `crashed`; an unproved cleanup
+refuses the lane and produces no candidate result.
+
+#### Native R2's process-tree boundary
+
+Linux child-subreaper mode changes process-wide state. Assay refuses to enter a
+native R2 command window if the Assay process already has children, but it
+cannot prevent a different thread from spawning an unrelated child after that
+check. Run native R2 through the normal isolated CLI process, or ensure an
+embedding application cannot spawn children concurrently for the duration of
+the campaign. The CLI resets an inherited ignored `SIGCHLD` before it starts
+subprocesses. Native R2 checks the kernel `SigIgn` mask and refuses if
+`SIGCHLD` is ignored. Linux `execve` resets caught signal handlers and their
+flags, so the supported fresh CLI process cannot inherit `SA_NOCLDWAIT`;
+in-process embedders must avoid it and must not reap children with
+`waitpid(-1)` while a window is active. If cleanup cannot
+prove the process tree empty, the process remains a subreaper and later native
+R2 windows refuse. The `process_runner` injection point is a low-level seam: native
+R2 requires it to provide valid process-tree evidence and to finish cleanup
+before Assay reads after-counters. Do not treat fabricated evidence as a
+substitute for those runtime guarantees.
 
 **New lane key: `judge.mutation.liveness = "auto" | true | false`**
 (default `"auto"`):
@@ -3545,7 +3708,7 @@ The recommended shape, with the caller supplying the liveness half:
 budget = "unbounded"
 
 [lanes.worker_lane.judge.mutation]
-jobs = 4
+jobs = 1
 max_mutants = 100
 operators = ["python:compare-swap"]
 budget_per_candidate = "300s"
@@ -3751,12 +3914,12 @@ assay run <lane> --resume --rejudge-outcome hung,budget_exceeded
 - **The ids `--rejudge` takes are `candidate_id` digests, not
   `MutantOutcome.identity`.** Since verdict schema v13, every native outcome
   carries its digest and `mutation.candidate_ids` lists the complete submitted
-  scope. To rejudge the survivors in a v15 verdict, select the `candidate_id`
+  scope. To rejudge the survivors in a v16 verdict, select the `candidate_id`
   values from its `survived` array. The older tuple-shaped
   `MutantOutcome.identity` (path, span, replacement hash, operator) remains a
   separate identity and cannot be passed as an ID. A v12 verdict has no
   candidate inventory; v12 and v13 verdicts both start cold for `--reuse-from`
-  under the v15 verifier.
+  under the v16 verifier.
 - **`resume`'s own progress event gains `rejudged_total`** (above): the count
   of records dropped by either selection on this run, `0` when neither flag
   is given.
@@ -3766,7 +3929,7 @@ assay run <lane> --resume --rejudge-outcome hung,budget_exceeded
 `--reuse-from` is for a new source or test tree when ordinary `--resume` would
 correctly reject the old judge identity. A first full, native R2 run over a
 direct sequential pytest command records the first call-phase failing node for
-each killed candidate. Keep that v15 verdict. On a later commit, Assay always
+each killed candidate. Keep that v16 verdict. On a later commit, Assay always
 runs the current R0 baseline and rediscovers the current candidates before it
 uses the prior verdict. A prior kill only chooses a point to test: the current
 suite is collected in full and must fail at that same node with pytest and the
@@ -3797,9 +3960,9 @@ assay run worker_lane \
 This option does not carry forward an old outcome. New candidates and prior
 survivors, crashes, hangs, timeouts, equivalents, or kills without a usable
 witness run the full current suite. `--rejudge <id>` also forces a full run for
-that candidate. A v12, v13, or v14 verdict is a cold start under v15: `assay plan`
-marks its evidence unproven and `assay run` runs every candidate fully after
-the baseline; `assay verify` refuses all three versions. Wrapped commands, xdist,
+that candidate. A v12, v13, v14, or v15 verdict is a cold start under v16:
+`assay plan` marks its evidence unproven and `assay run` runs every candidate
+fully after the baseline; `assay verify` refuses all four versions. Wrapped commands, xdist,
 nonempty `PYTEST_ADDOPTS`, custom test loops, or uncertain pytest hooks also use
 full runs. `--reuse-from` cannot be combined with `--shard`, because the
 feature returns a complete unsharded campaign.
@@ -3818,11 +3981,10 @@ It is a **pure time-based tick**: it never reads the child's stdout or stderr,
 counts its bytes, tracks activity, or knows which tool is running. A
 per-language live-test-progress adapter is a separate, larger item (B073) and
 is deliberately not part of this. The tick is armed only around the lane's own
-command, never around each mutant — a `jobs`-way concurrent sweep would
-otherwise interleave N tick streams about work the per-candidate records
-already describe one line at a time. A heartbeat write failure stops the
-heartbeat and nothing else; a diagnostic tick must never be able to kill a
-measured lane.
+command, never around each mutant; candidate progress is already recorded per
+attempt, and native R2 currently runs one candidate at a time (B157). A
+heartbeat write failure stops the heartbeat and nothing else; a diagnostic
+tick must never be able to kill a measured lane.
 
 When a command fails or times out, read the optional top-level
 `result_stdout_tail` / `result_stderr_tail` fields for the final error output.
@@ -3890,7 +4052,8 @@ that looks like a real finding.
 
 ## Adopting a v2-capable release
 
-The current verdict schema is v15, a hard cut from v14. Lane schema v2 was a
+The current verdict schema is v16, a hard cut from v15, carried by Assay
+10.0.0. Lane schema v2 was a
 hard cut from v1 and remains current (no dual-version verifier, no compatibility
 shim, no upgrade-in-place — see
 [the design guide](DESIGN-GUIDE.md#snapshot-selection-an-affirmative-materialisation-boundary-not-a-sandbox-b006a)
@@ -3898,8 +4061,9 @@ for why interpreting an old lane file as if it declared the new grammar would be
 shadowing default this project forbids elsewhere). That cuts both directions at once: a v2-capable
 assay refuses a v1 lane file's now-required `[isolation]` table with
 `BAD_LANE_CONFIG`, and a v1-pinned assay cannot parse a v2 file's `[isolation]`
-table at all — it is simply an unknown key. `assay verify` rejects v14 and
-earlier verdicts on the schema version alone; see the [v14-to-v15 migration
+table at all — it is simply an unknown key. `assay verify` rejects v15 and
+earlier verdicts on the schema version alone; see the [v15-to-v16 migration
+notes](#migration-notes-v15-to-v16) and the earlier [v14-to-v15 migration
 notes](#migration-notes-v14-to-v15).
 
 So the two moves are **one atomic, consumer-owned commit, never two**:
@@ -3995,6 +4159,27 @@ mode is opt-in through `assay run --cold-witness` for its supported native
 Python pytest command shape. See [Cold-witness R2 (B114)](#cold-witness-r2-b114)
 for the command and its limits.
 
+## Migration notes (v15 to v16)
+
+Verdict schema v16 is a **hard cut**. `assay verify` rejects v15 and older
+verdicts by schema version; there is no dual-version verifier or in-place
+upgrade. Keep an old release available to verify historical v15 artifacts, or
+regenerate evidence that must pass the current verifier.
+
+Native R2 now requires `judge.mutation.jobs = 1`. Candidate runs share the
+lane's cgroup event counters, so overlapping candidates cannot be assigned a
+resource-limit event reliably. Update native R2 lane configs in the same
+consumer commit that repins Assay; read-only `assay analyze plan-estimate`
+still accepts larger worker counts because it runs no candidates. Ingested R2
+does not declare Assay's native worker policy.
+
+Under `--reuse-from`, a v15 artifact is recognized only as a cold start; no
+candidate outcomes or witnesses are read from it. Mutation state from the
+previous judge identity also starts cold. Lane schema remains v2, and this
+release adds no lane schema version. Run R0 and R2 again to produce evidence
+under v16 and the serial execution contract. See the
+[serial event-window rationale](DESIGN-GUIDE.md#native-r2-candidate-event-windows-are-serial).
+
 ## Migration notes (v12 to v13)
 
 Verdict schema v13 was a **hard cut**. `assay verify` refuses a v12 verdict by
@@ -4006,9 +4191,10 @@ For `--reuse-from`, a v12 verdict is a cold start: it supplies no reusable
 mutation witness, so the current candidate runs in full. You may keep a v12
 artifact as historical evidence, but it cannot save candidate work. The v13
 cut did not change lane schema v2 or require a lane-file edit. When upgrading
-directly to v15, also apply the [v13-to-v14 migration
-notes](#migration-notes-v13-to-v14) and the [v14-to-v15 migration
-notes](#migration-notes-v14-to-v15).
+directly to v16, also apply the [v13-to-v14 migration
+notes](#migration-notes-v13-to-v14), the [v14-to-v15 migration
+notes](#migration-notes-v14-to-v15), and the [v15-to-v16 migration
+notes](#migration-notes-v15-to-v16).
 
 Adopt in this order: repin Assay, regenerate any archived verdicts that must
 verify under the new pin, then compare or reuse current-run evidence. No lane
@@ -4778,12 +4964,16 @@ day you were not planning a migration.
 
 ### Efficiency
 
-R2 cost is roughly *mutants × (snapshot + full command run)*, so the two levers
-that matter are how many mutants you generate and how fast one command run is.
-Narrow `source_roots` to what you actually judge, keep `max_mutants` at a value
-whose *total* runtime you are willing to pay, and raise `jobs` only as far as
-your command tolerates concurrent execution — a command that contends on a
-shared fixture will get slower, not faster.
+R2 cost is roughly *mutants × (snapshot + full command run)*. Native R2 runs
+one candidate at a time: `judge.mutation.jobs` must be `1`, because overlapping
+candidates would share cgroup event counters and make limit-event attribution
+ambiguous. The loader, public execution API, verdict schema, and verifier
+reject native verdicts that claim multiple workers. Narrow `source_roots` to
+the code you intend to judge and choose `max_mutants` for the runtime you can
+afford. Read-only `assay analyze plan-estimate --workers N` can estimate a
+parallel plan, but it does not run candidates. After the bounded B105 pilot,
+remeasure any old parallel throughput estimate before using it to schedule a
+campaign; see [native R2 and cgroup events](DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145).
 
 ## What is not shipped
 
@@ -5152,7 +5342,7 @@ report hashes the complete supplied files but displays at most the selected
 bounded error lines, so a controller can retrieve the full log by the reported
 path when necessary. See the [B100 design and limits](DESIGN-GUIDE.md#bounded-live-gate-snapshot-b100).
 
-Set `WORKTREE` to the reviewed project's directory containing `run-gate.py`
+Set `WORKTREE` to the reviewed project's directory containing `run-gate.toml`
 (for P5, the checkout's `run-gate-project/`) and `REVIEW_HEAD` to the full expected
 commit from the controller. Do not compute the expected value from the current
 HEAD as a substitute for checking the agreed candidate. The examples below
@@ -5169,7 +5359,7 @@ be hidden by a pipe or a shell wrapper. Its stdout is JSON; job output is in
 <!-- assay-analysis-example -->
 ```bash
 assay analyze record --worktree "$WORKTREE" --expected-head "$REVIEW_HEAD" \
-  --output "$WORKTREE/.assay/review-selftest" -- ./run-gate.py selftest
+  --output "$WORKTREE/.assay/review-selftest" -- run-gate selftest
 assay analyze receipt --worktree "$WORKTREE" --expected-head "$REVIEW_HEAD" \
   --recorded selftest "$WORKTREE/.assay/review-selftest/job" ASSAY_ANALYSIS_JOB_EXIT \
   --verdict r2 "$WORKTREE/.assay/verdict-r2.json" \
@@ -5274,24 +5464,55 @@ verdict, then close it out with the verdict and the observed gate exit:
 ```bash
 assay analyze campaign r2 --file assay.toml --expected-commit "$REVIEW_HEAD" \
   --progress .assay/progress-r2.jsonl --state-dir .assay/mutation-state \
-  --project --project-jobs 3 --outcome survived --limit 20
+  --project --project-jobs 1 --outcome survived --limit 20
 assay analyze campaign r2 --file assay.toml --expected-commit "$REVIEW_HEAD" \
   --progress .assay/progress-r2.jsonl --verdict .assay/verdict-r2.json \
-  --command-exit 0 --outcome survived --outcome hung
+  --coverage .assay/coverage-r2.json --command-exit 0 \
+  --outcome survived --outcome hung
 ```
 
 Without `--verdict` the status is never `complete` (blocker `no_verdict`). The
 survivors, hangs, crashes and budget exhaustions are listed by candidate id,
 path and operator, at most `--limit` per page with `matching_total` and
 `next_offset`; take the next page with `--offset`. `--project` adds a
-stratified wall-clock projection for `--project-jobs` workers (1 to 64) from
-measured per-candidate seconds; it needs at least 20 samples per basis and
-says why it has none. Exit codes: 0 complete PASS, 1 complete and not PASS, 2
-evidence error, 3 incomplete. `complete_blockers` names why a campaign is
-incomplete. Without `--verdict`, a plan whose lane delegates its base to the
-request needs `--request-base`.
+stratified wall-clock projection from measured per-candidate seconds; it needs
+at least 20 samples per basis and says why it has none. `--project-jobs` accepts
+1 to 64 for other plans. For a native R2 lane it must match the lane's declared
+`mutation.jobs`; this Assay configuration runs native R2 serially, so the
+example uses 1. The fixed-overhead estimate subtracts the first candidate's
+measured runtime before adding candidate costs to the projection. Exit codes:
+0 complete PASS, 1 complete and not PASS, 2 evidence error, 3 incomplete.
+`complete_blockers` names why a campaign is incomplete, including
+`shard_not_merged` when the evidence is from one shard of a multi-shard run.
+Without `--verdict`, a plan whose lane delegates its base to the request needs `--request-base`.
+For a lane that declares R1 coverage, include `--coverage` with its declared
+artifact; without it the report stays incomplete. The artifact must be present
+in the worktree (and ignored by Git) even when the judge produced it inside a
+snapshot. `qualifying: true` identifies whole requested scope only; it does not
+mean the verdict passed or that all evidence is complete. It remains true for a
+lane without an R2 declaration and for plan-only ingested analysis before a
+verdict exists. A `0/1` shard covers the full inventory and can qualify; a
+single result from a multi-shard campaign cannot qualify the combined plan.
 
-- **Plan rows.** `assay plan --json` rows carry `source_sha256` (the
+A matching `verdict_written` event and `--command-exit` do not establish that
+native R2 ran. If a verified verdict stopped before `judgment.r2` (such as an
+R0 baseline failure), campaign analysis remains `incomplete` with blocker
+`inventory_not_exhausted`; `qualifying` is false and `plan.status` is
+`not_supported` because native R2 was not judged. An absent R2 judgment is not
+evidence of an ingested campaign. To close out without a native plan,
+the verdict must explicitly record `producer = "ingested"` for a lane whose
+`judge.mutation.format` declares the external report.
+
+The reader is bounded: a supplied state directory may contain at most 50,000
+directory entries, 10,000 mutation records and 64 MiB of record data. The
+pretty-printed JSON report has a 16 MiB limit. If a large store or campaign
+history exceeds a limit, Assay returns `evidence_error` with the exceeded
+budget; it does not drop records and present a partial summary. Refusal JSON
+is limited to 64 KiB and each input-derived error detail to 768 characters, so
+a malformed input with a very long error detail cannot produce an unbounded
+response. Candidate details remain paged with `--offset` and `--limit`.
+
+- **Plan rows.** The JSON rows printed by `assay plan --json` carry `source_sha256` (the
   candidate's source file) and `mutated_file_sha256` (the file with the
   mutation applied) beside `path`, `lineno`, `operator`, `description`,
   `start_byte` and `end_byte`. `campaign` recomputes each `candidate_id` from
@@ -5312,6 +5533,38 @@ request needs `--request-base`.
   evidence error (create it); a supplied `--coverage` path that is not the
   declared one is an evidence error.
 
+### Analyze a bounded pilot
+
+For a B110 self-qualification sample, use the plan and selection report retained
+under `.assay/`:
+
+```bash
+assay analyze campaign self-qualification --file assay.toml \
+  --expected-commit "$REVIEW_HEAD" --progress .assay/progress-b110-pilot.jsonl \
+  --state-dir .assay/b110-pilot-state \
+  --plan-json .assay/b110-pilot-plan.json \
+  --selection-file .assay/b110-pilot-selection.json \
+  --project --project-jobs 1 --outcome survived --limit 20
+```
+
+For B131, use the analysis lane's retained artifacts instead:
+
+```bash
+assay analyze campaign analysis-r2 --file assay.toml \
+  --expected-commit "$REVIEW_HEAD" --progress .assay/progress-analysis-r2-pilot.jsonl \
+  --state-dir ".assay/analysis-r2-pilot-state-${REVIEW_HEAD:0:12}" \
+  --plan-json .assay/analysis-r2-pilot-plan.json \
+  --selection-file .assay/analysis-r2-pilot-selection.json \
+  --project --project-jobs 1 --outcome survived --limit 20
+```
+
+The analyzer checks both artifacts against the current lane plan and verifies
+the selection digest recorded in progress. It exits 3 and reports
+`qualifying: false` because a selected sample cannot qualify the full plan.
+Use the registered pilot gate's independent checker and attestation to decide
+whether that measurement completed successfully; this summary only makes its
+selected outcomes easier to inspect.
+
 ### Run the analysis-package R2 pilot (B131)
 
 The bounded pilot measures the separate `analysis-r2` lane before anyone
@@ -5322,7 +5575,7 @@ checkout, run the registered gate from the Assay project directory:
 ```bash
 WORKTREE=/workspaces/vbpub/.worktrees/assay-analysis-r2
 cd "$WORKTREE/assay"
-./run-gate.py --worktree "$WORKTREE" analysis-r2-pilot
+run-gate --worktree "$WORKTREE" analysis-r2-pilot
 ```
 
 The gate builds Assay from that exact worktree commit, then uses the detached,
@@ -5355,10 +5608,17 @@ Read `.assay/analysis-r2-pilot-selection.json` for the selected files,
 operators, sample reasons and counts; `.assay/analysis-r2-pilot-summary.json`
 for the completed sample and source-bound `r2_command`; and
 `.assay/r2-manifest-analysis-r2-pilot.txt` for the ordered baseline collection.
+If the pilot is incomplete, inspect the summary's
+`claim_diagnostics` for the bounded R0/R1/R2 details that explain the
+failure, including a recognized first failing test.
 The checker verifies that each candidate's collection evidence matches its
 baseline and each kill witness names a collected test. Read
 `.assay/progress-analysis-r2-pilot.jsonl` plus
-`.assay/analysis-r2-pilot-state/` for resumable execution evidence. A successful
+`.assay/analysis-r2-pilot-state-<commit12>/` for resumable execution evidence.
+Each state record must include valid v16 process-tree evidence; the checker
+uses it when reconciling the terminal result with the reported bucket.
+The commit-bound directory keeps a new source revision's selection separate
+from older pilot state while preserving those earlier records. A successful
 gate means only that the sample completed and its evidence verified. It does
 not create a verdict or qualify the full plan. A timeout, partial sample,
 host-busy refusal or cgroup resource event is not a successful measurement.

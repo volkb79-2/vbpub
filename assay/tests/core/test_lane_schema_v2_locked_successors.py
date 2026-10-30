@@ -51,7 +51,8 @@ five is itself testing omission mode.
 
 from __future__ import annotations
 
-import subprocess
+from conftest import completed_process
+
 import tomllib
 from pathlib import Path
 
@@ -256,7 +257,7 @@ def test_direct_r0_uses_the_existing_deadline_remainder_not_a_fresh_budget_under
 
     def process_runner(argv, *, env, cwd, timeout):
         timeouts.append(timeout)
-        return subprocess.CompletedProcess(argv, 0, "", "")
+        return completed_process(argv, 0, "", "")
 
     verdict = runner.run_lane(
         lane,

@@ -60,6 +60,7 @@ import json
 import math
 import re
 from .records import record
+from .process_tree import ProcessTreeEvidence
 from datetime import datetime, timezone
 from importlib.resources import files
 from types import MappingProxyType
@@ -381,7 +382,8 @@ __all__ = [
 #: names absent at run time. Present passthrough values are redacted in
 #: `env_effective` and fingerprinted in `env_effective_passthrough_sha256`.
 #: Native R2 outcomes also carry cgroup v2 process-limit and OOM event deltas;
-#: any positive delta must be classified as `crashed`. These v14 additions
+#: positive failed-fork or OOM-related deltas must be classified as `crashed`,
+#: while `memory.events:max` is retained as telemetry. These v14 additions
 #: ship together before the first v14 release; `assay verify` refuses v13.
 #:
 #: **Bumped 14 -> 15 (B114/B110 P3).** Native R2 policy records whether
@@ -390,9 +392,15 @@ __all__ = [
 #: ledger slot. Candidate outcomes may carry collection and hook evidence for
 #: cold/declared attempts. Liveness policy discloses its effective CPU and
 #: idle windows. Campaign deadlines bind resumed work to one commit and plan.
-#: Versions 12-14 are bounded `--reuse-from` cold starts; v11 and older remain
-#: refused. Producers emit v15, and `assay verify` refuses v14.
-VERDICT_SCHEMA_VERSION = 15
+#: Versions 12-15 are bounded `--reuse-from` cold starts; v11 and older remain
+#: refused. Producers emit v16, and `assay verify` refuses v15 and older.
+#:
+#: **Bumped 15 -> 16 (B157).** Native R2 fixes `judgment.r2.jobs` at 1 because
+#: candidate cgroup-event windows share counters and overlapping runs cannot
+#: be attributed. The schema/model/verifier refuse a native verdict claiming
+#: more than one worker. Older v15 verdicts remain eligible only as cold
+#: `--reuse-from` inputs; their mutation witnesses are not reused.
+VERDICT_SCHEMA_VERSION = 16
 
 #: (P21/A-183) the closed R1 exclusion-capability vocabulary, restoring A-008's
 #: distinction inside the artifact. `"unavailable"` means the coverage FORMAT
@@ -1255,7 +1263,7 @@ class Coverage:
 @record
 class CanaryAttempt:
     """ONE canary target's own record (B007/A-432, schema v10): the evidence
-    a cause-sensitive canary produces for a single declared target, carried
+    an R3 canary produces for a single declared target, carried
     separately from the JUDGEMENT :mod:`assay.canary` derives from it — the
     identical split :class:`Coverage` already keeps from :class:`Claim` (this
     is its exact construction-time-validation template, restated for canary's
@@ -1910,16 +1918,19 @@ class MutantOutcome:
     execution: MutationExecution | None = None
     #: (B145/schema v14) Exact cgroup v2 process-limit and OOM counter
     #: deltas observed around this native candidate's full command. A
-    #: positive delta during that command requires the `crashed` bucket; a
-    #: positive delta during witness-prefix replay instead stops the lane
-    #: with payload-free `ERROR/EXEC_FAILED` before retry. A `budget_exceeded`
-    #: candidate whose full command did not start carries the shared
-    #: zero-duration sweep-close sample. Replacement materialization or a
-    #: witness-prefix replay may already have run; that sample does not
+    #: positive failed-fork or OOM-related delta during that command requires
+    #: the `crashed` bucket; `memory.events:max` remains telemetry. A positive
+    #: failed-fork or OOM-related delta during witness-prefix replay instead
+    #: stops the lane with payload-free `ERROR/EXEC_FAILED` before retry. A
+    #: `budget_exceeded` candidate whose full command did not start carries
+    #: the shared zero-duration sweep-close sample. Replacement materialization
+    #: or a witness-prefix replay may already have run; that sample does not
     #: describe the earlier work. Native outcomes always carry this object,
-    #: including zero deltas. Ingested outcomes have no per-candidate
-    #: execution and therefore cannot carry this field.
+    #: including zero deltas. Ingested outcomes have no per-candidate execution
+    #: and therefore cannot carry this field.
     resource_limit_evidence: ResourceLimitEvidence | None = None
+    #: B162/schema v16: process-tree proof for each native executed candidate.
+    process_tree_evidence: ProcessTreeEvidence | None = None
     #: (B114/schema v15) collection and started-prefix facts for a cold or
     #: declared attempt. Ingested outcomes never carry execution evidence.
     evidence: MutantEvidence | None = None
@@ -1983,6 +1994,10 @@ class MutantOutcome:
             self.resource_limit_evidence, ResourceLimitEvidence
         ):
             raise ValueError("MutantOutcome.resource_limit_evidence has the wrong type")
+        if self.process_tree_evidence is not None and not isinstance(
+            self.process_tree_evidence, ProcessTreeEvidence
+        ):
+            raise ValueError("MutantOutcome.process_tree_evidence has the wrong type")
         if self.evidence is not None and not isinstance(self.evidence, MutantEvidence):
             raise ValueError("MutantOutcome.evidence has the wrong type")
         b106_values = (
@@ -2021,6 +2036,8 @@ class MutantOutcome:
             assert isinstance(self.execution, MutationExecution)
             if self.execution.mode == "ledger" and self.resource_limit_evidence is not None:
                 raise ValueError("ledger execution cannot carry per-execution resource evidence")
+            if self.execution.mode == "ledger" and self.process_tree_evidence is not None:
+                raise ValueError("ledger execution cannot carry process-tree evidence")
             if (
                 self.resource_limit_evidence is None
                 and self.execution.mode != "ledger"
@@ -2028,11 +2045,22 @@ class MutantOutcome:
                 raise ValueError(
                     "native executed MutantOutcome requires resource_limit_evidence"
                 )
+            if (
+                self.process_tree_evidence is None
+                and self.execution.mode != "ledger"
+            ):
+                raise ValueError(
+                    "native executed MutantOutcome requires process_tree_evidence"
+                )
         elif self.evidence is not None:
             raise ValueError("ingested MutantOutcome cannot carry execution evidence")
         elif self.resource_limit_evidence is not None:
             raise ValueError(
                 "ingested MutantOutcome cannot carry resource_limit_evidence"
+            )
+        elif self.process_tree_evidence is not None:
+            raise ValueError(
+                "ingested MutantOutcome cannot carry process_tree_evidence"
             )
 
     @property
@@ -2071,6 +2099,8 @@ class MutantOutcome:
             payload["execution"] = self.execution.to_dict()
             if self.resource_limit_evidence is not None:
                 payload["resource_limit_evidence"] = self.resource_limit_evidence.to_dict()
+            if self.process_tree_evidence is not None:
+                payload["process_tree_evidence"] = self.process_tree_evidence.to_dict()
         if self.evidence is not None:
             payload["evidence"] = self.evidence.to_dict()
         return payload
@@ -3195,6 +3225,10 @@ class JudgmentR2:
             raise ValueError(f"judgment.r2.jobs must be an integer, got {self.jobs!r}")
         if self.jobs < 1:
             raise ValueError(f"judgment.r2.jobs must be >= 1, got {self.jobs}")
+        if self.jobs != 1:
+            raise ValueError(
+                "judgment.r2.jobs must be 1 for native R2 event attribution"
+            )
         if not is_strict_int(self.max_mutants):
             raise ValueError(
                 f"judgment.r2.max_mutants must be an integer, got "

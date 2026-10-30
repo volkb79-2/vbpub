@@ -10,7 +10,8 @@ after a failing suite dirtied the tree) is what the headline reports.
 Recognised producers, each of which a lane's declared R0 command may be:
 
 * pytest: the ``FAILED``/``ERROR`` lines of the short test summary, falling
-  back to the ``____ name ____`` section header of the failures block.
+  back to the ``____ name ____`` section header of the failures block. Report
+  banners such as coverage.py's platform line are not test headers.
 * ``go test`` text: ``--- FAIL: Name``; ``go test -json``: the first event
   whose ``Action`` is ``fail`` and that names a ``Test``.
 * vitest text: `` FAIL  file > suite > test``.
@@ -36,7 +37,10 @@ _PYTEST_SUMMARY = re.compile(
     r"^(?:FAILED|ERROR) (\S*(?:::|\.py)(?:(?! - )[^\n])*)", re.MULTILINE
 )
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
-_PYTEST_HEADER = re.compile(r"^_{2,} (\S.*?) _{2,}$", re.MULTILINE)
+_PYTEST_HEADER = re.compile(
+    r"^_{2,} (?!coverage:\s)(\S.*?) _{2,}$",
+    re.MULTILINE | re.IGNORECASE,
+)
 _GO_TEXT = re.compile(r"^\s*--- FAIL: (\S+)", re.MULTILINE)
 _VITEST = re.compile(r"^\s*FAIL +(\S.* > \S.*)$", re.MULTILINE)
 _JEST = re.compile(r"^\s*● (\S.* › \S.*)$", re.MULTILINE)

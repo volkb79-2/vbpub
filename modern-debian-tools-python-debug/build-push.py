@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 from mdt_cli import MdtArgumentParser
+import hashlib
 import json
 import os
 import re
@@ -24,6 +25,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -150,10 +152,15 @@ def sync_ghcr_package_visibility(package_names: list[str]) -> None:
         f"[INFO] Syncing GHCR package visibility to {repo_visibility}: {', '.join(names)}\n"
     )
     for package_name in names:
-        ghcr.mirror_package_visibility(package_name, expected_visibility=repo_visibility)
-        sys.stderr.write(
-            f"[INFO] Synced {package_name} visibility to {repo_visibility}\n"
-        )
+        synced = ghcr.mirror_package_visibility(package_name, expected_visibility=repo_visibility)
+        if synced is None:
+            # cmru KI-97: the package could not be inspected (warned above); not a release failure.
+            sys.stderr.write(
+                f"[INFO] NOT synced: {package_name} visibility could not be verified "
+                "(see the warning above)\n"
+            )
+        else:
+            sys.stderr.write(f"[INFO] Synced {package_name} visibility to {synced}\n")
 
 
 def run_resolver() -> dict[str, str]:
@@ -239,6 +246,53 @@ def apply_env_to_os(env_vars: dict[str, str]) -> None:
     """Set resolved env vars into os.environ so step_runner can inject them via bake_set_vars."""
     for key, value in env_vars.items():
         os.environ[key] = value
+
+
+def pwmcp_build_inputs() -> dict[str, str]:
+    """Pin the generated installer and release bundle to this vbpub commit."""
+    identity_path = REPO_ROOT / "cmru.orchestration.toml"
+    contract_path = REPO_ROOT / "pwmcp" / "pwmcp.contract.json"
+    getpy_path = REPO_ROOT / "pwmcp" / "get.py"
+    try:
+        with identity_path.open("rb") as stream:
+            identity = tomllib.load(stream)["github"]
+        contract = json.loads(contract_path.read_text(encoding="utf-8"))
+        getpy = getpy_path.read_bytes()
+        owner, repo = identity["owner"], identity["repo"]
+        version = contract["release"]
+    except (OSError, KeyError, TypeError, ValueError, tomllib.TOMLDecodeError) as exc:
+        raise SystemExit(f"[ERROR] cannot resolve pinned PWMCP build inputs: {exc}") from None
+
+    if not isinstance(owner, str) or not re.fullmatch(r"[A-Za-z0-9-]+", owner):
+        raise SystemExit("[ERROR] cmru.orchestration.toml has an invalid GitHub owner")
+    if not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", repo):
+        raise SystemExit("[ERROR] cmru.orchestration.toml has an invalid GitHub repository")
+    if not isinstance(version, str) or not re.fullmatch(
+        r"[0-9]+(?:\.[0-9]+)+(?:-[A-Za-z0-9.-]+)?", version
+    ):
+        raise SystemExit("[ERROR] pwmcp.contract.json has an invalid release version")
+
+    revision_result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    revision = revision_result.stdout.strip()
+    if revision_result.returncode or not re.fullmatch(r"[0-9a-f]{40,64}", revision):
+        raise SystemExit("[ERROR] cannot resolve this source commit for the PWMCP installer")
+
+    base_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{revision}/pwmcp"
+    return {
+        "PWMCP_VERSION": version,
+        "PWMCP_GETPY_URL": f"{base_url}/get.py",
+        "PWMCP_GETPY_SHA256": hashlib.sha256(getpy).hexdigest(),
+        "PWMCP_CONTRACT_URL": f"{base_url}/pwmcp.contract.json",
+        "PWMCP_CONTRACT_SHA256": hashlib.sha256(
+            contract_path.read_bytes()
+        ).hexdigest(),
+    }
 
 
 def compute_build_date_with_counter(base_date: str) -> str:
@@ -328,6 +382,7 @@ def do_build(ignore_new_releases: bool) -> None:
 
     # Run the resolver
     env_vars = run_resolver()
+    env_vars.update(pwmcp_build_inputs())
 
     # Apply resolved vars to environment
     apply_env_to_os(env_vars)

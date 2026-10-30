@@ -1,13 +1,9 @@
-"""The cause-sensitive canary (P09, DESIGN-GUIDE §12's R3): proves the
-COMPLETE gate demonstrably rejects valid known-bad input for the INTENDED
-reason, not merely that it rejects something.
-
-The claim this module exists to defend, verbatim from the handoff: **a
-known-good control must PASS through the real pipeline, and a deliberately
-minimal, known-bad transform of the SAME input must FAIL for the SPECIFIC
-expected reason** — not just any failure (O1's own negative: *"accepting
-any non-zero (or any reason_code) as success lets an unrelated syntax/config
-error, or a failure for the wrong cause, satisfy the oracle."*).
+"""The R3 canary (P09, DESIGN-GUIDE §12) checks a known-good control and a
+deliberately transformed version of the same input through the lane's real
+pipeline. The transformed outcome is compared with the mechanism's expected
+reason code. For ``import-break``, a clean ``COMMAND_FAILED`` is expected; it
+does not prove that the injected statement caused the command failure.
+``uncovered-line`` is checked against R1's ``UNCOVERED_LINES`` result.
 
 **The two halves are structurally different, and both are real (A-107).**
 
@@ -79,12 +75,13 @@ runs against comes from *prepared*.
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Iterable, Mapping, Sequence
 
-from . import git
+from . import contention, git
 from .adapters.base import LanguageAdapter
 from .config import Lane
 from .coverage_parsers.model import CoverageProfile
@@ -95,16 +92,17 @@ from .isolation import SnapshotRepository
 from .runner import (
     Clock,
     CommandPlan,
+    CommandResult,
     LaneDeadline,
     ProcessRunner,
     SnapshotUnitResult,
+    _execute_snapshot_unit,
+    _plan_passthrough_values,
+    _relocate_source_roots,
     build_r0_claim,
     default_process_runner,
     evaluate_r1,
     execute_command,
-    _execute_snapshot_unit,
-    _plan_passthrough_values,
-    _relocate_source_roots,
 )
 from .verdict import (
     CANARY_AGGREGATIONS,
@@ -146,6 +144,28 @@ _EXPECTED_REASON_BY_MECHANISM: Mapping[str, ReasonCode] = MappingProxyType(
 )
 
 
+def _require_clean_import_break_exit(
+    mechanism: str,
+    outcome: Outcome,
+    reason_code: ReasonCode | None,
+    returncode: int | None,
+) -> tuple[Outcome, ReasonCode | None]:
+    """Only an ordinary nonzero process exit can certify an import break.
+
+    A negative ``subprocess`` return code means the process was terminated by
+    a signal. A report-derived ``COMMAND_FAILED`` with return code zero also
+    lacks the ordinary nonzero exit that certifies a clean import-break catch.
+    """
+    if (
+        mechanism == MECHANISM_IMPORT_BREAK
+        and outcome is Outcome.FAIL
+        and reason_code is ReasonCode.COMMAND_FAILED
+    ):
+        if returncode is None or returncode <= 0:
+            return Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE
+    return outcome, reason_code
+
+
 def _single_target_result(*, mechanism: str, **attempt: object) -> CanaryResult:
     """(B007/A-432, schema v10) the R3 payload for a lane that declared ONE
     canary target: a one-element ``attempts`` array.
@@ -161,6 +181,7 @@ def _single_target_result(*, mechanism: str, **attempt: object) -> CanaryResult:
         mechanism=mechanism,
         attempts=(CanaryAttempt(**attempt),),  # type: ignore[arg-type]
     )
+
 
 #: (P19) the closed vocabulary :mod:`assay.config`'s loader cross-checks
 #: ``judge.canary.mechanism`` against, imported from there via a DEFERRED
@@ -198,7 +219,9 @@ def _utc_now() -> datetime:
 
 
 def _apply_mechanism(
-    adapter: LanguageAdapter, mechanism: str, text: str
+    adapter: LanguageAdapter,
+    mechanism: str,
+    text: str,
 ) -> tuple[str, str] | None:
     """Apply *mechanism* to *text* via *adapter*'s own injector method, or
     ``None`` for an unrecognised mechanism name — O3's "malformed transform"
@@ -226,7 +249,7 @@ def _run_pipeline(
     infrastructure_environment: Mapping[str, str] | None = None,
     process_runner: ProcessRunner,
     clock: Clock,
-) -> tuple[Outcome, ReasonCode | None]:
+) -> tuple[Outcome, ReasonCode | None, CommandResult]:
     """The shared engine BOTH the control and the transformed half of
     :func:`run_python_canary` run through — the real R0 step
     (:func:`~assay.runner.execute_command`), then (only when R0 passed, and
@@ -271,7 +294,7 @@ def _run_pipeline(
     )
     r0_claim = build_r0_claim(result)
     if _r1_unreached(r0_claim, lane):
-        return r0_claim.status, r0_claim.reason_code
+        return r0_claim.status, r0_claim.reason_code, result
     r1_claim = evaluate_r1(
         lane,
         repo=repo,
@@ -280,7 +303,7 @@ def _run_pipeline(
         adapter=adapter,
         sensitive_values=_plan_passthrough_values(result.plan),
     )
-    return r1_claim.status, r1_claim.reason_code
+    return r1_claim.status, r1_claim.reason_code, result
 
 
 def run_python_canary(
@@ -326,7 +349,7 @@ def run_python_canary(
     :func:`judge_canary`/:func:`build_canary_claim` derive the actual
     verdict from it.
     """
-    control_outcome, _ = _run_pipeline(
+    control_outcome, _, _ = _run_pipeline(
         lane,
         repo=repo,
         project_root=project_root,
@@ -372,7 +395,7 @@ def run_python_canary(
     git.run(repo, "add", "-A")
     git.run(repo, "commit", "-q", "-m", f"assay canary: {description}")
 
-    transformed_outcome, observed_reason_code = _run_pipeline(
+    transformed_outcome, observed_reason_code, transformed_result = _run_pipeline(
         lane,
         repo=repo,
         project_root=project_root,
@@ -382,6 +405,12 @@ def run_python_canary(
         infrastructure_environment=infrastructure_environment,
         process_runner=process_runner,
         clock=clock,
+    )
+    transformed_outcome, observed_reason_code = _require_clean_import_break_exit(
+        mechanism,
+        transformed_outcome,
+        observed_reason_code,
+        transformed_result.returncode,
     )
     return _single_target_result(
         mechanism=mechanism,
@@ -555,23 +584,35 @@ def run_isolated_canary(
     # lane's own format, which is exactly the disagreement A-271's
     # one-grammar rule exists to prevent.
     coverage_producer = lane.judge.coverage.producer if wants_coverage else None
+    observer_is_declared = (
+        "ASSAY_RESOURCE_OBSERVER_SOCKET" in plan.env_effective
+        or "ASSAY_RESOURCE_OBSERVER_SOCKET" in plan.env_passthrough
+    )
+    observer_socket_path = plan.env_effective.get("ASSAY_RESOURCE_OBSERVER_SOCKET")
+    require_contention_observation = (
+        observer_is_declared
+        and os.environ.get("ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION") == "1"
+    )
 
     # B006(b): `control_snapshot` is always an ephemeral, assay-owned P22
     # checkout (never the consumer's real worktree), so this is one of the
     # "snapshot-running call sites" allowed to opt in to parent creation.
     with prepared.materialize(timeout=deadline.remaining()) as control_snapshot:
-        control_unit = _execute_snapshot_unit(
-            plan=plan,
-            snapshot=control_snapshot,
-            deadline=deadline,
-            wants_coverage=wants_coverage,
-            coverage_artifact=coverage_artifact,
-            coverage_format=coverage_format,
-            coverage_producer=coverage_producer,
-            process_runner=process_runner,
-            clock=clock,
-            create_missing_parents=True,
-        )
+        with contention.ContentionWindow(
+            observer_socket_path=observer_socket_path
+        ) as control_contention:
+            control_unit = _execute_snapshot_unit(
+                plan=plan,
+                snapshot=control_snapshot,
+                deadline=deadline,
+                wants_coverage=wants_coverage,
+                coverage_artifact=coverage_artifact,
+                coverage_format=coverage_format,
+                coverage_producer=coverage_producer,
+                process_runner=process_runner,
+                clock=clock,
+                create_missing_parents=True,
+            )
         if control_unit.post_reason is not None:
             raise AssayError(
                 "the canary control's own snapshot left Git-visible state "
@@ -591,6 +632,12 @@ def run_isolated_canary(
             deadline=deadline,
             sensitive_values=_plan_passthrough_values(plan),
         )
+        if contention.withhold_canary_result(
+            control_contention.observation,
+            outcome=control_outcome,
+            require_observation=require_contention_observation,
+        ):
+            control_outcome = Outcome.INCONCLUSIVE
         original_bytes = prepared.read_regular_file(
             canary_repo_path, timeout=deadline.remaining()
         )
@@ -640,18 +687,21 @@ def run_isolated_canary(
     ) as transform_snapshot:
         # B006(b): `transform_snapshot` is likewise an ephemeral, assay-owned
         # checkout -- the other "snapshot-running call site".
-        transform_unit = _execute_snapshot_unit(
-            plan=plan,
-            snapshot=transform_snapshot,
-            deadline=deadline,
-            wants_coverage=wants_coverage,
-            coverage_artifact=coverage_artifact,
-            coverage_format=coverage_format,
-            coverage_producer=coverage_producer,
-            process_runner=process_runner,
-            clock=clock,
-            create_missing_parents=True,
-        )
+        with contention.ContentionWindow(
+            observer_socket_path=observer_socket_path
+        ) as transform_contention:
+            transform_unit = _execute_snapshot_unit(
+                plan=plan,
+                snapshot=transform_snapshot,
+                deadline=deadline,
+                wants_coverage=wants_coverage,
+                coverage_artifact=coverage_artifact,
+                coverage_format=coverage_format,
+                coverage_producer=coverage_producer,
+                process_runner=process_runner,
+                clock=clock,
+                create_missing_parents=True,
+            )
         if transform_unit.post_reason is not None:
             raise AssayError(
                 "the canary transform's own snapshot left Git-visible state "
@@ -671,6 +721,19 @@ def run_isolated_canary(
             deadline=deadline,
             sensitive_values=_plan_passthrough_values(plan),
         )
+        transformed_outcome, observed_reason_code = _require_clean_import_break_exit(
+            mechanism,
+            transformed_outcome,
+            observed_reason_code,
+            transform_unit.result.returncode,
+        )
+        if contention.withhold_canary_result(
+            transform_contention.observation,
+            outcome=transformed_outcome,
+            require_observation=require_contention_observation,
+        ):
+            transformed_outcome = Outcome.INCONCLUSIVE
+            observed_reason_code = ReasonCode.CANARY_INCONCLUSIVE
 
     return _single_target_result(
         mechanism=mechanism,
@@ -986,12 +1049,13 @@ def judge_attempt(attempt: CanaryAttempt) -> tuple[Outcome, ReasonCode | None]:
     * a broken control, or a transform that never genuinely ran (a
       malformed mechanism or a no-op) — ``INCONCLUSIVE``/``CANARY_INCONCLUSIVE``
       (nothing proven either way);
-    * the bad case unexpectedly PASSED, or it failed for a reason OTHER
-      than the configured expected one — both ``FAIL``/``CANARY_SURVIVED``
-      ("survived" means the specific intended defect was never proven
-      caught, whichever way);
-    * otherwise — a PASSING control and a transformed run that failed for
-      EXACTLY the expected reason — ``PASS``.
+    * the transformed run unexpectedly PASSED, or its reason code differs
+      from the configured expected one — both ``FAIL``/``CANARY_SURVIVED``;
+    * otherwise — a PASSING control and a transformed run with the expected
+      reason code — ``PASS``. For ``import-break``, that code is the ordinary
+      ``COMMAND_FAILED`` result. The producer requires an ordinary nonzero
+      process exit for that result; a signal death or report-only failure is
+      recorded as ``INCONCLUSIVE`` before this helper judges the attempt.
 
     A ``"not_attempted"`` entry has no judgement of its own: it is
     bookkeeping about an aggregation, and :func:`judge_canary` reads it as
@@ -1000,6 +1064,13 @@ def judge_attempt(attempt: CanaryAttempt) -> tuple[Outcome, ReasonCode | None]:
     if attempt.control_outcome is not Outcome.PASS:
         return Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE
     if attempt.transformed_outcome is None:
+        return Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE
+    if attempt.transformed_outcome in {
+        Outcome.ERROR,
+        Outcome.NO_MEASUREMENT,
+        Outcome.BUDGET_EXCEEDED,
+        Outcome.INCONCLUSIVE,
+    }:
         return Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE
     if attempt.transformed_outcome is Outcome.PASS:
         return Outcome.FAIL, ReasonCode.CANARY_SURVIVED

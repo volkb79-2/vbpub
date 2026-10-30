@@ -1,5 +1,9 @@
 # T2 — per-server placement via `WINGS_CGROUP_PARENT` (patched Wings)
 
+> Historical design note. The active series is in
+> [`wings-patchstack/`](../../../wings-patchstack/README.md); the old
+> per-server-slice description below predates the 2026-09 scope redesign.
+
 > **Superseded for normal operation by patch 0004** (`docker.per_server_slices`,
 > shipped and deployed): Wings derives the per-server slice automatically and
 > manages the transient unit + properties itself — no egg variable, no
@@ -12,7 +16,8 @@
 > `WINGS_CG_IO_WEIGHT`, `WINGS_CG_IO_BFQ_WEIGHT` variables (see
 > `../STRATEGY.md` §T3b).
 
-Code: `../patchstack/patches/*/0002-*.patch`. This folder holds the panel-data
+Code: `../../../wings-patchstack/patches/pterodactyl-v1.13.3/0002-*.patch`.
+This folder holds the panel-data
 side (egg variable) and per-server slice tooling. **No panel code changes** —
 but panel *data* changes: the egg gains an admin-only variable; existing
 servers needing non-default placement get per-server overrides.

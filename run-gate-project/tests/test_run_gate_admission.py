@@ -753,6 +753,85 @@ def test_local_image_probe_is_bounded_and_placed_in_the_gates_slice():
                          "/bin/true", "ticket:local"]
 
 
+def _racing_inspect(fake, gone_id):
+    """Real docker's answer when one of the ids `ps` just listed was removed
+    before `inspect` ran: exit 1, `No such object` on stderr, and the
+    SURVIVING objects still on stdout."""
+    def run(argv, **kwargs):
+        args = list(argv[1:])
+        if args[:1] == ["inspect"]:
+            fake.calls.append(list(argv))
+            wanted = set(args[1:])
+            survivors = [item for item in fake.objects.values()
+                         if item["Id"] in wanted and item["Id"] != gone_id]
+            return subprocess.CompletedProcess(
+                argv, 1, json.dumps(survivors),
+                f"\nError: No such object: {gone_id}\n")
+        return fake(argv, **kwargs)
+    return run
+
+
+def test_containers_keep_the_survivors_when_one_vanishes_between_ps_and_inspect():
+    """RG-117: another gate's tombstone reap or ticket release between `ps`
+    and `inspect` made `inspect` exit 1 and the whole admission ERROR."""
+    fake, clock = FakeDocker(), Clock()
+    fake._add("ciu-res-gates-1", {"ciu.reservation.group": "a"})
+    fake._add("ciu-res-gates-2", {"ciu.reservation.group": "b"})
+    gone = fake.objects["ciu-res-gates-2"]["Id"]
+    manager = make_manager(_racing_inspect(fake, gone), clock)
+    assert [item["Id"] for item in manager._containers()] == \
+        [fake.objects["ciu-res-gates-1"]["Id"]]
+
+
+def test_containers_are_empty_when_every_listed_id_vanished():
+    fake, clock = FakeDocker(), Clock()
+    fake._add("ciu-res-gates-1", {})
+    gone = fake.objects["ciu-res-gates-1"]["Id"]
+    manager = make_manager(_racing_inspect(fake, gone), clock)
+    assert manager._containers() == []
+
+
+def test_containers_return_an_empty_list_when_inspect_race_has_no_json():
+    fake, clock = FakeDocker(), Clock()
+    fake._add("ciu-res-gates-1", {})
+
+    def empty_race(argv, **kwargs):
+        if list(argv[1:2]) == ["inspect"]:
+            return subprocess.CompletedProcess(
+                argv, 1, "", "Error: No such object: fake-1\n")
+        return fake(argv, **kwargs)
+
+    manager = make_manager(empty_race, clock)
+    assert manager._containers() == []
+
+
+def test_containers_still_refuse_any_other_inspect_failure():
+    fake, clock = FakeDocker(), Clock()
+    fake._add("ciu-res-gates-1", {})
+
+    def failing(argv, **kwargs):
+        if list(argv[1:2]) == ["inspect"]:
+            return subprocess.CompletedProcess(
+                argv, 1, "", "permission denied while trying to connect "
+                             "to the Docker daemon socket")
+        return fake(argv, **kwargs)
+
+    manager = make_manager(failing, clock)
+    with pytest.raises(admission.AdmissionDockerUnavailable,
+                       match="docker inspect failed"):
+        manager._containers()
+
+    def mixed(argv, **kwargs):
+        if list(argv[1:2]) == ["inspect"]:
+            return subprocess.CompletedProcess(
+                argv, 1, "[]", "Error: No such object: x\nError: broken pipe\n")
+        return fake(argv, **kwargs)
+
+    manager = make_manager(mixed, clock)
+    with pytest.raises(admission.AdmissionError, match="broken pipe"):
+        manager._containers()
+
+
 def test_image_inspect_error_is_not_misreported_as_missing_image():
     def invalid_reference(argv, **_kwargs):
         return subprocess.CompletedProcess(
@@ -877,7 +956,7 @@ def test_disabled_cli_accepts_flags_with_one_notice_and_no_admission_docker_call
     monkeypatch.setenv("PATH", f"{shim_dir}:{os.environ['PATH']}")
     invoke_dir = tmp_path / "invoke"
     invoke_dir.mkdir()
-    invoke = invoke_dir / "run-gate.py"
+    invoke = invoke_dir / "run_gate.py"
     invoke.symlink_to(Path(run_gate.__file__))
     proc = subprocess.run([sys.executable, str(invoke), "unit",
                            "--admission-wait", "3m", "--override-admission"],
@@ -942,7 +1021,6 @@ def _admission_run_project(tmp_path, argv, budget=None):
         "clean_tree = false\n"
         "profile = false\n"
         + budget_line)
-    (project / "run-gate.py").symlink_to(Path(run_gate.__file__))
     subprocess.run(["git", "add", "-A"], cwd=repo, check=True,
                    capture_output=True)
     subprocess.run(["git", "commit", "-qm", "admission lane"], cwd=repo,
@@ -979,7 +1057,8 @@ def test_lane_outcome_releases_admission_ticket(
     lock_dir.mkdir()
     monkeypatch.setenv("RUN_GATE_PROFILE", "off")
     monkeypatch.setenv("RUN_GATE_LOCK_DIR", str(lock_dir))
-    monkeypatch.setattr(sys, "argv", [str(project / "run-gate.py")])
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(sys, "argv", ['run-gate'])
     monkeypatch.chdir(project)
     monkeypatch.setattr(run_gate, "local_docker_endpoint",
                         lambda: (True, "local test endpoint"))
@@ -997,7 +1076,8 @@ def test_sigterm_unwinds_and_releases_admission_ticket(tmp_path, monkeypatch):
     lock_dir.mkdir()
     monkeypatch.setenv("RUN_GATE_PROFILE", "off")
     monkeypatch.setenv("RUN_GATE_LOCK_DIR", str(lock_dir))
-    monkeypatch.setattr(sys, "argv", [str(project / "run-gate.py")])
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(sys, "argv", ['run-gate'])
     monkeypatch.chdir(project)
     monkeypatch.setattr(run_gate, "local_docker_endpoint",
                         lambda: (True, "local test endpoint"))

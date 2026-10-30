@@ -43,7 +43,7 @@ _WRITTEN_BY_THE_CODE_UNDER_TEST = ("PYTHONUNBUFFERED",)
 def _clean_env(monkeypatch) -> None:
     for name in (
         *OLD_ENV_NAMES, *INTERNAL_ENV_NAMES, *_WRITTEN_BY_THE_CODE_UNDER_TEST,
-        transaction.CHILD_ENV,
+        transaction.CHILD_ENV, "CMRU_RELEASE_NOTES_SOURCE",  # conftest declares it "none"
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -193,6 +193,8 @@ def test_refused_is_the_only_exit_code_name_for_four():
 
 _RESERVED_PROJECT_ENV_NAMES = (
     *INTERNAL_ENV_NAMES, "CMRU_INTERNAL_RELEASE_PREFLIGHT_FD", "CMRU_RELEASE_PREFLIGHT_SNAPSHOT",
+    "CMRU_RELEASE_COMMIT", "CMRU_RELEASE_TAG", "CMRU_RELEASE_NOTES_SOURCE",
+    "CMRU_RELEASE_GATE_COMMIT", "CMRU_RELEASE_GATE_VERSION",
     "CMRU_INTERNAL_X",  # the PREFIX is reserved, not a list
 )
 
@@ -205,8 +207,8 @@ def test_project_env_cannot_declare_internal_names(name, capsys, monkeypatch):
     with pytest.raises(SystemExit) as refused:
         config._scalar_env({name: "/evil"}, "[env]", reject_credentials=True)
     assert refused.value.code == exit_codes.CONFIG_ERROR
-    assert "reserved for CMRU internal launch state" in capsys.readouterr().err
-    with pytest.raises(RuntimeError, match="reserved for CMRU internal launch state"):
+    assert "reserved for CMRU-managed protected context" in capsys.readouterr().err
+    with pytest.raises(RuntimeError, match="reserved for CMRU-managed protected context"):
         cli.apply_release_env(
             cli.GitHubConfig("owner", "repo", "", "org"), cli.ReleaseEnvConfig({name: "/evil"}, None),
         )
@@ -357,7 +359,26 @@ def _shell_text(path: Path) -> str:
         line for line in path.read_text(encoding="utf-8", errors="replace").splitlines()
         if not line.lstrip().startswith("#")
     ]
-    return re.sub(r"\\\n", " ", "\n".join(lines))
+    joined = re.sub(r"\\\n", " ", "\n".join(lines))
+    return _expand_static_bash_arrays(joined)
+
+
+def _expand_static_bash_arrays(text: str) -> str:
+    """Inline ``NAME=(...)`` / ``NAME+=(...)`` literals where ``"${NAME[@]}"`` is used.
+
+    A script that builds a command's options in an array (``build-image.sh``'s
+    ``tester_gate_args``) would otherwise hide them from the registry check. Every
+    assignment is included, so an optional ``+=`` item is validated too (a superset
+    of any single run's argv).
+    """
+    arrays: dict[str, list[str]] = {}
+    for match in re.finditer(r"(?m)^\s*(\w+)\+?=\(([^()]*)\)", text):
+        arrays.setdefault(match.group(1), []).append(match.group(2).strip())
+
+    def expand(match: re.Match) -> str:
+        return " ".join(arrays.get(match.group(1), [match.group(0)]))
+
+    return re.sub(r'"?\$\{(\w+)\[@\]\}"?', expand, text)
 
 
 def _registry_problem(argv: list[str], built) -> str | None:

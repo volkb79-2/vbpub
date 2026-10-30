@@ -135,6 +135,8 @@ def test_create_workspace_captures_reset_diagnostics_and_cleans_failed_allocatio
 def test_resume_workspace_refuses_fetch_failure_before_reopening(tmp_path):
     """A failed refresh cannot be mistaken for a successfully resumed tree."""
     root = _repo(tmp_path)
+    _git(root, "remote", "add", "origin", "file:///tmp/cmru-unreachable-origin.git")
+    _git(root, "config", "protocol.file.allow", "never")
     base = _git(root, "rev-parse", "HEAD")
     retained = tmp_path / "legacy"
     _git(root, "worktree", "add", "-q", "-b", "cmru/release/legacy", str(retained), base)
@@ -156,6 +158,8 @@ def test_resume_workspace_refuses_fetch_failure_before_reopening(tmp_path):
 
 def test_resume_retries_fetch_for_existing_legacy_record(tmp_path):
     root = _repo(tmp_path)
+    _git(root, "remote", "add", "origin", "file:///tmp/cmru-unreachable-origin.git")
+    _git(root, "config", "protocol.file.allow", "never")
     base = _git(root, "rev-parse", "HEAD")
     branch = "cmru/release/legacy-record"
     retained = tmp_path / "legacy-record"
@@ -259,14 +263,14 @@ def test_retain_successful_build_outputs_writes_hash_manifest_and_refuses_collis
     workspace = transaction.ReleaseWorkspace(root, workspace_path, "cmru/build/retain",
                                              _git(root, "rev-parse", "HEAD"))
     project = _project(root)
-    retained = transaction.retain_successful_build_outputs(root, workspace, {"demo": project}, ["demo"])
+    retained = transaction.retain_successful_build_outputs(root, workspace, {"demo": project}, ["demo"], source_mode="origin-main")
     assert len(retained) == 2
     manifests = list((root / "demo" / "artifacts").rglob("build.json"))
     assert manifests
     payload = json.loads(manifests[0].read_text())
     assert payload["publication"] == "eligible"
     with pytest.raises(RuntimeError, match="already exists"):
-        transaction.retain_successful_build_outputs(root, workspace, {"demo": project}, ["demo"])
+        transaction.retain_successful_build_outputs(root, workspace, {"demo": project}, ["demo"], source_mode="origin-main")
     _git(root, "worktree", "remove", "--force", str(workspace_path))
     _git(root, "branch", "-D", "cmru/build/retain")
 

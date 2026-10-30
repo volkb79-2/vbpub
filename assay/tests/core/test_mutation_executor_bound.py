@@ -1,20 +1,20 @@
-"""O2/A-082/A-122 -- the injected executor factory receives ``max_workers``
-EQUAL TO the caller's own declared ``jobs``, never a value derived from the
-mutant count or the machine (``os.cpu_count()``), and every mutant is
-submitted through the executor it returns; ``jobs=1`` and ``jobs=3``
-produce IDENTICAL ordered result records.
+"""B115 queue mechanics and B157's public serial-R2 boundary.
 
-The negative this defends (O2, verbatim): *constructing the executor with
-mutant count or bypassing it for one task fails the recorded
-bound/submission assertions without any wall-clock measurement.* Every
-assertion below is at the construction/submission BOUNDARY -- no timing,
-no sleeps, no elapsed-time comparison anywhere in this module
-(AUTHORING.md §3b.A).
+The executor implementation remains covered with injected worker counts so
+its ordering, draining, and resume invariants stay tested. Product callers use
+``run_mutation``, which refuses ``jobs > 1`` because candidate cgroup event
+windows cannot overlap safely.
+
+The executor boundary assertions use the private implementation entry point;
+the separate public-entry test proves multi-worker native R2 is refused
+before executor construction. There are no elapsed-time comparisons in this
+module (AUTHORING.md §3b.A).
 """
 
 from __future__ import annotations
 
-import subprocess
+from conftest import completed_process, timeout_expired
+
 import json
 import os
 import stat
@@ -30,6 +30,7 @@ from assay.adapters.python import PythonAdapter
 from assay import isolation as isolation_module
 from assay import mutation as mutation_module, runner as runner_module
 from assay.errors import AssayError, Outcome, ReasonCode
+from assay.process_tree import ProcessTreeError
 from assay.mutation import MutationTarget, candidate_id, collect_mutation_sites, run_mutation
 from assay.resource_limits import ResourceLimitCounters
 from assay.runner import execute_command
@@ -80,7 +81,7 @@ def _resource_counters_are_faked_for_executor_unit_tests(monkeypatch):
 
 
 def _always_pass(argv, *, env, cwd, timeout):
-    return subprocess.CompletedProcess(list(argv), returncode=0, stdout="", stderr="")
+    return completed_process(list(argv), returncode=0, stdout="", stderr="")
 
 
 class _RecordingExecutor:
@@ -131,7 +132,7 @@ def _run_with_recording_factory(tmp_path: Path, jobs: int):
     plan = make_plan(lane)
     deadline = make_deadline()
     with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
-        mutation = run_mutation(
+        mutation = mutation_module._run_mutation_impl(
             baseline=baseline,
             prepared=prepared,
             plan=plan,
@@ -203,7 +204,7 @@ def test_the_executor_is_never_constructed_when_there_are_no_mutants(tmp_path: P
             deadline=deadline,
             targets=(),  # nothing to mutate
             adapter=PythonAdapter(),
-            jobs=3,
+            jobs=1,
             max_mutants=50,
             operators=("python:bool-const-flip",),
             process_runner=_always_pass,
@@ -221,9 +222,7 @@ def test_the_executor_is_never_constructed_when_there_are_no_mutants(tmp_path: P
 
 
 def test_jobs_1_and_jobs_3_produce_identical_ordered_records(tmp_path: Path):
-    """The real default executor (a genuine ``ThreadPoolExecutor``) both
-    times -- proving the RESULT is independent of the actual concurrency
-    bound, never a claim about wall-clock speed."""
+    """The private queue implementation keeps result identity stable."""
     lane = make_lane(argv=("pytest", "-q"))
 
     def run(jobs: int):
@@ -234,7 +233,7 @@ def test_jobs_1_and_jobs_3_produce_identical_ordered_records(tmp_path: Path):
         plan = make_plan(lane)
         deadline = make_deadline()
         with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
-            mutation = run_mutation(
+            mutation = mutation_module._run_mutation_impl(
                 baseline=baseline,
                 prepared=prepared,
                 plan=plan,
@@ -254,6 +253,28 @@ def test_jobs_1_and_jobs_3_produce_identical_ordered_records(tmp_path: Path):
     parallel = run(3)
 
     assert serial.to_dict() == parallel.to_dict()
+
+
+def test_public_run_mutation_refuses_parallel_candidate_event_windows():
+    factory_calls = []
+
+    with pytest.raises(ValueError, match="jobs must be 1 for native R2"):
+        run_mutation(
+            baseline=None,
+            prepared=None,
+            plan=None,
+            deadline=None,
+            targets=(),
+            adapter=PythonAdapter(),
+            jobs=2,
+            max_mutants=1,
+            operators=(),
+            process_runner=None,
+            clock=None,
+            executor_factory=lambda jobs: factory_calls.append(jobs),
+        )
+
+    assert factory_calls == []
 
 
 # --- jobs is validated BEFORE the executor boundary (P18 work item 5) ------
@@ -375,13 +396,13 @@ def _decide5(repo_path: Path, behaviours):
             if f"{name} = False" in source
         ]
         if not changed:
-            return subprocess.CompletedProcess(list(argv), 0, "", "")
+            return completed_process(list(argv), 0, "", "")
         assert len(changed) == 1, f"expected one mutated site, found {changed}"
         action = behaviours.get(changed[0])
         if action is not None:
             return action(argv, cwd)
         # Default: the suite fails, so the mutant is killed.
-        return subprocess.CompletedProcess(list(argv), 1, "", "")
+        return completed_process(list(argv), 1, "", "")
 
     return process_runner
 
@@ -407,7 +428,7 @@ def _run_queue_case(
     budget_per_candidate_seconds: float | None = None,
     equivalence_artifact: str | None = None,
     baseline_equivalence: bytes | None = None,
-    oom_counter=None,
+    resource_counter_reader=None,
     deadline=None,
     state_root_guard=None,
     state_root_fd=None,
@@ -423,7 +444,13 @@ def _run_queue_case(
         memory_oom_group_kill=0,
     )
     monkeypatch.setattr(
-        mutation_module, "_read_candidate_resource_counters", lambda: counters
+        mutation_module,
+        "_read_candidate_resource_counters",
+        (
+            (lambda: counters)
+            if resource_counter_reader is None
+            else resource_counter_reader
+        ),
     )
     repo = _seed_repo(tmp_path, name, text) if repo is None else repo
     scratch_root = tmp_path / f"{name}-scratch"
@@ -439,7 +466,7 @@ def _run_queue_case(
             clock=lambda: datetime.now(timezone.utc),
         )
     with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
-        result = run_mutation(
+        result = mutation_module._run_mutation_impl(
             baseline=baseline,
             prepared=prepared,
             plan=plan,
@@ -464,11 +491,65 @@ def _run_queue_case(
             budget_per_candidate_seconds=budget_per_candidate_seconds,
             equivalence_artifact=equivalence_artifact,
             baseline_equivalence=baseline_equivalence,
-            oom_counter=(lambda: 0) if oom_counter is None else oom_counter,
         )
     assert baseline.outcome is Outcome.PASS
     assert result is not None
     return (result, repo) if return_repo else result
+
+
+def test_after_counter_failure_does_not_hide_process_tree_cleanup_failure(
+    tmp_path, monkeypatch
+):
+    zero = ResourceLimitCounters(
+        pids_max=0,
+        memory_oom=0,
+        memory_max=0,
+        memory_oom_kill=0,
+        memory_oom_group_kill=0,
+    )
+    reads = 0
+
+    def counters():
+        nonlocal reads
+        reads += 1
+        if reads == 3:  # preflight, before candidate, then failed after-read
+            # The patched reader stands in for mutation's own wrapper, which
+            # converts the observer error into the lane-level AssayError.
+            raise AssayError(
+                "observer disappeared",
+                outcome=Outcome.NO_MEASUREMENT,
+                reason_code=ReasonCode.CGROUP_OBSERVATION_UNAVAILABLE,
+            )
+        return zero
+
+    real_execute_plan = runner_module.execute_plan
+    plan_calls = 0
+
+    def fail_to_prove_cleanup(*args, **kwargs):
+        # The first call is _run_queue_case's own R0 baseline (the helper runs
+        # it through execute_command); only candidate executions lose proof.
+        nonlocal plan_calls
+        plan_calls += 1
+        if plan_calls == 1:
+            return real_execute_plan(*args, **kwargs)
+        raise ProcessTreeError("the command window is not empty")
+
+    monkeypatch.setattr(runner_module, "execute_plan", fail_to_prove_cleanup)
+    with pytest.raises(AssayError, match="process-tree cleanup") as failure:
+        _run_queue_case(
+            tmp_path,
+            monkeypatch,
+            name="observer-and-process-tree-failure",
+            targets=_TARGETS3,
+            text=_TEXT3,
+            jobs=1,
+            process_runner=_always_pass,
+            resource_counter_reader=counters,
+        )
+
+    assert failure.value.outcome is Outcome.ERROR
+    assert failure.value.reason_code is ReasonCode.EXEC_FAILED
+    assert reads == 3
 
 
 def test_campaign_plan_mismatch_refuses_before_executor_or_candidate_state(
@@ -568,7 +649,7 @@ def test_resume_reexecutes_state_bound_to_different_campaign_deadline_bytes(
 
     def pass_candidate(argv, cwd):
         calls.append(Path(cwd).name)
-        return subprocess.CompletedProcess(list(argv), 0, "", "")
+        return completed_process(list(argv), 0, "", "")
 
     progress_events: list[dict] = []
     resumed = _run_queue_case(
@@ -608,7 +689,7 @@ def test_lane_bound_timeout_closes_reservation_and_reexecutes_on_resume(
 
     def timeout_candidate(argv, cwd):
         candidate_calls.append(Path(cwd).name)
-        raise subprocess.TimeoutExpired(list(argv), timeout=60.0, output=b"partial")
+        raise timeout_expired(list(argv), timeout=60.0, output=b"partial")
 
     class Reservation:
         def __init__(self):
@@ -649,7 +730,7 @@ def test_lane_bound_timeout_closes_reservation_and_reexecutes_on_resume(
 
     def pass_candidate(argv, cwd):
         resumed_calls.append(Path(cwd).name)
-        return subprocess.CompletedProcess(list(argv), 0, "", "")
+        return completed_process(list(argv), 0, "", "")
 
     resumed = _run_queue_case(
         tmp_path,
@@ -671,27 +752,55 @@ def test_lane_bound_timeout_closes_reservation_and_reexecutes_on_resume(
     assert len(list(state_root.glob("*.json"))) == 3
 
 
-def test_oom_during_candidate_execution_is_unclassified_and_unrecorded(
+def test_sibling_hierarchical_oom_kill_does_not_abort_candidate(
     tmp_path, monkeypatch
 ):
-    values = iter((0, 0, 1))
-    state_root = tmp_path / "oom-state"
+    def counters(*, parent_hierarchical_oom_kill: int) -> ResourceLimitCounters:
+        return ResourceLimitCounters(
+            pids_max=0,
+            memory_oom=0,
+            memory_max=0,
+            memory_oom_kill=parent_hierarchical_oom_kill,
+            memory_oom_group_kill=0,
+            path_event_counters=(
+                ("/gate/candidate", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+                (
+                    "/gate",
+                    0,
+                    0,
+                    0,
+                    parent_hierarchical_oom_kill,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ),
+            ),
+        )
+
+    before = counters(parent_hierarchical_oom_kill=0)
+    sibling_oom = counters(parent_hierarchical_oom_kill=1)
+    samples = iter((before, before, sibling_oom))
     result = _run_queue_case(
         tmp_path,
         monkeypatch,
-        name="oom-candidate",
-        targets=_TARGETS3,
+        name="sibling-hierarchical-oom",
+        targets=(
+            MutationTarget(path="pkg/flags.py", text=_TEXT3, lines=frozenset({2})),
+        ),
         text=_TEXT3,
         jobs=1,
         process_runner=_decide5(tmp_path, {}),
-        state_root=state_root,
-        oom_counter=lambda: next(values),
+        resource_counter_reader=lambda: next(samples),
     )
 
-    assert len(result.budget_exceeded) == 3
-    assert not result.killed
+    assert result.total == 1
+    assert len(result.killed) == 1
     assert not result.crashed
-    assert list(state_root.glob("*.json")) == []
+    assert result.killed[0].resource_limit_evidence is not None
+    assert result.killed[0].resource_limit_evidence.memory_events_oom_kill.delta == 0
 
 
 def test_deadline_expiring_during_snapshot_cleanup_leaves_candidate_unclassified(
@@ -984,7 +1093,7 @@ def test_deadline_expiring_during_resume_merge_does_not_return_completed_result(
 
     def candidate_timeout(argv, cwd):
         del cwd
-        raise subprocess.TimeoutExpired(list(argv), timeout=1.0, output=b"partial")
+        raise timeout_expired(list(argv), timeout=1.0, output=b"partial")
 
     seeded, repo = _run_queue_case(
         tmp_path,
@@ -1224,11 +1333,11 @@ def test_completed_candidate_releases_a_slot_without_waiting_for_the_batch(
         zero_started.set()
         if not release_zero.wait(10):
             raise AssertionError("position 0 was never released")
-        return subprocess.CompletedProcess(list(argv), 0, "", "")
+        return completed_process(list(argv), 0, "", "")
 
     def observe_three(argv, cwd):
         candidate_three_started.set()
-        return subprocess.CompletedProcess(list(argv), 0, "", "")
+        return completed_process(list(argv), 0, "", "")
 
     behaviours = {
         name_at[0]: hold_zero,
@@ -1297,10 +1406,10 @@ def test_candidate_progress_stays_ordered_when_state_writes_complete_out_of_orde
     def hold_zero(argv, cwd):
         if not release_zero.wait(10):
             raise AssertionError("position 0 was never released")
-        return subprocess.CompletedProcess(list(argv), 0, "", "")
+        return completed_process(list(argv), 0, "", "")
 
     def complete_one(argv, cwd):
-        return subprocess.CompletedProcess(list(argv), 1, "", "")
+        return completed_process(list(argv), 1, "", "")
 
     def release_zero_after_one_is_recorded(root, payload, **kwargs):
         real_write(root, payload, **kwargs)
@@ -1428,7 +1537,7 @@ def test_lane_timeout_stops_submission_but_drains_completed_in_flight_work(
     def hold(argv, cwd):
         if not release.wait(10):
             raise AssertionError("held in-flight candidate was not released")
-        return subprocess.CompletedProcess(list(argv), 0, "", "")
+        return completed_process(list(argv), 0, "", "")
 
     timeout_error = AssayError(
         "campaign deadline during candidate",
@@ -1499,7 +1608,7 @@ def test_fatal_stops_submission_but_records_other_in_flight_results(
     def hold(argv, cwd):
         if not release.wait(10):
             raise AssertionError("held in-flight candidate was not released")
-        return subprocess.CompletedProcess(list(argv), 1, "", "")
+        return completed_process(list(argv), 1, "", "")
 
     fatal = AssayError(
         "candidate infrastructure failure",
@@ -1627,7 +1736,7 @@ def test_resumed_pending_indices_remain_monotonic_under_reverse_completion(
                 raise AssertionError(f"candidate {name} was not released")
             completed.append(name)
             finished[name].set()
-            return subprocess.CompletedProcess(list(argv), 1, "", "")
+            return completed_process(list(argv), 1, "", "")
 
         return action
 

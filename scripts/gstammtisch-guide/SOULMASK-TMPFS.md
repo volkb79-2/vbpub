@@ -17,65 +17,21 @@ cannot silently evict them under memory pressure — they must go through zswap
 (compressed RAM) before reaching disk swap. This prevents multi-second game
 stalls when the host is under memory pressure from other workloads.
 
-## Shortcomings of the legacy split-ramdisk design
+## Why the legacy split-ramdisk design was replaced
 
-The original design (2026-07-07, extended 2026-07-21) had two independent
-services, two tmpfs mounts, two sets of scripts, two cgroup slices, and two
-config keys per instance (`PAK_RAMDISK` + `STATIC_RAMDISK`). It suffered from
-three problems:
+The 2026-07-07 design (two services, two tmpfs mounts, `PAK_RAMDISK` + `STATIC_RAMDISK`, files in
+`files/legacy/`) had three defects; each is a reason for a decision below:
 
-### 1. Partial coverage — steam updates could partially corrupt state
-
-The legacy ramdisks covered the `.pak`/`.sig`/`.utoc`/`.ucas` files (pak
-ramdisk) and `Engine/`, `WS/Binaries/`, `linux64/`, `Steam/`, `steamclient.so`,
-`libsteamwebrtc.so` (static ramdisk). But **`steamapps/` (download staging +
-app manifests), `steamcmd/` (the updater itself), and `Manifest_*.txt` (depot
-metadata) were on disk**, not on any ramdisk.
-
-This meant a steam update could:
-1. Download to `steamapps/downloading/` on disk (succeeds)
-2. Delete the old `.pak` from the pak tmpfs (succeeds — tmpfs was writable)
-3. Write the new `.sig` to the pak tmpfs (succeeds — small file)
-4. **Fail to write the new `.pak`** — tmpfs space exhausted because the
-   **running other instance still holds the deleted old `.pak` open** (Unix
-   semantics: deleted files persist until last fd closes, still consuming
-   space)
-
-Result: `.pak` file **gone** from the shared tmpfs, `.sig` updated
-(mismatched), running instance still works (mmap'd the old inode), but any
-**restarting instance cannot start** because there's no `.pak` to mmap.
-
-**This is exactly what happened on 2026-07-29.** The steam content log shows
-`"Disk write failure"` at commit time — steam downloaded 1.65 GiB to staging,
-tried to move it to the tmpfs-backed `WS/Content/Paks/`, and failed because
-the 3G tmpfs had only 1.4G free (the deleted old `.pak` held by the running
-b87c0a5b process consumed 1.67G). The new `.sig` (110K) was small enough to
-write, so the tmpfs ended up with a new `.sig` and NO `.pak`.
-
-### 2. Writable tmpfs — no fail-safe
-
-The legacy tmpfs mounts were **read-write**. Steam inside the container could
-write through the bind mounts. The designers expected this (SOULMASK.md noted
-"steamcmd updates are the only thing that legitimately changes them") but
-didn't account for the **partial-write failure mode**: when the write of the
-large `.pak` fails but the small `.sig` succeeds, the system ends up in an
-**inconsistent state** that the running instance tolerates (old inode held
-open) but a restarting instance cannot survive (file missing).
-
-### 3. No guaranteed source instance
-
-Both legacy setup scripts enumerated instances in filesystem order and picked
-the **first** one that had the required files. There was no guarantee that the
-first instance was the most recently updated (ROLE=main) one. If a client
-instance was enumerated first and had stale files, the ramdisk would be
-populated from stale content.
-
-### 4. Two services, two scripts, duplicated logic
-
-The pak ramdisk and static ramdisk were deliberately kept separate (different
-cgroup slices for independent memory control). But they shared ~80% of their
-logic: instance enumeration, config loading, size checking, bind-mounting,
-state persistence, teardown. Every fix or improvement had to be applied twice.
+1. **Partial coverage, writable tmpfs, no fail-safe.** `steamapps/`, `steamcmd/` and `Manifest_*.txt`
+   stayed on disk while the paks were on a *writable* tmpfs. On 2026-07-29 a steam update downloaded
+   1.65 GiB to disk staging, deleted the old `.pak` from the tmpfs, wrote the small new `.sig`, then
+   failed writing the new `.pak` ("Disk write failure"): the other running instance still held the
+   deleted old `.pak` open and its 1.67G consumed the 3G tmpfs. Result: new `.sig`, no `.pak`; the running
+   instance survived (old inode mmap'd) but a restarting one could not start. Hence: full coverage and
+   a read-only design (below). Note: the host now runs it read-write by an accepted trade-off
+   (`SOULMASK_TMPFS_READONLY=0` since 2026-07-31, Wings' pre-boot chown; see "Current accepted tradeoff").
+2. **No guaranteed source instance** (first instance in filesystem order, possibly stale). Hence `ROLE=main`.
+3. **Duplicated logic** in two scripts. Hence one service, one script, one config.
 
 ## New design — unified read-only tmpfs
 
@@ -153,7 +109,8 @@ touches during an update:
 | Compressible | `Engine`, `WS/Binaries`, `linux64`, `Steam/*` (except logs/appcache), `steamclient.so`, `libsteamwebrtc.so`, `steamapps`, `steamcmd`, `Manifest_*.txt` | `soulmask_tmpfs-ZSwapMax1` |
 
 Deliberately **excluded** (stay on disk):
-- `WS/Saved/` — world save, account database, per-instance state
+- `WS/Saved/` — world save, account database, per-instance state (except
+  `WS/Saved/Logs`, a per-instance tmpfs — see "Per-instance tmpfs" below)
 - `WS/Config/` — server configuration, per-instance
 - `Steam/logs/` — steam runtime logs (written continuously, keep writable)
 - `Steam/appcache/` — steam HTTP cache (written continuously)
@@ -195,7 +152,368 @@ incompressible paths, then back to `ZSwapMax1` before copying the compressible
 paths. The kernel charges pages to whichever cgroup the allocating process is
 in, so each content type's pages end up in the correct slice.
 
+## Per-instance tmpfs (`WS/Saved/Logs`) — SMT-01, 2026-10-20
+
+### Why
+
+The game thread `FAsyncWriter_WS` writes `WS/Saved/Logs/WS.log` and calls
+`fdatasync`. Under dev IO load that blocks for up to ~26 s on the shared root
+ext4 journal (`jbd2_log_wait_commit`, `folio_wait_writeback`,
+`wait_transaction_locked`) and the tick rate drops from 30 to ~7. On a tmpfs the
+log touches no ext4 at all. The operator accepts that these logs are lost on
+service restart or reboot; nothing is copied back.
+
+Why the stall happens at all (the shared journal, the slow device, what bounds it) is in
+[HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md); this tmpfs removes only the *log's* share of it.
+
+### What a per-instance section is
+
+Every other section of `soulmask_tmpfs-paths.conf` is **shared**: the path is
+copied from the `ROLE=main` instance into one tmpfs and bind-mounted into every
+`TMPFS=1` instance. That is wrong for something the game *writes* — two servers
+would write the same `WS.log`. The two new sections are different:
+
+| Section | Mount | Pages |
+|---|---|---|
+| `[per-instance-compressible]` | own empty rw tmpfs per `TMPFS=1` instance, on `<volume>/<path>` | swappable, zswap-eligible |
+| `[per-instance-noswap]` | same, plus the tmpfs `noswap` option | resident, uncompressed |
+
+Nothing is copied in or back; the shared `/mnt/soulmask_tmpfs` is not involved.
+Shipped: `WS/Saved/Logs` under `[per-instance-compressible]`, nothing under
+`[per-instance-noswap]`.
+
+Mount options are **derived, never literals**: `uid`/`gid`/`mode` come from
+`stat` of the existing on-disk directory (988:988, 0755 today); `size` comes
+from `SOULMASK_TMPFS_PER_INSTANCE_SIZE` (set in `/etc/gstammtisch/soulmask_tmpfs.env`, 512M;
+the script has no default and refuses without it); always
+`nosuid,nodev,noexec`. A directory that does not exist yet is skipped with a log
+line, never created (its ownership would be a guess). The mount source is
+tagged `soulmask-pi-<first 8 hex of the uuid>`.
+
+Size syntax: a positive integer with an optional `k`/`m`/`g` suffix. `0` (which
+tmpfs treats as **unlimited**) and percentages (relative to RAM) are refused, as
+is anything malformed.
+
+### Containment: a symlink can never redirect the mount
+
+`<volume>/WS/Saved/Logs` lies in a tree the game (uid 988 in the container) can
+write. A planted symlink there must not make a ROOT mount land on a host
+directory (`/etc/gstammtisch`, another instance's volume, ...). Setup therefore
+refuses a target when the volume itself or **any component** of
+`<volume>/<path>` is a symlink (even one that stays inside the volume), or when
+the canonical path leaves the canonical volume, or the volume leaves
+`VOLUMES_ROOT`. The check runs while planning and **again immediately before each
+mount** (the tree can change in between; the remaining window is the few
+microseconds between that re-check and the `mount` syscall, which cannot be
+closed from shell). A refusal is an error line plus a non-zero exit; the other
+instance's mount still proceeds. Paths must also be relative, without `..`,
+whitespace, `%`, `|` or glob characters, and must not repeat, nest, or overlap a
+shared path.
+
+### Memory accounting — what "compressible" means here
+
+tmpfs pages are charged to the memcg of the task that **writes** them. For
+these mounts that is the game container's cgroup
+(`wings.slice/docker-<id>.scope`), **not** the `soulmask_tmpfs-ZSwapMax{0,1}`
+slices — the setup script's slice placement only governs the shared tmpfs it
+copies into itself, and does not apply to these pages. Consequences:
+
+- `[per-instance-compressible]` pages are swappable and so zswap-eligible under
+  the game cgroup's own `memory.zswap.max` (`max` on this host today).
+- `[per-instance-noswap]` pages stay resident and uncompressed. If the kernel
+  rejects `noswap` the script **fails**; it never falls back to a swappable
+  mount (the section's whole claim would then be false).
+- The size cap counts against the game cgroup's `memory.max` (12 GiB, ~4.5 GiB
+  in use) as it fills; two instances can each fill their own 512M.
+- When the container exits, its memcg's tmpfs pages are reparented to
+  `wings.slice` and stay resident until the tmpfs is unmounted or the host
+  restarts; they are not freed by stopping the game.
+
+### Existing on-disk logs
+
+They are not moved or deleted. They are *hidden* under the mount and reappear
+after unmount. Setup logs a `NOTICE` with the hidden size (78 MB on
+`b87c0a5b…` when this was written). They still count towards the volume's disk
+usage in Wings but are invisible in the file manager while the tmpfs is
+mounted. To inspect or remove them, bind the volume **non-recursively** (a plain
+`--bind` does not carry submounts, so it shows the underlying disk):
+
+```bash
+mkdir -p /mnt/probe && mount --bind /var/lib/pterodactyl/volumes/<uuid> /mnt/probe
+ls -la /mnt/probe/WS/Saved/Logs        # the hidden on-disk logs
+rm -f /mnt/probe/WS/Saved/Logs/WS-backup-*.log   # only if you want them gone
+umount /mnt/probe
+```
+
+### Bounded size: one deterministic pruning mechanism
+
+UE renames `WS.log` to `WS-backup-<ts>.log` at every server start, and the
+tmpfs lives until restart or reboot, so backups would pile up (a full tmpfs
+gives the game `ENOSPC`, exactly when the logs matter most). A log is about
+66 MB, so even the 512M cap holds only a handful of them.
+
+`soulmask_logs-prune.sh` is the **only** pruning mechanism. It runs once at the
+end of setup and every 10 minutes from `soulmask-logs-prune.timer`
+(`OnBootSec=5min`, `OnUnitActiveSec=10min`; enable it with
+`systemctl enable --now soulmask-logs-prune.timer`):
+
+1. It acts only on `PI_TARGET=` mounts from the state file that are, right now,
+   a `tmpfs` whose source is a `soulmask-pi-` tag. If the tmpfs is not mounted
+   it does nothing (it never prunes the on-disk directory underneath).
+2. A **backup** is exactly: a regular file (not a symlink, not a directory) in
+   the top level of the mount, named `WS-backup-<[A-Za-z0-9._-]+>.log`. Nothing
+   else is ever deleted. The live `WS.log` does not match and is never touched.
+3. It keeps the newest `SOULMASK_TMPFS_PER_INSTANCE_KEEP_BACKUPS` (by mtime),
+   deletes the rest, then deletes the oldest remaining backups while usage is
+   above `SOULMASK_TMPFS_PER_INSTANCE_HIGH_WATER_PCT` percent of the tmpfs.
+4. If it is still above the mark with no backup left, the live log alone is too
+   large: it logs an error and exits 1 (raise `SOULMASK_TMPFS_PER_INSTANCE_SIZE`).
+
+The policy has **one source**, the tracked file
+`/etc/gstammtisch/soulmask_tmpfs.env` (`files/etc/gstammtisch/soulmask_tmpfs.env`),
+read through a mandatory `EnvironmentFile=` by BOTH `soulmask_tmpfs.service` and
+`soulmask-logs-prune.service` (no `-` prefix: a missing file fails the unit
+loudly; a test asserts both units reference it and carry no copy). Shipped:
+`SIZE=512M`, `KEEP_BACKUPS=3`, `HIGH_WATER_PCT=75`. The scripts have no defaults
+and refuse (exit 2 for the prune script) unless `KEEP_BACKUPS` is an integer >= 0
+and `HIGH_WATER_PCT` an integer in 1..99. After editing the file run
+`systemctl restart soulmask_tmpfs.service` (a ~10-minute IO-saturating maintenance window, see "Deployment"; the size is applied at mount time; a
+kept mount whose `size=` no longer matches is refused until torn down).
+
+Sizing arithmetic (a log is ~66 MB; the game cgroup has `memory.max` 12 GiB with
+~4.5 GiB in use): steady state is the live log plus 3 backups, about 264 MB (52%
+of 512M); right after a restart, before the next prune pass, the old live log has
+become a 4th backup: about 330 MB (64%), still under the 75% mark (384 MB), and
+logs up to ~90 MB still fit. Why 3 backups: each restart renames the live log to
+a new backup, and the prune keeps the newest by mtime, so with `KEEP_BACKUPS=1` a
+couple of quick restart attempts after a crash would evict the crashed session's
+log, the evidence. With 3, the crash log survives up to 3 restarts per 10-minute
+prune window; more than that in one window can still evict it, so copy the
+evidence out first. Worst case the two tmpfs hold 2 x 512M against the instances'
+cgroups (<= 0.5 GiB each, 4.5 + 0.5 of 12 GiB), swappable under
+`[per-instance-compressible]`.
+
+**Why not a systemd-tmpfiles age rule (the first version):** it cannot bound
+size — a few same-day restarts already exceed the cap, and
+`systemd-tmpfiles-clean.timer` (measured on this host, 2026-10-20: static and
+active, 15 min after boot then every 1 d) only prunes daily and only by age. It
+also needs an `X` exemption to keep an idle live log (measured with
+`systemd-tmpfiles --clean`, systemd 257: an `e` age rule deletes an idle
+`WS.log` too, and `0` wipes everything), and a malformed age silently disables
+the whole rule. Two mechanisms would mean two policies that can disagree, so
+there is one.
+
+### Failure policy: per-instance problems never block the shared tmpfs
+
+The game needs the shared paks to start at all, whereas without the log tmpfs
+its logs simply stay on the disk. So setup treats a per-instance problem (bad
+configuration, a symlinked or foreign-mounted target, a failed mount) as an
+**error recorded, then exit status 75 (`EX_TEMPFAIL`) at the end** — it finishes
+the shared tmpfs first. The reverse also holds: if the shared part fails (exit
+1), the per-instance mounts are still applied (so the logs do not silently stay
+on ext4). If a per-instance mount fails halfway, every per-instance mount made in
+that run is rolled back (mounts kept from an earlier run are left alone).
+
+**Why exit 75 + `SuccessExitStatus=75` and not a second unit.** A plain non-zero
+exit would mark the oneshot `failed`: `ExecStartPost` (the wings restart) would be
+skipped although the shared binds are up, and `systemctl stop` / toggle-off on a
+failed unit does not run `ExecStop`, leaving the mounts in place. With
+`SuccessExitStatus=75` the unit stays `active`, wings is restarted and `stop`
+tears down normally. A separate `soulmask_tmpfs-per-instance.service` would give
+the failure its own unit but needs a second setup/teardown pair, a second state
+file and an ordering contract with the shared unit and the wings restart; the
+per-instance mounts are made inside the same `ExecStart` precisely so that they
+exist before `ExecStartPost` restarts wings and (`Before=docker.service`) before
+wings and the game containers start, which is what rslave propagation / the
+containers' recursive bind need. The failure is **not swallowed**:
+
+- every error is an `ERROR` line in the journal at priority `err`
+  (`journalctl -u soulmask_tmpfs -p err`);
+- the count and messages are written to the state file (`PI_ERRORS=n`,
+  `PI_ERROR=<message>`);
+- `soulmask-logs-prune.service` then **fails on every pass** (10 min) until a
+  clean setup run rewrites `PI_ERRORS=0` — `systemctl is-failed
+  soulmask-logs-prune.service` and the `mdt` unit checks show it;
+- `soulmask_tmpfs-toggle.sh` (status) prints a warning with the messages.
+
+### Idempotence and the state file
+
+- Re-running setup **keeps** a target that is already ours: fstype `tmpfs`,
+  source `soulmask-pi-<uuid8>`, **recorded in the state file** with its derived
+  uid/gid/mode, and carrying exactly the options this run would have mounted
+  (`rw`, `nosuid,nodev,noexec`, `size=`, `uid=`, `gid=`, `mode=`, `noswap` iff the
+  section says so). A mount with our tag but stale options (e.g. the unit's SIZE
+  changed) or not recorded is refused with the remedy: with the game stopped, run
+  `soulmask_tmpfs-teardown.sh` (it also finds tagged mounts that are not in the
+  state file) or `umount` it, then re-run.
+  Any other mount on a target — including an unrelated tmpfs — is refused;
+  mounts are never stacked.
+- The state file records `PI_TARGET=<path>` and `PI_DERIVED=<path> <uid> <gid>
+  <mode> <uuid>` (distinct from the shared `TARGET=` lines), plus `PI_ERRORS=` /
+  `PI_ERROR=`. It is rewritten **after every successful per-instance mount**, so
+  a setup killed mid-way leaves no unrecorded mount, and writing it merges the
+  earlier entries that are still mounted, so an instance flipped to `TMPFS=0` or
+  a path removed from the conf never orphans a live mount.
+- `DRY_RUN=1` (or `--dry-run`) prints every mount, unmount and prune action for
+  both scripts without executing it.
+
+### Teardown: a successful umount does not prove the game stopped
+
+The game container holds its **own copy** of the mount in its mount namespace.
+A host-side `umount` therefore succeeds while the game runs, and the game then
+keeps writing logs into an orphaned tmpfs nobody can see. The same holds for the
+shared binds. Teardown therefore runs a **preflight before unmounting anything**:
+for every instance that still has a mounted per-instance tmpfs or shared bind
+target it asks `docker ps` (filtered by the exact name = uuid) whether that
+container runs. If one does, the **whole teardown is refused** — exit 1, nothing
+unmounted (shared binds and ramdisk included), state file unchanged. If docker
+is unreachable while `docker.service` is active it also refuses ("cannot
+determine"); only a stopped daemon counts as no container (shutdown). (Residual
+NIT: with dockerd stopped under `live-restore` while containers keep running, the
+check reads "not running".)
+
+Per-instance tmpfs mounts are found from the state file **and** by their
+`soulmask-pi-<uuid8>` mount source (`findmnt`), so a mount left by a setup that
+was killed before writing its state is still unwound; its instance is taken from
+its path below `VOLUMES_ROOT` and must agree with the tag. A tagged tmpfs that
+is neither recorded nor attributable that way (outside `VOLUMES_ROOT`, or a tag
+that disagrees with its path) is a **stray**: it is not ours to unmount, so
+teardown logs `WARNING: SKIPPING stray tmpfs <path> ...` with the manual command
+and carries on with everything else (it does not block the teardown). Unmount a
+leftover stray by hand, once its users are stopped: `umount '<path>'`. A
+*recorded* target whose instance cannot be determined is still refused (we made
+it, so a running game must be ruled out). Children are unmounted before parents.
+A target that cannot be unmounted (busy on the host) stays recorded and makes
+teardown exit non-zero.
+
+**Recovery after a refused stop.** When teardown refuses because a game is
+running, `ExecStop` fails and systemd leaves `soulmask_tmpfs.service` in state
+`failed`; a second `systemctl stop` does not run `ExecStop` again (and
+`ExecStopPost` has already restarted wings, harmlessly). Once the game is
+stopped: run `/usr/local/sbin/soulmask_tmpfs-teardown.sh` directly (it reads no policy variables, only the
+state file, so no env is needed; checked in the script 2026-10-20), then
+`systemctl reset-failed soulmask_tmpfs.service`, then `systemctl start
+soulmask_tmpfs.service` (or leave it stopped). `systemctl restart` on the failed
+unit also works but only starts it again after skipping the stop phase, so the
+mounts would be reconciled by setup's kept/refuse logic rather than torn down.
+
+`systemctl restart soulmask_tmpfs.service` / `stop` run this teardown, so both
+are guarded; `soulmask_tmpfs-toggle.sh --stop` additionally refuses while any
+Soulmask container runs.
+
+### Operator responsibilities and known gaps
+
+Decided 2026-10-20: the operator chose not to engineer these further. They are the operator's to watch,
+and are tracked in `KNOWN_ISSUES_TODO_BACKLOG.md` (GG-3).
+
+- **Size and prune policy must fit the real log volume.** `SOULMASK_TMPFS_PER_INSTANCE_SIZE`,
+  `..._KEEP_BACKUPS` and `..._HIGH_WATER_PCT` in `/etc/gstammtisch/soulmask_tmpfs.env` rest on a ~66 MB
+  log. If the game logs more (verbose logging, a crash loop, a new game version), re-check with `df` on
+  the live mounts and re-tune; the prune script reports a live log that alone exceeds the mark and exits
+  1, but nothing watches for that on its own (see GG-2 R3-01). Any size mismatch is the operator's call.
+- **Other logs are not covered.** Only `WS/Saved/Logs` is on tmpfs. These still write to the root ext4
+  and still sit behind the shared journal: Steam logs (wherever steamcmd writes them inside the volume), any
+  other file under `WS/Saved` (including the SQLite `world.db`/`account.db`, the largest remaining
+  exposure; see [the eatmydata option](../../game_stuff/soulmask/README.md#eatmydata-optional-fsync-removal)),
+  and crash dumps (location not verified here). Moving more paths is a separate decision.
+- **Logs are lost at restart/reboot** by design (nothing is copied back). A crash log is evidence: copy it
+  out before restarting more than `KEEP_BACKUPS` times.
+
+### Tests
+
+`tests/test_soulmask_tmpfs_per_instance.py` runs the real scripts against
+PATH-shimmed `mount`/`umount`/`mountpoint`/`findmnt`/`docker`/`df`/`systemctl`/
+`stat` and real temp directories and symlinks (`SOULMASK_TMPFS_STATE_FILE` and
+`SOULMASK_TMPFS_RAMDISK` redirect the host paths for tests only; the production
+values are the defaults). The canaries in `tools/canary-run.sh` prove it goes
+red when containment, refusal, rollback-relevant, prune-safety or
+container-check logic is broken.
+
+### Ordering with a dedicated Wings filesystem
+
+All mounts this unit makes are inside `/var/lib/pterodactyl/volumes/...`. If that tree becomes its own
+filesystem (planned: btrfs on its own LV, [BTRFS-ROLLOUT.md](BTRFS-ROLLOUT.md)), the unit needs it mounted first
+and must not run against the ext4 directory underneath. The shipped unit therefore carries
+`RequiresMountsFor=/var/lib/pterodactyl` next to `After=local-fs.target` / `Before=docker.service`:
+
+- **Start:** an fstab mount is ordered before `local-fs.target` only if it has no `nofail` (verified on a
+  scratch host: a `nofail` mount is merely wanted by `local-fs.target`, not ordered before it), so with
+  `nofail` the existing `After=local-fs.target` does **not** guarantee the mount is up.
+  `RequiresMountsFor=` is what orders the unit after the mount and fails it when the mount cannot be made.
+- **Missing mount:** the unit fails (nothing is mounted onto the empty directory underneath); pair it with
+  `chattr +i` on the unmounted mountpoint so Wings cannot fork its state onto ext4 either.
+- **Shutdown:** systemd stops this unit (`ExecStop` = teardown of every bind target and per-instance tmpfs)
+  before unmounting the filesystem, so the unmount does not hit "busy".
+- **Not a symlink:** mount the filesystem directly on `/var/lib/pterodactyl`; setup refuses symlinked
+  volume paths. If `SOULMASK_VOLUMES_ROOT` is ever pointed elsewhere, change the unit's
+  `RequiresMountsFor=` to match.
+- **Deploying the unit file** needs only `systemctl daemon-reload`, no restart: while the path is a plain
+  directory on root the new line is a no-op.
+- The remaining ext4 exposure listed under "Operator responsibilities" (`world.db`/`account.db` fsyncs)
+  is what a dedicated Wings filesystem addresses: it gets its own journal.
+
+### Deployment (controller)
+
+> **Maintenance window, expect it (measured 2026-10-20, gstammtisch, live SMT-01 deploy).**
+> `systemctl restart|start soulmask_tmpfs.service` re-copies ~2.6 GB from disk, then restarts Wings, and
+> Wings restores its servers (inferred: steamcmd validate reading the installs). On this ~10 MB/s disk that kept `vda` at
+> 100 % utilisation for about 10 minutes (reads 6–10 MB/s plus writes 8 MB/s, awaits 0.2–1.5 s, from the
+> operator's `iostat`). During that time **every new container start on the host hung**, including other
+> servers Wings tried to boot and unrelated `docker run`. Do it in a quiet window and do not start other
+> container work until `vda` calms (`iostat -x 5`).
+
+> **Run `soulmask_tmpfs-setup.sh` directly only with the policy loaded** (teardown reads no policy variables
+> and needs no env). The unit gets `/etc/gstammtisch/soulmask_tmpfs.env` through `EnvironmentFile=`; a script
+> run by hand does not. Setup has no defaults, so without it the per-instance mounts are refused (the three
+> policy values reported as unset, exit 75, measured 2026-10-20; a real, non-dry run still does the shared
+> part first and records the errors, which also sets the prune alarm until a clean run).
+> Load it first: `set -a; . /etc/gstammtisch/soulmask_tmpfs.env; set +a; /usr/local/sbin/soulmask_tmpfs-setup.sh --dry-run`.
+
+1. Confirm no players are online on either instance.
+2. Stop both game servers (`6c418fe7…`, `b87c0a5b…`) — teardown refuses while
+   they run.
+3. Install the files to the host, **in this order**: first
+   `/etc/gstammtisch/soulmask_tmpfs.env` (the single policy source; both units
+   require it, so without it even the shared tmpfs fails to start), then the
+   scripts (`/usr/local/sbin/soulmask_tmpfs-{setup,teardown,toggle}.sh`,
+   `/usr/local/sbin/soulmask_logs-prune.sh`,
+   `/usr/local/sbin/soulmask-instance-lib.sh`) and
+   `/etc/gstammtisch/soulmask_tmpfs-paths.conf`, then the units
+   (`/etc/systemd/system/{soulmask_tmpfs.service,soulmask-logs-prune.service,soulmask-logs-prune.timer}`),
+   and only then `systemctl daemon-reload` and
+   `systemctl enable --now soulmask-logs-prune.timer`.
+4. `systemctl restart soulmask_tmpfs.service` (teardown, setup, restart wings;
+   it re-copies ~2.6 GB; **a ~10-minute IO-saturating maintenance window, see the warning at the top of this section**). The unit must be `active`; read the journal
+   (`journalctl -u soulmask_tmpfs -p err`): any `ERROR` line is a per-instance
+   problem (setup exited 75, which the unit accepts — see "Failure policy").
+5. **Second setup run** — load the env first, then run it (real run or `--dry-run`):
+   `set -a; . /etc/gstammtisch/soulmask_tmpfs.env; set +a; /usr/local/sbin/soulmask_tmpfs-setup.sh --dry-run`.
+   Run directly WITHOUT the env it reports all three policy values as unset and exits 75 (it refuses, as
+   designed, no script default); measured 2026-10-20 on gstammtisch, with the env: "keeping" for both
+   instances, exit 0. It must log, for BOTH instances, "per-instance tmpfs already
+   mounted at ... with the expected options — keeping" and exit 0. This is the
+   only live check of the `findmnt` options parsing (size normalisation, mode).
+   If it logs "refusing to keep", compare the logged options with the policy file.
+6. Start the servers.
+7. Verify:
+   - `findmnt -t tmpfs | grep soulmask-pi-` shows one tmpfs per instance on
+     `WS/Saved/Logs`;
+   - `WS.log` grows inside it;
+   - first prune-timer pass: `systemctl list-timers soulmask-logs-prune.timer`,
+     then `systemctl start soulmask-logs-prune.service` and
+     `journalctl -u soulmask-logs-prune.service -n 20` show `ok (…% used, …
+     backup(s) kept …)` for both mounts and no ERROR; and `df -h` on each mount
+     stays well below the 75% mark after the first game restart cycle;
+   - `systemctl is-failed soulmask-logs-prune.service` says `active`/not failed
+     (a failure there also means setup recorded per-instance errors);
+   - the D-state probe shows no ext4 or jbd2 stacks for `FAsyncWriter_WS`.
+
 ## Manual update procedure
+
+> **Maintenance window, expect it:** `systemctl start soulmask_tmpfs.service` in step 5 saturates `vda` for
+> ~10 minutes and hangs every new container start on the host; see the full measured warning under
+> "Deployment" above. Quiet window; no other container work until `vda` calms.
+> Step 5 below is the heavy one (the re-copy and Wings restart); step 2 is only a stop.
 
 With the tmpfs read-only, game updates **must** follow this procedure:
 
@@ -279,8 +597,8 @@ cat /run/soulmask_tmpfs.state
 # Check a specific bind mount
 findmnt /var/lib/pterodactyl/volumes/<uuid>/WS/Content/Paks
 
-# Dry-run (no changes)
-/usr/local/sbin/soulmask_tmpfs-setup.sh --dry-run
+# Dry-run (no changes); the policy env must be loaded first, or it exits 75
+set -a; . /etc/gstammtisch/soulmask_tmpfs.env; set +a; /usr/local/sbin/soulmask_tmpfs-setup.sh --dry-run
 
 # Toggle
 soulmask_tmpfs-toggle.sh status

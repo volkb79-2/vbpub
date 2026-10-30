@@ -1,0 +1,699 @@
+# iobench SPEC
+
+Normative. MUST / SHOULD / MAY as in RFC 2119. Each requirement has an id `IOB-<AREA>-<nn>` and an **Oracle**: the test (or, where stated, the acceptance
+probe) that goes red when the requirement is violated. Test oracles are named `tests/test_<area>.py::test_<id>_<slug>`. Revision 4 (2026-10-21) folds in the controller re-review R2-1..R2-4 on top of revision 3, which folds in the
+controller review `review-IOB-03-P1P2-opus.md` (O-1..O-8) on top of revision 2 (review `review-IOB-03-P1P2.md`, rulings R-1..R-10, [DESIGN-GUIDE](DESIGN-GUIDE.md) section 11). WHY: DESIGN-GUIDE; HOW: [CONSUMERS](CONSUMERS.md).
+
+Vocabulary. *Target*: the dedicated object iobench may write, of kind `device` (a raw block device or partition) or `file` (a preallocated file on an existing filesystem, IOB-TGT-06..10). *Work dir*: a directory on an **existing** filesystem under study (S3-S5);
+iobench never creates, mounts or unmounts a filesystem. *Calibration*: the slow once-per-host phase. *Matrix*: the fast iteration reusing a calibration.
+*Rung*: one working-set size of the ladder. *Steady*: median of the last 25 % of a time-resolved series. *Written extent*: byte ranges whose write fio itself
+reported complete. *Reference cell*: the fixed short cell of section 8.
+
+## 1. Architecture
+
+* **IOB-ARC-01** Package `iobench` under `libraries/iobench/src/iobench/`. Every module except `iobench.cli` imports only the standard library; only `iobench.cli` may import `cli_extended`. *Oracle:* `test_arc_01_core_imports_stdlib_only` (import every core module in a subprocess whose import hook rejects non-stdlib top-level names); `test_arc_01_cli_extended_only_in_cli` (AST).
+* **IOB-ARC-02** All side effects (file and sysfs/sysctl access, subprocesses, clock, sleep, environment, signals, randomness and unique tokens) go through the `Host` protocol (`host.py`): `Host.now()`, `Host.sleep()`, `Host.token()` (the only source of the `run.id` suffix), `Host.run()`, `Host.read_text()`, `Host.write_sysfs()`, `Host.write_range()`, `Host.discard_range()`, `Host.append_line()`. Core code MUST NOT call `open`, `subprocess`, `os.*` effect functions, `time.*`, `random.*`, `uuid.*`, `secrets.*` or `sys.exit` outside `host.py`, `cli.py`, `__main__.py`. *Oracle:* `test_arc_02_no_direct_effects` (AST scan with an allowlist; injecting `open(` into a core module turns it red).
+* **IOB-ARC-03** `iobench.testing` ships `FakeHost` (in-memory filesystem, sysfs/procfs tree, `/proc/diskstats`, mountinfo of both `self` and `1`, swaps, clock, a **device model with a reserved tail and an extent map**) and `FakeFio` (scenario-driven, returns fio 3.x JSON, logs, clat percentile ladders **and full latency histograms**). The cache model of FakeFio simulates cache **content**, not a closed formula: an LRU over 1 GiB buckets with a page-level filled fraction per bucket, flags `write_allocate` and `read_allocate`, and an optional second tier `(C2, F2)`; the hit ratio of every job is computed from the content at that moment, the fill and every earlier job change the content, and misses cost `R`. Other knobs: plateau; burst-then-throttle; flat cap; slow disk; fresh-block penalty; byte or IOPS metering; a moving ceiling (rate multiplier by clock); noise; a crash at stage N; a file target. *Oracle:* `test_arc_03_fakefio_scenarios` (each knob observable in the emitted JSON through the production parser) and `test_arc_03_cache_content_is_history_dependent` (the same job gives different hit ratios after different fills; the closed formula `C/ws` is NOT reproduced by a write-allocating fill, which inverts the ladder).
+* **IOB-ARC-04** Determinism: with the same Host responses, clock and token, a run produces byte-identical `result.json`. *Oracle:* `test_arc_04_deterministic_result` (run twice, compare bytes; a Host whose `token()` varies yields a different `run.id` and nothing else).
+* **IOB-ARC-05** Every device-touching action is built by a typed builder in `devio.py`: fio jobs, `blkdiscard`, the fill, `blkid -p`, `wipefs -n`, `swapon --show`. File targets add exactly two typed builders: `fallocate -l SIZE FILE` (preallocate) and `fallocate -p -o OFF -l LEN FILE` (punch hole). There is no builder (and a static test forbids any argv) for `fstrim`, `mkfs*`, `wipefs` without `-n`, `mount`, `umount`, `dd of=`, `systemctl set-property` or `daemon-reload`. Builders take the verified `(devno, partuuid, size)` and the planned extent; `Host.write_range/discard_range` re-check the live values and the extent. The Host itself (RealHost and FakeHost alike, `check_argv`) binds the argv independently of the caller: every non-fio argv is pinned to its typed builder in length and in every slot (`blkid -p -o export DEV`, `wipefs -n [-p] DEV`, the exact `swapon --show` and `docker ps --format` forms, `systemctl is-active UNIT` / `show -p LoadState|ActiveState --value UNIT` / `stop iobench-probe-*`, `blkdiscard -o OFF -l LEN DEV`, `fallocate -l SIZE PATH` and `fallocate -p -o OFF -l LEN PATH`, integers typed, no extra token: a `-d`/`-z`/`--punch-hole` after `-l` never fits); a `blkdiscard` or `fallocate -p` argv is accepted only through `discard_range` and `fallocate -l` only through `Host.preallocate` (a plain `run`/`spawn` refuses every fallocate; `preallocate` itself requires the path to lie inside an authorised scratch root, which `target init` sets to the verified directory, and to be absent or a regular file, never a device node or a symlink: `check_preallocate`; `init_file` authorises the directory only after every check passes and, on failure, revokes only a scratch root it added itself, including after failed marker or sidecar writes; a root authorised earlier is never revoked; a pseudo or volatile filesystem (`devtmpfs`, `devpts`, `proc`, `sysfs`, `tmpfs`, `ramfs`, `overlay`) is refused before any path check). **Limit of the containment:** it is a check-then-exec: the parent is resolved and the path stat'ed immediately before `fallocate`/fio is started, so a party with write access to that directory can swap a symlink or a device node into the window between the check and the exec; the guard holds against mistakes and against anyone without write access to the authorised directory, not against a concurrent writer inside it (the device-target path has the kernel's `O_EXCL` for that; a file target has none). A fio `--name` is one clean token (`[A-Za-z0-9_.-]+`); fio magnitudes are capped above every planned value (`--bs` 16 MiB, `--iodepth` 256, `--runtime` 7200 s, `--numjobs` 8, log intervals 60 s); `RuntimeMaxSec` is `[1-9][0-9]*` and at most 600 s; a fio argv with `--rw=write|randwrite` is accepted through a plain `run`/`spawn` only when its `--filename` is an iobench-named load file (`iobench-*` / `.iobench*`, the same naming the restore journal accepts), so a target writer exists only through `write_range`; `--rw` is one of `read|write|randread|randwrite` (`trim*` discards, `rw`/`randrw` mix), every numeric fio value is a non-negative integer and every path value (`--filename`, the three log prefixes) is a clean absolute path (no `:`, which fio reads as a file-list separator, no `,`, whitespace, control character or `..`); the `systemd-run` argv is exactly the probe-unit shape (`--wait`, `--unit=iobench-probe-*`, `--slice=*.slice`, `--collect`, one `-p RuntimeMaxSec=N`, `python3 -c` **the probe script byte for byte** (`probe_source.PROBE_SOURCE`) `DIR OUT DURATION INTERVAL`), never another property, script or command. Paths are bound to the Host's **scratch roots** (`Host.allow_scratch`: the run's log directory and the verified work dir, authorised by S0): an unbound writer's file, every fio log prefix (bound or not) and the probe unit's directory and output file must resolve (symlinks included) under a root and be absent, a regular file or (the directory) a directory, never a symlink or a device node; without a host no path is authorised. *Oracle:* `test_arc_05_builders_only` (grep of every `Host.run` argv in a full FakeHost run against the allowlist), `test_arc_05_no_forbidden_argv_exists`, `test_rev_e_*` (unbound writers, discards, `--rw`, typed values, log prefixes, the unit shape and script, scratch-root containment, FakeHost parity, RealHost `write_range`/`discard_range` refusing before any process starts on a fake subprocess layer, and the static rule that every `subprocess` call site in `host.py` sits behind `run`/`spawn`/`write_range`/`discard_range`).
+
+## 2. Target guard (finding P-01, rulings R-6, O-3)
+
+* **IOB-TGT-01** `iobench target init DEV` (kind `device`) MUST refuse, exit 2, write nothing, and name the reason, when the device, any partition or holder of it, or its parent disk, is: mounted (compared in **both** `/proc/self/mountinfo` and `/proc/1/mountinfo`; the run is refused if the two differ in any entry touching the device, see IOB-SAF-09), swap-active (`/proc/swaps`), carries a filesystem, partition-table, LVM or RAID signature (`blkid -p`, `wipefs -n` non-empty) other than an iobench marker, or contains `/` or `/boot`, or has any active holder (md, dm, LVM: `holder_active`, never overridable). *Oracle:* `test_tgt_01_refuses_{mounted,mounted_other_namespace,swap,signature,root,parent_of_mounted,holder}` (one controlled-wrong case each; each asserts zero bytes written to the FakeHost device and a message naming the condition).
+* **IOB-TGT-02** The signature override is `--i-own-this-device` **plus** `--expect-size BYTES` equal to the actual size **plus** `--expect-partuuid ID` equal to the actual PARTUUID (or `--expect-serial` when the device reports a non-empty serial). A device with neither a PARTUUID nor a serial is **refused outright** (size alone is not identity). Mounted, swap-active and root refusals are never overridable. *Oracle:* `test_tgt_02_override_matrix` (flag subsets x match/mismatch x each refusal kind) and `test_tgt_02_size_only_device_refused`.
+* **IOB-TGT-03** The marker is the last 1 MiB of the device. No writer (fio, discard, fill) may touch the last 1 MiB. iobench writes no filesystem anywhere (IOB-ARC-05); the signature set of a target is exactly {iobench marker}. *Oracle:* `test_tgt_03_reserved_tail_one_per_writer_type` (separate controlled-wrong tests: a fio job, a discard range, a fill job and a marker rewrite whose extent overlaps the tail each raise from the FakeHost device model).
+* **IOB-TGT-04** Before **every stage** that writes or discards the device, iobench verifies the marker exists and its size and PARTUUID still match the live device, and that the signature set is exactly {iobench marker}. This applies to fio jobs, discards and the fill alike, in every profile, **including `--installer`** (which only relaxes the live-host refusals of IOB-SAF-05/06, never any TGT requirement). *Oracle:* `test_tgt_04_{no_marker,size_changed,partuuid_changed,foreign_signature_appears,installer_flag_does_not_bypass}_refused`.
+* **IOB-TGT-05** A work dir MUST be new/empty or contain only `.iobench-workdir`; MUST be on an existing filesystem whose type is not `tmpfs` or `ramfs` (and not `overlay` unless `--installer`); MUST have free space >= max(4 GiB, 3 x the planned volume); files are created with explicit byte caps and removed **behind each cell** (the planned volume is one cell's, so a cell's load files never outlive its reduction) and again by the restore journal at the end. A work dir on the root filesystem is allowed only with `--confirm-quiet-window` (the live-host use case). The work dir's parent disk SHOULD be the target's parent disk; if it differs, every S3-S5 proposal carries reason `cross_disk`. The matrix reads the work dir's queue knobs and `/proc/diskstats` row, so a work dir on a filesystem with no single block device behind it (overlay, a multi-device or network filesystem) is refused by the matrix (`workdir_disk_unknown`, exit 2) before any job. *Oracle:* `test_tgt_05_workdir_rules` (tmpfs refused, overlay refused/allowed, non-empty refused, cross-disk flagged), `test_rev_e_matrix_load_files_are_removed_behind_each_cell`, `test_rev_e_matrix_refuses_a_work_dir_without_a_block_device_behind_it`.
+* **IOB-TGT-06 (kind `file`, findings O-3, R2-2)** `iobench target init --file PATH --size BYTES --i-own-this-file --expect-fs-uuid UUID` creates a target file on an **existing** filesystem. `--size` is **required** and is the operator's upper bound for everything iobench writes there (never derived up to free space). The file is preallocated (`fallocate -l`) and its working set is then **fully written** once (so its extents are real, not sparse), and it is accessed only with `O_DIRECT` (a filesystem that refuses `O_DIRECT` is refused, exit 2). Refused: a filesystem of type `tmpfs`, `ramfs` or `overlay`; a path that exists and lacks a **matching** sidecar (inode, size and filesystem UUID all equal the file's; a stale sidecar next to a later user file does not authorise overwriting it); a path containing `:` (fio would split it); the path is resolved (`..`, symlinks) before its filesystem is looked up and the root filesystem is recognised by device, not by mount point; a symlink; a link count above 1; free space below `size + margin` (`margin = max(2 GiB, 5 % of the filesystem)`); a path on the root filesystem unless `--confirm-quiet-window`; and, on the root filesystem, a `--size` above **10 % of the free space** unless `--allow-large-root-target` is given. *Oracle:* `test_tgt_06_file_kind_refusals` (one controlled-wrong case per refusal, including the missing `--size`, and the root-filesystem 10 % rule: gstammtisch geometry, 342 GiB free: `--size 30G` accepted, `--size 40G` and `--size 60G` refused without the flag, accepted with it) and `test_tgt_06_preallocate_then_fully_write` (the Host sees `fallocate -l` before a full-size write job and no read of an unwritten byte).
+* **IOB-TGT-07 (file identity and marker)** The identity of a file target is `(filesystem UUID, inode number, size)`. The marker is the file's **last 1 MiB** (same layout as IOB-TGT-03) plus a sidecar `PATH.iobench-target` (JSON: fs uuid, inode, size, created). IOB-TGT-04 applies unchanged: before every writing stage iobench re-reads `stat` (inode, size), the filesystem UUID, the marker and the sidecar and refuses on any mismatch. *Oracle:* `test_tgt_07_file_identity_reverified_per_stage` (inode replaced, size truncated, fs uuid changed, sidecar edited, marker overwritten: each refused before any fio launch).
+* **IOB-TGT-08 (fresh extent in a file; `fresh_fs_alloc`, finding R2-3)** The fresh extent of a file target is created with `fallocate -p` (punch hole) instead of `blkdiscard`; where the filesystem refuses hole punching the measurement is `not_measured` with the reason. A hole frees *filesystem* blocks; the next write allocates some free filesystem block, which is provider-fresh only if that block was discarded since it was last written (an `fstrim` or a `discard` mount). So for kind `file` the measurement is named **`fresh_fs_alloc`** (never `fresh`), the result records the filesystem's `discard` mount option (`mount_discard`: `true|false|unknown`, read from the mount options in `/proc/self/mountinfo`) and `limits += fresh_semantics_filesystem`. It enters the write cap basis `min(rewrite, fresh)` **only on a `discard` mount**; otherwise it is informational. iobench NEVER runs `fstrim` (a host-global action; no builder exists). *Oracle:* `test_tgt_08_punch_hole_or_not_measured`, `test_tgt_08_fresh_fs_alloc_label_and_discard_mount_rule` (mount with and without `discard`: basis includes it only with; label and limit always).
+* **IOB-TGT-09 (honest labelling)** A file-kind result records `identity.target.kind = "file"` and `limits += filesystem_layer` (extent mapping and journal overhead are inside every figure). The ceiling history header (IOB-CEI-01) digest includes the target kind, so file-kind observations are never mixed with device-kind history, and the cap values carry the limit. *Oracle:* `test_tgt_09_file_kind_labelled_and_history_separate`.
+* **IOB-TGT-10 (sizing, finding R2-2)** For `kind = file`: `WS_max = min(size - fresh_extent - reserved_tail, 0.85 x free - margin, R_est x fill_budget_s)` with `fresh_extent = min(10 % of WS_max, 2 GiB)`; the file never exceeds `--size`. Free space is **re-checked before the fill and every 10 s while it runs** (production writes keep going meanwhile); if free space falls below `margin` the fill aborts, the extent so far is recorded (`fill_aborted: free_space`) and `WS_max` shrinks to it. On a host whose free space is a few GiB the cliff is unreachable and read caps are `unproven: device_smaller_than_cache_margin` (honest and acceptable: reads are cheap there and the write cap is proven by the time axis, IOB-CCH-07). *Oracle:* `test_tgt_10_file_sizing` (6 GiB free -> `WS_max` <= 5.1 GiB - margin; the gstammtisch geometry, 342 GiB free, `--size 30G` -> `WS_max <= 30 GiB - fresh - tail`) and `test_tgt_10_fill_aborts_when_free_space_falls` (a competing writer shrinks free space mid-fill: fill stops above the margin).
+
+## 3. Time-series reduction (findings B-01, B-02, B-03)
+
+* **IOB-SER-01** `reduce_series(points)` takes `(t_seconds, rate)` pairs and MUST raise `SeriesError` for: fewer than 8 points; NaN, infinity or negative values; timestamps that are not strictly increasing; a zero steady value. Every planned job logs at <= 2 s resolution so that a 30 s run yields >= 12 points after the 5 s warm-up discard. *Oracle:* `test_ser_01_refusals` (NaN at index 3, 20 samples all at t=0, duplicates, negative, 7 points, all-zero) and `test_ser_01_planned_point_counts` (every planned fio job's `runtime / log_avg_msec - warmup` >= 8).
+* **IOB-SER-02** Steady = median of the last 25 % (min 3 points). The knee is the first index after which the rolling median (centered, window 5, edges shrink) stays within +-15 % of steady; `None` if no such index exists in the first 90 % of the series. *Oracle:* `test_ser_02_noisy_tail_knee` with the numerically verified fixture: 10 samples at 100000 followed by 30 samples alternating 18000/22000 (dt = 5 s; tail CV = 0.10, well under the 0.20 `unsteady` threshold) MUST give `state = steady`, `steady = 20000`, `knee_s = 50`, and `burst_units` within [3.6e6, 4.4e6] (clean-step reference 4.0e6; the noise above steady MUST NOT be added: burst <= 1.1 x the clean-step burst). `test_ser_02_clean_step`; `test_ser_02_noise_at_threshold` places a second fixture at tail CV 0.25 and asserts `unsteady`.
+* **IOB-SER-03** `state` is `steady` (tail flat, knee found), `flat` (flat from the start), `unsteady` (tail CV > 0.20 or tail trend > 0.20 of steady). `steady_certified` is true for `steady` and `flat`. Each reading carries `observation_s` (series duration). A `flat` reading says "no burst observed in `observation_s`" and never "no burst exists"; the result limits (IOB-RES-04) state the longest observation. The old name `passed_knee` MUST NOT exist. *Oracle:* `test_ser_03_states`; `test_ser_03_no_passed_knee_name` (grep); `test_ser_03_flat_reason_text`.
+* **IOB-SER-04** `rate_limited` is true when the coefficient of variation over the **final** 60 s window of the series (the window that defines `steady`) is < 1 %, and the series is at least 60 s long and the window holds at least 8 samples; otherwise the field is `not_assessed` (or false). A flat earlier window followed by a change is not a limiter. Informational only. *Oracle:* `test_ser_04_flat_line` (4096 MiB/s +-1 over 600 s -> true; the noisy 21.6k-IOPS series -> false; a 40 s flat series -> `not_assessed`).
+* **IOB-SER-05** `burst_units` = the signed integral of (**raw** rate - steady) over the samples before the knee (never below 0; noise cancels). The rolling median hides a burst of 1-2 samples, so a raw sample within the first two that sits above the +15 % band moves the knee past it: a one-sample 5 GB/s burst is a burst, not `flat`, and the gstammtisch shape reports `burst_bytes ~ 3.97e9` (the smoothed integral gave 2.98e9). *Oracle additions:* `test_rev_b_b1_*`. `mean_overstates(reading, ratio)` takes the ratio as a required argument. *Oracle:* `test_ser_05_burst_units` (clean step 100000 -> 20000: exactly 4.0e6 when dt = 5 s and 10 samples) and `test_ser_05_ratio_required`.
+
+## 4. Proof model: statuses, reasons, exit codes (rulings R-1, R-9)
+
+* **IOB-STA-01** Every proposed value (each cap key, each model key, each QoS key, each writeback value) carries its own `status`: `proven`, `unproven` (with `reasons[]` from the closed vocabulary below) or `absent` (with one `reason`). A value never has a status that is stronger than its weakest basis.
+* **IOB-STA-02** Closed vocabularies:
+  * `unproven` reasons: `cache_model_undetermined`, `cache_residual_possible`, `no_cliff_hit_like_mode`, `device_smaller_than_cache_margin`, `ceiling_moved`, `budget_limited`, `short_observation`, `quick_profile`, `worst_from_single_run`, `metering_undetermined`, `operator_override`, `shape_fit_poor`, `noise_floor_high`, `drain_below_ladder`, `formula_only`, `target_missed`, `cross_disk`, `identity_weak`, `cache_not_excluded`, `fresh_not_measured`.
+  * `absent` reasons: `stage_skipped`, `stage_failed`, `basis_unsteady`, `basis_missing`, `bps_basis_missing`, `no_calibration`, `missing_from_document`.
+  * `cache_state` values (reads): `cold_measured`, `rate_cap`, `no_cache_observed`, `cold_hit_like`, `undetermined`.
+  * `metering` values: `byte`, `iops`, `mixed`, `undetermined`.
+  * `fit` values (E1, informational): `good`, `poor`, `insufficient`, `plateau`.
+  * `limits[]` values: `quick-profile`, `limited-by-budget`, `short-observation`, `single-run`, `stage_skipped:<Sn>`, `bucket_exclusion_s<=<N>`, `filesystem_layer`, `fresh_semantics_filesystem`.
+* **IOB-STA-03** A cap, model or QoS value whose basis may still contain cache hits is **never** `proven`, whatever a fit says. For **reads**, `proven` requires the direct cold-region measurement of IOB-CCH-01 (`cache_state` `cold_measured`, or `rate_cap` where the **cold probe itself** is flat-line), with the E2 cross-check when E2 is available; E1 can never confer `proven`. For **writes**, `proven` requires the time-axis proof of IOB-CCH-07. *Oracle:* `test_sta_03_cache_dependent_never_proven_without_direct_evidence` (controlled-wrong: perfect E1 fit and no cold probe -> `unproven`; the two-tier E1-good-but-wrong fixture -> the cap equals the cold rate, not E1's).
+* **IOB-STA-04** The wizard/installer MAY apply an `unproven` value only after an explicit operator accept that displays its reasons; it MUST NOT apply an `absent` value. `iobench` itself applies nothing. *Oracle:* contract test `test_sta_04_show_marks_apply_requirements` (the `show --proposals` output contains `apply: requires_accept` for each unproven value, `apply: not_possible` for absent).
+* **IOB-STA-05 (status collapse audit, ruling R-1)** `check` states and proposal statuses are each reachable only from the conditions in the tables below; `test_sta_05_status_collapse_audit` constructs one scenario per row and asserts the status in both directions (the row's condition yields the status; a condition from another row does not). A row missing from this table cannot be tested, so the table is the contract.
+
+| Proposal status | Reached only when |
+|---|---|
+| `proven` | the value's basis is steady (`steady`/`flat`) AND (not cache-dependent, or a read whose cache state is `cold_measured`/`rate_cap`, or a write that satisfies the time-axis proof of IOB-CCH-07) AND no listed unproven reason applies |
+| `unproven: cache_model_undetermined` | read cache state `undetermined`: no cold probe, the cold probe is bimodal/overlapping/indeterminate, or E2 disagrees with it by more than the tolerance |
+| `unproven: no_cliff_hit_like_mode` | no cliff observed AND the cold probe is unimodal hit-like (`cold_hit_like`: a file target, or a cold rate below 0.9 x `cached_ref`) |
+| `unproven: fresh_not_measured` | the fresh-block penalty is not part of the write cap on a standard run: it could not be measured (no discard, no fresh extent, the stage failed) or it was measured but excluded by design (a file target on a mount without `discard`, IOB-TGT-08), so the cap lacks the fresh half of `min(rewrite, fresh)`; a budget skip is `budget_limited` instead |
+| `unproven: cache_not_excluded` | `cache_state` `no_cache_observed`: the cold region is as fast as the warm one, no cliff, unimodal. Two real-world conditions give this one observation (no cache; a cache at least as large as the written extent), so it is never `proven`; a larger fill or the ceiling history can separate them |
+| `unproven: cache_residual_possible` | a read figure is shown from the measured largest rung while no cold probe exists |
+| `unproven: device_smaller_than_cache_margin` | cliff observed and the largest rung < 1.2 x cliff, OR the cold probe is hit-like with a cliff |
+| `unproven: ceiling_moved` | a reference cell moved > 15 % across the comparison |
+| `unproven: budget_limited` / `quick_profile` / `short_observation` | the profile or time budget truncated the ladder / profile is `quick` / a write series fails the time-axis proof (bytes after the knee < 2x burst bytes or < 120 s) |
+| `unproven: worst_from_single_run` | worst/best come from this run only (no ceiling history) |
+| `unproven: metering_undetermined`/`shape_fit_poor`/`operator_override` | S6 tests did not both pass / linear fit poor / operator typed `--metering` |
+| `unproven: noise_floor_high`/`target_missed`/`drain_below_ladder`/`formula_only`/`cross_disk` | sweep noise > 4 / R4 failed / drain rate disagrees with the ladder / sweep skipped / work dir on another disk |
+| `absent: missing_from_document` | `check` only: a section or leaf that the schema requires (IOB-CHK-03 guaranteed keys; `result.json`: all four sections, `calibration.json`: caps, iocost_model, iocost_qos) is missing from the file or emptied. It blocks exit 0 and is not a stage that was skipped |
+| `absent: stage_skipped`/`stage_failed` | the producing stage was skipped (budget, refusal) / failed |
+| `absent: basis_unsteady` | the basis rung stayed `unsteady` after extension |
+| `absent: basis_missing`/`bps_basis_missing` | no rung/cell exists for the basis / no sequential 1 MiB cell |
+
+| `check` state (exit) | Reached only when |
+|---|---|
+| `current` (0) | identity matches AND every requested proposal is `proven` AND the file is readable and a supported schema |
+| `current_unproven` (7) | identity matches AND at least one requested proposal is `unproven` or `absent` (the JSON lists them; exit 7 is never raised for a group the caller did not request) |
+| `stale` (3) | the disk identity (devno, partuuid, size, and any non-null model/serial/wwn) differs from the calibration's |
+| `absent` (4) | no `result.json` (or, with `--calibration`, no `calibration.json`) |
+| exit 5, `reasons[0]` in `corrupt|schema_unsupported|unreadable|calibration_missing|calibration_superseded|damaged_proposals` | truncated/invalid JSON / unknown major or a newer minor schema / OS error (EACCES, EIO) / the result's `calibration_id` has no calibration file (`calibration_missing`) or the calibration file belongs to a newer run (`calibration_superseded`) / a proposals section with an unknown status or a malformed value |
+| `aborted_only` (6) | the newest record is `aborted` or `failed` and no good record exists |
+| `current` (0) or `current_unproven` (7) with warning `last_run_aborted` | a good record exists and a newer aborted/failed record also exists |
+
+`check` always prints `limits[]`, `warnings[]` (closed: `scheduler_changed`, `ram_changed`, `kernel_changed`, `root_source_changed`, `workdir_fs_changed`, `older_than_180_days`, `recalibrate_recommended`, `last_run_aborted`) and `identity_strength` (`strong` if a serial or wwn is recorded, else `weak`; `weak` adds `identity_weak` to every proposal's unproven reasons only when the caller passes `--require-strong-identity`).
+
+## 5. Calibration
+
+* **IOB-CAL-01 (rung plan)** `usable = size - reserved tail`. `WS_max = min(0.85 x usable, R_est x fill_budget_s)` where `fill_budget_s` = 12 % of the calibration budget. Rungs: 1 GiB, doubling while < `WS_max`, then `WS_max` itself. After the first rung below the cliff threshold, up to **two** log-equispaced densification rungs between the last good rung and `WS_max` are added (budget permitting; they refine the E1 cliff estimate and nothing else). The largest rung is never above `WS_max`. *Oracle:* `test_cal_01_rung_plan` asserts the exact list for the r1002 geometry (size 435853320192, `R_est` 1.36 GB/s, 3600 s budget): `[1,2,4,8,16,32,64,128,256,345.0] GiB` (WS_max = 0.85 x 405.9 GiB = 345.0 GiB) plus, for a cliff scenario at 270 GiB, two densification rungs log-equispaced between 256 and 345 GiB (282.8 and 312.4 GiB, the geometric thirds: 256 x (345/256)^(1/3) and 256 x (345/256)^(2/3)); and a slow-disk geometry where `R_est x fill_budget_s` is the bound. Test calls the production planner; the replay tests run through it.
+* **IOB-CAL-02 (fill, confinement, re-plan)** The fill writes `[0, WS_max)` sequentially (1 MiB, QD16) once, logged every 2 s; the written extent is **the bytes fio reports written**, so an interrupted fill records the shorter extent. **Re-plan (O-3.6):** if the median of the last 10 fill samples falls below `0.5 x R_est` (the probe saw a burst, as on gstammtisch, where the generator saw 2 GB/s), `R_est` is replaced by the measured fill rate, and `WS_max' = bytes_written + fill_rate x (fill_budget_s - elapsed)` (never above the old `WS_max`); the fill stops there, all later volume bounds (IOB-SLO-02) use the measured rate, and `fill_replanned: true` is recorded. Every read job's `offset + size` MUST lie within the recorded extent (argv-level confinement). *Oracle:* `test_cal_02_confinement_argv`; `test_cal_02_interrupted_fill_records_actual_bytes` (fill cut at 40 %: extent [0, 0.4 WS_max), later rungs larger than that are not planned, `unproven: budget_limited`); `test_cal_02_fill_replans_on_burst_capped_disk` (2 GB/s for 20 s then 14 MiB/s: `fill_replanned`, `WS_max'` bounded by the measured rate, the byte counter of later stages <= 1.2 x measured rate x stage seconds).
+* **IOB-CAL-03 (rung measurement)** Each rung runs random 4 KiB read and write at QD32 for 30 s (first 5 s discarded, 2 s log); the largest rung also runs QD1 and QD8. Rungs go through `reduce_series`; the record carries `steady_iops`, `mean_iops`, `state`, `observation_s`, `rate_limited`, latency p50/p90/p95/p99/p99.9 and a series downsampled to <= 120 points. An `unsteady` rung is extended up to 5 min and, if still `unsteady`, kept as `unsteady` and gives `absent: basis_unsteady` for any proposal that needs it (no fallback to a smaller rung). *Oracle:* `test_cal_03_rung_record_and_extension`.
+* **IOB-CAL-04 (cliff, classes, no-cliff outcomes)** `cached_ref` = median steady IOPS of the first three rungs. The cliff rung is the first rung with steady < 0.75 x `cached_ref` such that no later rung recovers to >= 0.75 x `cached_ref`; `cliff_bytes` is its size, else null. Rungs below the cliff are class `cached_tier`, at or after it `post_cliff`. With `cliff_bytes == null` the class of every rung is `no_cliff` and section 6 decides the cache state (a valid outcome, ruling R-4). *Oracle:* `test_cal_04_cliff_detection` on: cliff at 270 GiB; no cliff; cliff only at the last rung; noisy small rungs; plus the **r1002 recorded replay** (cliff between 250 and 300 GiB).
+* **IOB-CAL-05 (observation runs, write proof input)** `standard` adds one 240 s steady run (random write **QD32**, the depth of the cap it time-proves; largest rung), one 120 s run (random read QD32) and one 150 s **fresh** write run on the fresh extent (QD32; 30 s longer than the 120 s proof rule, because fio stamps the last sample of a 120 s run at 119.9x s and the rule gets no tolerance); `thorough` replaces them with a 900 s write run, a 240 s read run and the 120 s fresh run. Every result records the longest `observation_s` at the basis rung and `limits += bucket_exclusion_s<=<N>`. The write proof is IOB-CCH-07. *Oracle:* `test_cal_05_observation_limits`.
+* **IOB-CAL-06 (cap basis)** Read basis (IOPS): `min(measured_largest, R)` where `R` is the cache-free rate of IOB-CCH-05 when proven; unproven: see IOB-CCH-05. Write basis: `min(rewrite, fresh)` (IOB-CAL-07), `proven` only by the time-axis proof (IOB-CCH-07). The **write BPS cap is never proven** until the sequential series itself is time-proven: its proof would have to come from the same kind of series as the cap, and the sequential 1 MiB cell is observed for 30 s (< 120 s), so it carries `unproven: short_observation` in addition to the write basis reasons (backlog IOB-BL-02). A `cached_tier` figure and an `unsteady` rung are never a basis. BPS keys: the basis is the steady bytes/s of the sequential 1 MiB QD32 cell of S6 at the cap-basis working set, multiplied for **reads** by `cache_ratio = R / measured_largest` (<= 1) when the read cache state is proven, else by 1 with `unproven: cache_residual_possible`; for **writes** by 1 with the status of the write proof; if no such cell exists the BPS caps are `absent: bps_basis_missing`. A flat-line (`rate_limited`) sequential cell is **not** a proof: its bytes/s is multiplied by `cache_ratio` when the read cache state is proven, else the BPS key is `unproven: cache_residual_possible`. *Oracle:* `test_cal_06_cap_basis`, `test_cal_06_bps_basis_rules` (proven ratio, unproven ratio, flat-line sequential cell with and without a proven cache state, missing cell, write time-proof).
+* **IOB-CAL-07 (fresh versus rewrite, writes only, ruling R-5)** On an iobench-marked target that supports discard (device) or hole punching (file, IOB-TGT-08), the calibration discards a **fresh extent** located above `WS_max` and below the reserved tail (size = `min(usable - WS_max - reserved, 8 GiB)`), measures random 4 KiB QD32 writes to it for 30 s (`fresh`), and to a written extent (`rewrite`); `fresh_penalty = rewrite/fresh`. The fresh extent is re-discarded before each fresh cell and removed from the written-extent map after use. Fresh applies to writes only. If discard or space is unavailable: `fresh_write: not_measured` with the reason. The write-IOPS cap basis is `min(rewrite, fresh)` when both are measured (file target: IOB-TGT-08), and never above the steady rate of the observation series that time-proves it (IOB-CCH-07): `min(rewrite, fresh, obs_write_steady, obs_fresh_steady)`; the inputs are recorded in `cap_basis.write.inputs`. If the fresh half counts but its observation is missing the cap is `unproven: short_observation`; if no fresh penalty could be measured on a standard run (no discard, no fresh extent, stage failed) it is `unproven: fresh_not_measured` (`budget_limited` when the stage was skipped for budget) and `fresh_vs_rewrite.reason` names the real cause; a moved WRITE reference of the fresh-vs-rewrite pair makes it `unproven: ceiling_moved`. A stage that cannot apply to the target is recorded `skipped: <why>`, never `failed`. *Oracle:* `test_cal_07_fresh_penalty` (3596 vs 71584 -> 19.9; unsupported -> `not_measured`); `test_cal_07_fresh_extent_is_disjoint` (no overlap with `[0, WS_max)` nor the tail, re-discard between cells, extent map updated); `test_cal_07_write_cap_uses_min`.
+* **IOB-CAL-08** `QD90` is computed per direction as the smallest tested QD whose steady >= 0.9 x the maximum over the tested depths at the largest rung. Depths between tested values are untested and the record says so. *Oracle:* `test_cal_08_qd90` (r1002: 23.7k at QD8, 23.9k at QD32 -> 8).
+* **IOB-CAL-09 (artefact)** `calibration.json` is written atomically when the calibration status is `complete`: all stages the profile **requires** (S0, S1, fill, ladder) are `ok`; optional stages (S6, S7, fresh, CDF runs) may be `skipped: budget` and are recorded, with dependent proposals `absent: stage_skipped` and `limits += stage_skipped:<Sn>`. A ladder truncated before any cliff is `complete`; the read cache state comes from the cold probe (section 6). `aborted`/`failed` writes `calibration.last-failed.json` and never replaces a good one. *Oracle:* `test_cal_09_complete_definition`, `test_cal_09_atomic_no_replace`.
+* **IOB-CAL-10 (does discard re-arm the fresh penalty? hypothesis [I], finding O-5)** Where a fresh extent exists, one cell runs: random 4 KiB QD32 writes to a written range for 30 s (`before`), a discard/punch of the same range, then the same writes again for 30 s (`after`), bracketed by reference cells. `rearm_ratio = before/after`; the record carries `rearm_ratio` and the verdict `rearmed` iff `rearm_ratio >= 3` with unmoved references (`ceiling_moved` otherwise). Hypothesis (labelled [I] until P4): if the provider's slow path is block allocation, `fstrim` and swap `discard` on production hosts lower the write ceiling after each trim. Info only. *Oracle:* `test_cal_10_rearm_cell` (scenario with a re-arming penalty -> `rearmed`; scenario without -> not).
+
+## 6. Cache state (rulings R-2, revised by findings O-1 and O-2)
+
+**Scope.** E-cold, E1 and E2 are **read-only** estimators: a write-back cache is not a working-set phenomenon (it absorbs writes until its dirty capacity fills, then drains at the backing rate), so the write direction is proven by the time axis (IOB-CCH-07), never by these.
+
+**Why direct measurement comes first.** A 30 s rung reads 6-12 GB against a cache of hundreds of GiB: the cache content during a rung is whatever the **fill and the earlier rungs** left there, not the steady state of an LRU under uniform access. A hit-ratio fit (E1) can therefore be convex, decreasing and `good` while wrong. The primary estimator measures a region the cache cannot hold instead of extrapolating a model.
+
+* **IOB-CCH-01 (E-cold, primary)** Immediately after the fill, before any rung, reference cell or other job touches `[0, cold_len)` with `cold_len = min(32 GiB, 0.1 x WS_max)`: random 4 KiB read at QD32 for 70 s (first 5 s discarded, so a 65 s window makes a flat line assessable) confined to the first half of the cold region gives `R_cold` (steady tail) and the cold probe's `rate_limited` flag; then a QD1 run of 60 s on the **disjoint second half** records a full latency histogram. The cold region is the earliest-written region: when the fill wrote more than the cache holds, it is cold under every allocation policy (write-allocate LRU or FIFO, or read-allocate). It reads only data the fill wrote. The calibration stores a **touch map** per stage (`fill`, `e_cold`, `ladder`, `fresh`, `reference`: bytes written or read per 1/8 of the extent since the fill) so the history is part of the record; it is keyed by stage, not by individual rung or probe. *Oracle:* `test_cch_01_cold_probe_runs_first_and_reads_written_data_only` (the plan places it before the first rung; a controlled-wrong plan that reorders it fails; the extent check holds).
+* **IOB-CCH-02 (histograms and modes; thresholds `[I]` until P4)** Latency is measured with fio's **full histogram** (`--write_hist_log --log_hist_msec=1000 --log_hist_coarseness=0`, all bins); the percentile ladder is a summary only. `modes(hist)`: aggregate the bins of the run after the first 20 %, smooth with a 3-bin moving average in log-latency, take local maxima carrying >= 5 % of the mass as modes, the **valley** is the minimum smoothed density between adjacent modes. The histogram is **bimodal** iff two modes are >= 2.5x apart in latency and the valley density is <= 0.5 x the lower peak; **overlapping** if the modes are 1.5-2.5x apart or the valley is above that bound; **unimodal** otherwise. For bimodal: `h2` = the CDF mass below the valley, `t_hit`, `t_miss` the mode latencies. A unimodal histogram is **hit-like** if its p50 <= 1.5 x `hit_ref_us`, **miss-like** if >= 2.5 x `hit_ref_us` or the series is `rate_limited`, else indeterminate; `hit_ref_us` is the p50 of a QD1 run (60 s, full histogram) on the smallest rung. The thresholds are guesses until P4 measures real histograms (a miss at ~100-300 us against a 110 us hit would be "overlapping" under this rule and make everything `undetermined`; that outcome is acceptable, and P4 stores the raw histograms to tune the thresholds). *Oracle:* `test_cch_02_modes_*` (unimodal, bimodal, overlapping, valley, h2 value from a constructed histogram with known mass).
+* **IOB-CCH-03 (E2, cross-check)** On the largest rung, its QD32 run is followed **immediately** (gap <= 60 s, both start timestamps recorded; a larger gap voids E2) by a 60 s QD1 run with a full histogram. If bimodal, `R_E2 = steady_iops(QD32) x (1 - h2)`. When both `R_cold` and `R_E2` exist the ratio `R_cold / R_E2` must lie in [0.7, 1.43]; outside is `undetermined`. A unimodal, overlapping, voided or missing E2 gives no cross-check and is not a failure. *Oracle:* `test_cch_03_e2_adjacency_and_crosscheck`.
+* **IOB-CCH-04 (E1, informational)** The hit-ratio fit `1/iops = A + B/ws` (`A = 1/R`, `B = C (1/F - 1/R)`, `F` = median steady of the rungs before the cliff) over the post-cliff rungs yields a cliff/size estimate (`C_bytes`, `R_E1`), `cached_tier_factor` and the margin check. `fit` is `good` iff >= 4 post-cliff rungs, monotone non-increasing within +5 % per step, `A > 0`, `B < 0`, `0 < C < smallest post-cliff rung`, `R <= min(post-cliff steady)`, `r2 >= 0.97` and every leave-one-out prediction within 15 %; `plateau` iff >= 3 post-cliff rungs within 10 % of each other (the cache-free best case, never labelled poor); `insufficient` if < 4 rungs; else `poor`. It MUST NOT raise on degenerate input. **E1 never decides a cache state and is never a cap basis.** *Oracle:* `test_cch_04_e1_*` for the degenerate fixtures of IOB-CCH-08.
+* **IOB-CCH-05 (cache state, reads)** `classify_cache`:
+
+| Situation | `cache_state` | Status of cache-dependent read values |
+|---|---|---|
+| the **cold probe itself** is a flat-line (`rate_limited` over its final 60 s window, series `steady`/`flat`, and E2 within tolerance when E2 is available); its latency class does not matter (on a disk with no cache the cold latency equals `hit_ref`, so a bare provider cap reads "hit-like") | `rate_cap` | `proven` (the cold region is metered at that rate) |
+| cold probe unimodal (hit-like or indeterminate), **no cliff**, `R_cold >= 0.9 x cached_ref`, device target | `no_cache_observed` | `unproven: cache_not_excluded`; value `min(measured_largest, R_cold)`. No rate or latency difference was observed between data written first and data written last; this is equally consistent with no cache and with a cache at least as large as the written extent, and a larger fill or the ceiling history can separate them. Never `proven` |
+| a flat-line seen only on the largest rung or a sequential cell | (no state change) | a recorded fact (`rate_limited`) with **no proof value**: a limiter can cap cached data, and an upper bound must not certify a cap basis |
+| cold probe unimodal miss-like, and E2 (if bimodal) agrees within [0.7, 1.43] | `cold_measured` | `proven`; `R = R_cold` (and `min(R_cold, R_E2)` when E2 exists) |
+| cold probe unimodal miss-like, E2 bimodal and the ratio outside the tolerance | `undetermined` | `unproven: cache_model_undetermined` |
+| cold probe unimodal hit-like, no cliff, and not `no_cache_observed` (file target, or `R_cold < 0.9 x cached_ref`) | `cold_hit_like` | `unproven: no_cliff_hit_like_mode` |
+| cold probe unimodal hit-like, cliff exists | `cold_hit_like` | `unproven: device_smaller_than_cache_margin` |
+| cold probe bimodal, overlapping or indeterminate; `hit_ref` missing | `undetermined` | `unproven: cache_model_undetermined` |
+| no cold probe (stage skipped, not `quick`) | `undetermined` | `unproven: cache_residual_possible` |
+| any row, and the largest rung < 1.2 x `cliff_bytes` | (as above) plus | `unproven: device_smaller_than_cache_margin` |
+
+* **IOB-CCH-06 (values, finding R2-4)** Proven: cap value `min(measured_largest, R)`. Unproven: `min(measured_largest, R_cold)` whenever a cold probe exists, even when it is unclassifiable (the most conservative honest number); `min(measured_largest, R_E1)` only when E1 is `good` and **no** cold probe exists; else `measured_largest`; always shown with its reasons. A cap value never exceeds `measured_largest`. *Oracle:* `test_cch_06_value_never_exceeds_measured` (including E1 reporting 3 x the measured rate: value <= measured; the two-tier fixture: the proven value is `R_cold`, not `R_E1`; an unclassifiable cold probe at 9.8k with a 24k largest rung gives 9.8k).
+* **IOB-CCH-07 (write proof: the time axis, finding O-2)** A write series is `proven` cache-free iff its observation run (IOB-CAL-05) has `state steady` or `flat`, `observation_s - knee_s >= 120`, and the bytes written **after** the knee (`steady x (observation_s - knee_s) x bs`) are >= 2 x the burst bytes (`burst_units x bs`; a `flat` run has zero burst). The same rule applies to the fresh and rewrite series (the 150 s fresh observation run of IOB-CAL-05 supplies the fresh one). Otherwise `unproven: short_observation`. The burst is the RAW integral (IOB-SER-05), so the after-knee bytes must reach 2 x 3.97e9 = 7.94e9 (about 543 s for the gstammtisch shape): 500 s and 540 s are `unproven`, 560 s is `proven`, and a one-sample 5 GB/s burst at 240 s is `unproven`. The cap is bounded by the observation's own steady rate (IOB-CAL-07). *Oracle:* `test_cch_07_write_time_proof`, `test_rev_b_b1_*`, `test_rev_b_b3_*`: (a) a burst-then-throttle scenario whose burst is longer than the observation -> `unproven`; (b) the gstammtisch-shaped scenario (2 GB/s for 2 s, then 14 MiB/s): `unproven` at a 240 s observation (after-knee bytes 3.4 GB < 2 x 3.97 GB) and `proven` at 600 s; (c) a flat 21.6k-IOPS series of 240 s -> `proven`; (d) a 100 s flat series -> `unproven` (below 120 s).
+* **IOB-CCH-08 (fixtures; each is a named test and a FakeFio scenario; content-based cache model, IOB-ARC-03)** Each fixture header carries `synthetic: true` (with its generator parameters) or `recorded: <tarball sha256>`.
+  1. `two_tier_e1_good_but_wrong` (**the required fixture; analytic, not simulated**): tiers 40 GiB at 92k IOPS and 300 GiB in total at 15k IOPS over a backing store of 9.8k IOPS, write-allocating fill of `[0, 345 GiB)`; the ladder reads the most recently written `ws` GiB, so it decays. The content simulator did not produce E1 `good` with an over-estimating `R_E1` (its ladder reads `[0, ws)` and a two-tier model rises there), so the fixture ladder is computed from the generator parameters and fed to the production estimators (`e1_fit`, `classify_cache`, `read_value`). E1 returns `good` (`r2` 0.977, leave-one-out 0.133) with `R_E1` = 14.6k (+49 % over the true 9.8k) and `C` about 41 GiB; the cold probe gives `R_cold` within 5 % of 9.8k, so `cold_measured` is `proven` and the cap is derived from `R_cold`. The test asserts all three (E1 `good`, `R_E1` off by >= 30 %, cap from `R_cold`). The header records `{kind: two_tier, tier1_gib: 40, tier1_iops: 92000, tier2_total_gib: 300, tier2_iops: 15000, backing_iops: 9800, fill_gib: 345, write_allocate: true, rungs_gib: [1, 2, 4, 8, 16, 32, 64, 128, 256, 277, 300, 345], e1_rules_version: 2}`; the 324 GiB rung is omitted because with it the leave-one-out error is 0.158 (> 0.15, E1 `poor`). Because the error sits close to the limit, a change of the E1 rules requires regenerating the fixture, which the header version makes visible (`test_cch_08_fixture_header_matches_e1_rules_version`).
+  2. `fill_history_inversion`: write-allocate LRU `C = 265 GiB`, fill `[0, 345)`: the cache holds `[80, 345)`, the ladder over `[0, ws)` is *rising* with `ws` (about 9.8k at 64 GiB to 31k at 345 GiB), `cached_ref` is the miss rate, no cliff is found; E-cold on `[0, 32)` is miss-like (9.8k) -> `cold_measured`, cap = `min(R_cold, R_E2)`, `proven`: `R_E2 = steady(QD32) x (1 - h2)` is conservative on the mixed largest rung, so the cap lies in [0.7, 1.06] x 9.8k (about 7.3k in the simulator), never above the cold rate. This is the fixture where the dynamic simulator demonstrates the fill-history inversion: a rising ladder, `cached_ref` equal to the miss rate, no cliff, and a cap that still comes from the cold probe.
+  3. `read_alloc_cold_ladder`: read-allocate LRU `C = 265`, empty cache: ladder 41.8k at 1 GiB decaying to ~10k; E1 `poor`; E-cold `proven`.
+  4. `cache_larger_than_fill`: write-allocate `C = 500 GiB`, fill 345 GiB: the cold region is cache-resident and as fast as the warm region, with no cliff -> `no_cache_observed`, `unproven: cache_not_excluded`. The no-cache, not-flat disk gives the **same** state and status (they are indistinguishable by rate or latency; the test asserts it). `cold_hit_like`, `unproven` remains for a cliff, a file target, or `R_cold < 0.9 x cached_ref`.
+  5. `flat_rate_cap`: a bare flat provider cap on a disk with no cache (the cold probe is flat, whatever its latency class) -> `rate_cap`, `proven` (a provider cap bounds the sustained rate whether or not reads are cached); a disk with no cache and no flat line -> `no_cache_observed`, `unproven: cache_not_excluded`.
+  12. `largest_rung_flat_cold_slower` (**controlled wrong**, finding R2-1): the largest rung is flat at 24k IOPS (a limiter capping cached data), the cold probe is miss-like at 9.8k -> `cold_measured`, the cap is 9.8k-based, never 24k; with no cold probe the read cap is `unproven: cache_residual_possible`.
+  6. `e2_disagrees` (E2 bimodal with `R_E2` off by > 43 %) -> `undetermined`.
+  7. `overlapping_modes_e2` (t_miss/t_hit = 1.8 on the largest rung, cold probe unimodal miss-like) -> still `cold_measured`, `proven` (E2 is a cross-check, not a gate).
+  8. E1 degenerate inputs: `non_monotone`, `C_ge_smallest_rung`, `two_rungs`, `three_rungs_noise` -> `poor`/`insufficient`, no exception, and `cache_state` unaffected (decided by the cold probe).
+  9. `true_plateau` (flat within 5 % over >= 3 post-cliff rungs) -> E1 `plateau`, not poor.
+  10. `recorded_r1002` (rungs <= 0.85 x usable only: 1, 16, 100, 150, 200, 250, 300 GiB read; no cold probe was ever recorded): E1 `insufficient`, `cache_state undetermined`, `unproven: cache_residual_possible`, an honest outcome the test asserts.
+  11. `r_wrong_3x` (see IOB-CCH-06).
+
+## 7. Slow disks, budgets and stage allotments
+
+* **IOB-SLO-01** S1 (rate probe) is a 20 s **direct sequential 1 MiB write to the first 1 GiB of the target** (the device the fill will use), sampled each second; `R_est` = median of the last 10 samples. The work dir's buffered rate is S3's measurement, not `R_est`. *Oracle:* `test_slo_01_rate_probe` (fake series 1.2..1.4 GB/s -> `R_est` = the stated median).
+* **IOB-SLO-02** No stage writes more than `1.2 x R_est x stage_seconds` bytes, enforced by fio's `--io_size` (fio stops at the earlier of runtime and io_size) and by the free-space bound. A stage truncated by its byte cap yields a short series; if it has < 8 points the stage status is `failed: insufficient_points` and dependents are `absent: stage_failed` (never a guessed value). *Oracle:* `test_slo_02_volume_bound` (14 MB/s scenario; also the **3 x `R_est` scenario**: actual rate triples mid-run, bytes written still <= the bound, truncated stage reported).
+* **IOB-SLO-03** If `R_est < 5 MB/s`, or the fill does not fit `fill_budget_s`, the calibration runs time-bounded from the measured cap: `WS_max` shrinks by IOB-CAL-01, `limits += limited-by-budget`, cache-dependent values `unproven: budget_limited`. The sweep is skipped only if the quiet gap cannot drain the dirty pool within its bound (then writeback `unproven: formula_only`). *Oracle:* `test_slo_03_slow_disk_time_bounded`.
+* **IOB-SLO-04** A hard wall-clock budget bounds the run. Stages run in priority order S0, S1, fill, E-cold, ladder, E2 runs, reference cells, S3, S4, S5, S6, S7 (calibration: S0, S1, fill, E-cold, ladder, E2, fresh/rewrite, rearm, refs, observation, S6, S7); a stage that cannot fit its minimum is skipped and recorded `skipped: budget`. *Oracle:* `test_slo_04_priority_and_skip_record`.
+* **IOB-SLO-05 (allotment table, finding S-8)** Section 15 contains the per-stage allotment. A planner function `plan(profile, geometry)` returns it; *Oracle:* `test_slo_05_standard_fits_on_r1002_geometry` asserts `sum(allotments) == 3340 <= 3600` for `standard` and `4180 <= 4500` for `thorough` on the r1002 geometry with E-cold, S6 and S7 included, and `test_slo_05_matrix_worst_case_fits` asserts the matrix worst case <= 900 s and the knob plan typical <= 240 s, worst <= 480 s.
+
+## 8. Reference cells and the moving ceiling (ruling R-8)
+
+* **IOB-REF-01** The reference cell per direction is random 4 KiB QD8 over the first 1 GiB of the written extent, 15 s (3 s discarded). It runs before and after every comparison group (the ladder, S6, fresh-vs-rewrite); the S6 group's "before" reference is taken immediately before S6 (`r3s`), not several minutes of heavy writes earlier, and a write comparison is judged by the WRITE reference (a read reference follows the read cache) and comparisons are measured interleaved as `[ref, A, B, ref]`. `ceiling_moved` is true iff `abs(ref_after/ref_before - 1) > 0.15`. *Oracle:* `test_ref_01_protocol` (the plan contains the pairs; a scenario with a rate multiplier 0.5 mid-run -> true; static scenario -> false).
+* **IOB-REF-02** A comparison whose reference moved is `unproven: ceiling_moved`; both values are kept in the evidence. It is **not** a plausibility failure. The move is a finding: a ceilings.jsonl observation with `note: "reference_shift"` is appended (IOB-CEI-01). *Oracle:* `test_ref_02_moved_is_finding_not_failure` (the passing case is the healthy "moving cap" scenario, built first: a refusal needs its legitimate state constructed before it ships).
+
+## 9. Drain rate, sweep, read cost
+
+* **IOB-DRN-01** `R_drain` = median of the last 25 % of 1 s samples of device write bytes/s from `/proc/diskstats` while the reference load runs 60-90 s in the work dir: a buffered writer creating new 1 GiB files (removed behind itself, volume-bounded) plus a 4 KiB random-write job with `fsync=16`, 2 jobs. `rates_consistent` iff `R_drain` is within 1.3x of the ladder's `min(rewrite, fresh)`; else `drain_below_ladder` (`unproven`) or `drain_above_ladder` (`unproven: cache_residual_possible`). *Oracle:* `test_drn_01_drain_rate_and_consistency`.
+* **IOB-SWP-01** The default sweep has **6 cells**: REF, `dirty_bytes/2`, `nr_requests x2`, `max_sectors_kb` one step up, `max_sectors_kb` one step down, and REF again last; cell length 60 s (60-90 s allowed); the quiet gap ends when dirty+writeback < 4 MiB for 5 s or after 60 s. `--full-sweep` (thorough) adds `dirty_bytes x2` and `nr_requests /2` (8 cells). Typical planned time (cell 60 s + gap 20 s) 480 s; worst case (gap 60 s) 720 s. *Oracle:* `test_swp_01_plan_counts_and_times` asserts 6 cells, 8 with `--full-sweep`, typical 480 s, worst 720 s.
+* **IOB-SWP-02** The probe appends 200 B and calls `fdatasync` every 0.5 s on the work dir's filesystem and records per-op latency; it runs as a transient unit in a slice without IO limits and with `RuntimeMaxSec` (the Host accepts exactly that `systemd-run` shape, IOB-ARC-05). *Oracle:* `test_swp_02_probe_unit_properties` (unit text contains `RuntimeMaxSec=`, the slice name, no `IO*Max=`; probe interval 0.5 +-0.05 s in the fake clock).
+* **IOB-SWP-03** Noise floor = max/min of REF's two probe p99 values. A neighbour replaces REF only if its probe p99 beats REF's by more than the noise ratio in its cell **and** in a repeat, and the gate-like load's fsync p99 and iops did not regress by more than the noise ratio; otherwise REF stands. Noise > 4 -> `unproven: noise_floor_high`. *Oracle:* `test_swp_03_decision_rule` (lucky single cell loses; consistent 5x winner wins; noise 5 -> unproven).
+* **IOB-SWP-04** The sweep sets only `vm.dirty_bytes`, `vm.dirty_background_bytes`, `queue/nr_requests`, `queue/max_sectors_kb` of the derived disk, through the restore journal. *Oracle:* `test_swp_04_only_allowed_knobs` (FakeHost write log equals the allowlist).
+* **IOB-RDC-01** For each candidate `max_sectors_kb` and for `max_hw_sectors_kb`: direct 1 MiB sequential reads at QD4, 10 s, over the written extent; `read_ratio` = candidate/`max_hw` bytes/s; plus one buffered pair (64 vs 256). Three candidates take 30 s + the buffered pair 20 s. *Oracle:* `test_rdc_01_read_ratio` (replay: 1.3 GB/s vs 0.27 GB/s -> 0.21; plan time 50 s).
+
+## 10. Cost shape and metering (ruling R-9)
+
+* **IOB-SHP-01 (grid)** Rewrite cells: sizes {4 KiB, 16 KiB, 64 KiB, 256 KiB, 1 MiB} x {sequential, random} x {read, write} = 20 cells at QD32 on the cap-basis working set, 30 s each, steady tail via `reduce_series`. Fresh cells (writes only): random 4 KiB and sequential 1 MiB on the fresh extent = 2 cells. **Total 22 cells.** There is no `read x fresh` cell. The execution order is a fixed seeded shuffle with anchors (random 4 KiB and sequential 1 MiB, each direction) repeated at start, middle and end; the anchor spread estimates drift (`ceiling_moved` if > 15 %). Each cell: `{dir, pattern, bs, block_state, offered_bps, steady_bps, steady_iops, lat_us{p50,p90,p99}, cv, flat_line}`. *Oracle:* `test_shp_01_grid_plan` asserts 22 cells, no read-fresh cell, anchors present, no cell extent overlapping the fresh extent except fresh cells, and the fixed order for a fixed seed.
+* **IOB-SHP-02 (fit)** Per `dir x pattern x block_state`: `1/steady_iops = c_io + bs x c_byte` by linear regression over the sizes; `r2`, `residual_max`; `linear_model_fit` is `good` iff `r2 >= 0.9` and `residual_max <= 0.25`. *Oracle:* `test_shp_02_fit` (synthetic c_io = 80 us, c_byte = 0.25 ns recovered within 2 %; noise-only -> poor).
+* **IOB-SHP-03 (metering, both tests)** `T_size`: for byte metering, CV of `steady_bps` over the sizes <= 0.15 AND CV of `steady_iops` >= 0.40; for iops metering, the converse. `T_pattern`: at >= 4 of the 5 sizes `abs(seq/rand - 1) <= 0.20` in the metered quantity. `metering = byte` only if `T_size` (byte form) AND `T_pattern` hold; `iops` likewise; `mixed` if the fit is `good`, `c_io > 0`, `c_byte > 0` and `T_pattern` holds; otherwise `undetermined` (also when a reference moved: `unproven: ceiling_moved`). `fresh_penalty` is a separate field (IOB-CAL-07) and never changes `metering`. A typed override `--metering byte|iops|mixed` is stored as `override` and makes dependent values `unproven: operator_override`. *Oracle:* `test_shp_03_metering` (one scenario per class; **controlled-wrong**: flat bytes across sizes but seq != rand -> `undetermined`, not `byte`; seq == rand but not flat -> `undetermined`; a byte-metered disk with a fresh penalty stays `byte`).
+* **IOB-SHP-04 (model keys)** Model keys derive only when the fit is `good` for that direction: `*bps` and `*seqiops/*randiops` per section 12 (R6). When `poor`: `{"status": "absent", "reason": "stage_failed"}`-style null with `unproven: shape_fit_poor` for the dependent QoS; never a guess. When `metering == undetermined` and the fit is `good`: the keys are computed from the fit and are `unproven: metering_undetermined`. *Oracle:* `test_shp_04_model_keys`.
+
+## 11. Latency and ceiling history
+
+* **IOB-LAT-01** S7: at 10, 30, 60, 90 % of the cap-basis ceiling (random 4 KiB, `--rate_iops`), 20 s each per direction, record p50/p90/p95/p99 and achieved rate; a point whose achieved rate < 90 % of offered is `not_reached`. `light_p90`/`light_p95` are the larger of the 10 % and 30 % points. *Oracle:* `test_lat_01_curve_and_light_points`.
+* **IOB-LAT-02** The latency knee is the first load point whose p99 >= 2 x the 10 % point's p99, else null. *Oracle:* `test_lat_02_knee` uses a **synthetic** fixture (declared `synthetic: true`; derived from the IO-BENCH-01 background-QD sweep shape, since that data was not recorded at rate-limited load points).
+* **IOB-CEI-01** `ceilings.jsonl`: append-only; first line is a header `{header, schema, identity_digest}`; each observation `{ts, dir, workload, plateau_bps, duration_s, source, note?}` with `workload` in `seq1m|rand4k`, `source` in `benchmark|governor|probe`, `note` optional (`reference_shift`). Appends are atomic (`Host.append_line`, single write + fsync). *Oracle:* `test_cei_01_append_only_atomic`.
+* **IOB-CEI-02** Refused: `plateau_bps <= 0`, `duration_s < 60`, non-finite values, an unknown `source` or `workload`. (The reference-shift note is exempt from the 60 s rule: duration 15 s.) *Oracle:* `test_cei_02_refusals`.
+* **IOB-CEI-03** `summary` returns worst, median, best, n per `(dir, workload)` over a window; `history` is `recorded` (n >= 1) or `single-run` (no records; the caller uses the run's own windows). A history whose identity digest differs from the live disk is ignored with a warning. *Oracle:* `test_cei_03_summary_and_identity`.
+* **IOB-CEI-04** `recalibrate_recommended` (a warning, never an invalidation): the median plateau of the last 12 h differs from the calibration's by > 25 % in two consecutive 12 h windows. Nothing populates the history automatically until the probe/governor exists (D-011); until then the rule can only fire from manually added or benchmark-added observations, and `check` says so (`history: single-run`). *Oracle:* `test_cei_04_recalibrate_rule`.
+* **IOB-CEI-05** A complete run appends one `benchmark` observation per direction and workload for each sustained-plateau window (>= 60 s, state `steady`/`flat`) it measured at the cap-basis rung. *Oracle:* `test_cei_05_run_appends_plateaus`.
+
+## 12. Matrix and derivation
+
+* **IOB-MAT-01** `matrix` refuses (exit 2, "no current calibration") unless `calibration.json` exists, parses, has a supported schema and its identity matches. *Oracle:* `test_mat_01_requires_current_calibration` (absent, stale, corrupt).
+* **IOB-MAT-02** Default plan = S0, S3, 6-cell sweep (IOB-SWP-01), S5: typical 650 s, worst case 890 s. `--knob NAME --candidates a,b[,c] --repeat` = interleaved A B A B cells of 45 s with a gap of <= 15 s typical (<= 60 s bound), no S3: typical 220 s, worst 420 s. *Oracle:* `test_mat_02_plan_budgets` asserts these four numbers.
+* **IOB-MAT-03** The matrix uses only the calibrated written extent and the calibrated figures; it MUST NOT recompute caps or the model. *Oracle:* `test_mat_03_reuses_calibration` (the result's caps/model equal the calibration's, `calibration_id` set).
+* **IOB-MAT-04** Recalibration triggers: identity change (`check` exit 3) and `recalibrate_recommended`. A matrix on a stale calibration refuses; on `recalibrate_recommended` it warns and proceeds. *Oracle:* `test_mat_04_recalibration_triggers`.
+
+Proposals live in `proposals.*`; each value is `{value, status, reasons|reason, rule, inputs, basis, flags[]}` with `basis` in `measured`, `confirmed-by-sweep`, `ratio-inferred`, `formula-only`, `single-run`. A value is a number or `"kernel"`.
+
+* **IOB-DER-01 (R1)** Order: R2 and R3 first (R1 consumes them). `inflight = nr_requests x max_sectors_kb x 1024`. `dirty_bytes` = largest power-of-two MiB <= `W x R_drain - inflight`, clamped to `[4 MiB, 25 % of T_eff]`, where `T_eff` = the kernel's effective threshold computed from `vm.dirty_ratio x available memory` using the journal's **original** values (a `vm.dirty_bytes` already applied by host-setup is ignored: no ratchet); both `T_eff` and the applied value are recorded in `inputs`. `"kernel"` if the unclamped value >= `T_eff`. If `inflight >= W x R_drain` the value is the 4 MiB floor with flag `inflight_exceeds_budget`. `dirty_background_bytes` (R1b) = `dirty_bytes / 4`. *Oracle:* `test_der_01_r1` incl. gstammtisch replay (`R_drain` 10.5 MB/s, q16, r64 -> 16 MiB / 4 MiB), r1002 replay -> `"kernel"`, the ratchet case (applied 16 MiB does not lower the next proposal), and the `inflight_exceeds_budget` case.
+* **IOB-DER-02 (R2)** `nr_requests` = `2 x QD90(write, largest rung)` rounded to a power of two in `[8, 64]` (the tested depths are 1, 8, 32 (+64 in `thorough`), so 8, 16 or 64 can result); `"kernel"` if not below the current value. *Oracle:* `test_der_02_r2`.
+* **IOB-DER-03 (R3, R4 normative)** `max_sectors_kb` candidate = the largest power-of-two KB <= `R_drain x 0.010 / 1024` (`t_req` = 10 ms, labelled `[I]`: a request should occupy the device <= 10 ms), clamped to `[32, max_hw_sectors_kb]`; then raised to the smallest candidate with `read_ratio >= F` unless the sweep shows that candidate's probe p99 > `P` (then flag `read_floor_violated`); `"kernel"` if >= `max_hw`. R4: the chosen triple's REF probe p99 must be <= `P`, else `unproven: target_missed` with the closest cell. *Oracle:* `test_der_03_r3_r4` (gstammtisch -> 64 with `read_floor_violated` at `read_ratio` 0.21; the 128 KB fallback; r1002 -> `"kernel"`).
+* **IOB-DER-04 (R5 caps)** `caps.dev_aggregate.K = U x basis_K x min(1, worst/median)`, `K` in `RIOPS, WIOPS, RBPS, WBPS`; the basis per IOB-CAL-06/-07/-CCH-06 and `worst/median` from the ceiling summary for the same direction and workload (1.0 and `unproven: worst_from_single_run` when history is `single-run`). Using `worst` makes the cap bind when the provider drops to its worst plateau. No per-tier caps. *Oracle:* `test_der_04_r5` asserts four numbers for a fixture (e.g. basis 9400 read IOPS, U 0.70, worst/median 0.43 -> RIOPS 2829) and the absence of tier keys.
+* **IOB-DER-05 (R6 model; both directions use the worst/cache-free basis, decision IOB-D-015)** Basis = the **worst plateau** per direction (ceiling summary `worst` for `seq1m`, else this run's lowest steady window with `unproven: worst_from_single_run`); the **read** basis is the proven cache-free rate `R` (never the cached rate), the write basis `min(rewrite, fresh)` as proven by IOB-CCH-07. Per metering class: `byte`: `wbps = worst`, `wseqiops = wrandiops = wbps/4096` (and the read analogue); `iops`: the IOPS keys = worst IOPS plateau, `*bps` = IOPS x 1 MiB-class fit; `mixed`/`undetermined`: `*bps = min(1e9/c_byte x cache_ratio, worst)` and `*iops = 1e6/c_io x cache_ratio`, the latter `unproven: metering_undetermined` when undetermined. S6 read cells run on the cache-basis working set, so the **read** keys derived from the fit are scaled by `cache_ratio = R / measured_largest` (<= 1) when the read cache state is proven and carry `unproven: cache_residual_possible` otherwise (writes: ratio 1); only `steady`/`flat` cells enter the fit and the metering tests (IOB-DER-08); without history the write worst is the lowest steady seq-1M window of the run. *Oracle:* `test_der_05_r6_model` (plateau history 6/14/18 MiB/s byte-metered -> `wbps = 6291456`, `wseqiops = 1536`; read not byte-metered -> `rseqiops` from the fit; read basis equals `R`, not `cached_ref`).
+* **IOB-DER-06 (R6 QoS)** `min = 100`; `max = ceil5(110 x max(ratio_r, ratio_w))` where `ceil5` rounds up to a multiple of 5, `ratio_r = best_read_rung / R` where `best_read_rung` is the **maximum steady read IOPS over all rungs** (the read best is the best observed cached rate: the **only permitted use of a `cached_tier` figure**, see IOB-DER-08; `cached_ref`, the first three rungs, is NOT used because a write-allocating fill can make it the miss rate) and `ratio_w = best_w / worst_w` from the `seq1m` ceiling summary (the run's own windows without history). Rationale ("price the worst case, let vrate climb into the cache"): `max` must leave room for reads that the cache serves, otherwise vrate pins at `max` and under-admits reads by up to the cache speed-up. `wpct = 90`, `wlat = 2 x light_p90` rounded **up to 5 ms** and clamped to [10, 50] ms; `rpct = 95`, `rlat = 2 x light_p95` rounded **up to 1 ms** and clamped to [2, 20] ms (values emitted in microseconds). Histogram source recorded: `governor` (a file via `--governor-histogram`) else `benchmark`. *Oracle:* `test_der_06_r6_qos`: the synthetic r1002-model fixture (best read rung 92000, `R` 9800, write 3.2/1.4 GB/s) gives `max` = 1035 (`110 x 9.388 = 1032.7`, `ceil5`); the `fill_history_inversion` fixture (`cached_ref` = the miss rate 9.8k, best rung 31k, `R` 9.8k) gives `max` >= 355 where a `cached_ref`-based ratio would give 110; the gstammtisch write example (18/6 MiB/s) with a read ratio below 3 gives 330; light p90 4.2 ms -> `wlat` 10 ms; 17 ms -> 35 ms; light p95 read 0.6 ms -> `rlat` 2 ms; 3.2 ms -> 7 ms.
+* **IOB-DER-07** Every proposal has `rule` and `inputs` sufficient to recompute it (including `T_eff`). *Oracle:* `test_der_07_recomputable` recomputes every value from its `inputs`.
+* **IOB-DER-08** No proposal derives from a figure that is `cached_tier`, `unsteady`, or from a stage whose status is not `ok`; the proposal becomes `absent` with the reason. **Exception (decision IOB-D-015, finding R2-4):** the best observed read rung may be used as the read best in `iocost_qos.max` (IOB-DER-06) and nowhere else. *Oracle:* `test_der_08_no_derivation_from_bad_basis` (one controlled-wrong input per class) and `test_der_08_best_read_rung_only_in_qos_max` (a mutation that feeds the best read rung into any cap or model key fails).
+* **IOB-DER-10 (read cache headroom)** The result records `read_cache_headroom = best_read_rung / R` in `proposals.notes` and in the calibration (null when the read cache state is not proven). *Oracle:* `test_der_10_read_cache_headroom` (synthetic r1002-model fixture: 9.39 +-0.05).
+* **IOB-DER-09** Fresh-block penalty is consumed: write-IOPS cap basis = `min(rewrite, fresh)` (for a file target `fresh_fs_alloc` only on a `discard` mount, IOB-TGT-08); `proposals.notes` includes `fresh_write_penalty` when `fresh_penalty >= 3`. *Oracle:* `test_der_09_fresh_consumed`.
+
+## 13. Plausibility (runtime checks only)
+
+`quality.checks[]` holds `{id, status: pass|fail|info|not_applicable, detail, degrades: [proposal groups]}`. A `fail` of a **data-integrity** check fails the whole run (PLA-14, -15, -16 surface as `run.status: failed` + `*.last-failed.json`, never as a stored `fail`). All other checks degrade only the groups they list, via proposal statuses (section 4). Each check has a controlled-wrong oracle; the passing "moving cap" and "healthy" scenarios are built first. `rotational` plays no role.
+
+| Id | Check | Result |
+|---|---|---|
+| **IOB-PLA-01** | tail flat | the **largest planned rung** is `unsteady` after extension -> `fail`; no fallback to a smaller rung; degrades caps, model, QoS to `absent: basis_unsteady` |
+| **IOB-PLA-02** | working-set rule | largest rung >= 1.2 x cliff -> `pass`; else `fail` with `unproven: device_smaller_than_cache_margin`; `limited-by-budget` yields `info`, never `pass` |
+| **IOB-PLA-03** | cached-tier factor | `info` value `cached_tier_factor` = small-rung / largest-rung (report; a derivation using a small rung is a code defect caught by DER-08); stored in the calibration |
+| **IOB-PLA-04** | mean vs steady | `info` value `mean_overstates` (reported; the mean is never used) |
+| **IOB-PLA-05** | flat-line | `info`: `rate_limited` (e.g. 4096 MiB/s sequential read) |
+| **IOB-PLA-06** | Little's law | `iops x mean_clat / QD` outside [0.7, 1.3] for a rung -> `fail` (broken or faked fio) -> rung unusable (`absent`): the failing rung is dropped before every consumer (ladder, cliff, `cached_ref`, `best_read_rung`, E1, QD90) and listed in `ladder.excluded_rungs`; if no rung of a direction remains the run fails |
+| **IOB-PLA-07** | bytes consistency | random-4K bytes/s > sequential bytes/s of the same direction by > 5 % in an interleaved pair with unmoved reference -> `fail`; reference moved -> `info`, `unproven: ceiling_moved` Evaluated by the calibration from its own S6 cells and fill rate, per direction (the worst verdict is stored; the reference-moved flag is that direction's); `not_applicable` without the closing S6 reference. |
+| **IOB-PLA-08** | read-only-written | enforced by argv confinement (IOB-CAL-02); a violation is a programming error that fails the run |
+| **IOB-PLA-09** | fill vs sequential | `fill_bps` and the sequential 1 MiB rewrite differ by > 5x with unmoved reference -> `fail` for BPS caps Evaluated by the calibration from its own S6 cells and fill rate, per direction (the worst verdict is stored; the reference-moved flag is that direction's); `not_applicable` without the closing S6 reference. |
+| **IOB-PLA-10** | cache state | `info`/`unproven` per IOB-CCH-05 (E-cold primary) |
+| **IOB-PLA-11** | shape fit | `linear_model_fit == poor` -> the model keys are `absent: stage_failed` and the dependent QoS `max` is `unproven: shape_fit_poor` (as IOB-SHP-04) |
+| **IOB-PLA-12** | noise floor | sweep noise > 4 -> writeback `unproven: noise_floor_high` |
+| **IOB-PLA-13** | fresh vs rewrite | `fresh_iops > 1.5 x rewrite_iops` in an interleaved pair with unmoved reference -> `fail` (impossible without a cache effect); moved -> `info`, `unproven: ceiling_moved` |
+| **IOB-PLA-14** | data integrity | NaN, duplicate or non-monotonic timestamps in any series -> run `failed` |
+| **IOB-PLA-15** | identity stable | identity differs at the end -> run `failed` |
+| **IOB-PLA-16** | extent integrity | any writer outside the planned extents or in the reserved tail -> run `failed` |
+| **IOB-PLA-17** | outside history | steady differs from the ceiling median by > 3x -> `info` warning (evaluated per direction in the run from the observation plateau; `not_applicable` without history) |
+| **IOB-PLA-18** | fresh write bytes/s (hypothesis [I]) | `info`: `fresh_write_bps` (fresh sequential 1 MiB bytes/s) beside the rewrite 1 MiB figure from an interleaved pair; reference moved -> `info`, `not_comparable: ceiling_moved`; also records `rearm_ratio` of IOB-CAL-10 Evaluated by the calibration from its own S6 cells and fill rate, per direction (the worst verdict is stored; the reference-moved flag is that direction's); `not_applicable` without the closing S6 reference. |
+
+*Oracles:* `test_pla_NN_controlled_wrong` for each row (NN = 01..18) and `test_pla_healthy_and_moving_cap_pass`. The IO-BENCH-01 facts (cliff 250-300 GiB, fresh 3.6k vs rewrite 71k IOPS, 4096 MiB/s read cap) are not a runtime check but replay assertions, section 17.
+
+## 14. Safety
+
+* **IOB-SAF-01** Before the first state change the tool writes `/run/iobench/restore.json` (temp + rename + fsync) with every original value, the applied value, its path, the original value of the **coupled ratio knob** (`dirty_ratio` / `dirty_background_ratio`: the kernel zeroes a ratio when its bytes knob is written), and the **names of every file created in the work dir**. Only the lock holder writes, restores or removes the journal; a refused or lock-contended invocation owns nothing. *Oracle:* `test_saf_01_journal_before_first_write`.
+* **IOB-SAF-02** Restore runs on normal exit, exceptions, SIGTERM/SIGINT/SIGHUP, and at the start of the next invocation (`iobench restore` is public and idempotent). A knob is restored only if its current value equals the journalled `applied` value; otherwise the entry is dropped with `restore.skipped[] = {path, reason: "changed_by_other"}` and a warning (exit 0). Created work-dir files are removed. Restore attempts every entry and reports all failures together (exit 9); for a coupled pair the member that was originally non-zero is written last and both are verified by read-back. The journalled `applied` value is what the kernel reports after the write (clamped values do not read as `changed_by_other`); a journal read from disk is validated (allowlisted knob paths, iobench file names) before anything is written or unlinked. Transient units carry `RuntimeMaxSec`. After the restore the run's own log directory `/run/iobench/<run_id>/` is cleared on every exit: only the fio log files iobench named (`<name>_bw|iops|clat_hist.<N>.log`, fio's per-job numbering, regular files) are removed, anything else is left (accepted limit: a foreign file with exactly that name shape inside the run's own directory goes too), the directory goes only when empty, and a failure there is a `restore.warnings[]: scratch_not_cleared` entry, never an exception that could skip the lock release or change the run's verdict (`test_rev_e_the_run_directory_is_removed_after_the_run`, `test_rev_e_a_failing_scratch_cleanup_never_skips_the_lock_release_or_masks_the_status`). *Oracle:* `test_saf_02_restore_on_{exit,exception,signal,next_start}`, `test_saf_02_does_not_clobber_newer_value`, `test_saf_02_removes_leaked_files`.
+* **IOB-SAF-03** Restore is verified by read-back; a mismatch is exit 9 naming the file and value; the journal is kept. *Oracle:* `test_saf_03_readback_mismatch_exit_9`.
+* **IOB-SAF-04** The tool reads every slice's `io.max` (raw cgroup file) before and after and records `slice_io_max_unchanged`; a difference in a cgroup present in both snapshots is exit 9 (a cgroup that appears or disappears is a warning; no verdict without a `before` snapshot). The Host raises on any write to a path ending `io.max`, any `systemctl set-property` or `daemon-reload`, and any `IO*`/`BlockIO*` property argument in any spelling (`-p`, `--property=`, any case). *Oracle:* `test_saf_04_io_max_never_written`, `test_saf_04_io_max_changed_by_others_detected`.
+* **IOB-SAF-05** The live-host profile refuses (exit 2) with running production containers (`--production-pattern`, default any running container) or active units named by repeated `--production-unit`, unless `--confirm-quiet-window`. Every probe return code is checked (`blkid` 0/2, `wipefs` 0, `docker ps` 0, `systemctl show` 0, `is-active` 0/3): a failing probe is `probe_failed` (exit 2, naming the probe), never "nothing found" (a probe binary that is missing or not executable is the same refusal, never a traceback), a `--production-unit` that does not exist is `unit_not_found`, and a `--production-pattern` that is not a valid regular expression is `production_pattern_invalid`. Limitation, stated in the refusal text: workloads under systemd units that are not listed are **not detected**; `--confirm-quiet-window` is the operator's responsibility. `--installer` bypasses this check and IOB-SAF-06 only. *Oracle:* `test_saf_05_refuses_with_containers_and_units`.
+* **IOB-SAF-06** A live-host run (not `--installer`) REQUIRES `--protect-cgroup` and `--abort-psi` (no defaults: absent => refused, exit 2); `--abort-psi` must be a finite percentage in (0, 100] and the cgroup's `io.pressure` readable (`abort_psi_invalid`, `protect_cgroup_unreadable`), `--installer` with only one of the two flags is `abort_guard_incomplete`, and a stale `/run/iobench/abort` is `stale_abort_file` (never deleted silently). Abort: root `io.pressure` `some avg10` of that cgroup above the threshold for 3 consecutive samples, or `/run/iobench/abort`, or the guard itself becoming unreadable mid-run (the cgroup vanished or its `io.pressure` changed shape: a run that can no longer be protected does not continue, `test_rev_e_an_unreadable_protect_cgroup_aborts_the_run`); the run kills its fio children (each in its own process group, with a parent-death signal), waits up to 30 s for device `inflight == 0` (a device that did not drain is `restore.warnings[]: inflight_not_drained`), restores, marks the run `aborted` (exit 8). *Oracle:* `test_saf_06_abort_paths_and_required_flags`.
+* **IOB-SAF-07** An aborted or failed run never replaces `result.json` or `calibration.json`. *Oracle:* `test_saf_07_failed_run_keeps_good_result`.
+* **IOB-SAF-08** One iobench run per host at a time (non-blocking lock); a second invocation exits 2 and writes nothing, and never touches the first run's journal; an `fio` left by an earlier run refuses the next run (`orphan_fio`). *Oracle:* `test_saf_08_single_instance`, `test_rev_a_b1_*`, `test_rev_a_s8_*`.
+* **IOB-SAF-09** Mount and swap evidence is read from the **host** mount namespace: iobench compares `/proc/self/mountinfo` with `/proc/1/mountinfo` and refuses (exit 2) when they differ for any entry touching the target, its holders or the work dir. The caller must also provably run in the host's **initial PID namespace** (`/proc/self/ns/pid` and `/proc/1/ns/pid` equal `pid:[4026531836]`) and the mount namespace of PID 1: inside a container `/proc/1` is the container's own init, so the two mount tables always agree and the comparison alone proves nothing. Unprovable or non-initial namespaces are refused with `container_pid_namespace` / `mount_namespace_mismatch` / `namespace_unprovable`: "run on the host, not in a container". *Oracle additions:* `test_rev_a_b3_*`. *Oracle:* `test_saf_09_namespace_mismatch_refused`.
+
+## 15. Profiles, stages and allotments
+
+| Profile | Command | Budget | Content |
+|---|---|---|---|
+| `quick` | `calibrate --profile quick` | 12 min | S0, S1, fill up to `R_est x 60 s`, rungs 1 GiB / 16 GiB / `WS_max`, reference cells, S6 reduced (4 KiB and 64 KiB x seq/rand x read/write rewrite = 8 cells), S7 at 10/30/90 %; **no E-cold, no E2: all cache-dependent values `unproven: quick_profile`** (reported honestly, not absent) |
+| `standard` | `calibrate --profile standard` (default) | 60 min | the table below |
+| `thorough` | `calibrate --profile thorough` | 75 min (4500 s) | standard + QD64 (60 s) + the 900 s / 240 s observation runs (replacing 240/120 s, +780 s): 4180 s planned; `--full-sweep` is a matrix option |
+| `matrix` | `matrix` | 15 min | S0, S3, 6-cell sweep, S5 |
+| `matrix --knob` | `matrix --knob K --candidates ...` | 8 min | A B A B cells |
+| `run` | `run` | sum | calibrate if no current calibration, then matrix |
+
+`standard` allotment for the r1002 geometry (seconds; the planner derives it from the geometry, this table is the oracle's expected plan; `thorough` adds 840 s: observation runs +780 s and QD64 +60 s):
+
+| Stage | s | Basis |
+|---|---|---|
+| S0 identity/preflight | 30 | |
+| S1 rate probe | 30 | 20 s + setup |
+| fill | 420 | 345 GiB at ~1.36 GB/s = 270 s, +50 % |
+| E-cold | 140 | QD32 70 s + QD1 histogram 60 s + setup |
+| ladder | 720 | 12 rungs (10 + 2 densification) x 2 directions x 30 s |
+| largest-rung QD1/QD8 | 120 | 4 x 30 s |
+| E2 | 120 | QD1 histogram runs on the smallest rung (`hit_ref`) and the largest rung, 60 s each |
+| fresh vs rewrite | 90 | 2 x 30 s + discards |
+| fresh observation | 150 | write run on the fresh extent (120 s proof rule + 30 s margin) |
+| rearm cell (IOB-CAL-10) | 100 | 2 x 30 s + discard + references |
+| reference cells | 180 | 6 pairs x 2 dirs x 15 s (r0 to r4, plus a fresh reference immediately before S6) |
+| observation runs | 360 | 240 write + 120 read |
+| S6 | 720 | 22 cells x 30 s + anchor repeats (60 s) |
+| S7 | 160 | 4 points x 2 dirs x 20 s |
+| **total** | **3340** | <= 3600 (260 s slack) |
+
+* **IOB-PRF-01** `--budget-minutes N` overrides the profile; `--dry-run` prints each stage's allotment, fio argv and written-byte bound and writes nothing; it is plan-only and says so: the object (and the human output) carries `preflight: not_run` and a `preflight_note`, because a clean dry run must not read as "this target will be accepted" (the live-host preflight, abort guards, namespaces and work-dir checks are not run; backlog IOB-BL-01). *Oracle:* `test_prf_01_dry_run_plan_complete_and_writes_nothing`.
+* **IOB-PRF-02** `quick` marks `limits += quick-profile` and its cache-dependent values `unproven: quick_profile`. *Oracle:* `test_prf_02_quick_statuses`.
+
+## 16. Result, calibration, read path
+
+* **IOB-RES-01** Files follow section 18; writes are atomic (temp + rename + fsync of file and directory), mode 0644 root-owned. *Oracle:* `test_res_01_atomic_write_modes`.
+* **IOB-RES-02** Versioning: integer `schema` (major) and `schema_minor`. A reader refuses an unknown major (exit 5, `schema_unsupported`), ignores unknown keys, accepts any minor <= its own (a missing newer optional key is `not_measured`, never a default). *Oracle:* `test_res_02_versioning`.
+* **IOB-RES-03** Identity (exit 3 when it differs): `disk.devno`, `disk.partuuid`, `disk.size_bytes`, and each of `disk.model`, `disk.serial`, `disk.wwn` that is non-null in the stored record. `scheduler`, `ram_bytes`, `kernel` major.minor, `root_source`, the work-dir `fs.uuid` and age > 180 days are **advisory** warnings (a point release or a re-mkfs of the work-dir filesystem does not change the measured raw disk). The identity is re-read at the end of the run (IOB-PLA-15). *Oracle:* `test_res_03_identity_validity` (each strict field flipped -> exit 3; each advisory flipped -> warning only).
+* **IOB-RES-04** `quality.limits[]` and `quality.cache_proof` (`none|working-set|limited-by-budget`) are recorded; `check` prints them. *Oracle:* `test_res_04_limits_recorded`.
+* **IOB-CHK-01** `iobench check [--result P] [--calibration] [--section writeback|caps|iocost_model|iocost_qos] [--json]`: states and exit codes exactly per the tables of IOB-STA-05: 0, 3, 4, 5 (with a `reasons[]` closed vocabulary), 6, 7; JSON `{state, reasons[], warnings[], limits[], identity_strength, sections: {S: {proven: n, unproven: [{key, reasons}], absent: [{key, reason}]}}, result, calibration_id}`. A requested `--section` that the checked document does not carry (for example `writeback` on a `calibration.json`) is a usage error (exit 2); without `--section` the sections the SCHEMA requires for that kind of file are checked (all four for `result.json`, three for `calibration.json`), each with its required leaves (`caps`: RIOPS, WIOPS, RBPS, WBPS; the six model keys; the six QoS keys; the four writeback keys): a missing or emptied section or leaf is `absent: missing_from_document` (exit 7), never "nothing wrong"; a proposal status outside `proven|unproven|absent`, or a malformed section, is `corrupt` / `damaged_proposals` (exit 5), never `proven`; a `schema_minor` above the reader's is `schema_unsupported`. *Oracle:* `test_chk_01_exit_codes` (one case per row), `test_sta_05_status_collapse_audit`, `test_rev_b_b5_*`.
+* **IOB-CHK-02** `iobench show --proposals|--evidence|--calibration|--ceilings|--paths [--section S] --json` prints the object; exit 4 if the file is absent, 5 if corrupt/unsupported, 3 is not used by `show` (it prints the file and a `stale: true` field); unknown section => 2. It never recomputes nor modifies. *Oracle:* `test_chk_02_show_is_read_only_and_exact` (each exit).
+* **IOB-CHK-03** Wizard contract: precedence `benchmark (check == 0, or an explicit operator accept of each unproven value with its reasons shown) > configured value > kernel`; guaranteed keys for schema 1: `proposals.writeback.*`, `proposals.caps.dev_aggregate`, `proposals.iocost_model`, `proposals.iocost_qos`, `quality`. *Oracle:* `test_chk_03_guaranteed_keys_present_on_golden_results` for both replay results.
+* **IOB-CHK-04** `IOBENCH_DIR` (default `/var/lib/iobench`) and `--state-dir` select the directory. *Oracle:* `test_chk_04_state_dir_resolution`.
+
+## 17. CLI
+
+* **IOB-CLI-01** Commands: `target init|show`, `calibrate`, `matrix`, `run`, `check`, `show`, `ceilings add|summary`, `restore`, `--version`. Mutating commands support `--dry-run`. Exit codes: 0 ok, 1 runtime failure, 2 refusal or usage, 3-7 per `check`, 8 aborted (restored), 9 restore or io.max verification failure. *Oracle:* `test_cli_01_commands_and_exit_codes`.
+* **IOB-CLI-02** A refusal message names the condition and a safe remedy; it MUST NOT prescribe an unsafe or non-existent one. *Oracle:* `test_cli_02_messages`.
+* **IOB-CLI-10** `iobench.cli` is registered with `cli_extended` (`CliRegistry`, generated help, `--dry-run`, version from the distribution); the generated CLI surface and review artefacts exist and pass the cli-extended audit. *Oracle:* the cli-extended audit test module and `test_cli_10_surface_matches_registry`.
+
+## 18. Schemas
+
+Timestamps UTC ISO-8601 `Z`; sizes bytes; rates bytes/s or IO/s; latencies microseconds.
+
+### 18.1 `result.json` (schema 1, minor 0)
+
+```json
+{
+  "schema": 1, "schema_minor": 0,
+  "tool": {"name": "iobench", "version": "0.1.0", "method": "ladder-v1+cachefit-v1+shape-v1+latcurve-v1+drain-v1+sweep-v1+readcost-v1"},
+  "run": {"id": "run-20261021T031500Z-a1b2", "started": "2026-10-21T03:15:00Z", "finished": "2026-10-21T03:27:41Z", "profile": "matrix", "status": "complete",
+          "budget_s": 900, "calibration_id": "cal-20261021T020000Z-7b2d0c1e",
+          "stages": {"S0": "ok", "S3": "ok", "S4": "ok", "S5": "ok"}},
+  "identity": {"target": {"kind": "device"}, "disk": {"devno": "254:7", "model": null, "serial": null, "wwn": null, "partuuid": "3e1f7a52-5b6d-4c1e-9a0d-7b2d0c1e0007", "size_bytes": 435853320192, "scheduler": "none", "rotational_flag": "1"},
+               "identity_strength": "weak", "root_source": "/dev/vda3", "workdir_fs": {"type": "ext4", "uuid": "00000000-0000-0000-0000-000000000000"}, "kernel": "7.2.9", "ram_bytes": 8321499136, "virt": "kvm"},
+  "targets": {"W_s": 2.0, "P_ms": 250, "F_read_ratio": 0.25, "U_dev_share": 0.70, "source": "default"},
+  "evidence": {"histograms": {}, "history_rotated": null, "rate_probe": {}, "drain": {}, "sweep": {"noise_floor_ratio": 1.9, "cells": []}, "read_cost": {"native_bps": 0, "candidates": []},
+               "preflight": {"containers_active": 0, "confirmed_quiet_window": true, "slice_io_max_before": {}, "slice_io_max_after": {}}},
+  "proposals": {"writeback": {}, "caps": {}, "iocost_model": {}, "iocost_qos": {}, "notes": []},
+  "quality": {"cache_proof": "working-set", "limits": ["bucket_exclusion_s<=240"], "checks": [{"id": "IOB-PLA-01", "status": "pass", "detail": "", "degrades": []}]},
+  "restore": {"verified": true, "slice_io_max_unchanged": true, "journal_removed": true, "skipped": [], "warnings": []}
+}
+```
+
+Required top-level keys: `schema, schema_minor, tool, run, identity, targets, evidence, proposals, quality, restore`. `run.status` in `complete|aborted|failed`. A proposal value:
+
+```json
+{"value": 16777216, "status": "unproven", "reasons": ["worst_from_single_run"], "rule": "R1", "inputs": {"W_s": 2.0, "R_drain_bps": 10500000, "inflight_bytes": 1048576, "T_eff_bytes": 1717986918}, "basis": "confirmed-by-sweep", "flags": []}
+```
+
+### 18.2 `calibration.json` (schema 1)
+
+Same envelope (`schema, schema_minor, tool, run, identity, quality`) plus the `calibration` object. The example is the shape the code writes (reconciled with the code in the IOB-03 P3 review wave; every key below is produced by `Calibrator.assemble`):
+
+```json
+{
+  "calibration": {
+   "id": "cal-20261021T020000Z-7b2d0c1e",
+   "target": {
+    "kind": "device",
+    "path": "/dev/vda7",
+    "size_bytes": 435853320192,
+    "usable_bytes": 435852271616,
+    "reserved_tail_bytes": 1048576
+   },
+   "touch_map": {
+    "fill": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ],
+    "e_cold": [
+     8,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ],
+    "ladder": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ],
+    "fresh": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ],
+    "reference": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "extent_written": [
+    [
+     0,
+     370472800000
+    ]
+   ],
+   "fresh_extent": [
+    370472800000,
+    378000000000
+   ],
+   "fill_bps": 1357000000,
+   "R_est_bps": 1357000000,
+   "fill": {
+    "bytes": 370472800000,
+    "planned_bytes": 370472800000,
+    "fill_bps": 1357000000,
+    "fill_replanned": false,
+    "fill_aborted": null
+   },
+   "ladder": {
+    "rungs": [
+     {
+      "ws_bytes": 1073741824,
+      "dir": "read",
+      "qd": 32,
+      "bs": 4096,
+      "steady_iops": 97850,
+      "mean_iops": 98100,
+      "state": "steady",
+      "knee_s": 0.0,
+      "burst_units": 0.0,
+      "observation_s": 30,
+      "rate_limited": "not_assessed",
+      "class": "cached_tier",
+      "lat_us": {
+       "p50": 309,
+       "p90": 420,
+       "p95": 480,
+       "p99": 545,
+       "p999": 692
+      },
+      "series": [
+       [
+        6.0,
+        97000.0
+       ]
+      ]
+     }
+    ],
+    "excluded_rungs": [],
+    "cliff_bytes": 322122547200,
+    "cached_ref_iops": 92000,
+    "qd90": {
+     "read": 8,
+     "write": 8
+    },
+    "idle_qd1_p99_us": {
+     "read": 272,
+     "write": 440
+    },
+    "cached_tier_factor": 3.8,
+    "best_read_rung_iops": 97850,
+    "measured_largest": {
+     "read": 9810,
+     "write": 71584
+    }
+   },
+   "cache": {
+    "read": {
+     "cache_state": "cold_measured",
+     "status": "proven",
+     "reasons": [],
+     "R_iops": 9810,
+     "R_cold_iops": 9810,
+     "R_E2_iops": null,
+     "e_cold": {
+      "region_bytes": 34359738368,
+      "R_cold_iops": 9810,
+      "shape": "unimodal",
+      "class": "miss-like",
+      "p50_us": 760,
+      "rate_limited": false,
+      "state": "flat"
+     },
+     "E2": {
+      "shape": "overlapping",
+      "gap_ratio": 1.8,
+      "R_E2_iops": null,
+      "voided": false,
+      "qd32_start": 1792550700.0,
+      "qd1_start": 1792550731.0
+     },
+     "E1": {
+      "fit": "insufficient",
+      "points": 2,
+      "r2": null,
+      "loo_max": null,
+      "R_E1_iops": null,
+      "C_bytes": null,
+      "margin_ok": null
+     },
+     "hit_ref_us": 109,
+     "read_cache_headroom": 9.39,
+     "read_value": {
+      "value": 9810,
+      "status": "proven",
+      "reasons": []
+     }
+    },
+    "write": {
+     "time_proof": {
+      "observation_s": 240,
+      "knee_s": 3,
+      "burst_bytes": 3970000000,
+      "after_knee_bytes": 3480000000,
+      "proven": false,
+      "reason": "short_observation"
+     },
+     "fresh_proof": null
+    }
+   },
+   "cap_basis": {
+    "read": {
+     "value": 9810,
+     "status": "proven",
+     "reasons": []
+    },
+    "write": {
+     "value": 3596,
+     "status": "unproven",
+     "reasons": [
+      "short_observation"
+     ],
+     "inputs": {
+      "rewrite_iops": 71584,
+      "fresh_iops": 3596,
+      "obs_write_steady": 3600,
+      "obs_fresh_steady": 3596
+     }
+    },
+    "bps": {
+     "read": {
+      "value": 1830000000,
+      "status": "unproven",
+      "reasons": [
+       "cache_residual_possible"
+      ]
+     },
+     "write": {
+      "value": 14680064,
+      "status": "unproven",
+      "reasons": [
+       "short_observation"
+      ]
+     }
+    }
+   },
+   "fresh_vs_rewrite": {
+    "measured": true,
+    "kind": "device",
+    "label": "fresh",
+    "mount_discard": null,
+    "fresh_iops": 3596,
+    "rewrite_iops": 71584,
+    "penalty": 19.9
+   },
+   "rearm": {
+    "rearm_ratio": 1.02,
+    "verdict": "not_rearmed"
+   },
+   "reference": {
+    "cells": {
+     "r0": {
+      "read": 24100,
+      "write": 21000
+     },
+     "r1": {
+      "read": 24000,
+      "write": 21100
+     }
+    },
+    "moved": {
+     "ladder": false,
+     "fresh_vs_rewrite": false,
+     "rearm": false,
+     "shape": false
+    },
+    "moved_by_dir": {
+     "ladder": {
+      "read": false,
+      "write": false
+     }
+    }
+   },
+   "shape": {
+    "cells": [],
+    "fit": {
+     "read-rand-rewrite": {
+      "fit": "good",
+      "c_io_us": 80.0,
+      "c_byte_ns": 0.25,
+      "r2": 0.99,
+      "residual_max": 0.05,
+      "n": 5
+     }
+    },
+    "drift": {
+     "spread": {},
+     "moved": false
+    },
+    "metering_by_dir": {
+     "read": "undetermined",
+     "write": "mixed"
+    },
+    "metering": "mixed",
+    "linear_model_fit_by_dir": {
+     "read": "good",
+     "write": "good"
+    },
+    "linear_model_fit": "good",
+    "override": null
+   },
+   "latency_curve": [
+    {
+     "dir": "write",
+     "load_pct": 10,
+     "offered_iops": 358,
+     "achieved_iops": 358,
+     "bps": 1466368,
+     "lat_us": {
+      "p50": 0,
+      "p90": 0,
+      "p95": 0,
+      "p99": 0
+     },
+     "not_reached": false
+    }
+   ],
+   "latency_knee": {
+    "read": null,
+    "write": null
+   },
+   "windows": {
+    "write_seq1m_bps": [
+     14680064.0
+    ]
+   },
+   "plateau_bps": {
+    "read/rand4k": 40000000.0,
+    "write/rand4k": 14680064.0
+   },
+   "stages": {
+    "S0": "ok",
+    "S1": "ok",
+    "fill": "ok",
+    "ladder": "ok"
+   },
+   "proposals": {
+    "caps": {},
+    "iocost_model": {},
+    "iocost_qos": {},
+    "notes": []
+   },
+   "iocost_keys": {
+    "rbps": 0,
+    "rseqiops": 0,
+    "rrandiops": 0,
+    "wbps": 0,
+    "wseqiops": 0,
+    "wrandiops": 0
+   }
+  }
+}
+```
+
+Shape notes (divergences between the first draft of this section and the code, resolved in favour of the code): `cap_basis.<dir>` carries `value` (not `iops`) and the write entry its `inputs`; `cap_basis.bps` holds the two BPS bases; `reference` is `{cells: {tag: {read, write}}, moved: {group: bool}, moved_by_dir}`; `touch_map` is keyed by stage (`fill`, `e_cold`, `ladder`, `fresh`, `reference`), not per rung or probe (IOB-CCH-01); the E2 start timestamps are epoch seconds; `shape.fit` is keyed `<dir>-<pattern>-rewrite` with `metering_by_dir` and `linear_model_fit_by_dir`; `fresh_vs_rewrite` not measured is `{measured: false, reason}` with the real cause; `ladder.rungs[].class` is `no_cliff|cached_tier|post_cliff|write`.
+
+In the example, `cliff_bytes` is the recorded r1002 value: the first measured rung below the threshold (300 GiB = 322122547200 B); the cliff itself lies between the 250 GiB rung (not below) and that one.
+
+### 18.3 `ceilings.jsonl`
+
+```json
+{"header": true, "schema": 1, "identity_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"}
+{"ts": "2026-10-21T03:20:00Z", "dir": "write", "workload": "seq1m", "plateau_bps": 14680064, "duration_s": 600, "source": "governor"}
+{"ts": "2026-10-21T04:10:00Z", "dir": "write", "workload": "rand4k", "plateau_bps": 86000000, "duration_s": 15, "source": "benchmark", "note": "reference_shift"}
+```
+
+### 18.4 Journal and marker
+
+`/run/iobench/restore.json`: `{"run": id, "started": ts, "entries": [{"path": "...", "original": "...", "applied": "..."}], "files": ["workdir/..."]}`. Marker: the last 1 MiB of the target; its first 4 KiB is JSON `{"magic": "IOBENCH-TARGET-1", "size_bytes": N, "partuuid": "...", "serial": null, "created": ts}` followed by zero padding.
+
+## 19. Test, gate and documentation plan
+
+* **IOB-EVD-01 (replay)** `tests/fixtures/` holds condensed, provenance-stamped fixtures: the recorded r1002 rungs ≤ usable (header: sha256 of `IO-BENCH-01-data/r1002-fio-out.tgz`) and the gstammtisch tables (HOST-IO-INTERFERENCE s4.3/4.4), plus the **synthetic** `r1002-model` (C = 265 GiB, F = 92k, R = 9.8k; reproduces the recorded 300 GiB point 46440 vs 46315). Required replay oracles: gstammtisch -> 16 MiB / 4 MiB / 16 / 64; r1002 -> `kernel` for dirty and sectors; recorded r1002 cache state `undetermined` (honest, CCH-08 #10); the synthetic `two_tier_e1_good_but_wrong` and `fill_history_inversion` fixtures (CCH-08 #1, #2); r1002 `max` = 1035 (DER-06); the IO-BENCH-01 facts as assertions (cliff in [250, 300] GiB, fresh 3.6k vs rewrite 71k, cached-tier factor in [3.5, 4], 4096 MiB/s read flagged `rate_limited`). *Oracle:* the named tests.
+* **IOB-EVD-02** A fixture round-trip is not an oracle: every replay test asserts a derived value that depends on a rule constant. *Oracle:* `test_evd_02_mutation_sanity` mutates each rule constant (monkeypatch) and asserts the corresponding replay test fails.
+* **IOB-ACC-01 (acceptance probe, no VM lane, ruling R-10)** The live acceptance of mechanics and plausibility is the r1002 run of IOB-03 P4 (target guard refusals on real devices, sysctl/sysfs writes landing and restoring, `check` after a real run). It is an **acceptance probe**, not a unit test; it is recorded under `measurements/` in the program directory. What it proves and what it does not is stated in section 20. **Probe checklist (live, on the real host):** (1) `fio --cmdhelp=exclusive_open` names the option on the installed fio (S0 refuses `fio_option_unsupported` otherwise) and a device job really gets EBUSY on a mounted or claimed device; (2) `systemd-run --wait` returns only when the probe unit has finished and the output file then exists; (3) the O_EXCL marker open on a mounted device is a refusal (exit 2), not exit 1; (4) `PR_SET_PDEATHSIG` and the process group: SIGKILL of iobench stops fio; a second SIGTERM during `blkdiscard` interrupts it; (5) a real 150 s fresh observation reaches `proven` (fio stamps the last sample at 119.9x s for a 120 s run, hence the 30 s margin); (6) plausibility: a provider throttle that shows only on reads (cross-direction movement, backlog IOB-BL-04) and the PLA-07/-09/-17/-18 verdicts on real numbers; (7) `--exclusive_open` does not break the read jobs on the unmounted target.
+* **IOB-GATE-01** `run-gate.toml` registers `r0-r1` (pytest, 100 % branch coverage; `.coveragerc` omits only `host.py` and `__main__.py`, each with a reason, and `test_gate_01_coverage_exclusions_match` asserts the omit list equals exactly those files) and `r2` (Assay mutation lane, `assay.toml` whole-target coverage over every executable module). The package `__init__.py` is docstring-only and therefore has no executable lines for Assay's whole-target floor; `test_gate_01_package_initializer_has_no_executable_source` keeps that fact explicit, and `test_gate_01_mutation_targets_cover_every_executable_module` checks the remaining inventory. The two coverage-excluded `host.py` and `__main__.py` are thin real-effect shims, covered by the r1002 acceptance probe and FakeHost parity. The lane's pytest command has no fail-fast option, so a failed test cannot leave a partial coverage artifact. The devcontainer is a cockpit. The `vm` marker is not used. *Oracle:* `run-gate r0-r1` exits 0 (registered lane).
+* **IOB-DOC-01** Docs-sync: every requirement id in this file has a collected test **or** is listed in `tests/probe_oracles.txt` (the acceptance probes: IOB-ACC-01, IOB-GATE-01, IOB-REL-01); every collected iobench test id exists here; every cross-document anchor resolves. *Oracle:* `test_doc_01_ids_anchors`.
+* **IOB-DOC-02** In README, DESIGN-GUIDE and CONSUMERS (the SPEC is the contract), every `json` block parses with the shipped loader as the object it claims, every `bash` `iobench` invocation parses with the CLI's own parser in `--dry-run` mode, and every value of the closed vocabularies of IOB-STA-02, the exit codes 0-9 and the check ids IOB-PLA-01..17 appears in at least one of the three. *Oracle:* `test_doc_02_examples_parse_and_vocabulary_complete`.
+* **IOB-REL-01** Release through cmru only: `libraries/iobench/cmru.toml` (`iobench-v*` tags, a wheel plus its sha256 through `cmru handler wheel-publish`, GitHub Releases only, never PyPI; no zipapp, in-repo consumers copy the source), `fio >= 3.30` floor with its reason documented. *Oracle (probe):* `cmru status` reports the project and `cmru release --dry-run` plans the wheel.
+
+## 20. Out of scope for IOB-03 and open items (owner)
+
+Out of scope: consumer wiring (M1-M4), the persistent long-term probe (D-011), per-tier caps, changes to the shipped `iocost_coef_gen.py` flow.
+
+**What a run on r1002 proves, and what it does not (finding O-7).** r1002 rewrite writes run at ~86 MB/s; gstammtisch runs at ~14 MiB/s with a moving cap: a different tier with different behaviour. The P4 run proves (1) the mechanics: target guard, journal and restore, sysfs and sysctl round trips, `check`; (2) the cache method: E-cold, E2 and the fill-order history on a real cache; (3) the fresh/rewrite physics and the re-arm hypothesis (IOB-CAL-10). It does **not** prove the gstammtisch io.cost numbers, and P4 MUST NOT be reported as "io.cost model validated". Those numbers come from (a) a file-target calibration on gstammtisch (IOB-TGT-06..10) inside an operator-confirmed quiet window, deferred until that host is a controlled environment, and (b) the long-term ceiling history (OI-2 / D-011).
+
+| Open item | Owner |
+|---|---|
+| OI-1 installer (M2): iobench never makes a filesystem, so the installer needs either two throwaway partitions (raw target + work-dir fs) or a calibrate-then-mkfs sequence with a documented marker-preserving `mkfs` size | M2 work item (controller) |
+| OI-2 `history: single-run` hosts have no automatic population of the ceiling history until the probe/governor (D-011) exists | D-011 owner |
+| OI-3 the ten-millisecond request-time constant of R3 is `[I]` and the sweep is its arbiter | P4/P5 evidence |
+| OI-4 the E2 mode thresholds (2.5x gap, valley <= 0.5, 5 % mass) and the E-cold hit/miss thresholds (1.5x / 2.5x) are `[I]` until real histograms exist | P4 stores raw histograms; P5 tunes |
+| OI-5 whether discard re-arms the fresh penalty (IOB-CAL-10) and whether `fstrim`/swap discard on production hosts lowers the write ceiling | P4 cell; the controller reads gstammtisch trim/discard state read-only |

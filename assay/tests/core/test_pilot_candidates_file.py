@@ -12,6 +12,7 @@ import sys
 import threading
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,7 +20,8 @@ from assay import cli, mutation
 from assay.adapters.python import PythonAdapter
 from assay.cli import main
 from assay.errors import LaneConfigError, Outcome, ReasonCode
-from conftest import GitRepo, PROJECT_ROOT
+from assay.verdict import CLAIM_DETAIL_BYTES
+from conftest import GitRepo, PROJECT_ROOT, process_tree_evidence_dict
 
 
 def _seed_pilot_repo(repo: GitRepo) -> tuple[Path, tuple[int, ...]]:
@@ -88,7 +90,7 @@ def _run(argv: list[str]) -> tuple[int, str, str]:
 
 
 def _plan(lane_file: Path, lane: str = "package") -> list[dict[str, object]]:
-    code, stdout, stderr = _run(["plan", lane, "--file", str(lane_file)])
+    code, stdout, stderr = _run(["plan", "--json", lane, "--file", str(lane_file)])
     assert code == 0, stderr
     document = json.loads(stdout)
     assert document["status"] == "ok"
@@ -409,6 +411,7 @@ def test_T2_pilot_flag_conflicts_refuse_before_execution(git_repo: GitRepo, tmp_
         ("--rejudge", "f" * 64),
         ("--rejudge-outcome", "killed"),
         ("--pilot-jobs", "0"),
+        ("--pilot-jobs", "2"),
         ("--pilot-jobs", "9"),
         ("--pilot-jobs", "abc"),
         ("--pilot-jobs", "9" * 5000),
@@ -464,6 +467,7 @@ def test_T3_T5_single_killed_candidate_is_completed_and_persisted(git_repo: GitR
     assert code == 6, stderr
     summary = json.loads(stdout)
     assert summary["qualifying"] is False and summary["completed"] is True
+    assert "claim_diagnostics" not in summary
     current_judge = next(
         event["judge_sha256"]
         for event in _events(progress)
@@ -664,6 +668,150 @@ def test_T10_mutation_discovery_refusal_keeps_r2_reason_and_pilot_terminal(
     events = _events(progress)
     assert events[-1]["event"] == "verdict_written"
     assert events[-1]["reason_code"] == "MUTATION_DISCOVERY_FAILED"
+
+
+def test_B161_incomplete_pilot_keeps_first_failing_test_diagnostic(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    lane_file, _lines = _seed_pilot_repo(git_repo)
+    candidate = str(_plan(lane_file)[0]["id"])
+    lane_text = lane_file.read_text(encoding="utf-8")
+    failing_command = json.dumps(
+        [
+            "/bin/sh",
+            "-c",
+            "printf 'FAILED tests/test_alpha.py::test_broken - boom\\n'; exit 1",
+        ]
+    )
+    lane_text = lane_text.replace(
+        next(line for line in lane_text.splitlines() if line.startswith("argv = ")),
+        f"argv = {failing_command}",
+        1,
+    )
+    lane_file.write_text(lane_text, encoding="utf-8")
+    git_repo.commit_all("make the pilot baseline fail with a named test")
+    candidates = _candidate_file(tmp_path / "one.txt", [candidate])
+    progress = tmp_path / "progress.jsonl"
+    mutation_calls: list[bool] = []
+
+    def record_mutation_attempt(*_args, **_kwargs):
+        mutation_calls.append(True)
+        raise AssertionError("mutation execution started after the R0 failure")
+
+    monkeypatch.setattr(cli.mutation, "run_mutation", record_mutation_attempt)
+
+    code, stdout, stderr = _run_pilot(
+        lane_file,
+        candidates,
+        tmp_path / "state",
+        progress,
+    )
+
+    assert code == 1, stderr
+    summary = json.loads(stdout)
+    assert summary["completed"] is False
+    assert summary["r0"] == "FAIL"
+    assert summary["r2"] is None
+    assert summary["refusal"]["reason_code"] == "COMMAND_FAILED"
+    assert summary["claim_diagnostics"] == {
+        "R0": {
+            "detail": "R0 command failed; first failing test: tests/test_alpha.py::test_broken",
+            "detail_dropped_bytes": 0,
+        }
+    }
+    assert summary["unresolved"] == [candidate]
+    assert summary["candidates"] == []
+    assert mutation_calls == []
+    assert not [event for event in _events(progress) if event["event"] == "candidate"]
+
+
+def test_B161_r0_failure_name_is_bounded_before_pilot_summary(
+    git_repo: GitRepo, tmp_path: Path
+):
+    lane_file, _lines = _seed_pilot_repo(git_repo)
+    long_test_name = f"tests/{'x' * 2600}::test_broken"
+    lane_text = lane_file.read_text(encoding="utf-8")
+    failing_command = json.dumps(
+        [
+            "/bin/sh",
+            "-c",
+            f"printf 'FAILED {long_test_name} - boom\\n'; exit 1",
+        ]
+    )
+    lane_text = lane_text.replace(
+        next(line for line in lane_text.splitlines() if line.startswith("argv = ")),
+        f"argv = {failing_command}",
+        1,
+    )
+    lane_file.write_text(lane_text, encoding="utf-8")
+    git_repo.commit_all("make the pilot baseline diagnostic exceed its bound")
+    candidate = str(_plan(lane_file)[0]["id"])
+    candidates = _candidate_file(tmp_path / "one.txt", [candidate])
+
+    code, stdout, stderr = _run_pilot(
+        lane_file,
+        candidates,
+        tmp_path / "state",
+        tmp_path / "progress.jsonl",
+    )
+
+    assert code == 1, stderr
+    summary = json.loads(stdout)
+    detail = summary["claim_diagnostics"]["R0"]["detail"]
+    dropped = summary["claim_diagnostics"]["R0"]["detail_dropped_bytes"]
+    bounded_name = long_test_name[: cli.failure_summary.MAX_NAME_CHARS]
+    assert detail == f"R0 command failed; first failing test: {bounded_name}"
+    assert len(detail.encode("utf-8")) <= CLAIM_DETAIL_BYTES
+    assert dropped == 0
+    assert summary["completed"] is False
+
+
+def test_B161_incomplete_summary_keeps_details_after_r2_result():
+    candidate = "c" * 64
+    mutation_result = SimpleNamespace(
+        **{bucket: () for bucket in cli.MUTATION_BUCKETS}
+    )
+    r2_claim = SimpleNamespace(
+        rigor="R2",
+        mutation=mutation_result,
+        status=Outcome.BUDGET_EXCEEDED,
+        reason_code=ReasonCode.LANE_TIMEOUT,
+        detail="x" * CLAIM_DETAIL_BYTES,
+        detail_dropped_bytes=73,
+    )
+    verdict = SimpleNamespace(
+        claims=(r2_claim,),
+        judgment=None,
+        outcome=Outcome.BUDGET_EXCEEDED,
+        reason_code=ReasonCode.LANE_TIMEOUT,
+        commit="a" * 40,
+    )
+    lane = SimpleNamespace(
+        name="package",
+        judge=SimpleNamespace(mutation=SimpleNamespace(jobs=1)),
+    )
+
+    summary = cli._build_pilot_summary(
+        verdict,
+        lane=lane,
+        selected_ids=frozenset({candidate}),
+        selection_order=(candidate,),
+        selection_sha256="b" * 64,
+        candidates_file_sha256="d" * 64,
+        state_dir=Path("state"),
+        pilot_jobs={},
+        judge_sha256="e" * 64,
+        campaign_deadline_sha256=None,
+        cold_witness=False,
+        state_root_fd=None,
+        completed=False,
+    )
+
+    assert summary["r2"]["status"] == Outcome.BUDGET_EXCEEDED.value
+    diagnostic = summary["claim_diagnostics"]["R2"]
+    assert diagnostic["detail"] == "x" * CLAIM_DETAIL_BYTES
+    assert len(diagnostic["detail"].encode("utf-8")) == CLAIM_DETAIL_BYTES
+    assert diagnostic["detail_dropped_bytes"] == 73
 
 
 def test_T10d_nonpilot_records_cannot_seed_a_pilot_state_dir(git_repo: GitRepo, tmp_path: Path):
@@ -1424,6 +1572,9 @@ def test_real_candidate_timeout_record_is_valid_but_not_a_completed_pilot(
                 returncode=None,
                 started=fixed_time,
                 ended=fixed_time,
+                process_tree_evidence=process_tree_evidence_dict(
+                    leader_status="not-started"
+                ),
             )
         return original_execute_plan(plan, cwd=cwd, **kwargs)
 
@@ -1514,6 +1665,9 @@ def test_malformed_terminal_evidence_refuses_before_pilot_summary(
                 returncode=None,
                 started=fixed_time,
                 ended=fixed_time,
+                process_tree_evidence=process_tree_evidence_dict(
+                    leader_status="not-started"
+                ),
             )
         return original_execute_plan(plan, cwd=cwd, **kwargs)
 
@@ -1568,6 +1722,9 @@ def test_resume_reexecutes_incomplete_budget_record(
                 returncode=None,
                 started=fixed_time,
                 ended=fixed_time,
+                process_tree_evidence=process_tree_evidence_dict(
+                    leader_status="not-started"
+                ),
             )
         return original_execute_plan(plan, cwd=cwd, **kwargs)
 

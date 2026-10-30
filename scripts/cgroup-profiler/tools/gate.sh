@@ -75,31 +75,113 @@ if command -v git >/dev/null 2>&1 && git -C "$project_dir" rev-parse --git-dir >
 fi
 
 image="${CGPROFILE_GATE_IMAGE:-tester-unified:local}"
-docker image inspect "$image" >/dev/null 2>&1 || die "gate image $image is not present.
-Build it from the repo root:
-  docker build -f tester-unified/Dockerfile -t tester-unified:local $repo_root"
+if ! docker image inspect "$image" >/dev/null 2>&1; then
+  if [ "$image" = "tester-unified:local" ]; then
+    die "gate image $image is not present.
+  Build and load it using the version-pinned procedure in
+  $repo_root/tester-unified/README.md
+Use tester-unified/build-image.sh with the Run-Gate wheel built from that checkout."
+  fi
+  printf -v image_shell '%q' "$image"
+  die "configured gate image $image_shell is not present. Build and load that selected image, or unset CGPROFILE_GATE_IMAGE to use tester-unified:local."
+fi
 
 # --- the host path of the worktree -------------------------------------
 # Docker resolves bind sources in the HOST namespace, so the cockpit's own view
 # of the path is not usable. Derive it from this container's mount table rather
 # than hardcoding an operator's home directory.
-host_worktree="${CGPROFILE_HOST_WORKTREE:-}"
-if [ -z "$host_worktree" ]; then
-  self="$(cat /etc/hostname 2>/dev/null || true)"
-  if [ -n "$self" ]; then
-    # Longest matching Destination wins, so a nested bind beats the repo root.
-    host_worktree="$(docker inspect "$self" --format \
-      '{{range .Mounts}}{{.Destination}}	{{.Source}}
-{{end}}' 2>/dev/null \
-      | awk -v w="$worktree" -F'\t' '
-          $1 != "" && index(w, $1) == 1 && length($1) > best_len {
-            best_len = length($1); best_dst = $1; best_src = $2
-          }
-          END { if (best_src != "") { rest = substr(w, best_len + 1); print best_src rest } }')"
-  fi
+case "$worktree" in /*) ;; *) die "worktree path must be absolute: $worktree" ;; esac
+self="$(cat /etc/hostname 2>/dev/null || true)"
+[ -n "$self" ] || die "cannot identify this cockpit container to map worktree paths"
+docker_mounts_json="$(docker inspect "$self" --format '{{json .Mounts}}' 2>/dev/null || true)"
+
+# Resolve cockpit-visible paths through the longest matching Docker destination.
+# Require a path-component boundary: /repo must not match /repository.
+host_path_for() {
+  local container_path="$1"
+  CONTAINER_PATH="$container_path" DOCKER_MOUNTS_JSON="$docker_mounts_json" python3 -c '
+import json
+import os
+import sys
+
+path = os.environ["CONTAINER_PATH"]
+try:
+    mounts = json.loads(os.environ["DOCKER_MOUNTS_JSON"])
+except json.JSONDecodeError:
+    raise SystemExit(0)
+best = None
+for mount in mounts:
+    destination = mount.get("Destination")
+    source = mount.get("Source")
+    if not isinstance(destination, str) or not isinstance(source, str):
+        continue
+    destination = destination.rstrip("/") or "/"
+    matches = path == destination or (
+        destination == "/" and path.startswith("/")
+    ) or path.startswith(destination + "/")
+    if matches and (best is None or len(destination) > len(best[0])):
+        best = (destination, source)
+if best is not None:
+    destination, source = best
+    suffix = path if destination == "/" else path[len(destination):]
+    if source.endswith("/") and suffix.startswith("/"):
+        suffix = suffix[1:]
+    elif suffix and not suffix.startswith("/"):
+        suffix = "/" + suffix
+    sys.stdout.write(source + suffix)
+    sys.stdout.write("\0")
+'
+}
+
+if [ -n "${CGPROFILE_HOST_WORKTREE:-}" ]; then
+  host_worktree="$CGPROFILE_HOST_WORKTREE"
+else
+  IFS= read -r -d '' host_worktree < <(host_path_for "$worktree") || host_worktree=""
 fi
 [ -n "$host_worktree" ] || die "cannot determine the host path of $worktree.
 Set CGPROFILE_HOST_WORKTREE explicitly, or run from a bind-mounted checkout."
+
+# Docker parses --mount as CSV. Quote each key/value field so commas and quotes
+# in valid filesystem paths remain part of the source or target value.
+csv_field() {
+  local value="$1"
+  value="${value//\"/\"\"}"
+  printf '"%s"' "$value"
+}
+
+docker_bind_mount() {
+  printf 'type=bind,'
+  csv_field "source=$1"
+  printf ','
+  csv_field "target=$2"
+  printf ',readonly'
+}
+
+# A linked Git worktree's .git file points to an administrative directory in
+# the shared common Git directory. Mounting only the checkout at /work breaks
+# that absolute pointer in tester-unified. Keep the checkout and common-dir at
+# their cockpit-visible paths so both the .git pointer and commondir file keep
+# resolving. A normal checkout has a .git directory and needs only one mount.
+git_common_mount=()
+if [ -f "$worktree/.git" ]; then
+  git_common_dir_output=""
+  IFS= read -r -d '' git_common_dir_output < <(
+    git -C "$worktree" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || exit
+    printf '\0'
+  ) || die "cannot resolve linked worktree common Git directory for $worktree"
+  git_common_dir="${git_common_dir_output%$'\n'}"
+  [ -n "$git_common_dir" ] || die "Git returned an empty common directory for $worktree"
+  case "$git_common_dir" in
+    "$worktree"/*) ;; # Already carried by the checkout bind mount.
+    *)
+      host_git_common_dir=""
+      IFS= read -r -d '' host_git_common_dir < <(host_path_for "$git_common_dir") || host_git_common_dir=""
+      [ -n "$host_git_common_dir" ] || die "cannot determine the host path of Git common directory $git_common_dir.
+Ensure the Git common directory is inside a bind-mounted path visible to this cockpit."
+      git_common_mount=(--mount "$(docker_bind_mount "$host_git_common_dir" "$git_common_dir")")
+      ;;
+  esac
+fi
 
 # --- placement ---------------------------------------------------------
 parent="${CGPROFILE_CGROUP_PARENT:-${CGROUP_PARENT_DEV_GATES:-}}"
@@ -133,6 +215,7 @@ printf 'gate: placement probe container=%s parent=%s\n' "$probe_name" "$probe_pa
 # the response after the daemon has created the named container.
 trap 'docker rm -f "$probe_name" >/dev/null 2>&1 || true' EXIT
 probe_cid="$(docker run -d --name "$probe_name" \
+  --init --pids-limit=8192 \
   --cgroup-parent="$probe_parent" --network=none --cpus=3 \
   --read-only --cap-drop=ALL --security-opt=no-new-privileges --user=1003:1003 \
   --mount type=bind,source=/sys/fs/cgroup,target=/hostcg,readonly \
@@ -198,14 +281,16 @@ printf 'gate: test container=%s parent=%s\n' "$container_name" "$parent"
 # response still leaves the EXIT trap able to remove only our attempted gate.
 trap 'docker rm -f "$container_name" >/dev/null 2>&1 || true' EXIT
 cid="$(docker run -d --name "$container_name" \
+  --init --pids-limit=8192 \
   --cgroup-parent="$parent" \
   --network=none \
   --memory="${CGPROFILE_GATE_MEMORY:-3g}" \
   --memory-swap="${CGPROFILE_GATE_MEMORY_SWAP:-8g}" \
   --cpus=3 \
-  -v "$host_worktree:/work:ro" \
-  -w "/work/$project_rel" \
-  -e PYTHONPATH="/work/$project_rel" \
+  --mount "$(docker_bind_mount "$host_worktree" "$worktree")" \
+  "${git_common_mount[@]}" \
+  -w "$worktree/$project_rel" \
+  -e PYTHONPATH="$worktree/$project_rel" \
   -e PYTHONDONTWRITEBYTECODE=1 \
   "$image" \
   bash -c "set -euo pipefail

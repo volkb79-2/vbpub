@@ -16,11 +16,11 @@ wiring around it.
 from __future__ import annotations
 
 import json
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from conftest import timeout_expired
 from conftest import (
     FakeAdapter,
     GitRepo,
@@ -133,6 +133,51 @@ def test_run_lane_full_pass_builds_judgment_and_covers_ended_after_r1(
     # where the two genuinely differ.
     assert verdict.judgment.resolved.source_roots == judge.source_roots
     assert verdict.judgment.resolved.language == judge.language
+
+
+def test_run_lane_sorts_nested_whole_target_paths_in_the_r1_judgment(
+    git_repo: GitRepo,
+):
+    # Mirrors a package-grouped whole-source declaration: the OCR target
+    # appears before a later client target even though the wire invariant is
+    # globally lexical across path components.
+    targets = (
+        "build-push.zzz",
+        "client/src/pwmcp_client/__init__.zzz",
+        "containers/ocr/ocr_service.zzz",
+        "client/src/pwmcp_client/session.zzz",
+    )
+    git_repo.write(".gitignore", "cov.json\n")
+    for target in targets:
+        git_repo.write(target, "value = 1\n")
+    head_rev = git_repo.commit_all("add grouped whole-target sources")
+    judge = make_r1_judge(
+        source_root_paths=(git_repo.path,),
+        base=None,
+        mode="whole_target",
+        targets=targets,
+    )
+    lane = make_lane(
+        rigor=("R0", "R1"),
+        judge=judge,
+        argv=_write_cov_argv(
+            {target: {"executed_lines": [1]} for target in targets}
+        ),
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=ADAPTER,
+        assay_version="0.1.0",
+    )
+
+    assert verdict.outcome is Outcome.PASS
+    assert verdict.judgment is not None
+    assert verdict.judgment.r1 is not None
+    assert verdict.judgment.r1.targets == tuple(sorted(targets))
 
 
 def test_run_lane_r0_only_never_builds_judgment_and_ended_is_r0s_own(
@@ -931,7 +976,7 @@ def test_run_lane_r1_renders_empty_coverage_when_r0_never_starts(git_repo: GitRe
 
 
 def _raise_timeout(argv, *, env, cwd, timeout):
-    raise subprocess.TimeoutExpired(cmd=list(argv), timeout=timeout)
+    raise timeout_expired(cmd=list(argv), timeout=timeout)
 
 
 def test_run_lane_r1_renders_empty_coverage_when_r0_budget_expires(

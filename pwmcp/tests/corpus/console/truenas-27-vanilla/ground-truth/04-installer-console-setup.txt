@@ -1,0 +1,7 @@
+TrueNAS 27.0.0-RC.1 Console Setup
+1 Install/Upgrade
+2 Shell
+3 Reboot System
+4 Shutdown System
+< OK >
+<Cancel>

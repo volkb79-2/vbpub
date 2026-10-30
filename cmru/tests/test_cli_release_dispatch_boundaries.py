@@ -1,9 +1,11 @@
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from cmru import cli
+from cmru import runner
 
 
 def test_child_release_args_replaces_parent_only_options_and_preserves_operations(tmp_path):
@@ -82,8 +84,46 @@ def test_cleanup_project_step_dry_run_and_execution_pass_version_and_environment
     assert seen == {
         "step": ("clean", [command]), "root": tmp_path, "logs": tmp_path / "logs",
         "env": {"BASE": "yes", "CMRU_VERSION": "2.3.4"},
-        "protected_env": None,
+        "protected_env": {"CMRU_RELEASE_COMMIT": None, "CMRU_RELEASE_TAG": None},
     }
+
+
+def test_cleanup_project_step_clears_release_pair_after_environment_helper(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setenv("CMRU_RELEASE_COMMIT", "stale-shell-commit")
+    monkeypatch.setenv("CMRU_RELEASE_TAG", "stale-shell-tag")
+    step = runner.StepConfig(
+        name="clean",
+        commands=[{"label": "clean", "argv": ["clean"], "cwd": str(tmp_path)}],
+        bake_set_prefix=None, bake_set_vars=[], no_cache_env=None, clean_dirs=[],
+        required_env=[], login=None, step_env={}, env_command=["./set-env"],
+        registries=[], quiet=True,
+    )
+    monkeypatch.setattr(cli, "_build_step_config", lambda *_args: step)
+    monkeypatch.setattr(
+        runner, "apply_env_command",
+        lambda *_args: os.environ.update({
+            "CMRU_RELEASE_COMMIT": "helper-commit",
+            "CMRU_RELEASE_TAG": "helper-tag",
+        }),
+    )
+    monkeypatch.setattr(runner, "maybe_login_multi", lambda *_args: None)
+    captured = {}
+
+    def capture_command(_argv, _cwd, _log_file, **_kwargs):
+        captured.update(os.environ)
+        return runner.CommandResult(elapsed_seconds=0, evidence=None)
+
+    monkeypatch.setattr(runner, "run_command", capture_command)
+    project = cli.ProjectConfig("demo", {"BASE": "yes"}, {"clean": []})
+
+    assert cli.cleanup_project_step(tmp_path, project, "2.3.4", False) is True
+
+    assert "CMRU_RELEASE_COMMIT" not in captured
+    assert "CMRU_RELEASE_TAG" not in captured
+    assert os.environ["CMRU_RELEASE_COMMIT"] == "stale-shell-commit"
+    assert os.environ["CMRU_RELEASE_TAG"] == "stale-shell-tag"
 
 
 def test_cleanup_commit_deletions_refuses_empty_staging_and_reports_commit_failure(monkeypatch, tmp_path, capsys):

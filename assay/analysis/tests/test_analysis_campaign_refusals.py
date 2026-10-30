@@ -15,6 +15,7 @@ import subprocess
 import types
 
 import pytest
+from assay.config import load_lane_file
 
 from analysis.tests.test_analysis_campaign import (
     _complete_fixture,
@@ -349,6 +350,25 @@ def _log_missing(env):
     return {"extra": ("--log", str(env.tmp_path / "absent-gate.log"))}
 
 
+def test_r2_policy_is_not_inferred_when_verdict_stopped_before_r2(tmp_path, monkeypatch):
+    root, _head, _verdict, _progress = _complete_fixture(
+        tmp_path, monkeypatch, "r2_pass"
+    )
+    lane = load_lane_file(root / "assay.toml").lane("package")
+    early_error_verdict = _fixture_document("r2_error_exec_failed_baseline_crashed")
+    early_error_verdict["lane"] = "package"
+
+    policy = campaign_api._check_verdict_against_lane(
+        early_error_verdict, lane_name="package", lane=lane
+    )
+
+    assert policy == {}
+    assert campaign_api._native_r2(lane, policy) is False
+    # Without a verdict, campaign analysis still needs the declared native
+    # policy to reconstruct a plan from progress-only evidence.
+    assert campaign_api._native_r2(lane, None) is True
+
+
 RESUME = {"event": "resume", "resumed_total": 0, "rejected_total": 0, "rejudged_total": 0}
 SHARD = {"event": "shard", "shard_index": 0, "shard_count": 1, "selected_total": 2}
 MERGED = {"event": "resume_merged", "resumed_total": 0}
@@ -377,7 +397,7 @@ CASES = (
     ("latest-run-other-commit", _progress(_other_commit_run), "latest progress run is for commit"),
     # -- run milestones ---------------------------------------------------------
     ("candidates-repeated", _two_events_at(2, {"event": "candidates"}), "repeats its candidates milestone"),
-    ("candidates-pilot-selection", _set(1, selection_sha256="x"), "pilot selection unsupported before P7"),
+    ("candidates-pilot-selection", _set(1, selection_sha256="x"), "pilot progress requires --plan-json and --selection-file"),
     ("candidates-bad-judge", _set(1, judge_sha256="zz"), "progress judge_sha256 must be a SHA-256 digest"),
     ("shard-repeated", _two_events_at(1, SHARD), "repeats its shard milestone"),
     ("shard-out-of-order", _insert(2, SHARD), "shard milestone is out of order"),
@@ -475,8 +495,12 @@ CASES = (
     # -- verdict bound to the declared lane ---------------------------------------------
     (
         "verdict-r2-policy-differs",
-        _verdict_edit(lambda d: d["judgment"]["r2"].update(jobs=d["judgment"]["r2"]["jobs"] + 1)),
-        "R2 verdict policy jobs differs from the named lane declaration",
+        _verdict_edit(
+            lambda d: d["judgment"]["r2"].update(
+                max_mutants=d["judgment"]["r2"]["max_mutants"] + 1
+            )
+        ),
+        "R2 verdict policy max_mutants differs from the named lane declaration",
     ),
     # -- plan reconstruction -------------------------------------------------------------
     (

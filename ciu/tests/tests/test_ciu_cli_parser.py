@@ -253,6 +253,7 @@ class TestPerVerbHelp:
 
         for guidance in (
             "worktree create LOGICAL [--base REF]",
+            "--profile P1,P2",
             "exact commit SHA",
             "does NOT deploy",
             "ensure",

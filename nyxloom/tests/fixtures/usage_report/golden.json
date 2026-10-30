@@ -1,0 +1,295 @@
+{
+  "basis": {
+    "api_equivalent_usd": null,
+    "definition": "input + cache_read + cache_write_5m + cache_write_1h + cache_write_unclassified + output",
+    "estimated_limit_pct": null,
+    "mode": "raw",
+    "usd": null,
+    "weighted_units": null
+  },
+  "calls": [
+    {
+      "agent_id": null,
+      "agent_type": "main",
+      "api_equivalent_usd": null,
+      "call_id": "call-fixture-1",
+      "context_size": 29,
+      "copied_source_count": 1,
+      "conflicted": false,
+      "effort": "medium",
+      "has_fork_source": false,
+      "inference_geo": null,
+      "message_id": "msg-golden",
+      "model": "claude-sonnet-5-5",
+      "project_id": "project-fixture-1",
+      "provenance": [
+        {
+          "line": 1,
+          "source_id": "source-fixture-1"
+        }
+      ],
+      "raw_token_units": 36,
+      "request_id": "golden",
+      "request_ids": [
+        "golden"
+      ],
+      "service_tier": "standard",
+      "session_id": "session-001",
+      "sidechain": false,
+      "source_id": "source-fixture-1",
+      "source_ids": [
+        "source-fixture-1"
+      ],
+      "source_line": 1,
+      "speed": "standard",
+      "stream_block_count": 1,
+      "timestamp": "2026-10-28T11:00:00Z",
+      "tokens": {
+        "cache_read": 11,
+        "cache_write_1h": 4,
+        "cache_write_5m": 9,
+        "cache_write_unclassified": 0,
+        "input": 5,
+        "output": 7,
+        "thinking": 2
+      },
+      "topic": null,
+      "weighted_units": null
+    }
+  ],
+  "conflicts": [],
+  "contract": {
+    "active_burst_gap_seconds": 3600,
+    "call_order": "timestamp, session_id, source_id, source_line, call_id",
+    "call_timestamp": "record.timestamp; timezone-aware ISO-8601 required",
+    "copied_prefix_identity": "sessionId, message.id, UTC timestamp, model, complete usage tuple",
+    "csv_rows": "one report metadata row followed by one row per deduplicated call",
+    "event_order": "timestamp, session_id, source_id, source_line, event_id",
+    "json_key_order": "lexicographic",
+    "opaque_id": "truncated SHA-256 over canonical source and record identity",
+    "share_rounding_decimal_places": 8,
+    "stream_deduplication": "canonical source plus requestId, message.id fallback",
+    "window": "[since, until), UTC"
+  },
+  "coverage": {
+    "has_warnings": false,
+    "partial": false,
+    "scanned_files": 1,
+    "warnings": {
+      "ambiguous_parent_edges": 0,
+      "concurrent_changes": 0,
+      "conflicted_calls_excluded": 0,
+      "copied_prefixes": 0,
+      "cross_file_conflicts": 0,
+      "duplicate_conflicts": 0,
+      "duplicate_requests": 0,
+      "invalid_identity_fields": 0,
+      "invalid_metadata_values": 0,
+      "invalid_usage_fields": 0,
+      "malformed_lines": 0,
+      "malformed_meta": 0,
+      "missing_lineage_metadata": 0,
+      "missing_meta": 0,
+      "missing_timestamps": 0,
+      "missing_usage": 0,
+      "parent_conflicts": 0,
+      "session_id_mismatches": 0,
+      "symlink_aliases": 0,
+      "synthetic_models": 0,
+      "truncated_lines": 0,
+      "unattributed_agents": 0,
+      "unclassified_rejections": 0,
+      "unpaired_compaction_summaries": 0,
+      "unreadable_files": 0
+    }
+  },
+  "events": [],
+  "extensions": {
+    "chart_data": null,
+    "limit_anchors": null,
+    "prices": null
+  },
+  "filters": {
+    "no_labels": false,
+    "project_selected": false,
+    "session_selected": false
+  },
+  "generated_at": "2026-10-28T12:00:00Z",
+  "lineage_edges": [],
+  "nodes": [
+    {
+      "active_bursts": [
+        {
+          "calls": 1,
+          "end": "2026-10-28T11:00:00Z",
+          "start": "2026-10-28T11:00:00Z"
+        }
+      ],
+      "agent_id": null,
+      "agent_type": null,
+      "api_equivalent_usd": null,
+      "call_ids": [
+        "call-fixture-1"
+      ],
+      "calls": 1,
+      "children": [],
+      "claimed_parent_agent_id": null,
+      "clipped_after": false,
+      "clipped_before": false,
+      "depth": 0,
+      "duration_seconds": 0,
+      "efforts": {
+        "medium": 1
+      },
+      "end": "2026-10-28T11:00:00Z",
+      "event_ids": [],
+      "is_fork": false,
+      "kind": "main",
+      "lineage_candidates": [],
+      "lineage_status": "root",
+      "lineage_tool_use_id": null,
+      "models": {
+        "claude-sonnet-5-5": 1
+      },
+      "node_id": "session-001",
+      "omitted_descendants": 0,
+      "parent_id": null,
+      "peak_context": 29,
+      "peak_context_at": "2026-10-28T11:00:00Z",
+      "project_id": "project-fixture-1",
+      "raw_token_units": 36,
+      "self": {
+        "active_span_seconds": 0,
+        "api_equivalent_usd": null,
+        "calls": 1,
+        "duration_seconds": 0,
+        "efforts": {
+          "medium": 1
+        },
+        "end": "2026-10-28T11:00:00Z",
+        "models": {
+          "claude-sonnet-5-5": 1
+        },
+        "peak_context": 29,
+        "peak_context_at": "2026-10-28T11:00:00Z",
+        "raw_token_units": 36,
+        "share_of_total": 1.0,
+        "start": "2026-10-28T11:00:00Z",
+        "tokens": {
+          "cache_read": 11,
+          "cache_write_1h": 4,
+          "cache_write_5m": 9,
+          "cache_write_unclassified": 0,
+          "input": 5,
+          "output": 7,
+          "thinking": 2
+        },
+        "usd": null,
+        "wall_duration_seconds": 0,
+        "weighted_units": null
+      },
+      "session_id": "session-001",
+      "share_basis": "raw_token_units",
+      "share_of_total": 1.0,
+      "share_of_window": null,
+      "source_ids": [
+        "source-fixture-1"
+      ],
+      "spawn_depth": null,
+      "start": "2026-10-28T11:00:00Z",
+      "subtree": {
+        "active_span_seconds": 0,
+        "api_equivalent_usd": null,
+        "calls": 1,
+        "duration_seconds": 0,
+        "efforts": {
+          "medium": 1
+        },
+        "end": "2026-10-28T11:00:00Z",
+        "models": {
+          "claude-sonnet-5-5": 1
+        },
+        "peak_context": 29,
+        "peak_context_at": "2026-10-28T11:00:00Z",
+        "raw_token_units": 36,
+        "share_of_total": 1.0,
+        "start": "2026-10-28T11:00:00Z",
+        "tokens": {
+          "cache_read": 11,
+          "cache_write_1h": 4,
+          "cache_write_5m": 9,
+          "cache_write_unclassified": 0,
+          "input": 5,
+          "output": 7,
+          "thinking": 2
+        },
+        "usd": null,
+        "wall_duration_seconds": 0,
+        "weighted_units": null
+      },
+      "tokens": {
+        "cache_read": 11,
+        "cache_write_1h": 4,
+        "cache_write_5m": 9,
+        "cache_write_unclassified": 0,
+        "input": 5,
+        "output": 7,
+        "thinking": 2
+      },
+      "topic": null,
+      "usd": null,
+      "weighted_units": null
+    }
+  ],
+  "presentation": {
+    "depth": null,
+    "flat": false,
+    "min_share": 0.0,
+    "share_basis": "raw_token_units",
+    "sort": "cost"
+  },
+  "privacy": {
+    "filesystem_paths": "excluded; project_id is a stable hash of recorded cwd and source identifiers are opaque",
+    "message_content": "excluded",
+    "thinking_content": "excluded; token count is an output subset",
+    "tool_content": "excluded"
+  },
+  "report": "nyxloom-usage-report",
+  "schema_version": "usage-report-v1",
+  "totals": {
+    "active_span_seconds": 0,
+    "api_equivalent_usd": null,
+    "calls": 1,
+    "duration_seconds": 0,
+    "efforts": {
+      "medium": 1
+    },
+    "end": "2026-10-28T11:00:00Z",
+    "models": {
+      "claude-sonnet-5-5": 1
+    },
+    "peak_context": 29,
+    "peak_context_at": "2026-10-28T11:00:00Z",
+    "raw_token_units": 36,
+    "share_of_total": 1.0,
+    "start": "2026-10-28T11:00:00Z",
+    "tokens": {
+      "cache_read": 11,
+      "cache_write_1h": 4,
+      "cache_write_5m": 9,
+      "cache_write_unclassified": 0,
+      "input": 5,
+      "output": 7,
+      "thinking": 2
+    },
+    "usd": null,
+    "wall_duration_seconds": 0,
+    "weighted_units": null
+  },
+  "window": {
+    "semantics": "[since, until)",
+    "since": "2026-10-28T11:00:00Z",
+    "timezone": "UTC",
+    "until": "2026-10-28T12:00:00Z"
+  }
+}

@@ -1,0 +1,120 @@
+# RENDERED by host-setup/install.sh from host-setup.env — do not edit the
+# installed copy; edit /etc/mdt/host-setup.env and re-run install.sh.
+#
+# Runs a rootless BuildKit worker AS A CONTAINER via a plain `docker run`
+# (never through `buildx create` / any Buildx driver) — Buildx's own
+# `cgroup-parent` driver-opt does not reliably place a `docker-container`
+# builder under a named slice with Docker's systemd cgroup driver
+# (source-verified, docs/BUILD-ARCHITECTURE.md); a plain `docker run
+# --cgroup-parent=...` places correctly (verified live, see
+# plan-buildkitd-service.md §0). Buildx then reaches this worker via its
+# `remote` driver over the Unix socket this unit exposes at
+# /run/mdt-buildkitd/buildkitd.sock (see templates/devcontainer.json for the
+# consumer-side bind-mount).
+#
+# `docker run` (foreground, no -d) AS ExecStart= is systemd's own
+# established pattern for supervising a container — Restart= gives crash
+# recovery for free, and a config change just needs `systemctl restart`
+# after re-running install.sh. No bespoke drift-detection script.
+#
+# Rootless image variant (not a hand-rolled privilege setup): a build daemon
+# executes arbitrary Dockerfile RUN content, so rootless is the meaningfully
+# safer default, not merely a tolerable one. Cgroup placement/accounting is
+# unaffected either way — enforced by the kernel on the outer cgroup
+# regardless of the UID of processes inside it. The --device /dev/fuse
+# --security-opt seccomp=unconfined --security-opt apparmor=unconfined trio
+# is the SAME relaxation the mdt devcontainer already grants itself, for the
+# identical FUSE (fuse-overlayfs) reason — not a new category of exposure.
+#
+# --oci-worker-no-process-sandbox: without it, every RUN step's nested runc
+# fails with "error mounting proc to rootfs ... operation not permitted"
+# (verified live, 2026-08-04) — the container's own unprivileged user
+# namespace can't recursively unshare a second one for the per-exec mount
+# namespace under this host's runc/kernel combination, even with
+# unprivileged_userns_clone=1 and seccomp/apparmor unconfined. This is
+# buildkit's own documented flag for exactly "running as an unprivileged
+# user" (its startup warning names this case explicitly), not a workaround
+# outside the rootless design — trades per-RUN-step process isolation
+# (a build step could in principle signal another process in the same
+# worker) for working nested execution at all, which for a shared,
+# non-multi-tenant dev builder is the correct trade.
+[Unit]
+Description=mdt host-setup — host-managed BuildKit worker (dev-buildkitd.slice)
+Documentation=file:/etc/mdt/host-setup.env
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+# ExecStartPre pulls the image and ExecStartPost waits for the socket, all inside
+# the start job; systemd's 90 s default is too short for a cold image pull or a slow
+# (emulated, TCG) host: the vm-system lane timed out here on 2026-10-19.
+TimeoutStartSec=10min
+# Creates /run/mdt-buildkitd before ExecStart. Preserve the directory across
+# service stops and restarts: devcontainers bind-mount this host path, and
+# replacing its inode leaves an existing container attached to the old,
+# empty directory. /run is tmpfs, so a fresh directory is still created after
+# each host boot.
+#
+# RuntimeDirectoryMode=01777 is required, not just permissive: this unit has
+# no User=/Group=, so RuntimeDirectory='s default mode (0755, root:root)
+# only lets ROOT write into it — but the container that mounts it is the
+# ROOTLESS buildkit image (deliberately, see above), whose buildkitd process
+# runs as uid 1000. Without world write, buildkitd
+# fails at startup: "listen unix /run/buildkit/buildkitd.sock: bind:
+# permission denied" (verified live). The directory holds nothing but this
+# one socket for this one container's lifetime. The sticky bit prevents other
+# uids from replacing/removing it after it appears. ExecStartPost then locks
+# the directory against entry changes, validates the socket in the container's
+# user namespace, and assigns that socket to docker:0660 before readiness.
+RuntimeDirectory=mdt-buildkitd
+RuntimeDirectoryMode=01777
+RuntimeDirectoryPreserve=yes
+# Clear any stale container from an unclean shutdown before starting fresh
+# (the "-" prefix makes a failure here non-fatal — nothing to clear is fine).
+# A bind-mounted cache directory (DEV_BUILDKITD_CACHE is an absolute path) must already exist as a real directory:
+# `docker run -v` would otherwise create it, silently, on the root filesystem when the intended mount is absent.
+ExecStartPre=/bin/sh -ec 'cache="@DEV_BUILDKITD_CACHE@"; case "$cache" in /*) [ -d "$cache" ] && [ ! -L "$cache" ] || { echo "BuildKit cache directory $cache is missing or not a real directory" >&2; exit 1; } ;; esac'
+ExecStartPre=-/usr/bin/docker rm -f mdt-buildkitd
+ExecStartPre=-/usr/bin/docker pull @DEV_BUILDKITD_IMAGE@
+# ExecStartPost seals this directory to 0711. Restore only drifted metadata
+# before each start so rootless BuildKit can create its socket. Never replace
+# an existing bind source; reject an unexpected path type rather than follow
+# or repair it as a directory.
+ExecStartPre=/bin/sh -ec 'path=/run/mdt-buildkitd; [ -d "$path" ] && [ ! -L "$path" ] || { echo "unsafe BuildKit runtime directory" >&2; exit 1; }; [ "$(/usr/bin/stat -c %%u:%%g "$path")" = 0:0 ] || /bin/chown 0:0 "$path"; [ "$(/usr/bin/stat -c %%a "$path")" = 1777 ] || /bin/chmod 01777 "$path"'
+# Remove any stale filesystem socket while root still owns the directory.
+ExecStartPre=/bin/rm -f /run/mdt-buildkitd/buildkitd.sock
+ExecStart=/usr/bin/docker run --rm --name mdt-buildkitd \
+  --label io.volkb79.mdt.buildkit.managed=true \
+  --label io.volkb79.mdt.buildkit.builder=mdt-managed \
+  --label io.volkb79.mdt.buildkit.slice=dev-buildkitd.slice \
+  --cgroup-parent=dev-buildkitd.slice \
+  --device /dev/fuse \
+  --security-opt seccomp=unconfined \
+  --security-opt apparmor=unconfined \
+  -v /run/mdt-buildkitd:/run/buildkit \
+  -v /etc/mdt/buildkitd.toml:/etc/buildkit/buildkitd.toml:ro \
+  -v @DEV_BUILDKITD_CACHE@:/home/user/.local/share/buildkit \
+  @DEV_BUILDKITD_IMAGE@ \
+  --config /etc/buildkit/buildkitd.toml \
+  --addr unix:///run/buildkit/buildkitd.sock \
+  --oci-worker-no-process-sandbox
+# Rootless BuildKit creates this socket with its user-namespace uid/gid, which
+# may be remapped on the host. Wait for it, then make the root-owned parent
+# non-writable before checking or changing the path. This closes the check/use
+# race: the socket creator cannot replace the directory entry while root runs
+# chgrp/chmod. Check ownership inside the container's namespace so
+# Docker userns-remap does not create a false mismatch.
+# Double each percent sign so systemd passes stat's format specifiers through.
+# The socket wait is 60 s (600 x 0.1 s), not 10 s: rootless BuildKit (fuse-overlayfs) needs longer
+# than 10 s to create its socket in an emulated (TCG) guest — the 4th restart of one vm-system run
+# failed with "BuildKit socket did not become safe" at the old limit (MDT-HS-02).
+ExecStartPost=/bin/sh -ec 'attempt=0; while [ "$attempt" -lt 600 ]; do socket=/run/mdt-buildkitd/buildkitd.sock; if [ -S "$socket" ] && [ ! -L "$socket" ]; then [ "$(/usr/bin/stat -c %%a /run/mdt-buildkitd)" = 711 ] || /bin/chmod 0711 /run/mdt-buildkitd; if [ ! -S "$socket" ] || [ -L "$socket" ]; then echo "BuildKit socket changed while sealing its runtime directory" >&2; exit 1; fi; socket_uid=$(/usr/bin/docker exec mdt-buildkitd stat -c %%u /run/buildkit/buildkitd.sock 2>/dev/null) || { echo "cannot read BuildKit socket uid inside service container" >&2; exit 1; }; daemon_uid=$(/usr/bin/docker exec mdt-buildkitd id -u 2>/dev/null) || { echo "cannot read BuildKit service uid" >&2; exit 1; }; [ "$socket_uid" = "$daemon_uid" ] || { echo "BuildKit socket owner does not match service uid" >&2; exit 1; }; /bin/chgrp docker "$socket"; /bin/chmod 0660 "$socket"; socket_group=$(/usr/bin/stat -c %%g "$socket"); docker_gid=$(/usr/bin/getent group docker | /usr/bin/cut -d: -f3); socket_mode=$(/usr/bin/stat -c %%a "$socket"); [ "$socket_group" = "$docker_gid" ] && [ "$socket_mode" = 660 ] || { echo "BuildKit socket permissions did not verify" >&2; exit 1; }; exit 0; fi; attempt=$((attempt + 1)); sleep 0.1; done; echo "BuildKit socket did not become safe and docker-group-accessible" >&2; exit 1'
+# Record what this start used (rendered unit + config digest) so a pending restart is never reported as "unchanged" (MDT-HS-07).
+ExecStartPost=-/usr/local/sbin/mdt-buildkitd-stamp.sh
+ExecStop=/usr/bin/docker stop -t 30 mdt-buildkitd
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

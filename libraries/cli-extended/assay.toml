@@ -12,9 +12,11 @@ argv = [
 ]
 env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["PATH"]
-# Measured 2026-10-05: ~2-3 candidates/min at jobs=2 under host contention, so
-# 1,400 candidates need ~9-11 h; jobs=3 matches the 3-CPU slice cap. See assay
-# B144 for the covering-test ordering that would cut this.
+# The 2026-10-05 rate was measured with multiple workers. B157 now serializes
+# native R2 so event-counter deltas remain attributable. Re-measure this large
+# campaign with a bounded pilot before treating the 12-hour gate window as a
+# completion estimate. B144 tracks covering-test ordering that may reduce its
+# per-candidate work.
 budget = "720m"
 allow_argv_append = false
 
@@ -64,7 +66,7 @@ format = "coverage-py-json"
 artifact = "coverage.json"
 
 [lanes.cli-extended.judge.mutation]
-jobs = 3
+jobs = 1
 # Raised for the unified-adoption wave (2026-10-05): the library roughly
 # doubled (skills, doctor, config, findings, constraints), so the previous
 # 1,200 cap would refuse with MUTANT_LIMIT_EXCEEDED rather than sample.

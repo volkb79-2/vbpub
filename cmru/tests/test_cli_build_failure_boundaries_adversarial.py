@@ -35,6 +35,7 @@ def _prepare_build(monkeypatch, tmp_path):
         },
     )
     monkeypatch.setattr(cli.transaction, "assert_local_main_not_ahead", lambda *_, **__: 0)
+    monkeypatch.setattr(cli.transaction, "local_head_commit", lambda *_, **__: "c" * 40)
     monkeypatch.setattr(cli.transaction, "create_workspace", lambda *args, **kwargs: workspace)
     return workspace
 
@@ -49,7 +50,8 @@ def test_build_with_uncommitted_project_paths_is_a_refusal_exit_4(monkeypatch, t
     assert cli.main(["build", "demo", "--config", str(tmp_path / "cmru.toml")]) == 4
     err = capsys.readouterr().err
     assert "demo: uncommitted changes" in err
-    assert "cmru build snapshots origin/main" in err
+    assert "cmru build snapshots the checked-out commit (HEAD)" in err
+    assert "--allow-uncommitted" in err
 
 
 def test_build_while_the_release_lock_is_held_is_a_refusal_exit_4(monkeypatch, tmp_path, capsys):
@@ -67,7 +69,7 @@ def test_build_while_the_release_lock_is_held_is_a_refusal_exit_4(monkeypatch, t
         cli.transaction, "create_workspace",
         lambda *a, **k: pytest.fail("a refused build must not create a worktree"),
     )
-    assert cli.main(["build", "demo", "--config", str(tmp_path / "cmru.toml")]) == 4
+    assert cli.main(["build", "demo", "--from-origin-main", "--config", str(tmp_path / "cmru.toml")]) == 4
     assert "already running" in capsys.readouterr().err
 
 
@@ -77,16 +79,16 @@ def test_build_failing_after_the_snapshot_started_stays_exit_1(monkeypatch, tmp_
         cli.transaction, "fetch_origin_main",
         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("origin unreachable")),
     )
-    assert cli.main(["build", "demo", "--config", str(tmp_path / "cmru.toml")]) == 1
+    assert cli.main(["build", "demo", "--from-origin-main", "--config", str(tmp_path / "cmru.toml")]) == 1
     assert "origin unreachable" in capsys.readouterr().err
 
 
 def test_build_child_failure_retains_worktree_and_propagates_status(monkeypatch, tmp_path, capsys):
     workspace = _prepare_build(monkeypatch, tmp_path)
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: 7)
-    monkeypatch.setattr(cli.transaction, "retain_successful_build_outputs", lambda *args: (_ for _ in ()).throw(AssertionError("retain")))
+    monkeypatch.setattr(cli.transaction, "retain_successful_build_outputs", lambda *args, **_kw: (_ for _ in ()).throw(AssertionError("retain")))
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args: (_ for _ in ()).throw(AssertionError("remove")))
-    exc = cli.main(["build", "demo", "--config", str(tmp_path / "cmru.toml")])
+    exc = cli.main(["build", "demo", "--from-origin-main", "--config", str(tmp_path / "cmru.toml")])
     assert exc == 7
     assert "worktree retained for debugging" in capsys.readouterr().err
     assert workspace.path.name == "child"
@@ -95,10 +97,10 @@ def test_build_child_failure_retains_worktree_and_propagates_status(monkeypatch,
 def test_build_retention_failure_keeps_worktree_and_returns_generic_failure(monkeypatch, tmp_path, capsys):
     _prepare_build(monkeypatch, tmp_path)
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: 0)
-    monkeypatch.setattr(cli.transaction, "retain_successful_build_outputs", lambda *args: (_ for _ in ()).throw(RuntimeError("missing logs")))
+    monkeypatch.setattr(cli.transaction, "retain_successful_build_outputs", lambda *args, **_kw: (_ for _ in ()).throw(RuntimeError("missing logs")))
     removed = []
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda workspace: removed.append(workspace))
-    exc = cli.main(["build", "demo", "--config", str(tmp_path / "cmru.toml")])
+    exc = cli.main(["build", "demo", "--from-origin-main", "--config", str(tmp_path / "cmru.toml")])
     assert exc == 1
     assert removed == []
     assert "retention failed" in capsys.readouterr().err
@@ -108,9 +110,9 @@ def test_build_cleanup_failure_reports_retained_outputs_and_does_not_hide_error(
     workspace = _prepare_build(monkeypatch, tmp_path)
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: 0)
     retained = [tmp_path / "demo" / "artifacts" / "build-id"]
-    monkeypatch.setattr(cli.transaction, "retain_successful_build_outputs", lambda *args: retained)
+    monkeypatch.setattr(cli.transaction, "retain_successful_build_outputs", lambda *args, **_kw: retained)
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args: (_ for _ in ()).throw(RuntimeError("busy worktree")))
-    exc = cli.main(["build", "demo", "--config", str(tmp_path / "cmru.toml")])
+    exc = cli.main(["build", "demo", "--from-origin-main", "--config", str(tmp_path / "cmru.toml")])
     assert exc == 1
     output = capsys.readouterr().err
     assert "outputs were retained but worktree cleanup failed" in output
@@ -125,7 +127,7 @@ def test_dirty_retained_build_does_not_suggest_publication(monkeypatch, tmp_path
         tmp_path / "demo" / "artifacts" / "build-id",
     ]
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: 0)
-    monkeypatch.setattr(cli.transaction, "retain_successful_build_outputs", lambda *args: retained)
+    monkeypatch.setattr(cli.transaction, "retain_successful_build_outputs", lambda *args, **_kw: retained)
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *_args: None)
     monkeypatch.setattr(
         cli.transaction,
@@ -135,9 +137,41 @@ def test_dirty_retained_build_does_not_suggest_publication(monkeypatch, tmp_path
         )),
     )
 
-    assert cli.main(["build", "demo", "--config", str(tmp_path / "cmru.toml")]) == 0
+    assert cli.main(["build", "demo", "--from-origin-main", "--config", str(tmp_path / "cmru.toml")]) == 0
     output = capsys.readouterr()
     combined = output.out + output.err
     assert "not eligible for publication" in combined
     assert "source tree changes" in combined
     assert "publish these exact retained bytes" not in combined
+
+
+def test_build_default_source_is_the_checked_out_commit_and_never_fetches_origin(monkeypatch, tmp_path):
+    workspace = _prepare_build(monkeypatch, tmp_path)
+    seen = {}
+    monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *args: {})
+    monkeypatch.setattr(
+        cli.transaction, "fetch_origin_main",
+        lambda *a, **k: pytest.fail("the default build source must not fetch origin/main"),
+    )
+    monkeypatch.setattr(
+        cli.transaction, "assert_local_main_not_ahead",
+        lambda *a, **k: pytest.fail("an unpushed HEAD is a valid build source"),
+    )
+
+    def capture(*args, **kwargs):
+        seen.update(kwargs)
+        return workspace
+
+    monkeypatch.setattr(cli.transaction, "create_workspace", capture)
+    cli.main(["build", "demo", "--config", str(tmp_path / "cmru.toml")])
+    assert seen["base"] == "c" * 40
+
+
+def test_build_allow_uncommitted_skips_the_dirty_refusal(monkeypatch, tmp_path):
+    workspace = _prepare_build(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        cli, "_uncommitted_release_paths",
+        lambda *args: pytest.fail("--allow-uncommitted must not scan for dirty paths"),
+    )
+    monkeypatch.setattr(cli.transaction, "create_workspace", lambda *a, **k: workspace)
+    cli.main(["build", "demo", "--allow-uncommitted", "--config", str(tmp_path / "cmru.toml")])

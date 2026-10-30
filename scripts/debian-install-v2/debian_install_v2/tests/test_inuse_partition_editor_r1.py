@@ -30,10 +30,16 @@ import pytest
 MODULE_PATH = Path(__file__).resolve().parents[1] / "inuse_partition_editor.py"
 SFDISK_TOOLS = ("sfdisk", "blockdev", "partx")
 
-REAL_SFDISK_SKIP = pytest.mark.skipif(
+_REAL_SFDISK_SKIPIF = pytest.mark.skipif(
     any(shutil.which(t) is None for t in SFDISK_TOOLS),
     reason="sfdisk/blockdev/partx not available in this environment",
 )
+
+
+def REAL_SFDISK_SKIP(test):
+    """A real-sfdisk test: skipped where the binaries are absent, and marked os_integration so
+    gate containers deselect it and the QEMU VM lane requires it (MDTC-02 T7)."""
+    return pytest.mark.os_integration(_REAL_SFDISK_SKIPIF(test))
 
 
 def load_module():
@@ -391,7 +397,7 @@ def test_part_dev_naming_matches_loop_device_convention(mod, monkeypatch):
 # an authorization to run this in a privileged container. The virtualization
 # check is the second gate: a copied command on the host or in Docker remains
 # skipped even if an operator accidentally exports the variable there.
-REAL_VM_SWAP_TEST_SKIP = pytest.mark.skipif(
+_REAL_VM_SWAP_SKIPIF = pytest.mark.skipif(
     os.geteuid() != 0
     or shutil.which("losetup") is None
     or not _is_disposable_vm_guest(),
@@ -399,6 +405,11 @@ REAL_VM_SWAP_TEST_SKIP = pytest.mark.skipif(
            "VBPUB_ALLOW_VM_GLOBAL_SWAP_TEST=1; Docker/cockpit containers "
            "share host-global loop and swap state",
 )
+
+
+def REAL_VM_SWAP_TEST_SKIP(test):
+    """A real loop-device + swap test: VM-guest only, os_integration (MDTC-02 T7)."""
+    return pytest.mark.os_integration(_REAL_VM_SWAP_SKIPIF(test))
 
 
 @REAL_VM_SWAP_TEST_SKIP

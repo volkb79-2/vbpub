@@ -72,3 +72,10 @@ placement regressions. Whole-package coverage passed at 100% line and branch
 coverage (8,389 statements, 3,110 branches), and all seven package canaries
 were rejected. Final committed-tree gates, live acceptance against the
 candidate daemon, and independent Sol review remain pending.
+
+2026-10-15: Candidate-daemon live acceptance passed both the one-process
+`origin-scope-would-empty` refusal and a token-scoped move/stop cycle. The
+worker PID's host cgroup was identical before and after stop, and was observed
+inside the expected profiler leaf during placement. Final exact-tip registered
+gates and independent review remain pending. Evidence:
+`reports/cgprofile-CP18-CP19-LIVE-ACCEPTANCE-20261015.md`.

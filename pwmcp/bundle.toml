@@ -1,10 +1,17 @@
 project_root = "."
 dist_dir = "dist"
 bundle_dir = "bundle"
+client_dir = "wheels"
+
+[wheel]
+enabled = true
+python_bin = "python3"
+project_root = "client"
+find_links = "vendor"
 
 [archive]
 # PWMCP_VERSION is written by CMRU's explicit pwmcp prepare phase (e.g. "1.60.0-r2").
-name_template = "pwmcp-{version}.tar.xz"
+name_template = "pwmcp-v{version}.tar.xz"
 format = "xztar"
 version_env = "PWMCP_VERSION"
 
@@ -12,17 +19,13 @@ version_env = "PWMCP_VERSION"
 # Consumer-facing stack files only. Maintainer-only files (Dockerfile, docker-bake.hcl,
 # cmru.toml, bundle.toml, scripts/) are excluded — the image is already on GHCR.
 #
-# NOT vendored: ciu.global.defaults.toml.j2 / ciu.global.toml.j2. Those carry
-# standalone_root=true and are the image SOURCE's OWN build-test ciu root — shipping
-# them made every vendored consumer an independent standalone root (the S1.2 hack that
-# breaks `ciu up`, reaches across projects, and yields ambiguous container names). A
-# consumer must instead run pwmcp as a proper SUB-STACK of ITS OWN ciu root: it drops
-# these files into a subdir, inherits deploy.* from its root global, and sets
-# pwmcp.network.external_default = true in an override. See netcup-api-filter/infra/pwmcp.
+# The maintainer's build-test root configs remain excluded. `standalone/` contains the
+# separate root defaults for the CMRU-managed /srv/pwmcp-instance install; the ordinary
+# bundle remains usable as a sub-stack of a consumer's CIU root.
 files = [
   "ciu.compose.yml.j2",
   "ciu.defaults.toml.j2",
   "pwmcp.contract.json",
   "README.md",
 ]
-dirs = ["docs", "client"]
+dirs = ["docs", "client", "standalone", "installer"]

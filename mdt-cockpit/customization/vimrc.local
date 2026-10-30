@@ -1,0 +1,10 @@
+" mdt-cockpit vim defaults, installed as /etc/vim/vimrc.local (Debian's /etc/vim/vimrc
+" sources it). ~/.vimrc is read afterwards and overrides these.
+syntax on
+set hidden
+set expandtab shiftwidth=4 softtabstop=4
+set ignorecase smartcase incsearch hlsearch
+set wildmenu
+set scrolloff=5
+set ttimeoutlen=50
+set nomodeline

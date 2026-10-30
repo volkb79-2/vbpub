@@ -4,13 +4,138 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
-<!-- Empty on purpose (cmru KI-30 refuses a tagged release while this body is non-empty).
-     Release-notes pointer for the next nyxloom release (NYX-CLIX): the wheel no longer
-     vendors cli_extended; it declares `cli-extended>=0.3.0` as a real dependency
-     (unified-adoption CX-D1). Install the released cli-extended wheel first (GitHub
-     Releases only, never PyPI; CX-D2). Details: nyxloom/nyxloom-trove/reports/MM-MOVE-REPORT.md. -->
-
 <!-- cmru: release history -->
+
+## [0.12.0] - 2026-10-30
+<!-- cmru: generated -->
+<!-- cmru: source-end=f6dc2b9508a0ebc330a9561a6ddb3dbb80e8bc10 -->
+
+### Added
+- feat(nyxloom): add managed-browser usage PDF export (31885246e)
+- feat(nyxloom): add offline HTML usage report (fbe6c27c0)
+- feat(nyxloom): add usage chart data layer (2e451afb0)
+- feat(nyxloom): add usage pricing and calibration (2fee84a8e)
+- feat(nyxloom): add metadata-only Claude usage report (3af0bfdb3)
+
+### Fixed
+- fix(nyxloom): harden usage CSV and source-version floors (2760e2723)
+- fix(nyxloom): secure anchor parent before reading (98dd2bbde)
+- fix(nyxloom): warn for missing selected usage anchors (770a30fd5)
+- fix(nyxloom): close usage branch findings (10c5f3bfb)
+- fix(nyxloom): reconcile usage report with plan review (5dffd449f)
+
+### Changed
+- Remove unreachable usage provenance fallback (cc1ce5555)
+- Fix usage windows CLI coverage path (bd02247b2)
+- chore(nyxloom): size session-extract campaign for full run (c2448ef59)
+- Close session extract coverage branches (abd554f7d)
+- Widen mutation cap for candidate planning (f650feb26)
+- Keep unpriced call in rolling window fixture (db23fe7fa)
+- Align usage window fixtures with reset bounds (8e0df267d)
+- Bound usage reset boundaries to query window (630c04333)
+- Include strict CLI cases in usage coverage gate (345f277d8)
+- Run usage coverage gate serially (48e5d01f7)
+- Fix nyxloom usage round-two findings (a5e09046d)
+
+### Documentation
+- docs: record nyx-b3fix continuation results (a872aa7cd)
+- docs(nyxloom): record nyx-b3fix gate outcome (2feec39d9)
+- docs(nyxloom): record usage fix round two evidence (ce435465f)
+- docs(nyxloom): record usage review reconciliation (04a16e345)
+
+### Testing
+- test(nyxloom): close whole-source usage coverage gaps (19a353a31)
+- test: cover anchor read I/O errors (a43c0fcf9)
+- test(nyxloom): cover empty usage titles (1e9cf22d1)
+
+<!-- cmru: pending release notes begin -->
+### Added
+- Add `nyxloom usage report` for metadata-only Claude Code usage across sessions and nested subagents. Freeze `usage-report-v1` with a deduplicated call ledger, provenance, lineage edges, typed lifecycle/rejection events, self/subtree totals, coverage warnings, UTC half-open windows, and table/JSON/call-ledger CSV renderers.
+- Add dated exact-model Anthropic API-equivalent USD estimates, configurable experimental weights, guarded `cost-state` fit diagnostics, observed-reset windows, and private versioned operator usage anchors with bounded calibration.
+- Add the `usage-charts-v1` chart-data extension and `nyxloom usage charts`: self-cost-partitioned time buckets, top-N plus exact `other`, joined context data, packed swim lanes, deterministic IDs/colors, and peak/event-preserving context decimation.
+- Add `nyxloom usage report --format html --out FILE` as a private offline single-file report with a hierarchical table, joined SVG diagrams, exact live filtering, synchronized isolation, keyboard controls, safe embedded JSON, and A4 landscape print CSS.
+- Add `nyxloom usage report --format pdf --out FILE` through the optional PWMCP `BrowserLease` client, with repeated table headers, unbounded page flow, row-preserving breaks, and private PDF output.
+
+### Changed
+- Reconcile usage reporting with the plan review: file-local stream deduplication and exact copied-prefix identity, explicit conflict handling, structural compaction events, shared lineage resolution, deterministic IDs/order, and timestamp-based clipping.
+- Keep successful deduplication counts visible without mislabeling a complete merged ledger as partial coverage.
+- Keep raw tokens, local weighted shares, API-equivalent USD and subscription-limit percentages distinct; unknown prices and unidentified account coverage remain unknown.
+- Build chart extensions from the complete windowed tree before display folding; `--depth` and `--min-share` now affect only the rendered hierarchy.
+- Let report, chart and windows commands select the private anchor store with `--anchor-file`; invalid optional anchor state warns, reports `unreadable` with a structured warning, and leaves the query available without anchors.
+- Apply `usage windows` `--since/--until` consistently to calls, reset evidence and reset timestamps, threshold events, and interval metrics using the half-open UTC range; clip the rolling view to the same range.
+- Expose conflicted representatives in CSV, table, HTML and PDF outputs, and retain folded-node series in the HTML joined charts under their visible parent or `other` row.
+- Reject custom price tables that combine `fast` and `over_threshold` rates for one model, since the modifier precedence is undefined.
+- Preserve a deterministic cross-file conflict representative with a `conflicted` flag and conflict-record link; clarify that `project_id` is stable across reports and active span is a sum across nodes.
+- Raise the `cli-extended` runtime floor to 0.4.0 for Nyxloom's generated semantic CLI review workflow.
+
+### Fixed
+- Resolve child rows to the shared tree nodes before sorting the HTML hierarchy, so reports with multiple sibling agents render and print completely.
+- Deduplicate mixed stream rows through both request and message identities, retain cross-file conflict representatives, and sort node events after inferred drop events are appended.
+- Create private mode-0700 usage-output parent directories, retain mode-0600 files, and translate preparation/write failures into clean CLI errors.
+
+### Testing
+- The registered `session-extract` selection includes all usage test files; R0 and R1 passed with 100% changed-line coverage (7,295/7,295 statements; 1,580/1,580 branches). The detached tester-unified BrowserLease acceptance passed for full/folded ledger totals and joined chart points with zero network requests. The overall registered lane remains incomplete: R2 hit its lane time limit with 1,199/1,201 candidates complete, two per-candidate timeouts, and R3 unstarted. See the [iteration 4 report](nyxloom-trove/reports/nyxloom-usage-iteration-4-REPORT.md) for the exact evidence and limits.
+<!-- cmru: pending release notes end -->
+
+## [0.11.1] - 2026-10-28
+<!-- cmru: generated -->
+<!-- cmru: source-end=4305298770107130718c89a5dc35aaea45f8bda9 -->
+
+### Fixed
+- fix(cmru): orphan-sidecar abandon withholds on publication evidence; build-push callers report an unsynced package; cleanup --policy precondition documented (review round 1) (336938cab)
+- fix(nyxloom): lint L7 accepts an absent scope.forbid path (NL-26) (2b83e5921)
+
+### Changed
+- Merge nyxloom 0.11.1 wave: deterministic capture/SIGKILL drill tests, L7 lint, NL-26 — vbpub@0204aa8a3 (430529877)
+
+### Testing
+- test(nyxloom): make the stream-json capture and SIGKILL drill tests ordering-deterministic; L7 SPEC row + archived-forbid test (NL-26 review) (0204aa8a3)
+
+## [0.11.0] - 2026-10-21
+<!-- cmru: generated -->
+<!-- cmru: source-end=b44ee3604f3460d74c7d82d6e78f92cbfb7dfbc1 -->
+
+### Added
+- feat(assay,ciu,cmru,cgroup-profiler,nyxloom,run-gate): complete integrated release wave (1fa737782)
+- feat(run-gate): make wheel SemVer the only supported interface (9a0e192ab)
+- feat: add contract-2 resource event attribution (90dc9078d)
+
+### Fixed
+- fix: close remaining release wave review findings (edac3e69c)
+- fix: close release-wave followup findings (08632f747)
+- fix: close release-wave review findings (49e4be092)
+- fix: bind image builds to exact source identity (a0ad6f40d)
+- fix(nyxloom): clarify cli-extended upgrade ownership (b89ad60bc)
+
+### Changed
+- Merge main into CGProfile release candidate (f4933a2d5)
+- backlog: file NL-46..50 for nyxloom-harness search gaps (cc9cdadc8)
+- nyxloom: NL-23 note, second batch of stale canonical skill evidence (dstdns W05) (7b033ff49)
+- nyxloom: NL-23 note, canonical skills carry retired consumer mechanics (dstdns W04 evidence) (b261b03a2)
+- Merge branch 'cmru-release-readiness-20261015' into run-gate-rg93-git-metadata-20261013 (a23adb85a)
+- Merge branch 'tool-release-wave-20261014' into run-gate-rg93-git-metadata-20261013 (9df3aba6a)
+- merge main into run-gate-rg93-git-metadata-20261013 (1ba70a8ea)
+- Merge branch 'main' into cmru-release-readiness-20261015 (b5bf27485)
+- merge: sync release wave with main (a49c7ad9e)
+- merge latest main into Run-Gate SemVer candidate (7af06b66c)
+- chore(gates): declare mutation resource ceilings (da06e52de)
+- chore: integrate contract-2 release wave (336336d81)
+
+### Documentation
+- docs(nyxloom): add operator backlog follow-ups (673d0a709)
+- docs(nyxloom): file unique short session ID lookup (f3db44ce9)
+- docs: preserve final release-wave reviews (d6cf64998)
+- docs(nyxloom): add compact assignment audit feedback (d9ac353fd)
+- docs(nyxloom): file successor brief scope preservation (0e9d6219e)
+
+### Testing
+- test(run-gate): repair five selftest cases; complete the observer wrapper example (a1638d1d1)
+
+<!-- cmru: pending release notes begin -->
+### Changed
+- Declare released `cli-extended>=0.3.0` as a runtime dependency instead of vendoring it; install the released cli-extended wheel first (GitHub Releases only, never PyPI). Details: `nyxloom/nyxloom-trove/reports/MM-MOVE-REPORT.md`.
+- The remote mutation-audit host launcher requires a loaded systemd cgroup parent before cloning or starting Docker containers, and applies that parent to builder, staging, worker, and report-relay containers.
+<!-- cmru: pending release notes end -->
 
 ## [0.10.1] - 2026-10-09
 <!-- cmru: generated -->

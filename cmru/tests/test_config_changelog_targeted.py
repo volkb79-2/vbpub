@@ -30,7 +30,7 @@ def test_config_orchestration_dependency_order_rejects_late_provider(tmp_path):
     # Exercise the strict dependency-order policy through the parsed document.
     path = tmp_path / "cmru.orchestration.toml"
     path.write_text(
-        "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
+        "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\ntoken_source='cmru'\n"
         "[targets]\nhost='github'\nregistry=[]\n[orchestration]\nproject_order=['consumer','provider']\n"
         "default_projects=['consumer']\ndefault_steps=[]\nexecution_mode='project-first'\n"
         "[orchestration.project.consumer]\nconfig='consumer/cmru.toml'\ndepends_on=['provider']\n"
@@ -41,7 +41,7 @@ def test_config_orchestration_dependency_order_rejects_late_provider(tmp_path):
     (tmp_path / "consumer").mkdir(); (tmp_path / "provider").mkdir()
     for name in ("consumer", "provider"):
         document = (
-            "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
+            "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\ntoken_source='cmru'\n"
             "[targets]\nhost='github'\nregistry=[]\n[runtime]\nkind='none'\n[project]\nid='" + name + "'\n"
             "description='demo'\nprefix='" + name + "-v'\nartifacts=['bundle']\n"
             "[project.version]\nstrategy='scm'\nbump='patch'\n[project.release]\n"
@@ -57,7 +57,7 @@ def test_config_orchestration_dependency_order_rejects_late_provider(tmp_path):
 def test_config_project_and_orchestration_tables_fail_closed(tmp_path, capsys):
     project = tmp_path / "cmru.toml"
     project.write_text(
-        "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
+        "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\ntoken_source='cmru'\n"
         "[targets]\nhost='github'\nregistry=[]\n[runtime]\nkind='none'\n[project]\nid='demo'\n"
         "description='demo'\nprefix='demo-v'\nartifacts=['wheel']\n"
         "[project.version]\nstrategy='scm'\nbump='patch'\n"
@@ -92,12 +92,12 @@ def test_config_orchestration_requires_declared_projects_and_dependencies_in_ord
         return config.ProjectS2Config(name, None, f"{name}-v", [], None, None, None, {}, project_root=path.parent), github, targets
 
     monkeypatch.setattr(config, "_parse_project_document", fake_project)
-    monkeypatch.setattr(config, "_load_repository_secrets", lambda *args: (None, {}))
+    monkeypatch.setattr(config, "_load_repository_secrets", lambda *args, **_kwargs: (None, {}))
     path = tmp_path / "cmru.orchestration.toml"
 
     def run(order, entries):
         path.write_text(
-            "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
+            "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\ntoken_source='cmru'\n"
             "[targets]\nhost='github'\nregistry=[]\n[orchestration]\nproject_order=" + repr(order) + "\n"
             "default_projects=" + repr(order[:1]) + "\ndefault_steps=[]\nexecution_mode='project-first'\n" + entries,
             encoding="utf-8",
@@ -124,12 +124,12 @@ def test_config_orchestration_requires_declared_projects_and_dependencies_in_ord
 def test_config_orchestration_missing_tables_are_rejected(tmp_path, capsys):
     path = tmp_path / "cmru.orchestration.toml"
     cases = [
-        ("schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
+        ("schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\ntoken_source='cmru'\n"
          "[targets]\nhost='github'\nregistry=[]\n", "[orchestration] is required"),
-        ("schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
+        ("schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\ntoken_source='cmru'\n"
          "[targets]\nhost='github'\nregistry=[]\n[orchestration]\nproject_order=[]\ndefault_projects=[]\n"
          "default_steps=[]\nexecution_mode='project-first'\n", "entries are required"),
-        ("schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
+        ("schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\ntoken_source='cmru'\n"
          "[targets]\nhost='github'\nregistry=[]\n[orchestration]\nproject_order=['demo']\ndefault_projects=['demo']\n"
          "default_steps=[]\nexecution_mode='project-first'\n[orchestration.project]\ndemo='bad'\n", "must be a table"),
     ]
@@ -144,7 +144,7 @@ def test_config_orchestration_missing_tables_are_rejected(tmp_path, capsys):
 def test_config_missing_project_table_and_empty_project_path_fail_closed(tmp_path, capsys):
     project = tmp_path / "cmru.toml"
     project.write_text(
-        "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
+        "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\ntoken_source='cmru'\n"
         "[targets]\nhost='github'\nregistry=[]\n[runtime]\nkind='none'\n",
         encoding="utf-8",
     )
@@ -155,7 +155,7 @@ def test_config_missing_project_table_and_empty_project_path_fail_closed(tmp_pat
 
     orchestration = tmp_path / "cmru.orchestration.toml"
     orchestration.write_text(
-        "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
+        "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\ntoken_source='cmru'\n"
         "[targets]\nhost='github'\nregistry=[]\n[orchestration]\nproject_order=['demo']\n"
         "default_projects=['demo']\ndefault_steps=[]\nexecution_mode='project-first'\n"
         "[orchestration.project.demo]\nconfig=''\n",
@@ -178,7 +178,7 @@ def test_config_orchestration_rejects_resolved_symlink_escape_and_accepts_earlie
         return config.ProjectS2Config(name, None, f"{name}-v", [], None, None, None, {}, project_root=path.parent), github, targets
 
     monkeypatch.setattr(config, "_parse_project_document", fake_project)
-    monkeypatch.setattr(config, "_load_repository_secrets", lambda *args: (None, {}))
+    monkeypatch.setattr(config, "_load_repository_secrets", lambda *args, **_kwargs: (None, {}))
     outside = tmp_path.parent / (tmp_path.name + "-outside-demo")
     outside.mkdir()
     (outside / "cmru.toml").write_text("placeholder", encoding="utf-8")
@@ -186,7 +186,7 @@ def test_config_orchestration_rejects_resolved_symlink_escape_and_accepts_earlie
     link.symlink_to(outside, target_is_directory=True)
     escaped = tmp_path / "cmru.orchestration.toml"
     escaped.write_text(
-        "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
+        "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\ntoken_source='cmru'\n"
         "[targets]\nhost='github'\nregistry=[]\n[orchestration]\nproject_order=['demo']\n"
         "default_projects=['demo']\ndefault_steps=[]\nexecution_mode='project-first'\n"
         "[orchestration.project.demo]\nconfig='link/cmru.toml'\n"
@@ -200,7 +200,7 @@ def test_config_orchestration_rejects_resolved_symlink_escape_and_accepts_earlie
 
     ordered = tmp_path / "cmru.orchestration.toml"
     ordered.write_text(
-        "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
+        "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\ntoken_source='cmru'\n"
         "[targets]\nhost='github'\nregistry=[]\n[orchestration]\nproject_order=['provider','consumer']\n"
         "default_projects=['consumer']\ndefault_steps=[]\nexecution_mode='project-first'\n"
         "[orchestration.project.provider]\nconfig='provider/cmru.toml'\n"
@@ -214,17 +214,17 @@ def test_config_orchestration_rejects_resolved_symlink_escape_and_accepts_earlie
 
 def test_changelog_plan_rejects_no_changes_and_empty_external_variable(monkeypatch, tmp_path):
     project = SimpleNamespace(name="demo", cwd="demo", prefix="demo-v", version=SimpleNamespace(strategy="external:"))
-    monkeypatch.setattr(changelog, "detect_changed_projects", lambda *a: [])
+    monkeypatch.setattr(changelog, "detect_changed_projects", lambda *a, **_k: [])
     with pytest.raises(RuntimeError, match="no changes"):
         changelog._project_release_plan(tmp_path, project)
-    monkeypatch.setattr(changelog, "detect_changed_projects", lambda *a: [("demo", project, "demo-v1.0.0", "patch")])
+    monkeypatch.setattr(changelog, "detect_changed_projects", lambda *a, **_k: [("demo", project, "demo-v1.0.0", "patch")])
     with pytest.raises(RuntimeError, match="no variable"):
         changelog._project_release_plan(tmp_path, project)
 
 
 def test_changelog_plan_selects_external_explicit_major_counter_and_initial_versions(monkeypatch, tmp_path):
     project = SimpleNamespace(name="demo", cwd="demo", prefix="demo-v", git_tag=True)
-    monkeypatch.setattr(changelog, "detect_changed_projects", lambda *a: [("demo", project, "demo-v1.2.3", "patch")])
+    monkeypatch.setattr(changelog, "detect_changed_projects", lambda *a, **_k: [("demo", project, "demo-v1.2.3", "patch")])
     monkeypatch.setattr(changelog, "_external_version", lambda *_: "4.5.6")
     project.version = SimpleNamespace(strategy="external:VERSION")
     assert changelog._project_release_plan(tmp_path, project) == ("4.5.6", "demo-v1.2.3")
@@ -235,7 +235,7 @@ def test_changelog_plan_selects_external_explicit_major_counter_and_initial_vers
     project.version = SimpleNamespace(strategy="counter", base_version="1.0.0")
     assert changelog._project_release_plan(tmp_path, project)[0] == "1.0.7"
     project.version = SimpleNamespace(strategy="scm")
-    monkeypatch.setattr(changelog, "detect_changed_projects", lambda *a: [("demo", project, None, "patch")])
+    monkeypatch.setattr(changelog, "detect_changed_projects", lambda *a, **_k: [("demo", project, None, "patch")])
     assert changelog._project_release_plan(tmp_path, project, minor=True)[0] == "0.1.0"
     assert changelog._project_release_plan(tmp_path, project)[0] == "0.1.0"
 

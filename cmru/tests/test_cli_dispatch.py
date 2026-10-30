@@ -66,6 +66,7 @@ MINIMAL_S2 = """schema_version = 1
 owner = "octocat"
 repo = "demo"
 owner_type = "user"
+token_source = "cmru"
 [targets]
 host = "github"
 registry = ["ghcr.io"]
@@ -89,6 +90,7 @@ PROJECT = """schema_version = 1
 owner = "octocat"
 repo = "demo"
 owner_type = "user"
+token_source = "cmru"
 [targets]
 host = "github"
 registry = ["ghcr.io"]
@@ -120,7 +122,7 @@ commands = [ { label = "push", argv = ["true"], cwd = "." } ]
 """
 
 PROJECT_CENTRAL = PROJECT.replace(
-    '[github]\nowner = "octocat"\nrepo = "demo"\nowner_type = "user"\n'
+    '[github]\nowner = "octocat"\nrepo = "demo"\nowner_type = "user"\ntoken_source = "cmru"\n'
     '[targets]\nhost = "github"\nregistry = ["ghcr.io"]\n',
     "",
 )
@@ -168,6 +170,52 @@ def test_load_config_s2_schema(tmp_path):
     assert alpha.paths == ["alpha", "alpha/shared"]
     assert alpha.changelog == "CHANGES.md"
     assert set(alpha.steps) == {"run-tests", "build", "push"}
+
+
+def test_transaction_child_retains_full_project_scope_registry(tmp_path, monkeypatch):
+    """A single-project release child still knows scopes for unselected projects."""
+    orchestration_text = MINIMAL_S2.replace(
+        'project_order = ["alpha"]', 'project_order = ["alpha", "beta"]',
+    ) + '\n[orchestration.project.beta]\nconfig = "beta/cmru.toml"\ndepends_on = []\n'
+    orchestration = _write(
+        tmp_path, orchestration_text, name="cmru.orchestration.toml",
+    )
+    alpha_source = tmp_path / "alpha" / "cmru.toml"
+    alpha_source.parent.mkdir()
+    alpha_source.write_text(PROJECT_CENTRAL, encoding="utf-8")
+    beta_source = tmp_path / "beta" / "cmru.toml"
+    beta_source.parent.mkdir()
+    beta_source.write_text(
+        PROJECT_CENTRAL.replace('id = "alpha"', 'id = "beta"')
+        .replace('prefix = "alpha-v"', 'prefix = "beta-v"')
+        .replace('scm_dist = "alpha"', 'scm_dist = "beta"'),
+        encoding="utf-8",
+    )
+
+    candidate = tmp_path / "candidate"
+    candidate_alpha = candidate / "alpha" / "cmru.toml"
+    candidate_alpha.parent.mkdir(parents=True)
+    candidate_alpha.write_text(PROJECT_CENTRAL, encoding="utf-8")
+
+    monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root: True)
+    monkeypatch.setenv(cli.transaction.CHILD_ENV, "1")
+    monkeypatch.setenv("CMRU_WORKSPACE_PATH", str(candidate))
+    monkeypatch.setenv("CMRU_SOURCE_GIT_ROOT", str(tmp_path))
+    monkeypatch.setenv("CMRU_TRANSACTION_PROJECTS", "alpha")
+    # A transaction child never reads a credential file (it fails closed without
+    # its parent's handoff), so give the simulated child the handoff the parent
+    # would have sent. This test is about the scope registry, not credentials.
+    from cmru import credential_handoff
+
+    monkeypatch.setattr(
+        credential_handoff, "_CACHE",
+        credential_handoff.CredentialHandoff(root="test-credential"),
+    )
+
+    _root, projects, *_rest = cli.load_config(orchestration)
+
+    assert list(projects) == ["alpha"]
+    assert projects["alpha"].known_project_names == frozenset({"alpha", "beta"})
 
 
 def test_orchestration_env_policy_is_merged_before_a_project_override(tmp_path):
@@ -250,6 +298,7 @@ repo_root = "."
 username = "octocat"
 repo = "demo"
 owner_type = "user"
+token_source = "cmru"
 [registry]
 url = "ghcr.io"
 [orchestration]
@@ -460,7 +509,15 @@ def test_status_uses_current_directory_orchestration_without_a_shim(tmp_path, mo
 
     cli.main(["status", "alpha"])
 
-    assert calls == [(tmp_path, ["alpha"], {"minor": False, "major": False, "set_version": None, "ref": "HEAD"})]
+    # status resolves the plan against the full loaded registry, so the library
+    # is handed the configs and their scope names alongside the version flags.
+    (root, selected, forwarded), = calls
+    known_projects = forwarded.pop("known_projects")
+    known_project_names = forwarded.pop("known_project_names")
+    assert (root, selected) == (tmp_path, ["alpha"])
+    assert forwarded == {"minor": False, "major": False, "set_version": None, "ref": "HEAD"}
+    assert list(known_projects) == ["alpha"]
+    assert known_project_names == known_projects["alpha"].known_project_names
 
 
 def test_unknown_verb_exits_2():

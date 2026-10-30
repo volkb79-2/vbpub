@@ -1,5 +1,11 @@
 # Plan — Host Resource Governance for `gstammtisch`
 
+> Historical plan: values as planned in July. The live `memory.zswap.writeback` of the game cgroup is **1** (not the 0
+> shown in the tables below), and the IO-cap rows predate the 2026-10-20 findings; see
+> [HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md) and [MEMORY-ARCHITECTURE.md](MEMORY-ARCHITECTURE.md).
+> The `vm.swappiness` 100 below ("keep 100", persist 100) is superseded as well: now **10** (operator decision
+> 2026-10-21, MEMORY-ARCHITECTURE.md section 4).
+
 Status: PLAN ONLY (nothing applied). Authored 2026-07-01 against live host state.
 Scope: tiered cgroup-v2 resource governance (CPU / memory / IO) for a mixed-use
 16 GB host running one live game server (PROD), one interactive devcontainer, and
@@ -194,7 +200,7 @@ tier**, not by swap/zswap tuning.
 | `memory.swap.max` | keep `max`; `zswap.writeback=0` (never to disk) | `max` | **24 G** (leak-stopper; was `max`/12 G — 2026-07-10, D1) |
 | `memory.zswap.writeback` | **0** (game never spills to disk swap) | 0 (2026-07-10: actually applied by setup-cgroups.sh — was a documented-but-unimplemented gap, see PKG-1 in plan-stack-resource-tuning.md) | **1** (cold best-effort → disk, frees zswap pool) |
 | `io.weight` (BFQ) | **4950** (`io.bfq.weight` 1000) | 100 (default) | **10** (`io.bfq.weight` 1) |
-| `io.max` (hard IOPS/bps) | none | none | **dynamic (2026-07-10, D2): `BE_IO_CAP_PCT`% (default 40%) of the measured `io-baseline.env` ceilings, applied by `setup-cgroups.sh` via `systemctl set-property --runtime besteffort.slice`; the unit's static `rbps=31M wbps=31M riops=100 wiops=400` is now only a boot-window fallback before that runs.** (Per-container builders/test-runner caps are separate — still `IO_CAP_PCT` default 80% of baseline, §setup-cgroups.sh.) |
+| `io.max` (hard IOPS/bps) | none | none | **dynamic (2026-07-10, D2): `BE_IO_CAP_PCT`% (default 40%) of the measured `io-baseline.env` ceilings, applied by `setup-cgroups.sh` via `systemctl set-property --runtime besteffort.slice`; the unit's static `rbps=31M wbps=31M riops=100 wiops=400` is now only a boot-window fallback before that runs.** (Per-container builders/test-runner caps are separate — still `IO_CAP_PCT` default 80% of baseline, §setup-cgroups.sh.) **[2026-10-20: these caps cannot bind.** The baseline ceilings come from a 516 MB/s write run; the device really writes ~14–18 MB/s (~10 steady), so 40 % is ~200 MB/s. Caps must be derived from the steady write rate; see [HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md) §4.2, §5.] |
 | systemd-oomd | off | off | **`ManagedOOMMemoryPressure=kill` @60% / `ManagedOOMSwap=kill`** |
 
 Rationale for weights vs caps: with ~7 idle cores, CPU is proportional (`cpu.weight`),
@@ -202,6 +208,10 @@ not hard-capped — soulmask simply wins any contention 4:1 over interactive and
 over best-effort. Memory is the scarce resource, so it gets both a **floor** (min, prod
 only) and **hard ceilings** (max, every non-prod tier). IO latency for prod is
 protected by BFQ weight *plus* hard `io.max` on the best-effort noisemakers.
+(Corrected 2026-10-20: this protects against *request-queue* contention only. The multi-second game
+stalls come from the shared ext4 journal and the queue ahead of it, which neither weights nor caps
+above the ~15 MB/s device rate affect; the fix is bounded dirty data and queue depth. See
+[HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md).)
 
 ### 3.2 Where to set each — three placement mechanisms
 
@@ -264,6 +274,8 @@ IOWeight=10
 # BOOT-WINDOW FALLBACK ONLY (device from `findmnt -no MAJ:MIN --target /var/lib/docker`).
 # setup-cgroups.sh overrides these at runtime from the measured io-baseline.env
 # at BE_IO_CAP_PCT% (default 40%) once it runs post-boot — see D2, PKG-1.
+# (2026-10-20: neither the 31M fallback nor the 40% dynamic cap is derived from the real steady
+# write rate of ~10-15 MB/s on gstammtisch: see HOST-IO-INTERFERENCE.md section 5.)
 IOReadBandwidthMax=/dev/vda 31M
 IOWriteBandwidthMax=/dev/vda 31M
 IOReadIOPSMax=/dev/vda 100
@@ -472,7 +484,7 @@ risk and need a build to validate):
    the `besteffort.slice` `IO*Max` (§3.3) and extend `setup-cgroups.sh` to also target
    **`buildx_buildkit_*`** (currently untargeted — the real pak-evicting IO source) and to
    reapply independent of Soulmask restart. Risk: over-throttling makes builds crawl →
-   start at 31 MB/s / 100r+400w IOPS, watch a real build, relax if builds stall
+   start at 31 MB/s / 100r+400w IOPS (2026-10-20: 31 MB/s is a plausible order for the real steady write rate, ~10 MB/s measured, but this figure was a guess, not derived; see [HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md) §5), watch a real build, relax if builds stall
    unacceptably while pak `mflt/s` stays ~0. (Superseded 2026-07-10 — the
    `besteffort.slice` tier-wide `IO*Max` is now dynamic at `BE_IO_CAP_PCT`% of
    measured `io-baseline.env` ceilings, applied by `setup-cgroups.sh`; the

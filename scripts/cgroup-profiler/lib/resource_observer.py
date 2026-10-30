@@ -30,6 +30,7 @@ _PIDS_EVENTS = frozenset({"max"})
 _MEMORY_EVENTS = frozenset({"max", "oom", "oom_kill", "oom_group_kill"})
 _CAPS_THAT_CAN_BYPASS_CGROUP_DAC = sum(1 << bit for bit in (0, 1, 3, 6, 7, 21))
 _PEER_SNAPSHOT_ATTEMPTS = 3
+RESOURCE_OBSERVER_CONTRACT_VERSION = 2
 
 
 def observe_peer_cgroup(
@@ -41,7 +42,7 @@ def observe_peer_cgroup(
     cgroup_root: str,
     mountinfo_path: str,
     gates_slice_name: str,
-    contract: int = 1,
+    contract: int,
 ) -> dict[str, Any]:
     """Return counters for the authenticated peer's cgroup and ancestors.
 
@@ -54,8 +55,8 @@ def observe_peer_cgroup(
         raise ResourceObserverError("thread_id must be a positive native TID")
     if peer_uid is None or type(peer_uid) is not int or peer_uid < 0:
         raise ResourceObserverError("SO_PEERCRED did not provide a valid peer UID")
-    if type(contract) is not int or contract not in {1, 2}:
-        raise ResourceObserverError("resource observer contract must be 1 or 2")
+    if type(contract) is not int or contract != RESOURCE_OBSERVER_CONTRACT_VERSION:
+        raise ResourceObserverError("resource observer contract must be 2")
 
     peer = _resolve_peer(peer_pid, peer_uid, thread_id, proc_root)
     gates_path = PurePosixPath(targets.slice_to_path(gates_slice_name))
@@ -69,6 +70,11 @@ def observe_peer_cgroup(
         pids_localevents,
         memory_localevents,
     ) = _cgroup_mount(root, Path(mountinfo_path))
+    if pids_localevents:
+        raise ResourceObserverError(
+            "pids_localevents cannot identify which cgroup's pids.max rejected a fork; "
+            "native R2 attribution requires hierarchical pids.events and pids.events.local"
+        )
     leaf_path = _host_cgroup_path(peer["cgroup"], namespace_parent_levels)
     if leaf_path == gates_path or not leaf_path.is_relative_to(gates_path):
         raise ResourceObserverError("peer cgroup is not a descendant of the configured gates slice")
@@ -86,14 +92,9 @@ def observe_peer_cgroup(
             directory,
             mount_id,
             peer["tasks"],
-            include_local=contract == 2,
-            pids_localevents=pids_localevents,
             memory_localevents=memory_localevents,
         )
-        if current == leaf_path and contract == 2 and (
-            (pids_localevents and entry["pids_events"] is not None)
-            or (memory_localevents and entry["memory_events"] is not None)
-        ):
+        if current == leaf_path and memory_localevents and entry["memory_events"] is not None:
             _require_no_candidate_subgroups(directory, leaf_path)
         entries.append(entry)
         if current == PurePosixPath("/"):
@@ -109,10 +110,9 @@ def observe_peer_cgroup(
         "thread_id": thread_id,
         "gates_slice": str(gates_path),
         "cgroups": entries,
+        "pids_events_scope": "hierarchical",
+        "memory_events_scope": "local" if memory_localevents else "hierarchical",
     }
-    if contract == 2:
-        result["pids_events_scope"] = "local" if pids_localevents else "hierarchical"
-        result["memory_events_scope"] = "local" if memory_localevents else "hierarchical"
     return result
 
 
@@ -383,8 +383,6 @@ def _read_cgroup_entry(
     mount_id: int,
     tasks: list[dict[str, Any]],
     *,
-    include_local: bool = False,
-    pids_localevents: bool = False,
     memory_localevents: bool = False,
 ) -> dict[str, Any]:
     try:
@@ -398,35 +396,30 @@ def _read_cgroup_entry(
     memory_limit_present, memory_max = _read_limit(directory / "memory.max")
     pids_events = _read_events(directory / "pids.events", _PIDS_EVENTS)
     memory_events = _read_events(directory / "memory.events", _MEMORY_EVENTS)
-    pids_events_local = (
-        _read_events(directory / "pids.events.local", _PIDS_EVENTS)
-        if include_local else None
-    )
-    memory_events_local = (
-        _read_events(directory / "memory.events.local", _MEMORY_EVENTS)
-        if include_local else None
+    pids_events_local = _read_events(directory / "pids.events.local", _PIDS_EVENTS)
+    memory_events_local = _read_events(
+        directory / "memory.events.local", _MEMORY_EVENTS
     )
     if pids_limit_present and pids_events is None:
         raise ResourceObserverError(f"{cgroup_path} pids.max is present but pids.events is unavailable")
     if memory_limit_present and memory_events is None:
         raise ResourceObserverError(f"{cgroup_path} memory.max is present but memory.events is unavailable")
-    if include_local:
-        pids_events_local = _effective_local_events(
-            pids_events,
-            pids_events_local,
-            regular_is_local=pids_localevents,
-            required=_PIDS_EVENTS,
-            controller="pids",
-            cgroup_path=cgroup_path,
-        )
-        memory_events_local = _effective_local_events(
-            memory_events,
-            memory_events_local,
-            regular_is_local=memory_localevents,
-            required=_MEMORY_EVENTS,
-            controller="memory",
-            cgroup_path=cgroup_path,
-        )
+    pids_events_local = _effective_local_events(
+        pids_events,
+        pids_events_local,
+        regular_is_local=False,
+        required=_PIDS_EVENTS,
+        controller="pids",
+        cgroup_path=cgroup_path,
+    )
+    memory_events_local = _effective_local_events(
+        memory_events,
+        memory_events_local,
+        regular_is_local=memory_localevents,
+        required=_MEMORY_EVENTS,
+        controller="memory",
+        cgroup_path=cgroup_path,
+    )
 
     procs = directory / "cgroup.procs"
     try:
@@ -454,15 +447,14 @@ def _read_cgroup_entry(
         "memory_max": memory_max,
         "pids_events": pids_events,
         "memory_events": memory_events,
+        "pids_events_local": pids_events_local,
+        "memory_events_local": memory_events_local,
     }
-    if include_local:
-        result["pids_events_local"] = pids_events_local
-        result["memory_events_local"] = memory_events_local
     return result
 
 
 def _require_no_candidate_subgroups(directory: Path, cgroup_path: PurePosixPath) -> None:
-    """A local-only events mount is sufficient only for a leaf candidate."""
+    """memory_localevents is sufficient evidence only for a leaf candidate."""
     try:
         with os.scandir(directory) as entries:
             has_child = any(entry.is_dir(follow_symlinks=False) for entry in entries)
@@ -523,7 +515,7 @@ def _effective_local_events(
     controller: str,
     cgroup_path: PurePosixPath,
 ) -> dict[str, int] | None:
-    """Return local counters, using localevents as equivalent evidence."""
+    """Return local counters, using an explicitly verified local source."""
     if regular is None:
         if local is not None:
             raise ResourceObserverError(

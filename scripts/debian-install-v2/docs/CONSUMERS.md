@@ -44,14 +44,16 @@ the shipped loader; omitted fields receive that loader’s current defaults:
 {
   "schema_version": 1,
   "fresh_install": true,
+  "root_resize_policy": "resize",
+  "swap_policy": "on",
   "swap_disk_total_gb": 32,
-  "swap_file_count": 8,
+  "swap_partition_count": 8,
   "credential_mode": "systemd",
   "cloud_init_cleanup_mode": "userdata-only"
 }
 ```
 
-This example opts to remove only the cached raw user-data after successful
+This example opts to remove cloud-init's user-data copies after successful
 stage two. Omit `cloud_init_cleanup_mode` or set it to `retain` to keep all
 cloud-init cache data, including `/var/lib/cloud/instance/user-data.txt`.
 
@@ -63,30 +65,162 @@ arguments. For example:
 ```bash
 ./debian-install-v2.py plan --config target-host.json
 ./debian-install-v2.py plan --config-json \
-  '{"schema_version":1,"fresh_install":true,"swap_disk_total_gb":32,"swap_file_count":8,"credential_mode":"systemd","cloud_init_cleanup_mode":"userdata-only"}'
+  '{"schema_version":1,"fresh_install":true,"root_resize_policy":"resize","swap_policy":"on","swap_disk_total_gb":32,"swap_partition_count":8,"credential_mode":"systemd","cloud_init_cleanup_mode":"userdata-only"}'
 ```
 
 The parser rejects both a missing source and supplying both forms before any
 installation logic runs.
 
+## Root and swap policy
+
+The shared config keys `root_resize_policy` and `swap_policy` independently
+control root sizing and swap:
+
+```json
+{
+  "schema_version": 1,
+  "root_resize_policy": "grow-only",
+  "swap_policy": "on",
+  "swap_disk_total_gb": 8,
+  "swap_partition_count": 4,
+  "preserve_root_size_gb": 10
+}
+```
+
+Choose one root policy: `resize` (default) uses the largest safe root extent
+after managed swap and can grow or shrink; `grow-only` expands when possible
+but never shrinks; `untouched` forbids root partition changes. Choose one swap
+policy: `on` (default) replaces the guest's configured swap setup with native
+partitions: it disables all active swap, removes configured swapfiles and swap
+logical volumes, and replaces fstab swap entries with the managed partitions.
+A pre-root swap partition (physically before root) is retained and counts
+toward both the requested total size and the default total count of four, so
+less swap is placed after root. If that retained partition already meets or
+exceeds the requested total, no new tail swap partition is needed. `off` also
+disables all active swap and removes fstab swap entries and root-disk swap
+partitions; it does not delete swapfiles or logical volumes. `untouched`
+preserves swap state and geometry. With `swap_policy: "untouched"`, root
+growth can still use contiguous free space before the next existing partition.
+
+`swap_disk_total_gb: null` derives the target from actual disk capacity and
+guest RAM using `min(RAM × 2, round(20% of disk capacity))`, expressed in GiB.
+Twice the RAM rounds up to a whole GiB; 20% of actual disk bytes rounds to the
+nearest GiB, with half-GiB ties upward. The retained pre-root swap partition,
+when present, is included in that target. For the suggested 20–512 GB disk and
+4–128 GB RAM range, see the [default sizing table](../README.md#disk--swap).
+The default count is four total managed partitions, including retained
+pre-root swap; set `swap_partition_count` to change it. The nominal-capacity
+examples and the reasons for this sizing rule are in the
+[feature overview](../README.md#disk--swap) and
+[design rationale](DESIGN-GUIDE.md#root-and-swap-policies).
+
+Partition order is read from sector extents, not partition numbers. The
+Debian genericcloud GPT layout with BIOS/EFI partitions 14 and 15 before root
+partition 1 is supported; those pre-root partitions are retained unchanged.
+Managed swap refuses partitions that overlap root, incomplete geometry, or an
+unknown non-swap partition physically after root. Review `plan` before
+confirming if the image has a custom partition layout.
+
+If `swap=on` needs more tail space than exists and root policy is `untouched`
+or `grow-only`, planning refuses with the available/requested sizes. A
+`resize` shrink is refused if root data usage or the ext filesystem's minimum
+plus 256 MiB would exceed the planned target. Managed swap refuses layouts
+with an unknown non-swap partition after root rather than moving it.
+Root-shrink safety is checked before swapfile cleanup, so existing swapfile
+and ordinary-file usage are both included in that check.
+
 ## Cloud-init cache policy
 
 The `cloud_init_cleanup_mode` value is shared by the wizard, config file, and
 generated custom-script bundle. Choose `retain` (the default) to keep all
-cloud-init cache data, `userdata-only` to delete only the raw cached user-data,
+cloud-init cache data, `userdata-only` to delete the raw user-data and its
+parsed/intermediate copies (`user-data.txt.i`, `cloud-config.txt`, and `obj.pkl`),
 `clean` to run plain `cloud-init clean`, or `clean-all` to add `--logs --seed`.
 Neither clean mode removes generated SSH/network/fstab configuration; the
 installer does not pass `--configs all`.
 
-Cloud-init stores raw user-data at
-`/var/lib/cloud/instance/user-data.txt` by default. Plain `clean` resets
+Cloud-init stores user-data at
+`/var/lib/cloud/instance/user-data.txt` and keeps parsed/intermediate copies in
+the same instance directory. Plain `clean` resets
 cloud-init state so its stages run again at the next boot; `clean-all` does the
 same and also removes cloud-init logs and the guest's cached seed. If the same
 NoCloud seed ISO remains attached, it may provide the same user-data again.
-Detach it before a later boot if that replay is not wanted. These cleanup modes
+Before cleanup the installer writes `/var/lib/vbpub/install-v2-complete`
+outside cloud-init's cache. A later fresh-install invocation detects the marker
+and refuses before it can start a new disk operation. Detach the seed ISO after
+installation as well. These cleanup modes
 run only after successful stage-two install work, leaving cache data intact if
 an earlier install step fails. See the [feature overview](../README.md#cloud-init-cache-cleanup-policy)
 and [design rationale](DESIGN-GUIDE.md#cloud-init-cache-cleanup-policy).
+
+## Build a private VM seed ISO
+
+For a VM launched from a Debian cloud image on TrueNAS SCALE, Proxmox, Hyper-V,
+or another hypervisor, build a NoCloud seed ISO on a Linux workstation. This
+is a cloud-init data disk, not a bootable Debian installer ISO: attach it as a
+CD-ROM/seed device alongside the VM's Debian cloud-image disk. The guest needs
+cloud-init, Python 3, outbound HTTPS, and working APT sources.
+
+Install the ISO builder dependencies in the checkout:
+
+```bash
+cd scripts/debian-install-v2
+sudo apt-get install cloud-image-utils openssh-client
+python3 -m pip install -r wizard-requirements.txt
+./debian-install-v2.py build-iso --output ./debian-vbpub.iso
+```
+
+The wizard collects a source branch, profile source, notification settings,
+and zero or more persistent root SSH public-key lines (one complete
+`authorized_keys` entry per prompt). It checks the line structure and asks
+`ssh-keygen` to parse every key before building. These persistent keys are
+added to `/root/.ssh/authorized_keys` in stage one and remain after stage two;
+they are separate from the temporary controller SSH key, which has its own
+cleanup policy. `vanilla` requires at least one persistent key; `default` lets
+you skip them. The builder writes a new ISO with mode `0600` and refuses to
+overwrite an existing file. Keep the artifact private. The ISO's NoCloud
+user-data contains the selected notifications credentials, SSH keys,
+and—when used—the profile endpoint's Basic Auth username/password. The local
+JSONC profile itself is embedded in the ISO; it is not uploaded to the
+repository. The generated user-data is also normally retained by cloud-init
+inside the guest, so the default `cloud_init_cleanup_mode: "retain"` keeps
+those values under `/var/lib/cloud/instance/user-data.txt`. Set another
+cleanup mode in the selected profile if that is the intended policy; cleanup
+runs only after successful stage two. See [Cloud-init cache policy](#cloud-init-cache-policy).
+
+Released profile IDs are `vanilla` and `default`. `vanilla` keeps the disk
+resize/partition and swap transaction, disables optional tuning and services,
+and requires a persistent SSH key. `default` follows the selected branch's current
+installer defaults, including Docker, APT policy/upgrades, journald, zswap,
+cgroup2 flags, oomd and fstrim. These IDs are filenames in that branch's
+`scripts/debian-install-v2/profiles/` directory. The ISO records the ID, not a
+copy of the profile, so an old ISO intentionally follows changes to the
+selected branch and profile.
+
+A third-party builder can select a profile released in its configured Git
+repository, embed a custom `.jsonc` file from the build host, or point to an
+HTTPS JSONC URL. For a profile protected by Apache `.htaccess`/Basic Auth, enter
+the HTTPS URL without userinfo or a query string, then enter the username and
+password in the separate wizard prompts. The password is placed in the private
+ISO, never in Git or a published generic ISO. JSONC accepts only `//` and
+`/* ... */` comments; all other syntax is strict JSON and `schema_version`
+must match the shipped loader. Per-host notification and SSH fields are
+rejected in profiles.
+
+The source settings are distinct: a public HTTPS Git remote/branch supplies
+the installer tree and released profiles; an HTTPS URL supplies the initial
+`bootstrap-remote.py`; another HTTPS URL points to the cli-extended release
+manifest. The defaults use GitHub, but the wizard accepts alternate bootstrap
+and release-manifest URLs. Git checkout itself is provider-neutral and uses a
+shallow `--filter=blob:none` clone plus sparse paths. Bootstrap preflight
+checks for Git before it resolves or downloads the cli-extended wheel, and
+installs Git from APT if missing. The Git server must support the partial-clone filter;
+otherwise bootstrap fails rather than transferring the whole repository.
+
+After first boot and installation, detach the seed ISO so a later cloud-init
+clean/reboot cannot consume the same credentials again. Review
+[the design note](DESIGN-GUIDE.md#private-vm-seed-iso-and-moving-profiles) for
+the moving-profile contract and the documented bootstrap handoff race.
 
 To inspect a real target host’s partition plan, run `plan` on that host. It
 reads the host’s root disk and does not write to it:
@@ -174,8 +308,8 @@ stage-one invocation exits (successfully or with an error).
 
 To test the remote fetch/translation path without applying host operations,
 set `DRY_RUN=yes` in the cloud-init environment. A remote dry run still needs
-root to exercise the real bootstrap flow and will download the installer
-archive and the released cli-extended wheel, but the installer records rather
+root to exercise the real bootstrap flow and will perform the sparse Git fetch
+and download the released cli-extended wheel, but the installer records rather
 than executes privileged actions.
 
 The bootstrap resolves the cli-extended wheel from the
@@ -210,7 +344,7 @@ map or append it to a verb for that verb’s options and examples:
 The top-level verbs are:
 
 - Exploration: `status`, `verify`, `plan`, `build-customscript`.
-- Modification: `wizard`, `install`, `resume`, `disable-stage2`.
+- Modification: `wizard`, `build-iso`, `install`, `resume`, `disable-stage2`.
 
 Use `--json` where offered for machine-readable status/plan output. For
 diagnostics, `--debug` adds troubleshooting context; `--debug-raw` is only for

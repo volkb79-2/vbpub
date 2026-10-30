@@ -8,7 +8,7 @@
 # rule, `tools/` judged DELIBERATELY (a changed line in
 # tools/coverage_gate.py must be covered by tests/test_coverage_gate.py —
 # exactly "100% on every changed line" for this project, and the coverage
-# command already measures it via --cov=.). run-gate.py has no isolating
+# command already measures it via --cov=.). Run-Gate CLI has no isolating
 # subdirectory of its own (it sits at the project root beside tests/ and
 # tools/), and restructuring it into one is explicitly OUT of this
 # package's scope (RW-8) — `judge.targets`/`mode = "whole_target"` was

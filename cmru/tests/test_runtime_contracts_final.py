@@ -37,6 +37,7 @@ def project_toml(name: str = "demo") -> str:
 owner = "acme"
 repo = "vbpub"
 owner_type = "org"
+token_source = "cmru"
 [targets]
 host = "github"
 registry = []
@@ -76,6 +77,7 @@ def orchestration_toml(entry: str = 'config = "demo/cmru.toml"', *, order: str =
 owner = "acme"
 repo = "vbpub"
 owner_type = "org"
+token_source = "cmru"
 [targets]
 host = "github"
 registry = []

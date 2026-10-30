@@ -464,8 +464,11 @@ def test_shared_record_lookup_and_lease_sync_failures(monkeypatch, tmp_path):
     monkeypatch.setattr(worktree, "_shared_worktree", lambda: shared)
     assert worktree._shared_record_for_checkout(tmp_path) is None
     shared.discover_git_context = lambda _path: (_ for _ in ()).throw(SharedError("bad", "other"))
-    with pytest.raises(SharedError, match="bad"):
+    with pytest.raises(
+        worktree.WorktreeError, match="cannot determine Git-family ownership.*bad"
+    ) as caught:
         worktree._shared_record_for_checkout(tmp_path)
+    assert isinstance(caught.value.__cause__, SharedError)
     monkeypatch.setattr(worktree, "_shared_record_for_checkout", lambda _path: (_ for _ in ()).throw(RuntimeError("lease write")))
     with pytest.raises(worktree.WorktreeError, match="could not update shared"):
         worktree._sync_shared_lease(tmp_path, None)
@@ -488,9 +491,7 @@ def test_finish_allocation_accepts_a_generic_git_worktree_without_ciu_marker(mon
         workspace_lock=lambda _common_dir: nullcontext(),
     )
     monkeypatch.setattr(worktree, "_shared_worktree", lambda: shared)
-    monkeypatch.setattr(worktree, "_git", lambda *_args, **_kwargs: SimpleNamespace(
-        returncode=0, stdout="a" * 40, stderr=""
-    ))
+    monkeypatch.setattr(worktree, "_git", _fake_git)
     monkeypatch.setattr(worktree, "primary_worktree_root", lambda root: root)
     monkeypatch.setattr(workspace, "discover_committed_roots", lambda *_a, **_kw: ())
     written = []
@@ -504,6 +505,18 @@ def test_finish_allocation_accepts_a_generic_git_worktree_without_ciu_marker(mon
         workspace_context=workspace_context,
     )
     assert ready.state == "ready" and written[-1].state == "ready"
+
+
+def _fake_git(args, *_rest, **_kwargs):
+    """Answer commit lookups with a full SHA and report a pristine checkout.
+
+    The first-allocation safety probe runs ``git status`` on the unpopulated
+    linked checkout and expects no entries; every other call is a commit
+    resolution.
+    """
+    if args and args[0] == "status":
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    return SimpleNamespace(returncode=0, stdout="a" * 40, stderr="")
 
 
 def _create_setup(monkeypatch, tmp_path, *, roots, materialize=True, failure=None):
@@ -520,6 +533,10 @@ def _create_setup(monkeypatch, tmp_path, *, roots, materialize=True, failure=Non
         physical_worktree_path=target, git_common_dir=tmp_path / ".git",
         branch="thing", base_commit="a" * 40, purpose="ciu", state="ready",
         created_at_utc="2026-01-01T00:00:00Z",
+        metadata={
+            worktree._CIU_CHECKOUT_RESET_PHASE_METADATA: "not-started",
+            "root_entries": [],
+        },
     )
 
     def allocate(_source, allocated, **_kwargs):
@@ -550,9 +567,7 @@ def _create_setup(monkeypatch, tmp_path, *, roots, materialize=True, failure=Non
     monkeypatch.setattr(worktree, "_shared_worktree", lambda: shared)
     monkeypatch.setattr(worktree, "_write_instance_record", lambda _record: None)
     monkeypatch.setattr(worktree, "_write_worktree_overlay", lambda *_args: None)
-    monkeypatch.setattr(worktree, "_git", lambda *_args, **_kwargs: SimpleNamespace(
-        returncode=0, stdout="a" * 40, stderr=""
-    ))
+    monkeypatch.setattr(worktree, "_git", _fake_git)
     monkeypatch.setattr(worktree, "_generate_env_in", lambda *_args, **_kwargs: 0)
     monkeypatch.setattr(worktree, "_runtime_identity", lambda _root: ("abc123", "net"))
     monkeypatch.setattr(worktree, "_check_runtime_collision", lambda *_args: None)
@@ -581,6 +596,7 @@ def test_create_refuses_when_shared_allocation_fails(monkeypatch, tmp_path):
     monkeypatch.setattr(worktree, "_branch_exists", lambda *_args: False)
     monkeypatch.setattr(worktree, "list_worktrees", lambda *_args: [])
     monkeypatch.setattr(worktree, "_shared_worktree", lambda: shared)
+    monkeypatch.setattr(worktree, "_git", _fake_git)
     with pytest.raises(worktree.WorktreeError, match="shared workspace allocation failed"):
         worktree.create(tmp_path, "demo", path=tmp_path / ".worktrees" / "demo")
 
@@ -642,7 +658,15 @@ def test_create_records_all_nested_roots_before_returning_ready(monkeypatch, tmp
     )
     writes = []
     resolved_bases = []
-    _shared.write_record = lambda record: writes.append(record)
+    persist_record = _shared.write_record
+
+    def write_record(record):
+        # Keep the fake store coherent: later read-modify-write snapshots
+        # (reset phase, ready snapshot) must see earlier root entries.
+        writes.append(record)
+        persist_record(record)
+
+    _shared.write_record = write_record
     original_instance_writer = worktree._write_instance_record
 
     def write_instance_record(record):
@@ -886,6 +910,8 @@ def test_ensure_does_not_reset_a_checkout_after_fork_point_was_recorded(
         _record(tmp_path, state="recovery-required"),
         fork_point_sha="a" * 40,
         recovery_status="env-generation-failed",
+        initial_overlay=None,
+        overlay_intent_known=True,
     )
     calls = {}
     monkeypatch.setattr(worktree, "_allocation_lock", lambda _root: nullcontext())
@@ -894,15 +920,36 @@ def test_ensure_does_not_reset_a_checkout_after_fork_point_was_recorded(
         worktree, "_ensure_shared_record",
         lambda *_args: SimpleNamespace(physical_worktree_path=tmp_path),
     )
-    monkeypatch.setattr(worktree, "_git", lambda *_args, **_kwargs: SimpleNamespace(
-        returncode=0, stdout="a" * 40, stderr=""
-    ))
+    monkeypatch.setattr(worktree, "_git", _fake_git)
     monkeypatch.setattr(
         worktree, "_finish_allocation",
         lambda _root, _record, **kwargs: calls.update(kwargs) or record,
     )
     worktree.ensure(tmp_path, "demo")
     assert calls["checkout_required"] is False
+
+
+def test_ensure_refuses_schema_v3_incomplete_allocation(monkeypatch, tmp_path):
+    record = replace(
+        _record(tmp_path, state="recovery-required"),
+        fork_point_sha="a" * 40,
+        recovery_status="env-generation-failed",
+        schema_version=3,
+        initial_overlay=None,
+        overlay_intent_known=True,
+    )
+    monkeypatch.setattr(worktree, "_allocation_lock", lambda _root: nullcontext())
+    monkeypatch.setattr(worktree, "find_instance_record", lambda *_args: record)
+    monkeypatch.setattr(
+        worktree, "_ensure_shared_record",
+        lambda *_args: SimpleNamespace(physical_worktree_path=tmp_path),
+    )
+    monkeypatch.setattr(
+        worktree, "_finish_allocation",
+        lambda *_args, **_kwargs: pytest.fail("schema-v3 allocation must not resume"),
+    )
+    with pytest.raises(worktree.WorktreeError, match="predates the durable first-allocation"):
+        worktree.ensure(tmp_path, "demo")
 
 
 def test_adopt_shared_infra_requires_every_value_before_side_effects(tmp_path):
@@ -926,6 +973,7 @@ def test_create_marks_partial_multi_root_preparation_and_preserves_worktree_erro
     calls = []
     monkeypatch.setattr(worktree, "_mark_recovery", lambda record, status: calls.append(status) or record)
     count = 0
+    original_read_record = shared.read_record
 
     def read_facts(_root):
         nonlocal count
@@ -934,8 +982,15 @@ def test_create_marks_partial_multi_root_preparation_and_preserves_worktree_erro
             raise worktree.WorktreeError("nested facts invalid")
         return {"network": "net"}
 
+    def read_record(path):
+        # The first-reset phase read happens before nested preparation; only
+        # the repair read after the nested failure is broken.
+        if count >= 1:
+            raise RuntimeError("repair failed")
+        return original_read_record(path)
+
     monkeypatch.setattr(workspace_env, "read_generated_facts", read_facts)
-    shared.read_record = lambda _path: (_ for _ in ()).throw(RuntimeError("repair failed"))
+    shared.read_record = read_record
     with pytest.raises(worktree.WorktreeError, match="nested facts invalid"):
         worktree.create(tmp_path, "demo", path=target)
     assert calls == ["env-generation-failed"]

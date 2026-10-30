@@ -121,7 +121,12 @@ whenever the band or writeback policy changes.
 
 ---
 
-## M5. File-cache hotness — is 2–3 G of buff/cache justified? Is swappiness=100 right?
+## M5. File-cache hotness — is 2–3 G of buff/cache justified? Is the swappiness setting right?
+
+> **Conclusion superseded 2026-10-21:** the operator set `vm.swappiness` to 10 (write-capped disk, cheap reads; reasoning
+> in [MEMORY-ARCHITECTURE.md §4, "`vm.swappiness`"](MEMORY-ARCHITECTURE.md#vmswappiness--why-low-on-these-hosts)). The
+> measurement recipe below stays valid as the way to watch the cost of a *low* value: sustained `rf_f/s` is the
+> file-cache-thrash signal. The table row and paragraph that argued for 100 are rewritten below as superseded.
 
 buff/cache decomposition first:
 
@@ -148,20 +153,19 @@ grep -E 'workingset_refault_file|pgmajfault' /proc/vmstat
 # per cgroup: grep '^workingset_refault_file ' <cg>/memory.stat
 ```
 
-**Swappiness validation recipe** (this is the empirical answer to "is 100
-right for our workload"): watch both refault streams for a representative day —
+**Swappiness validation recipe** (the empirical answer to "is the current value right for our workload"): watch
+both refault streams for a representative day —
 
 | Observation | Meaning | Action |
 |---|---|---|
-| file refaults ≈ 0, anon rf_z modest, rf_d ≈ 0 | cache is big enough AND anon reclaim is absorbed by zswap | swappiness=100 is right; nothing to change |
-| file refaults sustained ≫ 0 (esp. game/wings cgroups) | kernel is dropping needed file pages (code!) | swappiness even higher is impossible-ish (max 200) → protect cache by capping anon hogs instead |
+| file refaults ≈ 0, anon rf_z modest, rf_d ≈ 0 | cache is big enough AND anon reclaim is absorbed by zswap | nothing to change |
+| file refaults sustained ≫ 0 (esp. game/wings cgroups) | kernel is dropping needed file pages (code!): the cost of a LOW swappiness is showing | raise swappiness toward 30–60 (**[I]**, a suggestion and a decision for the operator, not a new recommended value), or protect the file cache (floors, capping anon hogs); see MEMORY-ARCHITECTURE §4 "`vm.swappiness`" |
 | anon rf_d sustained ≫ 0 on the game | cold tail not really cold / floor too low | fix floors/writeback (M4), NOT swappiness |
 
-The asymmetry to remember: with zswap, an anon refault costs µs; a file
-refault always costs a disk read. swappiness=100 deliberately trades the
-cheap direction. Lowering it to 5–10 would evict executable pages (the game
-binary itself) to "protect" anon that zswap already handles — the wrong trade
-on this host. There is no per-cgroup swappiness in cgroup v2.
+(Superseded 2026-10-21: this section used to conclude "100 is right" and that 5–10 would be "the wrong trade" because
+zswap makes anon reclaim cheap. The operator decided on a low value; see MEMORY-ARCHITECTURE §4.) The measurement
+itself still holds: an anon refault from zswap costs µs, a file refault costs a read. There is no per-cgroup
+swappiness in cgroup v2.
 
 DAMON option for deeper file-cache analysis: `damo` in **paddr** (physical)
 mode samples ALL memory including page cache — use to build a hot/warm/cold
@@ -191,15 +195,18 @@ rbw 2,149 MB/s / wbw 516 MB/s; p99 4k-read 497µs, 4k-write 1,695µs, 128k-write
 hypervisor-cache artifacts — ramp_time + 4G span + `buffer_compress_percentage=0`
 killed them. These figures belong to that historical sustained-v3 run; the current
 MDT results file is the authoritative source after a fresh identity-bound benchmark.
-Notable: game `io.pressure full avg300` stayed at 0.05 % through the whole
-4-minute saturation run — the BFQ/io.weight arbitration alone nearly fully shielded
-the game even WITHOUT caps on the aggressor (the benchmark ran uncapped in
-system.slice).
+Notable: game `io.pressure full avg300` stayed at 0.05 % through that 4-minute saturation run, with
+the benchmark uncapped in system.slice. **Do not generalise this** (corrected 2026-10-20): that load did not
+contend on the game's fsync/journal path. A load that does (dev writeback sharing the root ext4 journal)
+gave game `io.pressure some` of 23–48 % (host `full` up to 76 %) and 26 s stalls despite BFQ weights; see [HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md) §2. Also note
+that 516 MB/s write bandwidth above is ~30× the 14–18 MB/s measured on 2026-10-20 (re-run the baseline
+before trusting any io.cost model derived from it).
 
 Validation that the cap protects the game: run a real build
 (`release-bake.sh` / docker-repack) and watch the game's `io.pressure`
 (`full avg10` < 2) and monitor `rf_d/s` ≈ 0 while `iostat -x 5` shows the
-build pinned at the cap.
+build pinned at the cap. (A cap only binds below the device's real steady write rate, ~10 MB/s on
+gstammtisch; a cap above it proves nothing, see [HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md) §4.2 A3.)
 
 Why no host-wide IOPS cap: `io.max` cannot be set on the cgroup root, and
 capping every slice would throttle the game's own DB backups too. The design
@@ -403,3 +410,91 @@ CPU-boost knobs used throughout: `advisor_mode=none`, `pages_to_scan=4000`,
 `use_zero_pages=1` (now persisted in `files/etc/tmpfiles.d/ksm.conf`, so it
 survives reboots; the scan-rate override does not and reverts to
 `advisor_mode=scan-time` defaults on the next reboot).
+
+---
+
+## M8. Soulmask startup to steady state, final configuration (tmpfs logs, eatmydata + KSM, bounded IO)
+
+**Raw data (verbatim, as pasted by the operator; kept byte-identical):**
+[`measurements/2026-10-20-soulmask-startup-monitor.txt`](measurements/2026-10-20-soulmask-startup-monitor.txt)
+(`soulmask-monitor.sh`, 5 s rows, **local time = UTC+2**, instance `b87c0a5b`, game pid 4040733, 136 rows
+11:08:02–11:23:07) and
+[`measurements/2026-10-20-iostat-zswap-writeback.txt`](measurements/2026-10-20-iostat-zswap-writeback.txt)
+(operator `iostat -x`, 5 s, decimal comma). Both files carry their own header (state, controller events).
+`measurements/` is new: this guide had no raw-data directory before (the earlier M-sections quote their
+numbers inline); keep further raw captures here under `YYYY-MM-DD-<what>.txt`.
+
+**State when measured (2026-10-20, gstammtisch, 0 players):** per-instance tmpfs for `WS/Saved/Logs`
+(SMT-01), eatmydata + KSM preloaded (`LD_PRELOAD` verified), bounded IO live (`vm.dirty_bytes` 16M /
+background 4M, vda `nr_requests` 16, `max_sectors_kb` 64). Kernel settings at the time: `min_free_kbytes`
+67584, `watermark_scale_factor` 50, zswap `max_pool_percent` 25, `shrinker_enabled` Y.
+
+**Phases read from the log (local time).** [M] unless marked [I].
+
+| Time | What the log shows |
+|---|---|
+| 11:08:02 | container appears; anon 731M, T0 (pak) 2215M in RAM + 77M on disk, disk swap 2052M |
+| 11:08:07 → 11:11:38 | **anon ramp** to ~9.5 G: 6826M by 11:09:06, 8003M by 11:09:48, 8898M by 11:11:28, **9348M at 11:11:38** (RAM 9521M) |
+| 11:09:06 → 11:10:58 | **pak T0 pushed to disk swap during the ramp:** `T0_disk` 77M → 193M (11:09:06) → 1374M (11:10:58) while `T0_RAM` fell 2215M → 918M; later drift only to 1495M by 11:13:44. Total disk swap 2052M → ~3.6 G |
+| by 11:11:23 | **KSM:** merging 283 466 pages, profit +1.0 G (≈ 288 649 pages at 11:11:28) |
+| 11:11:38 / 11:11:52 | **Wings steady squeeze** (controller events, UTC 09:11:38/09:11:52): memory.min 9G → 4000M, low 9G → 5000M, high 15G → 8736M → 8000M. RAM 9521M → 8790M (11:11:52) → 7999M (11:11:57); **zpool 37M → 457M → 755M, ~780M plateau** (max 789M in the log); ratio 4.50× → 2.20× → 2.6× |
+| 11:11:52 → 11:13:19 | KSM merging **drops** to 132–142 k pages / profit +397…+472M right after the squeeze, then rebuilds to ~268–290 k pages / ~1 G by 11:13:44 (the log shows ~289.8 k at 11:19:03) |
+| 11:13:19 → 11:14:05 | **fps appears** 0.8 (11:13:19), 5.5, 10.3, 15.2, 20.1, 25.0, 29.3 (11:13:50), **29.7 at 11:13:55, 29.9 by 11:14:05** |
+| 11:12:55–11:17:02 (UTC 09:12:55–09:17:02) | controller load test B2 (not the subject here) |
+| 11:19:34 → 11:22:00 | **writeback burst:** the monitor printed **nothing for 146 s**; at 11:22:00 zpool 750M, then **0M at 11:22:06**; disk swap 3588M → 5082M (11:22:00) → **5725M** (11:22:21): **+2.1 G**; fps 29.9 → — → **5.9 at 11:22:06**, 10.9, 14.4, 19.4, 24.4, 28.3, **recovered (29.8) at 11:22:47** |
+
+**The burst, in the iostat capture** (the end of the zswap pool writeback): vda writes flat at
+**14 334–14 338 kB/s (= 14 MiB/s)** across the 5 s samples (one at 14 018), 100 % util, 2 100–2 800 w/s of
+~5–7 KB requests, almost all to the swap partitions `vda6` + `vda7`. A flat rate at exactly 14 MiB/s points to a
+provider-side write cap **[I]**. The iostat capture has **no timestamps**. Its read tail (dm-0 ~59 MB/s, r_await
+168 ms) is **unexplained**. The zpool trajectory inside the 146 s window is **unobserved**: 750M at the first
+row after the gap (11:22:00), 0 six seconds later; swap was already +1.5 G (5082M) at that first row.
+
+**Game D-state during the burst** (pid 4040733, 11:18:30–11:24 local; from the controller's bpftrace log on
+gstammtisch, `/var/log/mdt-stall/dstate-20261020-pid4040733.log`, **not in this repo**;
+IO-STALL-TESTING-GUIDE.md §10): **455.8 s** total in `blk_mq_get_tag` ← `submit_bio` ← **`shrink_memcg_cb`**
+(the zswap shrinker writeback, running in the game's OWN threads) and 12.9 s + 8.1 s in `try_to_free_pages`
+(global direct reclaim); each wait < 100 ms, but very many on many threads. **Mechanism [I]:** host memory
+ran short (16 GB host; game ~7.5 G, dev.slice ~4.4 G), the game's threads entered direct reclaim, and the
+memcg zswap shrinker wrote the game's cold pool back synchronously at 14 MiB/s. After the squeeze the game
+scope's `memory.low` is 5000M, below its ~7.5 G footprint, so global reclaim reaches it **[I]**. Trigger,
+per the operator (2026-10-20): **no other load was started at 11:19:34**; this is shrinker behaviour (pages
+become "cold enough" and are written back a few minutes after the server settles, reproducibly). The
+kernel-source analysis is in progress (project `zswap-writeback-governor/` at the vbpub root, branch `zwg-01-20261020`, ZWG-01); the mechanism stays **[I]**
+until it lands.
+Mechanism and options: [MEMORY-ARCHITECTURE.md, "Burst writeback stall"](MEMORY-ARCHITECTURE.md#burst-writeback-stall-the-zswap-shrinker-has-no-rate-governor).
+
+**B3, settled server** (UTC 09:30:50–09:34:57, same load, all final settings live; controller trace): probe
+`write()` p99/max 101 / 1059 ms, fdatasync p50/p99/max 9.3 / 194 / 261 ms, **game D max 90 ms**, 0 windows
+> 1 s, **but fps min 7.0** (fps 7–11 from 09:34:00 to 09:34:36, recovered by 09:34:57). Game D total 16.25 s, of
+which **16.03 s is `shrink_memcg_cb` writeback** (worst windows 11:34:09 local 6.1 s, 11:34:29 2.7 s). Host
+memory PSI some rose ~22 s within 09:34:00–09:34:30; the load's 1 GiB dd files are page cache under
+`dev-gates.slice` (memory.high 7 G). vda ~11.9 MB/s, gate fio 214 iops. **Conclusion:** the IO-queue stall
+is fixed; the remaining stall is memory-reclaim-driven zswap writeback inside the game's threads.
+
+---
+
+## M9. Shutdown of a swapped-out server, eatmydata writeback delay, save cadence
+
+*Measured 2026-10-20 on gstammtisch (UTC) by the controller; the bpftrace and iostat logs are on the host, not in
+this repo. Labels: [M] measured, [I] inferred.*
+
+**Shutdown of a swapped-out server.** [M] CLIENT (`6c418fe7…`) was stopped via the Wings API. The stop took **125 s**
+(Wings stop request 23:12:38, container exit 23:14:43 UTC); the observer's own log says 128 s because its sampling
+window began about 3 s earlier. Exit code 130 is the normal stop-signal path.
+- **Page-in during shutdown:** 1 724 MiB from disk swap (`pswpin`) plus 805 MiB from zswap (`zswpin`); major faults
+  651 k, up to ~5 300 disk swap-ins/s. The scope's anon grew 3083 → 4522 MB before release.
+- **Shutdown save:** `world.db` and `world.db-journal`.
+- **Stalls:** the worst game-thread D-state was 4.5 s, at 23:12:59. The other server (MAIN) had no stall ≥ 20 ms
+  throughout.
+- **Implication:** stopping (and saving) a swapped-out server pages most of it back in. Budget the time (~2 min here)
+  and the disk read load for it. Operational note: [SOULMASK.md](SOULMASK.md#soulmask-save--backup-mechanism).
+
+**When eatmydata'd writes reach the disk.** [M] Probe [`tools/io-stall/wb_delay.bt`](tools/io-stall/wb_delay.bt)
+(game `vfs_write` on ext4 → `writeback_single_inode` for that inode; usage in the tools README).
+- Shutdown save: `world.db` reached the disk **0.4–2.3 s after its first write and ≤ 0.56 s after its last write**.
+- **Why so fast [I]:** `dirty_background_bytes` = 4 MiB (MDT-HS-05) starts writeback almost immediately, so the
+  exposure window of eatmydata is seconds, not the 30 s `dirty_expire` default.
+
+**Save cadence.** [M] Soulmask logs `logDB … cleanup auto database` hourly (at :08:39 on MAIN, :00:34 on CLIENT).
+`world.db` is rewritten more often than that.

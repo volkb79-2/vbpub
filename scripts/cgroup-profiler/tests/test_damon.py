@@ -397,6 +397,29 @@ def test_prepare_registry_lock_file_refuses_a_symlink(fake_damon, monkeypatch, t
         damon.prepare_registry_lock_file()
 
 
+def test_nr_kdamonds_write_refuses_a_target_resolving_to_admin_root(
+    monkeypatch, tmp_path,
+):
+    admin_root = tmp_path / "admin"
+    kdamonds_dir = admin_root / "kdamonds"
+    kdamonds_dir.mkdir(parents=True)
+    (kdamonds_dir / "nr_kdamonds").symlink_to(
+        admin_root, target_is_directory=True,
+    )
+    writes = []
+    monkeypatch.setattr(damon, "KDAMONDS_DIR", str(kdamonds_dir))
+    monkeypatch.setattr(
+        damon.SysfsInterface,
+        "_write_int",
+        lambda path, value: writes.append((path, value)),
+    )
+
+    with pytest.raises(damon.HostWriteError):
+        damon._write_nr_kdamonds(1)
+
+    assert writes == []
+
+
 def test_solo_session_refuses_when_another_cgprofile_process_holds_the_lock(fake_damon):
     held = damon._DamonRegistryLock()
     held.acquire()
@@ -2041,6 +2064,49 @@ def test_pool_quarantines_free_slot_when_count_disappears_before_claim(
     assert reads >= 2
     assert pool.live_indices == frozenset()
     assert pool.quarantined_indices == frozenset({0})
+
+
+def test_pool_quarantines_free_slot_when_count_excludes_its_pinned_identity(
+    fake_damon,
+):
+    pool = damon.KdamondPool(capacity=1)
+    idx = pool.acquire()
+    pool._live.remove(idx)
+    pool._free.add(idx)
+
+    # Model a counter/path disagreement during an external shrink: the
+    # identity is still readable, but the registry count says index 0 is gone.
+    (fake_damon.root / "nr_kdamonds").write_text(str(idx))
+    assert pool.owns_slot(idx)
+
+    pool._reconcile_live_indices()
+
+    assert idx not in pool._free
+    assert pool.quarantined_indices == frozenset({idx})
+
+
+def test_pool_does_not_restore_over_a_foreign_count_with_the_same_owned_identity(
+    fake_damon,
+):
+    pool = damon.KdamondPool(capacity=1)
+    idx = pool.acquire()
+    pool._live.remove(idx)
+    pool._free.add(idx)
+
+    # A count/path disagreement must be refused even when the owned slot's
+    # pinned identity still matches. In particular, don't shrink an index the
+    # pool cannot prove it owns.
+    (fake_damon.root / "nr_kdamonds").write_text("2")
+    assert pool.owns_slot(idx)
+    fake_damon.calls.clear()
+
+    assert not pool._restore_baseline()
+
+    assert fake_damon.nr_kdamonds() == 2
+    assert not [
+        call for call in fake_damon.calls
+        if call[0] == "_write_int" and call[1].endswith("nr_kdamonds")
+    ]
 
 
 def test_pool_records_foreign_growth_between_reconciliation_and_claim(

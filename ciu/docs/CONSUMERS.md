@@ -58,13 +58,140 @@ workspace record contains the matching root-entry list. CIU does not report
 lifecycle verb (`create`, `ensure`, `adopt`) with `--json` emits the same
 envelope. `status` is one of `allocating`, `ready`,
 `recovery-required`; a `recovery-required` instance carries a closed
-`recovery_status` of `checkout-incomplete`, `env-generation-failed`, or
-`runtime-collision`. Resume a partial allocation with `ensure`.
+`recovery_status` of `checkout-incomplete`, `env-generation-failed`,
+`runtime-collision`, or `runtime-verification-failed`. A proven duplicate
+identity or foreign network is a collision; an unreadable Git-family registry
+or failed Docker ownership probe is indeterminate and uses
+`runtime-verification-failed`. Resume a partial allocation with `ensure` after
+the registry or probe is available.
 
 CIU must prove the checkout's exact commit before it can select the committed
 root set. If Git cannot provide that commit, creation leaves the allocated
 checkout `recovery-required` instead of reporting `ready`; after the Git
 problem is corrected, retry with `ciu worktree ensure NAME`.
+
+When you pass initial overlay options, CIU validates and renders the local
+overlay before allocating the checkout, then saves the exact payload
+in the schema-v5 worktree record before writing the file. In a monorepo, run
+the command from the CIU root whose overlay you want, or pass that root with
+`--root-folder`; CIU refuses overlay options when it cannot identify a
+committed target root. For example:
+
+```console
+$ ciu worktree create pkg-under-test --base main \
+    --profile core,db
+```
+
+Use that same selected root for follow-on worktree commands such as `inspect`,
+`up`, `lease`, `exec`, `list`, and `rm`. Git operations still use the whole
+worktree family, while CIU record lookup uses the selected root's recorded
+offset. This matters in a monorepo with several CIU roots.
+
+CIU resolves the requested `--base REF` to one full commit before creating the
+workspace. It uses that same commit for committed-root validation, workspace
+creation, and the first checkout reset. If `main` advances after this snapshot,
+the allocation stays on the validated commit; an explicit `ensure --base main`
+then refuses until `main` again names the recorded allocation commit.
+
+Use names declared by this project's profiles. An adopted checkout can receive
+the same initial selection with `ciu worktree adopt NAME PATH --profile P1,P2`.
+`ensure NAME --profile P1,P2` creates an absent worktree with that selection.
+When a record already exists, omit overlay options: the saved intent is used
+for interrupted recovery and a ready overlay remains operator-owned. CIU
+refuses explicit overlay options for an existing record instead of silently
+ignoring them.
+
+Shared-infrastructure selections use the same saved overlay:
+
+```console
+$ ciu worktree create pkg-under-test --base main \
+    --shared-infra primary \
+    --shared-infra-services api,worker \
+    --shared-infra-ref-projects idp-dev-idp,vault-dev-vault
+```
+
+If that allocation is interrupted, `ensure` restores the recorded overlay if
+it is missing. It refuses a symlink, non-file, or different existing content
+without replacing it. Once creation reaches `ready`, the overlay is ordinary
+operator-owned configuration; later edits are preserved. A new CIU-written
+overlay has mode `0644`: it contains non-secret configuration and may need to
+be read by a test or application container running under a different uid. For
+an adopted checkout, omitting overlay options preserves any existing overlay.
+Passing options that would create an overlay where one already exists refuses
+before CIU records ownership.
+
+The one-time recovery marker is cleared when the first allocation becomes
+`ready`. If a later root repair is itself interrupted, the next `ensure` still
+repairs generated facts but does not replay the original overlay, so operator
+edits and deletions remain in place. Ready records from schemas 1 through 4
+remain readable; an incomplete schema-v3 record is refused because it predates the overlay
+recovery marker and cannot prove whether it represents initial allocation or an
+interrupted repair.
+New schema-v5 and later allocations record whether the worktree was created or adopted;
+the origin of a migrated older ready record remains unknown. Allocation origin
+or failure status alone never proves network ownership: CIU needs a saved Docker
+object id, a matching `io.ciu.instance-id` owner label, or an explicit claim for
+a known unlabelled legacy network.
+
+CIU labels each network it creates with its instance id and records the
+verified Docker network object id in schema v5. Schema v6 adds `base_branch_ref` (the local branch the frozen `base_ref` SHA was taken from, or null; always null for `adopt`); v5 records keep a SHA `base_ref` without it and consumers that need the moving branch must be given an explicit base for them. `ensure` checks a present
+network against that saved id or the CIU owner label, including on its ready
+fast path. A same-name replacement with no matching owner proof changes the
+record to `recovery-required`; a network outage does not erase the last saved
+object id. For a known legacy network with no CIU owner label, explicitly
+claim the exact object once with `--adopt-existing-network` on `adopt` or
+`ensure`, while the record has no saved network object id:
+
+```console
+$ ciu worktree ensure pkg-under-test --adopt-existing-network
+```
+
+A conflicting owner label always refuses.
+After an object id is saved, this flag cannot replace it with a different
+unlabelled network. `worktree up` checks a present network immediately before
+launching the managed `ciu up` child. Direct native and shipped `ciu up` verify
+the managed record and network before accepting or creating the network, then
+verify again after creation before attaching the devcontainer. Full
+`ciu env generate` also verifies ownership before creating or attaching a
+network. The shared Compose runner performs a final verification immediately
+before it starts Compose; if the managed network disappeared or no longer has
+ownership proof, Compose is not launched. This is a point-in-time check:
+Compose resolves the network by name afterward, so an external Docker actor can
+still replace that name in the short interval before Compose's lookup.
+
+A Docker permission or execution failure is an unknown result and refuses; it
+is not treated as proof that the network is absent. A same-name replacement
+without a matching object id or owner label is reported as
+`runtime-verification-failed`; a foreign owner label or duplicate readable
+identity is a proven `runtime-collision`. An unreadable sibling record under a
+CIU root at the selected root offset also blocks runtime identity admission,
+including during direct startup. Sibling root membership comes from its
+committed `HEAD` tree, so deleting the marker only in the working tree cannot
+hide the sibling. Listing remains best effort and malformed rootless siblings
+do not block admission. A genuinely absent Docker executable or network
+remains a supported local-only state.
+
+If direct startup says the CIU instance record is missing but its shared
+workspace record proves that the checkout is managed, restore it before
+starting:
+
+```console
+$ ciu worktree ensure pkg-under-test --json
+$ ciu up
+```
+
+`ensure` validates the shared snapshot against the checkout path, branch, base
+commit, and selected-root offset. A ready snapshot does not include initial
+overlay payload, so restoring a lost ready record cannot overwrite later
+operator edits or recreate a deleted overlay. A primary checkout without a
+managed shared workspace record is still allowed to start normally.
+
+When a worktree command needs a selected CIU root, `--root-folder` may name
+that exact CIU root or the Git-family root. If it names the family root, the
+current directory selects the nearest nested CIU root even when the family
+root also has a marker. An arbitrary existing descendant is an error; CIU
+will not walk up to a different root or silently use one from the caller's
+current directory.
 
 If root preparation fails, keep the checkout and retry through CIU:
 
@@ -83,7 +210,13 @@ for older records with only a symbolic base, it uses the neutral workspace's
 checkout moved or the allocation target cannot be proven, `ensure` marks the
 record `recovery-required` and refuses. If a fork point was saved before the
 interruption, `ensure` repairs against that exact commit and preserves later
-commits. It never resets an existing checkout during resume.
+commits. If the first `reset --hard` may have run but CIU could not save its
+exact resulting commit, `ensure` refuses to repeat that reset; inspect and
+recover the checkout manually so staged deletions or other operator work are
+not erased. It never resets an existing checkout during resume. For an
+existing record, an explicit `--base REF` must resolve to its saved allocation
+commit, and an explicit `--worktree-dir DIR` must resolve to its recorded
+checkout path. Omit those options to resume from the saved allocation.
 
 A Git family with no committed `ciu.global.defaults.toml.j2` is also valid.
 CIU records the Git worktree as ready with null runtime identity, because no
@@ -599,6 +732,14 @@ cannot be disconnected is NAMED and the clean exits 1 — it is never silently
 kept. The main workspace keeps its own workspace network (your devcontainer
 lives on it) and says so twice: a `kept:` line and the final success line.
 
+If `docker compose down` fails, CIU checks all containers carrying that exact
+Compose project label before removing any host `vol-*` directory or rendered
+configuration. It continues only when the query succeeds and returns no
+containers. If containers remain or Docker cannot answer, `ciu clean` exits
+with an error and keeps the host directories and cleanup files for retry.
+Symlinked `vol-*` paths are refused before deletion so the root helper cannot
+follow a link and erase data outside the stack directory.
+
 **Shipped stacks without deploy tags (CIU-46).** A stack deployed via
 `ciu up --dir <stack> --shipped` on a checkout whose config sets neither
 `deploy.project_name` nor `deploy.environment_tag` runs under the
@@ -667,8 +808,9 @@ convenience — that is the path it renders, silently, into your bind mount.
 
 **That file is CIU's, not yours.** It is rewritten in full on every
 `env generate`, so any hand edit to it is gone on the next one. Your own
-tables and comments go in `ciu.global.instance.toml.j2` next to it — CIU never
-writes that file at all, so everything in it is safe forever. (Both roles
+tables and comments go in `ciu.global.instance.toml.j2` next to it. A managed
+`create`/`adopt` may write an explicitly requested initial selection before
+the worktree is ready; after that, CIU does not rewrite the file. (Both roles
 shared one file, `ciu.global.worktree.toml.j2`, before the split; see §21.)
 
 In a **shell**, `ciu env print` prints the existing `ciu.env` as `export`
@@ -942,29 +1084,31 @@ reset); plain `ciu clean` preserves it. `ciu migration-check` reports a
 
 ## 12. The implementation gate (Assay-backed, S18)
 
-CIU's gate is judged by Assay installed from the **selected vbpub worktree**.
-There is no consumer-owned pyz or fixed version to refresh. You can reproduce
-the judgment half locally (the container orchestration still belongs to
-`run-gate.py`):
+CIU's implementation lane is judged by Assay installed from the **selected
+vbpub worktree**. There is no consumer-owned pyz or fixed version to refresh.
+Run the registered lane through the installed Run-Gate CLI from the `ciu/`
+directory of the worktree you want tested:
 
-```bash
-# 1. Install the selected worktree's source, with no dependency resolution.
-python3 -m pip install --no-deps --no-build-isolation --editable ./assay
-
-# 2. Inspect the declared lane (validates config, runs nothing).
-assay lanes --file ciu/assay.toml
-
-# 3. Run the lane; Assay snapshots the commit, runs the full suite at 100%
-#    line+branch, judges the changed-line floor (R1), runs native mutation
-#    (R2), and runs the import-break canary (R3).
-#    R2 liveness bounds stalled pytest candidates; --maxfail=1 stops a failing
-#    mutant at its first failed test without shortening a successful full run.
-#    The verdict goes OUTSIDE the judged tree (gitignored .assay/).
-cd ciu && mkdir -p .assay && \
-  assay run ciu \
-    --file assay.toml --verdict-json .assay/verdict-ciu.json \
-    --resume --progress .assay/progress-ciu.jsonl
+```console
+$ run-gate ciu
 ```
+
+Run-Gate starts the declared `tester-unified` environment, installs Assay from
+that selected worktree, and invokes the lane with resume and progress reporting.
+To target a different checkout explicitly, add `--worktree /absolute/path/to/vbpub`.
+For the full CIU release-test sequence, including the isolated real-system
+enrollment lane, use the registered CMRU workflow:
+
+```console
+$ cmru run ciu --step run-tests
+```
+
+The Assay lane runs the full suite with the configured coverage floor,
+changed-line judgment (R1), native mutation (R2), and import-break canary
+(R3). R2 liveness bounds stalled pytest candidates; `--maxfail=1` stops a
+failing mutant at its first failed test without shortening a successful full
+run. The verdict and progress stream live outside the judged tree in gitignored
+`.assay/`.
 
 Contract notes for a consumer of the gate:
 
@@ -1005,19 +1149,26 @@ registered Run-Gate lane refuses a dirty judged tree; CMRU's isolated release
 worktree satisfies that requirement when the release workflow runs it.
 
 The step invokes the installed Run-Gate CLI as `run-gate enroll` inside
-`tester-unified`. Before it starts, CIU checks that the installed wheel's
-Run-Gate modules match the selected checkout; if they differ, rebuild
-`tester-unified` from this checkout as described in the
+`tester-unified`. CMRU supplies the lane's required isolated-Docker endpoint
+and gates-slice environment; use the registered `cmru run` sequence above for
+that complete setup. There is no checkout-relative `../run-gate.py`
+dependency. Before the release step starts, CIU checks that the installed
+Run-Gate module bytes and console-entry-point targets match the selected
+checkout; it does not compare unrelated wheel metadata. If either check
+differs, rebuild `tester-unified` from this checkout as described in the
 [tester-unified build guide](../../tester-unified/README.md). The registered
 lane requires the exact DinD endpoint and forwarded `$CGROUP_PARENT_DEV_GATES`
 value created by CMRU. With
 `CIU_ENROLL_REQUIRED=1`, the enrollment oracle fails if that endpoint is
 missing; it does not silently skip the security assertions.
 
-Run-Gate supports `mode = "host"` as a general execution mode. It does not
-decide where every consumer must run tests. MDT's cockpit policy requires the
-devcontainer to drive gates while a stable, declared test environment hosts
-the suite, so dependencies and resource conditions are repeatable. See the
+Run-Gate supports `mode = "host"` as a general execution mode: the lane runs
+in the environment where the Run-Gate CLI is invoked. If an operator invokes
+it from a cockpit, pytest can run there; Run-Gate permits this and each
+consumer chooses its own policy. A stable, declared test environment gives
+repeatable dependencies and resource conditions. MDT's cockpit policy
+specifically requires the devcontainer to drive gates while that environment
+hosts the suite. See the
 [MDT container doctrine](../../modern-debian-tools-python-debug/docs/CONTAINER-DOCTRINE.md).
 This lane sets `profile = false`: its isolated
 Docker daemon cannot inspect the outer tester container's host cgroup, while
@@ -1734,7 +1885,7 @@ two, and the one you hand-edit was renamed.
 
 | before (≤ 7.9.0) | after (7.10.0) | who owns it |
 |---|---|---|
-| `ciu.global.worktree.toml.j2` — your sparse overrides AND CIU's `[ciu.instance.generated]` table | `ciu.global.instance.toml.j2` | **you.** CIU never writes it |
+| `ciu.global.worktree.toml.j2` — your sparse overrides AND CIU's `[ciu.instance.generated]` table | `ciu.global.instance.toml.j2` | **you, after any initial managed selection.** CIU does not rewrite it once ready |
 | (same file) | `ciu.instance.generated.toml` | **CIU.** Plain TOML, rewritten in full by every `ciu env generate` |
 
 **Nothing changes for a template.** `{{ ciu.instance.generated.* }}` reads

@@ -8,8 +8,10 @@ reachable and reviewable.
 from __future__ import annotations
 
 import json
-from conftest import TESTS_ROOT, zero_resource_limit_evidence_dict
 from types import SimpleNamespace
+
+import pytest
+from conftest import TESTS_ROOT, zero_resource_limit_evidence_dict
 
 from assay import verify as raw_verify
 from assay.errors import Outcome, ReasonCode
@@ -278,13 +280,20 @@ def _attempt(
     transformed=Outcome.FAIL,
     reason=ReasonCode.UNCOVERED_LINES,
 ):
+    observed_reason = {
+        Outcome.FAIL: reason,
+        Outcome.ERROR: ReasonCode.EXEC_FAILED,
+        Outcome.NO_MEASUREMENT: ReasonCode.CGROUP_OBSERVATION_UNAVAILABLE,
+        Outcome.BUDGET_EXCEEDED: ReasonCode.LANE_TIMEOUT,
+        Outcome.INCONCLUSIVE: ReasonCode.CANARY_INCONCLUSIVE,
+    }.get(transformed)
     return CanaryAttempt(
         target=target,
         description="probe",
         control_outcome=control,
         transformed_outcome=transformed,
         expected_reason_code=ReasonCode.UNCOVERED_LINES,
-        observed_reason_code=reason if transformed is Outcome.FAIL else None,
+        observed_reason_code=observed_reason,
     )
 
 
@@ -383,6 +392,32 @@ def test_raw_r3_rederivation_derives_failure_when_any_has_no_pass():
     )
 
     assert failures == []
+
+
+@pytest.mark.parametrize(
+    "transformed",
+    [
+        Outcome.ERROR,
+        Outcome.NO_MEASUREMENT,
+        Outcome.BUDGET_EXCEEDED,
+        Outcome.INCONCLUSIVE,
+    ],
+)
+def test_raw_r3_rederivation_treats_incomplete_transforms_as_inconclusive(
+    transformed,
+):
+    attempt = _attempt("src/only.py", transformed=transformed)
+
+    assert raw_verify._judge_one_attempt(attempt) == (
+        Outcome.INCONCLUSIVE,
+        ReasonCode.CANARY_INCONCLUSIVE,
+    )
+    assert _r3_check(
+        [attempt],
+        "all",
+        Outcome.INCONCLUSIVE,
+        ReasonCode.CANARY_INCONCLUSIVE,
+    ) == []
 
 
 def test_raw_r3_rederivation_checks_terminal_and_budget_bookkeeping():
@@ -782,6 +817,18 @@ def test_raw_reconstructor_reaches_optional_judge_and_helper_fields():
             "identity": "assay 7.1.0",
         }
     ]
+
+    assert raw_verify.verify_document(document) == []
+
+
+def test_verify_document_accepts_positive_memory_max_telemetry_in_killed():
+    fixture = TESTS_ROOT / "fixtures" / "verdicts" / "r2_pass.json"
+    document = json.loads(fixture.read_text(encoding="utf-8"))
+    r2_claim = next(claim for claim in document["claims"] if claim["rigor"] == "R2")
+    counter = r2_claim["mutation"]["killed"][0]["resource_limit_evidence"][
+        "memory_events"
+    ]["max"]
+    counter.update(before=0, after=1, delta=1)
 
     assert raw_verify.verify_document(document) == []
 

@@ -1,10 +1,16 @@
 # /etc/systemd/system/soulmask_tmpfs.service
 [Unit]
-Description=Soulmask unified tmpfs ramdisk (shared, bind-mounted into every TMPFS=1 instance)
+Description=Soulmask unified tmpfs ramdisk (shared, bind-mounted into every TMPFS=1 instance) + per-instance log tmpfs
 Documentation=file:///home/vb/volkb79-2/vbpub/scripts/gstammtisch-guide/SOULMASK-TMPFS.md
 # Must run before Docker so containers mount the tmpfs-backed paths.
 Before=docker.service
 After=local-fs.target
+# The per-instance tmpfs and bind mounts land INSIDE the Wings volumes tree, so this
+# unit needs that tree's own filesystem mounted first. Harmless while it is a plain
+# directory on root; once /var/lib/pterodactyl is a dedicated filesystem (BTRFS-ROLLOUT.md)
+# it makes a missing mount FAIL this unit instead of mounting tmpfs onto the directory
+# underneath, and orders ExecStop before that filesystem is unmounted at shutdown.
+RequiresMountsFor=/var/lib/pterodactyl
 DefaultDependencies=no
 
 [Service]
@@ -23,18 +29,42 @@ RemainAfterExit=yes
 # this tmpfs's headroom (5G vs ~2.3G payload) — see SOULMASK-TMPFS.md and
 # soulmask_tmpfs-setup.sh's own comment on READONLY.
 Environment=SOULMASK_TMPFS_READONLY=0
+# Per-instance log tmpfs policy (SIZE / KEEP_BACKUPS / HIGH_WATER_PCT) lives in
+# ONE file, read by this unit AND by soulmask-logs-prune.service (SMT-01). No '-'
+# prefix on purpose: a missing file fails the unit loudly instead of running
+# with an unset policy. The scripts have no defaults. See the file for the
+# sizing arithmetic.
+EnvironmentFile=/etc/gstammtisch/soulmask_tmpfs.env
+# Exit status 75 (EX_TEMPFAIL) = "the shared tmpfs is complete, but a PER-INSTANCE
+# problem was recorded" (symlinked path, foreign mount, failed mount, bad policy).
+# Treating it as success keeps the unit ACTIVE, so ExecStartPost (wings restart)
+# still runs and `systemctl stop` / toggle-off still run ExecStop. It is NOT
+# swallowed: the error count and messages are written to the state file
+# (PI_ERRORS= / PI_ERROR=), ERROR lines go to the journal at priority err, the
+# prune service then FAILS on every pass until a clean setup run, and
+# soulmask_tmpfs-toggle.sh status warns. Any other non-zero status (shared part
+# failed) still fails the unit.
+SuccessExitStatus=75
 # Enumerates /etc/gstammtisch/instances.d/*.env for TMPFS=1 instances, reads
 # /etc/gstammtisch/soulmask_tmpfs-paths.conf for what to share, copies from
 # the ROLE=main instance into ONE shared tmpfs, remounts it read-only, then
-# bind-mounts every path into every opted-in instance's volume.
+# bind-mounts every path into every opted-in instance's volume. Also mounts one
+# private rw tmpfs per instance on each [per-instance-*] path (WS/Saved/Logs);
+# a problem there never blocks the shared part (exit 75, see SuccessExitStatus).
+# The per-instance mounts are made inside this same ExecStart, i.e. BEFORE the
+# ExecStartPost wings restart and (Before=docker.service) before wings and the
+# game containers start, so rslave propagation / the recursive bind sees them.
 ExecStart=/usr/local/sbin/soulmask_tmpfs-setup.sh
 # Belt-and-suspenders alongside the wings docker-compose.yml propagation fix
 # (rslave on its /var/lib/pterodactyl bind, applied 2026-07-31): restart
 # wings on every toggle so it can never again carry ghost copies of bind
 # mounts the host has since changed. See soulmask_tmpfs-restart-wings.sh.
 ExecStartPost=/usr/local/sbin/soulmask_tmpfs-restart-wings.sh
-# Teardown: unmount every bind target recorded in the setup script's state
-# file, then the shared tmpfs itself.
+# Teardown: unmount every bind target and per-instance tmpfs recorded in the
+# setup script's state file, then the shared tmpfs itself. It REFUSES (exit
+# non-zero) a per-instance tmpfs whose game container is still running — a
+# plain `systemctl stop/restart` does not otherwise check (only
+# soulmask_tmpfs-toggle.sh --stop does).
 ExecStop=/usr/local/sbin/soulmask_tmpfs-teardown.sh
 ExecStopPost=/usr/local/sbin/soulmask_tmpfs-restart-wings.sh
 # Generous: copies ~2.5G across many paths on cold disk (pak ~1.7G +

@@ -1,0 +1,100 @@
+# =============================================================================
+# mdt-cockpit gate lanes — parsed ONLY by Run-Gate CLI
+# (one parser, D-110). Image-build tooling has no build-unit suite, so the lane
+# is a syntax smoke over every tracked Python file, plus host-setup Python tests
+# and (RG-55 P8)
+# host-setup/'s own renderer test (renders every units/*.in template from
+# host-setup.env.example's shipped defaults, asserts no unresolved @VAR@
+# tokens survive, and bash -n/shellcheck-checks every shell script that
+# package touches — see host-setup/tests/test-render.sh). The image builds
+# themselves belong to the cmru image-bake dependency chain (D-110.2), not a
+# per-commit gate. The command runs in tester-unified, never in the cockpit
+# devcontainer. The assay lane below supplies the Python R0-R3 evidence.
+# See run-gate-project/SPEC.md.
+# =============================================================================
+schema_version = 1
+
+# The bake-file evaluation test and the whole OCI-layout push module need `docker buildx`, `crane` and
+# `regctl`, which tester-unified (built on tester-base) deliberately does not carry. They are
+# DESELECTED here, explicitly, so no skip hides them; their only coverage is the `oci-push` lane below,
+# in the mdt-cockpit image, where they are required (T6/R6).
+[lanes.smoke]
+kind = "command"
+environment = "tester-unified"
+argv = ["bash", "-c", "cd {worktree}/mdt-cockpit && export PYTHONPATH=. MDT_REQUIRE_SHELLS=1 && find . -name '*.py' -print0 | xargs -0 -r python3 -m py_compile && bash host-setup/tests/test-render.sh && /opt/tester-venv/bin/pytest scripts host-setup/tests iogov/tests -q -rs --deselect scripts/test_local_dev.py::test_the_bake_file_gives_a_local_dev_build_only_dev_tags_and_leaves_release_tags_alone --deselect scripts/test_oci_layout_push.py && echo 'smoke: OK'"]
+budget = "2m"
+
+[lanes.smoke.resources]
+memory = "1g"
+memory_swap = "2g"
+
+# The CMRU image release consumes this same tester-unified release-flow lane;
+# keeping the command here prevents a second tester-gate recipe from drifting
+# away from the project gate declaration.
+[lanes.release]
+kind = "command"
+environment = "tester-unified"
+argv = ["bash", "-c", "cd {worktree}/mdt-cockpit && exec /opt/tester-venv/bin/python -m unittest scripts.test_release_flow scripts.test_oci_tool_staging scripts.test_oci_push_lane"]
+clean_tree = true
+budget = "15m"
+
+# The OCI-layout push test (real registry:2, buildx export, crane/regctl digest verification)
+# needs tools tester-unified does not carry, so it runs INSIDE the mdt-cockpit image, with the
+# host docker socket (MDTC-02 T6). The driver only orchestrates: it starts the image the release built,
+# gate-placed, and streams the tracked sources in. In that container a missing tool FAILS.
+# The image is DERIVED, never typed: the one the release's `prepare` step just built (the first OCI
+# layout under build/oci-layouts, imported under a private tag). No built image = the lane FAILS.
+#   run-gate oci-push        (after `python3 build-push.py --build`; cmru release does both)
+[lanes.oci-push]
+kind = "command"
+environment = "bare-host"
+argv = ["python3", "scripts/run_oci_push_lane.py", "--target", "trixie-py314-php85"]
+clean_tree = true
+required_env = ["CGROUP_PARENT_DEV_GATES", "BUILDKIT_HOST"]
+budget = "20m"
+
+[lanes.assay-full]
+kind = "assay"
+assay_lane = "host_setup"
+environment = "tester-unified"
+resource_observer = "cgprofile"
+clean_tree = true
+budget = "2h"
+artifacts = [".assay/verdict-host_setup.json", ".assay/progress-host_setup.jsonl", ".assay/coverage.json"]
+
+[lanes.assay-full.resources]
+pids = 8192
+# The full wizard R0-R3 lane routinely exceeds 4 GiB while executing the
+# serial mutation campaign (the observed peak was just over 4.1 GiB). Keep a
+# 6 GiB per-container ceiling so a normal mutation candidate is not mistaken
+# for a leaked/over-budget process; the surrounding dev slice remains the
+# aggregate host boundary.
+memory = "6g"
+memory_swap = "16g"
+
+[lanes.vm-system]
+kind = "command"
+environment = "bare-host"
+argv = ["bash", "host-setup/tests/run-vm-acceptance.sh"]
+clean_tree = true
+required_env = ["CGROUP_PARENT_DEV_GATES", "CGROUP_PARENT_DEV_INTERACTIVE", "BUILDX_BUILDER", "BUILDX_CONFIG", "DOCKER_HOST"]
+budget = "155m"
+
+# Runtime acceptance of the BUILT images (MDT-010, MDTC-01 D10). The driver only
+# orchestrates (the vm-system precedent): the subject runs in its own containers
+# started from the exact image refs below, each placed in the gate tier, offline,
+# `--init`, uniquely named and removed by exact name. There is no default image: the
+# lane refuses when either ref is unset and never falls back to a :latest tag.
+#   MDT_RUNTIME_IMAGE_NATIVE=<ref> MDT_RUNTIME_IMAGE_VSC=<ref> run-gate image-runtime
+# MDT_RUNTIME_LOCAL_DEV_MANIFEST names the local-dev manifest the images were built from.
+# It is REQUIRED when an image's build-mode label is local-dev (its labels are checked
+# against that manifest entry for entry, and the lane FAILS without it) and unused for
+# release images, which carry no local artifacts. It is deliberately not in required_env,
+# because a release run does not need it.
+[lanes.image-runtime]
+kind = "command"
+environment = "bare-host"
+argv = ["python3", "-m", "unittest", "discover", "-s", "tests/runtime", "-p", "test_*.py", "-v"]
+clean_tree = true
+required_env = ["CGROUP_PARENT_DEV_GATES", "MDT_RUNTIME_IMAGE_NATIVE", "MDT_RUNTIME_IMAGE_VSC"]
+budget = "60m"

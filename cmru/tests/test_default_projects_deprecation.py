@@ -50,6 +50,7 @@ CENTRAL = """schema_version = 1
 owner = "o"
 repo = "r"
 owner_type = "user"
+token_source = "cmru"
 
 [targets]
 host = "github"

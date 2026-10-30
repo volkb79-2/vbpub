@@ -185,9 +185,10 @@ w! /sys/kernel/mm/ksm/use_zero_pages           - - - - 1
 SWAP_SYSCTL = """\
 # vbpub debian-install v2 -- memory/swap tuning for a zswap-fronted host.
 
-# With zswap, reclaiming anonymous pages is cheap (they land in a compressed
-# RAM pool, not on disk), so cold anonymous memory is pushed out early and file
-# cache stays resident. Kernel range is 0-200; systemd-oomd is the safety net.
+# Low on purpose: on a RAM-constrained host with cheap reads, evicting clean file
+# cache costs no writes (a refault is a read), while evicting anonymous memory
+# becomes swap WRITES once the zswap pool is full. 0 is avoided (hot mapped files
+# would thrash). Kernel range is 0-200; systemd-oomd is the safety net.
 vm.swappiness = {swappiness}
 
 # Prefer keeping dentry/inode caches (<100): path-heavy work such as container
@@ -827,9 +828,10 @@ DEVICE=""
 DISK=""
 TARGET_BLOCKS=""
 TARGET_SECTORS=""
+SAFETY_BLOCKS=""
 SFDISK_PLAN=""
 . "$PLAN_ENV"
-[ -n "$DEVICE" ] && [ -n "$DISK" ] && [ -n "$TARGET_BLOCKS" ] && [ -n "$TARGET_SECTORS" ] && [ -n "$SFDISK_PLAN" ] || exit 0
+[ -n "$DEVICE" ] && [ -n "$DISK" ] && [ -n "$TARGET_BLOCKS" ] && [ -n "$TARGET_SECTORS" ] && [ -n "$SAFETY_BLOCKS" ] && [ -n "$SFDISK_PLAN" ] || exit 0
 [ -f "$SFDISK_PLAN" ] || exit 0
 [ -b "$DEVICE" ] || exit 0
 [ -b "$DISK" ] || exit 0
@@ -846,7 +848,10 @@ MIN_BLOCKS=$(resize2fs -P "$DEVICE" 2>&1 | sed -n 's/^Estimated minimum size of 
 case "$MIN_BLOCKS" in
   ''|*[!0-9]*) log_failure_msg "vbpub-root-shrink: could not read minimum filesystem size, skipping"; exit 0 ;;
 esac
-[ "$MIN_BLOCKS" -le "$TARGET_BLOCKS" ] || { log_failure_msg "vbpub-root-shrink: target too small (min=$MIN_BLOCKS target=$TARGET_BLOCKS)"; exit 0; }
+[ "$((MIN_BLOCKS + SAFETY_BLOCKS))" -le "$TARGET_BLOCKS" ] || {
+  log_failure_msg "vbpub-root-shrink: target too small for filesystem minimum plus safety margin (min=$MIN_BLOCKS margin=$SAFETY_BLOCKS target=$TARGET_BLOCKS)"
+  exit 0
+}
 
 resize2fs "$DEVICE" "$TARGET_BLOCKS" || { log_failure_msg "vbpub-root-shrink: resize2fs shrink failed"; exit 0; }
 e2fsck -f -y "$DEVICE" || { log_failure_msg "vbpub-root-shrink: post-shrink fsck failed"; exit 0; }

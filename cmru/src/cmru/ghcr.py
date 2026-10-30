@@ -31,6 +31,32 @@ class PackageVisibilityApiUnsupported(RuntimeError):
         self.body = body
 
 
+class PackageLookupUnauthorized(RuntimeError):
+    """Raised when the token may not read the package (HTTP 401/403).
+
+    A brand-new GHCR package is created private, and a token without
+    ``read:packages`` cannot look it up. Like :class:`PackageVisibilityApiUnsupported`
+    this arrives AFTER the image push succeeded, so callers degrade it to a warning
+    with the one-time remediation (KI-97).
+    """
+
+    def __init__(self, status: int, body: str) -> None:
+        super().__init__(f"package lookup not authorised (HTTP {status})")
+        self.status = status
+        self.body = body
+
+
+UI_VISIBILITY_HINT = (
+    "Set it ONCE in the UI (Your packages -> {package} -> Package settings -> "
+    "Danger Zone -> Change visibility -> {visibility}) and, for a first push, link the "
+    "package to its repository there; both then persist for all future pushes."
+)
+PACKAGES_SCOPE_HINT = (
+    "A `gh` login needs `gh auth refresh -h github.com -s read:packages,write:packages`; "
+    "a PAT needs the read:packages scope."
+)
+
+
 class GitHubPackages:
     """Minimal GitHub Packages client for GHCR visibility sync."""
 
@@ -106,6 +132,8 @@ class GitHubPackages:
         status, body = self._request("GET", self._package_url(package_name))
         if status == 404:
             return None
+        if status in (401, 403):
+            raise PackageLookupUnauthorized(status, body)
         if status >= 400:
             self._fail(
                 f"fetch GHCR package visibility for {package_name}",
@@ -144,28 +172,65 @@ class GitHubPackages:
         expected_visibility: Optional[str] = None,
         retries: int = 6,
         delay: int = 5,
-    ) -> str:
+        missing: str = "warn",
+    ) -> Optional[str]:
         """Make a package match the repository visibility.
 
-        Returns the visibility that should now be in effect. The package lookup is retried
-        briefly because the container registry can lag the push by a few seconds.
+        Returns the visibility that should now be in effect, or ``None`` when the
+        package could not be inspected. The package lookup is retried briefly
+        because the container registry can lag the push by a few seconds.
+
+        KI-97: this runs AFTER the image push succeeded, mid-release. A package
+        that still cannot be found after the retries (a brand-new package lagging
+        the API, or a token that may not read it) is therefore NOT a release
+        failure by default (``missing="warn"``): the one-time UI remediation is
+        printed and ``None`` is returned. ``missing="fail"`` keeps the old hard
+        failure for a project that requires the package to pre-exist.
         """
+        if missing not in ("warn", "fail"):
+            raise ValueError(f"missing must be 'warn' or 'fail', not {missing!r}")
         if expected_visibility is None:
             expected_visibility = self.repo_visibility()
 
         current: Optional[str] = None
+        unauthorized: Optional[PackageLookupUnauthorized] = None
         for attempt in range(retries):
-            current = self.package_visibility(package_name)
+            try:
+                current = self.package_visibility(package_name)
+            except PackageLookupUnauthorized as exc:
+                unauthorized = exc
+                break
             if current is not None:
                 break
             if attempt < retries - 1:
                 time.sleep(delay)
         if current is None:
-            self._fail(
-                f"GHCR package {package_name} is not visible yet; cannot sync visibility",
-                0,
-                "",
+            if unauthorized is not None:
+                cause = (
+                    f"the token may not read it (HTTP {unauthorized.status}). "
+                    + PACKAGES_SCOPE_HINT
+                )
+            else:
+                cause = (
+                    f"it was not found after {retries} lookup(s) over about "
+                    f"{max(retries - 1, 0) * delay} s (a brand-new package can lag the "
+                    "packages API, or be private to this token)"
+                )
+            if missing == "fail":
+                self._fail(
+                    f"GHCR package {package_name} cannot be inspected; cannot sync visibility: "
+                    f"{cause}",
+                    unauthorized.status if unauthorized is not None else 0,
+                    unauthorized.body if unauthorized is not None else "",
+                )
+            sys.stderr.write(
+                f"[WARN] Could not sync GHCR visibility for {package_name}: {cause}. "
+                "The image push already succeeded, so the release continues; the package "
+                f"may still be private. "
+                + UI_VISIBILITY_HINT.format(package=package_name, visibility=expected_visibility)
+                + "\n"
             )
+            return None
 
         if current == expected_visibility:
             return expected_visibility
@@ -177,9 +242,9 @@ class GitHubPackages:
                 f"[WARN] Could not set GHCR visibility for {package_name} via API "
                 f"(HTTP {exc.status}): GitHub provides no REST/GraphQL endpoint to change "
                 f"container-package visibility. The image pushed fine but the package "
-                f"stays {current!r}. Set it ONCE in the UI (Your packages -> {package_name} "
-                f"-> Package settings -> Danger Zone -> Change visibility -> "
-                f"{expected_visibility}); it then persists for all future pushes.\n"
+                f"stays {current!r}. "
+                + UI_VISIBILITY_HINT.format(package=package_name, visibility=expected_visibility)
+                + "\n"
             )
             return current or expected_visibility
         new_visibility = str(updated.get("visibility") or "").strip()

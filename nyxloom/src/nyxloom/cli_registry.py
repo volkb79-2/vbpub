@@ -271,6 +271,50 @@ def _backlog_new_guard(args: Any) -> None:
         )
 
 
+def _usage_share(value: str) -> float:
+    from .session_extract.usage import parse_share_percent
+
+    try:
+        return parse_share_percent(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def _usage_top(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("top N must be a positive integer") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("top N must be a positive integer")
+    return parsed
+
+
+def _usage_report_guard(args: Any) -> None:
+    report_format = getattr(args, "usage_format", "table")
+    if getattr(args, "flat", False) and getattr(args, "depth", None) is not None:
+        raise CliFailure(
+            "--flat and --depth are mutually exclusive",
+            exit_code=2,
+            show_help=True,
+        )
+    depth = getattr(args, "depth", None)
+    if depth is not None and depth < 0:
+        raise CliFailure("--depth must be zero or greater", exit_code=2, show_help=True)
+    if report_format in {"html", "pdf"} and not getattr(args, "out", None):
+        raise CliFailure(
+            f"--format {report_format} requires --out FILE",
+            exit_code=2,
+            show_help=True,
+        )
+    if (getattr(args, "top", None) is not None or getattr(args, "group_by", None) is not None) and report_format not in {"json", "html"}:
+        raise CliFailure(
+            "--top and --group-by configure chart data; use --format json|html or `nyxloom usage charts`",
+            exit_code=2,
+            show_help=True,
+        )
+
+
 def _resync_guard(args: Any) -> None:
     if getattr(args, "apply_content_merges", False) and not getattr(args, "apply", False):
         raise CliFailure(
@@ -570,12 +614,131 @@ def _local_backlog_group() -> VerbSpec:
     return _group(prog, "backlog", "Manage project-local managed backlog entries.", children)
 
 
+def _usage_report_group() -> VerbSpec:
+    prog = "nyxloom"
+    anchor_group = _group(f"{prog} usage", "anchor", "Record or list private account-usage display readings.", (
+        _leaf(
+            prog, "add", "Store one explicitly observed usage percentage and reset time.",
+            cli.cmd_usage_anchor_add,
+            options=(
+                _opt("--kind", "Account limit shown by the UI", required=True, choices=("five_hour", "weekly")),
+                _opt("--at", "When the displayed percentage was observed (timezone-aware ISO-8601)", required=True, metavar="TIMESTAMP"),
+                _opt("--percent", "Displayed percentage from 0 through 100", required=True, type=float, metavar="PERCENT"),
+                _opt("--reset-at", "Displayed next reset time (timezone-aware ISO-8601)", required=True, metavar="TIMESTAMP"),
+                _opt("--source", "UI source for the reading", required=True, choices=("settings-usage", "account-usage-page")),
+                _opt("--coverage-assumption", "Whether the reading covers only this machine or all account usage", required=True, choices=("local-only-lower-bound", "all-account-usage-observed")),
+                _opt("--anchor-file", "Private state file override", metavar="FILE", default=None),
+            ),
+            examples=("nyxloom usage anchor add --kind five_hour --at 2026-10-28T18:15:00Z --percent 96 --reset-at 2026-10-28T20:00:00Z --source settings-usage --coverage-assumption local-only-lower-bound",),
+            mutating=True,
+        ),
+        _leaf(
+            prog, "list", "List stored account-usage display readings.",
+            cli.cmd_usage_anchor_list,
+            options=(_opt("--anchor-file", "Private state file override", metavar="FILE", default=None),),
+        ),
+    ))
+    return _group(prog, "usage", "Analyze local Claude Code usage metadata.", (
+        _leaf(
+            prog,
+            "report",
+            "Attribute raw tokens, experimental weights and API-equivalent USD to sessions and nested subagents.",
+            cli.cmd_usage_report,
+            options=(
+                _opt("--since", "Start at a duration before --until or now, or an ISO-8601 timestamp", required=True),
+                _opt("--until", "Exclusive ISO-8601 end timestamp; omitted means the invocation time", default=None),
+                _opt("--project", "Select sessions with this recorded cwd or unique cwd basename", default=None),
+                _opt("--session", "Select one exact Claude Code session id", default=None),
+                _opt("--format", "Report encoding", dest="usage_format", choices=("table", "json", "csv", "html", "pdf"), default="table"),
+                _opt("--out", "Write a private report file; required for HTML and PDF", metavar="FILE", default=None),
+                _opt("--depth", "Maximum visible tree depth (root is depth 0)", type=int, default=None),
+                _opt("--min-share", "Fold smaller subtrees below this raw-token percentage", type=_usage_share, default=0.0),
+                _opt("--flat", "Rank visible nodes as a flat list (cannot combine with --depth)", action="store_true"),
+                _opt("--sort", "Sibling sort key; cost means raw token units in this iteration", choices=("cost", "start", "dur", "calls", "peak", "out"), default="cost"),
+                _opt("--no-labels", "Omit session titles and subagent topic labels", action="store_true"),
+                _opt("--weights", "TOML prices and experimental weights override", metavar="FILE", default=None),
+                _opt("--anchor-file", "Private usage anchor file; defaults to the XDG state file", metavar="FILE", default=None),
+                _opt("--top", "Number of chart groups and agents before the residual other group", type=_usage_top, default=None),
+                _opt("--group-by", "Cost bucket grouping in chart data", choices=("agent", "topic", "model", "effort", "session"), default=None),
+            ),
+            validate=_usage_report_guard,
+            examples=(
+                "nyxloom usage report --since 24h",
+                "nyxloom usage report --since 2026-10-27T00:00:00Z --format json --out usage.json",
+                "nyxloom usage report --since 24h --format html --out usage.html",
+                "nyxloom usage report --since 24h --format pdf --no-labels --out usage.pdf",
+                "nyxloom usage report --since 24h --format json --top 12 --group-by agent",
+                "nyxloom usage report --since 24h --project /path/to/project --flat --sort calls",
+            ),
+        ),
+        _leaf(
+            prog,
+            "charts",
+            "Write joined context, swim-lane, weighted-cost and composition chart data as JSON.",
+            cli.cmd_usage_charts,
+            options=(
+                _opt("--since", "Start at a duration before --until or now, or an ISO-8601 timestamp", required=True),
+                _opt("--until", "Exclusive ISO-8601 end timestamp; omitted means the invocation time", default=None),
+                _opt("--project", "Select sessions with this recorded cwd or unique cwd basename", default=None),
+                _opt("--session", "Select one exact Claude Code session id", default=None),
+                _opt("--top", "Number of chart groups and agents before the residual other group", type=_usage_top, default=12),
+                _opt("--group-by", "Cost bucket grouping", choices=("agent", "topic", "model", "effort", "session"), default="agent"),
+                _opt("--no-labels", "Omit session titles and subagent topic labels", action="store_true"),
+                _opt("--weights", "TOML prices and experimental weights override", metavar="FILE", default=None),
+                _opt("--anchor-file", "Private usage anchor file; defaults to the XDG state file", metavar="FILE", default=None),
+                _opt("--out", "Write private usage-charts-v1 JSON to this file", metavar="FILE", required=True),
+            ),
+            examples=(
+                "nyxloom usage charts --since 24h --out usage-charts.json",
+                "nyxloom usage charts --since 7d --group-by model --top 12 --out model-charts.json",
+                "nyxloom usage charts --since 24h --no-labels --out anonymous-charts.json",
+            ),
+        ),
+        _leaf(
+            prog, "prices", "Show dated API-equivalent prices and diagnose cost-state fit.",
+            cli.cmd_usage_prices,
+            options=(
+                _opt("--fit", "Attempt a guarded diagnostic fit against cost-state snapshots", action="store_true"),
+                _opt("--weights", "TOML prices and experimental weights override", metavar="FILE", default=None),
+                _opt("--format", "Output encoding", dest="usage_prices_format", choices=("text", "json"), default="text"),
+            ),
+            examples=("nyxloom usage prices", "nyxloom usage prices --fit --format json"),
+        ),
+        _leaf(
+            prog, "windows", "Show observed-reset sessions, fixed weekly resets and a separate rolling analysis window.",
+            cli.cmd_usage_windows,
+            options=(
+                _opt("--since", "Start of history for observed resets and threshold events; duration or ISO-8601 timestamp", default="24h"),
+                _opt("--until", "Exclusive history end; the rolling view is the trailing five hours ending here", default=None),
+                _opt("--weights", "TOML prices and experimental weights override", metavar="FILE", default=None),
+                _opt("--anchor-file", "Private state file override", metavar="FILE", default=None),
+                _opt("--format", "Output encoding", dest="usage_windows_format", choices=("text", "json"), default="text"),
+            ),
+            examples=("nyxloom usage windows", "nyxloom usage windows --since 7d --format json"),
+        ),
+        anchor_group,
+        _leaf(
+            prog, "calibrate", "Fit local weighted usage to explicit UI readings under stated coverage assumptions.",
+            cli.cmd_usage_calibrate,
+            options=(
+                _opt("--weights", "TOML prices and experimental weights override", metavar="FILE", default=None),
+                _opt("--anchor-file", "Private state file override", metavar="FILE", default=None),
+                _opt("--format", "Output encoding", dest="usage_calibrate_format", choices=("text", "json"), default="text"),
+            ),
+            examples=("nyxloom usage calibrate", "nyxloom usage calibrate --format json"),
+        ),
+    ))
+
+
 def primary_cli():
-    """Build the local project-authoring CLI."""
+    """Build the local project-authoring and Claude Code usage CLI."""
     registry = _registry(
         "nyxloom",
-        "Local Nyxloom project authoring. No registry or daemon is required.",
-        getting_started=("nyxloom lint", "nyxloom backlog list", "nyxloom --help"),
+        "Local Nyxloom project authoring and Claude Code usage analytics.",
+        getting_started=(
+            "nyxloom lint", "nyxloom backlog list",
+            "nyxloom usage report --since 24h", "nyxloom --help",
+        ),
     )
     registry.register(_leaf("nyxloom", "lint", "Lint the current project's configured handoffs, or explicit handoff paths.",
                             cli.cmd_lint_local,
@@ -597,6 +760,7 @@ def primary_cli():
                                 _opt("--scaffold-gate", "Write a reviewable gate skeleton when none is declared", action="store_true", dest="scaffold_gate"),
                             ), mutating=True))
     registry.register(_local_backlog_group())
+    registry.register(_usage_report_group())
     return registry.build()
 
 

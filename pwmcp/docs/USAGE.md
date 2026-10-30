@@ -11,13 +11,121 @@ A version mismatch causes protocol errors at connect time.
 `bundle/pwmcp.contract.json`, then install the bundled source and exact
 contract version:
 
+The client depends on the **`cli-extended`** wheel (`cli-extended>=0.3.0`, the shared CLI
+layer under the `pwmcp` command). It is published to GitHub Releases only, never PyPI: the
+bare name is unclaimed there, so install it first from its release (URL and sha256 from
+`cli-extended-latest/latest.json`, verified like the bundle), then the client. pip finds the
+requirement already satisfied and never queries an index for it:
+
 ```bash
+# 1. the released cli-extended wheel, sha256-verified, installed without any index
+python -m pip install --no-index --no-deps ./cli_extended-<version>-py3-none-any.whl
+# 2. the bundled client and the exact Playwright version from the contract
 PW_VER=$(python -c 'import json; print(json.load(open("pwmcp.contract.json"))["playwright"]["python"])')
 pip install "playwright==$PW_VER" ./client
 ```
 
+A wheelhouse works too: `pip install --no-index --find-links ./wheelhouse ./client` (the
+wheelhouse then holds the cli-extended wheel and Playwright's own dependencies). Without the
+library the client install fails with `cli-extended` named as the missing requirement.
+
 Do **not** run `playwright install` — browser binaries belong in the pwmcp container,
 not in your project.
+
+## Install a standalone CIU instance
+
+For an independent instance at `/srv/pwmcp-instance`, create the install root
+owned by the user who will run CIU, then use the generated CMRU installer. It verifies
+the versioned release bundle and its SHA-256 sidecar, then installs the bundled
+client and exact Playwright wheel offline:
+
+```bash
+sudo install -d -m 0755 -o "$USER" -g "$(id -gn)" /srv/pwmcp-instance
+set -o pipefail
+curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/pwmcp/get.py \
+  | XDG_DATA_HOME=/srv python3 - install --scope user
+export PATH="/srv/pwmcp-instance/bin:$PATH"
+cd /srv/pwmcp-instance
+ciu up
+```
+
+For an image that owns `/srv`, the same user-scope command works without the
+ownership setup line. Keep `/srv/pwmcp-instance/bin` on `PATH` in later shells
+to use the `pwmcp` launcher. To update, replace `install` with `update`, add
+the launcher directory to `PATH`, and run `ciu up` again.
+
+The standalone root is independent of a consuming project's CIU root. The
+internal network remains unauthenticated, matching PWMCP's existing internal
+policy. CIU attaches the current devcontainer to that network; agents there can
+use `http://pwmcp:8931/mcp`, while Python clients and the `pwmcp inspect`
+command use `ws://pwmcp:3000/`.
+
+## Inspect a webpage with the client CLI
+
+The release installs a `pwmcp` command alongside the Python client library. It
+opens pages in PWMCP's remote browser, so the devcontainer needs no local
+browser binaries:
+
+```bash
+pwmcp inspect https://example.com
+pwmcp inspect https://example.com --format snapshot --output page.yml
+pwmcp inspect https://example.com --format screenshot --output page.png --full-page
+pwmcp inspect https://example.com --wait-for '#content' --wait-until domcontentloaded
+pwmcp inspect https://nas.example --ignore-https-errors
+```
+
+`--format` accepts `text`, `snapshot`, or `screenshot`. `--wait-until` accepts
+`commit`, `domcontentloaded`, `load`, or `networkidle`. Text and snapshots go to
+stdout unless `--output PATH` is given; screenshots require `--output` and a
+`.png`, `.jpg`, or `.jpeg` suffix. `--wait-for SELECTOR` waits for a visible
+CSS selector, and `--timeout-ms` controls navigation and selector waits.
+`--ignore-https-errors` opts into accepting invalid HTTPS certificates for all
+HTTPS requests in this one-shot browser context, including redirects and page
+resources. Use it only for a trusted target with a known certificate problem;
+it does not change PWMCP service defaults. See the
+[design rationale](DESIGN-GUIDE.md#certificate-errors-during-inspection).
+
+When an override is active (server-level or `--user-agent`), the result reports the
+user agent it presented and its source (`user_agent`, `user_agent_source`:
+`preset:<name>` or `custom`) as JSON fields with `--json`, or one `[INFO] user agent:`
+line on stderr otherwise. With no override nothing is added: no field, no line.
+`--user-agent PRESET_OR_STRING` presents another identity for that one call
+(`edge-windows`, `chrome-windows`, `firefox-windows`, `default`, or a custom
+string); the server-level default is the `user_agent` config key. See
+[README: Overridable User Agent](../README.md#overridable-user-agent-pwmcp-09-opt-in-off-by-default).
+
+## Recognise text in an image or a canvas (`pwmcp ocr`, opt-in sidecar)
+
+Some consoles are a single `<canvas>`, so a snapshot has no text. When the stack runs the
+OCR sidecar (`pwmcp.ocr.enabled = true`; off by default, see
+[README: OCR sidecar](../README.md#ocr-sidecar-pwmcp-11-phase-1-opt-in-off-by-default)),
+`pwmcp ocr` turns an image into text with a confidence per word:
+
+```bash
+pwmcp ocr --image console.png                        # text only
+pwmcp ocr --image console.png --format tsv --min-conf 60
+cat console.png | pwmcp ocr --image - --json         # text, lines, words, confidences, boxes
+pwmcp ocr "$URL" --selector canvas --scale 2 --output screen.txt
+pwmcp ocr "$URL" --selector canvas --region 0,0,640,200 --wait-ms 1000
+```
+
+The usual agent path is: save a screenshot with the MCP `browser_take_screenshot` tool, then
+`pwmcp ocr --image FILE`. `--psm 6` (uniform block) is the default and suits consoles;
+`--scale N` upscales small text first; `--whitelist CHARS` restricts the alphabet;
+`--min-conf N` FLAGS words below N as `low_conf` (they stay in the text and the result, and a warning is
+printed; the full result carries `conf_min` / `low_conf_words` per line); without it nothing is assessed
+and the flags are `null`, not `false`; `--engine`/`--lang` select another engine or language.
+`--format text|json|tsv` (and the global `--json`) choose the output; `--output PATH` writes it
+to a file. The sidecar URL is `--sidecar-url`, else `$PWMCP_OCR_URL`, else the `ocr_url` in the
+contract; with none of them the command exits 2 and names `ocr.enabled`.
+
+**Confidence is NOT calibrated.** A garbled TrueNAS dialog read at a mean 91% confidence and digits were
+misread (`10.0.2.15` as `16.0.2.15`), so a high or unflagged result proves nothing: a flag is a hint, never
+a safety check, missing or fuzzy-matched text means UNKNOWN, and anything that will later trigger a keystroke
+needs an EXACT match of a known screen signature (or the glyph-grid engine), never merely "unflagged".
+
+It reports text and confidence only. It does not watch a screen for changes and does not send
+keys; treat low-confidence or empty results as "unknown", not as evidence.
 
 ## Unified Image: Three Services, One Hostname
 
@@ -257,17 +365,17 @@ curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-latest/la
 
 ```bash
 # Pin a specific release:
-VERSION="1.62.0-r4"
+VERSION="1.63.0-r4"
 mkdir -p services/pwmcp
-curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-${VERSION}.tar.xz" \
-  -o "pwmcp-${VERSION}.tar.xz"
+curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-v${VERSION}.tar.xz" \
+  -o "pwmcp-v${VERSION}.tar.xz"
 
 # Verify the bundle (sidecar lives in the same release):
-curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-${VERSION}.tar.xz.sha256" \
-  -o "pwmcp-${VERSION}.tar.xz.sha256"
-sha256sum -c "pwmcp-${VERSION}.tar.xz.sha256"
+curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-v${VERSION}.tar.xz.sha256" \
+  -o "pwmcp-v${VERSION}.tar.xz.sha256"
+sha256sum -c "pwmcp-v${VERSION}.tar.xz.sha256"
 
-tar -xJf "pwmcp-${VERSION}.tar.xz" --strip-components=1 -C services/pwmcp
+tar -xJf "pwmcp-v${VERSION}.tar.xz" --strip-components=1 -C services/pwmcp
 
 # Read the required Playwright version from the bundle (wire protocol pin):
 PW_VER=$(grep playwright_version services/pwmcp/ciu.defaults.toml.j2 | grep -oP '"\K[^"]+')
@@ -284,13 +392,13 @@ The unified container comes up as `pwmcp-pwmcp` (default project name `pwmcp`) o
 Download a newer bundle, verify it, re-read `playwright_version`, reinstall the pinned client, redeploy:
 
 ```bash
-VERSION="1.62.0-r1"
-curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-${VERSION}.tar.xz" \
-  -o "pwmcp-${VERSION}.tar.xz"
-curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-${VERSION}.tar.xz.sha256" \
-  -o "pwmcp-${VERSION}.tar.xz.sha256"
-sha256sum -c "pwmcp-${VERSION}.tar.xz.sha256"
-tar -xJf "pwmcp-${VERSION}.tar.xz" --strip-components=1 -C services/pwmcp
+VERSION="1.63.0-r4"
+curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-v${VERSION}.tar.xz" \
+  -o "pwmcp-v${VERSION}.tar.xz"
+curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-v${VERSION}.tar.xz.sha256" \
+  -o "pwmcp-v${VERSION}.tar.xz.sha256"
+sha256sum -c "pwmcp-v${VERSION}.tar.xz.sha256"
+tar -xJf "pwmcp-v${VERSION}.tar.xz" --strip-components=1 -C services/pwmcp
 PW_VER=$(grep playwright_version services/pwmcp/ciu.defaults.toml.j2 | grep -oP '"\K[^"]+')
 pip install playwright==${PW_VER}
 ciu -d services/pwmcp
@@ -361,4 +469,19 @@ curl -X POST http://pwmcp:8939/browser/restart
 curl http://pwmcp:8939/browser/health
 ```
 
-The standalone `pwmcp` CLI keeps parser diagnostics identifiable: the first line is `PWMCP <version> — client utility`, using the client package's existing metadata version.
+The standalone `pwmcp` CLI is built on the shared cli-extended grammar (full reference and
+reviewed semantics: [CLI-SPEC.md](CLI-SPEC.md)):
+
+```bash
+pwmcp --version                       # one line: pwmcp <version>
+pwmcp contract [--json]               # the server contract as JSON
+pwmcp doctor [--check NAME] [--json]  # named checks: contract, playwright, skills
+pwmcp skills install                  # install the packaged pwmcp-fetch agent skill
+```
+
+Help starts with `PWMCP <version> — client utility`. A usage error prints the `[ERROR]`
+diagnostic first, then the identity-headed usage, and exits 2; an unreachable or malformed
+contract is a one-line `[ERROR]` with exit 1 (never a traceback; add `--traceback` for the
+stack of an unexpected failure). `pwmcp doctor` reports one `[OK]`/`[WARN]`/`[FAIL]` line per
+check instead of the former single `ok release=... playwright=... ws=...` line; the same
+facts are in the `contract` and `playwright` check summaries and in `--json`.

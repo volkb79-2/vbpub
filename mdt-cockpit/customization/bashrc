@@ -1,0 +1,50 @@
+# shellcheck shell=bash
+# mdt-cockpit interactive bash defaults.
+#
+# Loaded system-wide from /etc/bash.bashrc (the hook is appended by the
+# Dockerfile), so the home needs no ~/.bashrc. bash reads ~/.bashrc AFTER this
+# file: create one to add to or override anything below.
+
+case $- in
+    *i*) ;;
+      *) return 0 2>/dev/null || true ;;
+esac
+
+# Shared environment, aliases and the cgroup/KSM banner.
+if [ -r /usr/local/share/mdt-cockpit/profile.sh ]; then
+    # shellcheck source=/dev/null
+    . /usr/local/share/mdt-cockpit/profile.sh
+fi
+
+HISTCONTROL=ignoreboth
+shopt -s histappend
+HISTSIZE=1000
+HISTFILESIZE=2000
+shopt -s checkwinsize
+
+# Coloured prompt and ls/grep when the terminal supports colour.
+case "$TERM" in
+    xterm-color|*-256color|xterm*|screen*|tmux*|linux) _mdt_color_prompt=yes ;;
+    *) _mdt_color_prompt= ;;
+esac
+if [ "$_mdt_color_prompt" = yes ]; then
+    PS1='${debian_chroot:+($debian_chroot)}\[\033[01;32m\]\u@\h\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ '
+    if [ -x /usr/bin/dircolors ]; then
+        eval "$(dircolors -b)"
+        alias ls='ls --color=auto'
+        alias grep='grep --color=auto'
+    fi
+fi
+unset _mdt_color_prompt
+export PROMPT_DIRTRIM=4
+
+# Programmable completion (the Debian /etc/bash.bashrc block for it is disabled).
+if [ -z "${BASH_COMPLETION_VERSINFO:-}" ] && ! shopt -oq posix; then
+    if [ -f /usr/share/bash-completion/bash_completion ]; then
+        # shellcheck source=/dev/null
+        . /usr/share/bash-completion/bash_completion
+    elif [ -f /etc/bash_completion ]; then
+        # shellcheck source=/dev/null
+        . /etc/bash_completion
+    fi
+fi

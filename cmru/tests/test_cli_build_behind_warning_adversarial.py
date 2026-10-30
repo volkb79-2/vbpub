@@ -37,9 +37,9 @@ def test_build_warns_when_local_main_is_behind_but_uses_fetched_origin(monkeypat
     monkeypatch.setattr(cli.transaction, "create_workspace", lambda *args, **kwargs: workspace_args.update(kwargs) or workspace)
     child = []
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: child.append(args) or 0)
-    monkeypatch.setattr(cli.transaction, "retain_successful_build_outputs", lambda *args: retained)
+    monkeypatch.setattr(cli.transaction, "retain_successful_build_outputs", lambda *args, **_kw: retained)
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args: None)
-    exc = cli.main(["build", "demo", "--config", str(tmp_path / "cmru.toml")])
+    exc = cli.main(["build", "demo", "--from-origin-main", "--config", str(tmp_path / "cmru.toml")])
     assert exc == 0
     assert child
     assert workspace_args == {

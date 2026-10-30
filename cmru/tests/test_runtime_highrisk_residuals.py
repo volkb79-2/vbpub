@@ -33,6 +33,7 @@ def project_doc():
 owner="acme"
 repo="vbpub"
 owner_type="org"
+token_source="cmru"
 [targets]
 host="github"
 registry=["ghcr.io"]
@@ -92,14 +93,14 @@ def test_transaction_build_retention_rejects_collision_and_rolls_back_destinatio
     project = SimpleNamespace(project_root=root / "demo", artifact_dirs=["dist"])
     output_id, _, _ = transaction.build_output_id(ws); (root / "demo" / "artifacts" / output_id).mkdir(parents=True)
     with pytest.raises(RuntimeError, match="already exists"):
-        transaction.retain_successful_build_outputs(root, ws, {"demo": project}, ["demo"])
+        transaction.retain_successful_build_outputs(root, ws, {"demo": project}, ["demo"], source_mode="origin-main")
     (root / "demo" / "artifacts" / output_id).rmdir()
     original_replace = Path.replace
     def fail_second(self, target):
         if self.name == "artifacts" and Path(target).parent.name == "artifacts": raise OSError("artifact destination")
         return original_replace(self, target)
     with patch.object(Path, "replace", new=fail_second), pytest.raises(OSError, match="artifact destination"):
-        transaction.retain_successful_build_outputs(root, ws, {"demo": project}, ["demo"])
+        transaction.retain_successful_build_outputs(root, ws, {"demo": project}, ["demo"], source_mode="origin-main")
     assert not (root / "demo" / "logs" / output_id).exists()
     assert (child / "logs").is_dir()
     transaction.remove_workspace(ws)

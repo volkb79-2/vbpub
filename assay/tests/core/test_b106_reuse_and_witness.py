@@ -6,7 +6,6 @@ import hashlib
 import io
 import json
 import os
-import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -26,6 +25,7 @@ from assay.resource_limits import ResourceLimitCounters
 from assay.reuse import classify_candidate, load_reuse_source, prior_only_candidates
 from assay.verdict import Mutation, MutationExecution, MutationWitnessReceipt
 from assay.verify import verify_document
+from conftest import completed_process, isolated_process_runner, process_tree_evidence_dict
 from conftest import (
     TESTS_ROOT,
     GitRepo,
@@ -128,7 +128,7 @@ def test_v12_through_v14_are_bounded_cold_starts_without_candidate_inspection(
     ("content", "detail"),
     [
         ('{"schema_version":14,"schema_version":14}', "duplicate object key"),
-        ('{"schema_version":15}', "current v15 verifier rejected"),
+        ('{"schema_version":16}', "current v16 verifier rejected"),
         ('{"schema_version":true}', "must be an integer"),
         ('{"schema_version":NaN}', "invalid JSON"),
     ],
@@ -646,6 +646,7 @@ operators = ["python:compare-swap"]
     exit_code = main(
         [
             "plan",
+            "--json",
             "package",
             "--file",
             str(project / "assay.toml"),
@@ -672,6 +673,7 @@ operators = ["python:compare-swap"]
     exit_code = main(
         [
             "plan",
+            "--json",
             "package",
             "--file",
             str(project / "assay.toml"),
@@ -689,6 +691,7 @@ operators = ["python:compare-swap"]
     exit_code = main(
         [
             "plan",
+            "--json",
             "package",
             "--file",
             str(project / "assay.toml"),
@@ -813,7 +816,7 @@ def test_replay_requires_a_current_kill_and_falls_back_to_a_full_run(
     def tracked_process_runner(argv, *, env, cwd, timeout):
         calls.append(tuple(argv))
         observed_targets.append(env.get("ASSAY_MUTATION_WITNESS_TARGET"))
-        return runner.default_process_runner(argv, env=env, cwd=cwd, timeout=timeout)
+        return isolated_process_runner(argv, env=env, cwd=cwd, timeout=timeout)
 
     stale_witness = runner.run_lane(
         lane,
@@ -913,7 +916,7 @@ def test_resource_limited_witness_replay_stops_before_full_fallback(
         # Baseline passes. The replay and any erroneous full fallback fail; a
         # zero-delta fallback would otherwise turn the prior resource hit into
         # a reported mutation kill.
-        return subprocess.CompletedProcess(
+        return completed_process(
             list(argv), returncode=0 if len(commands) == 1 else 1
         )
 
@@ -1051,7 +1054,7 @@ def test_custom_sessionfinish_hook_forces_full_suite_fallback(
     def tracked_process_runner(argv, *, env, cwd, timeout):
         observed_targets.append(env.get("ASSAY_MUTATION_WITNESS_TARGET"))
         observed_commands.append(tuple(argv))
-        return runner.default_process_runner(argv, env=env, cwd=cwd, timeout=timeout)
+        return isolated_process_runner(argv, env=env, cwd=cwd, timeout=timeout)
 
     current = runner.run_lane(
         lane,
@@ -1131,7 +1134,7 @@ def test_resume_preserves_witness_prefix_execution_provenance(
 
     def tracked_process_runner(argv, *, env, cwd, timeout):
         calls.append(tuple(argv))
-        return runner.default_process_runner(argv, env=env, cwd=cwd, timeout=timeout)
+        return isolated_process_runner(argv, env=env, cwd=cwd, timeout=timeout)
 
     resumed = runner.run_lane(
         lane,
@@ -1187,6 +1190,17 @@ def test_rejudge_outcome_disables_prior_witness_replay(
     record = json.loads(record_path.read_text(encoding="utf-8"))
     record["outcome_bucket"] = "hung"
     record["execution"] = {"mode": "full"}
+    # A hung record is valid only with a timeout-killed leader; otherwise the
+    # state record is rejected and the candidate re-runs for a different reason
+    # than the --rejudge-outcome selection this test is about.
+    record["process_tree_evidence"] = process_tree_evidence_dict(
+        leader_status="timeout-killed"
+    )
+    record["terminal_result"] = {
+        "outcome": "BUDGET_EXCEEDED",
+        "reason_code": "CANDIDATE_HUNG",
+        "returncode": None,
+    }
     resource_snapshot = {
         "schema_version": 1,
         "status": "available",
@@ -1242,7 +1256,7 @@ def test_rejudge_outcome_disables_prior_witness_replay(
 
     def tracked_process_runner(argv, *, env, cwd, timeout):
         observed_targets.append(env.get("ASSAY_MUTATION_WITNESS_TARGET"))
-        return runner.default_process_runner(argv, env=env, cwd=cwd, timeout=timeout)
+        return isolated_process_runner(argv, env=env, cwd=cwd, timeout=timeout)
 
     rejudged = runner.run_lane(
         lane,

@@ -364,6 +364,25 @@
         "weakref_slot": false
       }
     },
+    "assay.contention.ContentionObservation": {
+      "fields": {
+        "resource_limit_hit": {
+          "default": false
+        }
+      },
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": false,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
     "assay.coverage.FormatSpec": {
       "fields": {},
       "params": {
@@ -729,6 +748,21 @@
       }
     },
     "assay.mutation_witness.WitnessPluginInjection": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
+    "assay.process_tree.ProcessTreeEvidence": {
       "fields": {},
       "params": {
         "eq": true,

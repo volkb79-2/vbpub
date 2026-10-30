@@ -703,8 +703,29 @@ def _expected_r2_artifact(
                     "oom_group_kill": {"before": 0, "after": 0, "delta": 0},
                 },
             }
-            for item in outcomes:
-                item["resource_limit_evidence"] = zero_resource_limit_evidence
+            for bucket_name in (
+                "killed",
+                "survived",
+                "crashed",
+                "budget_exceeded",
+                "equivalent",
+                "hung",
+            ):
+                for item in mutation.get(bucket_name, []):
+                    item["resource_limit_evidence"] = zero_resource_limit_evidence
+                    item["process_tree_evidence"] = {
+                        "protocol": "assay-process-tree/1",
+                        "leader_status": (
+                            "timeout-killed"
+                            if bucket_name in {"budget_exceeded", "hung"}
+                            else "exited"
+                        ),
+                        "group_signalled_before_reap": False,
+                        "outliving_descendants": 0,
+                        "descendants_signalled": 0,
+                        "cleanup_seconds": 0.0,
+                        "clean": True,
+                    }
             mutation["candidate_ids"] = [
                 item["candidate_id"]
                 for item in sorted(
@@ -811,6 +832,11 @@ def _expected_r2_artifact(
     return document
 
 
+#: Leader statuses observed for `budget_exceeded` candidates by `_assert_complete`
+#: (it accepts the verifier's allowed set; tests report which variant occurred).
+OBSERVED_BUDGET_LEADER_STATUSES: list[str] = []
+
+
 def _assert_complete(real: dict, expected: dict) -> None:
     # `assay_version`/`started`/`ended` are values a real run genuinely cannot
     # hand-inject. B014's optional output tails are diagnosis evidence whose
@@ -877,15 +903,65 @@ def _assert_complete(real: dict, expected: dict) -> None:
                         sample["before"] = 0
                         sample["after"] = 0
 
+    def normalize_process_tree_evidence(mutation: object) -> None:
+        if not isinstance(mutation, dict):
+            return
+        for bucket in (
+            "killed",
+            "survived",
+            "crashed",
+            "budget_exceeded",
+            "equivalent",
+            "hung",
+        ):
+            for candidate in mutation.get(bucket, []):
+                evidence = candidate.get("process_tree_evidence")
+                assert isinstance(evidence, dict)
+                assert set(evidence) == {
+                    "protocol",
+                    "leader_status",
+                    "group_signalled_before_reap",
+                    "outliving_descendants",
+                    "descendants_signalled",
+                    "cleanup_seconds",
+                    "clean",
+                }
+                assert evidence["protocol"] == "assay-process-tree/1"
+                assert evidence["clean"] is True
+                assert evidence["outliving_descendants"] == 0
+                assert evidence["descendants_signalled"] == 0
+                assert evidence["group_signalled_before_reap"] is False
+                # A lane-deadline `budget_exceeded` candidate may be recorded
+                # before its leader was registered ("not-started"); both are
+                # valid per assay.mutation._terminal_result_matches_bucket.
+                # A hung candidate must still be timeout-killed.
+                allowed_leader_statuses = {
+                    "hung": {"timeout-killed"},
+                    "budget_exceeded": {"timeout-killed", "not-started"},
+                }.get(bucket, {"exited"})
+                assert evidence["leader_status"] in allowed_leader_statuses
+                # Record which variant occurred (the caller reports it), then
+                # normalize it to the expected artifact's for the comparison.
+                if bucket == "budget_exceeded":
+                    OBSERVED_BUDGET_LEADER_STATUSES.append(evidence["leader_status"])
+                    evidence["leader_status"] = "timeout-killed"
+                assert isinstance(evidence["cleanup_seconds"], (int, float))
+                assert evidence["cleanup_seconds"] >= 0
+                evidence["cleanup_seconds"] = 0.0
+
     # R2 outcome data is duplicated in the top-level claims and in the
     # judgment summary. Validate and normalize both copies before comparing
     # the complete artifact; their absolute cgroup counters are runtime facts.
     for claim in filtered.get("claims", []):
         if isinstance(claim, dict) and claim.get("rigor") == "R2":
             normalize_resource_limit_evidence(claim.get("mutation"))
+            normalize_process_tree_evidence(claim.get("mutation"))
     judgment = filtered.get("judgment")
     r2 = judgment.get("r2") if isinstance(judgment, dict) else None
     normalize_resource_limit_evidence(
+        r2.get("mutation") if isinstance(r2, dict) else None
+    )
+    normalize_process_tree_evidence(
         r2.get("mutation") if isinstance(r2, dict) else None
     )
     if isinstance(r2, dict) and "budget_per_candidate_derived_s" in r2:
@@ -1133,37 +1209,43 @@ def test_a_real_r2_lane_propagates_an_adverse_baseline_verbatim(
 
 
 def test_a_real_r2_mutant_that_outlives_the_lane_budget_is_its_own_bucket(
-    standalone: Standalone, git_repo: GitRepo, validator: Draft202012Validator
+    standalone: Standalone, git_repo: GitRepo, validator: Draft202012Validator,
+    tmp_path: Path, record_property,
 ):
     """O4's ``budget-exceeded`` shape, through a real timeout rather than an
     injected one -- the only one of the six that a real lane can only reach
     by actually waiting.
 
-    The command is content-dependent in the opposite direction to the kill
-    test: it sleeps only when ``x > 0`` is ABSENT, which is true for line
-    2's mutant and false for the baseline and for line 6's. So the baseline
-    and one mutant finish immediately, and exactly one mutant is stopped by
-    the lane's own budget -- never conflated with a kill (a timeout exits
-    non-zero too, which is precisely the conflation A-122 refuses).
+    The command checks the second comparison site: the baseline and line
+    2's mutant finish immediately, while line 6's mutant sleeps until the
+    lane budget expires. Serial execution preserves both dispositions without
+    overlapping the cgroup event windows used by native R2.
 
-    The margin is deliberate, not tuned: 5s of budget against a 300s sleep,
-    with the passing paths doing one `grep` on a six-line file. This cannot
-    flip on a slow machine without the whole suite already having failed
-    for a different reason (AUTHORING.md §3b.A's own reading -- a slow-host
-    red here would be a TRUE red).
+    The margin is deliberate, not tuned: 5s of budget against a 300s sleep.
+    The sleeping mutant writes a marker file first, and the test asserts it:
+    a run whose budget expired before line 6's mutant began fails instead of
+    passing as "outlived". The recorded process-tree leader status of the
+    budget-exceeded candidate may be `timeout-killed` or `not-started` (both
+    are valid for a lane timeout per the verifier); which one occurred is
+    reported through `record_property` and stdout, not hidden.
     """
-    script = "grep -q 'x > 0' src/mod.py || sleep 300"
+    # The sleeping mutant records that it really started, so a run in which the
+    # lane budget expired before line 6's mutant began cannot pass as "outlived".
+    marker = tmp_path / "sleeping-mutant-started.marker"
+    script = f"grep -q 'y > 1' src/mod.py || {{ : > '{marker}'; sleep 300; }}"
     base_rev = _seed_two_compare_swap_sites(git_repo)
     lane_file = _write_lane_file(
         git_repo.path,
-        _r2_lane_toml(script=script, base="control-baseline", jobs=2, budget="5s"),
+        _r2_lane_toml(script=script, base="control-baseline", jobs=1, budget="5s"),
     )
     git_repo.commit_all("add assay.toml")
     before = _tracked_file_hashes(git_repo.path)
 
+    OBSERVED_BUDGET_LEADER_STATUSES.clear()
     proc = _run_assay(standalone, lane_file)
 
     assert proc.returncode == 4, proc.stderr  # Outcome.BUDGET_EXCEEDED.exit_code
+    assert marker.exists(), "line 6's mutant never started, so it did not outlive the lane budget"
     real = json.loads(proc.stdout)
     assert why_invalid(validator, real) == []
     _assert_complete(
@@ -1175,7 +1257,7 @@ def test_a_real_r2_mutant_that_outlives_the_lane_budget_is_its_own_bucket(
             outcome="BUDGET_EXCEEDED",
             reason_code="LANE_TIMEOUT",
             exit_code=4,
-            jobs=2,
+            jobs=1,
             operators=["python:compare-swap"],
             r2_claim={
                 "rigor": "R2",
@@ -1186,14 +1268,14 @@ def test_a_real_r2_mutant_that_outlives_the_lane_budget_is_its_own_bucket(
                 "mutation": {
                     "candidate_count": 2,
                     "total": 2,
-                    # line 6's mutant leaves `x > 0` in place, so the grep
-                    # succeeds, nothing sleeps, and it SURVIVES.
+                    # line 2's mutant leaves `y > 1` in place, so the grep
+                    # succeeds and it SURVIVES before line 6 is attempted.
                     "killed": [],
-                    "survived": [_gt_site(6)],
+                    "survived": [_gt_site(2)],
                     "crashed": [],
-                    "budget_exceeded": [_gt_site(2)],
+                    "budget_exceeded": [_gt_site(6)],
                     "equivalent": [],
-                    # (B091/A3) present and empty: line 2's mutant is stopped
+                    # (B091/A3) present and empty: line 6's mutant is stopped
                     # by the lane's own budget (`budget_exceeded`), never
                     # conflated with `hung` -- a CPU-spinning mutant is not
                     # hung, per RW-33.
@@ -1203,6 +1285,10 @@ def test_a_real_r2_mutant_that_outlives_the_lane_budget_is_its_own_bucket(
         ),
     )
     assert _tracked_file_hashes(git_repo.path) == before
+    # Report which accepted variant occurred for the budget-exceeded candidate.
+    assert len(OBSERVED_BUDGET_LEADER_STATUSES) >= 1
+    record_property("budget_exceeded_leader_status", ",".join(OBSERVED_BUDGET_LEADER_STATUSES))
+    print("budget_exceeded leader_status observed:", OBSERVED_BUDGET_LEADER_STATUSES)
 
 
 # --- P19 (work item 6 / O2-O3) adds R3: an isolated canary, through the ------

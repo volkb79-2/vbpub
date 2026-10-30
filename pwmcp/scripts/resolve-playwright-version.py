@@ -5,13 +5,12 @@ Steps:
   1. Fetch stable Playwright versions and publication times from npm and PyPI,
      plus available tags from Microsoft's official Playwright image registry.
   2. Select the highest version common to all three whose package publication
-     timestamps clear the temporary 14-day age window.  A package release is
+     timestamps clear the temporary 2-day default age window. A package release is
      not publishable until its matching base-image tag exists, and PWMCP's
      Python and npm consumers must agree on one version.
   3. Compute the next r<N> counter by scanning git tags (pwmcp-v<pw_ver>-r*).
-  4. Update ciu.defaults.toml.j2 and ciu.toml.j2 (playwright_version + image.tag).
-  5. Update the Dockerfile and docker-bake.hcl with the matching base-image digest.
-  6. Write cmru.vars for downstream scripts.
+  4. Update CIU configs, client dependency projections, Dockerfile, and bake defaults.
+  5. Write cmru.vars for downstream scripts.
 
 Outputs:
   pwmcp/cmru.vars  — KEY=VALUE env file consumed by build-bundle.py / publish-bundle.py
@@ -19,6 +18,7 @@ Outputs:
   ciu.defaults.toml.j2 — playwright_version and image.tag updated in-place (PyPI version)
   ciu.toml.j2          — same (kept in sync with defaults)
   docker-bake.hcl      — common-version defaults updated in-place
+  client/pyproject.toml and client/requirements-runtime.txt — exact runtime dependencies
 
 Consumer contract:
   - :latest and :latest-npm track the same reviewed version available from all
@@ -33,10 +33,19 @@ import re
 import subprocess
 import sys
 import time
+import tomllib
 from datetime import datetime, timedelta, timezone
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+from cli_extended import OptionSpec, RegisteredCli
+
+# Shared script registration (pwmcp/scripts/_vars.py), importing the INSTALLED
+# cli_extended (CX-D3). The explicit insert keeps a bare `import _vars` working when
+# this hyphenated file is loaded by path rather than run as a script.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _vars import run_script, script_cli  # noqa: E402
 
 NPM_PLAYWRIGHT_URL = "https://registry.npmjs.org/playwright"
 PYPI_PLAYWRIGHT_URL = "https://pypi.org/pypi/playwright/json"
@@ -44,7 +53,7 @@ MCR_PLAYWRIGHT_TAGS_URL = "https://mcr.microsoft.com/v2/playwright/tags/list?n=1
 MCR_PLAYWRIGHT_MANIFEST_URL = "https://mcr.microsoft.com/v2/playwright/manifests"
 TIMEOUT_SECONDS = 20
 RETRIES = 3
-TEMPORARY_AGE_WINDOW_DAYS = 14
+TEMPORARY_AGE_WINDOW_DAYS = 2
 
 PWMCP_DIR = Path(__file__).resolve().parent.parent
 DEFAULTS_FILE = PWMCP_DIR / "ciu.defaults.toml.j2"
@@ -52,7 +61,15 @@ TOML_OVERRIDE_FILE = PWMCP_DIR / "ciu.toml.j2"
 BAKE_FILE = PWMCP_DIR / "docker-bake.hcl"
 RELEASE_VARS_FILE = PWMCP_DIR / "cmru.vars"
 CONTRACT_FILE = PWMCP_DIR / "pwmcp.contract.json"
+CLIENT_REQUIREMENTS_FILE = PWMCP_DIR / "client" / "requirements-runtime.txt"
+CLIENT_PROJECT_FILE = PWMCP_DIR / "client" / "pyproject.toml"
 DOCKERFILE = PWMCP_DIR / "containers" / "pwmcp" / "Dockerfile"
+OCR_DOCKERFILE = PWMCP_DIR / "containers" / "ocr" / "Dockerfile"
+# ciu.toml.j2 is a maintainer's LOCAL, gitignored override (pwmcp/.gitignore): it is not in a clean checkout
+# or in the release, but when it exists next to the defaults it must agree with them, so a stale one is named.
+OVERRIDE_LABEL = "ciu.toml.j2 (local gitignored override: run --refresh to rewrite it, or delete it)"
+DOCKER_HUB_TOKEN_URL = "https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/{repository}:pull"
+DOCKER_HUB_MANIFEST_URL = "https://registry-1.docker.io/v2/library/{repository}/manifests/{tag}"
 LIGHTHOUSE_PACKAGE_FILE = PWMCP_DIR / "containers" / "pwmcp" / "lighthouse-mcp" / "package.json"
 LIGHTHOUSE_LOCK_FILE = PWMCP_DIR / "containers" / "pwmcp" / "lighthouse-mcp" / "package-lock.json"
 
@@ -249,6 +266,42 @@ def fetch_mcr_manifest_digest(version: str, distro: str) -> str:
     return digest
 
 
+def fetch_dockerhub_manifest_digest(repository: str, tag: str) -> str:
+    """Return the current multi-arch manifest digest of a Docker Hub official image tag.
+
+    Anonymous, read-only (token + HEAD). Used for the OCR sidecar's Debian base, which is
+    pinned by digest like the Playwright base. A rolling OS tag has no package-age window
+    (a window would hold back security rebuilds): the digest is whatever the tag points at
+    when ``--refresh`` runs, and then stays fixed until the next refresh.
+    """
+    label = f"Docker Hub manifest for {repository}:{tag}"
+    body, _headers = _fetch_http(DOCKER_HUB_TOKEN_URL.format(repository=repository), f"Docker Hub token for {repository}")
+    try:
+        token = json.loads(body.decode("utf-8")).get("token")
+    except ValueError:
+        token = None
+    if not isinstance(token, str) or not token:
+        fail(f"Docker Hub did not return a pull token for {repository}")
+    _body, headers = _fetch_http(
+        DOCKER_HUB_MANIFEST_URL.format(repository=repository, tag=tag),
+        label,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": (
+                "application/vnd.oci.image.index.v1+json, "
+                "application/vnd.docker.distribution.manifest.list.v2+json"
+            ),
+        },
+        method="HEAD",
+    )
+    digest = headers.get("Docker-Content-Digest") if hasattr(headers, "get") else None
+    if not isinstance(digest, str):
+        fail(f"{label} did not return Docker-Content-Digest")
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None:
+        fail(f"{label} returned an invalid manifest digest: {digest!r}")
+    return digest
+
+
 def resolve_latest_common_version(
     npm_versions: set[str], pypi_versions: set[str], mcr_versions: set[str],
 ) -> str:
@@ -306,6 +359,16 @@ def update_toml_j2(path: Path, pw_version: str, image_tag: str) -> None:
     )
     if image_matches != 1:
         fail(f"{path.name} must contain exactly one [pwmcp.unified.image] tag field (found {image_matches})")
+    # The OCR sidecar ships under the SAME release coordinate. Updated when the section is
+    # present; --check (check_committed_inputs) is what requires it in the committed defaults.
+    content, ocr_matches = re.subn(
+        r'(\[pwmcp\.ocr\.image\][^\[]*tag\s*=\s*)"[^"]+"',
+        lambda m: m.group(0).rsplit('"', 2)[0] + f'"{image_tag}"',
+        content,
+        flags=re.DOTALL,
+    )
+    if ocr_matches > 1:
+        fail(f"{path.name} must contain at most one [pwmcp.ocr.image] tag field (found {ocr_matches})")
     path.write_text(content, encoding="utf-8")
 
 
@@ -314,8 +377,25 @@ def update_bake_hcl(
     playwright_version: str,
     pwmcp_version: str,
     image_digest: str,
+    debian_release: str | None = None,
+    debian_digest: str | None = None,
 ) -> None:
     content = path.read_text(encoding="utf-8")
+
+    if debian_release is not None or debian_digest is not None:
+        if debian_release is None or debian_digest is None:
+            fail(f"{path.name}: DEBIAN_RELEASE and DEBIAN_IMAGE_DIGEST must be updated together")
+        if re.fullmatch(r"sha256:[0-9a-f]{64}", debian_digest) is None:
+            fail(f"{path.name} OCR base-image digest is not a sha256 digest: {debian_digest!r}")
+        for name, value in (("DEBIAN_RELEASE", debian_release), ("DEBIAN_IMAGE_DIGEST", debian_digest)):
+            content, found = re.subn(
+                r'(variable\s+"' + name + r'"\s*\{[^}]*default\s*=\s*)"[^"]+"',
+                lambda m, v=value: m.group(1) + f'"{v}"',
+                content,
+                flags=re.DOTALL,
+            )
+            if found != 1:
+                fail(f"{path.name} must contain exactly one {name} variable (found {found})")
 
     content, playwright_matches = re.subn(
         r'(variable\s+"PLAYWRIGHT_VERSION"\s*\{[^}]*default\s*=\s*)"[^"]+"',
@@ -349,11 +429,22 @@ def update_bake_hcl(
     path.write_text(content, encoding="utf-8")
 
 
-def update_dockerfile(path: Path, image_digest: str) -> None:
-    """Update the authoritative base-image digest in Dockerfile ARG and FROM."""
+def update_dockerfile(path: Path, playwright_version: str, image_digest: str) -> None:
+    """Update the Dockerfile's Playwright version and base-image digest projection."""
     if re.fullmatch(r"sha256:[0-9a-f]{64}", image_digest) is None:
         fail(f"Dockerfile base-image digest is not a sha256 digest: {image_digest!r}")
     content = path.read_text(encoding="utf-8")
+    content, version_matches = re.subn(
+        r"(^ARG PLAYWRIGHT_VERSION=)[^\s]+$",
+        rf"\g<1>{playwright_version}",
+        content,
+        flags=re.MULTILINE,
+    )
+    if version_matches != 1:
+        fail(
+            f"{path.name} must contain exactly one PLAYWRIGHT_VERSION ARG "
+            f"(found {version_matches})"
+        )
     content, arg_matches = re.subn(
         r"(^ARG PLAYWRIGHT_IMAGE_DIGEST=)[^\s]+$",
         rf"\g<1>{image_digest}",
@@ -380,12 +471,108 @@ def update_dockerfile(path: Path, image_digest: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
+def update_ocr_dockerfile(path: Path, debian_release: str, image_digest: str) -> None:
+    """Update the OCR sidecar Dockerfile's Debian release and base-image digest projection."""
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", image_digest) is None:
+        fail(f"OCR Dockerfile base-image digest is not a sha256 digest: {image_digest!r}")
+    if re.fullmatch(r"[a-z][a-z0-9-]*", debian_release) is None:
+        fail(f"OCR Dockerfile Debian release is not a plain release name: {debian_release!r}")
+    content = path.read_text(encoding="utf-8")
+    for name, value in (("DEBIAN_RELEASE", debian_release), ("DEBIAN_IMAGE_DIGEST", image_digest)):
+        content, found = re.subn(rf"(^ARG {name}=)[^\s]+$", lambda m, v=value: m.group(1) + v, content, flags=re.MULTILINE)
+        if found != 1:
+            fail(f"{path.name} must contain exactly one {name} ARG (found {found})")
+    if len(re.findall(_OCR_FROM, content, flags=re.MULTILINE)) != 1:
+        fail(f"{path.name} must contain exactly one digest-pinned debian base FROM")
+    path.write_text(content, encoding="utf-8")
+
+
+_OCR_FROM = r"^FROM debian:\$\{DEBIAN_RELEASE\}-slim@\$\{DEBIAN_IMAGE_DIGEST\}\s*$"
+
+
 def update_contract(path: Path, *, release: str, playwright_version: str) -> None:
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["release"] = release
     payload["playwright"]["python"] = playwright_version
     payload["playwright"]["protocol"] = ".".join(playwright_version.split(".")[:2])
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def update_client_runtime_requirements(path: Path, playwright_version: str) -> None:
+    """Keep the installable client's Playwright dependency at the contract version."""
+    lines = [
+        line.partition("#")[0].strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.partition("#")[0].strip()
+    ]
+    cli_requirements = [
+        line for line in lines
+        if re.fullmatch(r"cli[-_.]extended\s*>=\s*\d+(?:\.\d+)*", line, re.IGNORECASE)
+    ]
+    if len(cli_requirements) != 1:
+        fail(
+            f"{path.name} must declare exactly one cli-extended minimum requirement "
+            "before the client dependency can be refreshed"
+        )
+    content = CLIENT_PROJECT_FILE.read_text(encoding="utf-8")
+    project = tomllib.loads(content).get("project", {})
+    dependencies = project.get("dependencies")
+    current_pins = [
+        item for item in dependencies or []
+        if isinstance(item, str) and re.fullmatch(r"playwright==\d+\.\d+\.\d+", item)
+    ]
+    cli_pins = [
+        item for item in dependencies or []
+        if isinstance(item, str) and re.fullmatch(r"cli[-_.]extended\s*>=\s*\d+(?:\.\d+)*", item, re.IGNORECASE)
+    ]
+    if (
+        not isinstance(dependencies, list)
+        or len(current_pins) != 1
+        or len(cli_pins) != 1
+        or len(dependencies) != 2
+        or dependencies != lines
+    ):
+        fail(f"{CLIENT_PROJECT_FILE.name} must declare the dependencies listed in {path.name}")
+    updated, matches = re.subn(
+        rf"(?<![\w.-])playwright=={re.escape(current_pins[0].partition('==')[2])}(?![\w.-])",
+        f"playwright=={playwright_version}",
+        content,
+    )
+    if matches != 1:
+        fail(f"{CLIENT_PROJECT_FILE.name} must contain exactly one Playwright dependency pin")
+    path.write_text(
+        "# CMRU checks this exact Playwright pin against pwmcp.contract.json.\n"
+        f"{cli_requirements[0]}\n"
+        f"playwright=={playwright_version}\n",
+        encoding="utf-8",
+    )
+    CLIENT_PROJECT_FILE.write_text(updated, encoding="utf-8")
+
+
+def check_client_runtime_requirements(playwright_version: str) -> None:
+    lines = [
+        line.partition("#")[0].strip()
+        for line in CLIENT_REQUIREMENTS_FILE.read_text(encoding="utf-8").splitlines()
+        if line.partition("#")[0].strip()
+    ]
+    cli_requirements = [
+        line for line in lines
+        if re.fullmatch(r"cli[-_.]extended\s*>=\s*\d+(?:\.\d+)*", line, re.IGNORECASE)
+    ]
+    if len(cli_requirements) != 1 or lines != [
+        cli_requirements[0] if cli_requirements else "",
+        f"playwright=={playwright_version}",
+    ]:
+        fail(
+            f"{CLIENT_REQUIREMENTS_FILE.name} must declare one "
+            f"cli-extended minimum followed by playwright=={playwright_version}"
+        )
+    project = tomllib.loads(CLIENT_PROJECT_FILE.read_text(encoding="utf-8")).get("project", {})
+    if project.get("dependencies") != lines:
+        fail(
+            f"{CLIENT_PROJECT_FILE.name} dependencies must match "
+            f"{CLIENT_REQUIREMENTS_FILE.name}"
+        )
 
 
 # Non-auto-updated package pins: read from bake file to preserve current values.
@@ -428,6 +615,22 @@ def _read_docker_arg(name: str) -> str:
         rf"^ARG\s+{re.escape(name)}=([^\s]+)\s*$",
         f"Dockerfile {name} ARG",
     )
+
+
+def _read_ocr_docker_arg(name: str) -> str:
+    return _read_single_value(
+        OCR_DOCKERFILE,
+        rf"^ARG\s+{re.escape(name)}=([^\s]+)\s*$",
+        f"OCR Dockerfile {name} ARG",
+    )
+
+
+def _read_ocr_toml_tag(path: Path) -> str | None:
+    """The [pwmcp.ocr.image] tag, or ``None`` when the file has no such section."""
+    matches = re.findall(r'\[pwmcp\.ocr\.image\][^\[]*?tag\s*=\s*"([^"]+)"', path.read_text(encoding="utf-8"), flags=re.DOTALL)
+    if len(matches) > 1:
+        fail(f"{path.name} must contain at most one [pwmcp.ocr.image] tag field (found {len(matches)})")
+    return matches[0] if matches else None
 
 
 def _read_docker_base_digest() -> str:
@@ -488,6 +691,27 @@ def check_committed_inputs() -> None:
             CONTRACT_FILE.name: contract["release"],
         },
     )
+    # The OCR sidecar ships under the SAME coordinate, in its own repository.
+    ocr_tag = _read_ocr_toml_tag(DEFAULTS_FILE)
+    if ocr_tag != release_tag:
+        fail(
+            f"{DEFAULTS_FILE.name} [pwmcp.ocr.image] tag={ocr_tag!r} must equal the pwmcp release "
+            f"{release_tag!r} (the OCR image is released with pwmcp under one coordinate)"
+        )
+    debian_release = _assert_same(
+        "OCR Debian release",
+        {BAKE_FILE.name: _read_bake_var("DEBIAN_RELEASE"), f"{OCR_DOCKERFILE.parent.name}/Dockerfile": _read_ocr_docker_arg("DEBIAN_RELEASE")},
+    )
+    debian_digest = _assert_same(
+        "OCR base-image digest",
+        {
+            BAKE_FILE.name: _read_bake_var("DEBIAN_IMAGE_DIGEST"),
+            f"{OCR_DOCKERFILE.parent.name}/Dockerfile ARG": _read_ocr_docker_arg("DEBIAN_IMAGE_DIGEST"),
+        },
+    )
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", debian_digest) is None:
+        fail(f"OCR base-image digest is not a sha256 digest: {debian_digest!r}")
+    _read_single_value(OCR_DOCKERFILE, _OCR_FROM, "digest-pinned debian base FROM")
     contract_playwright = contract.get("playwright")
     if not isinstance(contract_playwright, dict):
         fail(f"{CONTRACT_FILE.name} must contain a playwright object")
@@ -496,6 +720,7 @@ def check_committed_inputs() -> None:
             f"{CONTRACT_FILE.name} playwright.python={contract_playwright.get('python')!r} "
             f"does not match committed Playwright version {playwright_version!r}"
         )
+    check_client_runtime_requirements(playwright_version)
     expected_protocol = ".".join(playwright_version.split(".")[:2])
     if contract_playwright.get("protocol") != expected_protocol:
         fail(
@@ -536,12 +761,15 @@ def check_committed_inputs() -> None:
     if TOML_OVERRIDE_FILE.exists():
         _assert_same(
             "PWMCP override Playwright version",
-            {DEFAULTS_FILE.name: playwright_version, TOML_OVERRIDE_FILE.name: _read_toml_playwright_version(TOML_OVERRIDE_FILE)},
+            {DEFAULTS_FILE.name: playwright_version, OVERRIDE_LABEL: _read_toml_playwright_version(TOML_OVERRIDE_FILE)},
         )
         _assert_same(
             "PWMCP override release version",
-            {DEFAULTS_FILE.name: release_tag, TOML_OVERRIDE_FILE.name: _read_toml_release_tag(TOML_OVERRIDE_FILE)},
+            {DEFAULTS_FILE.name: release_tag, OVERRIDE_LABEL: _read_toml_release_tag(TOML_OVERRIDE_FILE)},
         )
+        override_ocr = _read_ocr_toml_tag(TOML_OVERRIDE_FILE)
+        if override_ocr is not None and override_ocr != release_tag:
+            fail(f"{TOML_OVERRIDE_FILE.name} [pwmcp.ocr.image] tag={override_ocr!r} must equal {release_tag!r}")
 
     distro = read_current_distro()
     write_release_vars(
@@ -553,6 +781,8 @@ def check_committed_inputs() -> None:
         _read_bake_var("CHROME_DEVTOOLS_MCP_VERSION"),
         _read_bake_var("MCP_PROXY_VERSION"),
         _read_bake_var("LIGHTHOUSE_VERSION"),
+        debian_release=debian_release,
+        debian_digest=debian_digest,
     )
     log(
         f"Validated committed release projection: PLAYWRIGHT_VERSION={playwright_version} "
@@ -569,6 +799,9 @@ def write_release_vars(
     chrome_devtools_mcp_version: str,
     mcp_proxy_version: str,
     lighthouse_version: str,
+    *,
+    debian_release: str,
+    debian_digest: str,
 ) -> None:
     RELEASE_VARS_FILE.write_text(
         f"PLAYWRIGHT_VERSION={playwright_version}\n"
@@ -579,7 +812,10 @@ def write_release_vars(
         f"MCP_PROXY_VERSION={mcp_proxy_version}\n"
         f"LIGHTHOUSE_VERSION={lighthouse_version}\n"
         f"PWMCP_VERSION={pwmcp_version}\n"
-        "GHCR_PACKAGE_NAMES=pwmcp\n",
+        f"DEBIAN_RELEASE={debian_release}\n"
+        f"DEBIAN_IMAGE_DIGEST={debian_digest}\n"
+        # one release publishes both images; visibility is synced for each GHCR package
+        "GHCR_PACKAGE_NAMES=pwmcp,pwmcp-ocr\n",
         encoding="utf-8",
     )
 
@@ -631,14 +867,24 @@ def refresh_upstream_projection(age_window_days: int = TEMPORARY_AGE_WINDOW_DAYS
         log(f"Updating {TOML_OVERRIDE_FILE.name}...")
         update_toml_j2(TOML_OVERRIDE_FILE, agreed_version, pwmcp_version)
 
-    log(f"Updating {BAKE_FILE.name}...")
-    update_bake_hcl(BAKE_FILE, agreed_version, pwmcp_version, image_digest)
+    debian_release = _read_ocr_docker_arg("DEBIAN_RELEASE")
+    debian_digest = fetch_dockerhub_manifest_digest("debian", f"{debian_release}-slim")
+    log(f"OCR base image: debian:{debian_release}-slim -> {debian_digest}")
 
-    log(f"Updating {DOCKERFILE.name} with base-image digest {image_digest}...")
-    update_dockerfile(DOCKERFILE, image_digest)
+    log(f"Updating {BAKE_FILE.name}...")
+    update_bake_hcl(BAKE_FILE, agreed_version, pwmcp_version, image_digest, debian_release, debian_digest)
+
+    log(f"Updating {OCR_DOCKERFILE.parent.name}/Dockerfile with Debian {debian_release} and digest {debian_digest}...")
+    update_ocr_dockerfile(OCR_DOCKERFILE, debian_release, debian_digest)
+
+    log(f"Updating {DOCKERFILE.name} with Playwright {agreed_version} and digest {image_digest}...")
+    update_dockerfile(DOCKERFILE, agreed_version, image_digest)
 
     log(f"Updating {CONTRACT_FILE.name}...")
     update_contract(CONTRACT_FILE, release=pwmcp_version, playwright_version=agreed_version)
+
+    log(f"Updating {CLIENT_REQUIREMENTS_FILE.name}...")
+    update_client_runtime_requirements(CLIENT_REQUIREMENTS_FILE, agreed_version)
 
     log(f"Writing {RELEASE_VARS_FILE.name}...")
     pw_mcp_ver = _read_bake_var("PLAYWRIGHT_MCP_VERSION")
@@ -646,7 +892,8 @@ def refresh_upstream_projection(age_window_days: int = TEMPORARY_AGE_WINDOW_DAYS
     mcp_proxy_ver = _read_bake_var("MCP_PROXY_VERSION")
     lh_ver = _read_bake_var("LIGHTHOUSE_VERSION")
     write_release_vars(agreed_version, distro, pwmcp_version, image_digest,
-                       pw_mcp_ver, cdt_mcp_ver, mcp_proxy_ver, lh_ver)
+                       pw_mcp_ver, cdt_mcp_ver, mcp_proxy_ver, lh_ver,
+                       debian_release=debian_release, debian_digest=debian_digest)
 
     log(
         f"Done. PLAYWRIGHT_VERSION={agreed_version} PWMCP_VERSION={pwmcp_version}"
@@ -654,32 +901,62 @@ def refresh_upstream_projection(age_window_days: int = TEMPORARY_AGE_WINDOW_DAYS
     log(f"Git tag to create after push: pwmcp-v{pwmcp_version}")
 
 
-def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(
-        description="Validate the committed PWMCP version projection or explicitly refresh it"
-    )
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument(
-        "--check",
-        action="store_true",
-        help="validate committed versions and write cmru.vars without contacting upstreams (default)",
-    )
-    mode.add_argument(
-        "--refresh",
-        action="store_true",
-        help="select the newest common upstream version at least 14 days old and rewrite the projection",
-    )
-    parser.add_argument(
-        "--age-window-days",
-        type=int,
-        default=TEMPORARY_AGE_WINDOW_DAYS,
-        help="temporary refresh age window until CMRU FEAT-03 owns version selection (default: 14)",
-    )
-    args = parser.parse_args(argv)
+def _handle(args: argparse.Namespace) -> None:
     if args.refresh:
         refresh_upstream_projection(args.age_window_days)
     else:
         check_committed_inputs()
+
+
+def _preview(args: argparse.Namespace) -> str:
+    if args.refresh:
+        return (
+            f"would select the newest common upstream version at least {args.age_window_days} "
+            "days old and rewrite the committed projection and cmru.vars"
+        )
+    return "would validate the committed version projection and write cmru.vars"
+
+
+def build_cli() -> RegisteredCli:
+    """Import-safe registration of the script's grammar (``--check`` | ``--refresh``)."""
+    return script_cli(
+        "resolve-playwright-version.py",
+        long_name="version projection",
+        description="Validate the committed PWMCP version projection or explicitly refresh it.",
+        handler=_handle,
+        preview=_preview,
+        options=(
+            OptionSpec(
+                ("--check",),
+                "validate committed versions and write cmru.vars without contacting upstreams (default)",
+                group="MODE",
+                parser_kwargs={"action": "store_true"},
+                mutually_exclusive_group="mode",
+            ),
+            OptionSpec(
+                ("--refresh",),
+                f"select the newest common upstream version at least {TEMPORARY_AGE_WINDOW_DAYS} days old by default and rewrite the projection",
+                group="MODE",
+                parser_kwargs={"action": "store_true"},
+                mutually_exclusive_group="mode",
+            ),
+            OptionSpec(
+                ("--age-window-days",),
+                "temporary refresh age window until CMRU FEAT-03 owns version selection",
+                group="MODE",
+                metavar="DAYS",
+                parser_kwargs={"type": int, "default": TEMPORARY_AGE_WINDOW_DAYS},
+            ),
+        ),
+        examples=(
+            "python3 scripts/resolve-playwright-version.py --check",
+            "python3 scripts/resolve-playwright-version.py --refresh",
+        ),
+    )
+
+
+def main(argv: list[str] | None = None) -> None:
+    run_script(build_cli(), argv)
 
 
 if __name__ == "__main__":

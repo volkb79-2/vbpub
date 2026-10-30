@@ -1,0 +1,106 @@
+schema_version = 1
+
+[runtime]
+kind = "none"
+
+[env]
+
+[project]
+id = "tester-base"
+description = "Minimal gate base image: python 3.14 + docker client + minisign + shellcheck."
+template_revision = 5
+prefix = "tester-base-v"
+artifacts = ["oci-image"]
+
+[project.version]
+strategy = "file:VERSION"
+bump = "conventional"
+
+[project.release]
+git_tag = true
+build_step = "build"
+artifact_dirs = []
+
+# ONE build (R1), versioned late (V1), private candidate tag (W5). cmru runs prepare -> gate ->
+# (VERSION written, committed, tagged) -> build_step -> push, so `prepare` cannot know the release version.
+# It builds the image under a private per-release tag tester-base:release-<source-commit> (NOT the shared
+# developer tag tester-base:local, which other sessions rebuild) and records tag + id; the gate runs the
+# contract lane against that recorded tag; `build` (the first step after the version exists) reads
+# VERSION, re-verifies the id and gives the SAME image its registry names with `docker tag`; `push` logs in
+# with the step's credentials (stdin, isolated config), never overwrites a version tag that serves another
+# image, pushes :latest and then :<VERSION> last, and checks the served digests.
+# The `oci-image-*` handlers are not used (see handoff/CMRU-GAPS-2026-10-19.md).
+[steps.prepare]
+quiet = true
+commands = [
+  { label = "tester-base: build the image once under its private per-release tag", argv = ["python3", "scripts/release_image.py", "build"], cwd = "." },
+]
+
+[steps.run-tests]
+quiet = true
+commands = [
+  { label = "tester-base: run-gate contract lane against the recorded private tag", argv = ["python3", "scripts/release_image.py", "gate"], cwd = "." },
+]
+
+[steps.build]
+quiet = true
+commands = [
+  { label = "tester-base: give the tested image its version and latest names", argv = ["python3", "scripts/release_image.py", "tag"], cwd = "." },
+]
+
+[steps.push]
+quiet = true
+required_env = ["GITHUB_USERNAME", "GITHUB_PUSH_PAT"]
+commands = [
+  { label = "tester-base: log in, push the tested image, verify the served digests", argv = ["python3", "scripts/release_image.py", "push"], cwd = "." },
+]
+
+[versions]
+
+[versions.targets]
+
+[versions.targets."oci.python.314.trixie"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."oci.python.314.trixie".oci]
+image = "docker.io/library/python"
+tag = "3.14.7-trixie"
+selection = "rolling"
+
+[versions.targets."oci.python.314.trixie".resolved]
+version = "3.14.7-trixie"
+resolved_at = "2026-10-19T00:01:28Z"
+age_cutoff = "2026-10-05T00:01:28Z"
+
+[versions.targets."oci.python.314.trixie".resolved.sources]
+
+[versions.targets."oci.python.314.trixie".resolved.sources.oci]
+version = "3.14.7-trixie"
+released_at = "2026-09-19T13:55:46Z"
+age_source = "oci-image-created-fallback"
+tag = "3.14.7-trixie"
+digest = "sha256:0876e54cf728d89fd9d0fdaf5837b9ee879ea5fbbd6fd0cddbe5eb0cce3f5f9e"
+
+[versions.targets."oci.node.26.trixie"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."oci.node.26.trixie".oci]
+image = "docker.io/library/node"
+tag = "26.9.0-trixie"
+selection = "rolling"
+
+[versions.targets."oci.node.26.trixie".resolved]
+version = "26.9.0-trixie"
+resolved_at = "2026-10-19T00:01:28Z"
+age_cutoff = "2026-10-05T00:01:28Z"
+
+[versions.targets."oci.node.26.trixie".resolved.sources]
+
+[versions.targets."oci.node.26.trixie".resolved.sources.oci]
+version = "26.9.0-trixie"
+released_at = "2026-09-19T12:24:11Z"
+age_source = "oci-image-created-fallback"
+tag = "26.9.0-trixie"
+digest = "sha256:fa271c47a5d81dc321f4a45be01362f5b3de7559edc7e76b8c4089be1e50d866"

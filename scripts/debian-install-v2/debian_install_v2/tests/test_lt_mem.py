@@ -200,6 +200,7 @@ def test_tmpfiles_allowlist_permits_create_and_boot():
     HostActions(dry_run=True).run(["/usr/bin/systemd-tmpfiles", "--create", "--boot", "/etc/tmpfiles.d/x.conf"])
 
 
+@pytest.mark.os_integration
 @pytest.mark.skipif(not Path("/usr/bin/systemd-tmpfiles").exists(), reason="no systemd-tmpfiles on this host")
 def test_real_systemd_tmpfiles_applies_w_bang_only_with_boot(tmp_path):
     """The real binary: `w!` lines are skipped by --create alone and applied by --create --boot."""
@@ -263,7 +264,7 @@ def test_sysctl_values_and_why_comments(tmp_path):
     installer._configure_zswap()
     text = installer.actions.dry_run_writes["/etc/sysctl.d/99-vbpub-swap.conf"]
     assert sysctl_values(text) == {
-        "vm.swappiness": "100", "vm.vfs_cache_pressure": "50", "vm.watermark_scale_factor": "50",
+        "vm.swappiness": "10", "vm.vfs_cache_pressure": "50", "vm.watermark_scale_factor": "50",
         "vm.page-cluster": "0", "vm.admin_reserve_kbytes": "65536",
         "vm.dirty_ratio": "15", "vm.dirty_background_ratio": "5",
     }
@@ -274,6 +275,9 @@ def test_sysctl_values_and_why_comments(tmp_path):
     lowered = text.lower()
     for word in ("game", "soulmask", "docker", "wings"):
         assert word not in lowered
+    # the swappiness rationale is the low-value one, not the earlier "push cold anon out early" wording
+    assert "Low on purpose" in text
+    assert "pushed out early" not in text
 
 
 def test_min_free_is_not_a_static_sysctl(tmp_path):

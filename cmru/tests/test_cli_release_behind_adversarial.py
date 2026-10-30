@@ -9,6 +9,11 @@ from cmru.credential_handoff import CredentialHandoff
 
 @pytest.fixture(autouse=True)
 def fake_release_preflight(monkeypatch):
+    monkeypatch.setattr(cli.transaction, "read_release_source", lambda *_args: None)
+    monkeypatch.setattr(cli.transaction, "backup_was_pushed", lambda *_args: False)
+    monkeypatch.setattr(cli.transaction, "read_release_results", lambda *_args: {})
+    monkeypatch.setattr(cli.transaction, "source_git_root_for_projects", lambda root, _projects: root)
+    monkeypatch.setattr(cli, "_configure_native_release_logging", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         cli.transaction,
         "project_git_family_groups",
@@ -73,7 +78,14 @@ def test_release_uses_fetched_origin_and_moved_config_path_when_local_main_is_be
             "--discard", "logs", "--discard", "artifacts",
         ])
     assert exc == 0
-    assert workspace_args == {"base": "b" * 40, "scope": "demo", "source_git_root": tmp_path}
+    assert workspace_args == {
+        "base": "b" * 40,
+        "scope": "demo",
+        "source_git_root": tmp_path,
+        "git_auth": cli.GitHubGitAuth(owner="o", repo="r", token="token"),
+        "require_remote_branch_absent": False,
+        "feature_source": False,
+    }
     # The parent hands its already-resolved credential to the child; it copies
     # no secret file into the release worktree.
     assert handed == [CredentialHandoff(root="token", projects={"demo": "token"})]

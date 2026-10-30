@@ -674,7 +674,7 @@ items, and consumer docs show the annotations to add.
    as the review/implementation record and link to the stable design-guide
    section.
 7. **Run the library's registered gates.** From `libraries/cli-extended`, use
-   `./run-gate.py gate`; its committed symlink invokes the shared
+   `run-gate gate`; its committed symlink invokes the shared
    `run-gate-project` runner and its declared `gate` lane serially runs
    `r0-r1`, `r2`, and `r3`. Keep all test, mutation, and canary work in
    `tester-unified`. The runner reads the lane resources and the

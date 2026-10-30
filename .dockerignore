@@ -7,10 +7,12 @@
 *
 !ciu
 !cmru
-!run-gate-project
 !assay
 !topos
 !nyxloom
+!run-gate-project
+run-gate-project/*
+!run-gate-project/pyproject.toml
 !wheel-builder
 # Nyxloom's image now builds with the repository root as context. Expose only
 # what its cli-extended WHEEL build copies (pyproject.toml + README.md + src;
@@ -35,6 +37,12 @@ libraries/worktree/*
 !libraries/worktree/src
 libraries/worktree/src/*
 !libraries/worktree/src/worktree
+# tester-unified reads patchseries' test extra for its dependency closure. Its
+# lane imports the bound worktree source directly, so only the pyproject is
+# copied into the image build context.
+!libraries/patchseries
+libraries/patchseries/*
+!libraries/patchseries/pyproject.toml
 # tester-unified's requirements generator and cli-extended release fetcher (the
 # only files of that directory the image COPYs; the parent must be re-included first).
 !tester-unified
@@ -50,18 +58,38 @@ tester-unified/*
 scripts/*
 !scripts/cgroup-profiler
 
-# tester-unified installs Run-Gate as an internal wheel. Keep only the wheel's
-# metadata, README and modules; tests and reports stay out of the image context.
+# tester-unified reads pwmcp-client's `test` extra (pwmcp/client/pyproject.toml) for the
+# closure generator; only that one file is copied (parents must be re-included first).
+!pwmcp
+pwmcp/*
+!pwmcp/client
+pwmcp/client/*
+!pwmcp/client/pyproject.toml
+
+# tester-unified installs the exact Run-Gate wheel through a named build
+# context. Keep only pyproject metadata for the dependency closure generator.
 run-gate-project/*
 !run-gate-project/pyproject.toml
-!run-gate-project/README.md
-!run-gate-project/run-gate.py
-!run-gate-project/run_gate.py
-!run-gate-project/run_gate_admission.py
 
-# Drop heavy/generated content within the whitelisted projects.
+# Drop generated content and the top-level test suites from the whitelisted
+# projects. Keep package-data paths named `tests` (for example a CLI skill) in
+# the build context; Docker's package-data patterns can include them in wheels.
+ciu/tests
+cmru/tests
+assay/tests
+assay/gate/tests
+assay/analysis/tests
+assay/gate/python/fixtures/sql/tests
+topos/tests
+nyxloom/tests
+scripts/cgroup-profiler/tests
+libraries/worktree/tests
 **/.git
 **/.venv
+**/.tox
+**/.nox
+**/.assay
+**/.run-gate
 **/__pycache__
 **/*.pyc
 **/.pytest_cache
@@ -69,6 +97,23 @@ run-gate-project/*
 **/.mypy_cache
 **/node_modules
 **/.worktrees
+# Coverage artifacts are gate output, never wheel source inputs.
+**/.coverage*
+**/coverage.json
+**/coverage.xml
+**/junit-*.xml
+# Trove specs, handoffs, and review reports are repository records, not wheel inputs.
+**/nyxloom-trove/**
+# Local setuptools/pip output (build/lib, dist wheels, egg-info). An in-tree
+# `pip wheel` reuses build/lib, so a module deleted from source could re-enter
+# the image's wheel from a stale copy. No committed context path uses these names.
+**/build
+**/dist
+**/*.egg-info
+# cmru release/build output retained by the caller checkout (`<project>/artifacts/<tag>/`:
+# release.json, evidence, wheels). Git ignores it (`**/artifacts/`); the build context must
+# too, or `COPY cmru/` carries a retained release record into the image's source tree.
+**/artifacts
 # cgroup-profiler ships a built venv and captured runs; neither belongs in a
 # build context (the venv alone is 500 MB).
 scripts/cgroup-profiler/venv

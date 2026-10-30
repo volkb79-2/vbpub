@@ -1,0 +1,9 @@
+{
+  // Follow the installer’s current Config() defaults on the selected channel.
+  // Today this includes Docker, APT policy/automatic upgrades, journald,
+  // zswap and memory tuning, cgroup2 flags, oomd, fstrim, and scheduled reboot
+  // checks. Disk defaults are root_resize_policy=resize and swap_policy=on;
+  // swap capacity is min(2x RAM, rounded 20% of disk), split into four parts.
+  // Per-host credentials and SSH keys are always supplied separately.
+  "schema_version": 1
+}

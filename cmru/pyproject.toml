@@ -25,7 +25,12 @@ dependencies = ["cli-extended>=0.3.0"]
 [project.optional-dependencies]
 # tester-unified SoT: cmru's test closure, including coverage and property
 # tests for the shared workspace adapter.
-test = ["pytest>=8", "pytest-cov>=5.0", "hypothesis>=6.140"]
+test = [
+  "pytest>=8",
+  "pytest-cov>=5.0",
+  "hypothesis>=6.140",
+  "markdown-it-py[linkify]>=4,<5",
+]
 versions-templates = ["Jinja2>=3.1,<4"]
 # `cmru init` asks its questions with the cli-extended prompt driver, which needs
 # questionary. cli-extended 0.3.0 declares `interactive = ["questionary>=2.1.1"]`

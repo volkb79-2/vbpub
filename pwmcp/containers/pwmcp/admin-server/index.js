@@ -15,7 +15,8 @@
  *                             program (kills + respawns the process).
  *   GET  /browser/health   — CDP liveness (via /json/version) + open target
  *                             (page/context) count + this admin-server's
- *                             own process uptime.
+ *                             own process uptime, and the active user-agent
+ *                             override (userAgent / userAgentSource, PWMCP-09).
  *
  * Talks to supervisord over its unix_http_server socket (XML-RPC/HTTP,
  * same transport supervisorctl uses) for /browser/restart — no capability
@@ -254,6 +255,9 @@ async function health() {
     browser: version ? version.Browser : null,
     targetCount,
     adminUptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
+    // PWMCP-09 transparency: the active user-agent override (null = browser default).
+    userAgent: process.env.PWMCP_USER_AGENT_RESOLVED || null,
+    userAgentSource: process.env.PWMCP_USER_AGENT_SOURCE || 'default',
   };
 }
 

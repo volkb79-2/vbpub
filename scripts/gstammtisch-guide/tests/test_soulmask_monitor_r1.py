@@ -194,6 +194,7 @@ def test_rescan_servers_preserves_the_real_relay_connection_across_a_rescan(
         relay.close()
 
 
+@pytest.mark.os_integration
 @pytest.mark.skipif(shutil.which("nsenter") is None, reason="nsenter not installed")
 def test_nsenter_binary_exists_but_real_netns_join_needs_a_real_host():
     """Documents the known environment limitation rather than asserting

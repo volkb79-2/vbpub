@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import runpy
+import shutil
 import subprocess
 import sys
 import urllib.error
@@ -14,6 +16,12 @@ from hypothesis import given, strategies as st
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "resolve-playwright-version.py"
 DIGEST = "sha256:" + "a" * 64
+DEBIAN_DIGEST = "sha256:" + "d" * 64
+OCR_FROM = "FROM debian:${DEBIAN_RELEASE}-slim@${DEBIAN_IMAGE_DIGEST}\n"
+
+
+def _ocr_dockerfile(release: str = "trixie", digest: str = DEBIAN_DIGEST) -> str:
+    return f"ARG DEBIAN_RELEASE={release}\nARG DEBIAN_IMAGE_DIGEST={digest}\n{OCR_FROM}RUN true\n"
 SPEC = importlib.util.spec_from_file_location("pwmcp_resolve_playwright_version", MODULE_PATH)
 assert SPEC and SPEC.loader
 resolver = importlib.util.module_from_spec(SPEC)
@@ -37,9 +45,14 @@ def _projection_fixture(tmp_path: Path) -> dict[str, Path]:
     lock = tmp_path / "package-lock.json"
     contract = tmp_path / "contract.json"
     release_vars = tmp_path / "cmru.vars"
+    client_requirements = tmp_path / "client-requirements.txt"
+    client_project = tmp_path / "client-pyproject.toml"
+    ocr_dockerfile = tmp_path / "ocr-Dockerfile"
+    ocr_dockerfile.write_text(_ocr_dockerfile(), encoding="utf-8")
     defaults.write_text(
         'image_distro = "noble"\nplaywright_version = "1.63.0"\n'
-        '[pwmcp.unified.image]\ntag = "1.63.0-r3"\n', encoding="utf-8"
+        '[pwmcp.unified.image]\ntag = "1.63.0-r3"\n'
+        '[pwmcp.ocr.image]\ntag = "1.63.0-r3"\n', encoding="utf-8"
     )
     override.write_text(defaults.read_text(), encoding="utf-8")
     bake.write_text(
@@ -49,7 +62,9 @@ def _projection_fixture(tmp_path: Path) -> dict[str, Path]:
         'variable "PLAYWRIGHT_MCP_VERSION" { default = "0.0.80" }\n'
         'variable "CHROME_DEVTOOLS_MCP_VERSION" { default = "1.8.0" }\n'
         'variable "MCP_PROXY_VERSION" { default = "6.7.14" }\n'
-        'variable "LIGHTHOUSE_VERSION" { default = "13.4.1" }\n', encoding="utf-8"
+        'variable "LIGHTHOUSE_VERSION" { default = "13.4.1" }\n'
+        'variable "DEBIAN_RELEASE" { default = "trixie" }\n'
+        f'variable "DEBIAN_IMAGE_DIGEST" {{ default = "{DEBIAN_DIGEST}" }}\n', encoding="utf-8"
     )
     dockerfile.write_text(
         "ARG PLAYWRIGHT_VERSION=1.63.0\n"
@@ -78,10 +93,18 @@ def _projection_fixture(tmp_path: Path) -> dict[str, Path]:
         "release": "1.63.0-r3",
         "playwright": {"python": "1.63.0", "protocol": "1.63"},
     }), encoding="utf-8")
+    client_requirements.write_text(
+        "cli-extended>=0.3.0\nplaywright==1.63.0\n", encoding="utf-8"
+    )
+    client_project.write_text(
+        '[project]\ndependencies = ["cli-extended>=0.3.0", "playwright==1.63.0"]\n',
+        encoding="utf-8",
+    )
     return {
         "defaults": defaults, "override": override, "bake": bake,
-        "dockerfile": dockerfile, "package": package, "lock": lock,
+        "dockerfile": dockerfile, "ocr_dockerfile": ocr_dockerfile, "package": package, "lock": lock,
         "contract": contract, "release_vars": release_vars,
+        "client_requirements": client_requirements, "client_project": client_project,
     }
 
 
@@ -94,10 +117,13 @@ def _bind_projection_fixture(
             "override": "TOML_OVERRIDE_FILE",
             "bake": "BAKE_FILE",
             "dockerfile": "DOCKERFILE",
+            "ocr_dockerfile": "OCR_DOCKERFILE",
             "package": "LIGHTHOUSE_PACKAGE_FILE",
             "lock": "LIGHTHOUSE_LOCK_FILE",
             "contract": "CONTRACT_FILE",
             "release_vars": "RELEASE_VARS_FILE",
+            "client_requirements": "CLIENT_REQUIREMENTS_FILE",
+            "client_project": "CLIENT_PROJECT_FILE",
         }[name]
         monkeypatch.setattr(resolver, constant, path)
 
@@ -518,11 +544,13 @@ def test_update_helpers_rewrite_release_inputs(tmp_path: Path) -> None:
 
     dockerfile = tmp_path / "Dockerfile"
     dockerfile.write_text(
+        "ARG PLAYWRIGHT_VERSION=1.0.0\n"
         "ARG PLAYWRIGHT_IMAGE_DIGEST=sha256:" + "b" * 64 + "\n"
         "FROM mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-${PLAYWRIGHT_DISTRO}@${PLAYWRIGHT_IMAGE_DIGEST}\n",
         encoding="utf-8",
     )
-    resolver.update_dockerfile(dockerfile, DIGEST)
+    resolver.update_dockerfile(dockerfile, "1.2.3", DIGEST)
+    assert "ARG PLAYWRIGHT_VERSION=1.2.3" in dockerfile.read_text()
     assert f"ARG PLAYWRIGHT_IMAGE_DIGEST={DIGEST}" in dockerfile.read_text()
     assert "@${PLAYWRIGHT_IMAGE_DIGEST}" in dockerfile.read_text()
 
@@ -565,13 +593,35 @@ def test_update_helpers_refuse_template_drift(tmp_path: Path) -> None:
 
     dockerfile = tmp_path / "Dockerfile"
     with pytest.raises(SystemExit):
-        resolver.update_dockerfile(dockerfile, "not-a-digest")
-    dockerfile.write_text("FROM mcr.microsoft.com/playwright:broken\n", encoding="utf-8")
+        resolver.update_dockerfile(dockerfile, "1.2.3", "not-a-digest")
+    dockerfile.write_text(
+        "ARG PLAYWRIGHT_IMAGE_DIGEST=" + DIGEST + "\n"
+        "FROM mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-${PLAYWRIGHT_DISTRO}@${PLAYWRIGHT_IMAGE_DIGEST}\n",
+        encoding="utf-8",
+    )
     with pytest.raises(SystemExit):
-        resolver.update_dockerfile(dockerfile, DIGEST)
-    dockerfile.write_text("ARG PLAYWRIGHT_IMAGE_DIGEST=" + DIGEST + "\n", encoding="utf-8")
+        resolver.update_dockerfile(dockerfile, "1.2.3", DIGEST)
+    dockerfile.write_text(
+        "ARG PLAYWRIGHT_VERSION=1.0.0\n"
+        "ARG PLAYWRIGHT_IMAGE_DIGEST=" + DIGEST + "\n"
+        "FROM mcr.microsoft.com/playwright:broken\n",
+        encoding="utf-8",
+    )
     with pytest.raises(SystemExit):
-        resolver.update_dockerfile(dockerfile, DIGEST)
+        resolver.update_dockerfile(dockerfile, "1.2.3", DIGEST)
+    dockerfile.write_text(
+        "ARG PLAYWRIGHT_VERSION=1.0.0\n"
+        "FROM mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-${PLAYWRIGHT_DISTRO}@${PLAYWRIGHT_IMAGE_DIGEST}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit):
+        resolver.update_dockerfile(dockerfile, "1.2.3", DIGEST)
+    dockerfile.write_text(
+        "ARG PLAYWRIGHT_VERSION=1.0.0\nARG PLAYWRIGHT_IMAGE_DIGEST=" + DIGEST + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit):
+        resolver.update_dockerfile(dockerfile, "1.2.3", DIGEST)
 
 
 def test_read_bake_var_and_release_vars(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -584,10 +634,12 @@ def test_read_bake_var_and_release_vars(tmp_path: Path, monkeypatch: pytest.Monk
 
     output = tmp_path / "cmru.vars"
     monkeypatch.setattr(resolver, "RELEASE_VARS_FILE", output)
-    resolver.write_release_vars("1.2.3", "noble", "1.2.3-r4", DIGEST, "0.0.82", "1.9.0", "6.7.18", "13.4.0")
+    resolver.write_release_vars("1.2.3", "noble", "1.2.3-r4", DIGEST, "0.0.82", "1.9.0", "6.7.18", "13.4.0",
+                                debian_release="trixie", debian_digest=DEBIAN_DIGEST)
     assert "PLAYWRIGHT_VERSION=1.2.3" in output.read_text()
     assert f"PLAYWRIGHT_IMAGE_DIGEST={DIGEST}" in output.read_text()
-    assert "GHCR_PACKAGE_NAMES=pwmcp" in output.read_text()
+    assert "GHCR_PACKAGE_NAMES=pwmcp,pwmcp-ocr" in output.read_text()
+    assert f"DEBIAN_IMAGE_DIGEST={DEBIAN_DIGEST}" in output.read_text()
 
 
 def test_projection_helpers_refuse_ambiguous_values(tmp_path: Path) -> None:
@@ -621,9 +673,13 @@ def test_main_updates_all_prepared_outputs(tmp_path: Path, monkeypatch: pytest.M
     dockerfile = tmp_path / "Dockerfile"
     release_vars = tmp_path / "vars"
     contract = tmp_path / "contract"
+    client_requirements = tmp_path / "client-requirements.txt"
+    client_project = tmp_path / "client-pyproject.toml"
+    ocr_dockerfile = tmp_path / "ocr-Dockerfile"
+    ocr_dockerfile.write_text(_ocr_dockerfile("trixie", "sha256:" + "0" * 64), encoding="utf-8")
     defaults.write_text(
         'image_distro = "noble"\nplaywright_version = "old"\n'
-        '[pwmcp.unified.image]\ntag = "old"\n', encoding="utf-8"
+        '[pwmcp.unified.image]\ntag = "old"\n[pwmcp.ocr.image]\ntag = "old"\n', encoding="utf-8"
     )
     override.write_text(defaults.read_text(), encoding="utf-8")
     bake.write_text(
@@ -633,20 +689,34 @@ def test_main_updates_all_prepared_outputs(tmp_path: Path, monkeypatch: pytest.M
         'variable "PLAYWRIGHT_MCP_VERSION" { default = "0.0.82" }\n'
         'variable "CHROME_DEVTOOLS_MCP_VERSION" { default = "1.9.0" }\n'
         'variable "MCP_PROXY_VERSION" { default = "6.7.18" }\n'
-        'variable "LIGHTHOUSE_VERSION" { default = "13.4.0" }\n', encoding="utf-8"
+        'variable "LIGHTHOUSE_VERSION" { default = "13.4.0" }\n'
+        'variable "DEBIAN_RELEASE" { default = "trixie" }\n'
+        'variable "DEBIAN_IMAGE_DIGEST" { default = "sha256:' + "0" * 64 + '" }\n', encoding="utf-8"
     )
     dockerfile.write_text(
+        "ARG PLAYWRIGHT_VERSION=old\n"
         "ARG PLAYWRIGHT_IMAGE_DIGEST=" + DIGEST + "\n"
         "FROM mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-${PLAYWRIGHT_DISTRO}@${PLAYWRIGHT_IMAGE_DIGEST}\n",
         encoding="utf-8",
     )
     contract.write_text(json.dumps(_payload()), encoding="utf-8")
+    client_requirements.write_text(
+        "cli-extended>=0.3.0\nplaywright==1.0.0\n", encoding="utf-8"
+    )
+    client_project.write_text(
+        '[project]\ndependencies = ["cli-extended>=0.3.0", "playwright==1.0.0"]\n',
+        encoding="utf-8",
+    )
     monkeypatch.setattr(resolver, "DEFAULTS_FILE", defaults)
     monkeypatch.setattr(resolver, "TOML_OVERRIDE_FILE", override)
     monkeypatch.setattr(resolver, "BAKE_FILE", bake)
     monkeypatch.setattr(resolver, "DOCKERFILE", dockerfile)
+    monkeypatch.setattr(resolver, "OCR_DOCKERFILE", ocr_dockerfile)
+    monkeypatch.setattr(resolver, "fetch_dockerhub_manifest_digest", lambda repo, tag: DEBIAN_DIGEST if (repo, tag) == ("debian", "trixie-slim") else "wrong")
     monkeypatch.setattr(resolver, "RELEASE_VARS_FILE", release_vars)
     monkeypatch.setattr(resolver, "CONTRACT_FILE", contract)
+    monkeypatch.setattr(resolver, "CLIENT_REQUIREMENTS_FILE", client_requirements)
+    monkeypatch.setattr(resolver, "CLIENT_PROJECT_FILE", client_project)
     monkeypatch.setattr(resolver, "fetch_npm_versions", lambda: {"1.2.3"})
     monkeypatch.setattr(resolver, "fetch_pypi_versions", lambda: {"1.2.3"})
     monkeypatch.setattr(resolver, "fetch_mcr_versions", lambda distro: {"1.2.3"})
@@ -661,7 +731,16 @@ def test_main_updates_all_prepared_outputs(tmp_path: Path, monkeypatch: pytest.M
     assert 'default = "1.2.3-r4"' in bake.read_text()
     assert DIGEST in bake.read_text()
     assert "PWMCP_VERSION=1.2.3-r4" in release_vars.read_text()
+    # the OCR image rides the same coordinate; its Debian base is re-resolved and re-pinned
+    assert defaults.read_text().count('tag = "1.2.3-r4"') == 2 and override.read_text().count('tag = "1.2.3-r4"') == 2
+    assert f'variable "DEBIAN_IMAGE_DIGEST" {{ default = "{DEBIAN_DIGEST}" }}' in bake.read_text()
+    assert f"ARG DEBIAN_IMAGE_DIGEST={DEBIAN_DIGEST}" in ocr_dockerfile.read_text()
+    assert OCR_FROM in ocr_dockerfile.read_text()
+    assert f"DEBIAN_IMAGE_DIGEST={DEBIAN_DIGEST}" in release_vars.read_text() and "DEBIAN_RELEASE=trixie" in release_vars.read_text()
+    assert "GHCR_PACKAGE_NAMES=pwmcp,pwmcp-ocr" in release_vars.read_text()
     assert json.loads(contract.read_text())["release"] == "1.2.3-r4"
+    assert "playwright==1.2.3" in client_requirements.read_text()
+    assert '"playwright==1.2.3"' in client_project.read_text()
 
     override.unlink()
     resolver.main(["--refresh"])
@@ -670,75 +749,64 @@ def test_main_updates_all_prepared_outputs(tmp_path: Path, monkeypatch: pytest.M
 def test_check_committed_inputs_validates_projection_and_writes_vars(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    defaults = tmp_path / "defaults"
-    override = tmp_path / "override"
-    bake = tmp_path / "bake"
-    dockerfile = tmp_path / "Dockerfile"
-    package = tmp_path / "package.json"
-    lock = tmp_path / "package-lock.json"
-    contract = tmp_path / "contract.json"
-    release_vars = tmp_path / "cmru.vars"
-    defaults.write_text(
-        'image_distro = "noble"\nplaywright_version = "1.63.0"\n'
-        '[pwmcp.unified.image]\ntag = "1.63.0-r3"\n', encoding="utf-8"
-    )
-    override.write_text(defaults.read_text(), encoding="utf-8")
-    bake.write_text(
-        'variable "PLAYWRIGHT_VERSION" { default = "1.63.0" }\n'
-        f'variable "PLAYWRIGHT_IMAGE_DIGEST" {{ default = "{DIGEST}" }}\n'
-        'variable "PWMCP_VERSION" { default = "1.63.0-r3" }\n'
-        'variable "PLAYWRIGHT_MCP_VERSION" { default = "0.0.80" }\n'
-        'variable "CHROME_DEVTOOLS_MCP_VERSION" { default = "1.8.0" }\n'
-        'variable "MCP_PROXY_VERSION" { default = "6.7.14" }\n'
-        'variable "LIGHTHOUSE_VERSION" { default = "13.4.1" }\n', encoding="utf-8"
-    )
-    dockerfile.write_text(
-        "ARG PLAYWRIGHT_VERSION=1.63.0\n"
-        f"ARG PLAYWRIGHT_IMAGE_DIGEST={DIGEST}\n"
-        "FROM mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-${PLAYWRIGHT_DISTRO}@${PLAYWRIGHT_IMAGE_DIGEST}\n"
-        "ARG PLAYWRIGHT_MCP_VERSION=0.0.80\n"
-        "ARG CHROME_DEVTOOLS_MCP_VERSION=1.8.0\n"
-        "ARG MCP_PROXY_VERSION=6.7.14\n"
-        "ARG LIGHTHOUSE_VERSION=13.4.1\n",
-        encoding="utf-8",
-    )
-    package_payload = {
-        "dependencies": {
-            "@modelcontextprotocol/sdk": "1.30.0",
-            "chrome-launcher": "1.2.1",
-            "lighthouse": "13.4.1",
-        }
-    }
-    package.write_text(json.dumps(package_payload), encoding="utf-8")
-    lock.write_text(
-        json.dumps({
-            "lockfileVersion": 3,
-            "packages": {
-                "": {"dependencies": package_payload["dependencies"]},
-                **{
-                    f"node_modules/{name}": {"version": version}
-                    for name, version in package_payload["dependencies"].items()
-                },
-            },
-        }),
-        encoding="utf-8",
-    )
-    contract.write_text(
-        json.dumps({"release": "1.63.0-r3", "playwright": {"python": "1.63.0", "protocol": "1.63"}}),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(resolver, "DEFAULTS_FILE", defaults)
-    monkeypatch.setattr(resolver, "TOML_OVERRIDE_FILE", override)
-    monkeypatch.setattr(resolver, "BAKE_FILE", bake)
-    monkeypatch.setattr(resolver, "DOCKERFILE", dockerfile)
-    monkeypatch.setattr(resolver, "LIGHTHOUSE_PACKAGE_FILE", package)
-    monkeypatch.setattr(resolver, "LIGHTHOUSE_LOCK_FILE", lock)
-    monkeypatch.setattr(resolver, "CONTRACT_FILE", contract)
-    monkeypatch.setattr(resolver, "RELEASE_VARS_FILE", release_vars)
+    files = _projection_fixture(tmp_path)
+    _bind_projection_fixture(monkeypatch, files)
 
     resolver.main(["--check"])
 
-    assert "PWMCP_VERSION=1.63.0-r3" in release_vars.read_text()
+    assert "PWMCP_VERSION=1.63.0-r3" in files["release_vars"].read_text()
+
+
+def test_check_committed_inputs_refuses_runtime_dependency_projection_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    files = _projection_fixture(tmp_path)
+    _bind_projection_fixture(monkeypatch, files)
+    original = files["client_requirements"].read_text(encoding="utf-8")
+    for bad_requirements in (
+        "playwright==1.63.0\n",
+        "cli-extended>=0.3.0\ncli-extended>=0.3.0\nplaywright==1.63.0\n",
+        "cli-extended>=0.3.0\nplaywright==1.62.0\n",
+    ):
+        files["client_requirements"].write_text(bad_requirements, encoding="utf-8")
+        with pytest.raises(SystemExit):
+            resolver.main(["--check"])
+    files["client_requirements"].write_text(original, encoding="utf-8")
+
+
+def test_update_client_runtime_requirements_validates_before_writing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    files = _projection_fixture(tmp_path)
+    _bind_projection_fixture(monkeypatch, files)
+    original_requirements = files["client_requirements"].read_text(encoding="utf-8")
+    original_project = files["client_project"].read_text(encoding="utf-8")
+
+    files["client_requirements"].write_text("playwright==1.63.0\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        resolver.update_client_runtime_requirements(files["client_requirements"], "1.64.0")
+    files["client_requirements"].write_text(original_requirements, encoding="utf-8")
+
+    files["client_project"].write_text(
+        original_project.replace("playwright==1.63.0", "playwright==1.62.0"),
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit):
+        resolver.update_client_runtime_requirements(files["client_requirements"], "1.64.0")
+    assert files["client_requirements"].read_text(encoding="utf-8") == original_requirements
+    files["client_project"].write_text(original_project, encoding="utf-8")
+
+    original_subn = resolver.re.subn
+
+    def no_project_pin_match(pattern: str, replacement: str, content: str, *args: object, **kwargs: object):
+        if "playwright==" in pattern:
+            return content, 0
+        return original_subn(pattern, replacement, content, *args, **kwargs)
+
+    monkeypatch.setattr(resolver.re, "subn", no_project_pin_match)
+    with pytest.raises(SystemExit):
+        resolver.update_client_runtime_requirements(files["client_requirements"], "1.64.0")
+    assert files["client_requirements"].read_text(encoding="utf-8") == original_requirements
 
 
 def test_check_committed_inputs_refuses_contract_and_lock_drift(
@@ -758,6 +826,15 @@ def test_check_committed_inputs_refuses_contract_and_lock_drift(
         with pytest.raises(SystemExit):
             resolver.main(["--check"])
     files["contract"].write_text(json.dumps(good_contract), encoding="utf-8")
+
+    good_project = files["client_project"].read_text(encoding="utf-8")
+    files["client_project"].write_text(
+        good_project.replace("playwright==1.63.0", "playwright==1.62.0"),
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit):
+        resolver.main(["--check"])
+    files["client_project"].write_text(good_project, encoding="utf-8")
 
     package = json.loads(files["package"].read_text())
     lock = json.loads(files["lock"].read_text())
@@ -828,8 +905,237 @@ def test_refresh_accepts_zero_age_window(
     monkeypatch.setattr(resolver, "compute_release_number", lambda version: 4)
     resolver.refresh_upstream_projection(0)
     assert "PWMCP_VERSION=1.2.3-r4" in files["release_vars"].read_text()
+    assert "ARG PLAYWRIGHT_VERSION=1.2.3" in files["dockerfile"].read_text()
+    assert "playwright==1.2.3" in files["client_requirements"].read_text()
+    assert '"playwright==1.2.3"' in files["client_project"].read_text()
 
 
-def test_resolver_module_entrypoint_runs_committed_check(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(sys, "argv", ["resolve-playwright-version.py", "--check"])
+def test_resolver_module_entrypoint_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    # --dry-run exercises the script entrypoint without reading or writing ANY project file. (It used to run
+    # `--check` against the live tree, which made the test depend on untracked local state: see below.)
+    monkeypatch.setattr(sys, "argv", ["resolve-playwright-version.py", "--check", "--dry-run"])
     runpy.run_path(str(MODULE_PATH), run_name="__main__")
+
+
+# ------------------------------------------------------------------ the committed projection, in a CLEAN checkout
+
+PWMCP_DIR = Path(__file__).resolve().parents[1]
+# Everything that is not in git: generated, built, local. A clean checkout has none of it.
+_UNTRACKED = shutil.ignore_patterns("ciu.toml.j2", "cmru.vars", "__pycache__", "dist", "bundle", "wheels", ".assay",
+                                    ".pytest_cache", ".coverage*", "coverage.json", "vendor")
+
+
+def _clean_checkout(tmp_path: Path) -> Path:
+    clean = tmp_path / "pwmcp"
+    shutil.copytree(PWMCP_DIR, clean, ignore=_UNTRACKED)
+    return clean
+
+
+def _check(clean: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, str(clean / "scripts" / "resolve-playwright-version.py"), "--check"],
+        cwd=clean, capture_output=True, text=True, check=False, timeout=120,
+    )
+
+
+def test_the_committed_projection_is_consistent_in_a_clean_checkout(tmp_path: Path) -> None:
+    """`--check` on the TRACKED files only: green here means green in any clean checkout and in the gate image.
+
+    The earlier test ran `--check` on the live tree, so a stale maintainer-local, gitignored `ciu.toml.j2`
+    (1.61.0 while the defaults said 1.64.0) made it fail in the tester image yet pass elsewhere. A stale
+    TRACKED projection (defaults, bake, Dockerfiles, contract, client requirements) fails THIS test.
+    """
+
+    clean = _clean_checkout(tmp_path)
+    assert not (clean / "ciu.toml.j2").exists() and not (clean / "cmru.vars").exists()
+    done = _check(clean)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "Validated committed release projection" in done.stdout
+    assert (clean / "cmru.vars").is_file()  # written into the copy, never into the live tree
+
+
+def test_a_stale_tracked_projection_is_caught(tmp_path: Path) -> None:
+    clean = _clean_checkout(tmp_path)
+    defaults = clean / "ciu.defaults.toml.j2"
+    defaults.write_text(re.sub(r'(\[pwmcp\.unified\.image\][^\[]*tag\s*=\s*)"[^"]+"', r'\1"1.61.0-r2"',
+                               defaults.read_text(encoding="utf-8"), flags=re.DOTALL), encoding="utf-8")
+    done = _check(clean)
+    assert done.returncode != 0 and "projections disagree" in done.stderr, done.stdout + done.stderr
+
+
+def test_a_stale_local_override_is_named_as_such(tmp_path: Path) -> None:
+    """The case that bit the tester-image run: a gitignored ciu.toml.j2 older than the defaults."""
+
+    clean = _clean_checkout(tmp_path)
+    text = (clean / "ciu.defaults.toml.j2").read_text(encoding="utf-8")
+    stale = re.sub(r'playwright_version\s*=\s*"[^"]+"', 'playwright_version = "1.61.0"', text)
+    stale = re.sub(r'(\[pwmcp\.unified\.image\][^\[]*tag\s*=\s*)"[^"]+"', r'\1"1.61.0-r2"', stale, flags=re.DOTALL)
+    (clean / "ciu.toml.j2").write_text(stale, encoding="utf-8")
+    done = _check(clean)
+    assert done.returncode != 0
+    assert "local gitignored override" in done.stderr and "1.61.0" in done.stderr, done.stderr
+
+
+def test_the_local_override_is_gitignored_so_it_cannot_reach_main() -> None:
+    ignore = (PWMCP_DIR / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert "ciu.toml.j2" in [line.strip() for line in ignore]
+    assert "local gitignored override" in resolver.OVERRIDE_LABEL
+
+
+# ------------------------------------------------------------------ OCR sidecar image in the same release
+
+
+def test_ocr_helpers_rewrite_the_coordinate_and_the_debian_pin(tmp_path: Path) -> None:
+    toml = tmp_path / "defaults"
+    toml.write_text('playwright_version = "1.0.0"\n[pwmcp.unified.image]\ntag = "o"\n[pwmcp.ocr.image]\ntag = "o"\n',
+                    encoding="utf-8")
+    resolver.update_toml_j2(toml, "1.2.3", "1.2.3-r4")
+    assert toml.read_text().count('tag = "1.2.3-r4"') == 2
+    toml.write_text(toml.read_text() + '[pwmcp.ocr.image]\ntag = "dup"\n', encoding="utf-8")
+    with pytest.raises(SystemExit):
+        resolver.update_toml_j2(toml, "1.2.3", "1.2.3-r5")
+
+    bake = tmp_path / "bake"
+    bake.write_text(
+        'variable "PLAYWRIGHT_VERSION" { default = "1" }\n'
+        f'variable "PLAYWRIGHT_IMAGE_DIGEST" {{ default = "{DIGEST}" }}\n'
+        'variable "PWMCP_VERSION" { default = "o" }\n'
+        'variable "DEBIAN_RELEASE" { default = "bookworm" }\n'
+        'variable "DEBIAN_IMAGE_DIGEST" { default = "x" }\n', encoding="utf-8")
+    resolver.update_bake_hcl(bake, "1.2.3", "1.2.3-r4", DIGEST, "trixie", DEBIAN_DIGEST)
+    assert 'DEBIAN_RELEASE" { default = "trixie"' in bake.read_text()
+    assert f'DEBIAN_IMAGE_DIGEST" {{ default = "{DEBIAN_DIGEST}"' in bake.read_text()
+    with pytest.raises(SystemExit):  # half an update is refused
+        resolver.update_bake_hcl(bake, "1.2.3", "1.2.3-r4", DIGEST, "trixie", None)
+    with pytest.raises(SystemExit):
+        resolver.update_bake_hcl(bake, "1.2.3", "1.2.3-r4", DIGEST, "trixie", "not-a-digest")
+    bake.write_text(bake.read_text().replace('variable "DEBIAN_RELEASE" { default = "trixie" }\n', ""), encoding="utf-8")
+    with pytest.raises(SystemExit):
+        resolver.update_bake_hcl(bake, "1.2.3", "1.2.3-r4", DIGEST, "trixie", DEBIAN_DIGEST)
+
+    ocr = tmp_path / "Dockerfile"
+    ocr.write_text(_ocr_dockerfile("bookworm", "sha256:" + "1" * 64), encoding="utf-8")
+    resolver.update_ocr_dockerfile(ocr, "trixie", DEBIAN_DIGEST)
+    assert ocr.read_text() == _ocr_dockerfile("trixie", DEBIAN_DIGEST)
+
+
+def test_ocr_dockerfile_update_refuses_drift(tmp_path: Path) -> None:
+    ocr = tmp_path / "Dockerfile"
+    ocr.write_text(_ocr_dockerfile(), encoding="utf-8")
+    with pytest.raises(SystemExit):
+        resolver.update_ocr_dockerfile(ocr, "trixie", "not-a-digest")
+    with pytest.raises(SystemExit):
+        resolver.update_ocr_dockerfile(ocr, "Trixie;rm", DEBIAN_DIGEST)
+    ocr.write_text(_ocr_dockerfile().replace("@${DEBIAN_IMAGE_DIGEST}", ""), encoding="utf-8")  # tag-only FROM
+    with pytest.raises(SystemExit):
+        resolver.update_ocr_dockerfile(ocr, "trixie", DEBIAN_DIGEST)
+    ocr.write_text(_ocr_dockerfile().replace("ARG DEBIAN_RELEASE=trixie\n", ""), encoding="utf-8")
+    with pytest.raises(SystemExit):
+        resolver.update_ocr_dockerfile(ocr, "trixie", DEBIAN_DIGEST)
+
+
+def test_check_requires_the_ocr_image_to_ride_the_release_coordinate_and_a_pinned_base(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    files = _projection_fixture(tmp_path)
+    _bind_projection_fixture(monkeypatch, files)
+    resolver.main(["--check"])
+    vars_text = files["release_vars"].read_text()
+    assert "DEBIAN_RELEASE=trixie" in vars_text and f"DEBIAN_IMAGE_DIGEST={DEBIAN_DIGEST}" in vars_text
+    assert "GHCR_PACKAGE_NAMES=pwmcp,pwmcp-ocr" in vars_text
+
+    good = {name: path.read_text(encoding="utf-8") for name, path in files.items() if name in ("defaults", "override", "bake", "ocr_dockerfile")}
+
+    def restore() -> None:
+        for name, text in good.items():
+            files[name].write_text(text, encoding="utf-8")
+
+    # 1. OCR tag differs from the pwmcp release
+    files["defaults"].write_text(good["defaults"].replace('[pwmcp.ocr.image]\ntag = "1.63.0-r3"', '[pwmcp.ocr.image]\ntag = "1.63.0-r2"'), encoding="utf-8")
+    with pytest.raises(SystemExit):
+        resolver.main(["--check"])
+    restore()
+    # 1b. the override file disagrees
+    files["override"].write_text(good["override"].replace('[pwmcp.ocr.image]\ntag = "1.63.0-r3"', '[pwmcp.ocr.image]\ntag = "9"'), encoding="utf-8")
+    with pytest.raises(SystemExit):
+        resolver.main(["--check"])
+    restore()
+    # 1c. an override without an OCR section is fine (it inherits the defaults)
+    files["override"].write_text(good["override"].replace('[pwmcp.ocr.image]\ntag = "1.63.0-r3"\n', ""), encoding="utf-8")
+    resolver.main(["--check"])
+    restore()
+    # 1d. committed defaults without the OCR section are refused
+    files["defaults"].write_text(good["defaults"].replace('[pwmcp.ocr.image]\ntag = "1.63.0-r3"\n', ""), encoding="utf-8")
+    files["override"].write_text(files["defaults"].read_text(), encoding="utf-8")
+    with pytest.raises(SystemExit):
+        resolver.main(["--check"])
+    restore()
+    # 2. digest projections disagree
+    files["ocr_dockerfile"].write_text(good["ocr_dockerfile"].replace("d" * 64, "e" * 64), encoding="utf-8")
+    with pytest.raises(SystemExit):
+        resolver.main(["--check"])
+    restore()
+    # 3. release name disagrees
+    files["bake"].write_text(good["bake"].replace('"DEBIAN_RELEASE" { default = "trixie"', '"DEBIAN_RELEASE" { default = "bookworm"'), encoding="utf-8")
+    with pytest.raises(SystemExit):
+        resolver.main(["--check"])
+    restore()
+    # 4. not a sha256
+    for name in ("bake", "ocr_dockerfile"):
+        files[name].write_text(good[name].replace(DEBIAN_DIGEST, "latest"), encoding="utf-8")
+    with pytest.raises(SystemExit):
+        resolver.main(["--check"])
+    restore()
+    # 5. the FROM lost its digest (tag-only base)
+    files["ocr_dockerfile"].write_text(good["ocr_dockerfile"].replace("@${DEBIAN_IMAGE_DIGEST}", ""), encoding="utf-8")
+    with pytest.raises(SystemExit):
+        resolver.main(["--check"])
+    restore()
+    resolver.main(["--check"])
+
+
+def test_fetch_dockerhub_manifest_digest_uses_a_pull_token_and_validates_the_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, dict, str]] = []
+
+    def fake_fetch(url: str, label: str, *, headers: dict | None = None, method: str = "GET"):
+        calls.append((url, headers or {}, method))
+        if "auth.docker.io" in url:
+            return json.dumps({"token": "tok"}).encode(), {}
+        return b"", {"Docker-Content-Digest": DEBIAN_DIGEST}
+
+    monkeypatch.setattr(resolver, "_fetch_http", fake_fetch)
+    assert resolver.fetch_dockerhub_manifest_digest("debian", "trixie-slim") == DEBIAN_DIGEST
+    assert "repository:library/debian:pull" in calls[0][0] and calls[0][2] == "GET"
+    assert calls[1][0].endswith("/v2/library/debian/manifests/trixie-slim") and calls[1][2] == "HEAD"
+    assert calls[1][1]["Authorization"] == "Bearer tok" and "image.index" in calls[1][1]["Accept"]
+
+
+@pytest.mark.parametrize(
+    ("token_body", "headers"),
+    [(b"not json", {}), (json.dumps({}).encode(), {}), (json.dumps({"token": "t"}).encode(), {}),
+     (json.dumps({"token": "t"}).encode(), {"Docker-Content-Digest": "sha256:short"}),
+     (json.dumps({"token": "t"}).encode(), {"Docker-Content-Digest": 5})],
+)
+def test_fetch_dockerhub_manifest_digest_refuses_bad_answers(monkeypatch: pytest.MonkeyPatch, token_body: bytes, headers: dict) -> None:
+    def fake_fetch(url: str, label: str, *, headers_: dict | None = None, method: str = "GET", **kwargs):
+        return (token_body, {}) if "auth.docker.io" in url else (b"", headers)
+
+    monkeypatch.setattr(resolver, "_fetch_http", fake_fetch)
+    with pytest.raises(SystemExit):
+        resolver.fetch_dockerhub_manifest_digest("debian", "trixie-slim")
+
+
+def test_duplicate_ocr_image_sections_are_refused_when_read(tmp_path: Path) -> None:
+    toml = tmp_path / "defaults"
+    toml.write_text('[pwmcp.ocr.image]\ntag = "a"\n[pwmcp.ocr.image]\ntag = "b"\n', encoding="utf-8")
+    with pytest.raises(SystemExit):
+        resolver._read_ocr_toml_tag(toml)
+    toml.write_text('[pwmcp.unified.image]\ntag = "a"\n', encoding="utf-8")
+    assert resolver._read_ocr_toml_tag(toml) is None
+
+
+def test_dry_run_previews_both_modes_without_touching_anything(capsys: pytest.CaptureFixture[str]) -> None:
+    resolver.main(["--check", "--dry-run"])
+    assert "validate the committed version projection" in capsys.readouterr().err
+    resolver.main(["--refresh", "--age-window-days", "3", "--dry-run"])
+    assert "at least 3 days old" in capsys.readouterr().err

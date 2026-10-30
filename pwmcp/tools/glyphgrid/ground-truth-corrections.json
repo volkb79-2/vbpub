@@ -1,0 +1,5 @@
+{
+ "_comment": "In-memory whole-line replacements of the human transcript (the corpus files are not modified). Format: {frame_id: [[from_line, to_line], ...]}. The title underline of the installed console is drawn with the underscore glyph (identical bitmap to the '_' cursor; a real hyphen in this font is mid-height), not '-'.",
+ "19-console-setup-with-kernel-noise": [["-------------", "_____________"]],
+ "20-console-setup-duplicated-redraw": [["-------------", "_____________"]]
+}

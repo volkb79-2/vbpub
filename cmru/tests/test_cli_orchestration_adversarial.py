@@ -82,9 +82,79 @@ def test_release_gate_refuses_missing_run_tests_before_runner(monkeypatch, tmp_p
         cli._run_release_gates(tmp_path, {"demo": project}, ["demo"])
     project.steps = {"run-tests": [object()]}
     calls = []
-    monkeypatch.setattr(cli, "run_project_step", lambda *args: calls.append(args[1]))
+    monkeypatch.setattr(cli, "_git", lambda *_args, **_kwargs: "a" * 40)
+    monkeypatch.setattr(
+        cli, "run_project_step",
+        lambda *args, **kwargs: calls.append((args[1], kwargs.get("protected_env"))),
+    )
     cli._run_release_gates(tmp_path, {"demo": project}, ["demo"])
-    assert calls == ["run-tests"]
+    assert calls == [("run-tests", {"CMRU_RELEASE_GATE_COMMIT": "a" * 40})]
+
+
+def test_release_gate_refuses_when_candidate_head_moves_during_gate(monkeypatch, tmp_path):
+    heads = iter(("a" * 40, "b" * 40))
+    monkeypatch.setattr(cli, "_git", lambda *_args, **_kwargs: next(heads))
+    monkeypatch.setattr(cli, "_assert_release_gate_source_matches_commit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli, "_run_release_gates", lambda *_args, **_kwargs: None)
+    with pytest.raises(RuntimeError, match="gate changed the candidate commit"):
+        cli._run_release_gates_on_exact_head(tmp_path, {}, ["demo"])
+
+
+@pytest.mark.parametrize("index_flag", ["--assume-unchanged", "--skip-worktree"])
+def test_release_gate_source_check_rejects_hidden_tracked_byte_change(tmp_path, index_flag):
+    root = _repo(tmp_path)
+    expected_sha = _git(root, "rev-parse", "HEAD")
+    _git(root, "update-index", index_flag, "demo/x")
+    (root / "demo" / "x").write_text("changed behind index flag\n")
+    assert cli._worktree_changed_paths(root) == []
+
+    with pytest.raises(RuntimeError, match="assume-unchanged or skip-worktree"):
+        cli._assert_release_gate_source_matches_commit(root, expected_sha, phase="after")
+    with pytest.raises(RuntimeError, match="assume-unchanged or skip-worktree"):
+        cli._assert_release_candidate_unchanged(
+            root, "demo", expected_sha, phase="after artifact build",
+        )
+
+
+def _linked_candidate(tmp_path: Path) -> tuple[Path, str]:
+    """A managed linked worktree of a committed repo, like a release candidate."""
+    root = _repo(tmp_path)
+    candidate = tmp_path / "candidate"
+    _git(root, "worktree", "add", "-q", "-b", "cmru/release/x", str(candidate), "HEAD")
+    return candidate, _git(candidate, "rev-parse", "HEAD")
+
+
+def test_release_gate_source_check_accepts_the_exact_candidate_and_names_a_changed_tracked_file(tmp_path):
+    candidate, expected_sha = _linked_candidate(tmp_path)
+    # The exact committed bytes pass both checks.
+    cli._assert_release_gate_source_matches_commit(candidate, expected_sha, phase="before")
+
+    (candidate / "demo" / "x").write_text("edited after the gate judged it\n")
+    with pytest.raises(RuntimeError) as refused:
+        cli._assert_release_gate_source_matches_commit(candidate, expected_sha, phase="after")
+    message = str(refused.value)
+    assert f"candidate source after does not match commit {expected_sha[:12]}" in message
+    assert "demo/x" in message
+
+
+def test_release_gate_source_check_refuses_a_new_non_ignored_file(tmp_path):
+    candidate, expected_sha = _linked_candidate(tmp_path)
+    (candidate / "demo" / "new.txt").write_text("untracked release input\n")
+
+    with pytest.raises(RuntimeError) as refused:
+        cli._assert_release_gate_source_matches_commit(candidate, expected_sha, phase="before")
+
+    assert str(refused.value) == (
+        "candidate source before has non-ignored changes: demo/new.txt"
+    )
+    # An ignored file is not release input and is tolerated.
+    (candidate / "demo" / "new.txt").unlink()
+    (candidate / ".gitignore").write_text("*.log\n")
+    _git(candidate, "add", ".gitignore")
+    _git(candidate, "commit", "-qm", "chore: ignore logs")
+    ignored_sha = _git(candidate, "rev-parse", "HEAD")
+    (candidate / "demo" / "build.log").write_text("noise\n")
+    cli._assert_release_gate_source_matches_commit(candidate, ignored_sha, phase="after")
 
 
 def test_child_release_args_removes_resume_but_rejects_no_obsolete_destructive_option(tmp_path):

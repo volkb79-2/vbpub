@@ -7,6 +7,13 @@ are sure we have polished tools"). This brief becomes the dispatch input for
 that rollout. Fields marked `⟨P3⟩` are filled at the end of the RG-55 wave
 (released versions, measured DAMON overhead).
 
+**HELD (2026-10-21):** the `⟨P3⟩` placeholders stay unfilled on purpose. The
+brief is held until the deployment is confirmed (released cgprofile daemon
+running, run-gate wheel installed, host P8 install confirmed); only then fill
+them (candidates: run-gate 24.0.1 or the next release; cgprofile 1.0.0 or 1.1.x;
+DAMON overhead 0.0503% of one CPU on the 100/102 s pair, ~0.41% earlier, see
+`run-gate-WAVE-RG55-REPORT.md`) and dispatch on the operator's say-so.
+
 | item | value |
 |---|---|
 | run-gate release carrying RG-55 | `⟨P3⟩ 23.7.0 (rev 41)` |

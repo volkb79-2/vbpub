@@ -25,7 +25,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from cmru.config_names import PROJECT_CONFIG_FILENAME
 from cmru.git_auth import GitHubGitAuth, run_local_git, run_remote_git
@@ -60,9 +60,15 @@ _RELEASE_CONTROL_EXCLUDES = (
 )
 
 
-def _git_log(repo_root: Path, since_ref: str, *paths: str, end_ref: str = "HEAD") -> List[str]:
+def _git_log(
+    repo_root: Path, since_ref: str, *paths: str, end_ref: str = "HEAD",
+    exclude: Sequence[str] = (),
+) -> List[str]:
     """Commit messages reachable from ``end_ref`` but not from ``since_ref``,
     touching paths (release-control files excluded).
+
+    ``exclude`` adds repo-relative paths that are release metadata for THIS
+    project (its configured changelog, KI-78) to the default exclusions.
 
     KI-20: ``end_ref`` defaults to ``"HEAD"`` -- today's behavior, and already
     worktree-correct (each worktree's own HEAD, not the shared local ``main``
@@ -71,7 +77,10 @@ def _git_log(repo_root: Path, since_ref: str, *paths: str, end_ref: str = "HEAD"
     """
     cmd = ["git", "log", f"{since_ref}..{end_ref}", "--format=%s"]
     if paths:
-        cmd += ["--"] + list(paths) + list(_RELEASE_CONTROL_EXCLUDES)
+        cmd += (
+            ["--"] + list(paths) + list(_RELEASE_CONTROL_EXCLUDES)
+            + [f":(exclude){path}" for path in exclude]
+        )
     try:
         result = subprocess.run(cmd, cwd=repo_root, capture_output=True, text=True)
     except OSError as exc:
@@ -102,6 +111,17 @@ class ReleasePlanRefused(RuntimeError):
     genuine mid-release failure, which must be retained for inspection."""
 
 
+def _require_origin_remote(repo_root: Path, *, purpose: str) -> None:
+    """Refuse an absent origin before Git can reinterpret its name as a path."""
+    result = run_local_git(
+        repo_root, "remote", "get-url", "--all", "origin",
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        detail = result.stderr.strip() or result.stdout.strip() or "origin has no configured URL"
+        raise ReleasePlanRefused(f"cannot {purpose}: origin remote is not configured ({detail})")
+
+
 def _tag_pushed_to_origin(
     repo_root: Path, tag: str, *, git_auth: GitHubGitAuth | None = None,
 ) -> bool:
@@ -125,6 +145,9 @@ def _tag_pushed_to_origin(
     naming both SHAs -- that is not "absent", so it must not be reported
     with the "push it" remedy that implies nothing exists there yet.
     """
+    _require_origin_remote(
+        repo_root, purpose=f"verify tag {tag!r} against origin's tags",
+    )
     result = run_remote_git(
         repo_root, "ls-remote", "--exit-code", "--tags", "origin",
         f"refs/tags/{tag}", f"refs/tags/{tag}^{{}}",
@@ -181,6 +204,9 @@ def _highest_remote_tag_for_prefix(
     ``tag_key`` is the caller's own ``_semver_key``-based ordering (over the
     same ``prefix``), so remote and local candidates are compared identically.
     """
+    _require_origin_remote(
+        repo_root, purpose=f"list origin's tags for prefix {prefix!r}",
+    )
     result = run_remote_git(
         repo_root, "ls-remote", "--tags", "origin", f"refs/tags/{prefix}*",
         auth=git_auth, capture_output=True, text=True,
@@ -273,10 +299,54 @@ def _latest_tag_for_prefix(
 
 _CC_BREAKING = re.compile(r"^[a-z]+(\([^)]+\))?!:|BREAKING[ -]CHANGE")
 _CC_FEAT = re.compile(r"^feat(\([^)]+\))?:")
+_CC_SUBJECT_SCOPE = re.compile(r"^[a-z]+(?:\(([^)]+)\))?!?:")
 
 
-def _bump_from_commits(messages: List[str]) -> str:
-    """Return 'major', 'minor', or 'patch' based on conventional commits."""
+def _project_scope_names(name: str, project: Any) -> frozenset[str]:
+    """Return the configured project names accepted in a commit scope."""
+    prefix = getattr(project, "prefix", None) or f"{name}-v"
+    cwd = getattr(project, "cwd", None)
+    if not cwd:
+        project_root = getattr(project, "project_root", None)
+        cwd = project_root.name if isinstance(project_root, Path) else name
+    candidates = {
+        name,
+        getattr(project, "scm_dist", None),
+        str(cwd).rstrip("/").rsplit("/", 1)[-1],
+        prefix[:-2] if isinstance(prefix, str) and prefix.endswith("-v") else None,
+    }
+    return frozenset(str(candidate).lower() for candidate in candidates if candidate)
+
+
+def _bump_from_commits(
+    messages: List[str],
+    *,
+    project_names: frozenset[str] | None = None,
+    known_project_names: frozenset[str] | None = None,
+) -> str:
+    """Return a project's Conventional Commit bump.
+
+    A scope matching a configured project (or alias) limits that commit's
+    feature/breaking effect to the named project. Unknown scopes retain the
+    historical path-based behavior so a new or local scope cannot silently
+    downgrade a breaking change.
+    """
+    if project_names is not None and known_project_names is not None:
+        scoped_messages: list[str] = []
+        for message in messages:
+            match = _CC_SUBJECT_SCOPE.match(message)
+            if match is None or match.group(1) is None:
+                scoped_messages.append(message)
+                continue
+            scopes = {
+                part.strip().lower()
+                for part in match.group(1).split(",")
+                if part.strip()
+            }
+            recognized = scopes & known_project_names
+            if not recognized or recognized & project_names:
+                scoped_messages.append(message)
+        messages = scoped_messages
     for msg in messages:
         if _CC_BREAKING.search(msg):
             return "major"
@@ -454,8 +524,7 @@ def _tag_covers_head(repo_root: Path, tag: str) -> bool:
 
 
 def _tag_head_relationship(repo_root: Path, tag: str) -> str:
-    """Classify ``tag`` against HEAD once a path-scoped ``git log`` is already
-    known to be empty for it (S12.2b) — three states, not two:
+    """Classify a release tag against the current candidate HEAD (S12.2b):
 
     * ``"equal"``  — the tag's commit IS HEAD: the ordinary, benign state right
       after any successful release (nothing has landed anywhere since). Not an
@@ -468,6 +537,8 @@ def _tag_head_relationship(repo_root: Path, tag: str) -> str:
     * ``"behind"`` — the tag is a strict ancestor of HEAD: the ordinary
       genuinely-unchanged case (some other project's commits moved HEAD, this
       project's own paths didn't change). Not an error.
+    * ``"diverged"`` — neither commit is an ancestor of the other. This is
+      not a valid release baseline and must be inspected before planning.
 
     ``git merge-base --is-ancestor`` alone cannot separate "equal" from
     "ahead" (both make HEAD an ancestor-or-equal of the tag), so the commit
@@ -479,7 +550,29 @@ def _tag_head_relationship(repo_root: Path, tag: str) -> str:
         return "equal"
     if _tag_covers_head(repo_root, tag):
         return "ahead"
-    return "behind"
+    result = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", tag_commit, head_commit],
+        cwd=repo_root, capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        return "behind"
+    if result.returncode == 1:
+        return "diverged"
+    raise ReleasePlanRefused(
+        f"cannot compare tag {tag!r} with HEAD (git merge-base exited "
+        f"{result.returncode}): {result.stderr.strip() or result.stdout.strip()}"
+    )
+
+
+def _tag_diverged_error(repo_root: Path, name: str, tag: str) -> ReleasePlanRefused:
+    head = _git(repo_root, "rev-parse", "HEAD")
+    tag_commit = _git(repo_root, "rev-parse", f"{tag}^{{commit}}")
+    return ReleasePlanRefused(
+        f"{name}: latest tag {tag} and HEAD have diverged "
+        f"(tag {tag_commit[:8]}, HEAD {head[:8]}); the release baseline is "
+        "ambiguous. Reconcile the tagged commit into the release branch or "
+        "restore the intended source history, then rerun the release plan."
+    )
 
 
 def _tag_ahead_error(repo_root: Path, name: str, prefix: str, tag: str) -> ReleasePlanRefused:
@@ -525,6 +618,8 @@ def detect_changed_projects(
     allow_tag_ahead_of_head: bool = False,
     end_ref: str = "HEAD",
     git_auth: GitHubGitAuth | None = None,
+    known_projects: Mapping[str, Any] | None = None,
+    known_project_names: frozenset[str] | None = None,
 ) -> List[Tuple[str, Any, Optional[str], str]]:
     """Return [(name, config, last_tag_or_None, bump)] for projects with changes.
 
@@ -567,6 +662,15 @@ def detect_changed_projects(
     there.
     """
     changed = []
+    if known_project_names is None:
+        scoped_projects = known_projects if known_projects is not None else projects
+        resolved_scope_names = frozenset(
+            alias
+            for project_name, project in scoped_projects.items()
+            for alias in _project_scope_names(project_name, project)
+        )
+    else:
+        resolved_scope_names = frozenset(name.lower() for name in known_project_names)
     for name, proj in projects.items():
         prefix = getattr(proj, "prefix", None) or f"{name}-v"
         paths = getattr(proj, "paths", None) or [getattr(proj, "cwd", None) or name]
@@ -575,21 +679,32 @@ def detect_changed_projects(
             git_auth=git_auth,
         )
         if last_tag:
-            messages = _git_log(repo_root, last_tag, *paths, end_ref=end_ref)
+            relationship = None
+            if check_tag_at_head:
+                relationship = _tag_head_relationship(repo_root, last_tag)
+                if relationship == "diverged":
+                    raise _tag_diverged_error(repo_root, name, last_tag)
+                if relationship == "ahead":
+                    if not allow_tag_ahead_of_head:
+                        raise _tag_ahead_error(repo_root, name, prefix, last_tag)
+                    print(
+                        f"[INFO] Unchanged, skipping: {name} (tag {last_tag} is ahead "
+                        "of the snapshot commit; skipped via --allow-tag-ahead-of-head)"
+                    )
+                    continue
+            # The project's own changelog is release metadata whatever it is called
+            # (KI-78 stages pending notes there before publishing).
+            changelog = getattr(proj, "changelog", None)
+            messages = _git_log(
+                repo_root, last_tag, *paths, end_ref=end_ref,
+                exclude=[f"{getattr(proj, 'cwd', None) or name}/{changelog}"] if changelog else [],
+            )
             if not messages:
                 if check_tag_at_head:
-                    relationship = _tag_head_relationship(repo_root, last_tag)
                     if relationship == "equal":
                         print(
                             f"[INFO] Unchanged, skipping: {name} (already released as "
                             f"{last_tag} at the snapshot commit; nothing new since)"
-                        )
-                    elif relationship == "ahead":
-                        if not allow_tag_ahead_of_head:
-                            raise _tag_ahead_error(repo_root, name, prefix, last_tag)
-                        print(
-                            f"[INFO] Unchanged, skipping: {name} (tag {last_tag} is ahead "
-                            "of the snapshot commit; skipped via --allow-tag-ahead-of-head)"
                         )
                     else:  # "behind" -- the ordinary, by-far-most-common skip reason
                         print(_unchanged_reason(repo_root, name, last_tag, paths))
@@ -600,7 +715,11 @@ def detect_changed_projects(
         version_cfg = getattr(proj, "version", None)
         bump_rule = getattr(version_cfg, "bump", "conventional") if version_cfg else "conventional"
         if bump_rule == "conventional" and messages:
-            bump = _bump_from_commits(messages)
+            bump = _bump_from_commits(
+                messages,
+                project_names=_project_scope_names(name, proj),
+                known_project_names=resolved_scope_names,
+            )
         else:
             bump = "patch"
 
@@ -620,6 +739,8 @@ def status_cmd(
     major: bool = False,
     set_version: Optional[str] = None,
     ref: str = "HEAD",
+    known_projects: Mapping[str, Any] | None = None,
+    known_project_names: frozenset[str] | None = None,
 ) -> None:
     """Print a table of changed projects and their proposed next versions (S12.7 status).
 
@@ -630,7 +751,8 @@ def status_cmd(
     records = [
         record for record in status_records(
             repo_root, projects, minor=minor, major=major,
-            set_version=set_version, ref=ref,
+            set_version=set_version, ref=ref, known_projects=known_projects,
+            known_project_names=known_project_names,
         )
         if record["changed"]
     ]
@@ -658,6 +780,8 @@ def status_records(
     major: bool = False,
     set_version: Optional[str] = None,
     ref: str = "HEAD",
+    known_projects: Mapping[str, Any] | None = None,
+    known_project_names: frozenset[str] | None = None,
 ) -> List[Dict[str, Any]]:
     """One record per SELECTED project (changed or not), in the given order.
 
@@ -669,7 +793,10 @@ def status_records(
     (the full next tag, or ``None`` when CMRU does not derive one or the project
     is unchanged) and ``note`` (a human explanation, or ``None``).
     """
-    changed = detect_changed_projects(repo_root, projects, end_ref=ref)
+    changed = detect_changed_projects(
+        repo_root, projects, end_ref=ref, known_projects=known_projects,
+        known_project_names=known_project_names,
+    )
     changed_by_name = {entry[0]: entry for entry in changed}
     bump_override = "major" if major else "minor" if minor else None
     records: List[Dict[str, Any]] = []
@@ -724,6 +851,8 @@ def release_cmd(
     major: bool = False,
     set_version: Optional[str] = None,
     dry_run: bool = False,
+    known_projects: Mapping[str, Any] | None = None,
+    known_project_names: frozenset[str] | None = None,
 ) -> List[str]:
     """Tag changed projects; return list of tags created (S12.7 release).
 
@@ -735,7 +864,10 @@ def release_cmd(
         print("[ERROR] Working tree is dirty — commit or stash changes before release.", file=sys.stderr)
         sys.exit(1)
 
-    changed = detect_changed_projects(repo_root, projects)
+    changed = detect_changed_projects(
+        repo_root, projects, known_projects=known_projects,
+        known_project_names=known_project_names,
+    )
     if project_filter:
         changed = [(n, p, lt, b) for n, p, lt, b in changed if n == project_filter]
 

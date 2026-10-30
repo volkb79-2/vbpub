@@ -1,0 +1,9 @@
+Choose Destination Media
+Install TrueNAS to a drive. If desired, select multiple
+drives to provide redundancy. TrueNAS installation
+drive(s) are not available for use in storage pools. Use
+arrow keys to navigate options. Press spacebar to
+select.
+[ ] vda  Unknown Model                          -- 20 GiB
+< OK >
+<Cancel>

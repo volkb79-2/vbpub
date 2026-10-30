@@ -80,6 +80,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import tomllib
 from contextlib import ExitStack, contextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -96,9 +97,8 @@ from typing import (
     TextIO,
 )
 
-import tomllib
-
 from . import (
+    contention,
     coverage,
     diff,
     git,
@@ -124,7 +124,6 @@ from .config import (
 from .coverage import derive_branch_capability
 from .coverage_parsers.model import CoverageProfile
 from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
-from .failure_summary import first_failing_test
 from .evaluate import (
     # (B074) `_is_test_filename` is imported rather than reproduced: R2's
     # declared-target gate below must split "test by DIRECTORY" from "test by
@@ -135,6 +134,7 @@ from .evaluate import (
     evaluate_targets,
     resolve_coverage_keys,
 )
+from .failure_summary import first_failing_test
 from .guards import is_finite_positive, is_nonempty_str, is_positive_or_inf, is_real
 from .mutation_witness import (
     MAX_INTERNAL_MANIFEST_BYTES,
@@ -145,9 +145,15 @@ from .mutation_witness import (
     make_attempt_plan,
     receipt_facts,
     supports_sequential_pytest,
-    survivor_proof_ok,
+    survivor_proof_failure,
+    unsupported_hook_diagnostic,
 )
 from .output import VerdictOutput
+from .process_tree import (
+    ProcessTreeError,
+    ProcessTreeProcessRunner,
+    ProcessTreeSpawnError,
+)
 from .records import record
 from .redaction import redact_passthrough_text as _redact_passthrough_text
 from .statement_attribution import attribute_statements
@@ -896,6 +902,13 @@ class CommandResult:
     #: candidate watchdog terminates this command. It is carried to the
     #: per-candidate mutation artifacts, never used as a functional verdict.
     liveness_resource_evidence: Mapping[str, Any] | None = None
+    #: Native R2 process-tree cleanup proof. A command that leaves adopted
+    #: descendants is recorded as crashed even when its leader returned 0/1.
+    process_tree_evidence: Mapping[str, Any] | None = None
+    #: Private gate-time observation around the R0 command, carried only so an
+    #: R1 coverage failure from that same run can also be withheld. It is not
+    #: serialized into the verdict; the claim remains the public evidence.
+    resource_contention: contention.ContentionObservation | None = None
 
 
 def resolve_command_plan(
@@ -1221,6 +1234,7 @@ def execute_plan(
     clock: Clock = _utc_now,
     result_report: ResultReportConfig | None = None,
     result_report_create_missing_parents: bool = False,
+    classify_resource_contention: bool = False,
 ) -> CommandResult:
     """Execute one already-frozen command plan with a required remainder.
 
@@ -1265,6 +1279,14 @@ def execute_plan(
     re-definition of what "killed" means -- neither of which B078 is about.
     A canary half does not get it either: its control/transform outcome is a
     different KIND of judgement from "did the wrapped suite pass".
+
+    *classify_resource_contention* is a separate, default-off gate option for
+    only the lane's own R0 baseline/direct command. A direct pids/OOM event can
+    make a failed baseline measurement incomplete, while a completed PASS
+    remains final even when an event is observed. A failed command with an
+    unavailable required direct-counter sample is incomplete. PSI and CPU
+    throttling do not change the result. R2 candidates and R3
+    transforms keep their own classification paths.
 
     *result_report_create_missing_parents* is B006(b)'s opt-in, threaded to
     :func:`_reserve_result_report`; only the snapshot baseline passes ``True``,
@@ -1312,16 +1334,45 @@ def execute_plan(
         if termination_requested():
             raise _lane_timeout("Assay termination was requested before child launch")
         try:
-            result = _execute_plan_inner(
-                plan,
-                run_cwd=run_cwd,
-                child_timeout=child_timeout,
-                process_runner=process_runner,
-                clock=clock,
-                started_at=started_at,
-                reservation=reservation,
-                result_report=result_report,
-            )
+            if classify_resource_contention:
+                with contention.ContentionWindow(
+                    observer_socket_path=(
+                        os.environ.get("ASSAY_RESOURCE_OBSERVER_SOCKET") or None
+                    )
+                ) as contention_window:
+                    result = _execute_plan_inner(
+                        plan,
+                        run_cwd=run_cwd,
+                        child_timeout=child_timeout,
+                        process_runner=process_runner,
+                        clock=clock,
+                        started_at=started_at,
+                        reservation=reservation,
+                        result_report=result_report,
+                    )
+                observation = contention_window.observation
+                result = replace(result, resource_contention=observation)
+                if contention.withhold_r0_result(
+                    observation,
+                    outcome=result.outcome,
+                    require_observation=classify_resource_contention,
+                ):
+                    result = replace(
+                        result,
+                        outcome=Outcome.ERROR,
+                        reason_code=ReasonCode.EXEC_FAILED,
+                    )
+            else:
+                result = _execute_plan_inner(
+                    plan,
+                    run_cwd=run_cwd,
+                    child_timeout=child_timeout,
+                    process_runner=process_runner,
+                    clock=clock,
+                    started_at=started_at,
+                    reservation=reservation,
+                    result_report=result_report,
+                )
         except BaseException as exc:
             if termination_requested():
                 raise _lane_timeout("Assay termination interrupted child execution") from exc
@@ -1378,6 +1429,8 @@ def _execute_plan_inner(
         stderr_tail, stderr_dropped_bytes = _bounded_tail(
             _decode_timeout_stream(exc.stderr), sensitive_values=sensitive_values
         )
+        stdout_dropped_bytes += int(getattr(exc, "assay_stdout_dropped_bytes", 0))
+        stderr_dropped_bytes += int(getattr(exc, "assay_stderr_dropped_bytes", 0))
         # (B091/RW-33, P7 A3) `LivenessRunner`'s monitoring loop raises its
         # own `liveness.LivenessHungExpired` -- a `subprocess.TimeoutExpired`
         # subclass -- ONLY for an idle-stall kill, never for a genuine
@@ -1406,8 +1459,9 @@ def _execute_plan_inner(
             liveness_resource_evidence=getattr(
                 exc, "resource_evidence", getattr(exc, "liveness_resource_evidence", None)
             ),
+            process_tree_evidence=getattr(exc, "process_tree_evidence", None),
         )
-    except OSError:
+    except ProcessTreeSpawnError as exc:
         return CommandResult(
             plan=plan,
             outcome=Outcome.ERROR,
@@ -1417,8 +1471,65 @@ def _execute_plan_inner(
             stderr_tail="",
             started=iso_utc(started_at),
             ended=iso_utc(clock()),
+            process_tree_evidence=getattr(exc, "process_tree_evidence", None),
         )
+    except OSError as exc:
+        if isinstance(process_runner, ProcessTreeProcessRunner):
+            # A process-tree runner wraps the one expected candidate-level
+            # spawn failure in ProcessTreeSpawnError. Any other OSError has
+            # escaped its cleanup/monitoring boundary and is an infrastructure
+            # failure; persisting it as a reusable crashed mutant would hide
+            # an Assay-side fault as a candidate fact.
+            raise AssayError(
+                f"native R2 process execution infrastructure failed: {exc}",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.EXEC_FAILED,
+            ) from exc
+        return CommandResult(
+            plan=plan,
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.EXEC_FAILED,
+            returncode=None,
+            stdout_tail="",
+            stderr_tail="",
+            started=iso_utc(started_at),
+            ended=iso_utc(clock()),
+            process_tree_evidence=getattr(exc, "process_tree_evidence", None),
+        )
+    except ProcessTreeError as exc:
+        raise AssayError(
+            f"native R2 process-tree isolation failed: {exc}",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.EXEC_FAILED,
+        ) from exc
     ended = iso_utc(clock())
+    process_tree_evidence = getattr(proc, "process_tree_evidence", None)
+    stdout_extra_dropped = int(getattr(proc, "assay_stdout_dropped_bytes", 0))
+    stderr_extra_dropped = int(getattr(proc, "assay_stderr_dropped_bytes", 0))
+    if (
+        isinstance(process_tree_evidence, Mapping)
+        and process_tree_evidence.get("outliving_descendants", 0) > 0
+    ):
+        sensitive_values = _plan_passthrough_values(plan)
+        stdout_tail, stdout_dropped_bytes = _bounded_tail(
+            proc.stdout, sensitive_values=sensitive_values
+        )
+        stderr_tail, stderr_dropped_bytes = _bounded_tail(
+            proc.stderr, sensitive_values=sensitive_values
+        )
+        return CommandResult(
+            plan=plan,
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.EXEC_FAILED,
+            returncode=None,
+            stdout_tail=stdout_tail,
+            stderr_tail=stderr_tail,
+            stdout_dropped_bytes=stdout_dropped_bytes + stdout_extra_dropped,
+            stderr_dropped_bytes=stderr_dropped_bytes + stderr_extra_dropped,
+            started=iso_utc(started_at),
+            ended=ended,
+            process_tree_evidence=process_tree_evidence,
+        )
     # (B078/SR-2) The three-way branch, and the whole point of the design.
     #
     # `summary is None` -- no lane declaration, no report written, a truncated
@@ -1443,6 +1554,7 @@ def _execute_plan_inner(
             returncode=0,
             started=iso_utc(started_at),
             ended=ended,
+            process_tree_evidence=process_tree_evidence,
         )
     # B014's bounded tails are retained for every terminal that is NOT the
     # plain green run above -- which now includes a report-driven PASS over a
@@ -1472,6 +1584,8 @@ def _execute_plan_inner(
     stderr_tail, stderr_dropped_bytes = _bounded_tail(
         proc.stderr, sensitive_values=sensitive_values
     )
+    stdout_dropped_bytes += stdout_extra_dropped
+    stderr_dropped_bytes += stderr_extra_dropped
     return CommandResult(
         plan=plan,
         outcome=Outcome.PASS if passed else Outcome.FAIL,
@@ -1483,6 +1597,7 @@ def _execute_plan_inner(
         stderr_dropped_bytes=stderr_dropped_bytes,
         started=iso_utc(started_at),
         ended=ended,
+        process_tree_evidence=process_tree_evidence,
     )
 
 
@@ -1497,6 +1612,45 @@ def _execute_plan_inner(
 _LANE_DECLARED_REPORT: Any = object()
 
 
+def _gate_contention_attribution_enabled() -> bool:
+    """Whether the registered gate opted in to R0 resource attribution.
+
+    This private variable is not part of any lane's environment allowlist, so
+    the command being judged and its test process cannot inherit the switch.
+    """
+    return os.environ.get("ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION") == "1"
+
+
+def _withhold_r1_claim_for_contention(
+    claim: Claim,
+    observation: contention.ContentionObservation | None,
+    *,
+    diagnostics: "TextIO | None",
+) -> Claim:
+    """Replace an unclassifiable coverage judgement with infrastructure."""
+    if not isinstance(claim, Claim) or claim.rigor != "R1":
+        raise TypeError("claim must be an R1 Claim")
+    if observation is None or claim.status not in {Outcome.PASS, Outcome.FAIL}:
+        return claim
+    if not contention.withhold_r1_result(observation, outcome=claim.status):
+        return claim
+
+    refusal = AssayError(
+        "R1 coverage claim withheld because its R0 resource observation "
+        "cannot classify the failed run.",
+        outcome=Outcome.ERROR,
+        reason_code=ReasonCode.EXEC_FAILED,
+    )
+    announce_refusal(refusal, diagnostics=diagnostics)
+    return Claim(
+        rigor="R1",
+        source="computed",
+        status=Outcome.ERROR,
+        verified_by_assay=True,
+        reason_code=ReasonCode.EXEC_FAILED,
+    )
+
+
 def execute_command(
     lane: Lane,
     *,
@@ -1509,6 +1663,7 @@ def execute_command(
     process_runner: ProcessRunner = default_process_runner,
     clock: Clock = _utc_now,
     result_report: ResultReportConfig | None = _LANE_DECLARED_REPORT,
+    classify_resource_contention: bool = False,
 ) -> CommandResult:
     """The R0 step (A-094): resolve the plan, then run it, and return a
     :class:`CommandResult` on every terminal path.
@@ -1550,6 +1705,11 @@ def execute_command(
     Otherwise the exit code decides: 0 is ``PASS``; anything else is
     ``FAIL``/``COMMAND_FAILED`` (A-073 -- an ordinary non-zero exit is a
     judged R0 FAIL, never ``EXEC_FAILED``, and never a universal PASS).
+    The registered gate may opt into cgroup attribution for its own R0 call:
+    a direct pids/OOM event can make a failed R0 result incomplete, while a
+    completed PASS remains final even when an event is observed. A missing
+    required direct-counter sample can likewise make only a failed result
+    incomplete. PSI and CPU throttling do not change the result.
 
     **(B078) *result_report*** defaults to the sentinel
     :data:`_LANE_DECLARED_REPORT`, meaning "use ``lane.result_report``" --
@@ -1562,6 +1722,10 @@ def execute_command(
     (round-1 blocker 3) -- a canary probe's control/transform outcome is not
     "did the wrapped suite pass", and SR-1 scopes the tiebreak to the lane's
     own R0 command.
+
+    *classify_resource_contention* is an internal gate opt-in. Its default is
+    false so library callers and tests do not acquire ambient-host-dependent
+    verdicts; registered gate R0 call sites opt in explicitly.
     """
     plan = resolve_command_plan(
         lane, argv_append=argv_append, passthrough_source=passthrough_source,
@@ -1588,6 +1752,7 @@ def execute_command(
             if result_report is _LANE_DECLARED_REPORT
             else result_report
         ),
+        classify_resource_contention=classify_resource_contention,
     )
 
 
@@ -3057,6 +3222,7 @@ def _execute_snapshot_unit(
     progress: "mutation.ProgressStream | None" = None,
     progress_heartbeat_seconds: float | None = None,
     progress_phase: str = "baseline",
+    classify_resource_contention: bool = False,
 ) -> SnapshotUnitResult:
     """Run *plan* once inside *snapshot* -- the ONE engine the lane's own
     baseline, :mod:`assay.canary`'s control/transform halves, and (with its
@@ -3307,6 +3473,7 @@ def _execute_snapshot_unit(
             # declaring `path = ".assay/report.json"` would fall back to
             # A-073 on every single run rather than only the first.
             result_report_create_missing_parents=True,
+            classify_resource_contention=classify_resource_contention,
         )
     if progress is not None:
         progress.emit(
@@ -3492,13 +3659,16 @@ def _mutation_context_sources(
     source_root_paths: Sequence[Path],
     adapter: LanguageAdapter,
     deadline: LaneDeadline,
+    target_source_identities: frozenset[str] = frozenset(),
 ) -> Iterator[tuple[str, str]] | None:
-    """Read every adapter source under the declared roots for cross-file rules.
+    """Read non-target adapter sources under declared roots for cross-file rules.
 
     Candidate selection controls which files may produce mutants. It cannot
     narrow facts needed to decide whether a candidate is safe: for example,
-    an unchanged migration may attach a unique index declared in a changed
-    file. Context bytes come only from the prepared commit manifest.
+    an unchanged migration may attach a unique index declared in another file.
+    Selected targets already carry their exact snapshot text, so excluding
+    them here avoids reading and retaining each full source twice. Context
+    bytes come only from the prepared commit manifest.
     """
     if not (
         callable(getattr(adapter, "prepare_mutation_context", None))
@@ -3508,6 +3678,7 @@ def _mutation_context_sources(
 
     roots: set[PurePosixPath] = set()
     for root in source_root_paths:
+        deadline.remaining()
         try:
             relative = root.relative_to(snapshot_repo_top)
         except ValueError as exc:
@@ -3521,13 +3692,15 @@ def _mutation_context_sources(
 
     paths = {
         path
-        for root in roots
-        for path in prepared.paths_under(root)
+        for path in prepared.iter_paths_under_any(
+            roots, check_deadline=deadline.remaining
+        )
         if any(
             fnmatch.fnmatch(path.as_posix(), pattern)
             for pattern in adapter.source_globs
         )
         and not adapter.is_test_path(path.as_posix())
+        and path.as_posix() not in target_source_identities
         and not any(
             part in adapter.excluded_dir_names for part in path.parts[:-1]
         )
@@ -3938,6 +4111,14 @@ def _run_prepared_lane(
     # both present or both absent.
     r2_ingested = r2_declared and lane.judge.mutation.is_ingested
     mutation_artifact = lane.judge.mutation.artifact if r2_ingested else None
+    # Native R2's baseline, cold witness, non-liveness candidates, and canary
+    # calls share one isolation boundary. Keep injected test runners intact;
+    # the installed CLI uses this wrapper around the real process boundary.
+    lane_process_runner = process_runner
+    if r2_declared and not r2_ingested and process_runner is default_process_runner:
+        lane_process_runner = ProcessTreeProcessRunner(
+            sensitive_values=_plan_passthrough_values(plan)
+        )
     # (B091/D-23/RW-33) Liveness applies ONLY to a native (non-ingested) R2
     # python lane. `plan` is shadowed for the REST of this function -- the
     # baseline call below and the R2 dispatch further down both read this
@@ -3977,6 +4158,7 @@ def _run_prepared_lane(
         liveness_reason = liveness_injection.reason
         liveness_plugin_path = liveness_injection.plugin
     coverage_facts = None
+    coverage_proof_failure = None
     r2_facts = None
     r2_plan = None
     r2_command_payload: R2Command | None = None
@@ -4128,7 +4310,7 @@ def _run_prepared_lane(
             coverage_artifact=coverage_artifact,
             coverage_format=coverage_format,
             coverage_producer=coverage_producer,
-            process_runner=process_runner,
+            process_runner=lane_process_runner,
             clock=clock,
             create_missing_parents=True,
             # (B078, round-1 blocker 1) THE fix for RG-45's actual lane.
@@ -4149,17 +4331,28 @@ def _run_prepared_lane(
             mutation_artifact=mutation_artifact,
             progress=progress_stream,
             progress_heartbeat_seconds=progress_heartbeat_seconds,
+            classify_resource_contention=_gate_contention_attribution_enabled(),
         )
         result = unit.result
         if cold_witness:
             coverage_facts = receipt_facts(coverage_receipt)
-            if coverage_facts is None or not survivor_proof_ok(
+            coverage_proof_failure = survivor_proof_failure(
                 coverage_receipt,
                 process_exit_status=result.returncode,
                 expected=coverage_facts,
                 command="declared",
+            )
+        if coverage_proof_failure is not None:
+            if (
+                diagnostics is not None
+                and "unsupported pytest hook configuration" in coverage_proof_failure
             ):
-                coverage_facts = None
+                print(
+                    "assay: cold witness: coverage baseline "
+                    + unsupported_hook_diagnostic(coverage_receipt),
+                    file=diagnostics,
+                )
+            coverage_facts = None
         r0_claim = build_r0_claim(result)
         # (B091/RW-33, P7 A3) Computed here, once, right beside the baseline
         # measurement A1's own `budget_per_candidate_derived_s` already
@@ -4363,6 +4556,11 @@ def _run_prepared_lane(
                         helpers_seen
                     ),
                 )
+                r1_claim = _withhold_r1_claim_for_contention(
+                    r1_claim,
+                    result.resource_contention,
+                    diagnostics=diagnostics,
+                )
                 claims += (r1_claim,)
                 if r1_claim.coverage is None:
                     # (A-407) The judge refused AFTER the oracle ran, so the
@@ -4479,7 +4677,15 @@ def _run_prepared_lane(
                         fail_under=lane.judge.fail_under,
                         allow_excluded=lane.judge.allow_excluded,
                         mode=r1_effective_mode,
-                        targets=lane.judge.targets,
+                        # The lane preserves target declaration order for
+                        # execution; the verdict model requires the wire
+                        # tuple in Python's lexical order. Keep those two
+                        # contracts separate at the producer boundary.
+                        targets=(
+                            tuple(sorted(lane.judge.targets))
+                            if lane.judge.targets is not None
+                            else None
+                        ),
                         require_branch=r1_effective_require_branch,
                         # B074: the EFFECTIVE opt-out, recorded the same way
                         # `require_branch` beside it is. Emitted into the
@@ -4834,7 +5040,7 @@ def _run_prepared_lane(
                     cpu_window_s=lane.judge.mutation.liveness_cpu_window_s,
                 )
             else:
-                candidate_process_runner = process_runner
+                candidate_process_runner = lane_process_runner
             reuse_witnesses: dict[str, tuple[str, str]] = {}
             if reuse_source is not None:
                 from .reuse import eligible_witnesses
@@ -4860,8 +5066,8 @@ def _run_prepared_lane(
                     or coverage_facts.runtime_fingerprint_sha256 is None
                 ):
                     raise mutation.R2CommandProofError(
-                        "cold witness: the coverage baseline collection, hooks, "
-                        "or runtime could not be proven"
+                        "cold witness: coverage baseline proof failed: "
+                        f"{coverage_proof_failure or 'the collection or runtime facts are incomplete'}"
                     )
                 r2_manifest_sidecar = witness_dir / "r2-manifest.txt"
                 try:
@@ -4908,7 +5114,7 @@ def _run_prepared_lane(
                             coverage_artifact=None,
                             coverage_format=None,
                             coverage_producer=None,
-                            process_runner=process_runner,
+                            process_runner=lane_process_runner,
                             clock=clock,
                             create_missing_parents=True,
                             progress=progress_stream,
@@ -4916,7 +5122,21 @@ def _run_prepared_lane(
                             progress_phase="r2-baseline",
                         )
                         if r2_unit.post_reason is not None:
-                            raise r2_unit.post_reason
+                            post_reason_message = {
+                                ReasonCode.DIRTY_TREE: (
+                                    "the R2 baseline left a dirty Git worktree after the "
+                                    "command ran; its result no longer represents its own commit"
+                                ),
+                                ReasonCode.HEAD_CHANGED: (
+                                    "the R2 baseline changed HEAD after the command ran; "
+                                    "its result no longer represents its own commit"
+                                ),
+                            }[r2_unit.post_reason]
+                            raise AssayError(
+                                post_reason_message,
+                                outcome=Outcome.NO_MEASUREMENT,
+                                reason_code=r2_unit.post_reason,
+                            )
                         r2_result = r2_unit.result
                         if (
                             r2_result.outcome is Outcome.BUDGET_EXCEEDED
@@ -4931,26 +5151,39 @@ def _run_prepared_lane(
                                 "cold witness: the no-coverage R2 baseline did not pass"
                             )
                         r2_facts = receipt_facts(r2_receipt)
-                        if (
-                            r2_facts is None
-                            or r2_facts.duplicates != 0
-                            or r2_facts.runtime_fingerprint_sha256 is None
-                            or not survivor_proof_ok(
-                                r2_receipt,
-                                process_exit_status=r2_result.returncode,
-                                expected=r2_facts,
-                                command="r2",
-                            )
-                            or not isinstance(r2_receipt, Mapping)
-                            or r2_receipt.get("unsupported") is not False
-                            or r2_facts.collection_count != coverage_facts.collection_count
-                            or r2_facts.collection_sha256 != coverage_facts.collection_sha256
-                        ):
+                        r2_proof_failure = survivor_proof_failure(
+                            r2_receipt,
+                            process_exit_status=r2_result.returncode,
+                            expected=r2_facts,
+                            command="r2",
+                        )
+                        if r2_proof_failure is None:
+                            assert r2_facts is not None
+                            if (
+                                r2_facts.collection_count
+                                != coverage_facts.collection_count
+                                or r2_facts.collection_sha256
+                                != coverage_facts.collection_sha256
+                            ):
+                                r2_proof_failure = (
+                                    "the no-coverage R2 baseline test collection "
+                                    "differs from the coverage baseline"
+                                )
+                        if r2_proof_failure is not None:
+                            if (
+                                diagnostics is not None
+                                and "unsupported pytest hook configuration" in r2_proof_failure
+                            ):
+                                print(
+                                    "assay: cold witness: no-coverage R2 baseline "
+                                    + unsupported_hook_diagnostic(r2_receipt),
+                                    file=diagnostics,
+                                )
                             raise mutation.R2CommandProofError(
-                                "cold witness: the no-coverage R2 baseline did not "
-                                "prove the same unique collection, trusted hooks, "
-                                "and runtime"
+                                "cold witness: no-coverage R2 baseline proof failed: "
+                                f"{r2_proof_failure}"
                             )
+                        assert r2_facts is not None
                         try:
                             manifest_bytes = safeio.read_bounded_file(
                                 witness_dir,
@@ -5059,6 +5292,9 @@ def _run_prepared_lane(
                         source_root_paths=relocated_lane_r2.judge.source_root_paths,
                         adapter=adapter,
                         deadline=deadline,
+                        target_source_identities=frozenset(
+                            target.path for target in targets
+                        ),
                     ),
                     adapter=adapter,
                     jobs=lane.judge.mutation.jobs,
@@ -5227,7 +5463,12 @@ def _run_prepared_lane(
         ended = iso_utc(clock())
 
     judgment_r3: JudgmentR3 | None = None
-    if r3_declared and r2_orchestration_fault is not None:
+    if (
+        r3_declared
+        and r2_orchestration_fault is not None
+        and r2_orchestration_fault.reason_code
+        is not ReasonCode.CGROUP_OBSERVATION_UNAVAILABLE
+    ):
         # No canary unit is started at all: the lane already stopped.
         #
         # (B053/A-439) ONE error, TWO claims, and A-428 puts `detail` on the
@@ -5321,7 +5562,7 @@ def _run_prepared_lane(
                     targets=canary_targets,
                     aggregation=canary_aggregation,
                     adapter=adapter,
-                    process_runner=process_runner,
+                    process_runner=lane_process_runner,
                     clock=clock,
                 )
             except AssayError as exc:
@@ -5551,8 +5792,10 @@ def _ingest_r2_report(
     # than compared across two grammars.
     declared_targets = (
         tuple(
-            (project_prefix / target).as_posix()
-            for target in (lane.judge.targets or ())
+            sorted(
+                (project_prefix / target).as_posix()
+                for target in (lane.judge.targets or ())
+            )
         )
         if lane.judge.mode == "whole_target"
         else None
@@ -5608,7 +5851,12 @@ def _build_ingested_judgment_r2(
         fail_under=lane.judge.mutation.fail_under,
         kill_attribution="unattributed",
         mode=lane.judge.mode or "changed_lines",
-        targets=lane.judge.targets if lane.judge.mode == "whole_target" else None,
+        targets=(
+            tuple(sorted(lane.judge.targets))
+            if lane.judge.mode == "whole_target"
+            and lane.judge.targets is not None
+            else None
+        ),
     )
 
 
@@ -5622,14 +5870,12 @@ def _build_judgment_r2(
     #: duration or the `"none"` opt-out. See `JudgmentR2.
     #: budget_per_candidate_derived_s`'s own docstring.
     budget_per_candidate_derived_s: float | None = None,
-    #: (B091/RW-36) The SAME three-field record the `plan` progress event
-    #: carries, straight from `assay.liveness.LivenessInjection` -- `False`/
-    #: `None`/`None` for every lane liveness never touched (non-python,
-    #: ingested, or no R2 at all), so a reader sees a real `{active: false,
-    #: reason: ..., plugin: null}` object rather than an absent key even on
-    #: those lanes (RW-36's own "a reader sees what ran").
+    #: (B091/RW-36) The same liveness fact the `plan` progress event carries.
+    #: The runner supplies a nonempty reason even when inactive, and this
+    #: required argument prevents a direct producer call from emitting an
+    #: uninformative `{active: false, reason: null, plugin: null}` record.
     liveness_active: bool = False,
-    liveness_reason: str | None = None,
+    liveness_reason: str,
     liveness_plugin: str | None = None,
     liveness_cpu_window_s: float | None = None,
     liveness_idle_floor_s: float | None = None,
@@ -5684,7 +5930,11 @@ def _build_judgment_r2(
         # refuses it otherwise), so this is the declared set exactly where
         # `JudgmentR2` requires it and `None` exactly where it forbids it --
         # the same expression `judgment.r1` is built from.
-        targets=lane.judge.targets,
+        targets=(
+            tuple(sorted(lane.judge.targets))
+            if lane.judge.targets is not None
+            else None
+        ),
         shard_index=shard_index,
         shard_count=shard_count,
         budget_per_candidate_derived_s=budget_per_candidate_derived_s,
@@ -7152,6 +7402,7 @@ def run_lane(
                 # lane's R0 command runs in `_run_prepared_lane`'s baseline
                 # unit, which is wired separately (round-1 blocker 1).
                 result_report=lane.result_report,
+                classify_resource_contention=_gate_contention_attribution_enabled(),
             )
         if progress_stream is not None:
             progress_stream.emit(

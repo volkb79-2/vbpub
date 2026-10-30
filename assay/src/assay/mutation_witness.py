@@ -209,6 +209,7 @@ class ReceiptFacts:
     config_sha256: str | None
     started_count: int
     collection_error: bool
+    unsupported_hook_names: tuple[str, ...]
 
 
 class ReceiptCapture:
@@ -439,6 +440,17 @@ def receipt_facts(receipt: Mapping[str, Any] | None) -> ReceiptFacts | None:
             return None
     if type(receipt.get("collection_error")) is not bool:
         return None
+    unsupported_hook_names = receipt.get("unsupported_hook_names")
+    if (
+        not isinstance(unsupported_hook_names, list)
+        or len(unsupported_hook_names) > len(HOOK_FINGERPRINT_HOOKS)
+        or any(
+            type(name) is not str or name not in HOOK_FINGERPRINT_HOOKS
+            for name in unsupported_hook_names
+        )
+        or unsupported_hook_names != sorted(set(unsupported_hook_names))
+    ):
+        return None
     return ReceiptFacts(
         collection_count=count,
         collection_sha256=receipt["collection_sha256"],
@@ -449,7 +461,35 @@ def receipt_facts(receipt: Mapping[str, Any] | None) -> ReceiptFacts | None:
         config_sha256=receipt["config_sha256"],
         started_count=started_count,
         collection_error=receipt["collection_error"],
+        unsupported_hook_names=tuple(unsupported_hook_names),
     )
+
+
+def unsupported_hook_diagnostic(receipt: Mapping[str, Any] | None) -> str:
+    """Return safe diagnostic text for an unsupported-hook refusal.
+
+    Hook names are useful when unrelated receipt facts are unavailable, but
+    must never be rendered from an open vocabulary or an inconsistent support
+    record. This parser validates only the closed names field; its result is
+    diagnostic text and never contributes to a witness or verdict.
+    """
+    if (
+        not isinstance(receipt, Mapping)
+        or receipt.get("unsupported") is not True
+        or receipt.get("unsupported_pytest_cov_only") is not False
+    ):
+        return "hook names unavailable (support flags are missing or malformed)"
+    names = receipt.get("unsupported_hook_names")
+    if (
+        not isinstance(names, list)
+        or len(names) > len(HOOK_FINGERPRINT_HOOKS)
+        or any(type(name) is not str or name not in HOOK_FINGERPRINT_HOOKS for name in names)
+        or names != sorted(set(names))
+    ):
+        return "hook names unavailable (name evidence is missing or malformed)"
+    if not names:
+        return "no unsupported pytest hook names were recorded"
+    return "unsupported pytest hooks: " + ", ".join(names)
 
 
 def _facts_match(receipt: Mapping[str, Any], expected: ReceiptFacts) -> bool:
@@ -473,41 +513,85 @@ def survivor_proof_ok(
     expected: ReceiptFacts,
     command: str,
 ) -> bool:
+    return survivor_proof_failure(
+        receipt,
+        process_exit_status=process_exit_status,
+        expected=expected,
+        command=command,
+    ) is None
+
+
+def survivor_proof_failure(
+    receipt: Mapping[str, Any] | None,
+    *,
+    process_exit_status: int,
+    expected: ReceiptFacts | None,
+    command: str,
+) -> str | None:
+    """Explain why a successful baseline receipt cannot anchor a witness.
+
+    Keep this check aligned with :func:`survivor_proof_ok`; callers use the
+    reason only to make a fail-closed cold-witness refusal actionable.
+    """
     if (
         not isinstance(receipt, Mapping)
         or set(receipt) != _INTERNAL_RECEIPT_KEYS
         or command not in ("r2", "declared")
     ):
-        return False
+        return "the receipt is missing, malformed, or has an unexpected schema"
     if type(process_exit_status) is not int or process_exit_status != 0:
-        return False
+        return "the baseline process did not exit successfully"
     if type(receipt.get("session_exit_status")) is not int or receipt["session_exit_status"] != 0:
-        return False
+        return "the pytest session did not exit successfully"
     if any(receipt.get(name) is not False for name in ("auxiliary_failure", "earlier_failure")):
-        return False
+        return "the baseline reported an auxiliary or earlier failure"
     if receipt.get("collection_error") is not False or receipt.get("started_prefix_ok") is not True:
-        return False
+        return "collection failed or execution did not follow the collected order"
     if any(
         receipt.get(name) is not None
         for name in ("witness_node_id", "witness_when", "witness_outcome", "failed_call_index")
     ):
-        return False
+        return "the passing baseline unexpectedly recorded a failure witness"
     if receipt.get("stopped_at_target") is not False or receipt.get("stopped_cold") is not False:
-        return False
+        return "the baseline stopped before completing the declared suite"
     unsupported = receipt.get("unsupported")
     coverage_only = receipt.get("unsupported_pytest_cov_only")
     if type(unsupported) is not bool or type(coverage_only) is not bool:
-        return False
+        return "the baseline support flags are missing or malformed"
     if coverage_only and not unsupported:
-        return False
-    if unsupported and not coverage_only:
-        return False
+        return "the pytest-cov-only support flag contradicts the support result"
     facts = receipt_facts(receipt)
-    if facts is None or facts.started_count != facts.collection_count:
-        return False
     if command == "r2" and unsupported:
-        return False
-    return _facts_match(receipt, expected)
+        if facts is None:
+            return (
+                "the no-coverage R2 baseline uses an unsupported pytest hook "
+                "configuration; receipt facts are missing or malformed"
+            )
+        return "the no-coverage R2 baseline uses an unsupported pytest hook configuration"
+    if unsupported and not coverage_only:
+        if facts is None:
+            return (
+                "the baseline uses an unsupported pytest hook configuration; "
+                "receipt facts are missing or malformed"
+            )
+        return "the baseline uses an unsupported pytest hook configuration"
+    if facts is None:
+        return "the unique collection manifest or its fingerprints are missing or malformed"
+    if facts.started_count != facts.collection_count:
+        return "execution did not start every collected test"
+    if expected is None:
+        return "the expected collection facts could not be parsed"
+    if facts.collection_count != expected.collection_count or facts.collection_sha256 != expected.collection_sha256:
+        return "the baseline test collection differs from the expected collection"
+    if facts.duplicates != 0:
+        return "the test collection contains duplicate node IDs"
+    if facts.hook_fingerprint_sha256 != expected.hook_fingerprint_sha256:
+        return "the pytest hook fingerprint differs from the expected baseline"
+    if facts.runtime_fingerprint_sha256 is None:
+        return "the pytest runtime fingerprint is unavailable"
+    if facts.runtime_fingerprint_sha256 != expected.runtime_fingerprint_sha256:
+        return "the pytest runtime fingerprint differs from the expected baseline"
+    return None
 
 
 def cold_witness_from_receipt(
@@ -1187,7 +1271,6 @@ def cold_shape_refusal(
     args = list(tokens[start:])
     expanded: list[tuple[str, str | None]] = []
     index = 0
-    flag_letters = COLD_PYTEST_FLAG_OPTIONS
     value_letters = COLD_PYTEST_VALUE_OPTIONS
     while index < len(args):
         token = args[index]
@@ -1202,10 +1285,6 @@ def cold_shape_refusal(
         while position < len(body):
             letter = body[position]
             option = f"-{letter}"
-            if letter in flag_letters:
-                expanded.append((option, None))
-                position += 1
-                continue
             if letter in value_letters:
                 value = body[position + 1 :] or None
                 if value is None and index < len(args):
@@ -1214,14 +1293,16 @@ def cold_shape_refusal(
                 expanded.append((option, value))
                 position = len(body)
                 continue
-            return f"unrecognized short option cluster {token}"
+            # Every other letter is value-less. `supports_sequential_pytest`
+            # (called above) already refused any letter outside the known flag
+            # and value sets, so no unrecognized cluster reaches this loop.
+            expanded.append((option, None))
+            position += 1
 
     for option, value in expanded:
         lower = option.lower()
         if option in ("-h", "-V"):
             return "not a sequential pytest command"
-        if option in ("-o",) or lower == "--override-ini" or lower.startswith("--override-ini="):
-            return "pytest override"
         if option == "-c" or lower == "--config-file" or lower.startswith(
             ("--config-file", "--rootdir", "--confcutdir")
         ):
@@ -1246,17 +1327,6 @@ def cold_shape_refusal(
                 return "coverage plugin re-enabled"
             if normalized == "xdist":
                 return "parallel option"
-        if lower.startswith("-p") and len(option) > 2:
-            plugin = option[2:]
-            normalized = plugin.casefold()
-            if normalized in {"randomly", "random_order", "pytest_randomly"}:
-                return "order-changing option"
-            if normalized in {"pytest_cov", "pytest-cov"}:
-                return "coverage plugin re-enabled"
-            if normalized == "xdist":
-                return "parallel option"
-        if option.startswith("--") and option.startswith(("--numprocesses", "--dist", "--looponfail")):
-            return "parallel option"
     return None
 
 
@@ -1297,7 +1367,17 @@ def witness_from_receipt(
     receipt: dict[str, Any] | None, *, process_exit_status: int | None
 ) -> dict[str, Any] | None:
     """Project only the bounded current-call failure facts onto the verdict."""
-    if receipt is None or set(receipt) != _INTERNAL_RECEIPT_KEYS:
+    if receipt is None:
+        return None
+    receipt_keys = set(receipt)
+    legacy_non_cold = receipt_keys == _LEGACY_NON_COLD_RECEIPT_KEYS
+    if receipt_keys != _INTERNAL_RECEIPT_KEYS and not legacy_non_cold:
+        return None
+    # B158 added unsupported_hook_names for actionable cold-witness refusal
+    # diagnostics. W10 froze the older non-cold projection contract; keep that
+    # path compatible with its exact receipt shape. Cold proof remains strict
+    # in cold_witness_from_receipt and requires the current receipt keys.
+    if legacy_non_cold and receipt.get("cold_requested") is not False:
         return None
     if (
         type(receipt.get("session_exit_status")) is not int
@@ -1417,8 +1497,10 @@ _INTERNAL_RECEIPT_KEYS = frozenset(
         "config_sha256",
         "archive_hook_exception_used",
         "unsupported_pytest_cov_only",
+        "unsupported_hook_names",
     }
 )
+_LEGACY_NON_COLD_RECEIPT_KEYS = _INTERNAL_RECEIPT_KEYS - {"unsupported_hook_names"}
 
 
 _PLUGIN_SOURCE = r'''"""Temporary standard-library/pytest plugin written by assay."""
@@ -1480,6 +1562,7 @@ _TARGET_COUNT = None
 _STANDARD_LOOP = False
 _REPLAY_SUPPORTED = False
 _UNSUPPORTED_PYTEST_COV_ONLY = False
+_UNSUPPORTED_HOOK_NAMES = set()
 _EARLIER_FAILURE = False
 _AUXILIARY_FAILURE = False
 _COLLECTION_ERROR = False
@@ -1790,8 +1873,8 @@ _REVIEWED_EXTERNAL_CALLABLE_CODES = {
 
 _REVIEWED_EXTERNAL_DISTRIBUTIONS = {
     "hypothesis": (
-        "6.156.6",
-        "c0b8c0b39b3eed02eea3591c642d652f2e127acb8b22027058cefe3416b64c35",
+        "6.169.0",
+        "5b8df643a5394e86bfe608b710ff2534ac74f7192f4f81faa091356ad426f182",
     ),
     "pytest-cov": (
         "7.1.0",
@@ -2096,11 +2179,13 @@ def _hook_impl_signature(impl):
     )
 
 
-def _mark_hook_registry_changed():
+def _mark_hook_registry_changed(hook_name=None):
     global _STANDARD_LOOP, _REPLAY_SUPPORTED, _UNSUPPORTED_PYTEST_COV_ONLY
     _STANDARD_LOOP = False
     _REPLAY_SUPPORTED = False
     _UNSUPPORTED_PYTEST_COV_ONLY = False
+    if hook_name in _HOOKS:
+        _UNSUPPORTED_HOOK_NAMES.add(hook_name)
 
 
 def _test_report_constructor_is_trusted():
@@ -2141,16 +2226,16 @@ def _check_hook_registry(hook_name):
         impls = getattr(_SESSION.config.hook, hook_name).get_hookimpls()
         observed = tuple(_hook_impl_signature(impl) for impl in impls)
     except Exception:
-        _mark_hook_registry_changed()
+        _mark_hook_registry_changed(hook_name)
         return
     if expected is None or observed != expected:
-        _mark_hook_registry_changed()
+        _mark_hook_registry_changed(hook_name)
 
 
 def _before_hook_call(hook_name, methods, kwargs):
     _check_hook_registry(hook_name)
     if hook_name == "pytest_runtest_makereport" and not _test_report_constructor_is_trusted():
-        _mark_hook_registry_changed()
+        _mark_hook_registry_changed(hook_name)
 
 
 def _after_hook_call(outcome, hook_name, methods, kwargs):
@@ -2158,33 +2243,33 @@ def _after_hook_call(outcome, hook_name, methods, kwargs):
     if hook_name != "pytest_runtest_makereport":
         return
     if not _test_report_constructor_is_trusted():
-        _mark_hook_registry_changed()
+        _mark_hook_registry_changed(hook_name)
     if getattr(outcome, "excinfo", None) is not None:
-        _mark_hook_registry_changed()
+        _mark_hook_registry_changed(hook_name)
         return
     try:
         report = outcome.get_result()
         call = kwargs.get("call")
         item = kwargs.get("item")
         if call is None or item is None or report.when != call.when or report.nodeid != item.nodeid:
-            _mark_hook_registry_changed()
+            _mark_hook_registry_changed(hook_name)
             return
         if report.when == "call":
             if report.outcome == "passed" and call.excinfo is not None:
-                _mark_hook_registry_changed()
+                _mark_hook_registry_changed(hook_name)
             elif (
                 report.outcome == "failed"
                 and call.excinfo is None
                 and not getattr(report, "wasxfail", None)
                 and not _is_builtin_strict_xpass(report, item)
             ):
-                _mark_hook_registry_changed()
+                _mark_hook_registry_changed(hook_name)
             elif report.outcome not in ("passed", "failed", "skipped"):
-                _mark_hook_registry_changed()
+                _mark_hook_registry_changed(hook_name)
     except BaseException:
         # The monitor must not replace pytest's own hook outcome. Any report
         # it cannot inspect is unsupported for cold/replay proof.
-        _mark_hook_registry_changed()
+        _mark_hook_registry_changed(hook_name)
 
 
 def _hook_fingerprint(config):
@@ -2329,6 +2414,7 @@ def _write(session_exit_status):
     payload = {
         "unsupported": not _STANDARD_LOOP,
         "unsupported_pytest_cov_only": bool(_UNSUPPORTED_PYTEST_COV_ONLY),
+        "unsupported_hook_names": sorted(_UNSUPPORTED_HOOK_NAMES),
         "replay_supported": bool(_REPLAY_SUPPORTED),
         "target_node_id": _TARGET,
         "target_count": _TARGET_COUNT,
@@ -2393,12 +2479,14 @@ def pytest_collection_finish(session):
     global _SESSION, _ITEMS, _TARGET, _TARGET_COUNT, _STANDARD_LOOP, _REPLAY_SUPPORTED
     global _COLD, _HOOK_FINGERPRINT_SHA256, _HOOK_COUNT, _RUNTIME_FINGERPRINT_SHA256, _CONFIG_SHA256
     global _UNSUPPORTED_PYTEST_COV_ONLY
+    global _UNSUPPORTED_HOOK_NAMES
     global _HOOK_IMPL_REGISTRY
     _SESSION = session
     assay_hooks_trusted = _assay_hook_registry_matches(session.config)
     _ITEMS = tuple(item.nodeid for item in session.items)
     _TARGET = os.environ.get("ASSAY_MUTATION_WITNESS_TARGET")
     _COLD = os.environ.get("ASSAY_MUTATION_WITNESS_COLD") == "1"
+    _UNSUPPORTED_HOOK_NAMES = set()
     _TARGET_COUNT = None if _TARGET is None else sum(1 for node_id in _ITEMS if node_id == _TARGET)
     _write_manifest(session)
     config = session.config
@@ -2466,6 +2554,18 @@ def pytest_collection_finish(session):
         )
     except Exception:
         _UNSUPPORTED_PYTEST_COV_ONLY = False
+    for hook_name in _HOOKS:
+        primary = (
+            ("main", "_pytest.main")
+            if hook_name == "pytest_runtestloop"
+            else ("runner", "_pytest.runner")
+            if hook_name == "pytest_runtest_protocol"
+            else None
+        )
+        if not _only_builtin_hook_impls(
+            config, hook_name, primary=primary, allow_coverage=True
+        ):
+            _UNSUPPORTED_HOOK_NAMES.add(hook_name)
     _HOOK_FINGERPRINT_SHA256, _HOOK_COUNT = _hook_fingerprint(config)
     _RUNTIME_FINGERPRINT_SHA256 = _runtime_fingerprint(config)
     _CONFIG_SHA256 = _config_fingerprint(config)

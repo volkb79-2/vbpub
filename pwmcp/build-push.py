@@ -20,20 +20,26 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from cli_extended import OptionSpec, RegisteredCli
+from cmru.ghcr import GitHubPackages
+
 PWMCP_DIR = Path(__file__).resolve().parent
 BUILD_CONFIG = PWMCP_DIR / "cmru.toml"
+ESTATE_CONFIG = PWMCP_DIR.parent / "cmru.orchestration.toml"
 
-# Strict prepared-coordinate loader (pwmcp/scripts/_vars.py).
+# Strict prepared-coordinate loader and the shared script registration
+# (pwmcp/scripts/_vars.py). `cli_extended` and `cmru` are the INSTALLED packages
+# (CX-D3): this script runs under CMRU, which brings both; gate lanes keep PYTHONPATH
+# on the worktree's own sources only.
 sys.path.insert(0, str(PWMCP_DIR / "scripts"))
-from _vars import load_vars  # noqa: E402
-sys.path.insert(0, str(PWMCP_DIR.parent / "cmru" / "src"))
-from cmru.ghcr import GitHubPackages  # noqa: E402
+from _vars import load_vars, run_script, script_cli  # noqa: E402
 
 
 def log(msg: str) -> None:
@@ -73,8 +79,12 @@ def sync_ghcr_package_visibility(package_names: list[str]) -> None:
     repo_visibility = ghcr.repo_visibility()
     log(f"Mirroring GHCR package visibility to {repo_visibility}: {', '.join(names)}")
     for package_name in names:
-        ghcr.mirror_package_visibility(package_name, expected_visibility=repo_visibility)
-        log(f"Synced {package_name} visibility to {repo_visibility}")
+        synced = ghcr.mirror_package_visibility(package_name, expected_visibility=repo_visibility)
+        if synced is None:
+            # cmru KI-97: the package could not be inspected (warned above); not a release failure.
+            log(f"NOT synced: {package_name} visibility could not be verified (see the warning above)")
+        else:
+            log(f"Synced {package_name} visibility to {synced}")
 
 
 def run(argv: list[str], cwd: Path | None = None) -> None:
@@ -85,27 +95,47 @@ def run(argv: list[str], cwd: Path | None = None) -> None:
 @dataclass(frozen=True)
 class BuilderConfig:
     name: str
-    endpoint: str
+    endpoint: str  # empty: a plain builder (e.g. the docker default), nothing to verify beyond it existing
 
 
-def load_builder_config(path: Path = BUILD_CONFIG) -> BuilderConfig:
+_ENV_REFERENCE = re.compile(r"^\$\{([A-Z_][A-Z0-9_]*)(?::-([^{}]*))?\}$")
+
+
+def _resolve(value: object) -> str:
+    """Expand a whole-value ${NAME:-default} reference the way cmru does at load (the environment
+    wins, a set-but-empty value counts as set); anything else is the literal."""
+    text = str(value).strip()
+    match = _ENV_REFERENCE.fullmatch(text)
+    if match is None:
+        return text
+    actual = os.environ.get(match.group(1))
+    return actual.strip() if actual is not None else (match.group(2) or "")
+
+
+def load_builder_config(path: Path = BUILD_CONFIG, estate: Path = ESTATE_CONFIG) -> BuilderConfig:
+    """The Buildx builder and BuildKit endpoint for a run of this script. Under cmru the step env
+    already carries cmru's resolved values (project [env] over [orchestration.defaults.env]), which
+    is what the process environment holds here. Run by hand, the process environment still wins,
+    else the project cmru.toml [env] over the estate defaults, whose ${NAME:-default} references
+    resolve as cmru resolves them. An empty endpoint means a plain builder, not the managed remote."""
+    raw: dict = {}
+    if estate.is_file():
+        with estate.open("rb") as handle:
+            raw.update(tomllib.load(handle).get("orchestration", {}).get("defaults", {}).get("env", {}))
     with path.open("rb") as handle:
-        raw = tomllib.load(handle).get("env", {})
+        raw.update(tomllib.load(handle).get("env", {}))
     required = ("BUILDX_BUILDER", "BUILDKIT_HOST")
-    missing = [key for key in required if key not in raw]
+    missing = [key for key in required if key not in raw and key not in os.environ]
     if missing:
-        fail(f"{path.name} [env] is missing managed BuildKit keys: {', '.join(missing)}")
-    name = str(raw["BUILDX_BUILDER"]).strip()
-    endpoint = str(raw["BUILDKIT_HOST"]).strip()
-    if not name:
-        fail(f"{path.name} [env].BUILDX_BUILDER must be non-empty")
-    if not endpoint.startswith("unix:///"):
-        fail(f"{path.name} [env].BUILDKIT_HOST must be an absolute Unix endpoint")
+        fail(f"{path.name} [env] (or the estate defaults) is missing BuildKit keys: {', '.join(missing)}")
+    name, endpoint = (os.environ[k].strip() if k in os.environ else _resolve(raw[k]) for k in required)
+    if endpoint and not endpoint.startswith("unix:///"):
+        fail(f"{path.name} [env].BUILDKIT_HOST must be empty or an absolute Unix endpoint")
     return BuilderConfig(name=name, endpoint=endpoint)
 
 
 def _inspect_builder(config: BuilderConfig, *, bootstrap: bool) -> str:
-    argv = ["docker", "buildx", "inspect", config.name]
+    argv = ["docker", "buildx", "inspect", *([config.name] if config.name else [])]
     if bootstrap:
         argv.append("--bootstrap")
     result = subprocess.run(argv, capture_output=True, text=True, check=False)
@@ -144,8 +174,17 @@ def _assert_remote_builder(config: BuilderConfig, output: str) -> None:
         )
 
 
+def _builder_args(config: BuilderConfig) -> list[str]:
+    return ["--builder", config.name] if config.name else []
+
+
 def ensure_builder(config: BuilderConfig) -> None:
-    """Verify the durable host-managed remote; never create a worker here."""
+    """Verify the configured builder exists; with a managed endpoint also that it is exactly that
+    remote. Never create a worker here."""
+    if not config.endpoint:
+        _inspect_builder(config, bootstrap=False)
+        log(f"Using Buildx builder {config.name or '<current>'} (no managed BuildKit endpoint configured)")
+        return
     _assert_remote_builder(config, _inspect_builder(config, bootstrap=False))
     _assert_remote_builder(config, _inspect_builder(config, bootstrap=True))
     log(f"Using host-managed BuildKit remote {config.name} at {config.endpoint}")
@@ -161,7 +200,7 @@ def do_build() -> None:
         f"Building pwmcp coordinated release "
         f"PLAYWRIGHT_VERSION={pw_version} PWMCP_VERSION={pwmcp_version}"
     )
-    run(["docker", "buildx", "bake", "--builder", builder.name, "all", "--load"], cwd=PWMCP_DIR)
+    run(["docker", "buildx", "bake", *_builder_args(builder), "all", "--load"], cwd=PWMCP_DIR)
     log("Build complete.")
 
 
@@ -188,27 +227,61 @@ def do_push() -> None:
         f"Pushing pwmcp coordinated release "
         f"PLAYWRIGHT_VERSION={pw_version} PWMCP_VERSION={pwmcp_version}"
     )
-    run(["docker", "buildx", "bake", "--builder", builder.name, "all", "--push"], cwd=PWMCP_DIR)
+    run(["docker", "buildx", "bake", *_builder_args(builder), "all", "--push"], cwd=PWMCP_DIR)
     package_names = [
         name.strip()
-        for name in (os.environ.get("GHCR_PACKAGE_NAMES") or "pwmcp").split(",")
+        for name in (os.environ.get("GHCR_PACKAGE_NAMES") or "pwmcp,pwmcp-ocr").split(",")
         if name.strip()
     ]
     sync_ghcr_package_visibility(package_names)
     log("Push complete.")
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Build/push pwmcp images")
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--build", action="store_true", help="Build images locally")
-    group.add_argument("--push", action="store_true", help="Push images to GHCR")
-    args = parser.parse_args()
-
+def _handle(args: argparse.Namespace) -> None:
     if args.build:
         do_build()
     else:
         do_push()
+
+
+def _preview(args: argparse.Namespace) -> str:
+    if args.build:
+        return "would build the pwmcp images locally through the managed BuildKit builder"
+    return "would log in to ghcr.io, push the pwmcp images and sync GHCR package visibility"
+
+
+def build_cli() -> RegisteredCli:
+    """Import-safe registration of the script's grammar (``--build`` | ``--push``)."""
+    return script_cli(
+        "build-push.py",
+        long_name="image build and push",
+        description="Build or push the pwmcp-playwright images through the managed BuildKit builder.",
+        handler=_handle,
+        preview=_preview,
+        options=(
+            OptionSpec(
+                ("--build",),
+                "build images locally",
+                group="OPERATION",
+                parser_kwargs={"action": "store_true"},
+                mutually_exclusive_group="operation",
+                mutually_exclusive_required=True,
+            ),
+            OptionSpec(
+                ("--push",),
+                "log in to GHCR and push the images",
+                group="OPERATION",
+                parser_kwargs={"action": "store_true"},
+                mutually_exclusive_group="operation",
+                mutually_exclusive_required=True,
+            ),
+        ),
+        examples=("python3 build-push.py --build", "python3 build-push.py --push"),
+    )
+
+
+def main(argv: list[str] | None = None) -> None:
+    run_script(build_cli(), argv)
 
 
 if __name__ == "__main__":

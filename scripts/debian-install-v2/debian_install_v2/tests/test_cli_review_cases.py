@@ -30,6 +30,11 @@ PLAN = {
     "release": "trixie",
     "root_device": "/dev/vda1",
     "new_root_size_sectors": 1000,
+    "root_shrink_check": "not required",
+    "swap_policy": "on",
+    "swap_total_gb": 4,
+    "swap_retained_before_root_gb": 0.0,
+    "swap_after_root_gb": 4.0,
     "swap_partitions": [{"device": "/dev/vda2", "start": 2048, "sectors": 4096}],
     "sfdisk_plan": "label: dos\n",
 }
@@ -135,7 +140,7 @@ def write_config(tmp_path, **overrides):
         "schema_version": 1,
         "fresh_install": True,
         "swap_disk_total_gb": 32,
-        "swap_file_count": 3,
+        "swap_partition_count": 3,
         "state_dir": str(tmp_path / "state"),
         "log_dir": str(tmp_path / "logs"),
         "never_reboot": True,
@@ -154,12 +159,12 @@ def run(capsys, argv):
     return code, captured.out, captured.err
 
 
-def assert_loaded_swap_file_count(verb, out):
-    """The configuration source reached the handler: swap_file_count 3 is ours."""
+def assert_loaded_swap_partition_count(verb, out):
+    """The configuration source reached the handler: swap_partition_count 3 is ours."""
     if verb == "build-customscript":
-        assert json.loads(out)["config"]["swap_file_count"] == 3
+        assert json.loads(out)["config"]["swap_partition_count"] == 3
     else:
-        assert [item.config.swap_file_count for item in FakeInstaller.instances] == [3]
+        assert [item.config.swap_partition_count for item in FakeInstaller.instances] == [3]
 
 
 # --- configuration source: --config / --config-json (exactly one) ----------
@@ -179,7 +184,7 @@ def test_config_file_source_is_read(verb, tmp_path, capsys):
     path, _ = write_config(tmp_path)
     code, out, err = run(capsys, [verb, "--config", path, *CONFIG_VERBS[verb]])
     assert code == 0, err
-    assert_loaded_swap_file_count(verb, out)
+    assert_loaded_swap_partition_count(verb, out)
 
 
 @pytest.mark.parametrize(
@@ -198,7 +203,7 @@ def test_inline_json_source_is_read(verb, tmp_path, capsys):
     _, inline = write_config(tmp_path)
     code, out, err = run(capsys, [verb, "--config-json", inline, *CONFIG_VERBS[verb]])
     assert code == 0, err
-    assert_loaded_swap_file_count(verb, out)
+    assert_loaded_swap_partition_count(verb, out)
 
 
 @pytest.mark.parametrize(
@@ -476,7 +481,7 @@ def test_explicit_canonical_repo_url_needs_no_bootstrap_url(tmp_path, capsys):
 
 
 @pytest.mark.cli_case(case_spelling("build-customscript", "--repo-branch"))
-def test_repo_branch_selects_the_archive_and_the_default_bootstrap_url(tmp_path, capsys):
+def test_repo_branch_selects_the_default_bootstrap_url_and_git_branch(tmp_path, capsys):
     result = bundle(capsys, tmp_path, "--repo-branch", "feature/install-v2")
     environment, launcher = script_parts(result)
     assert environment["REPO_BRANCH"] == "feature/install-v2"
@@ -543,3 +548,42 @@ def test_wizard_yes_writes_the_validated_file_and_without_it_refuses(tmp_path, m
     assert "Confirmation accepted via --yes." in err
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
     assert load_config(path=str(target)).schema_version == 1
+
+
+# --- build-iso ------------------------------------------------------------
+
+
+@pytest.mark.cli_case(case_min("build-iso"))
+@pytest.mark.cli_case(case_spelling("build-iso", "--output"))
+def test_build_iso_requires_interactive_terminal(tmp_path, capsys):
+    target = tmp_path / "private.iso"
+    code, out, err = run(capsys, ["build-iso", "--output", str(target)])
+    assert code == 2
+    assert out == ""
+    assert "build-iso requires an interactive terminal" in err
+    assert not target.exists()
+
+
+@pytest.mark.cli_case(case_spelling("build-iso", "--debug-raw"))
+def test_build_iso_debug_raw_only_warns_before_terminal_refusal(tmp_path, capsys):
+    target = tmp_path / "private.iso"
+    plain_code, plain_out, plain_err = run(capsys, ["build-iso", "--output", str(target)])
+    raw_code, raw_out, raw_err = run(
+        capsys, ["build-iso", "--output", str(target), "--debug-raw"]
+    )
+    assert (plain_code, raw_code) == (2, 2)
+    assert raw_out == plain_out == ""
+    assert "build-iso requires an interactive terminal" in plain_err
+    assert raw_err.startswith("[WARN] --debug-raw is active:")
+    assert "build-iso requires an interactive terminal" in raw_err
+    assert not target.exists()
+
+
+@pytest.mark.cli_case(case_spelling("build-iso", "--yes"))
+def test_build_iso_yes_does_not_bypass_interactive_secret_collection(tmp_path, capsys):
+    target = tmp_path / "private.iso"
+    code, out, err = run(capsys, ["build-iso", "--output", str(target), "--yes"])
+    assert code == 2
+    assert out == ""
+    assert "build-iso requires an interactive terminal" in err
+    assert not target.exists()

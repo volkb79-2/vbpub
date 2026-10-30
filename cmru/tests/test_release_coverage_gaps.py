@@ -19,6 +19,20 @@ from cmru import cli, cli_support, config, getpy, resolve as resolve_module, run
 from cmru.cli_support import select_target_names
 
 
+@pytest.fixture(autouse=True)
+def _no_untagged_publication_record(monkeypatch):
+    """KI-98: these tests drive the release transaction with a fake (non-git) workspace; the
+    untagged-publication record is covered by tests/test_cli_abandon.py, not here."""
+    monkeypatch.setattr(cli.transaction, "start_untagged_publication_record", lambda *a, **k: None)
+    monkeypatch.setattr(cli.transaction, "mark_untagged_publication_started", lambda *a, **k: None)
+
+
+@pytest.fixture(autouse=True)
+def default_source_for_synthetic_release_workspaces(monkeypatch):
+    monkeypatch.setattr(cli.transaction, "read_release_source", lambda *_args: None)
+    monkeypatch.setattr(cli.transaction, "source_git_root_for_projects", lambda root, _projects: root)
+
+
 def _loaded(projects, order=None):
     order = list(order or projects)
     return (
@@ -90,7 +104,7 @@ def test_config_parser_refuses_io_and_reserved_names(tmp_path, monkeypatch):
 def test_project_config_rejects_one_central_fact_duplicate(tmp_path):
     path = tmp_path / "cmru.toml"
     path.write_text(
-        "schema_version = 1\n[github]\nowner = 'o'\nrepo = 'r'\nowner_type = 'user'\n\n"
+        "schema_version = 1\n[github]\nowner = 'o'\nrepo = 'r'\nowner_type = 'user'\ntoken_source = 'cmru'\n\n"
         + _minimal_project().split("schema_version = 1\n", 1)[1],
         encoding="utf-8",
     )
@@ -114,6 +128,7 @@ def _orchestration_with_entry(tmp_path: Path, entry_name: str, config_path: str)
 owner = "o"
 repo = "r"
 owner_type = "user"
+token_source = "cmru"
 [targets]
 host = "github"
 registry = []
@@ -189,27 +204,39 @@ def test_context_helpers_cover_standalone_and_invalid_selection(monkeypatch, tmp
 def test_cli_native_logging_and_candidate_integrity_edges(tmp_path, monkeypatch):
     monkeypatch.setenv("CMRU_NATIVE_RELEASE_LOGGING", "0")
     cli._configure_native_release_logging(tmp_path, append=False)
-
-    class Stdin:
-        def fileno(self):
-            return 17
-
     monkeypatch.delenv("CMRU_NATIVE_RELEASE_LOGGING", raising=False)
-    proc = SimpleNamespace(stdin=Stdin())
-    calls = []
-    monkeypatch.setattr(cli.subprocess, "Popen", lambda *args, **kwargs: (calls.append((args, kwargs)) or proc))
-    monkeypatch.setattr(cli.os, "dup2", lambda *args: calls.append(("dup2", args)))
-    cli._configure_native_release_logging(tmp_path, append=True)
-    assert calls[0][0][0] == ["tee", "-a", str(tmp_path / "cmru.release.log")]
+    real_popen = cli.subprocess.Popen
+    tee_argv = []
+
+    def recording_popen(*args, **kwargs):
+        tee_argv.append(args[0])
+        return real_popen(*args, **kwargs)
+
+    monkeypatch.setattr(cli.subprocess, "Popen", recording_popen)
+    with cli._native_release_logging_scope():
+        cli._configure_native_release_logging(tmp_path, append=True)
+        tee = cli._ACTIVE_NATIVE_RELEASE_LOGGING.process
+        assert tee.poll() is None
+    assert tee.returncode == 0
+    assert tee_argv == [["tee", "-a", str(tmp_path / "cmru.release.log")]]
     assert (tmp_path / "cmru.release.log").read_text(encoding="utf-8") == "\n---\n"
 
     monkeypatch.setattr(cli, "_git", lambda *_args: "actual")
     with pytest.raises(RuntimeError, match="moved HEAD"):
-        cli._assert_release_candidate_unchanged(tmp_path, "demo", "expected")
+        cli._assert_release_candidate_unchanged(
+            tmp_path, "demo", "expected", phase="after build",
+        )
     monkeypatch.setattr(cli, "_git", lambda *_args: "same")
-    monkeypatch.setattr(cli, "_worktree_changed_paths", lambda *_args: ["tracked.txt"])
+    monkeypatch.setattr(
+        cli, "_assert_release_gate_source_matches_commit",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("candidate source after build has non-ignored changes")
+        ),
+    )
     with pytest.raises(RuntimeError, match="non-ignored changes"):
-        cli._assert_release_candidate_unchanged(tmp_path, "demo", "same")
+        cli._assert_release_candidate_unchanged(
+            tmp_path, "demo", "same", phase="after build",
+        )
 
     marker = object()
     monkeypatch.setattr(cli, "resolve_invocation_context", lambda *_args, **_kwargs: marker)
@@ -245,7 +272,16 @@ def test_cli_file_strategy_rechecks_the_changed_candidate(monkeypatch, tmp_path)
     monkeypatch.setattr(cli, "_prepare_release_projects", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli, "_run_release_gates", lambda *args, **kwargs: calls.append("gate"))
     git_calls = []
-    monkeypatch.setattr(cli, "_git", lambda *args, **kwargs: (git_calls.append(1) or ("gated" if len(git_calls) == 1 else "candidate")))
+
+    def fake_git(*_args, **_kwargs):
+        # HEAD is read before and after the gate (it must not move: both
+        # "gated"), then after versioning, where the file strategy has committed
+        # a version bump ("candidate") that the gate must judge again.
+        git_calls.append(1)
+        return "gated" if len(git_calls) <= 2 else "candidate"
+
+    monkeypatch.setattr(cli, "_git", fake_git)
+    monkeypatch.setattr(cli, "_assert_release_gate_source_matches_commit", lambda *_a, **_k: None)
     monkeypatch.setattr("cmru.version.release_cmd", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli, "_tag_on_head", lambda *args: None)
     cli._release_projects_sequentially(
@@ -254,6 +290,203 @@ def test_cli_file_strategy_rechecks_the_changed_candidate(monkeypatch, tmp_path)
         env_config=cli.ReleaseEnvConfig({}, None), no_build=True,
     )
     assert calls == ["gate", "gate"]
+
+
+def _sequential_release_doubles(monkeypatch, tmp_path, *, receipts):
+    """Stub only the collaborators around ``_release_projects_sequentially``'s tag
+    decision; the ordering and refusals under test are the product's own."""
+    events = []
+    monkeypatch.setattr(cli.transaction, "write_release_progress", lambda *args: None)
+    monkeypatch.setattr(cli.transaction, "push_backup_branch", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        cli.transaction, "promote_workspace",
+        lambda *args, **kwargs: events.append("promote"),
+    )
+    monkeypatch.setattr(
+        cli.transaction, "write_release_result",
+        lambda *args, **kwargs: events.append("result"),
+    )
+    monkeypatch.setattr(cli, "apply_project_release_env", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli, "_prepare_release_projects", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli, "_run_release_gates_on_exact_head", lambda *args, **kwargs: next(receipts))
+    monkeypatch.setattr(cli, "_git", lambda *args, **kwargs: "candidate")
+    monkeypatch.setattr("cmru.version.release_cmd", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        cli, "_tag_on_head", lambda *args: events.append("tag") or "demo-v1.0.0",
+    )
+    monkeypatch.setattr(
+        cli, "_push_tags", lambda _root, tags, **_kwargs: events.append(("push", tuple(tags))),
+    )
+    return events
+
+
+def _sequential_release(tmp_path, *, no_build):
+    project = cli.ProjectConfig("demo", {}, {}, prefix="demo-v")
+    workspace = cli.transaction.ReleaseWorkspace(
+        tmp_path, tmp_path / "child", "cmru/release/x", "a" * 40,
+    )
+    return cli._release_projects_sequentially(
+        tmp_path, {"demo": project}, workspace, ["demo"],
+        github_config=cli.GitHubConfig("o", "r", "t", "user"),
+        env_config=cli.ReleaseEnvConfig({}, None), no_build=no_build,
+    )
+
+
+def test_a_regated_candidate_that_still_differs_from_its_receipt_is_never_tagged(
+    monkeypatch, tmp_path,
+):
+    """Versioning moves HEAD, the gate is re-run, and the re-run's receipt is for a
+    different commit than the one now checked out: CMRU refuses before any tag."""
+    events = _sequential_release_doubles(
+        monkeypatch, tmp_path, receipts=iter(("gated", "regated-elsewhere")),
+    )
+
+    with pytest.raises(RuntimeError) as refused:
+        _sequential_release(tmp_path, no_build=True)
+
+    assert str(refused.value) == (
+        "demo: refusing to tag candidate candidate because its gate receipt is "
+        "for regated-else"
+    )
+    assert events == []  # no tag created, nothing pushed or promoted
+
+
+def test_a_failure_before_tag_publication_discards_the_unpushed_local_tag(
+    monkeypatch, tmp_path,
+):
+    """release_cmd tagged locally; a refusal before _push_tags must hand the
+    tagged commit and its cause to the local-tag cleanup, then re-raise."""
+    events = _sequential_release_doubles(
+        monkeypatch, tmp_path, receipts=iter(("gated", "regated-elsewhere")),
+    )
+    discarded = []
+    monkeypatch.setattr(
+        cli, "_discard_unpushed_release_tags",
+        lambda _root, _workspace, prefix, commit, *, cause: discarded.append(
+            (prefix, commit, str(cause)),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="refusing to tag candidate"):
+        _sequential_release(tmp_path, no_build=True)
+
+    assert discarded == [(
+        "demo-v", "candidate",
+        "demo: refusing to tag candidate candidate because its gate receipt is "
+        "for regated-else",
+    )]
+    assert not any(isinstance(event, tuple) and event[0] == "push" for event in events)
+
+
+def test_unpushed_tag_cleanup_deletes_only_this_attempts_exact_local_tag(monkeypatch, tmp_path):
+    workspace = cli.transaction.ReleaseWorkspace(tmp_path, tmp_path / "child", "cmru/release/x", "a" * 40)
+    monkeypatch.setattr(
+        cli.transaction, "read_release_tag_snapshot",
+        lambda *_a: {"refs/tags/demo-v0.9.0": "1" * 40},
+    )
+    monkeypatch.setattr(
+        cli.transaction, "read_release_tag_attempts",
+        lambda *_a: {"refs/tags/demo-v0.8.0": "2" * 40},
+    )
+    listed = []
+    monkeypatch.setattr(
+        cli, "_git",
+        lambda *args, **_kw: listed.append(args[1:]) or (
+            "other-v1\ndemo-v1-latest\ndemo-v0.9.0\ndemo-v0.8.0\ndemo-v0.7.0\ndemo-v1.0.0\n"
+        ),
+    )
+    monkeypatch.setattr(
+        cli, "local_git_tag_oid",
+        lambda _root, tag, **_kw: {"demo-v1.0.0": "c" * 40}.get(tag),
+    )
+    deleted = []
+    monkeypatch.setattr(
+        cli, "delete_git_tag_local",
+        lambda _root, tag, dry_run, **kw: deleted.append((tag, dry_run, kw)),
+    )
+    logged = []
+    monkeypatch.setattr(cli, "log_error", logged.append)
+
+    cli._discard_unpushed_release_tags(
+        tmp_path, workspace, "demo-v", "f" * 40, cause=RuntimeError("gate failed"),
+    )
+
+    assert listed == [("tag", "--points-at", "f" * 40, "--list", "demo-v*")]
+    # Not another project's tag, not a moving pointer, not a tag origin had at
+    # the start, not one CMRU attempted to push, not one already gone.
+    assert deleted == [
+        ("demo-v1.0.0", False, {"expected_present": True, "expected_oid": "c" * 40}),
+    ]
+    assert logged == [
+        "demo-v1.0.0: removed the never-pushed local release tag after a failure "
+        "before tag publication (gate failed); the candidate stays resumable",
+    ]
+
+
+def test_unpushed_tag_cleanup_failure_prints_manual_recovery_without_raising(
+    monkeypatch, tmp_path,
+):
+    workspace = cli.transaction.ReleaseWorkspace(tmp_path, tmp_path / "child", "cmru/release/x", "a" * 40)
+
+    def unreadable(*_args):
+        raise RuntimeError("tag snapshot unreadable")
+
+    monkeypatch.setattr(cli.transaction, "read_release_tag_snapshot", unreadable)
+    monkeypatch.setattr(
+        cli, "delete_git_tag_local",
+        lambda *_a, **_k: pytest.fail("nothing may be deleted without the protected-tag facts"),
+    )
+    logged = []
+    monkeypatch.setattr(cli, "log_error", logged.append)
+
+    cli._discard_unpushed_release_tags(
+        tmp_path, workspace, "demo-v", "f" * 40, cause=RuntimeError("gate failed"),
+    )
+
+    assert logged == [
+        "could not remove a never-pushed local demo-v* release tag after a failure before "
+        "tag publication (tag snapshot unreadable). Inspect `git tag --points-at "
+        f"{'f' * 12} --list 'demo-v*'` and delete a tag that origin does not have with "
+        "`git tag -d <tag>` before resuming",
+    ]
+
+
+def test_a_candidate_that_changes_after_its_tag_is_pushed_rolls_the_tag_back(
+    monkeypatch, tmp_path,
+):
+    """The tag is pushed but unpublished; if the candidate moved while pushing it,
+    the pushed tag is rolled back (pinned to its cause) and nothing is built,
+    published or promoted."""
+    events = _sequential_release_doubles(
+        monkeypatch, tmp_path, receipts=iter(("candidate",)),
+    )
+    rolled_back = []
+
+    def unchanged(_root, _name, _sha, *, phase):
+        events.append(("check", phase))
+        if phase == "after tag publication":
+            raise RuntimeError("candidate moved while the tag was pushed")
+
+    monkeypatch.setattr(cli, "_assert_release_candidate_unchanged", unchanged)
+    monkeypatch.setattr(
+        cli, "_rollback_unpublished_release_tag",
+        lambda _root, _workspace, tag, **kwargs: rolled_back.append((tag, str(kwargs["cause"]))),
+    )
+    monkeypatch.setattr(
+        cli, "_run_tagged_build_and_publish",
+        lambda *args, **kwargs: pytest.fail("nothing may be built after the rollback"),
+    )
+
+    with pytest.raises(RuntimeError, match="candidate moved while the tag was pushed"):
+        _sequential_release(tmp_path, no_build=False)
+
+    assert rolled_back == [("demo-v1.0.0", "candidate moved while the tag was pushed")]
+    assert events == [
+        "tag",
+        ("check", "before tag publication"),
+        ("push", ("demo-v1.0.0",)),
+        ("check", "after tag publication"),
+    ]
 
 
 def test_cli_status_from_console_entrypoint_does_not_configure_native_logging(monkeypatch, tmp_path):

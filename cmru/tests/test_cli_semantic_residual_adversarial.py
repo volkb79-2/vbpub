@@ -46,6 +46,7 @@ def test_build_success_runs_child_retains_outputs_and_reports_cleanup_command(mo
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "child", "cmru/build/abc", "a" * 40)
     calls = []
     monkeypatch.setattr(cli.transaction, "fetch_origin_main", lambda *_, **__: "b" * 40)
+    monkeypatch.setattr(cli.transaction, "local_head_commit", lambda *_, **__: "b" * 40)
     monkeypatch.setattr(
         cli, "_project_config_paths_at_snapshot",
         lambda _root, _base, _config, _configs, names: {
@@ -56,7 +57,7 @@ def test_build_success_runs_child_retains_outputs_and_reports_cleanup_command(mo
     monkeypatch.setattr(cli.transaction, "create_workspace", lambda *args, **kwargs: workspace)
     monkeypatch.setattr(cli.transaction, "run_child", lambda w, args, **kwargs: calls.append((w, args, kwargs)) or 0)
     retained = [tmp_path / "demo" / "artifacts" / "build-1"]
-    monkeypatch.setattr(cli.transaction, "retain_successful_build_outputs", lambda *args: retained)
+    monkeypatch.setattr(cli.transaction, "retain_successful_build_outputs", lambda *args, **_kw: retained)
     monkeypatch.setattr(cli.transaction, "validate_retained_build_output", lambda *_args: {"manifest": {"publication": "eligible"}})
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda w: calls.append(("removed", w)))
     exc = cli.main(["build", "--config", str(tmp_path / "cmru.toml"), "demo"])

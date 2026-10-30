@@ -34,7 +34,7 @@
 | Pool `max_pool_percent` | 35 % | 25 % | **30 %** | ceiling, not reservation; shrinker prevents starvation; tune by observation |
 | `accept_threshold_percent` | — | 80 % | **90 %** | SWAP-2's addition; reduces fill/evict thrash |
 | Shrinker enable | cmdline ✓ | `vm.zswap_shrinker_enabled` sysctl ✗ | **module/post-boot** | that sysctl doesn't exist; it's `/sys/module/zswap/parameters/shrinker_enabled` |
-| `vm.swappiness` | 30 ✗ | 80–100 ✓ | **100** | with zswap, anon reclaim is cheap — *want* it; protect game with cgroup, not swappiness |
+| `vm.swappiness` | 30 ✗ | 80–100 ✓ | **10** (superseded 2026-10-21; was 100) | operator decision: low, because the disk is write-capped and reads are cheap, see §4 "`vm.swappiness`"; protect game with cgroup, not swappiness (the ✗/✓ marks are as of 2026-07; the decision has since moved, see §4) |
 | cgroup model | CPU/IO weights | `memory.low/min` + `zswap.writeback` + `io.max` | **SWAP-2's model** | precise, protection-first |
 | Build I/O cap | BuildKit env | `io.max` 200 MB/s | **io.max / systemd IO\*Max** | robust, runtime-independent |
 | Network | fq_codel + DSCP/tc | prio qdisc + filters | **fq_codel only** | don't build speculative QoS; revisit only if starvation observed |
@@ -67,7 +67,7 @@ For gstammtisch — one process holding lots of cold pages, sharing the box with
 | Swap disk (SSD) | ~100 µs–1 ms | 100 ms–1 s | Noticeable pause |
 | Swap disk (HDD) | ~1–10 ms | 1–10 s | "Chest open" stall |
 
-The swap-*in* fault is **synchronous**: the game thread blocks until the page is back. Disk-backed swap-in is the dominant cause of game stalls; zswap-backed swap-in is 100–2000× faster but still has a cost when many pages are needed at once (area loads, chest contents). `workingset_refault_anon` is the counter that measures exactly this cost.
+The swap-*in* fault is **synchronous**: the game thread blocks until the page is back. Disk-backed swap-in is the dominant cause of *memory-pressure* game stalls (the stall from host IO is a separate mechanism, but it also reaches swap-in: with `writeback=1`, swap-in of pages zswap wrote back queues behind dev writeback, see [HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md) §4.6); zswap-backed swap-in is 100–2000× faster but still has a cost when many pages are needed at once (area loads, chest contents). `workingset_refault_anon` is the counter that measures exactly this cost.
 
 **Observed refault rate thresholds (Soulmask, 3 players, 2026-06-27):**
 
@@ -82,6 +82,91 @@ The swap-*in* fault is **synchronous**: the game thread blocks until the page is
 **Same-value / zero pages:** zswap special-cases "same-filled" pages (every word identical — the all-zero page being the common case from `calloc`/fresh container heaps). It stores just the fill value in the entry metadata — **no compression, ~no pool memory** — and reconstructs on fault-in. This is automatic and on by default (kernel 7.0 no longer exposes a `same_filled` knob; it's built in). It is *not* cross-page dedup; for that see **KSM** (§6).
 
 ---
+
+### Burst writeback stall: the zswap shrinker has no rate governor
+
+*Measured 2026-10-20 on gstammtisch (raw data and phases: [MEASUREMENTS.md M8](MEASUREMENTS.md#m8-soulmask-startup-to-steady-state-final-configuration-tmpfs-logs-eatmydata--ksm-bounded-io)); labels as there, [M] measured, [I] inferred.*
+
+**What happens.** [I, from the stacks below] When host memory runs short, **reclaim** reaches the
+game scope (which kind is not established, see "The reclaim caller is unknown" below); the **memcg zswap shrinker** (`shrink_memcg_cb`) then writes the game's cold zswap pool back to
+the swap partitions **synchronously, in the game's own threads**, at whatever rate the device allows:
+~14 MiB/s here. Nothing paces it: a ~770M pool takes minutes. The game threads each wait < 100 ms on
+`blk_mq_get_tag`, but there are many of them, and the game stalls.
+
+**Evidence.** [M]
+- Burst 11:19:34–11:22:00 local: the monitor printed nothing for 146 s, zpool 769M → 0 (**the trajectory inside the
+  146 s is unobserved**: 750M at the first row after the gap, 0 six seconds later; swap was already +1.5 G at that
+  row), disk swap +2.1 G,
+  fps 29.9 → 5.9, recovered at 11:22:47; vda flat at 14 MiB/s, 100 % util, mostly to `vda6` + `vda7`.
+- Game D-state in that window (the controller's bpftrace log on gstammtisch,
+  `/var/log/mdt-stall/dstate-20261020-pid4040733.log`, **not in this repo**): **455.8 s in `blk_mq_get_tag` ← `submit_bio` ← `shrink_memcg_cb`**, plus 12.9 s +
+  8.1 s in `try_to_free_pages`.
+- Later, "B3: settled server" (all final settings live, a dev load running): game D total 16.25 s, **16.03 s of
+  it `shrink_memcg_cb`**, and fps fell to 7 for ~35 s although the game's D-state max was only 90 ms.
+- Settings at the time: `min_free_kbytes` 67584, `watermark_scale_factor` 50, `max_pool_percent` 25,
+  `shrinker_enabled` Y; the game scope's `memory.low` 5000M after the Wings steady squeeze, below its ~7.5 G
+  footprint **[I]** (so global reclaim can take from it). The operator decision stands: `writeback=1` and the
+  shrinker are required (do not turn them off to avoid this).
+
+**Why `memory.zswap.max` is not a chunking lever.** [I] Lowering it only acts on the *next* store: it stops new
+pages entering the pool and does not push the existing pool out in controlled pieces. The upstream author of
+the proactive-writeback work argues the same in his replies on why `memory.zswap.max` is insufficient: it only
+acts on a new store, and the writeback per over-limit event is capped
+(<https://lkml.indiana.edu/2605.1/07304.html> and <https://lkml.indiana.edu/2605.1/09790.html>; the second
+URL is spelled out assuming the same archive directory as the first; read by the controller's web search
+2026-10-20, not re-read by the author of this document).
+
+**Upstream status.** Source: a controller web search on 2026-10-20 of LKML mirror archives (**mirror archives;
+verify on lore.kernel.org**). Everything below is "posted, under review, not known to be merged":
+- "mm/zswap: Implement proactive writeback" (Hao Jia): v1 2026-05 with `memory.zswap.proactive_writeback`,
+  v3/v4 as `memory.reclaim zswap_writeback_only`, v5 2026-06-29 as `memory.reclaim source=zswap`.
+  <https://lkml.iu.edu/2606.3/08404.html>, <https://lkml.indiana.edu/2605.1/07304.html>
+- "mm/zswap: Fixes and improves shrinker" (batch writeback, v3 2026-07): <https://ratatoskr.run/lkml/2026/07/17333952/t>
+- **Not available on gstammtisch's kernel 7.2.6, [I] and resting only on one observation:** `/proc/kallsyms` of
+  that one build has no proactive-writeback symbols [M]. That is the sole basis for "not merged in 7.2".
+  A probe of `memory.reclaim` keys on an empty throwaway cgroup returned **EIO for every key, including a bogus
+  one**, so it was inconclusive and proves nothing either way.
+
+**Mitigation options and operator decisions (2026-10-20).** The operator's words are quoted. Only (b) was applied,
+live and provisionally, and it was later superseded (wsf 50, boost 0; see section 4).
+- **(a) REJECTED** by the operator: *"no, far too much, around 4G min is fine as set now. refaults stay low at
+  5G."* (followed by *"ignore your suggestion."*) The steady band stays (min 4000M, low 5000M). The analysis follows for the record. Raise the game
+  scope's steady `memory.low` to cover its steady set, so global reclaim takes from others
+  first. **It must be set where Wings reads it, or the next start's squeeze (low 9G → 5000M) undoes a runtime
+  change.** Where that is (read from the repo, 2026-10-20): the steady band is the per-server egg variables
+  `WINGS_CG_MEMORY_MIN` / `_LOW` / `_HIGH` / `_MAX`, whose egg defaults are 6G / 7G / 7G / 20G in
+  `game_stuff/soulmask/egg-soulmask-rcon-ksm-cgroups.json` (the startup band is the separate `WINGS_CG_STARTUP_*`
+  variables, and `WINGS_CG_STEADY_MATCH` only triggers the switch; see
+  [SOULMASK-STARTUP-MARKERS.md](SOULMASK-STARTUP-MARKERS.md)). A server's value overrides the egg default and is
+  set in the panel (Admin → Servers → the server → Startup), which stores it in the **panel database, not in
+  this repo**. The observed 4000M / 5000M / 8000M are not the egg defaults, so they are per-server panel values
+  **[I]**. The fallback when a server sets nothing is the node's `config.yml`
+  (`/etc/pterodactyl/config.yml`, `docker.per_server_slices.defaults`; host-only, deliberately empty on this
+  node per [WINGS-CGROUPS-ROLLOUT.md](WINGS-CGROUPS-ROLLOUT.md) §2). So (a) means changing the panel value of
+  `WINGS_CG_MEMORY_LOW` for the server.
+- **(b) ACCEPTED provisionally**: *raise `vm.watermark_scale_factor`* so kswapd reclaims ahead of demand and the
+  game stays out of direct reclaim **[I]**. Cost: more kswapd CPU and less usable free memory. **It was applied live
+  only (50 → 200); later that day the operator settled on wsf 50 with `watermark_boost_factor` 0 (the 200 trial
+  hit a stuck-boost failure).** Measurements and status: the subsection under section 4,
+  "`vm.watermark_scale_factor`", and "Watermark boost".
+- **(c) REJECTED** by the operator: *"no, we need it"*. `dev.slice` `memory.high` stays. (Analysis: lowering it
+  would make dev builds reclaim themselves earlier and run slower **[I]**.)
+- **(d) WANTED later**: *"yes, we want that at some time"*. A userspace chunked governor that writes the pool back
+  in small paced pieces before pressure, instead of one unpaced burst, once `memory.reclaim source=zswap` is
+  available. The design lives in the project folder `zswap-writeback-governor/` at the vbpub root (branch
+  `zwg-01-20261020`, in progress).
+
+**What triggers the burst: the operator's observation.** The operator states that **no other load was started at
+11:19:34**; this is shrinker behaviour: pages become "cold enough" and are written back a few minutes after the
+server settles, **reproducibly**. This replaces the earlier "what started the pressure was not recorded". The
+mechanism above stays **[I]** until the kernel-source analysis lands; that analysis is in progress in the
+`zswap-writeback-governor/` project (ZWG-01, vbpub root, branch `zwg-01-20261020`).
+
+**The reclaim caller is unknown [M].** The D-state probe recorded only 10 kernel frames (`kstack(10)` in
+`dstall.bt`), so the caller above `shrink_memcg_cb → __list_lru_walk_one → list_lru_walk_one` is not known. It
+could be **global direct reclaim** (a separate 21 s in `try_to_free_pages` was seen) or **memcg `memory.high`
+reclaim** (the game sits near `memory.high` 8000M, and the zswap pool is charged to the memcg). Option (b) helps
+only for the global case. The controller will re-run the probe with a deeper stack.
 
 ## 3. The zstd boot-fallback gotcha (and the real fix)
 
@@ -107,11 +192,157 @@ File: [`99-gstammtisch-memory.conf`](files/etc/sysctl.d/99-gstammtisch-memory.co
 
 | Knob | Value | Reasoning |
 |---|---|---|
-| `vm.swappiness` | **100** | With zswap, reclaiming anon pages is cheap (compressed RAM, not disk). High swappiness pushes cold anon into the pool and keeps file cache (Docker layers, build cache) resident. **SWAP-1's 30 was backwards** — it would hoard cold anon in uncompressed RAM and evict useful cache. *Do not use swappiness to protect the game* — that's `memory.min`'s job (cgroup v2 has no per-cgroup swappiness). |
+| `vm.swappiness` | **10** (operator decision 2026-10-21; was 100) | Low on purpose: this disk is write-capped, reads are cheap, so prefer evicting clean file cache over anon. Reasoning, measurements and risks in the subsection "`vm.swappiness` — why low on these hosts" below. *Do not use swappiness to protect the game* — that's `memory.min`'s job (cgroup v2 has no per-cgroup swappiness). |
 | `vm.vfs_cache_pressure` | **50** | Keep dentry/inode caches; Docker does huge amounts of path lookup during create/teardown/builds. |
-| `vm.watermark_scale_factor` | **50** | Wake kswapd earlier → background reclaim starts before pressure is acute → less blocking direct reclaim under build storms. |
+| `vm.watermark_scale_factor` | **50** | Wake kswapd earlier → background reclaim starts before pressure is acute → less blocking direct reclaim under build storms. A 200 trial (2026-10-20) was superseded; see the subsection below. |
+| `vm.watermark_boost_factor` | **0** (operator decision 2026-10-20) | The kernel default 15000 lets a fragmentation event raise every watermark by up to 1.5 × high until kswapd clears it; on this swap-backed, memory-protected host the boost stuck once and forced all reclaim into the allocating threads. See "Watermark boost" below. |
 | `vm.page-cluster` | **0** | No swap readahead. Wasteful on SSD/thin backing and on zswap fault-back (random access). |
 | `vm.admin_reserve_kbytes` | **65536** | ~64 MB so root can always SSH in and act under OOM. |
+
+### `vm.swappiness` — why low on these hosts
+
+**Decision (operator, 2026-10-21):** set `vm.swappiness` low ("with cheap reads and RAM constrained, tend to a very low
+setting"): **10**, which gstammtisch had already been running for days. This resolves backlog GG-6 (host 10 versus repo
+100) by moving the repo to the host's value.
+
+**What it is.** A bias between reclaiming anonymous memory (process memory) and file cache. With MGLRU
+(`/sys/kernel/mm/lru_gen/enabled` = 0x0007 on gstammtisch **[M]**) it biases the kernel's own refault feedback rather than
+acting as a hard switch **[I]**.
+
+**Why low [I, from the measurements below].**
+- **Anon eviction is expensive here.** First a zswap store (cheap, CPU), but when the pool is full (`max_pool_percent` 25;
+  `pool_limit_hit` 16 697 **[M]**) or the shrinker runs, it becomes 4K random swap **writes**, the scarcest resource on a
+  write-capped, provider-metered disk (6–18 MiB/s measured **[M]**, IO-STALL-TESTING-GUIDE §14/§15, program directory).
+  Those writes are also charged to the page owner's cgroup as io.cost debt (the 57.7 s freeze, §15).
+- **Clean file eviction is cheap.** Zero writes; a refault is a **read**. Reads are fast: the provider does not limit
+  them (1.3 GB/s sequential observed) and `r_await` is ~0.2–0.3 ms **[M]** (OBSERVATION.md; IO-STALL-TESTING-GUIDE §12, §13).
+  The 290 MB/s in the io.cost model is a *modelled* `rbps`, and `dev.slice` has its own read cap (290M / 10 000 riops), so
+  reads are capped per tier by configuration, not by the provider.
+- **The measured stalls were swap-in waits and write/debt waits [M]:** 229.4 s in `do_swap_page` in the B0 window
+  (HOST-IO-INTERFERENCE.md §4.6), the dirty-limit stalls (§4.2), and the 57.7 s io.cost freeze (IO-STALL-TESTING-GUIDE
+  §15). The write-side share is [M] for the debt and dirty-limit cases; that the swap-in waits queued behind write-side
+  load is **[I]**. Swap-ins exist only for evicted anon, so preferring file eviction, i.e. low swappiness, follows **[I]**.
+
+**Risk of too low: file-cache thrash.** Counters from `/proc/vmstat` on gstammtisch, read 2026-10-21 ~00:43 UTC (02:42:58 CEST) at uptime
+2 d 13 h: `workingset_refault_file` 239 M against `pgsteal_file` 619 M (~39 % refaulted, ~0.9 TiB re-read) **[M]**.
+**[I]** Cheap here because reads are fast, but each refault a game thread waits on is a small stall.
+
+**Who it affects.** The games are governed by `memory.min`/`low`, not by swappiness. Swappiness mainly decides
+dev/system memory (VS Code anon against build file cache), and low keeps the interactive tier resident **[I]**.
+
+**Why not 0.** With 0, anon is barely reclaimed until file is nearly exhausted, so hot executables and mapped files thrash
+and the overcommitted host risks OOM **[I]**.
+
+**No A/B test was run.** The operator deferred tests on this host because its surroundings are not controlled; the value
+is a reasoned decision backed by the observations above, not a measured optimum.
+
+**History (superseded):** the earlier value 100 rested on "with zswap, anon reclaim is cheap, so push cold anon into
+the pool and keep file cache resident" (validation recipe: MEASUREMENTS.md M5).
+
+### `vm.watermark_scale_factor` — what it does, what we measured, status
+
+**What it does.** It sets the distance between a zone's `min`, `low` and `high` watermarks, in units of 0.01 % of
+RAM. kswapd wakes when free memory falls below `low` and reclaims until `high`; below `min`, allocating tasks
+reclaim for themselves (**direct reclaim**). **[I]** Global direct reclaim is one possible context in which the
+game's own threads ran the zswap shrinker's synchronous writeback (see "Burst writeback stall" above); memcg
+`memory.high` reclaim is the other candidate, and the probe cannot tell them apart.
+
+**Measured on gstammtisch (16 GB), 2026-10-20 ~10:20 UTC, from `/proc/zoneinfo`:** [M]
+
+| `watermark_scale_factor` | Normal min / low / high | DMA32 low / high |
+|---|---|---|
+| 50 | 53 / 118 / 183 MiB | 27 / 42 MiB |
+| 200 | 53 / 313 / 572 MiB | 72 / 132 MiB |
+
+So kswapd now wakes at ~385 MiB free instead of ~145 and refills to ~700 MiB instead of ~225. The
+**guaranteed** extra free memory is the difference of the **low** marks: about **240 MiB** (Normal 118 → 313,
+DMA32 27 → 72; per zone). The difference of the **high** marks (~480 MiB: Normal 183 → 572, DMA32 42 → 132) is the
+refill *target*, not a guarantee.
+`watermark_boost_factor` (15000) and `min_free_kbytes` (67584) were unchanged (at that time).
+
+**Status: superseded by the operator decision of 2026-10-20 (~23:16 UTC): `vm.watermark_scale_factor = 50` and
+`vm.watermark_boost_factor = 0`**, persisted in `/etc/sysctl.d/99-gstammtisch-memory.conf` on gstammtisch (the
+repo copy `files/etc/sysctl.d/99-gstammtisch-memory.conf` carries wsf 50 and, since DOCS-FOLD-01, the boost
+line). The 200 trial below (live only, provisional, operator-approved as option (b)) is kept as history, with
+its numbers. The operator's target is ~100–300 MB free. The second Soulmask server start on the 200 trial hit
+the boost failure mode described in the next subsection.
+
+**A second measurement of the same zones** (Normal zone, 16 GB, in MB): wsf 200: min 54 /
+low 313 / high 573; wsf 50: min 54 / low 118 / high 183. The table above (MiB, 53 / … / 572) comes from the
+earlier ~10:20 UTC read. The second reading is stated in MB; 573 MB would be 546 MiB, not 572, so the difference
+may be a unit or rounding artefact rather than a different reading; it is not reconciled. DMA32 has
+its own watermarks, and `lowmem_reserve_ratio` keeps part of DMA32 free and unusable for most allocations.
+Observed total free: ~500–700 MB at wsf 200; **expected** ~200–350 MB at wsf 50 **[I]**.
+
+**Expected effect of the 200 trial on this heavily overcommitted host [I], with the trade-offs (historical):**
+- at least ~240 MiB more RAM is kept free (the low-mark difference), up to ~480 MiB right after a kswapd pass
+  (the high-mark difference), and it is not usable by page cache or anon;
+- kswapd runs earlier and more often: CPU in kswapd, more zswap compression, cold pages pushed to zswap and swap sooner;
+- in exchange, allocating tasks such as the game's threads enter **global** direct reclaim less often, so the
+  shrinker's synchronous writeback mostly runs in kswapd rather than in the game. If the caller is memcg
+  `memory.high` reclaim instead, this does not help. The disk is still saturated during a
+  burst, so the game's own swap-ins and IO still wait behind it; only its threads stop doing the writeback
+  themselves;
+- under sustained overcommit kswapd may run near-continuously.
+
+**The measurement that was owed for the 200 trial** (the next startup burst: the game's D-state time in
+`shrink_memcg_cb` versus kswapd, **the reclaim caller above `shrink_memcg_cb`, recorded with a deeper stack than
+`kstack(10)`**, and the fps dip; compare with M8: 455.8 s in `shrink_memcg_cb`, fps 29.9 → 5.9) is still the
+evidence that decides whether any watermark setting helps the burst; the caller is still the open question.
+
+### Watermark boost and the 14:09 UTC failure mode
+
+**How the watermarks work.** Each zone has min < low < high. kswapd wakes below low and reclaims up to high. An
+allocation that would go below min reclaims for itself (direct reclaim, which stalls the allocating thread).
+`vm.min_free_kbytes` sets min; `vm.watermark_scale_factor` sets the low−min and high−low gaps as a fraction of zone
+memory (200 = 2 %, 50 = 0.5 %, default 10).
+
+**The boost mechanism [S, kernel v7.2 source].** On an external-fragmentation event (an allocation steals a
+pageblock of another migratetype), `boost_watermark()` adds one pageblock (2 MB) to `zone->watermark_boost`
+(`page_alloc.c:2163-2195`). The cap is high_wmark × `vm.watermark_boost_factor` / 10000; the default 15000 means
+1.5 × high. The boost is added to all three watermarks and kswapd is woken. A boosted kswapd pass runs with
+`may_swap = 0` and `may_writepage = 0`, i.e. clean file pages only (`vmscan.c:7164-7165`); kcompactd then
+compacts. At the end of its run kswapd subtracts the boost it saw at the start (`vmscan.c` ~7248-7260), so boost
+added during the pass remains. The recompute `__setup_per_zone_wmarks()` sets `watermark_boost = 0`
+(`page_alloc.c:6501`).
+
+**The failure seen (2026-10-20 14:09 UTC, second Soulmask server starting).**
+- **Observed [M]:** boost 220 008 pages = 1.5 × 146 672 (the high watermark at wsf 200) = 859 MB, effective min
+  912 MB; `node_unreclaimable` 1 with kswapd asleep; all reclaim direct (`pgscan_kswapd` 0/s against `pgscan_direct`
+  11–16 k/s, `allocstall` ~170–200/s), with zswap at its pool limit writing back synchronously; ~1.2 GB of file
+  pages, anon protected by `memory.min`/`low`; a watermark recompute cleared it.
+- **How `node_unreclaimable` was reached: [I], unexplained.** The earlier chain "boosted reclaim fails 16 times, so
+  the node goes unreclaimable and kswapd sleeps" is not supported: v7.2 does **not** count a kswapd failure for a
+  pass that started boosted (`vmscan.c:7237-7242`: `if (!sc.nr_reclaimed && !boosted)` before incrementing
+  `kswapd_failures`, "to prevent the kswapd thread from stopping"). The counted failures must have come from
+  passes that began unboosted, or by another route. The observation is [M]; the path is open.
+- Because kswapd was asleep and the boost remained, every allocation, game threads included, entered direct
+  reclaim **[I]**.
+
+**Recovery [M].** Writing *any* value to `vm.watermark_scale_factor` or `vm.min_free_kbytes` runs
+`setup_per_zone_wmarks()`, which recomputes every zone's watermarks **and resets `watermark_boost` to 0** [S].
+Rewriting the same wsf (200) cleared the boost: kswapd resumed at once (`node_unreclaimable` 0, direct reclaim 0/s).
+
+**Decision (operator, 2026-10-20):** `vm.watermark_boost_factor = 0` (persisted on gstammtisch at 23:16 UTC) and
+`vm.watermark_scale_factor = 50`. **Cost of boost 0:** more fragmentation, little impact with THP=`madvise`.
+**Watch:** `allocstall_*` in `/proc/vmstat` during a server start shows whether wsf 50 leaves enough kswapd headroom.
+
+**Related knobs:** `min_free_kbytes`, `watermark_scale_factor`, `watermark_boost_factor`, `lowmem_reserve_ratio`,
+`extfrag_threshold`, `compaction_proactiveness`, THP `enabled`/`defrag`.
+
+**Swappiness drift (resolved 2026-10-21):** the host had `vm.swappiness = 10` while the repo said 100; the operator
+decided 10 and the repo now says 10 (backlog GG-6, subsection "`vm.swappiness`" above).
+
+**Wizard and host-check follow-up:** the mdt host-setup does not manage the watermarks yet; backlog MDT-021 and the
+decision summary in [`mdt-cockpit/docs/DESIGN-GUIDE.md`](../../mdt-cockpit/docs/DESIGN-GUIDE.md#memory-watermarks-and-watermark-boost-are-kernel-settings-this-host-setup-does-not-own-yet-follow-up).
+
+### Steady state: zswap residency against `memory.low`
+
+Below its `memory.low` a game is not visited by the zswap shrinker, so its compressed pool stays resident for hours
+(observed 2026-10-20 ~21:40 UTC); above low at server start it writes back nearly everything, hence the
+all-or-nothing pattern. Numbers, mechanism and the sizing consequence (an inference that needs measurement):
+[zswap-writeback-governor KERNEL-ANALYSIS 6.1](../../zswap-writeback-governor/docs/KERNEL-ANALYSIS.md#61-steady-state-zswap-residency-below-memorylow-observation-2026-10-20-2140-utc).
+Manual commands: [OBSERVATION.md](OBSERVATION.md#per-memcg-zswap-residency-and-charged-io-manual-commands).
 
 ---
 
@@ -141,7 +372,7 @@ be applied at runtime, are documented in that companion's `CGROUP-NOTES.md`.
 - `memory.low` (**best-effort**) — abundant memory → game keeps up to 12 G; under pressure the kernel reclaims unprotected cgroups first; the game is reclaimed *last*, never immune.
 - `memory.high` (**throttle**) — dev slice over 8 G → allocations throttle + reclaim *within the slice*; slows the offender without killing.
 - `memory.max` (**hard cap → OOM**) — dev slice hits 14 G → OOM kills the largest process *inside dev.slice*; the game is never considered.
-- `memory.zswap.writeback` — `1` everywhere since 2026-07-07 (and for `interactive.slice` too since 2026-07-20, closing the last exception): zswap's LRU means only the coldest-of-cold pages drain to disk, freeing pool RAM. The game observably carries a ~4G genuinely-cold tail. Gate: if login latency regresses, set the game back to `0` (`SOULMASK_WRITEBACK=0`, see MEASUREMENTS.md M4). The pak slice goes further: `memory.zswap.max=0` (pak is zstd-incompressible, 1.006× — zswap would waste CPU+RAM on it; cold pak goes straight to disk).
+- `memory.zswap.writeback` — `1` everywhere since 2026-07-07 (and for `interactive.slice` too since 2026-07-20, closing the last exception): zswap's LRU means only the coldest-of-cold pages drain to disk, freeing pool RAM. The game observably carries a ~4G genuinely-cold tail. ~~Gate: if login latency regresses, set the game back to `0`~~ **Superseded by the operator decision of 2026-10-20: writeback=1 and the zswap shrinker are required; do not set the game's writeback to 0** (see MEASUREMENTS.md M4 for the history). The pak slice goes further: `memory.zswap.max=0` (pak is zstd-incompressible, 1.006× — zswap would waste CPU+RAM on it; cold pak goes straight to disk).
 - `cpu.weight` / `io.weight` — proportional under contention only; idle CPU/IO is always available to dev.
 
 **Why swap-IN latency drives these choices:** swap-*out* is async/background; swap-*in* is a synchronous page fault that blocks the process. So protecting the game = keeping its *hot* pages where fault-in is fastest: uncompressed RAM via a correctly-sized (and chain-effective) `memory.min`, warm pages in zswap (µs faults), and only the genuinely-cold tail on disk. The monitor's `rf_d/s` column (disk refaults) is the alarm that cold-tail paging is touching pages that aren't actually cold.
@@ -156,7 +387,7 @@ be applied at runtime, are documented in that companion's `CGROUP-NOTES.md`.
 | `memory.low` | soft floor ↑ | Best-effort: cgroup reclaimed last, not immune | Exceeded under severe pressure; good for "prefer to keep" |
 | `memory.high` | soft ceiling ↓ | Throttles allocs + aggressive reclaim; process survives | Useful for test pressure; never use on production game |
 | `memory.max` | hard ceiling ↓ | OOM kill inside the cgroup | One step too far = crash; don't use for live calibration |
-| `memory.zswap.writeback` | 0 / 1 | 0 = pages stay in zswap pool forever (never to disk) | 1 everywhere since 2026-07-07 (cold tail → disk); revert game to 0 if logins regress (MEASUREMENTS.md M4) |
+| `memory.zswap.writeback` | 0 / 1 | 0 = pages stay in zswap pool forever (never to disk) | 1 everywhere since 2026-07-07 (cold tail → disk); ~~revert game to 0 if logins regress~~ superseded 2026-10-20: writeback=1 and the shrinker are required, do not set 0 (history: MEASUREMENTS.md M4) |
 
 **gstammtisch deployed values:**
 
@@ -176,7 +407,8 @@ be applied at runtime, are documented in that companion's `CGROUP-NOTES.md`.
 > IO caps are now **dynamic**: `setup-cgroups.sh` applies `BE_IO_CAP_PCT`
 > (default 40%) of the measured `io-baseline.env` ceilings at runtime via
 > `systemctl set-property --runtime besteffort.slice`; the unit's static
-> `IO*Max` (31M/100/400) is only a boot-window fallback before that runs.
+> `IO*Max` (31M/100/400) is only a boot-window fallback before that runs. (2026-10-20: these caps are not
+> derived from the device's real ~10–15 MB/s steady write rate; see [HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md) §5.)
 >
 > ⚠ **Protection chain (found 2026-07-06):** `memory.min`/`memory.low` are *hierarchical* — a cgroup's effective protection is capped by every ancestor's value. The game scope lives under `system.slice` and the pak slice under `soulmask.slice`; without `MemoryMin` on those ancestors both floors are **ineffective** against global reclaim. Since 2026-07-07 `setup-cgroups.sh` asserts the ancestor floors (table above) via `systemctl set-property`. Do NOT set `system.slice` below the game floor — the parent value silently CAPS the child's effective protection.
 
@@ -246,7 +478,7 @@ Wings creates the Soulmask container under Docker's default cgroup parent, and r
 3. **`gstammtisch-cgroups.service`** re-asserts the raw Soulmask knobs; optionally trigger it from a Wings post-start hook or a `.timer` to survive container recreation.
 
 ### 5.3 systemd-oomd — the safety net
-With this much oversubscription the in-kernel OOM killer is slow and may pick a poor victim. [`oomd.conf.d/gstammtisch.conf`](files/etc/systemd/oomd.conf.d/gstammtisch.conf) + `ManagedOOMMemoryPressure=kill` on `besteffort.slice` makes systemd-oomd kill the worst **best-effort** offender fast on PSI/swap pressure — never touching the protected game or the IDE tier. This is what makes `swappiness=100` + large swap safe.
+With this much oversubscription the in-kernel OOM killer is slow and may pick a poor victim. [`oomd.conf.d/gstammtisch.conf`](files/etc/systemd/oomd.conf.d/gstammtisch.conf) + `ManagedOOMMemoryPressure=kill` on `besteffort.slice` makes systemd-oomd kill the worst **best-effort** offender fast on PSI/swap pressure — never touching the protected game or the IDE tier. This is what makes the swappiness setting (now 10, see section 4) + large swap safe.
 
 ---
 

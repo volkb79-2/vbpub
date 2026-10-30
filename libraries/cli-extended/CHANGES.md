@@ -174,6 +174,25 @@ Behaviour changes a consumer can see:
 
 <!-- cmru: release history -->
 
+## [0.5.0] - 2026-10-21
+<!-- cmru: generated -->
+<!-- cmru: source-end=eaa1421fc7e2df2fbf287a4cb68243b7a73f238b -->
+
+### Added
+- feat(run-gate): make wheel SemVer the only supported interface (9a0e192ab)
+- feat: add contract-2 resource event attribution (90dc9078d)
+
+### Changed
+- INT-01 amendment review of steps 1-3: fold duplicate KI-85 into KI-83 (3365d8de2)
+- Merge cmru-candidate-integrated-20261017 (03c2f5bab) (INT-01 step 2) (66bd6c9f9)
+- Merge cgprofile-v1.0.0 (a27fd282f) into estate-integration-20261019 (INT-01 step 1) (12d774477)
+- Merge PWMCP-02 client CLI adoption (eddd0b5df)
+- chore(gates): declare mutation resource ceilings (da06e52de)
+- chore: integrate contract-2 release wave (336336d81)
+
+### Documentation
+- docs(pwmcp): PWMCP-02 report, backlog FIXED, program row 5; file cmru KI-70 and CLI-EXT-32 (194f01e1d)
+
 ## [0.4.0] - 2026-10-07
 <!-- cmru: generated -->
 <!-- cmru: source-end=99f337081f71a727f868d003dbb81e97bb319524 -->

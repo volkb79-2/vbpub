@@ -6,7 +6,13 @@ set -euo pipefail
 
 die() {
   local exit_status=1
-  if [[ "${lane:-}" == b110-pilot && "${prior_pilot_evidence_secured:-false}" != true ]]; then
+  if [[ "${lane:-}" == self-qualification \
+    || "${lane:-}" == self-qualification-preflight \
+    || "${lane:-}" == self-qualification-provisional ]]; then
+    # No Assay FAIL exists when B105 cannot launch or complete its measurement.
+    # Run-Gate maps exit 3 to infrastructure ERROR, which is retried.
+    exit_status=3
+  elif [[ "${lane:-}" == b110-pilot && "${prior_pilot_evidence_secured:-false}" != true ]]; then
     # The lane maps exit 3 to run-gate ERROR, which is excluded from the
     # per-commit success history. Do not let a host refusal before prior
     # evidence is secured replace the pass needed to archive that evidence.
@@ -16,48 +22,25 @@ die() {
   exit "$exit_status"
 }
 
-RESOURCE_OBSERVER_SOURCE=/run/cgprofile/resource-observer.sock
+RESOURCE_OBSERVER_SOURCE=/run/cgprofile/observer/resource-observer.sock
 # This override names Docker's host-side bind source, not a translated target
 # path. Production uses the canonical host socket; the registered gate tests
 # inject the already-mounted observer source while substituting Docker.
 if [[ -v ASSAY_GATE_RESOURCE_OBSERVER_SOURCE ]]; then
   RESOURCE_OBSERVER_SOURCE="$ASSAY_GATE_RESOURCE_OBSERVER_SOURCE"
 fi
-RESOURCE_OBSERVER_TARGET="/tmp/cgprofile-resource-observer.sock"
+RESOURCE_OBSERVER_DIRECTORY_SOURCE="$(dirname "$RESOURCE_OBSERVER_SOURCE")"
+RESOURCE_OBSERVER_TARGET_DIRECTORY="/run/cgprofile-observer"
+RESOURCE_OBSERVER_TARGET="$RESOURCE_OBSERVER_TARGET_DIRECTORY/resource-observer.sock"
+source "$(dirname "${BASH_SOURCE[0]}")/resource-observer-gid.sh"
 
 resource_observer_gid() {
-  local parent
-  local parent_uid parent_gid parent_mode socket_uid socket_gid socket_mode
   case "$RESOURCE_OBSERVER_SOURCE" in
-    /run/cgprofile/resource-observer.sock) parent=/run/cgprofile ;;
-    /tmp/cgprofile-resource-observer.sock) parent=/tmp ;;
+    /run/cgprofile/observer/resource-observer.sock|/run/cgprofile-observer/resource-observer.sock) ;;
     *) die "unsupported cgprofile observer source path: $RESOURCE_OBSERVER_SOURCE" ;;
   esac
-  [[ -d "$parent" && ! -L "$parent" ]] \
-    || die "cgprofile observer directory is absent, not a directory, or a symlink: $parent"
-  read -r parent_uid parent_gid parent_mode < <(stat -Lc '%u %g %a' "$parent") \
-    || die 'could not inspect the cgprofile observer directory'
-  [[ "$parent_uid" == 0 ]] \
-    || die 'cgprofile observer directory is not root-owned'
-  if [[ "$parent" == /tmp ]]; then
-    (( (8#$parent_mode & 01000) != 0 )) \
-      || die 'the mounted cgprofile observer socket in /tmp is not protected by the sticky bit'
-  else
-    (( (8#$parent_mode & 0002) == 0 )) \
-      || die 'cgprofile observer directory is world-writable'
-  fi
-  [[ -S "$RESOURCE_OBSERVER_SOURCE" && ! -L "$RESOURCE_OBSERVER_SOURCE" ]] \
-    || die "cgprofile observer endpoint is not a Unix socket: $RESOURCE_OBSERVER_SOURCE"
-  read -r socket_uid socket_gid socket_mode < <(stat -Lc '%u %g %a' "$RESOURCE_OBSERVER_SOURCE") \
-    || die 'could not inspect the cgprofile observer socket'
-  [[ "$socket_uid" == 0 ]] \
-    || die 'cgprofile observer socket is not root-owned'
-  if [[ "$parent" == /run/cgprofile && "$socket_gid" != "$parent_gid" ]]; then
-    die 'cgprofile observer socket group does not match its root-owned directory'
-  fi
-  (( (8#$socket_mode & 0007) == 0 && (8#$socket_mode & 0020) != 0 )) \
-    || die 'cgprofile observer socket must be group-connectable and not accessible to other users'
-  printf '%s\n' "$socket_gid"
+  assay_resource_observer_gid "$RESOURCE_OBSERVER_SOURCE" /run/cgprofile \
+    || die 'host observer group identity check failed'
 }
 
 assay_git() {
@@ -109,19 +92,19 @@ clear_prior_outputs() {
 }
 
 usage() {
-  die 'usage: self-qualification-container.sh WORKTREE self-qualification|self-qualification-preflight|b110-pilot|b110-screen|analysis-r2-pilot'
+  die 'usage: self-qualification-container.sh WORKTREE self-qualification|self-qualification-preflight|self-qualification-provisional|b110-pilot|b110-screen|analysis-r2-pilot'
 }
 
 [[ $# -eq 2 ]] || usage
 worktree="$1"
 lane="$2"
 case "$lane" in
-  self-qualification|self-qualification-preflight|b110-pilot|b110-screen|analysis-r2-pilot) ;;
+  self-qualification|self-qualification-preflight|self-qualification-provisional|b110-pilot|b110-screen|analysis-r2-pilot) ;;
   *) usage ;;
 esac
 
 case "$worktree" in
-  /workspaces/vbpub|/workspaces/vbpub/.worktrees/*) ;;
+  /workspaces/vbpub|/workspaces/vbpub/.worktrees/*|/workspaces/vbpub/.claude/worktrees/*) ;;
   *) die "worktree $worktree is outside /workspaces/vbpub" ;;
 esac
 worktree="$(cd -- "$worktree" && pwd -P)" \
@@ -130,6 +113,18 @@ worktree="$(cd -- "$worktree" && pwd -P)" \
 project="$worktree/assay"
 [[ -d "$project" && ! -L "$project" && -f "$project/pyproject.toml" ]] \
   || die "selected worktree has no real assay project directory: $project"
+
+for required_command in realpath flock chmod python3 stat; do
+  command -v "$required_command" >/dev/null 2>&1 \
+    || die "required host command is unavailable: $required_command"
+done
+if [[ "$lane" != b110-pilot ]]; then
+  for required_command in rm mkdir mv; do
+    command -v "$required_command" >/dev/null 2>&1 \
+      || die "required host command is unavailable: $required_command"
+  done
+fi
+
 project_identity="$(stat -c '%d:%i' -- "$project")" \
   || die 'cannot capture the Assay project directory identity before container startup'
 [[ "$project_identity" =~ ^([0-9]+):([0-9]+)$ ]] \
@@ -143,15 +138,38 @@ source_commit="$(assay_git -C "$worktree" rev-parse HEAD)" \
 source_tree="$(assay_git -C "$worktree" rev-parse 'HEAD^{tree}')" \
   || die "cannot resolve selected worktree tree"
 
-for required_command in realpath flock chmod python3 stat; do
-  command -v "$required_command" >/dev/null 2>&1 \
-    || die "required host command is unavailable: $required_command"
-done
-if [[ "$lane" != b110-pilot ]]; then
-  for required_command in rm mkdir mv; do
-    command -v "$required_command" >/dev/null 2>&1 \
-      || die "required host command is unavailable: $required_command"
-  done
+if [[ "$lane" == self-qualification || "$lane" == self-qualification-provisional ]]; then
+  # run-gate admission may refuse before this wrapper starts, but once the
+  # wrapper has accepted a real worktree, clear old deferral evidence before
+  # dirty-tree, shared-host, or other outer admission checks can refuse.
+  if ! python3 - "$project" <<'PYEOF'
+import os
+import sys
+
+project_fd = os.open(
+    sys.argv[1], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+)
+try:
+    try:
+        assay_fd = os.open(
+            ".assay", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            dir_fd=project_fd,
+        )
+    except FileNotFoundError:
+        raise SystemExit(0)
+    try:
+        try:
+            os.unlink("mutation-postponed-assay.json", dir_fd=assay_fd)
+        except FileNotFoundError:
+            pass
+    finally:
+        os.close(assay_fd)
+finally:
+    os.close(project_fd)
+PYEOF
+  then
+    die 'cannot safely remove a prior R2 postponement marker before wrapper admission'
+  fi
 fi
 
 # The run-gate `resources.shared` flock is scoped to its caller's /tmp. B105
@@ -308,7 +326,7 @@ host_workspace_root="${ASSAY_GATE_HOST_WORKSPACE_ROOT:-$workspace_fsroot}"
 if ! command -v docker >/dev/null 2>&1; then
   die 'Docker is required to launch the cgroup-visible tester-unified runner'
 fi
-for required_command in timeout setsid od tr paste rg grep sort sed; do
+for required_command in timeout setsid od tr paste grep sort sed; do
   command -v "$required_command" >/dev/null 2>&1 \
     || die "required host command is unavailable: $required_command"
 done
@@ -320,12 +338,8 @@ docker_bounded() {
 }
 
 case "${ASSAY_GATE_ALLOW_SHARED_HOST:-}" in
-  '') ;;
-  1)
-    printf 'ASSAY_GATE_INCONCLUSIVE=Assay qualification requires an exclusive gates host; ASSAY_GATE_ALLOW_SHARED_HOST=1 is unsupported\n' >&2
-    exit 3
-    ;;
-  *) die 'ASSAY_GATE_ALLOW_SHARED_HOST must be unset or empty for B105 qualification' ;;
+  '' | 1) ;; # compatibility alias; cgroup evidence, not host exclusivity, governs the result
+  *) die 'ASSAY_GATE_ALLOW_SHARED_HOST must be unset, empty or 1' ;;
 esac
 
 docker_bounded image inspect tester-unified:local >/dev/null 2>&1 \
@@ -334,26 +348,12 @@ docker_bounded image inspect tester-unified:local >/dev/null 2>&1 \
 b105_memory_limit=2g
 b105_memory_reserve_bytes=2147483648
 observer_gid="$(resource_observer_gid)"
+host_docker_gid="$(assay_host_docker_gid /run/cgprofile)" \
+  || die 'could not resolve the host Docker GID from the verified host setup'
 cgroup_parent="$("$project/tools/cgroup-parent.sh" \
   --memory-reserve-bytes "$b105_memory_reserve_bytes")" \
   || die 'the host gates cgroup tier or its 2 GiB RAM headroom is absent or unverified'
 [[ -n "$cgroup_parent" ]] || die 'the verified gates cgroup tier is empty'
-
-# This is an admission snapshot, not a host-wide lock: the repository lock
-# excludes competing B105 callers, and the serial gate coordinator must keep
-# other projects' registered gates out for the duration. The scan catches a
-# gate already running; a cross-project gate launched after the scan remains an
-# unresolved evidence risk and invalidates this qualification attempt.
-if ! active_names="$(docker_bounded ps --no-trunc --format '{{.Names}}')"; then
-  printf 'ASSAY_GATE_INCONCLUSIVE=host check failed (docker ps) — rerun\n' >&2
-  exit 3
-fi
-active_gates="$(printf '%s\n' "$active_names" | rg '^run-gate-' || true)"
-if [[ -n "$active_gates" ]]; then
-  printf 'ASSAY_GATE_INCONCLUSIVE=host busy — rerun: %s\n' \
-    "$(printf '%s' "$active_gates" | paste -sd, -)" >&2
-  exit 3
-fi
 
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/assay-b105-container.XXXXXXXX")" \
   || die 'could not create private container ownership scratch'
@@ -464,6 +464,9 @@ forwarded_env=()
 if [[ -n "${CGROUP_PARENT_DEV_BACKGROUND:-}" ]]; then
   forwarded_env+=(-e "CGROUP_PARENT_DEV_BACKGROUND=$CGROUP_PARENT_DEV_BACKGROUND")
 fi
+if [[ -v CMRU_RELEASE_GATE_VERSION ]]; then
+  forwarded_env+=(-e "CMRU_RELEASE_GATE_VERSION=$CMRU_RELEASE_GATE_VERSION")
+fi
 b110_state_env=()
 if [[ "$lane" == b110-pilot || "$lane" == b110-screen ]]; then
   [[ "$assay_state_present" == true ]] || die 'B110 did not prepare its .assay state directory'
@@ -477,7 +480,7 @@ mount_args=(--mount "type=bind,src=$host_workspace_root,dst=$host_workspace_root
 if [[ "$host_workspace_root" != "/workspaces/vbpub" ]]; then
   mount_args+=(--mount "type=bind,src=$host_workspace_root,dst=/workspaces/vbpub")
 fi
-mount_args+=(--mount "type=bind,src=$RESOURCE_OBSERVER_SOURCE,dst=$RESOURCE_OBSERVER_TARGET,readonly")
+  mount_args+=(--mount "type=bind,src=$RESOURCE_OBSERVER_DIRECTORY_SOURCE,dst=$RESOURCE_OBSERVER_TARGET_DIRECTORY,readonly")
 
 case "$lane" in
   self-qualification)
@@ -492,6 +495,14 @@ case "$lane" in
     wait_timeout_label=65m
     wait_timeout_seconds=3900
     inner_argv=(bash "$project/tools/self-qualification-gate.sh" "$worktree" "$lane")
+    ;;
+  self-qualification-provisional)
+    wait_timeout_label=3h5m
+    wait_timeout_seconds=11100
+    inner_argv=(
+      timeout --verbose --signal=TERM --kill-after=30s 10800s
+      bash "$project/tools/self-qualification-gate.sh" "$worktree" "$lane"
+    )
     ;;
   b110-pilot)
     # The build and venv setup happen before the 90-minute campaign-attempt
@@ -535,9 +546,11 @@ setsid timeout --signal=TERM --kill-after=5s 60s docker run -d \
   --cpus=3 \
   --memory="$b105_memory_limit" \
   --memory-swap=8g \
+  --pids-limit=8192 \
   --group-add "$observer_gid" \
   --network=none \
   -e "CGROUP_PARENT_DEV_GATES=$cgroup_parent" \
+  -e "ASSAY_GATE_HOST_DOCKER_GID=$host_docker_gid" \
   -e "ASSAY_RESOURCE_OBSERVER_SOCKET=$RESOURCE_OBSERVER_TARGET" \
   -e "ASSAY_B105_GATE_EXPECTED_COMMIT=$source_commit" \
   -e "ASSAY_B105_GATE_EXPECTED_TREE=$source_tree" \
@@ -546,7 +559,7 @@ setsid timeout --signal=TERM --kill-after=5s 60s docker run -d \
   "${mount_args[@]}" \
   -w "$worktree" \
   tester-unified:local \
-  bash -lc 'git config --global --replace-all safe.directory "*" && exec "$@"' \
+  bash -lc 'git config --global --replace-all safe.directory "*" && groups=" $(id -G) " && observer_gid="$(stat -c %g /run/cgprofile-observer)" && [[ "$ASSAY_GATE_HOST_DOCKER_GID" =~ ^[1-9][0-9]*$ ]] && [[ "$groups" == *" $observer_gid "* ]] && [[ "$groups" != *" $ASSAY_GATE_HOST_DOCKER_GID "* ]] || { echo "tester identity must include only the observer access group, not the host Docker group" >&2; exit 2; } && exec "$@"' \
   assay-b105-inner "${inner_argv[@]}" >"$launch_output" 2>"$launch_error" &
 launch_pid=$!
 if wait "$launch_pid"; then
@@ -564,7 +577,7 @@ fi
 if ((launch_status != 0)); then
   if [[ -s "$launch_error" ]]; then cat "$launch_error" >&2; fi
   printf 'self-qualification-container: docker run failed (exit %s)\n' "$launch_status" >&2
-  exit "$launch_status"
+  exit 3
 fi
 
 if [[ ! "$container_id" =~ ^[0-9a-f]{64}$ || ! -f "$ownership_file" ]]; then
@@ -583,9 +596,9 @@ if [[ "$ownership_identity" != "$container_id|/$container_name|$ownership_token"
 fi
 
 identity="$(docker_bounded inspect "$container_id" \
-  --format '{{.Id}}|{{.Name}}|{{index .Config.Labels "assay.b105-gate.owner"}}|{{.Config.User}}|{{.HostConfig.CgroupParent}}|{{.HostConfig.CgroupnsMode}}|{{.HostConfig.NanoCpus}}|{{.HostConfig.Memory}}|{{.HostConfig.MemorySwap}}|{{.HostConfig.NetworkMode}}')" \
+  --format '{{.Id}}|{{.Name}}|{{index .Config.Labels "assay.b105-gate.owner"}}|{{.Config.User}}|{{.HostConfig.CgroupParent}}|{{.HostConfig.CgroupnsMode}}|{{.HostConfig.NanoCpus}}|{{.HostConfig.Memory}}|{{.HostConfig.MemorySwap}}|{{.HostConfig.PidsLimit}}|{{.HostConfig.NetworkMode}}')" \
   || die 'could not inspect the launched B105 container'
-expected_identity="$container_id|/$container_name|$ownership_token|1003|$cgroup_parent|private|3000000000|2147483648|8589934592|none"
+expected_identity="$container_id|/$container_name|$ownership_token|1003|$cgroup_parent|private|3000000000|2147483648|8589934592|8192|none"
 if [[ "$identity" != "$expected_identity" ]]; then
   die "B105 container launch verification mismatch: $identity"
 fi
@@ -597,7 +610,7 @@ expected_mounts="$host_workspace_root"$'\t'"$host_workspace_root"
 if [[ "$host_workspace_root" != "/workspaces/vbpub" ]]; then
   expected_mounts+=$'\n'"$host_workspace_root"$'\t'"/workspaces/vbpub"
 fi
-expected_mounts+=$'\n'"$RESOURCE_OBSERVER_SOURCE"$'\t'"$RESOURCE_OBSERVER_TARGET"
+expected_mounts+=$'\n'"$RESOURCE_OBSERVER_DIRECTORY_SOURCE"$'\t'"$RESOURCE_OBSERVER_TARGET_DIRECTORY"
 if [[ "$(printf '%s\n' "$mounts" | sed '/^$/d' | sort)" != \
       "$(printf '%s\n' "$expected_mounts" | sort)" ]] \
   || printf '%s\n' "$mounts" | grep -Fq '/var/run/docker.sock'; then
@@ -607,11 +620,16 @@ fi
 container_env="$(docker_bounded inspect "$container_id" \
   --format '{{range .Config.Env}}{{println .}}{{end}}')" \
   || die 'could not inspect B105 container environment'
-for expected in \
-  "CGROUP_PARENT_DEV_GATES=$cgroup_parent" \
-  "ASSAY_RESOURCE_OBSERVER_SOCKET=$RESOURCE_OBSERVER_TARGET" \
-  "ASSAY_B105_GATE_EXPECTED_COMMIT=$source_commit" \
-  "ASSAY_B105_GATE_EXPECTED_TREE=$source_tree"; do
+expected_container_env=(
+  "CGROUP_PARENT_DEV_GATES=$cgroup_parent"
+  "ASSAY_RESOURCE_OBSERVER_SOCKET=$RESOURCE_OBSERVER_TARGET"
+  "ASSAY_B105_GATE_EXPECTED_COMMIT=$source_commit"
+  "ASSAY_B105_GATE_EXPECTED_TREE=$source_tree"
+)
+if [[ -v CMRU_RELEASE_GATE_VERSION ]]; then
+  expected_container_env+=("CMRU_RELEASE_GATE_VERSION=$CMRU_RELEASE_GATE_VERSION")
+fi
+for expected in "${expected_container_env[@]}"; do
   if ! printf '%s\n' "$container_env" | grep -Fqx "$expected"; then
     die "B105 container is missing required environment fact: ${expected%%=*}"
   fi
@@ -677,13 +695,29 @@ fi
 
 docker_bounded logs "$container_id" >"$scratch/container.log" 2>&1 \
   || die 'could not collect the completed B105 container log'
-[[ "$wait_status" == 0 ]] || die "Assay qualification container exited with status $wait_status"
+if [[ "$wait_status" != 0 ]]; then
+  if [[ "$lane" == self-qualification \
+    || "$lane" == self-qualification-preflight \
+    || "$lane" == self-qualification-provisional ]]; then
+    if [[ "$wait_status" == 1 ]]; then
+      printf 'self-qualification-container: Assay qualification produced a completed FAIL (exit 1)\n' >&2
+      exit 1
+    fi
+    printf 'ASSAY_GATE_INCONCLUSIVE=Assay qualification ended incomplete or infrastructure (container exit %s)\n' \
+      "$wait_status" >&2
+    exit 3
+  fi
+  die "Assay qualification container exited with status $wait_status"
+fi
 case "$lane" in
   self-qualification)
     marker=ASSAY_SELF_QUALIFICATION_VERIFIED=1
     ;;
   self-qualification-preflight)
     marker=ASSAY_SELF_QUALIFICATION_PREFLIGHT_VERIFIED=1
+    ;;
+  self-qualification-provisional)
+    marker=ASSAY_SELF_QUALIFICATION_PROVISIONAL_VERIFIED=1
     ;;
   b110-pilot)
     if grep -Eq '^B110_SCREEN_(EXIT|VERIFIED|TIMEOUT_FAILSAFE|VERDICT)=' "$scratch/container.log"; then

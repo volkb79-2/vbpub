@@ -189,13 +189,29 @@ def _container_name(kind: str) -> str:
     return f"cmru-{kind}-{uuid.uuid4().hex[:8]}"
 
 
-def _remove_container(name: str) -> None:
-    """Best-effort ``docker stop`` then ``docker rm -f`` by EXACT name."""
-    for argv in (["docker", "stop", "-t", "5", name], ["docker", "rm", "-f", name]):
-        try:
-            subprocess.run(argv, capture_output=True, timeout=60, check=False)
-        except (OSError, subprocess.SubprocessError):
-            pass
+def _remove_container(name: str) -> bool:
+    """Best-effort ``docker stop`` then ``docker rm -f`` by EXACT name.
+
+    Never raises (it runs in ``finally`` blocks). Returns whether the container
+    is known to be gone: ``rm -f`` succeeded or Docker reports no such
+    container. A hung or failed ``rm -f`` returns ``False`` -- e.g. a probe
+    whose ``docker start`` hung daemon-side stays in ``Created`` state.
+    """
+    try:
+        subprocess.run(
+            ["docker", "stop", "-t", "5", name], capture_output=True, timeout=60, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        result = subprocess.run(
+            ["docker", "rm", "-f", name],
+            capture_output=True, text=True, errors="replace", timeout=60, check=False,
+        )
+        stderr = getattr(result, "stderr", None) or ""
+        return result.returncode == 0 or "no such container" in stderr.lower()
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 @contextmanager
@@ -287,7 +303,9 @@ def _run_probe(
     ``--pull=never``: the probe image is privileged with host PID, so it must
     already be present locally (digest-pinned) and is never pulled implicitly.
     ``timeout`` only kills the docker CLI, so a probe that did not finish
-    normally (timeout, signal) has its container removed by exact name.
+    normally (timeout, signal) has its container removed by exact name. A
+    timeout whose removal cannot be confirmed is still a probe failure, but
+    its message names the container left on the Docker host.
     """
     name = _container_name("probe")
     finished = False
@@ -301,6 +319,14 @@ def _run_probe(
         )
         finished = True
         return result
+    except subprocess.TimeoutExpired as exc:
+        finished = True  # cleaned up here, so its outcome can be reported
+        if _remove_container(name):
+            raise
+        raise subprocess.SubprocessError(
+            f"{exc}; probe container {name} could not be removed and may remain "
+            f"on the Docker host (docker inspect {name})"
+        ) from exc
     finally:
         if not finished:
             _remove_container(name)

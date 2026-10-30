@@ -1,7 +1,8 @@
-# CONSUMERS.md — adopting nyxloom's managed backlog entries
+# CONSUMERS.md — adopting Nyxloom CLI workflows
 
-Worked recipes for the per-entry backlog (`nyxloom-trove/backlog/`, one file
-per issue). Design authority (WHY it exists, rejected alternatives):
+Pasteable recipes for the installed Nyxloom command surfaces, including the
+per-entry backlog (`nyxloom-trove/backlog/`, one file per issue). Backlog
+design authority (WHY it exists, rejected alternatives):
 [`backlog-entries-spec.md`](backlog-entries-spec.md).
 
 The [canonical CLI reference](CLI-REFERENCE.md) records every accepted
@@ -49,6 +50,294 @@ state transitions. The lower-confidence content-merge channel requires both
 --apply and --apply-content-merges. Project-level resume separately dry-runs
 resync and refuses unresolved drift unless --force is supplied.
 
+## Report Claude Code usage
+
+`nyxloom usage report` scans local Claude Code transcripts and attributes
+deduplicated API request tokens to each session and nested subagent. D-022
+chooses this additive command spelling; the command uses the pure
+`session_extract.usage` service without project registration or daemon state.
+Reports are read-only unless `--out FILE` is supplied, which writes the
+selected rendering to that file with mode `0600`. The writer creates missing parent directories
+with mode `0700` and reports invalid parents clearly.
+Operator UI anchors are the narrow local-state exception: they are written
+only by the explicit `usage anchor add` command. JSON uses the frozen
+`usage-report-v1` schema and contains an exact call ledger, nodes with self and
+subtree totals, typed events, lineage edges, conflicts, provenance and coverage
+warnings. It excludes message, thinking and tool content and does not serialize
+filesystem paths.
+
+`--no-labels` removes session titles and agent topics. `agent_type` remains,
+and `project_id` is a stable hash of the recorded cwd, so the same project can
+be correlated across reports without exposing its path. Cross-file conflicts
+keep one deterministic call marked `conflicted`; its conflict record identifies
+the representative. JSON and CSV mark the individual call; table, HTML and PDF
+show conflicted-call counts on the corresponding visible node rows.
+
+```sh
+# Last 24 hours: raw tokens, experimental weighted units, local share and USD estimate.
+nyxloom usage report --since 24h
+
+# Select whole sessions recorded under this working directory and save JSON.
+nyxloom usage report --since 7d --project /path/to/project \
+  --format json --out usage-7d.json
+
+# Write the exact call ledger as CSV, ordered by time; rank the table by count.
+nyxloom usage report --since 24h --format csv --out usage.csv \
+  --sort calls
+
+# Hide session titles and agent topic labels in a table report.
+nyxloom usage report --since 24h --no-labels
+
+# Export standalone chart data from the same exact ledger.
+nyxloom usage charts --since 24h --out usage-charts.json
+
+# Group weighted buckets by model and remove free-text labels before writing.
+nyxloom usage charts --since 7d --group-by model --top 12 \
+  --no-labels --out anonymous-model-charts.json
+
+# Inspect the dated official API prices and guarded cost-state reconciliation.
+nyxloom usage prices --fit --format json
+
+# Compare a named rolling analysis range with observed account reset intervals.
+nyxloom usage windows --since 7d --format json
+
+# Record a reading from the account UI; use the exact displayed values.
+nyxloom usage anchor add --kind five_hour --at 2026-10-28T18:15:00Z --percent 96 \
+  --reset-at 2026-10-28T20:00:00Z --source settings-usage \
+  --coverage-assumption local-only-lower-bound
+nyxloom usage anchor list
+nyxloom usage calibrate --format json
+```
+
+The CSV writer prefixes a single quote to every text cell starting with `=`,
+`+`, `-`, `@`, tab, or carriage return, so user-controlled labels and IDs are
+treated as text by spreadsheet software. This changes only CSV text cells;
+numeric columns stay numeric and JSON output preserves the original values.
+See the [design rationale](DESIGN-GUIDE.md#local-usage-report).
+
+`--since` accepts an ISO-8601 timestamp with a timezone or a positive duration
+using seconds, minutes, hours, days, or weeks (`s`, `m`, `h`, `d`, `w`). The
+report interval is half-open `[since, until)` in UTC: `--since` is included and
+`--until` is excluded. A relative start counts backward from `--until` when
+present, otherwise from invocation time. Each request uses its own
+timezone-aware record timestamp; missing or invalid times are skipped and
+reported as coverage diagnostics. The table marks coverage `partial` when
+records or attribution are missing; successful stream and copied-prefix merges
+remain visible counts without making coverage partial by themselves. `--project` matches recorded `cwd` exactly or
+by a unique basename; `--session` selects one exact loaded session ID.
+
+The report labels three separate measures. Raw token units sum input,
+cache-read, cache-write 5-minute, cache-write 1-hour, unclassified cache-write,
+and output; thinking is a subset of output and is not counted twice. Weighted
+units use the configurable `e009-historical` experimental profile. The default
+TOML file records exact model IDs, documented token-class prices and its
+retrieval date. API-equivalent USD is an estimate from list prices, not a bill
+or a Claude subscription usage value. An unknown model, unknown pricing
+modifier, or unclassified cache-write leaves that call's USD value null and
+adds an explicit unpriced reason. Supply an alternate TOML with `--weights FILE`;
+it must keep schema version 1 and cite the official pricing page.
+
+`nyxloom usage prices --fit` uses `cost-state` only as a diagnostic. It returns
+`unfit` without coefficients unless the file sequence, transcript-family
+scope, monotonicity, cache TTL split, full rank and residual bound all pass.
+An unfit result is expected when records lack 5-minute/1-hour counters or do
+not match the deduplicated family ledger.
+
+`nyxloom usage windows` applies `--since` and `--until` as a half-open UTC
+range `[since, until)` to transcript calls, rejection events, reset evidence,
+reset timestamps, and interval metrics. Reset evidence and its reset timestamp
+must both fall inside the range; an interval's metrics use only the
+intersection with the query range. The
+separate five-hour rolling analysis ends at `--until` and clips at `--since`.
+Account intervals are shown only between consecutive observed reset timestamps:
+a five-hour session reset and the account's fixed weekly reset are separate
+models. Anthropic documents five-hour
+session-based resets and an account-assigned weekly reset time, not a rolling
+seven-day token sum ([Max plan limits](https://support.claude.com/en/articles/11049741-what-is-the-max-plan)).
+This reset description has been verified for Max plans only; semantics for
+other plans remain unverified.
+A single rejection's reset time does not identify the start or capacity of a
+limit window. Rejections are threshold events, never 100% anchors.
+
+Use `usage anchor add` only for a percentage actually read from the account UI.
+Record the limit kind, observation timestamp, displayed reset time, UI source,
+and coverage assumption. The versioned state is private local metadata at
+`$XDG_STATE_HOME/nyxloom/usage-anchors-v1.json` (or
+`~/.local/state/nyxloom/usage-anchors-v1.json`); `--anchor-file` can select a
+private test or alternate file. `local-only-lower-bound` means web, other
+devices and other shared surfaces may have consumed some of the displayed
+allowance. Calibration then reports only a local lower bound on capacity and
+leaves estimated limit percentage unknown. An all-account fit is conditional
+on the operator's explicit `all-account-usage-observed` assumption. API prices
+and weighted local shares do not establish subscription usage.
+
+`usage report`, `usage charts`, and `usage windows` read the default XDG anchor
+store and accept `--anchor-file FILE` to select another one. An invalid or
+unreadable store produces a warning; the read-only command continues without
+anchor data. Report JSON sets
+`extensions.limit_anchors.status: "unreadable"`; windows JSON sets
+`anchor_status: "unreadable"`. Both include a structured
+`usage_anchors_unreadable` warning when the store cannot be read. An absent
+default anchor store is normal; a missing explicitly selected anchor file
+produces the same warning and status. Create an alternate store with
+`nyxloom usage anchor add` using an observed UI reading before selecting it
+for a read-only query.
+
+The table's `ACTIVE SPAN SUM` adds node-local burst spans separated by gaps
+over one hour. Subtree rows sum across nodes; with concurrent subagents,
+active span can exceed wall duration.
+
+### Export usage chart data
+
+`nyxloom usage charts` writes a private `usage-charts-v1` JSON document. The
+same object appears at `extensions.chart_data` in
+`nyxloom usage report --format json`; its chart totals, ownership, and call
+lookup come from the full windowed tree before `--depth` or `--min-share` folds
+the displayed nodes. The report's `calls` array remains the exact ledger.
+`--out` is required and creates a mode-0600 file. Use `--no-labels` when chart
+labels should omit session titles and subagent topics; the transformation
+happens before serialization. Labeled reports can contain sensitive sidecar
+descriptions and should stay local.
+
+The chart section includes four datasets: context swim lanes, joined context
+lines for the three highest weighted sessions, weighted cost buckets, and
+weighted token-class composition for the highest weighted agents. `--top`
+defaults to 12. Ranking uses self weighted units and stable ID tie breaks;
+remaining stacked groups are combined in one exact `other` group. Supported
+`--group-by` values are `agent`, `topic`, `model`, `effort`, and `session`.
+Buckets partition each deduplicated call exactly once and never stack a
+parent's subtree with its children. Context decimation affects only chart
+points; the report ledger is untouched. Endpoints, peaks, compaction/drop
+neighbors, and model/effort switches remain represented.
+
+Weighted units are experimental local scores. They do not report account
+usage. The chart includes observed reset boundaries without inferring a window
+start from one rejection. Its cumulative percentage line stays unknown unless
+the existing calibration identifies a complete interval. Under
+`local-only-lower-bound` coverage, the line is labeled as local contribution;
+it becomes an account estimate only under an explicit all-account coverage
+assumption.
+
+```sh
+nyxloom usage report --since 24h --format json --out usage-report.json
+nyxloom usage report --since 24h --format json --anchor-file ./usage-anchors.json \
+  --out anchored-report.json
+nyxloom usage charts --since 24h --top 12 --group-by agent \
+  --anchor-file ./usage-anchors.json --out usage-charts.json
+nyxloom usage charts --since 24h --no-labels --out anonymous-charts.json
+```
+
+See the [chart-data design](DESIGN-GUIDE.md#usage-chart-data) for ranking,
+partition, decimation, and window semantics.
+
+### Interactive HTML report
+
+Write one private, self-contained file to explore the same ledger and chart
+data in a browser. The report works offline; its CSS, JavaScript, SVG charts,
+and versioned data are embedded, and the page blocks network requests.
+
+```sh
+nyxloom usage report --since 24h --format html --out usage.html
+nyxloom usage report --since 7d --format html --no-labels --out anonymous.html
+```
+
+Use the model, effort, topic, and time controls to filter the report. The
+hierarchical table recomputes exact call totals and subtree subtotals while the
+charts update from those calls. Drag across a timeline to zoom, shift-drag to
+pan, or use the keyboard-accessible time controls. Hover context points to see
+session, agent, topic, model, effort, token counts, and timestamp. Selecting a
+table row or chart series highlights that node in both views. Raw token units,
+experimental weighted units, and API-equivalent USD remain separate measures.
+When `--depth` or `--min-share` folds a node out of the table, its joined-chart
+points remain visible and are attributed to the folded `other` row or nearest
+displayed parent.
+
+The anonymize control changes visible labels for the current page but leaves
+the originals in the file. `--no-labels` removes free-text topics before
+serialization when the file must not contain them. Labeled HTML files may
+contain sensitive sidecar descriptions; keep them local and protect the
+mode-0600 output. `project_id` remains a stable cwd hash and `agent_type`
+remains available after `--no-labels`. Print CSS includes collapsed table rows and works with A4 or
+Letter landscape; long tables continue across pages.
+
+### PDF export
+
+PDF output uses the same `usage-report-v1` data and HTML renderer. It sends the
+generated page in memory to the managed PWMCP browser through `BrowserLease`,
+waits for the report-ready marker, selects print media, and asks Chromium for a
+PDF. The output has selectable vector text and crisp SVG charts. A4 landscape
+pagination repeats the table header, keeps each row together where it fits, and
+flows the complete hierarchy across as many pages as needed.
+
+Install the optional `report` extra from a wheelhouse containing Nyxloom, the
+matching PWMCP client wheel, and its declared dependencies. The PWMCP client is
+distributed in its verified GitHub release bundle; use its contract so the
+client's Playwright version matches the managed browser service.
+
+```sh
+python -m pip install --no-index --find-links ./wheelhouse 'nyxloom[report]'
+nyxloom usage report --since 24h --format pdf --out usage.pdf
+nyxloom usage report --since 7d --format pdf --no-labels --out anonymous.pdf
+```
+
+PDF generation requires the managed PWMCP service. If the optional client or
+service is unavailable, Nyxloom reports the remedy and writes no output file.
+PDF files use mode `0600`. Labeled reports are sensitive metadata artifacts;
+`--no-labels` removes free-text labels before the browser receives the page.
+PDF generation sends the generated HTML in memory, without a local file URL.
+
+The shipped price table is retrieved 2026-10-28 from
+[Anthropic's official pricing documentation](https://platform.claude.com/docs/en/about-claude/pricing).
+Rates below are USD per million tokens. The Haiku tier applies to all request
+token classes when prompt length exceeds 100,000 tokens.
+
+| Exact model ID | Prompt tier / mode | Input | Output | Cache write 5m | Cache write 1h | Cache read |
+|---|---:|---:|---:|---:|---:|---:|
+| `claude-fable-5-1` | standard | 10 | 50 | 12.50 | 20 | 0.25 |
+| `claude-opus-5-5` | standard | 4 | 20 | 5 | 8 | 0.20 |
+| `claude-opus-5-5` | fast | 8 | 40 | 10 | 16 | 0.40 |
+| `claude-sonnet-5-5` | standard | 2 | 10 | 2.50 | 4 | 0.10 |
+| `claude-haiku-5-5` | prompt ≤100,000 | 0.10 | 0.50 | 0.125 | 0.20 | 0.01 |
+| `claude-haiku-5-5` | prompt >100,000 | 0.50 | 2.50 | 0.625 | 1 | 0.05 |
+
+For these listed 4.6+ models, documented US inference multiplies every rate by
+1.1; `global` is the standard rate. No priority-tier rate is documented in
+this profile, so that modifier is left unpriced. The exact profile and its
+source metadata ship in `session_extract/usage/usage-weights.toml`.
+For a custom model entry, `fast` and `over_threshold` rates cannot be combined;
+the loader refuses that configuration because no precedence between those
+price modifiers is defined.
+
+The table has one session row per selected session, followed by attributed
+subagents and nested subagents. Each row includes self totals and a subtree
+subtotal; `--depth N` shows levels 0 through N. `--min-share PCT` folds smaller
+subtrees or session roots into explicit “other” rows. Use `--flat` for a global
+ranked list; it cannot be combined with `--depth`. JSON's `calls` array remains
+the exact ledger even when tree presentation is folded or clipped. CSV has one
+report metadata row followed by one row per deduplicated call, ordered by
+timestamp/session/source/line/call ID; events and tree rollups are available in
+JSON and the table, respectively. When copied sources had different request
+IDs, `request_ids` retains every distinct alias. `--no-labels` strips
+title/topic labels before JSON, CSV or table rendering. Raw token shares are
+local observed activity shares, not account limit percentages. Labelled
+reports can include sidecar topic text and should be treated as sensitive local
+artifacts; `--no-labels` removes those labels before serialization.
+
+The current CLI inventory is generated from Nyxloom's registered command
+grammar in [`docs/SPEC.md`](SPEC.md#generated-cli-surface-and-semantic-review)
+and [`docs/cli-surface.json`](cli-surface.json). Each public argument shape,
+option spelling, closed choice, and minimum route has a reviewed decision in
+[`docs/cli-review.toml`](cli-review.toml) linked to a parser probe. After
+changing `cli_registry.py`, regenerate and check the inventory with
+`cli-extended surface sync` and `cli-extended surface check`. The runtime floor
+is `cli-extended>=0.4.0`, which supplies the project-config and semantic-review
+contract used here.
+
+See the [usage report design](DESIGN-GUIDE.md#local-usage-report) for the
+deduplication, attribution, and privacy choices, and the
+[CLI reference](CLI-REFERENCE.md#current-command-and-option-contract) for all
+accepted options and output effects.
+
 ## Daemon service entrypoint
 
 The service manager starts the foreground daemon with no arguments. Inspect the
@@ -74,6 +363,15 @@ catalog for the installed version.
 | `nyxloom onboard --maturity` | `empty`, `partial`, `mature` |
 | `nyxloom onboard --docs` | `present`, `absent` |
 | `nyxloom onboard --mode` | `derive-from-code`, `code-good-docs-absent`, `greenfield-define-it` |
+| `nyxloom usage report --format` | `table`, `json`, `csv`, `html`, `pdf` |
+| `nyxloom usage charts --group-by` | `agent`, `topic`, `model`, `effort`, `session` |
+| `nyxloom usage report --sort` | `cost`, `start`, `dur`, `calls`, `peak`, `out` |
+| `nyxloom usage report --since` relative duration suffixes | `s`, `m`, `h`, `d`, `w` |
+| `nyxloom usage prices --format` | `text`, `json` |
+| `nyxloom usage windows --format`, `nyxloom usage calibrate --format` | `text`, `json` |
+| `nyxloom usage anchor add --kind` | `five_hour`, `weekly` |
+| `nyxloom usage anchor add --source` | `settings-usage`, `account-usage-page` |
+| `nyxloom usage anchor add --coverage-assumption` | `local-only-lower-bound`, `all-account-usage-observed` |
 | `nyxloom backlog new --type` | `feature`, `bugfix` |
 | `nyxloom backlog new --severity` | `low`, `medium`, `high` |
 | `nyxloom backlog new --context-estimate` | `small`, `medium`, `large` |
@@ -587,5 +885,5 @@ normal command output is unchanged.
 
 The broad `tester-unified` lane is Assay-judged with 100% whole-source line and
 branch coverage. The `session-extract` lane additionally carries its declared
-mutation and canary checks. Invoke both through the project's `./run-gate.py`
+mutation and canary checks. Invoke both through the project's `run-gate`
 entrypoint; local cockpit test results do not certify a release.

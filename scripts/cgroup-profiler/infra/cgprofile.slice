@@ -25,10 +25,10 @@
 # implicitly (any container naming it as `cgroup_parent` forces that
 # creation) — just unbounded: `MemoryMin`/`MemoryHigh` read back as the
 # cgroup v2 defaults, `ctl host`'s `daemon_slice` block reports exactly
-# that, and `doctor`/`ctl host` read it as "cgprofile.slice has no unit: no
-# memory floor". The daemon keeps running either way — this unit only
-# improves its resilience against host-wide memory pressure, it is never a
-# hard prerequisite for `serve` to start.
+# that. Since cgprofile 1.1.0 `serve` REFUSES to start when this slice's
+# memory.max is unlimited or unreadable (an unbounded daemon next to
+# production workloads violates the host-placement rule), so installing this
+# unit is a prerequisite for the daemon, not an optional resilience extra.
 
 [Unit]
 Description=cgprofile — RG-55 host-deployment containment for the cgroup-profiling daemon (D-29); protects the watcher itself from the memory pressure it exists to observe

@@ -15,10 +15,87 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from cmru.process_guard import (
+    DescendantGuard,
+    DescendantLeakError,
+    enable_child_subreaper,
+    restore_child_subreaper,
+)
+
 pytest_plugins = ["cli_extended.pytest_plugin"]
 
 #: The process environment when the session started (before any test ran).
 SESSION_START_ENVIRON = dict(os.environ)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _pytest_adopts_orphaned_test_children():
+    previous = enable_child_subreaper()
+    try:
+        yield
+    finally:
+        restore_child_subreaper(previous)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _pytest_disables_detached_git_maintenance():
+    """Keep every test Git child inside its subprocess lifetime.
+
+    Run-Gate may disable system config for its container copy. Append explicit
+    settings to that environment rather than relying on tester-unified's
+    system config to keep automatic maintenance foreground-only.
+    """
+    raw_count = os.environ.get("GIT_CONFIG_COUNT", "0")
+    if not raw_count.isdecimal():
+        raise RuntimeError("GIT_CONFIG_COUNT is malformed; refusing test Git children")
+    count = int(raw_count)
+    additions = {
+        "GIT_CONFIG_COUNT": str(count + 4),
+        f"GIT_CONFIG_KEY_{count}": "maintenance.auto",
+        f"GIT_CONFIG_VALUE_{count}": "false",
+        f"GIT_CONFIG_KEY_{count + 1}": "maintenance.autoDetach",
+        f"GIT_CONFIG_VALUE_{count + 1}": "false",
+        f"GIT_CONFIG_KEY_{count + 2}": "gc.auto",
+        f"GIT_CONFIG_VALUE_{count + 2}": "0",
+        f"GIT_CONFIG_KEY_{count + 3}": "gc.autoDetach",
+        f"GIT_CONFIG_VALUE_{count + 3}": "false",
+    }
+    with preserved_environ():
+        os.environ.update(additions)
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _each_test_reaps_its_process_descendants(request):
+    """Fail a test if new process descendants outlive its boundary.
+
+    Release and shell integration tests can start helpers below pytest that
+    outlive their immediate parent. The guard kills and reaps detected leaks
+    to protect later tests, but still fails the creating test even when cleanup
+    succeeds. Captured stdout/stderr are restored too: release logging redirects
+    those process-wide descriptors in in-process CLI tests.
+    """
+    guard = DescendantGuard(root_pid=os.getpid())
+    saved_stdout = os.dup(1)
+    saved_stderr = os.dup(2)
+    leak_error: DescendantLeakError | None = None
+    try:
+        yield
+    finally:
+        try:
+            guard.check()
+        except DescendantLeakError as exc:
+            leak_error = exc
+        finally:
+            os.dup2(saved_stdout, 1)
+            os.dup2(saved_stderr, 2)
+            os.close(saved_stdout)
+            os.close(saved_stderr)
+        if leak_error is not None:
+            pytest.fail(
+                f"{request.node.nodeid} leaked process descendants: {leak_error}",
+                pytrace=False,
+            )
 
 
 @contextlib.contextmanager
@@ -39,8 +116,148 @@ def preserved_environ():
             os.environ.update(before)
 
 
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "real_release_notes_preflight: run the real KI-75 release-notes preflight "
+        "instead of the neutral stub unrelated prepare-phase tests get",
+    )
+    config.addinivalue_line(
+        "markers",
+        "release_controller_provenance: exercise the installed-wheel release-controller boundary",
+    )
+    config.addinivalue_line(
+        "markers",
+        "real_release_version_plan: run the real D-001 release version-plan step "
+        "instead of the neutral stub unrelated release-child tests get",
+    )
+    config.addinivalue_line(
+        "markers",
+        "real_release_gates_plan: run the real CMRU-SKIP-01 gates record "
+        "instead of the pass-through stub unrelated release-child tests get",
+    )
+
+
+#: The release-controller identity unit tests see. The launcher records it and
+#: hands it to the transaction child through ``CMRU_RELEASE_CONTROLLER_*``.
+NEUTRAL_RELEASE_CONTROLLER_IDENTITY = {
+    "version": "6.2.0",
+    "wheel_sha256": "a" * 64,
+    "distribution_sha256": "b" * 64,
+    "module_path": "/site-packages/cmru/cli.py",
+}
+
+
 @pytest.fixture(autouse=True)
-def _restore_process_environment():
+def _neutral_release_controller_provenance(request):
+    """Keep release-transaction unit tests independent of the test image's CMRU install.
+
+    A plain attribute swap, not ``monkeypatch``: a ``monkeypatch`` requested by
+    an autouse fixture that runs before ``_restore_process_environment`` is torn
+    down AFTER that restore and re-introduces values the code under test wrote
+    (the leak the zz probe catches).
+    """
+    if request.node.get_closest_marker("release_controller_provenance"):
+        yield
+        return
+    from cmru import cli
+
+    saved = cli._record_release_controller_identity
+    cli._record_release_controller_identity = (
+        lambda _phase: dict(NEUTRAL_RELEASE_CONTROLLER_IDENTITY)
+    )
+    try:
+        yield
+    finally:
+        cli._record_release_controller_identity = saved
+
+
+@pytest.fixture(autouse=True)
+def _neutral_release_notes_preflight(request):
+    """Tests of other release behaviour have no real changelog to read.
+
+    ``_prepare_release_projects`` refuses (before any gate or tag) when a tagged
+    project's pending section is unusable, and ``release --dry-run`` previews the
+    release body (KI-75). Tests of OTHER behaviour (mocked changelog generation,
+    fake non-repository projects) stub those two seams; the KI-75 tests carry the
+    ``real_release_notes_preflight`` marker and exercise the real ones.
+
+    Plain attribute swaps, not ``monkeypatch``: a second monkeypatch fixture is torn
+    down AFTER the environment restore below and re-introduces leaked values (the zz
+    probe catches that).
+    """
+    if request.node.get_closest_marker("real_release_notes_preflight"):
+        yield
+        return
+    from types import SimpleNamespace
+
+    from cmru import cli
+
+    saved = (
+        cli._pending_release_notes_or_refuse,
+        cli._preview_release_bodies,
+    )
+    cli._pending_release_notes_or_refuse = (
+        lambda *_args, **_kwargs: SimpleNamespace(version="0.0.0")
+    )
+    cli._preview_release_bodies = lambda *_args, **_kwargs: None
+    try:
+        yield
+    finally:
+        (
+            cli._pending_release_notes_or_refuse,
+            cli._preview_release_bodies,
+        ) = saved
+
+
+@pytest.fixture(autouse=True)
+def _neutral_release_version_plan(request):
+    """Release-child tests of OTHER behaviour fake their plan and repository.
+
+    The D-001 version-plan step reads transaction sidecars and the candidate's
+    Git history, which those mocked, non-repository fixtures do not have. They
+    get a neutral step that leaves the invocation's flags in force; the D-001
+    tests carry the ``real_release_version_plan`` marker and exercise the real
+    step. The release end-to-end tests run CMRU in a subprocess and always use
+    the real step. Plain attribute swap, for the reason given above.
+    """
+    if request.node.get_closest_marker("real_release_version_plan"):
+        yield
+        return
+    from cmru import cli
+
+    saved = cli._release_version_plan
+    cli._release_version_plan = lambda *_args, **_kwargs: None
+    try:
+        yield
+    finally:
+        cli._release_version_plan = saved
+
+
+@pytest.fixture(autouse=True)
+def _neutral_release_gates_plan(request):
+    """Release-child tests of OTHER behaviour fake their workspace.
+
+    The CMRU-SKIP-01 gates record lives in the transaction sidecars those mocked
+    workspaces lack, so they get a neutral step that passes the invocation's
+    ``--skip-gates`` through unrecorded; tests carrying ``real_release_gates_plan``
+    exercise the real record.
+    """
+    if request.node.get_closest_marker("real_release_gates_plan"):
+        yield
+        return
+    from cmru import cli
+
+    saved = cli._release_gates_plan
+    cli._release_gates_plan = lambda _root, _workspace, requested, **_kw: requested
+    try:
+        yield
+    finally:
+        cli._release_gates_plan = saved
+
+
+@pytest.fixture(autouse=True)
+def _restore_process_environment(request):
     # Hermeticity: the real estate config DECLARES ``${CGROUP_PARENT_DEV_GATES}`` with no
     # default. The assay lane runs pytest with ``env_passthrough = ["PATH"]``, so the host's
     # variable is absent there and every test that loads ``cmru.orchestration.toml`` would
@@ -51,4 +268,23 @@ def _restore_process_environment():
     # values a test's own ``monkeypatch.delenv`` recorded (a leak the zz probe catches).
     with preserved_environ():
         os.environ["CGROUP_PARENT_DEV_GATES"] = "test-gates.slice"
+        # KI-75: a publisher refuses to run without a declared release-notes
+        # source. Tests of unrelated publisher behaviour declare "none"; the
+        # KI-75 tests set or remove it explicitly.
+        os.environ["CMRU_RELEASE_NOTES_SOURCE"] = "none"
+        # A transaction child refuses to run without the launcher's controller
+        # identity (``CMRU_RELEASE_CONTROLLER_*``). Tests that stand in for a
+        # child see the neutral identity that ``_neutral_release_controller_
+        # provenance`` makes the launcher record; the provenance tests set or
+        # remove these themselves.
+        if not request.node.get_closest_marker("release_controller_provenance"):
+            os.environ["CMRU_RELEASE_CONTROLLER_VERSION"] = (
+                NEUTRAL_RELEASE_CONTROLLER_IDENTITY["version"]
+            )
+            os.environ["CMRU_RELEASE_CONTROLLER_WHEEL_SHA256"] = (
+                NEUTRAL_RELEASE_CONTROLLER_IDENTITY["wheel_sha256"]
+            )
+            os.environ["CMRU_RELEASE_CONTROLLER_FILES_SHA256"] = (
+                NEUTRAL_RELEASE_CONTROLLER_IDENTITY["distribution_sha256"]
+            )
         yield

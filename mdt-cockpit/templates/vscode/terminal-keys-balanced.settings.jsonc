@@ -1,0 +1,47 @@
+// OPT-IN terminal key profile "balanced": VS Code shortcuts keep working, and the keys that
+// mc, vim, readline, tmux and agent CLIs need are released to the terminal. Merge into the settings
+// layer you use (see README.md). A leading "-" removes a command from VS Code's skip-shell list,
+// so the key that runs it is sent to the program instead.
+//
+// Keep ONE key profile: do not combine this file with terminal-keys-terminal-first.settings.jsonc.
+// UNVERIFIED: the command ids below were taken from third-party notes and VS Code's skip-shell
+// list as remembered; an id that is not in the list does nothing. When a key is still stolen, run
+// "Developer: Toggle Keyboard Shortcuts Troubleshooting", press the key once in the terminal and
+// add the command it names.
+//
+// What each removal costs while a terminal has focus (the shortcut stops working there):
+//   togglePanel (Ctrl+J), quickOpen (Ctrl+P, Ctrl+E), showCommands (F1 and Ctrl+Shift+P),
+//   focusFindWidget (Ctrl+F in the terminal), findNext/findPrevious (F3, Shift+F3),
+//   goTo*Reference (F4, Shift+F4), debug.* and toggleFullScreen (F5-F11 family).
+{
+  "terminal.integrated.sendKeybindingsToShell": false,
+  "terminal.integrated.allowChords": false,
+  "terminal.integrated.allowMnemonics": false,
+  "terminal.integrated.commandsToSkipShell": [
+    // Ctrl+J newline in agent CLIs; Ctrl+M
+    "-workbench.action.togglePanel",
+    "-editor.action.toggleTabFocusMode",
+    // Ctrl+P / Ctrl+E (readline, agent CLIs), F1
+    "-workbench.action.quickOpen",
+    "-workbench.action.showCommands",
+    // mc: F2 user menu, F3 view
+    "-workbench.action.terminal.renameActiveTab",
+    "-workbench.action.terminal.focusFindWidget",
+    "-workbench.action.terminal.findNext",
+    "-workbench.action.terminal.findPrevious",
+    // mc: F4 edit, Shift+F4
+    "-goToNextReference",
+    "-goToPreviousReference",
+    // mc: F5 copy, F6 move, F8 delete, F10 quit, F11 (debugger and full-screen defaults)
+    "-workbench.action.debug.start",
+    "-workbench.action.debug.run",
+    "-workbench.action.debug.continue",
+    "-workbench.action.debug.pause",
+    "-workbench.action.debug.restart",
+    "-workbench.action.debug.stop",
+    "-workbench.action.debug.stepOver",
+    "-workbench.action.debug.stepInto",
+    "-workbench.action.debug.stepOut",
+    "-workbench.action.toggleFullScreen"
+  ]
+}

@@ -1,5 +1,5 @@
 # =============================================================================
-# nyxloom project gate lanes -- parsed ONLY by run-gate.py (one parser, D-110).
+# nyxloom project gate lanes -- parsed ONLY by Run-Gate CLI (one parser, D-110).
 # Environment facts come from the CENTRAL vbpub-root run-gate.root.toml (nearest
 # ancestor); judgment policy lives in assay.toml [lanes.tester-unified] (R0+R1:
 # the existing pytest-cov suite with a whole-source line and branch floor).
@@ -36,10 +36,17 @@ budget = "30m"                       # advisory; consumers may enforce
 # same overreach.
 [lanes.session-extract]
 kind = "assay"
+resource_observer = "cgprofile"
 assay_lane = "session-extract"       # -> assay.toml [lanes.session-extract]
 environment = "tester-unified"       # central [environments.tester-unified]
-# session-extract's selected current-main R2 boundary has 45 candidates, run
-# two-at-a-time with four pytest workers per candidate. This is the
-# outer/advisory mirror of assay.toml's six-hour campaign budget (raised
-# from 2h by the SUCCESSOR package: 336 candidates, cap 350, see assay.toml).
-budget = "6h"
+# session-extract runs one native candidate at a time for cgroup-event
+# attribution, with one pytest worker inside that candidate. The previous
+# campaign processed 293 candidates in 7012 seconds; the current tree has 1203
+# candidates and Assay rejudges all after a tree change, projecting to about
+# 8.1 hours. This hard outer bound mirrors assay.toml and leaves room for R0/R1
+# and R3 while still refusing an unbounded campaign.
+budget = "10h"
+
+[lanes.session-extract.resources]
+memory = "2g"
+pids = 8192

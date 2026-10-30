@@ -1,0 +1,15 @@
+# tester-base gate lanes - parsed ONLY by Run-Gate CLI.
+#
+# `contract` is a driver (the mdt-cockpit image-runtime precedent): it runs on the bare host
+# and starts the exact CANDIDATE image in its own container, placed in the gate tier,
+# offline, `--init`, uniquely named and removed by exact name. There is no default image.
+#   TESTER_BASE_IMAGE=<ref> run-gate contract
+schema_version = 1
+
+[lanes.contract]
+kind = "command"
+environment = "bare-host"
+argv = ["python3", "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py", "-v"]
+clean_tree = true
+required_env = ["CGROUP_PARENT_DEV_GATES", "TESTER_BASE_IMAGE"]
+budget = "10m"

@@ -17,6 +17,7 @@ def _project_toml(name: str = "demo", *, owner: str = "acme", registry: str = "g
 owner = "{owner}"
 repo = "vbpub"
 owner_type = "org"
+token_source = "cmru"
 
 [targets]
 host = "github"
@@ -66,6 +67,7 @@ def _orchestration_toml(*, project_path: str = "demo/cmru.toml", mode: str = "pr
 owner = "acme"
 repo = "vbpub"
 owner_type = "org"
+token_source = "cmru"
 
 [targets]
 host = "github"
@@ -143,6 +145,22 @@ def test_project_config_loads_effective_contract_and_environment(tmp_path, monke
     loaded = cli.load_config(path)
     assert loaded[1]["demo"].github_token == "project-token"
     assert loaded[8].owner == "acme" and loaded[9].registry_url == "ghcr.io"
+
+
+def test_project_config_accepts_an_explicit_secret_file(tmp_path, monkeypatch):
+    path = _write_project(tmp_path)
+    explicit_secret = tmp_path / "main-tree" / "cmru.secret.toml"
+    explicit_secret.parent.mkdir()
+    explicit_secret.write_text('[github]\ntoken = "main-tree-token"\n', encoding="utf-8")
+    (tmp_path / "demo" / "cmru.secret.toml").write_text(
+        '[github]\ntoken = "worktree-token"\n', encoding="utf-8",
+    )
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_PUSH_PAT", raising=False)
+
+    loaded = cli.load_config(path, secret_file=explicit_secret)
+
+    assert loaded[1]["demo"].github_token == "main-tree-token"
 
 
 def test_environment_token_is_invocation_authority_over_secret_files(tmp_path, monkeypatch):

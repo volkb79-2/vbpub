@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-import subprocess
+import tomllib
 from dataclasses import replace
 from datetime import datetime, timezone
 from contextlib import contextmanager
@@ -19,6 +19,7 @@ from assay.adapters.python import PythonAdapter
 from assay.config import CanaryConfig, MutationConfig, ResultReportConfig
 from assay.errors import AssayError, Outcome, ReasonCode
 from assay.verdict import Claim
+from conftest import completed_process
 from conftest import (
     GitRepo,
     make_deadline,
@@ -28,6 +29,21 @@ from conftest import (
     make_r2_judge,
     prepared_snapshot,
 )
+
+
+def test_b105_whole_source_target_lists_cover_every_production_module() -> None:
+    project_root = Path(__file__).resolve().parents[2]
+    config = tomllib.loads((project_root / "assay.toml").read_text(encoding="utf-8"))
+    expected = {
+        path.relative_to(project_root).as_posix()
+        for path in (project_root / "src/assay").rglob("*.py")
+    }
+    for lane_name in ("self-qualification", "self-qualification-preflight"):
+        targets = set(config["lanes"][lane_name]["judge"]["targets"])
+        assert targets == expected, (
+            f"{lane_name} target list differs from production source inventory: "
+            f"missing={sorted(expected - targets)}, extra={sorted(targets - expected)}"
+        )
 
 
 def _seed_r1_lane(repo: GitRepo, *, rigor=("R0", "R1"), canary=None):
@@ -87,7 +103,7 @@ def _write_coverage(argv, *, env, cwd, timeout):
         }
     }
     (Path(cwd) / "cov.json").write_text(json.dumps(payload), encoding="utf-8")
-    return subprocess.CompletedProcess(list(argv), 0, stdout="", stderr="")
+    return completed_process(list(argv), 0, stdout="", stderr="")
 
 
 def test_bounded_command_tail_preserves_utf8_at_its_byte_boundary():
@@ -516,7 +532,7 @@ def test_snapshot_unit_refuses_a_symlink_as_its_declared_cwd(tmp_path):
             coverage_artifact=None,
             coverage_format=None,
             coverage_producer=None,
-            process_runner=lambda *_a, **_k: subprocess.CompletedProcess([], 0),
+            process_runner=lambda *_a, **_k: completed_process([], 0),
             clock=lambda: datetime(2026, 9, 26, tzinfo=timezone.utc),
         )
 
@@ -711,7 +727,7 @@ def test_whole_target_r2_refusal_names_the_lane_and_resolution_step(
         project_root=git_repo.path,
         adapter=PythonAdapter(),
         assay_version="7.1.0",
-        process_runner=lambda argv, *, env, cwd, timeout: subprocess.CompletedProcess(
+        process_runner=lambda argv, *, env, cwd, timeout: completed_process(
             list(argv), returncode=0, stdout="", stderr=""
         ),
         diagnostics=diagnostics,
@@ -765,7 +781,7 @@ def test_reuse_execution_reports_the_loaded_prior_campaign_state(
         project_root=git_repo.path,
         adapter=PythonAdapter(),
         assay_version="7.1.0",
-        process_runner=lambda argv, *, env, cwd, timeout: subprocess.CompletedProcess(
+        process_runner=lambda argv, *, env, cwd, timeout: completed_process(
             list(argv), returncode=0, stdout="", stderr=""
         ),
         reuse_from="prior-verdict.json",
@@ -809,7 +825,7 @@ def test_reuse_execution_refuses_witness_replay_when_snapshot_pytest_config_is_p
         project_root=git_repo.path,
         adapter=PythonAdapter(),
         assay_version="7.1.0",
-        process_runner=lambda argv, *, env, cwd, timeout: subprocess.CompletedProcess(
+        process_runner=lambda argv, *, env, cwd, timeout: completed_process(
             list(argv), returncode=0, stdout="", stderr=""
         ),
         reuse_from="prior-verdict.json",
@@ -891,7 +907,7 @@ def test_unsupported_native_r2_result_keeps_a_payload_free_claim(
         project_root=git_repo.path,
         adapter=PythonAdapter(),
         assay_version="7.1.0",
-        process_runner=lambda argv, *, env, cwd, timeout: subprocess.CompletedProcess(
+        process_runner=lambda argv, *, env, cwd, timeout: completed_process(
             list(argv), returncode=0, stdout="", stderr=""
         ),
     )
@@ -1005,7 +1021,7 @@ def test_direct_r0_post_command_refusal_keeps_the_completed_result(
         project_root=git_repo.path,
         adapter=None,
         assay_version="7.1.0",
-        process_runner=lambda argv, *, env, cwd, timeout: subprocess.CompletedProcess(
+        process_runner=lambda argv, *, env, cwd, timeout: completed_process(
             list(argv), returncode=0, stdout="", stderr=""
         ),
     )
@@ -1030,7 +1046,7 @@ def test_direct_r0_lane_can_own_its_progress_artifact(git_repo: GitRepo, tmp_pat
         adapter=None,
         assay_version="7.1.0",
         deadline=make_deadline(),
-        process_runner=lambda argv, *, env, cwd, timeout: subprocess.CompletedProcess(
+        process_runner=lambda argv, *, env, cwd, timeout: completed_process(
             list(argv), returncode=0
         ),
         clock=lambda: datetime(2026, 9, 26, tzinfo=timezone.utc),

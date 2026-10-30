@@ -21,7 +21,7 @@ downloaded from it** (§6). The artifacts contract, seam 1, is still just docs.
 The decision this implements is **D-110.4** (dstdns decisions, 2026-08-20):
 long and asynchronous lanes are additional `run-gate.toml` lanes with large
 budgets, run by Buildkite agents on the remote hosts, calling the same
-`./run-gate.py <lane>` every other consumer calls. Nothing in run-gate or
+`run-gate <lane>` every other consumer calls. Nothing in run-gate or
 assay changes for step 1; Buildkite is the queue, the trigger, the log store
 and the artifact store, and the hosts do the work.
 
@@ -34,7 +34,7 @@ and the artifact store, and the hosts do the work.
 | One gate container per host, enforced across EVERY trigger (agents, humans, the daemon) | a per-host queue plus `concurrency: 1` in a `concurrency_group` |
 | Fire-and-forget long lanes with a durable result | the build record, its log, its artifacts |
 | Retries, scheduled nightlies, a history you can browse | pipeline features, no code |
-| Pipelines that follow the lane list | a first step runs `./run-gate.py --list` and uploads the generated steps |
+| Pipelines that follow the lane list | a first step runs `run-gate --list` and uploads the generated steps |
 | The gate container stays offline | only the agent process talks to Buildkite |
 
 | cost | note |
@@ -177,9 +177,11 @@ are both `run-gate-project/…`.)
 
 **`run-gate-project/tools/buildkite/pipeline.sh` is that generator, and it is
 written** (seam 2 in §6; tested by `tests/test_buildkite_tools.py`). It reads
-`./run-gate.py --list` — the stable, machine-readable lane listing that
+`run-gate --list` — the stable, machine-readable lane listing that
 `CONSUMERS.md`'s anti-goals name as the ONLY way a consumer may read lane
-metadata — and prints, on stdout, one step per selected lane. It never opens
+metadata — and prints, on stdout, one step per selected lane. The Buildkite
+agent must have the compatible Run-Gate wheel installed on `PATH` before the
+generator or emitted commands run. It never opens
 `run-gate.toml`, starts no container, makes no network call and takes no
 `--dry-run`: running it *is* the rehearsal, because output is all it does.
 
@@ -188,8 +190,8 @@ usage: pipeline.sh [PROJECT_DIR]        (default: .)
        pipeline.sh --help
 ```
 
-`PROJECT_DIR` is the directory holding `run-gate.py`, **as the agent will see
-it** relative to the checkout root: it is used both to invoke `--list` here and
+`PROJECT_DIR` is the directory holding `run-gate.toml`, **as the agent will see
+it** relative to the checkout root: it is used both to invoke `run-gate --list` here and
 verbatim inside the emitted `command` and `artifact_paths` (a plain `.` emits
 neither a `cd` nor a path prefix). Its environment contract:
 
@@ -200,10 +202,11 @@ neither a `cd` nor a path prefix). Its environment contract:
 | `RUN_GATE_TIMEOUT_MINUTES` | no | per-step timeout, default 300; must be a positive integer |
 
 Exit 0 means the document was emitted; **exit 2 is always a refusal** — bad
-environment, unknown lane, a project with no executable `run-gate.py`, a
+environment, unknown lane, a project with no `run-gate.toml`, a missing
+Run-Gate wheel, a
 `--list` that failed, or a listing that no longer matches the three-column
 contract the generator was written against (`name<TAB>kind<TAB>environment`,
-verified against `run-gate.py` rev 33 `cmd_list()`). It refuses rather than
+verified against the installed `run-gate --list` contract). It refuses rather than
 guesses: a fourth column would mean the contract moved.
 
 **`--list` cannot say which lanes are remote-capable — there is no such
@@ -220,7 +223,7 @@ for whatever `RUN_GATE_QUEUE` held:
 ```yaml
 steps:
   - label: "run-gate: mutation on gate-alpha"
-    command: "cd <project> && ./run-gate.py mutation"
+    command: "cd <project> && run-gate mutation"
     agents:
       queue: "gate-alpha"
     concurrency: 1
@@ -282,7 +285,7 @@ curl -fsS -H "Authorization: Bearer $(cat ~/.config/buildkite/api-token)" https:
 **4.2 `bk-lane.sh` — trigger, wait, collect.** The sketch that used to sit here
 is now a real script, `run-gate-project/tools/buildkite/bk-lane.sh` (seam 4 in
 §6). It only creates builds and reads their results: the lane still runs as
-`./run-gate.py <lane>` on the agent, and this script never opens
+`run-gate <lane>` on the agent, and this script never opens
 `run-gate.toml` — lane *selection* travels as the build's
 `env.RUN_GATE_LANES`, which the §3 generator then reads.
 
@@ -397,13 +400,14 @@ implemented, and `collect` takes the build number for now.
 run-gate's central config names the environment image as `tester-unified:local`
 (`run-gate.root.toml` at the repo root). Two ways for a remote host to have it:
 
-- **Build from the checkout.** `docker build -f tester-unified/Dockerfile -t
-  tester-unified:local .` from the repo root, in an agent `pre-command` hook or
-  as the pipeline's first step on each host. This is what
-  `nyxloom/tools/remote-mutation-audit-host.sh` does today (line 93), and it
-  is fresh-clone safe: the base image is already on GHCR and the test closure
-  is derived from the projects' `pyproject.toml` files. Cost: minutes per
-  build; cache it by commit of `tester-unified/Dockerfile` plus the pyprojects.
+- **Build from the checkout.** Use the required Run-Gate wheel-version
+  extraction and image-build procedure in the
+  [tester-unified README](../tester-unified/README.md), in an agent
+  `pre-command` hook or as the pipeline's first step on each host. This is what
+  `nyxloom/tools/remote-mutation-audit-host.sh` does. The README procedure is
+  fresh-clone safe: the base image is already on GHCR and the test closure is
+  derived from the projects' `pyproject.toml` files. Cost: minutes per build;
+  cache it by commit of `tester-unified/Dockerfile` plus the pyprojects.
 - **Publish the image to GHCR and pull it.** cmru already has the verbs:
   `cmru.handlers oci-image-build` / `oci-image-push` run `docker buildx bake`
   against a bake HCL file and log in with `REGISTRY`, `GITHUB_USERNAME` and
@@ -435,7 +439,7 @@ API. **Seam 1 has not landed** (below). Seams 3, 5 and 6 are untouched.
 | # | seam | owner | status | shape |
 |---|---|---|---|---|
 | 1 | Artifacts contract | run-gate (docs) + each lane | **docs seam, not started** (E5-R5) | the generator's two `.assay/` globs plus `.run-gate/history.json` are FIXED, and they are its only executable evidence; **no lane in the estate declares the set** (every `artifacts =` in the repo today is a single file, and `run-gate-project/selftest`'s own `coverage.json` matches none of the globs), and a lane's declared `artifacts` outside `.assay/` and `.run-gate/` do not travel. The authoring side of the reconciliation has landed — **`LANE-AUTHORING.md` §5 requires a remote-capable lane to keep every artifact it wants back under `.assay/`**, which is what makes the fixed globs sufficient — but no lane declares such a set yet, so the seam itself has not started; RG-45's `--list --json` could later expose `artifacts` and retire the rule |
-| 2 | Pipeline generator | `run-gate-project/tools/buildkite/pipeline.sh` | **landed (no live build yet)** | consumes `./run-gate.py --list` only (no second parser of `run-gate.toml`); emits the §3 step shape; selects by `RUN_GATE_LANES`; refuses (exit 2) an unknown or duplicated lane, a missing `RUN_GATE_QUEUE`, a leading-zero timeout, or a listing wider than the three documented columns |
+| 2 | Pipeline generator | `run-gate-project/tools/buildkite/pipeline.sh` | **landed (no live build yet)** | consumes `run-gate --list` only (no second parser of `run-gate.toml`); emits the §3 step shape; selects by `RUN_GATE_LANES`; refuses (exit 2) an unknown or duplicated lane, a missing `RUN_GATE_QUEUE`, a leading-zero timeout, or a listing wider than the three documented columns |
 | 3 | Image provenance | `tester-unified/` cmru project, `run-gate.root.toml` central config | not started | build-from-checkout first; GHCR publish via `oci-image-push` later; `image_digest` key in the environment table (new RG item) |
 | 4 | Trigger + collector | `run-gate-project/tools/buildkite/bk-lane.sh` on the controller host | **landed (no live build yet)** | `run` creates + waits (exit 3 when `BK_MAX_WAIT_MINUTES` runs out), `status` reads, `collect` downloads into a commit-addressed directory with both path components gated; token file must be 0600; exit codes 0/1/2/3 as §4.2 states. Still open: feeding run-gate history with a `host` field (new RG item), dstdns's inbox, and lookup by commit instead of build number (§4.4) |
 | 5 | Async evidence | assay Tier 3 (A-O08 shape) | not started | fuzz findings and nightly campaign verdicts land as attested, commit-bound evidence; assay proves staleness, never truth |
@@ -470,9 +474,11 @@ push/activate/`ciu ssh` surface later). The two uses do not interfere:
       estate's host memory.
 - [ ] Agent installed, token in the config file at mode 0600, queue named
       `gate-<host>`, `spawn=1`, slice drop-in in place.
+- [ ] The Run-Gate wheel is installed in the agent environment at the
+      consumer's SemVer floor; `run-gate --version` confirms it.
 - [ ] `buildkite-agent` in the docker group; `docker ps` works as that user.
-- [ ] Image present (§5, build from checkout) and `./run-gate.py doctor`
-      clean from a fresh clone on the host.
+- [ ] Image present (§5, build from checkout) and `run-gate doctor`
+      clean from a checkout with the required Run-Gate wheel installed.
 - [ ] Pipeline created with the §3 generator-upload step and `RUN_GATE_QUEUE`
       set; `RUN_GATE_LANES=selftest run-gate-project/tools/buildkite/pipeline.sh
       run-gate-project` first checked by eye on this host — it needs no agent.

@@ -57,7 +57,7 @@ def test_changelog_rejects_hand_authored_duplicate_generated_heading(tmp_path, m
 
 def test_changelog_rejects_hand_authored_unreleased_heading_for_the_pending_version(tmp_path, monkeypatch):
     # KI-23: `## [X.Y.Z] - UNRELEASED` is the estate's own documented
-    # pre-release-draft convention -- _HEADING_RE (dated only) never matched
+    # pre-release-draft convention -- the dated-section parser never matched
     # it, so this collision went undetected and silently duplicated instead
     # of raising, on six consecutive real releases before this fix.
     project_root = tmp_path / "demo"; project_root.mkdir()

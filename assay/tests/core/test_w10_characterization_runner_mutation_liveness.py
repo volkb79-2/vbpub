@@ -9,9 +9,10 @@ source; never edited to follow the refactor.
 
 from __future__ import annotations
 
+from conftest import completed_process
+
 import json
 import math
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -132,7 +133,7 @@ def test_tightened_lets_an_int_beyond_float_range_overflow():
 
 def _execute(tmp_path: Path, timeout):
     def run(argv, *, env, cwd, timeout):
-        return subprocess.CompletedProcess(list(argv), returncode=0)
+        return completed_process(list(argv), returncode=0)
 
     return runner.execute_plan(
         make_plan(make_lane()), cwd=tmp_path, timeout=timeout, process_runner=run

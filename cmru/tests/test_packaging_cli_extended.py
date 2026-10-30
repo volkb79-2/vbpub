@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from tests._cx_paths import CX_LIBRARY
+from tests._cx_paths import CX_LIBRARY, library_source_uses
 
 PROJECT = Path(__file__).resolve().parents[1]
 REPO = PROJECT.parent
@@ -103,14 +103,27 @@ def test_no_gate_or_bootstrap_config_puts_cli_extended_source_on_a_path(relative
 
 
 def test_bootstrap_names_the_library_checkout_only_as_the_source_mode_build_input():
-    """W3-ZERO Z1: the bootstrap's explicit `source` mode BUILDS a wheel from the
-    library checkout (--source), but never puts that tree on an import path."""
+    """W3-ZERO Z1: the bootstrap's explicit zero-release `source` mode BUILDS a wheel from the
+    library checkout (--source). Only in that mode, and only for its verification and build
+    steps, is the tree named on a path; the released-wheel modes never name it."""
     code = _code_lines(PROJECT / "build-initial-standalone.sh")
-    assert "cli-extended/src" not in code and "cli_extended/src" not in code
+    assert "cli_extended/src" not in code
     assert not re.search(r"""["']/?cli[-_]extended/?["']""", code)
+    # The checkout's SOURCE tree is named only inside the explicit zero-release source-mode
+    # branch (no wheel exists to import there): in its source-binding inventory, for the
+    # pre-build import check, and for the build subshell below. Any use outside that branch
+    # would put it on a released-wheel path.
+    uses = library_source_uses(code)
+    assert len(uses) == 4 and all(inside for _number, _line, inside in uses), uses
+    assert sum("source_binding_paths+=" in line for _number, line, _inside in uses) == 1
+    assert sum("source_binding_roots+=" in line for _number, line, _inside in uses) == 1
+    # The checkout itself is named by its binding inventory, import check and assignment.
     lines = [line for line in code.splitlines() if CX_LIBRARY in line]
-    assert len(lines) == 1 and lines[0].lstrip().startswith("cli_extended_library="), lines
-    # The library source reaches PYTHONPATH exactly once: the explicit source-mode build subshell.
+    assert len(lines) == 4, lines
+    assert sum(line.lstrip().startswith("cli_extended_library=") for line in lines) == 1, lines
+    assert sum(line.lstrip().startswith("verify_pythonpath=") for line in lines) == 1, lines
+    # Through the checkout variable it reaches PYTHONPATH exactly once: the explicit
+    # source-mode build subshell (the verification step spells the path out, asserted above).
     on_path = [line for line in code.splitlines() if "cli_extended_library}/src" in line]
     assert len(on_path) == 1 and "export PYTHONPATH" in on_path[0], on_path
     assert code.index(on_path[0]) > code.index('"${cli_extended_mode}" == "source" ]]; then\n    cli_extended_library')

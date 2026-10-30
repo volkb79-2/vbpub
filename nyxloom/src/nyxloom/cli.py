@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -1415,6 +1416,358 @@ def cmd_extract_report(args) -> int:
         print(stats.render_detailed_csv(rows), end="")
     else:
         print(stats.render_detailed_text(rows), end="")
+    return 0
+
+
+def _build_usage_report_data(args, *, now=None):
+    """Build the shared ledger and chart contract for usage report commands."""
+    from datetime import datetime, timezone
+
+    from .session_extract.usage import (
+        ChartOptions,
+        build_report,
+        load_corpus,
+        resolve_window,
+    )
+    from .session_extract.usage.anchors import AnchorError, list_anchors
+    from .session_extract.usage.calibration import calibrate_anchors
+    from .session_extract.usage.pricing import (
+        apply_valuation,
+        attach_price_extension,
+        load_weights,
+    )
+
+    now = now or datetime.now(timezone.utc)
+    window = resolve_window(args.since, args.until, now=now)
+    weights = load_weights(getattr(args, "weights", None))
+    corpus = load_corpus(since=window.since, until=window.until)
+    valuation = apply_valuation(corpus, weights)
+    anchor_warnings = []
+    try:
+        anchors = list_anchors(getattr(args, "anchor_file", None))
+    except AnchorError as exc:
+        print(
+            f"warning: usage anchors could not be loaded; continuing without anchors ({exc})",
+            file=sys.stderr,
+        )
+        anchors = []
+        anchor_warnings.append({
+            "code": "usage_anchors_unreadable",
+            "message": "Usage anchor state could not be read; no anchors were used.",
+        })
+    calibration = calibrate_anchors(corpus, anchors, [], weights) if anchors else None
+    report = build_report(
+        corpus,
+        window=window,
+        project=getattr(args, "project", None),
+        session=getattr(args, "session", None),
+        depth=getattr(args, "depth", None),
+        min_share=getattr(args, "min_share", 0.0),
+        flat=getattr(args, "flat", False),
+        sort=getattr(args, "sort", "cost"),
+        no_labels=getattr(args, "no_labels", False),
+        generated_at=now,
+        chart_options=ChartOptions(
+            weights=weights,
+            top_n=getattr(args, "top", None) or 12,
+            group_by=getattr(args, "group_by", None) or "agent",
+            anchors=tuple(anchors),
+            calibration=calibration,
+        ),
+    )
+    valuation.update({
+        "retrieved_on": weights.provenance["retrieved_on"],
+        "pricing_url": weights.provenance["pricing_url"],
+        "weights_sha256": weights.source_sha256,
+    })
+    attach_price_extension(report, valuation)
+    report["extensions"]["limit_anchors"] = {
+        "schema_version": "usage-anchors-v1",
+        "anchor_count": len(anchors),
+        "anchors": anchors,
+        "estimated_limit_pct": None,
+        "status": (
+            "unreadable" if anchor_warnings
+            else "available" if anchors else "none"
+        ),
+        "warnings": anchor_warnings,
+    }
+    return report
+
+
+def cmd_usage_report(args) -> int:
+    """Read Claude Code metadata and render a de-duplicated usage report."""
+    from pathlib import Path
+
+    from .session_extract.usage import render_report
+
+    report = _build_usage_report_data(args)
+    weights_file = Path(args.weights).name if getattr(args, "weights", None) else "usage-weights.toml"
+    rendered = render_report(report, args.usage_format, weights_file=weights_file)
+    if args.out:
+        _write_private_usage_output(Path(args.out), rendered)
+    else:
+        print(rendered, end="")
+    return 0
+
+
+def cmd_usage_charts(args) -> int:
+    """Write the usage-charts-v1 datasets derived from the shared ledger."""
+    from pathlib import Path
+
+    from .session_extract.usage import render_json
+
+    report = _build_usage_report_data(args)
+    chart_data = report["extensions"]["chart_data"]
+    if chart_data is None:
+        raise ValueError("usage chart data was not produced")
+    if not args.out:
+        raise ValueError("usage charts requires --out FILE.json")
+    _write_private_usage_output(Path(args.out), render_json(chart_data))
+    return 0
+
+
+def _write_private_usage_output(path: Path, content: str | bytes) -> None:
+    """Atomically write a potentially sensitive report with mode 0600."""
+    if path.is_symlink():
+        raise ValueError("usage report output must not be a symlink")
+    try:
+        missing_parents = []
+        parent = path.parent
+        while not parent.exists():
+            missing_parents.append(parent)
+            parent = parent.parent
+        if not parent.is_dir():
+            raise ValueError("usage report output parent must be a directory")
+        for directory in reversed(missing_parents):
+            directory.mkdir(mode=0o700)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.", dir=path.parent,
+        )
+    except OSError as exc:
+        raise ValueError(
+            f"cannot prepare usage report output directory {path.parent}: {exc.strerror or exc}"
+        ) from exc
+    try:
+        os.fchmod(descriptor, 0o600)
+        if isinstance(content, bytes):
+            handle = os.fdopen(descriptor, "wb")
+        else:
+            handle = os.fdopen(descriptor, "w", encoding="utf-8", newline="")
+        with handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_name, path)
+    except OSError as exc:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        try:
+            os.unlink(temporary_name)
+        except OSError:
+            pass
+        raise ValueError(f"cannot write private usage report: {exc.strerror or exc}") from exc
+
+
+def _usage_json(value) -> str:
+    import json as jsonlib
+
+    return jsonlib.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+
+
+def cmd_usage_prices(args) -> int:
+    """Show the dated price profile and optionally its guarded cost-state fit."""
+    from .session_extract.usage.loader import load_corpus
+    from .session_extract.usage.pricing import (
+        apply_valuation,
+        fit_cost_state,
+        load_weights,
+        prices_summary,
+    )
+
+    weights = load_weights(args.weights)
+    corpus = load_corpus()
+    valuation = apply_valuation(corpus, weights)
+    result = prices_summary(corpus, weights, valuation)
+    if args.fit:
+        result["fit"] = fit_cost_state(corpus, weights)
+    if args.usage_prices_format == "json":
+        print(_usage_json(result), end="")
+        return 0
+    print(f"Price profile: {result['pricing_url']} (retrieved {result['retrieved_on']})")
+    print(f"Weights file SHA256: {result['weights_sha256']}")
+    print("Documented API prices (USD per million tokens):")
+    for model, table in result["price_table_usd_per_mtok"].items():
+        standard = table["standard"]
+        print(f"  {model} standard: " + ", ".join(f"{name}={value:g}" for name, value in standard.items()))
+        if table["fast"] is not None:
+            print("    fast: " + ", ".join(f"{name}={value:g}" for name, value in table["fast"].items()))
+        if table["over_threshold"] is not None:
+            print(f"    prompt>{table['prompt_threshold_tokens']:,}: " + ", ".join(f"{name}={value:g}" for name, value in table["over_threshold"].items()))
+    modifiers = result["price_modifiers"]
+    print(f"Inference geo multipliers: {modifiers['inference_geo_multipliers']}")
+    print(f"US inference exact model IDs: {', '.join(modifiers['us_model_ids'])}")
+    print(f"Priority tier: {modifiers['priority_service_tier']}")
+    print(f"Raw token units: {result['raw_token_units']:,}")
+    print(f"Experimental weighted units ({result['weighted_profile']}): {result['weighted_units']:,.1f} (estimate)")
+    print(f"  profile values: {result['weight_profile_values']}")
+    print(f"  profile note: {result['weight_profile_description']}")
+    print(f"  missing modifier policy: {result['missing_modifier_policy']}")
+    usd = result["api_equivalent_usd"]
+    print(f"API-equivalent USD estimate: ${usd:,.4f}" if usd is not None else "API-equivalent USD estimate: unknown for one or more calls")
+    print(f"Calls: {result['call_count']:,}; priced={result['priced_calls']:,}; unpriced={result['unpriced_calls']:,}")
+    print("API-equivalent USD is list-price arithmetic, not billed cost or subscription usage.")
+    if args.fit:
+        fit = result["fit"]
+        print(f"Cost-state diagnostic fit: {fit['status']} ({fit['diagnostics']['cost_state_records']} records)")
+        for reason in fit["reasons"]:
+            print(f"  - {reason}")
+        for model, values in fit["models"].items():
+            print(f"  {model}: rank={values['rank']} max residual=${values['residual_max_usd']:.6g}")
+            coefficients = ", ".join(
+                f"{name}={value:.8g}" for name, value in values["coefficients_usd_per_mtok"].items()
+            )
+            print(f"    coefficients (USD/MTok): {coefficients}")
+            print(f"    residuals (USD): {_usage_json(values['residuals_usd']).strip()}")
+            disagreement = values["disagreement_vs_price_profile"]
+            print(
+                "    disagreement vs weights file: "
+                + ("yes" if disagreement.get("has_disagreement") else "no")
+                + f"; {_usage_json(disagreement).strip()}"
+            )
+    return 0
+
+
+def cmd_usage_windows(args) -> int:
+    """Show observed reset intervals and a separate rolling analysis range."""
+    from datetime import datetime, timezone
+
+    from .session_extract.usage.anchors import AnchorError, list_anchors
+    from .session_extract.usage.loader import load_corpus
+    from .session_extract.usage.pricing import apply_valuation, load_weights
+    from .session_extract.usage.query import resolve_window
+    from .session_extract.usage.windows import build_usage_windows
+
+    now = datetime.now(timezone.utc)
+    query = resolve_window(args.since, args.until, now=now)
+    weights = load_weights(args.weights)
+    corpus = load_corpus(since=query.since, until=query.until)
+    apply_valuation(corpus, weights)
+    anchor_warnings = []
+    try:
+        anchors = list_anchors(args.anchor_file)
+    except AnchorError as exc:
+        print(
+            f"warning: usage anchors could not be loaded; continuing without anchors ({exc})",
+            file=sys.stderr,
+        )
+        anchors = []
+        anchor_warnings.append({
+            "code": "usage_anchors_unreadable",
+            "message": "Usage anchor state could not be read; no anchors were used.",
+        })
+    result = build_usage_windows(corpus, anchors, query, weights)
+    result["anchor_status"] = (
+        "unreadable" if anchor_warnings
+        else "available" if anchors else "none"
+    )
+    result["warnings"] = anchor_warnings
+    if args.usage_windows_format == "json":
+        print(_usage_json(result), end="")
+        return 0
+    rolling = result["rolling_analysis"]
+    print(f"Rolling five-hour analysis (not an account session): [{rolling['start']}, {rolling['end']})")
+    print(f"  raw={rolling['raw_token_units']:,}; weighted={rolling['weighted_units']}; API-equivalent USD={rolling['api_equivalent_usd']}")
+    print("  weighted units and API-equivalent USD are estimates; API-equivalent USD is not billed cost.")
+    # load_weights only returns profile-bearing weights with validated provenance.
+    profile = result["weight_profile"]
+    provenance = result["price_provenance"]
+    print(
+        f"Weight profile: {profile['name']} (experimental); API prices retrieved "
+        f"{provenance['retrieved_on']} from {provenance['source_url']}"
+    )
+    if result["observed_intervals"]:
+        print("Observed-reset intervals:")
+        for interval in result["observed_intervals"]:
+            print(f"  {interval['kind']} [{interval['start']}, {interval['end']}): raw={interval['raw_token_units']:,}; weighted={interval['weighted_units']}; API-equivalent USD={interval['api_equivalent_usd']}")
+    else:
+        print("Observed-reset intervals: none had two consecutive reset timestamps at the documented spacing.")
+    print(f"Threshold events: {len(result['threshold_events'])}; none is treated as a percentage or capacity anchor.")
+    for boundary in result["observed_reset_boundaries"]:
+        print(f"Observed {boundary['kind']} reset at {boundary['reset_at']} ({len(boundary['evidence'])} evidence record(s)).")
+    print(f"Usage anchors: {result['anchor_status']}.")
+    for warning in result["warnings"]:
+        print(f"Warning: {warning['message']}")
+    for kind, status in result["reset_boundary_status"].items():
+        if status["interval_status"] != "observed":
+            print(f"{kind} interval status: {status['interval_status']}; percentages stay unknown.")
+    semantics = result["window_semantics"]
+    print(f"Verified window scope: {semantics['documented_scope']}")
+    print("Unverified: " + "; ".join(semantics["unverified"]) + ".")
+    print("Weighted units are experimental; API-equivalent USD is a list-price estimate, not billed cost or subscription usage.")
+    print("Percentages remain unknown without identifiable UI readings and stated coverage.")
+    return 0
+
+
+def cmd_usage_anchor_add(args) -> int:
+    """Persist one explicitly observed UI usage percentage."""
+    from .session_extract.usage.anchors import add_anchor
+
+    anchor = add_anchor(
+        args.anchor_file,
+        kind=args.kind,
+        observed_at=args.at,
+        percent=args.percent,
+        reset_at=args.reset_at,
+        source=args.source,
+        coverage_assumption=args.coverage_assumption,
+    )
+    print(f"Recorded observed UI percentage {anchor['percent']:g}% for {anchor['kind']} at {anchor['observed_at']} (not an estimate).")
+    return 0
+
+
+def cmd_usage_anchor_list(args) -> int:
+    """List sanitized operator readings without exposing their state path."""
+    from .session_extract.usage.anchors import list_anchors
+
+    anchors = list_anchors(args.anchor_file)
+    print(_usage_json({
+        "schema_version": "usage-anchors-v1",
+        "percentage_basis": "operator_ui_observation",
+        "is_estimate": False,
+        "anchors": anchors,
+    }), end="")
+    return 0
+
+
+def cmd_usage_calibrate(args) -> int:
+    """Fit explicit UI readings to local weighted activity under stated coverage."""
+    from .session_extract.usage.anchors import list_anchors
+    from .session_extract.usage.calibration import calibrate_anchors
+    from .session_extract.usage.loader import load_corpus
+    from .session_extract.usage.pricing import apply_valuation, load_weights
+
+    weights = load_weights(args.weights)
+    corpus = load_corpus()
+    apply_valuation(corpus, weights)
+    result = calibrate_anchors(corpus, list_anchors(args.anchor_file), [], weights)
+    if args.usage_calibrate_format == "json":
+        print(_usage_json(result), end="")
+        return 0
+    if not result["groups"]:
+        print("Calibration: unknown; at least two consistent readings and an observed reset boundary are required.")
+    for group in result["groups"]:
+        print(f"{group['kind']} [{group['window_start']}, {group['window_reset_at']}): {group['fit_status']}; capacity={group['capacity_units']:,.2f} experimental weighted units")
+        print(f"  capacity interpretation: {group['capacity_interpretation']}")
+        print(f"  anchor residuals (percentage points): {group['anchor_fits']}")
+        print("  estimated limit percentage: unknown (no target instant requested)")
+    if result["weight_profile"] is not None:
+        print(f"Weight profile: {result['weight_profile']['name']} (experimental)")
+    for reason in result["reasons"]:
+        print(f"  - {reason}")
+    print(result["coverage_note"])
     return 0
 
 

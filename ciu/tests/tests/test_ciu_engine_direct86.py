@@ -34,7 +34,9 @@ def test_main_execution_explicit_network_override_reaches_network_boundary(monke
     monkeypatch.setattr(
         engine,
         "ensure_workspace_network",
-        lambda *, auto_connect: observed.append(auto_connect),
+        lambda *, auto_connect, verify_managed_instance: observed.append(
+            (auto_connect, verify_managed_instance)
+        ),
     )
     monkeypatch.setattr(
         engine.config_model,
@@ -46,4 +48,4 @@ def test_main_execution_explicit_network_override_reaches_network_boundary(monke
     with pytest.raises(RuntimeError, match="stop after network boundary"):
         engine.main_execution(stack, define_root=tmp_path, auto_connect_network=False)
 
-    assert observed == [False]
+    assert observed == [(False, True)]

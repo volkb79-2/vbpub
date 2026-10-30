@@ -45,8 +45,9 @@ scripts/debian-install/mem_write_bench
 scripts/debian-install/mem_read_bench
 scripts/debian-install/mem_mixed_bench
 
-# debian-install-v2 VM test state: downloaded base images, SSH keys, and
-# disposable qcow2 overlays are regenerable and must never enter the tree.
+# debian-install-v2 VM test state: downloaded base images, SSH keys,
+# credential-bearing private NoCloud seed ISOs, and disposable qcow2 overlays
+# are regenerable/local artifacts and must never enter the tree.
 scripts/debian-install-v2/testing/.cache/
 scripts/debian-install-v2/testing/vm/.vm/
 
@@ -60,6 +61,7 @@ tester-unified/local-wheel/*.whl
 downloads/
 eggs/
 .eggs/
+/pwmcp/vendor/
 lib/
 lib64/
 # These `lib/` rules exist for venv layouts (venv/lib/...), but they also swallow
@@ -77,6 +79,16 @@ share/python-wheels/
 
 # Build environment state (resolver output)
 modern-debian-tools-python-debug/.build-env.json
+mdt-cockpit/.build-env.json
+# mdt-cockpit explicit local-dev build mode (build-push.py --build --local-dev):
+# the operator's manifest of local artifacts, its saved build state, and the
+# per-entry manifest pages a local-dev build generates are never repository content.
+mdt-cockpit/local-dev-artifacts.toml
+mdt-cockpit/.build-env.local-dev.json
+mdt-cockpit/package-manifests-versioned/*/*-dev-*.md
+!mdt-cockpit/pip/wheels/
+!mdt-cockpit/pip/wheels/.gitignore
+!mdt-cockpit/pip/wheels/.gitkeep
 *.egg-info/
 .installed.cfg
 *.egg
@@ -237,6 +249,10 @@ ciu.worktree-instance.json
 # migrated yet.
 ciu.global.worktree.toml.j2
 ciu.global.instance.toml.j2
+# Atomic CIU-135 initial-overlay writer scratch; a hard interruption may leave
+# the unique staging file for later inspection/cleanup without dirtying gates.
+**/.ciu.worktree-instance.json.*.tmp
+**/.ciu.global.instance.toml.j2.*.tmp
 ciu.instance.generated.toml
 
 # Spyder project settings
@@ -341,6 +357,8 @@ cmru.secret.toml
 .ghcr-auth.json
 cmru.vars
 cmru/build/
+# CMRU's transient host-only source-mount canary (KI-74).
+/.cmru-gate-canary-*.txt
 # cmru tester-gate's in-container cgroup events handoff (removed after each run)
 .cmru/
 

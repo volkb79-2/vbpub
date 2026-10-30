@@ -9,6 +9,7 @@ import hashlib
 import importlib.util
 import os
 import re
+import select
 import signal
 import shutil
 import stat
@@ -88,11 +89,11 @@ if os.environ.get("FAST_DOCKER_TIMEOUT") == "1" and "docker" in args:
 os.execv(os.environ["REAL_TIMEOUT"], [os.environ["REAL_TIMEOUT"], *args])
 '''
 
-
 FAKE_DOCKER = r'''#!/usr/bin/env python3
 import hashlib
 import json
 import os
+import signal
 import sys
 import subprocess
 import time
@@ -110,6 +111,104 @@ def record():
 
 def read_state():
     return json.loads(state_path.read_text(encoding="utf-8"))
+
+def write_b110_pilot_outputs(state):
+    project = Path(os.environ["DOCKER_WORKTREE"]) / "assay"
+    artifacts = project / ".assay"
+    state_dir = artifacts / "b110-pilot-state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    identity = "a" * 64
+    commit = subprocess.check_output(
+        [os.environ["REAL_GIT"], "-C", os.environ["DOCKER_WORKTREE"], "rev-parse", "HEAD"],
+        text=True,
+    ).strip()
+    tree = subprocess.check_output(
+        [os.environ["REAL_GIT"], "-C", os.environ["DOCKER_WORKTREE"], "rev-parse", "HEAD^{tree}"],
+        text=True,
+    ).strip()
+    campaign = "b110-pilot-" + commit[:12]
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    if mode == "pilot-campaign-expired":
+        created = now - timedelta(hours=3)
+        expires = created + timedelta(hours=2)
+    else:
+        created = now
+        expires = now + timedelta(hours=2)
+    deadline_name = f"campaign-deadline-b110-pilot-{commit[:12]}.json"
+    deadline = {
+        "schema": "assay-campaign-deadline/1",
+        "campaign": campaign,
+        "commit": commit,
+        "git_tree": tree,
+        "lanes": ["self-qualification"],
+        "assay_version": "8.0.0",
+        "wheel_sha256": "f" * 64,
+        "plan_sha256": {"self-qualification": "e" * 64},
+        "created_at_utc": created.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "expires_at_utc": expires.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    deadline_raw = (json.dumps(deadline, sort_keys=True) + "\n").encode()
+    attempt_started = time.time_ns()
+    if mode == "pilot-attempt-expired":
+        attempt_started -= 91 * 60 * 1_000_000_000
+    elif mode == "pilot-attempt-near-expired":
+        attempt_started -= 90 * 60 * 1_000_000_000 - 5 * 1_000_000_000
+    attempt_window = {
+        "schema": "assay-b110-pilot-attempt-window/1",
+        "campaign": campaign,
+        "commit": commit,
+        "started_at_epoch_ns": attempt_started,
+        "expires_at_epoch_ns": attempt_started + 90 * 60 * 1_000_000_000,
+    }
+    attempt_raw = (
+        json.dumps(attempt_window, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode()
+    files = {
+        ".assay/b110-pilot-plan.json": b"plan\n",
+        ".assay/b110-pilot-candidates.txt": (
+            "# b110 pilot selection seed=b110-pilot-2026 size=64 plan_candidates=1\n"
+            + identity + "\n"
+        ).encode(),
+        ".assay/b110-pilot-selection.json": b"selection\n",
+        ".assay/b110-pilot-summary.json": b"summary\n",
+        ".assay/b110-pilot-run.log": b"run log\n",
+        ".assay/r2-manifest-b110-pilot.txt": b"test_contract::test_example\n",
+        ".assay/b110-pilot-attempt-window.json": attempt_raw,
+        ".assay/progress-b110-pilot.jsonl": b"progress\n",
+        f".assay/{deadline_name}": deadline_raw,
+        ".assay/b110-pilot-state/PILOT-STATE": b"sentinel\n",
+        f".assay/b110-pilot-state/{identity}.json": b"state\n",
+    }
+    manifest_entries = dict(files)
+    for relative, content in files.items():
+        target = project / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if relative == ".assay/progress-b110-pilot.jsonl" and target.exists():
+            with target.open("ab") as stream:
+                stream.write(content)
+        elif relative == ".assay/b110-pilot-state/PILOT-STATE" and target.exists():
+            # A resumed pilot validates this identity in place; attest its retained bytes.
+            manifest_entries[relative] = target.read_bytes()
+        else:
+            target.write_bytes(content)
+    # Progress is append-only across pilot retries, so attest the whole
+    # retained stream rather than the new line from this simulated run.
+    manifest_entries[".assay/progress-b110-pilot.jsonl"] = (
+        artifacts / "progress-b110-pilot.jsonl"
+    ).read_bytes()
+    if mode == "pilot-manifest-omits":
+        manifest_entries.pop(".assay/b110-pilot-run.log")
+    manifest = artifacts / "b110-pilot-artifacts.sha256"
+    manifest_bytes = "".join(
+        f"{hashlib.sha256(content).hexdigest()}  {relative}\n"
+        for relative, content in sorted(manifest_entries.items())
+    ).encode()
+    manifest.write_bytes(manifest_bytes)
+    if mode == "pilot-artifact-tampered":
+        (artifacts / "b110-pilot-summary.json").write_text("changed after attestation\n")
+    state["pilot_outputs_written"] = True
+    state["pilot_attestation_sha256"] = hashlib.sha256(manifest_bytes).hexdigest()
+    state_path.write_text(json.dumps(state), encoding="utf-8")
 
 def read_unit_probe_state():
     return json.loads(Path(os.environ["DOCKER_UNIT_PROBE_STATE"]).read_text(encoding="utf-8"))
@@ -194,6 +293,11 @@ if args and args[0] == "run" and "-d" in args:
     if mode == "blocked-launch":
         while True:
             time.sleep(0.05)
+    if (
+        state["inner"][-1] == "b110-pilot"
+        and mode not in {"pilot-init-refused", "pilot-timeout", "pilot-incomplete", "pilot-wrong-marker"}
+    ):
+        write_b110_pilot_outputs(state)
     print(state["id"])
     raise SystemExit(0)
 if args and args[0] == "inspect":
@@ -215,7 +319,7 @@ if args and args[0] == "inspect":
         print("true" if mode in {"blocked-wait", "blocked-launch", "create-then-nonzero", "stop-fails", "force-remove-fails"} and not state.get("stopped") else "false")
     elif ".Config.User" in fmt:
         cgroupns = "host" if mode == "bad-config" else state["cgroupns"]
-        print("|".join((state["id"], "/" + state["name"], state["token"], "1003", state["cgroup_parent"], cgroupns, "3000000000", "2147483648", "8589934592", state["network"])))
+        print("|".join((state["id"], "/" + state["name"], state["token"], "1003", state["cgroup_parent"], cgroupns, "3000000000", "2147483648", "8589934592", "8192", state["network"])))
     elif ".Mounts" in fmt:
         for mount in state["mounts"]:
             fields = {}
@@ -236,8 +340,11 @@ if args and args[0] == "wait":
         print("0")
         raise SystemExit(0)
     if mode == "blocked-wait":
-        while not read_state().get("stopped"):
-            time.sleep(0.05)
+        ready_path = os.environ.get("DOCKER_WAIT_READY")
+        if ready_path:
+            with open(ready_path, "w", encoding="ascii") as stream:
+                stream.write("ready\n")
+        signal.pause()
     if mode in {"analysis-pilot-inner-log", "analysis-host-check-dirties"}:
         log_follow_done = Path(os.environ["DOCKER_LOG_FOLLOW_DONE"])
         deadline = time.monotonic() + 10
@@ -286,90 +393,9 @@ if args and args[0] == "logs":
             print("B110_PILOT_COMPLETED=1")
             print("B110_SCREEN_VERIFIED=1")
         else:
-            project = Path(os.environ["DOCKER_WORKTREE"]) / "assay"
-            artifacts = project / ".assay"
-            state_dir = artifacts / "b110-pilot-state"
-            state_dir.mkdir(parents=True, exist_ok=True)
-            identity = "a" * 64
-            commit = subprocess.check_output(
-                [os.environ["REAL_GIT"], "-C", os.environ["DOCKER_WORKTREE"], "rev-parse", "HEAD"],
-                text=True,
-            ).strip()
-            tree = subprocess.check_output(
-                [os.environ["REAL_GIT"], "-C", os.environ["DOCKER_WORKTREE"], "rev-parse", "HEAD^{tree}"],
-                text=True,
-            ).strip()
-            campaign = "b110-pilot-" + commit[:12]
-            now = datetime.now(timezone.utc).replace(microsecond=0)
-            if mode == "pilot-campaign-expired":
-                created = now - timedelta(hours=3)
-                expires = created + timedelta(hours=2)
-            else:
-                created = now
-                expires = now + timedelta(hours=2)
-            deadline_name = f"campaign-deadline-b110-pilot-{commit[:12]}.json"
-            deadline = {
-                "schema": "assay-campaign-deadline/1",
-                "campaign": campaign,
-                "commit": commit,
-                "git_tree": tree,
-                "lanes": ["self-qualification"],
-                "assay_version": "8.0.0",
-                "wheel_sha256": "f" * 64,
-                "plan_sha256": {"self-qualification": "e" * 64},
-                "created_at_utc": created.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "expires_at_utc": expires.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            }
-            deadline_raw = (json.dumps(deadline, sort_keys=True) + "\n").encode()
-            attempt_started = time.time_ns()
-            if mode == "pilot-attempt-expired":
-                attempt_started -= 91 * 60 * 1_000_000_000
-            elif mode == "pilot-attempt-near-expired":
-                attempt_started -= 90 * 60 * 1_000_000_000 - 5 * 1_000_000_000
-            attempt_window = {
-                "schema": "assay-b110-pilot-attempt-window/1",
-                "campaign": campaign,
-                "commit": commit,
-                "started_at_epoch_ns": attempt_started,
-                "expires_at_epoch_ns": attempt_started + 90 * 60 * 1_000_000_000,
-            }
-            attempt_raw = (
-                json.dumps(attempt_window, sort_keys=True, separators=(",", ":")) + "\n"
-            ).encode()
-            files = {
-                ".assay/b110-pilot-plan.json": b"plan\n",
-                ".assay/b110-pilot-candidates.txt": (
-                    "# b110 pilot selection seed=b110-pilot-2026 size=64 plan_candidates=1\n"
-                    + identity + "\n"
-                ).encode(),
-                ".assay/b110-pilot-selection.json": b"selection\n",
-                ".assay/b110-pilot-summary.json": b"summary\n",
-                ".assay/b110-pilot-run.log": b"run log\n",
-                ".assay/r2-manifest-b110-pilot.txt": b"test_contract::test_example\n",
-                ".assay/b110-pilot-attempt-window.json": attempt_raw,
-                ".assay/progress-b110-pilot.jsonl": b"progress\n",
-                f".assay/{deadline_name}": deadline_raw,
-                ".assay/b110-pilot-state/PILOT-STATE": b"sentinel\n",
-                f".assay/b110-pilot-state/{identity}.json": b"state\n",
-            }
-            for relative, content in files.items():
-                target = project / relative
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(content)
-            manifest_entries = dict(files)
-            if mode == "pilot-manifest-omits":
-                manifest_entries.pop(".assay/b110-pilot-run.log")
-            manifest = artifacts / "b110-pilot-artifacts.sha256"
-            manifest_bytes = "".join(
-                f"{hashlib.sha256(content).hexdigest()}  {relative}\n"
-                for relative, content in sorted(manifest_entries.items())
-            ).encode()
-            manifest.write_bytes(manifest_bytes)
-            if mode == "pilot-artifact-tampered":
-                (artifacts / "b110-pilot-summary.json").write_text("changed after attestation\n")
             print("B110_PILOT_EXIT=6")
             print("B110_PILOT_VERIFIED=1")
-            print("B110_PILOT_ATTESTATION_SHA256=" + hashlib.sha256(manifest_bytes).hexdigest())
+            print("B110_PILOT_ATTESTATION_SHA256=" + state["pilot_attestation_sha256"])
             print("B110_PILOT_COMPLETED=1")
     elif lane == "b110-screen":
         if mode == "screen-r0-fail":
@@ -441,7 +467,6 @@ def committed_worktree():
     (project / ".gitignore").write_text(".assay/\n.run-gate/\n", encoding="utf-8")
     (project / "pyproject.toml").write_text("[project]\nname='assay-fixture'\nversion='1.0'\n", encoding="utf-8")
     shutil.copy2(PROJECT_ROOT / "run-gate.toml", project / "run-gate.toml")
-    (project / "run-gate.py").symlink_to((PROJECT_ROOT / "run-gate.py").resolve())
     shutil.copy2(SCRIPT, project / "tools" / SCRIPT.name)
     shutil.copy2(CGROUP_HELPER, project / "tools" / CGROUP_HELPER.name)
     shutil.copy2(PILOT_HOST_CHECK, project / "tools" / PILOT_HOST_CHECK.name)
@@ -763,6 +788,7 @@ if '--archive-prior-snapshot' in sys.argv:
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "CGROUP_PARENT_DEV_GATES": "dev-gates.slice",
+        "ASSAY_GATE_HOST_DOCKER_GID": "994",
         "CGROUP_PARENT_DEV_INTERACTIVE": "dev-interactive.slice",
         "HOSTNAME": "deliberately-not-the-parent-container-name",
         "DOCKER_TRACE": str(trace),
@@ -793,7 +819,7 @@ if '--archive-prior-snapshot' in sys.argv:
         "ASSAY_GATE_RESOURCE_OBSERVER_SOURCE",
         os.environ.get(
             "ASSAY_RESOURCE_OBSERVER_SOCKET",
-            "/run/cgprofile/resource-observer.sock",
+            "/run/cgprofile/observer/resource-observer.sock",
         ),
     )
     if inner_pilot_log is not None:
@@ -811,7 +837,7 @@ if '--archive-prior-snapshot' in sys.argv:
         minimal_bin = tmp_path / "minimal-bin"
         minimal_bin.mkdir(exist_ok=True)
         for name in (
-            "bash", "git", "findmnt", "realpath", "flock", "chmod", "rm",
+            "bash", "git", "findmnt", "realpath", "dirname", "flock", "chmod", "rm",
             "mkdir", "mv", "python3", "stat",
         ):
             target = shutil.which(name)
@@ -843,6 +869,7 @@ def launch_env(tmp_path: Path, *, mode: str):
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "CGROUP_PARENT_DEV_GATES": "dev-gates.slice",
+        "ASSAY_GATE_HOST_DOCKER_GID": "994",
         "CGROUP_PARENT_DEV_INTERACTIVE": "dev-interactive.slice",
         "HOSTNAME": "deliberately-not-the-parent-container-name",
         "DOCKER_TRACE": str(trace),
@@ -850,12 +877,13 @@ def launch_env(tmp_path: Path, *, mode: str):
         "DOCKER_UNIT_PROBE_STATE": str(tmp_path / "docker-unit-probe-state.json"),
         "DOCKER_MODE": mode,
         "TMPDIR": str(tmp_path),
+        "DOCKER_WAIT_READY": str(tmp_path / "docker-wait-ready.fifo"),
     }
     env["ASSAY_GATE_RESOURCE_OBSERVER_SOURCE"] = os.environ.get(
         "ASSAY_GATE_RESOURCE_OBSERVER_SOURCE",
         os.environ.get(
             "ASSAY_RESOURCE_OBSERVER_SOCKET",
-            "/run/cgprofile/resource-observer.sock",
+            "/run/cgprofile/observer/resource-observer.sock",
         ),
     )
     env.pop("ASSAY_GATE_HOST_WORKSPACE_ROOT", None)
@@ -947,7 +975,13 @@ def test_outer_runner_launches_bounded_cgroup_visible_container_and_reads_job_st
     assert "--cpus=3" in launch
     assert "--memory=2g" in launch
     assert "--memory-swap=8g" in launch
+    assert "--pids-limit=8192" in launch
     assert "--group-add" in launch
+    assert "ASSAY_GATE_HOST_DOCKER_GID=994" in launch
+    gate_source = (PROJECT_ROOT / "tools" / "tester-unified-gate.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "observer-only tester identity includes the host Docker group" in gate_source
     assert "--network=none" in launch
     assert all("--cgroupns=host" not in call for call in calls if call and call[0] == "run")
     assert "CGROUP_PARENT_DEV_GATES=dev-gates.slice" in launch
@@ -964,11 +998,11 @@ def test_outer_runner_launches_bounded_cgroup_visible_container_and_reads_job_st
         "ASSAY_GATE_RESOURCE_OBSERVER_SOURCE",
         os.environ.get(
             "ASSAY_RESOURCE_OBSERVER_SOCKET",
-            "/run/cgprofile/resource-observer.sock",
+            "/run/cgprofile/observer/resource-observer.sock",
         ),
     )
     expected_mounts.append(
-        f"type=bind,src={observer_source},dst=/tmp/cgprofile-resource-observer.sock,readonly"
+        f"type=bind,src={Path(observer_source).parent},dst=/run/cgprofile-observer,readonly"
     )
     assert mounts == expected_mounts
     assert all("docker.sock" not in mount for mount in mounts)
@@ -994,7 +1028,7 @@ def test_outer_runner_launches_bounded_cgroup_visible_container_and_reads_job_st
     ).stdout.strip()
     assert f"ASSAY_B105_GATE_EXPECTED_COMMIT={source_commit}" in env
     assert f"ASSAY_B105_GATE_EXPECTED_TREE={source_tree}" in env
-    assert "ASSAY_RESOURCE_OBSERVER_SOCKET=/tmp/cgprofile-resource-observer.sock" in env
+    assert "ASSAY_RESOURCE_OBSERVER_SOCKET=/run/cgprofile-observer/resource-observer.sock" in env
 
 
 @pytest.mark.parametrize(
@@ -3707,35 +3741,52 @@ def test_b110_container_wait_and_log_follow_include_the_exact_bounds(
     )
 
     assert proc.returncode == 0, proc.stderr
-    timeouts = [
-        json.loads(line)
-        for line in (tmp_path / "timeout.jsonl").read_text(encoding="utf-8").splitlines()
-    ]
+    def traced_timeouts():
+        return [
+            json.loads(line)
+            for line in (tmp_path / "timeout.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+
+    def follower_of(timeouts):
+        return next(
+            (
+                args for args in timeouts
+                if "docker" in args
+                and args[args.index("docker") + 1 : args.index("docker") + 4]
+                == ["logs", "--follow", CONTAINER_ID]
+            ),
+            None,
+        )
+
+    # The log follower is a background child: under host contention the launcher
+    # can exit before the child's `timeout` wrapper has recorded its invocation.
+    deadline = time.monotonic() + 30
+    timeouts = traced_timeouts()
+    while follower_of(timeouts) is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+        timeouts = traced_timeouts()
     wait = next(
         args for args in timeouts
         if "docker" in args and args[args.index("docker") + 1 : args.index("docker") + 3]
         == ["wait", CONTAINER_ID]
     )
-    follower = next(
-        args for args in timeouts
-        if "docker" in args and args[args.index("docker") + 1 : args.index("docker") + 4]
-        == ["logs", "--follow", CONTAINER_ID]
-    )
+    follower = follower_of(timeouts)
+    assert follower is not None, "the log follower's timeout invocation was never traced"
     assert wait[wait.index("docker") - 1] == f"{wait_seconds}s"
     assert follower[follower.index("docker") - 1] == f"{wait_seconds + 90}s"
 
 
-def test_runner_refuses_to_launch_beside_an_active_registered_gate(tmp_path: Path, committed_worktree: Path):
+def test_runner_launches_beside_an_active_registered_gate(tmp_path: Path, committed_worktree: Path):
     proc, calls, _elapsed = run_launcher(
         tmp_path, committed_worktree, lane="self-qualification-preflight", mode="busy"
     )
 
-    assert proc.returncode == 3
-    assert "host busy" in proc.stderr
-    assert not any(call and call[0] == "run" and "-d" in call for call in calls)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert any(call and call[0] == "run" and "-d" in call for call in calls)
+    assert not any(call[:2] == ["ps", "--no-trunc"] for call in calls)
 
 
-def test_b110_screen_removes_stale_verdict_before_host_admission(
+def test_b110_screen_removes_stale_verdict_and_runs_beside_an_active_gate(
     tmp_path: Path, committed_worktree: Path
 ):
     state = committed_worktree / "assay" / ".assay"
@@ -3752,14 +3803,13 @@ def test_b110_screen_removes_stale_verdict_before_host_admission(
         tmp_path, committed_worktree, lane="b110-screen", mode="busy"
     )
 
-    assert proc.returncode == 3
-    assert "host busy" in proc.stderr
+    assert proc.returncode == 0, proc.stdout + proc.stderr
     assert all(not (state / name).exists() for name in stale_outputs)
-    assert any(call[:2] == ["ps", "--no-trunc"] for call in calls)
-    assert not any(call and call[0] == "run" and "-d" in call for call in calls)
+    assert any(call and call[0] == "run" and "-d" in call for call in calls)
+    assert not any(call[:2] == ["ps", "--no-trunc"] for call in calls)
 
 
-def test_b110_screen_removes_stale_verdict_before_shared_host_refusal(
+def test_b110_screen_accepts_legacy_shared_host_opt_in(
     tmp_path: Path, committed_worktree: Path
 ):
     state = committed_worktree / "assay" / ".assay"
@@ -3779,10 +3829,9 @@ def test_b110_screen_removes_stale_verdict_before_shared_host_refusal(
         shared_host_value="1",
     )
 
-    assert proc.returncode == 3
-    assert "ASSAY_GATE_ALLOW_SHARED_HOST=1 is unsupported" in proc.stderr
+    assert proc.returncode == 0, proc.stdout + proc.stderr
     assert all(not (state / name).exists() for name in stale_outputs)
-    assert not any(call and call[0] == "run" and "-d" in call for call in calls)
+    assert any(call and call[0] == "run" and "-d" in call for call in calls)
 
 
 def test_b110_screen_clears_stale_outputs_before_host_bind_refusal(
@@ -3811,7 +3860,7 @@ def test_b110_screen_clears_stale_outputs_before_host_bind_refusal(
     assert not any(call and call[0] == "run" and "-d" in call for call in calls)
 
 
-def test_b110_pilot_clears_stale_attempt_outputs_before_host_admission(
+def test_b110_pilot_clears_stale_attempt_outputs_and_runs_beside_an_active_gate(
     tmp_path: Path, committed_worktree: Path
 ):
     state = committed_worktree / "assay" / ".assay"
@@ -3844,10 +3893,32 @@ def test_b110_pilot_clears_stale_attempt_outputs_before_host_admission(
         mode="busy",
     )
 
-    assert proc.returncode == 3
-    assert "host busy" in proc.stderr
-    assert all(not (state / name).exists() for name in stale_outputs)
-    assert progress.read_text(encoding="utf-8") == '{"event":"resume evidence"}\n'
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    fresh_outputs = {
+        "b110-pilot-plan.json": b"plan\n",
+        "b110-pilot-candidates.txt": (
+            b"# b110 pilot selection seed=b110-pilot-2026 size=64 plan_candidates=1\n"
+            + b"a" * 64
+            + b"\n"
+        ),
+        "b110-pilot-selection.json": b"selection\n",
+        "b110-pilot-summary.json": b"summary\n",
+        "b110-pilot-run.log": b"run log\n",
+        "r2-manifest-b110-pilot.txt": b"test_contract::test_example\n",
+    }
+    for name, expected in fresh_outputs.items():
+        assert (state / name).read_bytes() == expected
+    assert not (state / "b110-pilot-attempt.log").exists()
+    attempt_window = json.loads(
+        (state / "b110-pilot-attempt-window.json").read_text(encoding="utf-8")
+    )
+    assert attempt_window["schema"] == "assay-b110-pilot-attempt-window/1"
+    assert "b110-pilot-summary.json" in (state / "b110-pilot-artifacts.sha256").read_text(
+        encoding="ascii"
+    )
+    assert progress.read_text(encoding="utf-8") == (
+        '{"event":"resume evidence"}\nprogress\n'
+    )
     assert deadline.exists()
     assert mutation_state.read_text(encoding="utf-8") == "state identity\n"
 
@@ -3900,7 +3971,7 @@ def test_b110_attempt_clears_old_artifacts_before_missing_docker_refusal(
     assert calls == []
 
 
-def test_b105_refuses_the_shared_host_opt_in(tmp_path: Path, committed_worktree: Path):
+def test_b105_accepts_the_legacy_shared_host_opt_in(tmp_path: Path, committed_worktree: Path):
     proc, calls, _elapsed = run_launcher(
         tmp_path,
         committed_worktree,
@@ -3908,9 +3979,8 @@ def test_b105_refuses_the_shared_host_opt_in(tmp_path: Path, committed_worktree:
         shared_host_value="1",
     )
 
-    assert proc.returncode == 3
-    assert "ASSAY_GATE_ALLOW_SHARED_HOST=1 is unsupported" in proc.stderr
-    assert not any(call and call[0] == "run" and "-d" in call for call in calls)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert any(call and call[0] == "run" and "-d" in call for call in calls)
 
 
 def test_b105_lock_serializes_callers_across_tmp_namespaces(
@@ -3972,7 +4042,7 @@ def test_b110_screen_lock_refusal_preserves_the_existing_verdict(
     assert not any(call and call[0] in {"ps", "run"} for call in calls)
 
 
-def test_runner_fails_on_nonzero_container_exit_and_removes_its_verified_container(
+def test_b105_maps_incomplete_container_exit_to_inconclusive_and_removes_it(
     tmp_path: Path, committed_worktree: Path
 ):
     proc, calls, _elapsed = run_launcher(
@@ -3982,8 +4052,24 @@ def test_runner_fails_on_nonzero_container_exit_and_removes_its_verified_contain
         wait_status="137",
     )
 
-    assert proc.returncode != 0
-    assert "container exited with status 137" in proc.stderr
+    assert proc.returncode == 3
+    assert "ASSAY_GATE_INCONCLUSIVE=Assay qualification ended incomplete or infrastructure (container exit 137)" in proc.stderr
+    assert any(call[:2] == ["rm", CONTAINER_ID] for call in calls)
+
+
+def test_b105_preserves_a_completed_assay_fail_as_exit_one(
+    tmp_path: Path, committed_worktree: Path
+):
+    proc, calls, _elapsed = run_launcher(
+        tmp_path,
+        committed_worktree,
+        lane="self-qualification-preflight",
+        wait_status="1",
+    )
+
+    assert proc.returncode == 1
+    assert "Assay qualification produced a completed FAIL" in proc.stderr
+    assert "ASSAY_GATE_INCONCLUSIVE=" not in proc.stderr
     assert any(call[:2] == ["rm", CONTAINER_ID] for call in calls)
 
 
@@ -4059,6 +4145,9 @@ def test_runner_cancellation_stops_and_removes_its_owned_container(
     tmp_path: Path, committed_worktree: Path
 ):
     env, trace = launch_env(tmp_path, mode="blocked-wait")
+    ready_path = Path(env["DOCKER_WAIT_READY"])
+    os.mkfifo(ready_path)
+    ready_fd = os.open(ready_path, os.O_RDWR | os.O_NONBLOCK)
     proc = subprocess.Popen(
         ["bash", str(SCRIPT), str(committed_worktree), "self-qualification-preflight"],
         env=env,
@@ -4067,22 +4156,15 @@ def test_runner_cancellation_stops_and_removes_its_owned_container(
         text=True,
     )
     try:
-        for _ in range(200):
-            if trace.exists() and any(
-                json.loads(line)[:1] == ["wait"]
-                and CONTAINER_ID in json.loads(line)
-                for line in trace.read_text(encoding="utf-8").splitlines()
-            ):
-                break
-            if proc.poll() is not None:
-                pytest.fail("launcher exited before reaching docker wait")
-            time.sleep(0.05)
-        else:
+        readable, _, _ = select.select([ready_fd], [], [], 60)
+        if not readable:
             pytest.fail("launcher did not reach docker wait")
+        assert os.read(ready_fd, 64) == b"ready\n"
 
         proc.send_signal(signal.SIGTERM)
-        stdout, stderr = proc.communicate(timeout=10)
+        stdout, stderr = proc.communicate(timeout=60)
     finally:
+        os.close(ready_fd)
         if proc.poll() is None:
             proc.kill()
             proc.communicate(timeout=5)
@@ -4114,7 +4196,7 @@ def test_created_container_is_reconciled_after_nonzero_docker_run(
         mode="create-then-nonzero",
     )
 
-    assert proc.returncode == 17
+    assert proc.returncode == 3
     assert "docker run failed (exit 17)" in proc.stderr
     assert any(call[0] == "inspect" and "{{.Id}}" in call for call in calls)
     assert any(call[0] == "stop" and CONTAINER_ID in call for call in calls)
@@ -4136,7 +4218,7 @@ def test_cancellation_during_launch_reconciles_cidfile_and_owned_name(
             if state_path.exists():
                 break
             if proc.poll() is not None:
-                pytest.fail("launcher exited before the ambiguous creation window")
+                pytest.fail("launcher exited before the ambiguous creation window" + f": {proc.communicate()[1][-600:]!r}")
             time.sleep(0.05)
         else:
             pytest.fail("docker run did not create its container")

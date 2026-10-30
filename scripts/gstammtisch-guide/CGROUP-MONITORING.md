@@ -765,8 +765,9 @@ the game gets ~10× the I/O bandwidth of default-weight cgroups when the block d
 contested.
 
 **`io.bfq.weight = 1000`**: The BFQ (Budget Fair Queueing) scheduler weight (range 1–1000,
-default 100). At 1000 (maximum), BFQ prioritises the game's I/O requests over all other
-cgroups. Requires BFQ scheduler on the block device (`/sys/block/vda/queue/scheduler = bfq`).
+default 100). At 1000 (maximum), BFQ prioritises the game's queued I/O requests over all other
+cgroups (it cannot help a game `fdatasync` that waits on a journal commit carrying other cgroups' data,
+see [HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md)). Requires BFQ scheduler on the block device (`/sys/block/vda/queue/scheduler = bfq`).
 Without BFQ, this file exists but has no effect.
 
 **`io.stat`**: Since container start:
@@ -1047,8 +1048,9 @@ A third refault stream is shown separately: `rf_f/s` = Δ`workingset_refault_fil
 zswap for file pages), so a sustained rate means the kernel is dropping
 needed file pages — often the game binary's own executable code. This is the
 swappiness-validation signal from MEASUREMENTS.md M5: `rf_f/s ≈ 0` with
-modest `rf_z/s` and `rf_d/s ≈ 0` confirms `swappiness=100` is the right
-trade on this host.
+modest `rf_z/s` and `rf_d/s ≈ 0` confirmed `swappiness=100` was the right
+trade on this host (the value is now 10; `rf_f/s` is the signal to watch for the cost of a low value, see
+MEMORY-ARCHITECTURE.md §4 "`vm.swappiness`").
 
 ### Monitor line anatomy
 
@@ -1485,6 +1487,10 @@ small I/O, not the game (`io.stat` shows the game's IO is startup-only).
 swappiness               = 100
 watermark_scale_factor   = 50
 ```
+
+> **Superseded 2026-10-21:** this snapshot predates the operator decision to run `vm.swappiness = 10`
+> ([MEMORY-ARCHITECTURE.md §4](MEMORY-ARCHITECTURE.md#vmswappiness--why-low-on-these-hosts)); the explanation below
+> is the earlier reasoning.
 
 **`swappiness = 100`** is unusual — the default is 60. At 100, the kernel treats anonymous and
 file-backed pages equally for reclaim decisions, and is more willing to swap anonymous pages

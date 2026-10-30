@@ -69,6 +69,7 @@ exclude_also = [
 ]
 
 [tool.pytest.ini_options]
+addopts = []
 testpaths = ["tests"]
 tmp_path_retention_count = 1
 tmp_path_retention_policy = "failed"

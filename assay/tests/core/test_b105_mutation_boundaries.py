@@ -6,7 +6,6 @@ import hashlib
 import json
 import math
 import os
-import subprocess
 from concurrent.futures import Future as ConcurrentFuture
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +16,7 @@ from assay.adapters.python import PythonAdapter
 from assay.errors import AssayError, Outcome, ReasonCode
 from assay.mutation import MutationDiscoveryError, MutationStateError
 from assay.verdict import Mutation
+from conftest import completed_process
 from conftest import (
     GitRepo,
     make_deadline,
@@ -67,6 +67,15 @@ def _record(job=None):
         "description": job.site.description,
         "mutated_file_sha256": hashlib.sha256(mutated).hexdigest(),
         "resource_limit_evidence": zero_resource_limit_evidence_dict(),
+        "process_tree_evidence": {
+            "protocol": "assay-process-tree/1",
+            "leader_status": "exited",
+            "group_signalled_before_reap": False,
+            "outliving_descendants": 0,
+            "descendants_signalled": 0,
+            "cleanup_seconds": 0.001,
+            "clean": True,
+        },
     }
 
 
@@ -461,7 +470,7 @@ def test_mutation_worker_propagates_non_timeout_post_execution_git_failure(
                 jobs=1,
                 prepared=prepared,
                 plan=plan,
-                process_runner=lambda argv, *, env, cwd, timeout: subprocess.CompletedProcess(
+                process_runner=lambda argv, *, env, cwd, timeout: completed_process(
                     list(argv), returncode=0, stdout="", stderr=""
                 ),
                 clock=lambda: datetime(2026, 9, 26, tzinfo=timezone.utc),
@@ -502,7 +511,7 @@ def test_mutation_worker_leaves_candidate_unclassified_when_termination_interrup
 
     def run(argv, *, env, cwd, timeout):
         process_calls.append(tuple(argv))
-        return subprocess.CompletedProcess(list(argv), returncode=0, stdout="", stderr="")
+        return completed_process(list(argv), returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(mutation, "_snapshot_left_dirt", terminate_during_integrity)
     plan = make_plan(make_lane(argv=("check",)))
@@ -578,7 +587,7 @@ def test_mutation_worker_rechecks_deadline_after_successful_integrity_return(
             jobs=1,
             prepared=prepared,
             plan=plan,
-            process_runner=lambda argv, *, env, cwd, timeout: subprocess.CompletedProcess(
+            process_runner=lambda argv, *, env, cwd, timeout: completed_process(
                 list(argv), returncode=1, stdout="", stderr=""
             ),
             clock=lambda: datetime(2026, 9, 26, tzinfo=timezone.utc),
@@ -717,7 +726,7 @@ def test_empty_mutation_shard_records_its_assignment_without_running_a_candidate
     baseline_result = execute_command(
         lane,
         cwd=repo.path,
-        process_runner=lambda argv, *, env, cwd, timeout: subprocess.CompletedProcess(
+        process_runner=lambda argv, *, env, cwd, timeout: completed_process(
             list(argv), returncode=0
         ),
     )

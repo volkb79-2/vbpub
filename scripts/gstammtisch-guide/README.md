@@ -30,6 +30,8 @@ scripts the same cgroup attributes to write.
 | [MEMORY-ARCHITECTURE.md](MEMORY-ARCHITECTURE.md) | The synthesis: guide comparison + verdicts, zswap/zstd, sysctl, **cgroup v2 reasoning**, KSM/THP, kernel facts |
 | [OBSERVATION.md](OBSERVATION.md) | Environment observation & interpretation (`/sys/module/zswap`, `/sys/kernel/debug/zswap`, disk class/TRIM, PSI, cgroup, KSM, DAMON) |
 | [SOULMASK.md](SOULMASK.md) | Game-server specifics: protection, orderly shutdown, RCON |
+| [HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md) | Why host IO stalls the compute-only game server (shared ext4 journal + slow device), the A/B and matrix measurements, recommended kernel settings (applied as an interim on gstammtisch, to be owned by host-setup), structural options, what to monitor. Instruments: [tools/io-stall/](tools/io-stall/README.md) |
+| [BTRFS-ROLLOUT.md](BTRFS-ROLLOUT.md) | Plan to give Wings its own btrfs filesystem (subvolume mounted at `/var/lib/pterodactyl`, ordering with `soulmask_tmpfs.service`) and to add a btrfs CoW area for the devcontainers: sizing, offline root shrink, fstab, migration, checks. Design and concepts: [mdt-cockpit/docs/BTRFS-COW.md](../../mdt-cockpit/docs/BTRFS-COW.md) |
 | [CGROUP-MONITORING.md](CGROUP-MONITORING.md) | Every cgroup v2 metric explained through live Soulmask data: memory.stat field-by-field, zswap math, swapcached/compression-ratio traps, PSI, CPU/IO, pak-slice decomposition, monitor column guide |
 | [MEASUREMENTS.md](MEASUREMENTS.md) | Manual measurement procedures: refault-source split (zswap vs disk), pak hot set (vmtouch), login-latency gate for writeback, file-cache hotness + swappiness validation, io-baseline (fio), KSM estimate |
 | [plan-host-resource-governance.md](plan-host-resource-governance.md) | Living plan: tiered slices, decisions log (§9), measurement plan (§10) |
@@ -37,7 +39,9 @@ scripts the same cgroup attributes to write.
 ## File manifest
 ```
 gstammtisch-guide/
-├── README.md  MEMORY-ARCHITECTURE.md  OBSERVATION.md  SOULMASK.md
+├── README.md  MEMORY-ARCHITECTURE.md  OBSERVATION.md  SOULMASK.md  HOST-IO-INTERFERENCE.md  BTRFS-ROLLOUT.md
+├── tools/io-stall/                          # host IO stall instruments (see its README)
+├── measurements/                            # raw operator captures, verbatim (MEASUREMENTS.md M8)
 ├── files/                                   # drop-in config, mirrors target paths
 │   ├── etc/modules-load.d/zstd.conf
 │   ├── etc/modules-load.d/bfq.conf          # load BFQ module at boot
@@ -46,11 +50,14 @@ gstammtisch-guide/
 │   ├── etc/tmpfiles.d/thp.conf              # THP=madvise
 │   ├── etc/tmpfiles.d/ksm.conf              # KSM (optional)
 │   ├── etc/gstammtisch/instance-defaults.env      # per-instance defaults (N-instance, see SOULMASK.md §9b)
+│   ├── etc/gstammtisch/soulmask_tmpfs.env          # per-instance log tmpfs policy: size, backups kept, high-water (single source, SMT-01)
 │   ├── etc/gstammtisch/instances.d/*.env(.example) # per-instance overrides (one file per server UUID)
 │   ├── etc/systemd/system/zswap-config.service        # zstd post-boot fix
 │   ├── etc/systemd/system/soulmask-graceful-stop.service
+│   ├── etc/systemd/system/soulmask-logs-prune.{service,timer}   # prunes the per-instance log tmpfs (SMT-01)
 │   ├── etc/systemd/system/soulmask_tmpfs.service  soulmask_tmpfs.slice
-│   │                        soulmask_tmpfs-ZSwapMax{0,1}.slice   # SOULMASK-TMPFS.md
+│   │                        soulmask_tmpfs-ZSwapMax{0,1}.slice   # SOULMASK-TMPFS.md (shared tmpfs + per-instance
+│   │                                                             #   tmpfs for WS/Saved/Logs, SMT-01)
 │   ├── etc/systemd/oomd.conf.d/gstammtisch.conf
 │   ├── legacy/                              # retired — kept for reference, not installed
 │   │   ├── etc/systemd/system/gstammtisch-cgroups.service  soulmask-cgroup-watcher.service
@@ -62,6 +69,7 @@ gstammtisch-guide/
 │   │                             soulmask-static-ramdisk-{setup,teardown}.sh
 │   └── usr/local/sbin/soulmask-shutdown.sh  soulmask-instance-lib.sh  wings-ps.sh
 │                         soulmask_tmpfs-{setup,teardown,toggle,restart-wings}.sh
+│                         soulmask_logs-prune.sh
 │                         soulmask-monitor.{sh,py}  soulmask-mempress.sh
 │                         soulmask-pak-mempress.sh  container-mempress.sh
 │                         exec-soulmask-rcon.{sh,py}  soulmask_rcon.py  # RCON admin helper + engine
@@ -118,10 +126,10 @@ These are runtime confirmations the deliverables assume but couldn't be tested f
 
 ## Design decisions (one-liners; full reasoning in MEMORY-ARCHITECTURE.md)
 - **zswap + zstd**, configured **post-boot** (built-in init races the zstd module → lzo fallback; GRUB tokens dropped).
-- **swappiness=100** (zswap makes anon reclaim cheap; protect the game with `memory.min`, not swappiness).
+- **swappiness=10** (operator decision 2026-10-21; was 100): write-capped disk, cheap reads, so prefer evicting clean file cache over anon ([why](MEMORY-ARCHITECTURE.md#vmswappiness--why-low-on-these-hosts)); protect the game with `memory.min`, not swappiness.
 - **2 labeled swap partitions** for `iostat` visibility — *not* for speed (striping is a no-op on one vda); thin-provisioned disk → `discard=once`.
-- **cgroup v2**: Soulmask `memory.min`/`memory.low`/`zswap.writeback=0`, `io.bfq.weight=1000`, `cpu.weight=800`. Dev/test/build tiers are a separate concern — see [scope](#scope) below.
-- **BFQ I/O scheduler** on `vda` (not `[none]`): only scheduler that enforces cgroup `io.weight`/`io.bfq.weight` — without it, all I/O priority settings are no-ops. `io.latency` unavailable (`CONFIG_BLK_CGROUP_IOLATENCY` not set in Debian 13); `io.cost.qos` is the available alternative (see SOULMASK.md §2b).
+- **cgroup v2**: Soulmask `memory.min`/`memory.low`/`zswap.writeback=1` (operator decision: writeback and the shrinker are required, see [HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md)), `io.bfq.weight=1000`, `cpu.weight=800`. Dev/test/build tiers are a separate concern — see [scope](#scope) below.
+- **BFQ I/O scheduler** on `vda` (not `[none]`): only scheduler that enforces cgroup `io.weight`/`io.bfq.weight` — without it, all I/O priority settings are no-ops. `io.latency` unavailable (`CONFIG_BLK_CGROUP_IOLATENCY` not set in Debian 13); `io.cost.qos` is a candidate, untested (see SOULMASK.md §2b). BFQ weights do not stop the shared-journal stall; bounded dirty data and queue depth do ([HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md)).
 - **KSM optional** (dev opts containers in via `prctl`; never the game); **THP=madvise**.
 - **fq_codel only** for network; skip speculative QoS.
 - **Kernel 7.0.10** (non-LTS) — fine; plan toward 6.18 LTS via backports later.

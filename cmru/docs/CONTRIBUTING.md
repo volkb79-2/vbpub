@@ -31,7 +31,7 @@ mutants** — one in the single line deciding whether a pinned version was stale
 From the repository root, run the registered release gate:
 
 ```bash
-./run-gate.py gate
+run-gate gate
 ```
 
 The gate prepares authenticated origin baseline facts on the host, then runs
@@ -46,19 +46,24 @@ results and retries survivors or interrupted candidates. **Read the evidence
 file rather than reasoning about a survivor:** it records each mutation's path,
 operator, exact `Op->Op` description, outcome, and termination reason.
 
-## 2. You cannot dry-run your own unreleased changes
+## 2. The default dry-run uses the `origin/main` snapshot
 
-`S-CLI.5` makes `release` fetch `origin/main`, create a worktree at **that exact
-remote commit**, and re-exec there. That is deliberate: a release must never
+By default, `release` fetches `origin/main`, creates a worktree at **that exact
+remote commit**, and re-execs there. That is deliberate: a release must never
 publish from a dirty caller tree.
 
-The consequence is easy to miss and there is no warning for it: **`cmru release
---dry-run` from your branch runs `origin/main`'s cmru, not yours**, and will
-report success while exercising none of your changes.
+The consequence is easy to miss: **`cmru release --dry-run` from your branch
+uses the default `origin/main` source**, so it does not preview unpushed or
+uncommitted changes from the caller.
 
-To integration-test unreleased cmru changes, install the checkout into the
-active development environment and use the installed operator script. Module
-aliases such as `python -m cmru.cli` are intentionally unsupported:
+To preview a committed, pushed feature branch with the KI-82 candidate, install
+the CMRU checkout under review into the active development environment, ensure
+its same-named `origin/<branch>` is at `HEAD`, and run
+`cmru release --from-worktree --dry-run` from that clean branch. This option is
+available only when the installed CLI lists it; its registered gate is still
+pending. Unpushed or uncommitted CMRU changes still require the installed
+operator workflow below. Module aliases such as `python -m cmru.cli` are
+intentionally unsupported:
 
 ```bash
 python3 -m pip install --editable ./cmru

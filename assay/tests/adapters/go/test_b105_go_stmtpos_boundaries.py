@@ -8,8 +8,9 @@ fixtures and registered Go lane.
 
 from __future__ import annotations
 
+from conftest import completed_process, timeout_expired
+
 import json
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -103,7 +104,7 @@ def test_invocation_pins_its_environment_and_parses_the_helper_output(
         assert kwargs["env"]["GOWORK"] == "off"
         assert kwargs["env"]["GOTOOLCHAIN"] == "local"
         assert kwargs["env"]["GOFLAGS"] == "-mod=mod"
-        return subprocess.CompletedProcess(argv, 0, stdout=_output(argv[-1]), stderr=b"")
+        return completed_process(argv, 0, stdout=_output(argv[-1]), stderr=b"")
 
     monkeypatch.setattr(go_stmtpos.subprocess, "run", run)
     report = go_stmtpos._derive(tmp_path, ["a.go"], remaining, helper, ())
@@ -119,7 +120,7 @@ def test_a_go_timeout_is_preserved_as_the_lane_timeout(
     monkeypatch.setattr(go_stmtpos.shutil, "which", lambda _name: "/tools/go")
 
     def timeout(argv, **kwargs):
-        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+        raise timeout_expired(argv, kwargs["timeout"])
 
     monkeypatch.setattr(go_stmtpos.subprocess, "run", timeout)
     with pytest.raises(AssayError, match="did not finish") as caught:
@@ -151,7 +152,7 @@ def test_nonzero_go_exit_uses_a_bounded_stderr_tail(
     monkeypatch.setattr(
         go_stmtpos.subprocess,
         "run",
-        lambda argv, **_kwargs: subprocess.CompletedProcess(
+        lambda argv, **_kwargs: completed_process(
             argv, 2, stdout=b"", stderr=b"  compiler failed  \n"
         ),
     )

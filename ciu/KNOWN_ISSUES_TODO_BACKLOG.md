@@ -11,7 +11,7 @@ WITHDRAWN issue means the claimed product behavior was removed or never
 adopted after its premise was disproved; it must not remain described as a
 shipped capability.
 
-Last updated: 2026-10-15 — **CIU-143 FILED**: `ciu check` passes a stack whose Compose-managed network conflicts with CIU's already-created workspace network, so deployment fails late in `docker compose up` with a network-label error. **CIU-131 FIXED**: the exact registered CMRU sequence passed on `fcffeee8c`; a controlled break of `get.py` made the real-system lane fail on key-duplication assertions, then the source was restored byte-for-byte. The release flow invokes the registered `enroll` lane inside tester-unified through CMRU's isolated DinD path, checks the installed Run-Gate wheel against both checkout modules, and uses a digest-pinned fixture. CIU-134 remains OPEN: worktree removal can finish CIU cleanup and then fail deleting a checkout on permission-protected descendants, leaving a partial Git lifecycle state; offer a checked retry through CIU's existing S6.5 root helper and report exactly what remains. CIU-118 follow-up remains OPEN (service discovery: attached networks, aliases, URLs, exit status; filed from nyxloom NL-38, no new id; the shipped `ciu resolve`/`ciu exec` stay FIXED). Previous update 2026-10-05: **CIU-103, CIU-107, CIU-109, CIU-112, CIU-115, CIU-118, CIU-119, CIU-124, CIU-125, CIU-126, and CIU-127 FIXED** in the CIU v7 worktree/identity wave; CIU-128 implementation and regression oracles are committed, with its registered gate pending. dstdns caller migration ships with CIU-118; RG-70's direct service command path is folded into `ciu exec`, while run-gate remains the owner of declared gate invocations and their budgets.
+Last updated: 2026-10-27 — **7.18 wave:** CIU-135 FIXED (its tests and coverage repaired, record schema 6 added for Run-Gate); CIU-107 stays FIXED; CIU-134's retry implementation is PARKED with an unresolved review (findings recorded under CIU-134); **CIU-154** (branch pruning discards ignored resumable state; was CIU-143 on an unmerged branch, CIU-152 on the wave branch before integration) and **CIU-153** (`rm` deletes unmerged branches) FILED; CIU-151 has a second reproduction. Previous update 2026-10-15 — **CIU-144 and CIU-143 FILED**: linked-worktree JSON output can be polluted by the CIU-117 image-tag notice, and a conflicting Compose-managed network escapes `ciu check` and fails late during deployment. **CIU-140 remains IN PROGRESS; CIU-141, CIU-142, and CIU-139 remain OPEN. CIU-135 remains OPEN** pending its registered gate and final review; its candidate also includes direct `ciu up` network verification, truthful collision vs indeterminate status, unreadable CIU-root sibling records, exact legacy-network claims, and explicit root selection (P53 review 04). **CIU-134 remains OPEN** for a permission-specific, consented worktree-removal retry with exact-state reporting. **CIU-129 is FIXED by Assay B146** for the hidden-failure diagnostic (first failing test retained in the R0 summary/claim; fail-fast coverage warning emitted). **CIU-136** tracks the open CIU-118 service-discovery follow-up (attached networks, aliases, URLs, exit status; the shipped `ciu resolve`/`ciu exec` stay FIXED). **CIU-131 FIXED**: the exact registered CMRU sequence passed on `fcffeee8c`; a controlled break of `get.py` failed on the intended key-duplication assertions. **CIU-128 FIXED** with its registered gate pass. The release flow runs the registered `enroll` lane inside tester-unified through CMRU's isolated DinD path, checks the installed Run-Gate wheel against both checkout modules, and uses a digest-pinned fixture. Previous update 2026-10-05: **CIU-103, CIU-107, CIU-109, CIU-112, CIU-115, CIU-118, CIU-119, CIU-124, CIU-125, CIU-126, and CIU-127 FIXED** in the CIU v7 worktree/identity wave; dstdns caller migration ships with CIU-118, and RG-70's direct service command path is folded into `ciu exec`, while run-gate remains the owner of declared gate invocations and their budgets.
 
 Previously, 2026-09-02 — **V8-2 BACKPORTED (ciu-P47): the identity-file
 split and the overlay rename.** `[ciu.instance.generated]` moved out of the
@@ -536,7 +536,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-84 | `ciu check --json` writes `[INFO]` to stdout before the JSON document, breaking a naive `\| jq` — S13.4a and `_emit_check_report`'s docstring both say the document is the only thing the action writes, and `action_check` honors that, but `_run` reaches it past `deploy.py:4322`'s unconditional `info(f"Active service profile(s): …")` | Medium | FIXED — ciu-P44. Full sweep of the reachable call graph from `_run`'s check-action branch, as the row asked, not a one-line patch: (1) `_run` itself had FOUR unconditional `info()` calls reachable ahead of dispatch/during it (`Active service profile(s)`, `No action specified; defaulting to --deploy`, the S7.7 health-gate note, `>>> action: {action}`) — all four now route through a new local `_run_info` closure that prints to stderr instead whenever `--json`/`--format json` is set, rather than tracking exactly which action combination would reach the document (the simpler "no `_run`-level prose on stdout under a json-shaped flag, full stop" invariant is also the more robust one). (2) A SECOND class, in a different module, found by tracing `action_check`'s own `--live` branch into `provisioning.probe_ref`/`_probe_stack`: two unconditional `[WARN]` deprecation notices (the `one_shot`/`:completed` migration warnings, V8-PREP-5) printed straight to stdout with no `json_output` awareness at all — `probe_ref`/`_probe_stack` don't take that parameter, so both were moved to stderr UNCONDITIONALLY (matching CIU-75/CIU-62's own "STDERR, not a style preference" idiom) rather than threading a new parameter through a probe layer that has no other json-mode concept. (3) `action_check` itself, `_check_stack_config`, `_check_hooks_for_stack`, `render_selected_stacks`, and everything else in between were re-verified clean (either no raw stdout write, or already gated through `say`/`complain`) — `bootstrap_workspace_env`'s own deprecation-notice path (CIU-75) was independently confirmed to already route to stderr unconditionally, not touched. (4) While correcting SPEC S13.4a's own text (which had documented the pre-fix leak as INTENDED — "the orchestrator's own `[INFO]` lines still precede the document on stdout, exactly as for `ciu graph --format json`"), found that same sentence named a second, real sibling leak: `ciu graph --format json` shares the identical `_run`-level defect (S13.5's own "only the graph itself goes to stdout" claim was equally false for the same reason). `_run_info`'s gate now also covers `graph_format == "json"`. A THIRD, narrower gap surfaced by the same check — `action_graph`'s OWN internal `info()`/`error()` calls (not `_run`-level) are still ungated — is a separate surface (different function, needs its own parameter threading) and is filed as **CIU-86** rather than folded in here. Test: `test_check_json_stdout_is_exactly_one_json_document` (`test_ciu_deploy_direct79.py`) drives `deploy._run(["--check", "--json"])` end to end with the REAL `action_check` (not mocked) against an empty selection and asserts `json.loads()` on the ENTIRE captured stdout succeeds — the row's own required oracle, not a substring check — plus `test_run_info_routes_to_stderr_under_json_output` (the narrower `_run_info` unit proof) and five existing `test_ciu_provisioning.py` tests updated from asserting `[WARN]` in stdout to asserting it in stderr (and absent from stdout) for the `_probe_stack` fix. SPEC S13.4a's stale "[INFO] lines still precede the document" sentence corrected; S13.5 cross-referenced |
 | CIU-85 | `worktree._clean_in` (`:1267`) builds its child environment as `dict(os.environ)` + the target's identity, without the `_CIU_IDENTITY_ENV_KEYS` strip its two siblings (`_sanitized_target_env:2962`, `_resolve_budget_candidates:4406`) perform — so the caller's `CIU_SERVICES_PROFILE`, which is in that tuple but is NOT an overlay fact and therefore not in the overwrite, leaks into the child `ciu clean`. Separately, `PUBLIC_FQDN` is missing from `_CIU_IDENTITY_ENV_KEYS` despite being one of the six identity facts since CIU-47 | Low | FIXED — ciu-P44. `_CIU_IDENTITY_ENV_KEYS` now derives its identity half from `GENERATED_FACT_ENV_KEYS.values()` (`workspace_env.py`'s canonical fact->env-name table), adding `PUBLIC_FQDN` by construction, plus the one hand-added non-fact member `CIU_SERVICES_PROFILE` — replacing the old six-item hand-written literal that had drifted. `_clean_in` now builds `{k: v for k, v in os.environ.items() if k not in _CIU_IDENTITY_ENV_KEYS}` before overlaying `identity`, matching `_sanitized_target_env`/`_resolve_budget_candidates`. A THIRD sibling builder found during the fix, `_generate_env_in` (`:1221`, strips before running `ciu env generate`), carried its own separately hand-written six-key literal (identical to the pre-fix `_CIU_IDENTITY_ENV_KEYS`, so also missing `PUBLIC_FQDN`) — not named in this row originally, but the same class of drift and the same one-line fix, so folded in rather than left half-done: it now references `_CIU_IDENTITY_ENV_KEYS` too. Tests: `test_identity_env_keys_match_the_canonical_fact_table_plus_profile` pins the derivation; `test_clean_strips_the_callers_service_profile_selection` is the controlled-wrong-implementation proof for the `CIU_SERVICES_PROFILE` leak (reverting the strip makes it fail); `test_clean_strips_a_stale_ambient_public_fqdn_not_carried_by_target` proves an FQDN-less target no longer inherits the caller's stale `PUBLIC_FQDN` (all three in `tests/tests/test_ciu_worktree.py`, `TestWorktreeSubprocessEnvironment`); `test_generate_env_strips_primary_instance_identity`'s existing `_IDENTITY_KEYS` fixture gained `PUBLIC_FQDN`, extending its existing loop assertion for free. SPEC S16.6 updated to name the same seven keys (six derived + one hand-added) instead of the old hand-listed six |
 | CIU-86 | `action_graph`'s own `info()`/`error()` calls (`deploy.py`'s `"No stacks with requires/provides — nothing to graph"` note and the two `validate_stack_shape`/`validate_stack_provisioning` error paths) write unconditionally to stdout via `deploy.py`'s plain `print(..., flush=True)` helpers, with no gate on `fmt == "json"` — so `ciu graph --format json`'s own docstring claim ("diagnostics go to the logger (stderr); only the graph itself goes to stdout", matching SPEC S13.5) is false on any of those three paths, though the common "the graph rendered cleanly" case is unaffected since `print(provisioning_pkg.render_graph(...))` is the only stdout write on that path | Low | OPEN — found by ciu-P44 while sweeping CIU-84's stdout-purity class one layer up: SPEC S13.4a's own (now-corrected) text named `ciu graph --format json` as sharing the `_run`-level leak CIU-84 fixed ("exactly as for `ciu graph --format json`"), which led to checking S13.5's own claim against `action_graph`'s actual body. The `_run`-level half of this (the orchestrator's `>>> action: graph`/`Active service profile(s)` lines) IS fixed by CIU-84's `_run_info` gate, now also keyed on `graph_format == "json"` — this row is only the remaining, `action_graph`-internal half, which needs `fmt`/a `json_output`-shaped parameter threaded into `action_graph`'s own `info`/`error` calls (or their two call sites switched to a local gated closure, mirroring `action_check`'s own `say`/`complain`) plus tests pinning stderr for the two error paths and the empty-graph note |
-| CIU-87 | ciu's own integration test suite (`ciu/tests/tests/test_ciu_test_repo.py` + 7 sibling test files) drives real, non-mocked `ciu env generate`/`ciu up` calls against `tmp_path`-based fixture repos, which triggers `_connect_devcontainer_to_network()` (S1.9) and joins the calling devcontainer onto each freshly created network — but no `conftest.py` in `ciu/` ever disconnects/removes it afterward, so every real run of that suite on a long-lived devcontainer host leaks one Docker network permanently. `ciu clean`'s own teardown (`deploy.py`) refuses to remove a network while a container remains joined, so a later manual `ciu clean` against the vanished `tmp_path` can't reach the leak either | Medium | OPEN — filed by dstdns 2026-09-01, see detail below |
+| CIU-87 | ciu's own integration test suite (`ciu/tests/tests/test_ciu_test_repo.py` + 7 sibling test files) drove real, non-mocked `ciu env generate`/`ciu up` calls against `tmp_path` fixture repos, joining the devcontainer to each test network without teardown | Medium | FIXED 2026-09-02 (ciu-P48) |
 | CIU-88 | `ciu/nyxloom-trove/nyxloom.toml`'s `[gates.tester-unified].asserts` array includes `"assay-verdict"`, which is NOT a valid value in nyxloom's own asserts schema enum (`src/nyxloom/schemas/nyxloom-config.schema.json`, closed vocabulary `tests-pass\|changed-line-coverage\|mutation\|canary-verified`) — a live, checked-in schema violation, not just aspirational backlog prose. Currently undetectable in ciu's own pipeline: ciu has no self-lint unit test analogous to nyxloom's own dogfood `test_repos_own_config_no_findings`, and ciu's gate never invokes `nyxloom lint` against its own config | Low | FIXED UPSTREAM — **this row's premise is now false and was verified so, not assumed.** nyxloom-P98 landed NL-4 (`vbpub@479d7e71`, "fix(nyxloom): P98 -- NL-4, add assay-verdict to the asserts enum"), so `"assay-verdict"` IS a valid member of the closed vocabulary today: `nyxloom/src/nyxloom/schemas/nyxloom-config.schema.json` now enumerates `tests-pass\|changed-line-coverage\|mutation\|canary-verified\|assay-verdict`. ciu-P51 (2026-09-08) ran nyxloom's OWN CFG1 rule — `lint.lint_config`'s `Draft202012Validator(nyxloom-config.schema.json).iter_errors(...)` — directly against `ciu/nyxloom-trove/nyxloom.toml` and got **0 findings**, so there is nothing left to close and the file needs no edit. **ciu-P51's own handoff prescribed the opposite fix** (drop `"assay-verdict"` from the array, mirroring nyxloom-P48's comment) — NOT DONE, deliberately: that would now DELETE a valid, semantically meaningful declared assert from ciu's gate config and add a comment that is factually wrong ("it isn't a supported value ... yet"). Two follow-on facts for whoever picks this up: (1) `vbpub/nyxloom/nyxloom-trove/nyxloom.toml`'s own "assay-verdict is NOT listed" comment is now stale in the same way and should be revisited — out of ciu-P51's scope, not filed as a ciu issue since it is nyxloom's file; (2) the ORIGINAL secondary finding in this row still stands untouched — ciu has no self-lint unit test analogous to nyxloom's dogfood `test_repos_own_config_no_findings`, and ciu's gate never invokes `nyxloom lint` against its own config, so a FUTURE schema violation here would still be undetectable in ciu's own pipeline. Original filing follows: found 2026-09-02 by an independent adversarial reviewer during nyxloom-P48's own gate migration (an unrelated package moving nyxloom's OWN gate onto the same assay pattern ciu already uses), which hit the identical defect in nyxloom's copy first (filed there as NL-4) and then confirmed ciu already carries the same invalid value. Likely fix: once NL-4 adds `"assay-verdict"` to the schema enum, re-validate this file; or in the meantime just drop `"assay-verdict"` from ciu's `asserts` array the same way nyxloom-P48 did for its own copy, with a comment explaining the omission is deliberate, not forgotten |
 | CIU-89 | CIU-70's own fix (ciu 7.5.1.dev24+) resolves a `pg:`/`minio:` probe's target container via `_resolve_probe_container` → `_stack_container_name(config, stack_path)` (`src/ciu/provisioning.py:401-448,645-670`), which takes the PROVIDING STACK's declared path (e.g. `infra/db-core`) and uses its final path SEGMENT (`db-core`) as the literal service-name argument to `container_name()` — i.e. it assumes the stack directory's own basename is itself a valid compose service key inside that stack. This holds for a single-service stack (redis-core → container `redis`) but is false BY CONSTRUCTION for a multi-service stack whose directory name matches none of its own compose service keys: dstdns's `infra/db-core` stack declares `provides = ["pg:db/dstdns", ...]` at the STACK level (`infra/db-core/ciu.defaults.toml.j2:19-20`) but runs postgres as a service keyed `postgres` (`container_name: {{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ db_core.postgres.name }}`, `ciu.compose.yml.j2:61`) alongside five sibling services (`postgres-init`, `pgadmin`, `pgadmin-init`, `adminer`, `minio`, `minio-init`) — no container named `...-db-core` is ever created. The probe therefore always resolves `cname = container_name(config, "db-core")`, which never exists, and `docker exec` fails with "no such container" — worded IDENTICALLY to "the role/db is genuinely missing" from the caller's perspective (same failure shape CIU-70 itself was filed to fix, now reintroduced by CIU-70's own resolution strategy). Confirmed live 2026-09-02 (`ciu 7.10.1`) on a genuinely fresh Mode-B bring-up (dstdns-P152, `nyxloom-trove/reports/dstdns-P152-LOG.md`): `infra/db-init`'s `pg:db/dstdns` requirement failed provisioning preflight with `container 'p152-...-df56c9-db-core' unavailable (no such container) — pg db 'dstdns' was NOT checked`, even though the `dstdns` database and `controller_ddl` role both genuinely existed on the correctly-named `...-postgres` container (verified directly via `psql`) — i.e. a real, met precondition failing a broken *check*. This is NOT the CIU-70 entry's own predicted failure mode (a service keyed OTHER than `postgres`/`minio`, or two same-keyed services colliding) — it is the reverse: a correctly-keyed service (`postgres`) inside a stack whose OWN directory name differs from every one of its service keys, which CIU-70's stack-basename heuristic cannot express at all. Before CIU-70, the literal-hardcoded-`"postgres"`/`"minio"` behavior it replaced was ACCIDENTALLY correct here (dstdns happens to key its postgres service `postgres`), which is exactly why this coupling never surfaced until now. Proposed fix: resolve the probe container from the compose SERVICE that actually declares the `provides` entry, not the STACK's own path basename — either (a) let a stack's `provides` list carry an optional per-entry service-key override (e.g. a sibling `provides_container = {"pg:db/dstdns": "postgres"}` table, or a `pg:db/dstdns@postgres` selector suffix `parse_ref` learns to strip before matching but keeps for resolution), or (b) walk the stack's OWN rendered compose service list for one whose canonical service key matches the ref kind's own convention (`postgres`/`minio`) before falling back to the stack-basename guess — restoring today's dstdns-correct case while still refusing loudly (never guessing) when neither resolves. Controlled wrong implementation: a fixture with a stack directory `infra/foo-core` (provides `pg:db/bar` at the stack level) whose compose file keys its Postgres service `postgres` (not `foo-core`) must fail today (`container '...foo-core' unavailable') and pass after the fix (`pg db 'bar' exists`, probed against the `...postgres` container). Owning SPEC section: S13.2, same as CIU-70; `--no-preflight` (documented break-glass) is today's working consumer-side mitigation, used by dstdns-P152 to unblock its own bring-up after independently verifying the real precondition was met | Medium | FIXED — ciu-P49. Built the sibling `provides_container` override table (route (a) from this row's own proposed fix, not the compose-service-list walk — the handoff's design call, `nyxloom-trove/handoffs/ciu-P49-...md`): a stack's root-key table may declare `provides_container = { "<ref>" = "<service-key>" }`, validated by `config_model.validate_stack_provisioning` (`src/ciu/config_model.py:1267-1299`, new `[S13.2]`-tagged checks — a key not itself already in that stack's own `provides` list, or a non-string/empty value, is rejected, never silently ignored). `_resolve_probe_container` (`src/ciu/provisioning.py:401-465`) now checks `stacks[stack_path]['provides_container'].get(ref)` before falling back to `_stack_container_name`'s basename guess, passing an override straight to `container_name()` (same unresolvable-project/env-tag fallback `_stack_container_name` itself uses). Threaded the new key through the two `stacks`-dict builders that actually feed a live probe: `deploy.provisioning_graph()` (`src/ciu/deploy.py:632-649`, the `ciu up` per-phase probe graph) and `action_check`'s own builder (`src/ciu/deploy.py:3141-3167`, `ciu check --live`'s separate feed path) — deliberately NOT threaded into `action_graph`'s builder (`deploy.py:3306-3339`), since that dict is echoed verbatim into `--graph --fmt json`'s public `stacks` key and `--graph` never resolves a probe container (confirmed by a real test failure when first threaded there, then reverted). `docs/SPEC.md` S13.2 gained a `provides_container` subsection; `docs/CONFIG.md`'s requires/provides section gained a worked `infra/db-core`/`postgres` example. Purely additive — a ref absent from `provides_container`, or a stack declaring none, is byte-identical to before this package (pinned as a regression guard). Tests: `tests/tests/test_ciu_provisioning_ciu70_probe_container.py` (dedicated CIU-89 section — the exact `infra/foo-core`/`postgres` fixture this row's own "controlled wrong implementation" describes, both the before-fix-still-wrong pin and the after-fix-correct case, plus the undeclared-ref rejection) and `tests/tests/test_ciu_provisioning.py` (direct `_resolve_probe_container`/`probe_ref`/`validate_stack_provisioning` unit coverage, plus an `action_check --live` threading test) — all mutation-verified by actually reverting each fix line and confirming the exact predicted tests fail (ciu-P49 REPORT) |
 | CIU-90 | Governance injects `mem_limit`/`memswap_limit`/`mem_reservation`/`blkio_config` per-service compose keys but has no CPU-quota key at all — `src/ciu/governance.py`'s `INJECTED_KEYS` tuple (the exhaustive, commented list of "compose service-level keys governance may inject") lists exactly those four plus `cgroup_parent`; nothing named `cpus`/`cpu_quota`/`cpu_period`/`nano_cpus`/`cpu_shares` exists anywhere in the module. A stack that enables governance and relies on it (rather than authoring its own compose-level CPU key, which none of dstdns's stacks currently do) gets memory and block-IO capped but literally unbounded CPU, silently — there is no error, warning, or doc note; the author simply never gets what the memory/IO precedent would lead them to assume is a parallel guarantee. Confirmed live 2026-09-02 on dstdns's `test-runner` container (`ciu`-governed, `cgroup_parent=dev-background.slice`): `docker inspect` shows `Memory=1073741824` (1GiB), `MemorySwap=18253611008` (~17GiB, i.e. ~16GiB swap on top), `MemoryReservation=268435456` (256MiB) — all correctly injected — alongside `NanoCpus=0 CpuQuota=0 CpuPeriod=0 CpuShares=0`, i.e. no CPU governance at all. Confirmed load-bearing, not merely theoretical: host PSI (`/proc/pressure/cpu`) showed `some avg300=12.05` (processes stalled waiting for a CPU ~12% of the time over 5 min) at the same moment `/proc/pressure/memory` showed `some avg300=2.16` — the actually-scarce, actually-contended resource across this host's concurrent ciu-governed containers is CPU, which is exactly the one governance dimension left unenforced; memory pressure, despite alarming-looking `free -h` swap figures, was not the real signal. This is a ratified product call (dstdns `decisions.md` D-264 PC-1: "worker-io needs a CPU quota CIU governance does not inject... File a `vbpub/ciu` backlog entry (durable fix)") that was never actually filed upstream — D-291 re-confirmed the omission (`grep -ci cpu KNOWN_ISSUES_TODO_BACKLOG.md` → 0) — filed now with the concrete live specimen the earlier note lacked. Proposed fix: add a CPU key to `INJECTED_KEYS` (`cpus` is the modern Compose Specification key, translating cleanly to a container's `NanoCpus`; `cpu_quota`+`cpu_period` is the legacy two-key form governance's memory keys already mirror) sourced from a new `governance.cpu_limit` config table entry, following the exact same "author's explicit key always wins, governance only fills what's unset" precedence `INJECTED_KEYS`' own docstring already states for the other four keys | Medium | FIXED — ciu-P49. Added the modern single-key `cpus` (Compose Specification's own key name, no config-table/compose-key translation needed, unlike `mem_swap_limit`→`memswap_limit`) to `GOVERNANCE_DEFAULTS` (`src/ciu/governance.py:80-88`, default `""` = unset/uncapped — deliberately NOT a nonzero default: D-264 PC-1's actual ask was that a stack that WANTS a quota gets one to configure, not that every already-governed, currently-uncapped service gets silently throttled by an invented estate-wide default on upgrade) and `INJECTED_KEYS` (`:260-278`). `resolve_config()` validates `""` (unset) or `float(cpus) > 0`, raising `[S15.21]` otherwise (`:422-438`, mirrors `io_weight`'s S15.14 shape/reasoning). `build_injections()` injects `frag["cpus"] = cpus` only when `governance.cpus` is set AND the author hasn't already set their own `cpus:` key (`:1033-1038`, same S15.3 author-precedence the other four keys already have), and the `cpus=` note is appended only when actually set, not unconditionally (`:1082`). New `docs/SPEC.md` S15.21 section (mirrors S15.14's shape) and a `docs/CONFIG.md` governance worked example. Tests: `tests/tests/test_ciu_governance.py` `TestResolveConfig`/`TestBuildInjections` — unset-default regression guard, valid values, `"0"`/`"-1"`/non-numeric rejection, injection, author-precedence — all mutation-verified by actually reverting each fix line and confirming the exact predicted oracles fail (ciu-P49 REPORT). Live verification, mirroring this row's own `docker inspect` method: a real `governance.build_injections()`-computed fragment (`cpus: "1.5"`) fed into an actual `docker compose up`, `docker inspect --format '{{.HostConfig.NanoCpus}}'` reporting `1500000000`; the unset-default case on the same harness reports `0` |
@@ -566,7 +566,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-115 | CIU-owned outdated identity records block siblings and teardown | Medium | FIXED 2026-10-04 |
 | CIU-116 | Worktree shared-infrastructure reuse is not declared in project config | Medium | OPEN — waiting for shareability measurements |
 | CIU-117 | Worktree builds overwrite the primary checkout image tag | Medium | FIXED — linked-worktree Compose and Bake image tags include its instance id by default |
-| CIU-118 | No supported resolve/exec API for services of any instance | Medium | FIXED 2026-10-04; RG-70 direct command path folded into `ciu exec`; **follow-up OPEN 2026-10-07** (service discovery: attached networks, aliases, URLs, exit status; from nyxloom NL-38) |
+| CIU-118 | No supported resolve/exec API for services of any instance | Medium | FIXED 2026-10-04; RG-70 direct command path folded into `ciu exec`; service-discovery follow-up tracked as CIU-136 |
 | CIU-119 | v7 clean cannot remove resources owned by a retired instance id | Medium | FIXED 2026-10-04 with CIU-115 |
 | CIU-120 | Reserved; intentionally unused | — | UNUSED |
 | CIU-121 | Reserved; intentionally unused | — | UNUSED |
@@ -577,14 +577,30 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-126 | CIU rejects its own valid rootless worktree record and siblings can block lifecycle verbs | Medium | FIXED 2026-10-04 |
 | CIU-127 | `ciu down` cannot stop one stack without targeting the whole project | Medium | FIXED 2026-10-04 |
 | CIU-128 | Worktree reports `ready` before committed nested roots are prepared | High | FIXED 2026-10-05 |
-| CIU-129 | `assay.toml` runs pytest with `--maxfail=1` plus coverage, so a failing run writes no coverage report and assay reports NO_MEASUREMENT instead of naming the test | Medium | OPEN |
+| CIU-129 | `assay.toml` runs pytest with `--maxfail=1` plus coverage, so a failing run writes no coverage report and assay reports NO_MEASUREMENT instead of naming the test | Medium | FIXED 2026-10-13 by Assay B146 diagnostics; `--maxfail=1` retained for R2 early exit |
 | CIU-130 | `ciu host upgrade <host> --version X`: upgrade an enrolled host's pinned ciu over the push-over-SSH path | Medium | OPEN — v8.2 (cmru program 2026-10, O9) |
 | CIU-131 | The real-system `get.py enroll` oracles (O2/O3, ciu `enroll` lane) are in no automated release gate since the move from cmru | High | FIXED 2026-10-14 — registered CMRU gate and wheel/source preflight passed on `fcffeee8c`; controlled break failed on the intended key-duplication assertions |
 | CIU-132 | Outdated-identity guard blocks a stopped stack's data-preserving migration and is not told ownership drift or stale persisted hostnames | High | OPEN |
 | CIU-133 | `ciu up` hangs forever at "STEP 10/17 Resolving and materializing secrets" for a stack that IS its own ciu root (stack files in the root directory, the `mattermost/` and `pwmcp/` layout) when any GEN_LOCAL secret is declared. **Observed (2026-10-07, `ciu up --dir mattermost -y`):** `/proc/locks` listed the same PID as both holder and waiter (`->`), wchan `locks_lock_inode_wait`. `secrets/materialize.py::materialize` took `_flock(stack_dir/.ciu/lock)` and then `_flock(repo_root/.ciu/lock)`; with `stack_dir == repo_root` both are one file, flock locks an open file description, so the second `os.open()` + `LOCK_EX` blocked on the process's own first lock | High | FIXED 2026-10-07 (`dca8e1f75`): the project lock is taken only when `realpath(stack_lock) != realpath(project_lock)`, so a symlinked stack dir that resolves to the root is also covered; the stack lock already serializes the project store in that layout. Order for distinct files is unchanged (stack, then project, S4.26). **Oracle:** `tests/tests/test_ciu_materialize_self_root_lock.py` — real-flock subprocess with an 8 s timeout for `stack_dir == repo_root` and for a symlink to the root (both FAIL by timeout with the fix reverted, PASS with it), plus a `_flock` spy asserting both locks, stack first, for distinct paths. Sweep of every other `.ciu/lock` / flock site (`persist_hook_secret`, `materialize_host_secrets`, `worktree._allocation_lock`, `worktree_budget_slot`, `workspace_lock`) found no other same-file nesting |
 | CIU-134 | Worktree removal can finish `ciu clean` and then fail deleting the checkout due to protected descendants, leaving a partial Git/CIU lifecycle state with no supported root-assisted retry | High | OPEN — add permission-specific, consented retry through the existing S6.5 helper and truthful partial-state reporting |
+| CIU-135 | Managed worktree overlay recovery, reset retries, network ownership, and explicit `ensure` constraints can be ambiguous or silently ignored | Medium | FIXED in main (landed in the ungated 7.17.0 line); the 7.18 wave repaired its drifted tests (182 failing + 36 erroring), covered its remaining branches (100% line and branch) and added record schema 6 for Run-Gate — gate evidence in the 7.18 release notes once cut (see `ciu/CHANGES.md` [Unreleased]) |
+| CIU-136 | `ciu resolve` does not report live attached networks, aliases, derived URLs, or a nonzero status for an absent service | Medium | OPEN — extend the existing service-discovery follow-up from CIU-118 / nyxloom NL-38 |
+| CIU-137 | `ciu clean` can delete host data after failed Compose teardown or follow a symlinked `vol-*` path outside the stack | High | IN PROGRESS — exact-project inspection and stack-contained path checks are implemented; registered gate pending |
+| CIU-138 | Worktree removal cleans only the selected nested CIU root before deleting a checkout containing other committed roots | High | OPEN — clean every exact committed root under its own identity; preserve checkout and records on any incomplete clean |
 | CIU-139 | `ciu resolve --root-folder P` (and likely `ciu exec`) does not seed its environment from P's instance record, so an unprimed shell fails with missing `INSTANCE_ID`/`REPO_ROOT`/... while `ciu env print --root-folder P` succeeds | Medium | OPEN (filed 2026-10-15, dstdns deep review C04 F06) |
+| CIU-140 | Private locked env generation prints a traceback for expected workspace errors | Low | IN PROGRESS — candidate fix and regression test; registered CIU gate and final review pending |
+| CIU-141 | No stack-scoped one-shot `ciu run`; gate lanes must reuse a persistent service or launch containers outside CIU's rendered network/secrets/mount/cgroup/user contract | Medium | OPEN — proposed v7 package after the current release wave; exact lifecycle and Run-Gate identity handoff contract required |
 | CIU-142 | A managed worktree that is rebased keeps its spent `fork_point_sha` in `ciu.worktree-instance.json`, and no `ciu worktree` verb re-records it, so run-gate's derived base (SPEC R-35a: merge-base must equal the recorded fork point) refuses `NOT_RUN no-base` and every later gate needs a hand-passed `--base` | Medium | OPEN (filed 2026-10-15, dstdns P242, ciu 7.16.0) |
+| CIU-144 | `ciu resolve --json` and `ciu check --json` in a linked worktree put the `[CIU-117] project-built images use worktree tag suffix ...` notice on STDOUT ahead of the JSON document whenever a selected stack declares Compose `build:` (`engine.scope_worktree_compose_images` bare `print`, `engine.py:1278`), so every JSON consumer fails to parse; a regression of CIU-84's S13.4a sweep | Medium | OPEN (filed 2026-10-15, dstdns P243, ciu 7.16.0) |
+| CIU-146 | `ciu down --profile NAME` (and `--phases`) stops EVERY project container: `action_stop` matches the whole `^{project}-{env}-` prefix and never reads the selection, while `ciu down --help` says `--profile` restricts to the named host profile | High | OPEN. Filed 2026-10-15 from dstdns (deep-review run, main 02ed2c8b), ciu 7.16.0. See the CIU-146 section |
+| CIU-147 | `ciu up` reports success for a stack whose rendered, bind-mounted config file changed, while the running container keeps serving the OLD config: Compose's recreate diff hashes the service definition, not the content of a bind-mounted file, and CIU never forces a recreate or warns | Medium | OPEN |
+| CIU-148 | `docs/SPEC.md` S15.20 and `docs/DESIGN-NOTES.md` D8 cite dstdns `docs/KSM-OPTIN-MEASUREMENTS.md`, which dstdns merged into `docs/RESOURCE-GOVERNANCE.md` (dstdns docs-sync W20) | Low | OPEN |
+| CIU-149 | `tests/tests/test_ciu_cli_worktree.py::TestWorktreeCreateDispatch::test_forwards_all_options` fails in the registered `ciu` lane (and on origin/main): `--profile` without `--root-folder` hits the S16 selected-root refusal because ciu's own directory is not a CIU root, so `--maxfail=1` ends the lane as EMPTY_COVERAGE | Medium |
+| CIU-150 | `ciu up` preflight cannot prove a named governance slice is loaded on the Docker host from a cockpit (the `systemctl` check is skipped as inconclusive) and does not look at compose-authored `cgroup_parent` at all, so a stack such as cgprofile's can start under an implicit unbounded slice | Major | OPEN (filed 2026-10-21 from the cgprofile-v1.0.0 Sol review B4; cgprofile 1.1.0 added a daemon-side refusal as the interim guard) |
+| CIU-151 | `ciu worktree rm` cannot find a CIU root in an old checkout, so it refuses and only `--force` works (found 2026-10-05; operator-reported again 2026-10-21, text not recorded); related to CIU-115 (stale identity file) and CIU-134 (partial removal, third reproduction 2026-10-21) | Medium | OPEN (filed 2026-10-21, BL-01) |
+| CIU-152 | Worktree record schema v6 producer contract: `base_ref` pinned to the fork SHA, moving base named separately as `base_branch_ref` (the contract run-gate 24.1.0 reads) | Low | FIXED in the 7.18 wave by CIU-135 (ciu now emits schema 6); verify against the entry text before release |
+| CIU-154 | `ciu worktree branches -y` judges a checkout by `git status --porcelain`, which omits ignored files, then removes it with a `git worktree remove` that deletes them: a Git-clean checkout holding resumable `.assay/` mutation progress is classified `prunable` and silently destroyed, and the hint calls it "safe to remove" | High | OPEN (filed 2026-10-15, controller observation during CIU-134; backlog-only, no code change in this branch) |
+| CIU-153 | `ciu worktree rm` deletes the branch with `git branch -D` even when it is not merged, with no `--keep-branch` and no documentation of it: unmerged commits survive only in the reflog (found 2026-10-19; 12 unmerged branches lost from one cleanup batch) | High | OPEN (filed 2026-10-27) |
 
 
 The approved milestone decisions and serial package order are in
@@ -4461,9 +4477,10 @@ stack root; show the minimum config and `ciu init`/`ciu up` sequence; use the
 generated environment export; demonstrate read-only input and writable output
 mounts; and explain how to find and run a command in the selected service.
 Clarify the boundary between a normal project bridge with no published ports
-and Docker's stricter `--internal` network mode. If ordinary stacks need a
-supported stack-scoped one-shot `exec` command, record that as a separate
-product/API decision rather than making consumers depend on Docker labels.
+and Docker's stricter `--internal` network mode. The stack-scoped one-shot
+`ciu run` product/API decision is now tracked separately as CIU-141; this
+recipe should use that supported command once it ships rather than making
+consumers depend on Docker labels.
 
 The gap surfaced while preparing an MDB inspection stack in
 `mh-access-to-web`; the workflow succeeded using CIU 7.15.0 and a small
@@ -4702,9 +4719,9 @@ Severity: Medium. Type: feature. Spec owner: S16.6, S16.7 (v8: S4.4, S14.6.3). R
 
 **Disposition (2026-10-04): CIU v7 API FIXED; RG-70 folded here.** `ciu resolve --json` returns exact rendered service identities in a v8-shaped `resolved.identities` object and is read-only unless `--live` is requested. Repeated `--profile` options select the exact profile composition for optional stacks; no profile is inferred or silently substituted. `ciu exec` requires one exact already-running service and passes argv without a shell, returning the child status; terminal use requests Docker's interactive terminal, while scripts and pipes remain non-interactive. Declared worktree targets keep the mount proof. This is the canonical direct-command path into a worktree's test-runner, so RG-70 adds no second command surface; run-gate continues to own declared lanes and gate budgets. The dstdns host, editor, and admin-debug caller migrations ship with the consumer change; host scripts read generated environment facts through `ciu env print`, replacing the duplicate `scripts/ciu-env.sh`. Legacy live-test fixtures remain in `ConfigHelper` because the test-runner image does not contain the CIU CLI. Tests cover exact service filtering, optional-profile selection, no Docker/no writes, exact Docker labels, ambiguous matches, terminal allocation, and exit propagation.
 
-### Follow-up 2026-10-07 — service-discovery gaps (OPEN; filed from nyxloom NL-38; the verb itself stays FIXED)
+## CIU-136 — service-discovery gaps in `ciu resolve` (original CIU-118 follow-up)
 
-**Status: OPEN.** This follow-up is open even though the CIU-118 row in the index above and the Disposition of this entry say FIXED: those describe the shipped v7 `ciu resolve`/`ciu exec` API, not the gaps below. No new CIU id is allocated for it (ids above CIU-131 may collide with an unmerged branch); if it is split out later, take the next free id at that time.
+Severity: Medium. Type: feature. Filed 2026-10-13 by assigning an id to the open follow-up from nyxloom NL-38. The CIU-118 row remains FIXED for the shipped v7 `ciu resolve`/`ciu exec` API; this entry tracks only the gaps below. The former issue-id collision with `cmru-wave-2026-10` is cleared because that branch is merged and released.
 
 A "service discovery query" was proposed as a new verb (`ciu resolve <stack>[.<service>]` printing container, compose project, networks, aliases and URLs, with `--json`, non-zero when not running). `ciu resolve` already exists (this entry, ciu 7.15.3; SPEC-V8 S18 / `SPEC-V8.md:744`, S4.4.3 at `:200`), so this is an extension of it, not a new item. Checked 2026-10-07 on the live nyxloom checkout (`eval "$(ciu env print)"` first; without it `ciu resolve` stops with "Missing required environment values"):
 
@@ -4967,6 +4984,8 @@ Severity: Medium. Type: bugfix. Filed 2026-10-05 by the cmru program 2026-10 (pa
 
 **Related.** cmru BG-03 (fixed in cmru's own lanes), assay B146 (verdict summary should name an R0 FAIL and the first failure), nyxloom NL-37 (filed as NL-31, renumbered 2026-10-07; same pattern in `nyxloom/assay.toml`).
 
+**Disposition (2026-10-13): FIXED for the hidden-failure diagnostic by Assay B146.** The current same-repository Assay source retains the first recognized R0 failure in the summary and claim detail, and emits a coverage fail-fast advisory. CIU's `--maxfail=1` remains because native R2 mutation candidates need to stop at their first failing test. A failed run can still have incomplete coverage; it is now visible as an R0 failure with a named test when pytest output provides one, rather than only an unexplained `NO_MEASUREMENT` headline.
+
 ## CIU-130 — `ciu host upgrade <host> --version X`: upgrade an enrolled host's pinned ciu over the push-over-SSH path
 
 Severity: Medium. Type: feature. Target: **v8.2** (with the enrollment rewrite, CIU-122/CIU-123). Filed 2026-10-06 by the cmru program 2026-10 (package W1-CIU-ENROLL, operator decision O9, which retired cmru's agent/controller: push over SSH is the one remote path).
@@ -5011,7 +5030,7 @@ tester-unified Run-Gate wheel check reported a byte match for both modules.
 
 ## CIU-132 — recovering a stopped prod stack across the identity-scheme change needs a hand-run `clean --identity`, a manual hostdir re-own, and a manual named-volume copy
 
-Severity: High (it stands between a stopped production stack and its own data). Type: bugfix + feature. Spec owner: S3.1c, S6.3, S16.9, CIU-115/CIU-119. Filed 2026-10-06 from the nyxloom Mattermost restore (ids up to CIU-131 are taken on the unmerged branch `cmru-wave-2026-10`, so this is the next free id above 131).
+Severity: High (it stands between a stopped production stack and its own data). Type: bugfix + feature. Spec owner: S3.1c, S6.3, S16.9, CIU-115/CIU-119. Filed 2026-10-06 from the nyxloom Mattermost restore. At filing time the CMRU W1 branch was believed to reserve higher issue ids; that branch has since merged and shipped, so the collision concern is no longer current.
 
 **Observed (ciu 7.15.2).** `nyxloom-1dd3d1-mattermost{,-db}` had been stopped for three weeks (network deleted) and `ciu up --dir nyxloom/mattermost` was refused: `[S3.1c] ciu.instance.generated.toml has outdated identity '1dd3d1', and Docker still has resources carrying it. Remove those resources with ciu clean --identity 1dd3d1`. Recovery with zero data loss took four hand steps that CIU could have owned.
 1. **The guard cannot pass in place, by design.** The record was schema-1 and its id `1dd3d1` came from the pre-base36 derivation; `workspace_id_for_path("/home/vb/volkb79-2/vbpub/nyxloom")` now yields `3oqua1`, so there is no same-id in-place migration. Every container, network and project-named volume therefore changes name (`nyxloom-1dd3d1-*` to `nyxloom-3oqua1-*`). The only supported exit is `ciu clean --identity 1dd3d1`, whose message does not say what it will and will not delete. Measured: it removed the 2 stopped containers and the 2 compose-labelled named volumes and touched no `vol-*` hostdir (it does not, per `action_clean_identity`). It missed `mattermost_mattermost-data`, which carried no `com.docker.compose.project` label (and no `ciu.instance` label). The operator has to read ~150 lines of source to learn that.
@@ -5049,6 +5068,288 @@ Severity: High (a lifecycle command can complete resource cleanup but leave a br
 
 **Disposition:** OPEN. The affected checkout was removed with the existing host root helper after preserving its remaining evidence. No code or Git identity records were edited as part of the manual recovery.
 
+**Prior implementation attempt PARKED 2026-10-27 (ref `park/ciu-134-root-escalation-20261014`).** An implementation of the contract above (per-phase `rm` report, `--root-escalation {ask,yes,no}`, a `checkout_recovery`/`on_phase` callback pair in `libraries/worktree` `remove_workspace`) exists on that ref. Its static adversarial review of 2026-10-15 was never resolved, so it was NOT shipped in 7.18. Findings a successor must close (each needs a test that fails without the fix):
+1. *P1, wrong namespace.* The privileged helper is given a path translated with the selected CIU root, but a checkout under `<git-root>/.worktrees/` is outside a nested `<git-root>/<root>`, so on a Docker-outside-of-Docker host the logical path passes through unchanged and the helper can act on a different host path or create an empty bind source. Derive both daemon paths from the Git-family mount mapping, compare with the shared record's physical path, and make the helper refuse an absent bind target.
+2. *P1, unrelated refusal escalates.* The "permission blocker" probe treats any directory lacking write+execute as a blocker; an EMPTY read-only directory is removable by its writable parent, so a locked-worktree refusal plus such a directory reaches the helper. Establish that Git failed while deleting this checkout AND find a permission condition that actually obstructs that deletion. Test with a real locked worktree and an empty read-only directory.
+3. *P1, reusable administration name.* The Git administration directory is captured by pathname; while consent is pending, a direct `git worktree add` can reuse the freed name and the later deletion removes another checkout's administration directory. Capture and recheck its identity and reverse `gitdir` link, and re-verify that no other registered checkout owns it immediately before deletion.
+4. *P1, unrunnable recovery command.* The printed `ciu worktree rm NAME --root-escalation yes` cannot resume once Git has already dropped the registration (the next run stops at "no worktree named"). Provide a resume path backed by durable identity plus successful-cleanup evidence, or withhold a command that cannot run; test the printed command as a second invocation.
+5. *P1, unplaced helper.* `privileged_rmtree` starts `docker run --rm` without a verified loaded cgroup parent; use the configured tier, verify its unit, no hardcoded fallback, cover the real argv.
+6. *P2, `rm --json` is not one document.* The child `ciu clean` writes prose to stdout before the JSON; route child diagnostics to stderr in JSON mode.
+7. *P2, phase ledger over-claims.* `shared_record_removal` starts `pending` even when no shared record existed and can be reported complete without any removal; distinguish absent-before from removed-by-this-operation.
+8. *P2, unpinned branch deletion.* After a long prompt the branch is deleted with `git branch -D`; capture the object id before removal and use an expected-value ref deletion so an advanced branch is preserved and reported.
+Also (found 2026-10-27 while repairing the parked tests): Git removes every deletable file before failing on a protected descendant, including the checkout-local CIU record, so any pre-retry identity proof must accept the record's absence when the shared ledger row (outside the checkout) still proves the exact target, and must refuse when that row is changed or removed. `docs/FEATURES.md` also needs the new option once it ships.
+**Second reproduction, 2026-10-15 (priority evidence; dstdns P243, ciu 7.16.0).** `ciu worktree rm p243-lane-repair -y` completed its clean: containers, 6 volumes and the network were removed, with `[SUCCESS] clean complete`. It then failed with `[S16] shared workspace removal failed: git worktree remove failed (255): ... Permission denied`. Git had already dropped the worktree registration, but the directory and the branch remained. Five root-owned descendants were written by the runner and the schema-lane clones: `.coverage`, `tests/schema/__pycache__/*.pyc` and `.ciu/ksm/ksm-optin-*.so`. Recovered by hand: a one-shot root container (`rm -rf`) on the host path, then `git worktree prune` and `git branch -d`. Every lane-running worktree leaves such files, so the failure is systematic for dstdns. The supported retry through the S6.5 helper is still needed. The `.ciu/ksm` artifact is CIU's own.
+
+
+**Third reproduction, 2026-10-21 (worktree cleanup, BL-01).** Operator report (details unrecorded; source: controller report
+2026-10-21, not in repo): `ciu worktree rm` left a half-deleted tree, which the operator finished by hand. The exact error text
+is not recorded anywhere in the repo. Suspected, **unverified**: read-only directories in the tree, the same
+permission-protected-descendant shape as the reproductions above. Required contract unchanged. Proposal: the removal clears the
+read-only bit on directories it owns before deleting (or reports them by name) instead of stopping half-way.
+
+## CIU-135 — managed worktree overlay intent and recovery can be ambiguous
+
+Severity: Medium. Type: bugfix. Filed 2026-10-13 after reviewing the unmerged
+CIU-107/120 worktree branch family against current `main`. The old branch's
+useful overlay-preflight behavior is being rebuilt against the current record
+and lifecycle design; its stale record schema and CIU-120/121 ids are not
+being merged.
+
+**Observed.** `create()` currently creates the shared Git workspace and writes
+the CIU instance record before `_write_worktree_overlay()` validates and
+renders a requested profile. A malformed value such as `core,,db` can
+therefore fail after a checkout, branch, shared record and CIU record exist.
+`adopt()` similarly records ownership before rejecting an existing overlay
+that conflicts with its flags. A hard interruption after the CIU record is
+written but before the initial overlay is published loses the requested
+profile/shared-infrastructure data; `ensure()` has no saved source from which
+to restore it and can finish with the requested selection absent.
+
+**Required contract.**
+
+- Validate and render the complete initial overlay before any allocation
+  mutation. Invalid profile/shared-infrastructure syntax leaves no new Git
+  branch or checkout, no shared or CIU record, and no Git exclude change.
+- Persist the exact rendered payload and a known/unknown marker in the CIU
+  allocation record before publishing the overlay. Schema v4 introduced the
+  pending overlay marker and created/adopted origin; schema v5 adds the
+  checkout-reset checkpoint and verified Docker network id. Ready v1-v4
+  records remain readable, but incomplete legacy records without enough
+  overlay/recovery evidence are refused rather than treated as an empty request.
+- Persist a separate `initial_overlay_pending` marker. It starts true and is
+  cleared atomically with the first `ready` record. A later ready-root repair
+  may temporarily set lifecycle state to `allocating`; retries must preserve
+  the cleared marker so they cannot replay the initial payload over later
+  operator edits or deletion. The marker is schema v4; ready v3 records remain
+  readable, but incomplete v3 records are refused because their recovery
+  phase cannot be inferred safely.
+- Persist whether the checkout was created or explicitly adopted. During
+  initial recovery, origin or a generic `env-generation-failed` status alone
+  must not authorize network reuse. Require the saved Docker object id or a
+  matching `io.ciu.instance-id` label. An unlabelled legacy network needs the
+  explicit `--adopt-existing-network` assertion, which records its object id;
+  a conflicting owner label always refuses. Check a present network on the
+  ready fast path and retain its last id through an outage.
+- Expose `--profile` through the create/adopt/ensure CLI. When `ensure` finds an
+  existing record, reject explicit profile/shared-infrastructure options rather
+  than silently ignoring them; option-free recovery uses the exact saved
+  request and ready overlays remain operator-owned. Reject an explicitly empty
+  profile before mutation, and require the profile to resolve to a committed
+  target CIU root in the selected base.
+- Persist the initial checkout-reset phase before `reset --hard`. If CIU cannot
+  checkpoint the exact resulting HEAD, `ensure` refuses to reset again. A
+  pristine `--no-checkout` tree and a tree whose tracked files were staged for
+  deletion have the same Git status, so status alone is not a safe retry proof.
+- Treat explicit `ensure --base` and `--worktree-dir` as constraints on an
+  existing allocation: the base must resolve to its recorded allocation
+  commit, and the directory must resolve to the recorded checkout path. Refuse
+  when either comparison cannot be proven.
+- Resolve a create request's base ref once to a full commit before any
+  allocation side effect. Validate the requested CIU root at that commit, and
+  pass the same commit to the shared workspace allocation and first reset; a
+  later movement of the symbolic ref must not change the checked-out tree.
+- Resolve the selected nested CIU root for every worktree verb that looks up
+  CIU records (`create --up`, `ensure`, `adopt`, `inspect`, `up`, `exec`,
+  `lease`, `list`, `rm`, `branches`, and `reap`). Git operations remain
+  family-wide, but record lookup must use the same root offset that wrote the
+  record. Rootless Git families keep their record-only behavior.
+- Verify present network ownership immediately before managed `worktree up`
+  launches its child. A Docker permission/execution failure is indeterminate,
+  not network absence, and must refuse without falsely demoting a ready record
+  to a collision. A one-time explicit legacy claim may record an unlabelled
+  network only if no network object id is already saved.
+- Verify managed network identity in the shared network-startup path used by
+  direct native and shipped `ciu up`, before network creation/attachment and
+  again after creation. `worktree up` alone is not a complete guard because
+  operators can invoke the stack command directly from a managed checkout.
+- Require an exact network object to exist before `--adopt-existing-network`
+  can claim it. A missing network cannot satisfy an assertion of ownership.
+- Classify an unlabelled same-name replacement with a different saved object
+  id as unproven (`runtime-verification-failed`), not a proven collision.
+  Keep `runtime-collision` for a duplicate identity/network or a foreign owner
+  label.
+- Fail runtime identity admission when a sibling record cannot be read and
+  that sibling has a CIU root at the selected offset. Keep listing best effort
+  and do not let malformed rootless worktrees block a CIU runtime allocation.
+- Refuse an explicit worktree `--root-folder` that is neither a CIU root nor
+  the containing Git-family root; do not silently use the caller's current
+  directory to select a different root.
+- Reserve `runtime-collision` for a proven duplicate identity or foreign
+  network. A failed Git-family registry read or Docker ownership probe during
+  allocation is `runtime-verification-failed`, not evidence that another
+  instance owns the identity; retry `ensure` after the probe works.
+- Serialize lease and lifecycle read-modify-write operations through the same
+  Git-family allocation lock. Each mutation re-reads after acquiring the lock
+  so a stale lease snapshot cannot restore pending overlay state or erase a
+  network id.
+- After replacing the CIU record, fsync its containing directory. If that sync
+  fails after rename, report the replacement and uncertain durability rather
+  than claiming the record was untouched.
+- Ignore the managed-record writer's unique temporary file in the repository
+  root, CIU project ignore file, and `ciu init`'s published sample rules, so a
+  hard interruption cannot leave gate-visible scratch.
+- When `ensure` resumes an incomplete allocation, restore a missing recorded
+  payload atomically. Accept an existing regular file only when it matches the
+  recorded payload exactly; refuse symlinks, non-regular files and conflicting
+  files without replacing them. Once the allocation is ready, the checkpoint
+  is no longer enforced: operator edits or deletion remain in place on later
+  `ensure` calls. An adopt with no overlay flags preserves the checkout's
+  pre-existing operator overlay.
+- Publish a new overlay without a replace race: if another file appears after
+  preflight, CIU must preserve it and report the conflict.
+
+**Oracles.** (1) Calling the lifecycle API with `profile="core,,db"` leaves
+the Git branch/path, shared record, CIU record and Git exclude byte-identical
+to baseline. (2) The same malformed profile on `adopt` leaves the unmanaged
+checkout and all records unchanged. (3) Interrupt after the CIU record
+checkpoint but before overlay publication, then `ensure`: the exact requested
+bytes are restored before the worktree becomes ready. (4) Edit or replace the missing overlay
+before recovery `ensure`: CIU refuses and preserves the operator's file. (5) A
+partial v1/v2 record without saved overlay intent and an incomplete v3 record
+without a recovery-phase marker refuse before changing the checkout. (6) A file
+created between preflight and publish is never overwritten. (7) After readiness,
+`ensure` preserves operator edits and does not recreate an operator-deleted
+overlay. (8) Interrupt a ready-root repair
+after it moves the record to `allocating`, then retry `ensure`: it repairs
+generated facts while preserving both an operator-edited overlay and an
+operator-deleted overlay, even if that worktree's recorded network remains
+live. (9) A failed create followed by a network appearing before retry must
+refuse unless its object id or matching owner label proves ownership; an
+unlabelled network requires the explicit claim. A same-name replacement must
+be detected on a ready `ensure`, while a missing network retains the last
+recorded id. (10) Interrupt a v2 ready-record repair after migration to v5;
+retry completes without inventing overlay intent. (11) CLI `--profile` reaches
+create/adopt, targets the selected committed nested root, and refuses without
+one; an empty profile leaves allocation state unchanged. `ensure` rejects
+explicit overlay options for an existing record, a base resolving to another
+commit, and a worktree directory resolving to another path. (12) After reset
+succeeds but before its fork point is saved, stage deletions of all tracked
+paths and retry `ensure`: it refuses without another reset and preserves the
+staged deletions. (13) In a nested-root repository, create with `--up`, then
+ensure, adopt, inspect, up, lease, exec, list, branches, reap, and remove
+through the selected root; each operation uses that root's record offset.
+(14) Move the base branch after its snapshot
+and remove the selected root marker from the new branch tip: creation still
+validates and checks out the original commit. (15) Interleave a lease update
+with the first ready transition: the final record is ready, the overlay marker
+stays clear, and a network id written by creation remains. (16) Replace a
+recorded network and call `worktree up`: CIU refuses before starting the child.
+(17) After recording an object id, `--adopt-existing-network` cannot replace
+it with a different unlabelled object. (18) A missing Docker executable is
+treated as absence, but `PermissionError` refuses and leaves a ready record
+ready. (19) The record writer fsyncs the file before replace and the parent
+directory after replace; a parent-sync failure reports the already-replaced
+record with uncertain durability. Controlled wrong implementations that write
+the record first, infer missing intent, replay an initial overlay after
+readiness, reuse a network based only on failure status, silently ignore
+`ensure` options, treat probe errors as absence, skip startup ownership checks,
+or use `os.replace` to publish operator overlays must fail their oracles.
+(20) A failed family-registry or Docker ownership probe during allocation is
+recorded as `runtime-verification-failed`, while a proven duplicate remains
+`runtime-collision`; a failed managed `up` probe leaves the ready record and
+does not start its child.
+(21) A generated managed-record staging filename is ignored by both the CIU
+project and a fresh `ciu init` scaffold, and the scaffold list matches the
+published `.gitignored.ciu` sample.
+(22) `runtime-verification-failed` is accepted as a record status and appears
+in a user-facing document, so the documentation contract detects if the new
+closed recovery value is omitted.
+(23) Direct native and shipped `ciu up` verify the managed record and network
+before network setup and again afterward; an ownership mismatch refuses
+before network attachment/deployment, and a newly created exact network id is
+checkpointed. `ciu worktree up` keeps its pre-child check. (24) A non-CIU,
+non-family explicit `--root-folder` exits 2 with a diagnostic instead of
+falling back to the current directory. (25) An absent network cannot satisfy
+`--adopt-existing-network`, and an unproven replacement is recorded as
+`runtime-verification-failed` while a foreign owner label remains
+`runtime-collision`. (26) A malformed CIU-root sibling blocks runtime
+identity admission but remains visible as a best-effort listing warning; a
+malformed rootless sibling does not block identity admission. Controlled wrong
+implementations that bypass direct-start verification, mark an unproven
+network as a collision, silently accept a missing claim target, or ignore an
+unreadable CIU-root sibling must fail their oracles.
+
+(27) Interrupt creation after the neutral shared record is durable but before
+the CIU-local record is written; `ensure` restores the exact saved overlay
+intent and completes the same checkout without allocating another branch or
+path. (28) Remove a ready managed checkout's CIU-local record: direct startup
+refuses before Docker, then `ensure` restores the ready record from the shared
+snapshot without changing existing overlay bytes. A primary checkout without
+a managed shared record remains allowed. (29) Full `ciu env generate`
+verifies managed identity and ownership before creating or attaching a
+network; a foreign owner label prevents both side effects and any successful
+network-setup report, while allocation accepts only a matching checkpointed
+`allocating` record. (30) An explicit Git-family root from inside a nested
+CIU root selects that nearest nested root even when the family root has a
+marker; an arbitrary existing descendant refuses. (31) Corrupt a CIU-root
+sibling's record and delete its marker only in the working tree; runtime
+admission still refuses based on committed `HEAD` membership. (32) Corrupt or
+duplicate a CIU-root sibling after a managed instance is ready; direct native
+and shipped startup both refuse before Compose. (33) Change the generated
+identity between identity-only and full environment generation; recovery is
+recorded as `runtime-verification-failed`, not a proven `runtime-collision`.
+(34) The shared native/shipped Compose boundary performs a final ownership
+check immediately before process launch, refuses if the managed network
+disappeared or lost ownership proof, and never invokes Compose on that
+failure. The docs state that another Docker actor can still replace the
+network between the point-in-time check and Compose's later name lookup. No
+implementation may claim atomic object-id binding that Compose does not
+provide.
+
+**File list.** `src/ciu/worktree.py`, `src/ciu/workspace_env.py`,
+`src/ciu/engine.py`, `src/ciu/scaffold.py`,
+`src/ciu/cli.py`; the owning worktree lifecycle, workspace-network and CLI tests;
+`tests/test_init_scaffolding.py`, `tests/tests/test_ciu_documentation_contract.py`,
+`tests/tests/test_ciu_engine_execution_boundaries.py`;
+the root `.gitignore`, `ciu/.gitignore`, and the shipped `.gitignored.ciu`
+rules for interrupted atomic-writer scratch;
+`docs/SPEC.md`, `docs/DESIGN-GUIDE.md`, `docs/CONSUMERS.md`, `docs/CONFIG.md`,
+`docs/CIU.md`, and `README.md`; the root `AGENTS.md` Run-Gate invocation rule;
+`libraries/worktree/SPEC.md` and `libraries/worktree/CONSUMERS.md` CLI examples;
+this backlog entry; the P53 review reports including Review 05; and the next CIU `CHANGES.md`
+release-note section. The
+three adopter-facing documents (README, DESIGN-GUIDE, CONSUMERS) are required
+before merge, alongside the normative spec and configuration reference.
+
+**Disposition (2026-10-27): FIXED in the 7.18 wave.** The implementation was in main since the ungated 7.17.0 release; its tests had drifted from it (182 failing, 36 erroring on main, a keyword-only argument called positionally in the overlay-root preflight broke every managed create) and about 125 lines / 70 branches were uncovered. 7.18 fixes the call, repairs and extends the tests, and adds record schema 6 (`base_branch_ref`) so Run-Gate can read ciu-created records. Original status text follows.
+
+(superseded) OPEN pending the registered CIU gate and final read-only
+review. The seven findings from Review 05 are folded into the same package:
+missing local-record recovery from the shared snapshot, full env-generation
+ownership verification, exact root selection, committed sibling-root
+membership, direct-start family admission, a final network check at the shared
+Compose boundary with the external-Docker race documented, and truthful
+identity-drift classification. Earlier findings include the six findings from
+the second independent review, eight findings from the final broad design
+review, two adjacent gaps found while closing those findings, and five
+additional findings from the final follow-up review; all are folded into the
+isolated implementation and regression oracles. The exact candidate still
+needs its registered CIU gate and a final read-only review before merge.
+
+## CIU-137 — `ciu clean` must prove teardown and host-path safety before deleting data
+
+**Status:** implementation and focused regressions are in the integrated release candidate; registered CIU gate and final review pending. Severity: high (cleanup can erase a bind-mounted data directory while a service remains active).
+
+**Observed:** `docker compose down` failure was logged as a warning, after which CIU deleted `vol-*` host directories and rendered configuration. A nonzero teardown can leave project containers running against those directories. Separately, `_rmtree_with_fallback` resolves a symlinked `vol-*` path to its target before invoking the root helper, so a link inside a stack could widen deletion to an unrelated host directory.
+
+**Required contract:** after a failed Compose teardown, CIU may continue only when an exact `com.docker.compose.project=<project>` container query succeeds and returns no containers. A remaining container, failed query, or unavailable Docker daemon must stop before host-directory and rendered-config deletion. Before deleting volume directories, CIU refuses symlinked `vol-*` entries and verifies every resolved target remains under the resolved stack directory. Errors name the project/path and state which cleanup data was preserved.
+
+**Oracles:** (1) a stale project with no containers is allowed to continue after a successful exact-label query; (2) one remaining container stops cleanup and preserves host data/config; (3) an inspection error is indeterminate, stops cleanup, and preserves both; (4) a `vol-*` symlink to an external directory is refused without invoking the root helper or deleting the target; (5) ordinary in-stack directories still use the existing native/DooD removal path.
+
+**File list:** `src/ciu/engine.py`, focused reset tests, `README.md`, `docs/CONSUMERS.md`, `docs/DESIGN-GUIDE.md`, `docs/SPEC.md`, and this backlog.
+
+## CIU-138 — worktree removal must clean every committed nested CIU root
+
+**Status:** open; found in the 2026-10-15 broad release review. Severity: high (other nested stacks can keep containers and host data after their checkout is removed).
+
+**Observed:** worktree allocation prepares every committed nested CIU root, while removal currently invokes `ciu clean` only for the selected root (or skips clean for a rootless family record) before deleting the whole checkout.
+
+**Required contract:** discover the committed roots from the exact target worktree HEAD; verify each root's identity and clean it under its own environment. Any discovery, identity, or cleanup failure must preserve the checkout and lifecycle records. Release only the lease for a root whose clean succeeded. A truly rootless checkout remains removable without inventing a root.
+
+**Oracles:** (1) two committed roots both receive cleanup before shared Git removal; (2) a sibling-root failure preserves checkout and records while reporting prior successful roots; (3) an unreadable or mismatched root refuses before deleting any checkout; (4) a rootless managed worktree still removes without invoking a guessed cleanup.
+
+**File list:** `src/ciu/worktree.py`, worktree lifecycle tests, `README.md`, `docs/CONSUMERS.md`, `docs/DESIGN-GUIDE.md`, `docs/SPEC.md`, and this backlog.
+
 ## CIU-139 — `ciu resolve --root-folder` does not seed its environment from the selected checkout's instance record
 
 **Status:** OPEN. Filed 2026-10-15 from the dstdns deep review (auditor C04, finding F06), ciu 7.16.0. Severity Medium. Related to the CIU-118 follow-up (branch-local entry "service-discovery gaps in `ciu resolve`", whose Gap 4 measured results only "with the primed environment").
@@ -5067,6 +5368,32 @@ fails with `Missing required environment values ... CONTAINER_UID, DOCKER_GID, D
 **Oracles.** Unprimed-shell `resolve --root-folder P` returns P's identities; run from an unrelated cwd it still resolves P (a cwd-seeded implementation fails this); with the record deleted it refuses with the remedy.
 
 **SPEC owner.** S3.1b (instance record), the CIU-118 resolve/exec contract.
+
+## CIU-140 — private locked env generation prints a traceback for expected workspace errors
+
+**Status:** fix and regression test in the 2026-10-14 release candidate; registered CIU gate and final review pending. Severity: low (diagnostic quality; the operation still fails closed).
+
+**Observed:** managed worktree recovery invokes `action_generate_env(..., allocation_lock_held=True)` in a private Python child so it does not reacquire the allocation lock. Unlike the public `ciu env generate` handler, that child did not catch `WorkspaceEnvError`; malformed or unreadable workspace facts therefore produced a traceback instead of the normal `[ERROR]` message.
+
+**Chosen behavior:** route the private child through a private helper that catches only `WorkspaceEnvError`, prints the same concise error form as the CLI, and returns exit 1. Unexpected programming errors still retain their traceback.
+
+**Oracle:** a focused test forces `WorkspaceEnvError` through the private helper and asserts the exact stderr line and exit code; a neighboring test verifies the allocation-lock bypass remains private and does not add a user-facing CLI flag.
+
+## CIU-141 — Run one command in a fresh container from a rendered CIU service
+
+**Status:** OPEN — proposed v7 package after the current release wave. Severity: Medium. Type: feature. Spec owners: S10.8 (CLI surface), S8 (Compose execution). Related: CIU-113 (consumer recipe), CIU-118 (`resolve`/`exec`), CIU-139 (root-scoped environment), RG-99 and RG-102.
+
+**Observed.** CIU v7 can resolve and `exec` into an already-running service, while `ciu up` starts its declared service persistently. A test-runner does not need to stay up between lanes: its existing Compose service declaration already carries the instance network, CIU-rendered secrets, mounts (including dstdns P242's state volume), cgroup parent and user. Launching each lane with `docker compose run --rm` can use that same declaration to create a uniquely named, one-shot container for one lane and remove it on completion. Keeping a shared runner alive creates avoidable shared `/tmp`, process-reaping and cross-lane-state risks.
+
+**Why CIU owns it.** The service declaration and its rendered environment are CIU's authority. A consumer-side `docker compose run` wrapper would repeat root/profile selection, compose-project naming, secret rendering and network/cgroup setup. `ciu run` is a v7 lifecycle primitive: it does not require cross-instance bindings, byte-budget admission, or the v8 realization graph. The v8 gate environment should build on this primitive rather than replace it.
+
+**Proposed contract.** Add `ciu run [--root-folder P] [--profile NAME ...] <stack>[:<service>] -- ARGV...`. Resolve the exact selected root, instance record, profile and rendered Compose service using CIU's existing source of truth; support an unprimed shell by deriving identity from that selected root's record (coordinate with CIU-139). Pass the command as argv without a shell and return its exact exit status. For ordinary foreground use, use Compose's one-shot `run --rm` lifecycle with a unique container identity; the selected service's declared user, network, secrets, mounts, working directory and cgroup placement remain authoritative. A missing or ambiguous service refuses before launch; omitted service selection may proceed only if the selected stack resolves to exactly one runnable service. The operation must not require the test-runner service itself to be `up`. Define whether dependencies are started or suppressed, whether service aliases or published ports are needed, and how signals and TTY behavior map to Compose; do not silently invent different lifecycle semantics.
+
+**Run-Gate handoff.** CIU remains the container launcher and lifecycle owner; Run-Gate owns the lane argv, deadlines, state-root preflight, verdict mapping, evidence and cgprofile observer session. For observer-aware callers, CIU must send lifecycle records over a dedicated machine-readable channel (for example, JSONL on an explicitly selected file descriptor), never mixed with lane stdout/stderr. The protocol must report the exact container ID as soon as it is known, then the raw command status and cleanup result. Run-Gate must not infer identity from stdout, container-name substrings, or a later best-effort search. The observed detached path must keep the container until CIU has collected its raw status and Run-Gate has stopped the observer, then remove it explicitly; Compose `--rm` cannot race ahead and erase the result. Specify recovery for a controller that dies before cleanup. A detached `compose run` by itself does not prove the observer has attached before a short lane exits: specify and test the start/observer ordering, including an immediate-exit command, before claiming R2 coverage from lane start. For RG-89/R2, the service declaration or a narrowly typed one-shot attachment must make the read-only observer socket available. This lifecycle event and observer boundary is the coupling-heavy acceptance requirement for RG-102.
+
+**Oracles.** (1) An unprimed `ciu run --root-folder P` resolves P's recorded identity and exact rendered service. (2) A fixture service with network, CIU secret, read-only and writable mounts, cgroup parent and non-root user retains all of them in the one-shot invocation. (3) Two concurrent invocations produce distinct container IDs and each reaches its own command body; each runs as the declared user, with no shared process or temporary directory. (4) Missing/ambiguous service, missing identity, render failure, and unavailable Docker refuse with named remedies before any lane body runs. (5) Child exit status, stdin/stdout/TTY behavior and interruption cleanup are preserved; secret values never appear in CIU output. (6) A live registered acceptance proves the one-shot attaches to the declared instance network, sees only CIU-rendered secrets, uses the declared mounts/cgroup/user, and is removed on success, failure and interruption. (7) A Run-Gate integration probe receives a structured exact-ID event, preserves the lane's output streams and raw status, and starts/stops the RG-89 observer without output scraping. (8) Include a very short or immediate-exit lane to prove the lifecycle event, observer attachment ordering, terminal status collection and cleanup cannot race; if sampling must cover work from its first instruction, the launch protocol must provide an explicit readiness barrier and demonstrate it in the live acceptance. (9) Kill the controller before cleanup and verify CIU can identify and safely reap the abandoned one-shot without affecting a concurrently running invocation.
+
+**File list.** `src/ciu/cli.py`, the CIU compose execution boundary in `src/ciu/engine.py`/`src/ciu/deploy.py`, `docs/SPEC.md` S10.8/S8, README, `docs/CONSUMERS.md`, `docs/DESIGN-GUIDE.md`, `CHANGES.md`, this backlog, focused CLI/render/lifecycle tests and the registered CIU live acceptance lane. Coordinate the Run-Gate side through RG-102; do not merge only a consumer shell wrapper.
 
 ## CIU-142 — no way to re-record a managed worktree's fork point after a legitimate rebase
 
@@ -5104,3 +5431,208 @@ fails with `Missing required environment values ... CONTAINER_UID, DOCKER_GID, D
 **Oracles.** (1) A fixture with `name: {{ deploy.network_name }}` and `external: false` fails `ciu check` with the ownership mismatch, without Docker calls; `ciu up` refuses before pulling images or starting Compose. (2) The same fixture with `external: true` passes and uses CIU's workspace network. (3) A Compose-owned network with a distinct name passes and is created by Compose. (4) Both single-stack and profile-selected deployments report the same owning stack and network.
 
 **SPEC owner.** S2.8 (workspace network preparation), S8.3 (single-stack deployment), and S13.4a (static config validation).
+
+## CIU-144 — the CIU-117 image-scoping notice goes to STDOUT and breaks `ciu resolve --json` / `ciu check --json` in a linked worktree
+
+**Status:** OPEN. Filed 2026-10-15 from dstdns package P243 (LANE-REPAIR), ciu 7.16.0. Severity Medium. Type: bugfix. Same class as CIU-84 (stdout writes on a `--json` path, S13.4a), introduced afterwards by CIU-117.
+
+**Observed.** In dstdns's linked worktree `.worktrees/p243-lane-repair`, while `infra/seeded-targets/ciu.compose.yml.j2` still declared a Compose `build:`, `ciu resolve --json` with that stack selected wrote `[CIU-117] project-built images use worktree tag suffix '<suffix>'` as its first stdout line, so the runner's identity-cache hook and every `json.loads` consumer failed with `JSONDecodeError: Expecting value: line 1 column 1`. After dstdns removed its last `build:` (P243 O4, AGENTS §4.3) the same invocations print a clean document, which is consistent with the mechanism below: the notice fires only when scoping changed the rendered Compose.
+
+**Mechanism (source).** `cli._resolve_identities_cli` -> `deploy.resolve_identities` (`deploy.py:431`) -> `engine.scope_worktree_compose_images` (`deploy.py:569`), which ends with a bare `print(f"[CIU-117] project-built images use worktree tag suffix {suffix!r}", flush=True)` (`engine.py:1278-1281`) whenever `scoped != rendered_compose`, i.e. a linked worktree (`suffix is not None`) and at least one service with a `build` declaration (`image_isolation.compose_may_require_image_scoping`). The CLI then prints the JSON document after it. `deploy._check_stack_config` (`deploy.py:3828`) reaches the same function, so `ciu check --json` has the same pollution; CIU-84's oracle `test_check_json_stdout_is_exactly_one_json_document` does not cover a linked worktree with a `build:` stack, which is why it stayed green.
+
+**Why CIU owns it.** S18 (`ciu resolve`) and S13.4a (`ciu check --json`) promise exactly one JSON document on stdout. The consumer cannot filter it safely: stripping non-JSON lines is a workaround that hides the next regression.
+
+**Required contract.** Diagnostic and informational lines go to stderr on every code path a `--json` verb reaches (or through the logger that already routes to stderr); stdout carries only the JSON document. The notice may stay on stdout for human verbs (`ciu up`, `ciu render`) if that is intended, but the decision belongs at the CLI edge, not inside `engine`.
+
+**Oracles.**
+1. A fixture linked worktree whose selected stack declares `build:`: `ciu resolve --json` stdout parses with `json.loads` as one document and stderr contains the CIU-117 notice.
+2. The same fixture: `ciu check --json` stdout is exactly one JSON document (extend CIU-84's oracle with this shape).
+3. The primary checkout and a linked worktree without any `build:` stay byte-identical to today.
+4. Controlled wrong implementation: deleting the notice entirely passes oracle 1 but fails the stderr half of it, so the test must assert the notice moved, not vanished.
+
+**SPEC owner.** S18 (resolve data surface), S13.4a (check JSON contract), S6 CIU-117 worktree image isolation.
+
+## CIU-146 — `ciu down --profile` / `--phases` stop every project container; the selection is parsed and then ignored
+
+**Status:** OPEN. Filed 2026-10-15 from dstdns (deep-review run, main 02ed2c8b), ciu 7.16.0. Severity High. Type: bugfix. Related to CIU-127 (`down --dir`, the per-stack stop), but CIU-127 assumed that profile-wide stop already worked.
+
+**Observed.** On dstdns main, with 26 project containers running (core, db, runner, apps, workers, identity, observability and seeded), the operator wanted to free memory while keeping the runner. They ran:
+`ciu down --profile apps --profile worker-io --profile worker-db --profile identity --profile observability --profile seeded`
+It printed `Active service profile(s): apps,worker-io,worker-db,identity,observability,seeded` and then stopped all 25 running containers. That included `vault`, `consul`, `redis` (profile `core`), `postgres`, `minio`, `pgadmin`, `adminer` (profile `db`) and `test-runner` (profile `runner`), none of which the named profiles select (`ciu profiles`). A detached gate chain waiting on that runner would have failed against a stopped container. Recovery: `ciu up --profile core --profile db --profile runner --deploy --healthcheck`. Volumes are preserved, so no data was lost.
+
+**Mechanism (source).**
+- `deploy.action_stop(config)` (`src/ciu/deploy.py:4413`) takes only `config`. It calls `_matching_containers(config)` (`:4337`), which lists running containers by the anchored `^{project}-{env}-` name prefix, and stops all of them in one `docker stop`.
+- The parsed profile/phase selection never reaches the stop action.
+- Meanwhile `cli.py:391`/`:406` document `--profile NAME   restrict to the named host profile (repeatable)` and `--phases N,M   restrict to the given phase numbers` for `ciu down`.
+
+**Why CIU owns it.** The selection grammar is CIU's, and so is the help text. A consumer cannot work around it except with raw `docker stop`, which AGENTS-style consumer contracts forbid (CIU is the lifecycle API). The defect turns a narrow, intended stop into a project-wide one without any warning: a silent widening, the most dangerous direction for a teardown verb.
+
+**Required contract.**
+- `ciu down --profile P [--profile Q]` and `ciu down --phases N,M` stop only the running containers of the stacks the selection resolves. Resolve each stack's `compose_project` from CIU's resolved identities and list containers by the exact `com.docker.compose.project` label, the same mechanism CIU-127 specifies for `--dir`.
+- A bare `ciu down` stays project-wide.
+- If a selection cannot be resolved, or restriction is not supported on a path (for example `--host`), the verb refuses with an error naming the flag. It never falls back to the whole project.
+
+**Oracles.**
+1. Two profiles with disjoint stacks, both running: `ciu down --profile A` leaves every container of B's stacks running and stops all of A's.
+2. `ciu down --phases N` stops only phase-N stacks.
+3. Bare `ciu down` still stops every project container (regression guard).
+4. An unknown profile name refuses before any `docker stop`.
+5. Controlled wrong implementation: today's `action_stop` passes oracle 3 and fails oracle 1, so a test that only checks "something was stopped" cannot pass for it.
+
+**SPEC owner.** S7.8 (`--stop`), S7.4 (host profiles), S10.2a (CIU-127 per-stack stop). v8 mapping: SPEC-V8 S14.1.3 `ciu down --realization R` must keep the same never-widen rule.
+
+## CIU-147 — a changed bind-mounted rendered config does not recreate the container, and `ciu up` reports success
+
+**Status:** OPEN. Filed 2026-10-15 from the dstdns deep review (GUIDE B064 / dstdns backlog B064, first observed in dstdns package P60 on 2026-08-04), ciu 7.16.0. Severity Medium. Type: bugfix.
+
+**Observed.** A service reads a rendered file bind-mounted at `/etc/<svc>/config.toml`. After a re-render changed that file, `ciu up --dir <stack>` finished green and the container kept serving the old values. In P60 `GET .../settings/defaults` returned `{}` while a direct Consul KV read returned correct data, because the process had started 9 minutes before the config file it reads was re-rendered. Distinguishing observation: `docker inspect <container> --format '{{.State.StartedAt}}'` predates `stat -c %y` of the rendered file.
+
+**Mechanism (source).** Docker Compose decides to recreate a container from a hash of the service definition. A bind mount contributes its path, not its file content, so a content change leaves the hash equal. `src/ciu` never passes `--force-recreate` (no match in `src/` or `docs/SPEC.md`) and never compares the rendered file against the container's start time.
+
+**Why CIU owns it.** CIU renders the file, owns the `up` verb and reports its success. A consumer cannot detect the stale process from CIU's output and can only work around it with a raw `docker restart`, which AGENTS-style consumer contracts forbid.
+
+**Required contract.** When `ciu up` re-renders a file that is bind-mounted into a service and the file's content differs from the previous render, the service is recreated (or the verb names the stale service and refuses to report plain success). An unchanged render recreates nothing.
+
+**Oracles.**
+1. Render, `ciu up`, change one value in the config template, `ciu up` again: the container's `StartedAt` is newer than the second render's mtime and the process serves the new value.
+2. A second `ciu up` with no template change leaves `StartedAt` unchanged.
+3. Controlled wrong implementation: `--force-recreate` on every `up` passes oracle 1 and fails oracle 2.
+
+**SPEC owner.** S7.8 (stack deployment) and S8.3 (single-stack deployment).
+
+## CIU-148 — SPEC S15.20 and DESIGN-NOTES D8 cite a dstdns measurement doc that moved
+
+**Mechanism (source).** `docs/SPEC.md` S15.20 ("Full data: dstdns `docs/KSM-OPTIN-MEASUREMENTS.md`") and `docs/DESIGN-NOTES.md` D8 (line 479) point at a dstdns file. dstdns docs-sync W20 merged that file into dstdns `docs/RESOURCE-GOVERNANCE.md` (section 6, dated measurements) and archived the original under `docs/archive/analyses/`.
+
+**Why CIU owns it.** The citations live in CIU's own docs.
+
+**Required contract.** Repoint both citations to dstdns `docs/RESOURCE-GOVERNANCE.md` (sections 4 and 6), or state the data inline.
+
+**Oracles.** `grep -rn KSM-OPTIN-MEASUREMENTS docs` in ciu is empty.
+
+**SPEC owner.** S15.20.
+
+## CIU-149 — `test_forwards_all_options` trips the S16 selected-root refusal, so the registered `ciu` lane fails fast with EMPTY_COVERAGE
+
+**Evidence (2026-10-20).** `run-gate ciu` fails with `R0: FAIL (first failing test: TestWorktreeCreateDispatch.test_forwards_all_options)`, `NO_MEASUREMENT/EMPTY_COVERAGE (exit 3)`, both on a pwmcp-07 branch (`cce3488e4`) and on an origin/main-equivalent worktree (`e334720d3`, ciu code identical to main): logs `/tmp/run-gate/lanes/ciu/051ee6b1ef567417b628a3d8e355e715.log` and `/tmp/run-gate/lanes/ciu/b0096705ee70c4693ca19aecfe97e9ed.log`. Reproduced outside the lane: the test fails with `assert 2 == 0` and stderr `[S16] initial overlay and existing-network options require a selected CIU root; run from that root or pass its path with --root-folder`.
+
+**Mechanism.** The test calls `cli._worktree(["create", "mypkg", "--base", "develop", "--profile", "core,db", ...])` with no `--root-folder`. `ciu/src/ciu/cli.py` (~line 1990) refuses `--profile` and the network/shared-infra options when `_resolve_worktree_ciu_root_cli` finds no CIU root from the working directory; a clean checkout has no `ciu.toml` at the repository root or in `ciu/`, so no CIU root resolves from either working directory and the test (cwd-dependent, never given a root) always hits the refusal. The lane's `--maxfail=1` then stops at the first failure, which leaves the declared coverage artifact unwritten, so Assay reports EMPTY_COVERAGE instead of the test failure (its own warning: "pytest --maxfail can stop the suite after failures and leave the declared coverage artifact incomplete").
+
+**Not caused by** the pwmcp-07 / KI-89 change (no ciu source or test touched; only `ciu/get.py` was re-rendered, and the byte-identity test `TestRenderedInstaller::test_render_is_byte_identical_to_the_committed_file` passes in-process). It also means the byte-identity test has no gate evidence while this stands, because the lane stops before reaching it.
+
+**Required contract.** Give the test an explicit root (`--root-folder` to a temp CIU root, or `monkeypatch.chdir` into one), so it asserts option forwarding rather than cwd luck; consider dropping `--maxfail=1` from the lane (or declaring the failure honestly) so one failure cannot masquerade as an empty-coverage measurement.
+
+**Oracles.** `run-gate ciu` completes with a verdict that reflects the whole suite; the test passes from the lane's cwd.
+
+## CIU-150 — no Docker-host proof that a stack's cgroup parent slice is loaded before container creation
+
+**Evidence (2026-10-21).** The cgprofile-v1.0.0 Sol review (blocker 4) found that `scripts/cgroup-profiler/ciu.compose.yml.j2:94` authors `cgroup_parent: "cgprofile.slice"` outright, and that systemd auto-creates an uninstalled slice with no limits while the container still starts. CIU's `governance_preflight` (`ciu/src/ciu/deploy.py`, the `check_slice_unit` loop) (a) only examines slices resolved from the stack's `[governance]` table, never a compose-authored `cgroup_parent`, and (b) `return`s silently when `governance.check_slice_unit` is inconclusive, which is the normal cockpit case (no systemd PID 1 in the devcontainer).
+
+**Why CIU owns it.** Placement of a deployed container is CIU's supported workflow; the fix needs a probe that runs on the Docker host, not in the cockpit.
+
+**Sol requirement (verbatim).** "The supported deployment workflow needs a Docker-host systemd probe that proves `LoadState=loaded` before container creation; missing or unprovable units must refuse. Test both installed and missing-unit hosts."
+
+**Required contract.** Before creating any container whose resolved `cgroup_parent` (governance OR compose-authored) is a named non-default slice, prove `LoadState=loaded` through a Docker-host systemd probe; a missing or unprovable unit refuses (exit 2) naming the unit and the install step. Do not treat an inconclusive probe as success.
+
+**Oracles.** An installed-unit host passes; a missing-unit host refuses; a cockpit with no host probe refuses (not skips) for a stack that names a non-default slice.
+
+**Interim.** cgprofile 1.1.0 (CGP-110) refuses to start `serve` when `cgprofile.slice` has no finite `memory.max` (`scripts/cgroup-profiler/lib/serve.py` `daemon_slice_bounded`). That guards the one known case after container creation; it does not replace this probe.
+
+**SPEC owner.** S15.G9-1.
+
+## CIU-151 — `ciu worktree rm` cannot find a CIU root in an old checkout; only `--force` works
+
+Severity: Medium. Type: bugfix. Filed 2026-10-21 (BL-01) from the worktree cleanups of 2026-10-05 and 2026-10-21.
+
+**Observed.** In an old checkout, `ciu worktree rm` cannot find a CIU root, refuses, and only `--force` works. Cause (a missing
+root marker) is a **hypothesis, not verified**. Evidence: controller report 2026-10-21 (not in repo), quoting an operator/controller
+session memory note for the 2026-10-05 run: "`cmru-secret-git-auth` via `ciu worktree rm --force` (ciu clean can't find a root in
+an old checkout; force is safe only after checking no containers/volumes/networks for its instance id and no
+`vol-*`/foreign-owned files)". The 2026-10-21 recurrence is operator-reported; its exact refusal text is **not recorded**.
+
+**Why it matters.** `--force` skips the resource cleanup that `ciu clean` exists to do, so the operator must first verify by
+hand that no container, volume or network of that instance remains. Teardown is the operation an operator reaches for to get
+rid of a stale checkout, and it is blocked for an old checkout (compare CIU-115, where a pre-schema-2 identity file blocked it).
+
+**Existing entries checked.** CIU-115 (stale generated file fail-closes `worktree rm`; workaround `ciu env generate`) and CIU-134
+(partial removal) are related but not the same: here no root is found at all, so there is nothing for `env generate` to repair.
+
+**Required contract.** For a worktree whose record exists in the shared worktree records but whose checkout has no findable CIU root,
+`rm` should derive the instance identity from the record (or from the labels on the instance's Docker resources), run the same
+`clean` it runs elsewhere, and only then remove the checkout; if it cannot, it must say which resources it could not verify and
+offer a `--force` that prints the exact `docker` objects it is skipping. Oracle: a fixture checkout without the marker, with a
+recorded instance and one labelled volume, is removed by `rm` with the volume cleaned, and without the volume left behind.
+
+## CIU-152 — worktree record schema v6: pin `base_ref` to the fork SHA and name the moving base separately as `base_branch_ref` (run-gate's R-35a reader already ships)
+
+**Status:** FIXED in the ciu 7.18 wave (CIU-135 added record schema 6: `src/ciu/worktree.py` `WORKTREE_INSTANCE_BASE_BRANCH_SCHEMA_VERSION = 6`, emitting `base_ref` as the pinned fork SHA and `base_branch_ref`); originally filed 2026-10-27 from the run-gate 24.1.0 wave as the producer-side contract.
+
+**Context.** run-gate 24.1.0 reads `ciu.worktree-instance.json` schema v6 (`run_gate.py` `_usable_recorded_branch_base`,
+`CIU_BASE_BRANCH_SCHEMA_VERSION = 6`; docs `run-gate-project/docs/DESIGN-GUIDE.md` "ciu record schema v6", `CONSUMERS.md`,
+SPEC R-35a) and refuses v7+. ciu today emits v1..v5 (`src/ciu/worktree.py:75-79`) with a symbolic `base_ref`; no v6 exists
+yet, so the reader is a run-gate-side statement of the contract it expects.
+
+**Required contract when ciu bumps to v6.** `schema_version: 6`; `base_ref` = the pinned FULL fork commit id (40/64 hex),
+equal to `fork_point_sha`; a new `base_branch_ref` = the canonical LOCAL branch name the tree was forked from (plain
+gate-safe text; never `refs/heads/...`, a tag, a remote-tracking ref or a SHA), or JSON null when ciu cannot name one
+(adopt, tag, raw commit). run-gate anchors every freshness clause on `refs/heads/<base_branch_ref>` and hands the judge
+`fork_point_sha`; any deviation degrades with a `--base` remedy. If ciu's v6 ends up shaped differently, run-gate's reader
+must change in the same release wave.
+
+**Second reproduction, 2026-10-19 (cleanup of 18 old checkouts).** Seven recorded checkouts were refused by `ciu worktree rm` with `[no-ciu-root]` ("no CIU root above the checkout"); the message names the cause (the generated-defaults template marker is absent above the checkout), which confirms the missing-marker hypothesis for this shape. The only offered ways out were `--force` (skips the resource cleanup `ciu clean` exists for) and `--root-folder`; a rootless record should be removable by the documented path, or the refusal should name a safe one. No resources were touched; the checkouts were left for an operator decision.
+
+## CIU-154 — worktree pruning discards ignored, resumable state that the branch survey never shows
+
+**Status:** OPEN. Filed 2026-10-15 (as CIU-143 on an unmerged branch; renumbered CIU-154 on integration because main assigned CIU-143 to the Compose-network check) from a controller observation made while reviewing CIU-134. Severity High: the loss is silent and irreversible, and the state it destroys is expensive (a mutation campaign restarts from mutant #1). **Backlog-only:** this entry defines the contract and the oracles; no code, test, SPEC or user-doc change is made by the branch that files it, and CIU-134's implementation scope is unchanged. SPEC owner: S16.8 (branch hygiene).
+
+**Observed (measured 2026-10-15 in a throwaway repository, then read in the code).**
+- `branch_hygiene` (`ciu/src/ciu/worktree.py`, the `dirty` computation) runs `git status --porcelain` in each branch's checkout. That output never lists ignored files, so a checkout whose only content beyond Git's index is ignored is `dirty: false`.
+- `prune_branches` then runs plain `git worktree remove <checkout>`. Git's cleanliness test is the same "no tracked modification, no untracked file" test, so it succeeds, and it deletes the ignored files with the directory. Measured: a worktree with an ignored `.assay/progress-lane.jsonl` and an ignored `__pycache__/` had empty porcelain output, `git worktree remove` exited 0, and the checkout and both ignored entries were gone.
+- Here `.assay/` is ignored at the root (`.gitignore:355`) and holds exactly what AGENTS.md says it holds: the `--resume` state and `--progress` stream of every assay lane, "git-ignored … never in the judged tree". This repo's default worktree layout is `.worktrees/<branch>`, so such checkouts are ordinary unmanaged ones, which is the population `-y` is allowed to prune (a CIU-managed checkout is categorised `managed-instance` and skipped).
+- The wording compounds it: the survey hint says the `prunable` branches "are fully merged and safe to remove". "Merged" is a statement about commits; "safe" is a claim about the checkout that the check cannot support.
+
+**Why this is a check-narrower-than-its-message defect.** The status the survey reports is "this checkout holds nothing the operator would miss". The comparison it performs is "Git has no tracked or untracked changes here". The two collapse different real conditions into one value: a checkout with nothing but regenerable cache, and a checkout holding hours of mutation progress, both read `dirty: false`. AGENTS.md "A check is only as strong as what it actually compares" asks for both directions to be checked: here the dangerous condition is reported as benign (progress reported as nothing), and the fix must not swing to the opposite error of reporting every cache as dangerous (oracle 4).
+
+**Safety contract (normative for the future work item).**
+1. **The survey exposes ignored state.** Each branch entry that has a checkout gains an `ignored_state` field: the checkout's top-level ignored entries, each with a `class` and a bounded size fact (file count and bytes, capped, never following symlinks and never walking into a directory beyond the cap). `dirty` keeps its present meaning (tracked or untracked-not-ignored, as Git reports) and the docs say so; it is not widened, because every consumer of the field relies on that meaning.
+2. **Classes are a closed vocabulary decided by a fact, not a heuristic.** A class is `protected` only when the tool that owns the path documents that the content is resumable and not regenerable. The initial table, in CIU, is: `protected` = the git-ignored assay state directory (`.assay/`, owner: assay; resume state and progress stream), and CIU-owned persisted data (`vol-*` stack volume directories, which hold stack data). `regenerable` = files CIU or a toolchain rewrites on demand (`ciu.env`, `ciu.instance.generated.toml`, the instance record, `__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`). Everything else is `unclassified`. Ordinary caches are not protected: a cache is never `protected` unless its owner documents otherwise, and adding a class is a reviewed change to the table with the owner's document cited.
+3. **Only `protected` state blocks.** `unclassified` and `regenerable` entries are disclosed but never block `-y`, so the guard cannot cry wolf on a healthy estate (AGENTS.md corollary: a refusal whose condition matches ordinary, legitimate state gets switched off). `unclassified` is shown with its size so the operator can reclassify it; it is not silently treated as either.
+4. **A new category.** `BRANCH_CATEGORIES` gains `merged-protected` (merged, Git-clean, holds `protected` state), parallel to `merged-dirty`. A `merged-protected` branch is not `prunable`.
+5. **`--yes` never discards protected state.** `-y` prunes exactly `prunable` and reports each `merged-protected` branch as skipped with the protected paths and sizes. Discarding requires an explicit disposition naming the exact branch: `--discard-protected-state BRANCH` (repeatable; exact names, no glob and no `all`, so one flag cannot authorise an unseen set). The result lists what was discarded (path, file count, bytes) so the loss is recorded even when intended.
+6. **Indeterminate is not empty.** If ignored state cannot be enumerated for a checkout, that checkout is never `prunable` and the entry reports the failure and its cause (AGENTS.md anti-pattern 2, absence for emptiness). `ignored_state: []` means "read, and none".
+7. **Honest wording.** The hint no longer says "safe to remove". It says what was checked: "fully merged, no tracked or untracked changes, and no protected ignored state; ignored caches that `-y` will delete are listed per branch". `README` / `DESIGN-GUIDE` / `CONSUMERS` / `FEATURES` say the same, and the DESIGN-GUIDE records why `dirty` was not widened.
+8. **Same primitive, same rule.** `ciu worktree rm` removes the checkout through the same `git worktree remove` and is explicit per instance, but it discards the same ignored state without disclosing it. It adopts the same classification and disposition. That change touches the removal path CIU-134 is rewriting, so it is sequenced after CIU-134 lands, not folded into it.
+
+**Open decision (recommendation given).** Where the class table lives. Recommendation: a static table inside CIU for the first version, because `.assay/` and `vol-*` are the only two evidenced classes and a per-tool declaration marker has no consumer yet; revisit when a second tool needs to declare a class. Not decided here.
+
+**Oracles (behavioral; each asserts filesystem and Git outcomes, not command strings; none is timing-based).**
+1. *Protected state is exposed.* A real repository with `.assay/` git-ignored, a merged branch whose linked checkout contains `.assay/progress-lane.jsonl` and `.assay/state/resume.json`, and an otherwise clean tree: `git status --porcelain` is empty, yet the survey reports category `merged-protected`, lists `.assay` as `protected` with its file count and bytes, and the hint does not call it safe to remove.
+2. *`-y` preserves it.* On that fixture, `branches -y` leaves the checkout, both files (byte-identical) and the branch in place, and reports the branch as skipped with the reason. A porcelain-only implementation fails oracle 1; a "remove then warn" implementation fails this one.
+3. *Explicit disposition discards exactly what was named.* `--discard-protected-state <that branch>` removes the checkout and branch and lists the discarded files; a second fixture branch with the same `.assay/` content, not named, survives the same invocation intact.
+4. *Benign state is not over-blocked.* An identical fixture whose only ignored content is `__pycache__/` and `.pytest_cache/` stays `prunable` and is removed by `-y`, with the caches disclosed in the survey. An "any ignored file blocks" implementation fails this one.
+5. *CIU-owned data versus regenerable files.* A checkout with a populated `vol-*` directory is `merged-protected`; one with only `ciu.env` and a generated overlay is `prunable`.
+6. *Unknown content is disclosed, not guessed.* An ignored top-level `scratch/` is reported `unclassified` with its size, does not block, and is not described as protected.
+7. *Indeterminate is not empty.* With enumeration of ignored state made to fail for one checkout (fault injected at the Git call boundary), that branch is not `prunable`, the failure is reported with its cause, and `ignored_state` is not `[]`. A fail-open implementation removes it.
+8. *Symlinks are not followed.* An ignored `.assay` that is a symlink to a directory outside the checkout is reported without sizing the target, and pruning (when permitted) removes only the link, never the target's contents.
+9. *Wording and docs.* The survey hint and all four user documents carry the new wording, every example parses with the shipped loader, and every cross-document anchor resolves (the AGENTS.md documentation tests).
+10. *`rm` parity (sequenced after CIU-134).* `ciu worktree rm` on a managed checkout holding `.assay/` progress refuses without the same explicit disposition and, with it, reports what was discarded.
+
+**Not covered here.** Whether `.run-gate/` evidence and the assay state should be one class or two, and whether a mutation lane's evidence belongs to the owner tool's own retention policy, are questions for run-gate and assay; this entry lists only what CIU can evidence today.
+
+## CIU-153 — `ciu worktree rm` always deletes the branch, even one that is not merged, and has no way to keep it
+
+Severity: High (silent loss of the only ref to unmerged commits). Type: bugfix. Filed 2026-10-27 (release wave) from the 2026-10-19 worktree cleanup record.
+
+**Observed (ciu 7.16.0, 2026-10-19).** `ciu worktree rm LOGICAL -y` removes the checkout and then also deletes the checked-out branch ref. Nothing documents this: CONSUMERS.md section 5 documents only "`ciu clean` then `git worktree remove`", and the `-y` help text is silent about the branch. In one cleanup batch the removal deleted the branch of a merged checkout (benign; restored with `git branch NAME SHA`, and the ref list matched the baseline) and, in a second phase, 36 further branches, 12 of them not merged into the base. An unmerged branch that is the sole holder of its commits becomes reachable only through the reflog, with no prompt and no warning. The mechanism is the shared lifecycle's `remove_workspace(delete_branch=True)` default (libraries/worktree), which runs `git branch -D` unconditionally.
+
+**Why this is a defect.** `ciu worktree branches` already applies the correct safety (a branch is prunable only when it is an ancestor of the base); `rm` applies none, so the same operator intent ("remove this checkout") carries a destructive side effect that the survey verb refuses.
+
+**Required contract.**
+- `rm` deletes the branch only when it is an ancestor of the base ref (the `branches` rule) or the operator names it explicitly; otherwise it keeps the branch, says so, and prints the tip commit.
+- Add `--keep-branch` (keep unconditionally) and `--delete-branch` (the explicit, named destructive form for an unmerged branch). Whether keeping becomes the default in every case is an operator decision; the minimum is the merged-only safety above.
+- Document the branch behaviour in CONSUMERS.md section 5, the DESIGN-GUIDE and the verb's `--help`.
+- Report the branch outcome in the removal output (when the parked CIU-134 per-phase report ships, as its `branch_removal` phase: `deleted`, `kept-unmerged`, `kept-by-option`; until then in the existing removal message).
+
+**Oracles.** (1) A managed checkout whose branch holds a commit not in the base: after `rm`, the branch ref exists with the same tip and the output says it was kept. (2) A merged branch is deleted as before. (3) `--keep-branch` keeps a merged branch. (4) `--delete-branch` on an unmerged branch deletes it and prints the lost tip. (5) A detached checkout reports `skipped-detached`.
+
+**Disposition:** OPEN.

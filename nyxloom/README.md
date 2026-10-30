@@ -128,6 +128,7 @@ how these choices stay in sync with their owning schemas and registries.
 | --- | --- | --- |
 | `nyxloom lint` | Frontmatter schema + carve-quality rules (SPEC §6); gates the carve commit. Also validates the managed per-entry backlog: entry frontmatter (BLG2) and the generated `backlog/INDEX.md` freshness (BLG3), when a project adopts `[backlog_entries]` | No |
 | `nyxloom backlog` | Managed per-entry issue tracker (`nyxloom-trove/backlog/`, one file per entry): `new`/`promote`/`note`/`set-status`/`list`/`show`/`index`; merge auto-ticks linked entries to `merged`. Design authority: [docs/backlog-entries-spec.md](docs/backlog-entries-spec.md); adoption: [docs/CONSUMERS.md](docs/CONSUMERS.md) | No |
+| `nyxloom usage` | Metadata-only Claude Code usage tree, chart data, interactive offline single-file HTML, and paginated PDF, plus dated API-equivalent USD estimates, experimental weighted units, observed reset windows, and private operator anchors/calibration. Report JSON preserves `usage-report-v1` with its `usage-charts-v1` extension. Adoption: [docs/CONSUMERS.md#report-claude-code-usage](docs/CONSUMERS.md#report-claude-code-usage); HTML: [interactive report](docs/CONSUMERS.md#interactive-html-report); PDF: [PDF export](docs/CONSUMERS.md#pdf-export); rationale: [design guide](docs/DESIGN-GUIDE.md#pdf-usage-report). | No |
 | `nyxloom-harness` session tools | Search session words and return ranked session IDs; mechanically extract from Claude Code, Codex, OpenCode, and Reasonix logs; discover/report sessions; resolve bare IDs; render or highlight Markdown; and follow live streams with optional attention delivery. User guide: [`session_extract/README.md`](src/nyxloom/session_extract/README.md); search rationale: [design guide](docs/DESIGN-GUIDE.md#local-session-search). | No |
 | `nyxloomctl tick` | One operator reconcile pass: scan → dispatch/detect/collect → events → render → notify → exit | No |
 | Attempt wrapper | Runs one CLI leg detached; tees log; writes typed receipt with exit code; holds/releases flock leases | Only the launched agent |
@@ -227,6 +228,82 @@ notify channel. See the [design rationale](docs/design-context-lifecycle-experim
 and the [session extraction guide](src/nyxloom/session_extract/README.md) for
 the complete flag behavior and adoption examples.
 
+`nyxloom usage report --since 24h` summarizes Claude Code API request usage
+across local transcripts, including nested subagents. JSON is the frozen
+`usage-report-v1` contract with an exact deduplicated call ledger and typed
+events; CSV has one report row followed by one row per call. The table shows
+raw token classes, experimental weighted units, local observed share, and
+API-equivalent USD estimates. Message, thinking, tool content, and filesystem
+paths are excluded. CSV text cells beginning with `=`, `+`, `-`, `@`, tab, or
+carriage return receive a leading single quote so spreadsheet software treats
+them as text. API-equivalent USD is dated list-price arithmetic, not a billed
+amount; weighted units do not measure subscription consumption. The
+`usage prices`, `usage windows`, `usage anchor`, and `usage calibrate` verbs
+expose price diagnostics, observed reset intervals, and explicitly qualified
+UI readings. See the [usage report guide](docs/CONSUMERS.md#report-claude-code-usage)
+and [design rationale](docs/DESIGN-GUIDE.md#local-usage-report).
+
+`usage windows --since START --until END` uses the half-open UTC interval
+`[START, END)` for calls, reset evidence and reset timestamps, threshold events,
+and interval metrics. Custom price tables cannot combine fast and
+prompt-threshold rates for one model; the loader refuses that ambiguous
+combination. See the
+[design rationale](docs/DESIGN-GUIDE.md#local-usage-report).
+
+`--no-labels` removes session titles and agent topics before serialization.
+`agent_type` remains, and `project_id` is a stable hash of the recorded cwd, so
+the same project can be correlated across reports without including its path.
+Cross-file conflicts keep a deterministic representative call marked
+`conflicted`, with a conflict record that identifies it. JSON and CSV mark the
+individual call; table, HTML and PDF show conflicted-call counts on node rows.
+Output files use mode `0600`; missing parent directories use mode `0700`.
+Reports and chart exports accept `--anchor-file FILE`; absent that option they
+read the default XDG anchor store. An invalid anchor store produces a warning
+and the command continues without anchor data, with JSON status `unreadable`.
+An absent default anchor store is normal; a missing explicitly selected anchor
+file produces the same warning and status. Create an alternate store with
+`nyxloom usage anchor add` using an observed UI reading before using it in a
+report, chart, or windows query.
+Report JSON exposes this at `extensions.limit_anchors.status`; windows JSON
+uses `anchor_status`. Both include a structured warning.
+The table labels the measure
+`ACTIVE SPAN SUM` as a sum of node-local bursts; it can exceed wall duration
+when nodes overlap.
+
+`nyxloom usage charts --since 24h --out usage-charts.json` writes the same
+metadata-only chart section included in `nyxloom usage report --format json`.
+Its `usage-charts-v1` datasets contain packed agent context lanes, joined
+per-session context lines, weighted self-cost buckets, and top-agent cost
+composition. Cost stacks partition deduplicated call self-cost; subtree totals
+are never stacked with their children. Context lines are decimated for display
+while retaining exact call data in the report ledger. `--depth` and
+`--min-share` fold only the displayed tree; chart ownership and totals use the
+complete windowed tree. HTML maps hidden chart series to the visible folded
+`other` row or nearest displayed parent. Weighted units are an experimental local score, not
+subscription usage. Reports with labels are
+sensitive local artifacts; use `--no-labels` to remove titles and topics before
+writing them. See the [chart guide](docs/CONSUMERS.md#export-usage-chart-data)
+and [design rationale](docs/DESIGN-GUIDE.md#usage-chart-data).
+
+`nyxloom usage report --since 24h --format html --out usage.html` writes one
+offline interactive report with the full hierarchy, four joined diagrams,
+filters, exact live subtotals, hover identity, isolation, and time brushing.
+The file contains inline data, CSS, and JavaScript, makes no network requests,
+and is written with mode `0600`. Its anonymize control changes display only;
+use `--no-labels` to remove topics before serialization. Print CSS includes
+all tree rows and diagrams for A4 or Letter landscape. See the
+[interactive HTML guide](docs/CONSUMERS.md#interactive-html-report) and
+[design rationale](docs/DESIGN-GUIDE.md#offline-html-usage-report).
+
+`nyxloom usage report --since 24h --format pdf --no-labels --out usage.pdf`
+uses the optional PWMCP browser client to render the same report as searchable
+vector text and SVG. A4 landscape pages flow as needed, repeat the tree-table
+header, and keep rows together. Install the optional `nyxloom[report]` extra
+with the matching official PWMCP client wheel and use an available managed
+PWMCP service. PDF output is written with mode `0600`; see the
+[PDF export guide](docs/CONSUMERS.md#pdf-export) and
+[design rationale](docs/DESIGN-GUIDE.md#pdf-usage-report).
+
 For file-backed sessions, `--follow` reads the appended payload plus only
 bounded prefix/tail fingerprints as needed for rewrite detection; it never
 rescans the whole file. Unchanged polls read no content.
@@ -281,14 +358,14 @@ list no longer lists it as a non-goal because it shipped (P48).
 
 ## Testing
 
-`./run-gate.py` is the canonical test entrypoint — `./run-gate.py --list`
+`run-gate` is the canonical test entrypoint — `run-gate --list`
 discovers the declared lanes; definitions live in `run-gate.toml`.
 See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
 
 The broad `tester-unified` CLI lane measures and enforces 100% whole-source
 line and branch coverage through Assay. The focused `session-extract` lane
 keeps its own branch, mutation, and canary contract. The rationale is in the
-[design guide](docs/DESIGN-GUIDE.md). Run these lanes through `./run-gate.py`;
+[design guide](docs/DESIGN-GUIDE.md). Run these lanes through `run-gate`;
 a cockpit-local pytest run is diagnostic only.
 
 ### CLI diagnostics

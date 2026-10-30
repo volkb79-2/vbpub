@@ -281,6 +281,117 @@ def test_drop_unique_constraint_removes_nulls_and_include_options_with_the_key()
     assert site.replacement == b"CHECK (true)"
 
 
+def test_not_null_clause_inventory_retains_offsets_instead_of_clause_copies():
+    from assay.adapters.sql import _column_definition_clauses
+
+    source = b"CREATE TABLE t (a INT NOT NULL, b TEXT NOT NULL);"
+    clauses = _column_definition_clauses(source, source)
+
+    assert [source[start:end].strip() for start, end in clauses] == [
+        b"a INT NOT NULL",
+        b"b TEXT NOT NULL",
+    ]
+    assert all(type(start) is int and type(end) is int for start, end in clauses)
+
+
+def test_unique_constraint_whitespace_scan_checks_the_lane_deadline():
+    from assay.adapters.sql import _unique_constraint_end
+
+    calls = 0
+
+    def expire_during_long_whitespace():
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("lane deadline expired")
+
+    masked = b"UNIQUE" + (b" " * 1024) + b"(a)"
+    with pytest.raises(RuntimeError, match="deadline expired"):
+        _unique_constraint_end(
+            masked,
+            masked,
+            len(b"UNIQUE"),
+            check_deadline=expire_during_long_whitespace,
+        )
+    assert calls == 2
+
+
+def test_unique_option_whitespace_scan_checks_deadline_and_matches_after_skip(
+    monkeypatch,
+):
+    import assay.adapters.sql as sql_module
+
+    source = b"UNIQUE (a)" + (b" " * 1024) + b"DEFERRABLE"
+    expected_match_start = source.index(b"DEFERRABLE")
+    original = sql_module._sql_keyword_end
+    match_positions = []
+
+    def keyword_probe(masked, cursor, keyword):
+        if keyword == b"DEFERRABLE" and not match_positions:
+            match_positions.append(cursor)
+        return original(masked, cursor, keyword)
+
+    monkeypatch.setattr(sql_module, "_sql_keyword_end", keyword_probe)
+    deadline_checks = 0
+
+    def check_deadline():
+        nonlocal deadline_checks
+        deadline_checks += 1
+
+    end = sql_module._unique_constraint_end(
+        source, source, len(b"UNIQUE"), check_deadline=check_deadline
+    )
+
+    assert end == len(source)
+    assert match_positions == [expected_match_start]
+    assert deadline_checks >= 5
+
+
+@pytest.mark.parametrize(
+    "option",
+    (
+        b"INITIALLY" + (b" " * 1024) + b"DEFERRED",
+        b"USING" + (b" " * 1024) + b"INDEX idx",
+        b"USING INDEX" + (b" " * 1024) + b"TABLESPACE fast_space",
+        b"NOT" + (b" " * 1024) + b"DEFERRABLE",
+    ),
+)
+def test_unique_internal_option_whitespace_checks_lane_deadline(option):
+    from assay.adapters.sql import _unique_constraint_end
+
+    source = b"UNIQUE (a) " + option
+    calls = 0
+
+    def expire_in_option_tokens():
+        nonlocal calls
+        calls += 1
+        if calls == 5:
+            raise RuntimeError("lane deadline expired")
+
+    with pytest.raises(RuntimeError, match="deadline expired"):
+        _unique_constraint_end(
+            source,
+            source,
+            len(b"UNIQUE"),
+            check_deadline=expire_in_option_tokens,
+        )
+    assert calls == 5
+
+
+def test_drop_unique_includes_a_quoted_tablespace_identifier_in_its_span():
+    source = (
+        'CREATE TABLE t (a INT, CONSTRAINT uq UNIQUE (a) USING INDEX '
+        'TABLESPACE "fast space");\n'
+    )
+    site = _one_site(source, "sql:drop-unique")
+
+    assert _span_text(source, site) == (
+        b'UNIQUE (a) USING INDEX TABLESPACE "fast space"'
+    )
+    mutated = site.apply(source.encode("utf-8")).decode("utf-8")
+    assert 'TABLESPACE "fast space"' not in mutated
+
+
 def test_drop_unique_using_index_refuses_both_halves_of_the_linked_pair():
     source = (
         "CREATE TABLE t (a INT);\n"
@@ -750,6 +861,35 @@ def test_weaken_delete_action_replaces_the_two_word_no_action_form():
     site = _one_site(source, "sql:weaken-delete-action")
     assert _span_text(source, site) == b"NO ACTION"
     assert site.replacement == b"CASCADE"
+
+
+@pytest.mark.parametrize(
+    ("source", "expire_call"),
+    (
+        (b"ON" + (b" " * 1024) + b"DELETE RESTRICT", 3),
+        (b"ON DELETE NO" + (b" " * 1024) + b"ACTION", 5),
+    ),
+)
+def test_weaken_delete_action_keyword_gaps_check_the_lane_deadline(
+    source, expire_call
+):
+    from assay.adapters.sql import _scan_weaken_delete_action
+
+    calls = 0
+
+    def expire_inside_keyword_gap():
+        nonlocal calls
+        calls += 1
+        if calls == expire_call:
+            raise RuntimeError("lane deadline expired")
+
+    with pytest.raises(RuntimeError, match="deadline expired"):
+        list(
+            _scan_weaken_delete_action(
+                source, source, check_deadline=expire_inside_keyword_gap
+            )
+        )
+    assert calls == expire_call
 
 
 def test_drop_trigger_spans_from_create_trigger_through_its_own_terminator():
@@ -2531,6 +2671,49 @@ def test_rule5_declare_section_not_null_is_refused_but_the_executable_body_is_ac
     assert _span_text(source, sites[0]) == b"SET NOT NULL"
 
 
+def test_declare_section_keyword_search_preserves_offsets_across_windows(monkeypatch):
+    import assay.adapters.sql as sql_module
+
+    monkeypatch.setattr(sql_module, "_DECLARATION_SEARCH_WINDOW_BYTES", 8)
+    source = b" " * 6 + b"DECLARE\nv INT;\n" + b" " * 5 + b"BEGIN\n"
+
+    spans = sql_module._declare_section_spans(
+        source, ((0, len(source)),)
+    )
+
+    assert spans == [(6, source.index(b"BEGIN"))]
+
+
+@pytest.mark.parametrize(
+    ("body", "fail_call"),
+    (
+        (b" " * 96, 4),
+        (b"DECLARE " + b" " * 96, 7),
+    ),
+)
+def test_declare_section_search_checks_deadline_inside_large_body(
+    monkeypatch, body, fail_call,
+):
+    import assay.adapters.sql as sql_module
+
+    monkeypatch.setattr(sql_module, "_DECLARATION_SEARCH_WINDOW_BYTES", 8)
+    calls = 0
+
+    def expire_during_search():
+        nonlocal calls
+        calls += 1
+        if calls == fail_call:
+            raise RuntimeError("lane deadline expired")
+
+    with pytest.raises(RuntimeError, match="deadline expired"):
+        sql_module._declare_section_spans(
+            body,
+            ((0, len(body)),),
+            check_deadline=expire_during_search,
+        )
+    assert calls == fail_call
+
+
 def test_rule5_control_a_dollar_body_with_no_declare_section_is_unaffected():
     """Paired must-succeed control: a dollar body with NO ``DECLARE``
     section at all (no exclusion span computed) still recovers a real
@@ -2613,6 +2796,44 @@ def test_retention_returns_an_identity_ordered_batch_regardless_of_scan_order():
     assert sites[0].start_byte < sites[1].start_byte
     identities = [site.identity for site in sites]
     assert identities == sorted(identities)
+
+
+def test_candidate_sites_stream_before_the_next_scanner_starts(monkeypatch):
+    """The bounded heap must receive candidates as a scanner finds them;
+    materializing the scanner outputs first defeats ``limit``'s memory bound."""
+    import assay.adapters.sql as sql_module
+
+    events = []
+    first = sql_module._Site(
+        lineno=1,
+        operator="sql:drop-check",
+        description="first",
+        start=0,
+        end=1,
+        replacement=b"a",
+    )
+    second = sql_module._Site(
+        lineno=1,
+        operator="sql:drop-check",
+        description="second",
+        start=1,
+        end=2,
+        replacement=b"b",
+    )
+
+    def scanner(*_args, **_kwargs):
+        events.append("started")
+        yield first
+        events.append("resumed")
+        yield second
+
+    monkeypatch.setattr(sql_module, "_scan_drop_check", scanner)
+    candidates = sql_module._all_candidate_sites(b"", b"", (), [])
+    assert events == []
+    assert next(candidates) is first
+    assert events == ["started"]
+    assert next(candidates) is second
+    assert events == ["started", "resumed"]
 
 
 def test_retention_at_limit_one_keeps_the_identity_smallest_site_not_the_scan_first_one():
@@ -2899,35 +3120,148 @@ def test_scan_drop_check_skips_an_unbalanced_check_clause():
     from assay.adapters.sql import _scan_drop_check
 
     source = b"CHECK (a > 0"
-    assert _scan_drop_check(source, source) == []
+    assert list(_scan_drop_check(source, source)) == []
 
 
 def test_scan_drop_unique_skips_an_unbalanced_column_list():
     from assay.adapters.sql import _scan_drop_unique
 
     source = b"UNIQUE (a, b"
-    assert _scan_drop_unique(source, source) == []
+    assert list(_scan_drop_unique(source, source)) == []
 
 
 def test_scan_drop_foreign_key_form_skips_when_not_followed_by_open_paren():
     from assay.adapters.sql import _scan_drop_foreign_key
 
     source = b"FOREIGN KEY z"
-    assert _scan_drop_foreign_key(source, source) == []
+    assert list(_scan_drop_foreign_key(source, source)) == []
+
+
+def test_foreign_key_whitespace_scan_checks_the_lane_deadline():
+    from assay.adapters.sql import _scan_drop_foreign_key
+
+    calls = 0
+
+    def expire_during_long_whitespace():
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise RuntimeError("lane deadline expired")
+
+    source = b"FOREIGN KEY" + (b" " * 1024) + b"(a) REFERENCES parent(a)"
+    with pytest.raises(RuntimeError, match="deadline expired"):
+        list(
+            _scan_drop_foreign_key(
+                source, source, check_deadline=expire_during_long_whitespace
+            )
+        )
+    assert calls == 3
+
+
+def test_foreign_key_keyword_gap_checks_the_lane_deadline():
+    from assay.adapters.sql import _scan_drop_foreign_key
+
+    calls = 0
+
+    def expire_inside_keyword_gap():
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise RuntimeError("lane deadline expired")
+
+    source = b"FOREIGN" + (b" " * 1024) + b"KEY"
+    with pytest.raises(RuntimeError, match="deadline expired"):
+        list(
+            _scan_drop_foreign_key(
+                source, source, check_deadline=expire_inside_keyword_gap
+            )
+        )
+    assert calls == 3
+
+
+def test_index_attachment_keyword_gap_checks_the_lane_deadline():
+    from assay.adapters.sql import _iter_index_attachment_spans
+
+    calls = 0
+
+    def expire_inside_keyword_gap():
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise RuntimeError("lane deadline expired")
+
+    source = b"UNIQUE" + (b" " * 1024) + b"USING INDEX idx"
+    with pytest.raises(RuntimeError, match="deadline expired"):
+        list(
+            _iter_index_attachment_spans(
+                source, check_deadline=expire_inside_keyword_gap
+            )
+        )
+    assert calls == 3
+
+
+def test_references_target_whitespace_scan_checks_the_lane_deadline():
+    from assay.adapters.sql import _extend_references_clause
+
+    source = b"REFERENCES" + (b" " * 1024) + b"parent(id)"
+    calls = 0
+
+    def expire_during_long_whitespace():
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise RuntimeError("lane deadline expired")
+
+    with pytest.raises(RuntimeError, match="deadline expired"):
+        _extend_references_clause(
+            source, 0, check_deadline=expire_during_long_whitespace
+        )
+    assert calls == 3
+
+
+def test_references_target_accepts_column_lists_after_checked_whitespace():
+    from assay.adapters.sql import _extend_references_clause
+
+    source = b"REFERENCES" + (b" " * 1024) + b"parent (id, tenant_id)"
+
+    assert _extend_references_clause(source, 0) == len(source)
+
+
+def test_references_action_internal_whitespace_checks_lane_deadline():
+    from assay.adapters.sql import _extend_references_clause
+
+    source = (
+        b"REFERENCES parent ON DELETE"
+        + (b" " * 1024)
+        + b"NO ACTION"
+    )
+    calls = 0
+
+    def expire_inside_action_tokens():
+        nonlocal calls
+        calls += 1
+        if calls == 7:
+            raise RuntimeError("lane deadline expired")
+
+    with pytest.raises(RuntimeError, match="deadline expired"):
+        _extend_references_clause(
+            source, 0, check_deadline=expire_inside_action_tokens
+        )
+    assert calls == 7
 
 
 def test_scan_drop_foreign_key_form_skips_an_unbalanced_column_list():
     from assay.adapters.sql import _scan_drop_foreign_key
 
     source = b"FOREIGN KEY (a"
-    assert _scan_drop_foreign_key(source, source) == []
+    assert list(_scan_drop_foreign_key(source, source)) == []
 
 
 def test_scan_drop_foreign_key_form_skips_when_references_keyword_is_missing():
     from assay.adapters.sql import _scan_drop_foreign_key
 
     source = b"FOREIGN KEY (a) NOT_REFERENCES x"
-    assert _scan_drop_foreign_key(source, source) == []
+    assert list(_scan_drop_foreign_key(source, source)) == []
 
 
 def test_scan_drop_foreign_key_form_and_bare_form_both_skip_a_malformed_target():
@@ -2937,21 +3271,21 @@ def test_scan_drop_foreign_key_form_and_bare_form_both_skip_a_malformed_target()
     from assay.adapters.sql import _scan_drop_foreign_key
 
     source = b"FOREIGN KEY (a) REFERENCES ;"
-    assert _scan_drop_foreign_key(source, source) == []
+    assert list(_scan_drop_foreign_key(source, source)) == []
 
 
 def test_scan_drop_trigger_skips_when_no_terminating_semicolon_exists():
     from assay.adapters.sql import _scan_drop_trigger
 
     source = b"CREATE TRIGGER trg BEFORE INSERT ON t EXECUTE FUNCTION f()"
-    assert _scan_drop_trigger(source, source, ()) == []
+    assert list(_scan_drop_trigger(source, source, ())) == []
 
 
 def test_scan_widen_check_in_skips_an_unbalanced_check_clause():
     from assay.adapters.sql import _scan_widen_check_in
 
     source = b"CHECK (k IN (1, 2)"
-    assert _scan_widen_check_in(source, source) == []
+    assert list(_scan_widen_check_in(source, source)) == []
 
 
 def test_rule3_control_an_empty_in_list_produces_no_site():

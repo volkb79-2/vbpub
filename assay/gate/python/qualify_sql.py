@@ -30,10 +30,10 @@ frozen normalized verdict. (7) No database is left behind.
 
 **Exit codes.** 0 with stdout exactly ``ASSAY_SQL_QUALIFIED=1``; 1 a
 :class:`QualificationError`; 3 an :class:`InconclusiveError` with stderr
-``ASSAY_SQL_INCONCLUSIVE=<reason>`` (docker unavailable, image absent, host
-busy, a failing ``docker ps``, readiness failsafe, a command timeout, a
-container name in use, the docker environment lost mid-run, an
-incomplete witness): visible and rerunnable, never skipped and never green.
+``ASSAY_SQL_INCONCLUSIVE=<reason>`` (docker unavailable, image absent,
+readiness failsafe, a command timeout, a container name in use, the docker
+environment lost mid-run, an incomplete witness): visible and rerunnable,
+never skipped and never green.
 
 **Environment.** The registered gate runs this harness in a dedicated
 ``tester-unified`` container with a private cgroup namespace and the
@@ -43,15 +43,12 @@ hidden. Only this qualification container receives the Docker socket, because
 it owns the pinned PostgreSQL fixture; the ordinary installed-wheel suite
 never receives it. The qualification container runs ``--network none`` in
 the cgroup slice the caller passes. Its visible name starts
-``run-gate-assay-sql-`` so peer
-gates see it. The harness addresses PostgreSQL by its Docker ID and records
+``run-gate-assay-sql-`` so cleanup can identify it. The harness addresses PostgreSQL by its Docker ID and records
 that ID so the outer gate can retry cleanup without risking a same-name
-container. Before PostgreSQL starts the
-harness checks ``docker ps`` once, excluding only its own runner name; any
-other ``run-gate-*`` name means ``host busy`` (exit 3), never a wait.
-``--allow-shared-host`` (CD50) tolerates other projects' ``run-gate-*``
-containers (printing ``ASSAY_SQL_SHARED_HOST=`` on stderr) but still refuses
-another Assay SQL qualification. The witness lane strips ``DOCKER_HOST`` (its
+container. Docker-name snapshots do not control admission. The runner and
+PostgreSQL fixture use their own cgroup limits and bounded operations; the
+legacy ``--allow-shared-host`` option is accepted as a no-op. The witness lane
+strips ``DOCKER_HOST`` (its
 ``env`` is ``PATH`` only) and uses ``/var/run/docker.sock`` to reach the same
 daemon as the harness. It imports :mod:`assay` from the exact-OID clone's
 ``src/``: it qualifies THIS tree's adapter, so there is no separate wheel
@@ -471,13 +468,11 @@ class ThrowawayPostgres:
         cgroup_parent: str,
         fixture_root: Path,
         *,
-        allow_shared_host: bool = False,
         runner_name: str | None = None,
         ownership_file: Path | None = None,
         ownership_token: str,
     ) -> None:
         self.name = name
-        self.allow_shared_host = allow_shared_host
         self.runner_name = runner_name
         self.ownership_file = ownership_file
         self.ownership_token = ownership_token
@@ -518,23 +513,6 @@ class ThrowawayPostgres:
             raise InconclusiveError("docker unavailable")
         if _run(["docker", "image", "inspect", IMAGE], check=False, timeout=60).returncode != 0:
             raise InconclusiveError(f"image absent: docker pull {IMAGE}")
-        ps = _run(["docker", "ps", "--no-trunc", "--format", "{{.Names}}"], check=False, timeout=60)
-        if ps.returncode != 0:
-            raise InconclusiveError("host check failed (docker ps)")
-        busy = [
-            name
-            for name in ps.stdout.splitlines()
-            if name.startswith("run-gate-") and name != self.runner_name
-        ]
-        if not self.allow_shared_host:
-            if busy:
-                raise InconclusiveError(f"host busy — rerun: {','.join(busy)}")
-            return
-        sql_busy = [name for name in busy if name.startswith("run-gate-assay-sql-")]
-        if sql_busy:
-            raise InconclusiveError(f"host busy — rerun: {','.join(sql_busy)}")
-        if busy:
-            print(f"ASSAY_SQL_SHARED_HOST={','.join(busy)}", file=sys.stderr)
 
     def _docker_run_argv(self) -> list[str]:
         argv = [
@@ -1015,6 +993,18 @@ def normalize_verdict(document: Mapping[str, Any], *, assay_version: str, head_o
     for mutation in mutation_claims:
         for bucket in ("killed", "survived", "equivalent", "crashed", "hung", "budget_exceeded"):
             for candidate in mutation.get(bucket, []):
+                tree = candidate.get("process_tree_evidence")
+                if not isinstance(tree, dict):
+                    raise QualificationError("a witness candidate lacks process_tree_evidence")
+                cleanup = tree.get("cleanup_seconds")
+                if isinstance(cleanup, bool) or not isinstance(cleanup, (int, float)) or cleanup < 0:
+                    raise QualificationError(
+                        "process_tree_evidence.cleanup_seconds must be a nonnegative number"
+                    )
+                # The cleanup wall time is measured, not a stable witness value;
+                # it is validated above and zeroed here. Every other
+                # process-tree fact stays exact.
+                tree["cleanup_seconds"] = 0.0
                 evidence = candidate.get("resource_limit_evidence")
                 if evidence is None:
                     continue
@@ -1032,13 +1022,54 @@ def normalize_verdict(document: Mapping[str, Any], *, assay_version: str, head_o
     return normalized
 
 
+def _differing_json_paths(actual: Any, expected: Any, path: str = "$", *, limit: int = 20) -> list[str]:
+    """Return bounded JSON paths that explain an exact witness mismatch."""
+    differences: list[str] = []
+
+    def visit(left: Any, right: Any, current: str) -> None:
+        if len(differences) >= limit:
+            return
+        if isinstance(left, Mapping) and isinstance(right, Mapping):
+            keys = sorted(set(left) | set(right), key=str)
+            for key in keys:
+                child = f"{current}.{key}"
+                if key not in left or key not in right:
+                    differences.append(child)
+                else:
+                    visit(left[key], right[key], child)
+                if len(differences) >= limit:
+                    return
+            return
+        if isinstance(left, list) and isinstance(right, list):
+            if len(left) != len(right):
+                differences.append(f"{current}.length")
+            for index, (left_item, right_item) in enumerate(zip(left, right)):
+                visit(left_item, right_item, f"{current}[{index}]")
+                if len(differences) >= limit:
+                    return
+            return
+        if left != right:
+            differences.append(current)
+
+    visit(actual, expected, path)
+    if not differences and actual != expected:
+        differences.append(path)
+    return differences
+
+
 def compare_with_witness(
     actual: Mapping[str, Any], witness_path: Path, *, assay_version: str, head_oid: str, base_oid: str
 ) -> None:
     normalized = normalize_verdict(actual, assay_version=assay_version, head_oid=head_oid, base_oid=base_oid)
     expected = json.loads(witness_path.read_text(encoding="utf-8"))
     if normalized != expected:
-        raise QualificationError(f"the normalized verdict differs from the frozen witness at {witness_path}")
+        paths = _differing_json_paths(normalized, expected)
+        suffix = "; differing JSON paths: " + ", ".join(paths)
+        if len(paths) == 20:
+            suffix += ", …"
+        raise QualificationError(
+            f"the normalized verdict differs from the frozen witness at {witness_path}{suffix}"
+        )
 
 
 # --- the flow -------------------------------------------------------------------
@@ -1383,7 +1414,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.container_name,
             args.cgroup_parent,
             args.fixture_root,
-            allow_shared_host=args.allow_shared_host,
             runner_name=args.runner_name,
             ownership_file=ownership_file,
             ownership_token=args.ownership_token,

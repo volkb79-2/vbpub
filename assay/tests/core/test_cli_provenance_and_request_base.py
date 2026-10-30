@@ -677,7 +677,7 @@ def test_plan_refuses_a_delegating_lane_with_no_request_base(git_repo: GitRepo):
     _repo_with_two_commits(git_repo)
     path = _write_and_commit_lane(git_repo, _r2_lane(base_line='base_source = "request"'))
 
-    code, _out, err = run(["plan", "package", "--file", str(path)])
+    code, _out, err = run(["plan", "--json", "package", "--file", str(path)])
 
     assert code == 2
     assert "--request-base" in err

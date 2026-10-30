@@ -21,7 +21,8 @@
 
 set -euo pipefail
 
-die() { printf 'tester-unified-gate: %s\n' "$*" >&2; exit 1; }
+die() { printf 'tester-unified-gate: %s\n' "$*" >&2; exit 3; }
+fail() { printf 'tester-unified-gate: %s\n' "$*" >&2; exit 1; }
 
 bounded_docker_update_cpu_cap() {
   local container_name="$1" purpose="$2" status
@@ -34,28 +35,16 @@ bounded_docker_update_cpu_cap() {
   die "could not apply the $purpose CPU cap (bounded docker update exit $status)"
 }
 
-RESOURCE_OBSERVER_SOURCE="/run/cgprofile/resource-observer.sock"
-RESOURCE_OBSERVER_TARGET="/tmp/cgprofile-resource-observer.sock"
+RESOURCE_OBSERVER_SOURCE="/run/cgprofile/observer/resource-observer.sock"
+RESOURCE_OBSERVER_DIRECTORY_SOURCE="$(dirname "$RESOURCE_OBSERVER_SOURCE")"
+RESOURCE_OBSERVER_TARGET_DIRECTORY="/run/cgprofile-observer"
+RESOURCE_OBSERVER_TARGET="$RESOURCE_OBSERVER_TARGET_DIRECTORY/resource-observer.sock"
+# shellcheck source=/dev/null
+source "$(dirname "${BASH_SOURCE[0]}")/resource-observer-gid.sh"
 
 resource_observer_gid() {
-  local parent_uid parent_mode socket_uid socket_gid socket_mode
-  [[ -d /run/cgprofile && ! -L /run/cgprofile ]] \
-    || die 'cgprofile observer directory is absent, not a directory, or a symlink'
-  read -r parent_uid parent_mode < <(stat -Lc '%u %a' /run/cgprofile) \
-    || die 'could not inspect the cgprofile observer directory'
-  [[ "$parent_uid" == 0 ]] \
-    || die 'cgprofile observer directory is not root-owned'
-  (( (8#$parent_mode & 0002) == 0 )) \
-    || die 'cgprofile observer directory is world-writable'
-  [[ -S "$RESOURCE_OBSERVER_SOURCE" && ! -L "$RESOURCE_OBSERVER_SOURCE" ]] \
-    || die "cgprofile observer endpoint is not a Unix socket: $RESOURCE_OBSERVER_SOURCE"
-  read -r socket_uid socket_gid socket_mode < <(stat -Lc '%u %g %a' "$RESOURCE_OBSERVER_SOURCE") \
-    || die 'could not inspect the cgprofile observer socket'
-  [[ "$socket_uid" == 0 && "$socket_gid" == "$(stat -Lc %g /run/cgprofile)" ]] \
-    || die 'cgprofile observer socket ownership does not match its root-owned directory'
-  (( (8#$socket_mode & 0007) == 0 && (8#$socket_mode & 0020) != 0 )) \
-    || die 'cgprofile observer socket must be group-connectable and not accessible to other users'
-  printf '%s\n' "$socket_gid"
+  assay_resource_observer_gid "$RESOURCE_OBSERVER_SOURCE" /run/cgprofile \
+    || die 'host observer group identity check failed'
 }
 
 assay_git() {
@@ -68,7 +57,7 @@ assay_git() {
 
 validate_worktree() {
   case "$1" in
-    /workspaces/vbpub|/workspaces/vbpub/.worktrees/*) ;;
+    /workspaces/vbpub|/workspaces/vbpub/.worktrees/*|/workspaces/vbpub/.claude/worktrees/*) ;;
     *) die "worktree $1 is outside /workspaces/vbpub" ;;
   esac
 }
@@ -208,7 +197,7 @@ run_lint_phase() {
     "${test_sources[@]}" \
     "${analysis_sources[@]}" \
     "${gate_test_sources[@]}" \
-    || die 'pyflakes reported findings in src/assay, tests/, analysis/ or gate/tests/ (see the lines above)'
+    || fail 'pyflakes reported findings in src/assay, tests/, analysis/ or gate/tests/ (see the lines above)'
   echo 'ASSAY_GATE_PHASE=pyflakes-clean'
 }
 
@@ -310,7 +299,7 @@ require_emitted_version_matches() {
   emitted="$("$scratch/run-venv/bin/python" -c \
     'import json, sys; print(json.load(open(sys.argv[1]))["assay_version"])' "$verdict")"
   [[ "$emitted" == "$expected" ]] || \
-    die "emitted assay_version ($emitted) != installed version ($expected)"
+    fail "emitted assay_version ($emitted) != installed version ($expected)"
 }
 
 # B018/A-327: the gate's own end-to-end witness that a distribution invocation
@@ -345,13 +334,13 @@ print(
 PYEOF
   )
   [[ "$emitted_artifact" == "wheel" ]] || \
-    die "emitted judge_provenance.artifact ($emitted_artifact) is not 'wheel'"
+    fail "emitted judge_provenance.artifact ($emitted_artifact) is not 'wheel'"
   [[ "$emitted_algorithm" == "sha256" ]] || \
-    die "emitted judge_provenance.digest_algorithm ($emitted_algorithm) is not 'sha256'"
+    fail "emitted judge_provenance.digest_algorithm ($emitted_algorithm) is not 'sha256'"
   [[ "$emitted_version" == "$expected_version" ]] || \
-    die "emitted judge_provenance.version ($emitted_version) != installed ($expected_version)"
+    fail "emitted judge_provenance.version ($emitted_version) != installed ($expected_version)"
   [[ "$emitted_digest" == "$wheel_digest" ]] || \
-    die "emitted judge_provenance.digest ($emitted_digest) != the installed wheel's own sha256 ($wheel_digest)"
+    fail "emitted judge_provenance.digest ($emitted_digest) != the installed wheel's own sha256 ($wheel_digest)"
   echo 'ASSAY_GATE_PHASE=judge-provenance-bound-to-the-installed-wheel'
 }
 
@@ -361,7 +350,7 @@ PYEOF
 # success must never launder a red lane into a zero exit,
 # and no phase marker is printed on this path.
 run_self_hosted_lane() {
-  local worktree="$1" scratch="$2" version="$3" wheel="$4"
+  local worktree="$1" scratch="$2" version="$3" wheel="$4" lane_status=0
   cd "$worktree/assay"
   export PATH="$scratch/run-venv/bin:$PATH"
   # B018/A-327: `--require-judge-provenance` is exactly the flag a gate that
@@ -380,9 +369,12 @@ run_self_hosted_lane() {
   # The progress file lives in
   # `$scratch` like the verdict, never in the worktree, where an untracked
   # file would read as DIRTY_TREE.
-  if ! assay run tester-unified --require-judge-provenance \
+  if ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION=1 assay run tester-unified --require-judge-provenance \
       --resume --progress "$scratch/progress-tester-unified.jsonl" \
       --verdict-json "$scratch/verdict.json"; then
+    lane_status=0
+  else
+    lane_status=$?
     echo 'ASSAY_GATE_DIAGNOSTIC=self-hosted-lane-red; inspecting its captured verdict' >&2
     assay analyze verdict "$scratch/verdict.json" \
       --expected-commit "$(assay_git -C "$worktree" rev-parse HEAD)" --format text >&2 \
@@ -415,6 +407,10 @@ run_self_hosted_lane() {
     assay_git -C "$worktree" status --porcelain >&2 || true
     echo 'ASSAY_GATE_DIAGNOSTIC=worktree-untracked-by-assays-own-query' >&2
     assay_git -C "$worktree" ls-files --others --exclude-per-directory=.gitignore >&2 || true
+    if ((lane_status >= 2 && lane_status <= 5)); then
+      echo "ASSAY_GATE_INCONCLUSIVE=Assay tester-unified outcome is incomplete or infrastructure (exit $lane_status)" >&2
+      return 3
+    fi
     return 1
   fi
   require_emitted_version_matches "$scratch" "$scratch/verdict.json" "$version"
@@ -427,18 +423,25 @@ run_self_hosted_lane() {
 # exported by run_self_hosted_lane). No `require_emitted_*` here:
 # `--require-judge-provenance` binds this verdict.
 run_analysis_lane() {
-  local worktree="$1" scratch="$2"
+  local worktree="$1" scratch="$2" lane_status=0
   cd "$worktree/assay"
-  if ! assay run analysis --file assay.toml --require-judge-provenance \
+  if ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION=1 assay run analysis --file assay.toml --require-judge-provenance \
       --resume --progress "$scratch/progress-analysis.jsonl" \
       --verdict-json "$scratch/verdict-analysis.json"; then
+    lane_status=0
+  else
+    lane_status=$?
     echo 'ASSAY_GATE_DIAGNOSTIC=analysis-lane-red; inspecting its captured verdict' >&2
     assay analyze verdict "$scratch/verdict-analysis.json" \
       --expected-commit "$(assay_git -C "$worktree" rev-parse HEAD)" --format text >&2 \
       || echo 'ASSAY_GATE_DIAGNOSTIC=captured-verdict-unavailable-or-invalid' >&2
+    if ((lane_status >= 2 && lane_status <= 5)); then
+      echo "ASSAY_GATE_INCONCLUSIVE=Assay analysis outcome is incomplete or infrastructure (exit $lane_status)" >&2
+      return 3
+    fi
     return 1
   fi
-  assay verify "$scratch/verdict-analysis.json" || die 'assay verify refused the analysis lane verdict'
+  assay verify "$scratch/verdict-analysis.json" || fail 'assay verify refused the analysis lane verdict'
   echo 'ASSAY_GATE_PHASE=analysis-lane-passed'
 }
 
@@ -464,6 +467,16 @@ run_inner() {
   local worktree="$1"
   validate_worktree "$worktree"
   require_expected_head "$worktree"
+  [[ "${ASSAY_GATE_HOST_DOCKER_GID:-}" =~ ^[1-9][0-9]*$ ]] \
+    || die 'host Docker GID was not passed from the verified host launcher'
+  local groups observer_gid
+  groups=" $(id -G) "
+  observer_gid="$(stat -c %g "$ASSAY_RESOURCE_OBSERVER_SOCKET")" \
+    || die 'cannot determine the mounted observer group inside tester-unified'
+  [[ "$observer_gid" =~ ^[1-9][0-9]*$ && "$groups" == *" $observer_gid "* ]] \
+    || die 'tester identity lacks the mounted resource-observer group'
+  [[ "$groups" != *" $ASSAY_GATE_HOST_DOCKER_GID "* ]] \
+    || die 'observer-only tester identity includes the host Docker group'
 
   # The self-hosted lane below judges the ORIGINAL worktree, so its clean-tree
   # precondition requires the reviewed source to be committed. Refuse before
@@ -874,7 +887,7 @@ wait_for_container_log_follower() {
 }
 
 run_registered_tester_container() {
-  local worktree="$1" host_repo_root="$2" cgroup_parent="$3" observer_gid="$4"
+  local worktree="$1" host_repo_root="$2" cgroup_parent="$3" observer_gid="$4" docker_gid="$5"
   local forwarded_env=() container_id cidfile_id wait_status logs_status inventory
   _assay_gate_container_name="run-gate-assay-selfhosted-${BASHPID}-${RANDOM}-$(date +%s)"
   _assay_gate_container_ownership_token="$(od -An -N32 -tx1 /dev/urandom | tr -d '[:space:]')" \
@@ -905,13 +918,14 @@ run_registered_tester_container() {
     --cpus=3 \
     --group-add "$observer_gid" \
     -e "CGROUP_PARENT_DEV_GATES=$cgroup_parent" \
+    -e "ASSAY_GATE_HOST_DOCKER_GID=$docker_gid" \
     -e "ASSAY_GATE_EXPECTED_COMMIT=${ASSAY_GATE_EXPECTED_COMMIT:-}" \
     -e "ASSAY_RESOURCE_OBSERVER_SOCKET=$RESOURCE_OBSERVER_TARGET" \
     "${forwarded_env[@]}" \
     --network=none \
     --mount "type=bind,src=$host_repo_root,dst=$host_repo_root" \
     --mount "type=bind,src=$host_repo_root,dst=/workspaces/vbpub" \
-    --mount "type=bind,source=$RESOURCE_OBSERVER_SOURCE,target=$RESOURCE_OBSERVER_TARGET,readonly" \
+    --mount "type=bind,source=$RESOURCE_OBSERVER_DIRECTORY_SOURCE,target=$RESOURCE_OBSERVER_TARGET_DIRECTORY,readonly" \
     tester-unified:local \
     bash "$worktree/assay/tools/tester-unified-gate.sh" --inner "$worktree")" \
     || die "could not start named tester-unified container"
@@ -957,6 +971,11 @@ run_registered_tester_container() {
     || die "could not collect logs from $_assay_gate_container_name (exit $logs_status)"
 
   printf 'ASSAY_GATE_CONTAINER_EXIT=%s\n' "$wait_status"
+  if [[ "$wait_status" != 0 && "$wait_status" != 1 ]]; then
+    printf 'ASSAY_GATE_INCONCLUSIVE=tester-unified container exited with infrastructure status %s\n' \
+      "$wait_status" >&2
+    return 3
+  fi
   if [[ "$wait_status" == 0 ]]; then
     remove_owned_gate_container "$container_id" \
       "$_assay_gate_container_name" "$_assay_gate_container_ownership_token" \
@@ -1120,7 +1139,7 @@ run_b145_bounded_wait_acceptance_probe() {
 # even if its test regresses; the inner and outer limits bound the test process
 # and Docker wait independently.
 run_b145_low_pids_probe() {
-  local worktree="$1" host_repo_root="$2" cgroup_parent="$3" observer_gid="$4"
+  local worktree="$1" host_repo_root="$2" cgroup_parent="$3" observer_gid="$4" docker_gid="$5"
   local container_id cidfile_id wait_status wait_rc logs launch_rc wait_timeout_seconds=150
   command -v timeout >/dev/null 2>&1 \
     || die 'the B145 low-pids probe requires the host timeout command'
@@ -1139,13 +1158,14 @@ run_b145_low_pids_probe() {
     --cgroup-parent="$cgroup_parent" \
     --group-add "$observer_gid" \
     -e "CGROUP_PARENT_DEV_GATES=$cgroup_parent" \
+    -e "ASSAY_GATE_HOST_DOCKER_GID=$docker_gid" \
     -e "ASSAY_RESOURCE_OBSERVER_SOCKET=$RESOURCE_OBSERVER_TARGET" \
     -e ASSAY_B145_LOW_PIDS_PROBE=1 \
     -e "ASSAY_GATE_PROBE_WORKTREE=$worktree" \
     --network=none \
     --mount "type=bind,src=$host_repo_root,dst=$host_repo_root" \
     --mount "type=bind,src=$host_repo_root,dst=/workspaces/vbpub" \
-    --mount "type=bind,source=$RESOURCE_OBSERVER_SOURCE,target=$RESOURCE_OBSERVER_TARGET,readonly" \
+    --mount "type=bind,source=$RESOURCE_OBSERVER_DIRECTORY_SOURCE,target=$RESOURCE_OBSERVER_TARGET_DIRECTORY,readonly" \
     tester-unified:local \
     bash -lc 'git -c maintenance.auto=false -c maintenance.autoDetach=false -c gc.autoDetach=false config --global safe.directory "*" && cd "$ASSAY_GATE_PROBE_WORKTREE/assay" && exec timeout --signal=TERM --kill-after=10s 120s /opt/tester-venv/bin/python -m pytest -q tests/core/test_mutation_resource_limits.py::test_low_pids_limit_event_cannot_become_a_kill')" \
     || {
@@ -1204,8 +1224,11 @@ run_b145_low_pids_probe() {
   printf '%s\n' "$logs"
   cleanup_b145_probe_container \
     || die 'could not remove the B145 probe container after ownership verification'
+  if [[ "$wait_status" == 1 ]]; then
+    fail 'B145 low-pids acceptance test failed (container exit 1)'
+  fi
   [[ "$wait_status" == 0 ]] \
-    || die "B145 low-pids acceptance failed (container exit $wait_status)"
+    || die "B145 low-pids acceptance was incomplete or errored (container exit $wait_status)"
   echo 'ASSAY_GATE_PHASE=b145-low-pids-accepted'
 }
 
@@ -1263,13 +1286,12 @@ finish_registered_gate() {
 # scope. Exit 3 means the environment could not answer; it passes through with
 # no receipt or COMPLETE marker.
 run_sql_qualification() {
-  local commit="$1" cgroup="$2" observer_gid="$3" docker_socket_gid container_id runner_cidfile_id runner_inventory wait_status wait_rc logs_status postgres_container_id
-  local shared=0 docker_socket=/var/run/docker.sock run_id runner_launch_status runner_launch_stderr
+  # $4 (optional): the host Docker GID already verified by the host launcher.
+  # In a devcontainer the socket visible HERE can carry a different group than
+  # the host socket the runner container will bind, so prefer the verified GID.
+  local commit="$1" cgroup="$2" observer_gid="$3" verified_docker_gid="${4:-}" docker_socket_gid container_id runner_cidfile_id runner_inventory wait_status wait_rc logs_status postgres_container_id
+  local docker_socket=/var/run/docker.sock run_id runner_launch_status runner_launch_stderr
   local forwarded_env=() group_add_args=() sql_runner_script
-  # (CD50) The harness opt-in follows the gate's, and only for the exact value 1.
-  if [[ "${ASSAY_GATE_ALLOW_SHARED_HOST:-}" == 1 ]]; then
-    shared=1
-  fi
   assay_git -C "$worktree" check-ignore -q assay/.assay/sql-gate-probe \
     || die 'assay/.assay must be git-ignored for SQL qualification scratch'
   mkdir -p "$worktree/assay/.assay"
@@ -1283,14 +1305,17 @@ run_sql_qualification() {
     || die "SQL clone is not the gated commit $commit"
   [[ -S "$docker_socket" ]] \
     || die "Docker socket $docker_socket is unavailable to the SQL qualification launcher"
-  docker_socket_gid="$(stat -Lc %g "$docker_socket")" \
-    || die "could not read Docker socket group for $docker_socket"
-  [[ "$docker_socket_gid" =~ ^[0-9]+$ ]] || die "Docker socket group is malformed: $docker_socket_gid"
-  [[ "$observer_gid" =~ ^[0-9]+$ ]] || die "resource observer socket group is malformed: $observer_gid"
-  group_add_args=(--group-add "$docker_socket_gid")
-  if [[ "$observer_gid" != "$docker_socket_gid" ]]; then
-    group_add_args+=(--group-add "$observer_gid")
+  if [[ -n "$verified_docker_gid" ]]; then
+    docker_socket_gid="$verified_docker_gid"
+  else
+    docker_socket_gid="$(stat -Lc %g "$docker_socket")" \
+      || die "could not read Docker socket group for $docker_socket"
   fi
+  [[ "$docker_socket_gid" =~ ^[0-9]+$ ]] || die "Docker socket group is malformed: $docker_socket_gid"
+  # The runner's native R2 witness needs the same cgroup observer access as the
+  # tester container: the observer group, the read-only observer directory
+  # and the in-container socket path (v16 refuses R2 without observation).
+  group_add_args=(--group-add "$docker_socket_gid" --group-add "$observer_gid")
   if [[ -n ${CGROUP_PARENT_DEV_BACKGROUND:-} ]]; then
     forwarded_env=(-e "CGROUP_PARENT_DEV_BACKGROUND=$CGROUP_PARENT_DEV_BACKGROUND")
   fi
@@ -1314,8 +1339,7 @@ commit=$3
 cgroup=$4
 postgres_name=$5
 runner_name=$6
-allow_shared=$7
-ownership_token=$8
+ownership_token=$7
 assay_git() {
   command git -c maintenance.auto=false -c maintenance.autoDetach=false -c gc.autoDetach=false "$@"
 }
@@ -1325,9 +1349,8 @@ actual=$(assay_git -C "$worktree" rev-parse HEAD)
 clone_head=$(assay_git -C "$scratch/clone" rev-parse HEAD)
 [[ "$clone_head" == "$commit" ]] || { printf "SQL runner clone is not the gated commit %s\\n" "$commit" >&2; exit 1; }
 args=(--scratch "$scratch/sql" --container-name "$postgres_name" --runner-name "$runner_name" --ownership-token "$ownership_token" --cgroup-parent "$cgroup")
-if [[ "$allow_shared" == 1 ]]; then args+=(--allow-shared-host); fi
 set +e
-nice -n 19 /opt/tester-venv/bin/python -I "$scratch/clone/assay/gate/python/qualify_sql.py" "${args[@]}" >"$scratch/qualifier.stdout" 2>"$scratch/qualifier.stderr"
+ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION=1 nice -n 19 /opt/tester-venv/bin/python -I "$scratch/clone/assay/gate/python/qualify_sql.py" "${args[@]}" >"$scratch/qualifier.stdout" 2>"$scratch/qualifier.stderr"
 rc=$?
 set -e
 cat "$scratch/qualifier.stderr" >&2
@@ -1351,19 +1374,19 @@ cat "$scratch/expected.marker"
     --cpus=3 \
     "${group_add_args[@]}" \
     -e "CGROUP_PARENT_DEV_GATES=$cgroup" \
-    -e "ASSAY_RESOURCE_OBSERVER_SOCKET=$RESOURCE_OBSERVER_TARGET" \
     "${forwarded_env[@]}" \
     -e 'PATH=/opt/tester-venv/bin:/usr/local/bin:/usr/bin:/bin' \
+    -e "ASSAY_RESOURCE_OBSERVER_SOCKET=$RESOURCE_OBSERVER_TARGET" \
     --network=none \
     --mount "type=bind,src=$host_repo_root,dst=$host_repo_root" \
     --mount "type=bind,src=$host_repo_root,dst=/workspaces/vbpub" \
+    --mount "type=bind,source=$RESOURCE_OBSERVER_DIRECTORY_SOURCE,target=$RESOURCE_OBSERVER_TARGET_DIRECTORY,readonly" \
     --mount "type=bind,src=$docker_socket,dst=/var/run/docker.sock" \
-    --mount "type=bind,source=$RESOURCE_OBSERVER_SOURCE,target=$RESOURCE_OBSERVER_TARGET,readonly" \
     -w /workspaces/vbpub \
     tester-unified:local \
     bash -c "$sql_runner_script" assay-sql-qualification \
       "$worktree" "$_assay_sql_scratch" "$commit" "$cgroup" \
-      "$_assay_sql_container_name" "$_assay_sql_runner_container_name" "$shared" \
+      "$_assay_sql_container_name" "$_assay_sql_runner_container_name" \
       "$_assay_sql_ownership_token" 2>"$runner_launch_stderr")"; then
     bounded_docker_update_cpu_cap "$_assay_sql_runner_container_name" \
       'SQL qualification runner'
@@ -1442,6 +1465,10 @@ cat "$scratch/expected.marker"
     printf 'ASSAY_GATE_INCONCLUSIVE=sql-qualification — rerun\n' >&2
     exit 3
   fi
+  if [[ "$wait_status" == 1 ]]; then
+    printf 'ASSAY_GATE_DIAGNOSTIC=sql-qualification-completed-fail\n' >&2
+    exit 1
+  fi
   [[ "$wait_status" == 0 ]] || die "SQL qualification failed (exit $wait_status)"
   printf '%s\n' 'ASSAY_SQL_QUALIFIED=1' > "$_assay_sql_scratch/expected.marker"
   cmp -s "$_assay_sql_scratch/qualified.marker" "$_assay_sql_scratch/expected.marker" \
@@ -1468,47 +1495,27 @@ cat "$scratch/expected.marker"
 }
 
 run_registered_gate() {
-  local worktree="$1" host_repo_root="$2" cgroup_parent="$3" listing names assay_names commit tree observer_gid
-  # (CD50) The shared-host opt-in is validated before anything else, so a typo
-  # never launches and never touches the receipt.
+  local worktree="$1" host_repo_root="$2" cgroup_parent="$3" commit tree observer_gid docker_gid
+  # Compatibility alias only; admission and verdicts never depend on a Docker
+  # name snapshot. A typo is still rejected before the receipt can be changed.
   case "${ASSAY_GATE_ALLOW_SHARED_HOST:-}" in
     '' | 1) ;;
     *) die 'ASSAY_GATE_ALLOW_SHARED_HOST must be unset, empty or 1' ;;
   esac
   observer_gid="$(resource_observer_gid)"
-  # (CD32) One `docker ps`, no waiting: another session's gate on this shared host
-  # makes this run inconclusive before it captures, clears or builds anything.
-  # A `docker ps` that fails cannot show the host is free, so it is inconclusive too.
-  if ! listing="$(docker ps --no-trunc --format '{{.Names}}')"; then
-    echo 'ASSAY_GATE_INCONCLUSIVE=host check failed (docker ps) — rerun' >&2
-    exit 3
-  fi
-  names="$(printf '%s\n' "$listing" | grep '^run-gate-' | paste -sd, -)" || true
-  if [[ "${ASSAY_GATE_ALLOW_SHARED_HOST:-}" == 1 ]]; then
-    # (CD50) Other projects' gates may run alongside; another assay gate may not.
-    assay_names="$(printf '%s\n' "$listing" | grep '^run-gate-assay-' | paste -sd, -)" || true
-    if [[ -n "$assay_names" ]]; then
-      echo "ASSAY_GATE_INCONCLUSIVE=host busy — rerun: $assay_names" >&2
-      exit 3
-    fi
-    if [[ -n "$names" ]]; then
-      echo "ASSAY_GATE_SHARED_HOST=$names"
-    fi
-  elif [[ -n "$names" ]]; then
-    echo "ASSAY_GATE_INCONCLUSIVE=host busy — rerun: $names" >&2
-    exit 3
-  fi
+  docker_gid="$(assay_host_docker_gid /run/cgprofile)" \
+    || die 'could not resolve the host Docker GID from the verified host setup'
   commit="$(assay_git -C "$worktree" rev-parse HEAD)" || die "cannot resolve HEAD of $worktree"
   tree="$(assay_git -C "$worktree" rev-parse 'HEAD^{tree}')" || die "cannot resolve the tree of $worktree"
   clear_registered_gate_receipt "$worktree"
   _assay_gate_receipt_to_clear="$worktree/assay/.assay/registered-gate/tester-unified.json"
   trap cleanup_assay_gate_container EXIT
   run_b145_bounded_wait_acceptance_probe "$host_repo_root" "$cgroup_parent"
-  run_b145_low_pids_probe "$worktree" "$host_repo_root" "$cgroup_parent" "$observer_gid"
+  run_b145_low_pids_probe "$worktree" "$host_repo_root" "$cgroup_parent" "$observer_gid" "$docker_gid"
   # A plain call, never inside `||`/`if`: the script's `set -e` ends the run with
   # the container's own status, so a red container never reaches the receipt.
-  ASSAY_GATE_EXPECTED_COMMIT="$commit" run_registered_tester_container "$worktree" "$host_repo_root" "$cgroup_parent" "$observer_gid"
-  run_sql_qualification "$commit" "$cgroup_parent" "$observer_gid"
+  ASSAY_GATE_EXPECTED_COMMIT="$commit" run_registered_tester_container "$worktree" "$host_repo_root" "$cgroup_parent" "$observer_gid" "$docker_gid"
+  run_sql_qualification "$commit" "$cgroup_parent" "$observer_gid" "$docker_gid"
   finish_registered_gate "$worktree" "$commit" "$tree"
 }
 

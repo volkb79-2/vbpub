@@ -65,15 +65,25 @@ For a Luna-routed task, use the same stdin form with `-m gpt-6-luna` and
 `-c 'model_reasoning_effort="xhigh"'`; choose `.codex` or `.codex2` as the
 operator directs.
 
-### Claude review sessions
+### Claude sessions
 
-For Claude reviews, do not pass `--permission-mode plan`: it enters a planning
-interaction and may return asking what to work on instead of performing the
-assigned review. Never pass `--no-session-persistence`; keep review sessions
-resumable and retain their session IDs. When a follow-up concerns the same
-review scope and target revision, resume that session to preserve its context
-and avoid repeating orientation. Start a separate persistent session for an
-independent blind review or when the review target materially changes.
+For Claude CLI work, do not pass `--permission-mode plan`: it enters a
+planning interaction and may return asking what to work on instead of
+performing the assigned task. Never pass `--no-session-persistence`; keep
+sessions resumable and retain their session IDs. Before a follow-up, inspect
+`claude agents --json`: if the session is still running, use `claude attach
+<id>` and continue that conversation; `claude --resume` on a running
+background session starts a copy. Resume a stopped session by its full
+`sessionId`. Reuse the same session for follow-ups on the same task or review
+scope to preserve context and avoid repeating orientation. Start a separate
+persistent session for independent blind reviews or when the task or review
+target materially changes.
+
+**Long-running agent polling.** For Claude or other agent work expected to run
+longer than a minute, do not poll every few seconds. Wait at least 90 seconds
+before the first status check. If the tool supports waiting for completion or
+input, use that; otherwise check about every five minutes. Check sooner only
+when a concrete deadline, interruption, or required user input makes it useful.
 
 When stdin carries the prompt, pass `-` as the prompt argument and do not also
 pass a positional prompt. Codex appends piped stdin to a positional prompt as a
@@ -152,10 +162,68 @@ dedicated container, never here. For the vbpub family that is
 **`tester-unified`** (see `tester-unified/`); it must give the run-uid a full
 identity (passwd+group+HOME+XDG). "Green in the devcontainer venv" is not a ship
 signal.
+`tester-unified` builds FROM `tester-base` (`tester-base/`: python:3.14-trixie
+plus docker client, minisign and shellcheck), not from the MDT cockpit image.
 
-When installing a locally built wheel for inspection or a bounded local test,
-use the estate venv: `/home/vscode/.venv/bin/python -m pip install ...`.
-`/home/vscode/.local` is not the wheel installation environment.
+**Do not execute tests from the devcontainer cockpit.** This includes pytest,
+Hypothesis, unittest, project test scripts, and focused test selections. Run
+tests through the project's registered `run-gate <lane>` so the declared
+`tester-unified` image, dependencies, identity, and resource limits define the
+environment. If a behavior has no registered lane, add or use a supported
+tester-unified lane before executing it. The cockpit may inspect files, run
+static analysis that does not execute tests, and drive the registered gate.
+Installing pytest or Hypothesis in the cockpit venv does not make a test run a
+valid gate and must not be used as a fallback.
+
+When installing a locally built wheel for inspection, use the estate venv:
+`/home/vscode/.venv/bin/python -m pip install ...`. `/home/vscode/.local` is
+not the wheel installation environment. Any test of that wheel still runs
+through a registered tester-unified gate.
+
+**Never restart or rebuild a cockpit while an agent or user is working in it.**
+This includes restarting the current task's own devcontainer: doing so kills
+its active shell, tools, and unsaved session state. Before any host or service
+change that could restart a cockpit, identify the exact target and coordinate
+with its current owner; proceed only after they have finished or explicitly
+arranged a safe handoff. If ownership or activity is unclear, do not restart
+it. Prefer a targeted repair that leaves the cockpit process alone, then
+verify the result without disrupting its session.
+
+## Host-side Python environment
+
+MDT puts `/home/vscode/.venv/bin` ahead of system Python on the cockpit
+`PATH`, so bare `python3` and `pip` use the estate venv for host-side commands
+and `bare-host` controllers. `VIRTUAL_ENV` only indicates shell activation;
+check the selected interpreter with `command -v python3` when it matters. Gates
+still use their declared environment; `tester-unified` uses
+`/opt/tester-venv/bin/python`.
+
+On a cockpit whose `PATH` does not already put the venv first, activate the
+estate venv before running host-side Python commands or a `bare-host` gate
+controller:
+
+```bash
+. /home/vscode/.venv/bin/activate
+command -v python3   # must resolve inside /home/vscode/.venv/bin
+```
+
+An activated venv changes `PATH`; it does not change the interpreter a parent
+process is already running. A child launched as `python3` resolves that name
+from its inherited `PATH`, so a CMRU launcher running from the venv can still
+start a `run-gate.toml` child with `/usr/local/bin/python3` if the venv is not
+active or is later in `PATH`. Use the venv interpreter for host-side commands
+whose dependencies are installed there. If the child command names
+`/usr/local/bin/python3` explicitly, activation cannot redirect it; change the
+command to use the declared environment's interpreter.
+
+Python's `-I` flag does not prevent a venv interpreter from loading that venv's
+installed packages. It does ignore `PYTHONPATH` and user-site packages, so an
+isolated child must use the venv interpreter itself when it needs packages
+installed in `/home/vscode/.venv` (such as `cli-extended`).
+
+This applies to host-side orchestration and `bare-host` steps only. Test suites
+still run in their declared gate container; `tester-unified` uses
+`/opt/tester-venv/bin/python`, not the devcontainer's estate venv.
 
 ## Host cgroup placement for spawned containers
 This host runs real production workloads (game servers, edge/site infra)
@@ -193,12 +261,15 @@ a slice name should verify it's actually a loaded unit first
 
 ## Manual tester-unified fallback runs — the four traps (estate-wide)
 
-**For any project with a root `run-gate.py`, use `./run-gate.py <lane>` for
-registered gates — the mechanics are tested code (`run-gate-project/SPEC.md`),
-not doctrine prose.** The manual recipe below is only a fallback for projects
-without a root runner or for a narrowly-scoped live acceptance probe that the
-registered lane cannot express; it is not a substitute for registered gate
-evidence. Adopted estate-wide
+**For any project with a root `run-gate.toml`, install the released Run-Gate
+wheel and use `run-gate <lane>` from that project directory — the mechanics
+are tested code (`run-gate-project/SPEC.md`), not doctrine prose.** Copied
+scripts and consumer symlinks are retired; `run-gate --version` reports the
+installed wheel's SemVer identity. Use the project's owning workflow (such as
+`cmru run` or nyxloomd) when it supplies additional setup. The manual recipe
+below is only a fallback for projects without a registered lane or for a
+narrowly-scoped live acceptance probe that the registered lane cannot express;
+it is not a substitute for registered gate evidence. Adopted estate-wide
 2026-08-22 (ciu, cmru, assay, nyxloom, topos, pwmcp,
 shared-ramdisk-depot-manager, plesk-mailbox-create,
 modern-debian-tools-python-debug); projects without an executable test

@@ -12,8 +12,7 @@ import pytest
 from pwmcp_client import PwmcpContract
 from pwmcp_client import cli as cli_module
 from pwmcp_client import contract as contract_module
-from pwmcp_client import session
-from pwmcp_client.diagnostics import PwmcpArgumentParser, cli_headline
+from pwmcp_client import diagnostics, session
 
 
 def _payload() -> dict[str, object]:
@@ -104,20 +103,14 @@ def test_cli_doctor_reports_verified_client(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     contract = _contract()
-    monkeypatch.setattr(cli_module, "load_contract", lambda source: contract)
-    monkeypatch.setattr(cli_module, "verify_installed_playwright", lambda value: "1.63.4")
-    cli_module.main(["doctor", "--contract", "ignored"])
-    assert "ok release=1.63.0-r2 playwright=1.63.4" in capsys.readouterr().out
-
-
-def test_parser_help_and_usage_both_start_with_headline(capsys: pytest.CaptureFixture[str]) -> None:
-    parser = PwmcpArgumentParser(prog="pwmcp")
-    parser.add_argument("command")
-    assert parser.format_help().startswith(cli_headline())
-    assert parser.format_usage().startswith(cli_headline())
-    with pytest.raises(SystemExit):
-        parser.error("bad command")
-    assert capsys.readouterr().err.splitlines()[0] == cli_headline()
+    monkeypatch.setattr(diagnostics, "load_contract", lambda source: contract)
+    monkeypatch.setattr(diagnostics, "verify_installed_playwright", lambda value: "1.63.4")
+    # Intentional change (AC-20): the shared doctor replaces the single `ok release=...`
+    # line; the same facts now appear in the named checks' summaries.
+    assert cli_module.main(["doctor", "--contract", "ignored", "--check", "contract", "--check", "playwright"]) == 0
+    out = capsys.readouterr().out
+    assert "[OK] contract: release=1.63.0-r2 ws=ws://pwmcp:3000/" in out
+    assert "[OK] playwright: playwright=1.63.4" in out
 
 
 def test_verify_playwright_rejects_missing_distribution(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -182,7 +182,7 @@ why. The rules are deliberately structural, never line-exact:
 | `src/nyxloom/containment.py` | new | CR-13a (added 2026-08-03, D-R7): execution containment — the fail-closed requirement rule (only an explicit `trust = "operator"` on a non-free route runs uncontained), the environment ALLOWLIST that replaced `wrapper.DAEMON_ONLY_ENV`, host-path translation for a docker-out-of-docker daemon, the `docker run` plan, and the runtime probe behind the launch gate. Pure functions plus one injectable runner, so the effect boundary passes its own process port and the detached wrapper passes a plain subprocess. CR-13b adds resource and per-task policy ON this plan; it must not add a way to establish containment PARTIALLY |
 | `src/nyxloom/adapters.py` | 1,161 | Provider argv/prompt and usage adapters | CR-08, CR-10, CR-13a | Route selection must not remain at adapter call sites; preserve argv-budget tests |
 | `src/nyxloom/render.py` | 2,526 | Dashboard/operator rendering | CR-14 | Consume trace/evidence projections; do not derive authority from presentation data |
-| `src/nyxloom/cli.py` | 2,502 | Domain handlers for local authoring, harness extraction, and host control; public grammar and dispatch live in `cli_registry.py` | CR-01, CR-04, CR-14, CR-15, P112 | Keep state-changing paths on the same authoritative store/evidence rules |
+| `src/nyxloom/cli.py` | 3,101 | Domain handlers for local authoring, harness extraction, and host control; public grammar and dispatch live in `cli_registry.py` | CR-01, CR-04, CR-14, CR-15, P112 | Keep state-changing paths on the same authoritative store/evidence rules |
 
 ## Supporting boundaries
 

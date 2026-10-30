@@ -33,6 +33,7 @@ def project_toml() -> str:
 owner = "acme"
 repo = "vbpub"
 owner_type = "org"
+token_source = "cmru"
 [targets]
 host = "github"
 registry = []
@@ -72,6 +73,7 @@ def orch_toml(entry: str = 'config = "demo/cmru.toml"', order: str = '["demo"]')
 owner = "acme"
 repo = "vbpub"
 owner_type = "org"
+token_source = "cmru"
 [targets]
 host = "github"
 registry = []

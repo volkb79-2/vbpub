@@ -1,4 +1,4 @@
-"""Unit suite for run-gate.py — construction pinned against a FAKE docker.
+"""Unit suite for the run_gate module — construction pinned against a FAKE docker.
 
 Construction is NOT acceptance: these pins prove argv SHAPE only (the P06/P07
 lesson); live acceptance is oracle O4, run against real docker separately.
@@ -7,15 +7,20 @@ Every argv assertion compares the LIST, never a joined string.
 
 import atexit
 import ast
+import builtins
 import calendar
 import contextlib
+import concurrent.futures
+import ctypes
 import fcntl
 import hashlib
+from importlib import metadata as importlib_metadata
 import io
 import json
 import os
 import queue
 import re
+import runpy
 import shutil
 import signal
 import shlex
@@ -36,23 +41,20 @@ from pathlib import Path
 
 import pytest
 
-RUN_GATE_DIR = Path(__file__).resolve().parent.parent
-_TOOL = RUN_GATE_DIR / "run-gate.py"  # hyphenated filename: load via importlib
+import _testdeps   # missing optional test dependencies FAIL by default
 
-# run-gate-project now dogfoods itself (run-gate-project/run-gate.toml, the
-# selftest lane), so RUN_GATE_DIR is no longer an config-free directory: per
-# find_project_dir(), "directory of the invoked script path" is checked
-# BEFORE the CWD fallback, so invoking _TOOL directly would always resolve
-# THIS project's own config instead of a fixture's. Every fixture-driven
-# subprocess invocation goes through this neutral symlink instead — the same
-# indirection real external consumers use ("symlink's parent, never the
-# target's dir"), living in a directory that never gets a run-gate.toml.
-# The selftest lane uses a bind-mounted pytest basetemp so tests that inspect
-# real mountinfo can resolve their generated repository paths in tester-unified.
-# This one neutral symlink directory remains in /tmp and is cleaned up on
-# interpreter exit rather than accumulating across gate runs.
+RUN_GATE_DIR = Path(__file__).resolve().parent.parent
+_TOOL = RUN_GATE_DIR / "run_gate.py"
+
+# Public CLI identity comes from the installed wheel, including when a test
+# subprocess imports the candidate source module. Keep expectations tied to
+# that same installed distribution instead of inventing a test-only version.
+_TEST_VERSION = importlib_metadata.version("run-gate")
+
+# The suite invokes from a neutral directory so each fixture's current working
+# directory selects its project config as the installed CLI contract requires.
 _TOOL_INVOKE_DIR = tempfile.mkdtemp(prefix="run-gate-test-invoke-")
-_TOOL_INVOKE = Path(_TOOL_INVOKE_DIR) / "run-gate.py"
+_TOOL_INVOKE = Path(_TOOL_INVOKE_DIR) / "run_gate.py"
 _TOOL_INVOKE.symlink_to(_TOOL)
 atexit.register(shutil.rmtree, _TOOL_INVOKE_DIR, ignore_errors=True)
 
@@ -63,7 +65,108 @@ run_gate = importlib.util.module_from_spec(_spec)
 sys.modules["run_gate"] = run_gate
 _spec.loader.exec_module(run_gate)
 
+
+def _capture_run_gate_prints(monkeypatch):
+    streams = {"stdout": io.StringIO(), "stderr": io.StringIO()}
+    streams["calls"] = []
+
+    def recording_print(*args, **kwargs):
+        target = kwargs.get("file")
+        if target is None or target is sys.stdout:
+            stream_name = "stdout"
+            kwargs["file"] = streams["stdout"]
+        elif target is sys.stderr:
+            stream_name = "stderr"
+            kwargs["file"] = streams["stderr"]
+        else:
+            return builtins.print(*args, **kwargs)
+        rendered = io.StringIO()
+        builtins.print(*args, sep=kwargs.get("sep", " "),
+                       end=kwargs.get("end", "\n"), file=rendered)
+        streams["calls"].append((stream_name, rendered.getvalue(),
+                                 kwargs.get("flush", False)))
+        return builtins.print(*args, **kwargs)
+
+    monkeypatch.setattr(run_gate, "print", recording_print, raising=False)
+    return streams
+
+
+def _has_flushed_print(streams, stream_name, text):
+    return any(name == stream_name and flushed and text in rendered
+               for name, rendered, flushed in streams["calls"])
+
 CGROUP_VAR = "CGROUP_PARENT_DEV_GATES"
+
+_PR_SET_CHILD_SUBREAPER = 36
+_PR_GET_CHILD_SUBREAPER = 37
+
+
+def _set_child_subreaper(enabled: bool) -> bool:
+    """Set Linux child-subreaper mode and return its previous value."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    previous = ctypes.c_int()
+    if libc.prctl(_PR_GET_CHILD_SUBREAPER, ctypes.byref(previous), 0, 0, 0) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+    if bool(previous.value) != enabled:
+        if libc.prctl(_PR_SET_CHILD_SUBREAPER, int(enabled), 0, 0, 0) != 0:
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error))
+    return bool(previous.value)
+
+
+def _direct_child_pids() -> list[int]:
+    """Read direct children of every thread in this test process from procfs."""
+    task_root = Path("/proc/self/task")
+    children = []
+    for task in task_root.iterdir():
+        try:
+            children.extend(
+                int(pid)
+                for pid in (task / "children").read_text(encoding="ascii").split()
+            )
+        except FileNotFoundError:
+            # A short-lived thread can exit between listing tasks and reading it.
+            continue
+    return sorted(set(children))
+
+
+def _kill_and_reap_direct_children() -> None:
+    """Clean children orphaned by a client killed in a subprocess test."""
+    deadline = time.monotonic() + 5.0
+    while children := _direct_child_pids():
+        for pid in children:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        for pid in children:
+            try:
+                os.waitpid(pid, 0)
+            except ChildProcessError:
+                pass
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"could not reap adopted test children: {children}")
+
+
+@contextlib.contextmanager
+def _test_child_scope():
+    """Adopt and clean subprocess-test descendants so Assay cannot inherit them."""
+    previous = _set_child_subreaper(True)
+    try:
+        yield
+    finally:
+        try:
+            _kill_and_reap_direct_children()
+        finally:
+            _set_child_subreaper(previous)
+
+
+@pytest.fixture
+def child_process_scope():
+    """Keep intentionally orphaning subprocess tests inside their own boundary."""
+    with _test_child_scope():
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -237,9 +340,14 @@ def fake_docker(tmp_path: Path, monkeypatch, wait_code: int | str = 0) -> Path:
                 capture_output=True, text=True)
             commit = commit_result.stdout.strip() \
                 if commit_result.returncode == 0 else ""
-            outcome = "PASS" if status == "0" else "FAIL"
+            exit_code = int(status)
+            outcome = {
+                0: "PASS", 1: "FAIL", 2: "ERROR", 3: "NO_MEASUREMENT",
+                4: "BUDGET_EXCEEDED", 5: "INCONCLUSIVE",
+            }.get(exit_code, "ERROR")
             path.write_text(json.dumps({
                 "outcome": outcome,
+                "exit_code": exit_code,
                 "assay_version": "7.2.0",
                 "commit": commit,
                 "reason_code": None,
@@ -251,6 +359,54 @@ def fake_docker(tmp_path: Path, monkeypatch, wait_code: int | str = 0) -> Path:
             }))
     """))
     helper_command = shlex.quote(str(verdict_helper))
+    inventory_helper = tmp_path / "fake-assay-inventory.py"
+    inventory_helper.write_text(textwrap.dedent("""\
+        import json
+        import shlex
+        import sys
+        import tomllib
+        from pathlib import Path
+
+        script = sys.argv[1]
+        first = script.split("&&", 1)[0]
+        command = shlex.split(first)
+        project = (Path(command[1]) if len(command) > 1
+                   and command[0] == "cd" else Path.cwd())
+        documents = [project / "run-gate.toml"]
+        documents.extend(parent / "run-gate.root.toml"
+                         for parent in project.parents)
+        names = set()
+        for path in documents:
+            try:
+                config = tomllib.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+                continue
+            lanes = config.get("lanes", {})
+            if isinstance(lanes, dict):
+                for lane in lanes.values():
+                    if isinstance(lane, dict) and lane.get("kind") == "assay":
+                        name = lane.get("assay_lane")
+                        if isinstance(name, str):
+                            names.add(name)
+                    elif isinstance(lane, dict) and lane.get("kind") == "sequence":
+                        names.update(member for member in lane.get("lanes", [])
+                                     if isinstance(member, str)
+                                     and member not in lanes)
+            assay = config.get("assay", {})
+            imported = assay.get("import", {}) if isinstance(assay, dict) else {}
+            imported_names = imported.get("lanes") if isinstance(imported, dict) else None
+            if isinstance(imported_names, list):
+                names.update(name for name in imported_names
+                             if isinstance(name, str))
+        entries = [
+            {"name": name, "rigor": ["R0"], "base_source": None,
+             "external_tools": [], "argv0": None, "language": None}
+            for name in sorted(names)
+        ]
+        print(json.dumps({"assay_version": "9.0.0",
+                          "inventory_schema": 1, "lanes": entries}))
+    """))
+    inventory_helper_command = shlex.quote(str(inventory_helper))
     shim = shim_dir / "docker"
     shim.write_text(textwrap.dedent(f"""\
         #!/bin/sh
@@ -261,6 +417,14 @@ def fake_docker(tmp_path: Path, monkeypatch, wait_code: int | str = 0) -> Path:
             case "$*" in
               *RUN_GATE_STATE_ROOT_READY*)
                 echo "RUN_GATE_STATE_ROOT_READY"
+                ;;
+              *"lanes --json"*)
+                for last; do :; done
+                first_path="${{PATH%%:*}}"
+                if [ -x "$first_path/assay" ]; then
+                  exec bash -c "$last"
+                fi
+                python3 {inventory_helper_command} "$last"
                 ;;
               *)
                 python3 {helper_command} "{wait_code}" "$@"
@@ -275,6 +439,14 @@ def fake_docker(tmp_path: Path, monkeypatch, wait_code: int | str = 0) -> Path:
             case "$*" in
               *RUN_GATE_STATE_ROOT_READY*)
                 echo "RUN_GATE_STATE_ROOT_READY"
+                ;;
+              *"lanes --json"*)
+                for last; do :; done
+                first_path="${{PATH%%:*}}"
+                if [ -x "$first_path/assay" ]; then
+                  exec bash -c "$last"
+                fi
+                python3 {inventory_helper_command} "$last"
                 ;;
               *)
                 python3 {helper_command} "{wait_code}" "$@"
@@ -381,10 +553,17 @@ def install_fake_assay(monkeypatch, body: str, name: str = "assay") -> Path:
         done
         if [ -n "$verdict" ]; then
           mkdir -p "$(dirname "$verdict")"
-          outcome=PASS
-          [ "$result" -eq 0 ] || outcome=FAIL
-          printf '{"outcome":"%s","reason_code":null,"judge_provenance":{"name":"assay","version":"7.2.0","artifact":"test-assay","digest_algorithm":"sha256","digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}\\n' \\
-            "$outcome" > "$verdict"
+          case "$result" in
+            0) outcome=PASS ;;
+            1) outcome=FAIL ;;
+            2) outcome=ERROR ;;
+            3) outcome=NO_MEASUREMENT ;;
+            4) outcome=BUDGET_EXCEEDED ;;
+            5) outcome=INCONCLUSIVE ;;
+            *) outcome=ERROR ;;
+          esac
+          printf '{"outcome":"%s","exit_code":%s,"reason_code":null,"judge_provenance":{"name":"assay","version":"7.2.0","artifact":"test-assay","digest_algorithm":"sha256","digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}\\n' \\
+            "$outcome" "$result" > "$verdict"
         fi
         exit "$result"
     """))
@@ -594,7 +773,8 @@ class TestEarlyMutationSentinels:
             return real_run(argv, *args, **kwargs)
 
         monkeypatch.setattr(run_gate.subprocess, "run", fail_ps)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         assert run_gate.main(["doctor"]) == 0
         assert ("state could not be determined: docker ps failed (exit 1): "
                 "planted Docker denial") in capsys.readouterr().out
@@ -608,7 +788,8 @@ class TestEarlyMutationSentinels:
         stale.write_text("")
         old = time.time() - 90000
         os.utime(stale, (old, old))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         assert run_gate.main(["doctor"]) == 0
         assert "1 entry older than 1 day" in capsys.readouterr().out
 
@@ -619,7 +800,8 @@ class TestEarlyMutationSentinels:
         record = plant_inflight(proj, repo, None, runner="exec")
         before = record.read_bytes()
         fake_docker(tmp_path, monkeypatch)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
 
         def fresh_preflight_must_not_run(*args, **kwargs):
             raise AssertionError("foreign-record refusal fell through")
@@ -687,10 +869,10 @@ class TestEarlyMutationSentinels:
 # ---------------------------------------------------------------------------
 
 class TestUxSurface:
-    def test_version_prints_revision_and_exits_cleanly(self, tmp_path):
+    def test_version_prints_installed_version_and_exits_cleanly(self, tmp_path):
         proc = run_tool(tmp_path, "--version")
         assert proc.returncode == 0
-        assert proc.stdout == f"run-gate rev {run_gate.__revision__}\n"
+        assert proc.stdout == f"run-gate {_TEST_VERSION}\n"
         assert proc.stderr == ""
 
     def test_dynamic_parser_headline_formats_help_usage_and_errors(self, capsys):
@@ -702,12 +884,12 @@ class TestUxSurface:
             parser.error("bad option")
         assert capsys.readouterr().err.splitlines()[0] == run_gate.cli_headline()
 
-    def test_help_prints_revision_and_lanes(self, tmp_path):
+    def test_help_prints_installed_version_and_lanes(self, tmp_path):
         repo = make_repo(tmp_path)
         proj = make_project(repo, SIMPLE_LANE)
         proc = run_tool(proj, "--help")
         assert proc.returncode == 0
-        assert f"rev {run_gate.__revision__}" in proc.stdout
+        assert f"{_TEST_VERSION}" in proc.stdout
         assert "run-gate.root.toml" in proc.stdout
         assert proc.stdout.splitlines()[0] == run_gate.cli_headline()
         assert "suite" in proc.stdout and "environment=tester-unified" in proc.stdout
@@ -719,10 +901,31 @@ class TestUxSurface:
         assert proc.returncode == 0
         assert "usage:" in proc.stdout
 
-    def test_parser_argument_error_starts_with_the_revision_headline(self, tmp_path):
+    def test_parser_argument_error_starts_with_the_installed_version_headline(self, tmp_path):
         proc = run_tool(tmp_path, "--not-a-run-gate-option")
         assert proc.returncode == 2
         assert proc.stderr.splitlines()[0] == run_gate.cli_headline()
+
+    def test_version_refuses_when_wheel_metadata_is_missing(
+            self, monkeypatch, capsys):
+        def missing(_name):
+            raise run_gate.importlib_metadata.PackageNotFoundError("run-gate")
+
+        monkeypatch.setattr(run_gate.importlib_metadata, "version", missing)
+        assert run_gate.main(["--version"]) == 2
+        captured = capsys.readouterr()
+        assert "Run-Gate distribution metadata is unavailable" in captured.err
+        assert "Traceback" not in captured.err
+
+    def test_version_refuses_malformed_wheel_metadata(
+            self, monkeypatch, capsys):
+        monkeypatch.setattr(run_gate.importlib_metadata, "version",
+                            lambda _name: "68")
+        assert run_gate.main(["--version"]) == 2
+        captured = capsys.readouterr()
+        assert "invalid version '68'" in captured.err
+        assert "expected a SemVer release or valid wheel dev version" \
+               in captured.err
 
     def test_no_config_is_one_line_not_traceback(self, tmp_path):
         proc = run_tool(tmp_path, "--help")  # empty dir: no config anywhere
@@ -767,15 +970,13 @@ class TestUxSurface:
         assert "suite" in proc.stderr
         assert str(proj / "run-gate.toml") in proc.stderr
 
-    def test_symlink_parent_is_the_project_not_the_target(self, tmp_path):
-        """R-01/§1: invoked-symlink's PARENT resolves the config (regression:
-        .resolve() used to follow the link to run-gate-project itself)."""
+    def test_neutral_invocation_uses_the_callers_project_directory(self,
+                                                                  tmp_path):
+        """An installed CLI gets project identity from cwd, not argv[0]."""
         repo = make_repo(tmp_path)
         proj = make_project(repo, SIMPLE_LANE)
-        link = proj / "run-gate.py"
-        link.symlink_to(RUN_GATE_DIR / "run-gate.py")
-        proc = subprocess.run([sys.executable, str(link), "--list"],
-                              cwd=tmp_path, capture_output=True, text=True)
+        proc = subprocess.run([sys.executable, str(_TOOL_INVOKE), "--list"],
+                              cwd=proj, capture_output=True, text=True)
         assert proc.returncode == 0, proc.stdout + proc.stderr
         assert proc.stdout.startswith("suite\t")
 
@@ -926,8 +1127,8 @@ class TestConfigValidation:
         repo = make_repo(tmp_path)
         cfg = SIMPLE_LANE.replace(
             "argv = [\"bash\", \"-c\", \"cd {worktree}/proj && echo gate-ran\"]",
-            "argv = [\"bash\", \"-c\", \"./run-gate.py one && "
-            "./run-gate.py two\"]") + "\naccepts_args = true\n"
+            "argv = [\"bash\", \"-c\", \"run-gate one && "
+            "run-gate two\"]") + "\naccepts_args = true\n"
         proj = make_project(repo, cfg)
         with pytest.raises(run_gate.GateError, match="composite command lane"):
             run_gate.load_config(proj)
@@ -964,7 +1165,8 @@ class TestRG71SelectiveCommandArguments:
             profile = false
         """
         repo, proj = self._project(tmp_path, config)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["schema", "--", "tests/schema/test_x.py::"
                               "test_y", "{worktree}"])
         captured = capsys.readouterr()
@@ -980,14 +1182,16 @@ class TestRG71SelectiveCommandArguments:
     def test_non_opted_lane_refuses_selective_args_by_name(
             self, tmp_path, monkeypatch, capsys):
         repo, proj = self._project(tmp_path, SIMPLE_LANE)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         assert run_gate.main(["suite", "--", "tests/x.py"]) == 2
         assert "does not declare accepts_args = true" in capsys.readouterr().err
 
     def test_args_are_not_accepted_by_query_verbs(self, tmp_path, monkeypatch,
                                                    capsys):
         repo, proj = self._project(tmp_path, SIMPLE_LANE)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         assert run_gate.main(["history", "--", "tests/x.py"]) == 2
         assert "supported only by an opted-in command lane" in \
             capsys.readouterr().err
@@ -1065,7 +1269,8 @@ class TestRG78ClosedExitTable:
         proj = make_project(repo, config)
         cfg, cfg_path, central, central_path, cfg_sha, _ = \
             run_gate.load_config_snapshot(proj)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         monkeypatch.chdir(proj)
         monkeypatch.setattr(run_gate, "find_project_dir", lambda: proj)
         monkeypatch.setattr(run_gate, "load_config_snapshot",
@@ -1317,23 +1522,72 @@ class TestRG78ClosedExitTable:
         assert tomllib.loads(migrated)["environments"]["runner"]["mode"] == \
             "ephemeral"
 
+    def test_observer_refusal_follows_assay_a494_r2_only_shape(self):
+        """RG-104 is superseded by Assay A-494/A-496 (verdict v16, Assay >=
+        10.0.0): a missing cgroup hierarchy invalidates ONLY native R2. The
+        artifact keeps completed R0/R1 claims and the independent R3 claim and
+        stamps `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` on R2 alone,
+        which is the one shape Run-Gate accepts as an environment refusal.
+        The earlier whole-lane shape (every requested rigor stamped, before R0)
+        is no longer produced and is refused as a malformed claim set."""
+        provenance = {"name": "assay", "version": "10.0.0", "artifact": "wheel",
+                      "digest_algorithm": "sha256", "digest": "a" * 64}
+
+        def claims(**statuses):
+            return [
+                {"rigor": rigor, "source": "computed",
+                 "status": statuses.get(rigor, "PASS"),
+                 "verified_by_assay": True,
+                 "reason_code": ("CGROUP_OBSERVATION_UNAVAILABLE"
+                                 if statuses.get(rigor) == "NO_MEASUREMENT"
+                                 else None)}
+                for rigor in ("R0", "R1", "R2", "R3")
+            ]
+
+        def result(claim_set):
+            return run_gate.assay_lane_result(
+                3, "NO_MEASUREMENT", verdict_exit_code=3,
+                judge_provenance=provenance,
+                reason="CGROUP_OBSERVATION_UNAVAILABLE",
+                claims=claim_set, evidence=[])
+
+        # R0 PASS, R1 PASS, R2 refusal, R3 PASS: an infrastructure ERROR that
+        # names the observer, not a malformed-verdict reason and not a FAIL.
+        a494 = result(claims(R2="NO_MEASUREMENT"))
+        assert (a494.verdict, a494.reason, a494.assay_outcome) == (
+            "ERROR", "CGROUP_OBSERVATION_UNAVAILABLE", "NO_MEASUREMENT")
+        # The lower-rigor claims are read, not discarded: an adverse R0/R1/R3
+        # claim next to the R2 refusal still surfaces as a FAIL.
+        for rigor in ("R0", "R1", "R3"):
+            adverse = result(claims(R2="NO_MEASUREMENT", **{rigor: "FAIL"}))
+            assert (adverse.verdict, adverse.reason) == (
+                "FAIL", "assay-adverse-claim-alongside-observer-refusal"), rigor
+        # Pre-A-494 shape: the refusal on a non-R2 claim is not accepted.
+        for rigor in ("R0", "R1", "R3"):
+            stale = result(claims(R2="NO_MEASUREMENT", **{rigor: "NO_MEASUREMENT"}))
+            assert (stale.verdict, stale.reason) == (
+                "ERROR", "invalid-assay-observer-refusal-claim"), rigor
+
     def test_assay_outcomes_follow_the_closed_table_and_retain_raw_outcome(self):
         expected = {
-            "PASS": "PASS", "FAIL": "FAIL", "ERROR": "ERROR",
-            "BUDGET_EXCEEDED": "BUDGET_EXCEEDED",
-            "NO_MEASUREMENT": "FAIL", "INCONCLUSIVE": "FAIL",
+            "PASS": (0, "PASS"), "FAIL": (1, "FAIL"),
+            "ERROR": (2, "ERROR"),
+            "BUDGET_EXCEEDED": (4, "BUDGET_EXCEEDED"),
+            "NO_MEASUREMENT": (3, "FAIL"), "INCONCLUSIVE": (5, "FAIL"),
         }
         provenance = {"name": "assay", "version": "1", "artifact": "wheel",
                       "digest_algorithm": "sha256", "digest": "a" * 64}
-        for outcome, verdict in expected.items():
-            result = run_gate.assay_lane_result(1, outcome,
-                                                judge_provenance=provenance)
+        for outcome, (exit_code, verdict) in expected.items():
+            result = run_gate.assay_lane_result(
+                exit_code, outcome, verdict_exit_code=exit_code,
+                judge_provenance=provenance)
             assert result.verdict == verdict
             assert result.assay_outcome == outcome
         selected_commit = "b" * 40
-        for outcome, verdict in expected.items():
+        for outcome, (exit_code, verdict) in expected.items():
             result = run_gate.assay_lane_result(
-                1, outcome, source_mode=True, source_version="8.0.0.dev1",
+                exit_code, outcome, verdict_exit_code=exit_code,
+                source_mode=True, source_version="8.0.0.dev1",
                 source_commit=selected_commit,
                 expected_source_commit=selected_commit)
             assert result.verdict == verdict
@@ -1341,15 +1595,153 @@ class TestRG78ClosedExitTable:
         invalid = run_gate.assay_lane_result(
             0, "UNKNOWN", source_mode=True, source_version="8.0.0.dev1",
             source_commit=selected_commit,
-            expected_source_commit=selected_commit)
+            expected_source_commit=selected_commit,
+            verdict_exit_code=0)
         assert invalid.verdict == "ERROR"
         assert invalid.reason == "invalid-assay-outcome"
-        missing = run_gate.assay_lane_result(0, "PASS")
+        missing = run_gate.assay_lane_result(0, "PASS", verdict_exit_code=0)
         assert missing.verdict == "ERROR"
         assert missing.reason == "missing-or-invalid-judge-provenance"
         assert missing.gate_exit_code == 2
+
+        missing_exit = run_gate.assay_lane_result(0, "PASS")
+        assert missing_exit.verdict == "ERROR"
+        assert missing_exit.reason == "missing-or-invalid-assay-verdict-exit-code"
+
+        mismatched_runner = run_gate.assay_lane_result(
+            1, "PASS", verdict_exit_code=0, judge_provenance=provenance)
+        assert mismatched_runner.verdict == "ERROR"
+        assert mismatched_runner.reason == "assay-exit-code-mismatch"
+        mismatched_outcome = run_gate.assay_lane_result(
+            1, "PASS", verdict_exit_code=1, judge_provenance=provenance)
+        assert mismatched_outcome.verdict == "ERROR"
+        assert mismatched_outcome.reason == "assay-outcome-exit-code-mismatch"
+        runner_passed_fail_artifact = run_gate.assay_lane_result(
+            0, "FAIL", verdict_exit_code=1, judge_provenance=provenance)
+        assert runner_passed_fail_artifact.verdict == "ERROR"
+        assert runner_passed_fail_artifact.reason == "assay-exit-code-mismatch"
+        for malformed_exit in ("1", 1.0):
+            malformed_artifact_exit = run_gate.assay_lane_result(
+                0, "FAIL", verdict_exit_code=malformed_exit,
+                judge_provenance=provenance)
+            assert malformed_artifact_exit.verdict == "ERROR"
+            assert malformed_artifact_exit.reason == \
+                "missing-or-invalid-assay-verdict-exit-code"
+        boolean_exit = run_gate.assay_lane_result(
+            0, "PASS", verdict_exit_code=True, judge_provenance=provenance)
+        assert boolean_exit.verdict == "ERROR"
+        assert boolean_exit.reason == "missing-or-invalid-assay-verdict-exit-code"
+        malformed_runner_exit = run_gate.assay_lane_result(
+            True, "PASS", verdict_exit_code=1, judge_provenance=provenance)
+        assert malformed_runner_exit.verdict == "ERROR"
+        assert malformed_runner_exit.reason == \
+            "missing-or-invalid-assay-runner-exit-code"
+        def claims_with_observer_refusal(**statuses):
+            ordered = [
+                ("R0", statuses.get("R0", "PASS")),
+                ("R1", statuses.get("R1", "PASS")),
+                ("R2", "NO_MEASUREMENT"),
+                ("R3", statuses.get("R3", "PASS")),
+            ]
+            return [
+                {
+                    "rigor": rigor,
+                    "source": "computed",
+                    "status": status,
+                    "verified_by_assay": True,
+                    "reason_code": (
+                        "CGROUP_OBSERVATION_UNAVAILABLE"
+                        if rigor == "R2" else None
+                    ),
+                }
+                for rigor, status in ordered
+            ]
+
+        unavailable = run_gate.assay_lane_result(
+            3, "NO_MEASUREMENT", verdict_exit_code=3,
+            judge_provenance=provenance,
+            reason="CGROUP_OBSERVATION_UNAVAILABLE",
+            claims=claims_with_observer_refusal(), evidence=[])
+        assert unavailable.verdict == "ERROR"
+        assert unavailable.assay_outcome == "NO_MEASUREMENT"
+        assert unavailable.reason == "CGROUP_OBSERVATION_UNAVAILABLE"
+        r1_failed = run_gate.assay_lane_result(
+            3, "NO_MEASUREMENT", verdict_exit_code=3,
+            judge_provenance=provenance,
+            reason="CGROUP_OBSERVATION_UNAVAILABLE",
+            claims=claims_with_observer_refusal(R1="FAIL"), evidence=[])
+        assert r1_failed.verdict == "FAIL"
+        assert r1_failed.reason == "assay-adverse-claim-alongside-observer-refusal"
+        r3_failed = run_gate.assay_lane_result(
+            3, "NO_MEASUREMENT", verdict_exit_code=3,
+            judge_provenance=provenance,
+            reason="CGROUP_OBSERVATION_UNAVAILABLE",
+            claims=claims_with_observer_refusal(R3="FAIL"), evidence=[])
+        assert r3_failed.verdict == "FAIL"
+        budget_exceeded = run_gate.assay_lane_result(
+            3, "NO_MEASUREMENT", verdict_exit_code=3,
+            judge_provenance=provenance,
+            reason="CGROUP_OBSERVATION_UNAVAILABLE",
+            claims=claims_with_observer_refusal(R1="BUDGET_EXCEEDED"), evidence=[])
+        assert budget_exceeded.verdict == "BUDGET_EXCEEDED"
+        malformed_claims = run_gate.assay_lane_result(
+            3, "NO_MEASUREMENT", verdict_exit_code=3,
+            judge_provenance=provenance,
+            reason="CGROUP_OBSERVATION_UNAVAILABLE", claims=[{}], evidence=[])
+        assert malformed_claims.verdict == "ERROR"
+        assert malformed_claims.reason == "invalid-assay-claims-for-observer-refusal"
+        wrong_rigor = claims_with_observer_refusal()
+        wrong_rigor[2]["rigor"] = "R4"
+        malformed_observer_claim = run_gate.assay_lane_result(
+            3, "NO_MEASUREMENT", verdict_exit_code=3,
+            judge_provenance=provenance,
+            reason="CGROUP_OBSERVATION_UNAVAILABLE",
+            claims=wrong_rigor, evidence=[])
+        assert malformed_observer_claim.verdict == "ERROR"
+        assert malformed_observer_claim.reason == "invalid-assay-observer-refusal-claim"
+        malformed_evidence = run_gate.assay_lane_result(
+            3, "NO_MEASUREMENT", verdict_exit_code=3,
+            judge_provenance=provenance,
+            reason="CGROUP_OBSERVATION_UNAVAILABLE",
+            claims=claims_with_observer_refusal(), evidence=[{}])
+        assert malformed_evidence.verdict == "ERROR"
+        assert malformed_evidence.reason == "invalid-assay-evidence-for-observer-refusal"
+        malformed_evidence_source = run_gate.assay_lane_result(
+            3, "NO_MEASUREMENT", verdict_exit_code=3,
+            judge_provenance=provenance,
+            reason="CGROUP_OBSERVATION_UNAVAILABLE",
+            claims=claims_with_observer_refusal(),
+            evidence=[{"source": [], "key": "review", "status": "PASS",
+                       "verified_by_assay": True}])
+        assert malformed_evidence_source.verdict == "ERROR"
+        assert malformed_evidence_source.reason == \
+            "invalid-assay-evidence-for-observer-refusal"
+        unverified_passing_evidence = run_gate.assay_lane_result(
+            3, "NO_MEASUREMENT", verdict_exit_code=3,
+            judge_provenance=provenance,
+            reason="CGROUP_OBSERVATION_UNAVAILABLE",
+            claims=claims_with_observer_refusal(),
+            evidence=[{"source": "attested", "key": "review", "status": "PASS",
+                       "verified_by_assay": False}])
+        assert unverified_passing_evidence.verdict == "ERROR"
+        assert unverified_passing_evidence.reason == \
+            "CGROUP_OBSERVATION_UNAVAILABLE"
+        failed_evidence = run_gate.assay_lane_result(
+            3, "NO_MEASUREMENT", verdict_exit_code=3,
+            judge_provenance=provenance,
+            reason="CGROUP_OBSERVATION_UNAVAILABLE",
+            claims=claims_with_observer_refusal(),
+            evidence=[{"source": "adjudicated", "key": "review",
+                       "status": "FAIL", "verified_by_assay": True}])
+        assert failed_evidence.verdict == "FAIL"
+        ordinary_no_measurement = run_gate.assay_lane_result(
+            3, "NO_MEASUREMENT", verdict_exit_code=3,
+            judge_provenance=provenance,
+            reason="EMPTY_COVERAGE")
+        assert ordinary_no_measurement.verdict == "FAIL"
         missing_source = run_gate.assay_lane_result(
-            0, "PASS", source_mode=True, source_version="8.0.0.dev1",
+            0, "PASS", verdict_exit_code=0, source_mode=True,
+            source_version="8.0.0.dev1",
             source_commit=selected_commit, expected_source_commit=None)
         assert missing_source.verdict == "ERROR"
         assert missing_source.reason == "missing-or-invalid-source-identity"
@@ -1357,20 +1749,22 @@ class TestRG78ClosedExitTable:
         # valid matching commit hashes must not mask a missing or blank version.
         for source_version in (None, "", "   "):
             invalid_source_version = run_gate.assay_lane_result(
-                0, "PASS", source_mode=True, source_version=source_version,
+                0, "PASS", verdict_exit_code=0, source_mode=True,
+                source_version=source_version,
                 source_commit=selected_commit,
                 expected_source_commit=selected_commit)
             assert invalid_source_version.verdict == "ERROR"
             assert invalid_source_version.reason == \
                 "missing-or-invalid-source-identity"
         mismatch = run_gate.assay_lane_result(
-            0, "PASS", source_mode=True, source_version="8.0.0.dev1",
+            0, "PASS", verdict_exit_code=0, source_mode=True,
+            source_version="8.0.0.dev1",
             source_commit="c" * 40, expected_source_commit=selected_commit)
         assert mismatch.verdict == "ERROR"
         assert mismatch.reason == "source-commit-mismatch"
 
     def test_only_finish_returns_the_cli_gate_code_and_sys_exit_is_unique(self):
-        tree = ast.parse((RUN_GATE_DIR / "run-gate.py").read_text())
+        tree = ast.parse((RUN_GATE_DIR / "run_gate.py").read_text())
         dispatch = next(node for node in tree.body
                         if isinstance(node, ast.FunctionDef)
                         and node.name == "_dispatch")
@@ -1968,16 +2362,26 @@ class TestArgvConstruction:
         assert any(m.endswith(f":{repo / '.git'}/config:ro") for m in overlays)
         # + `worktrees/` read-only (real contents) and the judged admin dir
         # read-write on top, each at both paths (RG-86 round 4)
-        assert len(mounts) == 10, mounts
+        assert len(mounts) == 20, mounts
         assert sum(m.endswith("/.git/worktrees:ro") for m in mounts) == 2
         assert sum(m.split(":")[0].endswith(f"/.git/worktrees/{wt.name}")
                    and not m.endswith(":ro") for m in mounts) == 2, mounts
+        # RG-93: protect the common hooks/info directories and the linked
+        # worktree's three Git pointers, at both physical and namespace paths.
+        assert sum(m.endswith("/.git/hooks:ro") for m in mounts) == 2, mounts
+        assert sum(m.endswith("/.git/info:ro") for m in mounts) == 2, mounts
+        pointer_mounts = [m for m in mounts
+                          if m.endswith(("/.git:ro", "/gitdir:ro",
+                                         "/commondir:ro"))]
+        assert len(pointer_mounts) == 6, pointer_mounts
         assert not any(m.split(":")[1] == str(repo) for m in mounts), mounts
         assert "--rm" not in run_call
         assert run_call[-4:-2] == ["tester-unified:local", "bash"]
         inner = run_call[-1]
         assert inner.startswith("set -euo pipefail && ")
-        assert "git config --global --replace-all safe.directory '*'" in inner
+        assert 'export "GIT_CONFIG_KEY_${__rg_git_n}=safe.directory"' in inner
+        assert '"GIT_CONFIG_COUNT=$((__rg_git_n + 1))"' in inner
+        assert "git config --global --replace-all safe.directory" not in inner
         assert f"cd {wt}/proj && echo gate-ran" in inner  # {worktree} substituted
         # transparency: the docker argv is printed, never buried
         assert "docker argv:" in proc.stdout
@@ -2065,7 +2469,11 @@ class TestArgvConstruction:
         assert "--file assay.toml --verdict-json .assay/verdict-ciu.json" in inner
         assert "/opt/tester-venv/bin/python tools/assay/assay-6.1.0.pyz run ciu" \
             in inner
-        assert f"TMPDIR={repo / '.run-gate'}" in inner
+        # RG-98: the default root is inside the judged checkout, so the JUDGE
+        # does not get it as TMPDIR; the test command's path travels as
+        # RUN_GATE_TMPDIR.
+        assert not re.search(r"(?<![A-Z_])TMPDIR=", inner)
+        assert f"RUN_GATE_TMPDIR={repo / '.run-gate'}" in inner
         assert f"GIT_CEILING_DIRECTORIES={repo / '.run-gate'}" in inner
         assert f"verdict artifact: {proj}/.assay/verdict-ciu.json" in proc.stdout
 
@@ -2139,7 +2547,8 @@ class TestArgvConstruction:
         repo = make_repo(tmp_path)
         proj = make_project(repo, SIMPLE_LANE)
         log = fake_docker(tmp_path, monkeypatch)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py"), "suite"])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate', 'suite'])
         return proj, log
 
     def test_lane_path_calls_loadstate_guard_where_systemd_reachable(
@@ -2621,7 +3030,8 @@ def test_budget_hard_limit_is_printed(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(run_gate, "physical_path",
                         lambda p, **k: Path("/phys"))
     # in-process main() discovers the project from sys.argv[0] — pin it
-    monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py"), "suite"])
+    monkeypatch.chdir(proj)
+    monkeypatch.setattr(sys, "argv", ['run-gate', 'suite'])
     code = run_gate.main(["suite"])
     out = capsys.readouterr().out
     assert code == 0
@@ -2672,8 +3082,10 @@ def test_no_stdlib_violations():
     allowed.add("collections")
     # select: RG-55's placement ready/continue barrier waits on the wrapper's
     # private readiness pipe without timing out a slow command's lane body.
-    allowed.update({"copy", "contextlib", "dataclasses", "io", "select",
-                   "signal", "stat", "run_gate_admission"})
+    # grp: resolve host group identity for safe observer socket access.
+    # importlib: read the installed wheel's SemVer distribution metadata.
+    allowed.update({"copy", "contextlib", "dataclasses", "grp", "importlib",
+                   "io", "select", "signal", "stat", "run_gate_admission"})
     assert set(imports) <= allowed, f"non-stdlib/unplanned imports: {imports}"
 
 
@@ -3086,45 +3498,1250 @@ class TestExtraMounts:
             run_gate.extra_mount_flags()
 
 
-def test_safe_directory_uses_git_config_global_env():
-    inner = run_gate.build_command_inner(
-        {"argv": ["echo"]}, Path("/wt"))
-    assert "GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig" in inner
+class TestRG99LockFreeSafeDirectory:
+    """RG-99: `safe.directory` reaches the lane's Git through the environment
+    only -- no config file, no lock, no mutex -- appended AFTER any
+    `GIT_CONFIG_COUNT` entries the runner already carries, and the supported
+    Git floor is enforced by name. These run the built script under real
+    bash and real Git; a string match on the constructed environment proves
+    construction, not that Git accepts the entry."""
 
+    @staticmethod
+    def _clean_env(tmp_path, **extra):
+        """A Git environment with no ambient config that could mask the
+        injection (a global `safe.directory`, or inherited count entries)."""
+        home = tmp_path / "home"
+        home.mkdir(exist_ok=True)
+        env = {key: value for key, value in os.environ.items()
+               if not key.startswith("GIT_")}
+        env.update({"HOME": str(home), "XDG_CONFIG_HOME": str(home),
+                    "GIT_CONFIG_NOSYSTEM": "1",
+                    "GIT_CONFIG_GLOBAL": os.devnull})
+        env.update(extra)
+        return env
 
-def test_safe_directory_write_survives_preexisting_entries(tmp_path):
-    """RG-22: a plain `git config --global safe.directory '*'` (no
-    --replace-all) fails with "cannot overwrite multiple values" the moment
-    the isolated gitconfig at /tmp/run-gate-gitconfig already carries more
-    than one safe.directory entry — reproduced from dstdns P126/P127's
-    linked-worktree runners sharing a host. --replace-all makes the write
-    succeed regardless of how many entries were already there.
+    @staticmethod
+    def _inner(*shell: str) -> str:
+        return run_gate.build_command_inner(
+            {"argv": ["bash", "-c", "; ".join(shell)]}, Path("/wt"))
 
-    This test touches the REAL /tmp/run-gate-gitconfig path (the inner
-    command hard-codes it, matching TestPinVersionVerify's live-subprocess
-    pattern elsewhere in this file) and restores its prior content
-    afterward — other tests in this suite write a single entry there too.
-    """
-    gitconfig = Path("/tmp/run-gate-gitconfig")
-    original = gitconfig.read_bytes() if gitconfig.exists() else None
-    try:
-        env = {**os.environ, "GIT_CONFIG_GLOBAL": str(gitconfig)}
-        for path in ("/some/project", "/other/project"):
-            proc = subprocess.run(
-                ["git", "config", "--global", "--add", "safe.directory", path],
-                env=env, capture_output=True, text=True)
-            assert proc.returncode == 0, proc.stderr
-        inner = run_gate.build_command_inner(
-            {"argv": ["echo", "ok"]}, tmp_path)
-        proc = subprocess.run(["bash", "-c", inner], cwd=tmp_path,
-                              capture_output=True, text=True)
-        assert proc.returncode == 0, proc.stderr
-        assert "ok" in proc.stdout
-    finally:
-        if original is None:
-            gitconfig.unlink(missing_ok=True)
+    def test_construction_has_no_file_lock_or_global_config(self):
+        inner = self._inner("true")
+        for forbidden in ("GIT_CONFIG_GLOBAL", "run-gate-gitconfig", "trap ",
+                          "git config --global", "flock", "mkdir -p /tmp"):
+            assert forbidden not in inner
+        assert "safe.directory" in inner
+
+    def test_empty_environment_gets_one_entry_at_index_zero(self, tmp_path):
+        result = subprocess.run(
+            ["bash", "-c", self._inner(
+                'printf "COUNT=%s\\n" "$GIT_CONFIG_COUNT"',
+                'git config --get-all safe.directory')],
+            cwd=tmp_path, capture_output=True, text=True,
+            env=self._clean_env(tmp_path))
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == ["COUNT=1", "*"]
+
+    def test_preexisting_entries_are_kept_and_the_entry_is_appended(
+            self, tmp_path):
+        env = self._clean_env(
+            tmp_path, GIT_CONFIG_COUNT="2",
+            GIT_CONFIG_KEY_0="user.name", GIT_CONFIG_VALUE_0="runner-set",
+            GIT_CONFIG_KEY_1="core.abbrev", GIT_CONFIG_VALUE_1="9")
+        result = subprocess.run(
+            ["bash", "-c", self._inner(
+                'printf "COUNT=%s\\n" "$GIT_CONFIG_COUNT"',
+                'git config --get user.name',
+                'git config --get core.abbrev',
+                'git config --get-all safe.directory')],
+            cwd=tmp_path, capture_output=True, text=True, env=env)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == [
+            "COUNT=3", "runner-set", "9", "*"]
+
+    @pytest.mark.parametrize("count", ["abc", "-1", "08", "1.5", "2 "])
+    def test_unreadable_count_is_refused_before_the_command_runs(
+            self, tmp_path, count):
+        result = subprocess.run(
+            ["bash", "-c", self._inner("echo COMMAND-RAN")],
+            cwd=tmp_path, capture_output=True, text=True,
+            env=self._clean_env(tmp_path, GIT_CONFIG_COUNT=count))
+        assert result.returncode == 2
+        assert "COMMAND-RAN" not in result.stdout
+        assert "GIT_CONFIG_COUNT" in result.stderr
+        assert "not a plain non-negative integer" in result.stderr
+
+    def test_git_accepts_the_injected_entry_for_a_foreign_owner(
+            self, tmp_path):
+        """The behavioural oracle: Git's own ownership check, forced to see
+        a foreign owner, rejects the repository without the injection and
+        accepts it with the injection."""
+        repo = tmp_path / "owned-elsewhere"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True,
+                       env=self._clean_env(tmp_path))
+        env = self._clean_env(tmp_path, GIT_TEST_ASSUME_DIFFERENT_OWNER="1")
+        baseline = subprocess.run(
+            ["git", "-C", str(repo), "status", "--short"],
+            capture_output=True, text=True, env=env)
+        assert baseline.returncode != 0
+        assert "dubious ownership" in baseline.stderr
+        injected = subprocess.run(
+            ["bash", "-c", run_gate.build_command_inner(
+                {"argv": ["git", "-C", str(repo), "status", "--short"]},
+                repo)],
+            capture_output=True, text=True, env=env)
+        assert injected.returncode == 0, injected.stderr
+        assert "dubious ownership" not in injected.stderr
+
+    def test_injection_keeps_preexisting_entries_visible_to_git_itself(
+            self, tmp_path):
+        """With a foreign owner AND a runner-supplied entry, both must reach
+        Git: overwriting index 0 (the pre-RG-99 shape) loses the runner's."""
+        repo = tmp_path / "owned-elsewhere"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True,
+                       env=self._clean_env(tmp_path))
+        env = self._clean_env(
+            tmp_path, GIT_TEST_ASSUME_DIFFERENT_OWNER="1",
+            GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="user.name",
+            GIT_CONFIG_VALUE_0="runner-set")
+        result = subprocess.run(
+            ["bash", "-c", run_gate.build_command_inner(
+                {"argv": ["git", "-C", str(repo), "config", "user.name"]},
+                repo)],
+            capture_output=True, text=True, env=env)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "runner-set"
+
+    @pytest.mark.parametrize(("version", "accepted"), [
+        ("2.37.9", False), ("2.30.0", False), ("1.9.0", False),
+        ("2.38.0", True), ("2.38.1.windows.2", True), ("2.55.0", True),
+        ("3.0.1", True),
+    ])
+    def test_git_below_the_floor_is_refused_by_name(
+            self, tmp_path, version, accepted):
+        shim = tmp_path / "bin"
+        shim.mkdir()
+        fake_git = shim / "git"
+        fake_git.write_text(f"#!/bin/sh\necho 'git version {version}'\n")
+        fake_git.chmod(0o755)
+        env = self._clean_env(tmp_path, PATH=f"{shim}:/usr/bin:/bin")
+        result = subprocess.run(
+            ["bash", "-c", self._inner("echo COMMAND-RAN")],
+            cwd=tmp_path, capture_output=True, text=True, env=env)
+        if accepted:
+            assert result.returncode == 0, result.stderr
+            assert "COMMAND-RAN" in result.stdout
         else:
-            gitconfig.write_bytes(original)
+            assert result.returncode == 2
+            assert "COMMAND-RAN" not in result.stdout
+            assert "older than 2.38" in result.stderr
+            assert "dubious ownership" in result.stderr
+
+    def test_missing_or_unparseable_git_does_not_block_a_gitless_lane(
+            self, tmp_path):
+        # An image without git needs no injection; a git whose banner cannot
+        # be parsed is left to Git itself to judge.
+        for banner in (None, "git, but not as you know it"):
+            shim = tmp_path / f"bin-{banner is None}"
+            shim.mkdir()
+            for tool in ("bash", "sed", "echo"):
+                located = shutil.which(tool)
+                if located and not (shim / tool).exists():
+                    (shim / tool).symlink_to(located)
+            if banner is not None:
+                fake_git = shim / "git"
+                fake_git.write_text(f"#!/bin/sh\necho '{banner}'\n")
+                fake_git.chmod(0o755)
+            result = subprocess.run(
+                ["bash", "-c", self._inner("echo COMMAND-RAN")],
+                cwd=tmp_path, capture_output=True, text=True,
+                env=self._clean_env(tmp_path, PATH=str(shim)))
+            assert result.returncode == 0, result.stderr
+            assert "COMMAND-RAN" in result.stdout
+
+    def test_concurrent_lanes_share_no_file_and_each_sees_the_entry(
+            self, tmp_path):
+        """Two lanes in one runner at once: no shared `/tmp` config file or
+        lock exists to race on, so both observe the entry and neither fails."""
+        inners = [self._inner(
+            f'git config --get safe.directory; printf {label}')
+            for label in ("alpha", "beta")]
+        before = set(Path(tempfile.gettempdir()).glob("run-gate-gitconfig*"))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(
+                lambda inner: subprocess.run(
+                    ["bash", "-c", inner], cwd=tmp_path,
+                    capture_output=True, text=True,
+                    env=self._clean_env(tmp_path)),
+                inners))
+        for label, result in zip(("alpha", "beta"), results):
+            assert result.returncode == 0, result.stderr
+            assert result.stdout.splitlines()[0] == "*"
+            assert label in result.stdout
+        after = set(Path(tempfile.gettempdir()).glob("run-gate-gitconfig*"))
+        assert after == before
+
+    def test_assay_inner_uses_the_same_injection(self, tmp_path):
+        inner = run_gate.build_assay_inner(
+            {"assay_lane": "r1", "assay_command": ["assay"], "pins": {}},
+            tmp_path / "proj", tmp_path, worktree=tmp_path)
+        assert inner.count('"GIT_CONFIG_COUNT=$((__rg_git_n + 1))"') == 1
+        for forbidden in ("GIT_CONFIG_GLOBAL", "run-gate-gitconfig",
+                          "git config --global"):
+            assert forbidden not in inner
+
+
+class TestRG98JudgeScratchIsolation:
+    """RG-98: with the default in-repo `<checkout>/.run-gate` state root, a
+    snapshot-isolated Assay lane must reach R0.
+
+    The fake judge reproduces the one Assay rule at issue and nothing more:
+    it allocates its scratch the way `tempfile` does (TMPDIR, else the
+    system default) and refuses, as Assay's `IsolationSpec` does, a scratch
+    root inside the judged repository. The lane runs through the real
+    `run_bare_host_lane`, so the real inner script, state-root preflight and
+    environment hand-off are exercised -- not a constructed string."""
+
+    _JUDGE = """\
+#!/bin/sh
+case "$*" in
+  *"lanes --json"*) cat <<'JSON'
+@INVENTORY@
+JSON
+    exit 0 ;;
+  *--version*) echo "assay 9.0.0"; exit 0 ;;
+esac
+top=$(git rev-parse --show-toplevel)
+scratch=$(@PYTHON@ -c 'import tempfile; print(tempfile.mkdtemp(prefix="assay-p23-"))')
+case "$scratch" in
+  "$top"/*)
+    echo "ValueError: scratch_root must be outside repo_top ($scratch)" >&2
+    exit 2 ;;
+esac
+rm -rf "$scratch"
+echo "JUDGE-REACHED-R0"
+echo "JUDGE-TMPDIR=${TMPDIR-unset}"
+echo "CHILD-TMPDIR=$(TMPDIR="${RUN_GATE_TMPDIR-unset}" sh -c 'printf %s "$TMPDIR"')"
+exit 0
+"""
+
+    def _project(self, tmp_path, monkeypatch):
+        cfg = ASSAY_LANE_CFG.replace('environment = "tester-unified"',
+                                     'environment = "bare-host"', 1)
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, cfg)
+        (proj / "assay.toml").write_text("# judged by the fake judge\n")
+        commit_all(repo, "assay config")
+        ambient = tmp_path / "ambient-tmp"
+        ambient.mkdir()
+        monkeypatch.setenv("TMPDIR", str(ambient))
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda p, **k: Path("/phys/host/root"))
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ["run-gate"])
+        fake_docker(tmp_path, monkeypatch)
+        body = (self._JUDGE
+                .replace("@INVENTORY@", _inventory(rigor=["R0", "R1"]))
+                .replace("@PYTHON@", shlex.quote(sys.executable)))
+        install_fake_assay(monkeypatch, body)
+        return repo, proj, ambient
+
+    def test_default_in_repo_state_root_reaches_r0(
+            self, tmp_path, monkeypatch, capfd):
+        repo, _proj, ambient = self._project(tmp_path, monkeypatch)
+        assert not (repo / ".run-gate").exists()
+        assert run_gate.main(["ui-unit"]) == 0
+        out = capfd.readouterr()
+        assert "scratch_root must be outside repo_top" not in out.err
+        assert "JUDGE-REACHED-R0" in out.out
+        # the judge keeps the operator's own TMPDIR (outside the repository)
+        assert f"JUDGE-TMPDIR={ambient}" in out.out
+        # ... while the test command still gets the verified state path
+        child = re.search(r"CHILD-TMPDIR=(\S+)", out.out).group(1)
+        assert os.path.realpath(child) == os.path.realpath(repo / ".run-gate")
+        assert (repo / ".run-gate").is_dir()
+
+    def test_regression_control_judge_tmpdir_in_repo_would_error(
+            self, tmp_path, monkeypatch, capfd):
+        """The fixture can fail: pointing the judge's TMPDIR at the in-repo
+        root (the RG-85 behaviour) reproduces the observed ERROR."""
+        repo, _proj, _ambient = self._project(tmp_path, monkeypatch)
+        inside = repo / ".run-gate"
+        inside.mkdir()
+        monkeypatch.setenv("TMPDIR", str(inside))
+        assert run_gate.main(["ui-unit"]) != 0
+        # Run-Gate merges the judge's stderr into the lane output it tees to
+        # stdout, so the refusal and the closed result are both on stdout.
+        captured = capfd.readouterr()
+        assert "scratch_root must be outside repo_top" in captured.out
+        assert "verdict ERROR" in captured.out
+        assert "JUDGE-REACHED-R0" not in captured.out
+
+
+class TestAssayCampaignCloseout:
+    """B108 phase 2 (SPEC R-38 "Campaign closeout"): a registered
+    `kind = "assay"` lane is followed, inside the same script, by Assay's own
+    `analyze campaign` over the lane's OWN verdict/progress/state paths; the
+    text and JSON closeouts are retained with the gate evidence.
+
+    The fake judge below is deliberately dumb: it answers `run` with a
+    controlled exit and `analyze` with a controlled document. Every oracle
+    asserts on what Run-Gate does with those answers -- the original lane
+    verdict and exit must survive every closeout outcome unchanged."""
+
+    _COMMIT = "a" * 40
+    _JUDGE = """\
+#!/bin/sh
+case "$*" in
+  *"lanes --json"*) cat <<'JSON'
+@INVENTORY@
+JSON
+    exit 0 ;;
+  *--version*) echo "assay 9.0.0"; exit 0 ;;
+esac
+printf '%s\\n' "$*" >> "$FAKE_CONTROL/calls"
+if [ "$1" = "run" ]; then
+  if [ -f "$FAKE_CONTROL/kill_parent" ]; then kill -9 "$PPID"; fi
+  verdict=""; previous=""
+  for argument in "$@"; do
+    if [ "$previous" = "--verdict-json" ]; then verdict=$argument; fi
+    previous=$argument
+  done
+  if [ -n "$verdict" ]; then mkdir -p "$(dirname "$verdict")"; echo '{}' > "$verdict"; fi
+  exit "$(cat "$FAKE_CONTROL/run_exit")"
+fi
+if [ "$1" = "analyze" ]; then
+  lane=$3; commit=""; fmt=""; previous=""
+  for argument in "$@"; do
+    if [ "$previous" = "--expected-commit" ]; then commit=$argument; fi
+    if [ "$previous" = "--format" ]; then fmt=$argument; fi
+    previous=$argument
+  done
+  mode=$(cat "$FAKE_CONTROL/analyze")
+  run_exit=$(cat "$FAKE_CONTROL/run_exit")
+  case "$run_exit" in
+    0) outcome=PASS ;; 1) outcome=FAIL ;; 4) outcome=BUDGET_EXCEEDED ;;
+    *) outcome=ERROR ;;
+  esac
+  status=incomplete; code=3; verdict_exit=$run_exit
+  case "$mode" in
+    crash) echo "analysis exploded" >&2; exit 9 ;;
+    unsupported) echo "assay: error: unrecognized arguments: campaign" >&2; exit 2 ;;
+    empty) exit 0 ;;
+    disagree) outcome=PASS; verdict_exit=0; status=complete; code=0 ;;
+    ok) ;;
+  esac
+  if [ "$fmt" = text ]; then
+    printf '%s: %s outcome=%s planned=1 completed=1 pending=0\\n' "$lane" "$status" "$outcome"
+  else
+    printf '{"schema_version":2,"analysis":"mutation_campaign","status":"%s","lane":"%s","expected_commit":"%s","verdict":{"outcome":"%s","exit_code":%s,"observed_command_exit":%s}}\\n' "$status" "$lane" "$commit" "$outcome" "$verdict_exit" "$verdict_exit"
+  fi
+  exit "$code"
+fi
+exit 64
+"""
+
+    # -- the generated script (executed, with a fake judge) -----------------
+
+    def _script(self, tmp_path, analyze, run_exit, **lane_extra):
+        control = tmp_path / "control"
+        control.mkdir(exist_ok=True)
+        (control / "analyze").write_text(analyze)
+        (control / "run_exit").write_text(str(run_exit))
+        judge = tmp_path / "bin" / "assay"
+        judge.parent.mkdir(exist_ok=True)
+        judge.write_text(self._JUDGE.replace("@INVENTORY@", _inventory(
+            name="unit", rigor=["R0"])))
+        judge.chmod(0o755)
+        repo = tmp_path / "repo"
+        project = repo / "proj"
+        project.mkdir(parents=True, exist_ok=True)
+        (repo / ".run-gate").mkdir(exist_ok=True)
+        lane = {"assay_lane": "unit", "assay_command": [str(judge)],
+                "pins": {}, **lane_extra}
+        inner = run_gate.build_assay_inner(
+            lane, project, repo, worktree=repo, state_root=repo / ".run-gate",
+            closeout_commit=self._COMMIT)
+        env = dict(os.environ, FAKE_CONTROL=str(control))
+        return project, inner, env, control
+
+    def _execute(self, project, inner, env):
+        return subprocess.run(["bash", "-c", inner], cwd=project, env=env,
+                              capture_output=True, text=True)
+
+    @pytest.mark.parametrize("run_exit", [0, 1, 2, 4, 7])
+    @pytest.mark.parametrize("analyze", ["ok", "crash", "unsupported",
+                                         "empty", "disagree"])
+    def test_script_exit_is_the_judges_exit_whatever_the_analysis_does(
+            self, tmp_path, analyze, run_exit):
+        project, inner, env, _control = self._script(
+            tmp_path, analyze, run_exit)
+        proc = self._execute(project, inner, env)
+        assert proc.returncode == run_exit, proc.stderr
+        # the analysis was attempted exactly as the script promises, in both
+        # renderings, and never wrote into the lane's own output stream
+        assert (project / ".assay" / "campaign-unit.exit").is_file()
+        assert "analysis exploded" not in proc.stdout + proc.stderr
+
+    def test_analysis_binds_the_lanes_own_paths_commit_and_exit(self, tmp_path):
+        project, inner, env, control = self._script(tmp_path, "ok", 1)
+        assert self._execute(project, inner, env).returncode == 1
+        calls = (control / "calls").read_text().splitlines()
+        analyses = [call for call in calls if call.startswith("analyze ")]
+        assert len(analyses) == 2
+        state = tmp_path / "repo" / ".run-gate" / "assay-state" / "proj"
+        for call, fmt in zip(analyses, ("json", "text")):
+            assert call == (
+                f"analyze campaign unit --file assay.toml "
+                f"--expected-commit {self._COMMIT} "
+                f"--progress .assay/progress-unit.jsonl "
+                f"--state-dir {state} "
+                f"--verdict .assay/verdict-unit.json --command-exit 1 "
+                f"--format {fmt}")
+        assert (project / ".assay" / "campaign-unit.exit").read_text() \
+            == "3 3\n"
+
+    def test_request_base_is_passed_to_the_analysis_like_the_run(self, tmp_path):
+        project, _inner, env, control = self._script(tmp_path, "ok", 0)
+        lane = {"assay_lane": "unit", "pins": {},
+                "assay_command": [str(tmp_path / "bin" / "assay")]}
+        inner = run_gate.build_assay_inner(
+            lane, project, tmp_path / "repo", "deadbeef",
+            worktree=tmp_path / "repo", state_root=tmp_path / "repo" / ".run-gate",
+            closeout_commit=self._COMMIT)
+        assert self._execute(project, inner, env).returncode == 0
+        analysis = [c for c in (control / "calls").read_text().splitlines()
+                    if c.startswith("analyze ")][0]
+        assert "--request-base deadbeef" in analysis
+
+    def test_a_lane_without_a_verdict_gets_no_command_exit_binding(self, tmp_path):
+        """`--command-exit` is only meaningful against a verified verdict;
+        Assay refuses it otherwise, so it is never passed without one."""
+        project, inner, env, control = self._script(tmp_path, "ok", 0)
+        # a judge that writes no verdict (it never touches .assay/verdict-*)
+        assert self._execute(project, inner, env).returncode == 0
+        verdictless = inner.replace(
+            "if [ -f .assay/verdict-unit.json ]", "if [ -f /nonexistent/verdict ]")
+        assert verdictless != inner
+        (control / "calls").unlink()
+        assert self._execute(project, verdictless, env).returncode == 0
+        analysis = [c for c in (control / "calls").read_text().splitlines()
+                    if c.startswith("analyze ")][0]
+        assert "--verdict" not in analysis and "--command-exit" not in analysis
+
+    def test_a_failed_setup_runs_neither_the_judge_nor_the_analysis(
+            self, tmp_path):
+        project, _inner, env, control = self._script(tmp_path, "ok", 0)
+        lane = {"assay_lane": "unit",
+                "assay_command": [str(tmp_path / "bin" / "assay")],
+                "pins": {"judge": {"sha256": "missing.sha256"}}}
+        inner = run_gate.build_assay_inner(
+            lane, project, tmp_path / "repo", worktree=tmp_path / "repo",
+            state_root=tmp_path / "repo" / ".run-gate",
+            closeout_commit=self._COMMIT)
+        proc = self._execute(project, inner, env)
+        assert proc.returncode != 0
+        assert not (control / "calls").exists()
+        assert not (project / ".assay" / "campaign-unit.json").exists()
+
+    def test_a_killed_lane_leaves_no_closeout_of_an_earlier_run(
+            self, tmp_path, child_process_scope):
+        project, inner, env, control = self._script(tmp_path, "ok", 0)
+        assay = project / ".assay"
+        assay.mkdir()
+        for suffix in run_gate.ASSAY_CLOSEOUT_SUFFIXES:
+            (assay / f"campaign-unit.{suffix}").write_text("STALE")
+        (control / "kill_parent").write_text("")
+        proc = self._execute(project, inner, env)
+        assert proc.returncode != 0  # SIGKILL of the script itself
+        assert [p.name for p in assay.glob("campaign-unit.*")] == []
+
+    def test_without_a_commit_the_script_is_the_pre_closeout_script(self, tmp_path):
+        lane = {"assay_lane": "unit", "assay_command": ["assay"], "pins": {}}
+        inner = run_gate.build_assay_inner(lane, Path("/p"), Path("/r"))
+        assert "campaign" not in inner and "rc=" not in inner
+        assert inner.rstrip().split()[-2] == "--state-dir"
+        with_commit = run_gate.build_assay_inner(
+            lane, Path("/p"), Path("/r"), closeout_commit=self._COMMIT)
+        assert "campaign-unit.json" in with_commit
+        assert 'exit "$rc"; }' in with_commit
+
+    def _run_inner(self, tmp_path, budget, *, analyze_sleep=0, edit=None):
+        """Execute the real inner script with a recording fake judge whose
+        `analyze` can be made slow; `edit` rewrites the script before it
+        runs (to shrink a cap without a minutes-long sleep)."""
+        project = tmp_path / "proj"
+        project.mkdir(exist_ok=True)
+        (tmp_path / ".run-gate").mkdir(exist_ok=True)
+        fake = tmp_path / "fake-assay"
+        log = tmp_path / "calls.log"
+        fake.write_text(f'#!/bin/sh\necho "$1" >> {log}\n'
+                        f'[ "$1" = analyze ] && sleep {analyze_sleep}\nexit 0\n')
+        fake.chmod(0o755)
+        lane = {"assay_lane": "unit", "assay_command": [str(fake)], "pins": {}}
+        if budget is not None:
+            lane["budget"] = budget
+        inner = run_gate.build_assay_inner(
+            lane, project, tmp_path, closeout_commit=self._COMMIT)
+        if edit is not None:
+            edited = edit(inner)
+            assert edited != inner
+            inner = edited
+        done = subprocess.run(["bash", "-c", inner], cwd=project,
+                              capture_output=True, text=True, timeout=60)
+        calls = log.read_text().split() if log.exists() else []
+        return done, calls
+
+    def test_the_closeout_runs_inside_a_roomy_budget_and_keeps_the_lane_exit(self, tmp_path):
+        done, calls = self._run_inner(tmp_path, "1h")
+        assert done.returncode == 0, done.stderr
+        assert calls == ["run", "analyze", "analyze"]
+        exits = (tmp_path / "proj" / ".assay" / "campaign-unit.exit").read_text()
+        assert exits == "0 0\n"
+
+    def test_the_closeout_is_skipped_when_the_lane_budget_is_nearly_spent(self, tmp_path):
+        done, calls = self._run_inner(tmp_path, "10s")
+        assert done.returncode == 0, done.stderr
+        assert calls == ["run"]  # no analysis eats the lane's remaining budget
+        assay = tmp_path / "proj" / ".assay"
+        # The skip names itself where the host's "unavailable" reason reads
+        # its hint, and leaves no json/text/exit file to mistake for a run.
+        err = (assay / "campaign-unit.err").read_text()
+        assert err.startswith("closeout skipped: ") and "40 s floor" in err
+        assert sorted(p.name for p in assay.glob("campaign-unit.*")) == \
+            ["campaign-unit.err"]
+
+    def test_each_analysis_call_gets_a_quarter_of_the_remaining_budget(self, tmp_path):
+        """Two calls, each at most a quarter of what is left: together they
+        can never take more than half, whatever the judge does."""
+        lane = {"assay_lane": "unit", "assay_command": ["assay"], "pins": {},
+                "budget": "100s"}
+        inner = run_gate.build_assay_inner(
+            lane, Path("/p"), Path("/r"), closeout_commit=self._COMMIT)
+        assert "__rg_co_left=$((100 - SECONDS))" in inner
+        assert "__rg_co_cap=$((__rg_co_left / 4 - 5))" in inner
+        assert f"-gt {run_gate.ASSAY_CLOSEOUT_TIMEOUT_SECONDS}" in inner
+        assert 'if [ "$__rg_co_cap" -ge 5 ]' in inner   # i.e. >= 40 s left
+        # Two calls of (left/4 - 5) each, so at most left/2 - 10 in total.
+        assert inner.count("timeout $__rg_co_cap") == 1
+        assert inner.count('"${__rg_co_a[@]}" --format') == 2
+
+    def test_a_json_call_that_times_out_skips_the_text_call(
+            self, tmp_path, child_process_scope):
+        """The text call would only time out the same way and spend a second
+        cap; the exit file records 124 for both and the .err says why."""
+        done, calls = self._run_inner(
+            tmp_path, "1h", analyze_sleep=5,
+            edit=lambda s: s.replace("__rg_co_cap=$((__rg_co_left / 4 - 5))",
+                                     "__rg_co_cap=1").replace(
+                'if [ "$__rg_co_cap" -ge 5 ]', 'if [ "$__rg_co_cap" -ge 1 ]'))
+        assert done.returncode == 0, done.stderr
+        assert calls == ["run", "analyze"]
+        assay = tmp_path / "proj" / ".assay"
+        assert (assay / "campaign-unit.exit").read_text() == "124 124\n"
+        assert "timed out after 1 s; text rendering skipped" in \
+            (assay / "campaign-unit.err").read_text()
+        assert not (assay / "campaign-unit.txt").exists()
+
+    def test_the_closeout_without_a_declared_budget_still_runs(self, tmp_path):
+        done, calls = self._run_inner(tmp_path, None)
+        assert done.returncode == 0, done.stderr
+        assert calls == ["run", "analyze", "analyze"]
+
+    # -- the host collector (no shell) --------------------------------------
+
+    def _doc(self, **over):
+        document = {"schema_version": 2, "analysis": "mutation_campaign",
+                    "status": "incomplete", "lane": "unit",
+                    "expected_commit": self._COMMIT,
+                    "verdict": {"outcome": "FAIL", "exit_code": 1,
+                                "observed_command_exit": 1}}
+        document.update(over)
+        return document
+
+    def _seed(self, tmp_path, document=None, *, text=None, exits="3 3\n",
+              err=None):
+        assay = tmp_path / "proj" / ".assay"
+        assay.mkdir(parents=True, exist_ok=True)
+        document = self._doc() if document is None else document
+        body = json.dumps(document) if isinstance(document, dict) else document
+        (assay / "campaign-unit.json").write_text(body)
+        (assay / "campaign-unit.txt").write_text(
+            f"unit: {document['status']} outcome=FAIL planned=1\n"
+            if text is None else text)
+        if exits is not None:
+            (assay / "campaign-unit.exit").write_text(exits)
+        if err is not None:
+            (assay / "campaign-unit.err").write_text(err)
+        return assay / "verdict-unit.json"
+
+    def _collect(self, tmp_path, monkeypatch, verdict_path, *, commit=None,
+                 result=None, verdict_document=None, run_id="run1"):
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR,
+                           str(tmp_path / "evidence"))
+        result = result or run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL")
+        return run_gate.collect_assay_closeout(
+            {"assay_lane": "unit"}, "unit", run_id, commit or self._COMMIT,
+            verdict_path, result, verdict_document)
+
+    def test_a_coherent_closeout_is_retained_verbatim_and_named(
+            self, tmp_path, monkeypatch):
+        verdict = self._seed(tmp_path)
+        closeout = self._collect(tmp_path, monkeypatch, verdict)
+        assert closeout["status"] == "incomplete"
+        assert closeout["analysis_status"] == "incomplete"
+        assert closeout["analysis_exit"] == 3
+        json_path, text_path = Path(closeout["json_path"]), Path(closeout["text_path"])
+        assert json_path.parent == tmp_path / "evidence" / "lanes" / "unit"
+        assert json_path.name == "run1.campaign.json"
+        assert text_path.name == "run1.campaign.txt"
+        source = verdict.parent
+        assert json_path.read_bytes() == (source / "campaign-unit.json").read_bytes()
+        assert text_path.read_bytes() == (source / "campaign-unit.txt").read_bytes()
+        assert json_path.stat().st_mode & 0o777 == 0o600
+        assert closeout["json_sha256"] == hashlib.sha256(
+            json_path.read_bytes()).hexdigest()
+        assert closeout["text_sha256"] == hashlib.sha256(
+            text_path.read_bytes()).hexdigest()
+
+    def test_a_lane_with_no_r2_claim_has_no_campaign_and_retains_nothing(
+            self, tmp_path, monkeypatch):
+        verdict = self._seed(tmp_path)
+        closeout = self._collect(
+            tmp_path, monkeypatch, verdict,
+            verdict_document={"claims": [
+                self._claim("R0"), self._claim("R1")]})
+        assert closeout["status"] == "not_applicable"
+        assert closeout["json_path"] is None
+        assert not (tmp_path / "evidence").exists()
+
+    @staticmethod
+    def _claim(rigor, status="PASS", **over):
+        claim = {"rigor": rigor, "status": status, "source": "computed",
+                 "verified_by_assay": True, "reason_code": None}
+        claim.update(over)
+        return claim
+
+    @pytest.mark.parametrize("claims", [
+        [{"rigor": "R0", "status": "PASS", "source": "computed",
+          "verified_by_assay": True}, "R1"],                  # non-dict entry
+        [{"rigor": "R0", "status": "PASS", "source": "computed",
+          "verified_by_assay": True}, None],
+        [{"rigor": "R0", "status": "PASS", "source": "computed",
+          "verified_by_assay": True},
+         {"status": "PASS", "source": "computed",
+          "verified_by_assay": True}],                        # no rigor
+        [{"rigor": None, "status": "PASS", "source": "computed",
+          "verified_by_assay": True}],
+        [{"rigor": 1, "status": "PASS", "source": "computed",
+          "verified_by_assay": True}],
+        [{"rigor": "R9", "status": "PASS", "source": "computed",
+          "verified_by_assay": True}],
+        [{"rigor": "r2", "status": "PASS", "source": "computed",
+          "verified_by_assay": True}],
+        [{"rigor": ["R2"], "status": "PASS", "source": "computed",
+          "verified_by_assay": True}],
+        [{"rigor": "R0", "source": "computed", "verified_by_assay": True}],
+        [{"rigor": "R0", "status": "GREEN", "source": "computed",
+          "verified_by_assay": True}],                        # unknown status
+        [{"rigor": "R0", "status": 0, "source": "computed",
+          "verified_by_assay": True}],
+        # forged / unverified metadata: a plausible R0/R1 list that Assay
+        # never computed or verified must not prove "no R2"
+        [{"rigor": "R0", "status": "PASS"}],                  # both missing
+        [{"rigor": "R0", "status": "PASS", "source": "computed"}],
+        [{"rigor": "R0", "status": "PASS", "verified_by_assay": True}],
+        [{"rigor": "R0", "status": "PASS", "source": "computed",
+          "verified_by_assay": False}],
+        [{"rigor": "R0", "status": "PASS", "source": "computed",
+          "verified_by_assay": "true"}],                      # truthy, not True
+        [{"rigor": "R0", "status": "PASS", "source": "computed",
+          "verified_by_assay": 1}],
+        [{"rigor": "R0", "status": "PASS", "source": "adjudicated",
+          "verified_by_assay": True}],
+        [{"rigor": "R0", "status": "PASS", "source": "attested",
+          "verified_by_assay": True}],
+        [{"rigor": "R0", "status": "PASS", "source": None,
+          "verified_by_assay": True}],
+        [{"rigor": "R0", "status": "PASS", "source": "computed",
+          "verified_by_assay": True, "reason_code": 5}],     # bad reason_code
+        [{"rigor": "R0", "status": "PASS", "source": "computed",
+          "verified_by_assay": True, "reason_code": ["X"]}],
+        # one good claim does not launder an unverified sibling
+        [{"rigor": "R0", "status": "PASS", "source": "computed",
+          "verified_by_assay": True},
+         {"rigor": "R1", "status": "PASS", "source": "computed",
+          "verified_by_assay": False}],
+        # duplicates and a real R2
+        [{"rigor": "R1", "status": "PASS", "source": "computed",
+          "verified_by_assay": True},
+         {"rigor": "R1", "status": "PASS", "source": "computed",
+          "verified_by_assay": True}],
+        [{"rigor": "R0", "status": "PASS", "source": "computed",
+          "verified_by_assay": True},
+         {"rigor": "R2", "status": "PASS", "source": "computed",
+          "verified_by_assay": True}],
+        [], {"R0": "PASS"}, "R0", None,
+    ])
+    def test_malformed_unverified_or_incomplete_claims_never_prove_not_applicable(
+            self, tmp_path, monkeypatch, claims):
+        assert run_gate.claims_prove_no_r2(claims) is False
+        verdict = self._seed(tmp_path)
+        closeout = self._collect(
+            tmp_path, monkeypatch, verdict,
+            verdict_document={"claims": claims},
+            run_id=f"run-{abs(hash(repr(claims)))}")
+        # the closeout is analyzed and retained, not declared absent
+        assert closeout["status"] == "incomplete"
+        assert closeout["json_path"] is not None
+
+    def test_only_a_verified_wellformed_claim_set_without_r2_is_not_applicable(
+            self):
+        good = [self._claim("R0"),
+                self._claim("R1", "FAIL", reason_code="COVERAGE_BELOW_FLOOR")]
+        assert run_gate.claims_prove_no_r2(good) is True
+        assert run_gate.claims_prove_no_r2(good[:1]) is True
+        absent = {k: v for k, v in good[0].items() if k != "reason_code"}
+        assert run_gate.claims_prove_no_r2([absent]) is True
+        assert run_gate.claims_prove_no_r2(
+            good + [self._claim("R2")]) is False
+        for key, value in (("verified_by_assay", False), ("source", "attested")):
+            forged = [dict(good[0], **{key: value})]
+            assert run_gate.claims_prove_no_r2(forged) is False
+
+    def test_an_r2_claim_or_unreadable_claims_never_read_as_not_applicable(
+            self, tmp_path, monkeypatch):
+        verdict = self._seed(tmp_path)
+        for document in ({"claims": [{"rigor": "R2"}]}, {"claims": []},
+                         {"claims": "x"}, {}, None):
+            closeout = self._collect(
+                tmp_path, monkeypatch, verdict, verdict_document=document,
+                run_id=f"run-{abs(hash(repr(document)))}")
+            assert closeout["status"] == "incomplete", document
+
+    @pytest.mark.parametrize("name,mutate", [
+        ("another lane", lambda d: d.update(lane="other")),
+        ("another commit", lambda d: d.update(expected_commit="b" * 40)),
+        ("unknown status", lambda d: d.update(status="done")),
+        ("wrong analysis kind", lambda d: d.update(analysis="progress")),
+        ("verdict outcome differs", lambda d: d["verdict"].update(outcome="PASS")),
+        ("verdict exit differs", lambda d: d["verdict"].update(exit_code=2)),
+        ("observed exit differs",
+         lambda d: d["verdict"].update(observed_command_exit=0)),
+    ])
+    def test_a_closeout_that_is_not_this_lanes_this_commit_is_invalid(
+            self, tmp_path, monkeypatch, name, mutate):
+        document = self._doc()
+        mutate(document)
+        verdict = self._seed(tmp_path, document)
+        closeout = self._collect(tmp_path, monkeypatch, verdict)
+        assert closeout["status"] == "invalid", name
+        # still retained for forensics -- invalid is a closeout status, not a
+        # reason to lose the bytes -- and the lane result is not an input
+        assert closeout["json_path"] is not None
+
+    def test_a_closeout_cannot_promote_a_failed_lane(self, tmp_path, monkeypatch):
+        document = self._doc(status="complete", verdict={
+            "outcome": "PASS", "exit_code": 0, "observed_command_exit": 0})
+        verdict = self._seed(tmp_path, document, exits="0 0\n",
+                             text="unit: complete outcome=PASS planned=1\n")
+        result = run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL")
+        closeout = self._collect(tmp_path, monkeypatch, verdict, result=result)
+        assert closeout["status"] == "invalid"
+        assert result == run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL")
+
+    @pytest.mark.parametrize("exits", [None, "0 0\n", "3 0\n", "3 2\n", "x\n"])
+    def test_exits_must_be_the_ones_the_status_documents(
+            self, tmp_path, monkeypatch, exits):
+        verdict = self._seed(tmp_path, exits=exits)
+        assert self._collect(tmp_path, monkeypatch, verdict)["status"] \
+            == "invalid"
+
+    def test_text_that_disagrees_with_the_json_status_is_invalid(
+            self, tmp_path, monkeypatch):
+        verdict = self._seed(tmp_path, text="unit: complete outcome=PASS\n")
+        assert self._collect(tmp_path, monkeypatch, verdict)["status"] \
+            == "invalid"
+
+    def test_an_analysis_refusal_is_its_own_status_not_a_lane_failure(
+            self, tmp_path, monkeypatch):
+        refusal = {"schema_version": 2, "kind": "assay-campaign-analysis",
+                   "status": "evidence_error", "lane": "unit",
+                   "expected_commit": self._COMMIT,
+                   "errors": [{"source": "progress", "message": "torn"}],
+                   "errors_truncated": False}
+        verdict = self._seed(tmp_path, refusal, exits="2 2\n",
+                             text=json.dumps(refusal))
+        closeout = self._collect(tmp_path, monkeypatch, verdict)
+        assert closeout["status"] == "evidence_error"
+        assert closeout["analysis_exit"] == 2
+
+    def test_missing_files_are_unavailable_never_an_empty_or_zero_closeout(
+            self, tmp_path, monkeypatch):
+        assay = tmp_path / "proj" / ".assay"
+        assay.mkdir(parents=True)
+        (assay / "campaign-unit.err").write_text(
+            "assay: error: unrecognized arguments: campaign\n")
+        closeout = self._collect(tmp_path, monkeypatch, assay / "verdict-unit.json")
+        assert closeout["status"] == "unavailable"
+        assert "unrecognized arguments: campaign" in closeout["reason"]
+        assert closeout["json_path"] is None
+        assert not (tmp_path / "evidence").exists()
+
+    def test_an_empty_closeout_is_no_analysis_not_a_zero_campaign(
+            self, tmp_path, monkeypatch):
+        assay = tmp_path / "proj" / ".assay"
+        assay.mkdir(parents=True)
+        for suffix in ("json", "txt"):
+            (assay / f"campaign-unit.{suffix}").write_text("")
+        (assay / "campaign-unit.exit").write_text("0 0\n")
+        closeout = self._collect(tmp_path, monkeypatch, assay / "verdict-unit.json")
+        assert closeout["status"] == "unavailable"
+        assert closeout["analysis_exit"] == 0
+        assert closeout["json_path"] is None
+        assert not (tmp_path / "evidence").exists()
+
+    def test_a_symlinked_or_oversized_artifact_is_refused_by_name(
+            self, tmp_path, monkeypatch):
+        verdict = self._seed(tmp_path)
+        target = tmp_path / "elsewhere.json"
+        target.write_text(json.dumps(self._doc()))
+        link = verdict.parent / "campaign-unit.json"
+        link.unlink()
+        link.symlink_to(target)
+        closeout = self._collect(tmp_path, monkeypatch, verdict)
+        assert closeout["status"] == "unavailable"
+        assert "campaign-unit.json" in closeout["reason"]
+        link.unlink()
+        with link.open("wb") as stream:
+            stream.truncate(run_gate.ASSAY_CLOSEOUT_MAX_BYTES + 1)
+        closeout = self._collect(tmp_path, monkeypatch, verdict, run_id="run2")
+        assert closeout["status"] == "unavailable"
+        assert "is over" in closeout["reason"]
+
+    def test_an_unresolved_commit_requests_no_analysis(self, tmp_path, monkeypatch):
+        verdict = self._seed(tmp_path)
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR, str(tmp_path / "e"))
+        closeout = run_gate.collect_assay_closeout(
+            {"assay_lane": "unit"}, "unit", "r", None, verdict,
+            run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL"), None)
+        assert closeout["status"] == "unavailable"
+        assert "commit" in closeout["reason"]
+
+    def test_unwritable_evidence_is_retention_error_and_never_overwrites(
+            self, tmp_path, monkeypatch):
+        verdict = self._seed(tmp_path)
+        first = self._collect(tmp_path, monkeypatch, verdict)
+        assert first["status"] == "incomplete"
+        before = Path(first["json_path"]).read_bytes()
+        again = self._collect(tmp_path, monkeypatch, verdict)  # same run id
+        assert again["status"] == "retention_error"
+        assert Path(first["json_path"]).read_bytes() == before
+        blocker = tmp_path / "blocker"
+        blocker.write_text("a file, not a directory")
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR, str(blocker / "x"))
+        broken = run_gate.collect_assay_closeout(
+            {"assay_lane": "unit"}, "unit", "run3", self._COMMIT, verdict,
+            run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL"), None)
+        assert broken["status"] == "retention_error"
+        assert broken["json_sha256"] is not None
+
+    def test_finish_never_raises_and_never_returns_a_lane_result(
+            self, tmp_path, monkeypatch, capsys):
+        def explode(*_a, **_k):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(run_gate, "collect_assay_closeout", explode)
+        record = {"run_id": "r"}
+        result = run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL")
+        closeout = run_gate.finish_assay_closeout(
+            {"assay_lane": "unit"}, "unit", record, self._COMMIT,
+            tmp_path / "v.json", result, None)
+        assert closeout["status"] == "unavailable"
+        assert "RuntimeError: boom" in closeout["reason"]
+        assert record["closeout"] == closeout
+        assert result == run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL")
+        assert "WARNING: assay closeout unavailable" in capsys.readouterr().err
+
+    # -- registered lanes through main() ------------------------------------
+
+    def _project(self, tmp_path, monkeypatch, *, analyze, run_exit, cfg=None):
+        cfg = cfg or ASSAY_LANE_CFG.replace(
+            'environment = "tester-unified"', 'environment = "bare-host"', 1)
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, cfg)
+        (proj / "assay.toml").write_text("# judged by the fake judge\n")
+        commit_all(repo, "assay config")
+        control = tmp_path / "control"
+        control.mkdir()
+        (control / "analyze").write_text(analyze)
+        (control / "run_exit").write_text(str(run_exit))
+        monkeypatch.setenv("FAKE_CONTROL", str(control))
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR,
+                           str(tmp_path / "evidence"))
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda p, **k: Path("/phys/host/root"))
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ["run-gate"])
+        fake_docker(tmp_path, monkeypatch)
+        install_fake_assay(monkeypatch, self._JUDGE.replace(
+            "@INVENTORY@", _inventory(rigor=["R0", "R1"])))
+        seen = []
+        real = run_gate.finish_assay_closeout
+
+        def spy(*args, **kwargs):
+            seen.append(real(*args, **kwargs))
+            return seen[-1]
+
+        monkeypatch.setattr(run_gate, "finish_assay_closeout", spy)
+        return repo, proj, control, seen
+
+    _EXPECTED = {0: "PASS", 1: "FAIL", 2: "ERROR", 4: "BUDGET_EXCEEDED"}
+
+    def test_registered_lane_retains_text_and_json_with_gate_evidence(
+            self, tmp_path, monkeypatch, capfd):
+        _repo, _proj, _control, seen = self._project(
+            tmp_path, monkeypatch, analyze="ok", run_exit=1)
+        assert run_gate.main(["ui-unit"]) == run_gate.VERDICT_EXIT_CODES["FAIL"]
+        out = capfd.readouterr()
+        assert "verdict FAIL" in out.out
+        assert "assay closeout: campaign incomplete" in out.out
+        assert "unchanged" in out.out
+        [closeout] = seen
+        assert closeout["status"] == "incomplete"
+        document = json.loads(Path(closeout["json_path"]).read_text())
+        assert document["lane"] == "ui_unit"
+        assert document["expected_commit"] == run_gate.head_commit(_repo)
+        text = Path(closeout["text_path"]).read_text()
+        assert text.startswith("ui_unit: incomplete ")
+        # the closeout is filed under the GATE's lane name, where the lane
+        # log of the same run lives
+        assert Path(closeout["json_path"]).parent == (
+            tmp_path / "evidence" / "lanes" / "ui-unit")
+        assert Path(closeout["text_path"]).parent \
+            == Path(closeout["json_path"]).parent
+
+    @pytest.mark.parametrize("analyze", ["ok", "crash", "unsupported", "empty",
+                                         "disagree"])
+    @pytest.mark.parametrize("run_exit", [0, 1, 2, 4])
+    def test_the_lane_verdict_and_exit_are_independent_of_the_closeout(
+            self, tmp_path, monkeypatch, capfd, analyze, run_exit):
+        _repo, _proj, _control, seen = self._project(
+            tmp_path, monkeypatch, analyze=analyze, run_exit=run_exit)
+        expected = self._EXPECTED[run_exit]
+        assert run_gate.main(["ui-unit"]) == run_gate.VERDICT_EXIT_CODES[expected]
+        out = capfd.readouterr()
+        assert f"verdict {expected}" in out.out
+        assert len(seen) == 1
+        if analyze in ("crash", "unsupported", "empty"):
+            # a failed analysis leaves empty files: that is no closeout
+            assert seen[0]["status"] == "unavailable"
+            assert seen[0]["json_path"] is None
+            assert "assay closeout unavailable" in out.err
+            assert not list((tmp_path / "evidence").rglob("*.campaign.*"))
+        elif analyze == "disagree" and run_exit != 0:
+            # the closeout claims a complete PASS; the lane result stands
+            assert seen[0]["status"] == "invalid"
+            assert "assay closeout invalid" in out.err
+            assert "verdict PASS" not in out.out
+        elif analyze == "disagree":
+            assert seen[0]["status"] == "complete"
+        else:
+            assert seen[0]["status"] == "incomplete"
+
+    def test_evidence_that_cannot_be_written_is_named_and_the_lane_stands(
+            self, tmp_path, monkeypatch, capfd):
+        _repo, _proj, _control, seen = self._project(
+            tmp_path, monkeypatch, analyze="ok", run_exit=1)
+        blocker = tmp_path / "blocker"
+        blocker.write_text("not a directory")
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR, str(blocker / "ev"))
+        assert run_gate.main(["ui-unit"]) == run_gate.VERDICT_EXIT_CODES["FAIL"]
+        out = capfd.readouterr()
+        assert seen[0]["status"] == "retention_error"
+        assert "assay closeout retention_error" in out.err
+        assert "verdict FAIL" in out.out
+
+    def test_a_command_lane_that_wraps_assay_is_never_analyzed_by_inference(
+            self, tmp_path, monkeypatch, capfd):
+        cfg = """\
+            schema_version = 1
+
+            [lanes.wrap]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["bash", "-c", "cd {worktree}/proj && mkdir -p .assay && echo '{}' > .assay/progress-ui_unit.jsonl && assay run ui_unit --file assay.toml --verdict-json .assay/verdict-ui_unit.json --progress .assay/progress-ui_unit.jsonl"]
+            clean_tree = false
+        """
+        _repo, _proj, control, seen = self._project(
+            tmp_path, monkeypatch, analyze="ok", run_exit=0, cfg=cfg)
+        assert run_gate.main(["wrap"]) == 0
+        capfd.readouterr()
+        assert seen == []
+        assert [line.split()[0] for line in
+                (control / "calls").read_text().splitlines()] == ["run"]
+        assert not (tmp_path / "evidence").exists() or not list(
+            (tmp_path / "evidence").rglob("*.campaign.*"))
+
+    @pytest.mark.parametrize("name,body,text,exits", [
+        ("json is not UTF-8", b"\xff\xfe", "unit: incomplete x\n", "3 3\n"),
+        ("json is an array", b"[]", "unit: incomplete x\n", "3 3\n"),
+        ("refusal without its kind", json.dumps({
+            "status": "evidence_error", "lane": "unit",
+            "expected_commit": "a" * 40}).encode(), "{}", "2 2\n"),
+        ("refusal text is not JSON", json.dumps({
+            "kind": "assay-campaign-analysis", "status": "evidence_error",
+            "lane": "unit", "expected_commit": "a" * 40}).encode(),
+         "not json", "2 2\n"),
+        ("refusal text says another status", json.dumps({
+            "kind": "assay-campaign-analysis", "status": "evidence_error",
+            "lane": "unit", "expected_commit": "a" * 40}).encode(),
+         json.dumps({"status": "complete"}), "2 2\n"),
+        ("complete without a verdict has no documented exit", json.dumps({
+            "analysis": "mutation_campaign", "status": "complete",
+            "lane": "unit", "expected_commit": "a" * 40}).encode(),
+         "unit: complete x\n", "0 0\n"),
+    ])
+    def test_every_other_way_a_closeout_can_be_incoherent_is_invalid(
+            self, tmp_path, monkeypatch, name, body, text, exits):
+        assay = tmp_path / "proj" / ".assay"
+        assay.mkdir(parents=True)
+        (assay / "campaign-unit.json").write_bytes(body)
+        (assay / "campaign-unit.txt").write_text(text)
+        (assay / "campaign-unit.exit").write_text(exits)
+        closeout = self._collect(tmp_path, monkeypatch, assay / "verdict-unit.json")
+        assert closeout["status"] == "invalid", name
+
+    def test_text_that_is_not_utf8_is_invalid(self, tmp_path, monkeypatch):
+        verdict = self._seed(tmp_path)
+        (verdict.parent / "campaign-unit.txt").write_bytes(b"\xff\xfe")
+        assert self._collect(tmp_path, monkeypatch, verdict)["status"] == "invalid"
+
+    def test_a_directory_in_place_of_a_closeout_file_is_named(
+            self, tmp_path, monkeypatch):
+        verdict = self._seed(tmp_path)
+        (verdict.parent / "campaign-unit.txt").unlink()
+        (verdict.parent / "campaign-unit.txt").mkdir()
+        closeout = self._collect(tmp_path, monkeypatch, verdict)
+        assert closeout["status"] == "unavailable"
+        assert "campaign-unit.txt" in closeout["reason"]
+
+    def test_read_closeout_artifact_bounds_and_refuses_non_regular_files(self, tmp_path):
+        read = run_gate._read_closeout_artifact
+        assert read(tmp_path / "absent", 10) == (None, None)
+        data, why = read(tmp_path, 10)
+        assert data is None and "is not a regular file" in why
+        big = tmp_path / "big.json"
+        big.write_bytes(b"x" * 50)
+        data, why = read(big, 10)
+        assert data is None and "is over 10 bytes" in why
+        data, why = read(big, 10, truncate=True)
+        assert data == b"x" * 10 and why is None
+        small = tmp_path / "small.json"
+        small.write_bytes(b"{}")
+        assert read(small, 10) == (b"{}", None)
+
+    def test_read_closeout_artifact_accepts_a_file_at_the_size_limit(
+            self, tmp_path):
+        exact = tmp_path / "exact.json"
+        exact.write_bytes(b"x" * 10)
+        assert run_gate._read_closeout_artifact(exact, 10) == (b"x" * 10, None)
+
+    def test_read_closeout_artifact_accepts_exact_limit_after_short_fstat(
+            self, tmp_path, monkeypatch):
+        exact = tmp_path / "exact-after-stat.json"
+        exact.write_bytes(b"x" * 10)
+        real_fstat = os.fstat
+
+        class _Underreported:
+            def __init__(self, info):
+                self.st_mode, self.st_size = info.st_mode, 0
+
+        monkeypatch.setattr(
+            run_gate.os, "fstat", lambda fd: _Underreported(real_fstat(fd)))
+        assert run_gate._read_closeout_artifact(exact, 10) == (b"x" * 10, None)
+
+    @pytest.mark.parametrize("empty_suffix", ["json", "txt"])
+    def test_an_empty_closeout_artifact_is_unavailable_independently(
+            self, tmp_path, monkeypatch, empty_suffix):
+        verdict = self._seed(tmp_path)
+        (verdict.parent / f"campaign-unit.{empty_suffix}").write_bytes(b"")
+        closeout = self._collect(tmp_path, monkeypatch, verdict)
+        assert closeout["status"] == "unavailable"
+        label = "JSON" if empty_suffix == "json" else "text"
+        assert f"no {label} closeout" in closeout["reason"]
+
+    def test_complete_closeout_disclosure_flushes_its_stdout_line(
+            self, monkeypatch):
+        streams = _capture_run_gate_prints(monkeypatch)
+        run_gate.report_assay_closeout(
+            {"status": "complete", "json_path": "/e/campaign.json",
+             "text_path": "/e/campaign.txt"},
+            run_gate.LaneResult("PASS"))
+        assert _has_flushed_print(streams, "stdout",
+                                  "assay closeout: campaign complete")
+
+    def test_closeout_warning_disclosure_flushes_its_stderr_line(
+            self, monkeypatch):
+        streams = _capture_run_gate_prints(monkeypatch)
+        run_gate.report_assay_closeout(
+            {"status": "invalid", "reason": "bad evidence",
+             "json_path": None}, run_gate.LaneResult("FAIL", 1))
+        assert _has_flushed_print(streams, "stderr",
+                                  "WARNING: assay closeout invalid")
+
+    def test_closeout_reporter_crash_warning_flushes_its_stderr_line(
+            self, monkeypatch):
+        streams = _capture_run_gate_prints(monkeypatch)
+        closeout = {"status": "unavailable", "reason": "not present",
+                    "json_path": None}
+        monkeypatch.setattr(run_gate, "collect_assay_closeout",
+                            lambda *args, **kwargs: closeout)
+
+        def broken_report(*args, **kwargs):
+            raise RuntimeError("planted reporter failure")
+
+        monkeypatch.setattr(run_gate, "report_assay_closeout", broken_report)
+        result = run_gate.finish_assay_closeout(
+            {"assay_lane": "unit"}, "unit", {}, "commit",
+            Path("verdict.json"), run_gate.LaneResult("FAIL", 1), None)
+        assert result is closeout
+        assert _has_flushed_print(streams, "stderr",
+                                  "closeout could not be reported")
+
+    def test_read_closeout_artifact_survives_a_file_that_grows_or_fails_to_read(
+            self, tmp_path, monkeypatch):
+        read = run_gate._read_closeout_artifact
+        grown = tmp_path / "grown.json"
+        grown.write_bytes(b"x" * 50)
+        real_fstat = os.fstat
+
+        class _Small:
+            def __init__(self, info):
+                self.st_mode, self.st_size = info.st_mode, 0
+
+        # fstat said "small", the read finds more: refuse (or cut) after the fact.
+        monkeypatch.setattr(run_gate.os, "fstat", lambda fd: _Small(real_fstat(fd)))
+        data, why = read(grown, 10)
+        assert data is None and "is over 10 bytes" in why
+        assert read(grown, 10, truncate=True) == (b"x" * 10, None)
+        monkeypatch.undo()
+
+        def broken(*_a, **_k):
+            raise OSError("boom")
+        monkeypatch.setattr(run_gate.os, "fdopen", broken)
+        data, why = read(grown, 100)
+        assert data is None and "cannot read grown.json: boom" in why
+
+    def test_expected_exit_of_a_complete_closeout_without_a_verdict_is_unknown(self):
+        expected = run_gate._closeout_expected_exit
+        assert expected({"status": "complete"}) is None
+        assert expected({"status": "complete", "verdict": {"outcome": 3}}) is None
+        assert expected({"status": "complete", "verdict": {"outcome": "PASS"}}) == 0
+        assert expected({"status": "complete", "verdict": {"outcome": "FAIL"}}) == 1
+        assert expected({"status": "incomplete"}) == 3
+        assert expected({"status": "evidence_error"}) == 2
+        assert expected({"status": "other"}) is None
+
+    def test_the_stderr_hint_is_empty_for_blank_output(self):
+        assert run_gate._closeout_stderr_hint(None) == ""
+        assert run_gate._closeout_stderr_hint(b"  \n\n") == ""
+        assert run_gate._closeout_stderr_hint(b"a\nb") == "; analysis stderr: b"
+
+    def test_stderr_is_only_a_bounded_hint_and_never_refuses_the_closeout(
+            self, tmp_path, monkeypatch):
+        assay = tmp_path / "proj" / ".assay"
+        assay.mkdir(parents=True)
+        (assay / "campaign-unit.err").write_text(
+            "first\n" + "x" * 10_000 + "\nlast line\n")
+        closeout = self._collect(tmp_path, monkeypatch, assay / "verdict-unit.json")
+        assert closeout["status"] == "unavailable"
+        assert "analysis stderr: " in closeout["reason"]
+        assert len(closeout["reason"]) < 1500
+        assert "first" not in closeout["reason"]
+
+    def test_the_disclosure_line_matches_each_status(self, tmp_path, capsys):
+        result = run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL")
+        quiet = run_gate._closeout_record("not_applicable", "no campaign")
+        run_gate.report_assay_closeout(quiet, result)
+        captured = capsys.readouterr()
+        assert captured.out == "" and captured.err == ""
+        done = run_gate._closeout_record(
+            "incomplete", None, json_path="/e/j", text_path="/e/t")
+        run_gate.report_assay_closeout(done, result)
+        captured = capsys.readouterr()
+        assert "campaign incomplete" in captured.out
+        assert "lane verdict FAIL (exit 1) is unchanged" in captured.out
+        assert captured.err == ""
+        retained = run_gate._closeout_record(
+            "invalid", "disagrees", json_path="/e/j", text_path="/e/t")
+        run_gate.report_assay_closeout(retained, result)
+        captured = capsys.readouterr()
+        assert "WARNING: assay closeout invalid: disagrees" in captured.err
+        assert "retained json /e/j" in captured.err and captured.out == ""
+        bare = run_gate._closeout_record("unavailable", "nothing")
+        run_gate.report_assay_closeout(bare, result)
+        assert "retained" not in capsys.readouterr().err
+        with pytest.raises(ValueError):
+            run_gate._closeout_record("passed")
+
+    def test_a_disclosure_failure_cannot_change_the_lane_either(
+            self, tmp_path, monkeypatch, capsys):
+        def explode(*_a, **_k):
+            raise RuntimeError("print failed")
+
+        verdict = self._seed(tmp_path)
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR, str(tmp_path / "e"))
+        monkeypatch.setattr(run_gate, "report_assay_closeout", explode)
+        result = run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL")
+        closeout = run_gate.finish_assay_closeout(
+            {"assay_lane": "unit"}, "unit", None, self._COMMIT, verdict,
+            result, None)
+        assert closeout["status"] == "incomplete"
+        assert "could not be reported: print failed" in capsys.readouterr().err
+        assert result == run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL")
+
+    def test_a_run_without_a_record_still_gets_a_unique_evidence_name(
+            self, tmp_path, monkeypatch):
+        verdict = self._seed(tmp_path)
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR, str(tmp_path / "e"))
+        result = run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL")
+        names = set()
+        for _ in range(2):
+            closeout = run_gate.finish_assay_closeout(
+                {"assay_lane": "unit"}, "unit", None, self._COMMIT, verdict,
+                result, None)
+            assert closeout["status"] == "incomplete"
+            names.add(Path(closeout["json_path"]).name)
+        assert len(names) == 2
+
+    def test_whitespace_only_stderr_adds_no_hint(self, tmp_path, monkeypatch):
+        assay = tmp_path / "proj" / ".assay"
+        assay.mkdir(parents=True)
+        (assay / "campaign-unit.err").write_text("  \n\n")
+        closeout = self._collect(tmp_path, monkeypatch, assay / "verdict-unit.json")
+        assert closeout["status"] == "unavailable"
+        assert "analysis stderr" not in closeout["reason"]
+
+    def test_every_closeout_status_is_documented_where_adopters_look(self):
+        """The vocabulary is closed and public: a status added to the code
+        but not to all four documents must turn this red."""
+        for name in ("SPEC.md", "README.md", "CONSUMERS.md",
+                     "docs/DESIGN-GUIDE.md"):
+            body = (RUN_GATE_DIR / name).read_text(encoding="utf-8")
+            for status in run_gate.ASSAY_CLOSEOUT_STATUSES:
+                assert f"`{status}`" in body, (name, status)
+        assert set(run_gate.ASSAY_CLOSEOUT_STATUSES) == {
+            "complete", "incomplete", "evidence_error", "unavailable",
+            "invalid", "retention_error", "not_applicable"}
+
+    def test_a_dry_run_never_collects_a_closeout(self, tmp_path, monkeypatch):
+        _repo, _proj, _control, seen = self._project(
+            tmp_path, monkeypatch, analyze="ok", run_exit=0)
+        run_gate.main(["--dry-run", "ui-unit"])
+        assert seen == []
 
 
 class TestExecDisclosure:
@@ -3273,7 +4890,9 @@ class TestExecInnerWiring:
         calls = log.read_text().splitlines()
         exec_calls = docker_execs(log)
         inner = exec_calls[0][-1]
-        assert "echo gate-ran" in inner and "GIT_CONFIG_GLOBAL" in inner
+        assert "echo gate-ran" in inner
+        assert '"GIT_CONFIG_COUNT=$((__rg_git_n + 1))"' in inner
+        assert "GIT_CONFIG_GLOBAL" not in inner
 
     def test_exec_assay_lane_builds_assay_inner_not_crash(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
@@ -3293,7 +4912,8 @@ class TestExecInnerWiring:
         (repo / "ciu.global.toml").write_text(
             "[deploy]\nproject_name = 'myproj'\nenvironment_tag = 'dev1'\n")
         commit_all(repo, "ciu")
-        log = fake_docker(tmp_path, monkeypatch)
+        log = fake_docker_executing(tmp_path, monkeypatch)
+        install_fake_assay(monkeypatch, _fake_judge(_inventory(name="mock")))
         shim = shim_dir_of(monkeypatch) / "docker"
         body = shim.read_text()
         body = body.replace('case "$1" in', 'case "$1" in\n  ps) echo "myproj-dev1-runner" ;;')
@@ -3304,34 +4924,80 @@ class TestExecInnerWiring:
         exec_calls = lane_execs(log)   # never the RG-26 inventory probe
         inner = exec_calls[0][-1]
         assert "--file assay.toml" in inner
-        assert "GIT_CONFIG_GLOBAL" in inner
+        assert '"GIT_CONFIG_COUNT=$((__rg_git_n + 1))"' in inner
+        assert "GIT_CONFIG_GLOBAL" not in inner
 
 
-def test_assay_inner_has_git_config_global():
+def test_assay_inner_uses_only_count_injection():
     inner = run_gate.build_assay_inner(
         {"assay_lane": "x", "assay_command": ["assay"], "pins": {}},
         Path("/proj"), Path("/repo"))
-    assert "export GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig" in inner
+    assert 'export "GIT_CONFIG_KEY_${__rg_git_n}=safe.directory"' in inner
+    assert '"GIT_CONFIG_COUNT=$((__rg_git_n + 1))"' in inner
+    assert "GIT_CONFIG_GLOBAL" not in inner
+    assert "run-gate-gitconfig" not in inner
+    assert "trap " not in inner
+    assert "git config --global" not in inner
 
 
 def test_assay_inner_derives_test_temp_and_git_ceiling_from_state_root(tmp_path):
+    """An EXTERNAL state root is safe as the judge's own TMPDIR (Assay's
+    snapshot scratch lands outside the judged repository), so it keeps both
+    names and a lane that forwards TMPDIR by `env_passthrough` is unchanged."""
     repo = tmp_path / "checkout with spaces"
     project = repo / "run-gate-project"
-    state_root = repo / "durable state"
+    state_root = tmp_path / "durable state"
     inner = run_gate.build_assay_inner(
         {"assay_lane": "r1", "assay_command": ["assay"], "pins": {}},
         project, repo, state_root=state_root)
     assignment = shlex.quote(str(state_root))
     assert f"TMPDIR={assignment}" in inner
+    assert f"RUN_GATE_TMPDIR={assignment}" in inner
     assert f"GIT_CEILING_DIRECTORIES={assignment}" in inner
     assert "/worktree/.run-gate" not in inner
 
 
-def test_bare_host_assay_creates_default_state_root_for_fresh_checkout(tmp_path):
+def test_assay_inner_keeps_an_in_worktree_state_root_off_the_judge_tmpdir(
+        tmp_path):
+    """RG-98: a state root inside the judged worktree must never become the
+    judge's TMPDIR -- Assay would put its snapshot scratch inside the
+    repository and ERROR before R0. The path stays available as
+    RUN_GATE_TMPDIR for the test command."""
+    repo = tmp_path / "checkout with spaces"
+    project = repo / "run-gate-project"
+    for state_root in (None, repo / "durable state", repo / ".run-gate"):
+        inner = run_gate.build_assay_inner(
+            {"assay_lane": "r1", "assay_command": ["assay"], "pins": {}},
+            project, repo, state_root=state_root)
+        expected = shlex.quote(str(state_root or repo / ".run-gate"))
+        assert not re.search(r"(?<![A-Z_])TMPDIR=", inner)
+        assert f"RUN_GATE_TMPDIR={expected}" in inner
+        assert f"GIT_CEILING_DIRECTORIES={expected}" in inner
+
+
+def test_assay_inner_judges_a_linked_worktree_against_the_main_state_root(
+        tmp_path):
+    """The default root belongs to the checkout owning the shared `.git`; a
+    linked worktree beneath it is a different judged tree, so the root is
+    outside it and TMPDIR is exported exactly as before."""
+    repo = tmp_path / "main"
+    worktree = repo / ".worktrees" / "feature"
+    inner = run_gate.build_assay_inner(
+        {"assay_lane": "r1", "assay_command": ["assay"], "pins": {}},
+        worktree / "proj", repo, worktree=worktree)
+    assert f"TMPDIR={repo / '.run-gate'} " in inner
+
+
+def test_bare_host_assay_creates_default_state_root_for_fresh_checkout(
+        tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
     project = make_project(repo, SIMPLE_LANE)
     state_root = repo / ".run-gate"
     assert not state_root.exists()
+    monkeypatch.setattr(
+        run_gate, "assay_inventory_entry",
+        lambda *_args, **_kwargs:
+        ({"name": "r1", "rigor": ["R0"]}, "9.0.0", None))
     run_gate.assure_assay_state_root(
         None, {"kind": "assay", "assay_lane": "r1"}, {},
         "bare-host", "bare host", repo, project, repo, "")
@@ -3371,12 +5037,16 @@ def test_configured_host_state_root_refusal_names_configured_path(
     assert not configured_root.exists()
 
 
-def test_default_assay_state_root_refuses_symlink(tmp_path):
+def test_default_assay_state_root_refuses_symlink(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
     project = make_project(repo, SIMPLE_LANE)
     outside = tmp_path / "outside"
     outside.mkdir()
     (repo / ".run-gate").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(
+        run_gate, "assay_inventory_entry",
+        lambda *_args, **_kwargs:
+        ({"name": "r1", "rigor": ["R0"]}, "9.0.0", None))
     with pytest.raises(run_gate.GateError, match="not a real directory"):
         run_gate.assure_assay_state_root(
             None, {"kind": "assay", "assay_lane": "r1"}, {},
@@ -3461,22 +5131,23 @@ def test_source_backed_assay_inner_installs_selected_worktree_source():
     assert "sha256sum" not in inner
 
 
-def test_unreleased_changelog_matches_revision_and_recovery_contract():
+def test_changelog_uses_wheel_semver_and_preserves_removed_release_notes():
     changes = (RUN_GATE_DIR / "CHANGES.md").read_text()
+    preserved = (RUN_GATE_DIR / "nyxloom-trove" / "reports" /
+                 "CMRU-KI58-unreleased-notes-carry-forward-2026-10-13.md")
+    notes = preserved.read_text()
 
-    # The tagged release remains source rev 55. RG-90's telemetry change is
-    # historical at rev 60; the P5 transport and placement launch gate are
-    # current at rev 64.
-    # RG-89 stays at the revision that introduced its observer contract.
-    assert "This section describes released source rev 55." in changes
-    assert "RG-90, rev 60" in changes
-    assert f"RG-55/P5, rev {run_gate.__revision__}" in changes
-    assert "RG-89, rev 58" in changes
-    assert "RG-81, rev 54" in changes
-    assert "Older schemas refuse rather than being guessed or overwritten" \
-        in changes
-    assert "--fresh` only for an ephemeral-container lane" in changes
-    assert "lifecycle owner's confirmation" in changes
+    assert "SemVer from the installed wheel is the public tool identity" in changes
+    assert "persisted `revision` fields are provenance only" in changes
+    assert "## [23.10.0]" in changes
+    assert "## [Unreleased]" in changes
+    # CMRU requires the working section to stay empty until release; these
+    # removed notes remain preserved verbatim for the upcoming versioned
+    # section rather than being silently discarded.
+    assert "RG-90, rev 60" in notes
+    assert "RG-55/P5, rev 64" in notes
+    assert "observer-only Unix socket" in notes
+    assert "CP-11" in notes
 
 
 def test_selftest_lane_uses_bind_mounted_pytest_scratch_root():
@@ -3494,9 +5165,11 @@ def test_selftest_lane_uses_bind_mounted_pytest_scratch_root():
 
     assert argv[:2] == ["bash", "-c"] and len(argv) == 3
     script = argv[2]
-    assert script.startswith(
-        "cd {worktree}/run-gate-project && mkdir -p .run-gate/ && "
-        "RUN_GATE_TMP=$(mktemp -d .run-gate/selftest.XXXXXX) && ")
+    assert script.startswith("cd {worktree}/run-gate-project && mkdir -p .run-gate/ && ")
+    verify = 'verify-running --receipt "$RUN_GATE_RELEASE_WHEEL_RECEIPT"'
+    scratch = "RUN_GATE_TMP=$(mktemp -d .run-gate/selftest.XXXXXX)"
+    assert verify in script
+    assert script.index(verify) < script.index(scratch)
     assert 'RUN_GATE_ABS="$(realpath "$RUN_GATE_TMP")"' in script
     assert 'GIT_CEILING_DIRECTORIES="$RUN_GATE_ABS"' in script
     assert '--basetemp "$RUN_GATE_ABS"' in script
@@ -3693,6 +5366,23 @@ def test_source_inventory_checks_and_runs_selected_package_from_project_cwd(
                    for row in rows[rows_before_shadow_probe:])
 
 
+def test_assay_inventory_reports_spawn_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr(run_gate, "build_env_probe_argv",
+                        lambda *_args, **_kwargs: ["docker", "run"])
+
+    def fail_to_spawn(*_args, **_kwargs):
+        raise OSError("fixture spawn failure")
+
+    monkeypatch.setattr(run_gate.subprocess, "run", fail_to_spawn)
+    document, why = run_gate.assay_inventory(
+        "/bin/docker", {"assay_command": ["assay"], "assay_lane": "unit"},
+        {"mode": "host"}, "runner", tmp_path, tmp_path, "fixture",
+        tmp_path)
+    assert document is None
+    assert "probe could not start" in why
+    assert "fixture spawn failure" in why
+
+
 class TestPinVersionVerify:
     """RG-4: a declared pins.*.version is a CLAIM the artifact must satisfy,
     verified in-lane via `<assay_command> --version` — never provenance
@@ -3720,7 +5410,12 @@ class TestPinVersionVerify:
 
     def test_undeclared_version_never_probes(self):  # controlled wrong impl
         inner = run_gate.build_assay_inner(self._lane(None), Path("/proj"), Path("/repo"))
-        assert "--version" not in inner
+        # Only the JUDGE's version probe is the pin claim under test. The
+        # inner script legitimately probes `git --version` for the
+        # safe.directory floor (RG-99), so a bare `--version` is not evidence.
+        assert "./tools/assay/assay.pyz --version" not in inner
+        assert "version probe failed" not in inner
+        assert "version mismatch" not in inner
 
     def _live_proj(self, tmp_path, reported_version: str) -> Path:
         """Project whose fake pinned artifact reports `reported_version`."""
@@ -4224,6 +5919,16 @@ class TestEnvReferenceScan:
             V = reader()
         """) == []
 
+    def test_helper_with_computed_name_is_not_reported_as_a_literal(self):
+        assert self.names("""\
+            import os
+
+            def reader(name):
+                return os.getenv(name)
+
+            V = reader("RUN_" + "LIVE")
+        """) == []
+
     def test_syntax_error_propagates_for_the_caller_to_disclose(self):
         with pytest.raises(SyntaxError):
             run_gate.scan_env_references("def broken(:\n")
@@ -4260,6 +5965,30 @@ class TestEnvReferenceScan:
         assert "future_syntax.py does not parse" in out
         assert "fell back to a line regex" in out
         assert "$REGEX_ONLY_VAR" in out   # degraded, but not silent
+
+    def test_check_env_marks_directory_walk_and_environment_resolution_errors(
+            self, tmp_path, monkeypatch, capsys):
+        def broken_walk(_root, *, onerror):
+            onerror(PermissionError("cannot scan private source"))
+            yield str(tmp_path), [], []
+
+        monkeypatch.setattr(run_gate.os, "walk", broken_walk)
+        monkeypatch.setattr(
+            run_gate, "resolve_worktree_scope",
+            lambda *_args: (None, None, tmp_path, None))
+        monkeypatch.setattr(
+            run_gate, "resolve_environment",
+            lambda *_args: (_ for _ in ()).throw(
+                run_gate.GateError("fixture environment resolution failure")))
+        monkeypatch.setattr(run_gate, "assay_toolchain_findings", lambda *_args: [])
+
+        assert run_gate.cmd_check_env(
+            {"unit": {}}, tmp_path, {}, {}, tmp_path / run_gate.CONFIG_NAME,
+            None) == 0
+        out = capsys.readouterr().out
+        assert "fixture environment resolution failure" in out
+        assert "INCOMPLETE" in out
+        assert "directory traversal error" in out
 
 
 class TestEstateExecForwardEnvAudit:
@@ -4328,13 +6057,13 @@ class TestConjunctionOverrideGuard:
         kind = "command"
         environment = "bare-host"
         # RG-1 fixed shape: every sub-invocation carries the override.
-        argv = ["bash", "-c", "./run-gate.py --worktree {worktree} suite"]
+        argv = ["bash", "-c", "run-gate --worktree {worktree} suite"]
         clean_tree = false
         """
 
     CONJ_BARE = CONJ_FORWARDED.replace(
-        "./run-gate.py --worktree {worktree} suite",
-        "./run-gate.py suite")  # the pre-RG-1 shape — must refuse
+        "run-gate --worktree {worktree} suite",
+        "run-gate suite")  # the pre-RG-1 shape — must refuse
 
     def _conjunction_proj(self, tmp_path, gate_config: str):
         base = tmp_path / "repo"
@@ -4342,10 +6071,6 @@ class TestConjunctionOverrideGuard:
         repo = make_repo(base)
         proj = repo / "proj"
         proj.mkdir()
-        shutil.copy(_TOOL, proj / "run-gate.py")
-        shutil.copy(RUN_GATE_DIR / "run_gate_admission.py",
-                    proj / "run_gate_admission.py")
-        (proj / "run-gate.py").chmod(0o755)
         (proj / "run-gate.toml").write_text(
             _upgrade_fixture_environment_modes(textwrap.dedent(gate_config)))
         commit_all(repo, "conjunction fixture")
@@ -4755,7 +6480,7 @@ class TestPointerLinkage:
             [sys.executable, str(_TOOL), "validate-pointers", *[str(a) for a in args]],
             capture_output=True, text=True, cwd=str(RUN_GATE_DIR))
 
-    CANONICAL = ("cd {worktree}/proj && exec ./run-gate.py "
+    CANONICAL = ("cd {worktree}/proj && exec run-gate "
                  "--worktree {worktree} suite")
 
     def test_valid_pointer_certifies(self, tmp_path):
@@ -4776,14 +6501,14 @@ class TestPointerLinkage:
 
     def test_missing_worktree_forwarding_rejected(self, tmp_path):
         repo, proj, trove = self._estate(
-            tmp_path, "cd {worktree}/proj && exec ./run-gate.py suite")
+            tmp_path, "cd {worktree}/proj && exec run-gate suite")
         proc = self._validate(trove)
         assert proc.returncode == 2
         assert "drops '--worktree {worktree}'" in proc.stdout
 
     def test_wrong_project_dir_rejected(self, tmp_path):
         repo, proj, trove = self._estate(
-            tmp_path, "cd {worktree}/assayX && exec ./run-gate.py "
+            tmp_path, "cd {worktree}/assayX && exec run-gate "
                       "--worktree {worktree} suite")
         proc = self._validate(trove)
         assert proc.returncode == 2
@@ -4791,7 +6516,7 @@ class TestPointerLinkage:
 
     def test_noncanonical_cd_target_rejected(self, tmp_path):
         repo, proj, trove = self._estate(
-            tmp_path, "cd $PWD && exec ./run-gate.py --worktree {worktree} suite")
+            tmp_path, "cd $PWD && exec run-gate --worktree {worktree} suite")
         proc = self._validate(trove)
         assert proc.returncode == 2
         assert "'{worktree}/<project-relative>'" in proc.stdout
@@ -4805,12 +6530,12 @@ class TestPointerLinkage:
         assert "no run-gate pointers" in proc.stdout
 
     def test_list_form_argv_is_joined_and_resolves_to_file_project(self, tmp_path):
-        """cmru [steps.run-tests] shape: argv = ["./run-gate.py", "gate"] with
+        """cmru [steps.run-tests] shape: argv = ["run-gate", "gate"] with
         no cd — the project resolves to the document's own directory."""
         repo, proj, _ = self._estate(tmp_path, self.CANONICAL)  # reuse lanes
         steps = proj / "consumer-steps.toml"
         steps.write_text('[[steps]]\nlabel = "x"\n'
-                         'argv = ["./run-gate.py", "suite"]\ncwd = "."\n')
+                         'argv = ["run-gate", "suite"]\ncwd = "."\n')
         proc = self._validate(steps, "--root", str(repo))
         assert proc.returncode == 0, proc.stdout + proc.stderr
         assert "OK: 1 invocation(s)" in proc.stdout
@@ -4867,8 +6592,8 @@ class TestPointerLinkage:
         still gets certified."""
         repo, proj, trove = self._estate(
             tmp_path,
-            "cd {worktree}/proj && ./run-gate.py --list && "
-            "exec ./run-gate.py --worktree {worktree} suite")
+            "cd {worktree}/proj && run-gate --list && "
+            "exec run-gate --worktree {worktree} suite")
         proc = self._validate(trove)
         assert proc.returncode == 0, proc.stdout + proc.stderr
         assert "OK: 2 invocation(s)" in proc.stdout
@@ -4876,7 +6601,7 @@ class TestPointerLinkage:
     def test_equals_form_worktree_accepted(self, tmp_path):
         repo, proj, trove = self._estate(
             tmp_path,
-            "cd {worktree}/proj && exec ./run-gate.py --worktree={worktree} suite")
+            "cd {worktree}/proj && exec run-gate --worktree={worktree} suite")
         proc = self._validate(trove)
         assert proc.returncode == 0, proc.stdout + proc.stderr
         assert "OK: 1 invocation(s)" in proc.stdout
@@ -4901,7 +6626,7 @@ class TestPointerLinkage:
         steps = proj / "consumer-steps.toml"
         steps.write_text('[[steps]]\n'
                          'label = "proj: run-gate gate conjunction"\n'
-                         'argv = ["./run-gate.py", "--worktree", '
+                         'argv = ["run-gate", "--worktree", '
                          '"{worktree}", "suite"]\ncwd = "."\n')
         proc = self._validate(steps, "--root", str(repo))
         assert proc.returncode == 0, proc.stdout + proc.stderr
@@ -4914,6 +6639,13 @@ class TestPointerLinkageEstate:
 
     ESTATE_DOCS = sorted(RUN_GATE_DIR.parent.glob("*/nyxloom-trove/nyxloom.toml"))
 
+    def test_canonical_testing_methodology_uses_installed_run_gate_cli(self):
+        doc = RUN_GATE_DIR.parent / "nyxloom" / "reference" / "TESTING-METHODOLOGY.md"
+        text = doc.read_text(encoding="utf-8")
+        assert "./run-gate.py" not in text
+        assert "run-gate --list" in text
+        assert "run-gate <lane>" in text
+
     @pytest.mark.parametrize("doc", ESTATE_DOCS,
                              ids=[d.parent.parent.name for d in ESTATE_DOCS])
     def test_trove_pointers_name_real_lanes(self, doc):
@@ -4925,7 +6657,7 @@ class TestPointerLinkageEstate:
     def test_cmru_release_step_names_a_real_lane(self):
         cmru_doc = RUN_GATE_DIR.parent / "cmru" / "cmru.toml"
         if not cmru_doc.is_file():
-            pytest.skip("cmru not present in this checkout")
+            _testdeps.missing("cmru/cmru.toml", "cmru not present in this checkout")
         proc = subprocess.run(
             [sys.executable, str(_TOOL), "validate-pointers", str(cmru_doc)],
             capture_output=True, text=True, cwd=str(RUN_GATE_DIR))
@@ -4940,9 +6672,18 @@ class TestPointerLinkageEstate:
         assert gate_doc["lanes"]["selftest"]["resources"] == {
             "memory": "1g", "memory_swap": "16g", "cpus": "3",
         }
+        assert gate_doc["lanes"]["assay-r1"]["resources"] == {
+            "memory": "2g", "memory_swap": "16g",
+        }
+        assert gate_doc["lanes"]["assay-r3"]["resources"] == {
+            "memory": "1g", "memory_swap": "16g",
+        }
         commands = cmru_doc["steps"]["run-tests"]["commands"]
-        assert len(commands) == 1
-        assert commands[0]["argv"] == ["./run-gate.py", "selftest"]
+        assert len(commands) == 2
+        assert commands[0]["argv"] == ["python", "tools/release_candidate.py", "prepare"]
+        assert commands[1]["argv"] == [
+            "python", "tools/release_candidate.py", "run-selftest",
+        ]
         selftest_argv = gate_doc["lanes"]["selftest"]["argv"]
         assert selftest_argv[2].startswith(
             "cd {worktree}/run-gate-project && mkdir -p .run-gate/")
@@ -4968,6 +6709,118 @@ class TestPointerLinkageEstate:
         assert matches, "run-gate-project is not registered in " \
                         "cmru.orchestration.toml at all"
         assert cmru_doc["project"]["id"] in matches
+
+    def test_cmru_release_body_uses_the_versioned_changelog(self, monkeypatch):
+        """The 24.0.0 migration note reaches the body CMRU publishes.
+
+        CMRU's wheel-publish handler sends the exact dated `## [X.Y.Z] - date`
+        section of the tagged CHANGES.md. Release preparation first folds
+        [Unreleased] into the section it prepares, so the note belongs in
+        [Unreleased] until a dated 24.0.0 section exists, and in that section
+        afterwards. While 24.0.0 is not yet tagged, it must also be the version
+        the release candidate actually prepared. Parsing uses this checkout's
+        CMRU release-note module, so the selection matches the publisher's.
+        """
+        cmru_doc = tomllib.loads((RUN_GATE_DIR / "cmru.toml").read_text())
+        push_commands = cmru_doc["steps"]["push"]["commands"]
+        assert len(push_commands) == 1
+        assert "--notes-env" not in push_commands[0]["argv"]
+        assert cmru_doc["project"]["release"].get("changelog", "CHANGES.md") == "CHANGES.md"
+
+        def load(name, path):
+            spec = importlib.util.spec_from_file_location(name, path)
+            assert spec is not None and spec.loader is not None, path
+            module = importlib.util.module_from_spec(spec)
+            # Dataclasses resolve postponed annotations through
+            # sys.modules[cls.__module__], so register before executing.
+            # monkeypatch removes the entry at teardown, including when
+            # execution raises.
+            monkeypatch.setitem(sys.modules, name, module)
+            spec.loader.exec_module(module)
+            return module
+
+        notes = load("cmru_release_notes_under_test",
+                     RUN_GATE_DIR.parent / "cmru" / "src" / "cmru" / "release_notes.py")
+        candidate = load("release_candidate_under_test",
+                         RUN_GATE_DIR / "tools" / "release_candidate.py")
+        changes_path = RUN_GATE_DIR / "CHANGES.md"
+        changes = changes_path.read_text(encoding="utf-8")
+
+        def visible(markdown):
+            for comment in notes.html_comments_outside_fenced_code(markdown):
+                markdown = markdown.replace(comment, "")
+            return " ".join(markdown.split())
+
+        version = "24.0.0"
+        note = (
+            f"**{version}:** consumer scripts and symlinks are retired. Install "
+            "the `run-gate` wheel and invoke its console command from the "
+            "project directory containing `run-gate.toml`; `run-gate --version` "
+            "is the public compatibility identity."
+        )
+        assert visible(changes).count(note) == 1
+        dated = [
+            heading for heading in notes.markdown_h2_headings(changes)
+            if re.fullmatch(rf"## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}",
+                            heading.text)
+        ]
+        if not dated:
+            assert note in " ".join(notes.unreleased_body(changes).split())
+            return
+        section = notes.extract_release_section(changes, version, source=str(changes_path))
+        assert note in visible(section.text)
+
+    def test_cmru_release_body_versioned_section_beats_unreleased_on_fresh_tags(
+            self, tmp_path, monkeypatch):
+        """RG-107: the "prepared version is newer than the latest tag" half
+        of the release-body contract, on a throwaway repository.
+
+        The checkout's own `run-gate-v*` tags are ambient state: assay's
+        isolated snapshot has none, so reading them made the `assay-r1` lane
+        red while `selftest` stayed green. This builds its own repository
+        with an older `run-gate-v23.9.9` tag and a changelog whose dated
+        24.0.0 section carries the note, and proves the body CMRU would send
+        is that dated section, not [Unreleased].
+        """
+        def load(name, path):
+            spec = importlib.util.spec_from_file_location(name, path)
+            assert spec is not None and spec.loader is not None, path
+            module = importlib.util.module_from_spec(spec)
+            monkeypatch.setitem(sys.modules, name, module)
+            spec.loader.exec_module(module)
+            return module
+
+        notes = load("cmru_release_notes_fixture",
+                     RUN_GATE_DIR.parent / "cmru" / "src" / "cmru" / "release_notes.py")
+        candidate = load("release_candidate_fixture",
+                         RUN_GATE_DIR / "tools" / "release_candidate.py")
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        git = ["git", "-C", str(repo), "-c", "user.name=t",
+               "-c", "user.email=t@example.invalid"]
+        for argv in (["init", "-q"], ["commit", "-q", "--allow-empty", "-m", "x"],
+                     ["tag", "run-gate-v23.9.9"]):
+            subprocess.run([*git, *argv], check=True, capture_output=True)
+        monkeypatch.setattr(
+            candidate, "_git",
+            lambda *args: subprocess.run(
+                ["git", "-C", str(repo), *args], check=True,
+                capture_output=True, text=True).stdout.strip())
+
+        note = "**24.0.0:** fixture migration note."
+        changes_path = tmp_path / "CHANGES.md"
+        changes_path.write_text(
+            "# Changes\n\n## [Unreleased]\n\n"
+            "## [24.0.0] - 2026-10-17\n\n" + note + "\n\n"
+            "## [23.9.9] - 2026-09-01\n\nold\n", encoding="utf-8")
+        changes = changes_path.read_text(encoding="utf-8")
+
+        assert candidate.prepared_release_version(changes_path) == "24.0.0"
+        section = notes.extract_release_section(
+            changes, "24.0.0", source=str(changes_path))
+        assert note in " ".join(section.text.split())
+        assert note not in " ".join(notes.unreleased_body(changes).split())
 
 
 # ---------------------------------------------------------------------------
@@ -5015,7 +6868,8 @@ class TestDryRun:
         repo, proj = self._proj(tmp_path)
         log = fake_docker(tmp_path, monkeypatch)
         monkeypatch.setenv(run_gate.PROFILE_AMBIENT_ENV_VAR, "on")
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         preflights = []
 
         def preflight(*args, **kwargs):
@@ -5071,11 +6925,9 @@ class TestDryRun:
 
     def test_assay_lane_dry_run_runs_the_probe_and_no_judged_container(
             self, tmp_path, monkeypatch):
-        """B1 oracle: `--dry-run` DOES start a container since RG-26 — the
-        read-only inventory probe, because it is what resolves the base the
-        printed plan must show. `lane_runs()` filters on `-d` and therefore
-        cannot see it, so the exact call set is pinned here: every `docker
-        run` is the probe, no `-d`, no `docker exec`."""
+        """`--dry-run` runs the inventory probe needed to plan the lane, but
+        only prints the state-root probe command. No judged container or
+        state-root probe starts."""
         repo = make_repo(tmp_path)
         cfg = SIMPLE_LANE.replace('kind = "command"', 'kind = "assay"') \
             .replace('argv = ["bash", "-c", "cd {worktree}/proj && echo gate-ran"]',
@@ -5085,9 +6937,10 @@ class TestDryRun:
         proc = run_tool(proj, "suite", "--dry-run")
         assert proc.returncode == 0, proc.stderr
         runs = docker_runs(log)
-        assert len(runs) == 1, runs                # exactly one, and it is…
+        assert len(runs) == 1, runs
         assert "--rm" in runs[0] and "-d" not in runs[0]
-        assert "lanes --json" in runs[0][-1]       # …the inventory probe
+        assert "lanes --json" in runs[0][-1]
+        assert "assay state root preflight:" in proc.stdout
         assert docker_execs(log) == []
         assert lane_runs(log) == []                # no judged container at all
 
@@ -5702,7 +7555,8 @@ class TestResourcesCpusArgv:
         repo = make_repo(tmp_path)
         proj = make_project(repo, self._cfg(lane_cpus, env_cpus))
         log = fake_docker(tmp_path, monkeypatch)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py"), "suite"])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate', 'suite'])
         code = run_gate.main(["suite"])
         assert code == 0
         return docker_runs(log)[0]
@@ -5752,7 +7606,8 @@ class TestResourcesCpusExecWarning:
         shim = shim_dir_of(monkeypatch) / "docker"
         shim.write_text(shim.read_text().replace(
             'case "$1" in', 'case "$1" in\n  ps) echo "runner" ;;'))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py"), "suite"])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate', 'suite'])
         run_gate.main(["suite"])
         out = capsys.readouterr().out
         assert "resources/memory but its environment is exec-mode" in out
@@ -5781,7 +7636,8 @@ class TestResourcesCpusExecWarning:
         shim = shim_dir_of(monkeypatch) / "docker"
         shim.write_text(shim.read_text().replace(
             'case "$1" in', 'case "$1" in\n  ps) echo "runner" ;;'))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py"), "suite"])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate', 'suite'])
         run_gate.main(["suite"])
         out = capsys.readouterr().out
         assert "resources/memory but its environment is exec-mode" in out
@@ -5818,7 +7674,8 @@ class TestDoctorWorkerCountVsCpuCap:
             shim = shim_dir_of(monkeypatch) / "docker"
             shim.write_text(shim.read_text().replace(
                 'case "$1" in', 'case "$1" in\n  ps) echo "runner" ;;'))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["doctor"])
         return code, capsys.readouterr().out
 
@@ -7164,6 +9021,23 @@ class TestLinkedWorktreeHostLaneWarning:
         (tree / ".git").write_text("# not a gitfile\n")
         assert run_gate.linked_worktree_gitdir(tree) is None
 
+    def test_gitfile_read_error_after_file_check_is_benign(
+            self, tmp_path, monkeypatch):
+        tree = tmp_path / "t"
+        tree.mkdir()
+        gitfile = tree / ".git"
+        gitfile.write_text("gitdir: /outside/admin\n")
+        real_read_text = Path.read_text
+
+        def read_text(path, *args, **kwargs):
+            if path == gitfile:
+                raise OSError("read failed after the regular-file check")
+            return real_read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", read_text)
+        assert gitfile.is_file()
+        assert run_gate.linked_worktree_gitdir(tree) is None
+
     def test_doctor_warns_from_a_linked_worktree_with_a_host_lane(
             self, tmp_path, monkeypatch, capsys):
         repo = make_repo(tmp_path)
@@ -7172,7 +9046,8 @@ class TestLinkedWorktreeHostLaneWarning:
         git(repo, "worktree", "add", "-q", "-b", "w1", str(wt))
         fake_docker(tmp_path, monkeypatch)
         monkeypatch.chdir(wt / "proj")
-        monkeypatch.setattr(sys, "argv", [str(wt / "proj" / "run-gate.py")])
+        monkeypatch.chdir(wt / 'proj')
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         assert run_gate.main(["doctor"]) == 0     # advisory, never a refusal
         out = capsys.readouterr().out
         assert "[WARN] host-lane git view (RG-21)" in out, out
@@ -7186,7 +9061,8 @@ class TestLinkedWorktreeHostLaneWarning:
         proj = make_project(repo, self.HOST_LANE)
         fake_docker(tmp_path, monkeypatch)
         monkeypatch.chdir(proj)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         assert run_gate.main(["doctor"]) == 0
         out = capsys.readouterr().out
         assert "[OK] host-lane git view (RG-21)" in out
@@ -7200,9 +9076,146 @@ class TestLinkedWorktreeHostLaneWarning:
         git(repo, "worktree", "add", "-q", "-b", "w1", str(wt))
         fake_docker(tmp_path, monkeypatch)
         monkeypatch.chdir(wt / "proj")
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         assert run_gate.main(["doctor"]) == 0
         assert "host-lane git view (RG-21)" not in capsys.readouterr().out
+
+
+class TestRG103SequenceDoctor:
+    """RG-103: `doctor` (and `--check-env`) crashed with `KeyError:
+    'environment'` on any config declaring a `kind = "sequence"` lane,
+    because the per-lane pass resolved an environment a sequence is forbidden
+    to declare (R-07/RG-74)."""
+
+    SEQUENCE_CFG = """\
+        schema_version = 1
+
+        [environments.tester-unified]
+        mode = "ephemeral"
+        image = "tester-unified:local"
+
+        [environments.bare-host]
+        mode = "host"
+
+        [lanes.unit]
+        kind = "command"
+        environment = "tester-unified"
+        argv = ["bash", "-c", "true"]
+        clean_tree = false
+
+        [lanes.docs]
+        kind = "command"
+        environment = "bare-host"
+        argv = ["bash", "-c", "true"]
+        clean_tree = false
+
+        [lanes.inner]
+        kind = "sequence"
+        lanes = ["docs"]
+
+        [lanes.gate]
+        kind = "sequence"
+        lanes = ["unit", "inner"]
+    """
+
+    def test_doctor_reports_each_member_with_its_environment_facts(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, self.SEQUENCE_CFG)
+        fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "doctor")
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "Traceback" not in proc.stderr and "KeyError" not in proc.stderr
+        out = proc.stdout
+        assert ("[OK] sequence 'gate' member 'unit': environment "
+                "'tester-unified': mode ephemeral") in out
+        # transitive through the nested sequence, in its own (host) mode
+        assert ("[OK] sequence 'gate' member 'docs': environment "
+                "'bare-host': mode host") in out
+        assert "[OK] sequence 'inner' member 'docs'" in out
+        # the members are also checked as lanes in their own right
+        assert "[OK] slice for env tester-unified" in out
+
+    def test_a_member_whose_environment_cannot_resolve_is_a_failure(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        cfg = self.SEQUENCE_CFG.replace(
+            'environment = "tester-unified"', 'environment = "undeclared"', 1)
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "doctor")
+        assert proc.returncode == 2
+        assert "Traceback" not in proc.stderr
+        assert "[FAIL] sequence 'gate' member 'unit'" in proc.stdout
+        assert "undeclared" in proc.stdout
+
+    def test_malformed_members_are_reported_never_a_crash(
+            self, tmp_path, monkeypatch, capsys):
+        """Shapes the loader refuses, handed straight to the verb: a missing
+        member, a member with no environment, a cycle and an empty list are
+        each a named FAIL, and every other finding is still produced."""
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, self.SEQUENCE_CFG)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ["run-gate"])
+        cfg, cfg_path, central, central_path, *_rest = \
+            run_gate.load_config_snapshot(proj)
+        lanes = dict(cfg["lanes"])
+        lanes["no-env"] = {"kind": "command", "argv": ["true"]}
+        lanes["bad-environment"] = {
+            "kind": "command", "environment": "undeclared",
+            "argv": ["true"],
+        }
+        lanes["broken"] = {"kind": "sequence",
+                           "lanes": ["ghost", "no-env", "bad-environment",
+                                     "loop"]}
+        lanes["loop"] = {"kind": "sequence", "lanes": ["broken"]}
+        lanes["empty"] = {"kind": "sequence", "lanes": []}
+        code = run_gate.cmd_doctor(lanes, proj, cfg, central, cfg_path,
+                                   central_path)
+        out = capsys.readouterr().out
+        assert code == 2
+        assert ("[FAIL] sequence 'broken': member 'ghost' is not a "
+                "declared lane") in out
+        assert "[FAIL] sequence 'broken' member 'no-env': declares no " \
+            "environment" in out
+        assert ("[FAIL] sequence 'broken' member 'bad-environment':" in out
+                and "undeclared" in out)
+        assert "[FAIL] sequence 'broken': sequence cycle through 'broken'" \
+            in out
+        assert "[FAIL] sequence 'empty': sequence 'empty' has no member " \
+            "list" in out
+        assert "[FAIL] lane 'no-env' environment: no environment is " \
+            "declared for this lane" in out
+        assert "[OK] sequence 'gate' member 'unit'" in out   # others intact
+
+    def test_check_env_skips_sequences_and_still_covers_members(
+            self, tmp_path, monkeypatch, capsys):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, self.SEQUENCE_CFG)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ["run-gate"])
+        assert run_gate.main(["--check-env"]) == 0
+        assert "KeyError" not in capsys.readouterr().err
+
+    def test_sequence_leaf_members_orders_deduplicates_and_flags_defects(self):
+        lanes = {
+            "a": {"kind": "command", "environment": "e"},
+            "b": {"kind": "command", "environment": "e"},
+            "top": {"kind": "sequence", "lanes": ["a", "mid", "a"]},
+            "mid": {"kind": "sequence", "lanes": ["b", "a"]},
+        }
+        assert run_gate.sequence_leaf_members("top", lanes) == (
+            ["a", "b"], [])
+        assert run_gate.sequence_leaf_members("a", lanes) == (["a"], [])
+        lanes["bad"] = {"kind": "sequence", "lanes": "not-a-list"}
+        assert run_gate.sequence_leaf_members("bad", lanes) == (
+            [], ["sequence 'bad' has no member list"])
+        assert run_gate.sequence_leaf_members("missing", lanes) == (
+            [], ["member 'missing' is not a declared lane"])
 
 
 def _inventory(**over) -> str:
@@ -7709,7 +9722,8 @@ class TestDoctorAndCheckEnvWorktreeReadScope:
     def _two_trees(self, tmp_path, monkeypatch, cfg):
         repo = make_repo(tmp_path)
         proj = make_project(repo, cfg)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         wt = tmp_path / "w1"
         git(repo, "worktree", "add", "-q", "-b", "w1", str(wt))
         fake_docker(tmp_path, monkeypatch)
@@ -7749,7 +9763,8 @@ class TestDoctorAndCheckEnvWorktreeReadScope:
         nothing to name."""
         repo, proj, wt = self._two_trees(tmp_path, monkeypatch, self.HOST_LANE)
         monkeypatch.chdir(wt / "proj")
-        monkeypatch.setattr(sys, "argv", [str(wt / "proj" / "run-gate.py")])
+        monkeypatch.chdir(wt / 'proj')
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         assert run_gate.main(["doctor"]) == 0
         out = capsys.readouterr().out
         assert "[WARN] host-lane git view (RG-21)" in out
@@ -7771,6 +9786,7 @@ class TestDoctorAndCheckEnvWorktreeReadScope:
     def test_doctor_non_git_worktree_fails_with_gits_own_message(
             self, tmp_path, monkeypatch, capsys):
         repo, proj, wt = self._two_trees(tmp_path, monkeypatch, self.HOST_LANE)
+        monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
         monkeypatch.chdir(proj)
         outside = tmp_path / "plain-dir"
         (outside / "proj").mkdir(parents=True)
@@ -7836,6 +9852,7 @@ class TestDoctorAndCheckEnvWorktreeReadScope:
     def test_check_env_non_git_worktree_refuses_with_gits_own_message(
             self, tmp_path, monkeypatch, capsys):
         repo, proj, wt = self._two_trees(tmp_path, monkeypatch, SIMPLE_LANE)
+        monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
         monkeypatch.chdir(proj)
         outside = tmp_path / "plain-dir"
         (outside / "proj").mkdir(parents=True)
@@ -7874,15 +9891,15 @@ class TestShippedGateFullDeclaration:
         assert gate_full["argv"] == [
             "bash",
             "-c",
-            "./run-gate.py selftest && "
-            "./run-gate.py --base {base} assay-r1 && "
-            "./run-gate.py assay-r3",
+            "run-gate selftest && "
+            "run-gate --base {base} assay-r1 && "
+            "run-gate assay-r3",
         ]
         assert gate_full["clean_tree"] is False
 
         assert lanes["selftest"]["kind"] == "command"
         assert lanes["selftest"]["environment"] == "tester-unified"
-        assert "./run-gate.py --base" not in lanes["selftest"]["argv"][-1]
+        assert "run-gate --base" not in lanes["selftest"]["argv"][-1]
         assert lanes["assay-r1"]["kind"] == "assay"
         assert lanes["assay-r1"]["assay_lane"] == "r1"
         assert lanes["assay-r3"] == {
@@ -7891,11 +9908,14 @@ class TestShippedGateFullDeclaration:
             "argv": ["bash", "-c", "cd {worktree}/run-gate-project && "
                      "exec tools/canary-run.sh"],
             "budget": "15m",
+            "resources": {"memory": "1g", "memory_swap": "16g"},
         }
         assert lanes["assay-r2"]["assay_lane"] == "r2"
         assert lanes["assay-r2"]["environment"] == "tester-unified"
         assert lanes["assay-r2"]["resource_observer"] == "cgprofile"
-        assert lanes["assay-r2"]["resources"] == {"cpus": "3"}
+        assert lanes["assay-r2"]["resources"] == {
+            "cpus": "3", "memory": "2g", "pids": 8192,
+        }
         # Two scratch worktrees still share one tester-cgroup event counter.
         # Concurrent candidate windows cannot safely attribute a limit hit.
         assay_cfg = tomllib.loads((RUN_GATE_DIR / "assay.toml").read_text())
@@ -7911,9 +9931,14 @@ class TestResourceObserverLane:
                                parent_mode=None, parent_uid=0,
                                parent_gid=994, socket_mode=None,
                                socket_uid=0, socket_gid=994,
+                               docker_group_mode=None, docker_group_uid=0,
+                               docker_gid=994, docker_group_missing=False,
                                missing=None):
-        parent_mode = parent_mode or run_gate.stat.S_IFDIR | 0o770
+        parent_mode = parent_mode or run_gate.stat.S_IFDIR | 0o751
         socket_mode = socket_mode or run_gate.stat.S_IFSOCK | 0o660
+        docker_group_mode = (
+            docker_group_mode or run_gate.stat.S_IFDIR | 0o770
+        )
 
         def fake_lstat(path):
             path = Path(path)
@@ -7923,6 +9948,12 @@ class TestResourceObserverLane:
                 if missing:
                     raise OSError("socket path missing")
                 return self._stat(socket_mode, socket_uid, socket_gid)
+            if path == socket_path.parent.parent:
+                if docker_group_missing:
+                    raise OSError("host cgprofile control directory missing")
+                return self._stat(
+                    docker_group_mode, docker_group_uid, docker_gid
+                )
             raise AssertionError(f"unexpected lstat path: {path}")
 
         real_os = run_gate.os
@@ -7935,61 +9966,224 @@ class TestResourceObserverLane:
 
     def test_disabled_observer_adds_no_docker_flags(self):
         assert run_gate.resource_observer_docker_flags(
-            {"kind": "assay", "environment": "tester-unified"}) == []
+            {"kind": "assay"}, {"mode": "ephemeral"}) == []
 
     @pytest.mark.parametrize("lane, message", [
         ({"kind": "assay", "environment": "tester-unified",
          "resource_observer": "other"}, "must be 'cgprofile'"),
-        ({"kind": "command", "environment": "bare-host",
-         "resource_observer": "cgprofile"},
-         "requires an assay or command lane in tester-unified"),
         ({"kind": "sequence", "environment": "tester-unified",
           "resource_observer": "cgprofile"},
-         "requires an assay or command lane in tester-unified"),
-        ({"kind": "assay", "environment": "bare-host",
-          "resource_observer": "cgprofile"},
-         "requires an assay or command lane in tester-unified"),
+         "requires an assay or command lane"),
     ])
     def test_invalid_observer_lane_refuses(self, lane, message):
         with pytest.raises(run_gate.GateError, match=message):
-            run_gate.resource_observer_docker_flags(lane)
+            run_gate.resource_observer_docker_flags(lane, {"mode": "ephemeral"})
+
+    def test_observer_refuses_non_ephemeral_environment(self):
+        with pytest.raises(run_gate.GateError, match="mode = 'ephemeral'"):
+            run_gate.resource_observer_docker_flags(
+                {"kind": "assay", "resource_observer": "cgprofile"},
+                {"mode": "exec"},
+            )
 
     def test_load_validation_accepts_command_wrapper_and_closes_other_kinds(self):
         run_gate._validate_lane(
             "probe", {"kind": "command", "environment": "tester-unified",
-                      "argv": ["true"], "resource_observer": "cgprofile"},
+                      "argv": ["true"], "resource_observer": "cgprofile",
+                      "resources": {"memory": "2g", "pids": 8192}},
             "fixture")
         with pytest.raises(run_gate.GateError,
                            match="only for assay or command lanes"):
             run_gate._validate_lane(
                 "probe", {"kind": "sequence", "lanes": ["inner"],
                           "resource_observer": "cgprofile"}, "fixture")
-        with pytest.raises(run_gate.GateError,
-                           match="environment = \\\"tester-unified\\\""):
-            run_gate._validate_lane(
-                "r2", {"kind": "assay", "environment": "bare-host",
-                       "assay_lane": "r2", "resource_observer": "cgprofile"},
-                "fixture")
+        run_gate._validate_lane(
+            "r2", {"kind": "assay", "environment": "custom-ephemeral",
+                   "assay_lane": "r2", "resource_observer": "cgprofile",
+                   "resources": {"memory": "2g", "pids": 8192}},
+            "fixture")
         with pytest.raises(run_gate.GateError, match="must be 'cgprofile'"):
             run_gate._validate_lane(
                 "r2", {"kind": "assay", "environment": "tester-unified",
                        "assay_lane": "r2", "resource_observer": "anything"},
                 "fixture")
 
+    @pytest.mark.parametrize("pids", [0, -1, True, "8192", 1.5])
+    def test_pids_resource_requires_a_positive_integer(self, pids):
+        with pytest.raises(run_gate.GateError, match="positive integer Docker PID limit"):
+            run_gate._validate_lane(
+                "probe",
+                {"kind": "command", "environment": "tester-unified",
+                 "argv": ["true"], "resources": {"pids": pids}},
+                "fixture",
+            )
+
+    def test_effective_observer_lane_requires_local_memory_and_pid_ceilings(self):
+        project = {
+            "lanes": {
+                "r2": {
+                    "kind": "assay", "environment": "runner",
+                    "assay_lane": "r2", "resource_observer": "cgprofile",
+                    "resources": {"pids": 8192},
+                },
+            },
+            "environments": {"runner": {"mode": "ephemeral"}},
+        }
+        with pytest.raises(run_gate.GateError, match="requires explicit resources.memory and resources.pids"):
+            run_gate._validate_effective_resource_observers(project, {}, Path("run-gate.toml"))
+
+    @pytest.mark.parametrize("mode", ["host", "exec"])
+    def test_config_load_refuses_observer_on_non_ephemeral_environment(
+            self, tmp_path, mode):
+        repo = make_repo(tmp_path)
+        image = '\nimage = "runner:local"' if mode == "exec" else ""
+        project = make_project(repo, textwrap.dedent(f'''\
+            schema_version = 1
+            [environments.runner]
+            mode = "{mode}"{image}
+            [lanes.r2]
+            kind = "assay"
+            environment = "runner"
+            assay_lane = "r2"
+            resource_observer = "cgprofile"
+        '''))
+        with pytest.raises(run_gate.GateError,
+                           match="requires the resolved environment.*ephemeral"):
+            run_gate.load_config(project)
+
+    def test_inherited_observer_uses_project_shadowed_environment_mode(self,
+                                                                       tmp_path):
+        repo = make_repo(tmp_path)
+        (repo / run_gate.ROOT_CONFIG_NAME).write_text(textwrap.dedent("""\
+            schema_version = 1
+            [environments.runner]
+            mode = "ephemeral"
+            image = "runner:local"
+            [lanes.shared]
+            kind = "command"
+            environment = "runner"
+            argv = ["true"]
+            resource_observer = "cgprofile"
+        """))
+        commit_all(repo, "shared observer lane")
+        project = make_project(repo, textwrap.dedent("""\
+            schema_version = 1
+            [environments.runner]
+            mode = "host"
+        """))
+
+        with pytest.raises(run_gate.GateError,
+                           match="requires the resolved environment.*ephemeral"):
+            run_gate.load_config(project)
+
+    def test_observer_version_preflight_requires_contract2_path_and_listener(
+            self, monkeypatch):
+        valid = {
+            "resource_observer": {
+                "contract": 2,
+                "path": run_gate.CGPROFILE_RESOURCE_OBSERVER_SOURCE,
+                "listening": True,
+            },
+        }
+        monkeypatch.setattr(
+            run_gate.ProfilerClient, "version", lambda self: (valid, None),
+        )
+        run_gate.resource_observer_version_preflight("docker", "cgprofile")
+
+        for bad, message in [
+            ({}, "does not advertise"),
+            ({"resource_observer": {"contract": 1}}, "contract must be 2"),
+            ({"resource_observer": {"contract": True}}, "contract must be 2"),
+            ({"resource_observer": {"contract": 2, "path": "/wrong",
+                                     "listening": True}}, "unexpected socket path"),
+            ({"resource_observer": {
+                "contract": 2,
+                "path": run_gate.CGPROFILE_RESOURCE_OBSERVER_SOURCE,
+                "listening": False,
+            }}, "not listening"),
+        ]:
+            monkeypatch.setattr(
+                run_gate.ProfilerClient, "version", lambda self, bad=bad: (bad, None),
+            )
+            with pytest.raises(run_gate.GateInfraError, match=message):
+                run_gate.resource_observer_version_preflight("docker", "cgprofile")
+
+    def test_observer_version_preflight_reports_daemon_query_failure(self, monkeypatch):
+        monkeypatch.setattr(
+            run_gate.ProfilerClient, "version",
+            lambda self: (None, "control socket unavailable"),
+        )
+        with pytest.raises(run_gate.GateInfraError, match="control socket unavailable"):
+            run_gate.resource_observer_version_preflight("docker", "cgprofile")
+
+    def test_live_observer_lane_preflights_before_clearing_or_launching(
+            self, tmp_path, monkeypatch):
+        socket_path = tmp_path / "resource-observer.sock"
+        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+                            str(socket_path))
+        self._patch_socket_metadata(
+            monkeypatch, socket_path, parent_gid=1234, socket_gid=1234)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        events = []
+        monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/usr/bin/docker")
+        monkeypatch.setattr(run_gate, "resolve_inflight", lambda *_a, **_k: None)
+        monkeypatch.setattr(
+            run_gate, "resource_observer_version_preflight",
+            lambda docker, daemon: events.append(("version", docker, daemon)),
+        )
+        monkeypatch.setattr(
+            run_gate, "clear_previous_assay_verdict",
+            lambda *_a, **_k: events.append(("clear",)),
+        )
+        monkeypatch.setattr(run_gate, "container_mount_flags", lambda *_a, **_k: [])
+        monkeypatch.setattr(run_gate, "extra_mount_flags", lambda: [])
+        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda *_a: None)
+        monkeypatch.setattr(run_gate, "build_command_inner", lambda *_a, **_k: "true")
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a: "a" * 40)
+        monkeypatch.setattr(run_gate, "write_inflight_record", lambda *_a, **_k: True)
+        monkeypatch.setattr(run_gate, "await_container", lambda *_a, **_k: 0)
+        monkeypatch.setattr(run_gate, "make_progress_watch", lambda *_a, **_k: None)
+        monkeypatch.setattr(run_gate, "print_lane_bounds", lambda *_a: None)
+        monkeypatch.setattr(run_gate, "log_forwarded_env", lambda *_a: None)
+        monkeypatch.setattr(run_gate, "print_profile_plan_dry_run", lambda *_a: None)
+
+        def docker_run(argv, **_kwargs):
+            events.append(("docker-run", argv[1]))
+            return subprocess.CompletedProcess(argv, 0, "container-id\n", "")
+
+        monkeypatch.setattr(run_gate.subprocess, "run", docker_run)
+        assert run_gate.run_container_lane(
+            {"kind": "command", "environment": "private-test",
+             "argv": ["true"], "resource_observer": "cgprofile"},
+            "observer", repo, repo, repo,
+            {"mode": "ephemeral", "image": "tester:local"},
+            "fixture", "dev-gates.slice", "fixture",
+            profile_plan={"enabled": False, "daemon": "cgprofile-host-daemon",
+                          "disabled_reason": "test"},
+        ) == 0
+        assert events == [
+            ("version", "/usr/bin/docker", "cgprofile-host-daemon"),
+            ("clear",),
+            ("docker-run", "run"),
+        ]
+
     def test_missing_socket_is_infrastructure_error(self, tmp_path, monkeypatch):
         socket_path = tmp_path / "resource-observer.sock"
         monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
                             str(socket_path))
         self._patch_socket_metadata(monkeypatch, socket_path, missing=True)
-        with pytest.raises(run_gate.GateInfraError, match="unavailable"):
+        with pytest.raises(run_gate.GateInfraError,
+                           match="observer directory or socket is unavailable"):
             run_gate.resource_observer_docker_flags({
                 "kind": "assay", "environment": "tester-unified",
-                "resource_observer": "cgprofile"})
+                "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
 
     @pytest.mark.parametrize("parent_mode, parent_uid, socket_mode, socket_uid, socket_gid, message", [
-        (run_gate.stat.S_IFLNK | 0o777, 0, None, 0, 994, "root-owned directory"),
-        (run_gate.stat.S_IFDIR | 0o772, 0, None, 0, 994, "root-owned directory"),
-        (run_gate.stat.S_IFDIR | 0o770, 1000, None, 0, 994, "root-owned directory"),
+        (run_gate.stat.S_IFLNK | 0o777, 0, None, 0, 994, "not a safe root-owned"),
+        (run_gate.stat.S_IFDIR | 0o772, 0, None, 0, 994, "root-owned"),
+        (run_gate.stat.S_IFDIR | 0o771, 0, None, 0, 994, "root-owned"),
+        (run_gate.stat.S_IFDIR | 0o750, 1000, None, 0, 994, "root-owned"),
         (None, 0, run_gate.stat.S_IFREG | 0o660, 0, 994, "not a Unix socket"),
         (None, 0, None, 1000, 994, "ownership does not match"),
         (None, 0, None, 0, 995, "ownership does not match"),
@@ -8009,7 +10203,7 @@ class TestResourceObserverLane:
         with pytest.raises(run_gate.GateInfraError, match=message):
             run_gate.resource_observer_docker_flags({
                 "kind": "assay", "environment": "tester-unified",
-                "resource_observer": "cgprofile"})
+                "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
 
     @pytest.mark.parametrize("kind", ["assay", "command"])
     def test_observer_flags_mount_only_readonly_socket_and_forward_gid(
@@ -8021,15 +10215,67 @@ class TestResourceObserverLane:
             monkeypatch, socket_path, parent_gid=1234, socket_gid=1234)
         assert run_gate.resource_observer_docker_flags({
             "kind": kind, "environment": "tester-unified",
-            "resource_observer": "cgprofile"}) == [
+            "resource_observer": "cgprofile"}, {"mode": "ephemeral"}) == [
                 "--mount",
-                f"type=bind,source={socket_path},target="
-                f"{run_gate.CGPROFILE_RESOURCE_OBSERVER_TARGET},readonly",
+                f"type=bind,source={socket_path.parent},target="
+                f"{run_gate.CGPROFILE_RESOURCE_OBSERVER_TARGET_DIRECTORY},readonly",
                 "--group-add", "1234",
                 "-e", "ASSAY_RESOURCE_OBSERVER_SOCKET="
                 f"{run_gate.CGPROFILE_RESOURCE_OBSERVER_TARGET}",
             ]
         assert "ctl.sock" not in run_gate.CGPROFILE_RESOURCE_OBSERVER_SOURCE
+
+    def test_observer_refuses_docker_group_socket(self, tmp_path, monkeypatch):
+        socket_path = tmp_path / "resource-observer.sock"
+        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+                            str(socket_path))
+        self._patch_socket_metadata(
+            monkeypatch, socket_path, parent_gid=1234, socket_gid=1234,
+            docker_gid=1234)
+        with pytest.raises(run_gate.GateInfraError, match="dedicated group"):
+            run_gate.resource_observer_docker_flags({
+                "kind": "assay", "environment": "tester-unified",
+                "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
+
+    def test_observer_refuses_when_host_docker_group_source_is_unavailable(
+            self, tmp_path, monkeypatch):
+        socket_path = tmp_path / "resource-observer.sock"
+        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+                            str(socket_path))
+        self._patch_socket_metadata(
+            monkeypatch, socket_path, parent_gid=1234, socket_gid=1234,
+            docker_group_missing=True)
+        with pytest.raises(run_gate.GateInfraError,
+                           match="cannot inspect the host Docker group source"):
+            run_gate.resource_observer_docker_flags({
+                "kind": "assay", "environment": "tester-unified",
+                "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
+
+    @pytest.mark.parametrize("mode, uid, gid", [
+        (run_gate.stat.S_IFREG | 0o660, 0, 994),
+        (run_gate.stat.S_IFDIR | 0o770, 1000, 994),
+        (run_gate.stat.S_IFDIR | 0o770, 0, 0),
+        (run_gate.stat.S_IFDIR | 0o750, 0, 994),
+    ])
+    def test_observer_refuses_untrusted_host_docker_group_source(
+            self, tmp_path, monkeypatch, mode, uid, gid):
+        socket_path = tmp_path / "resource-observer.sock"
+        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+                            str(socket_path))
+        self._patch_socket_metadata(
+            monkeypatch, socket_path, parent_gid=1234, socket_gid=1234,
+            docker_group_mode=mode, docker_group_uid=uid, docker_gid=gid)
+        with pytest.raises(run_gate.GateInfraError, match="host Docker group|non-root group"):
+            run_gate.resource_observer_docker_flags({
+                "kind": "assay", "environment": "tester-unified",
+                "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
+
+    def test_observer_refuses_extra_mounts(self, monkeypatch):
+        monkeypatch.setenv(run_gate.EXTRA_MOUNT_ENV_VAR, "/var/run/docker.sock=/docker.sock")
+        with pytest.raises(run_gate.GateInfraError, match="incompatible with an observer lane"):
+            run_gate.resource_observer_docker_flags({
+                "kind": "assay", "environment": "tester-unified",
+                "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
 
     @pytest.mark.parametrize("kind", ["assay", "command"])
     def test_container_argv_wires_the_opted_in_observer(
@@ -8046,7 +10292,7 @@ class TestResourceObserverLane:
             "environment": "tester-unified",
             "resource_observer": "cgprofile",
             "budget": "4h",
-            "resources": {"cpus": "3"},
+            "resources": {"cpus": "3", "memory": "2g", "pids": 8192},
         }
         if kind == "assay":
             lane["assay_lane"] = "r2"
@@ -8080,8 +10326,10 @@ class TestResourceObserverLane:
         argv, = assembled
         assert "--cgroup-parent" in argv
         assert "--cpus" in argv and argv[argv.index("--cpus") + 1] == "3"
-        assert ["--mount", f"type=bind,source={socket_path},target="
-                f"{run_gate.CGPROFILE_RESOURCE_OBSERVER_TARGET},readonly"] == argv[
+        assert "--memory" in argv and argv[argv.index("--memory") + 1] == "2g"
+        assert "--pids-limit" in argv and argv[argv.index("--pids-limit") + 1] == "8192"
+        assert ["--mount", f"type=bind,source={socket_path.parent},target="
+                f"{run_gate.CGPROFILE_RESOURCE_OBSERVER_TARGET_DIRECTORY},readonly"] == argv[
                     argv.index("--mount"):argv.index("--mount") + 2]
         assert ["--group-add", "1234"] == argv[
             argv.index("--group-add"):argv.index("--group-add") + 2]
@@ -8108,7 +10356,8 @@ class TestComparisonBasePassthrough:
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda p, **k: Path("/phys/host/root"))
         monkeypatch.chdir(proj)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         return repo, proj
 
     @staticmethod
@@ -8175,7 +10424,14 @@ class TestComparisonBasePassthrough:
 
     def test_judge_without_json_and_no_base_behaves_exactly_as_before(
             self, tmp_path, monkeypatch):
-        self._project(tmp_path, monkeypatch)
+        _repo, project = self._project(tmp_path, monkeypatch)
+        external_state = tmp_path / "external-assay-state"
+        external_state.mkdir()
+        config_path = project / run_gate.CONFIG_NAME
+        config_path.write_text(config_path.read_text().replace(
+            'image = "tester-unified:local"',
+            'image = "tester-unified:local"\n'
+            f'state_root = "{external_state}"', 1))
         log = fake_docker_executing(tmp_path, monkeypatch)
         install_fake_assay(monkeypatch, "#!/bin/sh\n"
                            'echo "unrecognized arguments: --json" >&2\nexit 2\n')
@@ -8213,15 +10469,15 @@ class TestComparisonBasePassthrough:
             kind = "command"
             environment = "bare-host"
             argv = ["bash", "-c",
-                    "echo ./run-gate.py --base {base} a && echo ./run-gate.py --base {base} b"]
+                    "echo run-gate --base {base} a && echo run-gate --base {base} b"]
             clean_tree = false
         """
         self._project(tmp_path, monkeypatch, cfg)
         assert run_gate.main(["gate", "--base", "deadbeef"]) == 0
         out = capfd.readouterr().out   # fd-level: the sub-shell's own stdout
-        assert out.count("./run-gate.py --base deadbeef") == 2
+        assert out.count("run-gate --base deadbeef") == 2
         # the token itself never survives into a sub-invocation
-        assert "./run-gate.py --base {base}" not in out
+        assert "run-gate --base {base}" not in out
         assert "comparison base deadbeef (from --base) → {base} in the lane argv" in out
 
     def test_conjunction_lane_without_base_and_without_upstream_refuses(
@@ -8231,7 +10487,7 @@ class TestComparisonBasePassthrough:
             [lanes.gate]
             kind = "command"
         environment = "bare-host"
-            argv = ["bash", "-c", "echo ./run-gate.py --base {base} a"]
+            argv = ["bash", "-c", "echo run-gate --base {base} a"]
             clean_tree = false
         """
         self._project(tmp_path, monkeypatch, cfg)
@@ -8327,7 +10583,7 @@ class TestComparisonBasePassthrough:
             #!/bin/sh
             case "$*" in
               *"lanes --json"*) echo '{"inventory_schema": 1, "lanes": [
-                  {"name": "ui_unit", "base_source": "request",
+                  {"name": "ui_unit", "base_source": "request", "rigor": ["R0"],
                    "external_tools": [], "argv0": null, "language": null}]}' ;;
               *) echo "JUDGE-RAN-IN: $(pwd)"; echo "JUDGE-ARGV: $*" ;;
             esac
@@ -8355,12 +10611,19 @@ class TestRG66SelectiveAssayRequests:
         cfg = ASSAY_LANE_CFG.replace(
             "clean_tree = false",
             "clean_tree = false\nprofile = false")
+        external_state = tmp_path / "external-assay-state"
+        external_state.mkdir()
+        cfg = cfg.replace(
+            'image = "tester-unified:local"',
+            'image = "tester-unified:local"\n'
+            f'state_root = "{external_state}"', 1)
         repo = make_repo(tmp_path)
         proj = make_project(repo, cfg)
         (proj / "assay.toml").write_text("# fixture\n")
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda p, **k: Path("/phys/host/root"))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         monkeypatch.chdir(proj)
         doc = json.loads(_inventory(rigor=rigors))
         doc["assay_version"] = version
@@ -8408,7 +10671,8 @@ class TestRG66SelectiveAssayRequests:
                                                        monkeypatch, capsys):
         repo = make_repo(tmp_path)
         proj = make_project(repo, SIMPLE_LANE)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         assert run_gate.main(["suite", "--reuse-from", "prior.json"]) == 2
         assert "assay-only flags" in capsys.readouterr().err
 
@@ -8438,7 +10702,8 @@ class TestRG72FailureEvidence:
         exclude = repo / ".git" / "info" / "exclude"
         with exclude.open("a") as stream:
             stream.write("\n.assay/\n.run-gate/\n")
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         monkeypatch.chdir(proj)
         monkeypatch.setenv("RUN_GATE_EVIDENCE_DIR", str(tmp_path / "evidence"))
         fake_docker(tmp_path, monkeypatch)
@@ -8595,6 +10860,254 @@ def make_feature_repo(tmp_path: Path) -> Path:
     (repo / "feature.txt").write_text("work\n")
     commit_all(repo, "feature work")
     return repo
+
+
+def write_v6_record(directory: Path, *, drop=(), **over) -> Path:
+    """A ciu worktree record in schema v6, as the producer contract fixes it:
+    `base_ref` and `fork_point_sha` are the SAME pinned fork commit and
+    `base_branch_ref` names the moving local branch (or is null). `drop`
+    removes keys outright, which `**over` cannot express (None is a value)."""
+    pinned = fork_sha(directory, "main")
+    fields = {"schema_version": 6, "base_ref": pinned,
+              "fork_point_sha": pinned, "base_branch_ref": "main"}
+    fields.update(over)
+    path = write_instance_record(directory, **fields)
+    if drop:
+        doc = json.loads(path.read_text())
+        for key in drop:
+            doc.pop(key, None)
+        path.write_text(json.dumps(doc, indent=2))
+    return path
+
+
+class TestRecordedWorktreeBaseSchemaV6:
+    """R-35a: ciu schema v6 pins `base_ref` to a SHA and names the moving
+    base in `base_branch_ref`. The freshness anchor must be that branch — the
+    pinned SHA is an ancestor of HEAD forever, so a reader anchored on it can
+    never see the base absorb the tree — and the branch is never inferred."""
+
+    def test_pinned_sha_with_a_local_branch_is_accepted_and_returns_the_fork(
+            self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        record = write_v6_record(repo)
+        pinned = git_head(repo, "main")
+        doc = json.loads(record.read_text())
+        assert doc["base_ref"] == doc["fork_point_sha"] == pinned   # not a branch
+        assert run_gate.recorded_worktree_base(repo, repo) == (
+            pinned, record, "")
+
+    def test_a_record_in_a_nested_ciu_root_is_found_like_any_other(
+            self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        proj = repo / "proj"
+        proj.mkdir()
+        record = write_v6_record(proj)
+        assert run_gate.recorded_worktree_base(repo, repo, proj) == (
+            git_head(repo, "main"), record, "")
+
+    @pytest.mark.parametrize("how", ["merge", "fast-forward"])
+    def test_a_base_that_absorbed_the_branch_is_refused_as_moved(
+            self, tmp_path, how):
+        """The absorption oracle, end to end: the record was healthy when
+        written; `main` then absorbed the branch and the branch kept going."""
+        repo = make_feature_repo(tmp_path)
+        write_v6_record(repo)
+        if how == "merge":
+            git(repo, "checkout", "-q", "main")
+            git(repo, "merge", "-q", "--no-ff", "-m", "merge feature",
+                "feature")
+            git(repo, "checkout", "-q", "feature")
+        else:
+            git(repo, "branch", "-f", "main", "feature")
+        (repo / "after.txt").write_text("more\n")
+        commit_all(repo, "one more")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "MOVED since the record was written" in why
+
+    def test_a_reader_anchored_on_the_pinned_sha_accepts_the_absorbed_record(
+            self, tmp_path):
+        """Controlled wrong implementation: the same checks with the pinned
+        SHA as the freshness anchor ACCEPT the record that the real reader
+        refuses — which is exactly what makes the absorption oracle above
+        discriminating rather than decorative."""
+        repo = make_feature_repo(tmp_path)
+        record = write_v6_record(repo)
+        git(repo, "branch", "-f", "main", "feature")
+        (repo / "after.txt").write_text("more\n")
+        commit_all(repo, "one more")
+        doc = json.loads(record.read_text())
+
+        wrong = run_gate._fork_base_if_unmoved(
+            repo, doc, doc["base_ref"], "pinned", "refs/heads/main")
+        assert wrong == (doc["fork_point_sha"], "")           # false green
+        assert run_gate.merge_base_of(repo, doc["base_ref"]) == \
+            doc["fork_point_sha"]                              # blind anchor
+        assert run_gate.merge_base_of(repo, "refs/heads/main") != \
+            doc["fork_point_sha"]                              # real anchor
+        real, _found, why = run_gate.recorded_worktree_base(repo, repo)
+        assert real is None and "MOVED" in why
+
+    def test_null_base_branch_ref_is_refused_with_the_base_remedy(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        write_v6_record(repo, base_branch_ref=None)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "'base_branch_ref' is null" in why
+        assert "--base" in why
+
+    def test_missing_base_branch_ref_is_refused(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        write_v6_record(repo, drop=("base_branch_ref",))
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "no 'base_branch_ref' key" in why
+
+    @pytest.mark.parametrize("value", [
+        "", "   ", " main", "main ", 7, True, ["main"], {"name": "main"},
+        "main;touch /tmp/PWNED", "-main", "ma in", "bad\x00ref", "main~1",
+    ])
+    def test_malformed_or_unsafe_base_branch_ref_is_refused(
+            self, tmp_path, value):
+        repo = make_feature_repo(tmp_path)
+        write_v6_record(repo, base_branch_ref=value)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None and why
+        if value == "":
+            # An empty ref is malformed input, even though the later safe-ref
+            # check would also reject it. Keep the more precise diagnosis
+            # observable instead of letting that later guard mask this one.
+            assert "blank or not a plain string" in why
+
+    @pytest.mark.parametrize("value", [
+        "gone", "refs/heads/main", "heads/main", "origin/main", "v1.0.0",
+        "HEAD",
+    ])
+    def test_a_name_that_is_not_a_canonical_live_local_branch_is_refused(
+            self, tmp_path, value):
+        """Deleted/renamed branches, non-canonical spellings, a remote-tracking
+        ref, a tag and revision syntax never stand in for the branch — and the
+        branch is never recovered from the pinned SHA that is sitting right
+        there in the same record."""
+        repo = make_feature_repo(tmp_path)
+        git(repo, "update-ref", "refs/remotes/origin/main", "main")
+        git(repo, "tag", "v1.0.0", "main")
+        write_v6_record(repo, base_branch_ref=value)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "does not name a local branch in this tree" in why
+
+    def test_a_tag_spelled_like_a_branch_is_not_that_branch(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        git(repo, "tag", "release", "main")
+        write_v6_record(repo, base_branch_ref="release")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "does not name a local branch in this tree" in why
+
+    @pytest.mark.parametrize(("over", "drop", "fragment"), [
+        ({"base_ref": "main"}, (), "not the pinned full commit id"),
+        ({"base_ref": "a" * 12}, (), "not the pinned full commit id"),
+        ({}, ("base_ref",), "not the pinned full commit id"),
+        ({}, ("fork_point_sha",), "no usable 'fork_point_sha'"),
+        ({"fork_point_sha": "abc"}, (), "no usable 'fork_point_sha'"),
+        ({"fork_point_sha": 7}, (), "no usable 'fork_point_sha'"),
+        ({"fork_point_sha": "b" * 40}, (), "disagree"),
+    ], ids=["symbolic-base-ref", "abbreviated-base-ref", "no-base-ref",
+            "no-fork", "short-fork", "non-string-fork", "inconsistent"])
+    def test_missing_malformed_or_inconsistent_sha_evidence_is_refused(
+            self, tmp_path, over, drop, fragment):
+        repo = make_feature_repo(tmp_path)
+        write_v6_record(repo, drop=drop, **over)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert fragment in why
+
+    def test_a_record_for_another_branch_is_refused(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        write_v6_record(repo, branch="some-other-task")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "no longer describes it" in why
+
+    def test_a_tree_with_no_work_of_its_own_is_refused(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        write_v6_record(repo)
+        git(repo, "checkout", "-q", "main")
+        git(repo, "checkout", "-q", "-B", "feature", "main")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "already contains this tree's HEAD" in why
+
+    @pytest.mark.parametrize("version", ["6", 6.0, True, 0, -1, [6]])
+    def test_a_malformed_schema_version_is_refused(self, tmp_path, version):
+        repo = make_feature_repo(tmp_path)
+        write_v6_record(repo, schema_version=version)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "schema_version" in why
+
+    def test_a_newer_schema_is_refused_not_guessed_at(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        write_v6_record(repo, schema_version=7)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "newer than the v6" in why and "--base" in why
+
+
+class TestRecordedWorktreeBaseLegacySchemas:
+    """v1-v5 keep the symbolic-`base_ref` reading; a frozen SHA there is
+    refused (never promoted to a branch), with the explicit-`--base` remedy."""
+
+    @pytest.mark.parametrize("version", [1, 2, 3, 4, 5])
+    def test_a_symbolic_local_base_ref_is_still_accepted(self, tmp_path, version):
+        repo = make_feature_repo(tmp_path)
+        record = write_instance_record(repo, schema_version=version,
+                                       base_ref="main")
+        assert run_gate.recorded_worktree_base(repo, repo) == (
+            git_head(repo, "main"), record, "")
+
+    def test_a_record_with_no_schema_version_keeps_its_legacy_reading(
+            self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        path = write_instance_record(repo, base_ref="main")
+        doc = json.loads(path.read_text())
+        doc.pop("schema_version")
+        path.write_text(json.dumps(doc))
+        assert run_gate.recorded_worktree_base(repo, repo) == (
+            git_head(repo, "main"), path, "")
+
+    @pytest.mark.parametrize("version", [1, 5])
+    def test_a_pinned_sha_base_ref_is_refused_with_the_base_remedy(
+            self, tmp_path, version):
+        repo = make_feature_repo(tmp_path)
+        pinned = git_head(repo, "main")
+        write_instance_record(repo, schema_version=version, base_ref=pinned,
+                              fork_point_sha=pinned)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "does not name a local branch in this tree" in why
+        assert "--base" in why
+
+    def test_a_stray_base_branch_ref_in_a_v5_record_is_never_used(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        pinned = git_head(repo, "main")
+        write_instance_record(repo, schema_version=5, base_ref=pinned,
+                              fork_point_sha=pinned, base_branch_ref="main")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "does not name a local branch in this tree" in why
+
+    def test_a_symbolic_base_that_absorbed_the_branch_is_still_moved(
+            self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, schema_version=5, base_ref="main")
+        git(repo, "branch", "-f", "main", "feature")
+        (repo / "after.txt").write_text("more\n")
+        commit_all(repo, "one more")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "MOVED since the record was written" in why
 
 
 class TestRecordedWorktreeBase:
@@ -8758,7 +11271,7 @@ class TestRecordedWorktreeBase:
             assert run_gate.recorded_worktree_base(repo, repo) == \
                 (None, None, "")
 
-    @pytest.mark.skipif(os.geteuid() == 0,
+    @pytest.mark.skipif(os.geteuid() == 0,   # testdeps-exception: structural
                         reason="root reads a 0o000 file regardless")
     def test_an_unreadable_record_is_reported(self, tmp_path):
         repo = make_feature_repo(tmp_path)
@@ -9312,14 +11825,23 @@ class TestRecordedWorktreeBase:
         assert run_gate.recorded_worktree_base(repo, repo)[0] == \
             fork_sha(repo, legal)
 
-    def test_an_unknown_schema_version_still_reads(self, tmp_path):
-        """`base_ref` is present and identical in every schema ciu has
-        shipped, and nothing here validates a field it does not use — so a
-        future v3 with new keys must NOT start falling back."""
+    def test_unknown_extra_keys_in_a_known_schema_still_read(self, tmp_path):
+        """`base_ref` is present and identical in every schema v1-v5, and
+        nothing here validates a field it does not use — so a record with new
+        KEYS in a known schema must NOT start falling back."""
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref="main", schema_version=5,
+                              lease=None, some_future_key={"a": 1})
+        assert run_gate.recorded_worktree_base(repo, repo)[0] == fork_sha(repo)
+
+    def test_a_schema_newer_than_the_reader_fails_closed(self, tmp_path):
+        """v6 changed the MEANING of `base_ref` (symbolic -> pinned SHA), so a
+        future schema may do it again: it is refused with the `--base` remedy
+        rather than guessed at (supersedes the pre-v6 "unknown still reads")."""
         repo = make_feature_repo(tmp_path)
         write_instance_record(repo, base_ref="main", schema_version=99,
                               lease=None, some_future_key={"a": 1})
-        assert run_gate.recorded_worktree_base(repo, repo)[0] == fork_sha(repo)
+        assert run_gate.recorded_worktree_base(repo, repo)[0] is None
 
     def test_a_record_carrying_only_base_ref_is_refused(self, tmp_path):
         """Before CIU-106 this was enough. It no longer is: without a
@@ -9344,9 +11866,11 @@ class TestRecordedWorktreeBase:
         assert run_gate.local_branch_ref_name(repo, "v1.0.0") is None
         assert run_gate.local_branch_ref_name(repo, "nope") is None
 
-    def test_local_branch_ref_name_outside_a_repo_is_none(self, tmp_path):
+    def test_local_branch_ref_name_outside_a_repo_is_none(
+            self, tmp_path, monkeypatch):
         plain = tmp_path / "plain"
         plain.mkdir()
+        monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
         assert run_gate.local_branch_ref_name(plain, "main") is None
 
     def test_local_branch_ref_name_without_git_on_path_is_none(
@@ -9432,7 +11956,7 @@ class TestComparisonBaseCharset:
             [lanes.gate]
             kind = "command"
             environment = "bare-host"
-            argv = ["bash", "-c", "echo ./run-gate.py --base {base} a"]
+            argv = ["bash", "-c", "echo run-gate --base {base} a"]
             clean_tree = false
         """
         marker = Path("/tmp/RG52_PWNED")
@@ -9542,7 +12066,8 @@ class TestWorktreeRecordedComparisonBase:
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda p, **k: Path("/phys/host/root"))
         monkeypatch.chdir(proj)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         return repo, proj
 
     @staticmethod
@@ -9729,7 +12254,7 @@ class TestWorktreeRecordedComparisonBase:
             kind = "command"
             environment = "bare-host"
             argv = ["bash", "-c",
-                    "echo ./run-gate.py --base {base} a && echo ./run-gate.py --base {base} b"]
+                    "echo run-gate --base {base} a && echo run-gate --base {base} b"]
             clean_tree = false
         """
         repo, _proj = self._project(tmp_path, monkeypatch, cfg)
@@ -9737,7 +12262,7 @@ class TestWorktreeRecordedComparisonBase:
         fork = fork_sha(repo)
         assert run_gate.main(["gate"]) == 0
         out = capfd.readouterr().out
-        assert out.count(f"./run-gate.py --base {fork}") == 2
+        assert out.count(f"run-gate --base {fork}") == 2
         assert f"comparison base {fork} (from ciu.worktree-instance.json " \
                f"fork point) → {{base}} in the lane argv" in out
 
@@ -9765,82 +12290,54 @@ _SCM_PRETEND_VERSION = "1.2.3"  # fixed test version — the point of pretend-ve
 
 
 class TestWheelPackaging:
-    """The wheel never replaces the script; it wraps the SAME bytes.
+    """The installed wheel is the supported CLI distribution."""
 
-    Version identity is TWO-TIER (release-adoption program, superseding
-    RG-14's original coupling): `__revision__` inside the script stays the
-    copy-drift marker external repos compare; the wheel's version is
-    DERIVED from the git tag (`run-gate-vX.Y.Z`) by setuptools-scm, matching
-    ciu/cmru/assay/topos/nyxloom. A real release build never runs `git
-    describe` live — cmru's wheel-build step sets
-    `SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE` from the tag it just
-    minted (cmru.toml's `scm_dist = "run_gate"`), which is exactly what
-    these tests do too, so no git history needs to travel into the tmp
-    build stage.
-    """
-
-    def test_pyproject_declares_scm_version(self):
+    def test_pyproject_declares_scm_version_and_regular_module(self):
         cfg = tomllib.loads((RUN_GATE_DIR / "pyproject.toml").read_text())
         proj = cfg["project"]
         assert cfg["build-system"]["build-backend"] == "setuptools.build_meta"
-        # version comes from the git tag, never a second static declaration:
         assert "version" not in proj
         assert "version" in proj["dynamic"]
         scm = cfg["tool"]["setuptools_scm"]
         assert scm["root"] == ".."
-        assert scm["tag_regex"] == r"^run-gate-v(?P<version>[0-9].*)$"
+        assert scm["tag_regex"] == (
+            r"^run-gate-v(?P<version>[0-9]+\.[0-9]+\.[0-9]+"
+            r"(?:[a-zA-Z0-9.+-]*)?)$")
         assert scm["git_describe_command"][-2:] == ["--match", "run-gate-v*"]
-        # console script + module mapping + zero runtime deps (unchanged):
         assert proj["scripts"] == {"run-gate": "run_gate:main"}
         assert cfg["tool"]["setuptools"]["py-modules"] == [
             "run_gate", "run_gate_admission"]
         assert proj["dependencies"] == []
-        # the importable name exists and is the SAME bytes as the canonical
-        # script (committed symlink run_gate.py -> run-gate.py):
-        link = RUN_GATE_DIR / "run_gate.py"
-        assert os.path.islink(link)
-        assert os.path.realpath(link) == os.path.realpath(RUN_GATE_DIR / "run-gate.py")
-        assert link.read_bytes() == (RUN_GATE_DIR / "run-gate.py").read_bytes()
+        assert (RUN_GATE_DIR / "run_gate.py").is_file()
+        assert not (RUN_GATE_DIR / "run-gate.py").exists()
 
+    # A class-scoped fixture must not be an instance method (pytest 9
+    # deprecation, removed in 10): it runs once per class while every test
+    # gets a fresh instance, so `self` would be a lie.
     @pytest.fixture(scope="class")
-    def built_wheel(self, tmp_path_factory):
-        """Build the real wheel once, exactly the way cmru's publish flow
-        does (`python -m build`, pretend-version env var). Lives entirely
-        in tmp: the worktree gains no dist/ or egg-info."""
+    @staticmethod
+    def built_wheel(tmp_path_factory):
         if not (_has_module("setuptools") and _has_module("build")
                 and _has_module("setuptools_scm")):
-            # Review fix: a silent skip hides toolchain drift — make it loud
-            # in the warnings summary even when the suite stays green.
-            warnings.warn("run-gate wheel tests SKIPPED: wheel toolchain "
-                          "unavailable (setuptools/build/setuptools_scm not "
-                          "installed)")
-            pytest.skip("wheel toolchain unavailable")
+            _testdeps.missing("the wheel toolchain (setuptools, build, "
+                              "setuptools_scm)", "wheel toolchain unavailable")
         import setuptools
         from importlib.metadata import version as _dist_version
         pyproject = tomllib.loads((RUN_GATE_DIR / "pyproject.toml").read_text())
         for dist, have in (("setuptools", setuptools.__version__),
                            ("setuptools_scm", _dist_version("setuptools_scm"))):
             pin = next(r for r in pyproject["build-system"]["requires"]
-                      if r.startswith(f"{dist}=="))
+                       if r.startswith(f"{dist}=="))
             want = pin.split("==")[1]
             if have != want:
-                warnings.warn(f"run-gate wheel tests SKIPPED: local {dist} "
-                              f"{have} != pinned {want}")
-                pytest.skip(
-                    f"local {dist} {have} != pinned {want} (python -m build "
-                    "refuses a mismatched --no-isolation closure)")
+                _testdeps.missing(f"the pinned {dist}=={want}",
+                                  f"local {dist} {have} != pinned {want}")
         stage = tmp_path_factory.mktemp("wheel-stage")
-        for name in ("run-gate.py", "run_gate_admission.py",
-                     "pyproject.toml", "README.md"):
+        for name in ("run_gate.py", "run_gate_admission.py", "pyproject.toml",
+                     "README.md"):
             shutil.copy2(RUN_GATE_DIR / name, stage / name)
-        # copy2 FOLLOWS the symlink: the staged tree holds the dereferenced
-        # copy a git-archive/sdist build would see.
-        shutil.copy2(RUN_GATE_DIR / "run_gate.py", stage / "run_gate.py")
-        # No .git in this stage at all (matches a real sdist/tarball build):
-        # the pretend-version env var is the ONLY version source, exactly
-        # like cmru's release build sets it from the tag it just minted.
         env = {**os.environ,
-              "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE": _SCM_PRETEND_VERSION}
+               "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE": _SCM_PRETEND_VERSION}
         proc = subprocess.run(
             [sys.executable, "-m", "build", "--wheel", "--no-isolation", "."],
             cwd=stage, capture_output=True, text=True, env=env)
@@ -9849,8 +12346,7 @@ class TestWheelPackaging:
         assert len(wheels) == 1, wheels
         return wheels[0]
 
-    def test_built_wheel_ships_identical_module_and_derived_version(
-            self, built_wheel):
+    def test_wheel_contains_module_and_semver_metadata(self, built_wheel):
         v = _SCM_PRETEND_VERSION
         assert built_wheel.name == f"run_gate-{v}-py3-none-any.whl"
         with zipfile.ZipFile(built_wheel) as z:
@@ -9864,14 +12360,11 @@ class TestWheelPackaging:
             assert "run-gate = run_gate:main" in ep
             meta = z.read(f"run_gate-{v}.dist-info/METADATA").decode()
             assert f"Version: {v}" in meta
-            # THE truthfulness core: what pip installs is byte-identical to
-            # the canonical script regardless of the wheel's own version —
-            # __revision__ (unaffected by this) is the copies' drift marker.
-            assert z.read("run_gate.py") == \
-                (RUN_GATE_DIR / "run-gate.py").read_bytes()
+            assert z.read("run_gate.py") == (RUN_GATE_DIR / "run_gate.py").read_bytes()
 
-    def test_installed_console_script_matches_script_behavior(
+    def test_installed_console_script_loads_project_config_from_cwd(
             self, built_wheel, tmp_path):
+        v = _SCM_PRETEND_VERSION
         install = tmp_path / "install"
         subprocess.run(
             [sys.executable, "-m", "pip", "install", "-q", "--no-index",
@@ -9879,26 +12372,22 @@ class TestWheelPackaging:
             check=True, capture_output=True, text=True)
         bin_gate = install / "bin" / "run-gate"
         assert bin_gate.exists(), "console script not exposed by the wheel"
-        # An adopting project via CONSUMERS step 1: COPIED canonical script,
-        # no wheel anywhere on its path.
         proj = tmp_path / "proj"
         proj.mkdir()
-        shutil.copy2(RUN_GATE_DIR / "run-gate.py", proj / "run-gate.py")
-        shutil.copy2(RUN_GATE_DIR / "run_gate_admission.py",
-                     proj / "run_gate_admission.py")
         (proj / "run-gate.toml").write_text(
             'schema_version = 1\n'
             '[lanes.suite]\nkind = "command"\nenvironment = "host"\n'
             'argv = ["true"]\nclean_tree = false\n')
-        canon = subprocess.run([os.path.join(".", "run-gate.py"), "--list"],
-                               cwd=proj, capture_output=True, text=True)
-        wheeled = subprocess.run(
-            [str(bin_gate), "--list"], cwd=proj, capture_output=True,
-            text=True, env={**os.environ, "PYTHONPATH": str(install)})
-        assert canon.returncode == 0, canon.stderr
-        assert wheeled.returncode == 0, wheeled.stderr
-        assert canon.stdout.strip() != ""
-        assert wheeled.stdout == canon.stdout
+        env = {**os.environ, "PYTHONPATH": str(install)}
+        listed = subprocess.run([str(bin_gate), "--list"], cwd=proj,
+                                 capture_output=True, text=True, env=env)
+        version = subprocess.run([str(bin_gate), "--version"], cwd=tmp_path,
+                                 capture_output=True, text=True, env=env)
+        assert listed.returncode == 0, listed.stderr
+        assert listed.stdout.strip() == "suite\tcommand\thost"
+        assert version.returncode == 0, version.stderr
+        assert version.stdout == f"run-gate {v}\n"
+        assert version.stderr == ""
 
 
 class TestRG74NativeSequencesAndTrunkBase:
@@ -9935,7 +12424,8 @@ class TestRG74NativeSequencesAndTrunkBase:
         proj = make_project(repo, config)
         (repo / ".gitignore").write_text(".run-gate/\n")
         commit_all(repo, "ignore run-gate state")
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         monkeypatch.chdir(proj)
         return repo, proj
 
@@ -9981,7 +12471,8 @@ class TestRG74NativeSequencesAndTrunkBase:
         proj = make_project(repo, config)
         (repo / ".gitignore").write_text(".run-gate/\n")
         commit_all(repo, "ignore run-gate state")
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         monkeypatch.chdir(proj)
         assert run_gate.main(["gate"]) == 1
         out = capsys.readouterr().out
@@ -10042,11 +12533,11 @@ class TestRG76AssayLaneImports:
         "inventory_schema": 1,
         "assay_version": "7.2.0",
         "lanes": [
-            {"name": "alpha", "base_source": "declared",
+            {"name": "alpha", "base_source": "declared", "rigor": ["R0"],
              "external_tools": [], "argv0": None, "language": None},
-            {"name": "beta", "base_source": "declared",
+            {"name": "beta", "base_source": "declared", "rigor": ["R0"],
              "external_tools": [], "argv0": None, "language": None},
-            {"name": "gamma", "base_source": "declared",
+            {"name": "gamma", "base_source": "declared", "rigor": ["R0"],
              "external_tools": [], "argv0": None, "language": None},
         ]})
 
@@ -10087,7 +12578,8 @@ class TestRG76AssayLaneImports:
             {self.INVENTORY}
             JSON
             """)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         monkeypatch.chdir(proj)
         return repo, proj, fake
 
@@ -10113,6 +12605,61 @@ class TestRG76AssayLaneImports:
             1)
         config = config.replace('"bare-host"', '"runner"')
         config_path.write_text(config)
+
+    def test_import_discovery_gives_non_exec_inventory_remedy(self, monkeypatch):
+        settings = {
+            "command": ["assay"], "pins": {"assay": {"sha256": "a"}},
+            "import": {"environment": "host", "lanes": ["unit"]},
+        }
+        monkeypatch.setattr(run_gate, "resolve_environment",
+                            lambda *_args: ({"mode": "host"}, "host"))
+        monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/bin/docker")
+        monkeypatch.setattr(run_gate, "assay_inventory",
+                            lambda *_args: (None, "fixture inventory failure"))
+
+        with pytest.raises(run_gate.AssayImportUnavailable) as exc:
+            run_gate.discover_imported_assay_lanes(
+                settings, {}, {}, Path("run-gate.toml"), None,
+                Path("repo"), Path("repo"), Path("repo"))
+
+        assert "check the assay command, pin, and image" in str(exc.value)
+
+    def test_import_listing_placeholders_and_sequence_dependency(self):
+        declared = {
+            "suite": {"kind": "sequence", "lanes": ["local", "nested"]},
+            "local": {"kind": "command", "argv": ["true"]},
+            "nested": {"kind": "sequence", "lanes": ["remote", 17]},
+            "ignored": "not a lane table",
+        }
+        placeholders = run_gate.unresolved_import_placeholders(
+            {"import": {"environment": "runner", "lanes": "all"}},
+            declared)
+        assert list(placeholders) == ["remote"]
+        assert placeholders["remote"]["_import_unresolved"] is True
+        assert run_gate.unresolved_import_placeholders(
+            {"import": {"environment": "runner", "lanes": ["local", "remote"]}},
+            declared) == {"remote": {
+                "kind": "assay", "environment": "runner",
+                "assay_lane": "remote", "_import_unresolved": True}}
+        assert run_gate.unresolved_import_placeholders(
+            {"import": {"environment": "runner", "lanes": None}},
+            declared) == {}
+        assert run_gate.unresolved_import_placeholders({}, declared) == {}
+
+        assert run_gate.sequence_requires_assay_import(
+            "suite", declared, {"lanes": "all"})
+        assert run_gate.sequence_requires_assay_import(
+            "suite", declared, {"lanes": ["remote"]})
+        assert not run_gate.sequence_requires_assay_import(
+            "suite", declared, {"lanes": ["other"]})
+        assert not run_gate.sequence_requires_assay_import(
+            "local", declared, {"lanes": "all"})
+        cycle = {
+            "a": {"kind": "sequence", "lanes": ["b"]},
+            "b": {"kind": "sequence", "lanes": ["a"]},
+        }
+        assert not run_gate.sequence_requires_assay_import(
+            "a", cycle, {"lanes": "all"})
 
     @pytest.mark.parametrize("environment", ["host", "exec"])
     def test_container_record_refuses_after_imported_assay_environment_changes(
@@ -10251,28 +12798,112 @@ class TestRG76AssayLaneImports:
             in result.reason
         assert record_path.exists()
 
-    def test_import_all_lists_inventory_and_keeps_tsv_shape(self, tmp_path,
-                                                              monkeypatch,
-                                                              capsys):
+    def test_import_all_listing_does_not_probe_and_says_so(
+            self, tmp_path, monkeypatch, capsys):
+        """RG-100: `--list` is a display; it never asks the judge. An `all`
+        import therefore contributes no rows, and the listing says the import
+        was not queried instead of implying the declared lanes are all."""
         self._project(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            run_gate, "discover_imported_assay_lanes",
+            lambda *_args, **_kwargs: pytest.fail("--list must not probe"))
         assert run_gate.main(["--list"]) == 0
         captured = capsys.readouterr()
-        rows = captured.out.splitlines()
-        assert rows == ["alpha\tassay\tbare-host",
-                        "beta\tassay\tbare-host",
-                        "gamma\tassay\tbare-host"]
-        assert "imported assay lanes: alpha, beta, gamma" in captured.err
+        assert captured.out.splitlines() == []
+        assert "assay import unresolved: not queried" in captured.err
+
+    def test_import_all_resolves_inventory_for_a_verb_that_needs_every_lane(
+            self, tmp_path, monkeypatch, capsys):
+        """The same project, asked by a verb whose answer covers every lane,
+        does resolve the inventory and reports all three imported lanes."""
+        self._project(tmp_path, monkeypatch)
+        assert run_gate.main(["history", "--json"]) == 0
+        report = json.loads(capsys.readouterr().out)
+        assert sorted(report["lanes"]) == ["alpha", "beta", "gamma"]
 
     def test_explicit_lane_overrides_import_and_name_lists_are_exact(
             self, tmp_path, monkeypatch, capsys):
         self._project(tmp_path, monkeypatch, imported=["alpha", "beta"],
                       override=True)
+        assert run_gate.main(["history", "--json"]) == 0
+        report = json.loads(capsys.readouterr().out)
+        assert sorted(report["lanes"]) == ["alpha", "beta"]
         assert run_gate.main(["--list"]) == 0
         captured = capsys.readouterr()
+        # names the import lists explicitly show as unresolved placeholders;
+        # the explicit command lane overrides the imported `beta`
         assert "beta\tcommand\tbare-host" in captured.out
         assert "alpha\tassay\tbare-host" in captured.out
         assert "gamma\t" not in captured.out
-        assert "imported assay lanes: alpha" in captured.err
+        assert "imported assay lane names unresolved: alpha" in captured.err
+
+    def test_list_and_local_host_lane_do_not_require_stopped_import_runner(
+            self, tmp_path, monkeypatch, capsys):
+        _repo, project, _fake = self._project(
+            tmp_path, monkeypatch, imported=["alpha"])
+        self._use_exec_import_environment(project)
+        config_path = project / run_gate.CONFIG_NAME
+        config_path.write_text(config_path.read_text() + "\n" + """\
+            [environments.local]
+            mode = "host"
+            [lanes.docs]
+            kind = "command"
+            environment = "local"
+            argv = ["bash", "-c", "echo docs"]
+            clean_tree = false
+            """)
+        commit_all(_repo, "add local docs lane")
+        calls = []
+        real_run = subprocess.run
+        real_which = shutil.which
+
+        def unavailable_docker(argv, **kwargs):
+            if argv and argv[0] == "/bin/docker":
+                calls.append(list(argv))
+                return subprocess.CompletedProcess(
+                    argv, 125, "", "Error response from daemon: no such container")
+            return real_run(argv, **kwargs)
+
+        monkeypatch.setattr(run_gate.shutil, "which",
+                            lambda name: "/bin/docker" if name == "docker"
+                            else real_which(name))
+        monkeypatch.setattr(run_gate.subprocess, "run", unavailable_docker)
+
+        assert run_gate.main(["--list"]) == 0
+        listed = capsys.readouterr()
+        assert "alpha\tassay\trunner" in listed.out
+        assert "imported assay lane names unresolved: alpha" in listed.err
+        assert "assay import unresolved" in listed.err
+
+        assert run_gate.main(["docs", "--dry-run"]) == 0
+        local = capsys.readouterr()
+        assert "DRY RUN" in local.out
+        assert "alpha\tassay" not in local.out
+        assert calls == []  # neither `--list` nor a local lane asks the judge
+
+    def test_selected_imported_lane_refuses_with_runner_remedy_when_stopped(
+            self, tmp_path, monkeypatch, capsys):
+        _repo, project, _fake = self._project(
+            tmp_path, monkeypatch, imported=["alpha"])
+        self._use_exec_import_environment(project)
+        real_which = shutil.which
+        real_run = subprocess.run
+
+        def unavailable_docker(argv, **kwargs):
+            if argv and argv[0] == "/bin/docker":
+                return subprocess.CompletedProcess(
+                    argv, 125, "", "Error response from daemon: no such container")
+            return real_run(argv, **kwargs)
+
+        monkeypatch.setattr(run_gate.shutil, "which",
+                            lambda name: "/bin/docker" if name == "docker"
+                            else real_which(name))
+        monkeypatch.setattr(run_gate.subprocess, "run", unavailable_docker)
+
+        assert run_gate.main(["alpha", "--dry-run"]) == 2
+        error = capsys.readouterr().err
+        assert "[assay] import could not read the judge inventory" in error
+        assert "deployment authority" in error or "start via" in error
 
     def test_imported_lane_uses_shared_pin_and_tampering_is_not_run(
             self, tmp_path, monkeypatch, capsys):
@@ -10352,10 +12983,114 @@ class TestRG76AssayLaneImports:
             #!/bin/sh
             echo '{"inventory_schema":1,"lanes":[{"name":"alpha"}]}'
             """)
-        assert run_gate.main(["--list"]) == 0
+        assert run_gate.main(["history", "--json"]) == 0
         captured = capsys.readouterr()
-        assert captured.out.splitlines() == ["alpha\tassay\tbare-host"]
+        assert sorted(json.loads(captured.out)["lanes"]) == ["alpha"]
         assert "beta" not in captured.err and "gamma" not in captured.err
+
+    @staticmethod
+    def _spy_on_cmd(monkeypatch, name):
+        seen = []
+
+        def spy(lanes, *_args, **_kwargs):
+            seen.append(sorted(lanes))
+            return 0
+
+        monkeypatch.setattr(run_gate, name, spy)
+        return seen
+
+    def test_doctor_footprint_and_history_receive_the_imported_lanes(
+            self, tmp_path, monkeypatch, capsys):
+        """RG-100: the lane set these verbs act on includes the imported
+        lanes; answering from the declared lanes alone made `doctor` report a
+        clean result that skipped them and `footprint --write` drop them."""
+        self._project(tmp_path, monkeypatch)
+        for verb, cmd, argv in (
+                ("doctor", "cmd_doctor", ["doctor"]),
+                ("footprint", "cmd_footprint", ["footprint", "--json"]),
+                ("history", "cmd_history", ["history", "--json"])):
+            seen = self._spy_on_cmd(monkeypatch, cmd)
+            assert run_gate.main(argv) == 0, verb
+            assert seen == [["alpha", "beta", "gamma"]], verb
+        capsys.readouterr()
+
+    @pytest.mark.parametrize("argv", [
+        ["doctor"], ["--check-env"], ["history"], ["history", "--json"],
+        ["footprint"], ["footprint", "--write"],
+        ["history", "gamma"], ["footprint", "gamma"],
+        ["footprint", "--write", "--lane", "gamma"],
+    ])
+    def test_unavailable_inventory_refuses_instead_of_answering_partially(
+            self, tmp_path, monkeypatch, capsys, argv):
+        """With the judge unreachable these verbs must not report from the
+        declared lanes alone: no clean doctor/check-env, no history or
+        footprint answer, and no manifest file is written."""
+        repo, project, _fake = self._project(tmp_path, monkeypatch)
+        def unavailable(*_args, **_kwargs):
+            raise run_gate.AssayImportUnavailable(
+                "[assay] import could not read the judge inventory: "
+                "fixture runner down; start the runner")
+        monkeypatch.setattr(run_gate, "discover_imported_assay_lanes",
+                            unavailable)
+        for name in ("cmd_doctor", "cmd_check_env", "cmd_history",
+                     "cmd_footprint"):
+            monkeypatch.setattr(
+                run_gate, name, lambda *_a, **_k: pytest.fail(
+                    "must not answer without the inventory"))
+        assert run_gate.main(argv) == 2
+        assert "could not read the judge inventory" in capsys.readouterr().err
+        assert not run_gate.footprint_manifest_path(project).exists()
+
+    def test_declared_lane_queries_do_not_need_the_inventory(
+            self, tmp_path, monkeypatch, capsys):
+        """A superset refusal would cry wolf: asking about a lane declared
+        locally never needs the judge, so a stopped runner must not block it."""
+        self._project(tmp_path, monkeypatch, imported=["alpha"], override=True)
+        monkeypatch.setattr(
+            run_gate, "discover_imported_assay_lanes",
+            lambda *_args, **_kwargs: pytest.fail("declared lane: no probe"))
+        assert run_gate.main(["history", "beta", "--json"]) == 0
+        assert sorted(json.loads(capsys.readouterr().out)["lanes"]) == ["beta"]
+        assert run_gate.main(["footprint", "beta", "--json"]) == 0
+
+    def test_resolution_requirement_matrix(self):
+        declared = {
+            "local": {"kind": "command"},
+            "seq-imported": {"kind": "sequence", "lanes": ["remote"]},
+            "seq-local": {"kind": "sequence", "lanes": ["local"]},
+        }
+        spec = {"environment": "runner", "lanes": "all"}
+
+        def required(lane=None, target=None, *, list_=False, help_=False,
+                     check_env=False, footprint_lanes=None):
+            args = SimpleNamespace(
+                lane=lane, target=target, list=list_, help=help_,
+                check_env=check_env, footprint_lanes=footprint_lanes)
+            return run_gate.assay_import_resolution_required(
+                args, declared, spec)
+
+        # display-only paths never probe
+        assert not required(list_=True)
+        assert not required(help_=True)
+        assert not required()
+        for verb in ("admission", "validate-pointers", "migrate-modes",
+                     "status"):
+            assert not required(verb)
+        # every-lane verbs always do
+        assert required("doctor")
+        assert required(check_env=True)
+        assert required("history") and required("footprint")
+        # named lanes only when they could be imported names
+        assert not required("history", "local")
+        assert required("history", "remote")
+        assert not required("footprint", "local")
+        assert not required("footprint", footprint_lanes=["local"])
+        assert required("footprint", footprint_lanes=["local", "remote"])
+        # running a lane
+        assert not required("local")
+        assert required("remote")
+        assert required("seq-imported")
+        assert not required("seq-local")
 
     def test_import_policy_rejects_non_v8_shapes_and_unknown_fields(self):
         base = {"command": ["assay"],
@@ -10397,18 +13132,25 @@ class TestEstateBudgetTimeoutPairing:
     invokes a helper rather than a lane (srdm's canary-run.sh) pairs with
     nothing and is skipped by construction."""
 
-    # Review fix: accumulated across the parametrized sweep so a final
-    # aggregate test can prove the pairing mechanism is ALIVE estate-wide
-    # (per-trove skips must never add up to a vacuously green sweep).
-    PAIRINGS_SEEN: list[tuple[str, str]] = []
+    # Only projects that declare lanes can pair: a trove whose project has no
+    # run-gate.toml (ciu8, the shelved v8 subproject) is not a case at all,
+    # so it is filtered here rather than collected and skipped — a skip in
+    # the gate log must mean something is missing, never "not applicable".
+    TROVES = sorted(trove for trove
+                    in RUN_GATE_DIR.parent.glob("*/nyxloom-trove/nyxloom.toml")
+                    if (trove.parent.parent / "run-gate.toml").is_file())
 
-    @pytest.mark.parametrize("trove", sorted(
-        (RUN_GATE_DIR.parent.glob("*/nyxloom-trove/nyxloom.toml"))),
-        ids=lambda p: p.parent.parent.name)
-    def test_consumer_timeouts_never_cut_lanes_short(self, trove):
+    @staticmethod
+    def _pair(trove):
+        """Return [(gate_name, lane_name, timeout, budget)] for one trove,
+        or None when its project has no run-gate.toml. Pure function of the
+        files on disk (RG-62: the rot-guard below used to read a class-level
+        list filled by the parametrized siblings, so its verdict depended on
+        which siblings had already run: silent skip when it ran first, false
+        failure when only some had)."""
         proj_dir = trove.parent.parent
         if not (proj_dir / "run-gate.toml").is_file():
-            pytest.skip(f"{proj_dir.name} has no run-gate.toml")
+            return None
         project, _, central, central_path = run_gate.load_config(proj_dir)
         lanes = run_gate.merge_lanes(
             project.get("lanes", {}), central,
@@ -10417,9 +13159,8 @@ class TestEstateBudgetTimeoutPairing:
         paired = []
         for gate_name, gate in gates.items():
             timeout = gate.get("timeout_seconds")
+            # An unparseable timeout used to be silently skipped; fail loudly.
             if timeout is not None and not isinstance(timeout, int):
-                # Review fix: an unparseable timeout used to be silently
-                # skipped — exactly the rot this sweep exists to catch.
                 pytest.fail(
                     f"{trove}: [gates.{gate_name}] timeout_seconds must be "
                     f"integer seconds, got {timeout!r} — the pairing sweep "
@@ -10431,18 +13172,26 @@ class TestEstateBudgetTimeoutPairing:
                 budget = lane.get("budget")
                 if budget is None:
                     continue
-                # Whole-token on BOTH sides anchored at whitespace/ends
-                # (review fix): the old lookaround let 'out/suite.json'
-                # pair as lane 'suite'.
+                # Whole-token on both sides, anchored at whitespace/ends: the
+                # old lookaround let `out/suite.json` pair as lane `suite`.
                 if re.search(rf"(?:^|\s){re.escape(lane_name)}(?:\s|$)",
                              argv_text):
-                    paired.append((gate_name, lane_name))
-                    self.PAIRINGS_SEEN.append((proj_dir.name, gate_name))
-                    assert timeout >= _budget_seconds(budget), (
-                        f"{trove}: [gates.{gate_name}] timeout_seconds="
-                        f"{timeout} is TIGHTER than {proj_dir.name} lane "
-                        f"'{lane_name}' budget {budget} — widen the consumer "
-                        f"timeout or shrink the declared budget")
+                    paired.append((gate_name, lane_name, timeout, budget))
+        return paired
+
+    @pytest.mark.parametrize("trove", TROVES,
+                             ids=lambda p: p.parent.parent.name)
+    def test_consumer_timeouts_never_cut_lanes_short(self, trove):
+        proj_dir = trove.parent.parent
+        paired = self._pair(trove)
+        assert paired is not None, \
+            f"{proj_dir.name} lost its run-gate.toml after collection"
+        for gate_name, lane_name, timeout, budget in paired:
+            assert timeout >= _budget_seconds(budget), (
+                f"{trove}: [gates.{gate_name}] timeout_seconds="
+                f"{timeout} is TIGHTER than {proj_dir.name} lane "
+                f"'{lane_name}' budget {budget} — widen the consumer "
+                f"timeout or shrink the declared budget")
         assert paired, (
             f"{trove}: no gate↔lane pairing found — either the trove stopped "
             f"pointing at run-gate lanes or the pairing regex rotted")
@@ -10450,11 +13199,18 @@ class TestEstateBudgetTimeoutPairing:
     def test_estate_pairing_sweep_is_alive(self):
         """Rot-guard (review fix): the per-trove tests each prove their own
         pairings, but a mass rename could empty every trove at once. The
-        aggregate demands the sweep found REAL gate↔lane pairs somewhere."""
-        if not self.PAIRINGS_SEEN:
-            pytest.skip("no troves scanned (estate layout absent)")
-        assert len(self.PAIRINGS_SEEN) >= 3, (
-            f"estate-wide pairing collapsed to {self.PAIRINGS_SEEN} — the "
+        aggregate demands the sweep found REAL gate↔lane pairs somewhere.
+        It scans the troves itself (RG-62), so its verdict never depends on
+        which parametrized siblings ran before it."""
+        seen = []
+        for trove in self.TROVES:
+            seen.extend((trove.parent.parent.name, p[0])
+                        for p in (self._pair(trove) or []))
+        if not self.TROVES:
+            _testdeps.missing("the estate's nyxloom troves",
+                              "no troves scanned (estate layout absent)")
+        assert len(seen) >= 3, (
+            f"estate-wide pairing collapsed to {seen} — the "
             f"sweep's grammar and the estate's gate tables have drifted "
             f"apart; fix one or the other, never widen this guard to pass")
 
@@ -10957,7 +13713,8 @@ class TestHistoryTableResourceColumns:
         for tag, secs in (("a", 10.0), ("b", 100.0)):
             new_commit(repo, tag)
             record_run(proj, repo, seconds=secs)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         assert run_gate.main(["history", "suite"]) == 0
         out = capsys.readouterr().out
         assert "PEAK -" in out    # RUN_GATE_PROFILE=off -- no resources yet
@@ -11195,7 +13952,8 @@ class TestFootprintVerbCLI:
             self, tmp_path, monkeypatch, capsys):
         repo, proj = self._proj(tmp_path)
         record_run(proj, repo)   # unprofiled -- schema-1-shaped
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["footprint", "--write"])
         err = capsys.readouterr().err
         assert code == 2
@@ -11205,7 +13963,8 @@ class TestFootprintVerbCLI:
     def test_write_refuses_on_an_empty_store_too(self, tmp_path, monkeypatch,
                                                   capsys):
         repo, proj = self._proj(tmp_path)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["footprint", "--write"])
         assert code == 2
         assert "footprint --write refused" in capsys.readouterr().err
@@ -11214,7 +13973,8 @@ class TestFootprintVerbCLI:
             self, tmp_path, monkeypatch, capsys):
         repo, proj = self._proj(tmp_path)
         record_profiled_run(proj, repo, SUMMARY_V1)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["footprint", "--write"])
         assert code == 0, capsys.readouterr().err
         out = capsys.readouterr().out
@@ -11248,7 +14008,8 @@ class TestFootprintVerbCLI:
             clean_tree = false
         """)
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         fake_docker(tmp_path, monkeypatch)   # no inspect case -> rusage mode
         assert run_gate.main(["suite"]) == 0
         capsys.readouterr()
@@ -11265,7 +14026,8 @@ class TestFootprintVerbCLI:
         # doctor's own consolidated caveat (cmd_doctor section 6) — the
         # same disclosure `_fmt_footprint_row` already prints, surfaced
         # again where an operator is most likely to be reading for it.
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         doctor_code = run_gate.main(["doctor"])
         doctor_out = capsys.readouterr().out
         assert doctor_code == 0
@@ -11276,7 +14038,8 @@ class TestFootprintVerbCLI:
                                                   capsys):
         repo, proj = self._proj(tmp_path)
         record_profiled_run(proj, repo, SUMMARY_V1)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["footprint", "suite", "--write"])
         assert code == 2
         assert "does not accept a positional LANE filter" in \
@@ -11286,7 +14049,8 @@ class TestFootprintVerbCLI:
             self, tmp_path, monkeypatch, capsys):
         repo, proj = self._proj(tmp_path)
         record_profiled_run(proj, repo, SUMMARY_V1, exit_code=1)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         assert run_gate.main(["footprint", "--include-failed", "--json"]) == 0
         doc = json.loads(capsys.readouterr().out)
         assert doc["lanes"]["suite"]["included_outcomes"] == ["FAIL"]
@@ -11327,7 +14091,8 @@ class TestFootprintVerbCLI:
         other_profile = json.loads(json.dumps(SUMMARY_V1))
         other_profile["memory"]["peak_bytes"] = 999
         record_profiled_run(proj, repo, other_profile, lane="other")
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         assert run_gate.main(["footprint", "--write"]) == 0
         capsys.readouterr()
         before = read_footprint(proj)
@@ -11352,7 +14117,8 @@ class TestFootprintVerbCLI:
     def test_lane_merge_refuses_missing_manifest_and_unprofiled_name(
             self, tmp_path, monkeypatch, capsys):
         repo, proj = self._proj(tmp_path)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         assert run_gate.main(["footprint", "--write", "--lane", "suite"]) == 2
         assert "missing or is not a parseable" in capsys.readouterr().err
         record_run(proj, repo)
@@ -11366,7 +14132,8 @@ class TestFootprintVerbCLI:
             self, tmp_path, monkeypatch, capsys):
         repo, proj = self._proj(tmp_path)
         record_profiled_run(proj, repo, SUMMARY_V1)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["footprint", "--json"])
         assert code == 0
         out = capsys.readouterr().out
@@ -11377,7 +14144,8 @@ class TestFootprintVerbCLI:
     def test_table_output_with_no_data_says_so(self, tmp_path, monkeypatch,
                                                capsys):
         repo, proj = self._proj(tmp_path)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["footprint"])
         assert code == 0
         assert "no lane has a completed, profiled run" in capsys.readouterr().out
@@ -11386,7 +14154,8 @@ class TestFootprintVerbCLI:
                                                 capsys):
         repo, proj = self._proj(tmp_path)
         record_profiled_run(proj, repo, SUMMARY_V1)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["footprint"])
         assert code == 0
         out = capsys.readouterr().out
@@ -11398,14 +14167,16 @@ class TestFootprintVerbCLI:
             self, tmp_path, monkeypatch, capsys):
         repo, proj = self._proj(tmp_path)
         record_profiled_run(proj, repo, SUMMARY_V1)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["footprint", "suite", "--json"])
         assert code == 0
         assert set(json.loads(capsys.readouterr().out)["lanes"]) == {"suite"}
 
     def test_unknown_lane_is_refused(self, tmp_path, monkeypatch, capsys):
         repo, proj = self._proj(tmp_path)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["footprint", "nope"])
         assert code == 2
         assert "unknown lane" in capsys.readouterr().err
@@ -11422,7 +14193,8 @@ class TestFootprintVerbCLI:
             self, tmp_path, monkeypatch, capsys):
         repo, proj = self._proj(tmp_path)
         record_profiled_run(proj, repo, SUMMARY_V1)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["footprint", "--worktree", str(repo)])
         assert code == 0
         out = capsys.readouterr().out
@@ -11431,7 +14203,8 @@ class TestFootprintVerbCLI:
     def test_write_flag_refused_on_every_other_verb(self, tmp_path,
                                                      monkeypatch, capsys):
         repo, proj = self._proj(tmp_path)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["history", "--write"])
         assert code == 2
         assert "--write is honored by the `footprint` verb only" in \
@@ -11652,7 +14425,8 @@ class TestFootprintDoctorChecks:
     def _doctor(self, tmp_path, monkeypatch, capsys, config=FOOTPRINT_LANE):
         repo, proj = make_history_repo(tmp_path, config=config)
         fake_docker(tmp_path, monkeypatch)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["doctor"])
         return repo, proj, code, capsys.readouterr().out
 
@@ -11673,7 +14447,8 @@ class TestFootprintDoctorChecks:
                        "memory_peak_bytes": {"median": 734003200, "max": 734003200}}}}
         (proj / run_gate.FOOTPRINT_FILE_NAME).write_text(json.dumps(manifest))
         fake_docker(tmp_path, monkeypatch)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["doctor"])
         out = capsys.readouterr().out
         assert "[OK] footprint drift" in out
@@ -11697,7 +14472,8 @@ class TestFootprintDoctorChecks:
                        "memory_peak_bytes": {"median": 734003200, "max": 734003200}}}}
         (proj / run_gate.FOOTPRINT_FILE_NAME).write_text(json.dumps(manifest))
         fake_docker(tmp_path, monkeypatch)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["doctor"])
         out = capsys.readouterr().out
         assert "[INFO] footprint source" in out
@@ -11721,7 +14497,8 @@ class TestFootprintDoctorChecks:
                        "memory_peak_bytes": {"median": 734003200, "max": 734003200}}}}
         (proj / run_gate.FOOTPRINT_FILE_NAME).write_text(json.dumps(manifest))
         fake_docker(tmp_path, monkeypatch)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["doctor"])
         out = capsys.readouterr().out
         assert "[INFO] footprint source" in out
@@ -11738,7 +14515,8 @@ class TestFootprintDoctorChecks:
                        "memory_peak_bytes": {"median": 100 * MIB, "max": 100 * MIB}}}}
         (proj / run_gate.FOOTPRINT_FILE_NAME).write_text(json.dumps(manifest))
         fake_docker(tmp_path, monkeypatch)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["doctor"])
         out = capsys.readouterr().out
         assert "[WARN] footprint drift 'suite'" in out
@@ -11755,7 +14533,8 @@ class TestFootprintDoctorChecks:
                        "memory_peak_bytes": {"median": 734003200, "max": 734003200}}}}
         (proj / run_gate.FOOTPRINT_FILE_NAME).write_text(json.dumps(manifest))
         fake_docker(tmp_path, monkeypatch)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["doctor"])
         out = capsys.readouterr().out
         assert "[WARN] footprint staleness" in out
@@ -11778,7 +14557,8 @@ class TestFootprintDoctorChecks:
                                              "max": 734003200 * 2}}}}
         (proj / run_gate.FOOTPRINT_FILE_NAME).write_text(json.dumps(manifest))
         fake_docker(tmp_path, monkeypatch)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["doctor"])
         out = capsys.readouterr().out
         assert "[OK] footprint drift" in out
@@ -11792,7 +14572,8 @@ class TestFootprintDoctorChecks:
                    "lanes": {"suite": {"memory_peak_bytes": {"median": None}}}}
         (proj / run_gate.FOOTPRINT_FILE_NAME).write_text(json.dumps(manifest))
         fake_docker(tmp_path, monkeypatch)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["doctor"])
         out = capsys.readouterr().out
         assert code == 0
@@ -11809,7 +14590,8 @@ class TestFootprintDoctorChecks:
                        "memory_peak_bytes": {"median": 734003200, "max": 734003200}}}}
         (proj / run_gate.FOOTPRINT_FILE_NAME).write_text(json.dumps(manifest))
         fake_docker(tmp_path, monkeypatch)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["doctor"])
         out = capsys.readouterr().out
         assert code == 0
@@ -11823,7 +14605,8 @@ class TestFootprintDoctorChecks:
             "memory_peak_bytes": {"median": 734003200, "max": 734003200}}}}
         (proj / run_gate.FOOTPRINT_FILE_NAME).write_text(json.dumps(manifest))
         fake_docker(tmp_path, monkeypatch)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["doctor"])
         assert "footprint staleness" not in capsys.readouterr().out
         assert code == 0
@@ -11837,7 +14620,8 @@ class TestFootprintDoctorChecks:
                        "memory_peak_bytes": {"median": 734003200, "max": 734003200}}}}
         (proj / run_gate.FOOTPRINT_FILE_NAME).write_text(json.dumps(manifest))
         fake_docker(tmp_path, monkeypatch)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["doctor"])
         out = capsys.readouterr().out
         assert code == 0
@@ -11938,14 +14722,29 @@ class TestHistoryEligibilityGuard:
         assert rec["dirty"] is False
         assert lane_slot(proj)["history"][0]["duration_seconds"] == 10.0
 
-    def test_tree_state_is_sampled_before_the_lane_not_after(self, tmp_path):
+    def test_tree_state_is_sampled_before_the_lane_not_after(
+            self, tmp_path, monkeypatch):
         """A lane that leaves artifacts behind must not retro-disqualify its
         own (clean at start) measurement."""
         repo, proj = make_history_repo(tmp_path)
         new_commit(repo, "a")
         rec = run_gate.start_run_record("suite", repo, repo)
         (repo / "lane-artifact.txt").write_text("written BY the lane")
-        rec["_started_monotonic"] = time.monotonic() - 4.0
+        # RG-62: freeze the clock `finish_run_record` reads, so the 4.0 s
+        # duration is exact instead of 4.0 plus however long the host took
+        # between this stamp and the finish call (observed 4.001 under load).
+        # Only `run_gate`'s own `time` name is replaced; every other
+        # attribute still resolves to the real module.
+        real_time = time
+
+        class _FrozenClock:
+            monotonic = staticmethod(lambda: 1000.0)
+
+            def __getattr__(self, name):
+                return getattr(real_time, name)
+
+        monkeypatch.setattr(run_gate, "time", _FrozenClock())
+        rec["_started_monotonic"] = 1000.0 - 4.0
         run_gate.finish_run_record(rec, exit_code=0)
         run_gate.record_invocation(proj, repo, rec, 10)
         assert lane_slot(proj)["history"][0]["duration_seconds"] == 4.0
@@ -12123,13 +14922,14 @@ class TestHistoryStoreSafety:
         assert run_gate.paths_are_git_ignored(
             repo, run_gate.history_written_paths(proj)) is False
 
-    def test_git_error_status_is_indeterminate_not_a_green_light(self,
-                                                                 tmp_path):
+    def test_git_error_status_is_indeterminate_not_a_green_light(
+            self, tmp_path, monkeypatch):
         """git exits 128 outside a repo. That is 'I could not answer', and
         folding it into either answer would be the absence-for-emptiness
         anti-pattern — here in its dangerous direction."""
         outside = tmp_path / "not-a-repo"
         outside.mkdir()
+        monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
         assert run_gate.paths_are_git_ignored(
             outside, run_gate.history_written_paths(outside)) is None
 
@@ -12144,7 +14944,7 @@ class TestHistoryStoreSafety:
 
 
 class TestHistoryEndToEnd:
-    """The recorder wired into a REAL `run-gate.py <lane>` invocation — the
+    """The recorder wired into a REAL installed `run-gate <lane>` invocation — the
     unit tests above drive the recorder, these prove the gate calls it."""
 
     def test_a_real_lane_run_records_pass_in_both_slots(self, tmp_path,
@@ -12316,7 +15116,7 @@ class TestHistoryQueryVerb:
     def test_usage_documents_the_verb_and_the_store_contract(self, tmp_path):
         _, proj = make_history_repo(tmp_path)
         out = run_tool(proj, "--help")
-        assert "run-gate.py history [LANE] [--worktree PATH] [--json]" \
+        assert "run-gate history [LANE] [--worktree PATH] [--json]" \
             in out.stdout
         assert "read scope" in out.stdout
         assert ".run-gate/history.json" in out.stdout
@@ -12334,7 +15134,8 @@ class TestHistoryInProcess:
         fake_docker(tmp_path, monkeypatch)
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda p, **k: Path("/phys"))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         return repo, proj
 
     def test_main_records_a_pass_then_the_verb_prints_it(self, tmp_path,
@@ -12640,7 +15441,8 @@ class TestHistoryReadScope:
         repo, proj = make_history_repo(tmp_path)
         new_commit(repo, "a")
         record_run(proj, repo, seconds=3.0)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         calls = []
         real = run_gate.resolve_repo_and_worktree
         monkeypatch.setattr(run_gate, "resolve_repo_and_worktree",
@@ -12677,7 +15479,8 @@ class TestHistoryFlushIsAtMostOnce:
         fake_docker(tmp_path, monkeypatch)
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda p, **k: Path("/phys"))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         new_commit(repo, "a")
         seen = []
 
@@ -12753,7 +15556,7 @@ class TestJsonFlagScope:
         out = run_tool(proj, "--help")
         assert "`history`/`footprint`/`status`: emit one JSON" in out.stdout
         assert "REFUSES it by name" in out.stdout
-        assert "run-gate.py history [LANE] [--worktree PATH] [--json]" \
+        assert "run-gate history [LANE] [--worktree PATH] [--json]" \
             in out.stdout
 
 
@@ -12774,7 +15577,8 @@ class TestHistoryReadScopeInProcess:
         rec["_started_monotonic"] = time.monotonic() - 77.0
         run_gate.finish_run_record(rec, exit_code=0)
         run_gate.record_invocation(other / "proj", other, rec, 10)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         return repo, proj, other
 
     def test_worktree_read_names_and_reads_that_tree(self, tmp_path,
@@ -12820,7 +15624,8 @@ class TestHistoryReadScopeInProcess:
     def test_json_outside_history_refuses_by_name(self, tmp_path, monkeypatch,
                                                   capsys, args):
         repo, proj = make_history_repo(tmp_path)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         assert run_gate.main(args) == 2
         assert "--json is honored by the `history`/`footprint`/`status` verbs only" \
             in capsys.readouterr().err
@@ -12861,6 +15666,7 @@ class TestResumeAndProgressAlways:
                                            request_base="deadbeef")
         assert inner.rstrip().endswith("--request-base deadbeef")
         assert ("--progress .assay/progress-sql_mutation.jsonl "
+                "--progress-heartbeat 60 "
                 "--state-dir /repo/.run-gate/assay-state/proj "
                 "--request-base deadbeef") in inner
 
@@ -13191,6 +15997,7 @@ class TestResumeAndProgressAlways:
 
     def test_state_root_preflight_refuses_before_assay_and_uses_exact_runner(
             self, monkeypatch, tmp_path):
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
         calls = []
 
         def run(argv, **_kwargs):
@@ -13223,6 +16030,28 @@ class TestResumeAndProgressAlways:
         assert run_gate.ASSAY_STATE_UNAVAILABLE in calls[1][-1]
         assert "mkdir" not in calls[1][-1] and "chown" not in calls[1][-1]
 
+    def test_in_repo_state_root_never_reaches_preflight_as_a_refusal(
+            self, monkeypatch, tmp_path, capsys):
+        """RG-98: an in-worktree state root is no longer refused, so the
+        preflight needs no judge inventory probe at all. The scratch hazard is
+        removed where it arose, in the judge's environment (see
+        `TestRG98JudgeScratchIsolation`)."""
+        repo = tmp_path / "consumer"
+        project = repo / "service"
+        project.mkdir(parents=True)
+        monkeypatch.setattr(
+            run_gate, "assay_inventory_entry",
+            lambda *_args, **_kwargs:
+            pytest.fail("the state-root preflight must not probe the judge"))
+        monkeypatch.setattr(run_gate, "probe_assay_state_root",
+                            lambda *_args, **_kwargs: (True, None))
+        run_gate.assure_assay_state_root(
+            "/bin/docker", {"kind": "assay", "assay_lane": "r1",
+                             "assay_command": ["assay"], "pins": []},
+            {"mode": "exec", "image": "runner:local"}, "runner", "fixture",
+            repo, project, repo, "", resolved_container_name="runner-1")
+        assert "assay state root:" in capsys.readouterr().out
+
     @pytest.mark.parametrize(("env", "runner"), [
         ({"mode": "ephemeral", "image": "runner:local"},
          "image 'runner:local'"),
@@ -13232,6 +16061,10 @@ class TestResumeAndProgressAlways:
             self, monkeypatch, tmp_path, env, runner):
         repo = tmp_path / "repo"
         repo.mkdir()
+        monkeypatch.setattr(run_gate, "assay_inventory_entry",
+                            lambda *_args, **_kwargs:
+                            ({"name": "unit", "rigor": ["R0"]},
+                             "9.0.0", None))
         monkeypatch.setattr(run_gate, "probe_assay_state_root",
                             lambda *_args, **_kwargs: (False, None))
         monkeypatch.setattr(run_gate, "build_env_probe_argv",
@@ -13260,6 +16093,10 @@ class TestResumeAndProgressAlways:
 
     def test_writable_state_preflight_reports_the_ready_root(
             self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setattr(run_gate, "assay_inventory_entry",
+                            lambda *_args, **_kwargs:
+                            ({"name": "unit", "rigor": ["R0"]},
+                             "9.0.0", None))
         monkeypatch.setattr(run_gate, "probe_assay_state_root",
                             lambda *_args, **_kwargs: (True, None))
         repo = tmp_path / "repo"
@@ -13272,6 +16109,10 @@ class TestResumeAndProgressAlways:
 
     def test_indeterminate_state_probe_is_an_infrastructure_error(
             self, monkeypatch, tmp_path):
+        monkeypatch.setattr(run_gate, "assay_inventory_entry",
+                            lambda *_args, **_kwargs:
+                            ({"name": "unit", "rigor": ["R0"]},
+                             "9.0.0", None))
         monkeypatch.setattr(run_gate, "probe_assay_state_root",
                             lambda *_args, **_kwargs: (None, "daemon unavailable"))
         repo = tmp_path / "repo"
@@ -13294,7 +16135,8 @@ class TestResumeAndProgressAlways:
             clean_tree = false
         """)
         monkeypatch.chdir(project)
-        monkeypatch.setattr(sys, "argv", [str(project / "run-gate.py")])
+        monkeypatch.chdir(project)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
 
         def refuse_state_mount(*_args, **_kwargs):
             raise run_gate.GateNotRunError("state-mount", "mount unavailable")
@@ -13307,6 +16149,7 @@ class TestResumeAndProgressAlways:
 
     def test_state_root_dry_run_discloses_probe_without_running_it(
             self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
         calls = []
 
         def run(argv, **_kwargs):
@@ -13351,6 +16194,10 @@ class TestResumeAndProgressAlways:
             raise AssertionError("dry-run must not probe host state")
 
         monkeypatch.setattr(run_gate, "probe_assay_state_root", unexpected_probe)
+        monkeypatch.setattr(
+            run_gate, "assay_inventory_entry",
+            lambda *_args, **_kwargs:
+            ({"name": "unit", "rigor": ["R0"]}, "9.0.0", None))
         repo = tmp_path / "repo"
         repo.mkdir()
         default_root = repo / ".run-gate"
@@ -13442,6 +16289,7 @@ class TestResumeAndProgressAlways:
             self, tmp_path, monkeypatch, capfd):
         """The judge prints its executed argv and writes a valid verdict, so
         both the handover and the normal closed-result path are exercised."""
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
         cfg = ASSAY_LANE_CFG.replace('environment = "tester-unified"',
                                      'environment = "bare-host"', 1)
         TestComparisonBasePassthrough._project(self, tmp_path, monkeypatch, cfg)
@@ -13450,8 +16298,9 @@ class TestResumeAndProgressAlways:
             #!/bin/sh
             case "$*" in
               *"lanes --json"*) echo '{"inventory_schema": 1, "lanes": [
-                  {"name": "ui_unit", "base_source": "request",
+                  {"name": "ui_unit", "base_source": "request", "rigor": ["R0"],
                    "external_tools": [], "argv0": null, "language": null}]}' ;;
+              analyze*) exit 0 ;;  # B108-2: the closeout call must not rewrite the verdict
               *) echo "JUDGE-ARGV: $*"
                  mkdir -p .assay
                  cat > .assay/verdict-ui_unit.json <<'JSON'
@@ -13467,6 +16316,7 @@ class TestResumeAndProgressAlways:
         assert ("JUDGE-ARGV: run ui_unit --file assay.toml "
                 "--verdict-json .assay/verdict-ui_unit.json "
                 "--resume --progress .assay/progress-ui_unit.jsonl "
+                "--progress-heartbeat 60 "
                 f"--state-dir {state_dir} "
                 "--request-base deadbeef") in out
 
@@ -13536,6 +16386,28 @@ class TestResumeAndProgressAlways:
     def test_declared_version_tuple(self, declared, expected):
         assert run_gate.declared_version_tuple(declared) == expected
 
+    @pytest.mark.parametrize("declared, required, expected", [
+        ("9.0.1.dev1083+ga43c0fcf9", (5, 2, 0), True),
+        ("v7.1.1.dev4+gabc1234.d20261030", (7, 1, 0), True),
+        ("7.1.0", (7, 1, 0), True),
+        ("v7.1.0", (7, 1, 0), True),
+        ("7.1.0.dev4+gabc1234", (7, 1, 0), False),
+        ("5.1.99.dev4+gabc1234", (5, 2, 0), False),
+        ("9.0.1rc1", (5, 2, 0), False),
+        ("9.0.1+foo", (5, 2, 0), False),
+        ("9.0.1+ga43c0fcf9", (5, 2, 0), False),
+        ("9.0.1.dev3", (5, 2, 0), False),
+        ("9.0.1.dev3+foo", (5, 2, 0), False),
+        ("9.0.1.dev3+g123456", (5, 2, 0), False),
+        ("9.0.1.dev3+ga43c0fcf9.d2026-10-30", (5, 2, 0), False),
+        ("5.2.0.dev1+ga43c0fcf9", (5, 2, 0), False),
+        ("unknown", (5, 2, 0), False),
+    ])
+    def test_assay_inventory_version_meets_floor(
+            self, declared, required, expected):
+        assert run_gate.assay_inventory_version_meets_floor(
+            declared, required) is expected
+
 
 # ---------------------------------------------------------------------------
 # RG-35 / R-39 — the inflight record and re-attach
@@ -13557,6 +16429,8 @@ def fake_docker_stateful(tmp_path, monkeypatch) -> tuple[Path, Path]:
     """
     log = fake_docker(tmp_path, monkeypatch)
     verdict_helper = shlex.quote(str(Path(tmp_path) / "fake-assay-verdict.py"))
+    inventory_helper = shlex.quote(
+        str(Path(tmp_path) / "fake-assay-inventory.py"))
     state = tmp_path / "docker-state"
     state.mkdir(exist_ok=True)
     shim = shim_dir_of(monkeypatch) / "docker"
@@ -13582,6 +16456,15 @@ def fake_docker_stateful(tmp_path, monkeypatch) -> tuple[Path, Path]:
                 echo "RUN_GATE_STATE_ROOT_READY"
                 exit 0
                 ;;
+              *"lanes --json"*)
+                for last; do :; done
+                first_path="${{PATH%%:*}}"
+                if [ -x "$first_path/assay" ]; then
+                  exec bash -c "$last"
+                fi
+                python3 {inventory_helper} "$last"
+                exit 0
+                ;;
             esac
             python3 {verdict_helper} "0" "$@"
             name=""; prev=""; detached=no
@@ -13594,6 +16477,12 @@ def fake_docker_stateful(tmp_path, monkeypatch) -> tuple[Path, Path]:
             echo "sha256:fakeid-$name"
             ;;
           inspect)
+            if [ "$1" = "--format" ] && [ "$2" = "{{{{.Image}}}}" ]; then
+              name="$3"
+              [ -f "$S/$name" ] || {{ echo "Error: No such object: $name" >&2; exit 1; }}
+              echo "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+              exit 0
+            fi
             name="$3"
             [ -f "$S/$name" ] || {{ echo "Error: No such object: $name" >&2; exit 1; }}
             read status code id started < "$S/$name"
@@ -13621,7 +16510,24 @@ def fake_docker_stateful(tmp_path, monkeypatch) -> tuple[Path, Path]:
             # evidence is captured before removal, and a shim that blocked
             # there too would hang the very path a stall depends on.
             case "$*" in
-              *-f*) while [ -f "$S/.hang" ]; do sleep 0.2; done ;;
+              *-f*)
+                __sleep_pid=""
+                __stop_logs() {{
+                  if [ -n "$__sleep_pid" ]; then
+                    kill "$__sleep_pid" 2>/dev/null || :
+                    wait "$__sleep_pid" 2>/dev/null || :
+                  fi
+                  exit 143
+                }}
+                trap '__stop_logs' TERM INT
+                while [ -f "$S/.hang" ]; do
+                  sleep 0.2 &
+                  __sleep_pid=$!
+                  wait "$__sleep_pid"
+                  __sleep_pid=""
+                done
+                trap - TERM INT
+                ;;
             esac
             echo "FAKE-LOGS-LINE"
             ;;
@@ -13707,10 +16613,23 @@ def fake_docker_logstream(tmp_path, monkeypatch) -> tuple[Path, Path]:
               fi
             }}
             if [ "$streaming" = yes ]; then
+              __sleep_pid=""
+              __stop_logs() {{
+                if [ -n "$__sleep_pid" ]; then
+                  kill "$__sleep_pid" 2>/dev/null || :
+                  wait "$__sleep_pid" 2>/dev/null || :
+                fi
+                exit 143
+              }}
+              trap '__stop_logs' TERM INT
               while [ -f "$S/.hang" ]; do
                 emit_new
-                sleep 0.05
+                sleep 0.05 &
+                __sleep_pid=$!
+                wait "$__sleep_pid"
+                __sleep_pid=""
               done
+              trap - TERM INT
             fi
             emit_new
             ;;
@@ -13748,6 +16667,194 @@ def logstream_container(state: Path) -> str | None:
     return names[0] if names else None
 
 
+class TestRg109InterruptedClient:
+    """RG-109: what a SIGTERM to run-gate leaves behind, pinned.
+
+    A client STOPPED gracefully during the wait removes its container and
+    clears its record (adoption is for a client that DIED); a second SIGTERM
+    during that cleanup is deferred, never raised mid-cleanup; and an
+    interruption after `docker run -d` but before the wait keeps the
+    container (adoptable) and says so."""
+
+    def test_deferred_sigterm_records_the_signal_and_re_raises_after_the_body(self):
+        previous = signal.getsignal(signal.SIGTERM)
+        reached = []
+        with pytest.raises(SystemExit) as caught:
+            with run_gate.deferred_sigterm():
+                os.kill(os.getpid(), signal.SIGTERM)
+                reached.append("body ran to its end despite the signal")
+                reached.append(signal.getsignal(signal.SIGTERM) is not previous)
+        assert caught.value.code == 128 + signal.SIGTERM
+        assert reached == ["body ran to its end despite the signal", True]
+        assert signal.getsignal(signal.SIGTERM) is previous   # restored
+
+    def test_deferred_sigint_is_re_raised_as_keyboard_interrupt_after_the_body(self):
+        """Ctrl-C during the cleanup (README: SIGTERM / Ctrl-C) is deferred
+        the same way and comes back as the KeyboardInterrupt Python's own
+        handler would have raised; a SIGTERM seen as well wins (exit 143)."""
+        previous = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGINT)}
+        reached = []
+        with pytest.raises(KeyboardInterrupt):
+            with run_gate.deferred_sigterm():
+                os.kill(os.getpid(), signal.SIGINT)
+                reached.append("body ran to its end despite Ctrl-C")
+        assert reached == ["body ran to its end despite Ctrl-C"]
+        assert all(signal.getsignal(s) is h for s, h in previous.items())
+        with pytest.raises(SystemExit) as caught:
+            with run_gate.deferred_sigterm():
+                os.kill(os.getpid(), signal.SIGINT)
+                os.kill(os.getpid(), signal.SIGTERM)
+        assert caught.value.code == 128 + signal.SIGTERM
+        assert all(signal.getsignal(s) is h for s, h in previous.items())
+
+    def test_deferred_sigterm_restores_a_c_installed_handler_as_sig_dfl(
+            self, monkeypatch):
+        """`signal.signal` reports a handler Python did not install as None;
+        handing None back raises TypeError and would abort the restore
+        mid-way. The default disposition is restored instead."""
+        real_signal = signal.signal
+        original_sigint = signal.getsignal(signal.SIGINT)
+        restored = []
+
+        def reporting_none_for_sigint(signum, handler):
+            previous = real_signal(signum, handler)
+            if signum == signal.SIGINT and handler is not signal.SIG_DFL \
+                    and previous is original_sigint:
+                return None            # as if a C host had installed it
+            if handler is signal.SIG_DFL:
+                restored.append(signum)
+            return previous
+
+        monkeypatch.setattr(signal, "signal", reporting_none_for_sigint)
+        try:
+            with run_gate.deferred_sigterm():
+                pass
+            # SIGTERM's own previous handler may legitimately be SIG_DFL
+            # (it is under pytest); the point is SIGINT's None became SIG_DFL
+            # instead of a TypeError that would have skipped the rest.
+            assert signal.SIGINT in restored
+            assert signal.getsignal(signal.SIGINT) is signal.SIG_DFL
+        finally:
+            real_signal(signal.SIGINT, original_sigint)
+        assert signal.getsignal(signal.SIGINT) is original_sigint
+
+    def test_deferred_sigterm_without_a_signal_is_transparent(self):
+        previous = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGINT)}
+        with run_gate.deferred_sigterm():
+            pass
+        assert all(signal.getsignal(s) is h for s, h in previous.items())
+
+    def test_deferred_sigterm_outside_the_main_thread_runs_the_body_unprotected(self):
+        seen = []
+
+        def body():
+            with run_gate.deferred_sigterm():   # signal() raises ValueError here
+                seen.append(threading.current_thread() is not threading.main_thread())
+
+        worker = threading.Thread(target=body)
+        worker.start()
+        worker.join(timeout=10)
+        assert seen == [True]
+
+    def test_a_sigterm_during_the_wait_removes_the_container_and_clears_the_record(
+            self, tmp_path, monkeypatch):
+        repo, proj = make_history_repo(tmp_path, SIMPLE_LANE)
+        log, state = fake_docker_stateful(tmp_path, monkeypatch)
+        (state / ".hang").write_text("")      # `docker logs -f` blocks
+        previous_subreaper = _set_child_subreaper(True)
+        client = None
+        try:
+            client_script = tmp_path / "run-gate-client.py"
+            client_script.write_text(textwrap.dedent(f"""\
+                import importlib.util
+                import sys
+                from pathlib import Path
+
+                sys.argv[0] = "run-gate"
+                spec = importlib.util.spec_from_file_location(
+                    "run_gate", {str(_TOOL)!r})
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[spec.name] = module
+                spec.loader.exec_module(module)
+                module.physical_path = lambda path, *a, **kw: Path("/phys")
+                raise SystemExit(module.main(["suite"]))
+            """), encoding="utf-8")
+            client = subprocess.Popen([sys.executable, str(client_script)],
+                                      cwd=proj, stdout=subprocess.PIPE,
+                                      stderr=subprocess.STDOUT, text=True)
+            record = proj / ".run-gate" / "inflight" / "suite.json"
+            deadline = time.monotonic() + 30
+            while not (state_containers(state) and record.exists()) \
+                    and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert state_containers(state) and record.exists()
+            name = state_containers(state)[0]
+            client.send_signal(signal.SIGTERM)
+            out, _ = client.communicate(timeout=60)
+            assert client.returncode == 2, out   # ERROR: interrupted
+            assert ("interrupted before a closed result (exit status 143); "
+                    "verdict ERROR, exit 2") in out
+            assert state_containers(state) == [], out   # `docker rm -f` ran
+            assert not record.exists(), out               # and the record is gone
+            assert f"rm\x1f-f\x1f{name}" in log.read_text()
+            # Run-Gate terminates the fake `docker logs -f` shell during its
+            # SIGTERM cleanup. Its polling `sleep` is a separate child, so the
+            # fake Docker shim must reap it before the shell exits.
+            leaked_children = _direct_child_pids()
+            child_names = []
+            for pid in leaked_children:
+                try:
+                    name = Path(f"/proc/{pid}/comm").read_text(
+                        encoding="ascii").strip()
+                except OSError:
+                    name = "<exited>"
+                child_names.append((pid, name))
+            assert leaked_children == [], (
+                "SIGTERM cleanup left the fake docker logs process tree behind: "
+                f"{child_names}"
+            )
+        finally:
+            if client is not None:
+                if client.poll() is None:
+                    client.kill()
+                client.wait(timeout=30)
+            try:
+                _kill_and_reap_direct_children()
+            finally:
+                _set_child_subreaper(previous_subreaper)
+
+    def test_an_interruption_before_the_wait_keeps_the_container_and_says_so(
+            self, tmp_path, monkeypatch, capsys):
+        streams = _capture_run_gate_prints(monkeypatch)
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+        repo, proj = make_history_repo(tmp_path)
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ["run-gate"])
+        # the stateful shim: `docker run -d` creates a container `inspect`
+        # can answer for, so the lane reaches the profiling start (the window)
+        log, state = fake_docker_stateful(tmp_path, monkeypatch)
+        called = []
+
+        def interrupted(*args, **kwargs):
+            called.append(args[6])            # the container name
+            raise SystemExit(128 + signal.SIGTERM)
+
+        monkeypatch.setattr(run_gate, "start_lane_profiling", interrupted)
+        assert run_gate.main(["suite"]) == 2
+        assert len(called) == 1, "the profiling start (the window) never ran"
+        name = called[0]
+        err = streams["stderr"].getvalue()
+        assert (f"interrupted before lane 'suite' was awaited: container {name} "
+                f"keeps running and its in-flight record is kept") in err
+        assert _has_flushed_print(
+            streams, "stderr",
+            f"interrupted before lane 'suite' was awaited: container {name}")
+        assert f"`docker rm -f {name}` to discard it" in err
+        assert "budget is not enforced while no client is attached" in err
+        assert f"rm\x1f-f\x1f{name}" not in log.read_text()   # kept, by design
+        assert (proj / ".run-gate" / "inflight" / "suite.json").exists()
+
+
 class TestReattachAcrossADeadClient:
     """RG-35 (R-39). The controlled WRONG implementation is the one that
     shipped through rev 33: `docker run -d` … `docker rm -f` in a `finally`
@@ -13767,35 +16874,78 @@ class TestReattachAcrossADeadClient:
         repo, proj = self._repo(tmp_path)
         log, state = fake_docker_stateful(tmp_path, monkeypatch)
         (state / ".hang").write_text("")      # `docker logs -f` blocks
-        client = subprocess.Popen([sys.executable, str(_TOOL_INVOKE), "suite"],
-                                  cwd=proj, stdout=subprocess.PIPE,
-                                  stderr=subprocess.STDOUT, text=True)
-        deadline = time.monotonic() + 30
-        while not state_containers(state) and time.monotonic() < deadline:
-            time.sleep(0.05)
-        assert state_containers(state), "the fixture never started a container"
-        # …and then until the client has written its record, or 3 s pass.
-        # Waiting is not an assertion: the PRE-FIX client never writes one,
-        # so it is killed on the deadline and still produces the duplicate
-        # this test exists to catch.
-        record = proj / ".run-gate" / "inflight" / "suite.json"
-        deadline = time.monotonic() + 3
-        while not record.exists() and time.monotonic() < deadline:
-            time.sleep(0.05)
-        client.kill()
-        client.wait(timeout=30)
-        first = state_containers(state)
-        assert len(lane_runs(log)) == 1
+        previous_subreaper = _set_child_subreaper(True)
+        client = None
+        try:
+            client_script = tmp_path / "run-gate-client.py"
+            client_script.write_text(textwrap.dedent(f"""\
+                import importlib.util
+                import sys
+                from pathlib import Path
 
-        (state / ".hang").unlink()            # the container finishes
-        out = run_tool(proj, "suite")
-        assert len(lane_runs(log)) == 1, (
-            "a SECOND container was started for a lane that already had one "
-            f"running: {lane_runs(log)}")
-        assert f"run-gate: re-attached to {first[0]}" in out.stdout, out.stdout
-        assert out.returncode == 0
-        assert state_containers(state) == []   # removed in the finally
-        assert not (proj / ".run-gate" / "inflight" / "suite.json").exists()
+                sys.argv[0] = "run-gate"
+                spec = importlib.util.spec_from_file_location(
+                    "run_gate", {str(_TOOL)!r})
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[spec.name] = module
+                spec.loader.exec_module(module)
+                module.physical_path = lambda path, *a, **kw: Path("/phys")
+                raise SystemExit(module.main(["suite"]))
+            """), encoding="utf-8")
+            client = subprocess.Popen([sys.executable, str(client_script)],
+                                      cwd=proj, stdout=subprocess.PIPE,
+                                      stderr=subprocess.STDOUT, text=True)
+            deadline = time.monotonic() + 30
+            while not state_containers(state) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            if not state_containers(state):
+                if client.poll() is None:
+                    client.kill()
+                output, _ = client.communicate(timeout=30)
+                pytest.fail(
+                    "the fixture never started a container; "
+                    f"client exit={client.returncode}, output:\n{output}"
+                )
+            # …and then until the client has written its record, or 3 s pass.
+            # Waiting is not an assertion: the PRE-FIX client never writes one,
+            # so it is killed on the deadline and still produces the duplicate
+            # this test exists to catch.
+            record = proj / ".run-gate" / "inflight" / "suite.json"
+            deadline = time.monotonic() + 3
+            while not record.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            client.kill()
+            client.wait(timeout=30)
+            # SIGKILL cannot run the client-side cleanup. The fake `docker
+            # logs -f` process (and its polling `sleep`) is not the container
+            # whose record this test is preserving, so reap that helper tree
+            # before proving the next client can re-attach to the same state.
+            _kill_and_reap_direct_children()
+            assert _direct_child_pids() == [], (
+                "killing the Run-Gate client left its fake docker logs process "
+                f"tree behind: {_direct_child_pids()}"
+            )
+            first = state_containers(state)
+            assert len(lane_runs(log)) == 1
+
+            (state / ".hang").unlink()        # the container finishes
+            out = run_tool(proj, "suite")
+            assert len(lane_runs(log)) == 1, (
+                "a SECOND container was started for a lane that already had one "
+                f"running: {lane_runs(log)}")
+            assert f"run-gate: re-attached to {first[0]}" in out.stdout, out.stdout
+            assert out.returncode == 0
+            assert state_containers(state) == []   # removed in the finally
+            assert not (proj / ".run-gate" / "inflight" / "suite.json").exists()
+        finally:
+            if client is not None:
+                if client.poll() is None:
+                    client.kill()
+                client.wait(timeout=30)
+            try:
+                _kill_and_reap_direct_children()
+            finally:
+                _set_child_subreaper(previous_subreaper)
 
 
 def plant_inflight(proj: Path, repo: Path, state: Path | None, *,
@@ -13843,6 +16993,7 @@ def plant_inflight(proj: Path, repo: Path, state: Path | None, *,
         outcome = "PASS" if code == 0 else "FAIL"
         verdict_path.write_text(json.dumps({
             "outcome": outcome,
+            "exit_code": code,
             "reason_code": None,
             "judge_provenance": {
                 "name": "assay", "version": "7.2.0",
@@ -13933,7 +17084,7 @@ class TestTwoClientsOneLane:
                                 stderr=subprocess.STDOUT, text=True)
 
     def test_the_second_client_follows_and_the_owner_reports_its_own_result(
-            self, tmp_path, monkeypatch):
+            self, tmp_path, monkeypatch, child_process_scope):
         repo, proj = make_history_repo(tmp_path, SIMPLE_LANE)
         log, state = fake_docker_stateful(tmp_path, monkeypatch)
         (state / ".hang").write_text("")      # `docker logs -f` blocks
@@ -13972,6 +17123,83 @@ class TestTwoClientsOneLane:
         assert slot["latest"]["outcome"] == "pass", slot["latest"]
         assert not record.exists()
 
+    def test_log_spawn_failure_reaps_the_waiter(self, monkeypatch):
+        class Process:
+            def __init__(self):
+                self.terminated = False
+                self.waited = False
+
+            def poll(self):
+                return None if not self.waited else 0
+
+            def terminate(self):
+                self.terminated = True
+
+            def wait(self, timeout=None):
+                self.waited = True
+                return 0
+
+        waiter = Process()
+        calls = []
+
+        def popen(argv, **kwargs):
+            calls.append(argv)
+            if argv[1] == "wait":
+                return waiter
+            raise OSError("planted docker logs spawn failure")
+
+        monkeypatch.setattr(run_gate.subprocess, "Popen", popen)
+        with pytest.raises(OSError, match="planted docker logs spawn failure"):
+            run_gate.follow_container(
+                "docker", "run-gate-test", {"kind": "command"}, "suite",
+                Path("/project"), Path("/repo"), Path("/tree"))
+
+        assert calls == [["docker", "wait", "run-gate-test"],
+                         ["docker", "logs", "-f", "run-gate-test"]]
+        assert waiter.terminated
+        assert waiter.waited
+
+    def test_log_wait_failure_kills_and_reaps_a_slow_follower(self,
+                                                              monkeypatch):
+        class Process:
+            def __init__(self, *, fail_body_wait=False, timeout_cleanup=False):
+                self.fail_body_wait = fail_body_wait
+                self.timeout_cleanup = timeout_cleanup
+                self.terminated = False
+                self.killed = False
+                self.waited = False
+
+            def poll(self):
+                return None if not self.waited else 0
+
+            def terminate(self):
+                self.terminated = True
+
+            def kill(self):
+                self.killed = True
+
+            def wait(self, timeout=None):
+                if self.fail_body_wait and timeout is None and not self.terminated:
+                    raise RuntimeError("planted log follower wait failure")
+                if self.timeout_cleanup and timeout == 1:
+                    raise subprocess.TimeoutExpired("docker logs", timeout)
+                self.waited = True
+                return 0
+
+        waiter = Process()
+        logs = Process(fail_body_wait=True, timeout_cleanup=True)
+        monkeypatch.setattr(
+            run_gate.subprocess, "Popen",
+            lambda argv, **kwargs: waiter if argv[1] == "wait" else logs)
+
+        with pytest.raises(RuntimeError, match="planted log follower wait failure"):
+            run_gate.follow_container(
+                "docker", "run-gate-test", {"kind": "command"}, "suite",
+                Path("/project"), Path("/repo"), Path("/tree"))
+
+        assert logs.terminated and logs.killed and logs.waited
+        assert waiter.terminated and waiter.waited
+
 
 class TestInflightRecordDecisions:
     """RG-35 / R-39, branch by branch, driven THROUGH `main()` in-process —
@@ -13985,7 +17213,8 @@ class TestInflightRecordDecisions:
         log, state = fake_docker_stateful(tmp_path, monkeypatch)
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda p, **k: Path("/phys"))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         return repo, proj, log, state
 
     def test_an_exited_container_is_collected_with_its_real_exit_code(
@@ -14718,11 +17947,11 @@ class TestInflightRecordDecisions:
         assert run_gate.main(["suite"]) == 2
         err = capsys.readouterr().err
         assert "declares schema 99" in err
-        assert f"this run-gate (rev {run_gate.__revision__}) reads schema " \
+        assert f"this run-gate ({_TEST_VERSION}) reads schema " \
             f"{run_gate.INFLIGHT_SCHEMA}" in err
         # Every remedy, named: upgrade; --fresh (the container name IS
         # readable here); or the path to delete.
-        assert "Upgrade run-gate to the revision that wrote it" in err
+        assert "Upgrade or install a compatible Run-Gate version" in err
         assert "--fresh" in err and "run-gate-planted" in err
         assert str(record) in err
         # Nothing was started, nothing was inspected, and neither the record
@@ -15522,6 +18751,321 @@ class TestProgressWatch:
         assert stalled is not None
         assert "last event seen: the plan event" in stalled
 
+    def test_auto_bound_watches_the_baseline_heartbeat_before_plan(
+            self, tmp_path):
+        # Assay writes the R2 plan only after the baseline command returns.
+        # Until then command_running is the only caller-visible liveness
+        # signal; run-gate must observe that heartbeat rather than treat the
+        # stream as an empty (disclosure-only) one.
+        clock = FakeClock()
+        path = tmp_path / ".assay" / "progress-baseline-heartbeat.jsonl"
+        write_progress(path, {"event": "command_started",
+                              "phase": "baseline"})
+        watch = run_gate.ProgressWatch(
+            path, "sql-mutation", None, clock, auto_bound=True)
+        assert watch.poll() is None
+        clock.advance(299)
+        assert watch.poll() is None
+        old_mtime = path.stat().st_mtime
+        append_progress(path, {"event": "command_running",
+                               "phase": "baseline"})
+        os.utime(path, (old_mtime + 1, old_mtime + 1))
+        assert watch.poll() is None
+        clock.advance(299)
+        assert watch.poll() is None
+        clock.advance(1)
+        stalled = watch.poll()
+        assert stalled is not None
+        assert "idle_bound auto 300s" in stalled
+        assert "last event seen: baseline command progress" in stalled
+
+    def test_auto_bound_pauses_for_high_host_psi_during_baseline(
+            self, tmp_path):
+        clock = FakeClock()
+        psi = [0.0]
+        path = tmp_path / ".assay" / "progress-baseline-psi.jsonl"
+        write_progress(path, {"event": "command_started",
+                              "phase": "baseline"})
+        watch = run_gate.ProgressWatch(
+            path, "sql-mutation", None, clock, auto_bound=True,
+            pressure_reader=lambda: psi[0])
+        assert watch.poll() is None
+        clock.advance(299)
+        psi[0] = 6.0
+        assert watch.poll() is None
+        clock.advance(600)
+        assert watch.poll() is None
+        psi[0] = 0.0
+        assert watch.poll() is None
+        clock.advance(1)
+        stalled = watch.poll()
+        assert stalled is not None
+        assert "last event seen: baseline command progress" in stalled
+
+    def test_auto_bound_covers_baseline_finished_before_plan(self, tmp_path):
+        clock = FakeClock()
+        path = tmp_path / ".assay" / "progress-baseline-finished.jsonl"
+        write_progress(path, {"event": "command_started",
+                              "phase": "baseline"},
+                       {"event": "command_finished", "phase": "baseline"})
+        watch = run_gate.ProgressWatch(
+            path, "sql-mutation", None, clock, auto_bound=True,
+            expects_plan=True)
+        assert watch.poll() is None
+        clock.advance(599)
+        assert watch.poll() is None
+        clock.advance(1)
+        stalled = watch.poll()
+        assert stalled is not None
+        assert "last event seen: baseline completion; waiting for plan" \
+            in stalled
+
+    def test_plan_supersedes_the_baseline_signal_and_uses_its_cadence(
+            self, tmp_path):
+        clock = FakeClock()
+        path = tmp_path / ".assay" / "progress-baseline-then-plan.jsonl"
+        write_progress(path, {"event": "command_started"},
+                       {"event": "command_finished"},
+                       {"event": "plan", "expect_next_event_within_s": 200.0})
+        watch = run_gate.ProgressWatch(
+            path, "sql-mutation", None, clock, auto_bound=True)
+        assert watch.poll() is None
+        clock.advance(599)
+        assert watch.poll() is None
+        clock.advance(1)
+        stalled = watch.poll()
+        assert stalled is not None
+        assert "idle_bound auto 600s" in stalled
+        assert "last event seen: the plan event" in stalled
+
+    def test_verdict_written_ends_the_baseline_bound_for_r0_r1_streams(
+            self, tmp_path):
+        # An R0/R1 lane never writes a plan. Once its verdict is written
+        # there is nothing left to wait for, so the 300 s post-command bound
+        # must not turn a finished lane's silence into a stall.
+        clock = FakeClock()
+        path = tmp_path / ".assay" / "progress-r1-done.jsonl"
+        write_progress(path, {"event": "command_started"},
+                       {"event": "command_finished"},
+                       {"event": "verdict_written"})
+        watch = run_gate.ProgressWatch(
+            path, "r1", None, clock, auto_bound=True, expects_plan=True)
+        clock.advance(10_000)
+        assert watch.poll() is None
+
+    def test_final_verdict_does_not_arm_the_r2_post_command_bound(self,
+                                                                  tmp_path):
+        # A terminal verdict ends both R2-specific and generic command
+        # liveness. The ordinary 300 s bound must not remain armed merely
+        # because this lane expected a plan before the verdict arrived.
+        clock = FakeClock()
+        path = tmp_path / ".assay" / "progress-r2-verdict-written.jsonl"
+        write_progress(path, {"event": "command_started"},
+                       {"event": "command_finished"},
+                       {"event": "verdict_written"})
+        watch = run_gate.ProgressWatch(
+            path, "r2", None, clock, auto_bound=True, expects_plan=True)
+        assert watch.poll() is None
+        clock.advance(300)
+        assert watch.poll() is None
+        clock.advance(301)
+        assert watch.poll() is None
+
+    def test_legacy_r2_candidate_keeps_the_minimum_auto_bound(self, tmp_path):
+        # Pre-header progress files are still read as whole-file streams. If
+        # they contain no baseline-completion signal, R2 must use the ordinary
+        # 300 s minimum bound rather than waiting 600 s for a plan that has no
+        # observed baseline transition to follow.
+        clock = FakeClock()
+        path = tmp_path / ".assay" / "progress-legacy-r2.jsonl"
+        write_progress(path, candidate(1), header=False)
+        watch = run_gate.ProgressWatch(
+            path, "r2", None, clock, auto_bound=True, expects_plan=True)
+        assert watch.poll() is None
+        clock.advance(300)
+        stalled = watch.poll()
+        assert stalled is not None
+        assert "idle_bound auto 300s" in stalled
+
+    def test_header_only_stream_stays_disclosure_only_when_auto_bound(
+            self, tmp_path):
+        # Verdict invariance: a run header alone (no heartbeat, no plan) is
+        # still the R-40b "healthy, not an R2 lane" case.
+        clock = FakeClock()
+        path = tmp_path / ".assay" / "progress-header-only.jsonl"
+        write_progress(path)
+        watch = run_gate.ProgressWatch(
+            path, "r1", None, clock, auto_bound=True)
+        assert watch.poll() is None
+        clock.advance(10_000)
+        assert watch.poll() is None
+
+    @pytest.mark.parametrize(
+        "contents", ["", '{"event": "command_started"'],
+        ids=["empty", "torn-command-started"])
+    def test_empty_or_torn_progress_does_not_arm_the_command_bound(
+            self, tmp_path, contents):
+        # A readable file with no complete event carries no liveness signal.
+        # In particular, an empty or mid-write file must remain
+        # disclosure-only instead of inheriting a command heartbeat.
+        clock = FakeClock()
+        path = tmp_path / ".assay" / "progress-r2-incomplete.jsonl"
+        path.parent.mkdir(parents=True)
+        path.write_text(contents)
+        watch = run_gate.ProgressWatch(
+            path, "r2", None, clock, auto_bound=True, expects_plan=True)
+        assert watch.poll() is None
+        clock.advance(300)
+        assert watch.poll() is None
+
+    def test_baseline_bound_is_inert_without_auto_bound(self, tmp_path):
+        clock = FakeClock()
+        path = tmp_path / ".assay" / "progress-baseline-manual.jsonl"
+        write_progress(path, {"event": "command_started"})
+        watch = run_gate.ProgressWatch(path, "sql-mutation", None, clock)
+        assert watch.poll() is None
+        clock.advance(10_000)
+        assert watch.poll() is None
+
+    def test_auto_bound_uses_only_the_latest_append_only_run_segment(
+            self, tmp_path):
+        clock = FakeClock()
+        path = tmp_path / ".assay" / "progress-latest-run.jsonl"
+        path.parent.mkdir(parents=True)
+        path.write_text("\n".join((
+            json.dumps({"event": "run", "lane": "sql-mutation"}),
+            json.dumps({"event": "plan",
+                        "expect_next_event_within_s": 120.0}),
+            json.dumps(candidate(8)),
+            json.dumps({"event": "run", "lane": "sql-mutation"}),
+            json.dumps({"event": "command_started", "phase": "baseline"}),
+        )) + "\n")
+        watch = run_gate.ProgressWatch(
+            path, "sql-mutation", None, clock, auto_bound=True)
+        assert watch.poll() is None
+        assert watch._cadence_hint is None
+        clock.advance(300)
+        stalled = watch.poll()
+        assert stalled is not None
+        assert "idle_bound auto 300s" in stalled
+        assert "last event seen: baseline command progress" in stalled
+
+    def test_r1_judge_phase_silence_is_not_a_stall(self, tmp_path):
+        # Replay of the measured R1 shape (cmru-bugs62: command_finished,
+        # coverage_parsed, ~250 s of judge silence, verdict_written). No plan
+        # follows an R0/R1 lane, so that silence is not evidence of a stall.
+        clock = FakeClock()
+        path = tmp_path / ".assay" / "progress-r1-judge.jsonl"
+        write_progress(path, {"event": "command_started"},
+                       {"event": "command_running"},
+                       {"event": "command_finished"},
+                       {"event": "coverage_parsed"})
+        watch = run_gate.ProgressWatch(
+            path, "r1", None, clock, auto_bound=True, expects_plan=False)
+        assert watch.poll() is None
+        clock.advance(250)
+        assert watch.poll() is None
+        clock.advance(10_000)            # even far longer: no plan expected
+        assert watch.poll() is None
+        append_progress(path, {"event": "verdict_written"})
+        assert watch.poll() is None
+
+    def test_r2_post_baseline_bound_has_an_exact_600s_boundary(self, tmp_path):
+        clock = FakeClock()
+        path = tmp_path / ".assay" / "progress-r2-boundary.jsonl"
+        write_progress(path, {"event": "command_started"},
+                       {"event": "command_finished"},
+                       {"event": "coverage_parsed"})
+        watch = run_gate.ProgressWatch(
+            path, "r2", None, clock, auto_bound=True, expects_plan=True)
+        assert watch.poll() is None
+        clock.advance(599.9)
+        assert watch.poll() is None
+        clock.advance(0.1)
+        stalled = watch.poll()
+        assert stalled is not None and "idle_bound auto 600s" in stalled
+
+    def test_r2_judge_window_before_the_plan_is_not_a_stall(self, tmp_path):
+        # S-1: in an R2 lane assay runs evaluate_r1 between coverage_parsed
+        # and the sweep's plan; real silences of up to 253 s were measured.
+        clock = FakeClock()
+        path = tmp_path / ".assay" / "progress-r2-judge.jsonl"
+        write_progress(path, {"event": "command_started"},
+                       {"event": "command_running"},
+                       {"event": "command_finished"},
+                       {"event": "coverage_parsed"})
+        watch = run_gate.ProgressWatch(
+            path, "r2", None, clock, auto_bound=True, expects_plan=True)
+        assert watch.poll() is None
+        clock.advance(280)
+        assert watch.poll() is None
+        append_progress(path, {"event": "plan",
+                               "expect_next_event_within_s": 120.0})
+        assert watch.poll() is None
+        clock.advance(100)
+        assert watch.poll() is None      # the post-plan bound takes over
+
+    def test_unproven_rigor_prints_one_flushed_disclosure_line(
+            self, tmp_path, monkeypatch):
+        streams = _capture_run_gate_prints(monkeypatch)
+        run_gate._POST_COMMAND_UNPROVEN_ANNOUNCED.clear()
+        lane = {"kind": "assay", "assay_lane": "x"}
+        for _ in range(2):
+            run_gate.make_progress_watch(lane, "x", tmp_path, auto_bound=True)
+        out = streams["stdout"].getvalue()
+        assert out.count("no post-command liveness bound is armed") == 1
+        assert _has_flushed_print(
+            streams, "stdout", "no post-command liveness bound is armed")
+        streams["stdout"].seek(0)
+        streams["stdout"].truncate(0)
+        streams["calls"].clear()
+        run_gate._POST_COMMAND_UNPROVEN_ANNOUNCED.clear()
+        proven = dict(lane, _assay_inventory={"entry": {"rigor": ["R1"]}})
+        run_gate.make_progress_watch(proven, "y", tmp_path, auto_bound=True)
+        assert "no post-command" not in streams["stdout"].getvalue()
+
+    def test_expects_plan_comes_from_the_proven_inventory_only(self):
+        r2 = {"_assay_inventory": {"entry": {"rigor": ["R0", "R1", "R2"]}}}
+        r1 = {"_assay_inventory": {"entry": {"rigor": ["R0", "R1"]}}}
+        assert run_gate.lane_declares_r2(r2) is True
+        assert run_gate.lane_declares_r2(r1) is False
+        assert run_gate.lane_declares_r2({}) is False          # unknown
+        assert run_gate.lane_declares_r2(
+            {"_assay_inventory": {"entry": {"rigor": "R2"}}}) is False
+
+    def test_make_progress_watch_carries_the_declared_rigor(self, tmp_path):
+        lane = {"kind": "assay", "assay_lane": "x",
+                "_assay_inventory": {"entry": {"rigor": ["R2"]}}}
+        watch = run_gate.make_progress_watch(
+            lane, "x", tmp_path, auto_bound=True)
+        assert watch.expects_plan is True
+        lane["_assay_inventory"]["entry"]["rigor"] = ["R1"]
+        assert run_gate.make_progress_watch(
+            lane, "x", tmp_path, auto_bound=True).expects_plan is False
+
+    def test_requested_heartbeat_leaves_room_inside_the_auto_bound(self):
+        # F-05: run-gate pins the heartbeat it relies on; it must stay well
+        # inside the 300 s minimum idle bound.
+        assert run_gate.ASSAY_PROGRESS_HEARTBEAT_SECONDS * 3 <= 300
+        assert run_gate.ASSAY_STALL_FLOOR_SECONDS \
+            >= 2 * run_gate.ASSAY_PROGRESS_HEARTBEAT_SECONDS
+
+    def test_explicit_stall_timeout_below_the_heartbeat_is_refused(self):
+        base = {"kind": "assay", "environment": "tester-unified",
+                "assay_lane": "x"}
+        with pytest.raises(run_gate.GateError, match="below 120s"):
+            run_gate._validate_lane(
+                "x", {**base, "stall_timeout": "45s"}, "fixture")
+        with pytest.raises(run_gate.GateError, match="below 120s"):
+            run_gate._validate_lane(
+                "x", {**base, "stall_timeout": "119s"}, "fixture")
+        run_gate._validate_lane(
+            "x", {**base, "stall_timeout": "120s"}, "fixture")
+        # A command lane is judged from its log stream, not the heartbeat.
+        run_gate._validate_lane(
+            "c", {"kind": "command", "environment": "tester-unified",
+                  "argv": ["true"], "stall_timeout": "30s"}, "fixture")
+
     def test_auto_bound_plan_rewrite_reseeds_from_the_new_plan_time(self,
                                                                      tmp_path):
         clock = FakeClock()
@@ -15924,7 +19468,8 @@ class TestStallTimeoutLaneKey:
                                            capsys):
         repo = make_repo(tmp_path)
         proj = make_project(repo, self._cfg())
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         assert run_gate.main(["--help"]) == 0
         out = capsys.readouterr().out
         assert "stall_timeout=15m (silence, not elapsed)" in out
@@ -15988,7 +19533,8 @@ class TestBareHostStallTimeoutWarning:
         repo = make_repo(tmp_path)
         proj = make_project(repo, self._cfg())
         fake_docker(tmp_path, monkeypatch)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["doctor"])
         out = capsys.readouterr().out
         assert "[WARN] lane 'selftest' stall_timeout (RG-58)" in out
@@ -16035,7 +19581,8 @@ class TestBareHostStallTimeoutWarning:
             clean_tree = false
         """)
         fake_docker(tmp_path, monkeypatch)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         assert run_gate.main(["doctor"]) == 0
         assert "stall_timeout is inert" not in capsys.readouterr().out
 
@@ -16046,40 +19593,47 @@ class TestStallEndToEnd:
 
     def test_a_silent_lane_is_stopped_with_evidence_and_error_status(
             self, tmp_path, monkeypatch, capsys):
-        repo, proj = make_history_repo(tmp_path, """\
-            schema_version = 1
-            [environments.tester-unified]
-            image = "tester-unified:local"
-            [lanes.mutation]
-            kind = "assay"
-            environment = "tester-unified"
-            assay_lane = "cw2b_schema"
-            assay_command = ["./a.pyz"]
-            stall_timeout = "1s"
-            clean_tree = false
-        """)
-        monkeypatch.setenv("RUN_GATE_EVIDENCE_DIR", str(tmp_path / "ev"))
-        monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.2)
-        monkeypatch.setattr(run_gate, "physical_path",
-                            lambda p, **k: Path("/phys"))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
-        log, state = fake_docker_stateful(tmp_path, monkeypatch)
-        (state / ".hang").write_text("")          # `logs -f` never returns
-        write_progress(proj / ".assay" / "progress-cw2b_schema.jsonl",
-                       candidate(37))
-        assert run_gate.main(["mutation"]) == 2
-        err = capsys.readouterr().err
-        assert "lane 'mutation' STALLED" in err
-        assert "still RUNNING but progress-cw2b_schema.jsonl has not advanced" in err
-        assert "last event seen: candidate 37/172" in err
-        assert "container logs preserved at" in err
-        # …and the container is GONE: a stall stops the lane, it does not
-        # leave the thing that stalled running on a shared host.
-        assert state_containers(state) == []
-        assert not (proj / ".run-gate" / "inflight" / "mutation.json").exists()
+        with _test_child_scope():
+            # These end-to-end stall tests need a seconds-scale timeout; the
+            # load-time floor (twice the heartbeat) is lifted for them only.
+            monkeypatch.setattr(run_gate, "ASSAY_STALL_FLOOR_SECONDS", 0)  # test-only
+            repo, proj = make_history_repo(tmp_path, """\
+                schema_version = 1
+                [environments.tester-unified]
+                image = "tester-unified:local"
+                [lanes.mutation]
+                kind = "assay"
+                environment = "tester-unified"
+                assay_lane = "cw2b_schema"
+                assay_command = ["./a.pyz"]
+                stall_timeout = "1s"
+                clean_tree = false
+            """)
+            monkeypatch.setenv("RUN_GATE_EVIDENCE_DIR", str(tmp_path / "ev"))
+            monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.2)
+            monkeypatch.setattr(run_gate, "physical_path",
+                                lambda p, **k: Path("/phys"))
+            monkeypatch.chdir(proj)
+            monkeypatch.setattr(sys, "argv", ['run-gate'])
+            log, state = fake_docker_stateful(tmp_path, monkeypatch)
+            (state / ".hang").write_text("")          # `logs -f` never returns
+            write_progress(proj / ".assay" / "progress-cw2b_schema.jsonl",
+                           candidate(37))
+            assert run_gate.main(["mutation"]) == 2
+            err = capsys.readouterr().err
+            assert "lane 'mutation' STALLED" in err
+            assert "still RUNNING but progress-cw2b_schema.jsonl has not advanced" in err
+            assert "last event seen: candidate 37/172" in err
+            assert "container logs preserved at" in err
+            # …and the container is GONE: a stall stops the lane, it does not
+            # leave the thing that stalled running on a shared host.
+            assert state_containers(state) == []
+            assert not (proj / ".run-gate" / "inflight" / "mutation.json").exists()
+            assert _direct_child_pids() == []
 
     def test_a_moving_lane_is_never_stopped(self, tmp_path, monkeypatch,
                                             capsys):
+        monkeypatch.setattr(run_gate, "ASSAY_STALL_FLOOR_SECONDS", 0)  # test-only
         repo, proj = make_history_repo(tmp_path, """\
             schema_version = 1
             [environments.tester-unified]
@@ -16095,7 +19649,8 @@ class TestStallEndToEnd:
         monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.2)
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda p, **k: Path("/phys"))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         log, state = fake_docker_stateful(tmp_path, monkeypatch)
         progress = proj / ".assay" / "progress-cw2b_schema.jsonl"
         write_progress(progress, candidate(1))
@@ -16172,7 +19727,8 @@ class TestStallEndToEndCommandLane:
         repo, proj = make_history_repo(tmp_path, self.CMD_LANE)
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda p, **k: Path("/phys"))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         log, state = fake_docker_logstream(tmp_path, monkeypatch)
         assert run_gate.main(["suite"]) == 0
         logs_calls = [c for c in _docker_calls(log) if c and c[0] == "logs"]
@@ -16196,7 +19752,8 @@ class TestStallEndToEndCommandLane:
         repo, proj = make_history_repo(tmp_path, self.CMD_LANE)
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda p, **k: Path("/phys"))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         log, state = fake_docker_logstream(tmp_path, monkeypatch)
         calls = []
         real_popen = subprocess.Popen
@@ -16218,7 +19775,8 @@ class TestStallEndToEndCommandLane:
         repo, proj = make_history_repo(tmp_path, self.CMD_LANE)
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda p, **k: Path("/phys"))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         log, state = fake_docker_logstream(tmp_path, monkeypatch)
         assert run_gate.main(["suite"]) == 0
         out = capsys.readouterr().out
@@ -16228,34 +19786,37 @@ class TestStallEndToEndCommandLane:
 
     def test_a_silent_command_lane_is_stopped_with_evidence_and_error_status(
             self, tmp_path, monkeypatch, capsys):
-        repo, proj = make_history_repo(tmp_path, self.CMD_LANE)
-        monkeypatch.setenv("RUN_GATE_EVIDENCE_DIR", str(tmp_path / "ev"))
-        monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.2)
-        monkeypatch.setattr(run_gate, "physical_path",
-                            lambda p, **k: Path("/phys"))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
-        log, state = fake_docker_logstream(tmp_path, monkeypatch)
-        (state / ".hang").write_text("")          # `logs -f` never returns
-        assert run_gate.main(["suite"]) == 2
-        out, err = capsys.readouterr()
-        assert "lane 'suite' STALLED" in err
-        assert "still RUNNING but has printed nothing" in err
-        assert "for 1s (stall_timeout 1s)" in err
-        assert "last line seen: (no output yet)" in err
-        assert "container logs preserved at" in err
-        # Round-2 review finding, confirmed by direct reproduction: a
-        # stalled container's pump thread is BY DEFINITION still blocked
-        # reading (nothing more is coming until the container is removed),
-        # so joining it on the stall path used to time out on EVERY stall
-        # and print this WARNING — not just under real host contention, the
-        # case it exists to disclose. It must be silent here — on EITHER
-        # stream (round-3 review: a regression that leaked it onto stdout
-        # instead would not be caught by an err-only assertion).
-        assert "log pump did not finish draining" not in err
-        assert "log pump did not finish draining" not in out
-        # …the container is GONE, same as the assay case: a stall stops the
-        # lane, it does not leave the thing that stalled running.
-        assert not (proj / ".run-gate" / "inflight" / "suite.json").exists()
+        with _test_child_scope():
+            repo, proj = make_history_repo(tmp_path, self.CMD_LANE)
+            monkeypatch.setenv("RUN_GATE_EVIDENCE_DIR", str(tmp_path / "ev"))
+            monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.2)
+            monkeypatch.setattr(run_gate, "physical_path",
+                                lambda p, **k: Path("/phys"))
+            monkeypatch.chdir(proj)
+            monkeypatch.setattr(sys, "argv", ['run-gate'])
+            log, state = fake_docker_logstream(tmp_path, monkeypatch)
+            (state / ".hang").write_text("")          # `logs -f` never returns
+            assert run_gate.main(["suite"]) == 2
+            out, err = capsys.readouterr()
+            assert "lane 'suite' STALLED" in err
+            assert "still RUNNING but has printed nothing" in err
+            assert "for 1s (stall_timeout 1s)" in err
+            assert "last line seen: (no output yet)" in err
+            assert "container logs preserved at" in err
+            # Round-2 review finding, confirmed by direct reproduction: a
+            # stalled container's pump thread is BY DEFINITION still blocked
+            # reading (nothing more is coming until the container is removed),
+            # so joining it on the stall path used to time out on EVERY stall
+            # and print this WARNING — not just under real host contention, the
+            # case it exists to disclose. It must be silent here — on EITHER
+            # stream (round-3 review: a regression that leaked it onto stdout
+            # instead would not be caught by an err-only assertion).
+            assert "log pump did not finish draining" not in err
+            assert "log pump did not finish draining" not in out
+            # …the container is GONE, same as the assay case: a stall stops the
+            # lane, it does not leave the thing that stalled running.
+            assert not (proj / ".run-gate" / "inflight" / "suite.json").exists()
+            assert _direct_child_pids() == []
 
     def test_the_pump_thread_is_joined_even_on_a_stall(
             self, tmp_path, monkeypatch):
@@ -16277,7 +19838,8 @@ class TestStallEndToEndCommandLane:
         monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.2)
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda p, **k: Path("/phys"))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         log, state = fake_docker_logstream(tmp_path, monkeypatch)
         (state / ".hang").write_text("")
         calls = []
@@ -16299,7 +19861,8 @@ class TestStallEndToEndCommandLane:
         monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.2)
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda p, **k: Path("/phys"))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         log, state = fake_docker_logstream(tmp_path, monkeypatch)
         (state / ".hang").write_text("")
         stop = threading.Event()
@@ -16342,7 +19905,8 @@ class TestStallEndToEndCommandLane:
         repo, proj = make_history_repo(tmp_path, self.CMD_LANE)
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda p, **k: Path("/phys"))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         log, state = fake_docker_logstream(tmp_path, monkeypatch)
         monkeypatch.setattr(run_gate.LogStreamWatch, "join",
                             lambda self, timeout=2.0: False)
@@ -16383,7 +19947,8 @@ class TestDoctorNamesUnprefixedScriptPaths:
         repo = make_repo(tmp_path)
         proj = make_project(repo, cfg)
         fake_docker(tmp_path, monkeypatch)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["doctor"])
         return code, capsys.readouterr().out
 
@@ -16542,7 +20107,8 @@ class TestContainerFinishPathsInProcess:
         repo, proj = make_history_repo(tmp_path, SIMPLE_LANE)
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda p, **k: Path("/phys"))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         return repo, proj
 
     def _shim(self, tmp_path, monkeypatch, body: str) -> Path:
@@ -16821,7 +20387,8 @@ class TestInflightRecordStore:
         log, state = fake_docker_stateful(tmp_path, monkeypatch)
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda p, **k: Path("/phys"))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         # The record is cleared in the same finally that removes the
         # container, so it is read from INSIDE the run it describes.
         seen = {}
@@ -16922,6 +20489,7 @@ class TestInflightRecordStore:
 
     def test_fresh_launch_failure_cannot_reuse_stale_pass_but_attach_keeps_it(
             self, tmp_path, monkeypatch):
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
         repo = make_repo(tmp_path)
         lane = {"kind": "assay", "assay_lane": "unit",
                 "environment": "runner"}
@@ -16930,7 +20498,8 @@ class TestInflightRecordStore:
         verdict_path = Path(verdict)
         verdict_path.parent.mkdir(parents=True)
         commit = run_gate.head_commit(repo)
-        stale_pass = {"outcome": "PASS", "assay_version": "8.0.0",
+        stale_pass = {"outcome": "PASS", "exit_code": 0,
+                      "assay_version": "8.0.0",
                       "commit": commit}
         verdict_path.write_text(json.dumps(stale_pass))
         run_record = {"commit": commit, "_verdict_path": verdict}
@@ -16975,7 +20544,8 @@ class TestInflightRecordStore:
         # one; both return before fresh-attempt cleanup.
         for attached_code, attached_verdict in (
                 (0, stale_pass),
-                (1, {"outcome": "FAIL", "assay_version": "8.0.0",
+                (1, {"outcome": "FAIL", "exit_code": 1,
+                     "assay_version": "8.0.0",
                      "commit": commit})):
             verdict_path.write_text(json.dumps(attached_verdict))
             assert run_gate.run_container_lane(
@@ -17009,7 +20579,8 @@ class TestInflightRecordStore:
         fake_docker_stateful(tmp_path, monkeypatch)
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda p, **k: Path("/phys"))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         assert run_gate.main(["suite"]) == 0
         err = capsys.readouterr().err
         assert "re-attach record NOT written" in err
@@ -17088,6 +20659,19 @@ class TestReattachedRunHistory:
         assert 3599 <= rec["duration_seconds"] <= 3610
         assert rec["history_eligible"] is True
 
+    def test_adopting_run_preserves_its_image_selection_evidence(self, tmp_path):
+        repo, proj = make_history_repo(tmp_path)
+        rec = run_gate.start_run_record("suite", repo, repo)
+        selection = {
+            "effective_image": "tester-unified:candidate",
+            "image_id": "sha256:" + "a" * 64,
+            "image_id_status": "observed",
+        }
+        run_gate.adopt_inflight_start(
+            rec, {"started_at": "2026-09-02T11:00:00Z",
+                  "image_selection": selection})
+        assert rec["image_selection"] == selection
+
     def test_a_record_without_an_epoch_keeps_the_client_clock(self, tmp_path):
         repo, proj = make_history_repo(tmp_path)
         rec = run_gate.start_run_record("suite", repo, repo)
@@ -17127,7 +20711,8 @@ class TestFreshFlagScope:
 
     def _project(self, tmp_path, monkeypatch, config=HISTORY_LANE):
         repo, proj = make_history_repo(tmp_path, config)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         return repo, proj
 
     @pytest.mark.parametrize("verb", ["doctor", "history", "validate-pointers"])
@@ -17199,7 +20784,7 @@ class TestFreshFlagScope:
 # ---------------------------------------------------------------------------
 # RG-55 / C3 — profiling client (SPEC R-43). Wiring into await_container/
 # run_exec_lane/run_container_lane/run_bare_host_lane is a SEPARATE,
-# not-yet-landed deliverable (see run-gate.py's own new-section comment) --
+# not-yet-landed deliverable (see run_gate.py's own new-section comment) --
 # every test here exercises ProfilerClient/ResourceAccumulator/BasicSampler/
 # the config layer directly, never through a full lane run.
 # ---------------------------------------------------------------------------
@@ -17243,7 +20828,7 @@ class TestRG55FixtureByteIdentity:
 class TestProfileParsers:
     """Contract Sec 4.3's ported parsers, string variants (run-gate reads
     via `docker exec ... cat`, never a path directly) -- attributed to
-    scripts/cgroup-profiler/lib/util.py in run-gate.py's own docstrings."""
+    scripts/cgroup-profiler/lib/util.py in run_gate.py's own docstrings."""
 
     def test_parse_int_reads_a_plain_integer(self):
         assert run_gate._profile_parse_int("524288000\n") == 524288000
@@ -18129,13 +21714,16 @@ class TestProfilerClient:
             with listener:
                 conn, _ = listener.accept()
                 with conn:
-                    chunks = []
-                    while True:
-                        chunk = conn.recv(65536)
+                    # Match the daemon's newline-delimited request reader. A
+                    # pretty-printed JSON request is truncated at its first
+                    # line and fails to parse even though the socket is valid.
+                    line = bytearray()
+                    while b"\n" not in line:
+                        chunk = conn.recv(1)
                         if not chunk:
                             break
-                        chunks.append(chunk)
-                    received.append(b"".join(chunks).decode())
+                        line.extend(chunk)
+                    received.append(bytes(line).decode())
                     conn.sendall(response.encode())
 
         thread = threading.Thread(target=serve)
@@ -18257,7 +21845,10 @@ class TestProfilerClient:
             },
             "contract": 1,
         }
-        assert received == [json.dumps(expected, indent=2) + "\n"]
+        assert received == [
+            json.dumps(expected, ensure_ascii=False, separators=(",", ":"))
+            + "\n"
+        ]
 
     @pytest.mark.parametrize("verb, args, body", [
         ("version", (), '{"ok": true, "contract": 1}\n'),
@@ -19032,7 +22623,8 @@ class TestProfilerClient:
         assert doc is None
         assert "contract" in reason
 
-    def test_timeout_returns_reason_never_raises(self, tmp_path, monkeypatch):
+    def test_timeout_returns_reason_never_raises(
+            self, tmp_path, monkeypatch, child_process_scope):
         set_cgprofile_plan(tmp_path, monkeypatch, version=(None, None, 2))
         monkeypatch.setitem(run_gate.PROFILE_CTL_TIMEOUTS, "version", 0.1)
         client = self._client(tmp_path, monkeypatch)
@@ -19106,7 +22698,8 @@ class TestDoctorProfilerCheck:
         fake_docker(tmp_path, monkeypatch)
         if daemon_running:
             _add_daemon_ps_case(monkeypatch)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["doctor"])
         return code, capsys.readouterr().out
 
@@ -19116,7 +22709,8 @@ class TestDoctorProfilerCheck:
         proj = make_project(repo, PROFILER_DOCTOR_LANE +
                             "\n[profile]\nenabled = false\n")
         fake_docker(tmp_path, monkeypatch)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["doctor"])
         out = capsys.readouterr().out
         assert "[WARN] profile config" in out and "enabled=False" in out
@@ -19129,7 +22723,8 @@ class TestDoctorProfilerCheck:
         proj = make_project(repo, PROFILER_DOCTOR_LANE)
         monkeypatch.setenv(run_gate.PROFILE_AMBIENT_ENV_VAR, "off")
         fake_docker(tmp_path, monkeypatch)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         run_gate.main(["doctor"])
         out = capsys.readouterr().out
         assert (f"${run_gate.PROFILE_AMBIENT_ENV_VAR}='off' override active"
@@ -19166,7 +22761,8 @@ class TestDoctorProfilerCheck:
             return real_run(argv, *args, **kwargs)
 
         monkeypatch.setattr(run_gate.subprocess, "run", fail_ps)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["doctor"])
         out = capsys.readouterr().out
         profiler_line = next(
@@ -19190,7 +22786,8 @@ class TestDoctorProfilerCheck:
             return real_run(argv, *args, **kwargs)
 
         monkeypatch.setattr(run_gate.subprocess, "run", fail_ps)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         assert run_gate.main(["doctor"]) == 0
         out = capsys.readouterr().out
         profiler_line = next(
@@ -19206,7 +22803,8 @@ class TestDoctorProfilerCheck:
         fake_docker(tmp_path, monkeypatch)
         _add_daemon_ps_case(monkeypatch)
         set_cgprofile_plan(tmp_path, monkeypatch, version=(None, 3, None))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["doctor"])
         out = capsys.readouterr().out
         assert "[WARN] profiler daemon" in out
@@ -19220,7 +22818,8 @@ class TestDoctorProfilerCheck:
         _add_daemon_ps_case(monkeypatch)
         set_cgprofile_plan(tmp_path, monkeypatch, version=(
             json.dumps({"ok": True, "contract": 2}), None, None))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["doctor"])
         out = capsys.readouterr().out
         assert "[WARN] profiler daemon" in out and "contract" in out
@@ -19235,7 +22834,8 @@ class TestDoctorProfilerCheck:
         host = (RG55_FIXTURES / "host-v1.json").read_text()
         set_cgprofile_plan(tmp_path, monkeypatch, version=(version, None, None),
                            host=(host, None, None))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["doctor"])
         out = capsys.readouterr().out
         assert "[OK] profiler daemon" in out
@@ -19256,7 +22856,8 @@ class TestDoctorProfilerCheck:
         version = (RG55_FIXTURES / "version-v1.json").read_text()
         set_cgprofile_plan(tmp_path, monkeypatch, version=(version, None, None),
                            host=(None, 3, None))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["doctor"])
         out = capsys.readouterr().out
         assert "[OK] profiler daemon" in out
@@ -19267,7 +22868,8 @@ class TestDoctorProfilerCheck:
         repo = make_repo(tmp_path)
         proj = make_project(repo, PROFILER_DOCTOR_LANE)
         monkeypatch.setattr(run_gate.shutil, "which", lambda name: None)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         run_gate.main(["doctor"])
         out = capsys.readouterr().out
         assert "[SKIP] profiler daemon" in out
@@ -19283,7 +22885,8 @@ class TestDoctorStaleLockCheck:
         repo = make_repo(tmp_path)
         proj = make_project(repo, SIMPLE_LANE)
         fake_docker(tmp_path, monkeypatch)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["doctor"])
         return code, capsys.readouterr().out
 
@@ -19425,7 +23028,8 @@ class TestCgroupNamespacePrivateWhy:
         # absent, the "no derivable ceiling" branch this WHY attaches to.
         monkeypatch.setenv(run_gate.CGROUPFS_ROOT_ENV_VAR, str(tmp_path / "cgfs"))
         fake_docker(tmp_path, monkeypatch)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py"), "suite"])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate', 'suite'])
         code = run_gate.main(["suite"])
         out = capsys.readouterr().out
         assert code == 0, out
@@ -19442,7 +23046,8 @@ class TestCgroupNamespacePrivateWhy:
         monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR, str(proc_root))
         monkeypatch.setenv(run_gate.CGROUPFS_ROOT_ENV_VAR, str(tmp_path / "cgfs"))
         fake_docker(tmp_path, monkeypatch)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py"), "suite"])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate', 'suite'])
         code = run_gate.main(["suite"])
         out = capsys.readouterr().out
         assert code == 0, out
@@ -20081,6 +23686,162 @@ class TestProfilingOrchestration:
         assert result["profile_error"] is not None
         assert state["warning"] == result["profile_error"]
 
+    # -- cgprofile 1.1.0: `stop-incomplete`, `stop_forced`, `damon_cleanup` --
+
+    @staticmethod
+    def _client_with_stop_answers(tmp_path, monkeypatch, answers):
+        """A ProfilerClient whose `_ctl` answers `stop` from a scripted list
+        of `(doc, reason, refusal_code)`; records the calls."""
+        fake_docker(tmp_path, monkeypatch)
+        client = run_gate.ProfilerClient(shutil.which("docker"),
+                                         run_gate.PROFILE_DAEMON_DEFAULT)
+        script = iter(answers)
+        calls = []
+
+        def fake_ctl(verb, *args):
+            calls.append((verb, args))
+            doc, reason, code = next(script)
+            client.last_refusal_code = code
+            return doc, reason
+
+        monkeypatch.setattr(client, "_ctl", fake_ctl)
+        return client, calls
+
+    def test_stop_retries_while_the_daemon_answers_stop_incomplete(
+            self, tmp_path, monkeypatch):
+        stop = json.loads((RG55_FIXTURES / "stop-v1.json").read_text())
+        incomplete = (None, "`cgprofile ctl stop` refused (stop-incomplete): "
+                      "sampling worker still running", "stop-incomplete")
+        client, calls = self._client_with_stop_answers(
+            tmp_path, monkeypatch, [incomplete, incomplete, (stop, None, None)])
+        slept = []
+        doc, reason = client.stop("s-1", sleep=slept.append)
+        assert doc is stop and reason is None
+        assert calls == [("stop", ("s-1",))] * 3
+        assert slept == [run_gate.PROFILE_STOP_RETRY_SECONDS] * 2
+
+    def test_stop_gives_up_after_the_bounded_attempts_and_says_so(
+            self, tmp_path, monkeypatch):
+        incomplete = (None, "`cgprofile ctl stop` refused (stop-incomplete): "
+                      "sampling worker still running", "stop-incomplete")
+        client, calls = self._client_with_stop_answers(
+            tmp_path, monkeypatch, [incomplete] * 10)
+        slept = []
+        doc, reason = client.stop("s-1", sleep=slept.append)
+        assert doc is None
+        assert len(calls) == run_gate.PROFILE_STOP_RETRY_ATTEMPTS == 4
+        assert len(slept) == 3
+        assert reason.startswith("`cgprofile ctl stop` refused (stop-incomplete)")
+        assert reason.endswith("(still incomplete after 4 attempts 2 s apart; "
+                               "the daemon did not force the stop)")
+
+    def test_stop_stops_retrying_when_a_later_call_times_out(self, tmp_path, monkeypatch):
+        """Review finding: a timeout answers without `_parse_response`, so the
+        refusal code of the PREVIOUS call must not survive into this one —
+        otherwise `stop-incomplete` followed by a dead daemon meant four
+        30 s timeouts. The scripted fake sets `None` as `_ctl` now does."""
+        incomplete = (None, "`cgprofile ctl stop` refused (stop-incomplete): "
+                      "sampling worker still running", "stop-incomplete")
+        timed_out = (None, "`cgprofile ctl stop` timed out after 30s", None)
+        client, calls = self._client_with_stop_answers(
+            tmp_path, monkeypatch, [incomplete, timed_out, incomplete, incomplete])
+        slept = []
+        doc, reason = client.stop("s-1", sleep=slept.append)
+        assert doc is None and reason.endswith("timed out after 30s")
+        assert len(calls) == 2 and len(slept) == 1
+
+    def test_ctl_clears_the_refusal_code_before_every_call(self, tmp_path, monkeypatch):
+        """The real `_ctl`: a carrier timeout or an unknown transport returns
+        before `_parse_response` could reset the code."""
+        fake_docker(tmp_path, monkeypatch)
+        client = run_gate.ProfilerClient(shutil.which("docker"),
+                                         run_gate.PROFILE_DAEMON_DEFAULT,
+                                         transport="exec")
+        client.last_refusal_code = "stop-incomplete"
+        monkeypatch.setattr(client, "_exec_ctl", lambda verb, *args: (
+            None, f"`cgprofile ctl {verb}` timed out after 30s"))
+        assert client._ctl("stop", "s-1") == (
+            None, "`cgprofile ctl stop` timed out after 30s")
+        assert client.last_refusal_code is None
+        client.last_refusal_code = "stop-incomplete"
+        client.transport = "carrier-pigeon"
+        doc, reason = client._ctl("stop", "s-1")
+        assert doc is None and "unknown profiler transport" in reason
+        assert client.last_refusal_code is None
+
+    def test_stop_does_not_retry_any_other_refusal(self, tmp_path, monkeypatch):
+        client, calls = self._client_with_stop_answers(
+            tmp_path, monkeypatch,
+            [(None, "`cgprofile ctl stop` refused (no-such-session): gone",
+              "no-such-session")] * 3)
+        slept = []
+        doc, reason = client.stop("s-1", sleep=slept.append)
+        assert doc is None and "no-such-session" in reason
+        assert len(calls) == 1 and slept == []
+
+    def test_parse_response_records_the_refusal_code(self, tmp_path, monkeypatch):
+        fake_docker(tmp_path, monkeypatch)
+        client = run_gate.ProfilerClient(shutil.which("docker"),
+                                         run_gate.PROFILE_DAEMON_DEFAULT)
+        refused = {"contract": run_gate.PROFILE_CONTRACT, "ok": False,
+                   "error": {"code": "stop-incomplete", "message": "busy"}}
+        doc, reason = client._parse_response("stop", json.dumps(refused))
+        assert doc is None and "(stop-incomplete): busy" in reason
+        assert client.last_refusal_code == "stop-incomplete"
+        refused["error"] = {"code": 7}
+        client._parse_response("stop", json.dumps(refused))
+        assert client.last_refusal_code is None   # a non-string code is none
+        accepted = {"contract": run_gate.PROFILE_CONTRACT, "ok": True,
+                    "summary": {}}
+        doc, reason = client._parse_response("stop", json.dumps(accepted))
+        assert doc == accepted and client.last_refusal_code is None
+        client._parse_response("stop", "not json", returncode=1, stderr="x")
+        assert client.last_refusal_code is None
+
+    def test_finish_daemon_forced_stop_keeps_the_summary_and_warns(
+            self, tmp_path, monkeypatch, capsys):
+        stop = json.loads((RG55_FIXTURES / "stop-v1.json").read_text())
+        stop["summary"]["stop_forced"] = "sampler-still-running"
+        set_cgprofile_plan(tmp_path, monkeypatch, stop=(json.dumps(stop), None, None))
+        fake_docker(tmp_path, monkeypatch)
+        client = run_gate.ProfilerClient(shutil.which("docker"),
+                                         run_gate.PROFILE_DAEMON_DEFAULT)
+        state = {"mode": "daemon", "client": client,
+                 "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                 "session": "s-x", "warning": None}
+        result = run_gate.finish_lane_profiling(state)
+        assert result["resources"] == stop["summary"]   # recorded verbatim
+        assert result["profile_error"] is None
+        assert "stop_forced='sampler-still-running'" in state["warning"]
+        assert "may be incomplete" in state["warning"]
+        run_gate.print_profile_warning(state)
+        err = capsys.readouterr().err
+        assert "WARNING profiling: cgprofile finalized the session" in err
+        assert err.rstrip().endswith("— profile recorded with this caveat")
+
+    def test_finish_daemon_unconfirmed_damon_teardown_warns_confirmed_does_not(
+            self, tmp_path, monkeypatch):
+        stop = json.loads((RG55_FIXTURES / "stop-v1.json").read_text())
+        stop["summary"]["damon_cleanup"] = {"confirmed": False, "slot": 2,
+                                            "quarantined": True}
+        set_cgprofile_plan(tmp_path, monkeypatch, stop=(json.dumps(stop), None, None))
+        fake_docker(tmp_path, monkeypatch)
+        client = run_gate.ProfilerClient(shutil.which("docker"),
+                                         run_gate.PROFILE_DAEMON_DEFAULT)
+        state = {"mode": "daemon", "client": client,
+                 "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                 "session": "s-x", "warning": "earlier"}
+        result = run_gate.finish_lane_profiling(state)
+        assert result["resources"]["damon_cleanup"]["slot"] == 2
+        assert state["warning"] == "earlier"   # the first warning wins
+        caveat = run_gate.profile_summary_caveat(stop["summary"])
+        assert "slot 2, quarantined=True" in caveat and "not the same as DAMON off" in caveat
+        stop["summary"]["damon_cleanup"]["confirmed"] = True
+        assert run_gate.profile_summary_caveat(stop["summary"]) is None
+        assert run_gate.profile_summary_caveat(None) is None
+        assert run_gate.profile_summary_caveat({"stop_forced": None}) is None
+        assert run_gate.profile_summary_caveat({"damon_cleanup": "odd"}) is None
+
     def test_finish_basic(self, tmp_path, monkeypatch):
         fake_docker(tmp_path, monkeypatch)
         docker = shutil.which("docker")
@@ -20297,6 +24058,75 @@ class TestAwaitContainerProfilingWiring:
     def _start_container(self, state: Path, name: str) -> None:
         (state / name).write_text("running 0\n")
 
+    def test_log_watch_setup_failure_reaps_spawned_log_process(
+            self, tmp_path, monkeypatch):
+        fake_docker_stateful(tmp_path, monkeypatch)
+        docker = shutil.which("docker")
+
+        class Process:
+            pid = 4240
+
+            def __init__(self):
+                self.returncode = None
+                self.terminated = False
+                self.waited = False
+
+            def poll(self):
+                return self.returncode
+
+            def terminate(self):
+                self.terminated = True
+                self.returncode = -signal.SIGTERM
+
+            def wait(self, timeout=None):
+                self.waited = True
+                if self.returncode is None:
+                    self.returncode = -signal.SIGTERM
+                return self.returncode
+
+        process = Process()
+        real_popen = run_gate.subprocess.Popen
+
+        def popen(argv, *args, **kwargs):
+            if argv[1:3] == ["logs", "-f"]:
+                return process
+            return real_popen(argv, *args, **kwargs)
+
+        monkeypatch.setattr(run_gate.subprocess, "Popen", popen)
+
+        def fail_watch_setup(*args, **kwargs):
+            raise RuntimeError("planted log-watch startup failure")
+
+        monkeypatch.setattr(run_gate, "LogStreamWatch", fail_watch_setup)
+        with pytest.raises(RuntimeError, match="planted log-watch startup failure"):
+            run_gate.await_container(
+                docker, "run-gate-test-container",
+                {"kind": "command", "stall_timeout": "1s"}, "suite",
+                tmp_path, tmp_path, tmp_path)
+
+        assert process.terminated
+        assert process.waited
+
+    def test_log_spawn_failure_still_removes_the_container(
+            self, tmp_path, monkeypatch):
+        log, _state = fake_docker_stateful(tmp_path, monkeypatch)
+        docker = shutil.which("docker")
+        real_popen = run_gate.subprocess.Popen
+
+        def popen(argv, *args, **kwargs):
+            if argv[1:3] == ["logs", "-f"]:
+                raise OSError("planted docker logs spawn failure")
+            return real_popen(argv, *args, **kwargs)
+
+        monkeypatch.setattr(run_gate.subprocess, "Popen", popen)
+
+        with pytest.raises(OSError, match="planted docker logs spawn failure"):
+            run_gate.await_container(
+                docker, "run-gate-test-container", {"kind": "command"},
+                "suite", tmp_path, tmp_path, tmp_path)
+
+        assert ["rm", "-f", "run-gate-test-container"] in _docker_calls(log)
+
     def test_basic_mode_samples_on_every_timeout(self, tmp_path, monkeypatch):
         monkeypatch.setattr(run_gate, "PROFILE_SAMPLE_SECONDS", 0.05)
         log, state = fake_docker_stateful(tmp_path, monkeypatch)
@@ -20485,6 +24315,49 @@ class TestAwaitContainerProfilingWiring:
         assert fallback.poll_calls >= 1
         assert "daemon watch could not start" in profiler["warning"]
         assert "in-process watch" in capsys.readouterr().out
+
+    def test_profiling_disabled_assay_lane_keeps_in_process_watch(
+            self, tmp_path, monkeypatch, capsys):
+        # Liveness is not measurement: disabling profiling must not strip an
+        # assay lane of its progress watch.
+        monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.05)
+        _log, state = fake_docker_stateful(tmp_path, monkeypatch)
+        name = "run-gate-test-container"
+        self._start_container(state, name)
+        (state / ".hang").write_text("")
+
+        def _clear_hang():
+            time.sleep(0.2)
+            (state / ".hang").unlink(missing_ok=True)
+
+        threading.Thread(target=_clear_hang, daemon=True).start()
+
+        class _Fallback:
+            def __init__(self):
+                self.poll_calls = 0
+
+            def poll(self):
+                self.poll_calls += 1
+                return None
+
+        built = []
+        fallback = _Fallback()
+        monkeypatch.setattr(run_gate, "make_progress_watch",
+                            lambda *args, **kwargs: (
+                                built.append(kwargs) or fallback))
+        profiler = {"mode": "disabled", "client": None, "daemon": None,
+                    "session": None, "warning": None, "session_line": None,
+                    "sampler": None, "profiler_status": None,
+                    "disabled_reason": "disabled"}
+        docker = shutil.which("docker")
+        assert run_gate.await_container(
+            docker, name, {"kind": "assay", "assay_lane": "suite"},
+            "suite", tmp_path, tmp_path, tmp_path, profiler=profiler,
+            watch=None) == 0
+        assert built and built[0].get("auto_bound") is True
+        assert fallback.poll_calls >= 1
+        assert "in-process watch — profiling disabled" \
+            in capsys.readouterr().out
 
     def test_daemon_watch_verdict_kills_container_as_infrastructure(
             self, tmp_path, monkeypatch):
@@ -21079,7 +24952,8 @@ class TestBareHostProfilingWiring:
         monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR,
                            str(RG55_FIXTURES / "frames" / "0" / "proc"))
         repo, proj = make_history_repo(tmp_path, self._config())
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         fake_docker(tmp_path, monkeypatch)
         assert run_gate.main(["suite"]) == 0
         captured = capsys.readouterr()
@@ -21122,7 +24996,8 @@ class TestBareHostProfilingWiring:
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
         monkeypatch.delenv(run_gate.PROC_ROOT_ENV_VAR, raising=False)
         repo, proj = make_history_repo(tmp_path, self._config())
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         fake_docker(tmp_path, monkeypatch)
         assert run_gate.main(["suite"]) == 0
         mem = lane_slot(proj)["latest"]["resources"]["memory"]
@@ -21173,8 +25048,8 @@ class TestBareHostProfilingWiring:
         assert resources["started_at"] == resources["ended_at"]
         assert resources["duration_seconds"] == 0.375
 
-    def test_daemon_path_never_computes_a_floor(self, tmp_path, monkeypatch,
-                                               capsys):
+    def test_daemon_path_never_computes_a_floor(
+            self, tmp_path, monkeypatch, capsys, child_process_scope):
         """RW-46b is a rusage-path-only concept (the daemon path measures
         via a real cgroup) -- a daemon-path run must leave floor_bytes/
         peak_at_floor out of the picture entirely (both null, contract
@@ -21182,7 +25057,8 @@ class TestBareHostProfilingWiring:
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
         monkeypatch.delenv(run_gate.PROC_ROOT_ENV_VAR, raising=False)
         repo, proj = make_history_repo(tmp_path, self._config())
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         fake_docker(tmp_path, monkeypatch)
         version = (RG55_FIXTURES / "version-v1.json").read_text()
         start = (RG55_FIXTURES / "start-v1.json").read_text()
@@ -21205,7 +25081,8 @@ class TestBareHostProfilingWiring:
         monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR,
                            str(RG55_FIXTURES / "frames" / "0" / "proc"))
         repo, proj = make_history_repo(tmp_path, self._config())
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         assert run_gate.main(["suite"]) == 0
         out = capsys.readouterr().out
         assert "host memory PSI" not in out
@@ -21233,7 +25110,8 @@ class TestBareHostProfilingWiring:
             return {"admission": {"state": "would-wait"}}
 
         monkeypatch.setattr(run_gate, "prepare_profile_start", preflight)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         assert run_gate.main(["suite", "--dry-run"]) == 0
         out = capsys.readouterr().out
         assert "DRY RUN — profile plan: daemon" in out
@@ -21244,7 +25122,7 @@ class TestBareHostProfilingWiring:
         assert not (proj / ".run-gate" / "history.json").exists()
 
     def test_daemon_path_targets_self_id_scope_and_injects_token(
-            self, tmp_path, monkeypatch, capsys):
+            self, tmp_path, monkeypatch, capsys, child_process_scope):
         calls = []
         real_print = print
 
@@ -21256,7 +25134,8 @@ class TestBareHostProfilingWiring:
         monkeypatch.setattr(run_gate, "print", print_spy, raising=False)
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
         repo, proj = make_history_repo(tmp_path, self._config())
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         log = fake_docker(tmp_path, monkeypatch)
         version = (RG55_FIXTURES / "version-v1.json").read_text()
         start = (RG55_FIXTURES / "start-v1.json").read_text()
@@ -21311,12 +25190,13 @@ class TestBareHostProfilingWiring:
         assert latest["profile_error"] is None
 
     def test_daemon_path_missing_baseline_discloses_unknown(
-            self, tmp_path, monkeypatch, capsys):
+            self, tmp_path, monkeypatch, capsys, child_process_scope):
         # A daemon may omit its optional baseline. The session still starts;
         # the display must use the unknown marker rather than dividing None.
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
         repo, proj = make_history_repo(tmp_path, self._config())
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         fake_docker(tmp_path, monkeypatch)
         version = (RG55_FIXTURES / "version-v1.json").read_text()
         start = json.loads((RG55_FIXTURES / "start-v1.json").read_text())
@@ -21332,13 +25212,14 @@ class TestBareHostProfilingWiring:
         assert "baseline ? MiB" in capsys.readouterr().out
 
     def test_daemon_start_with_null_optional_target_still_stops_session(
-            self, tmp_path, monkeypatch):
+            self, tmp_path, monkeypatch, child_process_scope):
         """`target` is optional response metadata.  A valid session with
         JSON null there must remain a daemon session and reach exactly one
         stop; it must not crash after start and silently leak the session."""
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
         repo, proj = make_history_repo(tmp_path, self._config())
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         log = fake_docker(tmp_path, monkeypatch)
         version = (RG55_FIXTURES / "version-v1.json").read_text()
         start = json.loads((RG55_FIXTURES / "start-v1.json").read_text())
@@ -21368,7 +25249,8 @@ class TestBareHostProfilingWiring:
         # is unaffected: it still goes through `subprocess.run`).
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
         repo, proj = make_history_repo(tmp_path, self._config())
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         fake_docker(tmp_path, monkeypatch)
         real_popen = subprocess.Popen
         captured_env = {}
@@ -21396,7 +25278,8 @@ class TestBareHostProfilingWiring:
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
         repo, proj = make_history_repo(tmp_path, self._config().replace(
             'argv = ["true"]', 'argv = ["sh", "-c", "exit 7"]'))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         fake_docker(tmp_path, monkeypatch)
 
         def _boom(docker):
@@ -21423,7 +25306,8 @@ class TestBareHostProfilingWiring:
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
         repo, proj = make_history_repo(tmp_path, self._config().replace(
             'argv = ["true"]', 'argv = ["sh", "-c", "exit 3"]'))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         fake_docker(tmp_path, monkeypatch)  # empty inspect -> rusage mode
 
         def _boom(pid, options):
@@ -21457,7 +25341,8 @@ class TestBareHostProfilingWiring:
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
         repo, proj = make_history_repo(tmp_path, self._config().replace(
             'argv = ["true"]', 'argv = ["sh", "-c", "exit 5"]'))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         fake_docker(tmp_path, monkeypatch)   # no inspect case -> rusage mode
         real_popen = subprocess.Popen
         procs = []
@@ -21483,7 +25368,8 @@ class TestBareHostProfilingWiring:
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
         repo, proj = make_history_repo(tmp_path, self._config().replace(
             'argv = ["true"]', 'argv = ["sleep", "5"]'))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         fake_docker(tmp_path, monkeypatch)   # no inspect case -> rusage mode
         real_popen = subprocess.Popen
         procs = []
@@ -21516,7 +25402,8 @@ class TestBareHostProfilingWiring:
         # degrades to a valid rusage profile, never a fatal error.
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
         repo, proj = make_history_repo(tmp_path, self._config())
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         real_which = shutil.which
         monkeypatch.setattr(
             run_gate.shutil, "which",
@@ -21538,7 +25425,8 @@ class TestBareHostProfilingWiring:
         # refused, covered separately below).
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
         repo, proj = make_history_repo(tmp_path, self._config())
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         fake_docker(tmp_path, monkeypatch)
         set_cgprofile_plan(
             tmp_path, monkeypatch,
@@ -21559,7 +25447,8 @@ class TestBareHostProfilingWiring:
         # `ctl version` succeeds but `ctl start` itself refuses.
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
         repo, proj = make_history_repo(tmp_path, self._config())
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         fake_docker(tmp_path, monkeypatch)
         version = (RG55_FIXTURES / "version-v1.json").read_text()
         set_cgprofile_plan(
@@ -21585,7 +25474,8 @@ class TestBareHostProfilingWiring:
         # ENABLED arm (it delenv's the override); this is the disabled arm,
         # the ordinary case for a plain `--dry-run` with profiling off.
         repo, proj = make_history_repo(tmp_path, self._config())
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         assert run_gate.main(["suite", "--dry-run"]) == 0
         out = capsys.readouterr().out
         assert "host memory PSI" not in out
@@ -21615,7 +25505,8 @@ class TestBareHostProfilingWiring:
         monkeypatch.setattr(run_gate, "print", spy, raising=False)
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
         repo, proj = make_history_repo(tmp_path, self._config())
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         fake_docker(tmp_path, monkeypatch)   # no inspect case -> rusage mode
 
         def _boom(*a, **k):
@@ -21679,6 +25570,531 @@ class TestBareHostProfilingWiring:
             "suite", repo, repo, repo, run_record={}, profile_plan=plan)
         assert code == 0
         assert "daemon watch could not start" in capsys.readouterr().err
+
+    def _bare_assay_call(self, tmp_path, monkeypatch, profiler_state, *,
+                         watch, process):
+        repo = make_repo(tmp_path)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(run_gate, "start_bare_host_profiling",
+                            lambda *a, **k: profiler_state)
+        monkeypatch.setattr(run_gate, "make_progress_watch",
+                            lambda *a, **k: watch)
+        monkeypatch.setattr(run_gate.subprocess, "Popen",
+                            lambda *a, **k: process)
+        monkeypatch.setattr(run_gate, "finish_bare_host_profiling",
+                            lambda *a, **k: {"resources": None,
+                                             "profile_error": None,
+                                             "profile_ref": None})
+        monkeypatch.setattr(run_gate, "print_lane_artifacts",
+                            lambda *a, **k: None)
+        plan = {"enabled": True, "daemon": "d", "interval": "1s",
+                "damon": True, "source": "test", "token": "tok"}
+        return run_gate.run_bare_host_lane(
+            {"kind": "assay", "assay_lane": "r2",
+             "environment": "bare-host", "clean_tree": False},
+            "suite", repo, repo, repo, run_record={}, profile_plan=plan)
+
+    @staticmethod
+    def _rusage_state():
+        return {"mode": "rusage", "client": None, "daemon": "d",
+                "session": None, "session_line": None, "warning": None,
+                "sampler": None, "profiler_status": None}
+
+    def test_bare_host_rusage_fallback_stall_terminates_group_and_keeps_rusage(
+            self, tmp_path, monkeypatch, capsys, child_process_scope):
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
+        streams = _capture_run_gate_prints(monkeypatch)
+        class Watch:
+            def __init__(self):
+                self.calls = 0
+
+            def poll(self):
+                self.calls += 1
+                return "assay progress stopped"
+
+        class Process:
+            pid = 4242
+            returncode = None
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self, timeout=None):
+                self.returncode = -signal.SIGTERM
+                return self.returncode
+
+        proc = Process()
+        watch = Watch()
+        rusage = _FakeRusage(ru_maxrss=123, ru_utime=1.0, ru_stime=0.5)
+        state = {"killed": False}
+        wait_calls = []
+        finish_calls = []
+        watch_calls = []
+
+        def wait4(pid, options):
+            if len(wait_calls) >= 16:
+                raise AssertionError(
+                    "rusage fallback stall loop exceeded 16 wait4 polls")
+            wait_calls.append((pid, options))
+            if state["killed"]:
+                return pid, 15, rusage
+            return 0, 0, None
+
+        def killpg(pid, sig):
+            assert pid == proc.pid
+            state["killed"] = True
+
+        monkeypatch.setattr(run_gate.os, "wait4", wait4)
+        monkeypatch.setattr(run_gate.os, "killpg", killpg)
+        monkeypatch.setattr(run_gate.time, "sleep", lambda _s: None)
+        repo = make_repo(tmp_path)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(run_gate, "start_bare_host_profiling",
+                            lambda *a, **k: self._rusage_state())
+        def progress_watch(*args, **kwargs):
+            watch_calls.append(kwargs)
+            return watch
+
+        monkeypatch.setattr(run_gate, "make_progress_watch", progress_watch)
+        monkeypatch.setattr(run_gate.subprocess, "Popen",
+                            lambda *a, **k: proc)
+        monkeypatch.setattr(run_gate, "finish_bare_host_profiling",
+                            lambda state_, ru, *a, **k: (
+                                finish_calls.append(ru) or {
+                                    "resources": None, "profile_error": None,
+                                    "profile_ref": None}))
+        monkeypatch.setattr(run_gate, "print_lane_artifacts",
+                            lambda *a, **k: None)
+        plan = {"enabled": True, "daemon": "d", "interval": "1s",
+                "damon": True, "source": "test", "token": "tok"}
+        with pytest.raises(run_gate.GateInfraError, match="STALLED"):
+            run_gate.run_bare_host_lane(
+                {"kind": "assay", "assay_lane": "r2",
+                 "environment": "bare-host", "clean_tree": False},
+                "suite", repo, repo, repo, run_record={}, profile_plan=plan)
+        # The bounded fake makes the mutant fail quickly. Reap any adopted
+        # helper descendants at this test boundary before Assay's process-tree
+        # audit observes them.
+        assert state["killed"]
+        # The exact child is still reaped by wait4, so its rusage survives,
+        # and the watch is consulted once (stall latches; it is not re-polled).
+        assert watch.calls == 1
+        assert watch_calls and watch_calls[0]["auto_bound"] is True
+        assert finish_calls == [rusage]
+        assert all(pid == proc.pid for pid, _ in wait_calls)
+        assert _has_flushed_print(streams, "stdout",
+                                  "in-process watch — daemon unavailable")
+
+    def test_bare_host_rusage_fallback_is_polled_at_the_progress_cadence(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
+        class Watch:
+            def __init__(self):
+                self.calls = 0
+
+            def poll(self):
+                self.calls += 1
+                return None
+
+        class Process:
+            pid = 4244
+            returncode = None
+
+            def poll(self):
+                return self.returncode
+
+        clock = [1000.0]
+        watch = Watch()
+        rusage = _FakeRusage(ru_maxrss=1, ru_utime=0.1, ru_stime=0.1)
+        steps = [0]
+
+        def wait4(pid, options):
+            if steps[0] >= 700:          # 700 x 0.05 s = 35 s of fake time
+                return pid, 0, rusage
+            return 0, 0, None
+
+        def sleep(seconds):
+            steps[0] += 1
+            clock[0] += seconds
+
+        monkeypatch.setattr(run_gate.os, "wait4", wait4)
+        monkeypatch.setattr(run_gate.time, "sleep", sleep)
+        monkeypatch.setattr(run_gate.time, "monotonic", lambda: clock[0])
+        assert self._bare_assay_call(
+            tmp_path, monkeypatch, self._rusage_state(),
+            watch=watch, process=Process()) == 0
+        # first poll immediately, the second one PROGRESS_POLL_SECONDS (30 s)
+        # later: never once per 50 ms spin.
+        assert watch.calls == 2
+
+    def test_bare_host_rusage_polls_at_the_exact_next_poll_deadline(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)
+        monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.05)
+        clock = [1000.0]
+        poll_times = []
+
+        class Watch:
+            def poll(self):
+                poll_times.append(clock[0])
+                return None
+
+        class Process:
+            pid = 4251
+            returncode = 0
+
+            def poll(self):
+                return self.returncode
+
+        rusage = _FakeRusage(ru_maxrss=1, ru_utime=0.1, ru_stime=0.1)
+        wait4_calls = [0]
+
+        def wait4(pid, options):
+            wait4_calls[0] += 1
+            return ((pid, 0, rusage) if wait4_calls[0] == 3
+                    else (0, 0, None))
+
+        monkeypatch.setattr(run_gate.os, "wait4", wait4)
+        monkeypatch.setattr(run_gate.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(run_gate.time, "sleep",
+                            lambda seconds: clock.__setitem__(
+                                0, clock[0] + seconds))
+        assert self._bare_assay_call(
+            tmp_path, monkeypatch, self._rusage_state(), watch=Watch(),
+            process=Process()) == 0
+        assert poll_times == [1000.0, 1000.05]
+
+    def test_bare_host_watch_failure_degrades_to_unwatched_rusage_wait(
+            self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
+        streams = _capture_run_gate_prints(monkeypatch)
+        class Watch:
+            def __init__(self):
+                self.calls = 0
+
+            def poll(self):
+                self.calls += 1
+                raise RuntimeError("planted progress reader failure")
+
+        class Process:
+            pid = 4243
+            returncode = None
+
+            def poll(self):
+                return self.returncode
+
+        rusage = _FakeRusage(ru_maxrss=123, ru_utime=1.0, ru_stime=0.5)
+        calls = [0]
+        watch = Watch()
+
+        def wait4(pid, options):
+            calls[0] += 1
+            return (0, 0, None) if calls[0] < 4 else (pid, 0, rusage)
+
+        monkeypatch.setattr(run_gate.os, "wait4", wait4)
+        monkeypatch.setattr(run_gate.time, "sleep", lambda _s: None)
+        assert self._bare_assay_call(
+            tmp_path, monkeypatch, self._rusage_state(),
+            watch=watch, process=Process()) == 0
+        assert watch.calls == 1                 # dropped after the failure
+        assert _has_flushed_print(
+            streams, "stderr", "in-process watch failed unexpectedly")
+
+    def test_bare_host_profiling_disabled_assay_lane_keeps_progress_liveness(
+            self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
+        class Watch:
+            def poll(self):
+                return "assay progress stopped"
+
+        class Process:
+            pid = 4245
+            returncode = None
+
+            def __init__(self):
+                self.terminated = False
+                self.wait_calls = 0
+
+            def wait(self, timeout=None):
+                self.wait_calls += 1
+                if timeout is not None and not self.terminated:
+                    if self.wait_calls > 8:
+                        raise AssertionError(
+                            "fallback stall loop exceeded 8 process waits")
+                    raise subprocess.TimeoutExpired("bare assay", timeout)
+                self.returncode = 0
+                return 0
+
+            def poll(self):
+                return self.returncode
+
+        proc = Process()
+
+        def killpg(pid, sig):
+            proc.terminated = True
+
+        monkeypatch.setattr(run_gate.os, "killpg", killpg)
+        state = {"mode": "disabled", "client": None, "daemon": None,
+                 "session": None, "session_line": None, "warning": None,
+                 "sampler": None, "profiler_status": None,
+                 "disabled_reason": "disabled"}
+        with pytest.raises(run_gate.GateInfraError, match="STALLED"):
+            self._bare_assay_call(tmp_path, monkeypatch, state,
+                                  watch=Watch(), process=proc)
+        assert proc.terminated
+        assert "in-process watch — profiling disabled" \
+            in capsys.readouterr().out
+
+    def test_bare_host_daemon_watch_failure_uses_progress_fallback(
+            self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
+        class Client:
+            def watch(self, session):
+                raise OSError("planted daemon watch failure")
+
+        class Watch:
+            def poll(self):
+                return "assay progress stopped"
+
+        class Process:
+            pid = 4246
+            returncode = None
+
+            def __init__(self):
+                self.terminated = False
+                self.wait_calls = 0
+
+            def wait(self, timeout=None):
+                self.wait_calls += 1
+                if timeout is not None and not self.terminated:
+                    if self.wait_calls > 8:
+                        raise AssertionError(
+                            "fallback stall loop exceeded 8 process waits")
+                    raise subprocess.TimeoutExpired("bare assay", timeout)
+                self.returncode = 0
+                return 0
+
+            def poll(self):
+                return self.returncode
+
+        proc = Process()
+        monkeypatch.setattr(run_gate.os, "killpg",
+                            lambda pid, sig: setattr(proc, "terminated", True))
+        state = {"mode": "daemon", "client": Client(), "daemon": "d",
+                 "session": "s-bare-failed", "session_line": None,
+                 "warning": None, "sampler": None, "profiler_status": None}
+        with pytest.raises(run_gate.GateInfraError, match="STALLED"):
+            self._bare_assay_call(tmp_path, monkeypatch, state,
+                                  watch=Watch(), process=proc)
+        out, err = capsys.readouterr()
+        assert "in-process watch — daemon unavailable" in out
+        assert "daemon watch could not start" in err
+
+    def test_bare_host_reattach_failure_keeps_lane_exit_via_fallback(
+            self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
+        streams = _capture_run_gate_prints(monkeypatch)
+        class DaemonWatch:
+            def drain(self):
+                return []
+
+            def ended(self):
+                return True
+
+            def idle(self):
+                return False
+
+            def close(self):
+                pass
+
+        class Client:
+            def __init__(self):
+                self.calls = 0
+
+            def watch(self, session):
+                self.calls += 1
+                if self.calls > 1:
+                    raise OSError("planted reattach failure")
+                return DaemonWatch()
+
+        class Watch:
+            def __init__(self):
+                self.calls = 0
+
+            def poll(self):
+                self.calls += 1
+                return None
+
+        class Process:
+            pid = 4247
+            returncode = None
+
+            def __init__(self):
+                self.wait_calls = 0
+
+            def wait(self, timeout=None):
+                self.wait_calls += 1
+                if timeout is not None and self.wait_calls == 1:
+                    raise subprocess.TimeoutExpired("bare assay", timeout)
+                self.returncode = 0
+                return 0
+
+            def poll(self):
+                return self.returncode
+
+        client = Client()
+        watch = Watch()
+        state = {"mode": "daemon", "client": client, "daemon": "d",
+                 "session": "s-bare-reattach", "session_line": None,
+                 "warning": "earlier profiling warning",
+                 "sampler": None, "profiler_status": None}
+        assert self._bare_assay_call(tmp_path, monkeypatch, state,
+                                     watch=watch, process=Process()) == 0
+        assert client.calls == 2
+        assert watch.calls == 1
+        assert state["warning"] == "earlier profiling warning"
+        assert _has_flushed_print(streams, "stderr",
+                                  "watch reattach failed for lane")
+
+    def test_bare_host_idle_twice_announces_in_process_watch_exactly_once(
+            self, tmp_path, monkeypatch, capsys):
+        """Daemon watch idle on the first attach and again after the single
+        reattach, with a progress fallback configured: the in-process-watch
+        announcement is printed exactly once on stdout, even across further
+        idle polls served by the fallback, and the profiler warning names the
+        second idle."""
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
+        streams = _capture_run_gate_prints(monkeypatch)
+        class DaemonWatch:
+            def drain(self):
+                return []
+
+            def ended(self):
+                return False
+
+            def idle(self):
+                return True
+
+            def close(self):
+                pass
+
+        class Client:
+            def __init__(self):
+                self.calls = 0
+
+            def watch(self, session):
+                self.calls += 1
+                return DaemonWatch()
+
+        class Watch:
+            def __init__(self):
+                self.calls = 0
+
+            def poll(self):
+                self.calls += 1
+                return None
+
+        class Process:
+            pid = 4248
+            returncode = None
+
+            def __init__(self):
+                self.wait_calls = 0
+
+            def wait(self, timeout=None):
+                self.wait_calls += 1
+                if timeout is not None and self.wait_calls <= 5:
+                    raise subprocess.TimeoutExpired("bare assay", timeout)
+                self.returncode = 0
+                return 0
+
+            def poll(self):
+                return self.returncode
+
+        client = Client()
+        watch = Watch()
+        state = {"mode": "daemon", "client": client, "daemon": "d",
+                 "session": "s-bare-idle2", "session_line": None,
+                 "warning": None, "sampler": None, "profiler_status": None}
+        assert self._bare_assay_call(tmp_path, monkeypatch, state,
+                                     watch=watch, process=Process()) == 0
+        assert client.calls == 2
+        # Timeouts 1-2 consume the two idle daemon watches; 3-5 are served by
+        # the fallback alone, none of which may re-announce.
+        assert watch.calls >= 3
+        out = streams["stdout"].getvalue()
+        err = streams["stderr"].getvalue()
+        assert out.count("in-process watch") == 1
+        assert "in-process watch \u2014 daemon unavailable for lane" in out
+        assert _has_flushed_print(
+            streams, "stdout", "in-process watch \u2014 daemon unavailable for lane")
+        assert state["warning"] == \
+            "daemon watch remained idle after one reattach"
+        assert "went idle; reattaching once" in err
+        assert _has_flushed_print(streams, "stderr",
+                                  "went idle; reattaching once")
+        assert "using in-process liveness fallback" in err
+        assert _has_flushed_print(
+            streams, "stderr", "unavailable; using in-process liveness fallback")
+
+    def test_bare_host_idle_twice_without_fallback_stays_silent_and_keeps_exit(
+            self, tmp_path, monkeypatch, capsys):
+        """Same double-idle path with NO progress fallback: no in-process
+        announcement, the warning says liveness continues without the daemon,
+        and the lane exit code is unaffected."""
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a, **_k: "a" * 40)  # B108-2: the closeout names the judged commit
+        class DaemonWatch:
+            def drain(self):
+                return []
+
+            def ended(self):
+                return False
+
+            def idle(self):
+                return True
+
+            def close(self):
+                pass
+
+        class Client:
+            def __init__(self):
+                self.calls = 0
+
+            def watch(self, session):
+                self.calls += 1
+                return DaemonWatch()
+
+        class Process:
+            pid = 4249
+            returncode = None
+
+            def __init__(self):
+                self.wait_calls = 0
+
+            def wait(self, timeout=None):
+                self.wait_calls += 1
+                if timeout is not None and self.wait_calls <= 4:
+                    raise subprocess.TimeoutExpired("bare assay", timeout)
+                self.returncode = 0
+                return 0
+
+            def poll(self):
+                return self.returncode
+
+        client = Client()
+        state = {"mode": "daemon", "client": client, "daemon": "d",
+                 "session": "s-bare-idle2-nofb", "session_line": None,
+                 "warning": None, "sampler": None, "profiler_status": None}
+        assert self._bare_assay_call(tmp_path, monkeypatch, state,
+                                     watch=None, process=Process()) == 0
+        assert client.calls == 2
+        out, err = capsys.readouterr()
+        assert "in-process watch" not in out
+        assert "in-process watch" not in err
+        assert "continuing without daemon liveness" in err
+        assert "using in-process liveness fallback" not in err
+        assert state["warning"] == \
+            "daemon watch remained idle after one reattach"
 
     def test_bare_host_daemon_verdict_stops_child_as_infrastructure(
             self, tmp_path, monkeypatch):
@@ -22455,7 +26871,8 @@ class TestEphemeralProfilingWiring:
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
         repo, proj = make_history_repo(tmp_path, self._config())
         monkeypatch.setattr(run_gate, "physical_path", lambda p, **k: Path("/phys"))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         log, state = fake_docker_stateful(tmp_path, monkeypatch)
         version = (RG55_FIXTURES / "version-v1.json").read_text()
         start = (RG55_FIXTURES / "start-v1.json").read_text()
@@ -22485,7 +26902,8 @@ class TestEphemeralProfilingWiring:
         repo, proj = make_history_repo(tmp_path, self._config())
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda p, **k: Path("/phys"))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         log, state = fake_docker_stateful(tmp_path, monkeypatch)
 
         class Client:
@@ -22518,6 +26936,94 @@ class TestEphemeralProfilingWiring:
         assert record["placement"] == placement
         assert not (proj / ".run-gate" / "inflight" / "suite.json").exists()
 
+    def test_candidate_image_override_is_the_docker_image_argument(
+            self, tmp_path, monkeypatch, capsys):
+        image_override = "tester-unified:receipt-candidate"
+        config = self._config().replace(
+            'image = "tester-unified:local"',
+            'image = "tester-unified:local"\n'
+            'image_env = "RUN_GATE_TESTER_UNIFIED_IMAGE"',
+        )
+        monkeypatch.setenv("RUN_GATE_TESTER_UNIFIED_IMAGE", image_override)
+        repo, proj = make_history_repo(tmp_path, config)
+        monkeypatch.setattr(run_gate, "physical_path", lambda p, **k: Path("/phys"))
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ["run-gate"])
+        log, _state = fake_docker_stateful(tmp_path, monkeypatch)
+
+        assert run_gate.main(["suite"]) == 0
+        output = capsys.readouterr().out
+
+        run_call = docker_runs(log)[0]
+        assert run_call[-4] == image_override
+        assert "tester-unified:local" not in run_call
+        assert (
+            "image selection: tester-unified:receipt-candidate from "
+            "$RUN_GATE_TESTER_UNIFIED_IMAGE override" in output
+        )
+        assert "image ID sha256:" + "b" * 64 in output
+        selection = lane_slot(proj)["latest"]["image_selection"]
+        assert selection == {
+            "environment": "tester-unified",
+            "environment_source": f"[environments.tester-unified] in {proj / 'run-gate.toml'}",
+            "declared_image": "tester-unified:local",
+            "override_env": "RUN_GATE_TESTER_UNIFIED_IMAGE",
+            "override_applied": True,
+            "effective_image": image_override,
+            "image_id": "sha256:" + "b" * 64,
+            "image_id_status": "observed",
+            "image_id_error": None,
+        }
+
+
+    @pytest.mark.parametrize("exception", [
+        OSError("docker is unavailable"),
+        subprocess.TimeoutExpired("docker inspect", 10),
+    ])
+    def test_inspect_container_image_id_reports_command_failures(
+            self, monkeypatch, exception):
+        def fail_run(*args, **kwargs):
+            raise exception
+
+        monkeypatch.setattr(run_gate.subprocess, "run", fail_run)
+        image_id, error = run_gate.inspect_container_image_id(
+            "docker", "run-gate-candidate")
+        assert image_id is None
+        assert error.startswith(f"{type(exception).__name__}:")
+
+    @pytest.mark.parametrize(("result", "expected"), [
+        (subprocess.CompletedProcess(
+            ["docker"], 1, stdout="", stderr="daemon unavailable"),
+         "docker inspect exited 1: daemon unavailable"),
+        (subprocess.CompletedProcess(
+            ["docker"], 0, stdout="sha256:short\n", stderr=""),
+         "docker inspect returned an invalid image ID: 'sha256:short'"),
+    ])
+    def test_inspect_container_image_id_rejects_unusable_identity(
+            self, monkeypatch, result, expected):
+        monkeypatch.setattr(run_gate.subprocess, "run",
+                            lambda *args, **kwargs: result)
+        image_id, error = run_gate.inspect_container_image_id(
+            "docker", "run-gate-candidate")
+        assert image_id is None
+        assert error == expected
+
+    def test_disclose_image_selection_names_declared_image_when_unset(
+            self, capsys):
+        run_gate.disclose_image_selection({
+            "declared_image": "tester-unified:local",
+            "effective_image": "tester-unified:local",
+            "override_env": "RUN_GATE_TESTER_UNIFIED_IMAGE",
+            "override_applied": False,
+            "image_id": None,
+            "image_id_status": "not-observed",
+            "image_id_error": None,
+        })
+        assert capsys.readouterr().out == (
+            "run-gate: image selection: tester-unified:local from declared "
+            "image (override $RUN_GATE_TESTER_UNIFIED_IMAGE unset); declared "
+            "tester-unified:local\n")
+
     def test_disabled_lane_has_no_token_and_no_profiling_calls(
             self, tmp_path, monkeypatch):
         # `RUN_GATE_PROFILE=off` stays set (the module autouse default) --
@@ -22526,7 +27032,8 @@ class TestEphemeralProfilingWiring:
         # exercises.
         repo, proj = make_history_repo(tmp_path, self._config())
         monkeypatch.setattr(run_gate, "physical_path", lambda p, **k: Path("/phys"))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         log, state = fake_docker_stateful(tmp_path, monkeypatch)
         assert run_gate.main(["suite"]) == 0
         exec_calls = [c for c in _docker_calls(log) if c and c[0] == "exec"]
@@ -22544,7 +27051,8 @@ class TestEphemeralProfilingWiring:
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
         repo, proj = make_history_repo(tmp_path, self._config())
         monkeypatch.setattr(run_gate, "physical_path", lambda p, **k: Path("/phys"))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         log, state = fake_docker_stateful(tmp_path, monkeypatch)
         assert run_gate.main(["suite", "--dry-run"]) == 0
         out = capsys.readouterr().out
@@ -22559,7 +27067,8 @@ class TestEphemeralProfilingWiring:
         # not just the unit-level `print_profile_plan_dry_run` test above.
         repo, proj = make_history_repo(tmp_path, self._config())
         monkeypatch.setattr(run_gate, "physical_path", lambda p, **k: Path("/phys"))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         log, state = fake_docker_stateful(tmp_path, monkeypatch)
         assert run_gate.main(["suite", "--dry-run"]) == 0
         out = capsys.readouterr().out
@@ -22573,7 +27082,8 @@ class TestEphemeralProfilingWiring:
         monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR, str(tmp_path / "no-proc"))
         repo, proj = make_history_repo(tmp_path, self._config())
         monkeypatch.setattr(run_gate, "physical_path", lambda p, **k: Path("/phys"))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         fake_docker(tmp_path, monkeypatch)   # plain shim: no cgprofile plan set
         monkeypatch.setattr(run_gate, "container_state", lambda docker, name: None)
         assert run_gate.main(["suite"]) == 0
@@ -22608,7 +27118,8 @@ class TestProfilingNeverRaisesEndToEnd:
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
         repo, proj = make_history_repo(tmp_path, self._config())
         monkeypatch.setattr(run_gate, "physical_path", lambda p, **k: Path("/phys"))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         log, state = fake_docker_stateful(tmp_path, monkeypatch)
 
         def _boom(self, verb, *args):
@@ -22630,7 +27141,8 @@ class TestProfilingNeverRaisesEndToEnd:
         monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR, str(tmp_path / "no-proc"))
         repo, proj = make_history_repo(tmp_path, self._config())
         monkeypatch.setattr(run_gate, "physical_path", lambda p, **k: Path("/phys"))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         # No cgprofile plan / exec case at all -- `ctl version` degrades
         # naturally (unparsable stdout from the shim's unmatched `exec`),
         # so `start_lane_profiling` falls to the BASIC path, whose first
@@ -23081,6 +27593,45 @@ class TestPlacementBarrier:
         for fd in opened:
             with pytest.raises(OSError):
                 os.fstat(fd)
+
+    def test_bare_host_spawn_reaps_child_if_parent_fd_close_fails(
+            self, monkeypatch):
+        real_close = os.close
+        close_calls = []
+        leaked_read_fd = []
+
+        def fail_first_close(fd):
+            close_calls.append(fd)
+            if len(close_calls) <= 2:
+                if not leaked_read_fd:
+                    leaked_read_fd.append(fd)
+                raise OSError("planted parent fd close failure")
+            real_close(fd)
+
+        class Process:
+            stdin = None
+
+            def __init__(self):
+                self.wait_calls = 0
+
+            def wait(self, timeout=None):
+                self.wait_calls += 1
+                return 125
+
+        proc = Process()
+        monkeypatch.setattr(run_gate.os, "close", fail_first_close)
+        monkeypatch.setattr(run_gate.subprocess, "Popen",
+                            lambda *args, **kwargs: proc)
+        try:
+            with pytest.raises(OSError, match="planted parent fd close failure"):
+                run_gate.spawn_bare_host_placement_barrier(
+                    ["true"], "90" * 16)
+        finally:
+            if leaked_read_fd:
+                real_close(leaked_read_fd[0])
+
+        assert proc.wait_calls == 1
+        assert len(close_calls) == 3
 
     def test_bare_host_spawn_aborts_if_readiness_handshake_fails(
             self, tmp_path, monkeypatch):
@@ -23751,7 +28302,8 @@ class TestExecLaneProfilingWiring:
             f'2026-09-02T11:00:00Z|{RG55_CONTAINER_ID}\\n\' ;;\n'
             '  ps) printf \'the-runner\\n\' ;;')
         shim.write_text(body)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         assert run_gate.main(["suite"]) == 0
         execs = [c for c in docker_execs(log) if any("memory.current" in a for a in c)]
         # B4: >= 3, not >= 2 -- exactly 2 (baseline + sample_final) is what
@@ -23786,7 +28338,8 @@ class TestExecLaneProfilingWiring:
             f'2026-09-02T11:00:00Z|{RG55_CONTAINER_ID}\\n\' ;;\n'
             '  ps) printf \'the-runner\\n\' ;;')
         shim.write_text(body)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         assert run_gate.main(["suite"]) == 0
         run_calls = docker_runs(log)
         assert not run_calls or PROFILE_TOKEN_ENV_NEEDLE not in " ".join(
@@ -23820,7 +28373,8 @@ class TestExecLaneProfilingWiring:
         body = body.replace('case "$1" in',
                             'case "$1" in\n  ps) printf \'the-runner\\n\' ;;')
         shim.write_text(body)
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         preflights = []
 
         def preflight(*args, **kwargs):
@@ -23852,7 +28406,9 @@ class TestExecLaneProfilingWiring:
         shim.write_text(body)
         docker = shutil.which("docker")
         env = {"forward_env": []}
-        lane = {"kind": "command", "argv": ["true"]}
+        lane = {
+            "kind": "command", "environment": "fixture", "argv": ["true"],
+        }
         code = run_gate.run_exec_lane(
             lane, "suite", repo, repo, repo, env, "test-env",
             "the-runner", "test-src", "test-remedy", None, "no-slice",
@@ -23981,6 +28537,171 @@ class TestExecLaneProfilingWiring:
         captured = capsys.readouterr()
         assert "daemon watch could not start" in captured.err
         assert "in-process watch" in captured.out
+
+    def test_exec_profiling_disabled_assay_lane_keeps_progress_liveness(
+            self, tmp_path, monkeypatch, capsys):
+        # Disabling measurement must not disable the caller's stall
+        # protection: the in-process watch is built regardless of profiling.
+        built = []
+
+        class Fallback:
+            def __init__(self):
+                self.calls = 0
+
+            def poll(self):
+                self.calls += 1
+                return "assay progress stopped"
+
+        class Process:
+            def __init__(self):
+                self.terminated = False
+
+            def wait(self, timeout=None):
+                if timeout is not None and not self.terminated:
+                    raise subprocess.TimeoutExpired("docker exec", timeout)
+                return 0
+
+            def terminate(self):
+                self.terminated = True
+
+            def kill(self):
+                pass
+
+        fallback = Fallback()
+        monkeypatch.setattr(run_gate, "start_lane_profiling",
+                            lambda *args, **kwargs: {
+                                "mode": "disabled", "client": None,
+                                "daemon": None, "session": None,
+                                "session_line": None, "warning": None,
+                                "sampler": None, "profiler_status": None,
+                                "disabled_reason": "disabled"})
+        monkeypatch.setattr(run_gate, "make_progress_watch",
+                            lambda *args, **kwargs: (
+                                built.append(kwargs) or fallback))
+        monkeypatch.setattr(run_gate, "finish_lane_profiling",
+                            lambda state: {"resources": None,
+                                           "profile_error": None,
+                                           "profile_ref": None})
+        with pytest.raises(run_gate.GateInfraError, match="STALLED"):
+            self._exec_lane_call(
+                tmp_path, monkeypatch, ["true"], {},
+                popen_factory=lambda *args, **kwargs: Process())
+        assert built and built[0].get("auto_bound") is True
+        assert fallback.calls == 1
+        assert "in-process watch — profiling disabled" in capsys.readouterr().out
+
+    def test_exec_progress_fallback_failure_keeps_lane_exit(
+            self, tmp_path, monkeypatch):
+        streams = _capture_run_gate_prints(monkeypatch)
+        class Fallback:
+            def poll(self):
+                raise RuntimeError("planted progress reader failure")
+
+        class Process:
+            def __init__(self):
+                self.wait_calls = 0
+
+            def wait(self, timeout=None):
+                self.wait_calls += 1
+                if timeout is not None and self.wait_calls == 1:
+                    raise subprocess.TimeoutExpired("docker exec", timeout)
+                return 0
+
+            def kill(self):
+                pass
+
+        monkeypatch.setattr(run_gate, "start_lane_profiling",
+                            lambda *args, **kwargs: {
+                                "mode": "disabled", "client": None,
+                                "daemon": None, "session": None,
+                                "session_line": None, "warning": None,
+                                "sampler": None, "profiler_status": None,
+                                "disabled_reason": "disabled"})
+        monkeypatch.setattr(run_gate, "make_progress_watch",
+                            lambda *args, **kwargs: Fallback())
+        monkeypatch.setattr(run_gate, "finish_lane_profiling",
+                            lambda state: {"resources": None,
+                                           "profile_error": None,
+                                           "profile_ref": None})
+        assert self._exec_lane_call(
+            tmp_path, monkeypatch, ["true"], {},
+            popen_factory=lambda *args, **kwargs: Process()) == 0
+        assert _has_flushed_print(
+            streams, "stderr", "in-process watch failed unexpectedly")
+
+    def test_exec_watch_reattach_failure_keeps_lane_exit(
+            self, tmp_path, monkeypatch, capsys):
+        streams = _capture_run_gate_prints(monkeypatch)
+        class Watch:
+            def drain(self):
+                return []
+
+            def ended(self):
+                return True
+
+            def idle(self):
+                return False
+
+            def close(self):
+                pass
+
+        class Client:
+            carrier = "exec"
+            socket_path = "/run/cgprofile/ctl.sock"
+
+            def __init__(self):
+                self.calls = 0
+
+            def watch(self, session):
+                self.calls += 1
+                if self.calls > 1:
+                    raise OSError("planted reattach failure")
+                return Watch()
+
+        class Fallback:
+            def __init__(self):
+                self.poll_calls = 0
+
+            def poll(self):
+                self.poll_calls += 1
+                return None
+
+        class Process:
+            def __init__(self):
+                self.wait_calls = 0
+
+            def wait(self, timeout=None):
+                self.wait_calls += 1
+                if timeout is not None and self.wait_calls == 1:
+                    raise subprocess.TimeoutExpired("docker exec", timeout)
+                return 0
+
+            def kill(self):
+                pass
+
+        client = Client()
+        fallback = Fallback()
+        state = {"mode": "daemon", "client": client,
+                 "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                 "session": "s-reattach-fail", "session_line": None,
+                 "warning": "earlier profiling warning", "sampler": None,
+                 "profiler_status": None}
+        monkeypatch.setattr(run_gate, "start_lane_profiling",
+                            lambda *args, **kwargs: state)
+        monkeypatch.setattr(run_gate, "make_progress_watch",
+                            lambda *args, **kwargs: fallback)
+        monkeypatch.setattr(run_gate, "finish_lane_profiling",
+                            lambda state: {"resources": None,
+                                           "profile_error": None,
+                                           "profile_ref": None})
+        assert self._exec_lane_call(
+            tmp_path, monkeypatch, ["true"], {},
+            popen_factory=lambda *args, **kwargs: Process()) == 0
+        assert client.calls == 2
+        assert fallback.poll_calls == 1
+        assert state["warning"] == "earlier profiling warning"
+        assert _has_flushed_print(streams, "stderr",
+                                  "watch reattach failed for lane")
 
     def test_exec_second_ended_watch_can_kill_via_progress_fallback(
             self, tmp_path, monkeypatch):
@@ -24508,7 +29229,9 @@ class TestExecLaneInflightRecord:
             '  ps) printf \'the-runner\\n\' ;;')
         shim.write_text(body)
         env = {"forward_env": []}
-        lane = {"kind": "command", "argv": ["true"]}
+        lane = {
+            "kind": "command", "environment": "fixture", "argv": ["true"],
+        }
         profile_plan = {"enabled": True,
                         "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
                         "interval": "1s", "damon": True, "source": "test",
@@ -24631,18 +29354,16 @@ class TestExecLaneInflightRecord:
         lane's own real precedent
         (`TestReattachAcrossADeadClient::test_a_killed_client_leaves_a_
         container_the_next_run_re_attaches_to`): a REAL client subprocess
-        is spawned against a REAL (shimmed) exec-mode project, killed
-        mid-exec (the shim's `docker exec` actually runs `sleep 30`, wide
-        enough to guarantee the kill lands before it finishes), and the
-        record is read back from OUTSIDE that process -- proof it demonstrably
-        survives a client that never reaches its own `finally`, not merely
-        that the record functions can round-trip a dict."""
+        is spawned against a REAL (shimmed) exec-mode project and killed
+        inside its Docker-call boundary. The record is read back from OUTSIDE
+        that process, proving it survives a client that never reaches its own
+        `finally`. The boundary blocks in the client process so the local
+        fake does not leave a child behind when the client dies."""
         repo = make_repo(tmp_path)
         (repo / ".gitignore").write_text(".run-gate/\n")
-        cfg = self._cfg().replace('argv = ["true"]',
-                                  'argv = ["bash", "-c", "sleep 30"]')
+        cfg = self._cfg()
         proj = make_project(repo, cfg)
-        fake_docker_executing(tmp_path, monkeypatch)
+        fake_docker(tmp_path, monkeypatch)
         shim = shim_dir_of(monkeypatch) / "docker"
         body = shim.read_text()
         body = body.replace(
@@ -24652,26 +29373,80 @@ class TestExecLaneInflightRecord:
             f'2026-09-02T11:00:00Z|{RG55_CONTAINER_ID}\\n\' ;;\n'
             '  ps) printf \'the-runner\\n\' ;;')
         shim.write_text(body)
-        client = subprocess.Popen([sys.executable, str(_TOOL_INVOKE), "suite"],
-                                  cwd=proj, stdout=subprocess.PIPE,
-                                  stderr=subprocess.STDOUT, text=True)
-        record_path = proj / ".run-gate" / "inflight" / "suite.json"
-        deadline = time.monotonic() + 15
-        while not record_path.exists() and time.monotonic() < deadline:
-            time.sleep(0.05)
-        assert record_path.exists(), \
-            "the record must exist before the exec finishes (sleep 30 " \
-            "guarantees this branch is not just lucky timing)"
-        client.kill()
-        client.wait(timeout=30)
-        # RG-60's own scope: the record existing to be FOUND, not
-        # reconciliation (unlike a container lane, there is no re-attach
-        # here) -- it must still be there, untouched, after the client
-        # died mid-exec without ever reaching its `finally`.
-        recovered = run_gate.load_inflight_record(record_path)
-        assert recovered is not None
-        assert recovered["container"] == "the-runner"
-        assert recovered["lane"] == "suite"
+
+        client_blocked = tmp_path / "client-blocked-in-docker-exec"
+        client_script = tmp_path / "run-gate-client.py"
+        client_script.write_text(textwrap.dedent(f"""\
+            import importlib.util
+            import subprocess
+            import sys
+            import time
+            from pathlib import Path
+
+            sys.argv[0] = "run-gate"
+
+            spec = importlib.util.spec_from_file_location("run_gate", {str(_TOOL)!r})
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = module
+            spec.loader.exec_module(module)
+
+            client_blocked = Path({str(client_blocked)!r})
+            real_popen = module.subprocess.Popen
+
+            def hold_docker_exec(argv, *args, **kwargs):
+                if len(argv) >= 2 and Path(argv[0]).name == "docker" and argv[1] == "exec":
+                    client_blocked.write_text("entered", encoding="utf-8")
+                    while True:
+                        time.sleep(1)
+                return real_popen(argv, *args, **kwargs)
+
+            module.subprocess.Popen = hold_docker_exec
+            raise SystemExit(module.main(["suite"]))
+        """), encoding="utf-8")
+
+        previous_subreaper = _set_child_subreaper(True)
+        client = None
+        try:
+            client = subprocess.Popen([sys.executable, str(client_script)],
+                                      cwd=proj, stdout=subprocess.PIPE,
+                                      stderr=subprocess.STDOUT, text=True)
+            record_path = proj / ".run-gate" / "inflight" / "suite.json"
+            deadline = time.monotonic() + 15
+            while (
+                (not record_path.exists() or not client_blocked.exists())
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.05)
+            if not record_path.exists() or not client_blocked.exists():
+                client.kill()
+                client_output, _ = client.communicate(timeout=30)
+                raise AssertionError(
+                    "run-gate client did not reach docker exec; output:\n"
+                    f"{client_output}"
+                )
+            client.kill()
+            client.wait(timeout=30)
+            # RG-60's own scope: the record existing to be FOUND, not
+            # reconciliation (unlike a container lane, there is no re-attach
+            # here) -- it must still be there, untouched, after the client
+            # died mid-exec without ever reaching its `finally`.
+            recovered = run_gate.load_inflight_record(record_path)
+            assert recovered is not None
+            assert recovered["container"] == "the-runner"
+            assert recovered["lane"] == "suite"
+            assert _direct_child_pids() == [], (
+                "the killed client left child processes in the test process "
+                f"tree: {_direct_child_pids()}"
+            )
+        finally:
+            if client is not None:
+                if client.poll() is None:
+                    client.kill()
+                client.wait(timeout=30)
+            try:
+                _kill_and_reap_direct_children()
+            finally:
+                _set_child_subreaper(previous_subreaper)
 
     def test_record_written_even_when_profiling_disabled(self, tmp_path,
                                                           monkeypatch):
@@ -24707,7 +29482,8 @@ class TestReattachProfilingWiring:
         repo, proj = make_history_repo(tmp_path, config)
         log, state = fake_docker_stateful(tmp_path, monkeypatch)
         monkeypatch.setattr(run_gate, "physical_path", lambda p, **k: Path("/phys"))
-        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         return repo, proj, log, state
 
     def test_collected_after_exit_records_null_resources(self, tmp_path, monkeypatch):
@@ -24764,7 +29540,7 @@ class TestReattachProfilingWiring:
                        profile_daemon=run_gate.PROFILE_DAEMON_DEFAULT,
                        profile_session="s-20260912T101500Z-9f01",
                        **live_owner_fields())
-        answers = iter([os.getpid()])   # alive once (this client follows), then gone
+        answers = iter([os.getpid(), os.getpid(), None])
         monkeypatch.setattr(run_gate, "live_owner_pid",
                             lambda pending: next(answers, None))
         assert run_gate.main(["suite"]) == 0
@@ -24778,13 +29554,14 @@ class TestReattachProfilingWiring:
         repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
         plant_inflight(proj, repo, state, status="running", code=0,
                        profile_token="tok123", **live_owner_fields())
-        answers = iter([os.getpid()])
+        answers = iter([os.getpid(), os.getpid(), None])
         monkeypatch.setattr(run_gate, "live_owner_pid",
                             lambda pending: next(answers, None))
         assert run_gate.main(["suite"]) == 0
         latest = lane_slot(proj)["latest"]
         assert latest["resources"] is None
-        assert "does not survive a client restart" in latest["profile_error"]
+        assert "does not survive the owning client's death" \
+            in latest["profile_error"]
 
     def test_promoted_follower_stop_failure_names_the_reason(
             self, tmp_path, monkeypatch, capsys):
@@ -24795,7 +29572,7 @@ class TestReattachProfilingWiring:
                        profile_token="tok123",
                        profile_daemon=run_gate.PROFILE_DAEMON_DEFAULT,
                        profile_session="s-x", **live_owner_fields())
-        answers = iter([os.getpid()])
+        answers = iter([os.getpid(), os.getpid(), None])
         monkeypatch.setattr(run_gate, "live_owner_pid",
                             lambda pending: next(answers, None))
         assert run_gate.main(["suite"]) == 0
@@ -25129,7 +29906,8 @@ class TestAdmissionMainRouting:
             ticket_image = "ticket:v1"
             unreadable_policy = "refuse"
             """)
-        monkeypatch.setattr(sys, "argv", [str(project / "run-gate.py")])
+        monkeypatch.chdir(project)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         monkeypatch.chdir(project)
         monkeypatch.setattr(run_gate, "_require_local_admission_endpoint",
                             lambda _operation: None)
@@ -25805,6 +30583,8 @@ class TestRG78AndRG76DirectOracles:
         central_path = Path("run-gate.root.toml")
         central = {"environments": {
             "shared": {"mode": "exec", "image": "runner:v1"},
+            "candidate": {"mode": "ephemeral", "image": "tester:local",
+                          "image_env": "TESTER_IMAGE"},
             "host": {"mode": "ephemeral", "image": "default:v1"},
         }}
         resolved, source = run_gate.resolve_environment(
@@ -25812,12 +30592,193 @@ class TestRG78AndRG76DirectOracles:
             Path("run-gate.toml"), central_path)
         assert resolved["image"] == "runner:v1"
         assert "central run-gate.root.toml" in source
+        monkeypatch.delenv("TESTER_IMAGE", raising=False)
+        resolved, _ = run_gate.resolve_environment(
+            {"environment": "candidate"}, "unit", {}, central,
+            Path("run-gate.toml"), central_path)
+        assert resolved["image"] == "tester:local"
+        assert resolved["_image_selection"] == {
+            "declared_image": "tester:local",
+            "override_env": "TESTER_IMAGE",
+            "override_applied": False,
+            "effective_image": "tester:local",
+        }
+        monkeypatch.setenv("TESTER_IMAGE", "tester:candidate")
+        resolved, _ = run_gate.resolve_environment(
+            {"environment": "candidate"}, "unit", {}, central,
+            Path("run-gate.toml"), central_path)
+        assert resolved["image"] == "tester:candidate"
+        assert "image_env" not in resolved
+        monkeypatch.setenv("TESTER_IMAGE", "")
+        with pytest.raises(run_gate.GateError, match="selected image override \\$TESTER_IMAGE is empty"):
+            run_gate.resolve_environment(
+                {"environment": "candidate"}, "unit", {}, central,
+                Path("run-gate.toml"), central_path)
         monkeypatch.setenv(run_gate.HOST_IMAGE_ENV_VAR, "operator:v2")
         resolved, _ = run_gate.resolve_environment(
             {"environment": "host"}, "unit", {}, central,
             Path("run-gate.toml"), central_path)
         assert resolved["image"] == "operator:v2"
         assert resolved["user"] == f"{os.getuid()}:{os.getgid()}"
+
+    def test_undefined_bare_host_names_mode_fix_and_migration_command(self):
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.resolve_environment(
+                {"environment": "bare-host"}, "docs", {}, {},
+                Path("run-gate.toml"), None)
+        message = str(exc.value)
+        assert "[environments.bare-host]" in message
+        assert 'mode = "host"' in message
+        assert "run-gate migrate-modes run-gate.toml" in message
+
+    def test_undefined_legacy_host_names_its_own_declaration_and_migration(
+            self):
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.resolve_environment(
+                {"environment": "host"}, "docs", {}, {},
+                Path("run-gate.toml"), None)
+        message = str(exc.value)
+        assert "[environments.host]" in message
+        assert 'mode = "ephemeral"' in message
+        assert "run-gate migrate-modes run-gate.toml" in message
+        assert 'mode = "host"' not in message
+
+    def test_inherited_central_lane_is_migrated_in_the_central_config(self):
+        central_path = Path("/estate/run-gate.root.toml")
+        central = {"lanes": {"docs": {"environment": "bare-host"}}}
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.resolve_environment(
+                {"environment": "bare-host"}, "docs", {"lanes": {}},
+                central, Path("/estate/app/run-gate.toml"), central_path)
+        assert f"run-gate migrate-modes {central_path}" in str(exc.value)
+        # a project lane that shadows the central one is migrated locally
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.resolve_environment(
+                {"environment": "bare-host"}, "docs",
+                {"lanes": {"docs": {"environment": "bare-host"}}},
+                central, Path("/estate/app/run-gate.toml"), central_path)
+        assert "run-gate migrate-modes /estate/app/run-gate.toml" in str(
+            exc.value)
+
+    @pytest.mark.parametrize("legacy", ["bare-host", "host"])
+    def test_named_migration_makes_the_loader_accept_the_lane(
+            self, tmp_path, legacy):
+        """The remedy the refusal prints must WORK: run the exact command it
+        names, then load and resolve the same lane with the shipped loader."""
+        project = tmp_path / "proj"
+        project.mkdir()
+        # pytest's basetemp can sit under a repository that has its own
+        # `run-gate.root.toml` declaring these names; the nearest central
+        # config wins, so give the fixture a nearer, empty one. Otherwise the
+        # legacy name is already declared and there is nothing to refuse.
+        near_root = tmp_path / run_gate.ROOT_CONFIG_NAME
+        near_root.write_text("schema_version = 1\n")
+        (project / "run-gate.toml").write_text(textwrap.dedent(f"""\
+            schema_version = 1
+            [lanes.docs]
+            kind = "command"
+            environment = "{legacy}"
+            argv = ["true"]
+            """))
+
+        def resolve():
+            cfg, project_path, central, central_path, *_rest = \
+                run_gate.load_config_snapshot(project)
+            assert central_path.resolve() == near_root.resolve()
+            assert not central.get("environments")
+            return run_gate.resolve_environment(
+                cfg["lanes"]["docs"], "docs", cfg, central, project_path,
+                central_path)
+
+        with pytest.raises(run_gate.GateError) as exc:
+            resolve()
+        command = re.search(r"`run-gate (migrate-modes [^`]+)`",
+                            str(exc.value)).group(1)
+        assert command == f"migrate-modes {project / 'run-gate.toml'}"
+        assert run_gate.main(command.split()) == 0
+        resolved, _source = resolve()
+        if legacy == "bare-host":
+            assert resolved == {}                 # mode = "host"
+        else:
+            assert resolved["mode"] == "ephemeral"
+
+    def test_migrate_modes_materializes_names_referenced_only_by_assay_policy(
+            self):
+        for table in ("[assay]\nenvironment = \"bare-host\"\n",
+                      "[assay.import]\nenvironment = \"bare-host\"\n"
+                      "lanes = \"all\"\n"):
+            text = "schema_version = 1\n" + table
+            migrated, changed = run_gate.migrate_environment_modes_text(text)
+            assert changed
+            assert tomllib.loads(migrated)["environments"] == {
+                "bare-host": {"mode": "host"}}
+
+    def test_environment_user_invoker_resolves_to_the_invoking_identity(self, monkeypatch):
+        """RG-106: `user = "invoker"` derives uid:gid; a literal passes; absent stays absent."""
+        monkeypatch.setattr(run_gate.os, "getuid", lambda: 1234)
+        monkeypatch.setattr(run_gate.os, "getgid", lambda: 5678)
+        monkeypatch.delenv(run_gate.HOST_IMAGE_ENV_VAR, raising=False)
+        central = {"environments": {
+            "derived": {"mode": "ephemeral", "image": "base:local", "user": "invoker"},
+            "literal": {"mode": "ephemeral", "image": "base:local", "user": "1000:1000"},
+            "plain": {"mode": "ephemeral", "image": "base:local"},
+        }}
+        def resolve(name):
+            return run_gate.resolve_environment(
+                {"environment": name}, "unit", {}, central,
+                Path("run-gate.toml"), Path("run-gate.root.toml"))[0]
+        assert resolve("derived")["user"] == "1234:5678"
+        assert resolve("literal")["user"] == "1000:1000"
+        assert "user" not in resolve("plain")
+        # The central table itself is never mutated by a resolution.
+        assert central["environments"]["derived"]["user"] == "invoker"
+
+    def test_environment_user_rejects_malformed_values_and_host_mode(self):
+        for value in ("root", "1000:", ":1000", "1:2:3", "-1", 1000, True, ""):
+            with pytest.raises(run_gate.GateError, match="'user' must be"):
+                run_gate._validate_environment(
+                    "e", {"mode": "ephemeral", "image": "base:local", "user": value},
+                    "run-gate.toml")
+        for env in ({"mode": "host", "user": "invoker"},
+                    {"mode": "exec", "image": "r:1", "user": "invoker"}):
+            with pytest.raises(run_gate.GateError, match="'user' requires mode"):
+                run_gate._validate_environment("e", env, "run-gate.toml")
+        for value in ("invoker", "1000", "1000:100"):
+            run_gate._validate_environment(
+                "e", {"mode": "ephemeral", "image": "base:local", "user": value},
+                "run-gate.toml")
+
+    def test_declared_user_wins_over_the_host_image_override_default(self, monkeypatch):
+        monkeypatch.setattr(run_gate.os, "getuid", lambda: 1)
+        monkeypatch.setattr(run_gate.os, "getgid", lambda: 2)
+        monkeypatch.setenv(run_gate.HOST_IMAGE_ENV_VAR, "operator:v2")
+        central = {"environments": {"host": {
+            "mode": "ephemeral", "image": "d:v1", "user": "7:8"}}}
+        resolved, _ = run_gate.resolve_environment(
+            {"environment": "host"}, "unit", {}, central,
+            Path("run-gate.toml"), Path("run-gate.root.toml"))
+        assert resolved["image"] == "operator:v2" and resolved["user"] == "7:8"
+
+    def test_environment_image_override_requires_valid_name_and_container_mode(self):
+        for value in ("", "1IMAGE", "IMAGE-NAME"):
+            with pytest.raises(run_gate.GateError, match="valid environment-variable name"):
+                run_gate._validate_environment(
+                    "candidate",
+                    {"mode": "ephemeral", "image": "tester:local", "image_env": value},
+                    "run-gate.root.toml",
+                )
+        with pytest.raises(run_gate.GateError, match="requires mode = 'ephemeral'"):
+            run_gate._validate_environment(
+                "local", {"mode": "host", "image_env": "TESTER_IMAGE"},
+                "run-gate.toml",
+            )
+        with pytest.raises(run_gate.GateError, match="requires mode = 'ephemeral'"):
+            run_gate._validate_environment(
+                "runner", {
+                    "mode": "exec", "image": "runner:local",
+                    "image_env": "TESTER_IMAGE",
+                }, "run-gate.toml",
+            )
 
     def test_config_snapshot_inherits_nearest_root_config(self, tmp_path):
         repo = make_repo(tmp_path)
@@ -26083,7 +31044,7 @@ class TestAssayPinAndRequestPathOracles:
             "gate": {"kind": "sequence", "lanes": ["inner"]},
             "inner": {"kind": "sequence", "lanes": ["command", "assay"]},
             "command": {"kind": "command", "environment": "host",
-                        "argv": ["run-gate.py", "unit", "--base", "{base}"]},
+                        "argv": ["run-gate", "unit", "--base", "{base}"]},
             "assay": {"kind": "assay", "environment": "host",
                       "assay_lane": "unit"},
         }
@@ -26112,14 +31073,15 @@ class TestClosedDispatcherAndMigrationOracles:
     def _project(tmp_path, monkeypatch, config):
         repo = make_repo(tmp_path)
         project = make_project(repo, config)
-        monkeypatch.setattr(sys, "argv", [str(project / "run-gate.py")])
+        monkeypatch.chdir(project)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         monkeypatch.chdir(project)
         return repo, project
 
     def test_version_and_pointer_verb_use_closed_operation_results(
             self, tmp_path, monkeypatch, capsys):
         assert run_gate.main(["--version"]) == 0
-        assert f"rev {run_gate.__revision__}" in capsys.readouterr().out
+        assert f"{_TEST_VERSION}" in capsys.readouterr().out
         repo, project = self._project(tmp_path, monkeypatch, """\
             schema_version = 1
             [environments.local]
@@ -26154,7 +31116,8 @@ class TestDispatchAssayEvidenceAndAdmissionOracles:
             assay_lane = "unit"
             clean_tree = false
             """)
-        monkeypatch.setattr(sys, "argv", [str(project / "run-gate.py")])
+        monkeypatch.chdir(project)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         monkeypatch.chdir(project)
         assay_dir = project / ".assay"
         assay_dir.mkdir(exist_ok=True)
@@ -26164,7 +31127,7 @@ class TestDispatchAssayEvidenceAndAdmissionOracles:
             "outcome": "failed", "exception_class": "AssertionError"}) + "\n")
         verdict = assay_dir / "verdict-unit.json"
         commit = run_gate.head_commit(repo)
-        verdict.write_text(json.dumps({"outcome": "FAIL",
+        verdict.write_text(json.dumps({"outcome": "FAIL", "exit_code": 1,
                                        "assay_version": "8.0.0",
                                        "commit": commit}))
         record = {"run_id": "evidence-run", "commit": commit,
@@ -26208,7 +31171,7 @@ class TestDispatchAssayEvidenceAndAdmissionOracles:
                                    *, run_record, **_kwargs):
             selected = run_gate.head_commit(worktree)
             assert run_record["commit"] == selected == commit
-            verdict.write_text(json.dumps({"outcome": "PASS",
+            verdict.write_text(json.dumps({"outcome": "PASS", "exit_code": 0,
                                            "assay_version": "8.0.0",
                                            "commit": selected}))
             return 0
@@ -26258,7 +31221,8 @@ class TestDispatchAssayEvidenceAndAdmissionOracles:
             argv = ["true"]
             clean_tree = false
             """)
-        monkeypatch.setattr(sys, "argv", [str(project / "run-gate.py")])
+        monkeypatch.chdir(project)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         monkeypatch.chdir(project)
         record_path = run_gate.inflight_path(project, "unit")
         record_path.parent.mkdir(parents=True)
@@ -26290,7 +31254,8 @@ class TestDispatchAssayEvidenceAndAdmissionOracles:
             argv = ["true"]
             clean_tree = false
             """)
-        monkeypatch.setattr(sys, "argv", [str(project / "run-gate.py")])
+        monkeypatch.chdir(project)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         monkeypatch.chdir(project)
         record_path = run_gate.inflight_path(project, "unit")
         record_path.parent.mkdir(parents=True)
@@ -26814,7 +31779,8 @@ class TestLaneDeadlineEnforcement:
             [environments.shared]
             mode = "host"
             ''')
-        monkeypatch.setattr(sys, "argv", [str(project / "run-gate.py")])
+        monkeypatch.chdir(project)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         assert run_gate.main(["migrate-modes", str(config)]) == 0
         output = capsys.readouterr().out
         assert "migrated:" in output
@@ -26830,7 +31796,8 @@ class TestLaneDeadlineEnforcement:
         config = project / run_gate.CONFIG_NAME
         config.write_text('schema_version = 1\n')
         (repo / run_gate.ROOT_CONFIG_NAME).write_text("bad = [\n")
-        monkeypatch.setattr(sys, "argv", [str(project / "run-gate.py")])
+        monkeypatch.chdir(project)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         assert run_gate.main(["migrate-modes", str(config)]) == 2
         assert "cannot read central environment declarations" \
             in capsys.readouterr().err
@@ -26856,10 +31823,23 @@ class TestLaneDeadlineEnforcement:
         assert captured.err == ""
 
     def test_main_converts_dependency_system_exit_to_closed_error(self,
-                                                                 monkeypatch):
+                                                                 monkeypatch,
+                                                                 capsys):
+        streams = _capture_run_gate_prints(monkeypatch)
         monkeypatch.setattr(run_gate, "_dispatch",
                             lambda _argv: (_ for _ in ()).throw(SystemExit(255)))
         assert run_gate.main(["unit"]) == 2
+        err = streams["stderr"].getvalue()
+        assert ("interrupted before a closed result (exit status 255); "
+                "verdict ERROR, exit 2") in err   # RG-109: never silent
+        monkeypatch.setattr(run_gate, "_dispatch",
+                            lambda _argv: (_ for _ in ()).throw(KeyboardInterrupt()))
+        assert run_gate.main(["unit"]) == 2
+        err = streams["stderr"].getvalue()
+        assert "(exit status SIGINT); verdict ERROR, exit 2" in err
+        assert _has_flushed_print(
+            streams, "stderr",
+            "interrupted before a closed result (exit status SIGINT)")
         with pytest.raises(SystemExit) as caught:
             run_gate._sigterm_as_exit(signal.SIGTERM, None)
         assert caught.value.code == 128 + signal.SIGTERM
@@ -26975,6 +31955,50 @@ class TestUserDocumentationOracles:
             if fence is None:
                 lines.append(line)
         return "\n".join(lines)
+
+    def _observer_wrapper_example(self) -> str:
+        """The exact TOML text of CONSUMERS' command-wrapper observer example."""
+        matches = [source for _line, _tagged, source in
+                   self._toml_fences(RUN_GATE_DIR / "CONSUMERS.md")
+                   if "[lanes.self-qualification]" in source]
+        assert len(matches) == 1, "expected one documented observer wrapper"
+        return matches[0]
+
+    def _load_observer_example(self, tmp_path: Path, source: str):
+        """Run documented config text through the effective loader.
+
+        A nearer, empty central config keeps the result independent of any
+        `run-gate.root.toml` above pytest's basetemp: the example must stand
+        on its own declared environment."""
+        (tmp_path / run_gate.ROOT_CONFIG_NAME).write_text("schema_version = 1\n")
+        project = tmp_path / "consumer"
+        project.mkdir()
+        (project / run_gate.CONFIG_NAME).write_text(source)
+        return run_gate.load_config_snapshot(project)
+
+    def test_observer_wrapper_example_loads_with_both_documented_caps(
+            self, tmp_path):
+        source = self._observer_wrapper_example()
+        cfg, cfg_path, central, central_path, *_rest = \
+            self._load_observer_example(tmp_path, source)
+        lane = cfg["lanes"]["self-qualification"]
+        assert lane["resource_observer"] == "cgprofile"
+        assert lane["resources"] == {"memory": "2g", "pids": 8192}
+        env, _source = run_gate.resolve_environment(
+            lane, "self-qualification", cfg, central, cfg_path, central_path)
+        assert env["mode"] == "ephemeral"
+        assert env["image"] == "tester-unified:local"
+
+    @pytest.mark.parametrize("cap", ['memory = "2g"', "pids = 8192"])
+    def test_observer_wrapper_example_is_refused_without_either_cap(
+            self, tmp_path, cap):
+        """Fails if the loader stops requiring a cap, and — through the
+        extracted text — if the documented example stops carrying one."""
+        source = self._observer_wrapper_example()
+        assert source.count(cap) == 1, f"documented example lost {cap!r}"
+        with pytest.raises(run_gate.GateError,
+                           match="resources.memory and resources.pids"):
+            self._load_observer_example(tmp_path, source.replace(cap, ""))
 
     def test_run_gate_config_examples_load_with_current_schema(self):
         parsed_examples = 0
@@ -27195,7 +32219,7 @@ class TestFinalChangedLineCoverageOracles:
         repo, project, _fake = TestRG76AssayLaneImports()._project(
             tmp_path, monkeypatch, imported=["alpha"])
         defects, checked = run_gate._pointer_defects(
-            "./run-gate.py alpha", project / "consumer.toml", repo,
+            "run-gate alpha", project / "consumer.toml", repo,
             "fixture.pointer", {})
         assert checked == 1
         assert defects == []
@@ -27212,9 +32236,49 @@ class TestFinalChangedLineCoverageOracles:
             clean_tree = false
             """)
         defects, checked = run_gate._pointer_defects(
-            "./run-gate.py unit", project / "consumer.toml", repo,
+            "run-gate unit", project / "consumer.toml", repo,
             "fixture.pointer", {})
         assert checked == 1 and defects == []
+
+    def test_pointer_validation_reports_retired_script_invocation(self,
+                                                                   tmp_path):
+        repo = make_repo(tmp_path)
+        project = make_project(repo, """\
+            schema_version = 1
+            [lanes.unit]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+            clean_tree = false
+            """)
+        defects, checked = run_gate._pointer_defects(
+            "./run-gate.py unit", project / "consumer.toml", repo,
+            "fixture.pointer", {})
+        assert checked == 1
+        assert len(defects) == 1
+        assert "retired `run-gate.py`" in defects[0]
+        assert "install the Run-Gate wheel" in defects[0]
+
+    @pytest.mark.parametrize("command", [
+        "python3 {worktree}/run-gate-project/run-gate.py unit",
+        "../run-gate.py unit",
+        "/opt/run-gate/run-gate.py unit",
+    ])
+    def test_pointer_validation_rejects_path_prefixed_retired_script(
+            self, tmp_path, command):
+        repo = make_repo(tmp_path)
+        project = make_project(repo, """\
+            schema_version = 1
+            [lanes.unit]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+            clean_tree = false
+            """)
+        defects, _checked = run_gate._pointer_defects(
+            command, project / "consumer.toml", repo,
+            "fixture.pointer", {})
+        assert any("retired `run-gate.py`" in defect for defect in defects)
 
     def test_selective_base_requires_inventory(self, monkeypatch):
         monkeypatch.setattr(run_gate, "assay_inventory_entry",
@@ -27475,7 +32539,8 @@ class TestFinalChangedLineCoverageOracles:
         root_config = repo / run_gate.ROOT_CONFIG_NAME
         root_config.write_text('schema_version = 1\n'
                                '[environments.runner]\nimage = "runner:v1"\n')
-        monkeypatch.setattr(sys, "argv", [str(repo / "run-gate.py")])
+        monkeypatch.chdir(repo)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
         assert run_gate.main(["migrate-modes", str(root_config)]) == 0
         assert 'mode = "ephemeral"' in root_config.read_text()
         capsys.readouterr()
@@ -27490,14 +32555,18 @@ class TestFinalChangedLineCoverageOracles:
         assert 'mode = "ephemeral"' in config.read_text()
         capsys.readouterr()
 
-        orphan = tmp_path / "orphan" / "pkg"
-        orphan.mkdir(parents=True)
-        orphan_config = orphan / run_gate.CONFIG_NAME
-        orphan_config.write_text('schema_version = 1\n'
-                                 '[environments.local]\nimage = "runner:v1"\n')
-        assert run_gate.main(["migrate-modes", str(orphan_config)]) == 0
-        assert 'mode = "ephemeral"' in orphan_config.read_text()
-        capsys.readouterr()
+        # The registered selftest keeps pytest scratch under this checkout so
+        # mount-sensitive fixtures see the bind mount. Put the orphan beyond
+        # that repository root, or it would inherit the real central config.
+        with tempfile.TemporaryDirectory(prefix="run-gate-orphan-", dir="/tmp") as outside_repo:
+            orphan = Path(outside_repo) / "pkg"
+            orphan.mkdir()
+            orphan_config = orphan / run_gate.CONFIG_NAME
+            orphan_config.write_text('schema_version = 1\n'
+                                     '[environments.local]\nimage = "runner:v1"\n')
+            assert run_gate.main(["migrate-modes", str(orphan_config)]) == 0
+            assert 'mode = "ephemeral"' in orphan_config.read_text()
+            capsys.readouterr()
 
     def test_resolve_inflight_preserves_recorded_paths_for_follow_and_reattach(
             self, tmp_path, monkeypatch):
@@ -27758,7 +32827,9 @@ class TestFinalChangedLineCoverageOracles:
                             lambda *_args: None)
         monkeypatch.setattr(run_gate.shlex, "join",
                             lambda argv: (argvs.append(list(argv)) or "argv"))
-        lane = {"kind": "command", "argv": ["true"]}
+        lane = {
+            "kind": "command", "environment": "fixture", "argv": ["true"],
+        }
         env = {"image": "runner:v1"}
         plan = {"enabled": False, "disabled_reason": "test",
                 "source": "test"}
@@ -27990,7 +33061,7 @@ class TestFinalChangedLineCoverageOracles:
                             lambda *_args: ("run-gates.slice", "fixture"))
         monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)
         monkeypatch.setattr(run_gate, "run_bare_host_lane",
-                            lambda *_args, **_kwargs: 0)
+                            lambda *_args, **_kwargs: 1)
         result = run_gate._dispatch(
             ["unit", "--allow-dirty"], _admission_ticket=ticket,
             _admission_managed=True)
@@ -28021,7 +33092,7 @@ class TestFinalChangedLineCoverageOracles:
         _repo, _project, _record, verdict, _progress = \
             TestDispatchAssayEvidenceAndAdmissionOracles._project(
                 tmp_path, monkeypatch)
-        verdict.write_text(json.dumps({"outcome": "FAIL"}))
+        verdict.write_text(json.dumps({"outcome": "FAIL", "exit_code": 1}))
         monkeypatch.setattr(run_gate, "resolve_slice",
                             lambda *_args: ("run-gates.slice", "fixture"))
         monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)
@@ -28036,7 +33107,7 @@ class TestFinalChangedLineCoverageOracles:
         _repo, _project, _record, verdict, _progress = \
             TestDispatchAssayEvidenceAndAdmissionOracles._project(
                 tmp_path, monkeypatch)
-        verdict.write_text(json.dumps({"outcome": "FAIL",
+        verdict.write_text(json.dumps({"outcome": "FAIL", "exit_code": 1,
                                        "assay_version": "8.0.0",
                                        "commit": "f" * 40}))
         monkeypatch.setattr(run_gate, "resolve_slice",
@@ -28053,7 +33124,7 @@ class TestFinalChangedLineCoverageOracles:
         _repo, _project, record, verdict, _progress = \
             TestDispatchAssayEvidenceAndAdmissionOracles._project(
                 tmp_path, monkeypatch)
-        verdict.write_text(json.dumps({"outcome": ["PASS"],
+        verdict.write_text(json.dumps({"outcome": ["PASS"], "exit_code": 1,
                                        "assay_version": "8.0.0",
                                        "commit": record["commit"]}))
         monkeypatch.setattr(run_gate, "resolve_slice",
@@ -28095,7 +33166,7 @@ class TestFinalChangedLineCoverageOracles:
             # The current config is source mode. This mode came from the
             # inflight record written by the old invocation.
             record["_assay_identity_mode"] = "artifact"
-            verdict.write_text(json.dumps({"outcome": "PASS",
+            verdict.write_text(json.dumps({"outcome": "PASS", "exit_code": 0,
                                            "judge_provenance": provenance}))
             return 0
 
@@ -28129,7 +33200,7 @@ class TestFinalChangedLineCoverageOracles:
             promoted, _saved = run_gate.promote_follower(
                 "docker", "runner", "unit", project, 0, run_record)
             assert promoted
-            verdict.write_text(json.dumps({"outcome": "PASS",
+            verdict.write_text(json.dumps({"outcome": "PASS", "exit_code": 0,
                                            "judge_provenance": provenance}))
             return 0
 
@@ -28183,7 +33254,7 @@ class TestFinalChangedLineCoverageOracles:
             assert promoted
             # A zero container status is not a PASS if the source verdict is
             # missing its selected commit and Assay version.
-            verdict.write_text(json.dumps({"outcome": "PASS"}))
+            verdict.write_text(json.dumps({"outcome": "PASS", "exit_code": 0}))
             return 0
 
         def finish_and_capture(run_record, *, exit_code=None, error=None):
@@ -28232,7 +33303,7 @@ class TestFinalChangedLineCoverageOracles:
 
         def erase_recorded_mode(*_args, **_kwargs):
             record.pop("_assay_identity_mode", None)
-            verdict.write_text(json.dumps({"outcome": "PASS",
+            verdict.write_text(json.dumps({"outcome": "PASS", "exit_code": 0,
                                            "judge_provenance": provenance}))
             return 0
 
@@ -28471,6 +33542,14 @@ def test_cgroup_event_reader_accepts_private_namespace_root(tmp_path):
     assert current == root
 
 
+def test_cgroup_event_reader_ignores_legacy_rows_before_the_v2_path(tmp_path):
+    proc, root, _current = _cgroup_event_fixture(tmp_path)
+    proc.write_text("2:cpu,cpuacct:/legacy/worker\n0::/worker\n")
+    snapshot = run_gate.read_current_cgroup_events(proc, root)
+    assert snapshot.cgroup == "/worker"
+    assert snapshot.pids_max == 0
+
+
 @pytest.mark.parametrize("contents", [
     "", "0::/worker\n0::/other\n", "0::relative\n", "0::/../escape\n",
 ])
@@ -28657,7 +33736,7 @@ def test_main_pid1_refusal_keeps_json_on_stdout(monkeypatch, capsys):
 def test_main_version_keeps_no_config_contract_when_pid1(monkeypatch, capsys):
     monkeypatch.setattr(run_gate, "is_pid1_without_init", lambda: True)
     assert run_gate.main(["--version"]) == 0
-    assert capsys.readouterr().out == f"run-gate rev {run_gate.__revision__}\n"
+    assert capsys.readouterr().out == f"run-gate {_TEST_VERSION}\n"
 
 
 def test_pid1_detection_uses_current_process_id(monkeypatch):
@@ -28843,11 +33922,10 @@ class TestRgNarrowMounts:
         assert values[:4] == [f"{ph(wt)}:{ph(wt)}", f"{ph(wt)}:{wt}",
                               f"{ph(repo / '.git')}:{ph(repo / '.git')}",
                               f"{ph(repo / '.git')}:{repo / '.git'}"]
-        # exactly the dual worktree + dual git dir (read-write: ciu v8 SPEC
-        # S16.4.9) + `worktrees/` read-only (real contents) + the judged admin
-        # dir read-write on top + the two read-only config overlays: TWO
-        # worktrees mounts however many siblings there are (round 4)
-        assert len(values) == 10
+        # The worktree and common dir remain read-write for in-lane commits.
+        # Sibling admins are visible read-only, the judged admin is read-write,
+        # configs are sanitized overlays, and hooks/info cannot be changed.
+        assert len(values) == 20
         admin = repo / ".git" / "worktrees" / wt.name
         assert values[4:6] == [f"{ph(repo / '.git' / 'worktrees')}:"
                                f"{ph(repo / '.git' / 'worktrees')}:ro",
@@ -28856,6 +33934,28 @@ class TestRgNarrowMounts:
         assert values[6:8] == [f"{ph(admin)}:{ph(admin)}",
                                f"{ph(admin)}:{admin}"]
         assert all(v.endswith(":ro") for v in values[8:])
+        hook_mounts = values[10:12]
+        info_mounts = values[12:14]
+        hook_sources = {v.split(":", 1)[0] for v in hook_mounts}
+        assert len(hook_sources) == 1
+        empty_hooks = Path(next(iter(hook_sources)).removeprefix("/phys"))
+        assert empty_hooks.name == "hooks-empty"
+        assert {v.split(":")[1] for v in hook_mounts} == {
+            ph(repo / ".git" / "hooks"), str(repo / ".git" / "hooks"),
+        }
+        assert all(v.endswith(":ro") for v in info_mounts)
+        assert {v.split(":")[1] for v in info_mounts} == {
+            ph(repo / ".git" / "info"), str(repo / ".git" / "info"),
+        }
+        pointer_mounts = values[14:20]
+        expected_pointers = (wt / ".git", admin / "gitdir", admin / "commondir")
+        assert len(pointer_mounts) == 6
+        for index, pointer in enumerate(expected_pointers):
+            pair = pointer_mounts[index * 2:index * 2 + 2]
+            assert pair == [f"{ph(pointer)}:{ph(pointer)}:ro",
+                            f"{ph(pointer)}:{pointer}:ro"]
+        assert empty_hooks.is_dir() and not list(empty_hooks.iterdir())
+        assert empty_hooks.stat().st_mode & 0o777 == 0o755
         assert not any(v.endswith(":rw") or ":ro" in v
                        for v in (*values[:4], *values[6:8]))
         destinations = [v.split(":")[1] for v in values]
@@ -28937,8 +34037,12 @@ class TestRgNarrowMounts:
         root = repo / ".git" / "worktrees"
         flags = run_gate.container_mount_flags(repo, wt, {})
         under = [v for v in flags[1::2]
-                 if v.split(":")[1].removeprefix("/phys").startswith(str(root))]
-        # two mounts per path-view, independent of the 3 siblings
+                 if v.split(":")[1].removeprefix("/phys").startswith(str(root))
+                 and Path(v.split(":")[1].removeprefix("/phys")).name
+                 not in {"gitdir", "commondir", "config.worktree"}]
+        # The worktrees directory and judged admin are each dual-mounted,
+        # independent of the 3 siblings. Pointer/config overlays are asserted
+        # separately by the focused narrow-mount test.
         assert len(under) == 4
         ro = [v for v in under if v.endswith(":ro")]
         rw = [v for v in under if not v.endswith(":ro")]
@@ -29276,12 +34380,45 @@ class TestRgNarrowRealContainer:
             self, tmp_path, monkeypatch):
         image = os.environ.get("RUN_GATE_NARROW_SMOKE_IMAGE",
                                "tester-unified:local")
-        if not (shutil.which("docker") and _docker_image_present(image)):
-            pytest.skip(f"real container smoke needs docker + {image}")
-        if not os.environ.get(CGROUP_VAR):
-            pytest.skip(f"real container smoke needs ${CGROUP_VAR}")
+        # testdeps-exception: the ONE structural skip (see tests/_testdeps.py).
+        # Inside the selftest lane's own container the Docker socket is absent
+        # by design, so this cannot be a failing default there; where Docker
+        # is reachable, RUN_GATE_REQUIRE_CONTAINER_SMOKE=1 makes it one.
+        absent = (f"real container smoke needs docker + {image}"
+                  if not (shutil.which("docker") and _docker_image_present(image))
+                  else f"real container smoke needs ${CGROUP_VAR}"
+                  if not os.environ.get(CGROUP_VAR) else None)
+        if absent is not None:
+            if _testdeps.require_container_smoke():
+                pytest.fail(f"{absent} ({_testdeps.REQUIRE_CONTAINER_SMOKE_VAR}=1)",
+                            pytrace=False)
+            pytest.skip(absent)  # testdeps-exception
         monkeypatch.delenv(run_gate.ALLOW_MAIN_CHECKOUT_ENV_VAR, raising=False)
         repo = _narrow_repo(tmp_path)
+        wt = make_worktree(repo, repo / ".worktrees", "w1")
+        hook_dir = repo / ".git" / "hooks"
+        info_dir = repo / ".git" / "info"
+        hook_dir.mkdir(exist_ok=True)
+        info_dir.mkdir(exist_ok=True)
+        post_commit = hook_dir / "post-commit"
+        post_commit.write_text(
+            "#!/bin/sh\n"
+            "root=$(git rev-parse --show-toplevel)\n"
+            "printf host-hook-ran > \"$root/host-hook-fired\"\n",
+            encoding="utf-8",
+        )
+        post_commit.chmod(0o755)
+        exclude = info_dir / "exclude"
+        exclude.write_text("# host info must remain unchanged\n", encoding="utf-8")
+        original_exclude = exclude.read_bytes()
+        admin = repo / ".git" / "worktrees" / "w1"
+        worktree_config = admin / "config.worktree"
+        worktree_config.write_text("", encoding="utf-8")
+        original_pointers = {
+            path: path.read_bytes()
+            for path in (wt / ".git", admin / "gitdir", admin / "commondir",
+                         worktree_config)
+        }
         # state only a SIBLING worktree's admin dir keeps alive (round-4
         # B-NEW-2): a detached-HEAD commit, and a blob staged only in its index
         other_wt = make_worktree(repo, repo / ".worktrees", "other")
@@ -29318,22 +34455,35 @@ class TestRgNarrowRealContainer:
             f"test ! -e {repo}/README.md; "
             f"test ! -e {repo}/.worktrees/other; "
             f"test ! -e {repo}/.worktrees/other/other.secret; "
+            "common=$(cd \"$(git rev-parse --git-common-dir)\" && pwd); "
+            "admin=$(git rev-parse --absolute-git-dir); "
             "test \"$(git log -1 --format=%s)\" = 'lane config proj'; "
             "git rev-parse HEAD >/dev/null; git status --porcelain >/dev/null; "
             "git diff --stat >/dev/null; git rev-parse --git-common-dir; "
+            f"no sh -c 'printf redirected > \"$1\"' sh {wt / '.git'}; "
+            "no sh -c 'printf redirected > \"$1\"' sh \"$admin/gitdir\"; "
+            "no sh -c 'printf redirected > \"$1\"' sh \"$admin/commondir\"; "
+            "no sh -c 'printf redirected >> \"$1\"' sh \"$admin/config.worktree\"; "
             "git -c user.name=a -c user.email=a@b.invalid commit --allow-empty "
             "-qm in-container; "
             "test \"$(git log -1 --format=%s)\" = in-container; "
-            # gc sees the siblings' HEAD and index and keeps their objects
-            # (FIRST, so only the gc check can fail a lane that hides them)
-            "git gc --prune=now -q; "
+            # the host hook writes to `git rev-parse --show-toplevel`, the
+            # WORKTREE root (one above proj/); the lane's commit must not run it
+            "test ! -e {worktree}/host-hook-fired; "
+            "no touch $common/hooks/post-commit; "
+            "no sh -c 'printf compromised >> \"$1/info/exclude\"' sh $common; "
+            # repack+prune see the siblings' HEAD and index and keep their
+            # objects (FIRST, so only this check can fail a lane that hides
+            # them). Not `git gc`: its reflog expiry locks every sibling's
+            # HEAD under the read-only `worktrees/` admin mount and fails on
+            # git >= 2.4x — by design (RG-112), the siblings stay untouchable.
+            "git repack -a -d -q && git prune --expire=now; "
             f"git cat-file -e {head_sha}; git cat-file -e {blob_sha}; "
             # assay's snapshot is `clone --no-local`; `git worktree add` needs a
             # NEW admin dir under the read-only `worktrees/` and must fail
             "git clone -q --no-local {worktree} /tmp/narrow-clone; "
             "git -C /tmp/narrow-clone log -1 >/dev/null; "
             "no git worktree add -q --detach /tmp/narrow-snap HEAD; "
-            "common=$(cd \"$(git rev-parse --git-common-dir)\" && pwd); "
             # siblings are VISIBLE (real HEAD/index) but read-only
             "test -f $common/worktrees/other/HEAD; "
             "test -f $common/worktrees/other/index; "
@@ -29366,12 +34516,46 @@ class TestRgNarrowRealContainer:
             clean_tree = false
         """)
         proj = make_project(repo, config)
-        wt = make_worktree(repo, repo / ".worktrees", "w1")
+        # The worktree was forked before the project was committed to main;
+        # bring it level (a fast-forward: no commit, so no host hook fires).
+        git(wt, "merge", "-q", "--ff-only", "main")
         (other_wt / "other.secret").write_text("FAKE-OTHER-SECRET\n")
         (wt / "proj" / ".local-overlay").write_text("ignored but mine\n")
         proc = run_tool(proj, "suite", "--worktree", str(wt))
         assert proc.returncode == 0, proc.stdout + proc.stderr
         assert "NARROW-OK" in proc.stdout, proc.stdout
+        for path, contents in original_pointers.items():
+            assert path.read_bytes() == contents, path
+        assert not (wt / "host-hook-fired").exists()   # the hook's $root is wt
+        assert post_commit.read_text(encoding="utf-8").startswith("#!/bin/sh\n")
+        assert exclude.read_bytes() == original_exclude
+        fsmonitor_marker = tmp_path / "host-fsmonitor-fired"
+        fsmonitor = tmp_path / "host-fsmonitor"
+        fsmonitor.write_text(
+            "#!/bin/sh\n"
+            f"printf executed > {shlex.quote(str(fsmonitor_marker))}\n"
+            "printf '2\\0token\\0'\n",
+            encoding="utf-8",
+        )
+        fsmonitor.chmod(0o755)
+        common_config = repo / ".git" / "config"
+        original_config = common_config.read_bytes()
+        common_config.write_bytes(
+            original_config + b"\n[core]\n\tfsmonitor = "
+            + shlex.quote(str(fsmonitor)).encode() + b"\n"
+        )
+        run_gate.git_out("status", "--porcelain", cwd=wt / "proj")
+        assert not fsmonitor_marker.exists()
+        common_config.write_bytes(original_config)
+        host_commit = subprocess.run(
+            ["git", "-C", str(wt / "proj"), "-c", "user.name=host",
+             "-c", "user.email=host@example.invalid", "commit",
+             "--allow-empty", "-qm", "host-after-lane"],
+            capture_output=True, text=True,
+        )
+        assert host_commit.returncode == 0, host_commit.stderr
+        assert (wt / "host-hook-fired").read_text() == "host-hook-ran"
+        assert post_commit.read_text(encoding="utf-8").startswith("#!/bin/sh\n")
         # the in-container prune and gc left every host admin dir and every
         # sibling-only object intact
         for name in ("w1", "other", "held", "gone"):
@@ -29418,3 +34602,874 @@ def test_rg87_fake_docker_dir_is_reused_for_later_shims(tmp_path, monkeypatch):
     fake_docker(tmp_path, monkeypatch)
     assert install_fake_assay(monkeypatch, "#!/bin/sh\nexit 0\n").parent == (
         tmp_path / "shim")
+
+
+class TestRunGateR1DirectCoverage:
+    def test_check_env_reports_deduplicated_drift_and_unreadable_sources(
+            self, tmp_path, monkeypatch, capsys):
+        project = tmp_path / "project"
+        project.mkdir()
+        readable = project / "readable.py"
+        readable.write_text(
+            "import os\n"
+            "os.getenv('DRIFT')\n"
+            "os.getenv('DRIFT')\n"
+            "os.getenv('COVERED')\n"
+            "os.getenv('BROKEN_ENV')\n")
+        unreadable = project / "unreadable.py"
+        unreadable.write_text("ignored by fixture\n")
+        undecodable = project / "undecodable.py"
+        undecodable.write_text("also ignored by fixture\n")
+
+        monkeypatch.setattr(run_gate, "resolve_worktree_scope",
+                            lambda directory, *_args: (
+                                directory, directory, directory, None))
+        def resolve(_lane, name, *_args):
+            if name == "bad-environment":
+                raise run_gate.GateError("environment config is invalid")
+            return {"forward_env": ["COVERED"]}, "fixture environment"
+        monkeypatch.setattr(run_gate, "resolve_environment", resolve)
+        monkeypatch.setattr(run_gate, "assay_toolchain_findings",
+                            lambda *_args, **_kwargs: [])
+
+        original_read_text = Path.read_text
+        def read_text(path, *args, **kwargs):
+            if path == unreadable:
+                raise OSError("fixture read denied")
+            if path == undecodable:
+                raise UnicodeDecodeError("utf-8", b"\xff", 0, 1,
+                                         "invalid start byte")
+            return original_read_text(path, *args, **kwargs)
+        monkeypatch.setattr(Path, "read_text", read_text)
+
+        code = run_gate.cmd_check_env(
+            {"covered": {}, "bad-environment": {}}, project, {}, {},
+            project / run_gate.CONFIG_NAME, None)
+
+        output = capsys.readouterr().out
+        assert code == 0  # the heuristic remains advisory
+        assert output.count("$DRIFT referenced") == 1
+        assert "$COVERED" not in output
+        assert "$BROKEN_ENV referenced" in output
+        assert "unreadable.py could not be read" in output
+        assert "undecodable.py could not be read" in output
+        assert "INCOMPLETE: 2 Python source file(s)" in output
+
+    def test_check_env_clean_scan_is_not_marked_advisory_or_incomplete(
+            self, tmp_path, monkeypatch, capsys):
+        project = tmp_path / "project"
+        project.mkdir()
+        monkeypatch.setattr(run_gate, "resolve_worktree_scope",
+                            lambda directory, *_args: (
+                                directory, directory, directory, None))
+        monkeypatch.setattr(run_gate, "resolve_environment",
+                            lambda *_args: (None, "bare-host"))
+        monkeypatch.setattr(run_gate, "assay_toolchain_findings",
+                            lambda *_args, **_kwargs: [])
+
+        code = run_gate.cmd_check_env(
+            {"unit": {}}, project, {}, {}, project / run_gate.CONFIG_NAME, None)
+
+        output = capsys.readouterr().out
+        assert code == 0
+        assert "0 uncovered reference(s)" in output
+        assert "ADVISORY ONLY" not in output
+        assert "INCOMPLETE" not in output
+
+    def test_collect_pointers_handles_nested_argv_and_ignores_prose(self):
+        document = {
+            "steps": [
+                ["run-gate", "unit", "--json"],
+                {"description": "run-gate unit is documentation"},
+                7,
+            ]
+        }
+        assert run_gate._collect_pointers(document, "root") == [
+            ("root.steps[0][argv]", "run-gate unit --json")]
+
+    def test_pointer_project_root_and_missing_project(self, tmp_path):
+        root = tmp_path / "worktree"
+        root.mkdir()
+        (root / run_gate.CONFIG_NAME).write_text("schema_version = 1\n")
+        resolved, defects = run_gate._pointer_project_dir(
+            "cd {worktree} && run-gate unit", root / "consumer.toml",
+            root, "fixture.pointer")
+        assert resolved == root and defects == []
+
+        resolved, defects = run_gate._pointer_project_dir(
+            "cd {worktree}/missing && run-gate unit",
+            root / "consumer.toml", root, "fixture.pointer")
+        assert resolved is None
+        assert any("no run-gate.toml" in item for item in defects)
+
+    def test_pointer_defects_cover_supported_flags_reserved_verbs_and_cache(
+            self, tmp_path, monkeypatch):
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / run_gate.CONFIG_NAME).write_text("schema_version = 1\n")
+        document = tmp_path / "consumer.toml"
+        cache = {str(project): {"unit": {}}}
+
+        valid, checked = run_gate._pointer_defects(
+            "cd {worktree}/project && run-gate --worktree={worktree} --json unit",
+            document, tmp_path, "fixture.pointer", cache)
+        assert valid == [] and checked == 1
+        spaced, checked = run_gate._pointer_defects(
+            "cd {worktree}/project && run-gate --worktree {worktree} --json unit",
+            document, tmp_path, "fixture.pointer", cache)
+        assert spaced == [] and checked == 1
+
+        cases = [
+            ("cd {worktree}/project && run-gate unit", "drops '--worktree"),
+            ("cd {worktree}/project && run-gate doctor", None),
+            ("cd {worktree}/project && run-gate --list", None),
+            ("cd {worktree}/project && run-gate", "names no lane"),
+            ("cd {worktree}/project && run-gate missing", "is not declared"),
+            ("cd {worktree}/project && run-gate unit extra",
+             "unexpected trailing arguments"),
+        ]
+        for text, expected in cases:
+            defects, checked = run_gate._pointer_defects(
+                text, document, tmp_path, "fixture.pointer", cache)
+            assert checked == 1
+            if expected is None:
+                assert defects == []
+            else:
+                assert any(expected in item for item in defects), (text, defects)
+
+        outside, checked = run_gate._pointer_defects(
+            "cd $PWD && run-gate unit", document, tmp_path,
+            "fixture.pointer", cache)
+        assert checked == 0 and any("no run-gate.toml" in d for d in outside)
+
+        loads = []
+        def fail_load(_project):
+            loads.append(True)
+            raise run_gate.GateError("fixture config load failure")
+        monkeypatch.setattr(run_gate, "load_config_snapshot", fail_load)
+        uncached = {}
+        first, first_checked = run_gate._pointer_defects(
+            "cd {worktree}/project && run-gate unit", document, tmp_path,
+            "fixture.pointer", uncached)
+        second, second_checked = run_gate._pointer_defects(
+            "cd {worktree}/project && run-gate unit", document, tmp_path,
+            "fixture.pointer", uncached)
+        assert first_checked == second_checked == 0
+        assert any("fixture config load failure" in d for d in first)
+        assert second == [] and loads == [True]
+
+    def test_doctor_discloses_mount_probe_state_probe_tmp_and_image_failures(
+            self, tmp_path, monkeypatch, capsys):
+        repo = tmp_path / "repo"
+        project = repo / "project"
+        project.mkdir(parents=True)
+        monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/bin/docker")
+        monkeypatch.setattr(run_gate, "resolve_environment",
+                            lambda *_args: ({"mode": "exec", "image": "runner",
+                                             "container_name": "runner"},
+                                            "fixture environment"))
+        monkeypatch.setattr(run_gate, "resolve_worktree_scope",
+                            lambda *_args: (repo, repo, project, None))
+        monkeypatch.setattr(
+            run_gate, "physical_path",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                run_gate.GateError("mountinfo is unreadable")))
+        monkeypatch.setattr(run_gate, "probe_assay_state_root",
+                            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                                OSError("state probe fixture failure")))
+        monkeypatch.setattr(run_gate, "_probe_slice", lambda *_args: "")
+        monkeypatch.setattr(run_gate, "assay_toolchain_findings",
+                            lambda *_args, **_kwargs: [])
+        monkeypatch.setattr(run_gate, "load_footprint_manifest",
+                            lambda _project: None)
+        monkeypatch.setattr(run_gate.subprocess, "run", lambda argv, **_kwargs:
+                            subprocess.CompletedProcess(argv, 1, "", "missing"))
+        lanes = {"unit": {"kind": "assay", "assay_lane": "unit",
+                          "environment": "runner"}}
+
+        code = run_gate.cmd_doctor(
+            lanes, project, {}, {}, project / run_gate.CONFIG_NAME, None)
+
+        output = capsys.readouterr().out
+        assert code == 2
+        assert "[FAIL] mountinfo: mountinfo is unreadable" in output
+        assert "[SKIP] Assay state root for env runner" in output
+        assert "state probe fixture failure" in output
+        assert "git-config" not in output
+        assert "[WARN] image runner: runner not local" in output
+
+    def test_artifact_disclosure_normalizes_substitutes_and_deduplicates(
+            self, capsys):
+        project = Path("/effective/project")
+        worktree = Path("/judged/tree")
+        run_gate.print_lane_artifacts(
+            {"kind": "assay", "assay_lane": "unit", "artifacts": [
+                "./.assay/verdict-unit.json", "report.json",
+                "{worktree}/absolute.json"]},
+            "unit", project, Path("/repo"), worktree,
+            recorded={"verdict": None})
+        output = capsys.readouterr().out
+        assert output.count("/effective/project/.assay/verdict-unit.json") == 1
+        assert "run-gate: artifact: /effective/project/report.json" in output
+        assert "run-gate: artifact: /judged/tree/absolute.json" in output
+
+    def test_foreign_inflight_record_is_disclosed_without_docker_access(
+            self, tmp_path, monkeypatch, capsys):
+        project = tmp_path / "project"
+        project.mkdir()
+        pending = {"runner": "exec", "container": "shared-runner"}
+        calls = []
+        monkeypatch.setattr(run_gate, "load_inflight_record",
+                            lambda *_args, **_kwargs: pending)
+        monkeypatch.setattr(run_gate, "container_state",
+                            lambda *_args: calls.append("container-state"))
+        common = ("docker", {"kind": "command"}, "unit", project,
+                  tmp_path, tmp_path, False)
+
+        result = run_gate.resolve_inflight(
+            *common, True, None)  # dry-run describes the refusal
+        output = capsys.readouterr().out
+        assert result == 0 and "would REFUSE" in output
+        assert "foreign record" in output
+        assert pending == {"runner": "exec", "container": "shared-runner"}
+        assert calls == []
+
+        with pytest.raises(run_gate.GateError, match="foreign record"):
+            run_gate.resolve_inflight(*common, False, None)
+        assert calls == []
+
+    def test_container_dry_run_discloses_user_forwarding_and_swap(
+            self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/bin/docker")
+        monkeypatch.setattr(run_gate, "resolve_inflight", lambda *_a, **_k: None)
+        monkeypatch.setattr(run_gate, "container_mount_flags", lambda *_a, **_k: [])
+        monkeypatch.setattr(run_gate, "extra_mount_flags", lambda: [])
+        monkeypatch.setattr(run_gate, "resource_observer_docker_flags",
+                            lambda *_a: [])
+        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)
+        monkeypatch.setattr(run_gate, "build_command_inner", lambda *_a: "true")
+        monkeypatch.setenv("FORWARDED", "secret-value")
+        monkeypatch.setenv("EMPTY_FORWARD", "")
+        monkeypatch.delenv("ABSENT_FORWARD", raising=False)
+        lane = {"kind": "command", "environment": "tester-unified", "argv": ["true"],
+                "resources": {"memory_swap": "2g"}}
+        env = {"mode": "ephemeral", "image": "runner:local",
+               "user": "1000:1000",
+               "forward_env": ["FORWARDED", "EMPTY_FORWARD",
+                               "ABSENT_FORWARD"]}
+
+        assert run_gate.run_container_lane(
+            lane, "unit", tmp_path, tmp_path, tmp_path, env,
+            "fixture environment", "dev-gates.slice", "fixture",
+            dry_run=True,
+            profile_plan={"enabled": False, "disabled_reason": "test",
+                          "source": "fixture"}) == 0
+
+        output = capsys.readouterr().out
+        argv = next(line for line in output.splitlines()
+                    if "run-gate: docker argv:" in line)
+        assert "--user 1000:1000" in argv
+        assert "FORWARDED=<redacted>" in argv and "secret-value" not in argv
+        assert "EMPTY_FORWARD" not in argv and "ABSENT_FORWARD" not in argv
+        assert "--memory-swap 2g" in argv
+
+    @pytest.mark.parametrize("failure", ["missing-docker", "docker-ps"])
+    def test_exec_lane_refuses_missing_docker_or_failed_ps(
+            self, tmp_path, monkeypatch, failure):
+        if failure == "missing-docker":
+            monkeypatch.setattr(run_gate.shutil, "which", lambda _name: None)
+            expected = "docker not found on PATH"
+        else:
+            monkeypatch.setattr(run_gate.shutil, "which",
+                                lambda _name: "/bin/docker")
+            monkeypatch.setattr(run_gate.subprocess, "run", lambda argv, **_kw:
+                                subprocess.CompletedProcess(
+                                    argv, 1, "", "daemon unavailable\n"))
+            expected = "docker ps failed.*daemon unavailable"
+        with pytest.raises(run_gate.GateInfraError, match=expected):
+            run_gate.run_exec_lane(
+                {"kind": "command", "argv": ["true"]}, "unit",
+                tmp_path, tmp_path, tmp_path, {"mode": "exec"},
+                "fixture environment", "runner", "fixture", "start runner",
+                None, "no slice", dry_run=True)
+
+    def test_exec_dispatch_discloses_declared_and_missing_slice_facts(
+            self, tmp_path, monkeypatch, capsys):
+        monkeypatch.delenv(run_gate.CGROUP_ENV_VAR, raising=False)
+        monkeypatch.setattr(run_gate, "resolve_profile_settings",
+                            lambda *_args: {"enabled": False,
+                                            "disabled_reason": "test"})
+        monkeypatch.setattr(run_gate, "run_lane_with_cgroup_event_guard",
+                            lambda _name, run, **_kwargs: run())
+        selected_slices = []
+        def run_exec(*args, **_kwargs):
+            selected_slices.append((args[10], args[11]))
+            return 0
+        monkeypatch.setattr(run_gate, "run_exec_lane", run_exec)
+        lock_dir = tmp_path / "locks"
+        lock_dir.mkdir()
+        monkeypatch.setattr(run_gate, "_lock_dir", lambda: lock_dir)
+
+        cases = [
+            ('cgroup_slice = "dev-gates.slice"\n', None,
+             "dev-gates.slice", "cgroup_slice on exec environment",
+             "declared "),
+            ('cgroup_slice_env = "CGROUP_TEST_SLICE"\n',
+             "dev-gates.slice", "dev-gates.slice",
+             "cgroup_slice_env on exec environment", "$CGROUP_TEST_SLICE"),
+            ('cgroup_slice_env = "CGROUP_TEST_SLICE"\n',
+             None, None, None, "$CGROUP_TEST_SLICE declared by"),
+            ("", None, None, None,
+             "no cgroup_slice declared and no $CGROUP_PARENT_DEV_GATES"),
+        ]
+        for cgroup_line, env_value, expected_slice, warning, expected_source in cases:
+            if env_value is None:
+                monkeypatch.delenv("CGROUP_TEST_SLICE", raising=False)
+            else:
+                monkeypatch.setenv("CGROUP_TEST_SLICE", env_value)
+            base = tmp_path / ("fixture-" + str(len(list(tmp_path.iterdir()))))
+            base.mkdir()
+            repo = make_repo(base)
+            project = make_project(repo, f"""\
+                schema_version = 1
+                [environments.runner]
+                mode = "exec"
+                image = "runner:local"
+                container_name = "fixture-runner"
+                {cgroup_line}
+                [lanes.unit]
+                kind = "command"
+                environment = "runner"
+                argv = ["true"]
+                clean_tree = false
+                resources = {{ cpus = "1" }}
+                """)
+            monkeypatch.chdir(project)
+            result = run_gate._dispatch(["unit", "--dry-run"])
+            assert result.verdict == "PASS"
+            output = capsys.readouterr().out
+            if expected_slice:
+                assert warning in output
+                assert "naming-only" in output
+                assert expected_slice in output
+            assert expected_source in selected_slices[-1][1]
+            if warning is None:
+                assert "naming-only" not in output
+            assert "resource admission and --memory/--cpus caps apply" in output
+
+    def test_worktree_flag_without_container_argv_token_refuses_early(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        project = make_project(repo, """\
+            schema_version = 1
+            [environments.runner]
+            mode = "ephemeral"
+            image = "runner:local"
+            [lanes.unit]
+            kind = "command"
+            environment = "runner"
+            argv = ["bash", "-c", "echo no worktree token"]
+            clean_tree = false
+            """)
+        worktree = make_worktree(repo, tmp_path)
+        monkeypatch.chdir(project)
+        monkeypatch.setattr(run_gate, "run_container_lane",
+                            lambda *_args, **_kwargs: pytest.fail(
+                                "worktree mismatch must refuse before Docker"))
+
+        result = run_gate._dispatch(
+            ["unit", "--worktree", str(worktree), "--dry-run"])
+
+        assert result.verdict == "ERROR"
+        assert "would be SILENTLY IGNORED" in result.reason
+
+    def test_command_cgroup_event_error_preserves_status_without_assay_archive(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        project = make_project(repo, """\
+            schema_version = 1
+            [environments.host]
+            mode = "host"
+            [lanes.unit]
+            kind = "command"
+            environment = "host"
+            argv = ["true"]
+            clean_tree = false
+            """)
+        monkeypatch.chdir(project)
+        monkeypatch.setattr(run_gate, "run_lane_with_cgroup_event_guard",
+                            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                                run_gate.LaneCgroupEventError(
+                                    7, "cgroup resource event")))
+        archived = []
+        monkeypatch.setattr(run_gate, "_report_failed_assay",
+                            lambda *args, **_kwargs: archived.append(args))
+
+        result = run_gate._dispatch(["unit", "--allow-dirty"])
+
+        assert result.verdict == "ERROR"
+        assert result.exit_code == 7
+        assert result.reason == "cgroup resource event"
+        assert archived == []
+
+    def test_module_entrypoint_runs_version_and_exits_successfully(
+            self, monkeypatch, capsys):
+        monkeypatch.setattr(sys, "argv", [str(_TOOL), "--version"])
+        with pytest.raises(SystemExit) as caught:
+            runpy.run_path(str(_TOOL), run_name="__main__")
+        assert caught.value.code == 0
+        assert _TEST_VERSION in capsys.readouterr().out
+
+
+class TestRunGateReleaseCoverageEdges:
+    def test_observer_refusal_rollup_checks_closed_claim_and_evidence_shapes(self):
+        refusal = {
+            "rigor": "R2", "source": "computed",
+            "status": "NO_MEASUREMENT", "verified_by_assay": True,
+            "reason_code": "CGROUP_OBSERVATION_UNAVAILABLE",
+        }
+        passing = {
+            "rigor": "R0", "source": "computed", "status": "PASS",
+            "verified_by_assay": True, "reason_code": None,
+        }
+        claims = [passing, refusal]
+        assert run_gate._observer_unavailable_rollup(claims, []) == (
+            "ERROR", None)
+        assert run_gate._observer_unavailable_rollup(None, []) == (
+            "ERROR", "invalid-assay-claims-for-observer-refusal")
+        assert run_gate._observer_unavailable_rollup([], []) == (
+            "ERROR", "invalid-assay-claims-for-observer-refusal")
+        assert run_gate._observer_unavailable_rollup([None], []) == (
+            "ERROR", "invalid-assay-claims-for-observer-refusal")
+        assert run_gate._observer_unavailable_rollup(claims, None) == (
+            "ERROR", "invalid-assay-evidence-for-observer-refusal")
+        assert run_gate._observer_unavailable_rollup(claims, [None]) == (
+            "ERROR", "invalid-assay-evidence-for-observer-refusal")
+
+        bad_reason = [dict(passing, reason_code=[]), refusal]
+        assert run_gate._observer_unavailable_rollup(bad_reason, []) == (
+            "ERROR", "invalid-assay-claims-for-observer-refusal")
+        wrong_rigor = [passing, dict(refusal, rigor="R4")]
+        assert run_gate._observer_unavailable_rollup(wrong_rigor, []) == (
+            "ERROR", "invalid-assay-observer-refusal-claim")
+        missing_refusal = [passing, dict(refusal, status="PASS",
+                                         reason_code=None)]
+        assert run_gate._observer_unavailable_rollup(missing_refusal, []) == (
+            "ERROR", "invalid-assay-observer-refusal-claim")
+
+        good_evidence = {"source": "attested", "key": "review",
+                         "status": "PASS", "verified_by_assay": True}
+        bad_evidence_reason = dict(good_evidence, reason_code=[])
+        assert run_gate._observer_unavailable_rollup(
+            claims, [bad_evidence_reason]) == (
+                "ERROR", "invalid-assay-evidence-for-observer-refusal")
+        for status, expected in (
+                ("BUDGET_EXCEEDED", "BUDGET_EXCEEDED"),
+                ("FAIL", "FAIL"), ("ERROR", "ERROR")):
+            actual, reason = run_gate._observer_unavailable_rollup(
+                claims, [dict(good_evidence, status=status)])
+            assert actual == expected
+            assert reason is not None
+
+    @pytest.mark.parametrize(("resources", "message"), [
+        ({"memory": 1024}, "'memory' must be a size"),
+        ({"memory_max": "not-a-size"}, "'memory_max' must be a size"),
+        ({"memory_swap": " "}, "'memory_swap' must be a size"),
+        ({"shared": "database"}, "'shared' must be a list"),
+        ({"shared": ["bad/name"]}, "'shared' must be a list"),
+    ])
+    def test_lane_resource_strings_and_shared_names_are_closed(
+            self, resources, message):
+        with pytest.raises(run_gate.GateError, match=message):
+            run_gate._validate_lane(
+                "probe", {"kind": "command", "environment": "runner",
+                          "argv": ["true"], "resources": resources},
+                "run-gate.toml")
+
+    @pytest.mark.parametrize("field", ["environments", "lanes"])
+    def test_config_rejects_non_table_lane_collections(self, field):
+        with pytest.raises(run_gate.GateError,
+                           match="'environments' and 'lanes' must be tables"):
+            run_gate._validate_config(
+                {"schema_version": 1, field: []}, Path("run-gate.toml"),
+                central=False)
+
+    def test_effective_observer_environment_inheritance_and_deferred_errors(self):
+        run_gate._validate_effective_resource_observers(
+            {"assay": {"environment": "runner"},
+             "environments": {"runner": {"mode": "ephemeral"}},
+             "lanes": {"r2": {"kind": "assay", "resource_observer": "cgprofile",
+                               "resources": {"memory": "1g", "pids": 8192}}}},
+            {}, Path("run-gate.toml"))
+        # The ordinary lane/environment validators own these missing-name
+        # diagnostics; this effective-policy pass must not invent a second one.
+        for project in (
+                {"lanes": {"probe": {"kind": "command",
+                                      "resource_observer": "cgprofile"}}},
+                {"lanes": {"probe": {"kind": "assay",
+                                      "environment": "missing",
+                                      "resource_observer": "cgprofile"}}}):
+            run_gate._validate_effective_resource_observers(
+                project, {}, Path("run-gate.toml"))
+
+    def test_environment_resolution_names_the_missing_source(self):
+        lane = {"environment": "runner"}
+        with pytest.raises(run_gate.GateError,
+                           match="nor in central config run-gate.root.toml"):
+            run_gate.resolve_environment(
+                lane, "suite", {}, {}, Path("run-gate.toml"),
+                Path("run-gate.root.toml"))
+        with pytest.raises(run_gate.GateError,
+                           match="no central run-gate.root.toml exists"):
+            run_gate.resolve_environment(
+                lane, "suite", {}, {}, Path("run-gate.toml"), None)
+
+    def test_physical_path_uses_the_longest_mount_and_rejects_unmapped_paths(
+            self, monkeypatch):
+        mountinfo = ("bad line\n"
+                     "1 0 0:1 / / rw - overlay overlay rw\n"
+                     "2 1 0:2 /repo /workspaces/vbpub rw - ext4 /dev/a rw\n"
+                     "3 1 0:3 /nested /workspaces/vbpub/wt rw - ext4 /dev/b rw\n"
+                     "4 1 0:4 /repo /workspaces/vbpub rw - ext4 /dev/c rw\n")
+        actual = run_gate.physical_path(
+            Path("/workspaces/vbpub/wt/project"), container=True,
+            mountinfo_text=mountinfo)
+        assert actual == Path("/nested/project")
+        with pytest.raises(run_gate.GateInfraError, match="could not derive"):
+            run_gate.physical_path(
+                Path("/outside/project"), container=True,
+                mountinfo_text="bad line\n1 0 0:1 / / rw - overlay overlay rw\n")
+
+        original_read_text = Path.read_text
+        def fail_mountinfo(path, *args, **kwargs):
+            if path == Path("/proc/self/mountinfo"):
+                raise OSError("unreadable mount table")
+            return original_read_text(path, *args, **kwargs)
+        monkeypatch.setattr(Path, "read_text", fail_mountinfo)
+        with pytest.raises(run_gate.GateInfraError, match="cannot read /proc/self/mountinfo"):
+            run_gate.physical_path(Path("/repo"), container=True)
+
+    def test_host_git_environment_disables_helpers_and_rejects_bad_count(
+            self, monkeypatch):
+        monkeypatch.delenv("GIT_CONFIG_COUNT", raising=False)
+        env = run_gate.host_git_environment()
+        assert env["GIT_CONFIG_NOSYSTEM"] == "1"
+        assert env["GIT_CONFIG_GLOBAL"] == os.devnull
+        assert env["GIT_CONFIG_COUNT"] == "2"
+        assert env["GIT_CONFIG_KEY_0"] == "core.fsmonitor"
+        assert env["GIT_CONFIG_VALUE_1"] == os.devnull
+        monkeypatch.setenv("GIT_CONFIG_COUNT", "not-a-count")
+        with pytest.raises(run_gate.GateInfraError,
+                           match="GIT_CONFIG_COUNT is malformed"):
+            run_gate.host_git_environment()
+
+    def test_slice_resolution_and_cgroupfs_path_derivation(self, monkeypatch):
+        assert run_gate.resolve_slice(
+            {"cgroup_slice": "dev-gates.slice"}, "fixture") == (
+                "dev-gates.slice", "declared fixture")
+        monkeypatch.setenv("CGROUP_TEST_SLICE", "dev.slice/dev-gates.slice")
+        assert run_gate.resolve_slice(
+            {"cgroup_slice_env": "CGROUP_TEST_SLICE"}, "fixture")[0] == \
+            "dev.slice/dev-gates.slice"
+        monkeypatch.delenv("CGROUP_TEST_SLICE")
+        with pytest.raises(run_gate.GateError,
+                           match=r"\$CGROUP_TEST_SLICE declared by fixture is unset"):
+            run_gate.resolve_slice(
+                {"cgroup_slice_env": "CGROUP_TEST_SLICE"}, "fixture")
+        monkeypatch.setenv(run_gate.CGROUP_ENV_VAR, "dev-gates.slice")
+        assert run_gate.resolve_slice({}, "fixture")[0] == "dev-gates.slice"
+        assert run_gate.slice_cgroupfs_dir("dev-gates.slice") == Path(
+            "dev.slice/dev-gates.slice")
+        assert run_gate.slice_cgroupfs_dir("dev-test-gates.slice") == Path(
+            "dev.slice/test.slice/dev-test-gates.slice")
+        assert run_gate.slice_cgroupfs_dir("gates.slice") == Path("gates.slice")
+
+    def test_slice_memory_admission_warns_refuses_and_admits_from_cgroup_files(
+            self, tmp_path, monkeypatch, capsys):
+        root = tmp_path / "cgroup"
+        slice_dir = root / run_gate.slice_cgroupfs_dir("dev-gates.slice")
+        slice_dir.mkdir(parents=True)
+        monkeypatch.setenv(run_gate.CGROUPFS_ROOT_ENV_VAR, str(root))
+        lane = {"resources": {"memory": "1g"}}
+
+        (slice_dir / "memory.max").write_text("1500000000")
+        (slice_dir / "memory.current").write_text("200000000")
+        run_gate.check_slice_memory_admission(
+            lane, "unit", "dev-gates.slice", "fixture")
+        assert "admission OK" in capsys.readouterr().out
+
+        (slice_dir / "memory.current").write_text("1000000000")
+        with pytest.raises(run_gate.GateError, match="resource admission REFUSED"):
+            run_gate.check_slice_memory_admission(
+                lane, "unit", "dev-gates.slice", "fixture")
+
+        (slice_dir / "memory.current").unlink()
+        run_gate.check_slice_memory_admission(
+            lane, "unit", "dev-gates.slice", "fixture")
+        assert "current usage unreadable" in capsys.readouterr().out
+        (slice_dir / "memory.current").write_text("bad")
+        run_gate.check_slice_memory_admission(
+            lane, "unit", "dev-gates.slice", "fixture")
+        assert "current usage unreadable" in capsys.readouterr().out
+
+        (slice_dir / "memory.max").write_text("max")
+        monkeypatch.setattr(run_gate, "cgroup_namespace_is_private",
+                            lambda: False)
+        run_gate.check_slice_memory_admission(
+            lane, "unit", "dev-gates.slice", "fixture")
+        assert "no derivable memory ceiling" in capsys.readouterr().out
+        (slice_dir / "memory.max").unlink()
+        monkeypatch.setattr(run_gate, "cgroup_namespace_is_private",
+                            lambda: True)
+        run_gate.check_slice_memory_admission(
+            lane, "unit", "dev-gates.slice", "fixture")
+        assert "cgroupns=private" in capsys.readouterr().out
+
+    def test_clean_tree_reports_git_status_failure_and_run_record_keeps_config_identity(
+            self, tmp_path, monkeypatch):
+        with monkeypatch.context() as scoped:
+            scoped.setattr(run_gate.subprocess, "run", lambda *_a, **_kw:
+                           SimpleNamespace(returncode=1, stdout="",
+                                            stderr="fatal: unusable repo\n"))
+            with pytest.raises(run_gate.GateInfraError,
+                               match="git status failed"):
+                run_gate.check_clean_tree(tmp_path)
+
+        repo = make_repo(tmp_path)
+        central = repo / run_gate.ROOT_CONFIG_NAME
+        record = run_gate.start_run_record(
+            "suite", repo, repo, config_path=repo / run_gate.CONFIG_NAME,
+            config_sha256="a" * 64, central_config_path=central,
+            central_config_sha256="b" * 64)
+        assert record["config_path"] == str(repo / run_gate.CONFIG_NAME)
+        assert record["central_config_path"] == str(central)
+        assert record["central_config_sha256"] == "b" * 64
+
+    def test_required_environment_forwarding_and_disclosure_are_explicit(
+            self, monkeypatch, capsys):
+        run_gate.check_required_reaches_container(
+            {"required_env": ["CI"]}, "suite", {"forward_env": ["CI"]},
+            "runner", "fixture")
+        with pytest.raises(run_gate.GateError,
+                           match="requires TOKEN.*not on environment.*forward_env"):
+            run_gate.check_required_reaches_container(
+                {"required_env": ["CI", "TOKEN"]}, "suite",
+                {"forward_env": ["CI"]}, "runner", "fixture")
+
+        monkeypatch.setenv("CI", "private-value")
+        monkeypatch.setenv("EMPTY_FORWARD", "")
+        run_gate.log_forwarded_env(
+            {"forward_env": ["CI", "EMPTY_FORWARD", "MISSING_FORWARD"]},
+            "container")
+        output = capsys.readouterr().out
+        assert "forwarded: CI" in output
+        assert "declared but ABSENT: EMPTY_FORWARD, MISSING_FORWARD" in output
+        assert "private-value" not in output
+        run_gate.log_forwarded_env({}, "container")
+        assert "nothing declared" in capsys.readouterr().out
+
+    def test_inflight_disown_and_event_comparison_boundaries(self):
+        assert run_gate.disown_run_record(None) is None
+        record = {}
+        assert run_gate.disown_run_record(record) is None
+        assert record == {"_flushed": True}
+
+        before = run_gate.CgroupEventSnapshot("/lane", 2, 4)
+        same = run_gate.CgroupEventSnapshot("/lane", 2, 4)
+        assert run_gate._cgroup_event_error(before, same, "suite", 0) is None
+        both = run_gate.CgroupEventSnapshot("/lane", 3, 5)
+        error = run_gate._cgroup_event_error(before, both, "suite", 0)
+        assert isinstance(error, run_gate.LaneCgroupEventError)
+        assert "pids.events max +1" in str(error)
+        assert "memory.events oom_kill +1" in str(error)
+        pids_only = run_gate._cgroup_event_error(
+            before, run_gate.CgroupEventSnapshot("/lane", 3, 4), "suite", 0)
+        assert "pids.events max +1" in str(pids_only)
+        assert "memory.events" not in str(pids_only)
+        oom_only = run_gate._cgroup_event_error(
+            before, run_gate.CgroupEventSnapshot("/lane", 2, 5), "suite", 0)
+        assert "memory.events oom_kill +1" in str(oom_only)
+        assert "pids.events" not in str(oom_only)
+        decreased = run_gate.CgroupEventSnapshot("/lane", 1, 4)
+        with pytest.raises(run_gate.LaneCgroupEventError,
+                           match="counters moved backwards"):
+            raise run_gate._cgroup_event_error(before, decreased, "suite", 0)
+
+    def test_history_policy_optional_keep_and_resolved_worktree_refusal(
+            self, tmp_path):
+        run_gate._validate_history_policy({}, "run-gate.toml")
+        run_gate._validate_history_policy({"keep": 5}, "run-gate.toml")
+        with pytest.raises(run_gate.GateError, match="keep.*integer >= 1"):
+            run_gate._validate_history_policy({"keep": True}, "run-gate.toml")
+        with pytest.raises(run_gate.GateError, match="not a directory"):
+            run_gate.resolve_worktree_scope(
+                tmp_path, str(tmp_path / "missing-worktree"), "doctor")
+
+    def test_container_name_resolution_uses_judged_worktree_and_closed_fallbacks(
+            self, tmp_path):
+        root = tmp_path / "checkout"
+        root.mkdir()
+        declared = run_gate.resolve_container_name(
+            "runner", {"container_name": "declared-runner"}, root, root,
+            "fixture")
+        assert declared[0] == "declared-runner"
+        assert "declared container_name" in declared[1]
+        with pytest.raises(run_gate.GateError, match="this worktree's rendered"):
+            run_gate.resolve_container_name("runner", {}, root, root, "fixture")
+
+        config = root / "ciu.global.toml"
+        config.write_text("[deploy]\nnetwork_name = 'project-network'\n")
+        derived = run_gate.resolve_container_name(
+            "runner", {}, root, root, "fixture")
+        assert derived[0] == "project-runner"
+        config.write_text("[deploy]\nproject_name = 'project'\n"
+                          "environment_tag = 'dev'\n")
+        assert run_gate.resolve_container_name("runner", {}, root, root,
+                                               "fixture")[0] == "project-dev-runner"
+        config.write_text("[deploy]\nnetwork_name = 'project'\n")
+        with pytest.raises(run_gate.GateError, match="cannot derive container name"):
+            run_gate.resolve_container_name("runner", {}, root, root, "fixture")
+        config.write_text("not [ valid TOML")
+        with pytest.raises(run_gate.GateError, match="invalid TOML"):
+            run_gate.resolve_container_name("runner", {}, root, root, "fixture")
+
+    def test_usage_and_project_discovery_cover_empty_and_declared_lanes(
+            self, tmp_path, monkeypatch):
+        empty = run_gate.usage({})
+        assert "(none defined)" in empty
+        lanes = {
+            "gate": {"kind": "sequence", "lanes": ["unit"],
+                     "description": "whole gate", "budget": "10m",
+                     "stall_timeout": "2m", "_imported": True,
+                     "resources": {"memory": "1g", "pids": 16,
+                                   "cpus": 2, "memory_swap": "2g",
+                                   "cpu_weight": 100, "io_weight": 200,
+                                   "shared": ["db"]}},
+            "unit": {"kind": "command", "environment": "runner",
+                     "description": "unit check", "memory": "512m"},
+        }
+        text = run_gate.usage(lanes, {"gate", "unit"})
+        assert re.search(r"^  gate\s+\*.*imported=assay", text, re.MULTILINE)
+        for expected in ("environment=runner", "imported=assay",
+                         "resources: memory=1g", "pids=16", "cpus=2",
+                         "swap=2g", "cpu_weight=100", "io_weight=200",
+                         "shared=[db]", "whole gate", "unit check"):
+            assert expected in text
+
+        monkeypatch.chdir(tmp_path)
+        assert run_gate.find_project_dir() is None
+        (tmp_path / run_gate.CONFIG_NAME).write_text("schema_version = 1\n")
+        assert run_gate.find_project_dir() == tmp_path.resolve()
+
+    def test_pointer_verification_command_and_resolution_failures(
+            self, tmp_path, capsys):
+        helper = TestPointerLinkage()
+        repo, project, document = helper._estate(
+            tmp_path, helper.CANONICAL)
+        assert run_gate.cmd_validate_pointers(document, None) == 0
+        assert "OK: 1 invocation(s)" in capsys.readouterr().out
+        assert run_gate.cmd_validate_pointers(document, str(repo)) == 0
+        assert "OK: 1 invocation(s)" in capsys.readouterr().out
+
+        clean = project / "clean.toml"
+        clean.write_text('[gates]\nlabel = "run-gate suite"\n')
+        assert run_gate.cmd_validate_pointers(clean, str(repo)) == 0
+        assert "no run-gate pointers" in capsys.readouterr().out
+
+        invalid = project / "bad-pointer.toml"
+        invalid.write_text('[gates]\ncommand = "cd $PWD && run-gate --worktree {worktree} missing"\n')
+        assert run_gate.cmd_validate_pointers(invalid, str(repo)) == 2
+        assert "DEFECT" in capsys.readouterr().out
+
+        with pytest.raises(run_gate.GateError, match="no such file"):
+            run_gate.cmd_validate_pointers(project / "absent.toml", str(repo))
+        with pytest.raises(run_gate.GateError, match="is not a directory"):
+            run_gate.cmd_validate_pointers(document, str(tmp_path / "absent-root"))
+
+    def test_pointer_project_targets_and_retired_invocations_are_explicit(
+            self, tmp_path):
+        helper = TestPointerLinkage()
+        repo, project, document = helper._estate(
+            tmp_path, helper.CANONICAL)
+        resolved, defects = run_gate._pointer_project_dir(
+            "cd {worktree}/proj && run-gate suite", document, repo,
+            "fixture.pointer")
+        assert resolved == project and defects == []
+        resolved, defects = run_gate._pointer_project_dir(
+            "cd {worktree}/one && cd {worktree}/two", document, repo,
+            "fixture.pointer")
+        assert resolved is None and any("exactly one project target" in d
+                                        for d in defects)
+        resolved, defects = run_gate._pointer_project_dir(
+            "cd $PWD", document, repo, "fixture.pointer")
+        assert resolved is None and any("no run-gate.toml" in d
+                                        for d in defects)
+        defects, checked = run_gate._pointer_defects(
+            "cd {worktree}/proj && ./run-gate.py --worktree {worktree} suite",
+            document, repo, "fixture.pointer", {})
+        assert checked == 1 and any("retired `run-gate.py`" in d
+                                   for d in defects)
+
+    def test_resource_and_mount_helper_failure_paths(self, tmp_path, monkeypatch):
+        with pytest.raises(run_gate.GateError, match="not on environment"):
+            run_gate.check_required_reaches_container(
+                {"required_env": ["TOKEN"]}, "suite", {}, "runner", "fixture")
+
+        common = tmp_path / "common"
+        common.mkdir()
+        (common / "hooks").mkdir()
+        (common / "info").mkdir()
+        plan = {"common": common}
+        private = tmp_path / "private"
+        private.mkdir()
+        monkeypatch.setattr(run_gate, "_make_private_dir",
+                            lambda _repo: (private, private))
+        monkeypatch.setattr(run_gate, "physical_path", lambda path: Path(path))
+        monkeypatch.setattr(run_gate, "_dual", lambda path, _repo:
+                            ["-v", f"{path}:{path}", "-v", f"{path}:{path}"])
+        flags = run_gate.git_hook_info_mount_flags(plan, tmp_path)
+        assert flags and all(item.endswith(":ro") for item in flags[1::2])
+        (common / "info").rmdir()
+        with pytest.raises(run_gate.GateInfraError,
+                           match="shared Git info directory is missing or unsafe"):
+            run_gate.git_hook_info_mount_flags(plan, tmp_path)
+
+        assert run_gate.git_worktree_pointer_mount_flags(
+            {"kind": "plain"}, tmp_path, tmp_path) == []
+        wt = tmp_path / "wt"
+        admin = tmp_path / "admin"
+        wt.mkdir()
+        admin.mkdir()
+        (wt / ".git").write_text("gitdir: ../admin\n")
+        (admin / "gitdir").write_text(str(wt / ".git") + "\n")
+        (admin / "commondir").write_text("../common\n")
+        linked = {"kind": "linked", "admin": admin}
+        assert run_gate.git_worktree_pointer_mount_flags(
+            linked, wt, tmp_path)
+        outside = admin / "controlled-gitdir"
+        outside.write_text("redirected\n")
+        (admin / "gitdir").unlink()
+        (admin / "gitdir").symlink_to(outside)
+        with pytest.raises(run_gate.GateInfraError,
+                           match="pointer is not a regular file"):
+            run_gate.git_worktree_pointer_mount_flags(linked, wt, tmp_path)
+        (admin / "gitdir").unlink()
+        with pytest.raises(run_gate.GateInfraError,
+                           match="cannot inspect Git worktree pointer"):
+            run_gate.git_worktree_pointer_mount_flags(linked, wt, tmp_path)
+
+    def test_main_without_project_config_reports_both_invocation_shapes(
+            self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        assert run_gate.main(["--help"]) == 2
+        help_error = capsys.readouterr().err
+        assert "no run-gate.toml found in the current project directory" \
+               in help_error
+        assert "(run-gate " in help_error
+
+        assert run_gate.main(["suite"]) == 2
+        lane_error = capsys.readouterr().err
+        assert "no run-gate.toml found in the current project directory" \
+               in lane_error
+        assert str(tmp_path) in lane_error
+        assert "loads config from the current working directory" in lane_error

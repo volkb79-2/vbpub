@@ -1,0 +1,80 @@
+{
+  "corpus": "truenas-27-vanilla",
+  "captured_on": "2026-10-27",
+  "iso": {
+    "name": "TrueNAS-27.0.0-RC.1.iso",
+    "family": "TrueNAS-27-RC",
+    "sha256": "515a0252e72f1a6c86d603fa4d1661333029fe9a4804d0a7a28d24fe4f63498e",
+    "source": "truenas-vanilla-iso.py download --upstream-version 27.0.0-RC.1 --family TrueNAS-27-RC (published SHA-256 verified)",
+    "stored_at": "/home/vscode/console-corpus/iso/ (outside git)"
+  },
+  "vm": {
+    "qemu": "QEMU emulator version 10.0.13 (Debian 1:10.0.13+ds-0+deb13u1)",
+    "accel": "TCG (no /dev/kvm), 2 vCPU, 3072 MiB",
+    "firmware": "OVMF UEFI: /usr/share/OVMF/OVMF_CODE_4M.fd (readonly pflash) + a copy of OVMF_VARS_4M.fd",
+    "command_line": "nice -n 19 ionice -c3 timeout 14400 qemu-system-x86_64 -name truenas-console-capture -machine q35 -accel tcg,thread=multi -cpu max -smp 2 -m 3072 -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd -drive if=pflash,format=raw,file=$W/OVMF_VARS.fd -drive file=$W/disk.qcow2,format=qcow2,if=none,id=hd0,cache=writeback -device virtio-blk-pci,drive=hd0,bootindex=2 -drive file=$ISO,format=raw,media=cdrom,readonly=on,if=none,id=cd0 -device ide-cd,drive=cd0,bootindex=1 -nic user,model=virtio-net-pci -device virtio-vga -display none -monitor none -qmp unix:$W/qmp.sock,server=on,wait=off -pidfile $W/qemu.pid -serial file:$W/serial.log",
+    "launcher": "pwmcp/tools/console-capture/launch-truenas-vm.sh with VGA_DEV=virtio-vga",
+    "disk": "blank 20 GiB qcow2",
+    "note_display_adapter": "The first attempt used '-device VGA' (std VGA): QMP screendump of the installed-kernel framebuffer returned a static garbage image (11 frames kept, stored outside git in /home/vscode/console-corpus/frames-attempt1-stdvga) and the guest sat idle. virtio-vga gives a correct 1280x800 screendump. Not root-caused; do not assume it is a TrueNAS fault."
+  },
+  "frames": {
+    "resolution": "1280x800 RGB PNG (QMP screendump format=png); text is rendered by the guest as 8x16 pixel cells (160 columns x 50 rows) in the Linux console and newt dialogs",
+    "series_total_kept": 242,
+    "series_location": "/home/vscode/console-corpus/frames/frames (not in git; 5.4 MB); per-frame records in series-manifest.jsonl here",
+    "curated": 20,
+    "note_naming": "curated names are NN-<what>.png; their origin in the full series is in the README table"
+  },
+  "capture": {
+    "tool": "pwmcp/tools/console-capture/console_capture.py",
+    "poll_interval_s": 3,
+    "keep_rule": "fraction of pixels whose luma differs by more than 48 from the last kept frame >= threshold; a change confined to a 24x40 px box is held one poll and dropped if the next poll is back to the base frame (cursor blink)",
+    "threshold_fraction": {
+      "series 1-13 (first daemon)": 0.0002,
+      "series 14-242 (second daemon, restarted after the Space key)": 2e-05
+    },
+    "threshold_lesson": "0.0002 (=205 px at 1280x800) is too high: the '[*]' checkbox change in the disk picker (about 40 px) was not kept until the threshold was lowered; use ~0.00002 (20 px) at this resolution",
+    "daemon_restart_note": "The restart gap (~38.5 s) was not counted by the old resume arithmetic: elapsed_s labels in file names and keys.jsonl 't' after series 13 are 38.5 s too small. series-manifest.jsonl has elapsed_real_s and keys.jsonl t_real_s (from file mtimes, +-1 s). Series 14 is the first KEPT frame showing [*] (real 166.5 s; the Space was sent at 140.4 s). Fixed in the committed tool (state.json keeps the real t0; the last kept frame is reloaded).",
+    "tool_version_note": "The series was captured with the first version of console_capture.py; the committed tool has since gained timeouts, --max-runtime, DONE-in-finally, deterministic blink phases and resume reload."
+  },
+  "key_sequence": [
+    "GRUB: default entry auto-selected after timeout (no key)",
+    "installer Console Setup: Enter (1 Install/Upgrade)",
+    "Choose Destination Media: Space (select vda), Enter",
+    "Erase warning: Enter (Yes)",
+    "Web UI Authentication Method: Enter (1 Administrative user truenas_admin)",
+    "Password: type 'truenas-test', Down, type 'truenas-test', Enter (throwaway test value)",
+    "Installation Succeeded: Enter (returns to the installer's own Console Setup menu)",
+    "Console Setup: Down, Down, Enter (3 Reboot System)",
+    "ISO was still attached and booted first: GRUB(ISO) started again; detached the medium via QMP blockdev-open-tray + blockdev-remove-medium (qdev path), then system_reset",
+    "Installed GRUB: default entry auto-selected; installed system booted to the Console setup menu"
+  ],
+  "keys_file": "keys.jsonl (every send with timestamp, seconds since capture start)",
+  "host_safety": "load peak 5.64, MemAvailable minimum 4.74 GiB during the run (guard.log); no abort",
+  "at_s_since_capture_start_real": {
+    "uefi_to_iso_grub": 3,
+    "installer_menu": 70,
+    "install_started_password_enter": 265,
+    "finish_dialog": 1003,
+    "reboot_selected": 1106,
+    "ovmf_splash_after_reboot": 1119,
+    "iso_grub_again_with_iso_attached": 1129,
+    "installed_grub": 1291,
+    "kernel_boot_log": 1315,
+    "installed_console_setup_menu": 1889,
+    "vm_quit": 1938,
+    "note": "absolute seconds since capture start, real time (file mtimes), +-1 s"
+  },
+  "durations_s": {
+    "iso_grub_to_installer_menu": 67,
+    "install_password_enter_to_finish_dialog": 738,
+    "finish_dialog_to_installed_grub_incl_manual_iso_detach": 288,
+    "installed_grub_to_console_setup_menu": 598,
+    "whole_run": 1938
+  },
+  "ocr_evaluation": {
+    "sidecar_branch": "worktree-agent-a201aaf71c2233a93",
+    "sidecar_commit": "most likely 1af7ab16a: built from that worktree's working tree at ~07:55 UTC; the built code returns complete results with low_conf flags, which 6aaf21b13 and 1c9f5deda do not. The exact commit was not recorded and an uncommitted state cannot be excluded. Image id sha256:2742a6c056c0...",
+    "note": "pwmcp/containers/ocr is not part of this commit"
+  },
+  "paths_note": "Paths under /home/vscode/console-corpus are informative only (the full series, ISO and qcow2 are not in git)."
+}

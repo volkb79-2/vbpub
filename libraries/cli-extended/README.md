@@ -621,7 +621,7 @@ The tests and canary run in `tester-unified`, not in the devcontainer cockpit:
 
 ```bash
 cd libraries/cli-extended
-./run-gate.py gate
+run-gate gate
 ```
 
 CMRU, the Debian installer, and the Netcup entrypoints are current first-party

@@ -1,131 +1,144 @@
 {
- "schema_version": 15,
- "assay_version": "0.1.0",
- "lane": "package",
- "commit": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
- "outcome": "INCONCLUSIVE",
- "exit_code": 5,
- "started": "2026-08-18T09:00:00+00:00",
- "ended": "2026-08-18T09:00:03+00:00",
- "reason_code": "ALL_MUTANTS_EQUIVALENT",
- "declared_rigor": [
-  "R0",
-  "R2"
- ],
- "declared_evidence": [],
- "argv_declared": [
-  "bash",
-  "gate/qualify_dstdns_sql.sh"
- ],
- "argv_appended": [],
- "argv_effective": [
-  "bash",
-  "gate/qualify_dstdns_sql.sh"
- ],
- "argv_modified": false,
- "env_declared": {},
- "env_effective": {},
- "env_passthrough": [],
- "env_effective_passthrough_sha256": {},
- "scope": "S1",
- "enforcement": "gate",
- "judgment": {
-  "resolved": {
-   "language": "sql",
-   "source_roots": [
-    "init-scripts"
-   ],
-   "base": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  "schema_version": 16,
+  "assay_version": "0.1.0",
+  "lane": "package",
+  "commit": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "outcome": "INCONCLUSIVE",
+  "exit_code": 5,
+  "started": "2026-08-18T09:00:00+00:00",
+  "ended": "2026-08-18T09:00:03+00:00",
+  "reason_code": "ALL_MUTANTS_EQUIVALENT",
+  "declared_rigor": [
+    "R0",
+    "R2"
+  ],
+  "declared_evidence": [],
+  "argv_declared": [
+    "bash",
+    "gate/qualify_dstdns_sql.sh"
+  ],
+  "argv_appended": [],
+  "argv_effective": [
+    "bash",
+    "gate/qualify_dstdns_sql.sh"
+  ],
+  "argv_modified": false,
+  "env_declared": {},
+  "env_effective": {},
+  "env_passthrough": [],
+  "env_effective_passthrough_sha256": {},
+  "scope": "S1",
+  "enforcement": "gate",
+  "judgment": {
+    "resolved": {
+      "language": "sql",
+      "source_roots": [
+        "init-scripts"
+      ],
+      "base": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "r2": {
+      "producer": "native",
+      "cold_witness_kills": false,
+      "r2_command": null,
+      "equivalence_ledger": null,
+      "jobs": 1,
+      "max_mutants": 50,
+      "operators": [
+        "sql:drop-check"
+      ],
+      "kill_attribution": "unattributed",
+      "equivalence_artifact": ".assay/schema-dump.sql",
+      "mode": "changed_lines"
+    }
   },
-  "r2": {
-   "producer": "native",
-   "cold_witness_kills": false,
-   "r2_command": null,
-   "equivalence_ledger": null,
-   "jobs": 1,
-   "max_mutants": 50,
-   "operators": [
-    "sql:drop-check"
-   ],
-   "kill_attribution": "unattributed",
-   "equivalence_artifact": ".assay/schema-dump.sql",
-   "mode": "changed_lines"
-  }
- },
- "snapshot_policy": {
-  "selection": "repository"
- },
- "claims": [
-  {
-   "rigor": "R0",
-   "source": "computed",
-   "status": "PASS",
-   "verified_by_assay": true
+  "snapshot_policy": {
+    "selection": "repository"
   },
-  {
-   "rigor": "R2",
-   "source": "computed",
-   "status": "INCONCLUSIVE",
-   "verified_by_assay": true,
-   "reason_code": "ALL_MUTANTS_EQUIVALENT",
-   "mutation": {
-    "candidate_count": 1,
-    "total": 1,
-    "killed": [],
-    "survived": [],
-    "crashed": [],
-    "budget_exceeded": [],
-    "equivalent": [
-     {
-      "path": "init-scripts/002_workflow.sql",
-      "lineno": 14,
-      "start_byte": 210,
-      "end_byte": 238,
-      "replacement_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-      "operator": "sql:drop-check",
-      "description": "drop CHECK (status IN ('new', 'done'))",
-      "candidate_id": "a5f7ab74c46dad0f734d9ecabfd378833d9a2e00a4f805e6e2c3eea2de2f83d8",
-      "source_sha256": "4e245bedabee8341bd78cd2e562ca4e4d3b622964e06eadb29ce4a3487ae6aff",
-      "mutated_file_sha256": "b22a3a7a633ab47e66b4cf50cd341944ebe99422f692a52a67c99bbf16e5b98b",
-      "execution": {
-       "mode": "full"
-      },
-      "resource_limit_evidence": {
-       "cgroup_version": 2,
-       "pids_events": {
-        "max": {
-         "before": 0,
-         "after": 0,
-         "delta": 0
-        }
-       },
-       "memory_events": {
-        "max": {
-         "after": 0,
-         "before": 0,
-         "delta": 0
-        },
-        "oom": {"before": 0, "after": 0, "delta": 0},
-        "oom_kill": {
-         "before": 0,
-         "after": 0,
-         "delta": 0
-        },
-        "oom_group_kill": {
-         "before": 0,
-         "after": 0,
-         "delta": 0
-        }
-       }
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "rigor": "R2",
+      "source": "computed",
+      "status": "INCONCLUSIVE",
+      "verified_by_assay": true,
+      "reason_code": "ALL_MUTANTS_EQUIVALENT",
+      "mutation": {
+        "candidate_count": 1,
+        "total": 1,
+        "killed": [],
+        "survived": [],
+        "crashed": [],
+        "budget_exceeded": [],
+        "equivalent": [
+          {
+            "path": "init-scripts/002_workflow.sql",
+            "lineno": 14,
+            "start_byte": 210,
+            "end_byte": 238,
+            "replacement_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "operator": "sql:drop-check",
+            "description": "drop CHECK (status IN ('new', 'done'))",
+            "candidate_id": "a5f7ab74c46dad0f734d9ecabfd378833d9a2e00a4f805e6e2c3eea2de2f83d8",
+            "source_sha256": "4e245bedabee8341bd78cd2e562ca4e4d3b622964e06eadb29ce4a3487ae6aff",
+            "mutated_file_sha256": "b22a3a7a633ab47e66b4cf50cd341944ebe99422f692a52a67c99bbf16e5b98b",
+            "execution": {
+              "mode": "full"
+            },
+            "resource_limit_evidence": {
+              "cgroup_version": 2,
+              "pids_events": {
+                "max": {
+                  "before": 0,
+                  "after": 0,
+                  "delta": 0
+                }
+              },
+              "memory_events": {
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom": {
+                  "before": 0,
+                  "after": 0,
+                  "delta": 0
+                },
+                "oom_kill": {
+                  "before": 0,
+                  "after": 0,
+                  "delta": 0
+                },
+                "oom_group_kill": {
+                  "before": 0,
+                  "after": 0,
+                  "delta": 0
+                }
+              }
+            },
+            "process_tree_evidence": {
+              "protocol": "assay-process-tree/1",
+              "leader_status": "exited",
+              "group_signalled_before_reap": false,
+              "outliving_descendants": 0,
+              "descendants_signalled": 0,
+              "cleanup_seconds": 0.001,
+              "clean": true
+            }
+          }
+        ],
+        "hung": [],
+        "candidate_ids": [
+          "a5f7ab74c46dad0f734d9ecabfd378833d9a2e00a4f805e6e2c3eea2de2f83d8"
+        ]
       }
-     }
-    ],
-    "hung": [],
-    "candidate_ids": [
-     "a5f7ab74c46dad0f734d9ecabfd378833d9a2e00a4f805e6e2c3eea2de2f83d8"
-    ]
-   }
-  }
- ],
- "evidence": []
+    }
+  ],
+  "evidence": []
 }

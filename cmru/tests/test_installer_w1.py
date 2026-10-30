@@ -260,7 +260,7 @@ class TestRendering:
     def test_quote_in_owner_refused_exit_2(self, tmp_path):
         cfg = tmp_path / "cmru.toml"
         cfg.write_text(
-            'schema_version = 1\n[github]\nowner = \'o"x\'\nrepo = "r"\nowner_type = "user"\n'
+            'schema_version = 1\n[github]\nowner = \'o"x\'\nrepo = "r"\nowner_type = "user"\ntoken_source = "cmru"\n'
             '[targets]\nhost = "github"\nregistry = []\n[runtime]\nkind = "none"\n'
             '[project]\nid = "demo"\ndescription = "d"\ntemplate_revision = 2\nprefix = "demo-v"\n'
             'artifacts = ["tarball"]\n[project.version]\nstrategy = "file:VERSION"\nbump = "conventional"\n'

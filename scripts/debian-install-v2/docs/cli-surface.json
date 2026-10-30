@@ -166,6 +166,63 @@
       "signature": "sha256:24195d6a5e2a91ea8861f45cf861e09f7ce0d248df072b68807003b26c09c667"
     },
     {
+      "id": "case:route:entrypoint:debian-install-v2/build-iso/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/build-iso/--output"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/build-iso",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": [
+          "option:route:entrypoint:debian-install-v2/build-iso/--output"
+        ]
+      },
+      "signature": "sha256:aad9df3e9ee585cf0de03396ed72682d010043ec50b165614149f9e5774ba901"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/build-iso/option-spelling/option:route:entrypoint:debian-install-v2/build-iso/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/build-iso/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/build-iso",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/build-iso/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:d7816ae1f38afa0f92394f8200f88a65d0aa66dcbf7d5002687484878e0fb77b"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/build-iso/option-spelling/option:route:entrypoint:debian-install-v2/build-iso/--output/--output",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/build-iso/--output"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/build-iso",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/build-iso/--output",
+        "spelling": "--output"
+      },
+      "signature": "sha256:9652334e5eb9d4cfe3093dee5504a0b3c0f30695fdf39230f128f60b491cc965"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/build-iso/option-spelling/option:route:entrypoint:debian-install-v2/build-iso/--yes/--yes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/build-iso/--yes"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/build-iso",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/build-iso/--yes",
+        "spelling": "--yes"
+      },
+      "signature": "sha256:b36a2d478fc81304af3a2cc13cb6bef884ef0e8dea882ebef23d175842c3c32c"
+    },
+    {
       "id": "case:route:entrypoint:debian-install-v2/disable-stage2/exclusive-conflict/configuration-source/option:route:entrypoint:debian-install-v2/disable-stage2/--config/option:route:entrypoint:debian-install-v2/disable-stage2/--config-json",
       "kind": "exclusive-conflict",
       "members": [
@@ -1207,6 +1264,114 @@
       "subcommands": [],
       "subcommands_required": false,
       "summary": "render validated settings and a provider-neutral cloud-init bootstrap command as JSON",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--output",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "destination for the private mode-0600 NoCloud ISO",
+          "dest": "output",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--output"
+          ],
+          "help_group": "OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:debian-install-v2/build-iso/--output",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "required": true
+          },
+          "parser_path": [
+            "build-iso"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "interactive"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version",
+        "--yes"
+      ],
+      "confirmation": true,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "interactively build a private NoCloud seed ISO containing a moving-channel installer bootstrap, persistent SSH key list, and per-host settings",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:debian-install-v2/build-iso",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "build-iso"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "build-iso"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "build a private cloud-init seed ISO for an unattended VM install [mutating; interactive]",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null

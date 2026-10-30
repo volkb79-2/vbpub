@@ -4,10 +4,24 @@
 
 - [ciu](https://github.com/volkb79-2/vbpub/tree/main/ciu) installed
 - Docker with Buildx plugin
+- Python 3.11 or newer with `venv` and `ensurepip` (for the bundled client install)
+
+## CMRU standalone install
+
+For an instance that serves the connected devcontainer itself, install the
+versioned release at `/srv/pwmcp-instance` with the generated CMRU installer,
+then run `ciu env generate` once from that directory to record the connected
+devcontainer's identity and internal network. Run `ciu up` to start the
+standalone root's registered PWMCP stack; later updates do not need the
+identity-generation step again. The installer verifies the release bundle and
+its checksum before atomically installing it. See the
+[consumer install and update commands](CONSUMERS.md#install-and-update).
 
 ## Internal Mode (Dev / CI — Default)
 
 The unified container (`pwmcp`) runs on the project Docker network with plain HTTP and no auth. Sibling containers reach all services by **container name** — never via `localhost`.
+Compose reuses the configured version-pinned image from the local cache and
+pulls the tag only when that image is absent.
 
 ### Network joining
 
@@ -182,9 +196,13 @@ python3 scripts/resolve-playwright-version.py --check
 ```
 
 To deliberately refresh the projection, use the explicit upstream operation.
-It applies the configured temporary age window, updates
-`ciu.defaults.toml.j2` (`unified.image.tag`), `ciu.toml.j2`, `docker-bake.hcl`,
-and the Dockerfile's Playwright manifest digest. Then complete the release:
+It applies the temporary two-day default age window (overridable with
+`--age-window-days`), updates
+`ciu.defaults.toml.j2` (`unified.image.tag` and the OCR sidecar's `ocr.image.tag`, which ride the
+same release coordinate), `ciu.toml.j2`, `docker-bake.hcl`, the Dockerfile's Playwright manifest digest
+and the OCR sidecar Dockerfile's `debian:<release>-slim` manifest digest. The
+OCR image is published from the first release made after this wiring landed (`1.64.0-r3` has none); until
+then `pwmcp.ocr.enabled` needs a locally built image (README "OCR sidecar"). Then complete the release:
 
 ```bash
 # Explicit upstream refresh (normally owned by CMRU FEAT-03):
@@ -211,11 +229,15 @@ when reproducibility matters more than tracking latest.
 Every published bundle has a `.sha256` sidecar in the same release:
 
 ```bash
-VERSION="1.62.0-r4"
-curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-${VERSION}.tar.xz.sha256" \
-  -o "pwmcp-${VERSION}.tar.xz.sha256"
-sha256sum -c "pwmcp-${VERSION}.tar.xz.sha256"
+VERSION="1.63.0-r4"
+curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-v${VERSION}.tar.xz.sha256" \
+  -o "pwmcp-v${VERSION}.tar.xz.sha256"
+sha256sum -c "pwmcp-v${VERSION}.tar.xz.sha256"
 ```
+
+Releases up to and including `1.64.0-r2` use the unprefixed name
+(`pwmcp-${VERSION}.tar.xz.sha256`); later releases use the `v`-prefixed name above. `get.py` installs
+only the later ones (PWMCP-08).
 
 The SHA256 digest is also embedded in the release notes for a quick manual check.
 

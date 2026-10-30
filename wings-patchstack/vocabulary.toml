@@ -1,0 +1,14 @@
+schema_version = 1
+capabilities = [
+  "configuration-diagnostics",
+  "dependent-startup",
+  "node-placement",
+  "readonly-volume-startup",
+  "scope-control",
+  "scope-resource-control",
+  "server-placement",
+  "sftp-log-hygiene",
+  "startup-resource-staging",
+]
+roles = ["enable", "guard", "plumbing"]
+risks = ["low", "medium", "high"]

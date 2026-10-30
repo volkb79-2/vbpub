@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools==82.0.1", "wheel==0.47.0", "setuptools_scm==10.0.5"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "iobench"
+description = "Cache-proof disk benchmark: every proposed value says how far it can be trusted"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{name = "Volker Badziong"}]
+# The measurement core is standard-library only; only iobench.cli imports cli_extended
+# (a real wheel dependency, never vendored; published on GitHub Releases only).
+# Floor 0.4.0: the first release with CliIdentity.resolve, VerbSpec(dry_run=...), constraints and the
+# surface/review workflow this CLI and its audit test use.
+dependencies = ["cli-extended>=0.4.0"]
+dynamic = ["version"]
+
+# External tool floor (not a pip dependency): fio >= 3.30. Reason: the JSON `clat_ns` percentiles with
+# histogram logs (--log_hist_msec, --write_hist_log) and `--io_size` with `--time_based` semantics iobench
+# parses were verified on 3.30; older fio versions emit microsecond-only latency or lack the bins.
+[project.optional-dependencies]
+test = ["pytest>=8", "pytest-cov>=6"]
+
+[project.scripts]
+iobench = "iobench.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Version comes from the git tag `iobench-vX.Y.Z` minted by the cmru release transaction, resolved against
+# the enclosing checkout. No fallback_version: a build without git metadata must fail (AGENTS.md "Defaults
+# and fallbacks are hazards").
+[tool.setuptools_scm]
+root = "../.."
+tag_regex = "^iobench-v(?P<version>[0-9].*)$"
+git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "iobench-v*"]
+
+[tool.cli-extended]
+schema_version = 1
+
+[[tool.cli-extended.clis]]
+id = "iobench"
+factory = "iobench.cli:build_cli"
+review = "docs/cli-review.toml"
+manifest = "docs/cli-surface.json"
+spec = "docs/CLI-SPEC.md"
+findings = "docs/cli-review-findings.toml"

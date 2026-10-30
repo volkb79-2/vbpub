@@ -81,6 +81,16 @@ systemd Manager (owns unit boundary)
                 └── samples ──► daemon summary / ctl response
 ```
 
+### Run-Gate is an installed SemVer consumer
+
+The installed Run-Gate wheel is the daemon's supported consumer, and its
+SemVer is the public compatibility identity. A project-local copy of
+`run-gate.py` can drift
+from that installed package and is no longer a supported integration. Keeping
+the contract tied to the installed CLI makes the compatibility check describe
+the code that actually drives the lane. See the
+[Run-Gate wheel contract](../../../run-gate-project/CONSUMERS.md#distribution-installed-wheel-and-semver).
+
 Scope creation registers initial PIDs with systemd. cgprofile then moves each
 validated PID from the scope root into the leaf through
 `AttachProcessesToUnit`, verifies membership, enables controllers only after
@@ -104,7 +114,10 @@ source systemd units. If that empties a Docker-created `.scope`, systemd may
 retire the source unit immediately; the recorded unit/subgroup is then no
 longer a valid exact restoration target. Before the initial transfer,
 cgprofile inventories each recorded source unit's full cgroup subtree and
-requires at least one non-moving process to remain. It repeats the check
+requires at least one non-moving process to remain, and requires every
+selected, still-live process to be listed in its own recorded source unit
+(a process that left it since capture would otherwise be moved out of an
+unrelated unit and restored to a stale origin). It repeats the check
 immediately before each later migration from an origin unit. A known final
 member produces `place-refused:origin-scope-would-empty`; unavailable or
 inconsistent membership produces `place-refused:identity-unavailable`. Both
@@ -142,9 +155,9 @@ cockpit receives only the cgprofile ctl surface; it does not need the system
 bus. P1 and P6 introduced the observer and opt-in placement capabilities in
 separate implementation tranches. RW-434 settles their combined tree as the
 first 1.0.0 release, including the system-bus manager bridge and writable host
-cgroup view required for explicit placement; there is no separate planned
-1.1.0 release for those capabilities. Any later version increment requires
-genuine post-1.0.0 changes. An operator with unrestricted
+cgroup view required for explicit placement; 1.1.0 changes none of those
+capabilities (it carries the Sol-review fixes and the daemon slice guard, see
+`CHANGES.md`). An operator with unrestricted
 Docker access already has host-administrator authority, but that does not
 make these daemon mounts irrelevant: a compromised daemon process can exercise
 the mounted cgroupfs and systemd manager authority directly, beyond normal
@@ -283,18 +296,31 @@ unsampled sibling. The observer need not enumerate sibling destinations.
 Resource-observer contract 2 adds explicit scope metadata and the
 `pids.events.local` and `memory.events.local` values alongside the existing
 event files. The regular files can be hierarchical or local depending on the
-host mount's `pids_localevents` and `memory_localevents` options; contract 2
-reports those scopes so a consumer cannot silently mistake one for the other.
-Contract 1 remains available with its original response shape. Assay requests
-contract 2 because its candidate counter and ancestor-local counter play
-different roles in mutation classification. See the worked request and
-response in [`PROTOCOL.md`](PROTOCOL.md#8-native-r2-resource-observer-rg-89).
+host mount options. The observer refuses `pids_localevents`: its local fork
+failure count records where the process attempted to fork, not which cgroup's
+`pids.max` rejected the fork. That loses the distinction between a candidate
+limit and a shared ancestor limit. `memory_localevents` remains supported and
+is reported explicitly; when local memory counters are active on the candidate,
+the observer also proves the candidate has no child cgroups. These checks keep
+consumers from mistaking local event scope for local limit enforcement.
+Contract 2 is the only supported resource-observer version: accepting the old
+shape would let a client treat hierarchical counters as local evidence.
+Assay requests contract 2 because its candidate counter and ancestor-local
+counter play different roles in mutation classification. The daemon's
+separate control listener continues to use contract 1. See the worked request
+and response in [`PROTOCOL.md`](PROTOCOL.md#8-native-r2-resource-observer-rg-89).
+The control `version` response advertises the observer contract, socket path,
+and whether that listener bound successfully. This makes a required contract
+upgrade visible before a long mutation lane starts; the control contract number
+itself remains 1.
 
 The observer is a distinct listener, not a read-only bind of `ctl.sock`:
 filesystem read-only does not restrict the verbs of an AF_UNIX service. The
 listener accepts one `resource-limits` query and no start/stop/placement
-operation. Run-Gate validates the fixed socket and mounts only that node
-read-only, forwarding its observed group ID. It does not add a Docker socket,
+operation. Run-Gate validates the fixed socket path and bind-mounts its
+dedicated `/run/cgprofile/observer` DIRECTORY read-only (so a daemon restart
+that replaces the socket inode stays resolvable), forwarding the socket's
+observed group ID; the control socket's directory is never mounted. It does not add a Docker socket,
 host PID namespace, host cgroup namespace, or a second daemon.
 
 The observer request is one newline-terminated JSON line, at most 4096 bytes
@@ -557,22 +583,86 @@ turns an unreadable metric into zero.
 
 ## Release identity
 
-The daemon image version is the exact `cgprofile-v<version>` CMRU tag at
-`HEAD`. The build script reads the prefix from `cmru.toml`, rejects ambiguous
-or malformed matching tags, and supplies the resolved version to the OCI tag,
-image label, CLI identity, and daemon self-description. This keeps build
-metadata and live probes on one release fact rather than asking operators to
-type a second version. Untagged local images are marked `0.0.0-dev`; publish
-without an exact tag or explicit manual version refuses. No version lookup
-depends on network access at runtime.
+The daemon image version is the exact `cgprofile-v<version>` tag passed by
+CMRU for its release candidate. CMRU also passes protected
+`CMRU_RELEASE_COMMIT` and `CMRU_RELEASE_TAG` values to both artifact steps.
+Before a build or push, the wrapper checks that the current `HEAD` and the
+local tag both peel to that commit, and that the checkout is clean. It creates
+a temporary full-repository worktree at the same commit and builds from there,
+so version and source cannot come from separate reads of a moving checkout.
+Missing, incomplete, or mismatched identity refuses before registry login.
+An untagged local build resolves its version and commit together and uses
+`0.0.0-dev`. Ambient `CGPROFILE_VERSION` never creates release authority.
+CMRU clears ambient release-pair values from non-artifact steps. The pair is
+source-consistency metadata, not an authentication token or proof of CMRU
+provenance, so the supported publication workflow remains `cmru release`.
+
+Deployment verification checks two identities. `ctl version --json` confirms
+the daemon's software version and advertised protocol capabilities; the
+running container's `org.opencontainers.image.revision` label binds its image
+to source. Compare that label with the commit peeled from the pinned
+`cgprofile-v<version>` release tag after CIU brings up the service. The
+[consumer recipe](CONSUMERS.md#deploy-a-published-daemon-image-with-ciu) checks
+the source label on the image actually used by `cgprofile-host-daemon`.
+
+The Bake file itself uses a literal development version and tag instead of
+importing environment variables; it supplies no Git revision default. The
+wrapper's explicit target overrides carry the version and revision resolved
+together from one checked source state. The Dockerfile has no version or
+revision default and checks both arguments before package installation, so a
+low-level image build cannot silently label an image when no complete
+identity was supplied. The wrapper refuses changes in either local build
+context and builds from a temporary worktree at the resolved commit, so an
+image label cannot name a commit that omits its build inputs. A bare Bake
+invocation therefore refuses early; the supported local build path is
+`build-push.py --build`. No version lookup depends on network access at runtime.
 
 The local `cgprofile:local` alias is not a release coordinate: because it has
 no registry hostname, Docker resolves it to Docker Hub when used as a publish
-output. The Bake file therefore separates a local-only target from the
-versioned GHCR release target, and CMRU's push step selects only the latter.
-This keeps developer convenience from widening the release's external writes.
+output. The Bake file separates the local target from a release target whose
+default is still the development tag; the validated wrapper overrides the
+release tag and image argument after checking the source tag. A bare Bake
+command cannot turn `CGPROFILE_VERSION` from the environment into a release
+label. CMRU's push step selects only the release target. This keeps developer
+convenience from widening the release's external writes. CMRU owns the
+protected tag/commit handoff; consumers must invoke `cmru release` instead of
+manually exporting either value.
 The pasteable CIU pin and verification command live in
 [`CONSUMERS.md`](CONSUMERS.md#deploy-a-published-daemon-image-with-ciu).
+
+## The GitHub Release body for the published image
+
+The image on GHCR is cgprofile's only released artifact: nothing is uploaded to the GitHub
+Release, so the wheel-style body (artifact name, SHA256) has nothing true to say, and
+without a handler the `cgprofile-v<version>` release would have no body at all. CMRU's
+`oci-image-release` handler fills that gap. CGProfile's push step therefore has two commands,
+in this order:
+
+1. `build-push.py --push`, which pushes the release image;
+2. `cmru handler oci-image-release --prefix cgprofile --image ghcr.io/volkb79-2/cgprofile
+   --cwd .`, which writes the release body.
+
+The order is the contract, not a convention: the body announces an image, so it must follow
+the push of that image, and CMRU refuses (before any release side effect) a configuration in
+which anything follows it. The handler derives `:<version>` from the protected
+`CMRU_RELEASE_TAG` and reads the notes from the protected candidate commit's
+`cgroup-profiler/CHANGES.md`, so the pull instruction and the notes always describe the tag
+that was gated. Its `--image` repeats the registered release coordinate with an explicit
+`ghcr.io` registry (a bare `owner/name` would be read by Docker as a Docker Hub namespace),
+and it is the image `build-push.py` pushes, not a second source of truth: change one and the
+published pull instruction no longer matches the image.
+
+What CMRU checks before any side effect, and what it cannot: it validates the handler's
+`--prefix`, `--image` and `--cwd`, and that it is the last command, for the selected project
+before any prepare step, gate, tag or image push; `cmru release --dry-run` runs the same check
+and prints the complete body. After it writes, it reads the release back and succeeds only if
+the release has the same ID and tag, exactly the intended body, and the Git tag is still at
+the release commit. GitHub cannot make that atomic with creating the release, so a difference
+is reported as "the release was written and not rolled back" for inspection; the workflow
+narrows that window and reports it honestly rather than claiming to prevent partial public
+publication. The notes are the tagged changelog section, never `[Unreleased]` read later,
+so a failed or retried release cannot publish different notes than its tag carries. The
+[preview and ordering recipe](CONSUMERS.md#preview-the-github-release-body) is pasteable.
 
 ## Decisions intentionally left outside this repair
 
@@ -598,3 +688,92 @@ merge-commit base handling can change the resolved scope; the post-merge plan
 must be checked again rather than transferring a prior-tree count. The
 pasteable invocation is in
 [`CONSUMERS.md`](CONSUMERS.md#run-the-p1-review-gates).
+
+## Release qualification and the full R2 gate
+
+Two different things are called "the gate" and must not be conflated. CMRU's
+release gate is `cmru.toml` `steps.run-tests`: `run-gate r0-r1` (unit tests with
+100% line and branch coverage) and `run-gate r3` (canary rejection). The
+complete Run-Gate lane `gate` additionally runs `r2`, the Assay
+mutation-of-changed-lines campaign, whose budget is a 24-hour resumable window.
+R2 is kept out of the release gate because a campaign that long must not block
+every routine release, and because it judges one exact tree for one comparison
+base rather than the release range.
+
+The operator's release policy allows the full-source R2 campaign to be
+deferred. The consequence is stated plainly rather than implied: the initial
+1.0.0 release has no completed full-source R2 verdict, and nothing in this
+project's documentation, changelog or release configuration claims one. A
+later R2 result applies only to the exact tree and base it judged. Passing
+`r0-r1` and `r3` qualifies a release for exactly what those lanes test; it is
+not mutation evidence.
+
+## An unverified DAMON teardown is a reported fact, not a log line
+
+DAMON is optional evidence, so a failed or unverifiable kdamond teardown must
+not change the workload verdict or turn `stop` into an error. But the old
+behavior logged `cleanup_confirmed=False` and then returned the same
+successful stop as a session whose DAMON was never on, so a consumer could not
+tell "off" from "possibly still running". The daemon therefore reports the
+disposition separately and additively: `summary.damon_cleanup` (also in the
+manifest) is `{confirmed, slot, quarantined}`. `confirmed` is True only when the
+owner affirmatively verified its teardown; an exception from the owner, or no
+confirmation property at all, is unconfirmed. `quarantined` states whether the
+daemon will refuse to reuse that slot, so "unverified" is never read as a
+no-reuse guarantee it did not establish.
+
+## `stop` finalizes only after the sampler has exited
+
+`stop` used to join the sampling thread for ten seconds and then release
+placement, close DAMON, write `finished` and answer `ok: true` whether or not
+the thread had exited. A blocked sampler could then append samples to a
+finalized session. Finalization is now conditional on the worker being gone:
+a live worker leaves the session live, with its placement and DAMON resources
+held and no `finished` manifest, and `stop` answers `stop-incomplete`. The
+caller retries; the same session finalizes once the worker exits. Daemon
+shutdown logs the incomplete stop and leaves the manifest `running`, which the
+next start recovers as an orphan. This is deliberately NOT the CP-24 stop
+protocol (bounded finalization with kill evidence); it only forbids the false
+completion.
+
+## The daemon proves the slice it is in, not a slice by name
+
+Docker and systemd accept any `cgroup_parent` and auto-create an uninstalled
+slice without limits, so a daemon whose compose file names `cgprofile.slice`
+can still run unbounded next to production workloads. `serve` therefore refuses
+to start unless the cgroup it is actually running in, derived from the host
+proc view (`/proc/<host pid>/cgroup` normalized through the cgroup-namespace
+root, the same path derivation placement uses), is under the top-level
+`cgprofile.slice` and that slice's `memory.max` is a finite positive integer.
+A bounded `cgprofile.slice` that merely exists while the container was created
+under another parent, or a nested look-alike, does not pass (name for object).
+Zero is refused: it is finite but a slice that can hold no memory is a
+misconfiguration, and `read_int` folds `max`, empty, unreadable and garbage
+into one "not a number" outcome, so the message names every cause.
+
+Rejected alternatives: reading `LoadState` from inside the container (the
+daemon has no view of `/etc/systemd/system` or the host systemd, so it cannot
+be proven there); a flag to run unbounded anyway (the point is that unbounded
+must not look governed). The pre-creation Docker-host `LoadState=loaded` probe
+remains the complete fix and is CIU-150, outside the 1.1.0 window. The
+refusal runs after container creation, so on `restart: unless-stopped` a host
+without the unit crash-loops; that loud failure is intended.
+
+### A wedged worker has a bounded way out
+
+`stop-incomplete` alone would let a permanently wedged sampler hold placement
+and DAMON forever. The third consecutive incomplete `stop` therefore finalizes
+anyway (`stop_forced: sampler-still-running`, aborted manifest, resources
+released) and daemon shutdown forces the same way; a late sample from the
+worker is discarded because the session is finished. If the worker holds the
+session lock the forced path refuses rather than deadlock the daemon. The
+`finished` flag is set only after release, so finalization first sets a
+`closed` flag under the session lock; every sample-side action that touches
+placement, DAMON or the records re-checks it under that same lock, which closes
+the window in which a late sample could migrate or recommit after release began.
+The liveness stall kill and the DAMON `collect()`/disable paths are guarded the
+same way, and finalization acquires the session lock once, bounded, so a
+worker wedged inside a locked action costs one failed finalize (orphan
+recovery on restart) rather than a daemon-wide hang. Known
+limit: each attempt joins for up to 10 s while holding the server-wide lock, so
+a wedged sampler delays every verb for that long per retry.

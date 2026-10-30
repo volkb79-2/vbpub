@@ -235,3 +235,54 @@ def compare_resource_snapshots(
         if delta:
             deltas[f"cgroup_cpu.{key}"] = delta
     return ("stalled" if deltas else "clear"), deltas
+
+
+def compare_cgroup_resource_snapshots(
+    previous: Mapping[str, Any] | None,
+    current: Mapping[str, Any],
+) -> tuple[str, dict[str, int]]:
+    """Compare only the measured cgroup's PSI and CPU-throttling counters.
+
+    Host PSI is intentionally excluded: it can rise because of unrelated
+    work elsewhere on the machine and does not prove this command's cgroup
+    experienced pressure.
+    """
+    if previous is None:
+        return "unknown", {}
+    if (
+        previous.get("schema_version") != RESOURCE_SNAPSHOT_SCHEMA_VERSION
+        or current.get("schema_version") != RESOURCE_SNAPSHOT_SCHEMA_VERSION
+        or previous.get("status") != "available"
+        or current.get("status") != "available"
+        or previous.get("cgroup_identity") != current.get("cgroup_identity")
+    ):
+        return "unknown", {}
+
+    deltas: dict[str, int] = {}
+    old_psi = previous.get("cgroup_psi")
+    new_psi = current.get("cgroup_psi")
+    if not isinstance(old_psi, Mapping) or not isinstance(new_psi, Mapping):
+        return "unknown", {}
+    for pressure_name in _PRESSURE_NAMES:
+        old_pressure = old_psi.get(pressure_name)
+        new_pressure = new_psi.get(pressure_name)
+        if not isinstance(old_pressure, Mapping) or not isinstance(new_pressure, Mapping):
+            return "unknown", {}
+        for row_name in _PRESSURE_ROWS[pressure_name]:
+            delta = _counter_delta(old_pressure.get(row_name), new_pressure.get(row_name))
+            if delta is None:
+                return "unknown", {}
+            if delta:
+                deltas[f"cgroup_psi.{pressure_name}.{row_name}_us"] = delta
+
+    old_cpu = previous.get("cgroup_cpu")
+    new_cpu = current.get("cgroup_cpu")
+    if not isinstance(old_cpu, Mapping) or not isinstance(new_cpu, Mapping):
+        return "unknown", {}
+    for key in _CPU_STAT_KEYS:
+        delta = _counter_delta(old_cpu.get(key), new_cpu.get(key))
+        if delta is None:
+            return "unknown", {}
+        if delta:
+            deltas[f"cgroup_cpu.{key}"] = delta
+    return ("stalled" if deltas else "clear"), deltas

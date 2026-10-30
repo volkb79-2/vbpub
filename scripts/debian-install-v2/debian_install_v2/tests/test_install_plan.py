@@ -17,7 +17,7 @@ def run_dry_install(tmp_path: Path) -> tuple[Installer, list[str]]:
         log_dir=str(tmp_path / "logs"),
         stage2_output="/root/custom_script.output2",
         swap_disk_total_gb=32,
-        swap_file_count=8,
+        swap_partition_count=8,
         telegram_bot_token="",
         telegram_chat_id="",
         never_reboot=True,
@@ -46,7 +46,7 @@ def test_stage1_plans_expected_configuration_without_host_mutation(tmp_path):
 def test_state_new_excludes_secret_and_uses_stable_schema(tmp_path):
     config = Config(
         state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
-        swap_disk_total_gb=32, swap_file_count=8,
+        swap_disk_total_gb=32, swap_partition_count=8,
         telegram_bot_token="", telegram_chat_id="", auto_reboot_after_stage1=False,
         credential_mode="systemd",
     )
@@ -56,10 +56,10 @@ def test_state_new_excludes_secret_and_uses_stable_schema(tmp_path):
     assert manifest["schema_version"] == 1
     assert "telegram_bot_token" not in manifest["config"]
     assert manifest["config"]["swap_disk_total_gb"] == 32
-    assert manifest["config"]["swap_file_count"] == 8
+    assert manifest["config"]["swap_partition_count"] == 8
 
 
-def test_known_shape_partition_plan_has_exact_eight_devices(tmp_path):
+def test_default_partition_plan_has_exact_four_swap_devices(tmp_path):
     config = Config(
         state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
         telegram_bot_token="", telegram_chat_id="", auto_reboot_after_stage1=False,
@@ -74,7 +74,7 @@ def test_known_shape_partition_plan_has_exact_eight_devices(tmp_path):
     assert not Path(plan_path).exists()
     plan = actions.dry_run_writes[plan_path]
     swaps = [line for line in plan.splitlines() if line.startswith("/dev/vda") and "type=0657fd6d" in line]
-    assert len(swaps) == 8
+    assert len(swaps) == 4
     assert all("start=" in line and "size=" in line and ", type=0657fd6d-a4ab-43c4-84e5-0933c84b4f4f" in line for line in swaps)
     root_lines = [line for line in plan.splitlines() if line.startswith("/dev/vda3 ")]
     assert len(root_lines) == 1
@@ -87,7 +87,7 @@ def test_known_shape_partition_plan_has_exact_eight_devices(tmp_path):
     assert any(part.startswith("size=16777216") for part in root_lines[0].split())
 
 
-def test_fstab_swap_entries_are_planned(tmp_path):
+def test_default_fstab_swap_entries_are_planned(tmp_path):
     config = Config(
         state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
         telegram_bot_token="", telegram_chat_id="", auto_reboot_after_stage1=False,
@@ -98,7 +98,7 @@ def test_fstab_swap_entries_are_planned(tmp_path):
     StateStore(config.state_dir).save_new(StateStore.new(config))
     installer.resume()
     fstab = actions.dry_run_writes["/etc/fstab"]
-    assert len([line for line in fstab.splitlines() if " none swap sw,pri=10,discard=once 0 0" in line]) == 8
+    assert len([line for line in fstab.splitlines() if " none swap sw,pri=10,discard=once 0 0" in line]) == 4
 
 
 def test_disk_transaction_manifest_and_health_gate_are_planned(tmp_path):
@@ -138,17 +138,18 @@ def test_credentials_are_not_written_to_bootstrap_env(tmp_path):
 def test_geometry_refuses_existing_partition_after_root():
     config = Config(telegram_bot_token="", telegram_chat_id="", auto_reboot_after_stage1=False)
     actions = HostActions(dry_run=True)
-    installer = Installer(config, actions)
+    installer = Installer(config, actions, inspect_host=False)
+    installer.root_number = 3
     current = {
         3: {"start": "2500608", "size": "20971520"},
-        4: {"start": "2500609", "size": "100"},
+        4: {"start": "23472128", "size": "100"},
     }
     plan = {
         3: {"start": "2500608", "size": "20971520"},
         4: {"start": "23472128", "size": "8388608"},
     }
     import pytest
-    with pytest.raises(RuntimeError, match="existing partition 4 follows root"):
+    with pytest.raises(RuntimeError, match="non-swap partition 4 follows root"):
         installer._validate_plan_geometry(current, plan, 20971520)
 
 
@@ -163,7 +164,9 @@ def test_resume_restores_config_from_manifest_and_records_success(tmp_path):
     store = StateStore(config.state_dir)
     store.save_new(StateStore.new(config))
     installer.resume()
-    # LT-APT: the apt timers are released as the very last stage2 step.
-    assert installer.actions.planned[-1].description == "enable apt timers (install finished)"
-    assert installer.actions.planned[-2].description == "write /etc/fstab"
-    assert any(action.description == f"enable {installer._partition_base}{installer.root_number + 8}" for action in installer.actions.planned)
+    # LT-APT: timers are released after install work; the durable replay marker
+    # is the final host write before the completed state is recorded.
+    assert installer.actions.planned[-1].description == "write /var/lib/vbpub/install-v2-complete"
+    assert installer.actions.planned[-2].description == "enable apt timers (install finished)"
+    assert installer.actions.planned[-3].description == "write /etc/fstab"
+    assert any(action.description == f"enable {installer._partition_base}{installer.root_number + 4}" for action in installer.actions.planned)

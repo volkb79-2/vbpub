@@ -10,7 +10,7 @@ Files-first, daemon-supervised control plane for role-separated AI-assisted deve
 
 **Install**
 
-nyxloom depends on the `cli-extended` wheel (`cli-extended>=0.3.0`), published to GitHub Releases only, never PyPI. Download it beside this wheel.
+nyxloom depends on the `cli-extended` wheel (`cli-extended>=0.4.0`), published to GitHub Releases only, never PyPI. Download it beside this wheel.
 
 For a clean install:
 ```bash
@@ -58,7 +58,7 @@ commands = [
   # of this bounded release step, NL-1/nyxloom-P48). This step owns no test logic; a bare
   # `cmru tester-gate -- pytest` here would release on a lesser bare-pytest
   # check than every other gate this project's own pipeline actually trusts.
-  { label = "nyxloom: run-gate tester-unified", argv = ["./run-gate.py", "tester-unified"], cwd = "." },
+  { label = "nyxloom: run-gate tester-unified", argv = ["run-gate", "tester-unified"], cwd = "." },
 ]
 
 [steps.build]

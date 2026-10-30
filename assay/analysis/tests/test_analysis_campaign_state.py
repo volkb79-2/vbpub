@@ -7,6 +7,7 @@ The store is read-only evidence: every test builds records with
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -140,6 +141,107 @@ def test_o4_a_state_record_whose_identity_does_not_match_its_file_name_is_refuse
     assert {item["source"] for item in document["errors"]} == {"state"}
     assert document["errors_truncated"] is False
     assert err.count("\n") == 1
+
+
+def test_state_directory_entry_budget_counts_unrelated_files(tmp_path, monkeypatch):
+    root, head, verdict, progress = _complete_fixture(tmp_path, monkeypatch, "r2_pass")
+    state = tmp_path / "state"
+    state.mkdir()
+    for name in ("notes", "cache", "scratch"):
+        (state / name).write_text("ignored by the state parser")
+    monkeypatch.setattr(campaign_api, "MAX_STATE_DIRECTORY_ENTRIES", 2)
+
+    code, out, err = _invoke(
+        root, head, verdict, progress, command_exit=0,
+        extra=("--state-dir", str(state)),
+    )
+    document = json.loads(out)
+    assert code == 2
+    assert document["status"] == "evidence_error"
+    assert document["errors"] == [{
+        "source": "state",
+        "message": "state directory scan exceeds 2 entries",
+    }]
+    assert "state directory scan exceeds 2 entries" in err
+
+
+def test_state_record_count_budget_refuses_a_foreign_store(tmp_path, monkeypatch):
+    root, head, verdict, progress = _complete_fixture(tmp_path, monkeypatch, "r2_pass")
+    state = tmp_path / "state"
+    state.mkdir()
+    for index in range(3):
+        (state / f"{index:064x}.json").write_text("{}")
+    monkeypatch.setattr(campaign_api, "MAX_STATE_DIRECTORY_RECORDS", 2)
+
+    code, out, err = _invoke(
+        root, head, verdict, progress, command_exit=0,
+        extra=("--state-dir", str(state)),
+    )
+    document = json.loads(out)
+    assert code == 2
+    assert document["status"] == "evidence_error"
+    assert document["errors"] == [{
+        "source": "state",
+        "message": "state directory contains more than 2 mutation records",
+    }]
+    assert "mutation records" in err
+
+
+def test_state_aggregate_byte_budget_refuses_before_record_parsing(tmp_path, monkeypatch):
+    root, head, verdict, progress = _complete_fixture(tmp_path, monkeypatch, "r2_pass")
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / f"{'a' * 64}.json").write_text("{}")
+    monkeypatch.setattr(campaign_api, "MAX_STATE_DIRECTORY_BYTES", 1)
+
+    code, out, err = _invoke(
+        root, head, verdict, progress, command_exit=0,
+        extra=("--state-dir", str(state)),
+    )
+    document = json.loads(out)
+    assert code == 2
+    assert document["status"] == "evidence_error"
+    assert document["errors"] == [{
+        "source": "state",
+        "message": "state records exceed 1 aggregate bytes",
+    }]
+    assert "aggregate bytes" in err
+
+
+def test_state_aggregate_budget_stops_before_reading_the_next_record(
+    tmp_path, monkeypatch
+):
+    root, head, rows = _synthetic(tmp_path, monkeypatch, 2)
+    progress = tmp_path / "progress.jsonl"
+    support.write_records(progress, support.run_records(head, rows))
+    state = support.write_state(tmp_path / "state", [
+        support.state_record(rows[0], "killed", J_X),
+        support.state_record(rows[1], "killed", J_X),
+    ])
+    first_path = sorted(state.iterdir())[0]
+    monkeypatch.setattr(
+        campaign_api, "MAX_STATE_DIRECTORY_BYTES", first_path.stat().st_size + 1
+    )
+    read_state_records = []
+    read_artifact = campaign_api._read_artifact
+
+    def record_reads(path, *, limit, label):
+        if label == "state record":
+            read_state_records.append(Path(path).name)
+        return read_artifact(path, limit=limit, label=label)
+
+    monkeypatch.setattr(campaign_api, "_read_artifact", record_reads)
+    code, err, document = _analyze(
+        root, head, progress, extra=("--state-dir", str(state))
+    )
+    assert code == 2
+    assert document["errors"] == [{
+        "source": "state",
+        "message": (
+            f"state records exceed {first_path.stat().st_size + 1} aggregate bytes"
+        ),
+    }]
+    assert read_state_records == [first_path.name]
 
 
 # ---- O5 -------------------------------------------------------------------

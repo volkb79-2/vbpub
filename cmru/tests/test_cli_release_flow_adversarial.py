@@ -38,6 +38,7 @@ def _project(root: Path, *, steps=None, generated=()):
         runner_steps=steps or {}, steps=steps or {}, commit_generated=generated,
         changelog=None, version=SimpleNamespace(strategy="scm"), git_tag=True,
         prefix="demo-v", build_step="build", scm_dist=None,
+        known_project_names=frozenset(),
     )
 
 
@@ -49,6 +50,7 @@ def test_default_and_explicit_config_resolution_uses_nearest_central_root(tmp_pa
 owner = "owner"
 repo = "repo"
 owner_type = "user"
+token_source = "cmru"
 [targets]
 host = "github"
 registry = ["ghcr.io"]
@@ -133,15 +135,91 @@ def test_run_project_steps_rejects_missing_declared_step(tmp_path, monkeypatch):
         cli._run_project_steps(root, {"demo": project}, ["demo"], ["build"])
 
 
+def test_run_project_steps_forwards_protected_release_identity(monkeypatch, tmp_path):
+    root = _repo(tmp_path)
+    project = _project(root, steps={"build": object()})
+    identity = {
+        "CMRU_RELEASE_COMMIT": "a" * 40,
+        "CMRU_RELEASE_TAG": "demo-v1.2.3",
+    }
+    monkeypatch.setattr(cli, "resolve_versions_from_git", lambda *_a, **_k: None)
+    calls = []
+    monkeypatch.setattr(
+        cli,
+        "run_project_step",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    cli._run_project_steps(
+        root, {"demo": project}, ["demo"], ["build"], protected_env=identity,
+    )
+
+    assert len(calls) == 1
+    assert calls[0][1]["protected_env"] == identity
+
+
 def test_release_gates_require_run_tests_and_dispatch_declared_gate(tmp_path, monkeypatch):
     missing = _project(tmp_path)
     with pytest.raises(RuntimeError, match="no release gate"):
         cli._run_release_gates(tmp_path, {"demo": missing}, ["demo"])
     project = _project(tmp_path, steps={"run-tests": object()})
     calls = []
-    monkeypatch.setattr(cli, "run_project_step", lambda *args: calls.append(args[1]))
+    monkeypatch.setattr(cli, "_git", lambda *_args, **_kwargs: "a" * 40)
+    monkeypatch.setattr(
+        cli, "run_project_step",
+        lambda *args, **kwargs: calls.append((args[1], kwargs.get("protected_env"))),
+    )
     cli._run_release_gates(tmp_path, {"demo": project}, ["demo"])
-    assert calls == ["run-tests"]
+    assert calls == [("run-tests", {"CMRU_RELEASE_GATE_COMMIT": "a" * 40})]
+
+    calls.clear()
+    cli._run_release_gates(
+        tmp_path, {"demo": project}, ["demo"],
+        candidate_sha="b" * 40, release_version="1.2.3",
+    )
+    assert calls == [(
+        "run-tests",
+        {
+            "CMRU_RELEASE_GATE_COMMIT": "b" * 40,
+            "CMRU_RELEASE_GATE_VERSION": "1.2.3",
+        },
+    )]
+
+
+def test_release_transaction_passes_its_planned_version_to_the_gate(tmp_path, monkeypatch):
+    root = _repo(tmp_path)
+    project = _project(root, steps={"run-tests": object()})
+    project.git_tag = False
+    workspace = SimpleNamespace(base="a" * 40, branch="release-demo", path=root)
+    gate_calls = []
+
+    monkeypatch.setattr(cli.transaction, "read_release_source", lambda *_args: None)
+    monkeypatch.setattr(cli.transaction, "start_untagged_publication_record", lambda *_args: None)
+    monkeypatch.setattr(cli.transaction, "write_release_progress", lambda *_args: None)
+    monkeypatch.setattr(cli.transaction, "push_backup_branch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli.transaction, "promote_workspace", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli.transaction, "write_release_result", lambda *_args: None)
+    monkeypatch.setattr(cli, "apply_project_release_env", lambda *_args: None)
+    monkeypatch.setattr(cli, "_prepare_release_projects", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli,
+        "_run_release_gates_on_exact_head",
+        lambda *_args, **kwargs: gate_calls.append(kwargs) or "c" * 40,
+    )
+    monkeypatch.setattr(cli, "_git", lambda *_args, **_kwargs: "c" * 40)
+
+    cli._release_projects_sequentially(
+        root,
+        {"demo": project},
+        workspace,
+        ["demo"],
+        github_config=SimpleNamespace(),
+        env_config=SimpleNamespace(),
+        no_build=True,
+        version_plan={"demo": "2.3.4"},
+    )
+
+    assert gate_calls == [{"skip_gates": None, "release_version": "2.3.4"}]
 
 
 def test_untagged_project_refuses_build_side_effect_after_artifact_step(tmp_path, monkeypatch):

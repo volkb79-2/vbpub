@@ -23,7 +23,7 @@ orchestrated project at the estate root.
 
 Controls on every verb: `--log-level`, `--quiet`, `--debug`, `--debug-raw`,
 `--color`/`--no-color`, `--log-prefix-time-short`. `--json` exists only on
-verbs that say so (`status`, `worktrees`, `dependencies`, `standards`,
+verbs that say so (`status`, `worktrees`, `gate-snapshots`, `dependencies`, `standards`,
 `tool-deps`, `versions check`, `doctor`, `skills list`, `skills check`).
 `--dry-run` exists only on verbs that mutate.
 
@@ -33,6 +33,7 @@ verbs that say so (`status`, `worktrees`, `dependencies`, `standards`,
 cmru status                          # changed projects and their next versions
 cmru status ciu --minor --json       # preview a minor bump for one project as JSON
 cmru worktrees --json                # retained build/release worktrees
+cmru gate-snapshots --json           # retained release-gate snapshots, removable or retained (read-only without --remove)
 cmru dependencies --json             # the dependency graph and preflight
 cmru versions check                  # recorded vs currently eligible versions
 cmru resolve ciu --format url        # latest published artifact of a project
@@ -49,23 +50,62 @@ it during tests); without `--refresh` it only reports.
 cmru release --dry-run               # plan the whole transaction, change nothing
 cmru release                         # isolated: prepare, gate, integrate, tag, build, publish
 cmru release ciu --set-version 7.0.0 # explicit version (exactly one project)
+cmru release ciu --from-worktree     # release the exact pushed feature branch commit
+cmru release ciu --from-worktree --secret-file /path/to/main/cmru.secret.toml
 cmru release --no-build              # tag and push only
+cmru release ciu --skip-gates "operator: re-publish after release cleanup"   # ONLY on the operator's explicit say-so
 cmru release --resume cmru-release-20261006_101500-ciu-ab12cd
 cmru release --discard logs --discard artifacts
 ```
 
-`cmru release` runs the ENTIRE release as one transaction in its own worktree,
-from an `origin/main` snapshot (`--allow-uncommitted` allows local edits to be
-omitted from it; `--ahead-check-ref REF` sets the local-ahead guard's
-comparison ref). `--ref` is a deprecated alias of `--ahead-check-ref`. A FAILED
-release keeps its worktree for inspection; `--resume WORKTREE` recovers a
-pre-tag transaction after an interruption. There is no `release --abandon`:
+`--skip-gates REASON` skips only running `run-tests`: it is for an explicit operator decision
+to release without gates, never a convenience. The reason is required, recorded in the transaction and
+published in each Release body as `Released without gates (operator): REASON`. Never add it, edit a
+project's gate, or hand-tag to get around a failing gate on your own; a project with no declared gate
+is still refused; `--resume` uses the recorded choice and refuses the flag. A body retry (`cmru publish <project> --from-checkout --release-tag TAG`) restates the fact from evidence and otherwise refuses until `--gates-ran` or `--gates-skipped REASON` is given.
+
+`cmru release` runs the ENTIRE release as one transaction in its own worktree.
+By default it snapshots `origin/main` (`--allow-uncommitted` allows project edits
+to be omitted from that snapshot; `--ahead-check-ref REF` sets the local-ahead
+guard's comparison ref). Those two options apply only to the default source and
+are refused for feature-source releases or resumes. `--ref` is a deprecated alias
+of `--ahead-check-ref`.
+`--from-worktree` instead requires a clean named non-main branch whose fetched
+`origin/<branch>` tip exactly matches local `HEAD`. It supports one Git family,
+does not push the source branch or update/sync either main, and retains its
+generated same-named origin candidate after publication as the PR branch. The
+release may be public before the PR merges; use a fast-forward or merge commit
+to preserve the tagged SHA. `--secret-file PATH` explicitly selects the root
+credential document; an inferred path in another worktree is advice only.
+After the PR merge, run `cmru abandon <candidate> --dry-run` from a checkout
+with origin credentials, usually the main checkout; `abandon` has no `--secret-file` (only
+`release` and `publish` accept it).
+If hosting already deleted the PR head after merge, CMRU can retire the local transaction only
+after proving the exact candidate tip is in `origin/main`; an absent ref alone is not enough.
+This KI-82 flow shipped in cmru 6.2.0; an older installed `cmru` does not list
+`--from-worktree` in `cmru release --help`.
+A FAILED release keeps its worktree for inspection; `--resume WORKTREE` recovers
+a retained transaction only when its recorded tag/publication state is safe to
+continue. A resume keeps the version the first attempt recorded (D-001): do not
+repeat `--minor`/`--major`/`--set-version`; one that selects a different version
+is refused (exit 4) before anything changes. There is no `release --abandon`:
 discarding is the `abandon` verb below.
+
+## Credentials (`[github] token_source`, mandatory since 7.0)
+
+The committed `[github]` table declares `token_source = "gh"` or `"cmru"` (missing or other:
+exit 2). `"gh"` runs `gh auth token --hostname github.com`: no secret file and no
+`--secret-file` in any worktree (if it fails: `gh auth login`; for GHCR
+`gh auth refresh -h github.com -s read:packages,write:packages,delete:packages`). `"cmru"` uses
+`GITHUB_PUSH_PAT`/`GITHUB_TOKEN`, then `cmru.secret.toml`. `token_source` is not a secret-file key.
+`cmru doctor` reports which source is active, never the value.
 
 ## Build, publish, history
 
 ```bash
-cmru build                           # isolated local build; retains outputs on success
+cmru build                           # isolated local build of the checked-out commit (KI-95); retains outputs on success
+cmru build --from-origin-main        # build fetched origin/main instead of HEAD
+cmru build --allow-uncommitted       # build the committed state past uncommitted project edits
 cmru publish --build-output 20261006-ciu-1   # publish a retained build's exact bytes
 cmru publish --from-checkout         # explicit: run publish from the caller's checkout
 cmru changelog ciu --backfill-tag ciu-v7.0.0 # catalog an already-published tagged release
@@ -81,21 +121,30 @@ cmru run --step test                 # declared steps in the CALLER'S checkout
 cmru abandon                         # inspect retained release transactions
 cmru abandon --dry-run               # show exactly what would be discarded
 cmru abandon cmru/release/ciu --yes  # discard one retained worktree by branch or path
+cmru abandon cmru-release-20261027_162346-cmru-ko6hmt --dry-run  # also: an origin-only candidate, or orphan sidecars of one gone everywhere
 cmru cleanup --policy --dry-run      # preview the configured [cleanup] policy
 cmru cleanup --remove-assets 30d --dry-run
 ```
 
-`cleanup` is NOT routine: it deletes remote Releases, tags and GHCR versions
+`cleanup --policy` deletes EVERY `<prefix>-v*` Release and Git tag of each selected
+project except `<prefix>-latest`, `keep_release_tags` and, only when `[cleanup]
+max_age_days` is set, Releases published within that window; without the key there
+is no age filter at all. PRECONDITION: no `cmru release` may be in flight anywhere
+on the estate (`cleanup` takes no release lock, cmru KI-101): a tag a release just
+pushed has no Release yet and would be selected as a stale tag. `cleanup` is NOT routine: it deletes remote Releases, tags and GHCR versions
 (or one retained build record). Exactly one mode is required (`--policy`,
 `--remove-assets AGE`, `--delete-unmanaged-release-tag TAG`,
 `--delete-build-output ID`); always preview with `--dry-run` first, and note it
 asks for confirmation unless `--yes` is given. `cleanup` never abandons a
-release transaction; `abandon` refuses transactions that already carry
-publication or promotion evidence.
+release transaction. `abandon` withholds published candidates until a completed
+feature-source candidate's exact final commit is present in `origin/main`; it
+then removes the candidate ref if present and the worktree while preserving published tags and
+assets. If the ref is already absent, CMRU still proves the exact commit is merged before retirement.
 
 ## Writing verbs that take `--dry-run`
 
 ```bash
+cmru gate-snapshots --remove --dry-run   # preview which retained gate snapshots would be removed
 cmru dependencies --write --dry-run  # preview the generated block; without --write nothing is written
 cmru standards --update --dry-run    # refresh CMRU-owned revision markers
 cmru tool-deps --refresh ciu --dry-run   # re-vendor a provider's latest artifact

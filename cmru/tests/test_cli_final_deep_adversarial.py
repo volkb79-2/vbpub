@@ -15,7 +15,7 @@ def _project(name="demo", *, git_tag=True, build_step="build", steps=None, strat
         name=name, cwd=name, project_root=Path(name), paths=[name], runner_steps=steps or {},
         steps=steps or {}, env={}, github_token="tok", prefix=f"{name}-v", scm_dist=None,
         git_tag=git_tag, build_step=build_step, version=SimpleNamespace(strategy=strategy),
-        changelog=None, commit_generated=(),
+        changelog=None, commit_generated=(), known_project_names=frozenset(),
     )
 
 
@@ -37,16 +37,20 @@ def test_declared_generated_paths_match_exact_file_or_child_only():
 
 
 def test_release_sequentially_no_tag_no_build_records_nothing_but_checkpoints(monkeypatch, tmp_path):
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
     project = _project(git_tag=False)
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path, "cmru/release/x", "a" * 40)
     progress, calls = [], []
     monkeypatch.setattr(cli.transaction, "write_release_progress", lambda *args: progress.append(args[-1]))
+    monkeypatch.setattr(cli.transaction, "start_untagged_publication_record", lambda *a: None)
+    monkeypatch.setattr(cli.transaction, "mark_untagged_publication_started", lambda *a: None)
     monkeypatch.setattr(cli, "apply_project_release_env", lambda *args: None)
     monkeypatch.setattr(cli, "_prepare_release_projects", lambda *args, **kwargs: calls.append("prepare"))
-    monkeypatch.setattr(cli, "_run_release_gates", lambda *args: calls.append("gate"))
+    monkeypatch.setattr(cli, "_run_release_gates", lambda *args, **_kw: calls.append("gate"))
     monkeypatch.setattr(cli.transaction, "promote_workspace", lambda *_, **__: calls.append("promote"))
     monkeypatch.setattr(cli.transaction, "push_backup_branch", lambda *_, **__: calls.append("backup"))
     monkeypatch.setattr(cli, "_git", lambda *_args, **_kwargs: "b" * 40)
+    monkeypatch.setattr(cli, "_assert_release_gate_source_matches_commit", lambda *_a, **_k: None)
     result = cli._release_projects_sequentially(
         tmp_path, {"demo": project}, workspace, ["demo"],
         github_config=SimpleNamespace(), env_config=SimpleNamespace(), no_build=True,
@@ -57,16 +61,20 @@ def test_release_sequentially_no_tag_no_build_records_nothing_but_checkpoints(mo
 
 
 def test_release_sequentially_tagged_no_build_records_tag_and_skips_artifact_steps(monkeypatch, tmp_path):
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
     project = _project(git_tag=True)
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path, "cmru/release/x", "a" * 40)
     results, pushed = [], []
     monkeypatch.setattr(cli.transaction, "write_release_progress", lambda *args: None)
+    monkeypatch.setattr(cli.transaction, "start_untagged_publication_record", lambda *a: None)
+    monkeypatch.setattr(cli.transaction, "mark_untagged_publication_started", lambda *a: None)
     monkeypatch.setattr(cli, "apply_project_release_env", lambda *args: None)
     monkeypatch.setattr(cli, "_prepare_release_projects", lambda *args, **kwargs: None)
-    monkeypatch.setattr(cli, "_run_release_gates", lambda *args: None)
+    monkeypatch.setattr(cli, "_run_release_gates", lambda *args, **_kw: None)
     monkeypatch.setattr(cli.transaction, "promote_workspace", lambda *_, **__: None)
     monkeypatch.setattr(cli.transaction, "push_backup_branch", lambda *_, **__: None)
     monkeypatch.setattr(cli, "_git", lambda *_args, **_kwargs: "b" * 40)
+    monkeypatch.setattr(cli, "_assert_release_gate_source_matches_commit", lambda *_a, **_k: None)
     monkeypatch.setattr(cli, "_tag_on_head", lambda *_, **__: "demo-v1.2.3")
     monkeypatch.setattr(cli, "_push_tags", lambda _root, tags, **_kwargs: pushed.extend(tags))
     monkeypatch.setattr(cli.transaction, "write_release_result", lambda *args, **kwargs: results.append(args[-1]))
