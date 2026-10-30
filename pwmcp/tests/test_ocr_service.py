@@ -33,6 +33,28 @@ svc = importlib.util.module_from_spec(_spec)
 sys.modules["pwmcp_ocr_service"] = svc
 _spec.loader.exec_module(svc)
 
+
+class _IncompleteEngine(svc.Engine):
+    name = "incomplete"
+
+
+@pytest.mark.parametrize(
+    ("method_name", "args"),
+    [
+        ("available", ()),
+        ("version", ()),
+        ("languages", ()),
+        ("unavailable_reason", ()),
+        ("recognize", (b"", svc.Params(), 1.0)),
+    ],
+)
+def test_engine_protocol_methods_fail_when_unimplemented(
+    method_name: str, args: tuple[object, ...]
+) -> None:
+    engine = _IncompleteEngine()
+    with pytest.raises(NotImplementedError, match=f"Engine\\.{method_name}"):
+        getattr(engine, method_name)(*args)
+
 try:
     from PIL import Image  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover - environment dependent
