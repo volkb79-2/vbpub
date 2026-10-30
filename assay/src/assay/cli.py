@@ -1509,10 +1509,12 @@ def _built_in_registry() -> registry.Registry:
     the property that makes this entry safe everywhere rather than only
     where a toolchain happens to exist: a Go lane is either audited against
     real statement positions or cleanly refused, and there is no third state
-    in which it is silently wrong. This devcontainer and the registered
-    gate's own image (``tester-unified``) both have no Go and both take the
-    refusal -- see ``gate/tests/qualification/`` for where the real-toolchain
-    proof lives instead (DESIGN-GUIDE §10's pattern).
+    in which it is silently wrong. The interactive cockpit and custom slim
+    gate images without Go take the refusal; the standard vbpub
+    ``tester-unified`` image includes Go. The absent-tool behavior is covered
+    by a test that explicitly simulates that environment. See
+    ``gate/tests/qualification/`` for the real-toolchain proof
+    (DESIGN-GUIDE §10's pattern).
 
     **R2 and R3 stay unregistered for Go**, which the Wave C prompt's own
     NOT-IN-SCOPE list forbids changing:

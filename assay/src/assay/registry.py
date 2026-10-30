@@ -62,9 +62,10 @@ advertise today (Python, Go, and P34's own SQL) declares
 wrong in both halves: the set is no longer Python/Go/SQL, and EVERY real Go
 lane exercises the preflight. ``assay lanes --json`` on a Go lane reports
 ``external_tools: ["go"]``, and in an environment without ``go`` on ``PATH``
-(this devcontainer and the registered gate's own image, A-042/A-043) that
-lane is refused ``NO_MEASUREMENT``/``MISSING_EXTERNAL_TOOL`` before its
-command runs. The paragraph is rewritten rather than deleted because A-087's
+(including the interactive cockpit or a custom slim gate image) that lane is
+refused ``NO_MEASUREMENT``/``MISSING_EXTERNAL_TOOL`` before its command runs.
+The standard vbpub ``tester-unified`` image now includes Go, so the absence
+case is tested explicitly. The paragraph is rewritten rather than deleted because A-087's
 REASONING is the load-bearing half: it explains why the machinery lives in
 :mod:`assay.runner` instead of here, which is still true and is not what
 went stale. Only its factual premise did. (The identical paragraph in
