@@ -1022,13 +1022,54 @@ def normalize_verdict(document: Mapping[str, Any], *, assay_version: str, head_o
     return normalized
 
 
+def _differing_json_paths(actual: Any, expected: Any, path: str = "$", *, limit: int = 20) -> list[str]:
+    """Return bounded JSON paths that explain an exact witness mismatch."""
+    differences: list[str] = []
+
+    def visit(left: Any, right: Any, current: str) -> None:
+        if len(differences) >= limit:
+            return
+        if isinstance(left, Mapping) and isinstance(right, Mapping):
+            keys = sorted(set(left) | set(right), key=str)
+            for key in keys:
+                child = f"{current}.{key}"
+                if key not in left or key not in right:
+                    differences.append(child)
+                else:
+                    visit(left[key], right[key], child)
+                if len(differences) >= limit:
+                    return
+            return
+        if isinstance(left, list) and isinstance(right, list):
+            if len(left) != len(right):
+                differences.append(f"{current}.length")
+            for index, (left_item, right_item) in enumerate(zip(left, right)):
+                visit(left_item, right_item, f"{current}[{index}]")
+                if len(differences) >= limit:
+                    return
+            return
+        if left != right:
+            differences.append(current)
+
+    visit(actual, expected, path)
+    if not differences and actual != expected:
+        differences.append(path)
+    return differences
+
+
 def compare_with_witness(
     actual: Mapping[str, Any], witness_path: Path, *, assay_version: str, head_oid: str, base_oid: str
 ) -> None:
     normalized = normalize_verdict(actual, assay_version=assay_version, head_oid=head_oid, base_oid=base_oid)
     expected = json.loads(witness_path.read_text(encoding="utf-8"))
     if normalized != expected:
-        raise QualificationError(f"the normalized verdict differs from the frozen witness at {witness_path}")
+        paths = _differing_json_paths(normalized, expected)
+        suffix = "; differing JSON paths: " + ", ".join(paths)
+        if len(paths) == 20:
+            suffix += ", …"
+        raise QualificationError(
+            f"the normalized verdict differs from the frozen witness at {witness_path}{suffix}"
+        )
 
 
 # --- the flow -------------------------------------------------------------------

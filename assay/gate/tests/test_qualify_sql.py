@@ -840,6 +840,14 @@ def test_compare_with_witness_refuses_a_corrupted_mutation_bucket() -> None:
         q.compare_with_witness(actual, _WITNESS_PATH, assay_version="9.9.9", head_oid="1" * 40, base_oid="2" * 40)
 
 
+def test_compare_with_witness_names_the_differing_json_path() -> None:
+    actual = _witness_as_actual()
+    actual["result_stderr_tail"] = "runtime diagnostic"
+    actual["result_stderr_dropped_bytes"] = 0
+    with pytest.raises(q.QualificationError, match=r"differing JSON paths: \$\.result_stderr_dropped_bytes, \$\.result_stderr_tail"):
+        q.compare_with_witness(actual, _WITNESS_PATH, assay_version="9.9.9", head_oid="1" * 40, base_oid="2" * 40)
+
+
 def test_the_witness_is_the_current_schema_and_says_what_it_judged() -> None:
     document = json.loads(_WITNESS_PATH.read_text(encoding="utf-8"))
     assert document["schema_version"] == q.VERDICT_SCHEMA_VERSION
