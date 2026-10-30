@@ -52,13 +52,21 @@ archived deployed series and the metadata-bearing series to that exact base,
 then requires equal Git tree hashes and an empty `git diff --stat`.
 
 `build-image.sh` derives the `cgroup.N` suffix from the series digest and the
-committed [`image-ledger.json`](image-ledger.json). The digest covers the
-ordered patch filenames and bytes, upstream commit SHA, and `patchseries`
-version. The build date is an image label and is excluded from the digest.
-Each successful image build records its suffix, digest, image ID, and build
-date. The prior `1.13.3-cgroup.4` image predates this ledger; its suffix is
-recorded as a legacy floor, with unknown digest and image ID called out rather
-than invented.
+committed [`image-ledger.json`](image-ledger.json). The digest covers only the
+ordered patch bytes and the pinned upstream commit; filenames and the
+`patchseries` version are excluded. The tool version and build date are
+separate image labels. Before building, the script reserves the suffix in the
+ledger under a `flock` lock, then records the image ID and date on success or
+releases the reservation when Docker fails before producing the tag. If Docker
+has produced a tag but ledger recording fails, the reservation stays active to
+prevent that unrecorded image from being overwritten. This prevents
+overlapping builds from selecting the same tag. The schema-version-2 ledger records the
+active series identity as
+`3f9df8045b72c0346a0a2bc9aeac7fa1af1fb033e3e395d7c568ab22fae2558b`; its
+build and reservation arrays are empty, so no image has been built or recorded
+for it. The prior `1.13.3-cgroup.4` image predates the ledger, so its suffix is
+the legacy floor with unknown digest and image ID called out rather than
+invented.
 
 ## Checks
 
@@ -68,7 +76,14 @@ The patch series metadata check and README table use the same source patches:
 PYTHONPATH=../libraries/patchseries/src python3 -m patchseries check \
   patches/pterodactyl-v1.13.3 --vocabulary vocabulary.toml
 scripts/prove-v1-equivalence.sh
+scripts/test.sh pterodactyl
 ```
 
 The equivalence proof is a local Git operation and does not build an image or
-contact Docker.
+contact Docker. It reports the current series digest along with the tree
+comparison. `test.sh` delegates to the registered `wings` Run-Gate lane, which
+runs in tester-unified under `$CGROUP_PARENT_DEV_GATES`; it does not start a
+nested Go container or receive the host Docker socket. The wrapper refuses
+Run-Gate extra mounts and `DOCKER_HOST`, the worker checks the standard socket
+is absent, and `INTEGRATION=1` is refused explicitly. Exporting a patch series stages and
+validates the full replacement before swapping the canonical directory.

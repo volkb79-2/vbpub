@@ -140,6 +140,28 @@ refusal is not a product pass or failure.
 See [what the launcher guarantees](../README.md) and
 [why those guarantees are required](DESIGN-GUIDE.md#cockpit-and-gate-boundary).
 
+## Running a Go project gate
+
+The image includes the Go toolchain selected in
+`wings-patchstack/stack.conf` for Wings' registered Run-Gate lane. The toolchain
+is part of the tester-unified image; the lane runs `go build`, `go vet`, and
+`go test` directly inside that gate container. It does not start a nested Go
+container or request a host Docker socket for integration tests.
+
+From a prepared checkout, the Wings script delegates to the registered lane:
+
+```bash
+wings-patchstack/scripts/test.sh pterodactyl
+```
+
+Run-Gate resolves and validates `$CGROUP_PARENT_DEV_GATES` through the lane's
+`cgroup_slice_env` setting. Direct lane invocation is also supported:
+
+```bash
+cd wings-patchstack
+run-gate wings
+```
+
 ## Rebuilding the gate image against published tools (release waves)
 
 Run this after a Run-Gate release (and after the tester-base release, so the base is a registry reference)

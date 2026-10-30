@@ -2,6 +2,10 @@
 
 `tester-unified` is the vbpub gate environment. The devcontainer is only the
 cockpit used to launch it; pytest and the actual gate command run in the image.
+The image carries Python 3.14, Node.js for pwmcp, and the Go toolchain selected
+by Wings' `PTERODACTYL_GO_IMAGE`; Go tests run inside the same registered gate
+container, with Run-Gate setting its cgroup placement. See the [design guide](docs/DESIGN-GUIDE.md#userland-added-on-top-of-the-base)
+and [consumer examples](docs/CONSUMERS.md#running-a-go-project-gate).
 
 The image is built FROM `tester-base` (the minimal gate base: `python:3.14-trixie` +
 docker client + minisign + shellcheck; see `tester-base/README.md`), through
@@ -10,13 +14,16 @@ release; no other fallback). The argument keeps the name Run-Gate 24.0.1's relea
 preparation parses. It no longer derives from the MDT cockpit image, so a cockpit release
 cannot change the gate environment and none of the cockpit's baked release CLIs sit on PATH.
 This image adds the `/opt/tester-venv` closure, the uid-1003 identity and the git foreground
-maintenance config; its `PATH` is `/opt/tester-venv/bin:` followed by the base's own.
+maintenance config; its `PATH` starts with `/opt/tester-venv/bin` and the copied
+Go toolchain, followed by the base's own.
 
 Things the old cockpit base supplied implicitly are now explicit in this image (the
 [skip-diff section of the tester-base design guide](../tester-base/docs/DESIGN-GUIDE.md#what-the-skip-diff-found-mdtc-02-t8-and-where-each-answer-lives)
 has the evidence): `zsh` (the mdt-cockpit login-hook tests exercise it and FAIL, rather than lose their
 zsh cases, when `MDT_REQUIRE_SHELLS=1` and it is absent), Node.js with npm and npx (copied
-from the digest-pinned official `node:26.x-trixie` image; pwmcp's runtime-gateway tests run `node`), and
+from the digest-pinned official `node:26.x-trixie` image; pwmcp's runtime-gateway tests run `node`), Go
+(copied from the image selected by `wings-patchstack/stack.conf`; Wings' registered gate runs Go directly
+inside tester-unified instead of launching a nested toolchain container), and
 the uid-1003 identity, and the real `systemctl` client (Debian's `systemd` package: the cgroup-profiler
 placement probe `tools/gate.sh` / `lib/access.py` runs `systemctl show <slice>` inside this image against
 the host system bus, which it can reach only when the bus socket and `/run/systemd/system` are mounted;

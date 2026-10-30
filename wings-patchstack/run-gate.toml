@@ -1,0 +1,42 @@
+# Wings Go tests and workflow tests run in tester-unified, with Run-Gate
+# resolving and validating the host's required gates slice.
+schema_version = 1
+
+[environments.tester-unified]
+mode = "ephemeral"
+image = "tester-unified:local"
+image_env = "RUN_GATE_TESTER_UNIFIED_IMAGE"
+cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
+
+[lanes.wings]
+kind = "command"
+environment = "tester-unified"
+argv = [
+  "bash", "-c",
+  "cd {worktree}/wings-patchstack && exec bash scripts/run-tests-in-gate.sh pterodactyl",
+]
+clean_tree = false
+budget = "30m"
+
+[lanes.wings.resources]
+memory = "4g"
+pids = 4096
+
+[lanes.coverage]
+kind = "command"
+environment = "tester-unified"
+argv = [
+  "bash", "-c",
+  "cd {worktree}/wings-patchstack && exec bash scripts/run-coverage-in-gate.sh pterodactyl",
+]
+clean_tree = false
+budget = "60m"
+artifacts = [
+  ".assay/coverage/verdict.json",
+  ".assay/coverage/cover.out",
+  ".assay/progress-coverage.jsonl",
+]
+
+[lanes.coverage.resources]
+memory = "4g"
+pids = 4096

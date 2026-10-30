@@ -31,6 +31,7 @@
 # base, so the name is a published interface. The image's PATH is its own venv first, then
 # the base's PATH - nothing of the MDT cockpit PATH is relied on.
 ARG TESTER_UNIFIED_BASE_IMAGE=tester-base:local
+ARG WINGS_GO_TOOLCHAIN_IMAGE
 
 # Node.js for the suites that execute it (pwmcp's runtime gateway). The official node image,
 # major 26 (the cockpit's NODE_MAJOR; the major is the deliberate manual pin), pinned by digest.
@@ -39,12 +40,18 @@ ARG TESTER_UNIFIED_BASE_IMAGE=tester-base:local
 # lives in tester-base/cmru.toml because tester-unified has no cmru project); a test asserts equality.
 FROM docker.io/library/node:26.9.0-trixie@sha256:fa271c47a5d81dc321f4a45be01362f5b3de7559edc7e76b8c4089be1e50d866 AS node-source
 
+# Go for Wings' registered tester-unified lane. Keep the toolchain release
+# aligned with wings-patchstack/stack.conf's PTERODACTYL_GO_IMAGE.
+FROM ${WINGS_GO_TOOLCHAIN_IMAGE} AS go-source
+
 FROM ${TESTER_UNIFIED_BASE_IMAGE}
 # Record the base reference this stage was built FROM. build-image.sh and the
 # Run-Gate release preparation compare it with the requested base, so a
 # renamed or unconsumed build argument cannot silently build the default base.
 ARG TESTER_UNIFIED_BASE_IMAGE
+ARG WINGS_GO_TOOLCHAIN_IMAGE
 LABEL org.vbpub.tester-unified.base-image="${TESTER_UNIFIED_BASE_IMAGE}"
+LABEL org.vbpub.tester-unified.go-toolchain-image="${WINGS_GO_TOOLCHAIN_IMAGE}"
 # The identity the base reference resolved to when this image was built (build-image.sh supplies and
 # re-reads it): the reference above can be a mutable local tag, the id says which content it was.
 ARG TESTER_UNIFIED_BASE_IMAGE_ID
@@ -125,6 +132,8 @@ RUN apt-get update \
 #    corepack is NOT copied: the node 26 image no longer ships it (measured: `corepack: not found`).
 COPY --from=node-source /usr/local/bin/node /usr/local/bin/node
 COPY --from=node-source /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY --from=go-source /usr/local/go /usr/local/go
+ENV PATH=/usr/local/go/bin:${PATH}
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
  && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
  && node --version && npm --version && npx --version
@@ -415,3 +424,4 @@ ENV PATH=/opt/tester-venv/bin:${PATH} \
 # The installed CLI must remain executable after switching to the unprivileged
 # gate identity, with PATH resolving to the exact wheel installed above.
 RUN run-gate --version
+RUN go version

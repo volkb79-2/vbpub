@@ -34,6 +34,8 @@ BASE = re.search(r"^ARG TESTER_UNIFIED_BASE_IMAGE=(\S+)$", DOCKERFILE.read_text(
 DEFAULT_BASE = BASE.group(1) if BASE else ""
 UPSTREAM_BASE = "mcr.microsoft.com/devcontainers/python:3.14-trixie"
 assert UPSTREAM_BASE != DEFAULT_BASE
+STACK = (REPO_ROOT / "wings-patchstack" / "stack.conf").read_text("utf-8")
+GO_IMAGE = re.search(r'^PTERODACTYL_GO_IMAGE="([^"]+)"$', STACK, re.MULTILINE).group(1)
 
 
 BASE_ID = "sha256:" + "b" * 64
@@ -42,6 +44,8 @@ BASE_ID = "sha256:" + "b" * 64
 def _tree(tmp_path: Path):
     root = tmp_path / "tree"
     (root / "tester-unified").mkdir(parents=True)
+    (root / "wings-patchstack").mkdir()
+    shutil.copy2(REPO_ROOT / "wings-patchstack" / "stack.conf", root / "wings-patchstack" / "stack.conf")
     (root / "run-gate-project" / "dist").mkdir(parents=True)
     shutil.copy2(BUILDER, root / "tester-unified" / "build-image.sh")
     shutil.copy2(DOCKERFILE, root / "tester-unified" / "Dockerfile")
@@ -77,6 +81,7 @@ def _tree(tmp_path: Path):
         '    *org.vbpub.cli-extended.wheel-sha256*) echo "$FAKE_CLI_EXTENDED_LABEL";;\n'
         '    *org.vbpub.tester-unified.base-image-id*) echo "$FAKE_BASE_IMAGE_ID_LABEL";;\n'
         '    *org.vbpub.tester-unified.base-image*) echo "$FAKE_BASE_IMAGE_LABEL";;\n'
+        '    *org.vbpub.tester-unified.go-toolchain-image*) echo "$FAKE_GO_TOOLCHAIN_LABEL";;\n'
         '    *"{{.Id}}"*) echo "$FAKE_BASE_IMAGE_ID";;\n'
         '  esac\n'
         'fi\n'
@@ -96,6 +101,7 @@ def _tree(tmp_path: Path):
         # The identity the (fake) docker resolves the base to, and what the built image's id label says.
         "FAKE_BASE_IMAGE_ID": BASE_ID,
         "FAKE_BASE_IMAGE_ID_LABEL": BASE_ID,
+        "FAKE_GO_TOOLCHAIN_LABEL": GO_IMAGE,
         "FAKE_PULLED_MARKER": str(tmp_path / "pulled"),
     }
     return root, env, log

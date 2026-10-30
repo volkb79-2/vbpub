@@ -29,11 +29,35 @@ git -C "$UPSTREAM_DIR" worktree add --quiet -b "proof-new-$$" "$NEW_TREE" "$UPST
 git -C "$OLD_TREE" am "$OLD_SERIES"/*.patch
 git -C "$NEW_TREE" am "$PATCH_DIR"/*.patch
 
+SERIES_DIGEST="$(PYTHONPATH="$VBPUB_ROOT/libraries/patchseries/src" python3 - "$PATCH_DIR" "$UPSTREAM_COMMIT" "$STACK_DIR/image-ledger.json" "${REF#v}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+from patchseries import parse, series_digest
+
+digest = series_digest(parse(sys.argv[1]), sys.argv[2])
+current = json.loads(Path(sys.argv[3]).read_text(encoding="utf-8"))["current_series"]
+if (
+    current["upstream_version"] != sys.argv[4]
+    or current["upstream_commit"] != sys.argv[2]
+    or current["series_digest"] != digest
+):
+    raise SystemExit("active series identity does not match image-ledger.json")
+print(digest)
+PY
+)"
+[[ "$SERIES_DIGEST" =~ ^[0-9a-f]{64}$ ]] || {
+    echo "patchseries returned an invalid series digest" >&2
+    exit 1
+}
+
 OLD_HEAD="$(git -C "$OLD_TREE" rev-parse HEAD)"
 NEW_HEAD="$(git -C "$NEW_TREE" rev-parse HEAD)"
 OLD_TREE_SHA="$(git -C "$OLD_TREE" rev-parse 'HEAD^{tree}')"
 NEW_TREE_SHA="$(git -C "$NEW_TREE" rev-parse 'HEAD^{tree}')"
 printf 'upstream commit: %s\n' "$UPSTREAM_COMMIT"
+printf 'series digest: %s\n' "$SERIES_DIGEST"
 printf 'old series HEAD: %s\n' "$OLD_HEAD"
 printf 'new series HEAD: %s\n' "$NEW_HEAD"
 printf 'old tree: %s\n' "$OLD_TREE_SHA"

@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "legacy_unrecorded": [
     {
       "upstream": "1.13.3",
@@ -7,5 +7,11 @@
       "reason": "Predates the provenance ledger; series digest and image ID were not recorded."
     }
   ],
-  "builds": []
+  "current_series": {
+    "upstream_version": "1.13.3",
+    "upstream_commit": "6987d5e6f0612133e031255a99655e822d30579a",
+    "series_digest": "3f9df8045b72c0346a0a2bc9aeac7fa1af1fb033e3e395d7c568ab22fae2558b"
+  },
+  "builds": [],
+  "reservations": []
 }
