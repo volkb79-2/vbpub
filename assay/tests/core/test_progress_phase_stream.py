@@ -30,10 +30,13 @@ from pathlib import Path
 
 import pytest
 
+import pytest
+
 from conftest import GitRepo
 
-from assay import mutation, runner
+from assay import contention, mutation, runner
 from assay.cli import main
+from termination_table import LIMITS_CLEAR
 
 
 _R0_LANE = """\
@@ -103,6 +106,123 @@ def test_an_r0_only_lane_now_emits_its_own_phase_stream(git_repo: GitRepo, tmp_p
 
     names = [event["event"] for event in _events(destination)]
     assert names == ["run", "command_started", "command_finished", "verdict_written"]
+
+
+@pytest.mark.parametrize("path", ["direct", "snapshot"])
+def test_command_finished_carries_resources_when_observed(
+    git_repo: GitRepo, tmp_path, monkeypatch: pytest.MonkeyPatch, path: str
+):
+    observation = contention.ContentionObservation(
+        "clear",
+        limits=LIMITS_CLEAR,
+        pressure_us={
+            "cgroup_psi.cpu.some_us": 21,
+            "cgroup_cpu.throttled_usec": 12,
+        },
+    )
+
+    class Window:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    window = Window()
+    window.observation = observation
+    monkeypatch.setattr(
+        runner.contention, "ContentionWindow", lambda **kwargs: window
+    )
+    monkeypatch.setenv("ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION", "1")
+    monkeypatch.setenv("ASSAY_RESOURCE_OBSERVER_SOCKET", "/observer.sock")
+
+    if path == "direct":
+        lane_file = _r0_repo(git_repo)
+    else:
+        git_repo.write("assay.toml", _R1_LANE)
+        git_repo.write("pkg/__init__.py", "")
+        git_repo.write("pkg/thing.py", "def thing():\n    return 1\n")
+        git_repo.write(".gitignore", "coverage.json\n")
+        git_repo.write(
+            "coverage-fixture.json",
+            json.dumps(
+                {
+                    "meta": {"version": "7.0.0"},
+                    "files": {
+                        "pkg/thing.py": {
+                            "executed_lines": [1, 2],
+                            "missing_lines": [],
+                            "excluded_lines": [],
+                        }
+                    },
+                }
+            ),
+        )
+        git_repo.commit_all("lane")
+        git_repo.git("checkout", "-q", "-b", "base")
+        git_repo.git("checkout", "-q", "-b", "feature")
+        lane_file = str(git_repo.path / "assay.toml")
+
+    destination = tmp_path / "progress.jsonl"
+    assert main(["run", "unit", "--file", lane_file, "--progress", str(destination)]) == 0
+
+    finished = next(
+        event for event in _events(destination) if event["event"] == "command_finished"
+    )
+    resources = finished["resources"]
+    assert resources["observation"] == "clear"
+    assert resources["pressure_observation"] == "clear"
+    assert resources["psi_us"] == {"cpu.some": 21}
+    assert resources["throttled_us"] == 12
+    assert resources["limit_events"]["pids_events_max"] == 0
+    assert resources["window_s"] >= 0
+
+
+def test_fail_under_pressure_prints_one_advisory_line_and_stays_fail(
+    git_repo: GitRepo,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    git_repo.write(
+        "assay.toml",
+        _R0_LANE.replace("exit 0", "echo command-tail >&2; exit 7"),
+    )
+    git_repo.commit_all("failing lane")
+    observation = contention.ContentionObservation(
+        "clear",
+        limits=LIMITS_CLEAR,
+        pressure_us={
+            "cgroup_psi.cpu.some_us": 100_000,
+            "cgroup_cpu.throttled_usec": 50_000,
+        },
+    )
+
+    class Window:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    window = Window()
+    window.observation = observation
+    monkeypatch.setattr(
+        runner.contention, "ContentionWindow", lambda **kwargs: window
+    )
+    monkeypatch.setenv("ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION", "1")
+    monkeypatch.setenv("ASSAY_RESOURCE_OBSERVER_SOCKET", "/observer.sock")
+
+    exit_code = main(
+        ["run", "unit", "--file", str(git_repo.path / "assay.toml")]
+    )
+
+    stderr = capsys.readouterr().err
+    advisory = [line for line in stderr.splitlines() if "advisory" in line.lower()]
+    assert exit_code == 1
+    assert len(advisory) == 1
+    assert "cgroup_psi.cpu.some_us" in advisory[0]
+    assert "throttled_usec" in advisory[0]
 
 
 def test_the_direct_r0_path_never_claims_a_snapshot_it_did_not_take(
