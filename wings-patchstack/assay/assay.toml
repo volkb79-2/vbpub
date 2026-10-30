@@ -2,7 +2,7 @@
 # (R1) over the surface THIS series touches, not over upstream's tree.
 #
 # AUTHORITATIVE COPY. This file lives here, under version control, and is
-# copied to <clone>/assay.toml by patchstack/scripts/coverage.sh on every run.
+# copied to <clone>/assay.toml by wings-patchstack/scripts/coverage.sh on every run.
 # It must NOT be edited inside build/wings-pterodactyl/: that clone is
 # disposable — clone.sh recreates it and apply.sh/rebase.sh rewrite its
 # branch — so anything that only exists there is lost on the next re-clone.
@@ -22,7 +22,7 @@ schema_version = 2
 scope = "S1"
 rigor = ["R0", "R1"]
 enforcement = "gate"
-# The unit-test package set from patchstack/scripts/test.sh, verbatim; only
+# The unit-test package set from wings-patchstack/scripts/test.sh, verbatim; only
 # the three coverage flags are assay's. -coverpkg=./... is what keeps a
 # package with no test file of its own (cmd/, environment/docker/) in the
 # profile instead of vanishing from it (CONSUMERS.md Go point 8).

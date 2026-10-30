@@ -1,7 +1,8 @@
 # PR draft — pelican-dev/wings
 
-> **Status: DRAFT — not submitted.** Patches: `../patchstack/patches/pelican-main/`
-> (0001+0002; include 0003 tests at maintainers' preference).
+> **Status: ARCHIVED — not submitted.** The stale series is preserved at
+> `../../../wings-patchstack/archive/legacy-pelican/pelican-main/`; it has not
+> been ported to the current Pterodactyl scope redesign.
 > Submit with: fork pelican-dev/wings → push `cgroup/main` → open PR. See `README.md` here.
 >
 > Sections through "Security notes" are the body of **PR 2** (placement). The

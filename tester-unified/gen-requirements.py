@@ -17,14 +17,16 @@ SKIPPED (never printed, never refused). The Dockerfile installs a
 sha256-verified published wheel by default; the explicit zero-release mode
 supplies a local source-built wheel through the same install boundary.
 """
+
 from __future__ import annotations
 
 import argparse
 import re
 import sys
-import tomllib
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
+
+import tomllib
 
 #: FLOOR of normalised names of distributions this estate builds itself. The
 #: refusal set is this floor UNIONED with every project name found under the
@@ -33,10 +35,25 @@ from typing import Iterator
 #: Operator decision 2026-10-27: these first-party names have NO age window (always the latest
 #: published release; ``--uploaded-prior-to`` is for third-party dependencies only), and the way
 #: this image honours that is that none of them ever reaches an index-bound pip at all.
-ESTATE_INTERNAL = frozenset({
-    "cli-extended", "worktree", "cmru", "assay", "ciu", "nyxloom", "topos",
-    "cgroup-profiler", "run-gate", "pwmcp", "pwmcp-client", "srdm", "iobench", "vmscreen",
-})
+ESTATE_INTERNAL = frozenset(
+    {
+        "cli-extended",
+        "worktree",
+        "cmru",
+        "assay",
+        "ciu",
+        "nyxloom",
+        "topos",
+        "cgroup-profiler",
+        "run-gate",
+        "pwmcp",
+        "pwmcp-client",
+        "srdm",
+        "iobench",
+        "vmscreen",
+        "patchseries",
+    }
+)
 
 #: Estate-internal names that are SKIPPED rather than refused: since cmru
 #: declares ``cli-extended>=0.3.0`` (KI-51 / CX-D1) its requirement line reaches
@@ -53,6 +70,7 @@ PROJECTS = (
     ("topos/pyproject.toml", ("dev",)),
     ("nyxloom/pyproject.toml", ("test",)),
     ("cgroup-profiler/pyproject.toml", ("test",)),
+    ("libraries/patchseries/pyproject.toml", ("test",)),
     ("pwmcp/client/pyproject.toml", ("test",)),
 )
 
@@ -99,7 +117,9 @@ def derive_internal(root: Path) -> frozenset[str]:
 
 
 def refuse_internal(
-    requirement: str, source: str, internal: frozenset[str] = ESTATE_INTERNAL,
+    requirement: str,
+    source: str,
+    internal: frozenset[str] = ESTATE_INTERNAL,
 ) -> str:
     """Return ``requirement`` unchanged, or refuse it.
 
@@ -121,7 +141,9 @@ def refuse_internal(
 
 
 def admit(
-    requirement: str, source: str, internal: frozenset[str] = ESTATE_INTERNAL,
+    requirement: str,
+    source: str,
+    internal: frozenset[str] = ESTATE_INTERNAL,
 ) -> str | None:
     """The requirement to hand to pip, or ``None`` for a line the Dockerfile
     installs itself (D8: ``cli-extended`` is supplied by the Dockerfile as a
@@ -163,7 +185,11 @@ def requirements(root: Path) -> Iterator[str]:
             document = tomllib.load(handle)
         project = document["project"]
         source = f"{relative} [project]"
-        runtime = () if normalized(project["name"]) in TEST_EXTRAS_ONLY else project.get("dependencies", ())
+        runtime = (
+            ()
+            if normalized(project["name"]) in TEST_EXTRAS_ONLY
+            else project.get("dependencies", ())
+        )
         for requirement in runtime:
             admitted = admit(requirement, source, internal)
             if admitted is not None:
@@ -199,15 +225,25 @@ def build_requirements(root: Path, pyprojects: list[str]) -> Iterator[str]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--root", type=Path, required=True,
-                        help="directory holding the COPYed project trees (e.g. /src)")
-    parser.add_argument("--build-requires", nargs="+", metavar="PYPROJECT", default=None,
-                        help="print only the build-system requirements of these "
-                             "pyprojects (relative to --root) instead of the test closure")
+    parser.add_argument(
+        "--root",
+        type=Path,
+        required=True,
+        help="directory holding the COPYed project trees (e.g. /src)",
+    )
+    parser.add_argument(
+        "--build-requires",
+        nargs="+",
+        metavar="PYPROJECT",
+        default=None,
+        help="print only the build-system requirements of these "
+        "pyprojects (relative to --root) instead of the test closure",
+    )
     args = parser.parse_args(argv)
     produced = (
         build_requirements(args.root, args.build_requires)
-        if args.build_requires else requirements(args.root)
+        if args.build_requires
+        else requirements(args.root)
     )
     seen: dict[str, None] = {}
     for requirement in produced:

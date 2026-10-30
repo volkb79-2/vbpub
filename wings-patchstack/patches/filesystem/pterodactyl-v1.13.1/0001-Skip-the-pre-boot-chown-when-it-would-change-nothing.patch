@@ -25,6 +25,12 @@ bit is chowned unconditionally and that behaviour is preserved.
 
 The entry's ownership comes from the DirEntry the walker already yields, so
 this trades one lchownat for one fstatat on the unchanged path.
+Change-Id: wings-readonly-volume-chown
+Capability: readonly-volume-startup
+Role: enable
+Risk: medium
+Requires: none
+
 ---
  server/filesystem/filesystem.go | 40 +++++++++++++++++++++++++++++++++
  1 file changed, 40 insertions(+)

@@ -136,7 +136,7 @@ container's init process launches, so the properties can only be applied **after
 only the tier's protection is known and deliberate, not a bug to be raced away.
 
 **What shipped:** the 0001–0009 series — see the table in
-`v1-legacy/patchstack/README.md`, which also argues the two retirements that came
+`../wings-patchstack/README.md`, which also argues the two retirements that came
 with this pass (the old 0005, `io_bfq_weight`; the old 0011,
 `WINGS_CG_RAMDISK_UNITS`). Deployment is `v1-legacy/SETUP.md`; the semantics are
 `CGROUP-SEMANTICS.md`; the decision record entry is `STRATEGY.md` §T3b's

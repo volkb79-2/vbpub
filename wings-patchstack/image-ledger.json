@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "legacy_unrecorded": [
+    {
+      "upstream": "1.13.3",
+      "suffix": "cgroup.4",
+      "reason": "Predates the provenance ledger; series digest and image ID were not recorded."
+    }
+  ],
+  "builds": []
+}

@@ -1,5 +1,11 @@
 # Continuation brief — scope redesign, 2026-09-08
 
+> **Layout update, 2026-10-30:** the active Pterodactyl patches and scripts
+> now live in the single canonical [`wings-patchstack/`](../../wings-patchstack/README.md)
+> directory. The original deployed patch bytes are archived there under
+> `archive/deployed-v1/`; path references below record the layout that existed
+> during the 2026-09 review and are historical.
+
 State at hand-off after the rebase-to-v1.13.3 + slice→scope redesign session.
 Read this before touching `wings-cgroups` again.
 

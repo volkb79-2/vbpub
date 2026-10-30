@@ -1,9 +1,8 @@
 # PR draft — pterodactyl/wings
 
-> **Status: DRAFT — not submitted.** Patches:
-> `../patchstack/patches/pterodactyl-v1.13.1/` — rebase onto `develop` before
-> opening the PR (`scripts/rebase.sh pterodactyl develop`), since upstream PRs
-> target `develop`, not the release tag.
+> **Status: DRAFT — not submitted.** The active series is
+> `../../../wings-patchstack/patches/pterodactyl-v1.13.3/`. Refresh and review
+> it against the upstream PR base before opening a PR.
 >
 > Three PRs, in order: config diagnostics (0006) alone, then placement
 > (0001+0002+0003), then per-server slices (0004+0005) stacked on the second.

@@ -1,13 +1,12 @@
-# CI for the wings-cgroups project itself (patch series stays appliable +
-# slice-manager stays green). Copy to the repo's .github/workflows/ and adjust
-# the paths trigger if the folder moves.
+# CI for the Wings cgroups project. The patch series source lives in the
+# canonical top-level wings-patchstack/ directory.
 name: wings-cgroups-ci
 
 on:
   push:
-    paths: ["wings-cgroups/**"]
+    paths: ["wings-cgroups/**", "wings-patchstack/**", "libraries/patchseries/**"]
   pull_request:
-    paths: ["wings-cgroups/**"]
+    paths: ["wings-cgroups/**", "wings-patchstack/**", "libraries/patchseries/**"]
 
 jobs:
   patchstack:
@@ -18,20 +17,18 @@ jobs:
         include:
           - target: pterodactyl
             remote: https://github.com/pterodactyl/wings.git
-            ref: v1.13.1
-            patches: wings-cgroups/patchstack/patches/pterodactyl-v1.13.1
-          - target: pelican
-            remote: https://github.com/pelican-dev/wings.git
-            ref: main
-            patches: wings-cgroups/patchstack/patches/pelican-main
+            ref: v1.13.3
+            commit: 6987d5e6f0612133e031255a99655e822d30579a
+            patches: wings-patchstack/patches/pterodactyl-v1.13.3
     steps:
       - uses: actions/checkout@v4
       - name: Clone upstream and apply series
         run: |
-          git clone --depth 50 ${{ matrix.ref == 'main' && ' ' || '--branch' }} ${{ matrix.ref == 'main' && '' || matrix.ref }} "${{ matrix.remote }}" /tmp/wings
+          git clone --branch "${{ matrix.ref }}" --depth 50 "${{ matrix.remote }}" /tmp/wings
           cd /tmp/wings
           git config user.name ci && git config user.email ci@localhost
-          git checkout -b cgroup-ci ${{ matrix.ref == 'main' && 'origin/main' || matrix.ref }}
+          test "$(git rev-parse 'HEAD^{commit}')" = "${{ matrix.commit }}"
+          git checkout -b cgroup-ci "${{ matrix.commit }}"
           git am "$GITHUB_WORKSPACE/${{ matrix.patches }}"/*.patch
       - uses: actions/setup-go@v5
         with:
@@ -69,4 +66,4 @@ jobs:
       - name: shellcheck all project scripts
         run: |
           sudo apt-get update -q && sudo apt-get install -y shellcheck
-          find wings-cgroups -name '*.sh' -print0 | xargs -0 shellcheck -S warning
+          find wings-cgroups wings-patchstack -name '*.sh' -print0 | xargs -0 shellcheck -S warning

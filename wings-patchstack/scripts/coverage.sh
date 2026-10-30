@@ -28,7 +28,7 @@ resolve_target "${1:-pterodactyl}"
 # --- locate and verify the judge -------------------------------------------
 # vbpub-internal: consume assay's own release output rather than vendoring a
 # copy of the .pyz here. Override with ASSAY_DIST=<dir> to pin another build.
-VBPUB_ROOT="$(cd "$PROJECT_DIR/../.." && pwd)"
+VBPUB_ROOT="$STACK_DIR/.."
 ASSAY_DIST="${ASSAY_DIST:-$VBPUB_ROOT/assay/artifacts/assay-v6.0.0/dist}"
 ASSAY_PYZ="$(ls "$ASSAY_DIST"/assay-*.pyz 2>/dev/null | head -1)"
 [[ -n "$ASSAY_PYZ" && -f "$ASSAY_PYZ.sha256" ]] || {

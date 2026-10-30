@@ -21,8 +21,8 @@ ART="$HERE/artifacts"
 mkdir -p "$ART" && rm -f "$ART/cgroups.test"
 if [[ -d "$PROJECT/build/wings-pterodactyl" ]]; then
     echo "== compiling wings internal/cgroups integration test binary =="
-    # shellcheck source=../../patchstack/scripts/common.sh
-    source "$PROJECT/patchstack/scripts/common.sh"
+    # shellcheck source=../../../../wings-patchstack/scripts/common.sh
+    source "$PROJECT/../wings-patchstack/scripts/common.sh"
     resolve_target pterodactyl
     go_in_container "$SRC_DIR" \
         "CGO_ENABLED=0 go test -c -tags systemdintegration -o /tmp/cgroups.test ./internal/cgroups/ 1>&2 && cat /tmp/cgroups.test" \
