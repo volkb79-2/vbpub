@@ -76,7 +76,8 @@ labels unless `--no-labels` is used.
 
 ## Independent review round nyx-b3fix — 2026-10-29
 
-Current verdict: **FIXES-NEEDED — the full registered lane did not complete.**
+Initial 2026-10-29 verdict (superseded by the continuation below):
+**FIXES-NEEDED — the full registered lane did not complete.**
 The explicit missing-anchor behavior is implemented, and the review's P2 finding
 is covered by new direct-reader and CLI regression assertions in
 `tests/test_usage_pricing.py`. The first post-fix lane invocation was blocked at
@@ -103,13 +104,11 @@ whitespace without relaxing its wording. `git diff --check` and
 `python3 -m py_compile` passed after those corrections; the registered lane was
 not rerun afterward.
 
-The lane's configured R2 cap is 1,203 candidates with a 10-hour budget, but
-neither invocation reached Assay's R2 candidate plan. Both R2 candidate counts
-are therefore 0, not a partial mutation result. The two permitted invocations
-are exhausted; no third attempt was run. The earlier 1,199/1,201 mutation result
-in the iteration-4 evidence table is historical evidence from the earlier tree,
-not a green result for this follow-up. R2 and R3 remain unverified on the
-corrected source tree, so the independent review's P1 remains open.
+At the time of this initial report, neither invocation reached Assay's R2
+candidate plan, so both candidate counts were 0. The earlier 1,199/1,201
+mutation result in the iteration-4 evidence table was historical evidence from
+an earlier tree, not a green result for that follow-up. Those conclusions are
+superseded by the 2026-10-30 continuation below.
 
 Attempt 2 final Run-Gate output tail:
 
@@ -122,3 +121,53 @@ run-gate: assay failure digest: verdict=FAIL
 run-gate: WARNING: assay closeout evidence_error: None (lane verdict FAIL (exit 1) is unchanged); retained json /tmp/run-gate/lanes/session-extract/1c2d7882de6b20ccad0d6df51e9b0244.campaign.json, text /tmp/run-gate/lanes/session-extract/1c2d7882de6b20ccad0d6df51e9b0244.campaign.txt
 run-gate: lane 'session-extract' verdict FAIL; exit_code 1; reason COMMAND_FAILED; log /tmp/run-gate/lanes/session-extract/1c2d7882de6b20ccad0d6df51e9b0244.log
 ```
+
+## nyx-b3fix continuation — 2026-10-30
+
+Current verdict: **R0, R1, and R3 pass; R2 remains `BUDGET_EXCEEDED`; P1 is
+still open.** The usage anchor regression now covers `anchors.py:156` on commit
+`a43c0fcf97d8ef14b592b8eb0c6b377ab0e1251c`. Its registered R1 result is 100.0%
+(7,306/7,306 statements; 1,580/1,580 branches; 28 considered files).
+
+| Continuation evidence | Result |
+| --- | --- |
+| Registered `session-extract` R0 on the corrected tree | PASS; no failures |
+| Registered `session-extract` R1 on the corrected tree | PASS; 100.0%, 7,306/7,306 statements and 1,580/1,580 branches |
+| R2 campaign | 1,203/1,203 terminal; 889 killed, 312 survived, 2 `budget_exceeded`; 0 pending |
+| R3 uncovered-line canary | PASS |
+| Overall registered lane | exit 4, `BUDGET_EXCEEDED/LANE_TIMEOUT` |
+
+The two remaining budget candidates were rejudged through Run-Gate with the
+existing 120-second per-candidate cap and both reached the same terminal
+outcome: `presets.py:91` (`True -> False`, ID prefix `ebe086…`) and
+`usage/loader.py:397` (`NotEq -> Eq`, ID prefix `558916…`). The R2 campaign is
+fully enumerated, but Assay still reports the lane as budget-exceeded; the
+terminal counts do not make that a green R2 result. No candidate limit, time
+budget, or mutation scope was relaxed.
+
+The first selective rejudge request was refused before the lane started:
+Run-Gate's version floor parser did not recognize the worktree-sourced Assay
+version `9.0.1.dev1083+ga43c0fcf9`. Run-Gate now accepts the numeric release
+part of its own setuptools_scm `.devN+g...` source builds while continuing to
+refuse opaque versions and a development build exactly at the stable feature
+floor. The fix and its docs/tests are commit `829f30db7e219f3a6fcaf1e493cb7508ccbe18a0`;
+registered `run-gate selftest` passed with 2,435 passed, 1 skipped, 9/9 changed
+lines covered, and 6/6 branches taken.
+
+An initial selective invocation using that new CLI while HEAD was `829f30d`
+correctly treated the different full commit as a different Assay tree and
+started a full rejudge. It was interrupted through Run-Gate after five
+candidates. I then temporarily detached to the exact Nyxloom campaign commit
+`a43c0fcf` and ran the registered lane using a task-scoped wheel of the tested
+Run-Gate source. Assay resumed 1,196 prior results, rejudged the two requested
+budget candidates, and replayed the five records from the interrupted
+different-commit run. All seven reached terminal outcomes; R0/R1 and R3 passed.
+The original branch was restored afterwards. The tester image was not rebuilt;
+the already-built image contained `pypdf==6.19.0`;
+the existing `tester-unified:local` image ID remains
+`sha256:fca35f461d8a4098ae229c0883fc029f13b6bc9ad97bd285943e23673a547fe0`.
+
+The final exact-tree Run-Gate log is
+`/tmp/run-gate/lanes/session-extract/d1b8b0eadd04fb3c014f386fd8d3b1ed.log`;
+its campaign analysis is
+`/tmp/run-gate/lanes/session-extract/d1b8b0eadd04fb3c014f386fd8d3b1ed.campaign.json`.
