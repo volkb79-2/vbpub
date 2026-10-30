@@ -163,6 +163,7 @@ items:
   - {id: B178, title: "Reuse a passing lane baseline for the R3 canary control", type: feature, component: canary, context_estimate: medium}
   - {id: B179, title: "Retry unresolved R2 infrastructure candidates serially at sweep end", type: feature, component: mutation, context_estimate: medium}
   - {id: B180, title: "Move remaining host-varying process evidence out of verdict v16", type: feature, component: evidence, context_estimate: medium}
+  - {id: B181, title: "whole-target R2 start failures: unsorted R1 targets, coverage banner reported as the first failing test, leaked test children and maxfail in IOBench", type: bugfix, component: execution, context_estimate: medium}
 ---
 
 # assay — backlog
@@ -13366,3 +13367,38 @@ verifier can re-derive it. Keep `budget_per_candidate_derived_s`, because it is
 a judge input. Acceptance includes new-schema checks and old-v16 compatibility
 cases. See the [Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md), §§4,
 6.9 and 7/WP8.
+
+## B181 — whole-target start failures in the 2026-10-29 PWMCP and IOBench R2 runs
+
+**Status: IMPLEMENTED; IOBench `r0-r1` gate PASS; Assay `tester-unified` queued.**
+The two campaign worktrees remain read-only evidence. PWMCP's R1 judgment
+producer forwarded the lane's package-grouped target declaration directly,
+while `JudgmentR1.__post_init__` requires Python-lexically sorted targets. The
+campaign log therefore stopped at verdict construction before mutation work.
+IOBench's captured R0 stdout reports 752 passed tests and coverage JSON; its
+`EXEC_FAILED` instead came from an adopted detached `setsid sleep` child in
+`test_bl06_n_r3_2_a_survivor_holding_the_pipe_cannot_hang_the_run` remaining
+alive when Assay checked pytest's process tree. The diagnostic then falsely
+named pytest-cov's `coverage: platform ...` banner as a failing test because
+Assay's pytest-header fallback accepted any underscore-delimited line.
+
+**Fix:** sort whole-target R1 and native/ingested R2 target tuples at Assay's
+producer boundary, preserving configured order for execution; exclude the
+coverage.py platform banner from pytest failure-header parsing, and print an
+R0 failing-test detail only when the R0 claim is actually `FAIL`. IOBench now
+sets pytest as a child subreaper in the survivor test and kills/reaps both
+detached children before restoring the prior setting. Its R0/R1 argv no
+longer stops at the first failure, and its whole-target inventory omits the
+docstring-only `src/iobench/__init__.py`, which has no executable lines.
+
+**Evidence and acceptance:** the captured IOBench artifact reports
+`752 passed in 111.58s`; there is no coverage threshold failure or missing
+dependency. The registered `libraries/iobench` `r0-r1` lane passed with 754
+tests and 100% statement and branch coverage (log:
+`/tmp/run-gate/lanes/r0-r1/1209e88734533f9e2c762a92971d4933.log`). The Assay
+`tester-unified` lane is queued until the shared gate host is idle; its earlier
+admission attempt returned host-busy before tests ran (log:
+`/tmp/run-gate/lanes/tester-unified/6e7a425186146aa40b4e51b1d78214df.log`).
+After the Assay lane passes and this branch is merged, retry each R2 campaign
+from a new worktree based on the integrated `origin/main`; keep the failed
+campaign worktrees untouched.

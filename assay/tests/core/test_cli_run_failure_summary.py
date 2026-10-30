@@ -181,7 +181,7 @@ def test_a_failure_with_unrecognised_output_adds_no_line(git_repo: GitRepo):
     assert "R0:" not in out
 
 
-def test_a_passed_r0_claim_never_gets_a_failure_line():
+def test_r0_summary_requires_a_measured_failure_claim():
     from types import SimpleNamespace
 
     from assay.cli import _print_run_summary
@@ -207,10 +207,31 @@ def test_a_passed_r0_claim_never_gets_a_failure_line():
     _print_run_summary(verdict, out)
 
     assert "R0:" not in out.getvalue()
-    verdict.claims = (SimpleNamespace(rigor="R1", status=Outcome.FAIL),)
+    verdict.claims = (
+        SimpleNamespace(rigor="R0", status=Outcome.FAIL),
+        SimpleNamespace(rigor="R1", status=Outcome.FAIL),
+    )
     out = io.StringIO()
     _print_run_summary(verdict, out)
     assert f"R0: FAIL (first failing test: {FIRST})" in out.getvalue()
+
+    # A process-tree refusal can retain pytest's successful coverage output.
+    # Neither the R0 ERROR nor the coverage.py platform banner is evidence of
+    # a failed test.
+    verdict.outcome = Outcome.ERROR
+    verdict.exit_code = 2
+    verdict.claims = (
+        SimpleNamespace(rigor="R0", status=Outcome.ERROR),
+        SimpleNamespace(rigor="R1", status=Outcome.NO_MEASUREMENT),
+    )
+    verdict.result_stdout_tail = (
+        "752 passed in 111.58s (0:01:51)\n"
+        "================================ tests coverage ================================\n"
+        "_______________ coverage: platform linux, python 3.14.7-final-0 ________________\n"
+    )
+    out = io.StringIO()
+    _print_run_summary(verdict, out)
+    assert "R0:" not in out.getvalue()
 
 
 def test_a_passing_run_prints_no_failure_line(git_repo: GitRepo):
@@ -357,3 +378,11 @@ def test_a_passthrough_secret_in_a_failing_id_is_masked_in_the_summary(
     assert "R0: FAIL (first failing test: tests/t.py::t[" in out
     assert secret not in out
     assert secret not in err
+
+
+def test_coverage_py_platform_banner_is_not_a_failing_test_name():
+    output = (
+        "_______________ coverage: platform linux, python 3.14.7-final-0 "
+        "________________\n"
+    )
+    assert failure_summary.first_failing_test(output) is None

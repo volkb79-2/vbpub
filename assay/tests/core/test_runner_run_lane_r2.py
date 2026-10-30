@@ -118,6 +118,25 @@ def test_r2_without_r1_kills_the_one_generated_mutant(git_repo: GitRepo):
     assert verdict.judgment.r1 is None
 
 
+def test_native_whole_target_judgment_sorts_nested_target_paths(tmp_path):
+    targets = (
+        "containers/ocr/ocr_service.py",
+        "client/src/pwmcp_client/session.py",
+    )
+    judge = make_r1_judge(
+        source_root_paths=(tmp_path,),
+        base=None,
+        mutation=_MUTATION,
+        mode="whole_target",
+        targets=targets,
+    )
+    lane = make_lane(rigor=("R0", "R2"), judge=judge, argv=("true",))
+
+    judgment = runner._build_judgment_r2(lane)
+
+    assert judgment.targets == tuple(sorted(targets))
+
+
 def test_r2_without_r1_diffs_the_carried_base_in_a_history_cut_snapshot(
     git_repo: GitRepo, monkeypatch: pytest.MonkeyPatch
 ):

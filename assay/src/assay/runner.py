@@ -4677,7 +4677,15 @@ def _run_prepared_lane(
                         fail_under=lane.judge.fail_under,
                         allow_excluded=lane.judge.allow_excluded,
                         mode=r1_effective_mode,
-                        targets=lane.judge.targets,
+                        # The lane preserves target declaration order for
+                        # execution; the verdict model requires the wire
+                        # tuple in Python's lexical order. Keep those two
+                        # contracts separate at the producer boundary.
+                        targets=(
+                            tuple(sorted(lane.judge.targets))
+                            if lane.judge.targets is not None
+                            else None
+                        ),
                         require_branch=r1_effective_require_branch,
                         # B074: the EFFECTIVE opt-out, recorded the same way
                         # `require_branch` beside it is. Emitted into the
@@ -5784,8 +5792,10 @@ def _ingest_r2_report(
     # than compared across two grammars.
     declared_targets = (
         tuple(
-            (project_prefix / target).as_posix()
-            for target in (lane.judge.targets or ())
+            sorted(
+                (project_prefix / target).as_posix()
+                for target in (lane.judge.targets or ())
+            )
         )
         if lane.judge.mode == "whole_target"
         else None
@@ -5841,7 +5851,12 @@ def _build_ingested_judgment_r2(
         fail_under=lane.judge.mutation.fail_under,
         kill_attribution="unattributed",
         mode=lane.judge.mode or "changed_lines",
-        targets=lane.judge.targets if lane.judge.mode == "whole_target" else None,
+        targets=(
+            tuple(sorted(lane.judge.targets))
+            if lane.judge.mode == "whole_target"
+            and lane.judge.targets is not None
+            else None
+        ),
     )
 
 
@@ -5917,7 +5932,11 @@ def _build_judgment_r2(
         # refuses it otherwise), so this is the declared set exactly where
         # `JudgmentR2` requires it and `None` exactly where it forbids it --
         # the same expression `judgment.r1` is built from.
-        targets=lane.judge.targets,
+        targets=(
+            tuple(sorted(lane.judge.targets))
+            if lane.judge.targets is not None
+            else None
+        ),
         shard_index=shard_index,
         shard_count=shard_count,
         budget_per_candidate_derived_s=budget_per_candidate_derived_s,
